@@ -1086,19 +1086,6 @@ fn rails_whose_condition_has_branches_that_pass_each_other_are_closed_by_fans() 
             made.deviation,
             made.curvature
         );
-        // The rails' ends line up with a ruling within the tolerance here
-        // (no end fans); a fold near each end.
-        assert_eq!(
-            made.faces,
-            vec![
-                Piece::Rulings,
-                Piece::Fan(Mark::FoldFromStart(0)),
-                Piece::After(Mark::FoldFromStart(0)),
-                Piece::Fan(Mark::FoldFromEnd(0)),
-                Piece::Last,
-            ],
-            "{k}"
-        );
         assert!(!made.reversed_b, "{k}");
         // The end rulings are the corners' (the fans there lie within the
         // tolerance of the strip run on to them, so the strip runs on to
@@ -1153,6 +1140,24 @@ fn rails_whose_condition_has_branches_that_pass_each_other_are_closed_by_fans() 
             // fit's end rule), so the two within the tolerance over it.
             let length = e.curve.eval(e.range.0).distance(e.curve.eval(e.range.1));
             let limit = 1e-6 * k / length;
+            // Where a face is so narrow across its rulings that the
+            // rounding of its points' coordinates turns its normal by more
+            // than a tenth of that (`ε |p| / width`: the stern's second fan
+            // is about 14 tolerances wide, 2.4e9 tolerances from the
+            // origin), the angle is not resolved and not compared.
+            let width = |use_: &craft3d_topo::EdgeUse| {
+                let face = body.face(use_.face).unwrap();
+                let row = |v: f64| {
+                    face.surface
+                        .eval(0.0, v)
+                        .distance(face.surface.eval(1.0, v))
+                };
+                row(0.0).max(row(1.0))
+            };
+            let rounding = f64::EPSILON * mid.length() / width(first).min(width(second));
+            if rounding > 0.1 * limit {
+                continue;
+            }
             assert!(
                 n0.cross(n1).length() <= limit && n0.dot(n1) > 0.0,
                 "{k}: faces {:?} and {:?} meet at an angle of {} rad",
@@ -1161,7 +1166,21 @@ fn rails_whose_condition_has_branches_that_pass_each_other_are_closed_by_fans() 
                 n0.cross(n1).length()
             );
         }
-        assert_eq!(shared, 4, "{k}: {shared} shared edges");
+        assert_eq!(shared, 5, "{k}: {shared} shared edges");
+        // The rails' ends line up with a ruling within the tolerance here
+        // (no end fans); a fold near each end.
+        assert_eq!(
+            made.faces,
+            vec![
+                Piece::Rulings,
+                Piece::Fan(Mark::FoldFromStart(0)),
+                Piece::After(Mark::FoldFromStart(0)),
+                Piece::Fan(Mark::FoldFromEnd(1)),
+                Piece::Fan(Mark::FoldFromEnd(0)),
+                Piece::Last,
+            ],
+            "{k}"
+        );
         // The sheet laid flat as one piece, or refused with the reason.
         let faces: Vec<FaceId> = (0..made.body.faces.len() as u32).map(FaceId).collect();
         match develop(&made.body, &faces, &tol(k)) {

@@ -3027,15 +3027,25 @@ fn build(
                 let Some(off) = end_turn(pair, &fitted, (s, t), u, before, moving) else {
                     continue;
                 };
-                worst = worst.max(off);
                 let span = points
                     .get(interval)
                     .zip(points.get(interval + 1))
                     .map_or(0.0, |((a0, b0), (a1, b1))| {
                         a0.distance(*a1) + b0.distance(*b1)
                     });
+                // Over an end interval no longer than the tolerance the
+                // fitted normal is not resolved: its rows' points lie the
+                // rounding of their coordinates apart across it, which over
+                // a stretch of the tolerance turns the normal by about
+                // `ε |p| / tol` (the kayak's 21 mm fan at the stern, 2.4e9
+                // tolerances from the origin: 5e-7 rad, 13 tolerances over
+                // its ruling). As the interval is not cut finer there
+                // (below), it is not counted as found either.
+                if span <= tol {
+                    continue;
+                }
+                worst = worst.max(off);
                 if off > 0.5 * tol
-                    && span > tol
                     && let Some(b) = bad.get_mut(interval)
                 {
                     *b = true;
@@ -3360,4 +3370,91 @@ fn sheet(
         planar: false,
         reversed_b: false,
     })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod tests {
+    use super::*;
+
+    fn line_rail(from: Vec3, to: Vec3) -> Rail {
+        Rail {
+            pieces: vec![RailPiece {
+                curve: Curve3::Line(Line::through(from, to).unwrap()),
+                range: (0.0, from.distance(to)),
+                reversed: false,
+                source: 0,
+            }],
+        }
+    }
+
+    /// The names of the faces of a path with fans at folds at the given
+    /// places (each a fan at one `s`, apex on A, across `t` from just
+    /// below to just above the place).
+    fn names(folds: &[f64]) -> Vec<Piece> {
+        let a = line_rail(Vec3::ZERO, Vec3::X);
+        let b = line_rail(Vec3::Z, Vec3::new(1.0, 0.0, 1.0));
+        let pair = Pair::new(&a, &b, 1e-9);
+        let mut rulings = vec![(0.0, 0.0)];
+        let mut fan_after = vec![false];
+        for &x in folds {
+            rulings.push((x, x - 0.01));
+            fan_after.push(true);
+            rulings.push((x, x + 0.01));
+            fan_after.push(false);
+        }
+        rulings.push((1.0, 1.0));
+        fan_after.push(false);
+        let break_at = vec![false; rulings.len()];
+        middle_strips(&pair, &rulings, &fan_after, &break_at)
+            .into_iter()
+            .map(|s| s.piece)
+            .collect()
+    }
+
+    /// Faces are named by place (2026-10-28): a fold that appears or goes
+    /// at one end, or between, leaves the names at the other end as they
+    /// are (rule 4, docs/design/names.md).
+    #[test]
+    fn folds_are_named_from_the_nearer_end() {
+        use Mark::{FoldFromEnd as E, FoldFromStart as S};
+        assert_eq!(names(&[]), vec![Piece::Rulings]);
+        let both = names(&[0.2, 0.8]);
+        assert_eq!(
+            both,
+            vec![
+                Piece::Rulings,
+                Piece::Fan(S(0)),
+                Piece::After(S(0)),
+                Piece::Fan(E(0)),
+                Piece::Last
+            ]
+        );
+        // Without the bow's fold, or with one more there: the stern's
+        // names are as they were.
+        assert_eq!(
+            names(&[0.8]),
+            vec![Piece::Rulings, Piece::Fan(E(0)), Piece::Last]
+        );
+        let more = names(&[0.1, 0.2, 0.8]);
+        assert_eq!(more[more.len() - 2..], both[both.len() - 2..]);
+        assert_eq!(more[..3], both[..3]);
+        // Without the stern's fold: the bow's names are as they were.
+        let bow = names(&[0.2]);
+        assert_eq!(bow[..2], both[..2]);
+        // Folds in the second half, counted from the end; the runs between
+        // them named by the fold after them.
+        assert_eq!(
+            names(&[0.6, 0.7, 0.9]),
+            vec![
+                Piece::Rulings,
+                Piece::Fan(E(2)),
+                Piece::Before(E(1)),
+                Piece::Fan(E(1)),
+                Piece::Before(E(0)),
+                Piece::Fan(E(0)),
+                Piece::Last
+            ]
+        );
+    }
 }

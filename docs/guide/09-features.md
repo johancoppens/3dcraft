@@ -132,10 +132,21 @@ on the panel, and the other way round.
 - A face that is not developable (a sphere, a torus, a double-curved loft) is not unfolded: the reason
   gives its curvature and where. Two faces whose shared edge bends differently on its two sides (two hull
   panels at a chine, a fold) do not lie flat as one piece: unfold each on its own.
-- A developable is refused, with where, when its rulings would cross (an inflection of a curve, a curve
-  that winds about the other), when the curves lie in one plane over a stretch only, when they meet
-  between their ends, when a curve turns back on itself, and when one curve is closed and the other is
-  not. The fans at the ends and at the corners unfold; a strip beside a fan where the rulings turned back
+- The faces of a developable are named by where they are, not by how many come before them: `face(0)`
+  is the first run of rulings, `face(1)` and `face(2)` the fans at the start and the end. Where the rulings
+  turn back, a fan closes the gap: the `n`-th such fan (from 0) in the first half of the sheet, counted
+  from the start, is `face(10000000000 + n)`, in the second half, counted from the end,
+  `face(20000000000 + n)`; a fan from a corner of `a` is `face(30000000000 + c)` (of `b`,
+  `40000000000 + c`), `c` the id of the sketch curve after the corner, or the place of the edge after it in
+  the list from 0. A run of rulings after one of these is `face(100000000000 + m)` with `m` that fan's
+  number (a corner where the faces part counts as its fan's), one after a fan counted from the end is
+  named by the next one, `face(200000000000 + m)`, and the run that reaches the end is
+  `face(300000000000)`. So a fan that appears at one end leaves the names at the other as they were.
+- A developable is refused, with where, when its rulings would cross (a curve that winds about the
+  other), when the curves lie in one plane over a stretch only, when they meet between their ends, when a
+  curve turns back on itself, and when one curve is closed and the other is not. Two closed curves that
+  are the same are refused, and so are two closed curves in one plane that touch, cross or lie side by
+  side. The fans at the ends and at the corners unfold; a strip beside a fan where the rulings turned back
   does not yet (unfold the faces one by one).
 ## Plates and joints
 

@@ -62,7 +62,7 @@
 //!     branch whose rulings run across the panel's, and the two pass each
 //!     other a millimetre apart; the walk stepped from one to the other.
 //!     Now the walk follows its branch into the fold there and closes it
-//!     with a fan (2026-10-28): the panel is an exact developable of seven
+//!     with a fan (2026-10-28): the panel is an exact developable of eight
 //!     faces named by place, and the plate on it is refused only by the
 //!     names of its joints' edges (the Jig names the edges of `face(0)`
 //!     alone).
@@ -324,12 +324,15 @@ fn plates_on_the_long_developable_panels_are_built() {
     // branch that passes the panel's own, and the walk stepped from one to
     // the other). The walk now follows its branch into the fold and closes
     // it with a fan (docs/design/developable.md, Method 4), so the panel is
-    // an exact developable of seven faces named by place: the fans at its
+    // an exact developable of eight faces named by place: the fans at its
     // ends `face(1)` and `face(2)` (its rails' ends do not line up with a
     // ruling), the first run `face(0)`, the fan at the bow's fold (the
     // first from the start) `face(10000000000)`, the run after it
-    // `face(110000000000)`, the fan at the stern's fold (the first from the
-    // end) `face(20000000000)` and the run to the end `face(300000000000)`.
+    // `face(110000000000)`, at the stern the fan across the fold
+    // `face(20000000001)`, which lands on the other branch short of that
+    // branch's own fold, and the fan that closes that one
+    // `face(20000000000)` (the first from the end), and the run to the end
+    // `face(300000000000)`.
     // Its plate `Top4S` is refused by name only: the Jig plates `face(0)`
     // and names its joints' edges as the edges of that one face
     // (`between[DevTop4S:face(0)](2)` and `(3)`), which it no longer has
@@ -374,7 +377,21 @@ fn plates_on_the_long_developable_panels_are_built() {
     };
     let sheer = body("DevTop4S");
     assert_eq!(sheer["valid"], true, "{sheer}");
-    assert_eq!(sheer["faces"], 7, "{sheer}");
+    assert_eq!(sheer["faces"], 8, "{sheer}");
+    assert_eq!(
+        sheer["faceNames"],
+        json!([
+            "F33:face(1)",
+            "F33:face(0)",
+            "F33:face(10000000000)",
+            "F33:face(110000000000)",
+            "F33:face(20000000001)",
+            "F33:face(20000000000)",
+            "F33:face(300000000000)",
+            "F33:face(2)"
+        ]),
+        "{sheer}"
+    );
     for (plate, panel) in [("Plank1S", "Dev1S"), ("Plank2S", "Dev2S")] {
         let square = body(&format!("Square{panel}"));
         let (plate, panel) = (body(plate), body(panel));
