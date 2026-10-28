@@ -225,11 +225,14 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
+    /// The jobs posted to the fake worker: token, document, work.
+    type Posted = Rc<RefCell<Vec<(u64, Vec<u8>, String)>>>;
+
     /// A worker in the test: answers what it is posted with
     /// `measure_checks` when told to, or fails as told.
     #[derive(Clone, Default)]
     struct Fake {
-        posted: Rc<RefCell<Vec<(u64, Vec<u8>, String)>>>,
+        posted: Posted,
         stops: Rc<RefCell<usize>>,
         refuse: Option<String>,
     }
