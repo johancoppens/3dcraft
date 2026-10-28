@@ -202,7 +202,7 @@ fn thick_panels_round_vertices() {
     }
     let mut creases = Vec::new();
     let mut id = 100;
-    let zig = |i: usize| if i % 2 == 0 { 1.0 } else { -1.0 };
+    let zig = |i: usize| if i.is_multiple_of(2) { 1.0 } else { -1.0 };
     let kind = |sign: f64| if sign > 0.0 { V } else { M };
     for i in 1..cols {
         for j in 0..rows {

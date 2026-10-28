@@ -608,8 +608,8 @@ mod tests {
         // Bandwidth 1 after the ordering.
         assert_eq!(pattern.len, 2 * n - 1);
         let mut vals = vec![0.0; pattern.len];
-        for i in 0..n {
-            *pattern.diagonal_mut(&mut vals, perm[i]).unwrap() = 2.0;
+        for &c in &perm {
+            *pattern.diagonal_mut(&mut vals, c).unwrap() = 2.0;
         }
         for i in 0..n - 1 {
             let (a, b) = (pattern.at[perm[i]], pattern.at[perm[i + 1]]);
@@ -635,8 +635,8 @@ mod tests {
             b[perm[i]] = s;
         }
         let x = pattern.solve(&vals, &b).unwrap();
-        for c in 0..n {
-            assert!((x[c] - want[c]).abs() < 1e-12, "{x:?} vs {want:?}");
+        for (got, w) in x.iter().zip(&want) {
+            assert!((got - w).abs() < 1e-12, "{x:?} vs {want:?}");
         }
         // The graph Laplacian (diagonal 1 at the ends) has rank n − 1.
         let mut lap = a;
