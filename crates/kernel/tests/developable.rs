@@ -1005,9 +1005,25 @@ fn a_plate_on_a_long_developable_that_tapers_to_a_tip_has_its_closed_form_volume
 /// the tolerance (a stepped stretch), so the panel is one face, as the
 /// kayak's plate on it (`face(0)`, its edges by number) needs. Held to the
 /// condition at every ruling outside the stepped stretches, rulings that
-/// never cross, no curvature, a fit within half the tolerance, and an
-/// unfold that keeps every edge's length; at three scales (the curves
-/// scaled about the origin, at 1 the kayak's own).
+/// never cross, no curvature, a fit within half the tolerance; at three
+/// scales (the curves scaled about the origin, at 1 the kayak's own).
+///
+/// Its unfold is refused (expectation changed 2026-10-28, develop-r1b; it
+/// was to keep every edge's length): a stepped stretch is not developable,
+/// its curvature over the stretch adds up to an angle `δ` (about
+/// `φ² Δ / L` for a plane that turns by `φ` along rulings of length `L`
+/// over a stretch `Δ` along the rails), and by Gauss–Bonnet the images of
+/// the two rails turn by `δ` against each other there: a pattern takes it
+/// as a strain of about `δ L` across the panel, or, laid from one side as
+/// the unfold lays a face, as a turn of the rest of the face by `δ`, which
+/// over the metres beyond it is tens of tolerances (measured: 3e-5 mm at
+/// the kayak's scale, layouts that only halve their difference per
+/// doubling of the grid). The same panel between the rails cut short of
+/// both stepped stretches (3 % to 97 % of each) is laid flat keeping every
+/// edge's length, so the refusal is the stepped stretches', not the
+/// panel's (Gauss–Bonnet and that second sheet are the oracle, not the
+/// code under test). Owed: the approximate flatten with its strain
+/// reported (docs/design/developable.md, Open).
 #[test]
 fn rails_whose_condition_has_branches_that_pass_each_other_are_stepped_over() {
     let text = std::fs::read_to_string(
@@ -1016,7 +1032,7 @@ fn rails_whose_condition_has_branches_that_pass_each_other_are_stepped_over() {
     )
     .unwrap();
     let data: serde_json::Value = serde_json::from_str(&text).unwrap();
-    let rail_of = |name: &str, k: f64| -> Rail {
+    let rail_of = |name: &str, k: f64, part: (f64, f64)| -> Rail {
         let d = &data[name];
         let floats = |v: &serde_json::Value| -> Vec<f64> {
             v.as_array()
@@ -1042,10 +1058,14 @@ fn rails_whose_condition_has_branches_that_pass_each_other_are_stepped_over() {
         )
         .unwrap();
         let range = floats(&d["range"]);
-        rail(Curve3::Nurbs(curve), (range[0], range[1]))
+        let w = range[1] - range[0];
+        rail(
+            Curve3::Nurbs(curve),
+            (range[0] + part.0 * w, range[0] + part.1 * w),
+        )
     };
     for k in SCALES {
-        let (a, b) = (rail_of("A", k), rail_of("B", k));
+        let (a, b) = (rail_of("A", k, (0.0, 1.0)), rail_of("B", k, (0.0, 1.0)));
         let made = connect(&a, &b, &tol(k)).unwrap_or_else(|e| panic!("{k}: {e}"));
         eprintln!(
             "{k}: faces {:?}, {} rulings, stepped {:?}, deviation {:e}, K {:e}",
@@ -1104,10 +1124,23 @@ fn rails_whose_condition_has_branches_that_pass_each_other_are_stepped_over() {
         );
         assert!(made.curvature * k * k < 1e-6, "{k}: K {}", made.curvature);
         assert!(made.deviation <= 0.5e-6 * k, "{k}: {}", made.deviation);
-        // Laid flat, every edge keeps its length.
-        let dev = develop(&made.body, &[FaceId(0)], &tol(k)).unwrap_or_else(|e| panic!("{k}: {e}"));
+        // The stepped panel's unfold is refused, never a pattern off by
+        // more than the tolerance.
+        match develop(&made.body, &[FaceId(0)], &tol(k)) {
+            Ok(dev) => panic!("{k}: a stepped sheet laid flat, {:?}", dev.error()),
+            Err(e) => assert!(e.to_string().contains("converge"), "{k}: {e}"),
+        }
+        // Cut short of the stepped stretches: laid flat, every edge keeps
+        // its length.
+        let part = (0.03, 0.97);
+        let (a, b) = (rail_of("A", k, part), rail_of("B", k, part));
+        let made = connect(&a, &b, &tol(k)).unwrap_or_else(|e| panic!("{k}: short: {e}"));
+        assert!(made.stepped.is_empty(), "{k}: {:?}", made.stepped);
+        let faces: Vec<FaceId> = (0..made.body.faces.len() as u32).map(FaceId).collect();
+        let dev =
+            develop(&made.body, &faces, &tol(k)).unwrap_or_else(|e| panic!("{k}: short: {e}"));
         let e = dev.error();
-        eprintln!("{k}: unfolded, {e:?}");
+        eprintln!("{k}: short of the stepped stretches, unfolded, {e:?}");
         assert!(e.map <= 1e-6 * k, "{k}: {e:?}");
         for c in dev.outline() {
             assert!(
