@@ -261,14 +261,20 @@ fn new_edges(
         let Some(&(level, first)) = skins.first() else {
             continue;
         };
+        // A skin that cannot be laid flat one way is refused, never left
+        // out: a later cut through it would be missing from the pattern.
         let Some(role) = role_of(&first) else {
-            continue;
+            return Err(refuse(
+                "a face of the part's skin is not a flat or a bend of its pattern, so the later cuts through it cannot be laid flat".to_string(),
+            ));
         };
         let agree = skins
             .iter()
             .all(|(l, s)| *l == level && role_of(s).map(cell) == Some(cell(role)));
         if !agree {
-            continue;
+            return Err(refuse(
+                "a face of the part's skin lies on the surface of skins of different flats, bends or sides, so the later cuts through it cannot be laid flat one way".to_string(),
+            ));
         }
         for l in &face.loops {
             let Some(lp) = body.loop_(*l) else { continue };
@@ -475,7 +481,7 @@ pub fn later_cuts(
         }
         if met && !paired {
             return Err(refuse(format!(
-                "a later cut near ({}, {}) in the flat pattern does not go through the sheet square to it: its outline on the two skins differs, so it has no one outline in the flat (a bevelled or tilted cut); cut it square to the sheet, or draw it in the part's sketch or a cutouts sketch",
+                "a later cut near ({}, {}) in the flat pattern does not go through the sheet square to it: its outline on the two skins differs, so it has no one outline in the flat (a bevelled or tilted cut, or one across a bend whose walls do not follow the bend's radial lines); cut it square to the sheet, or draw it in the part's sketch or a cutouts sketch",
                 bb[0], bb[1]
             )));
         }

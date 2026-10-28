@@ -505,7 +505,8 @@ pub(crate) fn trace(
                 let mut most = 0.0_f64;
                 for (curve, p) in fitted.iter().zip(&points) {
                     let misfit = curve.eval(middle).distance(*p);
-                    if !(misfit <= most) {
+                    // A NaN stays: the step is off, whatever comes after it.
+                    if !most.is_nan() && !(misfit <= most) {
                         most = misfit;
                     }
                     if !(misfit <= SHARE * tol) && !(misfit <= worst.0) {
