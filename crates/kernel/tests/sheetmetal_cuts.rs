@@ -392,14 +392,14 @@ fn round_holes_on_the_strip_and_across_a_tangent_line() {
             let ba = ba(kf);
             let rho = ba / 4.0;
             let inside = circle([40.0 + ba / 2.0, 10.0], rho, k);
-            let across = circle([40.0, 22.0], 1.0, k);
+            let across = circle([40.0, 22.0], 0.8, k);
             let part = build(&part_spec(k, kf, vec![inside, across]), &tol).unwrap();
             healthy(&part, &tol);
             assert_eq!(part.cuts.len(), 2);
             assert_eq!(part.sheet_faces.len(), 3);
             let f = strip_factor(k, kf);
             let a_in = PI * rho * rho * k * k;
-            let half = 0.5 * PI * k * k;
+            let half = 0.5 * PI * 0.64 * k * k;
             let want = whole_volume(k) - a_in * f - half * k - half * f;
             near(volume(&part), want, 1e-7 * want, "the volume");
             one_sheet(&part, &tol);

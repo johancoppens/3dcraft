@@ -22,9 +22,11 @@
 //! goes to the angle `s / (R + K T)` about the bend's axis, `u` along it
 //! (the neutral fibre keeps its length, so the strip's width `θ (R + K T)`
 //! is the angle θ). A line along the bend stays a line, one across it is an
-//! arc of the skin's circle; any other curve's image is traced and fitted
-//! by a cubic spline within a quarter of the tolerance at the middles of
-//! its steps (the plate's own trace, [`crate::plate::trace`]).
+//! arc of the skin's circle; any other curve's image is a cubic Hermite
+//! spline through its points with its tangents (both exact), the steps
+//! halved until it holds the image within a quarter of the tolerance at
+//! their middles: the ends' tangents are the image's, so where a cut crosses
+//! a tangent line smoothly its edges meet as the image does.
 
 use super::{
     Bend, Builder, EdgeKey, Ends, Flat, P2, Segment, Shape, SheetFace, add, cross, dot, lift, line,
@@ -733,6 +735,17 @@ impl Skin {
             + (self.frame.x() * phi.cos() + self.frame.y() * phi.sin()) * self.radius
     }
 
+    /// The tangent of the image of a pattern curve through `p` with the
+    /// tangent `dp` there.
+    fn tangent(&self, p: P2, dp: P2) -> Vec3 {
+        let (_, s) = self.local(p);
+        let phi = self.angle(s);
+        let du = dot(dp, self.along);
+        let dphi = dot(dp, self.across) / self.neutral;
+        self.axis * du
+            + (self.frame.y() * phi.cos() - self.frame.x() * phi.sin()) * (self.radius * dphi)
+    }
+
     /// The circle of the skin `u` along the axis.
     fn circle(&self, u: f64) -> Result<Circle, KernelError> {
         let f = self
@@ -769,7 +782,7 @@ fn wrapped_edge(
             (builder.body.add_edge(circle, (p1, p0), vb, va), true)
         });
     }
-    let first = match &seg.shape {
+    let mut count = match &seg.shape {
         Shape::Arc { .. } | Shape::Circle { .. } => {
             let sweep = seg.angles().map_or(TAU, |(_, s)| s);
             ((sweep / 0.05).ceil() as usize).clamp(16, 512)
@@ -777,24 +790,106 @@ fn wrapped_edge(
         Shape::Spline(spline) => spline.control.len().saturating_mul(8).clamp(16, 512),
         Shape::Line => 16,
     };
-    let params: Vec<f64> = (0..=first).map(|i| i as f64 / first as f64).collect();
-    let (params, rows) = crate::plate::trace(
-        params,
-        1,
+    // A cubic Hermite spline through the wrapped points with the wrapped
+    // tangents: its ends' tangents are the image's exactly, so a cut that
+    // crosses a tangent line smoothly folds to edges that meet as the
+    // image does (a fit's end tangent would be a little off, a kink the
+    // plate's corners would have to make out).
+    let limit = 0.25 * tol;
+    while count <= MAX_WRAP_STEPS {
+        let params: Vec<f64> = (0..=count).map(|i| i as f64 / count as f64).collect();
+        let points: Vec<Vec3> = params
+            .iter()
+            .map(|&t| skin.point(loop_point(seg, t)))
+            .collect();
+        let tangents: Vec<Vec3> = params
+            .iter()
+            .map(|&t| skin.tangent(loop_point(seg, t), loop_tangent(seg, t)))
+            .collect();
+        let curve = hermite(&params, &points, &tangents)?;
+        let held = params.windows(2).all(|w| {
+            let [a, b] = w else { return false };
+            let m = 0.5 * (a + b);
+            curve.eval(m).distance(skin.point(loop_point(seg, m))) <= limit
+        });
+        if held {
+            let range = curve.domain();
+            return Ok((
+                builder.body.add_edge(Curve3::Nurbs(curve), range, va, vb),
+                false,
+            ));
+        }
+        count *= 2;
+    }
+    Err(refuse(
         None,
-        "edge of a hole across a bend",
-        &mut |t| Ok(vec![skin.point(loop_point(seg, t))]),
-        tol,
-    )?;
-    let row = rows
-        .first()
-        .ok_or_else(|| refuse(None, "a traced edge has no points"))?;
-    let curve = crate::plate::fit(&params, row)?;
-    let range = curve.domain();
-    Ok((
-        builder.body.add_edge(Curve3::Nurbs(curve), range, va, vb),
-        false,
+        format!(
+            "an edge of a hole across a bend could not be wrapped onto the bend within a quarter of the tolerance in {MAX_WRAP_STEPS} steps"
+        ),
     ))
+}
+
+/// The most steps a wrapped edge is laid in.
+const MAX_WRAP_STEPS: usize = 4096;
+
+/// The tangent of a segment at `t` along the loop's direction (per unit
+/// of `t`).
+fn loop_tangent(seg: &Segment, t: f64) -> P2 {
+    match &seg.shape {
+        Shape::Line => sub(seg.end, seg.start),
+        Shape::Arc { radius, .. } | Shape::Circle { radius, .. } => {
+            let (_, sweep) = seg.angles().unwrap_or((0.0, TAU));
+            let turn = if seg.reversed { -sweep } else { sweep };
+            let angle = loop_angle(seg, t);
+            [-radius * angle.sin() * turn, radius * angle.cos() * turn]
+        }
+        Shape::Spline(_) => {
+            // By the central difference (a spline lies inside a strip, so
+            // its ends meet only its own loop's corners).
+            let h = 1e-6;
+            let (a, b) = ((t - h).max(0.0), (t + h).min(1.0));
+            let (pa, pb) = (loop_point(seg, a), loop_point(seg, b));
+            scale(sub(pb, pa), 1.0 / (b - a))
+        }
+    }
+}
+
+/// The cubic B-spline, once differentiable, through `points` at the
+/// increasing `params` with the tangents `tangents` there: per step the
+/// Bézier piece `P_i, P_i + h T_i / 3, P_(i+1) − h T_(i+1) / 3, P_(i+1)`.
+fn hermite(
+    params: &[f64],
+    points: &[Vec3],
+    tangents: &[Vec3],
+) -> Result<craft3d_geom::NurbsCurve, KernelError> {
+    let (Some(&first), Some(&last)) = (params.first(), params.last()) else {
+        return Err(refuse(None, "a wrapped edge has no points"));
+    };
+    let mut knots = vec![first; 4];
+    let mut control: Vec<Vec3> = Vec::with_capacity(3 * points.len());
+    for (i, w) in params.windows(2).enumerate() {
+        let [a, b] = w else { continue };
+        let (Some(&p), Some(&q), Some(&tp), Some(&tq)) = (
+            points.get(i),
+            points.get(i + 1),
+            tangents.get(i),
+            tangents.get(i + 1),
+        ) else {
+            return Err(refuse(None, "a wrapped edge lost a point"));
+        };
+        let h = b - a;
+        if i == 0 {
+            control.push(p);
+        }
+        control.push(p + tp * (h / 3.0));
+        control.push(q - tq * (h / 3.0));
+        control.push(q);
+        if i + 2 < params.len() {
+            knots.extend([*b; 3]);
+        }
+    }
+    knots.extend([last; 4]);
+    Ok(craft3d_geom::NurbsCurve::polynomial(3, knots, control)?)
 }
 
 /// The folded bottom skin of a pattern with cuts across bends (see the
