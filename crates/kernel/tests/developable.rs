@@ -1071,7 +1071,22 @@ fn rails_whose_condition_has_branches_that_pass_each_other_are_stepped_over() {
                 .iter()
                 .any(|&((s0, t0), (s1, t1))| s > s0 && s < s1 && t > t0 && t < t1)
         };
-        for ruling in made.rulings.iter().filter(|r| !inside(r)) {
+        // The end rulings are the corners' (the fans there lie within the
+        // tolerance of the strip run on to them): held to the twist the fit
+        // holds every ruling to.
+        let last = made.rulings.len() - 1;
+        for (i, ruling) in made.rulings.iter().enumerate() {
+            if inside(ruling) {
+                continue;
+            }
+            if i == 0 || i == last {
+                let d = twist(&a, &b, *ruling);
+                assert!(
+                    d <= 0.5e-6 * k,
+                    "{k}: twist {d} at the end ruling {ruling:?}"
+                );
+                continue;
+            }
             let f = condition(&a, &b, *ruling);
             assert!(f.abs() < 1e-8, "{k}: condition {f} at {ruling:?}");
         }
@@ -1097,4 +1112,336 @@ fn rails_whose_condition_has_branches_that_pass_each_other_are_stepped_over() {
             );
         }
     }
+}
+
+/// The fan at a fold, laid flat alone (2026-10-28): its layout from the
+/// grid's rows converged only at first order towards its apex and ran out
+/// of grid (r1-kayakplates, 2026-10-27). Laid about its apex, each line
+/// from the apex in the direction its ruling has on the unit sphere's arc,
+/// it is exact: it opens by `∫ |d(B / |B|)|` over its stretch of B (the
+/// apex at the origin), every edge keeps its length, and a point mapped
+/// there and back returns; at three scales.
+#[test]
+fn a_fan_is_laid_flat_about_its_apex() {
+    for k in SCALES {
+        let (a, b) = passing_branches(k);
+        let made = connect(&a, &b, &tol(k)).unwrap_or_else(|e| panic!("{k}: {e}"));
+        let fan = made
+            .faces
+            .iter()
+            .position(|p| *p == Piece::Inner(0))
+            .unwrap();
+        let surface = &made.body.faces[fan].surface;
+        const CHORDS: usize = 1 << 14;
+        let row: Vec<Vec3> = (0..=CHORDS)
+            .map(|i| surface.eval(i as f64 / CHORDS as f64, 1.0))
+            .collect();
+        let angle: f64 = row
+            .windows(2)
+            .map(|w| {
+                w[0].normalized()
+                    .unwrap()
+                    .cross(w[1].normalized().unwrap())
+                    .length()
+                    .asin()
+            })
+            .sum();
+        let dev = develop(&made.body, &[FaceId(fan as u32)], &tol(k))
+            .unwrap_or_else(|e| panic!("{k}: {e}"));
+        let e = dev.error();
+        eprintln!("{k}: the fan laid flat, {e:?}");
+        assert!(e.map <= 0.5e-6 * k, "{k}: {e:?}");
+        for c in dev.outline() {
+            assert!(
+                (c.length_flat - c.length_3d).abs() <= 1e-6 * k,
+                "{k}: an edge {} long on the part, {} flat",
+                c.length_3d,
+                c.length_flat
+            );
+        }
+        let flat = |p: Vec3| dev.to_flat(FaceId(fan as u32), p).unwrap();
+        let (apex, first, last) = (
+            flat(surface.eval(0.5, 0.0)),
+            flat(row[0]),
+            flat(row[CHORDS]),
+        );
+        let (u, w) = (
+            [first[0] - apex[0], first[1] - apex[1]],
+            [last[0] - apex[0], last[1] - apex[1]],
+        );
+        let opened = (u[0] * w[1] - u[1] * w[0])
+            .abs()
+            .atan2(u[0] * w[0] + u[1] * w[1]);
+        assert!(
+            (opened - angle).abs() <= 1e-6,
+            "{k}: the fan opens by {opened} in the pattern, {angle} on the part"
+        );
+        // There and back.
+        for (uu, vv) in [(0.2, 0.3), (0.5, 0.9), (0.8, 0.05)] {
+            let p = surface.eval(uu, vv);
+            let (face, q) = dev.to_3d(flat(p)).unwrap();
+            assert_eq!(face, FaceId(fan as u32));
+            assert!(q.distance(p) <= 1e-6 * k, "{k}: {p:?} came back as {q:?}");
+        }
+        // The rays from the apex are straight: the midpoint of a ruling
+        // lies halfway along its image.
+        let (m, end) = (flat(surface.eval(0.4, 0.5)), flat(surface.eval(0.4, 1.0)));
+        let half = [0.5 * (apex[0] + end[0]), 0.5 * (apex[1] + end[1])];
+        assert!(
+            (m[0] - half[0]).hypot(m[1] - half[1]) <= 1e-6 * k,
+            "{k}: a ruling's middle off its image's"
+        );
+    }
+}
+
+/// A rail of several pieces end to end.
+fn chain(pieces: Vec<(Curve3, (f64, f64))>) -> Rail {
+    Rail {
+        pieces: pieces
+            .into_iter()
+            .enumerate()
+            .map(|(i, (curve, range))| RailPiece {
+                curve,
+                range,
+                reversed: false,
+                source: i as u64 + 1,
+            })
+            .collect(),
+    }
+}
+
+/// A chain's point and unit tangent at its parameter `s` (piece `⌊s⌋`
+/// over `[i, i + 1]`), the piece before a joint when `before`.
+fn chain_at(r: &Rail, s: f64, before: bool) -> (Vec3, Vec3) {
+    let n = r.pieces.len();
+    let i = if before && s.fract() == 0.0 && s >= 1.0 {
+        s as usize - 1
+    } else {
+        (s.floor() as usize).min(n - 1)
+    };
+    let piece = &r.pieces[i];
+    let (a, b) = piece.range;
+    let (p, d) = piece.curve.derivatives(a + (s - i as f64) * (b - a));
+    (p, d.normalized().unwrap())
+}
+
+/// The condition at a ruling of chains: the smaller of its two sides at
+/// a joint (a ruling at a corner satisfies the condition of the face on
+/// its side).
+fn chain_condition(a: &Rail, b: &Rail, (s, t): (f64, f64)) -> f64 {
+    let mut best = f64::INFINITY;
+    for before_a in [false, true] {
+        for before_b in [false, true] {
+            let ((pa, ua), (pb, ub)) = (chain_at(a, s, before_a), chain_at(b, t, before_b));
+            let f = ua.dot(ub.cross((pb - pa).normalized().unwrap()));
+            best = best.min(f.abs());
+        }
+    }
+    best
+}
+
+/// Faces that share an edge meet tangent there, at its middle (or, with
+/// `crease`, the number of edges where they do not).
+fn creases(body: &Body) -> usize {
+    let uses = craft3d_topo::edge_uses(body);
+    let mut count = 0;
+    for (edge, faces) in uses.iter().enumerate() {
+        let [first, second] = faces.as_slice() else {
+            continue;
+        };
+        let e = &body.edges[edge];
+        let mid = e.curve.eval(0.5 * (e.range.0 + e.range.1));
+        let normal = |use_: &craft3d_topo::EdgeUse| {
+            let face = body.face(use_.face).unwrap();
+            let (u, v) = face.surface.project(mid).unwrap();
+            let n = face.surface.normal(u, v).unwrap();
+            if face.reversed { -n } else { n }
+        };
+        let (n0, n1) = (normal(first), normal(second));
+        if !(n0.cross(n1).length() < 1e-6 && n0.dot(n1) > 0.0) {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// Rails with a corner (2026-10-28). A cone between two coaxial arcs, the
+/// upper turning by a corner into an arc of another circle in its plane:
+/// up to the corner the rulings pass through the cone's apex; at the
+/// corner the condition jumps (the rail's tangent does), and the sheet
+/// turns it by a fan from the corner across the lower arc to where the
+/// rulings after the corner start (the oblique cone between the lower arc
+/// and the other circle), so it is smooth across both of the fan's edges
+/// while its rail has the corner. Then the rest of the lower arc is a fan
+/// from the upper rail's end. Held to the condition at every ruling (on
+/// its side of the corner), the fan's apex at the corner, faces tangent
+/// where they meet, and the sheet laid flat as one piece keeping every
+/// edge's length and its area; at three scales.
+#[test]
+fn a_rail_with_a_corner_is_turned_by_a_fan_from_the_corner() {
+    for k in SCALES {
+        let (r_low, r_up, h) = (2.0 * k, 1.0 * k, 1.0 * k);
+        let frame = |c: Vec3, x: Vec3| Frame::new(c, Vec3::Z, x).unwrap();
+        let circle =
+            |c: Vec3, x: Vec3, r: f64| Curve3::Circle(Circle::new(frame(c, x), r).unwrap());
+        let a = chain(vec![(circle(Vec3::ZERO, Vec3::X, r_low), (0.2, 2.0))]);
+        // The upper rail: an arc of radius 1 at height 1 from 0.2 to 1 rad,
+        // then from its end an arc of radius 3 that leaves the first's
+        // tangent turned by 0.4 rad, for 0.5 rad.
+        let corner_at = 1.0_f64;
+        let p = Vec3::new(r_up * corner_at.cos(), r_up * corner_at.sin(), h);
+        let tangent = Vec3::new(-corner_at.sin(), corner_at.cos(), 0.0);
+        let (c, s) = (0.4_f64.cos(), 0.4_f64.sin());
+        let d = Vec3::new(
+            c * tangent.x - s * tangent.y,
+            s * tangent.x + c * tangent.y,
+            0.0,
+        );
+        let left = Vec3::Z.cross(d);
+        let rho = 3.0 * k;
+        let b = chain(vec![
+            (
+                circle(Vec3::new(0.0, 0.0, h), Vec3::X, r_up),
+                (0.2, corner_at),
+            ),
+            (circle(p + left * rho, -left, rho), (0.0, 0.5)),
+        ]);
+        let made = connect(&a, &b, &tol(k)).unwrap_or_else(|e| panic!("{k}: {e}"));
+        eprintln!("{k}: faces {:?}", made.faces);
+        assert_eq!(
+            made.faces,
+            vec![
+                Piece::Rulings,
+                Piece::Inner(0),
+                Piece::Inner(1),
+                Piece::EndFan
+            ],
+            "{k}"
+        );
+        for &ruling in &made.rulings {
+            let f = chain_condition(&a, &b, ruling);
+            assert!(f < 1e-8, "{k}: condition {f} at {ruling:?}");
+        }
+        assert!(
+            made.rulings
+                .windows(2)
+                .all(|w| w[1].0 >= w[0].0 && w[1].1 >= w[0].1),
+            "{k}: rulings are monotone"
+        );
+        assert!(made.curvature * k * k < 1e-6, "{k}: K {}", made.curvature);
+        // Up to the corner, through the cone's apex at height 2.
+        let apex = Vec3::new(0.0, 0.0, 2.0 * k);
+        for &(s, t) in made.rulings.iter().filter(|(_, t)| *t < 1.0) {
+            let ((pa, _), (pb, _)) = (chain_at(&a, s, false), chain_at(&b, t, false));
+            let dir = (pb - pa).normalized().unwrap();
+            let off = (apex - pa) - dir * (apex - pa).dot(dir);
+            assert!(
+                off.length() <= 1e-6 * k,
+                "{k}: misses the apex by {}",
+                off.length()
+            );
+        }
+        // The fan's apex is the corner.
+        let fan = &made.body.faces[1].surface;
+        for u in [0.0, 0.5, 1.0] {
+            let at = fan
+                .eval(u, 0.0)
+                .distance(p)
+                .min(fan.eval(u, 1.0).distance(p));
+            assert!(at <= 1e-6 * k, "{k}: the fan's apex {at} from the corner");
+        }
+        assert_eq!(creases(&made.body), 0, "{k}: the sheet is smooth");
+        // Laid flat as one piece.
+        let faces: Vec<FaceId> = (0..made.body.faces.len() as u32).map(FaceId).collect();
+        let dev = develop(&made.body, &faces, &tol(k)).unwrap_or_else(|e| panic!("{k}: {e}"));
+        let e = dev.error();
+        eprintln!("{k}: laid flat, {e:?}");
+        assert!(e.area < 1e-6 && e.length < 1e-6, "{k}: {e:?}");
+        assert!(e.map <= 0.5e-6 * k, "{k}: {e:?}");
+        for c in dev.outline() {
+            assert!(
+                (c.length_flat - c.length_3d).abs() <= 1e-6 * k,
+                "{k}: an edge {} long on the part, {} flat",
+                c.length_3d,
+                c.length_flat
+            );
+        }
+    }
+}
+
+/// Both rails with a corner on one ruling (2026-10-28): a generalised
+/// cylinder over a profile of a quarter circle and an arc of radius `ρ`
+/// that leaves it turned by 45 degrees, the second rail the first moved
+/// square to the profile's plane. The rulings are parallel to the move; at
+/// the corner both rails turn and the sheet is creased along that ruling:
+/// two faces that part there. Laid flat, the rectangle
+/// `w × (π r / 2 + 0.6 ρ)`; at three scales.
+#[test]
+fn rails_with_a_corner_on_one_ruling_crease_the_sheet_there() {
+    for k in SCALES {
+        let (r, rho, w) = (1.0 * k, 1.5 * k, 0.6 * k);
+        let l = 0.6 * rho;
+        let profile = |z: f64| {
+            let frame = Frame::new(Vec3::new(0.0, 0.0, z), Vec3::Z, Vec3::X).unwrap();
+            let end = Vec3::new(0.0, r, z);
+            let dir = Vec3::new(-1.0, 1.0, 0.0).normalized().unwrap();
+            let left = Vec3::Z.cross(dir);
+            let turn = Frame::new(end + left * rho, Vec3::Z, -left).unwrap();
+            chain(vec![
+                (
+                    Curve3::Circle(Circle::new(frame, r).unwrap()),
+                    (0.0, std::f64::consts::FRAC_PI_2),
+                ),
+                (Curve3::Circle(Circle::new(turn, rho).unwrap()), (0.0, 0.6)),
+            ])
+        };
+        let (a, b) = (profile(0.0), profile(w));
+        let made = connect(&a, &b, &tol(k)).unwrap_or_else(|e| panic!("{k}: {e}"));
+        assert_eq!(made.faces, vec![Piece::Rulings, Piece::Inner(0)], "{k}");
+        for &(s, t) in &made.rulings {
+            let ((pa, _), (pb, _)) = (chain_at(&a, s, false), chain_at(&b, t, false));
+            let d = pb - pa;
+            assert!(
+                (d - Vec3::new(0.0, 0.0, w)).length() <= 1e-6 * k,
+                "{k}: a ruling {d:?}"
+            );
+        }
+        assert_eq!(creases(&made.body), 1, "{k}: one crease");
+        let faces: Vec<FaceId> = (0..made.body.faces.len() as u32).map(FaceId).collect();
+        let dev = develop(&made.body, &faces, &tol(k)).unwrap_or_else(|e| panic!("{k}: {e}"));
+        let e = dev.error();
+        assert!(e.area < 1e-6 && e.length < 1e-6, "{k}: {e:?}");
+        let area: f64 = craft3d_topo::face_areas(&made.body)
+            .iter()
+            .map(|a| *a.as_ref().unwrap())
+            .sum();
+        let expected = w * (std::f64::consts::FRAC_PI_2 * r + l);
+        assert!(
+            (area - expected).abs() <= 1e-6 * expected,
+            "{k}: area {area} for {expected}"
+        );
+    }
+}
+
+/// Refusals with the reason (2026-10-28): a rail that turns back on itself
+/// (a cusp), and rails that close on themselves.
+#[test]
+fn a_rail_that_turns_back_is_refused() {
+    let k = 1.0;
+    let a = chain(vec![
+        (
+            Curve3::Line(Line::new(Vec3::ZERO, Vec3::X).unwrap()),
+            (0.0, 1.0),
+        ),
+        (
+            Curve3::Line(Line::new(Vec3::X, -Vec3::X).unwrap()),
+            (0.0, 0.5),
+        ),
+    ]);
+    let b = chain(vec![(
+        Curve3::Line(Line::new(Vec3::new(0.0, 0.0, 1.0), Vec3::X).unwrap()),
+        (0.0, 1.0),
+    )]);
+    let e = connect(&a, &b, &tol(k)).unwrap_err();
+    assert!(e.to_string().contains("cusp"), "{e}");
 }

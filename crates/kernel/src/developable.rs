@@ -121,14 +121,21 @@ impl Rail {
         self.pieces.len() as f64
     }
 
-    /// The piece at `s`, the curve parameter there and `dc/ds`.
-    fn locate(&self, s: f64) -> Option<(&RailPiece, f64, f64)> {
+    /// The piece at `s`, the curve parameter there and `dc/ds`; at a joint between two pieces (`s` a whole
+    /// number inside the rail), the piece before it when `before`, else
+    /// the one after (the two sides of a corner).
+    fn locate_side(&self, s: f64, before: bool) -> Option<(&RailPiece, f64, f64)> {
         let count = self.pieces.len();
         if count == 0 || !s.is_finite() {
             return None;
         }
         let s = s.clamp(0.0, count as f64);
-        let index = (s.floor() as usize).min(count - 1);
+        let joint = before && s >= 1.0 && s.fract() == 0.0;
+        let index = if joint {
+            s as usize - 1
+        } else {
+            (s.floor() as usize).min(count - 1)
+        };
         let piece = self.pieces.get(index)?;
         let local = s - index as f64;
         let (a, b) = piece.range;
@@ -142,9 +149,30 @@ impl Rail {
 
     /// `(point, d/ds)` at `s`.
     fn at(&self, s: f64) -> Option<(Vec3, Vec3)> {
-        let (piece, c, rate) = self.locate(s)?;
+        self.at_side(s, false)
+    }
+
+    /// `(point, d/ds)` at `s`, on the side before a joint when `before`
+    /// ([`Rail::locate_side`]).
+    fn at_side(&self, s: f64, before: bool) -> Option<(Vec3, Vec3)> {
+        let (piece, c, rate) = self.locate_side(s, before)?;
         let (p, d) = piece.curve.derivatives(c);
         Some((p, d * rate))
+    }
+
+    /// The joints where the rail has a corner: the tangent turns there by
+    /// more than `angular` (as whole-number rail parameters, in order).
+    fn corners(&self, angular: f64) -> Vec<f64> {
+        let turn = |u: Vec3, w: Vec3| u.cross(w).length().atan2(u.dot(w));
+        (1..self.pieces.len())
+            .filter_map(|k| {
+                let s = k as f64;
+                let (_, before) = self.at_side(s, true)?;
+                let (_, after) = self.at_side(s, false)?;
+                let (u, w) = (before.normalized()?, after.normalized()?);
+                (turn(u, w) > angular).then_some(s)
+            })
+            .collect()
     }
 
     fn point(&self, s: f64) -> Option<Vec3> {
@@ -233,7 +261,8 @@ impl Rail {
                         fmt_point(start)
                     )));
                 }
-                // A corner: the tangent turns where two curves meet.
+                // A cusp: the tangent turns back where two curves meet (a
+                // corner is a fan from it, [`trace`]).
                 let (_, d_out) = piece.curve.derivatives(if piece.reversed { a } else { b });
                 let (_, d_in) = next.curve.derivatives(if next.reversed {
                     next.range.1
@@ -244,10 +273,10 @@ impl Rail {
                 let d_in = if next.reversed { -d_in } else { d_in };
                 let turn = |u: Vec3, w: Vec3| u.cross(w).length().atan2(u.dot(w));
                 if let (Some(u), Some(w)) = (d_out.normalized(), d_in.normalized())
-                    && turn(u, w) > angular
+                    && turn(u, w) >= std::f64::consts::PI - angular
                 {
                     return Err(refused(format!(
-                        "{name} has a corner at {} between curves {} and {} (the tangent turns by {:.3} degrees); a developable through a corner of a rail (a fan from the corner) is not built yet: connect the smooth stretches one by one",
+                        "{name} turns back on itself at {} between curves {} and {} (a cusp: the tangent turns by {:.3} degrees); no sheet follows it there",
                         fmt_point(finish),
                         piece.source,
                         next.source,
@@ -260,18 +289,47 @@ impl Rail {
     }
 }
 
-/// The two rails, scaled so that each runs over `[0, 1]`.
+/// The two rails, scaled so that each runs over `[0, 1]`, and their
+/// corners there (the lines of the square on which the condition jumps).
 struct Pair<'a> {
     a: &'a Rail,
     b: &'a Rail,
+    corners_a: Vec<f64>,
+    corners_b: Vec<f64>,
+}
+
+impl<'a> Pair<'a> {
+    fn new(a: &'a Rail, b: &'a Rail, angular: f64) -> Pair<'a> {
+        let unit = |rail: &Rail| -> Vec<f64> {
+            let len = rail.len();
+            rail.corners(angular).into_iter().map(|s| s / len).collect()
+        };
+        Pair {
+            corners_a: unit(a),
+            corners_b: unit(b),
+            a,
+            b,
+        }
+    }
+}
+
+/// A rail parameter within rounding of a joint between pieces is the
+/// joint (a corner's line, `k / n` in the unit square, scaled back).
+fn snapped(s: f64, len: f64) -> f64 {
+    let r = s.round();
+    if (s - r).abs() <= 1e-12 * len.max(1.0) {
+        r
+    } else {
+        s
+    }
 }
 
 impl Pair<'_> {
     fn sa(&self, x: f64) -> f64 {
-        x * self.a.len()
+        snapped(x * self.a.len(), self.a.len())
     }
     fn tb(&self, y: f64) -> f64 {
-        y * self.b.len()
+        snapped(y * self.b.len(), self.b.len())
     }
     fn points(&self, x: f64, y: f64) -> Option<(Vec3, Vec3)> {
         Some((self.a.point(self.sa(x))?, self.b.point(self.tb(y))?))
@@ -280,15 +338,22 @@ impl Pair<'_> {
     /// The condition: `det[Â', B̂', D̂]`, `None` where a tangent or the
     /// ruling has no direction.
     fn f(&self, x: f64, y: f64) -> Option<f64> {
-        let (pa, da) = self.a.at(self.sa(x))?;
-        let (pb, db) = self.b.at(self.tb(y))?;
+        self.f_side(x, y, false, false)
+    }
+
+    /// The condition with each rail's tangent taken before a joint where
+    /// asked (the two sides of a corner, [`Rail::locate_side`]).
+    fn f_side(&self, x: f64, y: f64, before_a: bool, before_b: bool) -> Option<f64> {
+        let (pa, da) = self.a.at_side(self.sa(x), before_a)?;
+        let (pb, db) = self.b.at_side(self.tb(y), before_b)?;
         let (ua, ub, ud) = (da.normalized()?, db.normalized()?, (pb - pa).normalized()?);
         let value = ua.dot(ub.cross(ud));
         value.is_finite().then_some(value)
     }
 
     /// The gradient of `f` by central differences, one-sided at the
-    /// sides of the square.
+    /// sides of the square and beside a corner's line (on the side the
+    /// point is on; on the line, the side after it).
     fn gradient(&self, x: f64, y: f64) -> Option<(f64, f64)> {
         let h = 1e-7;
         let diff = |lo: f64, hi: f64, at: &dyn Fn(f64) -> Option<f64>| -> Option<f64> {
@@ -298,9 +363,28 @@ impl Pair<'_> {
             }
             Some((at(b)? - at(a)?) / (b - a))
         };
-        let gx = diff(x - h, x + h, &|x| self.f(x, y))?;
-        let gy = diff(y - h, y + h, &|y| self.f(x, y))?;
+        let sided = |here: f64, corners: &[f64]| -> (f64, f64) {
+            match corners.iter().find(|c| (here - **c).abs() < h) {
+                Some(&c) if here >= c => (here, here + h),
+                Some(_) => (here - h, here),
+                None => (here - h, here + h),
+            }
+        };
+        let (x0, x1) = sided(x, &self.corners_a);
+        let (y0, y1) = sided(y, &self.corners_b);
+        let gx = diff(x0, x1, &|x| self.f(x, y))?;
+        let gy = diff(y0, y1, &|y| self.f(x, y))?;
         (gx.is_finite() && gy.is_finite()).then_some((gx, gy))
+    }
+
+    /// Whether the stretch from `p` to `q` crosses a corner's line (one it
+    /// does not end on, nor start from).
+    fn crosses_corner(&self, p: (f64, f64), q: (f64, f64)) -> bool {
+        let across = |a: f64, b: f64, lines: &[f64]| {
+            let (lo, hi) = (a.min(b), a.max(b));
+            lines.iter().any(|c| *c > lo && *c < hi)
+        };
+        across(p.0, q.0, &self.corners_a) || across(p.1, q.1, &self.corners_b)
     }
 
     fn where_(&self, x: f64, y: f64) -> String {
@@ -409,6 +493,10 @@ struct Path {
     points: Vec<(f64, f64)>,
     fan_after: Vec<bool>,
     stepped_after: Vec<bool>,
+    /// Per point, whether the faces part there (a corner of a rail whose
+    /// fan is no longer than the tolerance: the rulings go on, the faces
+    /// do not, as a rail's row cannot follow a corner).
+    break_at: Vec<bool>,
 }
 
 impl Path {
@@ -416,6 +504,13 @@ impl Path {
         self.points.push(p);
         self.fan_after.push(false);
         self.stepped_after.push(false);
+        self.break_at.push(false);
+    }
+    /// The faces part at the last point.
+    fn mark_break(&mut self) {
+        if let Some(last) = self.break_at.last_mut() {
+            *last = true;
+        }
     }
     /// The stretch from the last point to `p` is a fan.
     fn push_fan(&mut self, p: (f64, f64)) {
@@ -439,7 +534,9 @@ impl Path {
     /// Whether point `k` ends or starts a fan or a stepped stretch (it is
     /// kept as it is).
     fn fixed(&self, k: usize) -> bool {
-        self.special_after(k) || k.checked_sub(1).is_some_and(|j| self.special_after(j))
+        self.special_after(k)
+            || k.checked_sub(1).is_some_and(|j| self.special_after(j))
+            || self.break_at.get(k).copied().unwrap_or(false)
     }
 }
 
@@ -664,13 +761,49 @@ fn trace(
         if ty < 0.0 {
             step = step.min(y / -ty);
         }
-        let (px, py) = (
-            (x + step * tx).clamp(0.0, 1.0),
-            (y + step * ty).clamp(0.0, 1.0),
-        );
-        let at_side = px >= 1.0 || py >= 1.0;
-        // Corrector: back onto the zero set; on a side, along that side.
-        let corrected = if at_side {
+        // Stopped at the next corner's line ahead (the condition jumps
+        // there): `(on A's line, the line, coming from below)`.
+        let mut on_corner: Option<(bool, f64, bool)> = None;
+        for (along_a, direction, here, lines) in [
+            (true, tx, x, &pair.corners_a),
+            (false, ty, y, &pair.corners_b),
+        ] {
+            let next = if direction > 0.0 {
+                lines.iter().copied().find(|c| *c > here)
+            } else if direction < 0.0 {
+                lines.iter().rev().copied().find(|c| *c < here)
+            } else {
+                None
+            };
+            if let Some(line) = next {
+                let reach = (line - here) / direction;
+                if reach > 0.0 && reach <= step {
+                    step = reach;
+                    on_corner = Some((along_a, line, direction > 0.0));
+                }
+            }
+        }
+        let (px, py) = match on_corner {
+            Some((true, line, _)) => (line, (y + step * ty).clamp(0.0, 1.0)),
+            Some((false, line, _)) => ((x + step * tx).clamp(0.0, 1.0), line),
+            None => (
+                (x + step * tx).clamp(0.0, 1.0),
+                (y + step * ty).clamp(0.0, 1.0),
+            ),
+        };
+        let at_side = on_corner.is_none() && (px >= 1.0 || py >= 1.0);
+        // Corrector: back onto the zero set; on a side, along that side;
+        // on a corner's line, along it, with the tangent of the side the
+        // walk comes from.
+        let corrected = if let Some((along_a, line, rising)) = on_corner {
+            if along_a {
+                nearest_root(&|l| pair.f_side(line, py + l, rising, false), 2.0 * step)
+                    .map(|l| (line, (py + l).clamp(0.0, 1.0)))
+            } else {
+                nearest_root(&|l| pair.f_side(px + l, line, false, rising), 2.0 * step)
+                    .map(|l| ((px + l).clamp(0.0, 1.0), line))
+            }
+        } else if at_side {
             if px >= 1.0 {
                 root_between(
                     &|v| pair.f(1.0, v),
@@ -695,7 +828,20 @@ fn trace(
         // branch, or a step over a fold, is retried shorter.
         let accepted = corrected.filter(|&(qx, qy)| {
             let moved = (qx - x).hypot(qy - y);
-            let turned = tangent_at(pair, qx, qy)
+            // On a corner's line the tangent is taken a little way back,
+            // on the side the walk came from.
+            let (ax, ay) = match on_corner {
+                Some((true, line, _)) => (
+                    line - (2e-7_f64).min(0.5 * (line - x).abs()).copysign(line - x),
+                    qy,
+                ),
+                Some((false, line, _)) => (
+                    qx,
+                    line - (2e-7_f64).min(0.5 * (line - y).abs()).copysign(line - y),
+                ),
+                None => (qx, qy),
+            };
+            let turned = tangent_at(pair, ax, ay)
                 .is_some_and(|(ux, uy)| (ux * tx + uy * ty).abs() >= MAX_TURN.cos());
             let forward = match fold {
                 None => qx >= x - 1e-12 && qy >= y - 1e-12,
@@ -706,6 +852,7 @@ fn trace(
                 && moved <= 1.5 * step + 1e-12
                 && moved > 0.0
                 && (turned || at_side)
+                && !pair.crosses_corner((x, y), (qx, qy))
                 && (fold.is_some() || !split_between(pair, (x, y), (qx, qy), tolerance))
         });
         let Some((qx, qy)) = accepted else {
@@ -737,6 +884,12 @@ fn trace(
             before = ((qx - x) / moved, (qy - y) / moved);
         }
         h = (h * 1.5).min(STEP_MAX);
+        if fold.is_some() && on_corner.is_some() {
+            give_up!(refused(format!(
+                "the condition turns back at a corner of a curve {}: not built",
+                pair.where_(qx, qy)
+            )));
+        }
         if let Some(f) = fold {
             let level = f.level();
             let back = if f.falls_t { qy >= level } else { qx >= level };
@@ -778,6 +931,53 @@ fn trace(
             (x, y) = (qx, qy);
             continue;
         }
+        // At a corner: the fan from it to where the condition on the side
+        // beyond goes on forward, or the faces part there.
+        if let Some((along_a, line, rising)) = on_corner {
+            if !rising {
+                return Err(refused(format!(
+                    "the condition turns back across a corner of a curve {}: not built",
+                    pair.where_(qx, qy)
+                )));
+            }
+            // A corner of the other rail on the same ruling (within the
+            // tolerance along that rail): the ruling is both corners'.
+            if let Some(both) = double_corner(pair, along_a, (qx, qy), tolerance) {
+                // The faces part there; the rulings after it start there
+                // too, or no developable turns both corners.
+                if ruling_twist(pair, both.0, both.1).is_none_or(|d| d > 0.5 * tolerance) {
+                    return Err(refused(format!(
+                        "both curves have a corner on the ruling {}, and the rulings after the corners do not start from it: not built (split the curves there)",
+                        pair.where_(both.0, both.1)
+                    )));
+                }
+                path.push(both);
+                path.mark_break();
+                (x, y) = both;
+                h = STEP_MAX / 4.0;
+                continue;
+            }
+            path.push((qx, qy));
+            let beyond = corner_fan(
+                pair,
+                along_a,
+                line,
+                if along_a { qy } else { qx },
+                tolerance,
+            )?;
+            match beyond {
+                Some(q) => {
+                    path.push_fan(q);
+                    (x, y) = q;
+                }
+                None => {
+                    path.mark_break();
+                    (x, y) = (qx, qy);
+                }
+            }
+            h = STEP_MAX / 4.0;
+            continue;
+        }
         // A ruling that shrinks to nothing away from ends that meet.
         if let Some((pa, pb)) = pair.points(qx, qy) {
             // Near ends that meet the rulings shrink to nothing: within
@@ -797,6 +997,134 @@ fn trace(
         path.push((x, y));
     }
     Ok(path)
+}
+
+/// Where the walk reached a corner's line of one rail at `q` (of A when
+/// `along_a`), the corner of the other rail that the ruling there meets
+/// within the tolerance along that rail, if any: the point on both lines.
+/// There the ruling is a crease of the sheet (both rails turn on it, as a
+/// generalised cylinder over a profile with a corner does), and the faces
+/// part along it.
+fn double_corner(pair: &Pair, along_a: bool, q: (f64, f64), tolerance: f64) -> Option<(f64, f64)> {
+    if along_a {
+        pair.corners_b
+            .iter()
+            .copied()
+            .find(|c| {
+                let (lo, hi) = (q.1.min(*c), q.1.max(*c));
+                pair.b.length_between(pair.tb(lo), pair.tb(hi)) <= tolerance
+            })
+            .map(|c| (q.0, c))
+    } else {
+        pair.corners_a
+            .iter()
+            .copied()
+            .find(|c| {
+                let (lo, hi) = (q.0.min(*c), q.0.max(*c));
+                pair.a.length_between(pair.sa(lo), pair.sa(hi)) <= tolerance
+            })
+            .map(|c| (c, q.1))
+    }
+}
+
+/// The fan at a corner of a rail that the walk reached on its line at
+/// `here` (the other parameter): a corner of A at `x = line` when
+/// `along_a`, else of B at `y = line`. On the corner's line the condition
+/// jumps (the rail's tangent does), so the zero set the walk followed with
+/// the tangent before the corner ends there, and the one with the tangent
+/// after it starts from another point of the line: the gap is a cone with
+/// its apex at the corner, from the walk's ruling to the first ruling
+/// along the line, forward, from which the condition after the corner
+/// goes on forward (as [`bridge`] does at a fold). Its two end rulings
+/// satisfy the condition of the face on their side, so the fan shares its
+/// tangent planes with both: the sheet is smooth, its rail has the
+/// corner. `None` when that ruling is within the tolerance of the walk's
+/// (the faces part there and the rulings go on); refused when none goes on
+/// forward (the rulings beyond the corner would cross those before it) or
+/// the fan would reach a corner of the other rail.
+fn corner_fan(
+    pair: &Pair,
+    along_a: bool,
+    line: f64,
+    here: f64,
+    tolerance: f64,
+) -> Result<Option<(f64, f64)>, KernelError> {
+    let g = |w: f64| {
+        if along_a {
+            pair.f(line, w)
+        } else {
+            pair.f(w, line)
+        }
+    };
+    let at = |w: f64| if along_a { (line, w) } else { (w, line) };
+    // The length of the other rail the fan would cover.
+    let covered = |w: f64| {
+        let (lo, hi) = (here.min(w), here.max(w));
+        if along_a {
+            pair.b.length_between(pair.tb(lo), pair.tb(hi))
+        } else {
+            pair.a.length_between(pair.sa(lo), pair.sa(hi))
+        }
+    };
+    let (p, q) = at(here);
+    let where_ = pair.where_(p, q);
+    // A root within the tolerance of the walk's ruling: no fan.
+    let speed = {
+        let (rail, w) = if along_a {
+            (pair.b, pair.tb(here))
+        } else {
+            (pair.a, pair.sa(here))
+        };
+        rail.at(w).map_or(0.0, |(_, d)| d.length()) * rail.len()
+    };
+    if speed > 0.0 && speed.is_finite() {
+        let window = (2.0 * tolerance / speed).min(1e-3);
+        if let Some(l) = nearest_root(&|l| g(here + l), window)
+            && covered(here + l) <= tolerance
+        {
+            return Ok(None);
+        }
+    }
+    let gap = 1e-9;
+    let mut from = here;
+    for _ in 0..64 {
+        if from >= 1.0 {
+            break;
+        }
+        let Some(root) = first_root(&g, from) else {
+            break;
+        };
+        let (rx, ry) = at(root);
+        // Forward on the side after the corner, a little way past its line.
+        let probe = if along_a {
+            ((rx + 2e-7).min(1.0), ry)
+        } else {
+            (rx, (ry + 2e-7).min(1.0))
+        };
+        if let Some((tx, ty)) = tangent_at(pair, probe.0, probe.1) {
+            let going_on = if along_a { tx >= 0.0 } else { ty >= 0.0 };
+            if going_on {
+                if covered(root) <= tolerance {
+                    return Ok(None);
+                }
+                let crossed = if along_a {
+                    pair.corners_b.iter().any(|c| *c > here && *c < root)
+                } else {
+                    pair.corners_a.iter().any(|c| *c > here && *c < root)
+                };
+                if crossed {
+                    return Err(refused(format!(
+                        "the fan from a corner of one curve {where_} would reach past a corner of the other: not built"
+                    )));
+                }
+                return Ok(Some(at(root)));
+            }
+        }
+        from = root + gap;
+    }
+    Err(refused(format!(
+        "the rulings would cross at a corner of a curve {where_}: no ruling from the corner on goes on forward beyond it, so no developable turns the corner (split the curves there)"
+    )))
 }
 
 /// The fan across a fold at `at` where `t` falls (`falls_t`; else `s`):
@@ -990,6 +1318,7 @@ fn cross(
         heading,
         step.max(2.0 * far),
     )
+    .filter(|&q| !pair.crosses_corner((x, y), q))
 }
 
 /// The critical point of the quadratic model of `f` at a point where the
@@ -1153,6 +1482,7 @@ fn split_ahead(
         return Some(Ahead::Near(far));
     }
     let over = past_saddle(pair, p, c, model.hessian, heading, 2.0 * far)
+        .filter(|&q| !pair.crosses_corner(p, q))
         .filter(|&q| stepped_stretch(pair, p, q).is_some_and(|d| d <= 0.5 * tolerance));
     Some(match over {
         Some(q) => Ahead::Over(q),
@@ -1450,7 +1780,7 @@ fn connect_as_given(a: &Rail, b: &Rail, tolerance: &Tolerance) -> Result<Connect
     if let Some(frame) = common_plane(a, b, tol) {
         return planar(a, b, frame, tolerance, tips);
     }
-    let pair = Pair { a, b };
+    let pair = Pair::new(a, b, tolerance.angular);
 
     // The start: a fan from an end to the first ruling that satisfies the
     // condition, unless the corner's ruling does.
@@ -1506,6 +1836,7 @@ fn connect_as_given(a: &Rail, b: &Rail, tolerance: &Tolerance) -> Result<Connect
         path.points.insert(0, (0.0, 0.0));
         path.fan_after.insert(0, false);
         path.stepped_after.insert(0, false);
+        path.break_at.insert(0, false);
     }
     let &(ex, ey) = path.points.last().ok_or_else(no_point)?;
     // The end: the rest of a rail as a fan from the other's last end,
@@ -1601,6 +1932,7 @@ fn connect_as_given(a: &Rail, b: &Rail, tolerance: &Tolerance) -> Result<Connect
         &rulings,
         &path.fan_after,
         &path.stepped_after,
+        &path.break_at,
     ));
     match end {
         Some(Start::FromA(_)) => strips.push(Strip {
@@ -1707,6 +2039,9 @@ fn thinned(pair: &Pair, path: Path, tol: f64) -> Path {
             {
                 *f = true;
             }
+            if path.break_at.get(k).copied().unwrap_or(false) {
+                out.mark_break();
+            }
         }
     }
     out.push(tail);
@@ -1733,6 +2068,7 @@ fn thinned(pair: &Pair, path: Path, tol: f64) -> Path {
         out.points.remove(n - 2);
         out.fan_after.remove(n - 2);
         out.stepped_after.remove(n - 2);
+        out.break_at.remove(n - 2);
         fixed_out.remove(n - 2);
     }
     out
@@ -1742,7 +2078,12 @@ fn thinned(pair: &Pair, path: Path, tol: f64) -> Path {
 /// each run of rulings a face and each fan a face. The first run of
 /// rulings is [`Piece::Rulings`]; every other face, in order along the
 /// rails, is [`Piece::Inner`] with its number.
-fn middle_strips(rulings: &[(f64, f64)], fan_after: &[bool], stepped_after: &[bool]) -> Vec<Strip> {
+fn middle_strips(
+    rulings: &[(f64, f64)],
+    fan_after: &[bool],
+    stepped_after: &[bool],
+    break_at: &[bool],
+) -> Vec<Strip> {
     let mut strips: Vec<Strip> = Vec::new();
     let mut run: Vec<(f64, f64)> = Vec::new();
     // The stepped flags of the run's intervals.
@@ -1779,6 +2120,15 @@ fn middle_strips(rulings: &[(f64, f64)], fan_after: &[bool], stepped_after: &[bo
             );
         }
         run.push(p);
+        // The faces part here: the run ends and the next starts at `p`.
+        if break_at.get(k).copied().unwrap_or(false)
+            && !fan_after.get(k).copied().unwrap_or(false)
+            && k + 1 < rulings.len()
+        {
+            close(&mut run, &mut flags, &mut strips);
+            run.push(p);
+            continue;
+        }
         if fan_after.get(k).copied().unwrap_or(false)
             && let Some(&q) = rulings.get(k + 1)
         {
@@ -1940,7 +2290,7 @@ fn planar(
     tolerance: &Tolerance,
     tips: [bool; 2],
 ) -> Result<Connected, KernelError> {
-    let pair = Pair { a, b };
+    let pair = Pair::new(a, b, tolerance.angular);
     let strips = vec![Strip {
         piece: Piece::Rulings,
         lower: Row {

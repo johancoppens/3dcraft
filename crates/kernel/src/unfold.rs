@@ -161,6 +161,139 @@ struct Layout {
     nv: usize,
     /// `(nu + 1) * (nv + 1)` points, `i * (nv + 1) + j`.
     flat: Vec<P2>,
+    /// For a face whose side `v = apex.v` is one point of the part (an
+    /// apex): the layout about it ([`Apex`]).
+    apex: Option<Apex>,
+}
+
+/// A face laid about its apex: the side of its region where `v` is
+/// `v` collapses into one point of the part, the apex of a cone (the fans
+/// of a developable, 2026-10-28). A developable is a cone about such a
+/// point, and laid flat a cone opens at its apex by the length of the
+/// curve its unit ruling directions draw on the unit sphere (an isometry
+/// keeps the angle between two curves, and at the apex the angle between
+/// two rulings, measured on the cone, is that arc). So the iso-line from
+/// the apex at each `u` is laid from the apex's image in the direction
+/// `θ(u) = ∫ (T × T')·n du`, with `T` the iso-line's unit tangent at the
+/// apex (`S_v / |S_v|`, `T' = (S_uv − T (T·S_uv)) / |S_v|`) and `n` the
+/// outward normal beside it, as its own planar image (its speed and
+/// geodesic curvature, [`planar_image`]): exact up to the quadrature, as
+/// the grid's rows from a collapsed row are not (laid from neighbours a
+/// small angle apart, the layout converges only at first order towards
+/// the apex, and the fans ran out of grid; r1-kayakplates, 2026-10-27).
+#[derive(Clone, Debug, PartialEq)]
+struct Apex {
+    v: f64,
+    /// `θ` at each column of the grid, `θ(u0) = 0`.
+    theta: Vec<f64>,
+}
+
+/// The rate `dθ/du` of the directions at the apex row `v` ([`Apex`]),
+/// `None` where the iso-line has no direction there.
+fn apex_rate(surface: &Surface, outward: bool, u: f64, v: f64, inward: f64) -> Option<f64> {
+    let (_, _, sv) = surface.derivatives(u, v);
+    let (_, suv, _) = craft3d_geom::curvature::second_derivatives(surface, u, v);
+    let speed = sv.length();
+    if !(speed > 0.0 && speed.is_finite()) {
+        return None;
+    }
+    let t = sv * (1.0 / speed);
+    let dt = (suv - t * t.dot(suv)) * (1.0 / speed);
+    let normal = surface
+        .normal(u, v + inward)
+        .map(|n| if outward { n } else { -n })?;
+    let rate = t.cross(dt).dot(normal);
+    rate.is_finite().then_some(rate)
+}
+
+/// `∫ dθ` from `a` to `b` along the apex row ([`apex_rate`]), by
+/// Simpson's rule doubled until two results agree to 1e-13 (at most 2^12
+/// steps).
+fn apex_turn(surface: &Surface, outward: bool, a: f64, b: f64, v: f64, inward: f64) -> Option<f64> {
+    if a == b {
+        return Some(0.0);
+    }
+    let rate = |u: f64| apex_rate(surface, outward, u, v, inward);
+    let simpson = |steps: usize| -> Option<f64> {
+        let h = (b - a) / steps as f64;
+        let mut sum = rate(a)? + rate(b)?;
+        for k in 1..steps {
+            let w = if k % 2 == 1 { 4.0 } else { 2.0 };
+            sum += w * rate(a + h * k as f64)?;
+        }
+        Some(sum * h / 3.0)
+    };
+    let mut steps = 8;
+    let mut last = simpson(steps)?;
+    while steps < 1 << 12 {
+        steps *= 2;
+        let next = simpson(steps)?;
+        let change = (next - last).abs();
+        last = next;
+        if change <= 1e-13 * (1.0 + next.abs()) {
+            break;
+        }
+    }
+    Some(last)
+}
+
+/// The image of `(u, v)` laid about the apex row `apex_v`, its iso-line
+/// turned by `theta` ([`Apex`]).
+fn about_apex(surface: &Surface, outward: bool, u: f64, v: f64, apex_v: f64, theta: f64) -> P2 {
+    if v == apex_v {
+        return [0.0, 0.0];
+    }
+    let local = planar_image(surface, outward, [u, apex_v], [u, v]);
+    let (sin, cos) = theta.sin_cos();
+    [
+        cos * local[0] - sin * local[1],
+        sin * local[0] + cos * local[1],
+    ]
+}
+
+/// A small step from the apex row `apex_v` into the region `v`, where the
+/// normal is taken.
+fn apex_inward(v: (f64, f64), apex_v: f64) -> f64 {
+    let step = 1e-3 * (v.1 - v.0);
+    if apex_v == v.0 { step } else { -step }
+}
+
+/// Which side `v = v0` or `v = v1` of the region collapses into one point
+/// of the part, an apex ([`Apex`]): nine points along it within a
+/// millionth of the tolerance of each other and the surface's normal lost
+/// there; `None` for neither (or both). A side within a millionth of the
+/// region of the surface's own bound (the feet of the apex's points, put
+/// on the surface) is taken at the bound.
+fn apex_side(
+    surface: &Surface,
+    (u0, u1): (f64, f64),
+    (v0, v1): (f64, f64),
+    tol: f64,
+) -> Option<f64> {
+    let (_, (d0, d1)) = surface.domain();
+    let near = 1e-6 * (v1 - v0);
+    let snapped = |v: f64| {
+        if (v - d0).abs() <= near {
+            d0
+        } else if (v - d1).abs() <= near {
+            d1
+        } else {
+            v
+        }
+    };
+    let collapsed = |v: f64| {
+        let first = surface.eval(u0, v);
+        (0..=8).all(|k| {
+            let u = u0 + (u1 - u0) * k as f64 / 8.0;
+            surface.eval(u, v).distance(first) <= 1e-6 * tol && collapsed_at(surface, [u, v], 1e-9)
+        })
+    };
+    let (low, high) = (snapped(v0), snapped(v1));
+    match (collapsed(low), collapsed(high)) {
+        (true, false) => Some(low),
+        (false, true) => Some(high),
+        _ => None,
+    }
 }
 
 impl Layout {
@@ -184,6 +317,16 @@ impl Layout {
     /// gives (the corner's edge in the layout, turned by the angle the
     /// two curves make on the surface).
     fn at(&self, surface: &Surface, outward: bool, u: f64, v: f64) -> P2 {
+        if let Some(apex) = &self.apex {
+            // From the nearest column's direction.
+            let fu = (u - self.u.0) / (self.u.1 - self.u.0) * self.nu as f64;
+            let i = (fu.round().max(0.0) as usize).min(self.nu);
+            let ui = self.uv(i, 0)[0];
+            let inward = apex_inward(self.v, apex.v);
+            let theta = apex.theta.get(i).copied().unwrap_or(f64::NAN)
+                + apex_turn(surface, outward, ui, u, apex.v, inward).unwrap_or(f64::NAN);
+            return about_apex(surface, outward, u, v, apex.v, theta);
+        }
         let fu = (u - self.u.0) / (self.u.1 - self.u.0) * self.nu as f64;
         let fv = (v - self.v.0) / (self.v.1 - self.v.0) * self.nv as f64;
         let (i, j) = (
@@ -1101,7 +1244,14 @@ fn lay_face(
     };
     let (mut nu, mut nv) = (cells(length_u), cells(length_v));
     let outward = !reversed;
-    let mut coarse = lay_grid(&surface, outward, (u0, u1), (v0, v1), nu, nv)?;
+    let apex = apex_side(&surface, (u0, u1), (v0, v1), tol);
+    // The region reaches the apex row.
+    let (v0, v1) = match apex {
+        Some(a) if a < v0 => (a, v1),
+        Some(a) if a > v1 => (v0, a),
+        _ => (v0, v1),
+    };
+    let mut coarse = lay_grid(&surface, outward, (u0, u1), (v0, v1), nu, nv, apex)?;
     let mut before: Option<f64> = None;
     loop {
         if (2 * nu + 1).saturating_mul(2 * nv + 1) > MAX_NODES {
@@ -1116,7 +1266,7 @@ fn lay_face(
                 before.unwrap_or(f64::NAN)
             )));
         }
-        let fine = lay_grid(&surface, outward, (u0, u1), (v0, v1), 2 * nu, 2 * nv)?;
+        let fine = lay_grid(&surface, outward, (u0, u1), (v0, v1), 2 * nu, 2 * nv, apex)?;
         // The coarse layout laid onto the fine at the common points, then
         // compared everywhere on the fine grid.
         let mut from = Vec::new();
@@ -1447,7 +1597,11 @@ fn lay_grid(
     (v0, v1): (f64, f64),
     nu: usize,
     nv: usize,
+    apex: Option<f64>,
 ) -> Result<Layout, KernelError> {
+    if let Some(apex_v) = apex {
+        return lay_about_apex(surface, outward, (u0, u1), (v0, v1), nu, nv, apex_v);
+    }
     let width = nv + 1;
     let uv = |i: usize, j: usize| {
         [
@@ -1557,6 +1711,51 @@ fn lay_grid(
             .into_iter()
             .map(|p| p.unwrap_or([f64::NAN, f64::NAN]))
             .collect(),
+        apex: None,
+    })
+}
+
+/// The grid of a face laid about its apex row `apex_v` ([`Apex`]).
+fn lay_about_apex(
+    surface: &Surface,
+    outward: bool,
+    (u0, u1): (f64, f64),
+    (v0, v1): (f64, f64),
+    nu: usize,
+    nv: usize,
+    apex_v: f64,
+) -> Result<Layout, KernelError> {
+    let inward = apex_inward((v0, v1), apex_v);
+    let column = |i: usize| u0 + (u1 - u0) * i as f64 / nu as f64;
+    let mut theta = Vec::with_capacity(nu + 1);
+    let mut angle = 0.0;
+    theta.push(angle);
+    for i in 1..=nu {
+        angle += apex_turn(surface, outward, column(i - 1), column(i), apex_v, inward)
+            .ok_or_else(|| {
+                let p = surface.eval(column(i), apex_v);
+                refused(format!(
+                    "the face cannot be laid about its apex at ({}, {}, {}): the curves from it have no direction there",
+                    p.x, p.y, p.z
+                ))
+            })?;
+        theta.push(angle);
+    }
+    let mut flat = Vec::with_capacity((nu + 1) * (nv + 1));
+    for (i, th) in theta.iter().enumerate() {
+        for j in 0..=nv {
+            let v = v0 + (v1 - v0) * j as f64 / nv as f64;
+            let v = if j == nv { v1 } else { v };
+            flat.push(about_apex(surface, outward, column(i), v, apex_v, *th));
+        }
+    }
+    Ok(Layout {
+        u: (u0, u1),
+        v: (v0, v1),
+        nu,
+        nv,
+        flat,
+        apex: Some(Apex { v: apex_v, theta }),
     })
 }
 
