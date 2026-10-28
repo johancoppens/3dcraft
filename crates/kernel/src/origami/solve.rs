@@ -1503,7 +1503,7 @@ fn parting_angles(
     let mut parts = Vec::new();
     let mut steady = Vec::new();
     for (i, &di) in d.iter().enumerate() {
-        if !(di.abs() > same) {
+        if di.is_nan() || di.abs() <= same {
             continue;
         }
         let hi = h.get(i).copied().unwrap_or(0.0);
