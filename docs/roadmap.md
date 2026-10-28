@@ -526,6 +526,7 @@ The first version for people outside the project (0.1.0); it does not wait for t
 - A sketch on a face with its x axis turned to a world direction (`sketch.create {face, xAxis}`) ([`design/document.md`](design/document.md) › *A sketch on a face with turned axes*) (2026-10-28).
 - `pointOn` and `tangent` on formula curves and live splines: a fitted spline or one through its points for the solver, tangent at a shared end or touching a line or circle anywhere ([`design/document.md`](design/document.md) › *Constraints on them*) (2026-10-28)
 - A unit after a parenthesis, a call or `pi` (`(360 / n) deg`, `2 * pi rad / n`), every expression of the repository's files unchanged; a plain angle with a bare `pi` is a `plainAngle` warning of `document.check`, its value kept ([`design/document.md`](design/document.md) › *A unit after a parenthesis*) (2026-10-28)
+- The release of 0.1.0 prepared up to the tag: a dry run of every package (Release run 40702985830: Linux, macOS, Windows, web), the Windows zip's name and the Jig's WiX icon id fixed, `CHANGELOG.md` grouped for users with the merging branches' items marked pending, and the steps to tag and publish ([`development.md`](development.md) › *Releasing a version*) (2026-10-28)
 
 #### Open
 - [ ] Sheet metal, what is not built: flanges on holes' edges, on flanges' sides, inset or with outlines of their own, mitred corners at reflex corners, bend sequence and press-brake collision; sharp and curved bends are refused with the method owed ([`design/sheetmetal.md`](design/sheetmetal.md) › *Limits*)
@@ -539,7 +540,7 @@ The first version for people outside the project (0.1.0); it does not wait for t
 - [ ] `document.setUnit` keeping the sizes refuses outputs, formula curves, numbers in sets and subjects, measures with numbers of their own and `value` assertions ([`design/document.md`](design/document.md) › *Changing the length unit*)
 
 #### Acceptance
-Every task of the set is built by an agent over MCP and `document.inspect` reports its known volume (✅ 2026-10-22: `crates/engine/tests/task_acceptance.rs`); a file saved by this version loads in the next; a killed app recovers the document on restart (✅ 2026-10-13: `apps/craft3d/tests/killed_window.rs` and `apps/craft3d-cli/tests/recovery.rs`, both with SIGKILL); FreeCAD or another independent reader opens the DXF and SVG exports with the same outline.
+Every task of the set is built by an agent over MCP and `document.inspect` reports its known volume (✅ 2026-10-22: `crates/engine/tests/task_acceptance.rs`); a file saved by this version loads in the next (✅ 2026-10-28: the frozen fixture per format version and the migrations, `crates/format/tests`, Check run 40700212405); a killed app recovers the document on restart (✅ 2026-10-13: `apps/craft3d/tests/killed_window.rs` and `apps/craft3d-cli/tests/recovery.rs`, both with SIGKILL); FreeCAD or another independent reader opens the DXF and SVG exports with the same outline (✅ 2026-10-28: `cargo xtask freecad`, Check run 40700252080; FreeCAD 1.1's DXF reader draws an elliptic arc whole, so those are checked through the SVG).
 
 ### V1: Design verification
 
