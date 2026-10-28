@@ -519,6 +519,7 @@ The first version for people outside the project (0.1.0); it does not wait for t
 - `document.inspect` gives an assertion's `measured` and `unit` as `assert.list` does, a number (or yes or no) with its unit apart (2026-10-28).
 - A subject that follows a body to the newest body that grew from it (`{"body": "Case", "follow": true}`), for assertions, outputs and measures; a body named as before keeps its exact meaning ([`design/verification.md`](design/verification.md) › *What is measured*) (2026-10-28).
 - A feature inserted at the rollback marker that takes a body re-points the features after it that named that body (`repointed` in its result) ([`design/names.md`](design/names.md) › *A feature inserted at the marker*) (2026-10-28).
+- A feature's name in a face name (`Cube:face(2)`) in every parameter that holds names (since 2026-10-25, every command's list checked by a test), and a script by names pinned to build the same part with a step added before it or inserted at the marker, where ids shift or stay (2026-10-28).
 
 #### Open
 - [ ] Sheet metal, what is not built: flanges on holes' edges, on flanges' sides, inset or with outlines of their own, curved bends, sharp bends, mitred corners at reflex corners, holes across a bend, a later boolean's cut carried onto the flat pattern, bend sequence and press-brake collision ([`design/sheetmetal.md`](design/sheetmetal.md) › *Limits*)
@@ -532,7 +533,6 @@ The first version for people outside the project (0.1.0); it does not wait for t
 - [ ] A sketch on a face takes the face's axes (the bottom of a block has x along world Y); a way to choose them (`xAxis`, or world-aligned where it can be)
 - [ ] Plain numbers as angles are degrees in parameters but radians inside `sin`/`cos`, and `pi` is a plain number, so `2 * pi / n` is a few degrees (kept, as files rely on it; `sin(30)` warns since 2026-10-23); a unit after a parenthesis is refused
 - [ ] No command changes a document's length unit after `file.new`
-- [ ] A feature's name is not accepted in a face name (`Cube:face(2)`), and ids shift when features are inserted
 
 #### Acceptance
 Every task of the set is built by an agent over MCP and `document.inspect` reports its known volume (✅ 2026-10-22: `crates/engine/tests/task_acceptance.rs`); a file saved by this version loads in the next; a killed app recovers the document on restart (✅ 2026-10-13: `apps/craft3d/tests/killed_window.rs` and `apps/craft3d-cli/tests/recovery.rs`, both with SIGKILL); FreeCAD or another independent reader opens the DXF and SVG exports with the same outline.

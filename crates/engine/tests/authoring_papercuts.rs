@@ -668,3 +668,64 @@ fn every_command_that_takes_names_lists_them() {
         }
     }
 }
+
+/// A script that names its features by name builds the same part when a
+/// step is added before it (which gives every later feature another id),
+/// and when that step is inserted at the rollback marker afterwards
+/// (which changes no id that was there): references by name do not shift.
+#[test]
+fn a_script_by_names_is_stable_when_a_step_is_added_before_it() {
+    let script = |s: &mut Session| {
+        run(
+            s,
+            "feature.block",
+            json!({ "size": [20, 10, 6], "name": "Cube" }),
+        );
+        run(
+            s,
+            "feature.fillet",
+            json!({ "edges": [["Cube:face(2)", "Cube:face(4)"]], "radius": 1, "name": "Round" }),
+        );
+        run(
+            s,
+            "sketch.create",
+            json!({ "face": "Cube:face(1)", "name": "Top" }),
+        );
+        run(
+            s,
+            "assert.add",
+            json!({ "name": "faces", "measure": "count", "of": {"kind": "face", "where": {"in": "Round"}}, "min": 1 }),
+        );
+    };
+    let outcome = |s: &mut Session| {
+        let inspect = run(s, "document.inspect", json!({}));
+        let volume = inspect["bodies"][0]["volume"].as_f64().unwrap();
+        let faces = run(s, "assert.list", json!({}))["assertions"][0]["measured"].clone();
+        (volume, faces, inspect["ok"].clone())
+    };
+    let mut plain = session();
+    run(&mut plain, "file.new", json!({ "units": "mm" }));
+    script(&mut plain);
+    let want = outcome(&mut plain);
+    assert_eq!(want.2, true, "{want:?}");
+    // A step added first: every id of the script's features is one more.
+    let mut shifted = session();
+    run(&mut shifted, "file.new", json!({ "units": "mm" }));
+    run(
+        &mut shifted,
+        "datum.plane",
+        json!({ "from": "xy", "distance": 50, "name": "Aside" }),
+    );
+    script(&mut shifted);
+    assert_eq!(outcome(&mut shifted), want);
+    // The same step inserted at the marker into the plain build: the
+    // stored ids stay as they were, and so does the part.
+    run(&mut plain, "history.rollback", json!({ "feature": "Cube" }));
+    run(
+        &mut plain,
+        "datum.plane",
+        json!({ "from": "xy", "distance": 50, "name": "Aside" }),
+    );
+    run(&mut plain, "history.rollback", json!({ "feature": null }));
+    assert_eq!(outcome(&mut plain), want);
+}

@@ -164,7 +164,10 @@ current body:
 `Plate:face(1)` is `F2:face(1)` when the feature called `Plate` is `F2`, and so is every feature inside a
 name (`Joined:copy(1)/Pin:side(e2)`). The name is looked up when the command runs, and the document stores
 the id, so a renamed feature keeps its references. A generated script can name faces of what it made in
-an earlier step without building first to learn the ids. A name no feature has (or, in an old file,
+an earlier step without building first to learn the ids. Ids are handed out in the order features are
+made, so a script that writes `F3` means another feature once a step is added before it; one that writes
+names means the same features whatever is added (and a feature inserted at the rollback marker leaves
+every id that was there as it was). A name no feature has (or, in an old file,
 several have) is an error that says so; a feature whose name holds `/`, `,`, `|` or a bracket is written
 by its id. `Plate:startCap` and `Plate:endCap` (with or without `()`) are the start and end cap of an
 extrusion of one profile; with several profiles they are refused, and the error lists the full names.
