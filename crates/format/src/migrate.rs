@@ -35,7 +35,7 @@ const STEPS: &[Step] = &[
     v18_to_v19, v19_to_v20, v20_to_v21, v21_to_v22, v22_to_v23, v23_to_v24, v24_to_v25, v25_to_v26,
     v26_to_v27, v27_to_v28, v28_to_v29, v29_to_v30, v30_to_v31, v31_to_v32, v32_to_v33, v33_to_v34,
     v34_to_v35, v35_to_v36, v36_to_v37, v37_to_v38, v38_to_v39, v39_to_v40, v40_to_v41, v41_to_v42,
-    v42_to_v43, v43_to_v44, v44_to_v45, v45_to_v46, v46_to_v47, v47_to_v48, v48_to_v49,
+    v42_to_v43, v43_to_v44, v44_to_v45, v45_to_v46, v46_to_v47, v47_to_v48, v48_to_v49, v49_to_v50,
 ];
 
 /// Version 2 adds the `cone` and `torus` feature kinds and an optional
@@ -957,6 +957,18 @@ fn sheet_metal_names_in(
         }
         _ => {}
     }
+}
+
+/// Version 50 adds `inserted`: the features inserted
+/// at the rollback marker that take a body, with the parameters of later
+/// features each pointed at itself and what they named before
+/// (docs/design/names.md › *A feature inserted at the marker*), so that
+/// deleting or editing one gives them back. A file of an older version
+/// has none: a re-point it holds was made once and is kept as written, as
+/// before; the version was raised so that an older build says a newer
+/// 3DCraft is needed instead of refusing the field.
+fn v49_to_v50(manifest: Value) -> Result<Value, String> {
+    Ok(manifest)
 }
 
 // One step per version after the first: forgetting either half of a

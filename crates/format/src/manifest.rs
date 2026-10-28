@@ -84,6 +84,33 @@ pub struct Document {
     /// Absent when there are none (and in files before version 43).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outputs: Vec<Output>,
+    /// The features inserted at the rollback marker that take a body, with
+    /// the parameters of later features each pointed at itself, in the
+    /// order they were inserted. Absent when there are none (and in files
+    /// before version 50, a TEMPORARY number).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inserted: Vec<Inserted>,
+}
+
+/// A feature inserted at the rollback marker: `{"feature": 7,
+/// "repointed": [{"feature": 5, "param": "target", "was": 3}]}`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Inserted {
+    pub feature: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repointed: Vec<Repointed>,
+}
+
+/// A parameter of a later feature re-pointed at an inserted one: the
+/// later feature, the parameter (`target`, `tool`, `source`) and the
+/// feature it named before.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Repointed {
+    pub feature: u64,
+    pub param: String,
+    pub was: u64,
 }
 
 /// One output: `{"name": "T", "measure": {"measure": "levelFor", ...}}`,

@@ -19,6 +19,7 @@ pub mod fold;
 pub mod name;
 pub mod output;
 pub mod public;
+pub mod repoint;
 pub mod sets;
 pub mod sheetmetal;
 pub mod sketch;
@@ -46,6 +47,7 @@ pub use public::{
     DocInfo, MAX_CHOICES, MAX_DESCRIPTION, MAX_INFO_TEXT, MAX_PARAM_TEXT, MAX_TAGS, ParamKind,
     PublicParam,
 };
+pub use repoint::{Inserted, MAX_INSERTED, Repointed};
 pub use sets::{MAX_SET_QUERY_BYTES, MAX_SETS, NamedSet};
 pub use sheetmetal::{
     BendDirection, CornerClose, CornerKind, CornerRelief, Flange, FlangeFrom, FlangeOn, FlangeSide,
@@ -1867,6 +1869,13 @@ pub struct Document {
     /// the history: regeneration does not read them.
     #[serde(default)]
     pub outputs: Vec<Output>,
+    /// The features inserted at the rollback marker that take a body, and
+    /// the parameters of later features each pointed at itself
+    /// ([`repoint`]), in the order they were inserted: so that deleting
+    /// or editing one gives those parameters back. Not read by
+    /// regeneration.
+    #[serde(default)]
+    pub inserted: Vec<Inserted>,
 }
 
 fn check_feature_name(name: &str) -> Result<(), DocError> {
@@ -2166,6 +2175,7 @@ impl Document {
         self.validate_public()?;
         self.validate_tables()?;
         self.validate_outputs()?;
+        self.validate_inserted()?;
         match self.rollback {
             Some(id) if !ids.contains(&id) => Err(DocError::UnknownFeature(id)),
             _ => Ok(()),
@@ -2571,6 +2581,10 @@ impl Document {
         self.bodies.retain(|entry| entry.feature != id);
         self.faces.retain(|entry| entry.feature != id);
         self.hidden.retain(|hidden| *hidden != id);
+        // What its insertion at the marker re-pointed is given back: the
+        // document is as if it had never been inserted.
+        self.restore_repointed(id, None);
+        self.forget_inserted(id);
         Ok(self.features.remove(index))
     }
 

@@ -47,6 +47,7 @@ pub(crate) fn to_manifest(document: &doc::Document) -> manifest::Document {
         info,
         tables,
         outputs,
+        inserted,
     } = document;
     let doc::Units { length, angle } = units;
     let doc::Tolerance {
@@ -102,6 +103,53 @@ pub(crate) fn to_manifest(document: &doc::Document) -> manifest::Document {
         info: (!info.is_empty()).then(|| info_to_manifest(info)),
         tables: tables.iter().map(table_to_manifest).collect(),
         outputs: outputs.iter().map(output_to_manifest).collect(),
+        inserted: inserted.iter().map(inserted_to_manifest).collect(),
+    }
+}
+
+fn inserted_to_manifest(entry: &doc::Inserted) -> manifest::Inserted {
+    let doc::Inserted {
+        feature: doc::FeatureId(feature),
+        repointed,
+    } = entry;
+    manifest::Inserted {
+        feature: *feature,
+        repointed: repointed
+            .iter()
+            .map(|r| {
+                let doc::Repointed {
+                    feature: doc::FeatureId(feature),
+                    param,
+                    was: doc::FeatureId(was),
+                } = r;
+                manifest::Repointed {
+                    feature: *feature,
+                    param: param.clone(),
+                    was: *was,
+                }
+            })
+            .collect(),
+    }
+}
+
+fn inserted_to_doc(entry: manifest::Inserted) -> doc::Inserted {
+    let manifest::Inserted { feature, repointed } = entry;
+    doc::Inserted {
+        feature: doc::FeatureId(feature),
+        repointed: repointed
+            .into_iter()
+            .map(
+                |manifest::Repointed {
+                     feature,
+                     param,
+                     was,
+                 }| doc::Repointed {
+                    feature: doc::FeatureId(feature),
+                    param,
+                    was: doc::FeatureId(was),
+                },
+            )
+            .collect(),
     }
 }
 
@@ -2117,6 +2165,7 @@ pub(crate) fn to_doc(document: manifest::Document, blobs: &Blobs) -> doc::Docume
         info,
         tables,
         outputs,
+        inserted,
     } = document;
     doc::Document {
         units: doc::Units {
@@ -2168,6 +2217,7 @@ pub(crate) fn to_doc(document: manifest::Document, blobs: &Blobs) -> doc::Docume
         info: info.map(info_to_doc).unwrap_or_default(),
         tables: tables.into_iter().map(table_to_doc).collect(),
         outputs: outputs.into_iter().map(output_to_doc).collect(),
+        inserted: inserted.into_iter().map(inserted_to_doc).collect(),
     }
 }
 

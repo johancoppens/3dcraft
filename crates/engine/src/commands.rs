@@ -99,7 +99,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("feature.delete", "Delete Feature", r#"{"feature": id or name}"#,
         "Deletes a feature (edit.undo brings it back). A feature that named it (as its target, tool, source or sketch) fails. The result lists the features that fail under failed. Where the host regenerates a piece at a time between its frames (the web page), the regeneration comes after the command: failed is left out then, and deferred: true says so.", doc: true, feature_delete),
     spec!("history.rollback", "Roll Back", r#"{"feature": id or name or null}"#,
-        "Regenerates only up to and including this feature; null removes the marker. While the marker is set, a feature added by any command goes in right after it, and the marker moves onto the new feature. A feature added there that takes a body (a fillet, a chamfer, a move, a boolean's target, a union's tool) takes it before the features after the marker that named that body (a boolean's target or tool, the source of a transform, mirror, pattern, shell or split): those are pointed at the new feature, so they go on with the body it changed, and the new feature's result lists them under repointed ([{feature, param}]). One that would then name it twice (a boolean of the two bodies an inserted union joined), and one that used the tool of an inserted subtraction or intersection, are left as they are and fail with \"already went into\", saying which feature.edit points them on. A fillet, a chamfer or a face operation names faces, not a body, and follows them into the new feature's body by itself. The result lists the features that fail now and did not before under failed. Where the host regenerates a piece at a time between its frames (the web page), the regeneration comes after the command: failed is left out then, and deferred: true says so.", doc: true, history_rollback),
+        "Regenerates only up to and including this feature; null removes the marker. While the marker is set, a feature added by any command goes in right after it, and the marker moves onto the new feature. A feature added there that takes a body (a fillet, a chamfer, a move, a boolean's target, a union's tool) takes it before the features after the marker that named that body (a boolean's target or tool, the source of a transform, mirror, pattern, shell or split): those are pointed at the new feature, so they go on with the body it changed, and the new feature's result lists them under repointed ([{feature, param}]). One that would then name it twice (a boolean of the two bodies an inserted union joined), and one that used the tool of an inserted subtraction or intersection, are left as they are and fail with \"already went into\", saying which feature.edit points them on. A fillet, a chamfer or a face operation names faces, not a body, and follows them into the new feature's body by itself. What was re-pointed is kept in the document (saved with it): feature.delete of the inserted feature gives every such parameter that still names it the feature it named before, as if it had never been inserted (restored: [{feature, param, names}] in its result), and feature.edit of it gives back those re-pointed from a body it no longer takes and re-points the later features that named a body it takes now (repointed and restored in its result). The result lists the features that fail now and did not before under failed. Where the host regenerates a piece at a time between its frames (the web page), the regeneration comes after the command: failed is left out then, and deferred: true says so.", doc: true, history_rollback),
     spec!("document.inspect", "Inspect", r#"{"measures": boolean = true, "named": boolean = false}"#,
         "Returns the whole document state (with named: true each feature's parameters also under named, in the commands' words: keys as the commands spell them, keepTool, and features by name, where they differ from params): units, variables with values, features with status (a failed one with the reason under error, which starts with the parameter and names the feature and the name it lost, and, when the reason is that something it is made from failed, under causedBy the feature at the start of that chain: the one to fix; a datum with where it lies, under datum), bodies with counts (shells: one per lump and one per cavity; a body a cut fell apart in, or one with a void, has several), mass properties (volume, area, centroid; with a material: mass and inertia) and bbox, appearance and material, and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), faceAppearances (the colours face.appearance gave single faces) and lostFaces (those whose face an edit took away, which colour nothing), assertions (when there are any: each with status passed, failed, notProven, error or pending (still being measured after two seconds), what was measured and what was expected, as assert.list), undo history. With measures: false the bodies are listed without what takes measuring them (volume, area, centroid, mass, inertia, bbox and bboxTolerance; a body with a spline face can take seconds the first time), the rest as always: the quick way to read the features, their status and the face names of a large model.", doc: true, document_inspect),
     spec!("document.check", "Check", r#"{"deep": boolean = false, "feature": id or name = every feature}"#,
@@ -327,16 +327,137 @@ pub(crate) fn repoint_inserted(
     let (Some(before), Some(feature)) = (before, doc.feature(id)) else {
         return Ok(None);
     };
-    let taken = match craft3d_regen::followed_feature(doc, &before.features, feature) {
-        Ok(Some(followed)) => followed.kind.grows_from(),
-        Ok(None) => feature.kind.grows_from(),
-        // It fails where it stands: nothing is taken from the features
-        // after it.
-        Err(_) => return Ok(None),
-    };
+    // It fails where it stands: nothing is taken from the features after
+    // it. It is kept as inserted all the same, so that an edit that makes
+    // it take a body re-points them then.
+    let taken = taken_at(doc, before, feature).unwrap_or_default();
     let changed = doc.repoint_after(id, &taken)?;
+    doc.record_inserted(id, &changed);
+    Ok(repointed_json(doc, id, &taken, &changed))
+}
+
+/// The bodies `feature` grows from where it stands, after `earlier` (the
+/// regeneration of the features before it): its faces followed to the
+/// body they are of there ([`craft3d_regen::followed_feature`]). `None`
+/// when it fails there.
+fn taken_at(
+    doc: &Document,
+    earlier: &craft3d_regen::Regen,
+    feature: &craft3d_doc::Feature,
+) -> Option<Vec<FeatureId>> {
+    match craft3d_regen::followed_feature(doc, &earlier.features, feature) {
+        Ok(Some(followed)) => Some(followed.kind.grows_from()),
+        Ok(None) => Some(feature.kind.grows_from()),
+        Err(_) => None,
+    }
+}
+
+/// The regeneration of the features before `id` (the document rolled back
+/// to the one before it): what an inserted feature that is edited is
+/// followed against, as it was when it was inserted.
+pub(crate) fn regen_before(
+    session: &mut Session,
+    id: FeatureId,
+) -> Result<std::sync::Arc<craft3d_regen::Regen>, CommandError> {
+    let open = session.document_mut()?;
+    let doc = open.history.current();
+    let at = doc
+        .features
+        .iter()
+        .position(|f| f.id == id)
+        .ok_or_else(|| CommandError::new(format!("there is no feature {id}")))?;
+    let Some(previous) = at.checked_sub(1).and_then(|i| doc.features.get(i)) else {
+        return Ok(std::sync::Arc::new(craft3d_regen::Regen {
+            variables: Vec::new(),
+            features: Vec::new(),
+        }));
+    };
+    let mut rolled = (**doc).clone();
+    rolled.rollback = Some(previous.id);
+    Ok(std::sync::Arc::new(craft3d_regen::regenerate_cached(
+        &rolled,
+        &mut open.cache,
+    )))
+}
+
+/// After the inserted feature `id` was edited from `old` (both followed
+/// against `earlier`, the features before it): the parameters it
+/// re-pointed from a body it no longer takes get that body back, and the
+/// later features that named a body it takes now and did not before go on
+/// with it ([`Document::repoint_after`]), as if it had been inserted so.
+/// Returns `(repointed, restored)` for the result.
+fn repoint_edited(
+    doc: &mut Document,
+    id: FeatureId,
+    old: &craft3d_doc::Feature,
+    earlier: &craft3d_regen::Regen,
+) -> Result<(Option<Value>, Option<Value>), DocError> {
+    let Some(feature) = doc.feature(id) else {
+        return Ok((None, None));
+    };
+    let new_taken = taken_at(doc, earlier, feature).unwrap_or_default();
+    let old_taken = taken_at(doc, earlier, old).unwrap_or_default();
+    let released: Vec<FeatureId> = doc
+        .inserted(id)
+        .map(|entry| {
+            let mut was: Vec<FeatureId> = entry
+                .repointed
+                .iter()
+                .map(|r| r.was)
+                .filter(|w| !new_taken.contains(w))
+                .collect();
+            was.dedup();
+            was
+        })
+        .unwrap_or_default();
+    let given = doc.restore_repointed(id, Some(&released));
+    let fresh: Vec<FeatureId> = new_taken
+        .iter()
+        .copied()
+        .filter(|t| !old_taken.contains(t))
+        .collect();
+    let changed = doc.repoint_after(id, &fresh)?;
+    doc.record_inserted(id, &changed);
+    Ok((
+        repointed_json(doc, id, &new_taken, &changed),
+        restored_json(doc, &given),
+    ))
+}
+
+/// `restored: [{feature, param, names}]`: the parameters given back the
+/// feature they named before an inserted feature re-pointed them.
+pub(crate) fn restored_json(
+    doc: &Document,
+    given: &[(FeatureId, String, FeatureId)],
+) -> Option<Value> {
+    if given.is_empty() {
+        return None;
+    }
+    let called = |f: FeatureId| {
+        doc.feature(f)
+            .map_or_else(|| f.to_string(), |f| f.name.clone())
+    };
+    Some(
+        given
+            .iter()
+            .map(|(later, param, names)| {
+                json!({"feature": called(*later), "param": param, "names": called(*names)})
+            })
+            .collect::<Vec<_>>()
+            .into(),
+    )
+}
+
+/// `repointed: [{feature, param, warning?}]` of what inserting (or
+/// editing) `id` re-pointed; `None` for nothing.
+fn repointed_json(
+    doc: &Document,
+    id: FeatureId,
+    taken: &[FeatureId],
+    changed: &[(FeatureId, &'static str, FeatureId)],
+) -> Option<Value> {
     if changed.is_empty() {
-        return Ok(None);
+        return None;
     }
     let called = |doc: &Document, f: FeatureId| {
         doc.feature(f)
@@ -370,7 +491,7 @@ pub(crate) fn repoint_inserted(
             entry
         })
         .collect();
-    Ok(Some(listed.into()))
+    Some(listed.into())
 }
 
 pub(crate) fn add_feature(
@@ -2929,11 +3050,26 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
         symmetric_fits(&extrusion.end, extrusion.symmetric, "feature.edit")?;
     }
     let before = failing(session)?;
-    edit(session, "feature.edit", "Edit feature", |doc| {
+    // A feature inserted at the rollback marker re-points the features
+    // after it as it is edited: followed against the features before it.
+    let inserted = match session.document()?.history.current().feature(id) {
+        Some(old) if session.document()?.history.current().inserted(id).is_some() => {
+            Some((old.clone(), regen_before(session, id)?))
+        }
+        _ => None,
+    };
+    let (repointed, restored) = edit(session, "feature.edit", "Edit feature", |doc| {
         doc.feature_mut(id)?.kind = kind;
-        Ok(())
+        match &inserted {
+            Some((old, earlier)) => repoint_edited(doc, id, old, earlier),
+            None => Ok((None, None)),
+        }
     })?;
     let mut result = feature_result(session, id)?;
+    with_repointed(&mut result, repointed);
+    if let (Some(map), Some(restored)) = (result.as_object_mut(), restored) {
+        map.insert("restored".into(), restored);
+    }
     add_failed(session, &before, Some(id), &mut result)?;
     Ok(result)
 }
@@ -3021,10 +3157,17 @@ fn feature_delete(session: &mut Session, params: &Value) -> Run {
         "feature",
     )?;
     let before = failing_unless_deferred(session)?;
-    let removed = edit(session, "feature.delete", "Delete feature", |doc| {
-        doc.remove_feature(id)
+    let (removed, given) = edit(session, "feature.delete", "Delete feature", |doc| {
+        // What inserting it at the marker re-pointed is given back first
+        // (`remove_feature` would too, without saying what).
+        let given = doc.restore_repointed(id, None);
+        let restored = restored_json(doc, &given);
+        Ok((doc.remove_feature(id)?, restored))
     })?;
     let mut result = json!({ "deleted": feature_json(&removed) });
+    if let (Some(map), Some(restored)) = (result.as_object_mut(), given) {
+        map.insert("restored".into(), restored);
+    }
     add_failed(session, &before, None, &mut result)?;
     Ok(result)
 }
