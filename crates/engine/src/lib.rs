@@ -84,6 +84,7 @@ mod unit_cmds;
 mod verify;
 mod verify_bound;
 mod verify_cmds;
+mod view_curves;
 mod view_export;
 mod visibility_cmds;
 mod when_cmds;

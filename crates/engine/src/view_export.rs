@@ -59,8 +59,10 @@
 
 use crate::commands::{Run, fail};
 use crate::params::Params;
+use crate::view_curves::{self, Drawn, Form, Registry};
 use crate::{CommandError, Session};
 use craft3d_drawing::{Color, Drawing, Layer, Path as DrawingPath, Point, Segment};
+use craft3d_geom::Curve3;
 use craft3d_io::DrawingFormat;
 use craft3d_math::{Bbox3, Vec3};
 use craft3d_render::Projection;
@@ -100,6 +102,9 @@ pub(crate) const DEPTH_MARGIN: f64 = 1.25;
 /// A perspective eye must be at least this fraction of its distance to the
 /// target in front of every point of the model.
 pub(crate) const NEAR_FRACTION: f64 = 0.05;
+/// The chords an edge is followed along keep within this share of the
+/// tolerance of its curve.
+const CHORD: f64 = 0.25;
 /// Bisection steps that place a change of visibility along a line.
 const BISECTIONS: usize = 30;
 /// Triangles a quadtree cell holds before it is split.
@@ -157,22 +162,22 @@ impl Budget {
 }
 
 /// How model points land in the drawing.
-struct View {
+pub(crate) struct View {
     /// Unit vectors: right and up in the drawing, and away from the eye.
-    right: Vec3,
-    up: Vec3,
-    forward: Vec3,
+    pub(crate) right: Vec3,
+    pub(crate) up: Vec3,
+    pub(crate) forward: Vec3,
     /// A perspective view's eye and the distance of its target, at which
     /// the drawing is true size.
-    perspective: Option<(Vec3, f64)>,
+    pub(crate) perspective: Option<(Vec3, f64)>,
     /// Nearest depth drawn, for a perspective view.
-    near: f64,
+    pub(crate) near: f64,
 }
 
 impl View {
     /// The point in the drawing and its depth along the view, or `None`
     /// nearer than the near plane.
-    fn project(&self, p: Vec3) -> Option<(Point, f64)> {
+    pub(crate) fn project(&self, p: Vec3) -> Option<(Point, f64)> {
         match self.perspective {
             None => Some(([p.dot(self.right), p.dot(self.up)], p.dot(self.forward))),
             Some((eye, scale)) => {
@@ -532,12 +537,65 @@ fn seen(
     })
 }
 
-/// A piece of a line of one kind, in model space.
+/// A drawn line: an edge of a body along its exact curve, or a
+/// silhouette, a polyline of the mesh.
+struct Track<'a> {
+    base: Kind,
+    /// The edge's curve; `None` for a silhouette.
+    curve: Option<&'a Curve3>,
+    /// A silhouette's points; its parameter is the place along them.
+    points: Vec<Vec3>,
+    /// The parameters of the ends of its chords, increasing.
+    breaks: Vec<f64>,
+    closed: bool,
+    form: Form,
+}
+
+impl Track<'_> {
+    /// The point at parameter `t`.
+    fn at(&self, t: f64) -> Vec3 {
+        if let Some(curve) = self.curve {
+            return curve.eval(t);
+        }
+        let last = self.points.len().saturating_sub(1);
+        let t = if t.is_finite() {
+            t.clamp(0.0, last as f64)
+        } else {
+            0.0
+        };
+        let k = (t.floor() as usize).min(last.saturating_sub(1));
+        match (self.points.get(k), self.points.get(k + 1)) {
+            (Some(a), Some(b)) => a.lerp(*b, t - k as f64),
+            (Some(a), None) => *a,
+            _ => Vec3::ZERO,
+        }
+    }
+
+    /// The first and the last parameter.
+    fn ends(&self) -> Option<(f64, f64)> {
+        Some((*self.breaks.first()?, *self.breaks.last()?))
+    }
+
+    /// The length of its parameter round a closed line.
+    fn period(&self) -> Option<f64> {
+        let (a, b) = self.ends()?;
+        self.closed.then_some(b - a)
+    }
+
+    /// Where `t` lands in the drawing.
+    fn drawn(&self, view: &View, t: f64) -> Option<Point> {
+        view.project(self.at(t)).map(|(p, _)| p)
+    }
+}
+
+/// A stretch of a track of one verdict, by its parameters, and its length
+/// in model space.
 #[derive(Clone, Copy, Debug)]
-struct Piece3 {
-    from: Vec3,
-    to: Vec3,
+struct Stretch {
+    t0: f64,
+    t1: f64,
     seen: Seen,
+    length: f64,
 }
 
 /// What the lines are sampled at, and the limits.
@@ -550,12 +608,9 @@ struct Sampling<'a> {
 }
 
 impl Sampling<'_> {
-    /// Splits the line from `a` to `b` where its visibility changes.
-    fn classify(&mut self, a: Vec3, b: Vec3) -> Result<Vec<Piece3>, CommandError> {
-        let length = a.distance(b);
-        if !(length.is_finite() && length > 0.0) {
-            return Ok(Vec::new());
-        }
+    /// How many samples a stretch of `length` takes, counted against
+    /// [`MAX_SAMPLES`].
+    fn count(&mut self, length: f64) -> Result<usize, CommandError> {
         let n = (length / self.spacing).ceil();
         let n = if n.is_finite() && n >= 1.0 {
             n.min(MAX_SAMPLES as f64) as usize
@@ -568,15 +623,31 @@ impl Sampling<'_> {
                 "{ID}: the view has too many lines to decide what is hidden ({MAX_SAMPLES} points); use a coarser `tolerance` or a simpler view"
             ));
         }
+        Ok(n)
+    }
+
+    /// Splits the chord of `track` from parameter `a` to `b` where its
+    /// visibility changes, its points on the exact curve.
+    fn classify(
+        &mut self,
+        track: &Track<'_>,
+        a: f64,
+        b: f64,
+    ) -> Result<Vec<Stretch>, CommandError> {
+        let length = track.at(a).distance(track.at(b));
+        if !(length.is_finite() && length > 0.0 && b > a) {
+            return Ok(Vec::new());
+        }
+        let n = self.count(length)?;
         let (view, occluders) = (self.view, self.occluders);
         let budget = &mut self.budget;
-        let at = |t: f64| a.lerp(b, t);
+        let param = |s: f64| a + (b - a) * s;
         let centre = |k: usize| (k as f64 + 0.5) / n as f64;
-        let mut pieces = Vec::new();
-        let mut start = 0.0;
-        let mut state = seen(view, occluders, at(centre(0)), budget)?;
+        let mut runs = Vec::new();
+        let mut start = a;
+        let mut state = seen(view, occluders, track.at(param(centre(0))), budget)?;
         for k in 1..n {
-            let next = seen(view, occluders, at(centre(k)), budget)?;
+            let next = seen(view, occluders, track.at(param(centre(k))), budget)?;
             if next == state {
                 continue;
             }
@@ -584,33 +655,38 @@ impl Sampling<'_> {
             let (mut lo, mut hi) = (centre(k - 1), centre(k));
             for _ in 0..BISECTIONS {
                 let mid = 0.5 * (lo + hi);
-                if seen(view, occluders, at(mid), budget)? == state {
+                if seen(view, occluders, track.at(param(mid)), budget)? == state {
                     lo = mid;
                 } else {
                     hi = mid;
                 }
             }
-            let cut = 0.5 * (lo + hi);
-            pieces.push(Piece3 {
-                from: at(start),
-                to: at(cut),
+            let cut = param(0.5 * (lo + hi));
+            runs.push(Stretch {
+                t0: start,
+                t1: cut,
                 seen: state,
+                length: 0.0,
             });
             start = cut;
             state = next;
         }
-        pieces.push(Piece3 {
-            from: at(start),
-            to: b,
+        runs.push(Stretch {
+            t0: start,
+            t1: b,
             seen: state,
+            length: 0.0,
         });
-        Ok(pieces)
+        for run in &mut runs {
+            run.length = track.at(run.t0).distance(track.at(run.t1));
+        }
+        Ok(runs)
     }
 }
 
 /// A run shorter than `shortest` between two runs of one other kind takes
 /// theirs: a verdict that flickers at the tolerance's scale is noise.
-fn smooth(pieces: &mut [Piece3], shortest: f64) {
+fn smooth(pieces: &mut [Stretch], shortest: f64) {
     // Runs of one verdict: [first, last] piece.
     let mut runs: Vec<(usize, usize)> = Vec::new();
     for (k, piece) in pieces.iter().enumerate() {
@@ -643,23 +719,13 @@ fn smooth(pieces: &mut [Piece3], shortest: f64) {
         };
         let length: f64 = pieces
             .get(first..=last)
-            .map_or(0.0, |run| run.iter().map(|p| p.from.distance(p.to)).sum());
+            .map_or(0.0, |run| run.iter().map(|p| p.length).sum());
         if length < shortest {
             for piece in pieces.get_mut(first..=last).into_iter().flatten() {
                 piece.seen = around;
             }
         }
     }
-}
-
-/// A straight piece of the drawing.
-#[derive(Clone, Copy, Debug)]
-struct Piece {
-    kind: Kind,
-    a: Point,
-    b: Point,
-    /// The line it came from, so pieces join only along their line.
-    line: usize,
 }
 
 fn sub2(p: Point, q: Point) -> Point {
@@ -674,38 +740,9 @@ fn dot2(p: Point, q: Point) -> f64 {
     p[0] * q[0] + p[1] * q[1]
 }
 
-fn dist2(p: Point, q: Point) -> f64 {
-    let d = sub2(p, q);
-    dot2(d, d).sqrt()
-}
-
-/// Joins pieces in line that follow on from each other.
-fn merge_in_line(pieces: Vec<Piece>, close: f64) -> Vec<Piece> {
-    let mut out: Vec<Piece> = Vec::with_capacity(pieces.len());
-    for piece in pieces {
-        if let Some(last) = out.last_mut() {
-            let d1 = sub2(last.b, last.a);
-            let d2 = sub2(piece.b, piece.a);
-            let same_way = dot2(d1, d2) > 0.0;
-            let in_line = cross2(d1, d2).abs() <= 1e-9 * dot2(d1, d1).sqrt() * dot2(d2, d2).sqrt();
-            if last.kind == piece.kind
-                && last.line == piece.line
-                && dist2(last.b, piece.a) <= close
-                && same_way
-                && in_line
-            {
-                last.b = piece.b;
-                continue;
-            }
-        }
-        out.push(piece);
-    }
-    out
-}
-
 /// Cells of a grid of `cell` that the segment from `a` to `b` crosses, in
 /// order (a walk from cell to cell along it), at most `cap` of them.
-fn cells_crossed(a: Point, b: Point, cell: f64, cap: usize) -> Vec<(i64, i64)> {
+pub(crate) fn cells_crossed(a: Point, b: Point, cell: f64, cap: usize) -> Vec<(i64, i64)> {
     let index = |v: f64| -> i64 {
         let k = (v / cell).floor();
         if k.is_finite() {
@@ -758,141 +795,326 @@ fn cells_crossed(a: Point, b: Point, cell: f64, cap: usize) -> Vec<(i64, i64)> {
     out
 }
 
-/// Leaves out what lies on a piece drawn before it: the pieces are taken
-/// in order (visible, silhouettes, hidden), and of each what another one
-/// already covers is cut away. Pieces are found through the cells they
-/// cross.
-fn without_overlaps(
-    pieces: &[Piece],
-    scale: f64,
-    close: f64,
-    budget: &mut Budget,
-) -> Result<Vec<Piece>, CommandError> {
-    const CELLS: f64 = 64.0;
-    let cell = (scale / CELLS).max(f64::MIN_POSITIVE);
-    // A piece of the drawing crosses at most this many cells.
-    let cap = (CELLS as usize).saturating_mul(4).saturating_add(8);
-    let mut grid: BTreeMap<(i64, i64), Vec<usize>> = BTreeMap::new();
-    let mut kept: Vec<Piece> = Vec::new();
-    let mut order: Vec<&Piece> = pieces.iter().collect();
-    order.sort_by_key(|p| p.kind);
-    for piece in order {
-        let d = sub2(piece.b, piece.a);
-        let len2 = dot2(d, d);
-        if len2.is_nan() || len2 <= close * close {
-            continue;
-        }
-        let len = len2.sqrt();
-        // What is left of it, as parameters along it.
-        let mut left: Vec<(f64, f64)> = vec![(0.0, 1.0)];
-        let mut candidates: Vec<usize> = Vec::new();
-        for key in cells_crossed(piece.a, piece.b, cell, cap) {
-            if let Some(list) = grid.get(&key) {
-                candidates.extend(list.iter().copied());
-            }
-        }
-        candidates.sort_unstable();
-        candidates.dedup();
-        budget.spend(candidates.len())?;
-        for id in candidates {
-            let Some(other) = kept.get(id) else {
-                continue;
-            };
-            let e = sub2(other.b, other.a);
-            let elen = dot2(e, e).sqrt();
-            if elen.is_nan() || elen <= 0.0 {
-                continue;
-            }
-            let off_a = cross2(e, sub2(piece.a, other.a)).abs() / elen;
-            let off_b = cross2(e, sub2(piece.b, other.a)).abs() / elen;
-            if off_a > close || off_b > close {
-                continue;
-            }
-            let ta = dot2(sub2(other.a, piece.a), d) / len2;
-            let tb = dot2(sub2(other.b, piece.a), d) / len2;
-            let (lo, hi) = (ta.min(tb), ta.max(tb));
-            let mut next = Vec::with_capacity(left.len() + 1);
-            for (s, t) in left {
-                if hi <= s || lo >= t {
-                    next.push((s, t));
-                    continue;
-                }
-                if lo > s {
-                    next.push((s, lo));
-                }
-                if hi < t {
-                    next.push((hi, t));
-                }
-            }
-            left = next;
-            if left.is_empty() {
-                break;
-            }
-        }
-        for (s, t) in left {
-            if (t - s) * len <= close {
-                continue;
-            }
-            let at = |u: f64| [piece.a[0] + d[0] * u, piece.a[1] + d[1] * u];
-            let part = Piece {
-                kind: piece.kind,
-                a: at(s),
-                b: at(t),
-                line: piece.line,
-            };
-            let index = kept.len();
-            for key in cells_crossed(part.a, part.b, cell, cap) {
-                grid.entry(key).or_default().push(index);
-            }
-            kept.push(part);
-        }
-    }
-    Ok(kept)
+/// A stretch of a track kept for the drawing.
+#[derive(Clone, Copy, Debug)]
+struct Kept {
+    line: usize,
+    kind: Kind,
+    t0: f64,
+    t1: f64,
 }
 
-/// The pieces of one kind as paths: a piece that starts where the one
-/// before it ended, on the same line, goes on its path.
-fn paths_of(pieces: &[Piece], kind: Kind, close: f64) -> Vec<DrawingPath> {
-    let mut paths: Vec<DrawingPath> = Vec::new();
-    let mut current: Option<(Point, Vec<Segment>, usize, Point)> = None;
-    let finish = |current: Option<(Point, Vec<Segment>, usize, Point)>,
-                  paths: &mut Vec<DrawingPath>| {
-        if let Some((start, mut segments, _, end)) = current {
-            let closed = segments.len() > 2 && dist2(start, end) <= close;
-            if closed {
-                // The last piece ends at the start itself.
-                if let Some(Segment::Line { to }) = segments.last_mut() {
-                    *to = start;
+/// What the overlap step needs.
+struct Overlaps<'a> {
+    view: &'a View,
+    /// How far a silhouette of the mesh may lie from the true one.
+    tolerance: f64,
+    close: f64,
+    registry: Registry,
+}
+
+impl Overlaps<'_> {
+    /// Leaves out of the stretch `t0`..`t1` of `track` (number `line`)
+    /// what lies on what is drawn before it, chord by chord: its points
+    /// are sampled and a change between covered and not placed by
+    /// bisection, as visibility is. What is left is drawn and recorded.
+    #[allow(clippy::too_many_arguments)]
+    fn keep(
+        &mut self,
+        track: &Track<'_>,
+        line: usize,
+        kind: Kind,
+        (t0, t1): (f64, f64),
+        sampling: &mut Sampling<'_>,
+        kept: &mut Vec<Kept>,
+    ) -> Result<(), CommandError> {
+        let view = self.view;
+        let close = self.close;
+        let period = track.period();
+        let first = track.breaks.partition_point(|b| *b <= t0).saturating_sub(1);
+        for k in first..track.breaks.len() {
+            let (Some(&c0), Some(&c1)) = (track.breaks.get(k), track.breaks.get(k + 1)) else {
+                break;
+            };
+            if c0 >= t1 {
+                break;
+            }
+            let (s0, s1) = (t0.max(c0), t1.min(c1));
+            if !(s1 > s0) {
+                continue;
+            }
+            let (Some(p0), Some(p1)) = (track.drawn(view, c0), track.drawn(view, c1)) else {
+                continue;
+            };
+            // How far the curve may lie from this chord in the drawing.
+            let slack = if track.curve.is_some() {
+                [0.25, 0.5, 0.75]
+                    .iter()
+                    .filter_map(|u| track.drawn(view, c0 + (c1 - c0) * u))
+                    .map(|q| view_curves::to_segment(q, p0, p1))
+                    .fold(0.0, f64::max)
+            } else {
+                self.tolerance
+            };
+            let dir = sub2(p1, p0);
+            let (Some(q0), Some(q1)) = (track.drawn(view, s0), track.drawn(view, s1)) else {
+                continue;
+            };
+            let length = view_curves::dist2(q0, q1);
+            if !(length > close) {
+                continue;
+            }
+            let n = sampling.count(length)?;
+            let registry = &self.registry;
+            let budget = &mut sampling.budget;
+            let mut covered = |s: f64| -> Result<bool, CommandError> {
+                let Some(p) = track.drawn(view, s0 + (s1 - s0) * s) else {
+                    return Ok(true);
+                };
+                let (on, tests) = registry.covers(p, slack, line, (c0, c1), dir, period, close);
+                budget.spend(tests)?;
+                Ok(on)
+            };
+            let centre = |j: usize| (j as f64 + 0.5) / n as f64;
+            let mut stretches: Vec<(f64, f64)> = Vec::new();
+            let mut start = 0.0;
+            let mut state = covered(centre(0))?;
+            for j in 1..n {
+                let next = covered(centre(j))?;
+                if next == state {
+                    continue;
                 }
+                let (mut lo, mut hi) = (centre(j - 1), centre(j));
+                for _ in 0..BISECTIONS {
+                    let mid = 0.5 * (lo + hi);
+                    if covered(mid)? == state {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                let cut = 0.5 * (lo + hi);
+                if !state {
+                    stretches.push((start, cut));
+                }
+                start = cut;
+                state = next;
             }
-            paths.push(DrawingPath::Chain {
-                start,
-                segments,
-                closed,
-            });
+            if !state {
+                stretches.push((start, 1.0));
+            }
+            for (a, b) in stretches {
+                // The ends at the chord's own parameters where they are.
+                let u0 = if a == 0.0 { s0 } else { s0 + (s1 - s0) * a };
+                let u1 = if b == 1.0 { s1 } else { s0 + (s1 - s0) * b };
+                let (Some(a), Some(b)) = (track.drawn(view, u0), track.drawn(view, u1)) else {
+                    continue;
+                };
+                if view_curves::dist2(a, b) <= close {
+                    continue;
+                }
+                self.registry.add(Drawn {
+                    a,
+                    b,
+                    slack,
+                    line,
+                    t0: u0,
+                    t1: u1,
+                });
+                kept.push(Kept {
+                    line,
+                    kind,
+                    t0: u0,
+                    t1: u1,
+                });
+            }
         }
-    };
-    for piece in pieces.iter().filter(|p| p.kind == kind) {
-        match &mut current {
-            Some((_, segments, line, end))
-                if *line == piece.line && dist2(*end, piece.a) <= close =>
-            {
-                segments.push(Segment::Line { to: piece.b });
-                *end = piece.b;
+        Ok(())
+    }
+}
+
+/// The path of the stretches `pieces` of `track` (one, or two that join
+/// across the start of a closed line), whole when it is all of a closed
+/// line; and how many pieces of the drawing it has.
+fn path_of(
+    track: &Track<'_>,
+    pieces: &[(f64, f64)],
+    whole: bool,
+    view: &View,
+    close: f64,
+) -> Option<(DrawingPath, usize)> {
+    let at = |t: f64| track.drawn(view, t);
+    let (&(first, _), &(_, last)) = (pieces.first()?, pieces.last()?);
+    let chords = || {
+        let mut points = Vec::new();
+        for &(a, b) in pieces {
+            points.push(at(a)?);
+            for t in track.breaks.iter().filter(|t| **t > a && **t < b) {
+                points.push(at(*t)?);
             }
-            _ => {
-                finish(current.take(), &mut paths);
-                current = Some((
-                    piece.a,
-                    vec![Segment::Line { to: piece.b }],
-                    piece.line,
-                    piece.b,
-                ));
+            points.push(at(b)?);
+        }
+        let path = view_curves::chain_of(&points, whole, close)?;
+        let count = match &path {
+            DrawingPath::Chain { segments, .. } => segments.len(),
+            _ => 1,
+        };
+        Some((path, count))
+    };
+    match &track.form {
+        Form::Line => {
+            let (a, b) = (at(first)?, at(last)?);
+            (view_curves::dist2(a, b) > close).then(|| {
+                (
+                    DrawingPath::Chain {
+                        start: a,
+                        segments: vec![Segment::Line { to: b }],
+                        closed: false,
+                    },
+                    1,
+                )
+            })
+        }
+        Form::Conic {
+            center,
+            major,
+            ratio,
+        } => {
+            let (center, major, ratio) = (*center, *major, *ratio);
+            let radius = dot2(major, major).sqrt();
+            let full = || {
+                if ratio == 1.0 {
+                    DrawingPath::Circle { center, radius }
+                } else {
+                    DrawingPath::Ellipse {
+                        center,
+                        major,
+                        ratio,
+                    }
+                }
+            };
+            if whole {
+                return Some((full(), 1));
+            }
+            let (from, to) = (at(first)?, at(last)?);
+            if view_curves::dist2(from, to) <= close {
+                // Round all but a sliver: the whole curve.
+                let span: f64 = pieces.iter().map(|(a, b)| b - a).sum();
+                let half = track.period().map_or(f64::INFINITY, |p| 0.5 * p);
+                return (span > half).then(|| (full(), 1));
+            }
+            // Which way it runs: at the middle of its first stretch.
+            let (a, b) = pieces.first().copied()?;
+            let (mid, h) = (0.5 * (a + b), 1e-3 * (b - a));
+            let turn = cross2(sub2(at(mid)?, center), sub2(at(mid + h)?, at(mid - h)?));
+            let ccw = turn > 0.0;
+            let segment = if ratio == 1.0 {
+                Segment::Arc {
+                    to,
+                    center,
+                    radius,
+                    ccw,
+                }
+            } else {
+                Segment::EllipticArc {
+                    to,
+                    center,
+                    major,
+                    ratio,
+                    ccw,
+                }
+            };
+            Some((
+                DrawingPath::Chain {
+                    start: from,
+                    segments: vec![segment],
+                    closed: false,
+                },
+                1,
+            ))
+        }
+        Form::Spline(spline) => {
+            let start = at(first)?;
+            let mut segments = Vec::new();
+            for &(a, b) in pieces {
+                let piece = spline.between(a, b).ok();
+                let (Some(piece), Some(from), Some(to)) = (piece, at(a), at(b)) else {
+                    return chords();
+                };
+                let to = if whole { start } else { to };
+                segments.push(Segment::Spline(piece.with_ends(from, to)));
+            }
+            let count = segments.len();
+            Some((
+                DrawingPath::Chain {
+                    start,
+                    segments,
+                    closed: whole,
+                },
+                count,
+            ))
+        }
+        Form::Chords => chords(),
+    }
+}
+
+/// The paths of the kept stretches of one kind: the stretches of a line
+/// that follow on from each other make one path, and on a closed line the
+/// last and the first join across its start.
+fn paths_of(
+    tracks: &[Track<'_>],
+    kept: &[Kept],
+    kind: Kind,
+    view: &View,
+    close: f64,
+) -> (Vec<DrawingPath>, usize) {
+    let mut by_line: BTreeMap<usize, Vec<(f64, f64)>> = BTreeMap::new();
+    for piece in kept.iter().filter(|k| k.kind == kind) {
+        by_line
+            .entry(piece.line)
+            .or_default()
+            .push((piece.t0, piece.t1));
+    }
+    let mut paths = Vec::new();
+    let mut count = 0;
+    for (line, mut stretches) in by_line {
+        let Some(track) = tracks.get(line) else {
+            continue;
+        };
+        stretches.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut groups: Vec<(f64, f64)> = Vec::new();
+        for (a, b) in stretches {
+            match groups.last_mut() {
+                Some(last) if last.1 == a => last.1 = b,
+                _ => groups.push((a, b)),
+            }
+        }
+        let Some((start, end)) = track.ends() else {
+            continue;
+        };
+        let mut lists: Vec<(Vec<(f64, f64)>, bool)> = Vec::new();
+        let wraps = track.closed
+            && groups.len() >= 2
+            && groups.first().is_some_and(|g| g.0 == start)
+            && groups.last().is_some_and(|g| g.1 == end);
+        if wraps {
+            if let (Some(first), Some(last)) = (groups.first().copied(), groups.pop()) {
+                groups.remove(0);
+                lists.push((vec![last, first], false));
+            }
+        }
+        for g in groups {
+            let whole = track.closed && g.0 == start && g.1 == end;
+            lists.push((vec![g], whole));
+        }
+        for (pieces, whole) in lists {
+            if let Some((path, n)) = path_of(track, &pieces, whole, view, close) {
+                paths.push(path);
+                count += n;
             }
         }
     }
-    finish(current, &mut paths);
-    paths
+    (paths, count)
 }
 
 /// Which way each triangle of `mesh` faces: 1 towards the eye, -1 away, 0
@@ -1144,7 +1366,8 @@ pub(crate) fn export(
         ..craft3d_tess::TessParams::default()
     };
     let mut meshes = Vec::new();
-    let mut lines: Vec<Vec<Vec3>> = Vec::new();
+    let mut tracks: Vec<Track<'_>> = Vec::new();
+    let mut breaks_total = 0_usize;
     let mut triangles = 0_usize;
     for (id, body) in &shown {
         let name = doc
@@ -1171,12 +1394,30 @@ pub(crate) fn export(
         if triangles > MAX_TRIANGLES {
             return Err(too_many());
         }
-        // A seam (both sides on one face) is no edge one sees.
+        // A seam (both sides on one face) is no edge one sees. Every
+        // other edge is followed along its own curve.
         let uses = craft3d_topo::edge_faces(body);
-        for (index, line) in made.edges.into_iter().enumerate() {
+        for (index, edge) in body.edges.iter().enumerate() {
             let seam = matches!(uses.get(index).map(Vec::as_slice), Some([a, b]) if a == b);
-            if !seam {
-                lines.push(line);
+            if seam {
+                continue;
+            }
+            let breaks = view_curves::breaks_of(&edge.curve, edge.range, CHORD * tolerance);
+            breaks_total = breaks_total.saturating_add(breaks.len());
+            if breaks_total > MAX_SAMPLES {
+                return fail(format!(
+                    "{ID}: the view has too many lines to decide what is hidden ({MAX_SAMPLES} points); use a coarser `tolerance` or a simpler view"
+                ));
+            }
+            if breaks.len() >= 2 {
+                tracks.push(Track {
+                    base: Kind::Visible,
+                    curve: Some(&edge.curve),
+                    points: Vec::new(),
+                    breaks,
+                    closed: edge.start == edge.end,
+                    form: Form::Chords,
+                });
             }
         }
         meshes.push(mesh);
@@ -1258,13 +1499,29 @@ pub(crate) fn export(
         diagonal * 1e-7,
         &mut budget,
     )?;
+    let close = scale * 1e-7;
+    // What each edge is in the drawing.
+    for track in &mut tracks {
+        if let Some(curve) = track.curve {
+            track.form = view_curves::form_of(curve, &view, close);
+        }
+    }
     // The silhouettes come after the edges of every body.
-    let edges_count = lines.len();
     for mesh in &meshes {
-        lines.extend(silhouettes(mesh, &view, diagonal * 1e-7));
+        for points in silhouettes(mesh, &view, diagonal * 1e-7) {
+            let closed = points.len() > 3
+                && matches!((points.first(), points.last()), (Some(a), Some(b)) if a.distance(*b) <= diagonal * 1e-7);
+            tracks.push(Track {
+                base: Kind::Silhouette,
+                curve: None,
+                breaks: (0..points.len()).map(|k| k as f64).collect(),
+                points,
+                closed,
+                form: Form::Chords,
+            });
+        }
     }
 
-    let close = scale * 1e-7;
     let mut sampling = Sampling {
         view: &view,
         occluders: &occluders,
@@ -1272,53 +1529,51 @@ pub(crate) fn export(
         samples: 0,
         budget,
     };
-    let mut pieces: Vec<Piece> = Vec::new();
-    for (index, line) in lines.iter().enumerate() {
-        let base = if index < edges_count {
-            Kind::Visible
-        } else {
-            Kind::Silhouette
-        };
-        let mut parts: Vec<Piece3> = Vec::new();
-        for pair in line.windows(2) {
+    // Each line split where it goes behind something, in its parameter.
+    let mut runs: Vec<(usize, Kind, f64, f64)> = Vec::new();
+    for (index, track) in tracks.iter().enumerate() {
+        let mut parts: Vec<Stretch> = Vec::new();
+        for pair in track.breaks.windows(2) {
             let [a, b] = pair else { continue };
-            parts.extend(sampling.classify(*a, *b)?);
+            parts.extend(sampling.classify(track, *a, *b)?);
         }
         // Within the depth margin of a surface the verdict is a guess.
         smooth(&mut parts, (1.0 + DEPTH_MARGIN) * tolerance);
-        let mut flat: Vec<Piece> = Vec::new();
         for part in parts {
             let kind = match part.seen {
                 Seen::Out => continue,
-                Seen::Yes => base,
-                Seen::Behind => Kind::Hidden,
+                Seen::Yes => track.base,
+                Seen::Behind if dashed => Kind::Hidden,
+                Seen::Behind => continue,
             };
-            let (Some((a, _)), Some((b, _))) = (view.project(part.from), view.project(part.to))
-            else {
-                continue;
-            };
-            if dist2(a, b) <= close {
-                continue;
+            match runs.last_mut() {
+                Some(last) if last.0 == index && last.1 == kind && last.3 == part.t0 => {
+                    last.3 = part.t1;
+                }
+                _ => runs.push((index, kind, part.t0, part.t1)),
             }
-            flat.push(Piece {
-                kind,
-                a,
-                b,
-                line: index,
-            });
         }
-        pieces.extend(merge_in_line(flat, close));
     }
-    let mut budget = sampling.budget;
-    let kept = without_overlaps(&pieces, scale, close, &mut budget)?;
-    let count = |kind: Kind| kept.iter().filter(|p| p.kind == kind).count();
-    let (visible, silhouette, hidden) = (
-        count(Kind::Visible),
-        count(Kind::Silhouette),
-        count(Kind::Hidden),
-    );
-    let dash = (scale / 60.0).max(f64::MIN_POSITIVE);
+    // What lies on a line drawn before it is left out: visible first,
+    // then silhouettes, then hidden lines.
+    runs.sort_by_key(|run| run.1);
+    let reach = close + 2.0 * tolerance;
+    let mut overlaps = Overlaps {
+        view: &view,
+        tolerance,
+        close,
+        registry: Registry::new((scale / 64.0).max(4.0 * reach), 4096),
+    };
+    let mut kept: Vec<Kept> = Vec::new();
+    for (line, kind, t0, t1) in runs {
+        let Some(track) = tracks.get(line) else {
+            continue;
+        };
+        overlaps.keep(track, line, kind, (t0, t1), &mut sampling, &mut kept)?;
+    }
+    let mut kinds: BTreeMap<Kind, usize> = BTreeMap::new();
     let mut layers = Vec::new();
+    let dash = (scale / 60.0).max(f64::MIN_POSITIVE);
     for (name, kind, dash) in [
         ("visible", Kind::Visible, None),
         ("silhouette", Kind::Silhouette, None),
@@ -1327,7 +1582,8 @@ pub(crate) fn export(
         if kind == Kind::Hidden && !dashed {
             continue;
         }
-        let paths = paths_of(&kept, kind, close);
+        let (paths, count) = paths_of(&tracks, &kept, kind, &view, close);
+        kinds.insert(kind, count);
         if !paths.is_empty() {
             layers.push(Layer {
                 name: name.to_string(),
@@ -1341,6 +1597,12 @@ pub(crate) fn export(
     if layers.is_empty() {
         return fail(format!("{ID}: nothing of the bodies is seen in this view"));
     }
+    let of_kind = |kind: Kind| kinds.get(&kind).copied().unwrap_or(0);
+    let (visible, silhouette, hidden) = (
+        of_kind(Kind::Visible),
+        of_kind(Kind::Silhouette),
+        of_kind(Kind::Hidden),
+    );
     let unit = doc.units.length;
     let drawing = Drawing {
         unit: crate::drawing_cmds::drawing_unit(unit),

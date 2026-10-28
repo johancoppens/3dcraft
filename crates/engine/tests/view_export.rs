@@ -16,6 +16,7 @@ use common::plain::run;
 use common::{session_in, workdir};
 use craft3d_engine::Session;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 fn cube(tag: &str) -> (Session, PathBuf) {
@@ -173,7 +174,195 @@ fn a_cylinder_from_the_side_has_two_silhouette_lines() {
     );
     let silhouettes = lines(&dxf, "silhouette");
     assert_eq!(silhouettes.len(), 2, "{iso}");
-    assert!(!lines(&dxf, "hidden").is_empty(), "{iso}");
+    // The far half of the bottom circle is an elliptic arc (until
+    // 2026-10-28 the chords of the mesh, LINE entities).
+    let hidden = entities(&dxf, "ELLIPSE", "hidden");
+    assert_eq!(hidden.len(), 1, "{iso}");
+    assert!(lines(&dxf, "hidden").is_empty(), "{iso}");
+}
+
+/// Every entity of `kind` on `layer` of a DXF file: its groups, code to
+/// the numbers under it in order.
+fn entities(dxf: &str, kind: &str, layer: &str) -> Vec<BTreeMap<String, Vec<f64>>> {
+    let start = dxf.find("  2\nENTITIES\n").unwrap();
+    let end = dxf.find("  2\nOBJECTS\n").unwrap();
+    let mut out = Vec::new();
+    for entity in dxf[start..end].split("  0\n").skip(1) {
+        if !entity.starts_with(&format!("{kind}\n")) {
+            continue;
+        }
+        let groups: Vec<&str> = entity.lines().skip(1).collect();
+        let mut map: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+        let mut on = String::new();
+        for pair in groups.chunks(2) {
+            let [code, value] = pair else { continue };
+            let code = code.trim().to_string();
+            if code == "8" {
+                on = value.to_string();
+            }
+            if let Ok(v) = value.trim().parse::<f64>() {
+                map.entry(code).or_default().push(v);
+            }
+        }
+        if on == layer {
+            out.push(map);
+        }
+    }
+    out
+}
+
+fn group(entity: &BTreeMap<String, Vec<f64>>, code: &str) -> f64 {
+    entity[code][0]
+}
+
+/// A cylinder seen along its axis is one circle of its radius: the top and
+/// the bottom lie on each other, and nothing else is drawn. Read back from
+/// the DXF (a CIRCLE) and the SVG (two arcs of its radius).
+#[test]
+fn a_cylinder_seen_along_its_axis_is_a_circle() {
+    let (mut s, dir) = cylinder("along");
+    let (result, dxf) = export(
+        &mut s,
+        &dir,
+        "top.dxf",
+        json!({"view": "top", "hidden": "dashed"}),
+    );
+    let circles = entities(&dxf, "CIRCLE", "visible");
+    assert_eq!(circles.len(), 1, "{result}");
+    let c = &circles[0];
+    assert!((group(c, "40") - 5.0).abs() < 1e-12, "{c:?}");
+    assert!(group(c, "10").abs() < 1e-12 && group(c, "20").abs() < 1e-12);
+    assert!(lines(&dxf, "visible").is_empty() && lines(&dxf, "hidden").is_empty());
+    assert!(entities(&dxf, "CIRCLE", "hidden").is_empty(), "{result}");
+    assert_eq!(
+        (result["visible"].as_u64(), result["hiddenLines"].as_u64()),
+        (Some(1), Some(0))
+    );
+    assert!((result["length"].as_f64().unwrap() - 10.0 * std::f64::consts::PI).abs() < 1e-12);
+    let (_, svg) = export(&mut s, &dir, "top.svg", json!({"view": "top"}));
+    let arcs = svg.matches(" 5,5 0 ").count() + svg.matches("A5,5 0 ").count();
+    assert!(arcs >= 2, "{svg}");
+    assert!(!svg.contains(" L"), "{svg}");
+}
+
+/// The view of a camera tilted 30° from a cylinder's axis: its circles
+/// are ellipses with semi-axes r and r cos 30°; the top whole, the bottom
+/// split where the sides hide it, at the ends of its longer axis.
+#[test]
+fn a_cylinder_seen_at_30_degrees_is_ellipses_of_r_and_r_cos_30() {
+    let (mut s, dir) = cylinder("tilted");
+    let (sin, cos) = 30f64.to_radians().sin_cos();
+    let target = craft3d_math::Vec3::new(0.0, 0.0, 10.0);
+    s.set_window_camera(Some(craft3d_render::Camera {
+        eye: target + craft3d_math::Vec3::new(0.0, -sin, cos) * 100.0,
+        target,
+        up: craft3d_math::Vec3::Z,
+        projection: craft3d_render::Projection::Orthographic { half_height: 30.0 },
+    }));
+    let tolerance: f64 = 1e-4;
+    let (result, dxf) = export(
+        &mut s,
+        &dir,
+        "tilted.dxf",
+        json!({"view": "current", "hidden": "dashed", "tolerance": tolerance}),
+    );
+    let visible = entities(&dxf, "ELLIPSE", "visible");
+    let hidden = entities(&dxf, "ELLIPSE", "hidden");
+    // The top whole, the near half of the bottom; its far half hidden.
+    assert_eq!((visible.len(), hidden.len()), (2, 1), "{result}");
+    for e in visible.iter().chain(&hidden) {
+        let major = group(e, "11").hypot(group(e, "21"));
+        assert!((major - 5.0).abs() < 1e-9, "{e:?}");
+        assert!((group(e, "40") - cos).abs() < 1e-9, "{e:?}");
+        // The longer axis across the view.
+        assert!(group(e, "21").abs() < 1e-9, "{e:?}");
+    }
+    assert_eq!(lines(&dxf, "silhouette").len(), 2, "{result}");
+    assert!(lines(&dxf, "visible").is_empty() && lines(&dxf, "hidden").is_empty());
+    let whole = visible
+        .iter()
+        .filter(|e| {
+            group(e, "41").abs() < 1e-12 && (group(e, "42") - std::f64::consts::TAU).abs() < 1e-12
+        })
+        .count();
+    assert_eq!(whole, 1, "{visible:?}");
+    // The split at the ends of the longer axis (parameters 0 and π), to
+    // within where the mesh's sides hide it: the sagitta of their chords,
+    // √(2 tolerance / r) of the angle.
+    let slack = 4.0 * (2.0 * tolerance / 5.0).sqrt();
+    for e in visible.iter().chain(&hidden) {
+        for code in ["41", "42"] {
+            let t = group(e, code).rem_euclid(std::f64::consts::PI);
+            let off = t.min(std::f64::consts::PI - t);
+            assert!(off < slack, "{code} {e:?}");
+        }
+    }
+    // The SVG: arcs of radii 5 and 5 cos 30°.
+    let (_, svg) = export(
+        &mut s,
+        &dir,
+        "tilted.svg",
+        json!({"view": "current", "hidden": "dashed", "tolerance": tolerance}),
+    );
+    let ry = format!("{}", 5.0 * cos);
+    assert!(svg.contains(&format!("A5,{}", &ry[..6])), "{svg}");
+}
+
+/// A spline edge is drawn as the spline it is: a D of a cubic and a line,
+/// extruded and seen from above, is the sketch's own Bézier.
+#[test]
+fn a_spline_edge_is_a_spline() {
+    let dir = workdir("view-export", "spline");
+    let mut s = session_in(&dir);
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(&mut s, "sketch.create", json!({"name": "D"}));
+    run(
+        &mut s,
+        "sketch.spline",
+        json!({"sketch": "D", "degree": 3, "control": [[0, 0], [10, 0], [10, 10], [0, 10]]}),
+    );
+    run(
+        &mut s,
+        "sketch.line",
+        json!({"sketch": "D", "from": [0, 10], "to": [0, 0]}),
+    );
+    run(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "D", "distance": 5}),
+    );
+    let (result, dxf) = export(&mut s, &dir, "d.dxf", json!({"view": "top"}));
+    assert_eq!(entities(&dxf, "SPLINE", "visible").len(), 1, "{result}");
+    assert_eq!(lines(&dxf, "visible").len(), 1, "{result}");
+    let (_, svg) = export(&mut s, &dir, "d.svg", json!({"view": "top"}));
+    assert!(svg.contains("C10,0 10,-10 0,-10"), "{svg}");
+    // In perspective the spline is rational, still one entity.
+    let (seen, dxf) = export(
+        &mut s,
+        &dir,
+        "p.dxf",
+        json!({"view": "iso", "projection": "perspective"}),
+    );
+    assert!(!entities(&dxf, "SPLINE", "visible").is_empty(), "{seen}");
+}
+
+/// In perspective a circle is an ellipse: the top of the rod in iso.
+#[test]
+fn a_circle_in_perspective_is_an_ellipse() {
+    let (mut s, dir) = cylinder("perspective-circle");
+    let (result, dxf) = export(
+        &mut s,
+        &dir,
+        "p.dxf",
+        json!({"view": "iso", "projection": "perspective", "hidden": "dashed"}),
+    );
+    let whole: Vec<_> = entities(&dxf, "ELLIPSE", "visible")
+        .into_iter()
+        .filter(|e| (group(e, "42") - group(e, "41") - std::f64::consts::TAU).abs() < 1e-12)
+        .collect();
+    assert_eq!(whole.len(), 1, "{result}");
+    assert!(group(&whole[0], "40") < 1.0);
+    assert!(!entities(&dxf, "ELLIPSE", "hidden").is_empty(), "{result}");
 }
 
 #[test]
