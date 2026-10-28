@@ -1265,6 +1265,13 @@ fn creases(body: &Body) -> usize {
         };
         let (n0, n1) = (normal(first), normal(second));
         if !(n0.cross(n1).length() < 1e-6 && n0.dot(n1) > 0.0) {
+            eprintln!(
+                "faces {:?} and {:?} meet at {} rad (dot {})",
+                first.face,
+                second.face,
+                n0.cross(n1).length(),
+                n0.dot(n1)
+            );
             count += 1;
         }
     }

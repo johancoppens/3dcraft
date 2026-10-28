@@ -787,6 +787,41 @@ fn trace(
                 }
             }
         }
+        // Both rails' corners ahead within the step, and the ruling between
+        // the two corners within the tolerance of a developable on the side
+        // the walk comes from: the walk goes to that ruling (a crease of the
+        // sheet, as a generalised cylinder over a profile with a corner has),
+        // whichever line rounding would have it reach first. Without this
+        // the corrector on one line meets the jump of the condition on the
+        // other within rounding of the root and finds no root on either
+        // side.
+        if fold.is_none()
+            && tx > 0.0
+            && ty > 0.0
+            && let (Some(la), Some(lb)) = (
+                pair.corners_a.iter().copied().find(|c| *c > x),
+                pair.corners_b.iter().copied().find(|c| *c > y),
+            )
+            && (la - x) / tx <= h
+            && (lb - y) / ty <= h
+            && ruling_twist_side(pair, la, lb, true, true).is_some_and(|d| d <= 0.5 * tolerance)
+        {
+            if ruling_twist(pair, la, lb).is_none_or(|d| d > 0.5 * tolerance) {
+                return Err(refused(format!(
+                    "both curves have a corner on the ruling {}, and the rulings after the corners do not start from it: not built (split the curves there)",
+                    pair.where_(la, lb)
+                )));
+            }
+            let moved = (la - x).hypot(lb - y);
+            if moved > 0.0 {
+                before = ((la - x) / moved, (lb - y) / moved);
+            }
+            path.push((la, lb));
+            path.mark_break();
+            (x, y) = (la, lb);
+            h = STEP_MAX / 4.0;
+            continue;
+        }
         let (px, py) = match on_corner {
             Some((true, line, _)) => (line, (y + step * ty).clamp(0.0, 1.0)),
             Some((false, line, _)) => ((x + step * tx).clamp(0.0, 1.0), line),
@@ -2367,7 +2402,13 @@ fn no_point() -> KernelError {
 /// `|det[Â', B̂', D̂]| / (|Â' × D̂| |B̂' × D̂|)`. `None` where a tangent runs
 /// along the ruling (no plane there) or the ruling has no length.
 fn ruling_twist(pair: &Pair, x: f64, y: f64) -> Option<f64> {
-    let (angle, length) = ruling_turn(pair, x, y)?;
+    ruling_twist_side(pair, x, y, false, false)
+}
+
+/// [`ruling_twist`] with each rail's tangent taken before a joint where
+/// asked (the side of a corner the walk comes from, [`Rail::locate_side`]).
+fn ruling_twist_side(pair: &Pair, x: f64, y: f64, before_a: bool, before_b: bool) -> Option<f64> {
+    let (angle, length) = ruling_turn_side(pair, x, y, before_a, before_b)?;
     let twist = angle * length;
     twist.is_finite().then_some(twist)
 }
@@ -2375,8 +2416,19 @@ fn ruling_twist(pair: &Pair, x: f64, y: f64) -> Option<f64> {
 /// The angle by which the tangent plane turns along the ruling at
 /// `(x, y)` ([`ruling_twist`]) and the ruling's length.
 fn ruling_turn(pair: &Pair, x: f64, y: f64) -> Option<(f64, f64)> {
-    let (pa, da) = pair.a.at(pair.sa(x))?;
-    let (pb, db) = pair.b.at(pair.tb(y))?;
+    ruling_turn_side(pair, x, y, false, false)
+}
+
+/// [`ruling_turn`] on the given sides of joints.
+fn ruling_turn_side(
+    pair: &Pair,
+    x: f64,
+    y: f64,
+    before_a: bool,
+    before_b: bool,
+) -> Option<(f64, f64)> {
+    let (pa, da) = pair.a.at_side(pair.sa(x), before_a)?;
+    let (pb, db) = pair.b.at_side(pair.tb(y), before_b)?;
     let d = pb - pa;
     let (ua, ub, ud) = (da.normalized()?, db.normalized()?, d.normalized()?);
     let (sa, sb) = (ua.cross(ud).length(), ub.cross(ud).length());
