@@ -297,7 +297,7 @@ fn conic(view: &View, c: Vec3, u: Vec3, v: Vec3, resolution: f64) -> Option<Form
             let f = view.forward;
             // Every point of the whole curve in front of the eye.
             let nearest = q.dot(f) - u.dot(f).hypot(v.dot(f));
-            if !(nearest > 1e-6 * q.length()) {
+            if nearest.is_nan() || nearest <= 1e-6 * q.length() {
                 return None;
             }
             let col = |w: Vec3, z: f64| [scale * w.dot(view.right), scale * w.dot(view.up), z];
@@ -391,6 +391,9 @@ pub(crate) struct Drawn {
     pub line: usize,
     pub t0: f64,
     pub t1: f64,
+    /// The whole chord it is a piece of, from its start to its end: the
+    /// way the line runs there.
+    pub chord: Point,
 }
 
 /// What is drawn so far, in a grid over the drawing.
@@ -507,15 +510,19 @@ impl Registry {
             // of one curve turn from each other by at most about
             // 8 reach / length, so a line that meets or crosses it at an
             // angle covers nothing of it.
-            let along = sub2(d.b, d.a);
+            let along = d.chord;
             let (l1, l2) = (dot2(dir, dir).sqrt(), dot2(along, along).sqrt());
             let shorter = l1.min(l2);
-            let sine = if l1 > 0.0 && l2 > 0.0 {
-                cross2(dir, along).abs() / (l1 * l2)
-            } else {
-                0.0
-            };
-            if shorter <= 0.0 || sine <= 16.0 * reach / shorter {
+            // A chord too short to tell which way it runs (an edge-on
+            // circle where it turns) covers only its own line.
+            if shorter.is_nan() || shorter <= 16.0 * reach {
+                if d.line == line {
+                    return (true, tests);
+                }
+                continue;
+            }
+            let sine = cross2(dir, along).abs() / (l1 * l2);
+            if sine <= 16.0 * reach / shorter {
                 return (true, tests);
             }
         }
@@ -550,12 +557,12 @@ pub(crate) fn simplified(points: &[Point], close: f64) -> Vec<Point> {
 /// The path of an open run of points, or of a closed loop.
 pub(crate) fn chain_of(points: &[Point], closed: bool, close: f64) -> Option<DrawingPath> {
     let mut points = simplified(points, close);
-    if closed && points.len() > 3 {
-        if let (Some(first), Some(last)) = (points.first().copied(), points.last().copied())
-            && dist2(first, last) <= close
-        {
-            points.pop();
-        }
+    if closed
+        && points.len() > 3
+        && let (Some(first), Some(last)) = (points.first().copied(), points.last().copied())
+        && dist2(first, last) <= close
+    {
+        points.pop();
     }
     let (&start, rest) = points.split_first()?;
     if rest.is_empty() {
@@ -691,6 +698,7 @@ mod tests {
             line: 0,
             t0: 0.0,
             t1: 1.0,
+            chord: [1.0, 0.0],
         });
         // The next chord of the same line going on: not covered.
         let (on, _) = registry.covers([1.0, 0.0], 0.0, 0, (1.0, 2.0), [1.0, 0.0], None, 1e-9);
@@ -703,5 +711,8 @@ mod tests {
         assert!(other);
         let (apart, _) = registry.covers([0.5, 0.1], 0.0, 1, (0.0, 1.0), [1.0, 0.0], None, 1e-9);
         assert!(!apart);
+        // Another line meeting it square: not covered where they meet.
+        let (square, _) = registry.covers([1.0, 0.0], 0.0, 1, (0.0, 1.0), [0.0, 1.0], None, 1e-9);
+        assert!(!square);
     }
 }

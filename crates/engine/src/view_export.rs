@@ -840,7 +840,7 @@ impl Overlaps<'_> {
                 break;
             }
             let (s0, s1) = (t0.max(c0), t1.min(c1));
-            if !(s1 > s0) {
+            if s1.is_nan() || s1 <= s0 {
                 continue;
             }
             let (Some(p0), Some(p1)) = (track.drawn(view, c0), track.drawn(view, c1)) else {
@@ -861,7 +861,7 @@ impl Overlaps<'_> {
                 continue;
             };
             let length = view_curves::dist2(q0, q1);
-            if !(length > close) {
+            if length.is_nan() || length <= close {
                 continue;
             }
             let n = sampling.count(length)?;
@@ -920,6 +920,7 @@ impl Overlaps<'_> {
                     line,
                     t0: u0,
                     t1: u1,
+                    chord: dir,
                 });
                 kept.push(Kept {
                     line,
