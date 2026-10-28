@@ -5119,7 +5119,7 @@ fn an_older_file_naming_a_sheet_metal_rim_or_edge_warns_by_name() {
         roughness: None,
     });
     let painted = format!("F{f}:rim(78)/F{f}:face(2)");
-    doc.set_face_appearance(part, name(&painted), colour.clone())
+    doc.set_face_appearance(part, name(&painted), colour)
         .unwrap();
     doc.set_face_appearance(part, name(&format!("F{f}:copy(1)/F{f}:face(2)")), colour)
         .unwrap();
