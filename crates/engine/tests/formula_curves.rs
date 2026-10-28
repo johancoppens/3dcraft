@@ -709,10 +709,12 @@ fn a_ring_of_formula_teeth_extrudes_and_exports() {
     assert_eq!(stl["closed"], stl["bodies"], "{stl}");
 }
 
-/// A curve may not be held by other constraints at its ends, and takes no
-/// tangent or pointOn constraint yet: refused with the reason.
+/// A formula curve takes `tangent` and `pointOn` (since 2026-10-28; they
+/// were refused before, `fitted_constraints.rs` has the closed forms): a
+/// line from its end leaves along the curve there, and a point on its own
+/// end point repeats what the formulas hold.
 #[test]
-fn constraints_on_formula_curves_are_refused_for_now() {
+fn a_line_leaves_a_formula_curve_along_it_and_its_end_is_on_it() {
     let mut s = session();
     new_document(&mut s, 1e-6);
     run(&mut s, "sketch.create", json!({"name": "C"}));
@@ -724,21 +726,37 @@ fn constraints_on_formula_curves_are_refused_for_now() {
     let line = run(
         &mut s,
         "sketch.line",
-        json!({"sketch": "C", "from": curve["end"], "to": [3, 0]}),
+        json!({"sketch": "C", "from": curve["end"], "to": [3, 3]}),
     );
-    for kind in ["tangent", "pointOn"] {
-        let entities = if kind == "tangent" {
-            json!([curve["entity"], line["entity"]])
-        } else {
-            json!([curve["start"], curve["entity"]])
-        };
-        let refused = error(
+    for (kind, entities) in [
+        ("tangent", json!([curve["entity"], line["entity"]])),
+        ("pointOn", json!([curve["start"], curve["entity"]])),
+    ] {
+        let made = run(
             &mut s,
             "sketch.constrain",
             json!({"sketch": "C", "type": kind, "entities": entities}),
         );
-        assert!(refused.contains("formula curve"), "{kind}: {refused}");
+        assert_eq!(made["status"], "ok", "{kind}: {made}");
     }
+    // y = t^2 leaves (1, 1) along (1, 2).
+    let inspected = run(&mut s, "sketch.inspect", json!({"sketch": "C"}));
+    let find = |id: &Value| {
+        let e = inspected["entities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["id"] == *id)
+            .unwrap();
+        [e["x"].as_f64().unwrap(), e["y"].as_f64().unwrap()]
+    };
+    let (from, to) = (find(&line["start"]), find(&line["end"]));
+    let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
+    assert!((from[0] - 1.0).abs() < 1e-9 && (from[1] - 1.0).abs() < 1e-9);
+    assert!(
+        (dy - 2.0 * dx).abs() <= 1e-6 * dx.hypot(dy),
+        "the line runs along ({dx}, {dy})"
+    );
 }
 
 /// The fits of the examples, for the dev log: control points, deviation

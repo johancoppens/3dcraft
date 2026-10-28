@@ -336,6 +336,13 @@ fn a_spline_through_points_passes_through_them_and_adds_no_freedom() {
 fn a_point_and_a_line_on_a_spline_through_points() {
     for k in SCALES {
         let mut live = live(k, true);
+        // Started where the document would have it: the inner control
+        // points at the fit through the points (regeneration starts them
+        // at the fit through the stored points), so that the place where
+        // the line touches is read off the curve, not off a start that is
+        // no curve through them.
+        let fit = solved(&live.sketch, k);
+        live.sketch.entities = fit.entities.clone();
         // A point on it at x = 3.2 k.
         let p = live.sketch.add_point(3.2 * k, 3.0 * k);
         live.sketch.add_constraint(C::CoordinateX {

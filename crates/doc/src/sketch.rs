@@ -630,7 +630,8 @@ impl Geometry {
     }
 
     /// True for the curves regeneration fits (a formula curve, a live
-    /// spline): they have no unknowns, and no constraint takes them yet.
+    /// spline): they have no unknowns of their own; `pointOn` and
+    /// `tangent` take them.
     pub fn is_fitted(&self) -> bool {
         matches!(
             self,
@@ -809,7 +810,7 @@ pub enum Role {
     /// A circle or an arc.
     Round,
     Spline,
-    /// A formula curve or a live spline, which no constraint takes yet.
+    /// A formula curve or a live spline: `pointOn` and `tangent` take it.
     Fitted,
 }
 
@@ -835,7 +836,7 @@ impl Role {
     }
 }
 
-use Role::{Line, Point, Round, Spline};
+use Role::{Fitted, Line, Point, Round, Spline};
 
 impl ConstraintKind {
     /// Every constraint type, by the name used in files and commands.
@@ -888,7 +889,12 @@ impl ConstraintKind {
     pub fn roles(type_name: &str) -> Option<&'static [&'static [Role]]> {
         Some(match type_name {
             "coincident" => &[&[Point, Point]],
-            "pointOn" => &[&[Point, Line], &[Point, Round], &[Point, Spline]],
+            "pointOn" => &[
+                &[Point, Line],
+                &[Point, Round],
+                &[Point, Spline],
+                &[Point, Fitted],
+            ],
             "horizontal" | "vertical" => &[&[Line], &[Point, Point]],
             "parallel" | "perpendicular" | "angle" => &[&[Line, Line]],
             "tangent" => &[
@@ -900,6 +906,13 @@ impl ConstraintKind {
                 &[Round, Spline],
                 &[Spline, Round],
                 &[Spline, Spline],
+                &[Line, Fitted],
+                &[Fitted, Line],
+                &[Round, Fitted],
+                &[Fitted, Round],
+                &[Spline, Fitted],
+                &[Fitted, Spline],
+                &[Fitted, Fitted],
             ],
             "equal" => &[&[Line, Line], &[Round, Round]],
             "concentric" => &[&[Round, Round]],
@@ -1486,7 +1499,9 @@ impl Sketch {
                 .zip(&given)
                 .map(|(id, role)| format!("{id} ({})", role.noun()))
                 .collect();
-            let unsupported = if given.contains(&Role::Spline) {
+            let unsupported = if given.contains(&Role::Fitted) {
+                " (not supported for formula curves and live splines yet: they take pointOn and tangent)"
+            } else if given.contains(&Role::Spline) {
                 " (not supported for splines yet)"
             } else {
                 ""
@@ -1589,6 +1604,34 @@ impl Sketch {
             return invalid(format!(
                 "a spline is tangent to another curve at an end point the two share, but {a} and {b} share none: build both on one point, or make their ends coincident first"
             ));
+        }
+        // A formula curve or live spline touches a line or a round
+        // anywhere; another curve only at an end the two share. Two
+        // formula curves have nothing for a constraint to move.
+        if let ConstraintKind::Tangent { a, b } = &kind {
+            let role = |id: EntityId| self.entity(id).map(|e| Role::of(&e.geometry));
+            let (ra, rb) = (role(*a)?, role(*b)?);
+            let formula = |id: EntityId| {
+                matches!(
+                    self.entity(id).map(|e| &e.geometry),
+                    Ok(Geometry::Formula { .. })
+                )
+            };
+            if formula(*a) && formula(*b) {
+                return invalid(format!(
+                    "{a} and {b} are both curves given by formulas, which no constraint moves: whether they are tangent is up to their formulas"
+                ));
+            }
+            let free_form = |r: Role| matches!(r, Role::Spline | Role::Fitted);
+            if (ra == Role::Fitted || rb == Role::Fitted)
+                && free_form(ra)
+                && free_form(rb)
+                && self.tangent_at(*a, *b).is_none()
+            {
+                return invalid(format!(
+                    "two free-form curves are tangent at an end point they share, but {a} and {b} share none: build both on one point, or make their ends coincident first"
+                ));
+            }
         }
         let id = ConstraintId(self.next_constraint_id);
         self.next_constraint_id = self.next_constraint_id.checked_add(1).ok_or_else(|| {
@@ -3692,13 +3735,46 @@ mod tests {
         assert_eq!(s.entity(live).unwrap().geometry.type_name(), "interpolated");
         assert!(s.add_interpolated(3, vec![a, b, c], false).is_err());
         assert!(s.add_interpolated(1, vec![a, a], false).is_err());
-        // No constraint takes them yet, and a point they end on stays.
+        // pointOn and tangent take them (since 2026-10-28): a point on
+        // either; a formula curve and a live spline that share `a`; a
+        // line anywhere. Two formula curves have nothing to move, two
+        // free-form curves meet at an end they share, and other
+        // constraints refuse them, saying which take them.
+        let d = s.add_point(5.0, 5.0).unwrap();
+        let line = s.add_line(c, d, false).unwrap();
         for kind in [
             ConstraintKind::PointOn { point: c, curve },
+            ConstraintKind::PointOn {
+                point: d,
+                curve: live,
+            },
             ConstraintKind::Tangent { a: curve, b: live },
+            ConstraintKind::Tangent { a: line, b: curve },
         ] {
-            let refused = s.add_constraint(kind).unwrap_err().to_string();
-            assert!(refused.contains("formula curve"), "{refused}");
+            s.add_constraint(kind).unwrap();
+        }
+        let refused = |s: &mut Sketch, kind| s.add_constraint(kind).unwrap_err().to_string();
+        let message = refused(
+            &mut s,
+            ConstraintKind::Tangent {
+                a: curve,
+                b: closed,
+            },
+        );
+        assert!(
+            message.contains("both curves given by formulas"),
+            "{message}"
+        );
+        let e1 = s.add_point(7.0, 1.0).unwrap();
+        let e2 = s.add_point(8.0, 2.0).unwrap();
+        let e3 = s.add_point(9.0, 1.0).unwrap();
+        let apart = s.add_interpolated(2, vec![e1, e2, e3], false).unwrap();
+        let message = refused(&mut s, ConstraintKind::Tangent { a: curve, b: apart });
+        assert!(message.contains("share none"), "{message}");
+        let message = refused(&mut s, ConstraintKind::Parallel { a: line, b: curve });
+        assert!(message.contains("formula curve"), "{message}");
+        for id in s.constraints.iter().map(|c| c.id).collect::<Vec<_>>() {
+            s.remove_constraint(id).unwrap();
         }
         assert!(matches!(s.remove_entity(a), Err(SketchError::InUse { .. })));
         s.validate().unwrap();

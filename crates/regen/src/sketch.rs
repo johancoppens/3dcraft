@@ -458,7 +458,7 @@ fn problem(
                 Err(format!("{curve} is a point, which has no direction"))
             }
             Geometry::Formula { .. } | Geometry::Interpolated { .. } => Err(format!(
-                "{curve} is a fitted curve, which takes no tangent constraint yet"
+                "{curve} is a fitted curve, which is tangent to another as its own constraint"
             )),
             Geometry::Spline { control, .. } => {
                 let leg = if control.first() == Some(&at) {
@@ -495,6 +495,108 @@ fn problem(
             _ => Err(format!("{id} is not a line")),
         }
     };
+    let is_fitted = |id: EntityId| sketch.entity(id).is_ok_and(|e| e.geometry.is_fitted());
+    let is_formula = |id: EntityId| {
+        sketch
+            .entity(id)
+            .is_ok_and(|e| matches!(e.geometry, Geometry::Formula { .. }))
+    };
+    // Where the solve starts a point: where the document has it.
+    let stored_at = |id: EntityId| -> Option<[f64; 2]> {
+        match sketch.entity(id).ok().map(|e| &e.geometry) {
+            Some(&Geometry::Point { x, y }) => Some([x, y]),
+            Some(Geometry::Image { .. }) => sketch
+                .image_places
+                .iter()
+                .find(|place| place.entity == id)
+                .map(|place| place.at),
+            _ => None,
+        }
+    };
+    // A formula curve or a live spline for the solver, made the first
+    // time a constraint needs it: a formula curve as the spline it was
+    // fitted to, with fixed control points (it has no unknowns); a live
+    // spline as a spline through its points whose inner control points
+    // are points of their own, unknowns that its built-in equations
+    // determine (no degree of freedom), started at the fit through where
+    // the document has the points. With its control points (none for a
+    // formula curve).
+    type Made = (usize, Vec<solve::EntityId>);
+    let fitted_spline = |input: &mut solve::Sketch,
+                         entities: &mut Vec<EntityId>,
+                         made: &mut BTreeMap<EntityId, Made>,
+                         curve: EntityId|
+     -> Result<Made, String> {
+        if let Some(found) = made.get(&curve) {
+            return Ok(found.clone());
+        }
+        let now = match &sketch.entity(curve).map_err(|e| e.to_string())?.geometry {
+            Geometry::Formula { .. } => {
+                let fit = fits
+                    .iter()
+                    .find(|(id, _)| *id == curve)
+                    .map(|(_, fit)| fit)
+                    .ok_or_else(|| format!("{curve} has not been fitted"))?
+                    .as_ref()
+                    .map_err(Clone::clone)?;
+                let number = input.add_fixed_spline(
+                    fit.spline.degree,
+                    fit.spline.knots.clone(),
+                    fit.spline.control.clone(),
+                );
+                (number, Vec::new())
+            }
+            Geometry::Interpolated { degree, through } => {
+                let p = usize::try_from(*degree)
+                    .map_err(|_| format!("{curve}: the degree is too high"))?;
+                let knots = craft3d_doc::clamped_uniform_knots(*degree, through.len());
+                let (Some(first), Some(last), false) =
+                    (through.first(), through.last(), knots.is_empty())
+                else {
+                    return Err(format!(
+                        "{curve}: no spline of degree {degree} passes through {} points",
+                        through.len()
+                    ));
+                };
+                let at: Option<Vec<[f64; 2]>> = through.iter().map(|id| stored_at(*id)).collect();
+                let guess = at
+                    .as_ref()
+                    .and_then(|at| curve_fit::interpolated(*degree, at).ok())
+                    .map(|fit| fit.control);
+                let mut control = vec![find(*first)?];
+                let mut passes = Vec::new();
+                for i in 1..through.len().saturating_sub(1) {
+                    let [x, y] = guess
+                        .as_ref()
+                        .and_then(|g| g.get(i))
+                        .or_else(|| at.as_ref().and_then(|a| a.get(i)))
+                        .copied()
+                        .unwrap_or([0.0, 0.0]);
+                    let id = position(input.entities.len())?;
+                    input.entities.push(solve::Entity::Point { x, y });
+                    entities.push(curve);
+                    control.push(id);
+                    // At the Greville abscissa of its control point, summed
+                    // as the fit sums it.
+                    let window = knots
+                        .get(i + 1..=i + p)
+                        .ok_or_else(|| format!("{curve}: the knots are too short"))?;
+                    let u = window.iter().sum::<f64>() / f64::from(*degree);
+                    let point = through
+                        .get(i)
+                        .ok_or_else(|| format!("{curve}: a point is missing"))?;
+                    passes.push((find(*point)?, u));
+                }
+                control.push(find(*last)?);
+                let number = input.add_spline_through(p, knots, control.clone(), passes);
+                (number, control)
+            }
+            _ => return Err(format!("{curve} is not a formula curve or a live spline")),
+        };
+        made.insert(curve, now.clone());
+        Ok(now)
+    };
+    let mut made: BTreeMap<EntityId, Made> = BTreeMap::new();
     let mut splines: BTreeMap<EntityId, usize> = BTreeMap::new();
     let mut handed = Vec::with_capacity(sketch.constraints.len());
     let mut left_out = Vec::new();
@@ -520,6 +622,13 @@ fn problem(
                 a: find(*a)?,
                 b: find(*b)?,
             },
+            ConstraintKind::PointOn { point, curve } if is_fitted(*curve) => {
+                let (number, _) = fitted_spline(&mut input, &mut entities, &mut made, *curve)?;
+                S::PointOnSpline {
+                    point: find(*point)?,
+                    spline: number,
+                }
+            }
             ConstraintKind::PointOn { point, curve } => {
                 if let Ok(Geometry::Spline { degree, control }) =
                     sketch.entity(*curve).map(|e| &e.geometry)
@@ -576,6 +685,82 @@ fn problem(
                 a: find(*a)?,
                 b: find(*b)?,
             },
+            ConstraintKind::Tangent { a, b } if is_fitted(*a) || is_fitted(*b) => {
+                if is_formula(*a) && is_formula(*b) {
+                    return Err(format!(
+                        "{id}: {a} and {b} are both curves given by formulas, which no constraint moves: whether they are tangent is up to their formulas; delete the constraint"
+                    ));
+                }
+                // The fitted curve the other follows: a formula curve
+                // before a live spline.
+                let (f, o) = if is_fitted(*a) && (is_formula(*a) || !is_formula(*b)) {
+                    (*a, *b)
+                } else {
+                    (*b, *a)
+                };
+                let (number, _) = fitted_spline(&mut input, &mut entities, &mut made, f)?;
+                let other = &sketch.entity(o).map_err(|e| e.to_string())?.geometry;
+                match sketch.tangent_at(f, o) {
+                    Some((at_f, at_o)) => {
+                        let start = sketch
+                            .entity(f)
+                            .ok()
+                            .and_then(|e| e.geometry.ends())
+                            .map(|(start, _)| start);
+                        let end = if start == Some(at_f) {
+                            solve::SplineEnd::Start
+                        } else {
+                            solve::SplineEnd::End
+                        };
+                        let curve = match other {
+                            Geometry::Interpolated { .. } => {
+                                // Its leg from the shared end to the next
+                                // control point, as a spline's.
+                                let (_, control) =
+                                    fitted_spline(&mut input, &mut entities, &mut made, o)?;
+                                let shared = find(at_o)?;
+                                let next = if control.first() == Some(&shared) {
+                                    control.get(1)
+                                } else {
+                                    control.len().checked_sub(2).and_then(|i| control.get(i))
+                                };
+                                let Some(next) = next else {
+                                    return Err(format!("{o} has too few points"));
+                                };
+                                let leg = position(input.entities.len())?;
+                                input.entities.push(solve::Entity::Line {
+                                    start: shared,
+                                    end: *next,
+                                });
+                                entities.push(o);
+                                leg
+                            }
+                            _ => match along(&mut input, &mut entities, o, at_o)? {
+                                Along::Line(id) | Along::Round(id) => id,
+                            },
+                        };
+                        S::TangentToSpline {
+                            curve,
+                            spline: number,
+                            at: Some(end),
+                        }
+                    }
+                    None => match other {
+                        Geometry::Line { .. } | Geometry::Circle { .. } | Geometry::Arc { .. } => {
+                            S::TangentToSpline {
+                                curve: find(o)?,
+                                spline: number,
+                                at: None,
+                            }
+                        }
+                        _ => {
+                            return Err(format!(
+                                "{id}: {f} is tangent to {o} at an end point the two share, and they share none (any more); make their ends coincident, or delete the constraint"
+                            ));
+                        }
+                    },
+                }
+            }
             ConstraintKind::Tangent { a, b } if is_spline(*a) || is_spline(*b) => {
                 let Some((at_a, at_b)) = sketch.tangent_at(*a, *b) else {
                     return Err(format!(
@@ -1484,7 +1669,16 @@ pub(crate) fn solve_sketch(
     let mut radii = Vec::new();
     for (id, entity) in problem.entities.iter().zip(&solution.entities) {
         match *entity {
-            solve::Entity::Point { x, y } => points.push((*id, x, y)),
+            // Not the control points of live splines: they are the
+            // solver's.
+            solve::Entity::Point { x, y }
+                if sketch
+                    .entity(*id)
+                    .is_ok_and(|e| matches!(e.geometry, Geometry::Point { .. })) =>
+            {
+                points.push((*id, x, y));
+            }
+            solve::Entity::Point { .. } => {}
             solve::Entity::Circle { radius, .. } => radii.push((*id, radius)),
             solve::Entity::Line { .. }
             | solve::Entity::Arc { .. }
