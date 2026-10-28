@@ -294,6 +294,40 @@ corners, one of them covered the other way round:
 ]
 ```
 
+**Inset flanges, tabs and outlines.** A flange need not span its whole edge: `insetStart` and `insetEnd`
+stand its bend back from the edge's start and end (the edge's direction is the base's, counter-clockwise
+round the outline), so one edge can carry several tabs, kept apart. A flange can sit on a `side` of an
+earlier flange (`{"flange": 0, "end": "start"}` or `"end"`, the side at its bend's start or end: a tab that
+wraps round a corner), and on a straight edge of a hole of the base, where it grows into the hole (a tab
+bent out of a cut-out, a louver; give it insets, or its bend's ends lie along the hole's sides). With
+`outline` a flange's flat is the closed profile of a sketch of its own (holes allowed) instead of a
+rectangle `length` long: draw it in the base sketch's plane as if the bend had no width, one line of it
+on the edge's line and the rest beyond; the bend spans that line and the flat is laid out the bend
+allowance further on (give no `length`). The flat pattern is checked as a whole, so tabs whose flats would
+overlap in it are refused naming them. A flange added later changes no name the part had but the end
+along the edge it is bent from. Corner reliefs and closed corners are for flanges that reach a corner of
+the base; a corner with an inset flange is not one. A cover with an inset wall, a tab on its side, an ear
+of its own outline with a hole, and a tab bent down out of a cut-out:
+
+```json
+[
+ ["sketch.create", {"plane": "xy", "name": "CoverBase"}],
+ ["sketch.rect", {"sketch": "CoverBase", "from": [0, 0], "to": [100, 60]}],
+ ["sketch.rect", {"sketch": "CoverBase", "from": [40, 15], "to": [60, 40]}],
+ ["sketch.create", {"plane": "xy", "name": "Ear"}],
+ ["sketch.rect", {"sketch": "Ear", "from": [40, 60], "to": [60, 75]}],
+ ["sketch.circle", {"sketch": "Ear", "center": [50, 68], "radius": 3}],
+ ["feature.sheetMetal", {"sketch": "CoverBase", "name": "Cover", "thickness": "1 mm", "radius": "1 mm",
+   "kFactor": 0.42,
+   "flanges": [{"edge": "e5", "length": "15 mm", "angle": "90 deg", "insetStart": "10 mm", "insetEnd": "10 mm"},
+               {"side": {"flange": 0, "end": "end"}, "length": "10 mm", "angle": "90 deg"},
+               {"edge": "e7", "outline": "Ear", "angle": "90 deg"},
+               {"edge": "e13", "length": "12 mm", "angle": "90 deg", "direction": "down",
+                "insetStart": "3 mm", "insetEnd": "3 mm"}]}],
+ ["file.export", {"path": "cover.svg", "sheetMetal": "Cover"}]
+]
+```
+
 The measures read a part as it was built, by its feature's name, also after a boolean took its body; with
 no `of` they measure every part that is switched on, and a part named while it is switched off is an error
 that says so. `file.export` with a list in `sheetMetal` puts several parts' flat patterns side by side on

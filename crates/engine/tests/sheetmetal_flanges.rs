@@ -254,6 +254,42 @@ fn bad_flanges_are_errors_or_fail_the_part() {
     }
 }
 
+#[test]
+fn the_guide_cover_runs_as_it_says() {
+    let guide = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/guide/09-features.md");
+    let text = std::fs::read_to_string(guide).unwrap();
+    let fence = "`".repeat(3);
+    let section = text
+        .split("**Inset flanges, tabs and outlines.**")
+        .nth(1)
+        .unwrap();
+    let block = section
+        .split(&format!("{fence}json"))
+        .nth(1)
+        .unwrap()
+        .split(&fence)
+        .next()
+        .unwrap();
+    let steps: Value = serde_json::from_str(block).unwrap();
+    let dir = workdir("sheetmetal-flanges", "guide");
+    let mut s = session_in(&dir);
+    new_document(&mut s, 1.0);
+    for step in steps.as_array().unwrap() {
+        let id = step[0].as_str().unwrap();
+        let result = run(&mut s, id, step[1].clone());
+        assert_ne!(result["status"], "failed", "{id}: {result}");
+    }
+    let table = run(&mut s, "sheetMetal.bends", json!({"feature": "Cover"}));
+    let ba = FRAC_PI_2 * (1.0 + 0.42);
+    // The wall 80 wide, its side 15, the ear 20, the tab 14; the hole 20 × 25.
+    let widths = [80.0, 15.0, 20.0, 14.0];
+    let flats = 6000.0 - 500.0 + 80.0 * 15.0 + 15.0 * 10.0 + (300.0 - 9.0 * PI) + 14.0 * 12.0;
+    let area = flats + widths.iter().sum::<f64>() * ba;
+    assert_close(&table["flatArea"], area, "the cover's flat area");
+    assert!(dir.join("cover.svg").exists());
+}
+
 /// TEMPORARY (sheetmetal-r2): prints the panel's renders (base64 PNG) and
 /// its flat pattern (SVG) for the evidence; removed before merge.
 #[test]

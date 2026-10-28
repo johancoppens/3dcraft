@@ -1,0 +1,16 @@
+[
+ ["variable.set", {"name": "gap", "expr": "10 mm"}],
+ ["sketch.create", {"plane": "xy", "name": "CoverBase"}],
+ ["sketch.rect", {"sketch": "CoverBase", "from": [0, 0], "to": [100, 60]}],
+ ["sketch.rect", {"sketch": "CoverBase", "from": [40, 15], "to": [60, 40]}],
+ ["sketch.create", {"plane": "xy", "name": "Ear"}],
+ ["sketch.rect", {"sketch": "Ear", "from": [40, 60], "to": [60, 75]}],
+ ["sketch.circle", {"sketch": "Ear", "center": [50, 68], "radius": 3}],
+ ["feature.sheetMetal", {"sketch": "CoverBase", "name": "Cover", "thickness": "1 mm", "radius": "1 mm",
+   "kFactor": 0.42,
+   "flanges": [{"edge": "e5", "length": "15 mm", "angle": "90 deg", "insetStart": "gap", "insetEnd": "gap"},
+               {"side": {"flange": 0, "end": "end"}, "length": "10 mm", "angle": "90 deg"},
+               {"edge": "e7", "outline": "Ear", "angle": "90 deg"},
+               {"edge": "e13", "length": "12 mm", "angle": "90 deg", "direction": "down",
+                "insetStart": "3 mm", "insetEnd": "3 mm"}]}]
+]
