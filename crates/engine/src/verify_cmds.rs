@@ -68,6 +68,11 @@ pub(crate) struct Ctx<'a> {
     /// expressions of an assertion or of an output's measure (an input's
     /// expression never reaches them): none for a measure command.
     pub outputs: Option<&'a crate::output_cmds::Resolved>,
+    /// The first output without a value that an expression evaluated in
+    /// this context needed (one in a branch of `if` that is not taken is
+    /// not needed): what leaves an assertion undecided rather than in
+    /// error.
+    pub unknown_used: std::sync::OnceLock<String>,
 }
 
 impl<'a> Ctx<'a> {
@@ -81,6 +86,7 @@ impl<'a> Ctx<'a> {
             refine: 0,
             box_budget: BOX_TRIANGLE_BUDGET,
             outputs: None,
+            unknown_used: std::sync::OnceLock::new(),
         })
     }
 
@@ -136,7 +142,18 @@ impl<'a> Ctx<'a> {
             (Some(evaluation), None) => evaluation.evaluate(source),
             (None, _) => craft3d_expr::evaluate(source, |_| None),
         }
-        .map_err(|e| format!("`{key}`: {e}"))
+        .map_err(|e| {
+            // An output that has no value counts only where it is used:
+            // the evaluation is lazy (the branch of `if` not taken is not
+            // needed), and says which one it needed.
+            if let (craft3d_expr::ErrorKind::DependencyFailed { name }, Some(outputs)) =
+                (&e.kind, self.outputs)
+                && outputs.unknown(name).is_some()
+            {
+                let _ = self.unknown_used.set(name.clone());
+            }
+            format!("`{key}`: {e}")
+        })
     }
 
     /// A value of dimension `wanted` in the document's units (a length

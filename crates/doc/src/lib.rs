@@ -2229,7 +2229,7 @@ impl Document {
             .collect();
         let mut renamed_assertions = self.assertions.clone();
         for assertion in &mut renamed_assertions {
-            for expr in assertion.expect.exprs_mut() {
+            for expr in assertion.exprs_mut() {
                 *expr = Expr::new(craft3d_expr::rename_variable(expr.source(), old, new)?);
             }
         }
@@ -2297,7 +2297,7 @@ impl Document {
             }
         }
         for assertion in &mut self.assertions {
-            for expr in assertion.expect.exprs_mut() {
+            for expr in assertion.exprs_mut() {
                 used.extend(
                     craft3d_expr::names_in(expr.source())
                         .into_iter()
@@ -2360,7 +2360,7 @@ impl Document {
                 }
             }
             for assertion in &mut self.assertions {
-                for expr in assertion.expect.exprs_mut() {
+                for expr in assertion.exprs_mut() {
                     rename(expr)?;
                 }
             }

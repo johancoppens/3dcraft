@@ -2499,6 +2499,9 @@ impl Shell {
                                 A::Failed | A::Error => (FeatureState::Failed, tokens.failed),
                                 A::NotProven => (FeatureState::Failed, tokens.attention),
                                 A::Pending => (FeatureState::RolledBack, tokens.inactive),
+                                // Switched off by its condition, as a
+                                // feature by its when.
+                                A::Inactive => (FeatureState::Inactive, tokens.inactive),
                             };
                             pending |= row.status == A::Pending;
                             let mut name = egui::RichText::new(&row.name);

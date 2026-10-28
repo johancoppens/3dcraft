@@ -4641,10 +4641,13 @@ fn assertions_are_written_like_this_and_round_trip() {
         ),
     ];
     for (name, measure, expect) in entries {
+        // A condition (format 46) on one of them; the others have none.
+        let when = (name == "wall").then(|| Expr::new("width > 1 mm"));
         doc.add_assertion(Assertion {
             name: name.into(),
             measure: measure.into(),
             expect,
+            when,
         })
         .unwrap();
     }
@@ -4656,7 +4659,7 @@ fn assertions_are_written_like_this_and_round_trip() {
         serde_json::json!([
             {"name": "holes go through", "measure": {"measure": "through", "of": {"hole": true, "madeBy": "F1"}}, "expect": {"is": true}},
             {"name": "volume", "measure": {"measure": "volume", "of": "F1"}, "expect": {"eq": "width * width / 2 * 10 mm", "tol": "1e-6"}},
-            {"name": "wall", "measure": {"measure": "thickness", "of": "F1"}, "expect": {"min": "2 mm"}},
+            {"name": "wall", "measure": {"measure": "thickness", "of": "F1"}, "expect": {"min": "2 mm"}, "when": "width > 1 mm"},
         ])
     );
     // Without assertions the field is not written at all.

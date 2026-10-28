@@ -112,11 +112,12 @@ As assertions: `volumeBelow`, `centroidBelow` (with `axis`), `sectionArea`, `sec
 Each assertion has a status: **passed**; **failed** (with what was measured and expected);
 **notProven** (a thickness or distance whose found value is within the bound but whose proven bound is
 not: a warning, never a pass); **error** (it could not be measured: its subject names nothing, or a body
-is missing); **pending** (still being measured, on a large model). They are measured off to the side and
+is missing); **inactive** (its condition `when` is 0: [below](#assertions-that-apply-only-sometimes));
+**pending** (still being measured, on a large model). They are measured off to the side and
 only when what they depend on changed, so they never slow modelling down or stop a feature.
 
 Where they show: in the result of every feature command, `variable.set` and `param.set` (`assertions:
-{count, passed, broken, unproven, pending}`), in `assert.list` (each with its message), in `document.check` (a broken one makes
+{count, passed, broken, unproven, pending, inactive}`), in `assert.list` (each with its message), in `document.check` (a broken one makes
 `ok` false), in `document.inspect`, and in the window's tree. `assert.edit` and `assert.delete` change
 and remove them.
 
@@ -209,11 +210,51 @@ and *stable* fails; only the assertion is measured again, since the waterline do
   (B → A → B)*. `variable.set`, `param.set` and `variable.publish` refuse an output: it is read-only.
 - **Unknown, never a guess.** When a measure fails (a volume the hull cannot hold), or what it proves is
   wider than the document's tolerance (a wall found at 2 mm but proven only above 1.96 mm), the output is
-  *unknown* with the reason, and so is every output that uses it; an assertion that uses one is
-  *notProven*, with that reason.
+  *unknown* with the reason, and so is every output that needs it; an assertion that needs one is
+  *notProven*, with that reason. *Needs* is what the formula uses as it is worked out: in
+  `if(corner == 1, gap, cg)` with `corner` at 1, `cg` is not needed, and its being unknown changes nothing.
 - `output.list` gives each output with `status` (*known*, *unknown*, or *pending* while it is measured),
   its `value` in the document's units, `unit` and `message`; so do `document.inspect` (under `outputs`)
   and a Jig's Parameters tab, below the parameters. Outputs are saved with the document and are the same
   every time it is built.
+
+## Assertions that apply only sometimes
+
+A Jig's choices change what there is to check. With the corners of a sheet-metal box open, there is no
+closed corner, so `cornerGap` has no value: the least gap over no corners is no number, and the measure
+says so as an *error* rather than pass. Give such an assertion a condition, `when`, as a feature has
+one: while it is 0 the assertion is **inactive**. It is not measured, and it counts as neither passed nor
+failed nor unproven, in `assert.list` (`inactive` counts them; `ok` is true when every other one passed),
+in `document.check` and in `craft3d-cli check-range`.
+
+```json
+[
+ ["variable.set", {"name": "corner", "expr": "1"}],
+ ["variable.set", {"name": "gap", "expr": "0.5 mm"}],
+ ["sketch.create", {"plane": "xy", "name": "BoxBase"}],
+ ["sketch.rect", {"sketch": "BoxBase", "from": [0, 0], "to": [120, 80]}],
+ ["feature.sheetMetal", {"sketch": "BoxBase", "name": "Box", "thickness": "1.5 mm", "radius": "2 mm", "kFactor": 0.42,
+   "relief": {"shape": "round", "size": "4 mm"}, "corner": {"kind": "corner", "gap": "gap"},
+   "flanges": [{"edge": "e5", "length": "20 mm", "angle": "90 deg"}, {"edge": "e6", "length": "20 mm", "angle": "90 deg"},
+               {"edge": "e7", "length": "20 mm", "angle": "90 deg"}, {"edge": "e8", "length": "20 mm", "angle": "90 deg"}]}],
+ ["assert.add", {"name": "gap", "measure": "cornerGap", "of": "Box", "eq": "gap", "when": "corner != 1"}],
+ ["variable.measure", {"name": "cg", "measure": "cornerGap", "of": "Box"}],
+ ["assert.add", {"name": "gap or open", "measure": "value", "expr": "if(corner == 1, gap, cg)", "eq": "gap"}],
+ ["assert.list", {}]
+]
+```
+
+`corner` picks the corners' kind (1 open, 2 butt, 3 overlap, 4 mitre). At 1, *gap* is inactive (*inactive:
+its condition `corner != 1` is 0*), the output `cg` is unknown, and *gap or open* passes all the same: the
+branch of `if` that is taken does not need `cg`. Set `corner` to 2 and the corners close with a 0.5 mm gap:
+*gap* is measured and passes, and so does *gap or open*, now on `cg`.
+
+- `when` is an expression of the variables and outputs, true when it is a number other than 0
+  (`corner != 1`, `lid`, `holes && size > 20 mm`). A condition with a unit, or one that does not work
+  out, is the assertion's *error*. `assert.edit` changes it, and `"when": null` takes it away.
+- `holeToBend` is the same: a part with no hole on a flat beside a bend has no least distance, and the
+  error says what the part has. A part's holes are those it was built with (its sketch's inner loops and
+  its `cutouts`), not a hole a later feature cuts into its body; an assertion on a hole that only some of a Jig's
+  choices make takes those choices' condition.
 
 **Next:** [Selection and named sets](11-selection.md).

@@ -128,7 +128,7 @@ impl Document {
         }
         let mut assertions = self.assertions.clone();
         for assertion in &mut assertions {
-            for e in assertion.expect.exprs_mut() {
+            for e in assertion.exprs_mut() {
                 *e = Expr::new(craft3d_expr::rename_variable(e.source(), old, new)?);
             }
         }
@@ -225,6 +225,7 @@ mod tests {
                 min: Some(Expr::new("BM / 10")),
                 max: None,
             },
+            when: Some(Expr::new("BM > 0 mm")),
         })
         .unwrap();
         doc.rename_output("BM", "metacentre").unwrap();
@@ -235,6 +236,8 @@ mod tests {
         assert!(doc.output("metacentre").is_some());
         let bound = doc.assertions.first().unwrap().expect.exprs()[0].source();
         assert_eq!(bound, "metacentre / 10");
+        let when = doc.assertions.first().unwrap().when.as_ref().unwrap();
+        assert_eq!(when.source(), "metacentre > 0 mm");
         assert!(doc.rename_output("GM", "KG").is_err());
     }
 }

@@ -130,11 +130,13 @@ fn output_names(output: &Output) -> BTreeSet<String> {
     }
 }
 
-/// The outputs of `doc` that `assertion` uses, in its bounds or in its
-/// measure's expressions, by name in order.
+/// The outputs of `doc` that `assertion` uses, in its bounds, its
+/// condition or its measure's expressions, by name in order: those it may
+/// need, which it waits for (whether it does need one, an evaluation
+/// tells: a branch of `if` that is not taken is not needed).
 pub(crate) fn assertion_uses(doc: &Document, assertion: &Assertion) -> Vec<String> {
     let mut names = measure_names(&assertion.measure);
-    for e in assertion.expect.exprs() {
+    for e in assertion.exprs() {
         names.extend(
             craft3d_expr::names_in(e.source())
                 .into_iter()
@@ -254,24 +256,25 @@ pub(crate) fn resolve(
             if !resolved.pending(&output.name) || asked.get(i).copied().unwrap_or(true) {
                 continue;
             }
+            // Every output it may use is computed first, so that what it
+            // is never depends on what happened to be measured by then;
+            // whether it needs one that is unknown, its evaluation tells
+            // (lazily: a branch of `if` that is not taken is not needed).
             let deps = plan.deps.get(i).map(Vec::as_slice).unwrap_or(&[]);
-            let dep_names = deps.iter().filter_map(|&d| doc.outputs.get(d));
-            if dep_names.clone().any(|d| resolved.pending(&d.name)) {
+            if deps
+                .iter()
+                .filter_map(|&d| doc.outputs.get(d))
+                .any(|d| resolved.pending(&d.name))
+            {
                 continue;
             }
-            let failed = dep_names
-                .clone()
-                .find_map(|d| resolved.unknown(&d.name).map(|why| (d.name.clone(), why)));
-            let value = match (&output.def, failed) {
-                (_, Some((dep, why))) => {
-                    OutputValue::Unknown(format!("it uses `{dep}`, which is unknown: {why}"))
-                }
-                (OutputDef::Expr(e), None) => {
+            let value = match &output.def {
+                OutputDef::Expr(e) => {
                     let evaluation = inputs
                         .get_or_insert_with(|| doc.variable_table().ok().map(|t| t.evaluate()));
                     evaluated(evaluation.as_ref(), e, &resolved)
                 }
-                (OutputDef::Measure(_), None) => {
+                OutputDef::Measure(_) => {
                     if let Some(slot) = asked.get_mut(i) {
                         *slot = true;
                     }
@@ -299,7 +302,15 @@ fn evaluated(inputs: Option<&Evaluation>, e: &Expr, resolved: &Resolved) -> Outp
     match result {
         Ok(q) if q.value.is_finite() => OutputValue::Known(q),
         Ok(_) => OutputValue::Unknown(format!("`{}` is not finite", e.source())),
-        Err(err) => OutputValue::Unknown(format!("`{}`: {err}", e.source())),
+        Err(err) => match &err.kind {
+            // An output it needed has no value: said as that output's.
+            craft3d_expr::ErrorKind::DependencyFailed { name }
+                if let Some(why) = resolved.unknown(name) =>
+            {
+                OutputValue::Unknown(format!("it uses `{name}`, which is unknown: {why}"))
+            }
+            _ => OutputValue::Unknown(format!("`{}`: {err}", e.source())),
+        },
     }
 }
 
@@ -327,6 +338,7 @@ pub(crate) fn as_assertion(output: &Output) -> Option<Assertion> {
                 name: output.name.clone(),
                 measure: text.clone(),
                 expect,
+                when: None,
             })
         }
         OutputDef::Expr(_) => None,
@@ -340,6 +352,11 @@ pub(crate) fn from_checked(doc: &Document, checked: &Checked) -> OutputValue {
     match checked.state.status {
         AssertionStatus::Pending => return OutputValue::Pending,
         AssertionStatus::Error => {
+            return OutputValue::Unknown(checked.state.message.clone());
+        }
+        // An output its measure needed is unknown (the measure's own
+        // expressions are lazy as an output's are).
+        AssertionStatus::NotProven if checked.value.is_null() => {
             return OutputValue::Unknown(checked.state.message.clone());
         }
         _ => {}

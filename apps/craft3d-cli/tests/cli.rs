@@ -1673,6 +1673,44 @@ fn check_range_counts_unproven_points_apart_and_fails_them_when_strict() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// `check-range` counts an inactive assertion (its `when` is 0 there) as
+/// neither passed nor failed nor unproven: the ring of
+/// [`check_range_counts_unproven_points_apart_and_fails_them_when_strict`]
+/// with its wall assertion switched off from `lim` 4 mm on, so the corner
+/// at 5 mm passes, and the default (3 mm) stays unproven.
+#[test]
+fn check_range_does_not_count_an_inactive_assertion_as_unproven() {
+    let dir = workdir("check-range-inactive");
+    let file = path(&dir, "ring.3dcraft");
+    let script = path(&dir, "ring.json");
+    let steps = json!([
+        ["variable.set", {"name": "lim", "expr": "3 mm"}],
+        ["feature.torus", {"name": "Ring", "major": 5, "minor": 4}],
+        ["assert.add", {"name": "wall", "measure": "thickness", "of": "Ring", "min": "lim", "when": "lim < 4 mm"}],
+        ["assert.add", {"name": "never", "measure": "volume", "of": "Ring", "max": "1 mm^3", "when": "0"}],
+        ["variable.publish", {"name": "lim", "min": "1 mm", "max": "5 mm"}],
+    ]);
+    std::fs::write(&script, steps.to_string()).unwrap();
+    cli(&["run", "--script", &script, "--out", &file]).ok();
+    let ran = cli(&["check-range", &file, "--samples", "0"]).ok();
+    assert!(
+        ran.stdout.contains(
+            "3 points (1 default, all 2 corners, 0 choices, 0 random): 2 passed, 1 with unproven assertions, 0 failed"
+        ),
+        "{}",
+        ran.stdout
+    );
+    // Strict fails the unproven default only, never an inactive one.
+    let ran = cli(&["check-range", &file, "--samples", "0", "--strict"]).failed(1);
+    assert!(
+        ran.stdout
+            .contains("2 passed, 0 with unproven assertions, 1 failed"),
+        "{}",
+        ran.stdout
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// On Linux with glibc `check-range` runs the check in a process of its
 /// own (two allocator arenas), told by `CRAFT3D_CHECK_PARENT` which
 /// process started it: that one is not started again, and stops before its

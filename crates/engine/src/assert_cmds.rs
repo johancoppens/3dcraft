@@ -18,14 +18,14 @@ use craft3d_regen::Regen;
 use serde_json::{Map, Value, json};
 
 pub(crate) static SPECS: &[CommandSpec] = &[
-    spec!("assert.add", "Add Assertion", r#"{"name": string, "measure": "volume|area|mass|count|extent|boxMin|boxMax|centerOfMass|distance|clearance|thickness|through|overlap|symmetric|volumeBelow|centroidBelow|sectionArea|sectionCentroid|sectionInertia|levelFor|curvature|developable|bendRadius|flangeLength|holeToBend|relief|cornerGap|kawasakiFails|maekawaFails|flatFoldable|value", "expr": expr, "of": subject, "from": subject, "to": subject, "axis": "x|y|z", "plane": plane, "offset": expr, "xAxis": direction, "about": "x|y|xy|major|minor", "volume": expr, "measured": "tangent|mould", "tol": expr, "eq": expr, "min": expr, "max": expr, "is": boolean}"#,
-        "Adds an assertion to the document: a measure of part of the design and what it must be, checked after every regeneration (one undo step; saved with the document). Measures and their parameters: volume, area, mass (of: bodies, default all; area also of faces; mass needs a material), count (of: a query, the number of things it finds), extent (of: bodies, axis: the size of their box along it), boxMin and boxMax (of: bodies, axis: where their box begins and ends along it, in the model's frame, so each side is bounded on its own), centerOfMass (of: bodies, default all, axis: the coordinate of their centre of mass along it, each body's centroid weighted by its mass; every body needs a material), distance (from, to: faces or bodies, the least distance), clearance (from, to: bodies; a pair that overlaps fails), thickness (of: a body, the thinnest wall), through (of: cylindrical or conical faces, every one cut through along its axis), overlap (of: bodies, to: bodies = each other; whether any pair has a volume in common, so is false asserts that none overlap; the message names the pairs and their common volume, \"Bolt overlaps Plate by 12 mm^3\", or says no overlap), symmetric (of, plane, tol: as measure.symmetry), and what lies on one side of a plane (of: bodies, default all; plane, default xy, as symmetric takes it, or a flat face by name; offset, a length along its normal, default 0; xAxis: the section's x axis; as measure.below, measure.section and measure.levelFor): volumeBelow (the volume below the plane), centroidBelow (axis: the coordinate of its centroid), sectionArea, sectionCentroid (axis), sectionInertia (about: x, y or xy about the section's centroid in its own axes, or major or minor, the principal moments; in the document's unit to the fourth power), levelFor (volume: the offset at which the volume below is that); of sheet-metal parts (of: feature.sheetMetal features by name or id, read as they were built whatever takes their body later; default all those switched on, a part switched off by when or suppressed left out, one named refused): bendRadius (the smallest inner radius of their bends, measured on the part), flangeLength (the shortest flange: its flat from the bend's tangent line, or with measured mould from the virtual sharp of the outside surfaces), holeToBend (the least distance from a hole of the base or of a flange's flat to the tangent line of a bend beside that flat) relief (whether every corner where two flanged edges meet has a relief; is) and cornerGap (the least gap at their closed corners, measured on the solid between the faces of each corner's two flats); of a fold (of: a feature.fold by name or id): kawasakiFails and maekawaFails (how many interior vertices of its crease pattern fail Kawasaki's or Maekawa's condition, at the document's tolerances, as fold.check counts them: eq 0 asserts both hold everywhere, which is necessary for folding flat and proves nothing more) and flatFoldable (is: whether the pattern with its mountain-valley assignment folds flat, every crease by 180 degrees, with an order of the layers, as feature.fold at 180 degrees decides it; an error, never a guess, when the search for an order runs out of work, since the question is NP-hard); and value (expr: an expression of the variables and of the document's outputs, variable.measure and variable.output, exactly; in the document's units of its dimension). An output that is unknown (its measure failed or was not proven) makes an assertion that uses it, in expr, in a bound or in a measure's expression, notProven with the reason, never a number. The limits for a material and a thickness are the caller's: min and max are expressions in the document's variables, tables included (table.set), never a built-in catalogue. A subject is a body (feature name or id), a list of them, a query {kind, where} as select.query takes, or a bare filter. What it must be: eq (with tol, default a millionth of eq or ten times the document's tolerance for a length) or min and/or max, expressions in the document's variables (\"wall\", \"2 mm\"), in the measure's unit (length, area or volume in the document's unit, mass in kg); through and symmetric take is (default true); overlap takes is, which must be given. The old form interference (is true for no overlap) is still accepted and written as overlap with the opposite is; saved documents are migrated on load (format 36). A tol may be 0 (exactly; the document's tolerance still applies), and 0 and 1 may carry a power of a unit (0 mm^3). Feature names in the subject are kept as ids, so a renamed feature stays measured. Returns the assertion and its check: status passed, failed (measured, expected), notProven (a least searched for, such as a thickness, lies within the bound but what is proven does not: a warning, never passed) or error (the measure could not be taken, such as a subject that names nothing yet: an assertion may be written before the model meets it). A bound written N unit^k (50 cm^3, which is (50 cm)^3) is refused for any N but 0 and 1: write 50 * (1 cm)^3. Assertions are measured off the caller's thread and only when what they depend on changed; this command waits for its own.", doc: true, names: ["of", "from", "to", "plane"], assert_add),
+    spec!("assert.add", "Add Assertion", r#"{"name": string, "measure": "volume|area|mass|count|extent|boxMin|boxMax|centerOfMass|distance|clearance|thickness|through|overlap|symmetric|volumeBelow|centroidBelow|sectionArea|sectionCentroid|sectionInertia|levelFor|curvature|developable|bendRadius|flangeLength|holeToBend|relief|cornerGap|kawasakiFails|maekawaFails|flatFoldable|value", "expr": expr, "of": subject, "from": subject, "to": subject, "axis": "x|y|z", "plane": plane, "offset": expr, "xAxis": direction, "about": "x|y|xy|major|minor", "volume": expr, "measured": "tangent|mould", "tol": expr, "eq": expr, "min": expr, "max": expr, "is": boolean, "when": expr (a condition) = always on}"#,
+        "Adds an assertion to the document: a measure of part of the design and what it must be, checked after every regeneration (one undo step; saved with the document). Measures and their parameters: volume, area, mass (of: bodies, default all; area also of faces; mass needs a material), count (of: a query, the number of things it finds), extent (of: bodies, axis: the size of their box along it), boxMin and boxMax (of: bodies, axis: where their box begins and ends along it, in the model's frame, so each side is bounded on its own), centerOfMass (of: bodies, default all, axis: the coordinate of their centre of mass along it, each body's centroid weighted by its mass; every body needs a material), distance (from, to: faces or bodies, the least distance), clearance (from, to: bodies; a pair that overlaps fails), thickness (of: a body, the thinnest wall), through (of: cylindrical or conical faces, every one cut through along its axis), overlap (of: bodies, to: bodies = each other; whether any pair has a volume in common, so is false asserts that none overlap; the message names the pairs and their common volume, \"Bolt overlaps Plate by 12 mm^3\", or says no overlap), symmetric (of, plane, tol: as measure.symmetry), and what lies on one side of a plane (of: bodies, default all; plane, default xy, as symmetric takes it, or a flat face by name; offset, a length along its normal, default 0; xAxis: the section's x axis; as measure.below, measure.section and measure.levelFor): volumeBelow (the volume below the plane), centroidBelow (axis: the coordinate of its centroid), sectionArea, sectionCentroid (axis), sectionInertia (about: x, y or xy about the section's centroid in its own axes, or major or minor, the principal moments; in the document's unit to the fourth power), levelFor (volume: the offset at which the volume below is that); of sheet-metal parts (of: feature.sheetMetal features by name or id, read as they were built whatever takes their body later; default all those switched on, a part switched off by when or suppressed left out, one named refused): bendRadius (the smallest inner radius of their bends, measured on the part), flangeLength (the shortest flange: its flat from the bend's tangent line, or with measured mould from the virtual sharp of the outside surfaces), holeToBend (the least distance from a hole of the base or of a flange's flat to the tangent line of a bend beside that flat) relief (whether every corner where two flanged edges meet has a relief; is) and cornerGap (the least gap at their closed corners, measured on the solid between the faces of each corner's two flats); of a fold (of: a feature.fold by name or id): kawasakiFails and maekawaFails (how many interior vertices of its crease pattern fail Kawasaki's or Maekawa's condition, at the document's tolerances, as fold.check counts them: eq 0 asserts both hold everywhere, which is necessary for folding flat and proves nothing more) and flatFoldable (is: whether the pattern with its mountain-valley assignment folds flat, every crease by 180 degrees, with an order of the layers, as feature.fold at 180 degrees decides it; an error, never a guess, when the search for an order runs out of work, since the question is NP-hard); and value (expr: an expression of the variables and of the document's outputs, variable.measure and variable.output, exactly; in the document's units of its dimension). An output that is unknown (its measure failed or was not proven) makes an assertion that uses it, in expr, in a bound or in a measure's expression, notProven with the reason, never a number. The limits for a material and a thickness are the caller's: min and max are expressions in the document's variables, tables included (table.set), never a built-in catalogue. A subject is a body (feature name or id), a list of them, a query {kind, where} as select.query takes, or a bare filter. What it must be: eq (with tol, default a millionth of eq or ten times the document's tolerance for a length) or min and/or max, expressions in the document's variables (\"wall\", \"2 mm\"), in the measure's unit (length, area or volume in the document's unit, mass in kg); through and symmetric take is (default true); overlap takes is, which must be given. The old form interference (is true for no overlap) is still accepted and written as overlap with the opposite is; saved documents are migrated on load (format 36). A tol may be 0 (exactly; the document's tolerance still applies), and 0 and 1 may carry a power of a unit (0 mm^3). Feature names in the subject are kept as ids, so a renamed feature stays measured. Returns the assertion and its check: status passed, failed (measured, expected), notProven (a least searched for, such as a thickness, lies within the bound but what is proven does not: a warning, never passed) or error (the measure could not be taken, such as a subject that names nothing yet: an assertion may be written before the model meets it). A bound written N unit^k (50 cm^3, which is (50 cm)^3) is refused for any N but 0 and 1: write 50 * (1 cm)^3. Assertions are measured off the caller's thread and only when what they depend on changed; this command waits for its own. when is a condition, as a feature's (feature.when): an expression of the variables and outputs that switches the assertion on and off; while it is 0 the assertion is inactive (status inactive: not measured, and counted as neither passed nor failed nor notProven), so an assertion on what only one choice of a Jig makes (a closed corner's cornerGap, a hole's holeToBend) is written with that choice's condition; a condition with a unit, or one that does not evaluate, is an error, and one that needs an unknown output notProven. Expressions are lazy: an output in a branch of if that is not taken is not needed, so its being unknown does not make the assertion notProven (if(corner == 1, gap, cg)).", doc: true, names: ["of", "from", "to", "plane"], assert_add),
     spec!("assert.edit", "Edit Assertion", r#"{"name": string, "rename": string, ...the parameters of assert.add}"#,
-        "Changes an assertion (one undo step): what is given replaces what it had; measure parameters are replaced as a whole when measure or any of them is given, the expectation when any of eq, tol, min, max or is is given. Returns it with its check.", doc: true, names: ["of", "from", "to", "plane"], assert_edit),
+        "Changes an assertion (one undo step): what is given replaces what it had; measure parameters are replaced as a whole when measure or any of them is given, the expectation when any of eq, tol, min, max or is is given, the condition when when is given (null: always on). Returns it with its check.", doc: true, names: ["of", "from", "to", "plane"], assert_edit),
     spec!("assert.delete", "Delete Assertion", r#"{"name": string}"#,
         "Removes an assertion from the document (one undo step).", doc: true, assert_delete),
     spec!("assert.list", "Assertions", r#"{"details": boolean = false, "wait": boolean = true}"#,
-        "Lists the document's assertions, each checked against the document as it is now: name, measure (as stored), expected, status (passed, failed, notProven, error, or pending while it is measured: only with wait false), measured with its unit (and what is proven, for a least searched for), message (one line); with details what the measure found (where the thinnest place is, which hole is blocked). passed, failed, errors, notProven and pending count them; ok is true when all passed.", doc: true, assert_list),
+        "Lists the document's assertions, each checked against the document as it is now: name, measure (as stored), expected, status (passed, failed, notProven, error, inactive while its when is 0, or pending while it is measured: only with wait false), measured with its unit (and what is proven, for a least searched for), message (one line), when (its condition, or null); with details what the measure found (where the thinnest place is, which hole is blocked). passed, failed, errors, notProven, inactive and pending count them; ok is true when every one that is not inactive passed.", doc: true, assert_list),
 ];
 
 /// The keys of each measure's parameters.
@@ -362,14 +362,14 @@ fn without_old_name(params: &Value) -> Value {
     params
 }
 
-const ADD_KEYS: [&str; 20] = [
+const ADD_KEYS: [&str; 21] = [
     "name", "measure", "of", "from", "to", "axis", "plane", "tol", "eq", "min", "max", "is",
-    "offset", "xAxis", "about", "volume", "measured", "expr", "rename", "details",
+    "offset", "xAxis", "about", "volume", "measured", "expr", "when", "rename", "details",
 ];
 
 /// How many of [`ADD_KEYS`] assert.add takes; assert.edit takes `rename`
 /// too.
-const ADD: usize = 18;
+const ADD: usize = 19;
 
 fn params_map(params: &Value) -> Map<String, Value> {
     match params {
@@ -385,7 +385,7 @@ fn check_keys(
     p: &Map<String, Value>,
     extra: &[&str],
 ) -> Result<(), CommandError> {
-    let mut allowed: Vec<&str> = vec!["name", "measure", "eq", "min", "max", "is", "tol"];
+    let mut allowed: Vec<&str> = vec!["name", "measure", "eq", "min", "max", "is", "tol", "when"];
     allowed.extend_from_slice(measure_keys(measure));
     allowed.extend_from_slice(extra);
     only(p, &allowed).map_err(|e| CommandError::new(format!("{id}: {measure}: {e}")))
@@ -402,10 +402,15 @@ fn assert_add(session: &mut Session, params: &Value) -> Run {
     let doc = session.document()?.history.current();
     let text = stored_measure(doc, ID, &map)?;
     let expect = expectation(&p, ID, measure)?;
+    let when = match params.get("when") {
+        Some(value) => crate::when_cmds::condition(ID, "when", value)?,
+        None => None,
+    };
     let assertion = Assertion {
         name: name.clone(),
         measure: text,
         expect,
+        when,
     };
     edit(session, ID, &format!("Add assertion {name}"), |doc| {
         doc.add_assertion(assertion)
@@ -460,10 +465,16 @@ fn assert_edit(session: &mut Session, params: &Value) -> Run {
         old.expect.clone()
     };
     let new_name = p.str("rename")?.unwrap_or(&name).to_string();
+    // Given (null takes it away), the condition replaces the old one.
+    let when = match params.get("when") {
+        Some(value) => crate::when_cmds::condition(ID, "when", value)?,
+        None => old.when.clone(),
+    };
     let assertion = Assertion {
         name: new_name.clone(),
         measure: text,
         expect,
+        when,
     };
     edit(session, ID, &format!("Edit assertion {name}"), |doc| {
         doc.replace_assertion(&name, assertion)
@@ -504,6 +515,7 @@ fn assert_list(session: &mut Session, params: &Value) -> Run {
     let listed: Vec<Value> = checked.iter().map(|c| c.json(doc, details)).collect();
     let count = |s: Status| checked.iter().filter(|c| c.state.status == s).count();
     let passed = count(Status::Passed);
+    let inactive = count(Status::Inactive);
     Ok(json!({
         "assertions": listed,
         "count": checked.len(),
@@ -512,7 +524,9 @@ fn assert_list(session: &mut Session, params: &Value) -> Run {
         "errors": count(Status::Error),
         "notProven": count(Status::NotProven),
         "pending": count(Status::Pending),
-        "ok": passed == checked.len(),
+        "inactive": inactive,
+        // Every one that is on passed: an inactive one is neither.
+        "ok": passed.saturating_add(inactive) == checked.len(),
     }))
 }
 
@@ -545,6 +559,9 @@ pub enum AssertionStatus {
     /// The measure could not be taken (its subject names nothing, the
     /// geometry refused); counted as broken.
     Error,
+    /// Switched off by its condition (`when` is 0): not measured, and
+    /// counted as neither passed nor failed nor unproven.
+    Inactive,
 }
 use AssertionStatus as Status;
 
@@ -556,6 +573,7 @@ impl AssertionStatus {
             Status::NotProven => "notProven",
             Status::Pending => "pending",
             Status::Error => "error",
+            Status::Inactive => "inactive",
         }
     }
 }
@@ -590,9 +608,11 @@ pub(crate) struct Checked {
 impl Checked {
     fn json(&self, doc: &Document, details: bool) -> Value {
         let measure: Value = serde_json::from_str(&self.stored).unwrap_or(Value::Null);
-        let expect = doc
-            .assertion(&self.state.name)
-            .map_or(Value::Null, |a| expect_json(&a.expect));
+        let stored = doc.assertion(&self.state.name);
+        let expect = stored.map_or(Value::Null, |a| expect_json(&a.expect));
+        let when = stored
+            .and_then(|a| a.when.as_ref())
+            .map_or(Value::Null, |w| Value::String(w.source().to_string()));
         let mut out = json!({
             "name": self.state.name,
             "measure": measure,
@@ -602,6 +622,7 @@ impl Checked {
             "unit": self.unit,
             "expected": self.state.expected,
             "message": self.state.message,
+            "when": when,
         });
         if let (true, Some(map)) = (details, out.as_object_mut()) {
             map.insert("detail".into(), Value::Object(self.detail.clone()));
@@ -731,16 +752,48 @@ fn check(doc: &Document, regen: &Regen, assertion: &Assertion, outputs: &Resolve
             return checked;
         }
     };
-    // An output it uses that is unknown leaves it undecided: not proven,
-    // with the output's reason, never a number.
-    if let Some((name, why)) = crate::output_cmds::assertion_uses(doc, assertion)
-        .iter()
-        .find_map(|name| outputs.unknown(name).map(|why| (name.clone(), why)))
-    {
+    // An output it needs that is unknown leaves it undecided: not proven,
+    // with the output's reason, never a number. Needed is what an
+    // evaluation used: one in a branch of `if` that is not taken, or in
+    // the condition's branch not taken, is not (`Ctx::unknown_used`).
+    let undecided = |checked: &mut Checked, ctx: &Ctx<'_>| -> bool {
+        let Some((name, why)) = ctx
+            .unknown_used
+            .get()
+            .and_then(|name| outputs.unknown(name).map(|why| (name.clone(), why)))
+        else {
+            return false;
+        };
         checked.state.status = Status::NotProven;
         checked.state.message =
             format!("{measure}: not proven: the output `{name}` it uses is unknown: {why}");
-        return checked;
+        true
+    };
+    // Its condition first: while it is 0 the assertion is inactive, and
+    // nothing else of it is measured or worked out.
+    if let Some(when) = &assertion.when {
+        match ctx.evaluate(when.source(), "when") {
+            Ok(q) if !q.dimension.is_dimensionless() => {
+                checked.state.message = format!(
+                    "when: `{}` is {}, but a condition is a plain number (a comparison such as `corner == 1`; 0 is off)",
+                    when.source(),
+                    q.dimension.described()
+                );
+                return checked;
+            }
+            Ok(q) if q.value == 0.0 => {
+                checked.state.status = Status::Inactive;
+                checked.state.message = format!("inactive: its condition `{}` is 0", when.source());
+                return checked;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                if !undecided(&mut checked, &ctx) {
+                    checked.state.message = format!("its condition cannot be worked out: {e}");
+                }
+                return checked;
+            }
+        }
     }
     let wanted = match dim {
         Dim::Length(k) => craft3d_expr::Dimension::new(k, 0),
@@ -788,7 +841,9 @@ fn check(doc: &Document, regen: &Regen, assertion: &Assertion, outputs: &Resolve
     let (lo, hi, want) = match bounds {
         Ok(b) => b,
         Err(e) => {
-            checked.state.message = format!("what it must be cannot be worked out: {e}");
+            if !undecided(&mut checked, &ctx) {
+                checked.state.message = format!("what it must be cannot be worked out: {e}");
+            }
             return checked;
         }
     };
@@ -806,7 +861,9 @@ fn check(doc: &Document, regen: &Regen, assertion: &Assertion, outputs: &Resolve
         let outcome = match outcome {
             Ok(o) => o,
             Err(e) => {
-                checked.state.message = format!("cannot be measured: {e}");
+                if !undecided(&mut checked, &ctx) {
+                    checked.state.message = format!("cannot be measured: {e}");
+                }
                 return checked;
             }
         };
@@ -987,7 +1044,8 @@ pub(crate) fn check_one(
 
 /// For the result of an edit and for `document.check`: how the
 /// assertions of the active document stand, `None` when it has none:
-/// `{count, passed, broken: [failed or in error], unproven, pending}`.
+/// `{count, passed, broken: [failed or in error], unproven, pending,
+/// inactive}` (an inactive one is in none of the lists).
 pub(crate) fn summary(session: &mut Session, wait: Wait) -> Option<Value> {
     let checked = session.assertion_checks(wait).ok()?;
     if checked.is_empty() {
@@ -1017,6 +1075,7 @@ pub(crate) fn summary(session: &mut Session, wait: Wait) -> Option<Value> {
         "broken": of(&[Status::Failed, Status::Error]),
         "unproven": of(&[Status::NotProven]),
         "pending": count(Status::Pending),
+        "inactive": count(Status::Inactive),
     }))
 }
 

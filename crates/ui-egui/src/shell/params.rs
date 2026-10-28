@@ -1011,7 +1011,7 @@ impl Shell {
                     faults.assertions.insert(a.name.clone(), a.message.clone());
                 }
                 A::Pending => pending = true,
-                A::Passed | A::NotProven => {}
+                A::Passed | A::NotProven | A::Inactive => {}
             }
         }
         (faults, pending)

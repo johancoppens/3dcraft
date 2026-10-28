@@ -350,3 +350,50 @@ fn the_outputs_of_the_measuring_chapter_are_as_it_says() {
     let stable = run(&mut s, "assert.list", json!({}));
     assert_eq!(stable["failed"], 1, "{stable}");
 }
+
+/// The conditions of the measuring chapter (`10-measure.md` ›
+/// *Assertions that apply only sometimes*) run as written and say what the
+/// text says: with every corner open the gap assertion is inactive, `cg`
+/// unknown and the `if` that does not take it passed; with the corners
+/// closed (corner 2) both are measured and pass.
+#[test]
+fn the_conditions_of_the_measuring_chapter_are_as_it_says() {
+    let text = read_text(&docs().join("guide/10-measure.md"));
+    let block = json_blocks(&text)
+        .into_iter()
+        .find(|b| b.contains("\"when\"") && b.contains("cornerGap"))
+        .expect("the chapter has a block of conditions");
+    let steps = steps(&serde_json::from_str(&block).unwrap()).unwrap();
+    let mut s = Session::new(craft3d_engine::Workspace::unrestricted());
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    let mut last = Value::Null;
+    for (id, params) in steps {
+        last = run(&mut s, &id, params);
+    }
+    let status = |listed: &Value, name: &str| {
+        listed["assertions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["name"] == name)
+            .unwrap_or_else(|| panic!("no {name}: {listed}"))["status"]
+            .clone()
+    };
+    assert_eq!(status(&last, "gap"), "inactive", "{last}");
+    assert_eq!(status(&last, "gap or open"), "passed", "{last}");
+    assert_eq!(last["inactive"], 1, "{last}");
+    assert_eq!(last["ok"], true, "{last}");
+    let message = last["assertions"][0]["message"].as_str().unwrap();
+    assert_eq!(message, "inactive: its condition `corner != 1` is 0");
+    let outputs = run(&mut s, "output.list", json!({}));
+    assert_eq!(outputs["outputs"][0]["status"], "unknown", "{outputs}");
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "corner", "expr": "2"}),
+    );
+    let listed = run(&mut s, "assert.list", json!({}));
+    assert_eq!(status(&listed, "gap"), "passed", "{listed}");
+    assert_eq!(status(&listed, "gap or open"), "passed", "{listed}");
+    assert_eq!(listed["ok"], true, "{listed}");
+}

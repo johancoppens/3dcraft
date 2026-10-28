@@ -146,7 +146,7 @@ fn key_of(doc: &Document, regen: &Regen, assertion: &Assertion, outputs: &Resolv
     );
     // The variables its bounds and its measure's own expressions name.
     let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for e in assertion.expect.exprs() {
+    for e in assertion.exprs() {
         names.extend(
             craft3d_expr::names_in(e.source())
                 .into_iter()

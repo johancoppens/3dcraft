@@ -408,7 +408,7 @@ impl Document {
             }
         }
         for assertion in &self.assertions {
-            if assertion.expect.exprs().into_iter().any(uses) {
+            if assertion.exprs().into_iter().any(uses) {
                 users.push(format!("assertion `{}`", assertion.name));
             }
         }
@@ -456,7 +456,7 @@ impl Document {
                 .collect();
             sources.extend(formulas);
             for assertion in &self.assertions {
-                sources.extend(assertion.expect.exprs());
+                sources.extend(assertion.exprs());
             }
             for body in &self.bodies {
                 sources.extend(body.exprs());
@@ -535,7 +535,7 @@ impl Document {
             }
         }
         for assertion in &mut doc.assertions {
-            for expr in assertion.expect.exprs_mut() {
+            for expr in assertion.exprs_mut() {
                 rename(expr)?;
             }
         }

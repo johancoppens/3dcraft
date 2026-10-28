@@ -1245,11 +1245,29 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
     let (mut lower, mut upper) = (f64::INFINITY, f64::INFINITY);
     let mut every = true;
     let mut listed = Vec::new();
+    // For holeToBend with no hole beside a bend: the parts, how many
+    // holes they have, and the features their bodies went on into.
+    let mut parts = Vec::new();
+    let mut holes = 0_usize;
+    let mut taken = Vec::new();
     for id in parts_of(ctx, p)? {
         let fname = ctx.feature_name(id);
         let built = craft3d_regen::sheet_metal_part(ctx.doc, ctx.regen, id)
             .map_err(|e| format!("`{fname}`: {e}"))?;
         let part = &built.part;
+        if name == "holeToBend" {
+            holes = part
+                .flats
+                .iter()
+                .fold(holes, |n, f| n.saturating_add(f.holes.len()));
+            if let Some(taker) = ctx.regen.feature(id).and_then(|o| o.consumed_by) {
+                taken.push(format!(
+                    "`{fname}` went on into `{}`",
+                    ctx.feature_name(taker)
+                ));
+            }
+            parts.push(format!("`{fname}`"));
+        }
         match name {
             "bendRadius" => {
                 for i in 0..part.bends.len() {
@@ -1304,7 +1322,7 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
     } else {
         if !least.is_finite() {
             return Err(match name {
-                "holeToBend" => "no hole of the part lies beside a bend".to_string(),
+                "holeToBend" => no_hole_beside_a_bend(&parts, holes, &taken),
                 _ => "the part has no bends".to_string(),
             });
         }
@@ -1326,6 +1344,32 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
     Ok(out)
 }
 
+/// Why `holeToBend` has no value: a least distance over no holes is no
+/// number (not a pass), so it is an error that says what the part has and
+/// how an assertion written for a design without such a hole is switched
+/// off (docs/design/sheetmetal.md › *Measures over nothing*).
+fn no_hole_beside_a_bend(parts: &[String], holes: usize, taken: &[String]) -> String {
+    let has = if parts.len() > 1 { "have" } else { "has" };
+    let parts = if parts.is_empty() {
+        "the parts".to_string()
+    } else {
+        parts.join(", ")
+    };
+    let what = if holes == 0 {
+        format!("{parts} {has} no holes")
+    } else {
+        format!("none of the {holes} holes of {parts} lies on a flat beside a bend")
+    };
+    let later = if taken.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", taken.join(", "))
+    };
+    format!(
+        "{what}, so holeToBend has no value; a part's holes are those it was built with (its sketch's inner loops and its cutouts), not a later feature's cut into its body{later}; while the design has no such hole, switch the assertion off with when (the condition of what makes the hole)"
+    )
+}
+
 /// The measure `cornerGap`: the least gap at the closed corners of the
 /// parts, each measured on the solid between the faces of the corner's
 /// two flats; what is proven below it is the measure's lower bound.
@@ -1333,10 +1377,12 @@ fn corner_gap(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> 
     crate::verify_cmds::only(p, &["of"])?;
     let (mut least, mut lower) = (f64::INFINITY, f64::INFINITY);
     let mut listed = Vec::new();
+    let mut names = Vec::new();
     for id in parts_of(ctx, p)? {
         let fname = ctx.feature_name(id);
         let built = craft3d_regen::sheet_metal_part(ctx.doc, ctx.regen, id)
             .map_err(|e| format!("`{fname}`: {e}"))?;
+        names.push(format!("`{fname}`"));
         let part = &built.part;
         for c in part.corners.iter().filter(|c| closed(c)) {
             let near = measured_gap(part, c, &built.tolerance)
@@ -1354,7 +1400,15 @@ fn corner_gap(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> 
         }
     }
     if !least.is_finite() {
-        return Err("no corner of the part is closed (corner kind open everywhere)".to_string());
+        // A least gap over no closed corners is no number (not a pass).
+        return Err(format!(
+            "no corner of {} is closed (every corner is open), so cornerGap has no value; while the design opens every corner, switch the assertion off with when (such as when: \"corner != 1\" for a corner kind chosen by the variable corner)",
+            if names.is_empty() {
+                "the parts".to_string()
+            } else {
+                names.join(", ")
+            }
+        ));
     }
     let mut out = Outcome::number(Dim::Length(1), least);
     out.lower = Some(lower.min(least));

@@ -153,6 +153,10 @@ pub struct Assertion {
     pub name: String,
     pub measure: serde_json::Value,
     pub expect: Expect,
+    /// The condition that switches it on and off (format 46); absent:
+    /// always on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<String>,
 }
 
 /// What an assertion expects: `is` for a yes-or-no measure, else `eq`

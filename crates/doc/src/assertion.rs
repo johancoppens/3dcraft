@@ -26,6 +26,27 @@ pub struct Assertion {
     /// reads it; this crate only keeps it.
     pub measure: String,
     pub expect: Expect,
+    /// A condition that switches the assertion on and off, as a feature's
+    /// `when` does: an expression of the variables and outputs. While it
+    /// is zero the assertion is *inactive*: not measured, and counted as
+    /// neither passed nor failed nor unproven. `None`: always on.
+    #[serde(default)]
+    pub when: Option<Expr>,
+}
+
+impl Assertion {
+    /// Every expression it holds: what it expects, then its condition.
+    pub fn exprs(&self) -> Vec<&Expr> {
+        let mut out = self.expect.exprs();
+        out.extend(self.when.as_ref());
+        out
+    }
+
+    pub fn exprs_mut(&mut self) -> Vec<&mut Expr> {
+        let mut out = self.expect.exprs_mut();
+        out.extend(self.when.as_mut());
+        out
+    }
 }
 
 /// What a measure is expected to be. Values are expressions in the

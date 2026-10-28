@@ -24,7 +24,11 @@ pub(crate) const WHEN_PARAM: &str = r#""when": expr = always on"#;
 
 /// A condition as a parameter gives it: an expression, or `None` for
 /// null (no condition, always on).
-fn condition(command: &str, key: &str, value: &Value) -> Result<Option<Expr>, CommandError> {
+pub(crate) fn condition(
+    command: &str,
+    key: &str,
+    value: &Value,
+) -> Result<Option<Expr>, CommandError> {
     let source = match value {
         Value::Null => return Ok(None),
         Value::String(text) => text.clone(),

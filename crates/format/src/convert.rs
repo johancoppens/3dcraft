@@ -321,6 +321,7 @@ fn assertion_to_manifest(assertion: &doc::Assertion) -> manifest::Assertion {
         name,
         measure,
         expect,
+        when,
     } = assertion;
     // The engine writes the measure as a JSON object; anything else is
     // kept as the text it is.
@@ -349,6 +350,7 @@ fn assertion_to_manifest(assertion: &doc::Assertion) -> manifest::Assertion {
         name: name.clone(),
         measure,
         expect,
+        when: when.as_ref().map(text),
     }
 }
 
@@ -357,6 +359,7 @@ fn assertion_to_doc(assertion: manifest::Assertion) -> doc::Assertion {
         name,
         measure,
         expect,
+        when,
     } = assertion;
     let measure = match measure {
         serde_json::Value::String(text) => text,
@@ -386,6 +389,7 @@ fn assertion_to_doc(assertion: manifest::Assertion) -> doc::Assertion {
         name,
         measure,
         expect,
+        when: when.map(doc::Expr),
     }
 }
 
