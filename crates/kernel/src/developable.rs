@@ -2929,14 +2929,15 @@ fn build(
 
 /// How far the fitted face's tangent plane along its end ruling `(s, t)`
 /// (rail parameters, at `u` on the face) strays from the developable's:
-/// at each row, the angle between the fitted normal there and the normal
-/// of the plane of the ruling and that row's rail tangent (at a joint, on
-/// the side given; a developable's tangent plane holds both, a ruling
-/// snapped to a corner within the tolerance holds each at its own end),
-/// the larger times the ruling's length. A row that stands still along
-/// the face (a fan's apex, `moving` false) has no tangent and the face no
-/// normal there: only the moving rows count. `None` where a normal has no
-/// direction.
+/// the angle between the fitted normal at the ruling's middle and the
+/// normal of the plane of the ruling and a rail's tangent (at a joint, on
+/// the side given), the larger over the rails whose rows move along the
+/// face, times the ruling's length. A developable's tangent plane along a
+/// ruling holds both rails' tangents; a ruling snapped to a corner within
+/// the tolerance holds each within the tolerance. The middle, as a row
+/// may stand still at the end ruling (the strip beside a fold's fan) and
+/// a fan's apex row has no normal; a fan's apex row has no tangent either
+/// (`moving` false). `None` where a normal has no direction.
 fn end_turn(
     pair: &Pair,
     fitted: &Surface,
@@ -2949,13 +2950,13 @@ fn end_turn(
     let (pb, db) = pair.b.at_side(t, before)?;
     let d = pb - pa;
     let ud = d.normalized()?;
+    let n = fitted.normal(u, 0.5)?.normalized()?;
     let mut angle: f64 = 0.0;
-    for (v, row, tangent) in [(0.0, moving[0], da), (1.0, moving[1], db)] {
+    for (row, tangent) in [(moving[0], da), (moving[1], db)] {
         if !row {
             continue;
         }
         let expected = tangent.normalized()?.cross(ud).normalized()?;
-        let n = fitted.normal(u, v)?.normalized()?;
         angle = angle.max(n.cross(expected).length().min(1.0).asin());
     }
     let off = angle * d.length();
