@@ -30,6 +30,7 @@ mod layers;
 mod sheet;
 mod solve;
 mod sparse;
+mod thick;
 
 pub use arrange::{Arrangement, Edge, EdgeKind, Facet, Hinge, arrange};
 pub use checks::{VertexCheck, vertex_checks};
@@ -39,6 +40,7 @@ pub use layers::{Layers, MAX_LAYER_CONSTRAINTS, MAX_LAYER_WORK, layer_order};
 pub use sheet::folded_sheet;
 pub use solve::{Angle, Folded, Joint, Linkage, MAX_WORK, fold_linkage, fold_linkage_with};
 pub use sparse::MAX_PROFILE;
+pub use thick::{PanelSide, Panels, thick_panels};
 
 pub(crate) use crate::profile::{P2, cross, distance as dist, dot, sub};
 use craft3d_math::{Bbox3, Transform, Vec3};
@@ -173,6 +175,13 @@ pub enum FoldError {
     /// Two facets of the folded sheet pass through each other or touch
     /// (other than along the creases and at the vertices they share).
     Meets(Meeting),
+    /// Thick panels: the clearance does not fit facet `facet`.
+    Clearance { facet: usize, reason: &'static str },
+    /// Thick panels: a thickness or a clearance that cannot be used.
+    Panels { reason: &'static str },
+    /// Thick panels: the panels of two facets pass through each other or
+    /// touch.
+    PanelsMeet(Meeting),
     /// The body could not be built: see the reason.
     Build(String),
     /// Folded flat (every crease by 180 degrees), the facets round the
@@ -257,6 +266,17 @@ impl fmt::Display for FoldError {
             FoldError::Ambiguous { ids } => write!(
                 f,
                 "two branches from the flat sheet keep every kind; creases {ids:?} differ"
+            ),
+            FoldError::Clearance { facet, reason } => {
+                write!(f, "the panel of facet {facet} does not fit: {reason}")
+            }
+            FoldError::Panels { reason } => write!(f, "{reason}"),
+            FoldError::PanelsMeet(c) => write!(
+                f,
+                "the panels of facets {} and {} {}",
+                c.facets[0],
+                c.facets[1],
+                c.kind.verb()
             ),
             FoldError::Build(reason) => write!(f, "{reason}"),
             FoldError::NotFlat { id, gap } => write!(

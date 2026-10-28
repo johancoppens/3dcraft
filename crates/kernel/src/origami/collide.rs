@@ -50,7 +50,7 @@ pub struct Meeting {
     pub at: Vec3,
 }
 
-struct Placed {
+pub(super) struct Placed {
     /// The loops in the flat sheet.
     flat: Vec<Vec<P2>>,
     /// The same loops folded.
@@ -201,7 +201,7 @@ fn boxes_meet(a: &Bbox3, b: &Bbox3) -> bool {
     }
 }
 
-fn meet(p: &Placed, q: &Placed, tol: f64, angular: f64) -> Option<(FacetMeeting, Vec3)> {
+pub(super) fn meet(p: &Placed, q: &Placed, tol: f64, angular: f64) -> Option<(FacetMeeting, Vec3)> {
     let shared_v: BTreeSet<usize> = p.vertices.intersection(&q.vertices).copied().collect();
     let shared_e: BTreeSet<usize> = p.edges.intersection(&q.edges).copied().collect();
     // Parallel when the normals are within the angular tolerance (the
@@ -427,6 +427,64 @@ impl Placed {
     fn folded_of(&self, p: P2) -> Vec3 {
         self.forth.point(lift(p))
     }
+
+    /// Every corner, placed.
+    pub(super) fn corners(&self) -> Vec<Vec3> {
+        self.folded.iter().flatten().copied().collect()
+    }
+}
+
+/// A planar polygon (`rings` in its own plane's coordinates, z = 0)
+/// placed by `forth`, sharing nothing with any other: every corner and
+/// edge numbered afresh from `next_id`. What the contact test of two
+/// facets asks of the faces of thick panels.
+pub(super) fn polygon_face(
+    rings: Vec<Vec<P2>>,
+    forth: Transform,
+    next_id: &mut usize,
+) -> Option<Placed> {
+    let mut lo = Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+    let mut hi = -lo;
+    let mut folded = Vec::with_capacity(rings.len());
+    let mut ids = Vec::with_capacity(rings.len());
+    let mut edge_ids = Vec::with_capacity(rings.len());
+    let mut vertices = BTreeSet::new();
+    let mut edges = BTreeSet::new();
+    for ring in &rings {
+        let mut moved = Vec::with_capacity(ring.len());
+        let mut r_ids = Vec::with_capacity(ring.len());
+        let mut r_edges = Vec::with_capacity(ring.len());
+        for &p in ring {
+            let q = forth.point(lift(p));
+            lo = lo.min(q);
+            hi = hi.max(q);
+            moved.push(q);
+            let id = *next_id;
+            *next_id = next_id.saturating_add(1);
+            r_ids.push(id);
+            r_edges.push(id);
+            vertices.insert(id);
+            edges.insert(id);
+        }
+        folded.push(moved);
+        ids.push(r_ids);
+        edge_ids.push(r_edges);
+    }
+    let origin = *folded.first()?.first()?;
+    Some(Placed {
+        flat: rings,
+        folded,
+        ids,
+        edge_ids,
+        vertices,
+        edges,
+        normal: forth.vector(Vec3::Z),
+        origin,
+        lo,
+        hi,
+        forth,
+        back: forth.inverse()?,
+    })
 }
 
 /// Where segments `a`–`b` and `c`–`d` cross properly.
