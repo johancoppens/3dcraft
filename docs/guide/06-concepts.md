@@ -40,6 +40,9 @@ Commands that change the history (`feature.edit`, `feature.suppress`, `feature.m
   feature that used the tool of an inserted subtraction) they fail with *the body of `Bored` already went
   into `Bevel`*, and the message gives the `feature.edit` that points them on. A fillet, a chamfer or a
   face operation after the marker names faces, not a body, and follows them into the new body by itself.
+  The document remembers what it re-pointed, also in the file: deleting the inserted feature later points
+  them back (`"restored"` in the result), as if it had never been inserted, and editing it so it takes
+  another body re-points the features that named that one.
 - `edit.undo` and `edit.redo` undo and redo any change, one command at a time.
 
 ## Variables, expressions and units
@@ -60,7 +63,8 @@ Every length, angle and count may be an **expression** in the document's variabl
   "sizes"}` changes the document's unit later and keeps the model as large as it was (a plain `10` read as
   a length becomes `10 mm`); `"keep": "numbers"` keeps every number and changes only the unit, so what has
   no unit grows or shrinks with it. Keeping the sizes is proven on the result (every body as large as it
-  was) or refused, as it is for documents with outputs or formula curves. An expression that cannot be worked out
+  was, and every assertion and output as it was), also for outputs, assertions, named sets and formula
+  curves, or refused when a plain number could be a length or not. An expression that cannot be worked out
   (`width + 3 deg`, an unknown name) is kept, but the variable *fails*: its result and `document.check`
   carry the error, and what uses it fails too until it is fixed. A variable cannot be defined from itself:
   "make the wall 1 mm thicker" is `{"name": "wall", "expr": "3 mm"}`, not `wall + 1 mm` (refused). Only
