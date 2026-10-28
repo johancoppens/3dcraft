@@ -1310,7 +1310,7 @@ impl Solver<'_> {
         )?;
         let last = largest_gap(&now);
         if let Some((best, best_gap)) = within
-            && !(last < best_gap)
+            && (last.is_nan() || last >= best_gap)
         {
             return Ok((best, false, best_gap));
         }
