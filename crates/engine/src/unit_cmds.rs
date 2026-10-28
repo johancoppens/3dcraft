@@ -17,21 +17,24 @@
 //! and box by the factor's powers) and every feature the status it had, or the
 //! change is refused and the document left as it was.
 
+use crate::assert_check::Wait;
+use crate::assert_cmds::Checked;
 use crate::commands::{Run, edit, fail, spec};
+use crate::output_cmds::{OutputValue, Resolved};
 use crate::params::Params;
 use crate::verify_cmds::Dim;
-use crate::{CommandError, CommandSpec, Session};
+use crate::{CommandError, CommandSpec, OpenDocument, Session};
 use craft3d_doc::sketch::{ConstraintKind, Geometry, PlaceMap};
-use craft3d_doc::{Document, Expect, Expr, FeatureKind, LengthUnit, PatternLayout};
-use craft3d_expr::{Dimension, Evaluation};
+use craft3d_doc::{Document, Expect, Expr, FeatureKind, LengthUnit, OutputDef, PatternLayout};
+use craft3d_expr::{Dimension, Evaluation, Quantity};
 use craft3d_math::Vec3;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 pub(crate) static SPECS: &[CommandSpec] = &[spec!(
     "document.setUnit",
     "Set Length Unit",
     r#"{"units": "um|mm|cm|m|in|ft", "keep": "numbers|sizes"}"#,
-    "Changes the length unit of the active document (one undo step). A plain number read as a length is in the document's unit, so keep says what stays: numbers keeps every number as written and changes only the unit (a block of size 10 is then 10 of the new unit; a value written with a unit, 10 mm, keeps its size, and so does the tolerance's number); sizes keeps the model as large as it was: every plain number read as a length gets the old unit written on it (10 becomes 10 mm, w / 2 becomes (w / 2) * 1 mm; variables are left as they are, their uses get the unit), assertions' bounds likewise, the tolerance and the sketches' points and circles are converted, and the result is proven: regenerated in the new unit, every feature (also those rolled back or switched off) has the status it had and every body the volume, area, centroid and box it had, or the change is refused and the document stays as it was. sizes refuses what it cannot convert for certain: outputs, formula curves, numbers in sets and subjects, measures with expressions of their own, a parameter whose expression does not evaluate. Returns {units, was, keep, rewritten: the expressions given a unit}.",
+    "Changes the length unit of the active document (one undo step). A plain number read as a length is in the document's unit, so keep says what stays: numbers keeps every number as written and changes only the unit (a block of size 10 is then 10 of the new unit; a value written with a unit, 10 mm, keeps its size, and so does the tolerance's number); sizes keeps the model as large as it was: every plain number read as a length gets the old unit written on it (10 becomes 10 mm, w / 2 becomes (w / 2) * 1 mm; variables are left as they are, their uses get the unit), assertions' bounds likewise, the tolerance and the sketches' points and circles are converted, and the result is proven: regenerated in the new unit, every feature (also those rolled back or switched off) has the status it had and every body the volume, area, centroid and box it had, or the change is refused and the document stays as it was. Formula curves' x(t) and y(t) that are plain numbers get the unit too; so do the lengths in named sets' queries and in assertions' and measured outputs' subjects (volume, area, radius, length, inside, above, below) and the measures' own lengths (offset, a symmetry's tol, a level's volume, a plane's point); a value assertion's bounds get the unit to the power of its expression's dimension. Every assertion must then have the status it had and every output its value, or the change is refused. sizes refuses what it cannot convert for certain, naming it: a plain number whose dimension is not known (a parameter or a filter of a name not known, the bounds of a value assertion whose expression uses an output that is unknown), a formula curve whose dimension changes along t, a parameter whose expression does not evaluate. Returns {units, was, keep, rewritten: the expressions given a unit}.",
     doc: true,
     set_unit
 )];
@@ -69,7 +72,13 @@ fn set_unit(session: &mut Session, params: &Value) -> Run {
     changed.units.length = to;
     let mut rewritten = 0;
     if keep_sizes {
-        rewritten = keep_the_sizes(&mut changed, from, to)
+        // The assertions and outputs as they stand now: the outputs'
+        // values for the expressions that use them, and what the change
+        // must leave as it is.
+        let checks = (!current.assertions.is_empty() || !current.outputs.is_empty())
+            .then(|| session.checks_and_outputs(Wait::All))
+            .transpose()?;
+        rewritten = keep_the_sizes(&mut changed, from, to, checks.as_ref().map(|c| &*c.1))
             .map_err(|e| CommandError::new(format!("{ID}: keep sizes: {e}")))?;
         // Every feature is proven, also those the marker rolls back and
         // those switched off: both documents are regenerated whole, with
@@ -81,6 +90,14 @@ fn set_unit(session: &mut Session, params: &Value) -> Run {
                 "{ID}: keep sizes: not proven, so nothing was changed: {e}"
             ))
         })?;
+        if let Some(checks) = &checks {
+            let now = checked_alone(session, changed.clone())?;
+            same_checks(checks, &now).map_err(|e| {
+                CommandError::new(format!(
+                    "{ID}: keep sizes: not proven, so nothing was changed: {e}"
+                ))
+            })?;
+        }
     }
     let label = format!("Set length unit to {}", to.symbol());
     edit(session, ID, &label, |doc| {
@@ -149,31 +166,57 @@ fn is_length(name: &str) -> Option<bool> {
     }
 }
 
-/// `source`, read as a length to the power `power` in the unit `unit`,
-/// written with that unit, and proven to be that: a plain number gets the
-/// unit after it, anything else is multiplied by one of it.
+/// What the expressions of the document are evaluated with: its
+/// variables and, where it has them, its outputs as they are computed
+/// before the change (an output's value is in base units, so the same in
+/// either unit).
+struct Values<'a> {
+    variables: &'a Evaluation,
+    outputs: Option<&'a Resolved>,
+}
+
+impl Values<'_> {
+    fn eval(&self, source: &str) -> Result<Quantity, String> {
+        match self.outputs {
+            Some(outputs) => self
+                .variables
+                .evaluate_with(source, |name| outputs.lookup(name)),
+            None => self.variables.evaluate(source),
+        }
+        .map_err(|e| e.to_string())
+    }
+}
+
+/// `source`, a plain number read in the document's unit as a quantity of
+/// dimension `dim` (a length to a power, perhaps times an angle), written
+/// with the unit `unit`, and proven to be that: a plain length gets the
+/// unit after it, anything else is multiplied by one of it to the power.
 fn with_unit(
-    values: &Evaluation,
+    values: &Values<'_>,
     source: &str,
     unit: LengthUnit,
-    power: i32,
+    dim: Dimension,
 ) -> Result<String, String> {
     let symbol = unit.symbol();
     let plain = values
-        .evaluate(source)
+        .eval(source)
         .map_err(|e| format!("`{source}` does not evaluate: {e}"))?;
     let trimmed = source.trim();
-    let written = match (power, trimmed.parse::<f64>()) {
+    let mut written = match (dim.length, trimmed.parse::<f64>()) {
         (1, Ok(n)) if n.is_finite() => format!("{trimmed} {symbol}"),
         (1, _) => format!("({trimmed}) * 1 {symbol}"),
+        (k, _) if k < 0 => format!("({trimmed}) * (1 {symbol})^({k})"),
         (k, _) => format!("({trimmed}) * (1 {symbol})^{k}"),
     };
+    if dim.angle != 0 {
+        written.push_str(&format!(" * (1 rad)^({})", dim.angle));
+    }
     let got = values
-        .evaluate(&written)
+        .eval(&written)
         .map_err(|e| format!("`{written}` does not evaluate: {e}"))?;
-    let want = plain.value * unit.as_expr_unit().factor().powi(power);
+    let want = plain.value * unit.as_expr_unit().factor().powi(dim.length);
     let close = (got.value - want).abs() <= 1e-12 * want.abs().max(f64::MIN_POSITIVE);
-    if got.dimension != Dimension::new(power, 0) || !close {
+    if got.dimension != dim || !close {
         return Err(format!(
             "`{source}` could not be written with its unit (`{written}`)"
         ));
@@ -181,25 +224,333 @@ fn with_unit(
     Ok(written)
 }
 
-/// Rewrites `doc` (already in the unit `to`) so that it is as large as it
-/// was in `from`; the number of expressions given a unit.
-fn keep_the_sizes(doc: &mut Document, from: LengthUnit, to: LengthUnit) -> Result<usize, String> {
-    let k = factor(from, to);
-    if !doc.outputs.is_empty() {
-        return Err("the document has outputs, whose values are in its unit (owed)".into());
+/// The length's power each filter of a query reads its values in
+/// (select.query: `volume`, `area`, `radius`, `length`, a box `inside`,
+/// `above` and `below`); the filters whose values are no lengths (names,
+/// kinds, colours, counts, directions, angles in degrees) are kept as they
+/// are, and a filter not known with a number in it is refused.
+const FILTER_LENGTHS: [(&str, i32); 4] = [("volume", 3), ("area", 2), ("radius", 1), ("length", 1)];
+const FILTER_OTHERS: [&str; 16] = [
+    "kind", "name", "type", "status", "set", "in", "madeBy", "copyOf", "instance", "color",
+    "within", "material", "surface", "hole", "normal", "axis",
+];
+
+/// Rewrites the numbers of queries, subjects and measures that are read
+/// in the document's unit so that they keep their sizes in another unit.
+struct Sizer<'a> {
+    values: Values<'a>,
+    from: LengthUnit,
+    rewritten: usize,
+}
+
+impl Sizer<'_> {
+    /// A value read as a length to `power` (a number, or an expression
+    /// that is a plain number) with the old unit written on it; a value
+    /// with a unit, or one that is no value, as it is.
+    fn sized(&mut self, value: &Value, power: i32, what: &str) -> Result<Value, String> {
+        let source = match value {
+            Value::Number(n) => n.to_string(),
+            Value::String(text) => {
+                let quantity = self
+                    .values
+                    .eval(text)
+                    .map_err(|e| format!("{what}: `{text}` does not evaluate: {e}"))?;
+                if !quantity.dimension.is_dimensionless() {
+                    return Ok(value.clone());
+                }
+                text.clone()
+            }
+            other => return Ok(other.clone()),
+        };
+        let written = with_unit(&self.values, &source, self.from, Dimension::new(power, 0))
+            .map_err(|e| format!("{what}: {e}"))?;
+        self.rewritten = self.rewritten.saturating_add(1);
+        Ok(Value::String(written))
     }
-    let values = doc
+
+    /// A value or a range `{eq, tol}` / `{min, max}` of a filter.
+    fn range(&mut self, value: &Value, power: i32, what: &str) -> Result<Value, String> {
+        match value {
+            Value::Object(fields) => {
+                let mut out = Map::new();
+                for (key, v) in fields {
+                    let v = match key.as_str() {
+                        "eq" | "tol" | "min" | "max" => {
+                            self.sized(v, power, &format!("{what}.{key}"))?
+                        }
+                        _ => v.clone(),
+                    };
+                    out.insert(key.clone(), v);
+                }
+                Ok(Value::Object(out))
+            }
+            other => self.sized(other, power, what),
+        }
+    }
+
+    /// A filter of select.query, its lengths sized.
+    fn filter(&mut self, value: &Value, what: &str, depth: usize) -> Result<Value, String> {
+        if depth > 64 {
+            return Err(format!("{what}: filters nested too deep"));
+        }
+        let Value::Object(map) = value else {
+            return match value {
+                Value::Array(items) => Ok(Value::Array(
+                    items
+                        .iter()
+                        .map(|item| self.filter(item, what, depth + 1))
+                        .collect::<Result<_, _>>()?,
+                )),
+                other => Ok(other.clone()),
+            };
+        };
+        let mut out = Map::new();
+        for (key, inner) in map {
+            let here = format!("{what}: `{key}`");
+            let v = match key.as_str() {
+                "all" | "any" | "not" => self.filter(inner, what, depth + 1)?,
+                "inside" => match inner {
+                    Value::Array(corners) => Value::Array(
+                        corners
+                            .iter()
+                            .map(|corner| match corner {
+                                Value::Array(xyz) => Ok(Value::Array(
+                                    xyz.iter()
+                                        .map(|c| self.sized(c, 1, &here))
+                                        .collect::<Result<_, String>>()?,
+                                )),
+                                other => Ok(other.clone()),
+                            })
+                            .collect::<Result<_, String>>()?,
+                    ),
+                    other => other.clone(),
+                },
+                "above" | "below" => match inner {
+                    Value::Object(along) => {
+                        let mut sized = Map::new();
+                        for (axis, at) in along {
+                            sized.insert(axis.clone(), self.sized(at, 1, &here)?);
+                        }
+                        Value::Object(sized)
+                    }
+                    other => self.sized(other, 1, &here)?,
+                },
+                word => match FILTER_LENGTHS.iter().find(|(k, _)| *k == word) {
+                    Some(&(_, power)) => self.range(inner, power, &here)?,
+                    None if FILTER_OTHERS.contains(&word) || !has_plain_number(inner, 0) => {
+                        inner.clone()
+                    }
+                    None => {
+                        return Err(format!(
+                            "{here} holds a number, and whether it is a length is not known"
+                        ));
+                    }
+                },
+            };
+            out.insert(key.clone(), v);
+        }
+        Ok(Value::Object(out))
+    }
+
+    /// A query `{kind, where}`, its filter sized.
+    fn query(&mut self, value: &Value, what: &str) -> Result<Value, String> {
+        let Value::Object(map) = value else {
+            return Ok(value.clone());
+        };
+        let mut out = map.clone();
+        if let Some(filter) = map.get("where") {
+            out.insert("where".into(), self.filter(filter, what, 0)?);
+        }
+        Ok(Value::Object(out))
+    }
+
+    /// A subject (an assertion's or a measured output's `of`, `from`,
+    /// `to`): bodies by name or id are kept, a query or a bare filter is
+    /// sized.
+    fn subject(&mut self, value: &Value, what: &str) -> Result<Value, String> {
+        match value {
+            Value::Object(map) if map.contains_key("body") => Ok(value.clone()),
+            Value::Object(map) if map.contains_key("where") => self.query(value, what),
+            Value::Object(_) => self.filter(value, what, 0),
+            other => Ok(other.clone()),
+        }
+    }
+
+    /// A stored measure `{"measure": name, ...}` with its subjects and its
+    /// own lengths sized (`offset`, a symmetry's `tol`, a level's
+    /// `volume`, a plane's `point`); `None` when nothing changed.
+    fn measure(&mut self, text: &str, what: &str) -> Result<Option<String>, String> {
+        let value: Value =
+            serde_json::from_str(text).map_err(|e| format!("{what} is not a measure: {e}"))?;
+        let Value::Object(map) = &value else {
+            return Err(format!("{what} is not a measure"));
+        };
+        let mut out = Map::new();
+        for (key, v) in map {
+            let here = format!("{what}: `{key}`");
+            let sized = match key.as_str() {
+                "measure" | "axis" | "xAxis" | "about" | "measured" | "expr" => v.clone(),
+                "of" | "from" | "to" => self.subject(v, &here)?,
+                "offset" | "tol" => self.sized(v, 1, &here)?,
+                "volume" => self.sized(v, 3, &here)?,
+                "plane" => match v {
+                    Value::Object(plane) => {
+                        let mut sized = plane.clone();
+                        if let Some(Value::Array(point)) = plane.get("point") {
+                            sized.insert(
+                                "point".into(),
+                                Value::Array(
+                                    point
+                                        .iter()
+                                        .map(|c| self.sized(c, 1, &here))
+                                        .collect::<Result<_, String>>()?,
+                                ),
+                            );
+                        }
+                        Value::Object(sized)
+                    }
+                    other => other.clone(),
+                },
+                _ if !has_plain_number(v, 0) => v.clone(),
+                _ => {
+                    return Err(format!(
+                        "{here} holds a number, and whether it is a length is not known"
+                    ));
+                }
+            };
+            out.insert(key.clone(), sized);
+        }
+        let out = Value::Object(out);
+        if out == value {
+            return Ok(None);
+        }
+        let written = serde_json::to_string(&out).map_err(|e| format!("{what}: {e}"))?;
+        if written.len() > craft3d_doc::MAX_ASSERTION_TEXT {
+            return Err(format!(
+                "{what} would be longer than {} bytes with its units",
+                craft3d_doc::MAX_ASSERTION_TEXT
+            ));
+        }
+        Ok(Some(written))
+    }
+}
+
+/// The curves of a sketch given by formulas: `x(t)` and `y(t)` that are
+/// plain numbers (read in the document's unit) get the old unit, proven at
+/// points along the range of `t`; formulas that are lengths are kept. A
+/// formula whose dimension changes along `t` is refused.
+fn size_formula_curves(
+    sketch: &mut craft3d_doc::Sketch,
+    variables: &Evaluation,
+    from: LengthUnit,
+    feature: &str,
+) -> Result<usize, String> {
+    let mut rewritten = 0usize;
+    let symbol = from.symbol();
+    let factor = from.as_expr_unit().factor();
+    for entity in &mut sketch.entities {
+        let id = entity.id;
+        let Geometry::Formula {
+            x,
+            y,
+            from: t0,
+            to: t1,
+            ..
+        } = &mut entity.geometry
+        else {
+            continue;
+        };
+        let range = |e: &Expr, name: &str| {
+            variables.evaluate(e.source()).map_err(|err| {
+                format!(
+                    "`{feature}` {id}.{name}: `{}` does not evaluate: {err}",
+                    e.source()
+                )
+            })
+        };
+        let (mut start, mut end) = (range(t0, "from")?, range(t1, "to")?);
+        // As regeneration reads them: an end that is exactly zero takes the
+        // other's dimension.
+        if start.dimension != end.dimension {
+            if start.value == 0.0 {
+                start = Quantity::new(0.0, end.dimension);
+            } else if end.value == 0.0 {
+                end = Quantity::new(0.0, start.dimension);
+            }
+        }
+        if start.dimension != end.dimension {
+            return Err(format!(
+                "`{feature}` {id}: the range of t has ends of two dimensions"
+            ));
+        }
+        let samples: Vec<Quantity> = (0..=8)
+            .map(|i| {
+                let s = f64::from(i) / 8.0;
+                Quantity::new(start.value + (end.value - start.value) * s, start.dimension)
+            })
+            .collect();
+        for (name, formula) in [("x", x), ("y", y)] {
+            let source = formula.source().to_string();
+            let what = format!("`{feature}` {id}.{name}");
+            let at = |text: &str, t: Quantity| -> Result<Quantity, String> {
+                let parsed = craft3d_expr::Expr::parse(text)
+                    .map_err(|e| format!("{what}: `{text}`: {e}"))?;
+                variables
+                    .evaluate_bound(&parsed, craft3d_doc::FORMULA_PARAMETER, t)
+                    .map_err(|e| format!("{what}: `{text}` at t = {}: {e}", t.value))
+            };
+            let plain: Vec<Quantity> = samples
+                .iter()
+                .map(|&t| at(&source, t))
+                .collect::<Result<_, _>>()?;
+            if plain.iter().all(|q| q.dimension == Dimension::LENGTH) {
+                continue;
+            }
+            if !plain.iter().all(|q| q.dimension.is_dimensionless()) {
+                return Err(format!(
+                    "{what}: `{source}` is not a plain number or a length all along t"
+                ));
+            }
+            let written = format!("({}) * 1 {symbol}", source.trim());
+            for (&t, was) in samples.iter().zip(&plain) {
+                let got = at(&written, t)?;
+                let want = was.value * factor;
+                if got.dimension != Dimension::LENGTH
+                    || (got.value - want).abs() > 1e-12 * want.abs().max(f64::MIN_POSITIVE)
+                {
+                    return Err(format!(
+                        "{what}: `{source}` could not be written with its unit (`{written}`)"
+                    ));
+                }
+            }
+            *formula = Expr::new(written);
+            rewritten = rewritten.saturating_add(1);
+        }
+    }
+    Ok(rewritten)
+}
+
+/// Rewrites `doc` (already in the unit `to`) so that it is as large as it
+/// was in `from`; the number of expressions given a unit. `outputs` are the
+/// document's outputs as computed before the change, which the bounds and
+/// the measures' expressions may use.
+fn keep_the_sizes(
+    doc: &mut Document,
+    from: LengthUnit,
+    to: LengthUnit,
+    outputs: Option<&Resolved>,
+) -> Result<usize, String> {
+    let k = factor(from, to);
+    let variables = doc
         .variable_table()
         .map_err(|e| format!("its variables: {e}"))?
         .evaluate();
+    let values = Values {
+        variables: &variables,
+        outputs,
+    };
     let mut rewritten = 0usize;
     for feature in &mut doc.features {
-        if !feature.kind.formula_exprs().is_empty() {
-            return Err(format!(
-                "`{}` has a formula curve, whose numbers are lengths in the unit (owed)",
-                feature.name
-            ));
-        }
         let circular_step = matches!(
             &feature.kind,
             FeatureKind::Pattern(p) if matches!(p.layout, PatternLayout::Circular { .. })
@@ -235,7 +586,7 @@ fn keep_the_sizes(doc: &mut Document, from: LengthUnit, to: LengthUnit) -> Resul
             ));
         }
         for (expr, (name, source, role)) in exprs.into_iter().zip(named) {
-            let quantity = values.evaluate(&source).map_err(|e| {
+            let quantity = values.eval(&source).map_err(|e| {
                 format!("`{feature_name}` {name}: `{source}` does not evaluate: {e}")
             })?;
             if !quantity.dimension.is_dimensionless() {
@@ -245,19 +596,25 @@ fn keep_the_sizes(doc: &mut Document, from: LengthUnit, to: LengthUnit) -> Resul
                 Some(false) => {}
                 Some(true) => {
                     *expr = Expr::new(
-                        with_unit(&values, &source, from, 1)
+                        with_unit(&values, &source, from, Dimension::LENGTH)
                             .map_err(|e| format!("`{feature_name}` {name}: {e}"))?,
                     );
                     rewritten = rewritten.saturating_add(1);
                 }
                 None => {
                     return Err(format!(
-                        "`{feature_name}` {name}: `{source}` is a plain number, and whether it is a length is not known here (owed)"
+                        "`{feature_name}` {name}: `{source}` is a plain number, and whether it is a length is not known here"
                     ));
                 }
             }
         }
         if let FeatureKind::Sketch(sketch) = &mut feature.kind {
+            rewritten = rewritten.saturating_add(size_formula_curves(
+                sketch,
+                &variables,
+                from,
+                &feature_name,
+            )?);
             for entity in &mut sketch.entities {
                 match &mut entity.geometry {
                     Geometry::Point { x, y } => {
@@ -278,45 +635,82 @@ fn keep_the_sizes(doc: &mut Document, from: LengthUnit, to: LengthUnit) -> Resul
             }
         }
     }
-    for set in &doc.sets {
-        if has_plain_number(&serde_json::from_str(&set.query).unwrap_or(Value::Null), 0) {
-            return Err(format!(
-                "the set `{}` has a number in its query, in the unit (owed: write it with its unit)",
-                set.name
-            ));
+    let mut sizer = Sizer {
+        values,
+        from,
+        rewritten,
+    };
+    for set in &mut doc.sets {
+        let what = format!("the set `{}`", set.name);
+        let query: Value = serde_json::from_str(&set.query).map_err(|e| format!("{what}: {e}"))?;
+        let sized = sizer.query(&query, &what)?;
+        if sized != query {
+            set.query = serde_json::to_string(&sized).map_err(|e| format!("{what}: {e}"))?;
+            if set.query.len() > craft3d_doc::MAX_SET_QUERY_BYTES {
+                return Err(format!(
+                    "{what} would be longer than {} bytes with its units",
+                    craft3d_doc::MAX_SET_QUERY_BYTES
+                ));
+            }
+        }
+    }
+    for output in &mut doc.outputs {
+        // An output's expression is computed in base units: the same
+        // number in either unit. A measured one's subjects and lengths are
+        // read in the document's unit.
+        if let OutputDef::Measure(text) = &mut output.def {
+            let what = format!("the output `{}`", output.name);
+            if let Some(sized) = sizer.measure(text, &what)? {
+                *text = sized;
+            }
         }
     }
     for assertion in &mut doc.assertions {
+        let name = assertion.name.clone();
+        let what = format!("the assertion `{name}`");
         let measure: Value = serde_json::from_str(&assertion.measure).unwrap_or(Value::Null);
         let kind = measure.get("measure").and_then(Value::as_str).unwrap_or("");
-        let own_numbers = measure.as_object().is_some_and(|m| {
-            m.keys().any(|key| {
-                !matches!(
-                    key.as_str(),
-                    "measure" | "of" | "from" | "to" | "axis" | "expr"
-                )
-            })
-        });
-        let subjects_numbered = ["of", "from", "to"]
-            .iter()
-            .any(|key| measure.get(*key).is_some_and(|v| has_plain_number(v, 0)));
-        if own_numbers || subjects_numbered {
-            return Err(format!(
-                "the assertion `{}` has numbers of its own in what it measures (owed)",
-                assertion.name
-            ));
-        }
-        let power = match crate::assert_cmds::dim_of(kind) {
-            Dim::Length(power) => power,
+        let dim = match crate::assert_cmds::dim_of(kind) {
+            Dim::Length(power) => Some(Dimension::new(power, 0)),
+            // A value's bounds are in the document's units of its
+            // expression's dimension, which the outputs it uses tell.
             Dim::Of(_) => {
-                return Err(format!(
-                    "the assertion `{}` measures a value, whose bounds are in the unit (owed)",
-                    assertion.name
-                ));
+                let source = measure.get("expr").and_then(Value::as_str).unwrap_or("");
+                match sizer.values.eval(source) {
+                    Ok(q) => Some(q.dimension),
+                    Err(e) => {
+                        let bounds: Vec<&Expr> = match &assertion.expect {
+                            Expect::Is(_) => Vec::new(),
+                            Expect::Equal { value, tol } => {
+                                std::iter::once(value).chain(tol.as_ref()).collect()
+                            }
+                            Expect::Within { min, max } => {
+                                min.as_ref().into_iter().chain(max.as_ref()).collect()
+                            }
+                        };
+                        let plain_bound = bounds.iter().any(|b| {
+                            sizer
+                                .values
+                                .eval(b.source())
+                                .is_ok_and(|q| q.dimension.is_dimensionless())
+                        });
+                        if plain_bound {
+                            return Err(format!(
+                                "{what} measures `{source}`, whose dimension is not known ({e}), so a plain number in its bounds could be a length or not; write its bounds with their unit"
+                            ));
+                        }
+                        None
+                    }
+                }
             }
-            Dim::Mass | Dim::Count | Dim::Flag => continue,
+            Dim::Mass | Dim::Count | Dim::Flag => None,
         };
-        let name = assertion.name.clone();
+        if let Some(sized) = sizer.measure(&assertion.measure, &what)? {
+            assertion.measure = sized;
+        }
+        let Some(dim) = dim.filter(|d| d.length != 0) else {
+            continue;
+        };
         let bounds: Vec<&mut Expr> = match &mut assertion.expect {
             Expect::Is(_) => Vec::new(),
             Expect::Equal { value, tol } => std::iter::once(value).chain(tol.as_mut()).collect(),
@@ -324,18 +718,20 @@ fn keep_the_sizes(doc: &mut Document, from: LengthUnit, to: LengthUnit) -> Resul
         };
         for bound in bounds {
             let source = bound.source().to_string();
-            let quantity = values.evaluate(&source).map_err(|e| {
-                format!("the assertion `{name}`: `{source}` does not evaluate: {e}")
-            })?;
+            let quantity = sizer
+                .values
+                .eval(&source)
+                .map_err(|e| format!("{what}: `{source}` does not evaluate: {e}"))?;
             if quantity.dimension.is_dimensionless() {
                 *bound = Expr::new(
-                    with_unit(&values, &source, from, power)
-                        .map_err(|e| format!("the assertion `{name}`: {e}"))?,
+                    with_unit(&sizer.values, &source, from, dim)
+                        .map_err(|e| format!("{what}: {e}"))?,
                 );
-                rewritten = rewritten.saturating_add(1);
+                sizer.rewritten = sizer.rewritten.saturating_add(1);
             }
         }
     }
+    let rewritten = sizer.rewritten;
     doc.tolerance.linear *= k;
     doc.tolerance.loosest = doc.tolerance.loosest.map(|l| l * k);
     if !craft3d_doc::Tolerance::linear_in_range(doc.tolerance.linear) {
@@ -377,6 +773,62 @@ fn has_plain_number(value: &Value, depth: usize) -> bool {
             .any(|(key, v)| key != "instance" && has_plain_number(v, depth + 1)),
         Value::Bool(_) | Value::Null => false,
     }
+}
+
+/// The assertions and outputs of `doc` as checked against it, in a
+/// document of their own beside the open ones (the active one put back
+/// whatever happens): what the change is proven against.
+fn checked_alone(
+    session: &mut Session,
+    doc: Document,
+) -> Result<(Vec<Checked>, std::sync::Arc<Resolved>), CommandError> {
+    let active = session.active;
+    session.documents.push(OpenDocument::new(doc, None));
+    session.active = session.documents.len().saturating_sub(1);
+    let checked = session.checks_and_outputs(Wait::All);
+    session.documents.pop();
+    session.active = active;
+    checked
+}
+
+/// The proof that the assertions and outputs did not change: every
+/// assertion has the status it had, every output the value (in base
+/// units, so the same in either unit) and the dimension it had.
+fn same_checks(
+    before: &(Vec<Checked>, std::sync::Arc<Resolved>),
+    after: &(Vec<Checked>, std::sync::Arc<Resolved>),
+) -> Result<(), String> {
+    if before.0.len() != after.0.len() {
+        return Err("the assertions are not the same in the new unit".into());
+    }
+    for (was, now) in before.0.iter().zip(&after.0) {
+        if was.state.status != now.state.status {
+            return Err(format!(
+                "the assertion `{}` is {} in the new unit and was {}",
+                now.state.name,
+                now.state.status.name(),
+                was.state.status.name()
+            ));
+        }
+    }
+    for (name, was) in before.1.entries() {
+        let now = after.1.get(name);
+        let same = match (was, now) {
+            (OutputValue::Known(a), Some(OutputValue::Known(b))) => {
+                a.dimension == b.dimension
+                    && (a.value - b.value).abs()
+                        <= 1e-6 * a.value.abs().max(b.value.abs()).max(f64::MIN_POSITIVE)
+            }
+            (OutputValue::Unknown(_), Some(OutputValue::Unknown(_))) => true,
+            _ => false,
+        };
+        if !same {
+            return Err(format!(
+                "the output `{name}` is {was:?} before and {now:?} in the new unit"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The proof of keeping the sizes: `after` (the document in the new unit,

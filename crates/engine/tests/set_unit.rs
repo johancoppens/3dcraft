@@ -155,6 +155,11 @@ fn keeping_the_numbers_rescales_what_has_no_unit() {
     assert_eq!(inspect["units"]["length"], "cm", "{inspect}");
 }
 
+/// An output and the measure it is made of keep their sizes (owed until
+/// 2026-10-28, when this refused); a value assertion whose expression
+/// uses an output that has no value has bounds whose dimension is not
+/// known, and a plain number in them is refused, naming the assertion;
+/// bad params are errors.
 #[test]
 fn what_cannot_be_kept_is_refused_and_bad_params_are_errors() {
     let mut s = part("mm", 1.0);
@@ -163,12 +168,53 @@ fn what_cannot_be_kept_is_refused_and_bad_params_are_errors() {
         "variable.measure",
         json!({"name": "v", "measure": "volume", "of": "Row"}),
     );
+    let v = |s: &mut Session| {
+        run(s, "output.list", json!({}))["outputs"][0]["value"]
+            .as_f64()
+            .unwrap()
+    };
+    let before = v(&mut s);
+    run(
+        &mut s,
+        "document.setUnit",
+        json!({"units": "in", "keep": "sizes"}),
+    );
+    close(v(&mut s), before / 25.4f64.powi(3), "the output in inches");
+    run(&mut s, "edit.undo", json!({}));
+    run(
+        &mut s,
+        "variable.output",
+        json!({"name": "bad", "expr": "1 / 0"}),
+    );
+    run(
+        &mut s,
+        "assert.add",
+        json!({"name": "unknowable", "measure": "value", "expr": "bad", "max": 5}),
+    );
     let e = error(
         &mut s,
         "document.setUnit",
         json!({"units": "in", "keep": "sizes"}),
     );
-    assert!(e.contains("outputs"), "{e}");
+    assert!(
+        e.contains("unknowable") && e.contains("dimension is not known"),
+        "{e}"
+    );
+    // Written with its unit, it is no longer ambiguous: the change is
+    // made, and the assertion, which cannot be measured, stays so.
+    run(
+        &mut s,
+        "assert.edit",
+        json!({"name": "unknowable", "max": "5 * (1 mm)^3"}),
+    );
+    let was = statuses(&mut s);
+    run(
+        &mut s,
+        "document.setUnit",
+        json!({"units": "in", "keep": "sizes"}),
+    );
+    assert_eq!(statuses(&mut s), was);
+    run(&mut s, "edit.undo", json!({}));
     for bad in [
         json!({}),
         json!({"units": "in"}),
@@ -184,6 +230,267 @@ fn what_cannot_be_kept_is_refused_and_bad_params_are_errors() {
         json!({"units": "mm", "keep": "sizes"}),
     );
     assert_eq!(same["rewritten"], 0, "{same}");
+}
+
+/// The pairs of units the cases below are checked at, and the factor
+/// from the first to the second.
+const PAIRS: [(&str, &str); 2] = [("mm", "m"), ("in", "mm")];
+
+fn statuses(s: &mut Session) -> Vec<(String, String)> {
+    let listed = run(s, "assert.list", json!({}));
+    listed["assertions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| {
+            (
+                a["name"].as_str().unwrap().to_string(),
+                a["status"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+fn output(s: &mut Session, name: &str) -> f64 {
+    let listed = run(s, "output.list", json!({}));
+    listed["outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["name"] == name)
+        .unwrap_or_else(|| panic!("no output {name}: {listed}"))["value"]
+        .as_f64()
+        .unwrap_or_else(|| panic!("{name}: {listed}"))
+}
+
+/// Outputs measured with numbers of their own (an offset, a plane's
+/// point), an output computed from one, and value assertions with plain
+/// bounds: a block of 20 x 10 x 6, whose volume is 1200, whose volume
+/// below 2 is 400 and whose section is 200, in the new unit by the
+/// factor's powers; every assertion as it was (one fails, and still does).
+#[test]
+fn outputs_and_value_assertions_keep_their_sizes() {
+    for (from, to) in PAIRS {
+        let f = mm(from) / mm(to);
+        let mut s = common::session();
+        run(
+            &mut s,
+            "file.new",
+            json!({"units": from, "tolerance": 1e-6}),
+        );
+        run(
+            &mut s,
+            "feature.block",
+            json!({"size": [20, 10, 6], "name": "Base"}),
+        );
+        for (name, measure) in [
+            ("v", json!({"measure": "volume", "of": "Base"})),
+            (
+                "below",
+                json!({"measure": "volumeBelow", "of": "Base", "plane": "xy", "offset": 2}),
+            ),
+            (
+                "section",
+                json!({"measure": "sectionArea", "of": "Base", "plane": {"point": [0, 0, "3"], "normal": [0, 0, 1]}}),
+            ),
+        ] {
+            let mut params = measure;
+            params["name"] = json!(name);
+            run(&mut s, "variable.measure", params);
+        }
+        run(
+            &mut s,
+            "variable.output",
+            json!({"name": "half", "expr": "v / 2"}),
+        );
+        for params in [
+            json!({"name": "vol", "measure": "value", "expr": "v", "min": 1100, "max": 1300}),
+            json!({"name": "halfEq", "measure": "value", "expr": "half", "eq": 600}),
+            json!({"name": "tooSmall", "measure": "value", "expr": "v", "max": 1000}),
+            json!({"name": "belowEq", "measure": "volumeBelow", "of": "Base", "offset": "3", "eq": 600}),
+            json!({"name": "sectionEq", "measure": "sectionArea", "of": "Base", "plane": {"point": [0, 0, 3], "normal": [0, 0, 1]}, "eq": 200}),
+            json!({"name": "valueBelow", "measure": "value", "expr": "below / section", "eq": 2}),
+            json!({"name": "symmetric", "measure": "symmetric", "of": "Base", "plane": {"point": [10, 0, 0], "normal": [1, 0, 0]}, "tol": 0.001}),
+        ] {
+            run(&mut s, "assert.add", params);
+        }
+        let before = statuses(&mut s);
+        let failed: Vec<&str> = before
+            .iter()
+            .filter(|(_, status)| status != "passed")
+            .map(|(name, _)| name.as_str())
+            .collect();
+        assert_eq!(failed, ["tooSmall"], "{before:?}");
+        let changed = run(
+            &mut s,
+            "document.setUnit",
+            json!({"units": to, "keep": "sizes"}),
+        );
+        assert!(changed["rewritten"].as_u64().unwrap() >= 10, "{changed}");
+        assert_eq!(statuses(&mut s), before, "{from} to {to}");
+        close(output(&mut s, "v"), 1200.0 * f.powi(3), "v");
+        close(output(&mut s, "half"), 600.0 * f.powi(3), "half");
+        close(output(&mut s, "below"), 400.0 * f.powi(3), "below");
+        close(output(&mut s, "section"), 200.0 * f.powi(2), "section");
+    }
+}
+
+/// Formula curves whose x(t) and y(t) are plain numbers: a parabola
+/// segment `y = t^2 / 40` from -20 to 20 closed by its chord (two thirds
+/// of its box, 4/3 a h) and an Archimedean spiral `r = 10 + 3 t` over one
+/// turn closed along the x axis (`((a + 2 pi b)^3 - a^3) / (6 b)`), each
+/// extruded by 5: as large in the new unit. One whose dimension changes
+/// along t is refused, naming it.
+#[test]
+fn formula_curves_keep_their_sizes() {
+    use std::f64::consts::PI;
+    for (from, to) in PAIRS {
+        let f = mm(from) / mm(to);
+        let mut s = common::session();
+        run(
+            &mut s,
+            "file.new",
+            json!({"units": from, "tolerance": 1e-7}),
+        );
+        for (name, x, y, t) in [
+            ("P", "t", "t^2 / 40", json!([-20, 20])),
+            (
+                "S",
+                "(10 + 3 * t) * cos(t)",
+                "(10 + 3 * t) * sin(t)",
+                json!([0, "2 * pi"]),
+            ),
+        ] {
+            run(&mut s, "sketch.create", json!({"name": name}));
+            let curve = run(
+                &mut s,
+                "sketch.curve",
+                json!({"sketch": name, "x": x, "y": y, "t": t}),
+            );
+            run(
+                &mut s,
+                "sketch.line",
+                json!({"sketch": name, "from": curve["end"], "to": curve["start"]}),
+            );
+            run(
+                &mut s,
+                "feature.extrude",
+                json!({"sketch": name, "distance": 5, "name": format!("{name}x")}),
+            );
+        }
+        let parabola = 4.0 / 3.0 * 20.0 * 10.0 * 5.0;
+        let spiral = ((10.0 + 2.0 * PI * 3.0).powi(3) - 1000.0) / 18.0 * 5.0;
+        let near = |a: f64, b: f64, what: &str| {
+            assert!((a - b).abs() <= 1e-5 * b, "{what}: {a} vs {b}");
+        };
+        near(volume(&mut s), parabola + spiral, "before");
+        let changed = run(
+            &mut s,
+            "document.setUnit",
+            json!({"units": to, "keep": "sizes"}),
+        );
+        assert!(changed["rewritten"].as_u64().unwrap() >= 4, "{changed}");
+        near(volume(&mut s), (parabola + spiral) * f.powi(3), "after");
+        let inspect = run(&mut s, "sketch.inspect", json!({"sketch": "P"}));
+        assert!(
+            inspect
+                .to_string()
+                .contains(&format!("(t^2 / 40) * 1 {from}")),
+            "{inspect}"
+        );
+        assert_eq!(run(&mut s, "document.check", json!({}))["ok"], true);
+    }
+    // A formula that is a plain number on one side and a length on the
+    // other: whether its plain part is a length is not known for certain.
+    let mut s = common::session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(&mut s, "sketch.create", json!({"name": "Odd"}));
+    run(
+        &mut s,
+        "sketch.curve",
+        json!({"sketch": "Odd", "x": "if(t < 0, t, t * 1 mm)", "y": "t^2 / 40 * 1 mm", "t": [-20, 20]}),
+    );
+    let e = error(
+        &mut s,
+        "document.setUnit",
+        json!({"units": "m", "keep": "sizes"}),
+    );
+    assert!(e.contains("Odd") && e.contains("along t"), "{e}");
+}
+
+/// Numbers in a named set's query and in assertions' subjects: faces of
+/// at least 199 (the block's two of 200), the cylinder's side by its
+/// radius 2, the bodies inside a box, the faces above 5.5 and the edges
+/// from 19 to 21 long; every count as it was, and the block's volume in
+/// the box by the factor cubed.
+#[test]
+fn numbers_in_sets_and_subjects_keep_their_sizes() {
+    for (from, to) in PAIRS {
+        let f = mm(from) / mm(to);
+        let mut s = common::session();
+        run(
+            &mut s,
+            "file.new",
+            json!({"units": from, "tolerance": 1e-6}),
+        );
+        run(
+            &mut s,
+            "feature.block",
+            json!({"size": [20, 10, 6], "name": "Base"}),
+        );
+        run(
+            &mut s,
+            "feature.cylinder",
+            json!({"radius": 2, "height": 6, "position": [40, 0, 0], "name": "Pin"}),
+        );
+        run(
+            &mut s,
+            "set.define",
+            json!({"name": "big", "kind": "face", "where": {"area": {"min": 199}}}),
+        );
+        for params in [
+            json!({"name": "bigFaces", "measure": "count", "of": {"kind": "face", "where": {"set": "big"}}, "eq": 2}),
+            json!({"name": "pinSide", "measure": "count", "of": {"kind": "face", "where": {"radius": 2}}, "eq": 1}),
+            json!({"name": "inBox", "measure": "volume", "of": {"kind": "body", "where": {"inside": [[-1, -1, -1], [21, 11, "7"]]}}, "eq": 1200}),
+            json!({"name": "tops", "measure": "count", "of": {"kind": "face", "where": {"above": {"z": 5.5}}}, "eq": 2}),
+            json!({"name": "long", "measure": "count", "of": {"kind": "edge", "where": {"length": {"min": 19, "max": "21"}}}, "eq": 4}),
+            json!({"name": "notSmall", "measure": "count", "of": {"kind": "face", "where": {"not": {"area": {"max": 13}}}}, "eq": 7}),
+        ] {
+            run(&mut s, "assert.add", params);
+        }
+        let before = statuses(&mut s);
+        assert!(before.iter().all(|(_, st)| st == "passed"), "{before:?}");
+        run(
+            &mut s,
+            "document.setUnit",
+            json!({"units": to, "keep": "sizes"}),
+        );
+        assert_eq!(statuses(&mut s), before, "{from} to {to}");
+        let listed = run(&mut s, "assert.list", json!({}));
+        let in_box = listed["assertions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["name"] == "inBox")
+            .unwrap()
+            .clone();
+        close(
+            in_box["measured"].as_f64().unwrap(),
+            1200.0 * f.powi(3),
+            "inBox",
+        );
+        let sets = run(&mut s, "set.list", json!({}));
+        assert!(
+            sets.to_string().contains(&format!("(199) * (1 {from})^2")),
+            "{sets}"
+        );
+        let held = run(
+            &mut s,
+            "select.query",
+            json!({"kind": "face", "where": {"set": "big"}}),
+        );
+        assert_eq!(held["count"], 2, "{held}");
+    }
 }
 
 /// A sketch's dimension and its stored points, kept as large.
