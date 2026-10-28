@@ -8,6 +8,7 @@ holds a static site in `3dcraft-web-@VERSION@/`:
 | `index.html` | The page. It loads everything through relative URLs. |
 | `@JS@` | wasm-bindgen glue (generated, ES module) |
 | `@WASM@` | The app (the engine, the kernel and the viewer), about 16 MB: 6 MB with gzip, 4.5 MB with Brotli |
+| `craft3d-worker-<hash>.js` | The checking worker: a Web Worker that runs the same module to measure a model's assertions and outputs off the page's thread (named in `index.html`) |
 | `manifest.webmanifest`, `icon-256.png`, `icon-512.png` | So the browser can install it as an app (Chromebooks, Chrome, Edge) |
 | `_headers`, `.htaccess` | Sample header rules for Netlify/Cloudflare Pages and Apache |
 | `LICENSE` | The MIT licence of 3DCraft |
@@ -19,7 +20,7 @@ There is no server-side code. Upload the folder's contents anywhere that serves 
 All URLs in `index.html` and the manifest are relative, so the site works at a domain root
 (`https://example.com/`), under a prefix (`https://example.com/tools/3dcraft/`) and from a CDN
 bucket. The `.js` and `.wasm` names carry a content hash of exactly 16 hex digits
-(`-[0-9a-f]{16}(_bg)?\.(wasm|js)$`), so they can be cached forever. Only `index.html` and
+(`-[0-9a-f]{16}(_bg)?\.(wasm|js)$`; the worker's too), so they can be cached forever. Only `index.html` and
 `manifest.webmanifest` need revalidation.
 
 ## Required server settings
@@ -35,9 +36,13 @@ bucket. The `.js` and `.wasm` names carry a content hash of exactly 16 hex digit
   `.js` files, and `no-cache` on `index.html`.
 - **HTTPS:** WebGPU only works in a secure context, which means `https://` or
   `http://localhost`. Over plain HTTP elsewhere, the app falls back to WebGL2.
-- **No special isolation headers:** 3DCraft runs on one thread and doesn't use
+- **No special isolation headers:** 3DCraft runs on the page's thread plus one Web Worker
+  for the checks, which talk by messages and share no memory. It doesn't use
   `SharedArrayBuffer`, so it doesn't need `Cross-Origin-Opener-Policy` or
-  `Cross-Origin-Embedder-Policy`. If your site already sends COEP `require-corp`, also send
+  `Cross-Origin-Embedder-Policy`. The worker is a script of the same site: a
+  `Content-Security-Policy` must allow it (`worker-src 'self'`, or `script-src 'self'`
+  without a `worker-src`). Where a worker cannot be started, the page measures the checks
+  itself, as before, and is then busier while they run. If your site already sends COEP `require-corp`, also send
   `Cross-Origin-Resource-Policy: same-origin` (or `cross-origin` when the files live on a CDN)
   on the app's files.
 

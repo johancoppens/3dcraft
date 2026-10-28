@@ -8,13 +8,22 @@ name: Release
 #   Web      3dcraft-web-<version>.zip (a static site, packaging/web/HOSTING.md)
 # and SHA256SUMS.txt over all of them (what an updater of the web build
 # checks before it unpacks it).
-# Started by hand (the packages are kept as run artifacts):
+# Started by hand (the packages are kept as run artifacts; nothing is
+# published):
 #   gh workflow run Release && gh run watch
+# or only the web zip, on one Linux runner:
+#   gh workflow run Release -f only=web && gh run watch
 # or by pushing a tag `v<version>` matching the workspace version, which
 # also makes a draft GitHub release with the packages for the developer to
 # publish, its notes taken from CHANGELOG.md's section for that version. macOS minutes count tenfold in a private repository.
 on:
   workflow_dispatch:
+    inputs:
+      only:
+        description: "all: every package; web: only the web zip (one Linux runner)"
+        type: choice
+        options: [all, web]
+        default: all
   push:
     tags: ["v*"]
 
@@ -27,6 +36,7 @@ env:
 jobs:
   package:
     name: package (${{ matrix.name }})
+    if: github.event_name != 'workflow_dispatch' || inputs.only != 'web'
     strategy:
       fail-fast: false
       matrix:
@@ -181,6 +191,10 @@ jobs:
           test "$(find ../target/smoke -name index.html | wc -l)" = 1
           ls "$site"/craft3d-web-*_bg.wasm | grep -Eq -- '-[0-9a-f]{16}_bg\.wasm$'
           ls "$site"/craft3d-web-*.js | grep -Eq -- '-[0-9a-f]{16}\.js$'
+          worker=$(ls "$site"/craft3d-worker-*.js)
+          echo "$worker" | grep -Eq -- '-[0-9a-f]{16}\.js$'
+          grep -q "content=\"./$(basename "$worker")\"" "$site/index.html"
+          grep -q "from './$(basename "$site"/craft3d-web-*.js)'" "$worker"
           grep -q 'rel="manifest"' "$site/index.html"
           grep -q '?webgl' "$site/HOSTING.md"
           test -s "$site/.htaccess" && test -s "$site/_headers" && test -s "$site/icon-512.png"

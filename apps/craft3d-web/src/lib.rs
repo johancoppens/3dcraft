@@ -34,6 +34,7 @@
 //! changes is closed. Building the site: `cargo xtask package --formats
 //! web` (docs/development.md, Web build).
 
+pub mod checks;
 pub mod flags;
 pub mod host;
 #[cfg(target_arch = "wasm32")]
@@ -41,3 +42,5 @@ mod page;
 #[cfg(target_arch = "wasm32")]
 mod pickers;
 pub mod prefs;
+#[cfg(target_arch = "wasm32")]
+mod worker;

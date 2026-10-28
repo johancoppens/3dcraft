@@ -7,6 +7,8 @@
 //!   index.html                       relative URLs only: any path works
 //!   craft3d-web-<hash>.js            wasm-bindgen's glue (an ES module)
 //!   craft3d-web-<hash>_bg.wasm       the app
+//!   craft3d-worker-<hash>.js         the checking worker (a module worker
+//!                                    that loads the glue), named by the page
 //!   manifest.webmanifest, icon-256.png, icon-512.png   installable app
 //!   HOSTING.md, _headers, .htaccess  server settings
 //!   LICENSE
@@ -96,11 +98,20 @@ pub fn with_sum(existing: &str, line: &str, name: &str) -> String {
     out
 }
 
+/// The checking worker's file name: the first 16 hex digits of the
+/// SHA-256 of the worker as filled in (which names the glue, whose name
+/// carries the module's hash), so it is cached forever like them.
+pub fn worker_name(worker: &[u8]) -> String {
+    let hash: String = hex(&craft3d_doc::sha256(worker)).chars().take(16).collect();
+    format!("craft3d-worker-{hash}.js")
+}
+
 /// A template of `packaging/web` with its names filled in.
-pub fn fill(template: &str, js: &str, wasm: &str, version: &str) -> String {
+pub fn fill(template: &str, js: &str, wasm: &str, worker: &str, version: &str) -> String {
     template
         .replace("@JS@", js)
         .replace("@WASM@", wasm)
+        .replace("@WORKER@", worker)
         .replace("@VERSION@", version)
         .replace("@THEME_COLOR@", THEME_COLOR)
         .replace("@BACKGROUND@", BACKGROUND)
@@ -257,6 +268,11 @@ pub fn package(
     let web = repo.join("packaging").join("web");
     crate::package::write(&site.join(&js_name), &js)?;
     crate::package::write(&site.join(&wasm_name), &wasm)?;
+    let worker_template = String::from_utf8(crate::package::read(&web.join("worker.js"))?)
+        .map_err(|_| "packaging/web/worker.js is not UTF-8".to_string())?;
+    let worker = fill(&worker_template, &js_name, &wasm_name, "", version);
+    let worker_file = worker_name(worker.as_bytes());
+    crate::package::write(&site.join(&worker_file), worker.as_bytes())?;
     for (from, to) in [
         ("index.html", "index.html"),
         ("manifest.webmanifest", "manifest.webmanifest"),
@@ -266,7 +282,7 @@ pub fn package(
     ] {
         let template = String::from_utf8(crate::package::read(&web.join(from))?)
             .map_err(|_| format!("packaging/web/{from} is not UTF-8"))?;
-        let filled = fill(&template, &js_name, &wasm_name, version);
+        let filled = fill(&template, &js_name, &wasm_name, &worker_file, version);
         crate::package::write(&site.join(to), filled.as_bytes())?;
     }
     for size in [256, 512] {
@@ -367,11 +383,26 @@ mod tests {
             &read("index.html"),
             "a-0123456789abcdef.js",
             "a-0123456789abcdef_bg.wasm",
+            "craft3d-worker-0123456789abcdef.js",
             "1.2.3",
         );
         assert!(!index.contains('@'), "{index}");
         assert!(index.contains("import init from './a-0123456789abcdef.js'"));
         assert!(index.contains("module_or_path: './a-0123456789abcdef_bg.wasm'"));
+        // The page names its checking worker, which loads the glue.
+        assert!(index.contains(
+            "<meta name=\"craft3d-worker\" content=\"./craft3d-worker-0123456789abcdef.js\">"
+        ));
+        let worker = fill(&read("worker.js"), "a-0123456789abcdef.js", "", "", "");
+        assert!(!worker.contains('@'), "{worker}");
+        assert!(worker.contains("from './a-0123456789abcdef.js'"));
+        assert!(worker.contains("craft3d_check"));
+        let name = worker_name(worker.as_bytes());
+        assert!(
+            name.starts_with("craft3d-worker-") && name.ends_with(".js") && name.len() == 34,
+            "{name}"
+        );
+        assert_ne!(name, worker_name(b"another worker"));
         // An updater installs it as an app only without a manifest of its
         // own; ours is there, with relative addresses.
         assert!(index.contains("rel=\"manifest\""));
@@ -379,7 +410,7 @@ mod tests {
             index.contains("id=\"craft3d_canvas\"") && index.contains("id=\"craft3d_loading\"")
         );
         let manifest: serde_json::Value =
-            serde_json::from_str(&fill(&read("manifest.webmanifest"), "", "", "")).unwrap();
+            serde_json::from_str(&fill(&read("manifest.webmanifest"), "", "", "", "")).unwrap();
         assert_eq!(manifest["start_url"], "./");
         assert_eq!(manifest["scope"], "./");
         assert_eq!(manifest["theme_color"], THEME_COLOR);

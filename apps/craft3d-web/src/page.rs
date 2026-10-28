@@ -10,6 +10,7 @@
 //! in WebAssembly ends the page). A file dialog the person closes is not
 //! reported: nothing was asked of the page.
 
+use crate::checks::{Checks, Reply};
 use crate::flags::{self, Flags};
 use crate::host::{
     Ask, Download, Pick, PickerType, WebHost, open_types, received_kind,
@@ -17,6 +18,7 @@ use crate::host::{
 };
 use crate::pickers::{self, Picked};
 use crate::prefs::{self, Prefs};
+use crate::worker::{self, Replies, WebWorker};
 use craft3d_ui_egui::{RendererChoice, Shell, window_title};
 use egui_wgpu::wgpu;
 use std::cell::{Cell, RefCell};
@@ -91,6 +93,11 @@ type Mailbox = Rc<RefCell<Vec<Mail>>>;
 /// Starts the page once the module is loaded.
 #[wasm_bindgen(start)]
 pub fn start() {
+    // The same module runs the checking worker (`worker.rs`), where there
+    // is no window and no page to start.
+    if web_sys::window().is_none() {
+        return;
+    }
     // The commit the build script embedded, for the bug report.
     craft3d_engine::set_build_commit(option_env!("CRAFT3D_GIT_COMMIT"));
     let _ = eframe::WebLogger::init(log::LevelFilter::Info);
@@ -435,6 +442,12 @@ struct Page {
     gpu_error: Arc<Mutex<Option<String>>>,
     title: String,
     stored: String,
+    /// The assertions and outputs, measured in the checking worker
+    /// (`checks.rs`); `None` on a page that names no worker, which
+    /// measures them itself a piece per frame.
+    checks: Option<Checks<WebWorker>>,
+    /// What the worker answered, for the next frame.
+    replies: Replies,
 }
 
 impl Page {
@@ -482,6 +495,13 @@ impl Page {
         // The long work a piece per frame: the page's one thread draws
         // between the pieces (`WebHost::prepare`).
         host.set_stepwise(true);
+        // The checks off the page's thread, in a worker of their own.
+        let replies: Replies = Rc::new(RefCell::new(Vec::new()));
+        let checks = worker::script().map(|script| {
+            log::info!("checks: in a Web Worker ({script})");
+            let transport = WebWorker::new(script, Rc::clone(&replies), creation.egui_ctx.clone());
+            Checks::new(transport, &mut host.session)
+        });
         if let Some(url) = &flags.open {
             host.fetching(&flags::file_name(url));
         }
@@ -511,6 +531,8 @@ impl Page {
             gpu_error,
             title: String::new(),
             stored,
+            checks,
+            replies,
         }
     }
 
@@ -965,6 +987,18 @@ impl eframe::App for Page {
             .prepare(move || js_sys::Date::now() - started > FRAME_WORK_MS);
         if busy {
             ctx.request_repaint();
+        }
+        // The checks to and from their worker; the worker's answer asks
+        // for the frame that takes it.
+        if let Some(checks) = &mut self.checks {
+            let replies: Vec<Reply> = self.replies.borrow_mut().drain(..).collect();
+            let done = checks.frame(&mut self.host.session, replies);
+            if let Some(why) = done.home {
+                log::warn!("checks: measured on the page, the worker cannot be had: {why}");
+            }
+            if !done.answered.is_empty() {
+                ctx.request_repaint();
+            }
         }
         let title = window_title(self.host.session.document_status().as_ref());
         if title != self.title {

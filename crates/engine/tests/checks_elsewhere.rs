@@ -15,7 +15,9 @@ use craft3d_engine::{AssertionStatus, SceneQuality, Session, Workspace, measure_
 use serde_json::{Value, json};
 
 /// Blocks at scale `s` (mm), a hole, outputs measured in two stages (the
-/// second uses the first) and assertions on bodies and on the outputs.
+/// second uses the first) and assertions on bodies and on the outputs;
+/// then `w` set to 41 (scaled), an edit whose checks are left to the
+/// host (`assert.add` measures its own assertion in line).
 fn build(session: &mut Session, s: f64) {
     let mm = |v: f64| format!("{} mm", v * s);
     let steps = [
@@ -27,7 +29,7 @@ fn build(session: &mut Session, s: f64) {
         ),
         (
             "feature.block",
-            json!({"size": [mm(10.0), mm(10.0), mm(10.0)], "position": [mm(60.0), "0 mm", "0 mm"], "name": "B"}),
+            json!({"size": ["w / 4", "w / 4", "w / 4"], "position": [mm(60.0), "0 mm", "0 mm"], "name": "B"}),
         ),
         (
             "feature.cylinder",
@@ -47,7 +49,7 @@ fn build(session: &mut Session, s: f64) {
         ),
         (
             "assert.add",
-            json!({"name": "cube", "measure": "volume", "of": "B", "eq": format!("({})^3", mm(10.0)), "tol": "1e-6 * (1 mm)^3"}),
+            json!({"name": "cube", "measure": "volume", "of": "B", "eq": "(w / 4)^3", "tol": "1e-6 * (1 mm)^3"}),
         ),
         (
             "assert.add",
@@ -55,8 +57,9 @@ fn build(session: &mut Session, s: f64) {
         ),
         (
             "assert.add",
-            json!({"name": "twice", "measure": "value", "expr": "VB2", "min": format!("({})^3", mm(10.0))}),
+            json!({"name": "twice", "measure": "value", "expr": "VB2", "min": "(w / 4)^3"}),
         ),
+        ("variable.set", json!({"name": "w", "expr": mm(41.0)})),
     ];
     for (id, params) in steps {
         session
@@ -143,7 +146,7 @@ fn checks_measured_elsewhere_are_those_measured_here() {
         assert_eq!(answers(&mut session), want, "scale {s}");
 
         // An edit and back: only what changed is handed over again.
-        for w in [41.0, 40.0] {
+        for w in [40.0, 41.0] {
             session
                 .execute(
                     "variable.set",
