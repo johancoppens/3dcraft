@@ -1,0 +1,15 @@
+[
+ ["variable.set", {"name": "seam", "expr": "3"}],
+ ["variable.set", {"name": "notch", "expr": "2"}],
+ ["sketch.create", {"plane": "xy", "name": "BoxBase"}],
+ ["sketch.rect", {"sketch": "BoxBase", "from": [0, 0], "to": [80, 50]}],
+ ["feature.sheetMetal", {"sketch": "BoxBase", "name": "Box", "thickness": "1.5 mm", "radius": "2 mm", "kFactor": 0.42,
+   "relief": {"shape": "notch", "size": "4 mm"},
+   "corner": {"kind": "seam", "gap": "0.3 mm"},
+   "corners": [{"flanges": [0, 1], "kind": "miter", "gap": "0.4 mm"},
+               {"flanges": [2, 3], "kind": "butt", "over": 3}],
+   "flanges": [{"edge": "e5", "length": "15 mm", "angle": "90 deg"},
+               {"edge": "e6", "length": "15 mm", "angle": "90 deg"},
+               {"edge": "e7", "length": "15 mm", "angle": "90 deg"},
+               {"edge": "e8", "length": "15 mm", "angle": "90 deg"}]}]
+]
