@@ -13,7 +13,9 @@
 //! works on it (an edit, another document shown) is cancelled by ending
 //! the worker, which the next job starts again. An answer that says the
 //! worker stopped while measuring (a bug that aborted its module) makes
-//! the job's checks errors and the worker is started again. A worker that
+//! the job's checks errors and the worker is started again; so does one
+//! that takes longer than [`DEADLINE_MS`] over a job (it hangs), with
+//! errors that say so. A worker that
 //! cannot be had at all (no worker file, a browser or a policy that
 //! refuses it) before it ever answered sends the checks home: the page
 //! measures them a piece per frame, as it did before.
@@ -23,7 +25,7 @@ use craft3d_engine::Session;
 /// The worker, as [`Checks`] uses it.
 pub trait Transport {
     /// Starts the worker (when it is not running) and posts it a job.
-    fn post(&mut self, token: u64, document: &str, work: &str) -> Result<(), String>;
+    fn post(&mut self, token: u64, document: &[u8], work: &str) -> Result<(), String>;
     /// Ends the worker and whatever it was doing.
     fn stop(&mut self);
 }
@@ -54,12 +56,26 @@ pub struct Frame {
     pub cancelled: Option<u64>,
     /// The checks were sent home this frame, and why.
     pub home: Option<String>,
+    /// The job given up this frame: the worker took longer than
+    /// [`DEADLINE_MS`] on it.
+    pub timed_out: Option<u64>,
 }
+
+/// How long the worker may take over one job before it is ended and the
+/// job's checks are errors that say so, in milliseconds: ten minutes, far
+/// beyond the longest job measured (the gear reducer's 22 assertions,
+/// some 30 s in a browser), so only a worker that hangs reaches it.
+pub const DEADLINE_MS: f64 = 10.0 * 60.0 * 1000.0;
+
+/// What the checks of a job given up at the deadline say.
+pub const TOO_LONG: &str = "measuring them beside the page took longer than 10 minutes and was stopped; change a parameter or open the document again to measure them again";
 
 pub struct Checks<T: Transport> {
     transport: T,
     /// The job the worker is measuring.
     busy: Option<u64>,
+    /// When it was posted ([`Checks::frame_at`]'s clock, ms).
+    posted_at: f64,
     /// The worker answered at least once: it can be had on this page.
     answered_once: bool,
     /// Measured on the page again (the worker could not be had).
@@ -73,6 +89,7 @@ impl<T: Transport> Checks<T> {
         Self {
             transport,
             busy: None,
+            posted_at: 0.0,
             answered_once: false,
             home: false,
         }
@@ -88,9 +105,17 @@ impl<T: Transport> Checks<T> {
         self.busy
     }
 
-    /// Takes what came back (`replies`), cancels a job that was replaced,
-    /// and posts the job that waits. Called once per frame.
+    /// [`Checks::frame_at`] without a clock: no job ever reaches the
+    /// deadline.
     pub fn frame(&mut self, session: &mut Session, replies: Vec<Reply>) -> Frame {
+        self.frame_at(session, replies, 0.0)
+    }
+
+    /// Takes what came back (`replies`), gives up a job the worker has
+    /// had longer than [`DEADLINE_MS`] at `now` (ms, any clock that does
+    /// not go back), cancels a job that was replaced, and posts the job
+    /// that waits. Called once per frame.
+    pub fn frame_at(&mut self, session: &mut Session, replies: Vec<Reply>, now: f64) -> Frame {
         let mut done = Frame::default();
         if self.home {
             return done;
@@ -126,6 +151,17 @@ impl<T: Transport> Checks<T> {
                 }
             }
         }
+        // A worker that hangs: ended, and the job's checks say so.
+        if let Some(busy) = self.busy
+            && now - self.posted_at > DEADLINE_MS
+        {
+            self.transport.stop();
+            self.busy = None;
+            done.timed_out = Some(busy);
+            if session.checks_failed(busy, TOO_LONG) {
+                done.answered.push(busy);
+            }
+        }
         let wanted = session.checks_job();
         if let Some(busy) = self.busy
             && wanted != Some(busy)
@@ -141,6 +177,7 @@ impl<T: Transport> Checks<T> {
                 Ok(request) => match self.transport.post(token, &request.document, &request.work) {
                     Ok(()) => {
                         self.busy = Some(token);
+                        self.posted_at = now;
                         done.posted = Some(token);
                     }
                     Err(why) => {
@@ -154,9 +191,14 @@ impl<T: Transport> Checks<T> {
                         }
                     }
                 },
-                // The document cannot be written out: its checks say so.
+                // The document cannot be written out (it breaks its own
+                // rules, or is larger than a file may be): its checks say
+                // why. Not measured on the page instead: a document that
+                // large holds up the page for as long as they take.
                 Err(why) => {
-                    if session.checks_answered(token, Err(&why)) {
+                    let why =
+                        format!("the document cannot be handed to the checking worker: {why}");
+                    if session.checks_failed(token, &why) {
                         done.answered.push(token);
                     }
                 }
@@ -187,19 +229,19 @@ mod tests {
     /// `measure_checks` when told to, or fails as told.
     #[derive(Clone, Default)]
     struct Fake {
-        posted: Rc<RefCell<Vec<(u64, String, String)>>>,
+        posted: Rc<RefCell<Vec<(u64, Vec<u8>, String)>>>,
         stops: Rc<RefCell<usize>>,
         refuse: Option<String>,
     }
 
     impl Transport for Fake {
-        fn post(&mut self, token: u64, document: &str, work: &str) -> Result<(), String> {
+        fn post(&mut self, token: u64, document: &[u8], work: &str) -> Result<(), String> {
             if let Some(why) = &self.refuse {
                 return Err(why.clone());
             }
             self.posted
                 .borrow_mut()
-                .push((token, document.into(), work.into()));
+                .push((token, document.to_vec(), work.into()));
             Ok(())
         }
         fn stop(&mut self) {
@@ -289,6 +331,38 @@ mod tests {
         assert!(checks.frame(&mut s, late).answered.is_empty());
         assert_eq!(checks.frame(&mut s, fake.answers()).answered, vec![new]);
         assert_eq!(s.assertion_states()[0].status, AssertionStatus::Passed);
+    }
+
+    #[test]
+    fn a_worker_that_hangs_is_ended_at_the_deadline() {
+        let mut s = session();
+        let fake = Fake::default();
+        let mut checks = Checks::new(fake.clone(), &mut s);
+        pieces(&mut s);
+        let token = checks.frame_at(&mut s, Vec::new(), 1000.0).posted.unwrap();
+        // Just before the deadline it still waits.
+        let frame = checks.frame_at(&mut s, Vec::new(), 1000.0 + DEADLINE_MS);
+        assert_eq!(frame.timed_out, None);
+        assert_eq!(checks.busy(), Some(token));
+        let frame = checks.frame_at(&mut s, Vec::new(), 1001.0 + DEADLINE_MS);
+        assert_eq!(frame.timed_out, Some(token));
+        assert_eq!(frame.answered, vec![token]);
+        assert_eq!(*fake.stops.borrow(), 1);
+        let states = s.assertion_states();
+        assert_eq!(states[0].status, AssertionStatus::Error);
+        assert_eq!(states[0].message, format!("not measured: {TOO_LONG}"));
+        // Its answer, late, is dropped; the next state goes to a new worker.
+        assert!(
+            checks
+                .frame_at(&mut s, fake.answers(), 2e6)
+                .answered
+                .is_empty()
+        );
+        s.execute("variable.set", &json!({"name": "w", "expr": "15 mm"}))
+            .unwrap();
+        pieces(&mut s);
+        assert!(checks.frame_at(&mut s, Vec::new(), 2e6).posted.is_some());
+        assert!(!checks.home());
     }
 
     #[test]

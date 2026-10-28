@@ -234,3 +234,93 @@ fn only_a_host_that_works_a_piece_at_a_time_measures_elsewhere() {
     assert_eq!(empty.checks_job(), None);
     assert!(!empty.checks_answered(0, Err("x")));
 }
+
+/// A document with an imported STEP file: the file crosses with it (the
+/// bytes of the `.3dcraft` file hold it), so the worker measures the
+/// imported bodies as the session does.
+#[test]
+fn an_imported_body_is_measured_elsewhere_as_here() {
+    let mut source = Session::new(Workspace::memory());
+    for (id, params) in [
+        ("file.new", json!({"units": "mm"})),
+        (
+            "feature.block",
+            json!({"size": [40, 20, 10], "name": "Plate"}),
+        ),
+        (
+            "feature.cylinder",
+            json!({"radius": 5, "height": 30, "position": [60, 0, 0], "name": "Pin"}),
+        ),
+        ("file.export", json!({"path": "parts.step"})),
+    ] {
+        source.execute(id, &params).unwrap();
+    }
+    let step = source.take_file("parts.step").unwrap();
+    let build = |session: &mut Session| {
+        session
+            .execute("file.new", &json!({"units": "mm"}))
+            .unwrap();
+        session.put_file("parts.step", step.clone()).unwrap();
+        session
+            .execute("file.import", &json!({"path": "parts.step"}))
+            .unwrap();
+        for (id, params) in [
+            ("variable.set", json!({"name": "w", "expr": "10 mm"})),
+            (
+                "feature.block",
+                json!({"size": ["w", "w", "w"], "position": [0, 100, 0], "name": "Cube"}),
+            ),
+            (
+                "assert.add",
+                json!({"name": "all", "measure": "volume", "min": "1 mm^3"}),
+            ),
+            (
+                "assert.add",
+                json!({"name": "apart", "measure": "overlap", "is": false}),
+            ),
+            ("variable.set", json!({"name": "w", "expr": "11 mm"})),
+        ] {
+            session
+                .execute(id, &params)
+                .unwrap_or_else(|e| panic!("{id}: {}", e.message()));
+        }
+    };
+    let mut here = Session::new(Workspace::memory());
+    build(&mut here);
+    let want = answers(&mut here);
+    assert_eq!(want.0["passed"], 2, "{}", want.0);
+
+    let mut session = Session::new(Workspace::memory());
+    session.set_stepwise(true);
+    session.set_checks_elsewhere(true);
+    build(&mut session);
+    assert!(settle(&mut session) >= 1);
+    assert!(nothing_pending(&mut session));
+    assert_eq!(answers(&mut session), want);
+}
+
+/// A job that cannot be measured for a reason that is no bug (a worker
+/// that took too long) is an error that says so, without the bug label.
+#[test]
+fn a_job_given_up_says_why() {
+    let mut session = elsewhere();
+    build(&mut session, 1.0);
+    while session
+        .prepare_some(SceneQuality::display(), || false)
+        .is_some()
+    {}
+    let token = session.checks_job().unwrap();
+    assert!(session.checks_failed(token, "measuring took longer than 5 minutes"));
+    assert!(!session.checks_failed(token, "again"));
+    settle(&mut session);
+    let states = session.assertion_states();
+    assert!(
+        states.iter().any(|a| a.status == AssertionStatus::Error
+            && a.message == "not measured: measuring took longer than 5 minutes"),
+        "{states:?}"
+    );
+    assert!(
+        states.iter().all(|a| !a.message.contains("a bug")),
+        "{states:?}"
+    );
+}

@@ -4,8 +4,9 @@
 //! answers each job with [`craft3d_check`]. [`WebWorker`] is the page's
 //! [`Transport`] for [`crate::checks::Checks`].
 //!
-//! Messages: the page posts `{token, document, work, module}` (strings,
-//! and the page's compiled `WebAssembly.Module`, so the worker compiles
+//! Messages: the page posts `{token, document, work, module}` (the bytes
+//! of the document's `.3dcraft` file as a `Uint8Array`, the work as a
+//! string, and the page's compiled `WebAssembly.Module`, so the worker compiles
 //! nothing); the worker answers `{token, reply}`, `{token, fatal}` when
 //! measuring threw (a panic aborts the module: a bug), or `{token,
 //! unavailable}` when the module could not be started there. An error that
@@ -24,7 +25,7 @@ const META: &str = "craft3d-worker";
 
 /// What the worker answers a job with: `craft3d_engine::measure_checks`.
 #[wasm_bindgen]
-pub fn craft3d_check(document: &str, work: &str) -> String {
+pub fn craft3d_check(document: &[u8], work: &str) -> String {
     craft3d_engine::measure_checks(document, work)
 }
 
@@ -44,7 +45,7 @@ pub type Replies = Rc<RefCell<Vec<Reply>>>;
 struct Running {
     worker: web_sys::Worker,
     _message: Closure<dyn FnMut(web_sys::MessageEvent)>,
-    _error: Closure<dyn FnMut(web_sys::ErrorEvent)>,
+    _error: Closure<dyn FnMut(web_sys::Event)>,
 }
 
 pub struct WebWorker {
@@ -78,20 +79,21 @@ impl WebWorker {
                 },
             );
             let (replies, ctx) = (Rc::clone(&self.replies), self.ctx.clone());
-            let error = Closure::<dyn FnMut(web_sys::ErrorEvent)>::new(
-                move |event: web_sys::ErrorEvent| {
-                    // Not the page's error: the page goes on.
-                    event.prevent_default();
-                    let why = event.message();
-                    let why = if why.is_empty() {
-                        "the checking worker could not be loaded".to_string()
-                    } else {
-                        why
-                    };
-                    replies.borrow_mut().push(Reply::Failed(why));
-                    ctx.request_repaint();
-                },
-            );
+            // A script that cannot be loaded (a 404, a failed import, a
+            // `Content-Security-Policy` that refuses it) fires a plain
+            // `Event`, an error that escapes the worker an `ErrorEvent`:
+            // both are taken, the message read only where there is one.
+            let error = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+                // Not the page's error: the page goes on.
+                event.prevent_default();
+                let why = event
+                    .dyn_ref::<web_sys::ErrorEvent>()
+                    .map(web_sys::ErrorEvent::message)
+                    .filter(|m| !m.is_empty())
+                    .unwrap_or_else(|| "the checking worker could not be loaded".to_string());
+                replies.borrow_mut().push(Reply::Failed(why));
+                ctx.request_repaint();
+            });
             worker.set_onmessage(Some(message.as_ref().unchecked_ref()));
             worker.set_onerror(Some(error.as_ref().unchecked_ref()));
             self.running = Some(Running {
@@ -108,11 +110,11 @@ impl WebWorker {
 }
 
 impl Transport for WebWorker {
-    fn post(&mut self, token: u64, document: &str, work: &str) -> Result<(), String> {
+    fn post(&mut self, token: u64, document: &[u8], work: &str) -> Result<(), String> {
         let message = js_sys::Object::new();
         for (key, value) in [
             ("token", JsValue::from_str(&token.to_string())),
-            ("document", JsValue::from_str(document)),
+            ("document", js_sys::Uint8Array::from(document).into()),
             ("work", JsValue::from_str(work)),
             ("module", wasm_bindgen::module()),
         ] {

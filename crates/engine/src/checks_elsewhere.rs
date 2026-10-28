@@ -6,7 +6,8 @@
 //! A host that says so ([`Session::set_checks_elsewhere`]) takes the job
 //! of the active document that waits for answers ([`Session::checks_job`],
 //! a number), has it written out ([`Session::checks_request`]: the job's
-//! document as the `.3dcraft` manifest and its work, the assertions and
+//! document as the bytes of its `.3dcraft` file, with the files it holds
+//! such as an imported STEP file, and its work, the assertions and
 //! the outputs known so far, as JSON) and hands that to the other side,
 //! which answers with [`measure_checks`]. The answer goes back with
 //! [`Session::checks_answered`]; from then on the job is done as if this
@@ -44,8 +45,9 @@ use std::sync::{Arc, PoisonError};
 pub struct CheckRequest {
     /// What its answer goes back with ([`Session::checks_answered`]).
     pub token: u64,
-    /// The document the job measures, as the `.3dcraft` manifest.
-    pub document: String,
+    /// The document the job measures, as the bytes of its `.3dcraft`
+    /// file (with the files it holds: an imported STEP file).
+    pub document: Vec<u8>,
     /// What to measure: `{assertions, outputs}`.
     pub work: String,
 }
@@ -109,8 +111,8 @@ impl Session {
         let job = self
             .job_with_token(token)
             .ok_or_else(|| format!("no job of checks {token} waits for answers"))?;
-        let document = craft3d_format::to_manifest_json(&job.doc)
-            .map_err(|e| format!("the document cannot be written: {e}"))?;
+        let document = craft3d_format::to_bytes(&job.doc)
+            .map_err(|e| format!("the document cannot be written out: {e}"))?;
         let assertions: Vec<&Assertion> = job.work.iter().map(|(_, a)| a).collect();
         let work = json!({
             "assertions": assertions,
@@ -161,6 +163,26 @@ impl Session {
         true
     }
 
+    /// Job `token` could not be measured, for a reason that is no bug
+    /// (the worker took too long, the document cannot be written out):
+    /// every one of its checks is an error that says `why` as it is. The
+    /// job is then done. False when it no longer waits.
+    pub fn checks_failed(&mut self, token: u64, why: &str) -> bool {
+        let Some(job) = self.job_with_token(token) else {
+            return false;
+        };
+        let mut results = job.results.lock().unwrap_or_else(PoisonError::into_inner);
+        for (slot, (_, assertion)) in results.iter_mut().zip(&job.work) {
+            let mut failed = pending(assertion);
+            failed.state.status = AssertionStatus::Error;
+            failed.state.message = format!("not measured: {why}");
+            *slot = Some(failed);
+        }
+        drop(results);
+        job.done.store(true, Ordering::Release);
+        true
+    }
+
     /// The job numbered `token` of any open document, while it waits.
     fn job_with_token(&self, token: u64) -> Option<Arc<crate::assert_check::Job>> {
         if token == 0 {
@@ -186,9 +208,9 @@ thread_local! {
 /// answer for [`Session::checks_answered`], `{"checked": [...]}`, or
 /// `{"error": why}` when the request cannot be read. Never panics on any
 /// input.
-pub fn measure_checks(document: &str, work: &str) -> String {
+pub fn measure_checks(document: &[u8], work: &str) -> String {
     let measured = (|| -> Result<Vec<Value>, String> {
-        let doc = craft3d_format::from_manifest_json(document.as_bytes())
+        let doc = craft3d_format::from_bytes(document)
             .map_err(|e| format!("the document cannot be read: {e}"))?;
         let work: Value =
             serde_json::from_str(work).map_err(|e| format!("the work cannot be read: {e}"))?;
@@ -384,9 +406,10 @@ mod tests {
             ("", ""),
             ("{}", "{}"),
             ("not json", "[]"),
-            ("{\"version\": 1}", "{\"assertions\": 3}"),
+            ("PK\u{3}\u{4}", "{\"assertions\": 3}"),
         ] {
-            let answer: Value = serde_json::from_str(&measure_checks(document, work)).unwrap();
+            let answer: Value =
+                serde_json::from_str(&measure_checks(document.as_bytes(), work)).unwrap();
             assert!(answer["error"].is_string(), "{answer}");
         }
         assert!(decode_answer("{\"checked\": []}", 1).is_err());

@@ -992,12 +992,20 @@ impl eframe::App for Page {
         // for the frame that takes it.
         if let Some(checks) = &mut self.checks {
             let replies: Vec<Reply> = self.replies.borrow_mut().drain(..).collect();
-            let done = checks.frame(&mut self.host.session, replies);
+            let done = checks.frame_at(&mut self.host.session, replies, js_sys::Date::now());
             if let Some(why) = done.home {
                 log::warn!("checks: measured on the page, the worker cannot be had: {why}");
             }
             if !done.answered.is_empty() {
                 ctx.request_repaint();
+            }
+            if let Some(token) = done.timed_out {
+                log::warn!("checks: job {token} took too long in the worker and was stopped");
+            }
+            // While the worker measures, a frame now and then to see
+            // whether it has taken too long (`checks::DEADLINE_MS`).
+            if checks.busy().is_some() {
+                ctx.request_repaint_after(std::time::Duration::from_secs(30));
             }
         }
         let title = window_title(self.host.session.document_status().as_ref());
