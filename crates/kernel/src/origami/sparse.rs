@@ -504,24 +504,6 @@ impl Pattern {
         vals
     }
 
-    /// Takes the unknowns `out` (old order) out of `vals`: their rows and
-    /// columns 0, their diagonal 1.
-    pub fn decouple(&self, vals: &mut [f64], out: &[usize]) {
-        let gone: std::collections::BTreeSet<usize> = out
-            .iter()
-            .filter_map(|&c| self.at.get(c).copied())
-            .collect();
-        for (i, (&f, &s)) in self.first.iter().zip(&self.start).enumerate() {
-            for j in f..=i {
-                if gone.contains(&i) || gone.contains(&j) {
-                    if let Some(v) = vals.get_mut(s + j - f) {
-                        *v = if i == j { 1.0 } else { 0.0 };
-                    }
-                }
-            }
-        }
-    }
-
     /// The smallest pivot of factored `vals` among the unknowns not in
     /// `loose` (infinite with none).
     pub fn smallest_pivot(&self, vals: &[f64], loose: &[usize]) -> f64 {

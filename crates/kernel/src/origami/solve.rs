@@ -648,12 +648,22 @@ pub fn fold_linkage_with(
         weight: size,
         pattern: pattern.as_ref(),
     };
+    // The first step's solutions solved on to the rounding of the sheet's
+    // size, not just within the stopping rule: near the flat sheet the
+    // loops' derivative is near singular, and two solves of one branch
+    // that each stop at the rule can differ by more than the tolerances'
+    // angle; solved on, they meet.
+    let fine = Solver {
+        goal: size * 1e-15,
+        ..solver
+    };
 
     // A guess solved at `base`: the solution when it closes within the
     // tolerance with every solved joint its kind's way.
-    let attempt = |base: &[f64],
-                   guess: Vec<f64>,
-                   budget: &mut Budget|
+    let attempt_with = |solver: &Solver,
+                        base: &[f64],
+                        guess: Vec<f64>,
+                        budget: &mut Budget|
      -> Result<Option<(Vec<f64>, bool)>, FoldError> {
         let (solved, ran_out) = match solver.levenberg(base, guess, budget) {
             Ok(found) => found,
@@ -674,6 +684,13 @@ pub fn fold_linkage_with(
         };
         let kinds = solved.iter().zip(&signs).all(|(v, s)| s * v >= -angular);
         Ok((largest_gap(&here) <= tol && kinds).then_some((solved, ran_out)))
+    };
+    let attempt = |base: &[f64], guess: Vec<f64>, budget: &mut Budget| {
+        attempt_with(&solver, base, guess, budget)
+    };
+    // The first step's: solved on (`fine`).
+    let first_attempt = |base: &[f64], guess: Vec<f64>, budget: &mut Budget| {
+        attempt_with(&fine, base, guess, budget)
     };
     let size_of = |v: &[f64]| v.iter().fold(0.0f64, |m, a| m.max(a.abs()));
     // Continuation from the flat sheet: a first step by the kinds, then a
@@ -711,7 +728,7 @@ pub fn fold_linkage_with(
                  -> Result<Option<Vec<f64>>, FoldError> {
                     if c.quarter.is_none() {
                         let guess: Vec<f64> = c.half.iter().map(|v| v / 2.0).collect();
-                        let solved = attempt(&given(target / 4.0), guess.clone(), budget)?
+                        let solved = first_attempt(&given(target / 4.0), guess.clone(), budget)?
                             .map(|(q, _)| q)
                             .filter(|q| max_diff(q, &guess) <= 0.25 * size_of(&guess) + angular);
                         c.quarter = Some(solved);
@@ -741,7 +758,7 @@ pub fn fold_linkage_with(
                 let mut passed: Vec<Candidate> = Vec::new();
                 let mut parted: Option<Vec<usize>> = None;
                 for guess in first_guesses(&signs, step) {
-                    let Some((solved, ran_out)) = attempt(&base, guess, &mut budget)? else {
+                    let Some((solved, ran_out)) = first_attempt(&base, guess, &mut budget)? else {
                         continue;
                     };
                     // The same solution again, within the tolerance's angle:
@@ -751,7 +768,7 @@ pub fn fold_linkage_with(
                     }
                     let half_guess: Vec<f64> = solved.iter().map(|v| v / 2.0).collect();
                     let Some((half, _)) =
-                        attempt(&given(target / 2.0), half_guess.clone(), &mut budget)?
+                        first_attempt(&given(target / 2.0), half_guess.clone(), &mut budget)?
                     else {
                         continue;
                     };
@@ -1283,7 +1300,7 @@ fn undetermined(
         let scaled = vals.clone();
         let mut loose = p.factor(&mut vals, Some(RANK_PIVOT)).ok_or(BROKEN)?;
         let smallest = p.smallest_pivot(&vals, &loose);
-        confirm_rank(p, &scaled, &mut loose, smallest, budget)?;
+        name_free(p, &scaled, &mut loose, smallest, budget)?;
         return Ok(loose);
     }
     budget.spend((n as u64).saturating_pow(3))?;
@@ -1336,13 +1353,13 @@ fn undetermined(
         }
     }
     loose.sort_unstable();
-    if smallest <= CONFIRM_PIVOT && n > 0 {
+    if (smallest <= CONFIRM_PIVOT || !loose.is_empty()) && n > 0 {
         // Confirmed on the same matrix as the sparse test: one clique of
         // every unknown, its skyline the whole lower triangle.
         let all: Vec<usize> = (0..n).collect();
         let p = Pattern::new(n, &[all], budget)?;
         let vals = p.skyline_of(&scaled, n);
-        confirm_rank(&p, &vals, &mut loose, smallest, budget)?;
+        name_free(&p, &vals, &mut loose, smallest, budget)?;
     }
     Ok(loose)
 }
@@ -1353,69 +1370,114 @@ fn undetermined(
 /// singular (Kahan's matrix is the textbook case).
 const CONFIRM_PIVOT: f64 = RANK_PIVOT * 1e6;
 
-/// When the smallest pivot kept (`smallest`) is near the rank pivot,
-/// the smallest eigenvalue of the unit-scaled normal equations `scaled`
-/// (skyline of `p`) with the `loose` unknowns taken out, by inverse
-/// iteration on its factor; at most the rank pivot, the unknowns that
-/// carry its eigenvector (a component at least a tenth of the largest)
-/// are undetermined too. Dense and sparse tests come here with the same
-/// matrix, so they agree on a near dependence their eliminations missed.
-fn confirm_rank(
+/// The most near-null directions [`name_free`] looks for.
+const MAX_NULL_VECTORS: usize = 16;
+
+/// Which unknowns are free, in words that do not depend on an
+/// elimination's order. An elimination finds how many directions the
+/// normal equations leave free (its pivots at most the rank pivot), and
+/// can miss a near dependence (Kahan's matrix shows no small pivot,
+/// pivoted or not); so when any pivot was dropped, or the smallest kept
+/// is near the rank pivot, the near-null directions of the unit-scaled
+/// equations `scaled` (skyline of `p`) are found by inverse iteration
+/// on their factor shifted by the rank pivot, each orthogonal to those
+/// found, as long as its eigenvalue is at most the rank pivot (one more
+/// than the elimination found, at most [`MAX_NULL_VECTORS`]). The
+/// unknowns that carry a tenth of a direction's largest component are the
+/// free ones: dense and sparse ask this of the same matrix and name the
+/// same unknowns. Where it finds fewer directions than the elimination
+/// (or hits the cap) the elimination's unknowns are named too.
+fn name_free(
     p: &Pattern,
     scaled: &[f64],
     loose: &mut Vec<usize>,
     smallest: f64,
     budget: &mut Budget,
 ) -> Result<(), FoldError> {
-    if smallest > CONFIRM_PIVOT {
+    if loose.is_empty() && smallest > CONFIRM_PIVOT {
         return Ok(());
     }
     let n = p.unknowns();
-    let mut a = scaled.to_vec();
-    p.decouple(&mut a, loose);
-    budget.spend(
-        p.flops
-            .saturating_add(60u64.saturating_mul(p.entries() as u64)),
-    )?;
-    let Some(_) = p.factor(&mut a, None) else {
-        return Ok(());
-    };
-    let out: std::collections::BTreeSet<usize> = loose.iter().copied().collect();
-    let mut x: Vec<f64> = (0..n)
-        .map(|i| if out.contains(&i) { 0.0 } else { 1.0 })
-        .collect();
-    let mut lambda = f64::INFINITY;
-    for _ in 0..60 {
-        let norm = x.iter().map(|v| v * v).sum::<f64>().sqrt();
-        if !(norm.is_finite() && norm > 0.0) {
-            return Ok(());
-        }
-        x.iter_mut().for_each(|v| *v /= norm);
-        let Some(y) = p.solve(&a, &x) else {
-            return Ok(());
-        };
-        let grow = y.iter().map(|v| v * v).sum::<f64>().sqrt();
-        if !(grow.is_finite() && grow > 0.0) {
-            return Ok(());
-        }
-        let next = 1.0 / grow;
-        let settled = (next - lambda).abs() <= 1e-6 * next;
-        lambda = next;
-        x = y;
-        if settled {
-            break;
+    let shift = RANK_PIVOT;
+    let mut b = scaled.to_vec();
+    for i in 0..n {
+        if let Some(d) = p.diagonal_mut(&mut b, i) {
+            *d += shift;
         }
     }
-    if lambda <= RANK_PIVOT {
-        let top = x.iter().fold(0.0f64, |m, v| m.max(v.abs()));
-        for (i, v) in x.iter().enumerate() {
-            if v.abs() >= 0.1 * top && !out.contains(&i) {
-                loose.push(i);
+    let wanted = (loose.len() + 1).min(MAX_NULL_VECTORS);
+    budget.spend(
+        p.flops.saturating_add(
+            (wanted as u64)
+                .saturating_mul(80)
+                .saturating_mul(p.entries() as u64 + n as u64),
+        ),
+    )?;
+    if p.factor(&mut b, None).is_none() {
+        return Ok(());
+    }
+    let dot = |x: &[f64], y: &[f64]| x.iter().zip(y).map(|(a, b)| a * b).sum::<f64>();
+    let mut found: Vec<Vec<f64>> = Vec::new();
+    for r in 0..wanted {
+        let away = |x: &mut Vec<f64>, found: &[Vec<f64>]| {
+            for v in found {
+                let k = dot(x, v);
+                x.iter_mut().zip(v).for_each(|(a, b)| *a -= k * b);
+            }
+        };
+        // A start of every unknown, the same in every run.
+        let mut x: Vec<f64> = (0..n)
+            .map(|i| 0.5 + ((i * 7919 + r * 104_729) % 1000) as f64 / 1000.0)
+            .collect();
+        away(&mut x, &found);
+        let mut lambda = f64::INFINITY;
+        let mut good = false;
+        for _ in 0..80 {
+            let norm = dot(&x, &x).sqrt();
+            if !(norm.is_finite() && norm > 0.0) {
+                break;
+            }
+            x.iter_mut().for_each(|v| *v /= norm);
+            let Some(mut y) = p.solve(&b, &x) else {
+                break;
+            };
+            away(&mut y, &found);
+            let grow = dot(&y, &y).sqrt();
+            if !(grow.is_finite() && grow > 0.0) {
+                break;
+            }
+            let next = 1.0 / grow - shift;
+            let settled = (next - lambda).abs() <= 1e-3 * shift.max(next.abs());
+            lambda = next;
+            x = y.iter().map(|v| v / grow).collect();
+            good = true;
+            if settled {
+                break;
             }
         }
-        loose.sort_unstable();
-        loose.dedup();
+        if !(good && lambda <= RANK_PIVOT) {
+            break;
+        }
+        found.push(x);
     }
+    if found.is_empty() {
+        return Ok(());
+    }
+    let mut names: std::collections::BTreeSet<usize> =
+        if found.len() < loose.len() || loose.len() >= MAX_NULL_VECTORS {
+            loose.iter().copied().collect()
+        } else {
+            std::collections::BTreeSet::new()
+        };
+    for v in &found {
+        let top = v.iter().fold(0.0f64, |m, a| m.max(a.abs()));
+        for (i, a) in v.iter().enumerate() {
+            if a.abs() >= 0.1 * top {
+                names.insert(i);
+            }
+        }
+    }
+    *loose = names.into_iter().collect();
     Ok(())
 }
 
