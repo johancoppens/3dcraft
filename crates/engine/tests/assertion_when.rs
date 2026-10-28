@@ -515,3 +515,54 @@ fn a_lazy_mutual_pair_of_outputs_is_refused_as_a_cycle() {
     );
     assert!(e.contains("A → B → A") || e.contains("A → B"), "{e}");
 }
+
+/// `document.inspect` gives what an assertion measured as `assert.list`
+/// does: the number with its unit apart (it gave one line of text).
+#[test]
+fn inspect_gives_measured_as_a_number_with_its_unit() {
+    let mut s = block();
+    run(
+        &mut s,
+        "assert.add",
+        json!({"name": "vol", "measure": "volume", "of": "B", "eq": "6000"}),
+    );
+    run(
+        &mut s,
+        "assert.add",
+        json!({"name": "thru", "measure": "through", "of": "B", "is": false}),
+    );
+    let inspect = run(&mut s, "document.inspect", json!({"measures": false}));
+    let shown = inspect["assertions"].as_array().unwrap();
+    for name in ["vol", "thru"] {
+        let listed = listed(&mut s, name);
+        let inspected = shown.iter().find(|a| a["name"] == name).unwrap();
+        assert_eq!(inspected["measured"], listed["measured"], "{inspect}");
+        assert_eq!(inspected["unit"], listed["unit"], "{inspect}");
+    }
+    let vol = shown.iter().find(|a| a["name"] == "vol").unwrap();
+    assert!(
+        (vol["measured"].as_f64().unwrap() - 6000.0).abs() < 1e-6,
+        "{vol}"
+    );
+    assert_eq!(vol["unit"], "mm^3", "{vol}");
+}
+
+/// A `value` whose expression fails for a reason of its own (units that
+/// do not add up, a name that is not there) says that error, not that
+/// its bounds cannot be read in a dimension the expression does not have.
+#[test]
+fn a_value_whose_expression_fails_says_its_own_error() {
+    let mut s = block();
+    for (expr, says) in [("1 mm + 1 mm^2", "`expr`"), ("nosuch + 1", "nosuch")] {
+        let a = run(
+            &mut s,
+            "assert.add",
+            json!({"name": "v", "measure": "value", "expr": expr, "eq": "2 mm"}),
+        );
+        assert_eq!(a["status"], "error", "{a}");
+        let why = a["message"].as_str().unwrap();
+        assert!(why.contains(says), "{a}");
+        assert!(!why.contains("what it must be"), "{a}");
+        run(&mut s, "assert.delete", json!({"name": "v"}));
+    }
+}

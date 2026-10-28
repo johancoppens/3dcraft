@@ -70,10 +70,10 @@ pub(crate) struct Ctx<'a> {
     pub outputs: Option<&'a crate::output_cmds::Resolved>,
     /// The outputs without a value that expressions evaluated in this
     /// context needed (one in a branch of `if` that is not taken is not
-    /// needed), each once in the order met: what leaves an assertion
-    /// undecided rather than in error, when the error it reports is that
-    /// output's ([`Ctx::unknown_in`]).
-    pub unknown_used: std::sync::Mutex<Vec<String>>,
+    /// needed), each with the exact error its evaluation returned, in the
+    /// order met: what leaves an assertion undecided rather than in error,
+    /// when the error it reports is that one ([`Ctx::unknown_in`]).
+    pub unknown_used: std::sync::Mutex<Vec<(String, String)>>,
 }
 
 impl<'a> Ctx<'a> {
@@ -125,17 +125,19 @@ impl<'a> Ctx<'a> {
 
     /// The output without a value that the error `error` (as an
     /// evaluation in this context reported it, perhaps inside a measure's
-    /// own words) is about: one this context needed, named in the error as
-    /// what it depends on. An unrelated error, met after an unknown output
-    /// was needed elsewhere, is about none.
+    /// own words) is about: one this context needed, whose evaluation
+    /// returned exactly an error that `error` holds (matched on that
+    /// string, not on how an error happens to be worded). An unrelated
+    /// error, met after an unknown output was needed elsewhere, is about
+    /// none.
     pub fn unknown_in(&self, error: &str) -> Option<String> {
         let used = self
             .unknown_used
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         used.iter()
-            .find(|name| error.contains(&format!("depends on `{name}`")))
-            .cloned()
+            .find(|(_, returned)| !returned.is_empty() && error.contains(returned.as_str()))
+            .map(|(name, _)| name.clone())
     }
 
     /// A length, area or volume (power 1, 2, 3) or a plain number
@@ -159,9 +161,11 @@ impl<'a> Ctx<'a> {
             (None, _) => craft3d_expr::evaluate(source, |_| None),
         }
         .map_err(|e| {
+            let returned = format!("`{key}`: {e}");
             // An output that has no value counts only where it is used:
             // the evaluation is lazy (the branch of `if` not taken is not
-            // needed), and says which one it needed.
+            // needed), and says which one it needed; kept with the exact
+            // error returned, which is what `unknown_in` matches.
             if let (craft3d_expr::ErrorKind::DependencyFailed { name }, Some(outputs)) =
                 (&e.kind, self.outputs)
                 && outputs.unknown(name).is_some()
@@ -170,11 +174,12 @@ impl<'a> Ctx<'a> {
                     .unknown_used
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if !used.contains(name) {
-                    used.push(name.clone());
+                let entry = (name.clone(), returned.clone());
+                if !used.contains(&entry) {
+                    used.push(entry);
                 }
             }
-            format!("`{key}`: {e}")
+            returned
         })
     }
 

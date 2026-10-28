@@ -516,6 +516,7 @@ The first version for people outside the project (0.1.0); it does not wait for t
 - The export dialog first: what goes into the file, only the formats that hold it and the options, then the system's save dialog with that format's filter, the name with its extension and the last folder, the file written at once with its extension corrected; the same dialog in the browser, driven by `ui.set {export}` ([`control-protocol.md`](control-protocol.md)) (2026-10-27)
 - Plates on long developable panels (the sea kayak's repro 14): a freeform skin held to the tolerance only within the plate's reach of its face, measured along the surface, and the offset fit bound by its work (2¹⁸ samples); `topo::mass` measures a face whose parametrisation stands still at a corner in u against the rates of v (a plane square there was 0.56 % short) ([`design/plates.md`](design/plates.md), [`design/developable.md`](design/developable.md)) (2026-10-27)
 - A plate's spline edge continued past its ends without the rounding of evaluating a short end span far out (the sea kayak's sheer plate `Top4S`, repro 12; 2026-10-28, [`design/plates.md`](design/plates.md)).
+- `document.inspect` gives an assertion's `measured` and `unit` as `assert.list` does, a number (or yes or no) with its unit apart (2026-10-28).
 
 #### Open
 - [ ] Sheet metal, what is not built: flanges on holes' edges, on flanges' sides, inset or with outlines of their own, curved bends, sharp bends, mitred corners at reflex corners, holes across a bend, a later boolean's cut carried onto the flat pattern, bend sequence and press-brake collision ([`design/sheetmetal.md`](design/sheetmetal.md) › *Limits*)
@@ -532,7 +533,6 @@ The first version for people outside the project (0.1.0); it does not wait for t
 - [ ] Plain numbers as angles are degrees in parameters but radians inside `sin`/`cos`, and `pi` is a plain number, so `2 * pi / n` is a few degrees (kept, as files rely on it; `sin(30)` warns since 2026-10-23); a unit after a parenthesis is refused
 - [ ] No command changes a document's length unit after `file.new`
 - [ ] A feature's name is not accepted in a face name (`Cube:face(2)`), and ids shift when features are inserted
-- [ ] `document.inspect` shows assertions' `measured` as text where `assert.list` gives numbers
 
 #### Acceptance
 Every task of the set is built by an agent over MCP and `document.inspect` reports its known volume (✅ 2026-10-22: `crates/engine/tests/task_acceptance.rs`); a file saved by this version loads in the next; a killed app recovers the document on restart (✅ 2026-10-13: `apps/craft3d/tests/killed_window.rs` and `apps/craft3d-cli/tests/recovery.rs`, both with SIGKILL); FreeCAD or another independent reader opens the DXF and SVG exports with the same outline.

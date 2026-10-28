@@ -3240,12 +3240,12 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
     }
     // The assertions and how each stands: only when there are any; the
     // outputs as they are computed, likewise.
-    let (states, outputs): (Vec<crate::AssertionState>, Vec<Value>) = match session
+    let (states, outputs): (Vec<crate::assert_cmds::Checked>, Vec<Value>) = match session
         .checks_and_outputs(crate::assert_check::Wait::For(
             crate::assert_check::EDIT_WAIT,
         )) {
         Ok((checked, resolved)) => (
-            checked.into_iter().map(|c| c.state).collect(),
+            checked,
             crate::output_cmds::states(session.document()?.history.current(), &resolved)
                 .iter()
                 .map(crate::output_cmds::state_json)
@@ -3260,15 +3260,19 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
         let doc = session.document()?.history.current();
         let listed: Vec<Value> = states
             .iter()
-            .map(|a| {
+            .map(|c| {
+                let a = &c.state;
                 // Its condition, as assert.list gives it.
                 let when = doc
                     .assertion(&a.name)
                     .and_then(|stored| stored.when.as_ref())
                     .map(|w| w.source().to_string());
+                // What was measured as assert.list gives it: the number
+                // (or yes or no) and its unit apart, not one line of text.
                 json!({
                     "name": a.name, "measure": a.measure, "status": a.status.name(),
-                    "measured": a.measured, "expected": a.expected, "message": a.message,
+                    "measured": c.value, "unit": c.unit,
+                    "expected": a.expected, "message": a.message,
                     "when": when,
                 })
             })

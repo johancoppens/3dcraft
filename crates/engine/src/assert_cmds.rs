@@ -802,10 +802,12 @@ fn check(doc: &Document, regen: &Regen, assertion: &Assertion, outputs: &Resolve
     }
     // A `value` whose expression needs an unknown output is undecided
     // (its dimension, and so its bounds, are not known either); any
-    // other error of it is the measure's own, said where it is taken.
-    if let Some(e) = &expr_error
-        && undecided(&mut checked, &ctx, e)
-    {
+    // other error of it is the expression's own, said as it is (not as
+    // bounds that cannot be read in a dimension it does not have).
+    if let Some(e) = &expr_error {
+        if !undecided(&mut checked, &ctx, e) {
+            checked.state.message = format!("cannot be measured: {e}");
+        }
         return checked;
     }
     let wanted = match dim {
