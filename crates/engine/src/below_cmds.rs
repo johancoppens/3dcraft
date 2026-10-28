@@ -1,9 +1,9 @@
 //! What lies on one side of a plane (`measure.below`, `measure.section`,
 //! `measure.levelFor`, and the assertion measures `volumeBelow`,
 //! `centroidBelow`, `sectionArea`, `sectionCentroid`, `sectionInertia`,
-//! `levelFor`): the volume and centroid of the part of closed bodies below
-//! a plane, the area, centroid and second moments of their section by it,
-//! and the offset at which the volume below is a given volume. The
+//! `sectionExtent`, `levelFor`): the volume and centroid of the part of
+//! closed bodies below a plane, the area, centroid, second moments and
+//! extent along an axis of their section by it, and the offset at which the volume below is a given volume. The
 //! geometry is `craft3d_kernel::below` (exact on the B-rep); the design
 //! note is docs/design/sections-and-levels.md.
 
@@ -13,7 +13,7 @@ use crate::verify_cmds::{
     Ctx, Dim, Outcome, all_bodies, direction, nonempty, plane, subject, whole_bodies,
 };
 use crate::{CommandError, CommandSpec, Session};
-use craft3d_kernel::below::{BelowPlane, CutPlane, Level, below, level_for};
+use craft3d_kernel::below::{BelowPlane, CutPlane, Level, below, level_for, section_extent};
 use craft3d_math::Vec3;
 use craft3d_topo::Body;
 use serde_json::{Map, Value};
@@ -32,12 +32,13 @@ pub(crate) static SPECS: &[CommandSpec] = &[
 
 /// The assertion measures and their dimensions: the one list
 /// `assert_cmds` reads them from.
-pub(crate) const MEASURES: [(&str, Dim); 6] = [
+pub(crate) const MEASURES: [(&str, Dim); 7] = [
     ("volumeBelow", Dim::Length(3)),
     ("centroidBelow", Dim::Length(1)),
     ("sectionArea", Dim::Length(2)),
     ("sectionCentroid", Dim::Length(1)),
     ("sectionInertia", Dim::Length(4)),
+    ("sectionExtent", Dim::Length(1)),
     ("levelFor", Dim::Length(1)),
 ];
 
@@ -52,6 +53,7 @@ pub(crate) fn keys_of(measure: &str) -> &'static [&'static str] {
         "volumeBelow" | "sectionArea" => &["of", "plane", "offset", "xAxis"],
         "centroidBelow" | "sectionCentroid" => &["of", "plane", "offset", "xAxis", "axis"],
         "sectionInertia" => &["of", "plane", "offset", "xAxis", "about"],
+        "sectionExtent" => &["of", "plane", "offset", "axis"],
         "levelFor" => &["of", "plane", "volume", "xAxis"],
         _ => &[],
     }
@@ -314,6 +316,9 @@ pub(crate) fn measure(
     } else {
         Asked::At
     };
+    if name == "sectionExtent" {
+        return extent_measure(ctx, p);
+    }
     let (found, plane, _) = measured(ctx, p, asked, keys_of(name))?;
     let s = found.section;
     let value = match name {
@@ -343,6 +348,40 @@ pub(crate) fn measure(
     }
     let mut out = Outcome::number(*dim, value);
     out.detail = below_json(&found, &plane);
+    Ok(out)
+}
+
+/// The assertion measure `sectionExtent`: how far the section of the
+/// bodies by the plane (at `offset`) reaches along `axis` (x, y, z or a
+/// direction), from where it begins to where it ends; `from` and `to` in
+/// the detail are those two coordinates along the axis. A plane that cuts
+/// nothing is an error, not a length of zero.
+fn extent_measure(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
+    crate::verify_cmds::only(p, keys_of("sectionExtent"))?;
+    let along = direction(
+        Some(given(p, "axis").ok_or("`axis` is required: x, y, z or [x, y, z]")?),
+        "axis",
+    )?;
+    let bodies = bodies_named(ctx, p)?;
+    let (plane, base) = cut_plane(ctx, p)?;
+    let offset = given(p, "offset")
+        .map(|v| ctx.quantity(v, "offset", 1))
+        .transpose()?
+        .unwrap_or(0.0);
+    let plain: Vec<&Body> = bodies.iter().map(|(_, b)| b.as_ref()).collect();
+    let found = section_extent(&plain, &plane, base + offset, along, &ctx.tolerance)
+        .map_err(|e| e.to_string())?
+        .ok_or("the plane does not cut the bodies: there is no section")?;
+    let value = found.hi - found.lo;
+    if !value.is_finite() {
+        return Err("sectionExtent is not a finite number".into());
+    }
+    let mut out = Outcome::number(Dim::Length(1), value);
+    out.detail.insert("from".into(), num(found.lo));
+    out.detail.insert("to".into(), num(found.hi));
+    out.detail.insert("axis".into(), vec3(along));
+    out.detail.insert("offset".into(), num(offset));
+    out.detail.insert("normal".into(), vec3(plane.normal));
     Ok(out)
 }
 

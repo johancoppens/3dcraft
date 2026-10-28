@@ -68,8 +68,10 @@ the third, the cross-section square to x: `area` 1.3e6, with `xAxis` y and `yAxi
   is in [`design/sections-and-levels.md`](../design/sections-and-levels.md)).
 
 As assertions: `volumeBelow`, `centroidBelow` (with `axis`), `sectionArea`, `sectionCentroid` (with
-`axis`), `sectionInertia` (with `about`: `x`, `y`, `xy`, `major` or `minor`) and `levelFor` (with
-`volume`), each with the same `of`, `plane`, `offset` (not for `levelFor`) and `xAxis`:
+`axis`), `sectionInertia` (with `about`: `x`, `y`, `xy`, `major` or `minor`), `sectionExtent` (with
+`axis`: `x`, `y`, `z` or `[x, y, z]`; how far the section reaches along it, the length of a hull's
+waterline at its level) and `levelFor` (with `volume`), each with the same `of`, `plane`, `offset`
+(not for `levelFor`) and `xAxis` (not for `sectionExtent`):
 
 ```json
 [
@@ -95,7 +97,7 @@ As assertions: `volumeBelow`, `centroidBelow` (with `axis`), `sectionArea`, `sec
   (where the box begins and ends along `axis`, so each side is bounded on its own), `centerOfMass`
   (its coordinate along `axis`; every body needs a material), `distance`, `clearance`, `thickness`,
   `through`, `overlap` (whether bodies overlap), `symmetric`, and `volumeBelow`, `centroidBelow`,
-  `sectionArea`, `sectionCentroid`, `sectionInertia`, `levelFor` ([above](#below-a-plane-sections-and-levels)),
+  `sectionArea`, `sectionCentroid`, `sectionInertia`, `sectionExtent`, `levelFor` ([above](#below-a-plane-sections-and-levels)),
   and `value`, a formula of the variables and outputs (`expr`, [below](#outputs-measures-in-formulas)).
 - Bounds: `eq` (with `tol`, by default a millionth of the value; `0` is allowed), or `min` and/or
   `max`; `is` for the yes-or-no measures (`true` by default, except for `overlap`, which wants it

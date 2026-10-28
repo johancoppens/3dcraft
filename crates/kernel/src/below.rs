@@ -1289,6 +1289,133 @@ fn edge_sums(
     Ok(total)
 }
 
+/// Where the section of the bodies by a plane begins and ends along a
+/// direction ([`section_extent`]): `lo` is no more than the least of
+/// `p · along` over the section and `hi` no less than the greatest, each
+/// within a hundredth of the tolerance of a point of it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SectionExtent {
+    pub lo: f64,
+    pub hi: f64,
+}
+
+/// Where the section of `bodies` by the plane `{p : p · side.normal =
+/// offset}` begins and ends along the unit direction `along`, or `None`
+/// when the plane does not cut them (the length of a waterline, the span
+/// of a cut along an axis). The section is the flat faces of what lies
+/// below the plane that are pieces of the plane ([`below`]); a flat face
+/// lies within its edges, so its extent along any direction is theirs.
+/// Each edge's least along `along` and along `−along` is closed in on by
+/// branch and bound over pieces of its curve (each piece's least is a
+/// proof, from the convex hull of its Bézier net) until it is within a
+/// hundredth of the tolerance of a point of the edge.
+pub fn section_extent(
+    bodies: &[&Body],
+    side: &CutPlane,
+    offset: f64,
+    along: Vec3,
+    tolerance: &Tolerance,
+) -> Result<Option<SectionExtent>, CutError> {
+    if !offset.is_finite() {
+        return Err(CutError::NotFinite("the offset"));
+    }
+    let along = along
+        .normalized()
+        .filter(|d| d.is_finite())
+        .ok_or(CutError::InvalidPlane("the direction has no length"))?;
+    let prepared = prepare(bodies, side.normal)?;
+    let resolution = 0.01 * tolerance.linear;
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for one in &prepared {
+        let part = part_one(one, side, offset, tolerance)?;
+        let Some((body, caps)) = &part.cut else {
+            continue;
+        };
+        let mut seen = std::collections::BTreeSet::new();
+        for &face in caps {
+            let shape = body.faces.get(face).ok_or(CutError::Section {
+                body: one.index,
+                what: "a face that is not in the body",
+            })?;
+            for &loop_id in &shape.loops {
+                let lost = CutError::Section {
+                    body: one.index,
+                    what: "a loop or an edge that is not in the body",
+                };
+                let coedges = &body.loop_(loop_id).ok_or(lost.clone())?.coedges;
+                for coedge in coedges {
+                    if !seen.insert(coedge.edge.0) {
+                        continue;
+                    }
+                    let edge = body.edge(coedge.edge).ok_or(lost.clone())?;
+                    let unbounded = CutError::Section {
+                        body: one.index,
+                        what: "an edge whose extent along the direction cannot be bounded",
+                    };
+                    let least = curve_least(&edge.curve, edge.range, along, resolution)
+                        .ok_or(unbounded.clone())?;
+                    let most = curve_least(&edge.curve, edge.range, -along, resolution)
+                        .ok_or(unbounded)?;
+                    lo = lo.min(least);
+                    hi = hi.max(-most);
+                }
+            }
+        }
+    }
+    if !(lo.is_finite() && hi.is_finite()) {
+        return Ok(None);
+    }
+    Ok(Some(SectionExtent { lo, hi }))
+}
+
+/// No more than the least of `curve(t) · d` over `range`, within
+/// `resolution` of the value at a point of it: branch and bound over
+/// pieces of the curve (`craft3d_geom::support::curve_piece`), the piece
+/// with the least bound halved until that bound is within `resolution` of
+/// the least point seen, or [`MAX_FLOOR_SPLITS`] are spent (the bound
+/// left is still a true one). `None` where a piece cannot be made or a
+/// bound is not a number.
+fn curve_least(curve: &Curve3, range: (f64, f64), d: Vec3, resolution: f64) -> Option<f64> {
+    let nets = CurveNets::of(curve);
+    let mut open = BinaryHeap::new();
+    let mut least_point = f64::INFINITY;
+    let mut seq = 0_u64;
+    let mut push = |t: (f64, f64), open: &mut BinaryHeap<Waiting>, least_point: &mut f64| {
+        let piece = curve_piece(curve, &nets, t)?;
+        for s in [t.0, 0.5 * (t.0 + t.1), t.1] {
+            let h = curve.eval(s).dot(d);
+            if h.is_finite() {
+                *least_point = least_point.min(h);
+            }
+        }
+        let bound = piece.least(d);
+        if !bound.is_finite() {
+            return None;
+        }
+        seq += 1;
+        open.push(Waiting {
+            bound,
+            seq,
+            region: Region::Edge(0, t),
+        });
+        Some(())
+    };
+    push(range, &mut open, &mut least_point)?;
+    for _ in 0..MAX_FLOOR_SPLITS {
+        let lowest = open.pop()?;
+        let Region::Edge(_, (a, b)) = lowest.region else {
+            return None;
+        };
+        let m = 0.5 * (a + b);
+        if least_point - lowest.bound <= resolution || !(m > a && m < b) {
+            return Some(lowest.bound.min(least_point));
+        }
+        push((a, m), &mut open, &mut least_point)?;
+        push((m, b), &mut open, &mut least_point)?;
+    }
+    open.pop().map(|w| w.bound.min(least_point))
+}
+
 /// The offset of a plane square to `side.normal` at which the volume of
 /// `bodies` below it is `volume`, found as the module documentation says,
 /// and what lies below the plane there. An offset the boolean refuses

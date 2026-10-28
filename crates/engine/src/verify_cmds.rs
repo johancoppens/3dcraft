@@ -665,7 +665,7 @@ impl Outcome {
 }
 
 /// The measures, by name: what `assert.add` takes under `measure`.
-pub(crate) const MEASURES: [&str; 31] = [
+pub(crate) const MEASURES: [&str; 32] = [
     "volume",
     "area",
     "mass",
@@ -685,6 +685,7 @@ pub(crate) const MEASURES: [&str; 31] = [
     "sectionArea",
     "sectionCentroid",
     "sectionInertia",
+    "sectionExtent",
     "levelFor",
     "curvature",
     "developable",
@@ -713,7 +714,7 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
         "overlap" => overlap(ctx, p),
         "symmetric" => symmetric(ctx, p),
         "volumeBelow" | "centroidBelow" | "sectionArea" | "sectionCentroid" | "sectionInertia"
-        | "levelFor" => crate::below_cmds::measure(ctx, name, p),
+        | "sectionExtent" | "levelFor" => crate::below_cmds::measure(ctx, name, p),
         "curvature" | "developable" => crate::develop_cmds::take(ctx, name, p),
         "bendRadius" | "flangeLength" | "holeToBend" | "relief" | "cornerGap" => {
             crate::sheetmetal_cmds::take(ctx, name, p)

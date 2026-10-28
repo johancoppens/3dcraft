@@ -537,3 +537,88 @@ fn a_measured_output_follows_a_table_it_looks_up() {
     );
     close(value_of(&mut s, "Tload"), 250.0, 1e-9);
 }
+
+/// The waterline's length (repro sea-kayak 15): the extent along an axis
+/// of a body's section by a plane at the level found for its
+/// displacement. A box 4000 × 500 × 300 mm displacing 0.2 m³ floats at
+/// T = 100 mm with a waterline 4000 mm long and 500 mm wide; a cylinder
+/// lying along x, radius 200 mm, cut at z = h spans 2 √(r² − h²) across;
+/// a sphere cut at a height spans its circle along a slanted axis.
+#[test]
+fn the_extent_of_a_section_along_an_axis_is_its_closed_form() {
+    let mut s = Session::new(Workspace::unrestricted());
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    for step in [
+        json!(["feature.block", {"size": ["4000 mm", "500 mm", "300 mm"], "position": ["-2000 mm", "-250 mm", "0 mm"], "name": "Hull"}]),
+        json!(["variable.set", {"name": "V", "expr": "0.2 * (1 m)^3"}]),
+        json!(["variable.measure", {"name": "T", "measure": "levelFor", "of": "Hull", "volume": "V"}]),
+        json!(["variable.measure", {"name": "LWL", "measure": "sectionExtent", "of": "Hull", "plane": "xy", "offset": "T", "axis": "x"}]),
+        json!(["variable.measure", {"name": "BWL", "measure": "sectionExtent", "of": "Hull", "offset": "T", "axis": "-y"}]),
+        json!(["feature.cylinder", {"radius": "200 mm", "height": "1000 mm", "position": ["0 mm", "2000 mm", "0 mm"], "axis": [1, 0, 0], "name": "Log"}]),
+        json!(["variable.measure", {"name": "LogB", "measure": "sectionExtent", "of": "Log", "offset": "120 mm", "axis": "y"}]),
+        json!(["variable.measure", {"name": "LogL", "measure": "sectionExtent", "of": "Log", "offset": "-50 mm", "axis": "x"}]),
+        json!(["feature.sphere", {"radius": "300 mm", "position": ["0 mm", "-2000 mm", "0 mm"], "name": "Ball"}]),
+        json!(["variable.measure", {"name": "BallD", "measure": "sectionExtent", "of": "Ball", "offset": "180 mm", "axis": [3, 4, 0]}]),
+        json!(["assert.add", {"name": "waterline", "measure": "sectionExtent", "of": "Hull", "offset": "T", "axis": "x", "eq": "4000 mm"}]),
+    ] {
+        run(&mut s, step[0].as_str().unwrap(), step[1].clone());
+    }
+    close(value_of(&mut s, "T"), 100.0, 1e-9);
+    close(value_of(&mut s, "LWL"), 4000.0, 1e-12);
+    close(value_of(&mut s, "BWL"), 500.0, 1e-12);
+    close(
+        value_of(&mut s, "LogB"),
+        2.0 * (200f64.powi(2) - 120f64.powi(2)).sqrt(),
+        1e-9,
+    );
+    close(value_of(&mut s, "LogL"), 1000.0, 1e-12);
+    close(
+        value_of(&mut s, "BallD"),
+        2.0 * (300f64.powi(2) - 180f64.powi(2)).sqrt(),
+        1e-9,
+    );
+    assert_eq!(output(&mut s, "LWL")["unit"], "mm");
+    let waterline = assertion(&mut s, "waterline");
+    assert_eq!(waterline["status"], "passed", "{waterline}");
+    // Where it begins and ends along the axis, in the details.
+    let detailed = run(&mut s, "assert.list", json!({"details": true}));
+    let found = detailed["assertions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == "waterline")
+        .unwrap()
+        .clone();
+    let details = found.to_string();
+    assert!(details.contains("\"from\":-2000"), "{details}");
+    assert!(details.contains("\"to\":2000"), "{details}");
+}
+
+#[test]
+fn a_section_extent_that_cannot_be_measured_is_said() {
+    let mut s = Session::new(Workspace::unrestricted());
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [100, 50, 30], "name": "B"}),
+    );
+    // Above the body: no section, an error and not a length of zero.
+    let above = run(
+        &mut s,
+        "assert.add",
+        json!({"name": "above", "measure": "sectionExtent", "of": "B", "offset": 40, "axis": "x", "eq": 0}),
+    );
+    assert_eq!(above["status"], "error", "{above}");
+    assert!(above.to_string().contains("does not cut"), "{above}");
+    for bad in [
+        json!({"name": "no axis", "measure": "sectionExtent", "of": "B", "offset": 10, "eq": 1}),
+        json!({"name": "zero axis", "measure": "sectionExtent", "of": "B", "offset": 10, "axis": [0, 0, 0], "eq": 1}),
+        json!({"name": "word", "measure": "sectionExtent", "of": "B", "offset": 10, "axis": "w", "eq": 1}),
+        json!({"name": "key", "measure": "sectionExtent", "of": "B", "offset": 10, "axis": "x", "about": "x", "eq": 1}),
+    ] {
+        if let Ok(v) = s.execute("assert.add", &bad) {
+            assert_eq!(v["status"], "error", "{bad}: {v}");
+        }
+    }
+}

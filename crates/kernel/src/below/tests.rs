@@ -977,3 +977,124 @@ fn a_bracket_as_narrow_as_it_gets_is_an_answer_only_near_the_volume() {
         other => panic!("{other:?}"),
     }
 }
+
+/// The extent of a section along a direction, exactly: within a
+/// hundredth of the tolerance of the closed form, and never inside it
+/// (`lo` no more than the least, `hi` no less than the greatest).
+#[track_caller]
+fn spans(found: Option<SectionExtent>, (lo, hi): (f64, f64), t: &Tolerance, what: &str) {
+    let found = found.unwrap_or_else(|| panic!("{what}: no section"));
+    let r = 0.01 * t.linear + 1e-12 * (lo.abs() + hi.abs());
+    assert!(
+        found.lo <= lo + 1e-12 * lo.abs().max(t.linear) && lo - found.lo <= r,
+        "{what}: lo {} want {lo} (within {r})",
+        found.lo
+    );
+    assert!(
+        found.hi >= hi - 1e-12 * hi.abs().max(t.linear) && found.hi - hi <= r,
+        "{what}: hi {} want {hi} (within {r})",
+        found.hi
+    );
+}
+
+#[test]
+fn a_sphere_cut_at_a_height_spans_its_circle() {
+    for k in SCALES {
+        let r = k;
+        let t = tol(k);
+        let centre = Vec3::new(0.3 * k, -0.2 * k, 0.0);
+        let body = sphere(&Frame::WORLD, r)
+            .unwrap()
+            .transformed(&Transform::translation(centre))
+            .unwrap();
+        for h in [-0.5 * k, 0.0, 0.3 * k, 0.9 * k] {
+            let c = (r * r - h * h).sqrt();
+            let x = section_extent(&[&body], &upright(), h, Vec3::new(1.0, 0.0, 0.0), &t).unwrap();
+            spans(x, (centre.x - c, centre.x + c), &t, "along x");
+            let y = section_extent(&[&body], &upright(), h, Vec3::new(0.0, 1.0, 0.0), &t).unwrap();
+            spans(y, (centre.y - c, centre.y + c), &t, "along y");
+            // Along a slanted direction in the plane, a circle spans its
+            // diameter about the centre's projection.
+            let d = Vec3::new(3.0, 4.0, 0.0) * 0.2;
+            let s = section_extent(&[&body], &upright(), h, d, &t).unwrap();
+            let m = centre.dot(d);
+            spans(s, (m - c, m + c), &t, "along (3, 4, 0) / 5");
+        }
+    }
+}
+
+#[test]
+fn a_horizontal_cylinder_cut_at_a_height_spans_its_rectangle() {
+    for k in SCALES {
+        let (r, l) = (k, 3.0 * k);
+        let frame = Frame::new(
+            Vec3::new(-0.5 * l, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        )
+        .unwrap();
+        let body = cylinder(&frame, r, l).unwrap();
+        let t = tol(k);
+        for h in [-0.7 * k, -0.2 * k, 0.4 * k] {
+            let c = (r * r - h * h).sqrt();
+            let x = section_extent(&[&body], &upright(), h, Vec3::new(1.0, 0.0, 0.0), &t).unwrap();
+            spans(x, (-0.5 * l, 0.5 * l), &t, "length");
+            let y = section_extent(&[&body], &upright(), h, Vec3::new(0.0, -1.0, 0.0), &t).unwrap();
+            spans(y, (-c, c), &t, "breadth");
+        }
+        // Cut by the plane x = 0.25 l square to the axis: the circle.
+        let across = CutPlane::new(Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0)).unwrap();
+        let z = section_extent(&[&body], &across, 0.25 * l, Vec3::new(0.0, 0.0, 1.0), &t).unwrap();
+        spans(z, (-r, r), &t, "circle across the axis");
+    }
+}
+
+#[test]
+fn a_spline_cone_cut_at_a_height_spans_its_circle() {
+    for k in SCALES {
+        let (r_top, height, h) = (0.5 * k, k, 0.6 * k);
+        let frame = Frame::new(
+            Vec3::ZERO,
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        )
+        .unwrap();
+        let body = craft3d_testkit::solids::spline_cone(&frame, r_top, height)
+            .unwrap()
+            .body;
+        // The spline cone is within its fit of the true one: the section's
+        // edges are curves of the boolean on the spline, so the closed form
+        // holds to the tolerance, not a hundredth of it.
+        let t = tol(k);
+        let r = r_top * h / height;
+        let found = section_extent(&[&body], &upright(), h, Vec3::new(1.0, 0.0, 0.0), &t)
+            .unwrap()
+            .unwrap();
+        let allowed = 20.0 * t.linear;
+        assert!(
+            (found.lo + r).abs() <= allowed,
+            "lo {} want {}",
+            found.lo,
+            -r
+        );
+        assert!((found.hi - r).abs() <= allowed, "hi {} want {r}", found.hi);
+    }
+}
+
+#[test]
+fn a_plane_that_misses_the_bodies_has_no_section_extent() {
+    for k in SCALES {
+        let body = sphere(&Frame::WORLD, k).unwrap();
+        let t = tol(k);
+        let x = Vec3::new(1.0, 0.0, 0.0);
+        for h in [-2.0 * k, 2.0 * k] {
+            assert_eq!(
+                section_extent(&[&body], &upright(), h, x, &t).unwrap(),
+                None
+            );
+        }
+        assert!(section_extent(&[&body], &upright(), 0.0, Vec3::ZERO, &t).is_err());
+        assert!(section_extent(&[&body], &upright(), f64::NAN, x, &t).is_err());
+        assert!(section_extent(&[], &upright(), 0.0, x, &t).is_err());
+    }
+}
