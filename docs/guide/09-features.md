@@ -217,7 +217,12 @@ from the virtual sharp), `holeToBend` (the least distance from a hole to a bend'
 `relief` (every corner where two bends meet is relieved) and `cornerGap` (the least gap at the closed corners). 3DCraft has no material catalogue: the limits
 for a material and a thickness are yours, as expressions or a table, as above. `file.export` with
 `sheetMetal` writes the flat pattern (.dxf or .svg): the outline on the layer `outline`, the bend lines
-on `bendUp` (dashed) and `bendDown` (dash-dot). `sheetMetal.edit` changes a part (flanges as a whole
+on `bendUp` (dashed) and `bendDown` (dash-dot). `sheetMetal.bendSequence` checks whether the part can be
+bent on a press brake with your punch and die (each a polygon in the plane square to the bend: the punch's
+tip centre and the die's top at the origin, `y` up into the punch) and finds an order of the bends: every
+step is proven to keep each tool at least `clearance` from every other piece of the part over the whole
+stroke, and a step that does not is listed by bend, by the bends made before it, by tool and by piece.
+`sheetMetal.edit` changes a part (flanges as a whole
 list). Refused, with the flange: a radius below zero or of zero (a sharp bend is not supported: give the radius the tooling makes), a K-factor
 outside 0 to 1, an angle outside 0 to 180 degrees, an edge that is not a straight line of the base's
 outline (a flange on a curved edge is a formed flange, not a bend: it has no flat pattern that keeps

@@ -19,6 +19,7 @@ mod assert_check;
 mod assert_cmds;
 mod base64;
 mod below_cmds;
+mod bendseq_cmds;
 mod blend_cmds;
 mod body_cmds;
 mod checks_elsewhere;
@@ -520,6 +521,7 @@ impl Session {
                 sheet_cmds::SPECS,
                 fold_cmds::SPECS,
                 sheetmetal_cmds::SPECS,
+                bendseq_cmds::SPECS,
                 split_cmds::SPECS,
                 query_cmds::SPECS,
                 interference_cmds::SPECS,

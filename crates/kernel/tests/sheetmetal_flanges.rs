@@ -728,3 +728,73 @@ fn an_outline_on_a_tip_moves_with_the_tip() {
         }
     }
 }
+
+/// Two flanges that reach a reflex corner of the base need the same part
+/// of the sheet (docs/design/sheetmetal.md › *Reflex corners*): open or
+/// closed by any kind, the part is refused with that reason and the way
+/// out, at three scales; inset at the corner as the reason says (both, at
+/// this square corner), the same flanges are built.
+#[test]
+fn flanges_that_reach_a_reflex_corner_are_refused_with_the_reason() {
+    use craft3d_kernel::sheetmetal::{CornerKind, CornerSpec};
+    for k in SCALES {
+        let tol = tolerance(k);
+        let (t, r) = (1.0 * k, 1.0 * k);
+        let l_base = || {
+            profile(
+                &[&[
+                    [0.0, 0.0],
+                    [40.0, 0.0],
+                    [40.0, 10.0],
+                    [10.0, 10.0],
+                    [10.0, 30.0],
+                    [0.0, 30.0],
+                ]],
+                k,
+            )
+        };
+        let f = |on, a, b| inset(flange(on, 5.0 * k, Direction::Up, r, 0.5), a * k, b * k);
+        for kind in [
+            CornerKind::Open,
+            CornerKind::Miter,
+            CornerKind::Butt,
+            CornerKind::Overlap,
+        ] {
+            let mut s = spec(
+                l_base(),
+                t,
+                vec![f(On::Base(3), 0.0, 0.0), f(On::Base(4), 0.0, 0.0)],
+            );
+            s.corners = vec![CornerSpec {
+                flanges: [0, 1],
+                closing: Closing {
+                    kind,
+                    gap: 0.2 * k,
+                    over: None,
+                },
+            }];
+            let why = reason(&s, &tol);
+            assert!(
+                why.contains("reflex corner")
+                    && why.contains("same part of the sheet")
+                    && why.contains("inset them"),
+                "{kind:?}: {why}"
+            );
+            assert_eq!(
+                why.contains("lies across"),
+                kind != CornerKind::Open,
+                "{kind:?}: {why}"
+            );
+        }
+        let part = build(
+            &spec(
+                l_base(),
+                t,
+                vec![f(On::Base(3), 0.0, 10.0), f(On::Base(4), 3.0, 0.0)],
+            ),
+            &tol,
+        )
+        .unwrap();
+        healthy(&part, &tol);
+    }
+}

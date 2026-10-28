@@ -63,6 +63,7 @@ use std::f64::consts::{PI, TAU};
 
 mod cuts;
 mod later;
+pub mod sequence;
 pub use cuts::Cut;
 pub use later::{LaterCuts, later_cuts};
 
@@ -704,8 +705,21 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
                         "the flanges {fa} and {fb} sit on edges in line; make them one flange on one edge"
                     )
                 } else {
+                    // docs/design/sheetmetal.md › *Reflex corners*: the two
+                    // strips' corners at the point overlap for any right
+                    // turn, and walls that meet need each other's place in
+                    // the sheet, so neither an open nor a closed corner is
+                    // cut from one sheet.
+                    let closed = closing_of(spec, [fa, fb])
+                        .map(|c| c.kind != CornerKind::Open)
+                        .unwrap_or(false);
                     format!(
-                        "the flanges {fa} and {fb} meet at a reflex corner of the base, where their bend strips overlap in the flat pattern; not supported (owed: a mitre between the flanges)"
+                        "the flanges {fa} and {fb} meet at a reflex corner of the base: there the two flanges need the same part of the sheet (their bend strips overlap in the flat pattern at the corner{}), so the corner cannot be made from one sheet, open or closed; inset them at this corner far enough that their pieces of the sheet keep apart (at a square corner both: the strip of one that reaches the corner lies along the other's edge), or make one of them a part of its own",
+                        if closed {
+                            ", and a flange's flat run on to meet the other's wall lies across the other flange's piece of the sheet"
+                        } else {
+                            ""
+                        }
                     )
                 },
             ));
