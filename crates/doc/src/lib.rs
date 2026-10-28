@@ -2007,6 +2007,14 @@ impl Document {
                 )));
             }
             if let FeatureKind::SheetMetal(part) = &feature.kind
+                && let Some(fault) = part.flange_ids_fault()
+            {
+                return Err(DocError::Invalid(format!(
+                    "the sheet-metal part `{}`: {fault}",
+                    feature.name
+                )));
+            }
+            if let FeatureKind::SheetMetal(part) = &feature.kind
                 && part.corners.len() > MAX_SHEET_FLANGES
             {
                 return Err(DocError::Invalid(format!(

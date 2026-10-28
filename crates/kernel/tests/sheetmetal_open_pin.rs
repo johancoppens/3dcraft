@@ -174,6 +174,7 @@ fn spec(
         corner: Closing::OPEN,
         corners: Vec::new(),
         cutouts,
+        ids: Vec::new(),
     }
 }
 

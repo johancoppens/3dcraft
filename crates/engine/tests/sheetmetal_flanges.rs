@@ -285,6 +285,149 @@ fn names_stay_in_place_when_a_flange_is_added_on_the_same_edge() {
     }
 }
 
+/// The rims along the base's bottom edge (y = 0, between its ends, in
+/// the sheet): the pieces of that edge between its tabs.
+fn bottom_rims(s: &mut Session, k: f64) -> std::collections::BTreeMap<String, [f64; 4]> {
+    rims(s)
+        .into_iter()
+        .filter(|(_, a)| {
+            a[2].abs() <= 1e-9 * k && a[1] > 0.0 && a[1] < 60.0 * k && a[3] > 0.0 && a[3] < k
+        })
+        .collect()
+}
+
+/// Rule 4 across the list (review 2026-10-28: the pieces of a split edge
+/// were named by the flanges' places in the list, so deleting an earlier
+/// flange gave the name of the gap between the first two tabs to the gap
+/// between the next two): three tabs on the bottom edge behind a wall on
+/// the left edge. Deleting the wall, putting a flange in front of the
+/// list, or changing a tab with its id keeps every piece's name where it
+/// was; changing a tab without its id makes it a new flange, whose
+/// pieces' names are new (the old ones name nothing), never another
+/// piece's.
+#[test]
+fn split_edge_names_follow_their_flanges_not_their_places_in_the_list() {
+    for k in SCALES {
+        let dir = workdir("sheetmetal-flanges", &format!("ids-{k}"));
+        let mut s = session_in(&dir);
+        new_document(&mut s, k);
+        run(
+            &mut s,
+            "sketch.create",
+            json!({"plane": "xy", "name": "Base"}),
+        );
+        let base = lines_of(&run(
+            &mut s,
+            "sketch.rect",
+            json!({"sketch": "Base", "from": [0.0, 0.0], "to": [60.0 * k, 40.0 * k]}),
+        ));
+        let tab = |from: f64, to: f64| {
+            json!({"edge": base[0], "length": mm(8.0 * k), "angle": "90 deg",
+                   "insetStart": mm(from * k), "insetEnd": mm((60.0 - to) * k)})
+        };
+        let wall = json!({"edge": base[3], "length": mm(10.0 * k), "angle": "90 deg"});
+        let tabs = [tab(5.0, 15.0), tab(25.0, 35.0), tab(45.0, 55.0)];
+        let mut all = vec![wall];
+        all.extend(tabs.iter().cloned());
+        panel(&mut s, k, all);
+        let ids: Vec<Value> = run(&mut s, "sheetMetal.bends", json!({"feature": "Panel"}))["bends"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b["id"].clone())
+            .collect();
+        assert_eq!(ids, [json!(1), json!(2), json!(3), json!(4)], "scale {k}");
+        let first = bottom_rims(&mut s, k);
+        // Four pieces: before, between and after the three tabs.
+        assert_eq!(first.len(), 4, "scale {k}: {first:?}");
+
+        // The wall deleted: the tabs sent back as they were keep their ids.
+        let edit = |s: &mut Session, flanges: Vec<Value>| {
+            run(
+                s,
+                "sheetMetal.edit",
+                json!({"feature": "Panel", "flanges": flanges}),
+            );
+            bottom_rims(s, k)
+        };
+        let deleted = edit(&mut s, tabs.to_vec());
+        assert_eq!(
+            first.keys().collect::<Vec<_>>(),
+            deleted.keys().collect::<Vec<_>>(),
+            "deleting the wall at scale {k}"
+        );
+        same_places(&first, &deleted, k, "deleting the wall");
+        let ids: Vec<Value> = run(&mut s, "sheetMetal.bends", json!({"feature": "Panel"}))["bends"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b["id"].clone())
+            .collect();
+        assert_eq!(ids, [json!(2), json!(3), json!(4)], "scale {k}");
+
+        // A flange put in front of the list: a new id (5), never the
+        // deleted wall's 1.
+        let mut front = vec![json!({"edge": base[1], "length": mm(6.0 * k), "angle": "90 deg"})];
+        front.extend(tabs.iter().cloned());
+        let added = edit(&mut s, front);
+        assert_eq!(
+            first.keys().collect::<Vec<_>>(),
+            added.keys().collect::<Vec<_>>(),
+            "a flange in front at scale {k}"
+        );
+        same_places(&first, &added, k, "a flange in front");
+        let bends = run(&mut s, "sheetMetal.bends", json!({"feature": "Panel"}));
+        assert_eq!(bends["bends"][0]["id"], 5, "{bends}");
+
+        // The middle tab moved along the edge, given with its id: its
+        // pieces keep their names (and move with it).
+        let mut moved = vec![tabs[0].clone(), tab(27.0, 37.0), tabs[2].clone()];
+        moved[1]["id"] = json!(3);
+        let shifted = edit(&mut s, moved.clone());
+        assert_eq!(
+            first.keys().collect::<Vec<_>>(),
+            shifted.keys().collect::<Vec<_>>(),
+            "the middle tab moved with its id at scale {k}"
+        );
+        // Without its id it is a new flange: the two pieces beside it get
+        // new names, the old ones name nothing; the end pieces stay.
+        moved[1] = tab(29.0, 39.0);
+        let renamed = edit(&mut s, moved);
+        let kept: Vec<&String> = first.keys().filter(|n| renamed.contains_key(*n)).collect();
+        assert_eq!(kept.len(), 2, "scale {k}: kept {kept:?}");
+        same_places(&first, &renamed, k, "the middle tab changed without its id");
+
+        // An id no flange of the part has, or one given twice, is refused.
+        let mut bad = tabs.to_vec();
+        bad[0]["id"] = json!(1);
+        let got = error(
+            &mut s,
+            "sheetMetal.edit",
+            json!({"feature": "Panel", "flanges": bad}),
+        );
+        assert!(got.contains("no flange of this part"), "{got}");
+        let mut twice = tabs.to_vec();
+        twice[0]["id"] = json!(2);
+        twice[1]["id"] = json!(2);
+        let got = error(
+            &mut s,
+            "sheetMetal.edit",
+            json!({"feature": "Panel", "flanges": twice}),
+        );
+        assert!(got.contains("another flange"), "{got}");
+        for id in [json!(0), json!(-1), json!("2"), json!(1u64 << 33)] {
+            let mut odd = tabs.to_vec();
+            odd[0]["id"] = id.clone();
+            let got = error(
+                &mut s,
+                "sheetMetal.edit",
+                json!({"feature": "Panel", "flanges": odd}),
+            );
+            assert!(got.contains("flanges.0.id"), "{id}: {got}");
+        }
+    }
+}
+
 #[test]
 fn bad_flanges_are_errors_or_fail_the_part() {
     let k = 1.0;

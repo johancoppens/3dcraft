@@ -736,6 +736,10 @@ pub enum FeatureKind {
         corner: Option<SheetCornerClose>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         corners: Vec<SheetCorner>,
+        /// The id the next new flange gets (format version 49; absent:
+        /// past the flanges' ids).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next_flange_id: Option<u32>,
     },
 }
 
@@ -811,6 +815,11 @@ pub struct SheetFlange {
     /// On a side of flange `flange` (format version 49).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub side: Option<SheetFlangeSide>,
+    /// The flange's id, what its split edges are named by (format version
+    /// 49; absent in a file of a part written before ids: its place in
+    /// the list plus 1, as those names were).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<u32>,
     /// How far the bend stands back from its edge's start and end, and
     /// the sketch of the flange's own outline (format version 49).
     #[serde(default, skip_serializing_if = "Option::is_none")]

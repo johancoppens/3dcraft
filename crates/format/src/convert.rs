@@ -696,7 +696,11 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 cutouts,
                 corner,
                 corners,
+                next_flange_id,
             }) => manifest::FeatureKind::SheetMetal {
+                // Written only when it is not past the flanges' ids, as a
+                // flange's id only when it is not its place plus 1.
+                next_flange_id: (*next_flange_id != next_past(flanges)).then_some(*next_flange_id),
                 corner: corner.as_ref().map(|doc::CornerClose { kind, gap }| {
                     manifest::SheetCornerClose {
                         kind: pick_to_manifest(kind, corner_kind_to_manifest),
@@ -724,7 +728,11 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 thickness: expr_to_manifest(thickness),
                 radius: expr_to_manifest(radius),
                 k_factor: expr_to_manifest(k_factor),
-                flanges: flanges.iter().map(flange_to_manifest).collect(),
+                flanges: flanges
+                    .iter()
+                    .enumerate()
+                    .map(|(i, f)| flange_to_manifest(i, f))
+                    .collect(),
                 relief: relief.as_ref().map(|doc::CornerRelief { shape, size }| {
                     manifest::SheetRelief {
                         shape: pick_to_manifest(shape, relief_shape_to_manifest),
@@ -1400,7 +1408,22 @@ fn relief_shape_to_doc(shape: manifest::ReliefShape) -> doc::ReliefShape {
     }
 }
 
-fn flange_to_manifest(flange: &doc::Flange) -> manifest::SheetFlange {
+/// The id a flange without one has: its place in the list plus 1.
+fn place_id(i: usize) -> u32 {
+    u32::try_from(i).map_or(u32::MAX, |i| i.saturating_add(1))
+}
+
+/// The next flange id past every flange's.
+fn next_past(flanges: &[doc::Flange]) -> u32 {
+    flanges
+        .iter()
+        .map(|f| f.id)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1)
+}
+
+fn flange_to_manifest(place: usize, flange: &doc::Flange) -> manifest::SheetFlange {
     let doc::Flange {
         on,
         length,
@@ -1412,6 +1435,7 @@ fn flange_to_manifest(flange: &doc::Flange) -> manifest::SheetFlange {
         inset_start,
         inset_end,
         outline,
+        id,
     } = flange;
     let (base, tip, side) = match on {
         doc::FlangeOn::Base(doc::EntityId(id)) => (Some(*id), None, None),
@@ -1429,6 +1453,7 @@ fn flange_to_manifest(flange: &doc::Flange) -> manifest::SheetFlange {
         ),
     };
     manifest::SheetFlange {
+        id: (*id != place_id(place)).then_some(*id),
         base,
         tip,
         side,
@@ -1466,8 +1491,10 @@ fn flange_to_doc(flange: manifest::SheetFlange) -> doc::Flange {
         inset_start,
         inset_end,
         outline,
+        id,
     } = flange;
     doc::Flange {
+        id: id.unwrap_or(0),
         on: match (base, tip, side) {
             (Some(id), None, None) => doc::FlangeOn::Base(doc::EntityId(id)),
             (None, Some(i), None) => doc::FlangeOn::Tip(i),
@@ -2307,39 +2334,56 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
                 cutouts,
                 corner,
                 corners,
-            } => doc::FeatureKind::SheetMetal(doc::SheetMetal {
-                corner: corner.map(
-                    |manifest::SheetCornerClose { kind, gap }| doc::CornerClose {
-                        kind: pick_to_doc(kind, corner_kind_to_doc),
-                        gap: gap.map(doc::Expr),
-                    },
-                ),
-                corners: corners
-                    .into_iter()
-                    .map(
-                        |manifest::SheetCorner {
-                             flanges,
-                             kind,
-                             gap,
-                             over,
-                         }| doc::SheetCorner {
-                            flanges,
+                next_flange_id,
+            } => doc::FeatureKind::SheetMetal({
+                let mut part = doc::SheetMetal {
+                    next_flange_id: next_flange_id.unwrap_or(0),
+                    corner: corner.map(|manifest::SheetCornerClose { kind, gap }| {
+                        doc::CornerClose {
                             kind: pick_to_doc(kind, corner_kind_to_doc),
                             gap: gap.map(doc::Expr),
-                            over,
-                        },
-                    )
-                    .collect(),
-                cutouts: cutouts.into_iter().map(doc::FeatureId).collect(),
-                sketch: doc::FeatureId(sketch),
-                thickness: doc::Expr(thickness),
-                radius: doc::Expr(radius),
-                k_factor: doc::Expr(k_factor),
-                flanges: flanges.into_iter().map(flange_to_doc).collect(),
-                relief: relief.map(|manifest::SheetRelief { shape, size }| doc::CornerRelief {
-                    shape: pick_to_doc(shape, relief_shape_to_doc),
-                    size: doc::Expr(size),
-                }),
+                        }
+                    }),
+                    corners: corners
+                        .into_iter()
+                        .map(
+                            |manifest::SheetCorner {
+                                 flanges,
+                                 kind,
+                                 gap,
+                                 over,
+                             }| doc::SheetCorner {
+                                flanges,
+                                kind: pick_to_doc(kind, corner_kind_to_doc),
+                                gap: gap.map(doc::Expr),
+                                over,
+                            },
+                        )
+                        .collect(),
+                    cutouts: cutouts.into_iter().map(doc::FeatureId).collect(),
+                    sketch: doc::FeatureId(sketch),
+                    thickness: doc::Expr(thickness),
+                    radius: doc::Expr(radius),
+                    k_factor: doc::Expr(k_factor),
+                    flanges: flanges.into_iter().map(flange_to_doc).collect(),
+                    relief: relief.map(|manifest::SheetRelief { shape, size }| doc::CornerRelief {
+                        shape: pick_to_doc(shape, relief_shape_to_doc),
+                        size: doc::Expr(size),
+                    }),
+                };
+                // A flange without an id is its place plus 1 (a part
+                // written before ids, whose split edges were named so, or
+                // one written compactly); the next id, without one, is
+                // past them.
+                for (i, f) in part.flanges.iter_mut().enumerate() {
+                    if f.id == 0 {
+                        f.id = place_id(i);
+                    }
+                }
+                if part.next_flange_id == 0 {
+                    part.next_flange_id = next_past(&part.flanges);
+                }
+                part
             }),
             manifest::FeatureKind::Fold {
                 sketch,

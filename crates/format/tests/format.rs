@@ -4946,8 +4946,10 @@ fn a_sheet_metal_part_is_written_like_this_and_round_trips() {
                     inset_start: None,
                     inset_end: None,
                     outline: None,
+                    id: 1,
                 },
                 Flange {
+                    id: 2,
                     on: FlangeOn::Tip(0),
                     length: Expr::new("8 mm"),
                     angle: Expr::new("45 deg"),
@@ -4967,6 +4969,7 @@ fn a_sheet_metal_part_is_written_like_this_and_round_trips() {
             cutouts: vec![FeatureId(7)],
             corner: None,
             corners: Vec::new(),
+            next_flange_id: 3,
         }),
     )
     .unwrap();
@@ -5013,16 +5016,19 @@ fn sheet_metal_insets_sides_and_outlines_are_written_like_this_and_round_trip() 
         inset_start: None,
         inset_end: None,
         outline: None,
+        id: 0,
     };
     let mut doc = small();
     let inset = Flange {
         inset_start: Some(Expr::new("5 mm")),
         inset_end: Some(Expr::new("w / 4")),
+        id: 1,
         ..flange(FlangeOn::Base(EntityId(5)))
     };
     let outlined = Flange {
         length: Expr::new("0"),
         outline: Some(FeatureId(7)),
+        id: 2,
         ..flange(FlangeOn::Base(EntityId(6)))
     };
     doc.add_feature(
@@ -5032,11 +5038,19 @@ fn sheet_metal_insets_sides_and_outlines_are_written_like_this_and_round_trip() 
             thickness: Expr::new("1 mm"),
             radius: Expr::new("1 mm"),
             k_factor: Expr::new("0.4"),
-            flanges: vec![inset, outlined, flange(FlangeOn::Side(0, FlangeSide::End))],
+            flanges: vec![
+                inset,
+                outlined,
+                Flange {
+                    id: 3,
+                    ..flange(FlangeOn::Side(0, FlangeSide::End))
+                },
+            ],
             relief: None,
             cutouts: Vec::new(),
             corner: None,
             corners: Vec::new(),
+            next_flange_id: 4,
         }),
     )
     .unwrap();
@@ -5093,11 +5107,13 @@ fn an_older_file_naming_a_sheet_metal_rim_or_edge_warns_by_name() {
                     inset_start: None,
                     inset_end: None,
                     outline: None,
+                    id: 1,
                 }],
                 relief: None,
                 cutouts: Vec::new(),
                 corner: None,
                 corners: Vec::new(),
+                next_flange_id: 2,
             }),
         )
         .unwrap();
@@ -5211,7 +5227,8 @@ fn closed_sheet_metal_corners_are_written_like_this_and_round_trip() {
         BendDirection, CornerClose, CornerKind, CornerRelief, EntityId, Expr, Flange, FlangeFrom,
         FlangeOn, Pick, SheetCorner, SheetMetal,
     };
-    let flange = |line: u64| Flange {
+    let flange = |line: u64, id: u32| Flange {
+        id,
         on: FlangeOn::Base(EntityId(line)),
         length: Expr::new("20 mm"),
         angle: Expr::new("90 deg"),
@@ -5231,7 +5248,7 @@ fn closed_sheet_metal_corners_are_written_like_this_and_round_trip() {
             thickness: Expr::new("1.5 mm"),
             radius: Expr::new("2 mm"),
             k_factor: Expr::new("0.42"),
-            flanges: vec![flange(5), flange(6)],
+            flanges: vec![flange(5, 1), flange(6, 2)],
             relief: Some(CornerRelief {
                 shape: Pick::Expr(Expr::new("notch")),
                 size: Expr::new("4 mm"),
@@ -5247,6 +5264,7 @@ fn closed_sheet_metal_corners_are_written_like_this_and_round_trip() {
                 gap: None,
                 over: Some(1),
             }],
+            next_flange_id: 3,
         }),
     )
     .unwrap();

@@ -125,6 +125,14 @@ pub struct Flange {
     /// the edge's line, the rest beyond (`None`: the rectangle `length`
     /// long). Comes before the part in the history.
     pub outline: Option<FeatureId>,
+    /// What the part names this flange's bend by where its edge is split
+    /// at it (the pieces between bends), so those names stay with the
+    /// flange when others are added, deleted or moved in the list: above
+    /// 0, no two flanges of a part alike, never one a flange deleted had
+    /// ([`SheetMetal::next_flange_id`]). A file without ids reads each
+    /// as its place in the list plus 1 (what those names were).
+    #[serde(default)]
+    pub id: u32,
 }
 
 /// The shape of a corner relief.
@@ -283,9 +291,34 @@ pub struct SheetMetal {
     /// ... but these, each its own.
     #[serde(default)]
     pub corners: Vec<SheetCorner>,
+    /// The id the next new flange gets: above every id a flange of this
+    /// part has had, so a deleted flange's id never comes back.
+    #[serde(default)]
+    pub next_flange_id: u32,
 }
 
 impl SheetMetal {
+    /// Why the flanges' ids are not sound, if they are not: one is 0,
+    /// two are alike, or one is not below `next_flange_id`.
+    pub fn flange_ids_fault(&self) -> Option<String> {
+        let mut seen = std::collections::BTreeSet::new();
+        for (i, f) in self.flanges.iter().enumerate() {
+            if f.id == 0 {
+                return Some(format!("flange {i} has no id"));
+            }
+            if !seen.insert(f.id) {
+                return Some(format!("flange {i}'s id {} is another flange's", f.id));
+            }
+            if f.id >= self.next_flange_id {
+                return Some(format!(
+                    "flange {i}'s id {} is not below the next id {}",
+                    f.id, self.next_flange_id
+                ));
+            }
+        }
+        None
+    }
+
     /// The expressions, with the name of their parameter
     /// (`flanges.2.angle`).
     pub fn exprs(&self) -> Vec<(String, &Expr)> {

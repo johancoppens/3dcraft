@@ -255,6 +255,11 @@ pub struct Spec {
     pub corner: Closing,
     /// ... but the corners listed here, each named by its two flanges.
     pub corners: Vec<CornerSpec>,
+    /// Per flange, its id: what the pieces of an edge split at its bend
+    /// are named by, so the name stays with the flange when others are
+    /// added, deleted or moved in the list (each above 0, below 2³², none
+    /// twice). Empty: each flange's place in the list plus 1.
+    pub ids: Vec<u64>,
     /// Holes and cut-outs drawn in the pattern's axes outside the base:
     /// each closed profile becomes a hole of the one flat (a flange's; the
     /// base's holes are its own) it lies wholly inside in the flat pattern.
@@ -549,6 +554,7 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
     for (i, f) in spec.flanges.iter().enumerate() {
         check_flange(i, f, tol)?;
     }
+    let marks = flange_marks(spec)?;
     if let Some(relief) = spec.relief
         && !(relief.size.is_finite() && relief.size > tol)
     {
@@ -714,7 +720,7 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
                         .map(|c| c.kind != CornerKind::Open)
                         .unwrap_or(false);
                     format!(
-                        "the flanges {fa} and {fb} meet at a reflex corner of the base: there the two flanges need the same part of the sheet (their bend strips overlap in the flat pattern at the corner{}), so the corner cannot be made from one sheet, open or closed; inset them at this corner far enough that their pieces of the sheet keep apart (at a square corner both: the strip of one that reaches the corner lies along the other's edge), or make one of them a part of its own",
+                        "the flanges {fa} and {fb} meet at a reflex corner of the base: there the two flanges need the same part of the sheet (their bend strips overlap in the flat pattern at the corner{}), so the corner cannot be made from one sheet, open or closed (closed, only where one edge is shorter than the other flange's bend allowance, a tab about 2 thicknesses wide, and then only with the bends trimmed, which is not built); inset them at this corner far enough that their pieces of the sheet keep apart (at a square corner both: the strip of one that reaches the corner lies along the other's edge), or make one of them a part of its own",
                         if closed {
                             ", and a flange's flat run on to meet the other's wall lies across the other flange's piece of the sheet"
                         } else {
@@ -992,7 +998,7 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
         let below = lifts.get(parent).copied().ok_or_else(lost)?;
         lifts.push(add(below, shift));
     }
-    split_at_seats(&mut flats, &bends, &seated, tol)?;
+    split_at_seats(&mut flats, &bends, &seated, &marks, tol)?;
 
     // The fold places every flat by its bends alone, so the closed
     // corners' extensions are laid out against the walls as folded.
@@ -1741,6 +1747,31 @@ fn seat_of(flats: &[Flat], i: usize, bend: &Bend) -> Result<Seat, KernelError> {
         .ok_or_else(|| refuse(Some(i), "a flange lost its edge"))
 }
 
+/// Per flange, the number the pieces of a split edge name its bend by:
+/// its id ([`Spec::ids`]), or its place plus 1 when none are given.
+fn flange_marks(spec: &Spec) -> Result<Vec<u64>, KernelError> {
+    let n = spec.flanges.len();
+    if spec.ids.is_empty() {
+        return Ok((1..=n as u64).collect());
+    }
+    if spec.ids.len() != n {
+        return Err(refuse(
+            None,
+            format!("{} flange ids for {n} flanges", spec.ids.len()),
+        ));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for (i, &id) in spec.ids.iter().enumerate() {
+        if id == 0 || id > u64::from(u32::MAX) || !seen.insert(id) {
+            return Err(refuse(
+                Some(i),
+                format!("its id {id} is 0, too large or another flange's"),
+            ));
+        }
+    }
+    Ok(spec.ids.clone())
+}
+
 /// The piece of the straight segment `seg` from `a` to `b` (both on it).
 fn piece(seg: &Segment, a: P2, b: P2) -> Segment {
     Segment {
@@ -1760,6 +1791,7 @@ fn split_at_seats(
     flats: &mut [Flat],
     bends: &[Bend],
     seated: &[(usize, Option<usize>, usize)],
+    marks: &[u64],
     tol: f64,
 ) -> Result<(), KernelError> {
     let mut groups: BTreeMap<(usize, Option<usize>, usize), Vec<usize>> = BTreeMap::new();
@@ -1795,17 +1827,19 @@ fn split_at_seats(
                     continue;
                 };
                 // The pieces of the edge, named by the bends at their two
-                // ends, not by their place along it (rule 4: a flange added
-                // or deleted on the same edge renames only the piece it
-                // splits or joins, never another): `part` is
-                // `from · 2³² + to`, `from` 0 at the edge's start or
-                // `b + 1` after bend `b`, `to` 0 at the edge's end or
-                // `b + 1` before bend `b`; bend `b`'s own tangent line is
-                // `(b + 1) · 2³² + b + 1` (no gap starts and ends at one
-                // bend; it is named as the bend's tangent line in any case).
+                // ends by their flanges' ids, not by their place along it
+                // nor in the list (rule 4: a flange added or deleted, on
+                // the edge or anywhere in the list, renames only the piece
+                // it splits or joins, never another): `part` is
+                // `from · 2³² + to`, `from` 0 at the edge's start or the id
+                // of the flange whose bend it follows, `to` 0 at the edge's
+                // end or the id of the one it runs to; bend `b`'s own
+                // tangent line is `id · 2³² + id` (no gap starts and ends
+                // at one bend; it is named as the bend's tangent line in
+                // any case).
                 let part =
                     |from: u64, to: u64| [id[0], id[1], id[2], (from << 32) | (to & 0xffff_ffff)];
-                let mark = |b: usize| (b as u64).saturating_add(1);
+                let mark = |b: usize| marks.get(b).copied().unwrap_or(0);
                 let d = unit(sub(seg.end, seg.start))
                     .ok_or_else(|| refuse(list.first().copied(), "the edge has no length"))?;
                 let along = |p: P2| dot(sub(p, seg.start), d);
@@ -3085,6 +3119,7 @@ mod tests {
                 corner: Closing::OPEN,
                 corners: Vec::new(),
                 cutouts: Vec::new(),
+                ids: Vec::new(),
             },
             tol,
         )

@@ -311,6 +311,7 @@ pub(crate) fn analyse(
         corner,
         corners,
         cutouts,
+        ids: made.flanges.iter().map(|f| u64::from(f.id)).collect(),
     };
     let part = sheetmetal::build(&spec, &tol).map_err(explain)?;
     Ok(SheetMetalPart {

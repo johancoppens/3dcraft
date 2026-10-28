@@ -102,6 +102,7 @@ fn spec(base: Profile, t: f64, flanges: Vec<FlangeSpec>, relief: Option<Relief>)
         corner: Closing::OPEN,
         corners: Vec::new(),
         cutouts: Vec::new(),
+        ids: Vec::new(),
     }
 }
 

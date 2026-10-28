@@ -124,6 +124,7 @@ fn part_spec(k: f64, kf: f64, cutouts: Vec<Cutout>) -> Spec {
         corner: Closing::OPEN,
         corners: Vec::new(),
         cutouts,
+        ids: Vec::new(),
     }
 }
 
