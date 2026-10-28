@@ -670,11 +670,12 @@ fn keep_the_sizes(
         let what = format!("the assertion `{name}`");
         let measure: Value = serde_json::from_str(&assertion.measure).unwrap_or(Value::Null);
         let kind = measure.get("measure").and_then(Value::as_str).unwrap_or("");
-        let dim = match crate::assert_cmds::dim_of(kind) {
-            Dim::Length(power) => Some(Dimension::new(power, 0)),
+        // `dim_of` knows measures by their name and reads any other as a
+        // length: a value is told apart here, before it.
+        let dim = match (kind, crate::assert_cmds::dim_of(kind)) {
             // A value's bounds are in the document's units of its
             // expression's dimension, which the outputs it uses tell.
-            Dim::Of(_) => {
+            ("value", _) | (_, Dim::Of(_)) => {
                 let source = measure.get("expr").and_then(Value::as_str).unwrap_or("");
                 match sizer.values.eval(source) {
                     Ok(q) => Some(q.dimension),
@@ -703,7 +704,8 @@ fn keep_the_sizes(
                     }
                 }
             }
-            Dim::Mass | Dim::Count | Dim::Flag => None,
+            (_, Dim::Length(power)) => Some(Dimension::new(power, 0)),
+            (_, Dim::Mass | Dim::Count | Dim::Flag) => None,
         };
         if let Some(sized) = sizer.measure(&assertion.measure, &what)? {
             assertion.measure = sized;

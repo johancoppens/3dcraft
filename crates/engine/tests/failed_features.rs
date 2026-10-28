@@ -1102,10 +1102,34 @@ fn independent_features_are_untouched(session: &Session, context: &str) {
         return;
     }
     let mut without = with.clone();
+    // Deleting a failed feature inserted at the rollback marker gives the
+    // later features it re-pointed what they named before
+    // (docs/design/names.md › *A feature inserted at the marker*); each
+    // delete says which under restored, and the kept features are
+    // compared with those parameters given back.
+    let mut restored: Vec<Value> = Vec::new();
     for id in &failed {
-        only(&mut without, "feature.delete", json!({"feature": id}));
+        let deleted = without
+            .execute("feature.delete", &json!({"feature": id}))
+            .unwrap_or_else(|e| panic!("feature.delete {id}: {e}"));
+        if let Some(list) = deleted["restored"].as_array() {
+            restored.extend(list.iter().cloned());
+        }
     }
     let after = state(&mut without);
+    let number_of = |name: &Value| -> Value {
+        let f = features.iter().find(|f| &f["name"] == name).unwrap();
+        json!(f["id"].as_str().unwrap()[1..].parse::<u64>().unwrap())
+    };
+    let given_back = |entry: &Value| {
+        let mut entry = entry.clone();
+        for r in &restored {
+            if entry["name"] == r["feature"] {
+                entry["params"][r["param"].as_str().unwrap()] = number_of(&r["names"]);
+            }
+        }
+        entry
+    };
     // A feature switched off that cannot pass its body on says why, as a
     // failed feature does, in terms of the document it is in: its reason
     // is not compared, that it has one is.
@@ -1121,7 +1145,8 @@ fn independent_features_are_untouched(session: &Session, context: &str) {
         .unwrap()
         .iter()
         .filter(|f| f["status"] != "failed")
-        .map(reasonless)
+        .map(given_back)
+        .map(|f| reasonless(&f))
         .collect();
     let now: Vec<Value> = after["features"]
         .as_array()

@@ -340,7 +340,7 @@ fn outputs_and_value_assertions_keep_their_sizes() {
 /// of its box, 4/3 a h) and an Archimedean spiral `r = 10 + 3 t` over one
 /// turn closed along the x axis (`((a + 2 pi b)^3 - a^3) / (6 b)`), each
 /// extruded by 5: as large in the new unit. One whose dimension changes
-/// along t is refused, naming it.
+/// along t cannot be made.
 #[test]
 fn formula_curves_keep_their_sizes() {
     use std::f64::consts::PI;
@@ -401,21 +401,18 @@ fn formula_curves_keep_their_sizes() {
         assert_eq!(run(&mut s, "document.check", json!({}))["ok"], true);
     }
     // A formula that is a plain number on one side and a length on the
-    // other: whether its plain part is a length is not known for certain.
+    // other cannot be made: `if` needs branches of one dimension, so a
+    // curve's dimension never changes along t in a document the commands
+    // made (setUnit still refuses one, for a file from elsewhere).
     let mut s = common::session();
     run(&mut s, "file.new", json!({"units": "mm"}));
     run(&mut s, "sketch.create", json!({"name": "Odd"}));
-    run(
+    let e = error(
         &mut s,
         "sketch.curve",
         json!({"sketch": "Odd", "x": "if(t < 0, t, t * 1 mm)", "y": "t^2 / 40 * 1 mm", "t": [-20, 20]}),
     );
-    let e = error(
-        &mut s,
-        "document.setUnit",
-        json!({"units": "m", "keep": "sizes"}),
-    );
-    assert!(e.contains("Odd") && e.contains("along t"), "{e}");
+    assert!(e.contains("same dimension"), "{e}");
 }
 
 /// Numbers in a named set's query and in assertions' subjects: faces of

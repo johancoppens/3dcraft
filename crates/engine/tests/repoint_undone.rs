@@ -197,6 +197,84 @@ fn deleting_an_inserted_feature_gives_the_later_ones_their_bodies_back() {
     }
 }
 
+/// The target of the subtraction as `document.inspect` lists it.
+fn cut_target(s: &mut Session) -> Value {
+    features(s)
+        .into_iter()
+        .find(|f| f["name"] == "Cut")
+        .unwrap()["params"]["target"]
+        .clone()
+}
+
+/// Two chamfers inserted one after the other re-point the subtraction's
+/// target twice. Deleting the second gives it the first back; an undo
+/// takes that back and a redo does it again; after a save and a load,
+/// deleting the first leaves the second standing for the block, and
+/// deleting the second then gives the block back: the part never changed.
+#[test]
+fn two_insertions_on_one_parameter_deleted_undone_and_redone() {
+    for k in SCALES {
+        let dir = workdir("repoint_undone", &format!("twice-{k}"));
+        let mut s = session_in(&dir);
+        run(
+            &mut s,
+            "file.new",
+            json!({"units": "mm", "tolerance": 1e-6 * k}),
+        );
+        build(&mut s, &part(k));
+        let mut original = new(k);
+        build(&mut original, &part(k));
+        let before = features(&mut original);
+        run(&mut s, "history.rollback", json!({"feature": "Tool"}));
+        for (edge, name) in [
+            (["F1:face(1)", "F1:face(3)"], "Bevel"),
+            (["F1:face(0)", "F1:face(5)"], "Bevel2"),
+        ] {
+            let added = run(
+                &mut s,
+                "feature.chamfer",
+                json!({"edges": [edge], "distance": 0.5 * k, "name": name}),
+            );
+            assert_eq!(
+                added["repointed"],
+                json!([{"feature": "Cut", "param": "target"}]),
+                "{name}: {added}"
+            );
+        }
+        let both = features(&mut s);
+        let bevel = both.iter().find(|f| f["name"] == "Bevel").unwrap()["id"].clone();
+        let bevel2 = both.iter().find(|f| f["name"] == "Bevel2").unwrap()["id"].clone();
+        assert_eq!(cut_target(&mut s), bevel2, "{k}");
+        let deleted = run(&mut s, "feature.delete", json!({"feature": "Bevel2"}));
+        assert_eq!(
+            deleted["restored"],
+            json!([{"feature": "Cut", "param": "target", "names": "Bevel"}]),
+            "{deleted}"
+        );
+        assert_eq!(cut_target(&mut s), bevel, "{k}");
+        run(&mut s, "edit.undo", json!({}));
+        assert_eq!(features(&mut s), both, "undone {k}");
+        run(&mut s, "edit.redo", json!({}));
+        assert_eq!(cut_target(&mut s), bevel, "redone {k}");
+        run(&mut s, "edit.undo", json!({}));
+        round_trip(&mut s, &dir, "twice");
+        assert_eq!(features(&mut s), both, "opened {k}");
+        let deleted = run(&mut s, "feature.delete", json!({"feature": "Bevel"}));
+        assert!(deleted.get("restored").is_none(), "{deleted}");
+        assert_eq!(cut_target(&mut s), bevel2, "{k}");
+        round_trip(&mut s, &dir, "twice-one");
+        let deleted = run(&mut s, "feature.delete", json!({"feature": "Bevel2"}));
+        assert_eq!(
+            deleted["restored"],
+            json!([{"feature": "Cut", "param": "target", "names": "Base"}]),
+            "{deleted}"
+        );
+        forward(&mut s);
+        assert_eq!(features(&mut s), before, "{k}");
+        same_bodies(&mut s, &mut original, k, "both deleted");
+    }
+}
+
 /// A move of the fillet inserted before the pattern, edited to move the
 /// spare block instead: the pattern repeats the fillet again, and the
 /// move after it, which named the spare block, moves the inserted one;
