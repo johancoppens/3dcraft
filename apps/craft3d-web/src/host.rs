@@ -441,6 +441,30 @@ impl WebHost {
             return false;
         }
         let quality = self.shell.scene_quality();
+        // Regenerated and meshed in a worker (`scenes.rs`): nothing to do
+        // here but say so until the scene is there; the window is drawn
+        // as it was meanwhile, and takes edits.
+        if self.session.regen_elsewhere() {
+            self.away = !self.session.scene_ready(quality);
+            if self.session.scene_job(quality).is_none() {
+                self.about = None;
+                self.shell.set_work(None);
+                return false;
+            }
+            let phase = if self.away {
+                "regenerating"
+            } else {
+                "refining"
+            };
+            self.show_work(Some(craft3d_engine::Progress {
+                phase,
+                feature: None,
+                name: None,
+                step: 0,
+                steps: 0,
+            }));
+            return true;
+        }
         let step = self.session.prepare_some(quality, stop);
         self.away = !self.session.scene_ready(quality);
         match step {

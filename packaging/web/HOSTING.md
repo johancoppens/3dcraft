@@ -125,6 +125,7 @@ work on the iframe `src` too:
 | `?webgl` | Force the WebGL2 backend (useful when a WebGPU driver misbehaves) |
 | `?cpu` | Render the viewport with the CPU reference renderer (slowest, most compatible) |
 | `?download` | Save and export as browser downloads and open with the file chooser, also where the system's file dialogs exist |
+| `?pageregen` | Regenerate and mesh the model on the page's own thread, a piece per frame, also where the worker could (to compare, or when the worker misbehaves) |
 
 For example: `<iframe src="https://example.com/3dcraft/?webgl" ...>`. Flags combine:
 `?webgl&open=part.3dcraft`.

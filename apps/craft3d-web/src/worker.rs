@@ -1,18 +1,23 @@
-//! The checking worker in the browser: a module Web Worker running
+//! The page's workers in the browser: module Web Workers running
 //! `worker.js` (`packaging/web`, named in the page's
 //! `<meta name="craft3d-worker">`), which loads this same module and
-//! answers each job with [`craft3d_check`]. [`WebWorker`] is the page's
-//! [`Transport`] for [`crate::checks::Checks`].
+//! answers each job: a job of checks with [`craft3d_check`], a job of
+//! scenes with [`craft3d_scene_begin`] and [`craft3d_scene_next`].
+//! [`WebWorker`] is the page's [`Transport`] for
+//! [`crate::checks::Checks`] and [`crate::scenes::Scenes`], one worker
+//! each.
 //!
-//! Messages: the page posts `{token, document, work, module}` (the bytes
-//! of the document's `.3dcraft` file as a `Uint8Array`, the work as a
-//! string, and the page's compiled `WebAssembly.Module`, so the worker compiles
-//! nothing); the worker answers `{token, reply}`, `{token, fatal}` when
-//! measuring threw (a panic aborts the module: a bug), or `{token,
-//! unavailable}` when the module could not be started there. An error that
-//! escapes the worker (it could not be loaded) arrives as its `error`
-//! event. Every reply is put in a queue the next frame takes, and asks for
-//! that frame.
+//! Messages: the page posts `{token, kind, document, work, module}`
+//! (`kind` is `check` or `scene`, the bytes of the document's `.3dcraft`
+//! file as a `Uint8Array`, the work as a string, and the page's compiled
+//! `WebAssembly.Module`, so the worker compiles nothing); the worker
+//! answers a check with `{token, reply}`, a scene with a `{token, part}`
+//! per part (a `Uint8Array`, its buffer handed over, not copied) and
+//! `{token, done}`; `{token, fatal}` when the work threw (a panic aborts
+//! the module: a bug), or `{token, unavailable}` when the module could
+//! not be started there. An error that escapes the worker (it could not
+//! be loaded) arrives as its `error` event. Every reply is put in its
+//! worker's queue the next frame takes, and asks for that frame.
 
 use crate::checks::{Reply, Transport};
 use std::cell::RefCell;
@@ -27,6 +32,20 @@ const META: &str = "craft3d-worker";
 #[wasm_bindgen]
 pub fn craft3d_check(document: &[u8], work: &str) -> String {
     craft3d_engine::measure_checks(document, work)
+}
+
+/// What the regenerating worker answers a job of scenes with, first:
+/// `craft3d_engine::scene_begin`.
+#[wasm_bindgen]
+pub fn craft3d_scene_begin(document: &[u8], work: &str) {
+    craft3d_engine::scene_begin(document, work);
+}
+
+/// The next part of that answer (`craft3d_engine::scene_next`), built
+/// now; `undefined` once it is complete.
+#[wasm_bindgen]
+pub fn craft3d_scene_next() -> Option<Vec<u8>> {
+    craft3d_engine::scene_next()
 }
 
 /// The worker's script, as the page names it; `None` on a page that
@@ -50,15 +69,29 @@ struct Running {
 
 pub struct WebWorker {
     script: String,
+    /// What it is posted: `check` or `scene` (`worker.js`).
+    kind: &'static str,
+    /// What it is called in messages: "the checking worker".
+    name: &'static str,
     replies: Replies,
     ctx: egui::Context,
     running: Option<Running>,
 }
 
 impl WebWorker {
-    pub fn new(script: String, replies: Replies, ctx: egui::Context) -> Self {
+    /// A worker for jobs of `kind` (`check`, `scene`), `name` in what
+    /// the page says of it.
+    pub fn new(
+        script: String,
+        kind: &'static str,
+        name: &'static str,
+        replies: Replies,
+        ctx: egui::Context,
+    ) -> Self {
         Self {
             script,
+            kind,
+            name,
             replies,
             ctx,
             running: None,
@@ -70,15 +103,15 @@ impl WebWorker {
             let options = web_sys::WorkerOptions::new();
             options.set_type(web_sys::WorkerType::Module);
             let worker = web_sys::Worker::new_with_options(&self.script, &options)
-                .map_err(|e| format!("the checking worker cannot be started: {}", text(&e)))?;
-            let (replies, ctx) = (Rc::clone(&self.replies), self.ctx.clone());
+                .map_err(|e| format!("{} cannot be started: {}", self.name, text(&e)))?;
+            let (replies, ctx, name) = (Rc::clone(&self.replies), self.ctx.clone(), self.name);
             let message = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(
                 move |event: web_sys::MessageEvent| {
-                    replies.borrow_mut().push(reply_of(&event.data()));
+                    replies.borrow_mut().push(reply_of(&event.data(), name));
                     ctx.request_repaint();
                 },
             );
-            let (replies, ctx) = (Rc::clone(&self.replies), self.ctx.clone());
+            let (replies, ctx, name) = (Rc::clone(&self.replies), self.ctx.clone(), self.name);
             // A script that cannot be loaded (a 404, a failed import, a
             // `Content-Security-Policy` that refuses it) fires a plain
             // `Event`, an error that escapes the worker an `ErrorEvent`:
@@ -90,7 +123,7 @@ impl WebWorker {
                     .dyn_ref::<web_sys::ErrorEvent>()
                     .map(web_sys::ErrorEvent::message)
                     .filter(|m| !m.is_empty())
-                    .unwrap_or_else(|| "the checking worker could not be loaded".to_string());
+                    .unwrap_or_else(|| format!("{name} could not be loaded"));
                 replies.borrow_mut().push(Reply::Failed(why));
                 ctx.request_repaint();
             });
@@ -105,7 +138,7 @@ impl WebWorker {
         self.running
             .as_ref()
             .map(|r| &r.worker)
-            .ok_or_else(|| "the checking worker cannot be started".to_string())
+            .ok_or_else(|| format!("{} cannot be started", self.name))
     }
 }
 
@@ -114,6 +147,7 @@ impl Transport for WebWorker {
         let message = js_sys::Object::new();
         for (key, value) in [
             ("token", JsValue::from_str(&token.to_string())),
+            ("kind", JsValue::from_str(self.kind)),
             ("document", js_sys::Uint8Array::from(document).into()),
             ("work", JsValue::from_str(work)),
             ("module", wasm_bindgen::module()),
@@ -121,12 +155,10 @@ impl Transport for WebWorker {
             js_sys::Reflect::set(&message, &JsValue::from_str(key), &value)
                 .map_err(|e| text(&e))?;
         }
-        self.start()?.post_message(&message).map_err(|e| {
-            format!(
-                "the job cannot be posted to the checking worker: {}",
-                text(&e)
-            )
-        })
+        let name = self.name;
+        self.start()?
+            .post_message(&message)
+            .map_err(|e| format!("the job cannot be posted to {name}: {}", text(&e)))
     }
 
     fn stop(&mut self) {
@@ -140,15 +172,21 @@ impl Transport for WebWorker {
 
 /// A message of the worker as a [`Reply`]; one that does not fit is the
 /// worker failing.
-fn reply_of(data: &JsValue) -> Reply {
-    let field = |key: &str| {
-        js_sys::Reflect::get(data, &JsValue::from_str(key))
-            .ok()
-            .and_then(|v| v.as_string())
-    };
+fn reply_of(data: &JsValue, name: &str) -> Reply {
+    let get = |key: &str| js_sys::Reflect::get(data, &JsValue::from_str(key)).ok();
+    let field = |key: &str| get(key).and_then(|v| v.as_string());
     let Some(token) = field("token").and_then(|t| t.parse::<u64>().ok()) else {
-        return Reply::Failed("the checking worker answered without a job".into());
+        return Reply::Failed(format!("{name} answered without a job"));
     };
+    if let Some(part) = get("part").and_then(|v| v.dyn_into::<js_sys::Uint8Array>().ok()) {
+        return Reply::Part {
+            token,
+            bytes: part.to_vec(),
+        };
+    }
+    if get("done").is_some_and(|v| v.is_truthy()) {
+        return Reply::Done { token };
+    }
     if let Some(why) = field("unavailable") {
         return Reply::Failed(format!("the module cannot be started in the worker: {why}"));
     }
@@ -163,7 +201,7 @@ fn reply_of(data: &JsValue) -> Reply {
         },
         (None, None) => Reply::Answer {
             token,
-            answer: Err("the checking worker answered nothing".into()),
+            answer: Err(format!("{name} answered nothing")),
         },
     }
 }

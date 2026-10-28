@@ -18,6 +18,7 @@ use crate::host::{
 };
 use crate::pickers::{self, Picked};
 use crate::prefs::{self, Prefs};
+use crate::scenes::Scenes;
 use crate::worker::{self, Replies, WebWorker};
 use craft3d_ui_egui::{RendererChoice, Shell, window_title};
 use egui_wgpu::wgpu;
@@ -448,6 +449,12 @@ struct Page {
     checks: Option<Checks<WebWorker>>,
     /// What the worker answered, for the next frame.
     replies: Replies,
+    /// The document shown, regenerated and meshed in a worker of its own
+    /// (`scenes.rs`); `None` on a page that names no worker, or with
+    /// `?pageregen`, which regenerates a piece per frame.
+    scenes: Option<Scenes<WebWorker>>,
+    /// What that worker answered, for the next frame.
+    scene_replies: Replies,
 }
 
 impl Page {
@@ -499,9 +506,31 @@ impl Page {
         let replies: Replies = Rc::new(RefCell::new(Vec::new()));
         let checks = worker::script().map(|script| {
             log::info!("checks: in a Web Worker ({script})");
-            let transport = WebWorker::new(script, Rc::clone(&replies), creation.egui_ctx.clone());
+            let transport = WebWorker::new(
+                script,
+                "check",
+                "the checking worker",
+                Rc::clone(&replies),
+                creation.egui_ctx.clone(),
+            );
             Checks::new(transport, &mut host.session)
         });
+        // The regeneration and meshing too, in another, so that a
+        // regeneration of minutes never holds the page up.
+        let scene_replies: Replies = Rc::new(RefCell::new(Vec::new()));
+        let scenes = worker::script()
+            .filter(|_| !flags.page_regen)
+            .map(|script| {
+                log::info!("regeneration: in a Web Worker ({script})");
+                let transport = WebWorker::new(
+                    script,
+                    "scene",
+                    "the regenerating worker",
+                    Rc::clone(&scene_replies),
+                    creation.egui_ctx.clone(),
+                );
+                Scenes::new(transport, &mut host.session)
+            });
         if let Some(url) = &flags.open {
             host.fetching(&flags::file_name(url));
         }
@@ -533,6 +562,8 @@ impl Page {
             stored,
             checks,
             replies,
+            scenes,
+            scene_replies,
         }
     }
 
@@ -979,6 +1010,33 @@ impl eframe::App for Page {
         }
         self.deliver(outcome.downloads);
         self.forget_closed();
+        // The scenes to and from their worker, before the page decides
+        // what to draw: a part that came is shown in this frame.
+        if let Some(scenes) = &mut self.scenes {
+            let replies: Vec<Reply> = self.scene_replies.borrow_mut().drain(..).collect();
+            let quality = self.host.shell.scene_quality();
+            let done = scenes.frame_at(
+                &mut self.host.session,
+                quality,
+                replies,
+                js_sys::Date::now(),
+            );
+            if let Some(why) = done.home {
+                log::warn!("regeneration: on the page, the worker cannot be had: {why}");
+            }
+            if let Some(token) = done.cancelled {
+                log::info!("regeneration: job {token} superseded, its worker ended");
+            }
+            if let Some(token) = done.timed_out {
+                log::warn!("regeneration: job {token} took too long in the worker and was stopped");
+            }
+            if !done.parts.is_empty() {
+                ctx.request_repaint();
+            }
+            if scenes.busy().is_some() {
+                ctx.request_repaint_after(std::time::Duration::from_secs(30));
+            }
+        }
         // A piece of the long work, for as long as a frame allows: the
         // rest in the next frames, drawn in between.
         let started = js_sys::Date::now();

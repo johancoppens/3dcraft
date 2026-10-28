@@ -39,6 +39,11 @@ pub enum Reply {
         token: u64,
         answer: Result<String, String>,
     },
+    /// A part of the answer to job `token` of scenes (`scenes.rs`): what
+    /// `scene_next` returned.
+    Part { token: u64, bytes: Vec<u8> },
+    /// The answer to job `token` of scenes is complete.
+    Done { token: u64 },
     /// The worker itself failed (it could not be loaded, or an error
     /// escaped it): why.
     Failed(String),
@@ -135,6 +140,8 @@ impl<T: Transport> Checks<T> {
                         done.answered.push(token);
                     }
                 }
+                // Not the checking worker's.
+                Reply::Part { .. } | Reply::Done { .. } => {}
                 Reply::Failed(why) => {
                     self.transport.stop();
                     let busy = self.busy.take();

@@ -25,11 +25,13 @@
 //! - `pickers` (wasm32 only): the system's file dialogs and writing to
 //!   the file one chose.
 //! - [`checks`]: the assertions and outputs measured in a Web Worker;
-//!   `worker` (wasm32 only) is that worker and its messages.
+//!   [`scenes`]: the document regenerated and meshed in another; `worker`
+//!   (wasm32 only) is such a worker and its messages.
 //!
-//! The page runs on its own thread plus one Web Worker for the checks,
-//! which share no memory (messages only): no `SharedArrayBuffer`, so no
-//! cross-origin isolation headers. The viewport is drawn by the GPU
+//! The page runs on its own thread plus two Web Workers, one for the
+//! checks and one for the regeneration and meshing, which share no memory
+//! (messages only): no `SharedArrayBuffer`, so no cross-origin isolation
+//! headers. The viewport is drawn by the GPU
 //! renderer on the page's own device (WebGPU, else WebGL2; `?webgl`
 //! forces WebGL2), with the CPU reference renderer standing by on the same
 //! thread. Crash recovery is off in the browser: a document lives in the
@@ -45,5 +47,6 @@ mod page;
 #[cfg(target_arch = "wasm32")]
 mod pickers;
 pub mod prefs;
+pub mod scenes;
 #[cfg(target_arch = "wasm32")]
 mod worker;

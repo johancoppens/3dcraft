@@ -397,6 +397,7 @@ mod tests {
         assert!(!worker.contains('@'), "{worker}");
         assert!(worker.contains("from './a-0123456789abcdef.js'"));
         assert!(worker.contains("craft3d_check"));
+        assert!(worker.contains("craft3d_scene_begin") && worker.contains("craft3d_scene_next"));
         let name = worker_name(worker.as_bytes());
         assert!(
             name.starts_with("craft3d-worker-") && name.ends_with(".js") && name.len() == 34,
