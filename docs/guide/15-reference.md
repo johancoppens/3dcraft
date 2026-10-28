@@ -8,7 +8,7 @@ The full description of any command, with every value it takes and what it refus
 
 ## Commands
 
-3DCraft 0.1.0 has 130 commands. A command's id is its family and its name: `feature.fillet`.
+3DCraft 0.1.0 has 131 commands. A command's id is its family and its name: `feature.fillet`.
 
 ### Documents and files
 
@@ -79,7 +79,7 @@ The full description of any command, with every value it takes and what it refus
 | `document.inspect` | The whole state (`doc_inspect` over MCP) |
 | `document.check` | Every problem in one list |
 | `document.measure`, `document.edges`, `document.interference` | Volumes and areas, edges, clashes |
-| `measure.distance`, `measure.clearance`, `measure.thickness`, `measure.through`, `measure.ray`, `measure.symmetry`, `measure.below`, `measure.section`, `measure.levelFor` | Questions to the geometry ([chapter 10](10-measure.md)) |
+| `measure.distance`, `measure.clearance`, `measure.thickness`, `measure.through`, `measure.ray`, `measure.symmetry`, `measure.below`, `measure.section`, `measure.levelFor`, `measure.floating` | Questions to the geometry ([chapter 10](10-measure.md)) |
 | `assert.add`, `assert.edit`, `assert.delete`, `assert.list` | Checks kept in the document |
 | `variable.measure`, `variable.output`, `output.list` | Outputs: read-only variables computed after regeneration from measures and formulas, for assertions ([chapter 10](10-measure.md#outputs-measures-in-formulas)) |
 | `select.get`, `select.set`, `select.query` | The selection, and finding things by description ([chapter 11](11-selection.md)) |
