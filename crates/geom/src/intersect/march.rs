@@ -115,6 +115,11 @@ const MIN_SINE: f64 = 1e-8;
 /// twice its length) across a jump in speed of `2^(RESCALES − 2)` and
 /// more.
 const RESCALES: usize = 48;
+/// Places at which a border of a freeform chart is sampled for the
+/// stretches of it that lie on the field ([`Marcher::border_stretches`]).
+const BORDER_SAMPLES: u32 = 64;
+/// Halvings by which an end of such a stretch is found.
+const BORDER_HALVINGS: usize = 48;
 
 fn stalled() -> GeomError {
     GeomError::NoConvergence(
@@ -248,6 +253,27 @@ impl Disc {
     }
 }
 
+/// A stretch of a border of the chart (side 0 to 3: u start, u end,
+/// v start, v end) that lies on the field: from `from` to `to` in the
+/// border's parameter, the border's iso-curve (`None` for a border that is
+/// one point).
+#[derive(Clone, Debug)]
+struct Lying {
+    side: usize,
+    from: f64,
+    to: f64,
+    closed: bool,
+    /// The whole border: along it, everything is on the stretch.
+    whole: bool,
+    /// The least sine of the angle between the surfaces measured across
+    /// the stretch ([`Marcher::leaves_field`]), which sizes its band;
+    /// `None` for a whole border along which the surfaces do not cross
+    /// (tangent: no band, as before stretches).
+    sine: Option<f64>,
+    curve: Option<NurbsCurve>,
+    deviation: f64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum End {
     Closed,
@@ -288,9 +314,9 @@ pub(super) struct Marcher {
     hmax: f64,
     hmin: f64,
     evals: usize,
-    /// Borders of the chart's rectangle (u start, u end, v start, v end)
-    /// that lie on the field's surface: reported as curves, not marched.
-    lying: [bool; 4],
+    /// Stretches of the borders of the chart's rectangle that lie on the
+    /// field's surface: reported as curves, not marched.
+    lying: Vec<Lying>,
     /// Crossing points read as such although the surfaces are a little
     /// apart there, each with the radius within which a branch is drawn
     /// straight to the point instead of along `f = 0`, which turns away
@@ -334,7 +360,7 @@ impl Marcher {
             hmax: scale / 32.0,
             hmin: 4.0 * on,
             evals: 0,
-            lying: [false; 4],
+            lying: Vec::new(),
             zones: Vec::new(),
             tacnodes: Vec::new(),
             field_chart: None,
@@ -561,18 +587,37 @@ impl Marcher {
         Some(place(0.5 * (lo + hi)))
     }
 
-    /// The borders of a freeform chart that lie on the field's surface,
-    /// as curves. The intersection then runs along the edge of the
-    /// rectangle, where no cell edge shows a change of sign and every cell
-    /// along it would be split to the floor for nothing (a plane through
-    /// the edge of a patch, which is every patch standing on a plate). The
-    /// border is the surface's own iso-curve there, exact on the chart and
-    /// on the field to the sampled deviation.
-    fn border_curves(&mut self) -> Result<Vec<MeetingCurve>, GeomError> {
+    /// The stretches of the borders of a freeform chart that lie on the
+    /// field's surface ([`Lying`]). The intersection then runs along the
+    /// edge of the rectangle, where no cell edge shows a change of sign and
+    /// every cell along it would be split to the floor for nothing (a
+    /// plane through the edge of a patch, which is every patch standing on
+    /// a plate). A border is the surface's own iso-curve there, exact on
+    /// the chart and on the field to the sampled deviation.
+    ///
+    /// **Stretches, not only whole borders** (2026-10-27, the sea kayak's
+    /// touching plates). Two surfaces that share an edge each continue
+    /// past its ends in their own way (a plate's rim traced past the
+    /// chine's ends by the corners' reach), so only the stretch of the
+    /// border along the shared edge lies on the other surface. The border
+    /// is sampled at [`BORDER_SAMPLES`] places (a place too far from the
+    /// field to be on it is skipped: the field is a distance, and the
+    /// border moves no faster than the chart's bound on its speed, a proof
+    /// for analytic and Bézier charts and an estimate for NURBS charts,
+    /// whose bounds are sampled); every run of at least three places
+    /// within half the tolerance is a stretch, its ends found by bisection
+    /// between the last place on and the first off, held to half the
+    /// tolerance at as many places again between them, and kept only where
+    /// the surfaces cross along it ([`Marcher::leaves_field`]). A whole
+    /// border on the field is one curve over the curve's whole domain, as
+    /// before; it has a band and is divided by the branches that end on it
+    /// only where the surfaces cross along it (tangent along it, as a
+    /// fillet on the face it rounds, it is what it was before).
+    fn border_stretches(&mut self) -> Result<(), GeomError> {
         let spline = match &self.chart.surface {
             Surface::Bezier(b) => NurbsSurface::from_bezier(b)?,
             Surface::Nurbs(s) => s.clone(),
-            _ => return Ok(Vec::new()),
+            _ => return Ok(()),
         };
         let ((u0, u1), (v0, v1)) = (self.chart.u, self.chart.v);
         let (degree_u, degree_v) = spline.degrees();
@@ -588,8 +633,7 @@ impl Marcher {
                 knots.first() == knots.get(degree)
             }
         };
-        const SAMPLES: u32 = 64;
-        let mut curves = Vec::new();
+        let tol = self.tol.linear;
         for side in 0..4 {
             let along_u = side >= 2;
             let at_end = side % 2 == 1;
@@ -610,25 +654,167 @@ impl Marcher {
                 2 => v0,
                 _ => v1,
             };
-            let mut worst = 0.0_f64;
-            let mut on_field = true;
-            for k in 0..=SAMPLES {
+            let (start, end) = if along_u { (u0, u1) } else { (v0, v1) };
+            let speed = if along_u {
+                self.chart.bounds.lu
+            } else {
+                self.chart.bounds.lv
+            };
+            let place = move |t: f64| if along_u { (t, fixed) } else { (fixed, t) };
+            // The distance to the field at a place of the border; `None`
+            // where it cannot be had.
+            let dist_at = |me: &mut Self, t: f64| -> Option<f64> {
+                let (u, v) = place(t);
+                me.eval(u, v).map(|e| e.dist)
+            };
+            let step = (end - start) / f64::from(BORDER_SAMPLES);
+            // (The places as they were before stretches, bit for bit.)
+            let at = |k: u32| start + (end - start) * (f64::from(k) / f64::from(BORDER_SAMPLES));
+            // The distance to the field at each place (`None`: skipped as
+            // too far by the speed bound, or not to be had).
+            let mut on: Vec<Option<f64>> = Vec::new();
+            let mut skip_to = 0_u32;
+            for k in 0..=BORDER_SAMPLES {
                 self.spent()?;
-                let t = f64::from(k) / f64::from(SAMPLES);
-                let (u, v) = if along_u {
-                    (u0 + (u1 - u0) * t, fixed)
-                } else {
-                    (fixed, v0 + (v1 - v0) * t)
-                };
-                match self.eval(u, v) {
-                    Some(e) if e.dist <= self.tol.linear => worst = worst.max(e.dist),
-                    _ => {
-                        on_field = false;
-                        break;
+                if k < skip_to {
+                    on.push(None);
+                    continue;
+                }
+                match dist_at(self, at(k)) {
+                    Some(d) if d <= tol => on.push(Some(d)),
+                    Some(d) => {
+                        on.push(Some(d));
+                        // The border comes no nearer than `d − speed Δt`.
+                        if speed > 0.0 && step > 0.0 {
+                            let clear = (d - tol) / (speed * step);
+                            if clear.is_finite() && clear >= 2.0 {
+                                let ahead = clear.floor().min(f64::from(BORDER_SAMPLES));
+                                skip_to = k.saturating_add(ahead as u32);
+                            }
+                        }
                     }
+                    None => on.push(None),
                 }
             }
-            if !on_field {
+            let whole = on.iter().all(|d| d.is_some_and(|d| d <= tol));
+            // A stretch (not the whole border) is held to half the
+            // tolerance: a marched branch that leaves the border where it
+            // ends joins it there ([`Marcher::onto_stretch`]), and its last
+            // span is then off the field by no more than that.
+            let near = if whole { tol } else { 0.5 * tol };
+            let close = |d: Option<f64>| d.filter(|&d| d <= near);
+            // The runs of places on the field.
+            let mut runs: Vec<(u32, u32)> = Vec::new();
+            let mut first: Option<u32> = None;
+            for k in 0..=BORDER_SAMPLES {
+                let here = close(on.get(k as usize).copied().flatten()).is_some();
+                match (here, first) {
+                    (true, None) => first = Some(k),
+                    (false, Some(a)) => {
+                        runs.push((a, k - 1));
+                        first = None;
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(a) = first {
+                runs.push((a, BORDER_SAMPLES));
+            }
+            let mut stretches: Vec<(f64, f64, f64, Option<f64>)> = Vec::new();
+            for (a, b) in runs {
+                if b < a.saturating_add(2) {
+                    continue; // A crossing, not a stretch.
+                }
+                let mut worst = (a..=b)
+                    .filter_map(|k| close(on.get(k as usize).copied().flatten()))
+                    .fold(0.0_f64, f64::max);
+                if whole {
+                    // A band beside it only where the surfaces cross along
+                    // it (two traces of one chine on the plates' skins,
+                    // continued past its ends, agree only to the
+                    // tolerance); none where they are tangent along it (a
+                    // fillet on the face it rounds), as before stretches.
+                    let mut sine: Option<f64> = None;
+                    for share in [0.25, 0.5, 0.75] {
+                        self.spent()?;
+                        match self.leaves_field(side, start + (end - start) * share, tol) {
+                            Some(s) => sine = Some(sine.map_or(s, |least: f64| least.min(s))),
+                            None => {
+                                sine = None;
+                                break;
+                            }
+                        }
+                    }
+                    stretches.push((start, end, worst, sine));
+                    break;
+                }
+                // The ends: between the last place on and the first off.
+                let mut ends = [at(a), at(b)];
+                for (which, (inside, outside)) in [(a, a.checked_sub(1)), (b, b.checked_add(1))]
+                    .into_iter()
+                    .enumerate()
+                {
+                    let Some(outside) = outside.filter(|&k| k <= BORDER_SAMPLES) else {
+                        continue;
+                    };
+                    let (mut t_on, mut t_off) = (at(inside), at(outside));
+                    for _ in 0..BORDER_HALVINGS {
+                        self.spent()?;
+                        let m = 0.5 * (t_on + t_off);
+                        if m == t_on || m == t_off {
+                            break;
+                        }
+                        match dist_at(self, m) {
+                            Some(d) if d <= near => {
+                                t_on = m;
+                                worst = worst.max(d);
+                            }
+                            _ => t_off = m,
+                        }
+                    }
+                    if let Some(slot) = ends.get_mut(which) {
+                        *slot = t_on;
+                    }
+                }
+                let [from, to] = ends;
+                // Held to the tolerance between the places.
+                let mut held = true;
+                for k in 1..BORDER_SAMPLES {
+                    self.spent()?;
+                    let t = from + (to - from) * f64::from(k) / f64::from(BORDER_SAMPLES);
+                    match dist_at(self, t) {
+                        Some(d) if d <= near => worst = worst.max(d),
+                        _ => {
+                            held = false;
+                            break;
+                        }
+                    }
+                }
+                // The surfaces cross along it: a little way across into
+                // the chart the field is clear of zero. (Not a place where
+                // the chart is itself within the tolerance of the field
+                // all around: near a cusp's point on the axis every
+                // meridian is that close to a plane through the axis, and
+                // the border there is no meeting of its own.)
+                let mut sine: Option<f64> = None;
+                if held && to > from {
+                    for share in [0.25, 0.5, 0.75] {
+                        self.spent()?;
+                        let t = from + (to - from) * share;
+                        match self.leaves_field(side, t, tol) {
+                            Some(s) => sine = Some(sine.map_or(s, |least: f64| least.min(s))),
+                            None => {
+                                sine = None;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if let Some(sine) = sine {
+                    stretches.push((from, to, worst, Some(sine)));
+                }
+            }
+            if stretches.is_empty() {
                 continue;
             }
             let (points, curve_weights, knots, degree): (Vec<Vec3>, Vec<f64>, Vec<f64>, usize) =
@@ -678,49 +864,316 @@ impl Marcher {
                     .first()
                     .is_some_and(|&first| points.iter().all(|p| p.distance(first) <= 1e-9 * size))
             };
-            if collapsed {
-                if let Some(flag) = self.lying.get_mut(side) {
-                    *flag = true;
+            let curve = if collapsed {
+                None
+            } else {
+                match NurbsCurve::new(degree, knots, points, curve_weights) {
+                    Ok(curve) => Some(curve),
+                    Err(_) => continue,
                 }
-                continue;
-            }
-            let Ok(curve) = NurbsCurve::new(degree, knots, points, curve_weights) else {
-                continue;
             };
-            if let Some(flag) = self.lying.get_mut(side) {
-                *flag = true;
+            for (from, to, worst, sine) in stretches {
+                // A whole border is the whole curve, as before.
+                let (from, to) = match (&curve, whole) {
+                    (Some(c), true) => c.domain(),
+                    _ => (from, to),
+                };
+                self.lying.push(Lying {
+                    side,
+                    from,
+                    to,
+                    closed: around && whole,
+                    whole,
+                    sine,
+                    curve: curve.clone(),
+                    deviation: worst.max(4.0 * self.on),
+                });
             }
-            curves.push(MeetingCurve {
-                range: curve.domain(),
-                curve: Curve3::Nurbs(curve),
-                closed: around,
-                tangent: false,
-                exact: false,
-                deviation: worst.max(4.0 * self.on),
-            });
         }
-        Ok(curves)
+        Ok(())
     }
 
-    /// True when a seed sits on a border that lies on the field: the
-    /// branch it would start is the border curve, already reported.
-    fn on_lying_border(&self, u: f64, v: f64) -> bool {
+    /// The sine of the angle at which the surfaces meet at the place `t`
+    /// of the border on `side`, measured as the distance to the field a
+    /// little way across into the chart (64 tolerances in space, or half
+    /// the chart's width) over that way; `None` unless that distance is
+    /// more than twice the tolerance (a sine of 1/32 or more on the 64
+    /// tolerances).
+    fn leaves_field(&mut self, side: usize, t: f64, tol: f64) -> Option<f64> {
         let ((u0, u1), (v0, v1)) = (self.chart.u, self.chart.v);
-        let (hair_u, hair_v) = (1e-9 * (u1 - u0), 1e-9 * (v1 - v0));
-        (self.lying[0] && (u - u0).abs() <= hair_u)
-            || (self.lying[1] && (u - u1).abs() <= hair_u)
-            || (self.lying[2] && (v - v0).abs() <= hair_v)
-            || (self.lying[3] && (v - v1).abs() <= hair_v)
+        let (u, v) = match side {
+            0 => (u0, t),
+            1 => (u1, t),
+            2 => (t, v0),
+            _ => (t, v1),
+        };
+        let e = self.eval(u, v)?;
+        let speed = if side >= 2 {
+            e.sv.length()
+        } else {
+            e.su.length()
+        };
+        let width = if side >= 2 { v1 - v0 } else { u1 - u0 };
+        if !(speed > 0.0 && width > 0.0) {
+            return None;
+        }
+        let step = (64.0 * tol / speed).min(0.5 * width);
+        let (u, v) = match side {
+            0 => (u0 + step, t),
+            1 => (u1 - step, t),
+            2 => (t, v0 + step),
+            _ => (t, v1 - step),
+        };
+        let away = self.eval(u, v)?;
+        let went = away.p.distance(e.p);
+        (away.dist > 2.0 * tol && went > 0.0).then(|| (away.dist / went).min(1.0))
+    }
+
+    /// The border's parameter and the distance across to it, in the
+    /// chart's parameters, of `(u, v)` for a stretch on `side`.
+    fn border_place(&self, side: usize, u: f64, v: f64) -> (f64, f64) {
+        let ((u0, u1), (v0, v1)) = (self.chart.u, self.chart.v);
+        match side {
+            0 => (v, (u - u0).abs()),
+            1 => (v, (u - u1).abs()),
+            2 => (u, (v - v0).abs()),
+            _ => (u, (v - v1).abs()),
+        }
+    }
+
+    /// The chart's spans along a side's border and across it.
+    fn border_spans(&self, side: usize) -> (f64, f64) {
+        let ((u0, u1), (v0, v1)) = (self.chart.u, self.chart.v);
+        if side >= 2 {
+            (u1 - u0, v1 - v0)
+        } else {
+            (v1 - v0, u1 - u0)
+        }
+    }
+
+    /// True when a seed sits on a stretch of a border that lies on the
+    /// field: the branch it would start is the stretch, already reported.
+    fn on_lying_border(&self, u: f64, v: f64) -> bool {
+        self.lying.iter().any(|l| {
+            let (along, across) = self.border_spans(l.side);
+            let (t, off) = self.border_place(l.side, u, v);
+            let (hair_along, hair_across) = (1e-9 * along, 1e-9 * across);
+            off <= hair_across && (l.whole || (t >= l.from - hair_along && t <= l.to + hair_along))
+        })
+    }
+
+    /// True when a point found on `f = 0` (with the chart's speeds `lu`,
+    /// `lv` there) is within `reach` (a length) of a stretch of a border
+    /// that lies on the field.
+    fn near_lying(&self, u: f64, v: f64, lu: f64, lv: f64, reach: f64) -> bool {
+        self.lying.iter().any(|l| {
+            let (t, off) = self.border_place(l.side, u, v);
+            let (speed_along, speed_across) = if l.side >= 2 { (lu, lv) } else { (lv, lu) };
+            off * speed_across <= reach
+                && (l.whole
+                    || ((t - l.from) * speed_along >= -reach && (l.to - t) * speed_along >= -reach))
+        })
     }
 
     /// True when the stationary point is within `reach` (a length) of a
-    /// border of the chart that lies on the field.
+    /// stretch of a border of the chart that lies on the field.
     fn near_lying_border(&self, s: &Stationary, reach: f64) -> bool {
+        self.near_lying(s.u, s.v, s.lu, s.lv, reach)
+    }
+
+    /// How far beside a stretch lying on the field `f = 0` may run and be
+    /// that stretch: `2 tol / sin θ`, with `sin θ` the least measured
+    /// across the stretch itself ([`Lying::sine`], 1/32 at least), not at
+    /// the point asked about. `None` for a stretch with no band.
+    fn band(&self, l: &Lying) -> Option<f64> {
+        l.sine
+            .map(|sine| 2.0 * self.tol.linear / sine.clamp(1.0 / 32.0, 1.0))
+    }
+
+    /// The stretch beside which the point at `(u, v)` on `f = 0` is that
+    /// stretch: within the stretch's band of it ([`Marcher::band`]), and
+    /// with the field within the tolerance halfway across from it to the
+    /// border (so `f` stays at zero between them: a branch of its own a
+    /// little way off the stretch, a loop or a dip that comes close to it,
+    /// has the field clear of zero between, and is kept). Not beside a
+    /// border that is one point, and not where the chart's speed away
+    /// from the border has fallen below a thousandth of its bound (near a
+    /// pole every meridian comes as close to the border as to each other:
+    /// a band there ended every march to the pole, a cusp's meridians in
+    /// a plane through its axis, `boolean_poles.rs`).
+    fn in_band(&mut self, u: f64, v: f64) -> Option<usize> {
+        if self.lying.iter().all(|l| l.sine.is_none()) {
+            return None;
+        }
+        let (_, su, sv) = self.chart.at(u, v);
+        let (lu, lv) = (su.length(), sv.length());
+        let b = self.chart.bounds;
         let ((u0, u1), (v0, v1)) = (self.chart.u, self.chart.v);
-        (self.lying[0] && (s.u - u0).abs() * s.lu <= reach)
-            || (self.lying[1] && (s.u - u1).abs() * s.lu <= reach)
-            || (self.lying[2] && (s.v - v0).abs() * s.lv <= reach)
-            || (self.lying[3] && (s.v - v1).abs() * s.lv <= reach)
+        let mut found = None;
+        for (k, l) in self.lying.iter().enumerate() {
+            let Some(band) = self.band(l) else {
+                continue;
+            };
+            if l.curve.is_none() {
+                continue;
+            }
+            let (t, off) = self.border_place(l.side, u, v);
+            let (speed_along, speed_across) = if l.side >= 2 { (lu, lv) } else { (lv, lu) };
+            let bound_across = if l.side >= 2 { b.lv } else { b.lu };
+            if speed_across > 1e-3 * bound_across
+                && off * speed_across <= band
+                && (t - l.from) * speed_along >= -band
+                && (l.to - t) * speed_along >= -band
+            {
+                let t = t.clamp(l.from, l.to);
+                let (bu, bv) = match l.side {
+                    0 => (u0, t),
+                    1 => (u1, t),
+                    2 => (t, v0),
+                    _ => (t, v1),
+                };
+                found = Some((k, (0.5 * (u + bu), 0.5 * (v + bv))));
+                break;
+            }
+        }
+        let (k, (mu, mv)) = found?;
+        let tol = self.tol.linear;
+        self.eval(mu, mv).filter(|e| e.dist <= tol).map(|_| k)
+    }
+
+    /// Where a step from `cur` to `next` (both on `f = 0`) comes beside a
+    /// stretch lying on the field ([`Marcher::in_band`]): the branch ends
+    /// there, on the border, at the stretch's parameter there (no further
+    /// than its ends), since beside the stretch it is the stretch. The
+    /// place is found by halving the step (each place corrected onto
+    /// `f = 0`). `None` when `next` is not beside a stretch.
+    fn onto_stretch(&mut self, cur: &Pt, next: &Pt) -> Option<Pt> {
+        let mut which = self.in_band(next.u, next.v)?;
+        let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
+        let mut entry = (next.u, next.v);
+        for _ in 0..BORDER_HALVINGS {
+            let m = 0.5 * (lo + hi);
+            let (u, v) = (cur.u + (next.u - cur.u) * m, cur.v + (next.v - cur.v) * m);
+            let beside = match self.correct(u, v) {
+                Some((_, cu, cv)) => self.in_band(cu, cv).map(|k| (k, cu, cv)),
+                None => None,
+            };
+            if let Some((k, cu, cv)) = beside {
+                (which, entry) = (k, (cu, cv));
+                hi = m;
+            } else {
+                lo = m;
+            }
+            if (hi - lo) * cur.p.distance(next.p) <= self.on {
+                break;
+            }
+        }
+        let lying = self.lying.get(which)?;
+        let (t, _) = self.border_place(lying.side, entry.0, entry.1);
+        let t = t.clamp(lying.from, lying.to);
+        let ((u0, u1), (v0, v1)) = (self.chart.u, self.chart.v);
+        let (bu, bv) = match lying.side {
+            0 => (u0, t),
+            1 => (u1, t),
+            2 => (t, v0),
+            _ => (t, v1),
+        };
+        let (p, _, _) = self.chart.at(bu, bv);
+        Some(Pt {
+            u: bu,
+            v: bv,
+            p,
+            ..*next
+        })
+    }
+
+    /// The stretches as meeting curves, each divided where a marched branch
+    /// ends on it (where the meeting leaves the border: the surfaces go on
+    /// crossing past the end of what they share, or another branch meets
+    /// the border there), so that curves meet only at their ends.
+    fn lying_curves(&self, branches: &[Branch]) -> Vec<MeetingCurve> {
+        let mut curves = Vec::new();
+        for l in &self.lying {
+            let Some(curve) = &l.curve else {
+                continue;
+            };
+            let (along, across) = self.border_spans(l.side);
+            let mut cuts: Vec<f64> = Vec::new();
+            if !l.closed && (!l.whole || l.sine.is_some()) {
+                for branch in branches.iter().filter(|b| !b.closed) {
+                    for end in [branch.pts.first(), branch.pts.last()]
+                        .into_iter()
+                        .flatten()
+                    {
+                        let (t, off) = self.border_place(l.side, end.u, end.v);
+                        let hair = 1e-9 * along;
+                        if off <= 1e-9 * across && t > l.from + hair && t < l.to - hair {
+                            cuts.push(t);
+                        }
+                    }
+                }
+            }
+            cuts.sort_by(f64::total_cmp);
+            cuts.dedup_by(|a, b| (*a - *b).abs() <= 1e-9 * along);
+            let mut from = l.from;
+            for to in cuts.into_iter().chain([l.to]) {
+                curves.push(MeetingCurve {
+                    range: (from, to),
+                    curve: Curve3::Nurbs(curve.clone()),
+                    closed: l.closed,
+                    tangent: false,
+                    exact: false,
+                    deviation: l.deviation,
+                });
+                from = to;
+            }
+        }
+        curves
+    }
+
+    /// The parts of the span `(lo, hi)` of grid nodes along the border on
+    /// `side` that are not inside a stretch lying on the field (each from
+    /// the last node in a stretch, so that a branch that leaves the border
+    /// where a stretch ends is seen).
+    fn off_stretches(
+        &self,
+        grid: &Grid,
+        side: usize,
+        along_u: bool,
+        (lo, hi): (i64, i64),
+    ) -> Vec<(i64, i64)> {
+        let (origin, step) = if along_u {
+            (grid.u0, grid.du)
+        } else {
+            (grid.v0, grid.dv)
+        };
+        let mut parts = vec![(lo, hi)];
+        for l in self.lying.iter().filter(|l| l.side == side) {
+            if !(step > 0.0) {
+                break;
+            }
+            if l.whole {
+                return Vec::new();
+            }
+            let first = ((l.from - origin) / step).ceil();
+            let last = ((l.to - origin) / step).floor();
+            if !(first.is_finite() && last.is_finite() && first <= last) {
+                continue;
+            }
+            let (first, last) = (first as i64, last as i64);
+            let mut kept = Vec::new();
+            for (a, b) in parts {
+                if a < first {
+                    kept.push((a, b.min(first)));
+                }
+                if b > last {
+                    kept.push((a.max(last), b));
+                }
+            }
+            parts = kept;
+        }
+        parts.retain(|&(a, b)| b > a);
+        parts
     }
 
     /// Seeds on an edge that lies on the border of the chart's rectangle,
@@ -1156,10 +1609,9 @@ impl Marcher {
                     (false, true) => 0,
                     (false, false) => 1,
                 };
-                if self.lying.get(side).copied().unwrap_or(false) {
-                    continue;
+                for span in self.off_stretches(&grid, side, along_u, (lo, hi)) {
+                    self.border_seeds(&grid, &mut cache, along_u, fixed, span, &mut seeds)?;
                 }
-                self.border_seeds(&grid, &mut cache, along_u, fixed, (lo, hi), &mut seeds)?;
                 continue;
             }
             let node = |k: i64| if along_u { (k, fixed) } else { (fixed, k) };
@@ -1741,6 +2193,10 @@ impl Marcher {
                         if may_close && pts.len() >= 2 && self.closes_on(start, &cur, went) {
                             return Ok((pts, End::Closed));
                         }
+                        if let Some(end) = self.onto_stretch(&cur, &new) {
+                            pts.push(end);
+                            return Ok((pts, End::Open));
+                        }
                         pts.push(new);
                         cur = new;
                         continue;
@@ -1753,6 +2209,12 @@ impl Marcher {
             }
             if e.dist > self.cut {
                 pts.extend(self.edge(&cur, h, sign));
+                return Ok((pts, End::Open));
+            }
+            // (Before the border: a step along a stretch lying on the
+            // field lands on the border by rounding as often as not.)
+            if let Some(end) = self.onto_stretch(&cur, &new) {
+                pts.push(end);
                 return Ok((pts, End::Open));
             }
             if !self.inside(u, v) {
@@ -2682,7 +3144,7 @@ impl Marcher {
     // ----- the whole intersection -----------------------------------------------
 
     pub(super) fn solve(&mut self, within: &Bbox3) -> Result<Meeting, GeomError> {
-        let lying = self.border_curves()?;
+        self.border_stretches()?;
         let mut singular: Vec<Singular> = Vec::new();
         // The apex of a cone the chart passes through.
         if let Some(apex) = self.field.apex()
@@ -2729,6 +3191,15 @@ impl Marcher {
                     .normalized()
                     .map_or(0.0, |n| n.cross(e.n).length());
             let slack = self.tol.linear + 16.0 * self.on / sine.max(1e-12);
+            // Beside a stretch of a border that lies on the field, `f = 0`
+            // is the border to within what the stretch is off the field
+            // over the sine of the angle between the surfaces: the same
+            // meeting, already reported (where the borders agree only to
+            // the tolerance, `f = 0` wanders across the border, in and out
+            // of the chart, all along).
+            if self.in_band(u, v).is_some() {
+                continue;
+            }
             // Close to a crossing point every arm has its own seed.
             let covered = |s: &Singular| {
                 let radius = match s.kind {
@@ -2763,7 +3234,7 @@ impl Marcher {
                 branches.push(branch);
             }
         }
-        let mut curves = lying;
+        let mut curves = self.lying_curves(&branches);
         for branch in &branches {
             let whole = branch.pts.iter().all(|p| within.contains(p.p, 0.0));
             for (mut pts, closed) in self.clip(branch, within) {

@@ -9,6 +9,11 @@
 //!    the faces' surfaces continued", as the panel's surface was continued
 //!    across its rulings by as far as the longest one moves. Now each
 //!    border is continued far enough past every vertex on it.
+//! 3. Two plates joined by `touch` along a chine: their rims share the
+//!    inner chine edge, each traced past the chine's ends in its own way,
+//!    and every question of their overlap was refused at the marcher's
+//!    evaluation cap. Now a stretch of a border on the other surface is a
+//!    meeting curve: the plates touch, the intersection is empty.
 //! 5. A 5 m hull's panels: the fit near their ends did not settle (the
 //!    walk crept into a side, rulings 2e-6 apart beside rulings 3e-3
 //!    apart). Now the path is thinned before the fit; the curvature
@@ -287,4 +292,40 @@ fn plates_on_the_long_developable_panels_are_built() {
             "{plate} against {square}"
         );
     }
+}
+
+#[test]
+fn plates_that_touch_along_their_chine_share_no_volume() {
+    // Two plates on the hull's bottom and side panels, joined by `touch`
+    // along their chine: their rims meet along the inner chine edge,
+    // which each traces past the chine's ends in its own way. Refused
+    // after 119 s ("more evaluations than the cap allows"); now the
+    // overlap assertion passes, the interference is a touch, and the
+    // intersection is empty.
+    let (mut s, failed) = steps("sea_kayak_3.steps.json");
+    assert!(failed.is_empty(), "{failed:#?}");
+    let found = s
+        .execute(
+            "document.interference",
+            &json!({"pairs": [["Bottom", "Side"]], "details": false}),
+        )
+        .unwrap();
+    let summary = &found["summary"];
+    assert_eq!(summary["touch"], 1, "{found}");
+    assert_eq!(summary["overlap"], 0, "{found}");
+    assert_eq!(summary["unknown"], 0, "{found}");
+    let common = s
+        .execute(
+            "feature.boolean",
+            &json!({"op": "intersect", "target": "Bottom", "tool": "Side", "keepTool": true, "name": "Common"}),
+        )
+        .unwrap();
+    assert_eq!(common["status"], "failed", "{common}");
+    assert!(
+        common["error"]
+            .as_str()
+            .unwrap()
+            .contains("the result is empty"),
+        "{common}"
+    );
 }
