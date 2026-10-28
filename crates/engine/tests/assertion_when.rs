@@ -420,3 +420,98 @@ fn hole_to_bend_without_a_hole_says_why_and_a_condition_switches_it_off() {
     assert_eq!(a["status"], "inactive", "{a}");
     assert_eq!(run(&mut s, "document.check", json!({}))["ok"], true);
 }
+
+/// A condition that needs an unknown output leaves the assertion
+/// undecided: notProven with that output's reason, neither an error nor
+/// inactive.
+#[test]
+fn a_condition_that_needs_an_unknown_output_is_not_proven() {
+    let mut s = enclosure(1);
+    let a = run(
+        &mut s,
+        "assert.add",
+        json!({"name": "When cg", "measure": "value", "expr": "gap", "eq": "gap", "when": "cg > 0 mm"}),
+    );
+    assert_eq!(a["status"], "notProven", "{a}");
+    assert!(a["message"].as_str().unwrap().contains("`cg`"), "{a}");
+    // Not needed (the branch is not taken): on, and measured.
+    let a = run(
+        &mut s,
+        "assert.edit",
+        json!({"name": "When cg", "when": "if(corner == 1, 1, cg > 0 mm)"}),
+    );
+    assert_eq!(a["status"], "passed", "{a}");
+}
+
+/// An error that is not about the unknown output an earlier evaluation of
+/// the same check needed (the `value` expression, read for its dimension)
+/// is the assertion's error, not notProven for that output.
+#[test]
+fn an_unrelated_error_is_not_blamed_on_an_unknown_output() {
+    let mut s = enclosure(1);
+    let a = run(
+        &mut s,
+        "assert.add",
+        json!({"name": "Typo", "measure": "value", "expr": "cg", "eq": "gap", "when": "nosuch"}),
+    );
+    assert_eq!(a["status"], "error", "{a}");
+    let why = a["message"].as_str().unwrap();
+    assert!(why.contains("condition") && why.contains("nosuch"), "{a}");
+    // The same assertion with a condition that works out: it is the
+    // output it needs that leaves it undecided.
+    let a = run(&mut s, "assert.edit", json!({"name": "Typo", "when": "1"}));
+    assert_eq!(a["status"], "notProven", "{a}");
+    assert!(a["message"].as_str().unwrap().contains("`cg`"), "{a}");
+}
+
+/// An edit of the condition alone, with no variable in it, is seen: the
+/// condition is part of what an assertion's result is kept by (it was
+/// not, and the old result came back).
+#[test]
+fn editing_only_the_condition_changes_the_status() {
+    let mut s = block();
+    let a = run(
+        &mut s,
+        "assert.add",
+        json!({"name": "vol", "measure": "volume", "of": "B", "eq": "6000", "when": "1"}),
+    );
+    assert_eq!(a["status"], "passed", "{a}");
+    let a = run(&mut s, "assert.edit", json!({"name": "vol", "when": "0"}));
+    assert_eq!(a["status"], "inactive", "{a}");
+    assert_eq!(listed(&mut s, "vol")["status"], "inactive");
+    let a = run(&mut s, "assert.edit", json!({"name": "vol", "when": "2"}));
+    assert_eq!(a["status"], "passed", "{a}");
+    let a = run(
+        &mut s,
+        "assert.edit",
+        json!({"name": "vol", "when": "1 mm"}),
+    );
+    assert_eq!(a["status"], "error", "{a}");
+    // document.inspect shows the condition, as assert.list does.
+    let inspect = run(&mut s, "document.inspect", json!({"measures": false}));
+    assert_eq!(inspect["assertions"][0]["when"], "1 mm", "{inspect}");
+}
+
+/// Outputs that use each other lazily are still a cycle: the check is on
+/// the names written, so `A`, whose taken branch needs `B`, and `B`, whose
+/// untaken branch names `A`, are refused.
+#[test]
+fn a_lazy_mutual_pair_of_outputs_is_refused_as_a_cycle() {
+    let mut s = block();
+    run(
+        &mut s,
+        "variable.output",
+        json!({"name": "A", "expr": "1 mm"}),
+    );
+    run(
+        &mut s,
+        "variable.output",
+        json!({"name": "B", "expr": "if(on == 1, 2 mm, A)"}),
+    );
+    let e = error(
+        &mut s,
+        "variable.output",
+        json!({"name": "A", "expr": "if(on == 1, B, 0 mm)"}),
+    );
+    assert!(e.contains("A → B → A") || e.contains("A → B"), "{e}");
+}

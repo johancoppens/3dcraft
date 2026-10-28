@@ -755,12 +755,12 @@ fn check(doc: &Document, regen: &Regen, assertion: &Assertion, outputs: &Resolve
     // An output it needs that is unknown leaves it undecided: not proven,
     // with the output's reason, never a number. Needed is what an
     // evaluation used: one in a branch of `if` that is not taken, or in
-    // the condition's branch not taken, is not (`Ctx::unknown_used`).
-    let undecided = |checked: &mut Checked, ctx: &Ctx<'_>| -> bool {
+    // the condition's branch not taken, is not; and only when the error
+    // reported is that output's (`Ctx::unknown_in`).
+    let undecided = |checked: &mut Checked, ctx: &Ctx<'_>, error: &str| -> bool {
         let Some((name, why)) = ctx
-            .unknown_used
-            .get()
-            .and_then(|name| outputs.unknown(name).map(|why| (name.clone(), why)))
+            .unknown_in(error)
+            .and_then(|name| outputs.unknown(&name).map(|why| (name, why)))
         else {
             return false;
         };
@@ -788,7 +788,7 @@ fn check(doc: &Document, regen: &Regen, assertion: &Assertion, outputs: &Resolve
             }
             Ok(_) => {}
             Err(e) => {
-                if !undecided(&mut checked, &ctx) {
+                if !undecided(&mut checked, &ctx, &e) {
                     checked.state.message = format!("its condition cannot be worked out: {e}");
                 }
                 return checked;
@@ -841,7 +841,7 @@ fn check(doc: &Document, regen: &Regen, assertion: &Assertion, outputs: &Resolve
     let (lo, hi, want) = match bounds {
         Ok(b) => b,
         Err(e) => {
-            if !undecided(&mut checked, &ctx) {
+            if !undecided(&mut checked, &ctx, &e) {
                 checked.state.message = format!("what it must be cannot be worked out: {e}");
             }
             return checked;
@@ -861,7 +861,7 @@ fn check(doc: &Document, regen: &Regen, assertion: &Assertion, outputs: &Resolve
         let outcome = match outcome {
             Ok(o) => o,
             Err(e) => {
-                if !undecided(&mut checked, &ctx) {
+                if !undecided(&mut checked, &ctx, &e) {
                     checked.state.message = format!("cannot be measured: {e}");
                 }
                 return checked;

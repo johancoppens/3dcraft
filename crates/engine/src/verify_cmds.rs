@@ -68,11 +68,12 @@ pub(crate) struct Ctx<'a> {
     /// expressions of an assertion or of an output's measure (an input's
     /// expression never reaches them): none for a measure command.
     pub outputs: Option<&'a crate::output_cmds::Resolved>,
-    /// The first output without a value that an expression evaluated in
-    /// this context needed (one in a branch of `if` that is not taken is
-    /// not needed): what leaves an assertion undecided rather than in
-    /// error.
-    pub unknown_used: std::sync::OnceLock<String>,
+    /// The outputs without a value that expressions evaluated in this
+    /// context needed (one in a branch of `if` that is not taken is not
+    /// needed), each once in the order met: what leaves an assertion
+    /// undecided rather than in error, when the error it reports is that
+    /// output's ([`Ctx::unknown_in`]).
+    pub unknown_used: std::sync::Mutex<Vec<String>>,
 }
 
 impl<'a> Ctx<'a> {
@@ -86,7 +87,7 @@ impl<'a> Ctx<'a> {
             refine: 0,
             box_budget: BOX_TRIANGLE_BUDGET,
             outputs: None,
-            unknown_used: std::sync::OnceLock::new(),
+            unknown_used: std::sync::Mutex::new(Vec::new()),
         })
     }
 
@@ -122,6 +123,21 @@ impl<'a> Ctx<'a> {
             .map_or_else(|| Value::from(face), |name| name.to_string().into())
     }
 
+    /// The output without a value that the error `error` (as an
+    /// evaluation in this context reported it, perhaps inside a measure's
+    /// own words) is about: one this context needed, named in the error as
+    /// what it depends on. An unrelated error, met after an unknown output
+    /// was needed elsewhere, is about none.
+    pub fn unknown_in(&self, error: &str) -> Option<String> {
+        let used = self
+            .unknown_used
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        used.iter()
+            .find(|name| error.contains(&format!("depends on `{name}`")))
+            .cloned()
+    }
+
     /// A length, area or volume (power 1, 2, 3) or a plain number
     /// (power 0) from a number in the document's unit or an expression.
     pub fn quantity(&self, value: &Value, key: &str, power: i32) -> Result<f64, String> {
@@ -150,7 +166,13 @@ impl<'a> Ctx<'a> {
                 (&e.kind, self.outputs)
                 && outputs.unknown(name).is_some()
             {
-                let _ = self.unknown_used.set(name.clone());
+                let mut used = self
+                    .unknown_used
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if !used.contains(name) {
+                    used.push(name.clone());
+                }
             }
             format!("`{key}`: {e}")
         })

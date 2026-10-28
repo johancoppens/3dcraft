@@ -3257,12 +3257,19 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
         map.insert("outputs".into(), outputs.into());
     }
     if let (false, Some(map)) = (states.is_empty(), out.as_object_mut()) {
+        let doc = session.document()?.history.current();
         let listed: Vec<Value> = states
             .iter()
             .map(|a| {
+                // Its condition, as assert.list gives it.
+                let when = doc
+                    .assertion(&a.name)
+                    .and_then(|stored| stored.when.as_ref())
+                    .map(|w| w.source().to_string());
                 json!({
                     "name": a.name, "measure": a.measure, "status": a.status.name(),
                     "measured": a.measured, "expected": a.expected, "message": a.message,
+                    "when": when,
                 })
             })
             .collect();

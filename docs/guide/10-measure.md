@@ -207,7 +207,8 @@ and *stable* fails; only the assertion is measured again, since the waterline do
   output*): the model is built first, then measured, so a measure can never depend on itself. Give such a
   size a variable of its own.
 - An output that would depend on itself is refused with the loop named: *`B` would depend on itself
-  (B → A → B)*. `variable.set`, `param.set` and `variable.publish` refuse an output: it is read-only.
+  (B → A → B)*. A name in a branch of `if` that is not taken counts too: `A = if(on == 1, B, 0 mm)` with
+  `B = if(on == 1, 2 mm, A)` is refused as a loop, although at `on` = 1 neither needs the other. `variable.set`, `param.set` and `variable.publish` refuse an output: it is read-only.
 - **Unknown, never a guess.** When a measure fails (a volume the hull cannot hold), or what it proves is
   wider than the document's tolerance (a wall found at 2 mm but proven only above 1.96 mm), the output is
   *unknown* with the reason, and so is every output that needs it; an assertion that needs one is
