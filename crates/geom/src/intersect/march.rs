@@ -285,6 +285,14 @@ struct Branch {
     closed: bool,
 }
 
+/// What refining a branch came to (`Marcher::refine_to_edge`).
+enum Refined {
+    Done,
+    /// The middle of the span from this point to the next is past the
+    /// edge of the field's surface.
+    Leaves(usize),
+}
+
 struct Grid {
     u0: f64,
     v0: f64,
@@ -2407,19 +2415,15 @@ impl Marcher {
         best.filter(|pt| pt.p.distance(cur.p) > self.on)
     }
 
-    fn trace(
-        &mut self,
-        seed: (f64, f64),
-        singular: &[Singular],
-    ) -> Result<Option<Branch>, GeomError> {
+    fn trace(&mut self, seed: (f64, f64), singular: &[Singular]) -> Result<Vec<Branch>, GeomError> {
         let Some((e, u, v)) = self.correct(seed.0, seed.1) else {
-            return Ok(None);
+            return Ok(Vec::new());
         };
         if e.dist > self.cut || !self.inside(u, v) {
-            return Ok(None);
+            return Ok(Vec::new());
         }
         let Some(start) = Self::point(&e, u, v, 1.0) else {
-            return Ok(None);
+            return Ok(Vec::new());
         };
         let (forward, end) = self.run(&start, 1.0, singular, true)?;
         let mut pts;
@@ -2443,7 +2447,7 @@ impl Marcher {
             pts.extend(forward);
         }
         if pts.len() < 2 {
-            return Ok(None);
+            return Ok(Vec::new());
         }
         // An end on a border moved in short of a cusp is drawn on to it.
         if !closed {
@@ -2462,8 +2466,11 @@ impl Marcher {
                 pts = before;
             }
         }
-        self.refine(&mut pts)?;
-        Ok(Some(Branch { pts, closed }))
+        Ok(self
+            .refine_pieces(pts, closed)?
+            .into_iter()
+            .map(|(pts, closed)| Branch { pts, closed })
+            .collect())
     }
 
     /// The border moved in short of a cusp that `p` is on, if any.
@@ -2832,8 +2839,153 @@ impl Marcher {
     }
 
     /// Adds points until every span is within half the tolerance of both
-    /// surfaces at its sampled places.
+    /// surfaces at its sampled places; refused where the branch leaves
+    /// the field's surface between two of its points.
     fn refine(&mut self, pts: &mut Vec<Pt>) -> Result<(), GeomError> {
+        match self.refine_to_edge(pts)? {
+            Refined::Done => Ok(()),
+            Refined::Leaves(_) => Err(GeomError::NoConvergence(
+                "an intersection curve could not be fitted within the tolerance",
+            )),
+        }
+    }
+
+    /// Refines the branch (`refine`) and, where it leaves the field's
+    /// surface between two of its points, divides it there: the pieces on
+    /// the surface, each refined, and whether the one piece left is still
+    /// closed. A march takes steps and looks at their ends, so a step can
+    /// pass over a stretch where `f = 0` runs on past the edge of the
+    /// other surface and back (the field goes on past its edge); the
+    /// points the refinement puts between show it, and the branch ends at
+    /// the edge there as a march that met it would (`edge_between`).
+    fn refine_pieces(
+        &mut self,
+        pts: Vec<Pt>,
+        closed: bool,
+    ) -> Result<Vec<(Vec<Pt>, bool)>, GeomError> {
+        let mut done: Vec<Vec<Pt>> = Vec::new();
+        let mut rest = pts;
+        let mut split = false;
+        loop {
+            self.spent()?;
+            let Refined::Leaves(i) = self.refine_to_edge(&mut rest)? else {
+                done.push(rest);
+                break;
+            };
+            if done.len() >= MAX_BRANCHES {
+                return Err(GeomError::NoConvergence(
+                    "the intersection has more branches than the cap allows",
+                ));
+            }
+            split = true;
+            let give_up = GeomError::NoConvergence(
+                "an intersection curve could not be fitted within the tolerance",
+            );
+            let (Some(a), Some(b)) = (rest.get(i).copied(), rest.get(i + 1).copied()) else {
+                return Err(give_up);
+            };
+            let m = self.between(&a, &b).ok_or(give_up)?;
+            let mut head: Vec<Pt> = rest.get(..=i).map(<[Pt]>::to_vec).unwrap_or_default();
+            head.extend(self.edge_between(&a, &m, &a));
+            let mut tail: Vec<Pt> = self.edge_between(&b, &m, &b).into_iter().collect();
+            tail.extend(rest.get(i + 1..).unwrap_or_default().iter().copied());
+            // The head was refined up to `a`; its new last span is
+            // refined with the rest of it (nothing before it changes).
+            if head.len() >= 2 {
+                match self.refine_to_edge(&mut head)? {
+                    Refined::Done => done.push(head),
+                    // (The edge found from `a` is on the surface, so the
+                    // span to it leaves it only if the march passed over
+                    // more than one stretch: refused as before.)
+                    Refined::Leaves(_) => {
+                        return Err(GeomError::NoConvergence(
+                            "an intersection curve could not be fitted within the tolerance",
+                        ));
+                    }
+                }
+            }
+            rest = tail;
+        }
+        let mut pieces: Vec<Vec<Pt>> = done.into_iter().filter(|p| p.len() >= 2).collect();
+        if !split {
+            return Ok(pieces.into_iter().map(|p| (p, closed)).collect());
+        }
+        // A closed branch divided is open, its first piece going on from
+        // its last (which ends on the copy of the start, whose parameters
+        // continue the loop's: the first piece's are moved by as much).
+        if closed && pieces.len() >= 2 {
+            let first = pieces.remove(0);
+            if let (Some(last), Some(start)) = (pieces.last_mut(), first.first()) {
+                let shift = last
+                    .last()
+                    .map_or((0.0, 0.0), |copy| (copy.u - start.u, copy.v - start.v));
+                last.extend(first.iter().skip(1).map(|p| Pt {
+                    u: p.u + shift.0,
+                    v: p.v + shift.1,
+                    ..*p
+                }));
+            }
+        }
+        Ok(pieces.into_iter().map(|p| (p, false)).collect())
+    }
+
+    /// The last point from `from` towards `to` (in the chart's parameters,
+    /// each brought onto `f = 0`) that is still on the field's surface,
+    /// found by halving, travelling the way `like` does; `None` when
+    /// there is none further than `on` from `from`.
+    fn edge_between(&mut self, from: &Pt, to: &Pt, like: &Pt) -> Option<Pt> {
+        let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
+        let mut best = None;
+        let reach = from.p.distance(to.p);
+        for _ in 0..60 {
+            let mid = 0.5 * (lo + hi);
+            let found = self
+                .correct(
+                    from.u + mid * (to.u - from.u),
+                    from.v + mid * (to.v - from.v),
+                )
+                .filter(|(e, u, v)| e.dist <= self.cut && self.inside(*u, *v))
+                .map(|(e, u, v)| {
+                    let point = Self::point(&e, u, v, 1.0).map(|pt| {
+                        if pt.t.dot(like.t) < 0.0 {
+                            Pt {
+                                t: -pt.t,
+                                du: -pt.du,
+                                dv: -pt.dv,
+                                ..pt
+                            }
+                        } else {
+                            pt
+                        }
+                    });
+                    point.unwrap_or(Pt {
+                        u,
+                        v,
+                        p: e.p,
+                        t: like.t,
+                        du: 0.0,
+                        dv: 0.0,
+                    })
+                });
+            match found {
+                Some(pt) => {
+                    best = Some(pt);
+                    lo = mid;
+                }
+                None => hi = mid,
+            }
+            if (hi - lo) * reach <= self.on {
+                break;
+            }
+        }
+        best.filter(|pt| pt.p.distance(from.p) > self.on)
+    }
+
+    /// `refine`, stopping at the first span whose middle on the branch is
+    /// past the edge of the field's surface by more than the span may be
+    /// off it (`Refined::Leaves`, with the span's index): no point added
+    /// there could bring that span within the tolerance.
+    fn refine_to_edge(&mut self, pts: &mut Vec<Pt>) -> Result<Refined, GeomError> {
         let target = 0.5 * self.tol.linear;
         let mut i = 0;
         while let (Some(mut a), Some(mut b)) = (pts.get(i).copied(), pts.get(i + 1).copied()) {
@@ -2872,9 +3024,18 @@ impl Marcher {
             } else {
                 self.between(&a, &b)
             };
-            pts.insert(i + 1, middle.ok_or(give_up)?);
+            let middle = middle.ok_or(give_up)?;
+            self.evals += 1;
+            if self
+                .field
+                .sample(middle.p)
+                .is_some_and(|x| x.dist - x.signed.abs() > target)
+            {
+                return Ok(Refined::Leaves(i));
+            }
+            pts.insert(i + 1, middle);
         }
-        Ok(())
+        Ok(Refined::Done)
     }
 
     /// True when `p` lies on the branch.
@@ -3292,7 +3453,20 @@ impl Marcher {
             {
                 continue;
             }
-            if let Some(branch) = self.trace((u, v), &singular)? {
+            let pieces = self.trace((u, v), &singular)?;
+            let divided = pieces.len() > 1;
+            for branch in pieces {
+                // A piece of a branch divided where it left the field's
+                // surface may be one traced already from a seed of its own.
+                if divided
+                    && branch.pts.get(branch.pts.len() / 2).is_some_and(|mid| {
+                        branches
+                            .iter()
+                            .any(|b| Self::on_spans(mid.p, &b.pts, slack))
+                    })
+                {
+                    continue;
+                }
                 let mut joined = false;
                 for old in &mut branches {
                     if let Some(one) = self.united(old, &branch)? {
@@ -3315,13 +3489,18 @@ impl Marcher {
         let mut curves = self.lying_curves(&branches);
         for branch in &branches {
             let whole = branch.pts.iter().all(|p| within.contains(p.p, 0.0));
-            for (mut pts, closed) in self.clip(branch, within) {
+            let mut pieces = Vec::new();
+            for (pts, closed) in self.clip(branch, within) {
                 // Where the box cut the branch, the span to the new end is
                 // a new cubic (the end and its tangent are new), held to
                 // nothing yet: it is refined as the branch was.
-                if !whole {
-                    self.refine(&mut pts)?;
+                if whole {
+                    pieces.push((pts, closed));
+                } else {
+                    pieces.extend(self.refine_pieces(pts, closed)?);
                 }
+            }
+            for (pts, closed) in pieces {
                 let (Some(first), Some(last)) = (pts.first(), pts.last()) else {
                     continue;
                 };

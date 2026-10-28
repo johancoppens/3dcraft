@@ -62,6 +62,10 @@ pub(super) struct Solid<'a> {
     /// Per face: its outline, made when needed ([`Solid::outline`]).
     outlines: Vec<Lazy>,
     pub boxes: Vec<Bbox3>,
+    /// Per face: the box of [`Hull::near_bbox`], each edge held by the
+    /// part of its curve it is: for a pair whose surfaces cannot be met
+    /// in the box of `boxes` (`meet_in`).
+    pub near: Vec<Bbox3>,
     pub hulls: Vec<Hull>,
     /// The merged vertex of each of the body's vertices.
     pub vertices: Vec<usize>,
@@ -295,6 +299,7 @@ pub(super) fn prepare<'a>(
     }
     let mut outlines = Vec::with_capacity(body.faces.len());
     let mut boxes = Vec::with_capacity(body.faces.len());
+    let mut near = Vec::with_capacity(body.faces.len());
     let mut hulls = Vec::with_capacity(body.faces.len());
     for (index, face) in body.faces.iter().enumerate() {
         let named = [(operand, face_id(index))];
@@ -333,6 +338,7 @@ pub(super) fn prepare<'a>(
                 .map(|outline| !matches!(outline.side(tip, tol), Ok(Side::Out)))
         })?;
         boxes.push(hull.bbox());
+        near.push(hull.near_bbox());
         hulls.push(hull);
         outlines.push(lazy);
     }
@@ -341,6 +347,7 @@ pub(super) fn prepare<'a>(
         body,
         outlines,
         boxes,
+        near,
         hulls,
         vertices: merged,
         tree: OnceLock::new(),
@@ -1191,6 +1198,42 @@ fn in_room<T>(
     }
 }
 
+/// `in_room`, and where the surfaces cannot be met in the boxes' room,
+/// the same in the room of the faces' nearer boxes (`Hull::near_bbox`)
+/// when that is smaller: the boxes hold the whole circles and control
+/// polygons of the curves the faces' edges are pieces of, and a stretch
+/// of a circle far larger than the face (a nearly straight arc) makes
+/// the box of a face millimetres across hundreds of metres wide, at
+/// which size the tolerance is finer than rounding allows. Where the
+/// nearer boxes do not come within twice the tolerance of each other the
+/// faces do not meet. (Asked only where the first refuses, so that what
+/// was met before is met the same.)
+fn meet_in(
+    (box_a, box_b): (&Bbox3, &Bbox3),
+    near: (Option<&Bbox3>, Option<&Bbox3>),
+    (within, room): (&Bbox3, f64),
+    tol: f64,
+    meet: impl Fn(&Bbox3) -> Result<SurfaceMeeting, GeomError>,
+) -> Result<SurfaceMeeting, GeomError> {
+    let first = match in_room(box_a, box_b, within, room, tol, &meet) {
+        Ok(met) => return Ok(met),
+        Err(error) => error,
+    };
+    let (Some(near_a), Some(near_b)) = near else {
+        return Err(first);
+    };
+    if !boxes_meet(near_a, near_b, 2.0 * tol) {
+        return Ok(SurfaceMeeting::None);
+    }
+    let near_room = 16.0 * tol + 0.013 * near_a.diagonal().max(near_b.diagonal());
+    match overlap(near_a, near_b, near_room) {
+        Some(closer) if closer.diagonal() < within.diagonal() => {
+            in_room(near_a, near_b, &closer, near_room, tol, &meet).map_err(|_| first)
+        }
+        _ => Err(first),
+    }
+}
+
 /// How far apart, in tolerances, two faces' covers must be for the pair
 /// to be passed over: beyond every distance a rule of the section reads
 /// (two tolerances for faces over each other or touching, the outline's
@@ -1263,7 +1306,8 @@ pub(super) fn section(
             crate::work::face_pairs(1);
             #[cfg(test)]
             tests::PAIRS_MET.with(|n| n.set(n.get() + 1));
-            let met = match in_room(box_a, box_b, &within, room, tol, |room| {
+            let near = (a.near.get(fa), b.near.get(fb));
+            let met = match meet_in((box_a, box_b), near, (&within, room), tol, |room| {
                 meet_surfaces(&oa.surface, &ob.surface, room, tolerance)
             }) {
                 Ok(met) => met,

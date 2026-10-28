@@ -12,7 +12,7 @@ use super::Reason;
 use super::chart::{About, Chart, TOO_CLOSE};
 use super::freeform::{PatchTree, is_freeform};
 use super::hits::speed_bound;
-use craft3d_geom::{Curve3, Ellipse, Surface};
+use craft3d_geom::{Curve3, Ellipse, NurbsCurve, Surface};
 use craft3d_math::{Bbox3, Frame, Vec3};
 use std::f64::consts::{FRAC_PI_2, FRAC_PI_8, PI, TAU};
 use std::sync::Arc;
@@ -382,6 +382,14 @@ pub(super) fn piece_box(curve: &Curve3, a: Vec3, b: Vec3) -> Bbox3 {
         bx.add(center + reach);
     }
     bx
+}
+
+/// Points whose hull holds the part of a spline over `range`: the control
+/// points of that part, or all the curve's where they cannot be had.
+fn spline_hull(curve: &NurbsCurve, range: (f64, f64)) -> Vec<Vec3> {
+    curve
+        .hull_points(range)
+        .unwrap_or_else(|| curve.control_points().to_vec())
 }
 
 pub(super) fn boxes(loops: &[Vec<Seg>]) -> Boxes {
@@ -916,6 +924,8 @@ pub(super) fn hull_of<E>(
     for seg in loops.iter().flatten() {
         hull.points.push(seg.a);
         hull.points.push(seg.b);
+        hull.near.push(seg.a);
+        hull.near.push(seg.b);
         let mut points = vec![seg.a, seg.b];
         let conic = match &seg.curve {
             Curve3::Line(_) => None,
@@ -931,17 +941,23 @@ pub(super) fn hull_of<E>(
             Curve3::Nurbs(c) => {
                 hull.points.extend_from_slice(c.control_points());
                 points.extend_from_slice(c.control_points());
+                hull.near.extend(spline_hull(c, seg.range));
                 None
             }
         };
         if let Some((center, x, y)) = conic {
             hull.conics.push((center, x, y));
+            hull.edge_conics += 1;
+            let from = points.len();
             if !arc_polygon(center, x, y, seg.range, FRAC_PI_2, &mut points) {
                 points.extend(square(center, x, y));
             }
+            hull.near
+                .extend(points.get(from..).unwrap_or_default().iter().copied());
         }
         pieces.push(points);
     }
+    hull.boundary_points = hull.points.len();
     let (frame, radius, slope, apex) = match surface {
         Surface::Plane(_) => return Ok(hull),
         // A freeform surface lies in the hull of its control points.
@@ -1221,6 +1237,18 @@ pub(super) struct Hull {
     points: Vec<Vec3>,
     /// `center + x cos t + y sin t`, whole.
     conics: Vec<(Vec3, Vec3, Vec3)>,
+    /// How many of the first `conics` are the boundary's (a circle or an
+    /// ellipse an edge is a piece of), counted whole.
+    edge_conics: usize,
+    /// Points whose hull holds the boundary more closely than `points`
+    /// and the boundary's conics: of each edge, its ends, the polygon of
+    /// a piece of a conic (`arc_polygon`: pieces of at most a quarter
+    /// turn and the corners where their end tangents meet) and the
+    /// control points of the part of a spline the edge is
+    /// (`NurbsCurve::hull_points`). In `near_bbox` in place of those.
+    near: Vec<Vec3>,
+    /// How many of the first `points` are the boundary's.
+    boundary_points: usize,
     /// Centre and radius.
     balls: Vec<(Vec3, f64)>,
     /// A ball the face lies within as well: every span is cut to it.
@@ -1257,8 +1285,40 @@ impl Hull {
     }
 
     pub fn bbox(&self) -> Bbox3 {
+        Self::boxed(|d| self.span(d))
+    }
+
+    /// A box around the face as close as its hull tells: as `bbox`, with
+    /// the boundary held by `near` (each edge by the part of its curve it
+    /// is) instead of by the whole conics and the whole control polygons
+    /// of the curves its edges are pieces of. Of an edge that is a
+    /// stretch of a circle far larger than the face (a nearly straight
+    /// arc), `bbox` holds the whole circle.
+    pub fn near_bbox(&self) -> Bbox3 {
+        let own = Hull {
+            points: self
+                .near
+                .iter()
+                .chain(self.points.get(self.boundary_points..).unwrap_or_default())
+                .copied()
+                .collect(),
+            conics: self
+                .conics
+                .get(self.edge_conics..)
+                .unwrap_or_default()
+                .to_vec(),
+            edge_conics: 0,
+            near: Vec::new(),
+            boundary_points: 0,
+            balls: self.balls.clone(),
+            bound: self.bound,
+        };
+        Self::boxed(|d| own.span(d))
+    }
+
+    fn boxed(span: impl Fn(Vec3) -> (f64, f64)) -> Bbox3 {
         let mut b = Bbox3::EMPTY;
-        let (x, y, z) = (self.span(Vec3::X), self.span(Vec3::Y), self.span(Vec3::Z));
+        let (x, y, z) = (span(Vec3::X), span(Vec3::Y), span(Vec3::Z));
         if x.0 <= x.1 {
             b.add(Vec3::new(x.0, y.0, z.0));
             b.add(Vec3::new(x.1, y.1, z.1));
@@ -1968,5 +2028,72 @@ mod tests {
             &mut none
         ));
         assert!(none.is_empty());
+    }
+
+    /// The near box of a face holds each edge by the part of its curve it
+    /// is: a sliver under a stretch of a circle 1e5 across, and one under
+    /// the first span of a spline whose last control point is 1e6 away,
+    /// are in near boxes about their own size (every sampled point of
+    /// the edges inside), while their boxes hold the whole circle and the
+    /// whole control polygon (2026-10-28, the sea kayak's deck plates,
+    /// repro 19: a face 17 mm across in a box 900 m wide). At three
+    /// scales.
+    #[test]
+    fn the_near_box_holds_each_edge_by_the_part_of_its_curve_it_is() {
+        for k in [1e-3, 1.0, 1e6] {
+            let plane = Surface::Plane(Plane::new(Frame::WORLD));
+            let radius = 1e5 * k;
+            let centre = Frame::WORLD.at(Vec3::new(0.0, -radius, 0.0)).unwrap();
+            let half = 5e-5;
+            let bend = arc(centre, radius, (FRAC_PI_2 - half, FRAC_PI_2 + half), false);
+            let chord = line(bend.b, bend.a, false);
+            let spline = NurbsCurve::polynomial(
+                3,
+                vec![0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0],
+                vec![
+                    Vec3::new(0.0, 0.0, 0.0) * k,
+                    Vec3::new(1.0, 1.0, 0.0) * k,
+                    Vec3::new(2.0, -1.0, 0.0) * k,
+                    Vec3::new(3.0, 0.5, 0.0) * k,
+                    Vec3::new(1e6, 1e6, 0.0) * k,
+                ],
+            )
+            .unwrap();
+            let curve = Curve3::Nurbs(spline);
+            let (a, b) = (curve.eval(0.0), curve.eval(0.5));
+            let along = Seg {
+                curve,
+                range: (0.0, 0.5),
+                a,
+                b,
+                reversed: false,
+            };
+            let back = line(b, a, false);
+            for segs in [vec![bend, chord], vec![along, back]] {
+                let mut sampled = Bbox3::EMPTY;
+                for seg in &segs {
+                    for i in 0..=256 {
+                        let t = seg.range.0 + (seg.range.1 - seg.range.0) * f64::from(i) / 256.0;
+                        sampled.add(seg.curve.eval(t));
+                    }
+                }
+                let hull = hull_of(&plane, &[segs], |_| Ok::<bool, ()>(true)).unwrap();
+                let (near, whole) = (hull.near_bbox(), hull.bbox());
+                let (lo, hi) = sampled.corners().unwrap();
+                let slack = 1e-12 * k;
+                assert!(
+                    near.contains(lo, slack) && near.contains(hi, slack),
+                    "{k}: {near:?}"
+                );
+                assert!(
+                    near.diagonal() <= 4.0 * sampled.diagonal(),
+                    "{k}: {near:?} {sampled:?}"
+                );
+                assert!(
+                    whole.diagonal() >= 1e3 * sampled.diagonal(),
+                    "{k}: {whole:?}"
+                );
+            }
+        }
     }
 }

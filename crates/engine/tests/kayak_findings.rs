@@ -57,6 +57,23 @@
 //!     ruling needs, and the offset fitted to the tolerance over all of
 //!     it. Now the offset is held to the tolerance only within the length
 //!     along the surface that the plate uses.
+//! 16.–19. The overlap assertions of neighbouring plates (repro 16: the
+//!     garboards either side of the keel, 17 and 18: planks above one
+//!     another and the sheer plate, 19: the deck plates either side of
+//!     the centreline), each from the steps that make the two plates with
+//!     their drilled holes. 16 to 18 pass on main (the touching plates of
+//!     repro 3 and 12); 19 was refused, "the box has no size, or the
+//!     tolerance is finer than rounding allows at its size": an end face
+//!     of a deck plate 17 mm across had an edge on a circle 860 m in
+//!     radius (a nearly straight arc of the deck's crown), and its box
+//!     held the whole circle. Now a pair whose surfaces cannot be met in
+//!     the room of the faces' boxes is met in the room of the boxes that
+//!     hold each edge by the part of its curve it is.
+//! 20. The inner hull (`InHull`, the half hull's intersection with its
+//!     mirror image): refused, "an intersection curve could not be fitted
+//!     within the tolerance", as a march stepped over a stretch where the
+//!     curve runs past the edge of the other face's surface and back.
+//!     Now a branch is divided where it leaves the other surface.
 
 #![allow(
     clippy::unwrap_used,
@@ -449,4 +466,73 @@ fn the_sheer_plate_and_the_deck_over_it_share_no_volume() {
     };
     close(volume(&mut s, "Both"), top + deck, "the union");
     close(volume(&mut s, "Less"), top, "the sheer plate less the deck");
+}
+
+#[test]
+fn neighbouring_plates_share_no_volume() {
+    for file in [
+        "sea_kayak_16.steps.json",
+        "sea_kayak_17.steps.json",
+        "sea_kayak_18.steps.json",
+        "sea_kayak_19.steps.json",
+    ] {
+        let (_, failed) = steps(file);
+        assert!(failed.is_empty(), "{file}: {failed:#?}");
+    }
+}
+
+#[test]
+fn the_inner_hull_is_the_half_hull_cut_by_its_mirror_image() {
+    let (mut s, failed) = steps("sea_kayak_20.steps.json");
+    assert!(failed.is_empty(), "{failed:#?}");
+    let check = s.execute("document.check", &json!({"deep": true})).unwrap();
+    assert_eq!(check["ok"], true, "{check}");
+    // The same again, keeping the half hull (a copy, the mirror image of
+    // its mirror image) and its mirror image: what is left of the half
+    // hull outside its mirror image and the inner hull together make the
+    // half hull.
+    let volume = |s: &mut Session, name: &str| {
+        let document = s.execute("document.inspect", &json!({})).unwrap();
+        document["bodies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["name"] == name)
+            .unwrap_or_else(|| panic!("no body {name}: {document}"))["volume"]
+            .as_f64()
+            .unwrap()
+    };
+    let inner = volume(&mut s, "InHull");
+    let mirrored = |s: &mut Session, source: &str, name: &str| {
+        s.execute(
+            "feature.mirror",
+            &json!({"source": source, "normal": [0, 1, 0], "keep": true, "name": name}),
+        )
+        .unwrap();
+    };
+    let text = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/kayak_findings/sea_kayak_20.steps.json"),
+    )
+    .unwrap();
+    let all: Vec<(String, Value)> = serde_json::from_str(&text).unwrap();
+    let mut s = Session::new(Workspace::unrestricted());
+    s.execute("file.new", &json!({"units": "mm"})).unwrap();
+    for (id, params) in all.iter().take(all.len() - 1) {
+        s.execute(id, params).unwrap();
+    }
+    mirrored(&mut s, "InPort", "Again");
+    let half = volume(&mut s, "Again");
+    s.execute(
+        "feature.boolean",
+        &json!({"op": "subtract", "target": "Again", "tool": "InPort", "keepTool": true, "name": "Outside"}),
+    )
+    .unwrap();
+    let outside = volume(&mut s, "Outside");
+    eprintln!("half hull {half}, inner hull {inner}, outside {outside}");
+    assert!(inner > 0.0 && outside > 0.0, "{inner} {outside}");
+    assert!(
+        (inner + outside - half).abs() <= 1e-6 * half,
+        "{inner} + {outside} against {half}"
+    );
 }

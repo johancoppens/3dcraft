@@ -815,6 +815,58 @@ impl NurbsCurve {
         }
         (found && first.is_finite() && second.is_finite()).then_some((first, second))
     }
+
+    /// Points whose convex hull holds the curve over `range` (its two
+    /// parameters in either order): over the whole domain or more, the
+    /// control points themselves; over part of it, the control points of
+    /// the Bézier pieces of that part, each piece the curve's span cut to
+    /// the range by de Casteljau's algorithm (exact: the same polynomial,
+    /// or rational function, over a shorter interval), so that control
+    /// points far from the part used (an end span continued a long way)
+    /// do not count. `None` when the range is not finite, reaches past
+    /// the domain on one side only, or a weight of a cut piece is not
+    /// positive.
+    pub fn hull_points(&self, range: (f64, f64)) -> Option<Vec<Vec3>> {
+        if !(range.0.is_finite() && range.1.is_finite()) {
+            return None;
+        }
+        let (r0, r1) = (range.0.min(range.1), range.0.max(range.1));
+        let (d0, d1) = self.domain();
+        if r0 <= d0 && r1 >= d1 {
+            return Some(self.control_points().to_vec());
+        }
+        if r0 < d0 || r1 > d1 {
+            return None;
+        }
+        let mut points = Vec::new();
+        for ((a, b), piece) in self.bezier_pieces() {
+            if !(b >= r0 && a <= r1 && b > a) {
+                continue;
+            }
+            let mut row: Vec<H> = piece.iter().map(|&(p, w)| H { p: p * w, w }).collect();
+            // The right part from the range's start, then the left part of
+            // that to the range's end.
+            let from = r0.max(a);
+            if from > a {
+                row = split_row(&row, (from - a) / (b - a)).1;
+            }
+            let to = r1.min(b);
+            if to < b {
+                row = split_row(&row, (to - from) / (b - from)).0;
+            }
+            for h in row {
+                if !(h.w.is_finite() && h.w > 0.0) {
+                    return None;
+                }
+                let p = h.p * (1.0 / h.w);
+                if !p.is_finite() {
+                    return None;
+                }
+                points.push(p);
+            }
+        }
+        (!points.is_empty()).then_some(points)
+    }
 }
 
 /// One Bézier piece of a curve: its span of the curve's parameter, and its
