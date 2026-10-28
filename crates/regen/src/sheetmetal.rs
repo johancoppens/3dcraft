@@ -40,21 +40,16 @@ pub struct SheetMetalPart {
 
 /// The name of a face of the folded bottom skin: the base `F9:face(0)`,
 /// bend `i` `F9:face(2i + 1)`, flange `i`'s flat `F9:face(2i + 2)`; the
-/// further faces a hole across a bend leaves (`further`: their place among
-/// those, in the order of the sheet's faces) after them all,
-/// `F9:face(2n + 1 + further)` for `n` bends.
-pub fn sheet_face_name(
-    feature: FeatureId,
-    face: SheetFace,
-    bends: usize,
-    further: usize,
-) -> PersistentName {
+/// further face `j` (1, 2, ...) a hole across a bend leaves of one of
+/// those has that face's number in its low 32 bits and `j` above
+/// (`F9:face(k + j * 2^32)`), so adding a flange or a cut elsewhere does
+/// not renumber it.
+pub fn sheet_face_name(feature: FeatureId, face: SheetFace) -> PersistentName {
     let number = match face {
         SheetFace::Flat(i) => 2 * i as u64,
         SheetFace::Bend(i) => 2 * i as u64 + 1,
-        SheetFace::FlatPiece(..) | SheetFace::BendPiece(..) => {
-            2 * bends as u64 + 1 + further as u64
-        }
+        SheetFace::FlatPiece(i, j) => 2 * i as u64 + ((j as u64) << 32),
+        SheetFace::BendPiece(i, j) => 2 * i as u64 + 1 + ((j as u64) << 32),
     };
     PersistentName::new(feature, NameRole::Face, vec![number])
 }
@@ -413,14 +408,8 @@ pub(crate) fn build(
     let built = analyse(doc, variables, made, earlier)?;
     let (part, tolerance) = (&built.part, built.tolerance);
     let mut sheet_names = Names::default();
-    let mut further = 0;
     for face in &part.sheet_faces {
-        sheet_names
-            .faces
-            .push(sheet_face_name(id, *face, part.bends.len(), further));
-        if matches!(face, SheetFace::FlatPiece(..) | SheetFace::BendPiece(..)) {
-            further += 1;
-        }
+        sheet_names.faces.push(sheet_face_name(id, *face));
     }
     let none = vec![None; part.sheet.edges.len()];
     let no_vertices = vec![None; part.sheet.vertices.len()];

@@ -809,9 +809,15 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
         // Only named: with the cuts if they lie in the open pattern too,
         // else without them (their edges are then named as they are).
         let (body, _, _, keys) =
-            folded_sheet(spec, &open, &bends, &base_edges, &cuts, tolerance, false).or_else(
-                |_| folded_sheet(spec, &open, &bends, &base_edges, &[], tolerance, false),
-            )?;
+            match folded_sheet(spec, &open, &bends, &base_edges, &cuts, tolerance, false) {
+                // A cut that lies in no face of the open pattern (in an
+                // extension) is a refusal of the cuts' own; anything else
+                // is the part's error.
+                Err(KernelError::SheetMetal { .. }) if !cuts.is_empty() => {
+                    folded_sheet(spec, &open, &bends, &base_edges, &[], tolerance, false)?
+                }
+                other => other?,
+            };
         Some((body, keys))
     } else {
         None

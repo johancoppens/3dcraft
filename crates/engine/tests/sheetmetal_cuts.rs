@@ -63,7 +63,7 @@ fn a_slot_across_a_bend_by_command() {
         assert!(
             names
                 .iter()
-                .any(|n| n.as_str().unwrap().contains("face(3)")),
+                .any(|n| n.as_str().unwrap().contains("face(4294967297)")),
             "the bend's second face has a name of its own: {names:?}"
         );
         let out = run(
@@ -209,5 +209,132 @@ fn a_later_cut_is_carried_back_onto_the_flat_pattern() {
             json!({"path": "p.dxf", "sheetMetal": "P"}),
         );
         assert!(why.contains("square"), "{why}");
+    }
+}
+
+/// Review of 348185c2: (1) a part whose bend a slot leaves in two faces
+/// (they share the bend's surface) drilled straight through the bend: the
+/// drill was silently left out of the export; it is a cut that is not
+/// square to the sheet (its outline on the two skins differs) and refuses
+/// the export. (2) Two drilled holes whose boxes overlap: each found its
+/// own partner, not the first box it met. (3) The bend's second face keeps
+/// its name when a flange is added. At three scales.
+#[test]
+fn review_findings_on_later_cuts_and_names() {
+    for k in SCALES {
+        let mm = |v: f64| format!("{} mm", v * k);
+        let ba = FRAC_PI_2 * (2.0 + 0.33);
+        // (1)
+        let dir = workdir("sheetmetal-cuts", &format!("review1-{k}"));
+        let mut s = session_in(&dir);
+        new_document(&mut s, k);
+        run(
+            &mut s,
+            "sketch.create",
+            json!({"plane": "xy", "name": "Slot"}),
+        );
+        run(
+            &mut s,
+            "sketch.rect",
+            json!({"sketch": "Slot", "from": [46.0 * k, 17.0 * k], "to": [(50.0 + ba + 5.0) * k, 23.0 * k]}),
+        );
+        bracket(&mut s, k, "P", "Base", &["Slot"]);
+        let c = std::f64::consts::FRAC_1_SQRT_2;
+        run(
+            &mut s,
+            "feature.cylinder",
+            json!({"name": "Drill", "radius": mm(0.5), "height": mm(2.0), "axis": [-c, 0, c],
+                   "position": [mm(50.0 + 3.6 * c), mm(30.0), mm(3.0 - 3.6 * c)]}),
+        );
+        built(
+            &mut s,
+            "feature.boolean",
+            json!({"op": "subtract", "target": "P", "tool": "Drill", "name": "Drilled"}),
+        );
+        let why = common::error(
+            &mut s,
+            "file.export",
+            json!({"path": "p.dxf", "sheetMetal": "P"}),
+        );
+        assert!(why.contains("square"), "{why}");
+        // (2)
+        let dir = workdir("sheetmetal-cuts", &format!("review2-{k}"));
+        let mut s = session_in(&dir);
+        new_document(&mut s, k);
+        bracket(&mut s, k, "P", "Base", &[]);
+        let mut target = "P".to_string();
+        for (i, (x, y)) in [(20.0, 20.0), (23.5, 23.5)].into_iter().enumerate() {
+            run(
+                &mut s,
+                "feature.cylinder",
+                json!({"name": format!("D{i}"), "radius": mm(2.0), "height": mm(3.0),
+                       "position": [mm(x), mm(y), mm(-1.0)]}),
+            );
+            built(
+                &mut s,
+                "feature.boolean",
+                json!({"op": "subtract", "target": target, "tool": format!("D{i}"), "name": format!("B{i}")}),
+            );
+            target = format!("B{i}");
+        }
+        let out = run(
+            &mut s,
+            "file.export",
+            json!({"path": "p.dxf", "sheetMetal": "P"}),
+        );
+        assert_eq!(out["laterCuts"], 2, "{out}");
+        // (3)
+        let dir = workdir("sheetmetal-cuts", &format!("review3-{k}"));
+        let mut s = session_in(&dir);
+        new_document(&mut s, k);
+        run(
+            &mut s,
+            "sketch.create",
+            json!({"plane": "xy", "name": "Slot"}),
+        );
+        run(
+            &mut s,
+            "sketch.rect",
+            json!({"sketch": "Slot", "from": [46.0 * k, 17.0 * k], "to": [(50.0 + ba + 5.0) * k, 23.0 * k]}),
+        );
+        run(
+            &mut s,
+            "sketch.create",
+            json!({"plane": "xy", "name": "Base"}),
+        );
+        let made = run(
+            &mut s,
+            "sketch.rect",
+            json!({"sketch": "Base", "from": [0.0, 0.0], "to": [50.0 * k, 40.0 * k]}),
+        );
+        let lines: Vec<String> = made["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l.as_str().unwrap().to_string())
+            .collect();
+        let flange = |edge: &str| json!({"edge": edge, "length": mm(15.0), "angle": "90 deg"});
+        built(
+            &mut s,
+            "feature.sheetMetal",
+            json!({"sketch": "Base", "name": "P", "thickness": mm(1.0), "radius": mm(2.0),
+                   "kFactor": 0.33, "cutouts": ["Slot"], "flanges": [flange(&lines[1])]}),
+        );
+        let piece = |s: &mut craft3d_engine::Session| {
+            body(s, "P")["faceNames"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|n| n.as_str())
+                .filter(|n| n.starts_with("F3:copy(1)/") && n.contains("face(4294967297)"))
+                .count()
+        };
+        assert_eq!(piece(&mut s), 1, "the bend's second face is named");
+        run(
+            &mut s,
+            "sheetMetal.edit",
+            json!({"feature": "P", "flanges": [flange(&lines[1]), flange(&lines[3])]}),
+        );
+        assert_eq!(piece(&mut s), 1, "and keeps its name with a flange added");
     }
 }

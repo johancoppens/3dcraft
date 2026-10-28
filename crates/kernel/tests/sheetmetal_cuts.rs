@@ -273,9 +273,8 @@ fn round_trip(part: &Part, tol: &Tolerance) {
                             tol.linear,
                             "a bend's edge from its axis",
                         );
-                        let phi = (r0.0 * v.1 - r0.1 * v.0)
-                            .abs()
-                            .atan2(r0.0 * v.0 + r0.1 * v.1);
+                        let phi =
+                            (r0.0 * v.1 - r0.1 * v.0).atan2(r0.0 * v.0 + r0.1 * v.1) * zc.signum();
                         let s = phi * b.neutral();
                         let q = [foot[0] + s * b.across[0], foot[1] + s * b.across[1]];
                         on_pattern(q, "a bend's edge");
@@ -589,5 +588,46 @@ fn a_hole_of_the_thickness_radius_on_the_tangent_line() {
             1e-7 * want,
             "the notched part at K = ½",
         );
+    }
+}
+
+/// A slot across two bends: flange 0 up on the base's right edge, 6 long,
+/// flange 1 on its tip bent down, 10 long; the slot runs from 3 inside
+/// the base across both strips to 4 into flange 1. The volume loses the
+/// slot's flats times T and both strips times T (R + T/2) / (R + K T)
+/// (the same for a bend down); fold then unfold with the angle signed.
+/// A circle three tolerances clear of a tangent line, inside the strip,
+/// gives a valid part.
+#[test]
+fn a_slot_across_two_bends_one_down() {
+    for k in SCALES {
+        let tol = tolerance(k);
+        let kf = 0.33;
+        let ba = ba(kf);
+        let x1 = 40.0 + ba + 6.0 + ba + 4.0;
+        let slot = polygon(&[[37.0, 12.0], [x1, 12.0], [x1, 18.0], [37.0, 18.0]], k);
+        let mut spec = part_spec(k, kf, vec![slot]);
+        spec.flanges[0].length = 6.0 * k;
+        let mut down = spec.flanges[0];
+        down.on = On::Tip(0);
+        down.direction = Direction::Down;
+        down.length = 10.0 * k;
+        spec.flanges.push(down);
+        let part = build(&spec, &tol).unwrap();
+        healthy(&part, &tol);
+        let (t, r) = (k, 2.0 * k);
+        let whole =
+            (40.0 + 6.0 + 10.0) * 30.0 * k * k * t + 2.0 * FRAC_PI_2 * 30.0 * k * t * (r + 0.5 * t);
+        let w = 6.0 * k;
+        let want = whole - w * 13.0 * k * t - 2.0 * w * ba * k * strip_factor(k, kf);
+        near(volume(&part), want, 1e-7 * want, "the volume");
+        one_sheet(&part, &tol);
+        round_trip(&part, &tol);
+
+        let rho = 0.25 * ba;
+        let clear = circle([40.0 + ba - rho - 3e-6, 15.0], rho, k);
+        if let Ok(part) = build(&part_spec(k, kf, vec![clear]), &tol) {
+            healthy(&part, &tol);
+        }
     }
 }

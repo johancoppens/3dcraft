@@ -78,7 +78,9 @@ fn flat_point(part: &Part, role: SheetFace, level: usize, p: Vec3) -> Option<(P2
             let foot = [b.start[0] + u * d[0], b.start[1] + u * d[1]];
             let v = [dot(sub([q.x, q.y], foot), b.across), q.z - zc];
             let r0 = [0.0, -zc];
-            let phi = cross(r0, v).abs().atan2(dot(r0, v));
+            // Signed: positive towards the flange (a bend up turns with
+            // the axis above, a bend down below).
+            let phi = cross(r0, v).atan2(dot(r0, v)) * zc.signum();
             // The bottom skin is the outside of a bend up.
             let bottom = zc.abs();
             let radius = match (level, b.angle > 0.0) {
@@ -230,7 +232,7 @@ fn new_edges(
     let mut out: [Vec<Segment>; 2] = [Vec::new(), Vec::new()];
     for face in &body.faces {
         // The skin it is, by its surface.
-        let mut skins = part
+        let skins: Vec<(usize, craft3d_topo::FaceId)> = part
             .solid
             .body
             .faces
@@ -241,16 +243,33 @@ fn new_edges(
                 Made::Back(s) => Some((0usize, *s)),
                 Made::Front(s) => Some((1usize, *s)),
                 Made::Rim(_) => None,
-            });
-        let (Some((level, sheet_face)), None) = (skins.next(), skins.next()) else {
+            })
+            .collect();
+        // Several skins may share a surface (the faces a hole across a
+        // bend leaves a flat or a bend in): they lie flat the same way
+        // when they are of one level and one flat or bend.
+        let role_of = |s: &craft3d_topo::FaceId| {
+            usize::try_from(s.0)
+                .ok()
+                .and_then(|i| part.sheet_faces.get(i))
+                .copied()
+        };
+        let cell = |r: SheetFace| match r {
+            SheetFace::Flat(i) | SheetFace::FlatPiece(i, _) => (0, i),
+            SheetFace::Bend(i) | SheetFace::BendPiece(i, _) => (1, i),
+        };
+        let Some(&(level, first)) = skins.first() else {
             continue;
         };
-        let Some(&role) = usize::try_from(sheet_face.0)
-            .ok()
-            .and_then(|i| part.sheet_faces.get(i))
-        else {
+        let Some(role) = role_of(&first) else {
             continue;
         };
+        let agree = skins
+            .iter()
+            .all(|(l, s)| *l == level && role_of(s).map(cell) == Some(cell(role)));
+        if !agree {
+            continue;
+        }
         for l in &face.loops {
             let Some(lp) = body.loop_(*l) else { continue };
             for c in &lp.coedges {
@@ -438,12 +457,14 @@ pub fn later_cuts(
         let pts = samples(&ring);
         let bb = bbox(&pts);
         let mut paired = false;
+        let mut met = false;
         for (j, other) in top.iter().enumerate() {
             let ob = bbox(&samples(other));
             let meet = !(ob[0] > bb[2] || ob[2] < bb[0] || ob[1] > bb[3] || ob[3] < bb[1]);
             if !meet {
                 continue;
             }
+            met = true;
             if matched(&ring, other) && matched(other, &ring) {
                 if let Some(u) = used_top.get_mut(j) {
                     *u = true;
@@ -451,6 +472,8 @@ pub fn later_cuts(
                 paired = true;
                 break;
             }
+        }
+        if met && !paired {
             return Err(refuse(format!(
                 "a later cut near ({}, {}) in the flat pattern does not go through the sheet square to it: its outline on the two skins differs, so it has no one outline in the flat (a bevelled or tilted cut); cut it square to the sheet, or draw it in the part's sketch or a cutouts sketch",
                 bb[0], bb[1]
