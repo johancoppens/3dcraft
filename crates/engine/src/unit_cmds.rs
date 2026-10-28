@@ -720,6 +720,9 @@ fn keep_the_sizes(
         }
         powers.push(match (kind, crate::assert_cmds::dim_of(kind)) {
             ("value", _) | (_, Dim::Of(_) | Dim::Length(_)) => dim.map(|d| d.length),
+            // A mass is in kilograms whatever the length unit, as long as a
+            // material's density does not depend on it (it is kept in
+            // kg/m^3); a count and a yes or no have no size.
             (_, Dim::Mass | Dim::Count | Dim::Flag) => Some(0),
         });
         let Some(dim) = dim.filter(|d| d.length != 0) else {
@@ -874,8 +877,14 @@ fn same_checks(
                 }
                 _ => false,
             },
+            // A number whose dimension is not known cannot be held to a
+            // size: not proven.
+            (Value::Number(_), Value::Number(_), None) => false,
             (Value::Bool(a), Value::Bool(b), _) => a == b,
-            _ => true,
+            // Nothing measured either time (an error, a note in words).
+            (Value::Null, Value::Null, _) | (Value::String(_), Value::String(_), _) => true,
+            // A number one time and not the other, or a yes or no.
+            _ => false,
         };
         if !same {
             return Err(format!(

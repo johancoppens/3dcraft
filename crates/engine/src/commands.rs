@@ -400,7 +400,12 @@ fn repoint_edited(
     let Some(feature) = doc.feature(id) else {
         return Ok((None, None));
     };
-    let taken = taken_at(doc, earlier, feature).unwrap_or_default();
+    // One that fails where it stands now is not one that no longer takes
+    // a body: what it re-pointed stays recorded, for an edit that makes it
+    // work again.
+    let Some(taken) = taken_at(doc, earlier, feature) else {
+        return Ok((None, None));
+    };
     let released: Vec<FeatureId> = doc
         .inserted(id)
         .map(|entry| {
@@ -410,6 +415,9 @@ fn repoint_edited(
                 .map(|r| r.was)
                 .filter(|w| !taken.contains(w))
                 .collect();
+            // Only to keep the list short: `restore_repointed` reads it
+            // as a set.
+            was.sort();
             was.dedup();
             was
         })

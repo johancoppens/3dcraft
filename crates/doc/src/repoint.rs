@@ -11,8 +11,10 @@
 //! deleting the inserted feature gives every parameter it re-pointed (and
 //! still names it) its old feature back, so the document is as if it had
 //! never been inserted; an edit of it that no longer takes a body gives
-//! the parameters it re-pointed from that body theirs back, and one that
-//! takes another body re-points the later features that named that one.
+//! the parameters it re-pointed from that body theirs back (and re-points
+//! nothing new: a later feature naming a body it takes now was pointed
+//! there by the user). A parameter a command points elsewhere itself is
+//! the user's from then on ([`Document::forget_hand_edits`]).
 //! Regeneration does not read the entries: a file regenerates as its
 //! features are written.
 
@@ -98,10 +100,10 @@ impl Document {
     /// Takes back what inserting `id` re-pointed from the features in
     /// `from` (every one when `None`): each such parameter that still names
     /// `id` names the feature it named before again, unless that feature
-    /// no longer comes before it in the history (moved after it, or gone):
+    /// no longer comes before it in the history (moved after it):
     /// such a parameter is left as it is and listed as kept. Returns
     /// `(given, kept)`, each `(feature, parameter, the feature it named
-    /// before)` in history order. The entries taken back are dropped,
+    /// before)` in the order they were recorded. The entries taken back are dropped,
     /// given or kept; the entry of `id` itself stays.
     pub fn restore_repointed(&mut self, id: FeatureId, from: Option<&[FeatureId]>) -> Restored {
         let Some(at) = self.inserted.iter().position(|e| e.feature == id) else {

@@ -387,6 +387,44 @@ fn a_parameter_pointed_by_hand_stays_as_the_user_left_it() {
     assert_eq!(cut_target(&mut s), bevel);
 }
 
+/// An edit that makes the inserted chamfer fail where it stands (an edge
+/// named by a face its body does not have) is not one that no longer
+/// takes the block: nothing is given back and the entry stays, so the
+/// edit back to its edges leaves the subtraction on the chamfer and
+/// nothing fails.
+#[test]
+fn an_edit_that_fails_where_it_stands_gives_nothing_back() {
+    let mut s = new(1.0);
+    build(&mut s, &part(1.0));
+    run(&mut s, "history.rollback", json!({"feature": "Tool"}));
+    run(
+        &mut s,
+        "feature.chamfer",
+        json!({"edges": [["F1:face(1)", "F1:face(3)"]], "distance": 0.5, "name": "Bevel"}),
+    );
+    let bevel = number(&features(&mut s), "Bevel");
+    let broken = run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Bevel", "edges": [["F1:face(1)", "F1:face(7)"]]}),
+    );
+    assert!(broken.get("restored").is_none(), "{broken}");
+    assert_eq!(cut_target(&mut s), bevel);
+    let inspect = run(&mut s, "document.inspect", json!({"measures": false}));
+    assert_eq!(
+        inspect["inserted"][0]["repointed"].as_array().map(Vec::len),
+        Some(1),
+        "{inspect}"
+    );
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Bevel", "edges": [["F1:face(1)", "F1:face(3)"]]}),
+    );
+    assert_eq!(cut_target(&mut s), bevel);
+    forward(&mut s);
+}
+
 /// The block the subtraction named before moved after it: deleting the
 /// chamfer inserted on it cannot give it back (it would come after the
 /// subtraction), says so under notRestored and leaves the subtraction

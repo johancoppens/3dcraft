@@ -1112,18 +1112,34 @@ fn independent_features_are_untouched(session: &Session, context: &str) {
     // parameter of a kept feature may differ only so: it named a deleted
     // feature in `with`, and names now a feature an entry of `with`
     // (document.inspect's inserted) recorded it named before.
-    let recorded = |feature: &Value, param: &str, was: &Value| {
-        before["inserted"].as_array().is_some_and(|entries| {
-            entries.iter().any(|entry| {
-                entry["repointed"].as_array().is_some_and(|list| {
-                    list.iter().any(|r| {
-                        &r["feature"] == feature
-                            && r["param"] == param
-                            && r["was"] == json!(format!("F{was}"))
-                    })
-                })
+    // What the entry of the inserted feature `of` recorded `param` of
+    // `feature` named before.
+    let was_of = |of: &str, feature: &Value, param: &str| -> Option<Value> {
+        before["inserted"].as_array()?.iter().find_map(|entry| {
+            (entry["feature"] == of).then_some(())?;
+            entry["repointed"].as_array()?.iter().find_map(|r| {
+                (&r["feature"] == feature && r["param"] == param).then(|| r["was"].clone())
             })
         })
+    };
+    // From the deleted feature the parameter named in `with`, its entry's
+    // `was`, and on through the entries of deleted features a chain of
+    // insertions passes (each deleted gives the next one back).
+    let recorded = |feature: &Value, param: &str, named: &Value, now: &Value| {
+        let mut at = format!("F{named}");
+        for _ in 0..=failed.len() {
+            let Some(was) = was_of(&at, feature, param) else {
+                return false;
+            };
+            if was == json!(format!("F{now}")) {
+                return true;
+            }
+            let Some(next) = was.as_str().filter(|w| failed.iter().any(|f| f == w)) else {
+                return false;
+            };
+            at = next.to_string();
+        }
+        false
     };
     let given_back = |entry: &Value| {
         let mut entry = entry.clone();
@@ -1141,7 +1157,7 @@ fn independent_features_are_untouched(session: &Session, context: &str) {
                 continue;
             }
             let named_deleted = failed.contains(&format!("F{was}"));
-            if named_deleted && recorded(&entry["id"], param, is) {
+            if named_deleted && recorded(&entry["id"], param, was, is) {
                 entry["params"][param] = is.clone();
             }
         }
