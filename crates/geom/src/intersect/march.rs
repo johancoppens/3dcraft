@@ -288,9 +288,10 @@ struct Branch {
 /// What refining a branch came to (`Marcher::refine_to_edge`).
 enum Refined {
     Done,
-    /// The middle of the span from this point to the next is past the
-    /// edge of the field's surface.
-    Leaves(usize),
+    /// The middle of the span from this point to the next (the point
+    /// given, the one the refinement put there) is past the edge of the
+    /// field's surface.
+    Leaves(usize, Pt),
 }
 
 struct Grid {
@@ -2844,7 +2845,7 @@ impl Marcher {
     fn refine(&mut self, pts: &mut Vec<Pt>) -> Result<(), GeomError> {
         match self.refine_to_edge(pts)? {
             Refined::Done => Ok(()),
-            Refined::Leaves(_) => Err(GeomError::NoConvergence(
+            Refined::Leaves(..) => Err(GeomError::NoConvergence(
                 "an intersection curve could not be fitted within the tolerance",
             )),
         }
@@ -2863,13 +2864,16 @@ impl Marcher {
         pts: Vec<Pt>,
         closed: bool,
     ) -> Result<Vec<(Vec<Pt>, bool)>, GeomError> {
-        let mut done: Vec<Vec<Pt>> = Vec::new();
+        // Each piece with whether it begins at the branch's first point
+        // and whether it ends at its last.
+        let mut done: Vec<(Vec<Pt>, bool, bool)> = Vec::new();
         let mut rest = pts;
+        let mut at_first = true;
         let mut split = false;
         loop {
             self.spent()?;
-            let Refined::Leaves(i) = self.refine_to_edge(&mut rest)? else {
-                done.push(rest);
+            let Refined::Leaves(i, m) = self.refine_to_edge(&mut rest)? else {
+                done.push((rest, at_first, true));
                 break;
             };
             if done.len() >= MAX_BRANCHES {
@@ -2884,7 +2888,6 @@ impl Marcher {
             let (Some(a), Some(b)) = (rest.get(i).copied(), rest.get(i + 1).copied()) else {
                 return Err(give_up);
             };
-            let m = self.between(&a, &b).ok_or(give_up)?;
             let mut head: Vec<Pt> = rest.get(..=i).map(<[Pt]>::to_vec).unwrap_or_default();
             head.extend(self.edge_between(&a, &m, &a));
             let mut tail: Vec<Pt> = self.edge_between(&b, &m, &b).into_iter().collect();
@@ -2893,29 +2896,35 @@ impl Marcher {
             // refined with the rest of it (nothing before it changes).
             if head.len() >= 2 {
                 match self.refine_to_edge(&mut head)? {
-                    Refined::Done => done.push(head),
+                    Refined::Done => done.push((head, at_first, false)),
                     // (The edge found from `a` is on the surface, so the
                     // span to it leaves it only if the march passed over
                     // more than one stretch: refused as before.)
-                    Refined::Leaves(_) => {
-                        return Err(GeomError::NoConvergence(
-                            "an intersection curve could not be fitted within the tolerance",
-                        ));
-                    }
+                    Refined::Leaves(..) => return Err(give_up),
                 }
             }
+            at_first = false;
             rest = tail;
         }
-        let mut pieces: Vec<Vec<Pt>> = done.into_iter().filter(|p| p.len() >= 2).collect();
+        let mut pieces: Vec<(Vec<Pt>, bool, bool)> =
+            done.into_iter().filter(|p| p.0.len() >= 2).collect();
         if !split {
-            return Ok(pieces.into_iter().map(|p| (p, closed)).collect());
+            return Ok(pieces.into_iter().map(|p| (p.0, closed)).collect());
         }
         // A closed branch divided is open, its first piece going on from
-        // its last (which ends on the copy of the start, whose parameters
-        // continue the loop's: the first piece's are moved by as much).
-        if closed && pieces.len() >= 2 {
-            let first = pieces.remove(0);
-            if let (Some(last), Some(start)) = (pieces.last_mut(), first.first()) {
+        // its last when the first begins at the loop's start and the last
+        // ends on the copy of it (whose parameters continue the loop's:
+        // the first piece's are moved by as much). Where either was left
+        // out (the loop's start on the edge of the field's surface, so
+        // that nothing of the piece before it is on it), the loop leaves
+        // the surface there and its pieces stay apart.
+        let joins = closed
+            && pieces.len() >= 2
+            && pieces.first().is_some_and(|p| p.1)
+            && pieces.last().is_some_and(|p| p.2);
+        if joins {
+            let (first, _, _) = pieces.remove(0);
+            if let (Some((last, _, _)), Some(start)) = (pieces.last_mut(), first.first()) {
                 let shift = last
                     .last()
                     .map_or((0.0, 0.0), |copy| (copy.u - start.u, copy.v - start.v));
@@ -2926,7 +2935,7 @@ impl Marcher {
                 }));
             }
         }
-        Ok(pieces.into_iter().map(|p| (p, false)).collect())
+        Ok(pieces.into_iter().map(|p| (p.0, false)).collect())
     }
 
     /// The last point from `from` towards `to` (in the chart's parameters,
@@ -2983,7 +2992,7 @@ impl Marcher {
 
     /// `refine`, stopping at the first span whose middle on the branch is
     /// past the edge of the field's surface by more than the span may be
-    /// off it (`Refined::Leaves`, with the span's index): no point added
+    /// off it (`Refined::Leaves`, with the span's index and that middle): no point added
     /// there could bring that span within the tolerance.
     fn refine_to_edge(&mut self, pts: &mut Vec<Pt>) -> Result<Refined, GeomError> {
         let target = 0.5 * self.tol.linear;
@@ -3031,7 +3040,7 @@ impl Marcher {
                 .sample(middle.p)
                 .is_some_and(|x| x.dist - x.signed.abs() > target)
             {
-                return Ok(Refined::Leaves(i));
+                return Ok(Refined::Leaves(i, middle));
             }
             pts.insert(i + 1, middle);
         }
@@ -3457,14 +3466,19 @@ impl Marcher {
             let divided = pieces.len() > 1;
             for branch in pieces {
                 // A piece of a branch divided where it left the field's
-                // surface may be one traced already from a seed of its own.
-                if divided
-                    && branch.pts.get(branch.pts.len() / 2).is_some_and(|mid| {
-                        branches
-                            .iter()
-                            .any(|b| Self::on_spans(mid.p, &b.pts, slack))
-                    })
-                {
+                // surface may be one traced already from a seed of its own
+                // (its ends and middle on that branch; one that reaches
+                // further is joined to it, or kept, as any other).
+                let traced = |b: &Branch| {
+                    [
+                        branch.pts.first(),
+                        branch.pts.get(branch.pts.len() / 2),
+                        branch.pts.last(),
+                    ]
+                    .into_iter()
+                    .all(|p| p.is_some_and(|p| Self::on_spans(p.p, &b.pts, slack)))
+                };
+                if divided && branches.iter().any(traced) {
                     continue;
                 }
                 let mut joined = false;
@@ -3733,6 +3747,176 @@ mod tests {
                 m.united(&inner, &short).unwrap().is_none(),
                 "short arm at {k}"
             );
+        }
+    }
+
+    /// A wall round the unit circle (a rational quadratic circle extruded
+    /// up to `z = 1`) whose lower border is below `z = 0` but for two
+    /// bumps, about 0 and 180 degrees, where it rises above it (the seam
+    /// where the circle closes inside the first): against the plane
+    /// `z = 0`, the meeting is the circle less the bumps.
+    fn bumped_wall(k: f64) -> Surface {
+        let w = std::f64::consts::FRAC_1_SQRT_2;
+        let ring = [
+            (1.0, 0.0),
+            (1.0, 1.0),
+            (0.0, 1.0),
+            (-1.0, 1.0),
+            (-1.0, 0.0),
+            (-1.0, -1.0),
+            (0.0, -1.0),
+            (1.0, -1.0),
+            (1.0, 0.0),
+        ];
+        let mut ctrl = Vec::new();
+        let mut weights = Vec::new();
+        for (i, (x, y)) in ring.into_iter().enumerate() {
+            let low = if i == 0 || i == 4 || i == 8 {
+                0.6
+            } else {
+                -0.3
+            };
+            ctrl.push(Vec3::new(x, y, low) * k);
+            ctrl.push(Vec3::new(x, y, 1.0) * k);
+            let weight = if i % 2 == 1 { w } else { 1.0 };
+            weights.extend([weight, weight]);
+        }
+        Surface::Nurbs(
+            NurbsSurface::new(
+                2,
+                1,
+                vec![
+                    0.0, 0.0, 0.0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1.0, 1.0, 1.0,
+                ],
+                vec![0.0, 0.0, 1.0, 1.0],
+                9,
+                2,
+                ctrl,
+                weights,
+            )
+            .unwrap(),
+        )
+    }
+
+    /// A closed branch that leaves the field's surface twice, starting
+    /// where it leaves it the first time (on the edge, so that nothing of
+    /// the piece before is on the surface): two pieces, open, each on the
+    /// surface, neither bridging a bump; the first is not joined on to
+    /// the last across the bump the loop starts at (review of
+    /// 2026-10-28). At three scales.
+    #[test]
+    fn a_closed_branch_that_starts_on_the_edge_it_leaves_by_is_not_joined_across_it() {
+        for k in [1e-3, 1.0, 1e6] {
+            let plane = Surface::Plane(Plane::new(Frame::WORLD));
+            let wall = bumped_wall(k);
+            let within = Bbox3::from_points([
+                Vec3::new(-3.0, -3.0, -3.0) * k,
+                Vec3::new(3.0, 3.0, 3.0) * k,
+            ]);
+            let tol = Tolerance::new(1e-6 * k, 1e-9).unwrap();
+            let field = Field::new(&wall).unwrap();
+            let chart = Chart::new(&plane, &within, &tol, &field).unwrap().unwrap();
+            let mut m = Marcher::new(chart, field, &within, &tol).unwrap();
+            // Where the border crosses `z = 0` (angles, by halving on u):
+            // the first bump, about 0, from `rise` to `fall`.
+            let z = |u: f64| wall.eval(u, 0.0).z;
+            let cross = |mut lo: f64, mut hi: f64| {
+                for _ in 0..200 {
+                    let mid = 0.5 * (lo + hi);
+                    if (z(mid) > 0.0) == (z(lo) > 0.0) {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                let p = wall.eval(0.5 * (lo + hi), 0.0);
+                p.y.atan2(p.x)
+            };
+            let (rise, fall) = (cross(0.75, 1.0), cross(0.0, 0.25));
+            assert!(
+                rise < -0.3 && fall > 0.3 && (rise + fall).abs() < 1e-9,
+                "{rise} {fall}"
+            );
+            let point = |a: f64| {
+                let (s, c) = a.sin_cos();
+                Pt {
+                    u: k * c,
+                    v: k * s,
+                    p: Vec3::new(c, s, 0.0) * k,
+                    t: Vec3::new(-s, c, 0.0),
+                    du: -s,
+                    dv: c,
+                }
+            };
+            // The start just past the rise, short of the edge's cut by
+            // half of `on`: no point beyond it, further than `on`, is on
+            // the surface (by halving on its distance).
+            let target = m.cut - 0.5 * m.on;
+            let (mut lo, mut hi) = (rise, rise + 0.1);
+            for _ in 0..200 {
+                let mid = 0.5 * (lo + hi);
+                if m.field.sample(point(mid).p).unwrap().dist < target {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            let start = lo;
+            // From there round to it again, passing over both bumps in
+            // one span each.
+            let tau = std::f64::consts::TAU;
+            let angles = [
+                start,
+                fall + 0.2,
+                fall + 0.9,
+                rise + std::f64::consts::PI - 0.2,
+                fall + std::f64::consts::PI + 0.2,
+                fall + std::f64::consts::PI + 0.9,
+                start + tau,
+            ];
+            let pts: Vec<Pt> = angles.iter().map(|&a| point(a)).collect();
+            let pieces = m.refine_pieces(pts, true).unwrap();
+            let described: Vec<String> = pieces
+                .iter()
+                .map(|(p, _)| {
+                    let angle = |q: &Pt| q.p.y.atan2(q.p.x);
+                    let (f, l) = (p.first().unwrap(), p.last().unwrap());
+                    format!(
+                        "{} pts {:.6}..{:.6} (u {:.6}..{:.6})",
+                        p.len(),
+                        angle(f),
+                        angle(l),
+                        f.u,
+                        l.u
+                    )
+                })
+                .collect();
+            assert_eq!(
+                pieces.len(),
+                2,
+                "{k}: start {start} rise {rise} fall {fall}: {described:#?}"
+            );
+            let in_bump = |a: f64| {
+                let pi = std::f64::consts::PI;
+                let near = |c: f64| (a - c + pi).rem_euclid(tau) - pi;
+                near(0.0).abs() < fall - 1e-6 || near(pi).abs() < fall - 1e-6
+            };
+            for (piece, closed) in &pieces {
+                assert!(!closed, "{k}");
+                for p in piece {
+                    let off = m.field.sample(p.p).unwrap();
+                    assert!(off.dist <= tol.linear, "{k}: {:?} off by {}", p.p, off.dist);
+                }
+                // No span passes over a bump: the angles run on by less
+                // than a bump's width each, and none is inside one.
+                for (a, b) in piece.iter().zip(piece.iter().skip(1)) {
+                    let (ta, tb) = (a.p.y.atan2(a.p.x), b.p.y.atan2(b.p.x));
+                    let step = (tb - ta).rem_euclid(tau);
+                    assert!(step < fall - rise, "{k}: a span of {step} rad");
+                    let middle = (a.p + b.p) * 0.5;
+                    assert!(!in_bump(middle.y.atan2(middle.x)), "{k}: {middle:?}");
+                }
+            }
         }
     }
 }

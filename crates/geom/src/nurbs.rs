@@ -817,15 +817,18 @@ impl NurbsCurve {
     }
 
     /// Points whose convex hull holds the curve over `range` (its two
-    /// parameters in either order): over the whole domain or more, the
-    /// control points themselves; over part of it, the control points of
-    /// the Bézier pieces of that part, each piece the curve's span cut to
-    /// the range by de Casteljau's algorithm (exact: the same polynomial,
-    /// or rational function, over a shorter interval), so that control
+    /// parameters in either order), every weight involved being positive
+    /// and finite (a rational curve lies in the hull of its control points
+    /// only then): over the whole domain or more, the control points
+    /// themselves; over part of it, the control points of the Bézier
+    /// pieces of that part, each piece the curve's span cut to the range
+    /// by de Casteljau's algorithm (exact: the same polynomial, or
+    /// rational function, over a shorter interval), so that control
     /// points far from the part used (an end span continued a long way)
     /// do not count. `None` when the range is not finite, reaches past
-    /// the domain on one side only, or a weight of a cut piece is not
-    /// positive.
+    /// the domain on one side only, or a weight (of the curve over the
+    /// whole domain, of a cut piece over part of it) is not positive and
+    /// finite: no hull of control points is known to hold the curve.
     pub fn hull_points(&self, range: (f64, f64)) -> Option<Vec<Vec3>> {
         if !(range.0.is_finite() && range.1.is_finite()) {
             return None;
@@ -833,7 +836,8 @@ impl NurbsCurve {
         let (r0, r1) = (range.0.min(range.1), range.0.max(range.1));
         let (d0, d1) = self.domain();
         if r0 <= d0 && r1 >= d1 {
-            return Some(self.control_points().to_vec());
+            let positive = self.weights().iter().all(|w| w.is_finite() && *w > 0.0);
+            return positive.then(|| self.control_points().to_vec());
         }
         if r0 < d0 || r1 > d1 {
             return None;
