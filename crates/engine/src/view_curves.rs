@@ -440,7 +440,7 @@ impl Registry {
     /// Whether `p`, of the chord of `line` over `chord` drawn in the
     /// direction `dir` and lying within `slack` of what it stands for, is
     /// on a piece drawn before: within the two slacks and `close` of its
-    /// chord. A line does not cover itself next to where it is (within the
+    /// chord, which runs along this one. A line does not cover itself next to where it is (within the
     /// chord's own span of parameter, or across the start of a closed one
     /// of `period`) unless it runs back there. Returns the tests made.
     #[allow(clippy::too_many_arguments)]
@@ -499,7 +499,23 @@ impl Registry {
             if d.line == line && near(d) && dot2(dir, sub2(d.b, d.a)) >= 0.0 {
                 continue;
             }
-            if to_segment(p, d.a, d.b) <= close + slack + d.slack {
+            let reach = close + slack + d.slack;
+            if to_segment(p, d.a, d.b) > reach {
+                continue;
+            }
+            // Only a piece that runs along it: two chords within `reach`
+            // of one curve turn from each other by at most about
+            // 8 reach / length, so a line that meets or crosses it at an
+            // angle covers nothing of it.
+            let along = sub2(d.b, d.a);
+            let (l1, l2) = (dot2(dir, dir).sqrt(), dot2(along, along).sqrt());
+            let shorter = l1.min(l2);
+            let sine = if l1 > 0.0 && l2 > 0.0 {
+                cross2(dir, along).abs() / (l1 * l2)
+            } else {
+                0.0
+            };
+            if shorter <= 0.0 || sine <= 16.0 * reach / shorter {
                 return (true, tests);
             }
         }
