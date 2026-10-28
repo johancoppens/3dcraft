@@ -220,10 +220,14 @@ for a material and a thickness are yours, as expressions or a table, as above. `
 on `bendUp` (dashed) and `bendDown` (dash-dot). `sheetMetal.bendSequence` checks whether the part can be
 bent on a press brake with your punch and die (each a polygon in the plane square to the bend: the punch's
 tip centre and the die's top at the origin, `y` up into the punch) and finds an order of the bends: every
-step is proven to keep each tool at least `clearance` from every other piece of the part over the whole
-stroke, and a step that does not is listed by bend, by the bends made before it, by tool and by piece.
-`sheetMetal.edit` changes a part (flanges as a whole
-list). Refused, with the flange: a radius below zero or of zero (a sharp bend is not supported: give the radius the tooling makes), a K-factor
+step is proven to keep the punch at least `clearance` from every piece of the part but the bend and its
+two flats, and the die from every piece but the bend, over the whole stroke (the sheet may rest on the
+die's top, not go into it), and a step that does not is listed by bend, by the bends made before it, by
+tool and by piece; `unchecked` says what is not looked at. `sheetMetal.edit` changes a part (flanges as a
+whole list). Each flange has an `id` (`sheetMetal.bends` lists them): give it back with the flange in
+`sheetMetal.edit` and the names of the edge pieces beside its bend stay with it whatever else you add,
+delete or move; a flange sent back unchanged keeps its id without it, and one changed without it is a
+new flange. Refused, with the flange: a radius below zero or of zero (a sharp bend is not supported: give the radius the tooling makes), a K-factor
 outside 0 to 1, an angle outside 0 to 180 degrees, an edge that is not a straight line of the base's
 outline (a flange on a curved edge is a formed flange, not a bend: it has no flat pattern that keeps
 lengths), flanged edges meeting at an inside corner, a relief that does not fit, and flanges that run into

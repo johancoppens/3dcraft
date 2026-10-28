@@ -352,3 +352,114 @@ pub fn inside_piece(part: &Part, piece: PieceOf, p: Vec3) -> bool {
         }
     }
 }
+
+/// Points (in the built part's world) whose convex hull holds the
+/// material of `piece` exactly as built, with no mesh slack: a flat's the
+/// eight corners of its outline's box (an arc's or circle's by its
+/// centre and radius, a spline's by its control points) at `z = 0` and
+/// `T`; a strip's the corners of its rectangle `T` thick; a built bend's
+/// the ends of its inner and outer arcs and, for the outer arc taken in
+/// two halves of at most 90 degrees, where each half's end tangents
+/// meet, at both ends of the bend.
+pub fn piece_points(part: &Part, piece: PieceOf) -> Vec<Vec3> {
+    let t = part.thickness;
+    let to_world = |flat: usize, local: &[Vec3]| -> Vec<Vec3> {
+        part.flats
+            .get(flat)
+            .map(|f| world(&part.plane, f))
+            .map(|w| local.iter().map(|p| w.point(*p)).collect())
+            .unwrap_or_default()
+    };
+    match piece {
+        PieceOf::Flat(f) => {
+            let Some(flat) = part.flats.get(f) else {
+                return Vec::new();
+            };
+            let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+            let mut grow = |p: [f64; 2]| {
+                lo = [lo[0].min(p[0]), lo[1].min(p[1])];
+                hi = [hi[0].max(p[0]), hi[1].max(p[1])];
+            };
+            for s in &flat.outer {
+                grow(s.start);
+                grow(s.end);
+                match &s.shape {
+                    crate::profile::Shape::Line => {}
+                    crate::profile::Shape::Arc { center, radius }
+                    | crate::profile::Shape::Circle { center, radius } => {
+                        grow([center[0] - radius, center[1] - radius]);
+                        grow([center[0] + radius, center[1] + radius]);
+                    }
+                    crate::profile::Shape::Spline(spline) => {
+                        for p in &spline.control {
+                            grow(*p);
+                        }
+                    }
+                }
+            }
+            if !(lo[0] <= hi[0] && lo[1] <= hi[1]) {
+                return Vec::new();
+            }
+            let mut local = Vec::with_capacity(8);
+            for x in [lo[0], hi[0]] {
+                for y in [lo[1], hi[1]] {
+                    for z in [0.0, t] {
+                        local.push(Vec3::new(x, y, z));
+                    }
+                }
+            }
+            to_world(f, &local)
+        }
+        PieceOf::Strip(i) | PieceOf::Bend(i) => {
+            let Some(b) = part.bends.get(i) else {
+                return Vec::new();
+            };
+            let lifted = |p: [f64; 2], u: f64, z: f64| {
+                Vec3::new(p[0] + u * b.across[0], p[1] + u * b.across[1], z)
+            };
+            let mut local = Vec::new();
+            if matches!(piece, PieceOf::Strip(_)) {
+                for p in [b.start, b.end] {
+                    for u in [0.0, b.allowance] {
+                        for z in [0.0, t] {
+                            local.push(lifted(p, u, z));
+                        }
+                    }
+                }
+                return to_world(b.parent, &local);
+            }
+            // In the plane square to the axis: `u` across, `w` up from
+            // the axis; the strip starts square under (over) the axis and
+            // turns towards `across`.
+            let up = b.angle > 0.0;
+            let zc = if up { t + b.radius } else { -b.radius };
+            let at = |r: f64, phi: f64| {
+                let w = if up { -phi.cos() } else { phi.cos() };
+                (r * phi.sin(), r * w)
+            };
+            let theta = b.theta();
+            let outer = b.radius + t;
+            let mut plane = vec![
+                at(b.radius, 0.0),
+                at(b.radius, theta),
+                at(outer, 0.0),
+                at(outer, theta),
+                at(outer, 0.5 * theta),
+            ];
+            // Each half arc (at most 90 degrees) lies inside the triangle
+            // of its ends and where their tangents meet, `outer /
+            // cos(θ/4)` from the axis at the half's middle.
+            let apex = outer / (0.25 * theta).cos();
+            if apex.is_finite() {
+                plane.push(at(apex, 0.25 * theta));
+                plane.push(at(apex, 0.75 * theta));
+            }
+            for p in [b.start, b.end] {
+                for &(u, w) in &plane {
+                    local.push(lifted(p, u, zc + w));
+                }
+            }
+            to_world(b.parent, &local)
+        }
+    }
+}
