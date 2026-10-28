@@ -451,7 +451,6 @@ pub fn layer_order(arr: &Arrangement, folded: &Folded, tol: f64) -> Result<Layer
             .collect();
         spans.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.2.cmp(&y.2)));
         let index = lines.len();
-        let mut current: Option<(f64, f64, bool)> = None;
         let at = |t: f64| [a[0] + d[0] * t, a[1] + d[1] * t];
         let mut push = |from: f64, to: f64, slit: bool, creases: &mut Vec<Crease>| {
             creases.push(Crease {
@@ -469,21 +468,49 @@ pub fn layer_order(arr: &Arrangement, folded: &Folded, tol: f64) -> Result<Layer
             });
             line_of_crease.push(index);
         };
+        // The spans merged where they overlap or touch; each merged run
+        // split where a slit's or a slot's edge goes on past every other
+        // edge on the line: the stretches only slits cover are cuts (they
+        // may end inside a cell), the rest divide (a slit's edge collinear
+        // with a crease's runs on past it as a cut).
+        let mut run: Vec<(f64, f64, bool)> = Vec::new();
+        let mut flush = |run: &mut Vec<(f64, f64, bool)>, creases: &mut Vec<Crease>| {
+            let mut cuts: Vec<f64> = run.iter().flat_map(|r| [r.0, r.1]).collect();
+            cuts.sort_by(f64::total_cmp);
+            let mut pieces_of_run: Vec<(f64, f64, bool)> = Vec::new();
+            for w in cuts.windows(2) {
+                let (Some(&from), Some(&to)) = (w.first(), w.get(1)) else {
+                    continue;
+                };
+                let divides = run
+                    .iter()
+                    .any(|&(s, e, slit)| !slit && s <= from + tol && e >= to - tol);
+                match pieces_of_run.last_mut() {
+                    // A stretch no longer than the tolerance, or of the same
+                    // kind, goes on the one before.
+                    Some(last) if last.2 == !divides || to - from <= tol => last.1 = to,
+                    // One no longer than the tolerance before it takes this
+                    // one's kind.
+                    Some(last) if last.1 - last.0 <= tol => *last = (last.0, to, !divides),
+                    _ => pieces_of_run.push((from, to, !divides)),
+                }
+            }
+            for (from, to, slit) in pieces_of_run {
+                push(from, to, slit, creases);
+            }
+            run.clear();
+        };
+        let mut hi = f64::NEG_INFINITY;
         for &(s, e, k) in &spans {
             let slit = pieces.get(k).is_some_and(|p| p.slit);
-            current = match current {
-                // A merged line is a slit's only when every piece is.
-                Some((lo, hi, all)) if s <= hi + tol => Some((lo, hi.max(e), all && slit)),
-                Some((lo, hi, all)) => {
-                    push(lo, hi, all, &mut creases);
-                    Some((s, e, slit))
-                }
-                None => Some((s, e, slit)),
-            };
+            if !run.is_empty() && s > hi + tol {
+                flush(&mut run, &mut creases);
+                hi = f64::NEG_INFINITY;
+            }
+            run.push((s, e, slit));
+            hi = hi.max(e);
         }
-        if let Some((lo, hi, all)) = current {
-            push(lo, hi, all, &mut creases);
-        }
+        flush(&mut run, &mut creases);
         lines.push(Line { a, d, spans });
     }
 

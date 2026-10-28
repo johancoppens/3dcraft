@@ -23,9 +23,10 @@
 //! both are folded about (the layers of a stack folded on bend round the
 //! same line: in the zero-thickness model they touch there).
 
+use super::solve::{Budget, fold_linkage_within};
 use super::{
     Angle, Arrangement, BoundarySegment, Crease, CreaseKind, EdgeKind, FoldError, Folded, Joint,
-    Layers, Linkage, arrange, fold_flat, fold_linkage, layer_order, lift,
+    Layers, Linkage, MAX_DENSE, arrange, fold_flat, layer_order, lift, vertex_checks,
 };
 use craft3d_math::{Bbox3, Transform, Vec3};
 use std::collections::BTreeSet;
@@ -128,7 +129,7 @@ pub fn fold_stacked(
     let reduced = arrange(&boundary, &creases, tol).map_err(|e| match e {
         FoldError::Dangling { id } => FoldError::StackNotFlat {
             id,
-            why: "it ends on a crease folded by less than 180 degrees, so the 180-degree creases alone do not divide the sheet into stacks",
+            why: "it ends on a crease folded by less than 180 degrees, so the 180-degree creases alone do not divide the sheet into stacks; give the creases it meets 180 degrees too, or fold them less",
         },
         other => other,
     })?;
@@ -160,11 +161,50 @@ pub fn fold_stacked(
     let fixed_reduced = *in_reduced.get(fixed).ok_or(FoldError::Broken {
         reason: "the fixed facet is missing",
     })?;
+    // Where the 180-degree creases alone do not fold flat: at a vertex
+    // that creases folded by less meet too, the stack needs those at 180
+    // as well; at a vertex of 180-degree creases only, the pattern does
+    // not fold flat there however the others fold (Kawasaki fails among
+    // creases all folded flat), its own reason.
+    let lesser: BTreeSet<usize> = arr
+        .hinges
+        .iter()
+        .zip(angles)
+        .filter(|(_, a)| !at_flat(a))
+        .map(|(h, _)| h.edge)
+        .collect();
+    let lesser_at = |at: [f64; 2]| -> bool {
+        arr.around.iter().enumerate().any(|(v, around)| {
+            arr.point(v).is_some_and(|p| {
+                (p[0] - at[0]).hypot(p[1] - at[1]) <= tol
+                    && around.iter().any(|&h| lesser.contains(&(h / 2)))
+            })
+        })
+    };
     let flat = fold_flat(&reduced, &reduced_angles, fixed_reduced, tol).map_err(|e| match e {
-        FoldError::NotFlat { id, .. } => FoldError::StackNotFlat {
-            id,
-            why: "the 180-degree creases alone do not meet again round a vertex where creases folded by less meet them too (Kawasaki fails among the 180-degree ones)",
-        },
+        FoldError::NotFlat { id, .. } => {
+            let (checks, _) = vertex_checks(&reduced, angular);
+            let failing: Vec<[f64; 2]> = checks
+                .iter()
+                .filter(|c| !c.kawasaki_holds)
+                .map(|c| c.at)
+                .collect();
+            if failing.iter().any(|&at| lesser_at(at)) {
+                FoldError::StackNotFlat {
+                    id,
+                    why: "the 180-degree creases alone do not meet again round a vertex where creases folded by less meet them too (Kawasaki fails among the 180-degree ones); give those creases 180 degrees too, or fold them less",
+                }
+            } else {
+                FoldError::StackNotFlat {
+                    id,
+                    why: if failing.is_empty() {
+                        "the 180-degree creases do not meet again round a loop of them"
+                    } else {
+                        "the 180-degree creases do not meet again round a vertex where only they meet (Kawasaki fails there: the crease pattern does not fold flat at that vertex, whatever the other creases do); move or remove a crease there"
+                    },
+                }
+            }
+        }
         other => other,
     })?;
     let reduced_layers = layer_order(&reduced, &flat, tol)?;
@@ -260,8 +300,18 @@ pub fn fold_stacked(
         joints,
         size: box_.diagonal(),
     };
-    // The fixed facet's stack is number 0.
-    let moved = match fold_linkage(&link, &joint_angles, 0, tol, angular) {
+    // The fixed facet's stack is number 0. One budget for the fold and the
+    // solve again below that names a crease.
+    let mut budget = Budget(0);
+    let moved = match fold_linkage_within(
+        &link,
+        &joint_angles,
+        0,
+        tol,
+        angular,
+        MAX_DENSE,
+        &mut budget,
+    ) {
         Ok(moved) => moved,
         Err(e @ (FoldError::WrongWay { .. } | FoldError::NotFollowed { .. })) => {
             // Which crease's kind stands in the way: the same linkage with
@@ -274,8 +324,12 @@ pub fn fold_stacked(
                     given => *given,
                 })
                 .collect();
-            let against = fold_linkage(&link, &open, 0, tol, angular)
-                .ok()
+            let against =
+                match fold_linkage_within(&link, &open, 0, tol, angular, MAX_DENSE, &mut budget) {
+                    Ok(r) => Some(r),
+                    Err(FoldError::TooMuchWork) => return Err(e),
+                    Err(_) => None,
+                }
                 .and_then(|r| {
                     joint_angles
                         .iter()

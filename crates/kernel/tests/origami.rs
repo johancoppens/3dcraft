@@ -1498,3 +1498,83 @@ fn slits_and_slots_are_cuts_with_one_facet_on_both_sides() {
     let e = arrange(&square(1.0), &[crease(13, [1.5, 0.3], [1.5, 0.7], Cut)], t);
     assert!(matches!(e, Err(FoldError::Outside { id: 13 })), "{e:?}");
 }
+
+/// A Miura sheet of 13 × 13 cells, 311 solved angles: the dense solve
+/// (at most 400 unknowns) folds it by its closed form within the work
+/// budget, at the sheet's own size and at a million times it, where the
+/// first step's solves stop on stagnation, not on an absolute goal below
+/// the rounding of long loops. The time is printed (`--nocapture`).
+#[test]
+fn a_dense_sheet_of_three_hundred_angles_folds_within_the_budget_at_any_scale() {
+    let (l, d, h): (f64, f64, f64) = (1.0, 0.5, 1.0);
+    let gamma = (h / d).atan();
+    for scale in [1.0, 1e6] {
+        let (boundary, creases) = miura(scale, 13, 13, l, d, h);
+        let arr = arrange(&boundary, &creases, tol(scale)).unwrap();
+        let solved = arr.hinges.len() - 1;
+        assert!((300..=400).contains(&solved), "{solved}");
+        let driver = creases
+            .iter()
+            .find(|c| c.start[1] > 0.0 && c.start[1] == c.end[1])
+            .unwrap()
+            .id;
+        for degrees in [20.0f64, 60.0] {
+            let rho = degrees.to_radians();
+            let clock = std::time::Instant::now();
+            let folded = fold(
+                &arr,
+                &angles(&arr, &[(driver, rho)]),
+                0,
+                tol(scale),
+                ANGULAR,
+            )
+            .unwrap();
+            println!(
+                "Miura 13 x 13 at scale {scale:e}, dense: {solved} angles at {degrees} degrees in {:.3} s",
+                clock.elapsed().as_secs_f64()
+            );
+            let zig = 2.0 * ((rho / 2.0).tan() / gamma.cos()).atan();
+            for (hinge, a) in arr.hinges.iter().zip(&folded.angles) {
+                let c = &arr.creases[hinge.crease];
+                let want = c.kind.sign() * if c.start[1] == c.end[1] { rho } else { zig };
+                assert!(
+                    close(*a, want, 1e-8),
+                    "{scale} {degrees}: e{} {a} vs {want}",
+                    c.id
+                );
+            }
+        }
+    }
+}
+
+/// Folded flat, a slit's folded edge that lies on the line of another
+/// folded edge and runs on past it: the stretch only the slit covers is a
+/// cut (it may end inside a cell), the rest divides as before. A notched
+/// square folded in half: the slit in the right half, from the right
+/// edge, lands on the notch's top edge and runs on past it.
+#[test]
+fn a_slit_edge_running_on_past_a_collinear_edge_stays_a_cut_in_the_layers() {
+    use CreaseKind::{Cut, Valley as V};
+    for scale in SCALES {
+        let s = scale;
+        let t = tol(scale);
+        let outline = polygon(&[
+            [0.0, 0.4 * s],
+            [0.2 * s, 0.4 * s],
+            [0.2 * s, 0.0],
+            [s, 0.0],
+            [s, s],
+            [0.0, s],
+        ]);
+        let creases = [
+            crease(10, [0.5 * s, 0.0], [0.5 * s, s], V),
+            crease(11, [s, 0.4 * s], [0.6 * s, 0.4 * s], Cut),
+        ];
+        let arr = arrange(&outline, &creases, t).unwrap();
+        assert_eq!(arr.facets.len(), 2);
+        let left = arr.facet_at([0.1 * s, 0.7 * s]).unwrap();
+        let flat = fold_flat(&arr, &angles(&arr, &[(10, PI)]), left, t).unwrap();
+        let layers = layer_order(&arr, &flat, t).unwrap();
+        assert_ne!(layers.layer[0], layers.layer[1]);
+    }
+}

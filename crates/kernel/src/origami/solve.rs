@@ -198,6 +198,8 @@ struct Candidate {
     /// `None` not asked yet; `Some(None)` asked and not solved.
     quarter: Option<Option<Vec<f64>>>,
     ran_out: bool,
+    /// Its error bound ([`error_bound`]), `None` not measured yet.
+    bound: Option<f64>,
 }
 /// Unknowns without a kind whose sign patterns are all tried at the first
 /// step, at most (2^6 patterns); beyond, all one way and all the other.
@@ -519,6 +521,28 @@ pub fn fold_linkage_with(
     angular: f64,
     dense_up_to: usize,
 ) -> Result<Folded, FoldError> {
+    fold_linkage_within(
+        link,
+        angles,
+        fixed,
+        tol,
+        angular,
+        dense_up_to,
+        &mut Budget(0),
+    )
+}
+
+/// [`fold_linkage_with`], its work counted in `budget` with what the
+/// caller already spent (a fold solved again shares one budget).
+pub(super) fn fold_linkage_within(
+    link: &Linkage,
+    angles: &[Angle],
+    fixed: usize,
+    tol: f64,
+    angular: f64,
+    dense_up_to: usize,
+    budget: &mut Budget,
+) -> Result<Folded, FoldError> {
     if !(tol.is_finite() && tol > 0.0 && angular.is_finite() && angular > 0.0) {
         return Err(FoldError::Tolerance);
     }
@@ -591,7 +615,6 @@ pub fn fold_linkage_with(
     if free.len() > MAX_FREE {
         return Err(FoldError::TooManyFree { count: free.len() });
     }
-    let mut budget = Budget(0);
     // Past `dense_up_to` unknowns the sparse solve: a short cycle basis, its
     // loops in their own frames, the normal equations as a skyline.
     let (loops, pattern) = if free.len() > dense_up_to {
@@ -600,7 +623,7 @@ pub fn fold_linkage_with(
             .map(|(k, ..)| fundamental_chain(link, &forest, *k))
             .collect::<Option<_>>()
             .ok_or(BROKEN)?;
-        let chains = cycle_basis(link, fundamental, &mut budget)?;
+        let chains = cycle_basis(link, fundamental, &mut *budget)?;
         let cliques: Vec<Vec<usize>> = chains
             .iter()
             .map(|c| {
@@ -610,7 +633,7 @@ pub fn fold_linkage_with(
                     .collect()
             })
             .collect();
-        let pattern = Pattern::new(free.len(), &cliques, &mut budget)?;
+        let pattern = Pattern::new(free.len(), &cliques, &mut *budget)?;
         (Loops::Chains(chains), Some(pattern))
     } else {
         (Loops::Tree(loops), None)
@@ -647,25 +670,29 @@ pub fn fold_linkage_with(
         goal,
         weight: size,
         pattern: pattern.as_ref(),
+        polish: false,
     };
-    // The first step's solutions solved on to the rounding of the sheet's
-    // size, not just within the stopping rule: near the flat sheet the
-    // loops' derivative is near singular, and two solves of one branch
-    // that each stop at the rule can differ by more than the tolerances'
-    // angle; solved on, they meet.
+    // The first step's solutions solved on past the stopping rule, as long
+    // as the gap at least halves an iteration (`polish`): near the flat
+    // sheet the loops' derivative is near singular, and two solves of one
+    // branch that each stop at the rule can differ by more than the
+    // tolerances' angle. Solved on, each lies within its own error bound
+    // ([`error_bound`]) of the solution, and two solves of one branch lie
+    // within the sum of theirs.
     let fine = Solver {
-        goal: size * 1e-15,
+        polish: true,
         ..solver
     };
 
-    // A guess solved at `base`: the solution when it closes within the
-    // tolerance with every solved joint its kind's way.
+    // A guess solved at `base`: the solution, whether the iterations ran
+    // out and its largest gap, when it closes within the tolerance with
+    // every solved joint its kind's way.
     let attempt_with = |solver: &Solver,
                         base: &[f64],
                         guess: Vec<f64>,
                         budget: &mut Budget|
-     -> Result<Option<(Vec<f64>, bool)>, FoldError> {
-        let (solved, ran_out) = match solver.levenberg(base, guess, budget) {
+     -> Result<Option<(Vec<f64>, bool, f64)>, FoldError> {
+        let (solved, ran_out, _) = match solver.levenberg(base, guess, budget) {
             Ok(found) => found,
             Err(FoldError::TooMuchWork) => return Err(FoldError::TooMuchWork),
             Err(_) => return Ok(None),
@@ -683,7 +710,8 @@ pub fn fold_linkage_with(
             Err(_) => return Ok(None),
         };
         let kinds = solved.iter().zip(&signs).all(|(v, s)| s * v >= -angular);
-        Ok((largest_gap(&here) <= tol && kinds).then_some((solved, ran_out)))
+        let gap = largest_gap(&here);
+        Ok((gap <= tol && kinds).then_some((solved, ran_out, gap)))
     };
     let attempt = |base: &[f64], guess: Vec<f64>, budget: &mut Budget| {
         attempt_with(&solver, base, guess, budget)
@@ -720,24 +748,44 @@ pub fn fold_linkage_with(
                 // times the step. Two different solutions that both pass
                 // are two branches the kinds do not tell apart: refused.
                 let same = 10.0 * (angular + tol / size);
-                // A candidate solved again at a quarter of the step, from
-                // half its half: `None` when that solve does not close or
-                // does not stay on the line through the flat sheet.
+                // How far a candidate may lie from the solution it stands
+                // for, in radians ([`error_bound`]), measured once.
+                let bound_of = |c: &mut Candidate, budget: &mut Budget| -> Result<f64, FoldError> {
+                    if let Some(b) = c.bound {
+                        return Ok(b);
+                    }
+                    let here = rows(
+                        link,
+                        &forest,
+                        &loops,
+                        &solver.with(&base, &c.solved),
+                        Some(&column),
+                        budget,
+                    )?;
+                    let b = error_bound(&here, free.len(), pattern.as_ref(), budget)?;
+                    c.bound = Some(b);
+                    Ok(b)
+                };
+                // A candidate solved again at a quarter of the step, from a
+                // quarter of its solution (as its half is from half of
+                // it): `None` when that solve does not close or does not
+                // stay on the line through the flat sheet.
                 let quarter_of = |c: &mut Candidate,
                                   budget: &mut Budget|
                  -> Result<Option<Vec<f64>>, FoldError> {
                     if c.quarter.is_none() {
-                        let guess: Vec<f64> = c.half.iter().map(|v| v / 2.0).collect();
+                        let guess: Vec<f64> = c.solved.iter().map(|v| v / 4.0).collect();
                         let solved = first_attempt(&given(target / 4.0), guess.clone(), budget)?
-                            .map(|(q, _)| q)
+                            .map(|(q, ..)| q)
                             .filter(|q| max_diff(q, &guess) <= 0.25 * size_of(&guess) + angular);
                         c.quarter = Some(solved);
                     }
                     Ok(c.quarter.clone().flatten())
                 };
                 // The solved angles in which `a` and `b` are two branches
-                // (`parting_angles`): solved again at half and a quarter of
-                // the step, any difference that shrinks is two branches.
+                // (`parting_angles`): a difference past both error bounds,
+                // solved again at half and a quarter of the step; any
+                // difference that shrinks is two branches.
                 let parting = |a: &mut Candidate,
                                b: &mut Candidate,
                                budget: &mut Budget|
@@ -745,6 +793,7 @@ pub fn fold_linkage_with(
                     let diff = |x: &[f64], y: &[f64]| -> Vec<f64> {
                         x.iter().zip(y).map(|(p, q)| p - q).collect()
                     };
+                    let apart = same.max(bound_of(a, budget)? + bound_of(b, budget)?);
                     let d = diff(&a.solved, &b.solved);
                     let h = diff(&a.half, &b.half);
                     let mut quarter = || -> Result<Option<Vec<f64>>, FoldError> {
@@ -753,12 +802,13 @@ pub fn fold_linkage_with(
                             _ => None,
                         })
                     };
-                    parting_angles(&d, &h, &mut quarter, same)
+                    parting_angles(&d, &h, &mut quarter, apart)
                 };
                 let mut passed: Vec<Candidate> = Vec::new();
                 let mut parted: Option<Vec<usize>> = None;
                 for guess in first_guesses(&signs, step) {
-                    let Some((solved, ran_out)) = first_attempt(&base, guess, &mut budget)? else {
+                    let Some((solved, ran_out, _)) = first_attempt(&base, guess, &mut *budget)?
+                    else {
                         continue;
                     };
                     // The same solution again, within the tolerance's angle:
@@ -766,43 +816,59 @@ pub fn fold_linkage_with(
                     if passed.iter().any(|p| max_diff(&p.solved, &solved) <= same) {
                         continue;
                     }
-                    let half_guess: Vec<f64> = solved.iter().map(|v| v / 2.0).collect();
-                    let Some((half, _)) =
-                        first_attempt(&given(target / 2.0), half_guess.clone(), &mut budget)?
+                    let mut candidate = Candidate {
+                        solved,
+                        half: Vec::new(),
+                        quarter: None,
+                        ran_out,
+                        bound: None,
+                    };
+                    // One solution found twice: near the flat sheet the
+                    // loops' derivative is near singular, so two solves of
+                    // one branch can differ by more than the tolerance's
+                    // angle (a Miura sheet of 3 × 12 cells: 4.5e-8 rad at a
+                    // 1-degree step, stopped at the goal). Each solve lies
+                    // within its error bound of the solution, so two within
+                    // the sum of their bounds may be one solution and are
+                    // taken as one; two further apart are two solutions.
+                    let mut duplicate = false;
+                    for p in &mut passed {
+                        let apart =
+                            bound_of(p, &mut *budget)? + bound_of(&mut candidate, &mut *budget)?;
+                        if max_diff(&p.solved, &candidate.solved) <= apart {
+                            duplicate = true;
+                            break;
+                        }
+                    }
+                    if duplicate {
+                        continue;
+                    }
+                    let half_guess: Vec<f64> = candidate.solved.iter().map(|v| v / 2.0).collect();
+                    let Some((half, ..)) =
+                        first_attempt(&given(target / 2.0), half_guess.clone(), &mut *budget)?
                     else {
                         continue;
                     };
                     if max_diff(&half, &half_guess) > 0.25 * size_of(&half_guess) + angular {
                         continue;
                     }
-                    let mut candidate = Candidate {
-                        solved,
-                        half,
-                        quarter: None,
-                        ran_out,
-                    };
-                    // One branch found twice, or two branches? Near the flat
-                    // sheet the loops' derivative is near singular, so two
-                    // solves of one branch that both close within the
-                    // tolerance can differ by more than the tolerance's
-                    // angle (a Miura sheet of 3 × 12 cells: 4.5e-8 rad at a
-                    // 1-degree step); that difference is the solver's play,
-                    // which does not shrink with the step. Two branches
-                    // through the flat sheet part in proportion to the
-                    // step. So the difference is asked again at half and at
-                    // a quarter of the step, per solved angle.
-                    let mut duplicate = false;
+                    candidate.half = half;
+                    // Two solutions, each on a branch through the flat
+                    // sheet: two branches where their difference shrinks
+                    // with the step, asked at half and at a quarter of it
+                    // per solved angle.
+                    let mut one = false;
                     for p in &mut passed {
-                        let apart = parting(p, &mut candidate, &mut budget)?;
+                        let apart = parting(p, &mut candidate, &mut *budget)?;
                         if apart.is_empty() {
-                            duplicate = true;
+                            one = true;
                             break;
                         }
                         if parted.is_none() {
                             parted = Some(apart);
                         }
                     }
-                    if !duplicate {
+                    if !one {
                         passed.push(candidate);
                     }
                 }
@@ -818,9 +884,9 @@ pub fn fold_linkage_with(
                             &loops,
                             &solver.with(&base, &a.solved),
                             Some(&column),
-                            &mut budget,
+                            &mut *budget,
                         )?;
-                        let loose = undetermined(&at, free.len(), pattern.as_ref(), &mut budget)?;
+                        let loose = undetermined(&at, free.len(), pattern.as_ref(), &mut *budget)?;
                         if !loose.is_empty() {
                             let mut ids: Vec<u64> = loose
                                 .iter()
@@ -848,10 +914,11 @@ pub fn fold_linkage_with(
                 // corrector lands within a quarter of the predicted motion.
                 let now = given(done);
                 let dg: Vec<f64> = base.iter().zip(&now).map(|(a, b)| a - b).collect();
-                let dx = solver.tangent(&solver.with(&now, &x), &dg, &mut budget)?;
+                let dx = solver.tangent(&solver.with(&now, &x), &dg, &mut *budget)?;
                 let moved = size_of(&dx);
                 let predicted: Vec<f64> = x.iter().zip(&dx).map(|(a, d)| a + d).collect();
-                if let Some((solved, ran_out)) = attempt(&base, predicted.clone(), &mut budget)? {
+                if let Some((solved, ran_out, _)) = attempt(&base, predicted.clone(), &mut *budget)?
+                {
                     let off = solved
                         .iter()
                         .zip(&predicted)
@@ -889,7 +956,7 @@ pub fn fold_linkage_with(
             *slot = v;
         }
     }
-    let final_rows = rows(link, &forest, &loops, &rho, Some(&column), &mut budget)?;
+    let final_rows = rows(link, &forest, &loops, &rho, Some(&column), &mut *budget)?;
     let gap = largest_gap(&final_rows);
     if gap > tol {
         if exhausted {
@@ -918,19 +985,19 @@ pub fn fold_linkage_with(
     // stays at half (within a quarter). With none the flat sheet is the
     // only fold near it, and it is the answer.
     if !free.is_empty() {
-        let mut loose = undetermined(&final_rows, free.len(), pattern.as_ref(), &mut budget)?;
+        let mut loose = undetermined(&final_rows, free.len(), pattern.as_ref(), &mut *budget)?;
         if !loose.is_empty() && largest == 0.0 {
             let flat = given(0.0);
             let mut branch = false;
             for guess in first_guesses(&signs, FIRST_STEP) {
-                let Some((solved, _)) = attempt(&flat, guess, &mut budget)? else {
+                let Some((solved, ..)) = attempt(&flat, guess, &mut *budget)? else {
                     continue;
                 };
                 if size_of(&solved) < 0.25 * FIRST_STEP {
                     continue;
                 }
                 let half_guess: Vec<f64> = solved.iter().map(|v| v / 2.0).collect();
-                let Some((half, _)) = attempt(&flat, half_guess.clone(), &mut budget)? else {
+                let Some((half, ..)) = attempt(&flat, half_guess.clone(), &mut *budget)? else {
                     continue;
                 };
                 if max_diff(&half, &half_guess) <= 0.25 * size_of(&half_guess) + angular {
@@ -997,6 +1064,11 @@ struct Solver<'a> {
     goal: f64,
     weight: f64,
     pattern: Option<&'a Pattern>,
+    /// Past the goal, solved on while the gap at least halves an
+    /// iteration: it stops where the rounding of the loops' transforms
+    /// sets the gap, whatever that is for the sheet's size and the loops'
+    /// lengths.
+    polish: bool,
 }
 
 impl Solver<'_> {
@@ -1125,17 +1197,20 @@ impl Solver<'_> {
             .sum()
     }
 
-    /// Levenberg–Marquardt from `x`; the solution and whether the
-    /// iterations ran out first.
+    /// Levenberg–Marquardt from `x`; the solution, whether the iterations
+    /// ran out first, and its largest gap.
     fn levenberg(
         &self,
         base: &[f64],
         mut x: Vec<f64>,
         budget: &mut Budget,
-    ) -> Result<(Vec<f64>, bool), FoldError> {
+    ) -> Result<(Vec<f64>, bool, f64), FoldError> {
         let n = self.free.len();
         let cube = (n as u64).saturating_pow(3);
         let mut lambda = 1e-3;
+        // Polishing: the last point within the goal and its gap.
+        let mut within: Option<(Vec<f64>, f64)> = None;
+        let mut gap = f64::INFINITY;
         for _ in 0..MAX_ITERATIONS {
             let now = rows(
                 self.link,
@@ -1145,8 +1220,23 @@ impl Solver<'_> {
                 Some(self.column),
                 budget,
             )?;
-            if largest_gap(&now) <= self.goal {
-                return Ok((x, false));
+            gap = largest_gap(&now);
+            if gap <= self.goal {
+                if !self.polish || gap == 0.0 {
+                    return Ok((x, false, gap));
+                }
+                // Stagnation: the gap no longer halves, so rounding, not
+                // the solve, sets it now. The better of the two is kept.
+                if let Some((last, last_gap)) = &within
+                    && gap > 0.5 * last_gap
+                {
+                    return Ok(if gap < *last_gap {
+                        (x, false, gap)
+                    } else {
+                        (last.clone(), false, *last_gap)
+                    });
+                }
+                within = Some((x.clone(), gap));
             }
             let c0 = cost(&now) + self.penalty(&x);
             let (mut gram, mut grad) = match self.pattern {
@@ -1206,10 +1296,25 @@ impl Solver<'_> {
                 lambda *= 4.0;
             }
             if !moved {
-                return Ok((x, false));
+                return Ok((x, false, gap));
             }
         }
-        Ok((x, true))
+        // The last step's gap, not yet measured.
+        let now = rows(
+            self.link,
+            self.forest,
+            self.loops,
+            &self.with(base, &x),
+            None,
+            budget,
+        )?;
+        let last = largest_gap(&now);
+        if let Some((best, best_gap)) = within
+            && !(last < best_gap)
+        {
+            return Ok((best, false, best_gap));
+        }
+        Ok((x, gap > self.goal && last > self.goal, last))
     }
 }
 
@@ -1406,11 +1511,15 @@ fn name_free(
         }
     }
     let wanted = (loose.len() + 1).min(MAX_NULL_VECTORS);
+    // Per vector at most 80 iterations, each a solve with the factor and
+    // the orthogonalisation against the vectors found (2 n each).
     budget.spend(
         p.flops.saturating_add(
-            (wanted as u64)
-                .saturating_mul(80)
-                .saturating_mul(p.entries() as u64 + n as u64),
+            (wanted as u64).saturating_mul(80).saturating_mul(
+                (p.entries() as u64)
+                    .saturating_mul(2)
+                    .saturating_add((n as u64).saturating_mul(2 * wanted as u64 + 1)),
+            ),
         ),
     )?;
     if p.factor(&mut b, None).is_none() {
@@ -1479,6 +1588,114 @@ fn name_free(
     }
     *loose = names.into_iter().collect();
     Ok(())
+}
+
+/// How far, in radians, a solution of the loops may lie from the solution
+/// it stands for: twice the length of the Gauss–Newton step it would still
+/// take, bounded by `2 ‖r‖ / σ_min(J)`, with `r` the gaps of `rows` and
+/// `σ_min(J) ≥ √λ_min · min_i ‖J e_i‖` (`λ_min` the smallest eigenvalue of
+/// the normal equations scaled to unit diagonal, as the rank test scales
+/// them). The step is the distance to the solution to first order; twice
+/// it is Kantorovich's bound where the second order is at most half of
+/// the first, which holds at a solve stopped at rounding. `λ_min` is
+/// taken no smaller than the rank pivot (below it the rank test calls the
+/// unknowns free). Inverse iteration estimates `λ_min` from above, and the
+/// bound is 0 where it cannot be measured: every doubt makes the bound
+/// smaller, so a difference it would have explained is two solutions
+/// (refused, never merged).
+fn error_bound(
+    rows: &[Row],
+    n: usize,
+    pattern: Option<&Pattern>,
+    budget: &mut Budget,
+) -> Result<f64, FoldError> {
+    if n == 0 {
+        return Ok(0.0);
+    }
+    let owned;
+    let p = match pattern {
+        Some(p) => p,
+        None => {
+            // Dense: one clique of every unknown, the whole lower triangle.
+            let all: Vec<usize> = (0..n).collect();
+            owned = Pattern::new(n, &[all], budget)?;
+            &owned
+        }
+    };
+    budget.spend(p.entries() as u64)?;
+    let (mut vals, _) = p.normal(rows, n);
+    let diag: Vec<f64> = (0..n)
+        .map(|i| p.diagonal_mut(&mut vals, i).map_or(0.0, |d| *d))
+        .collect();
+    let column = diag.iter().copied().fold(f64::INFINITY, f64::min);
+    if !(column.is_finite() && column > 0.0) {
+        return Ok(0.0);
+    }
+    p.scale(&mut vals, &diag);
+    let Some(lambda) = smallest_eigenvalue(p, &vals, budget)? else {
+        return Ok(0.0);
+    };
+    let residual = cost(rows).sqrt();
+    let bound = 2.0 * residual / (lambda.max(RANK_PIVOT) * column).sqrt();
+    Ok(if bound.is_finite() { bound } else { 0.0 })
+}
+
+/// The smallest eigenvalue of the unit-scaled normal equations `scaled`
+/// (skyline of `p`), by inverse iteration on their factor shifted by the
+/// rank pivot; `None` when the factor fails.
+fn smallest_eigenvalue(
+    p: &Pattern,
+    scaled: &[f64],
+    budget: &mut Budget,
+) -> Result<Option<f64>, FoldError> {
+    let n = p.unknowns();
+    let shift = RANK_PIVOT;
+    budget.spend(
+        p.flops.saturating_add(
+            80u64.saturating_mul(
+                (p.entries() as u64)
+                    .saturating_mul(2)
+                    .saturating_add(n as u64),
+            ),
+        ),
+    )?;
+    let mut b = scaled.to_vec();
+    for i in 0..n {
+        if let Some(d) = p.diagonal_mut(&mut b, i) {
+            *d += shift;
+        }
+    }
+    if p.factor(&mut b, None).is_none() {
+        return Ok(None);
+    }
+    let dot = |x: &[f64], y: &[f64]| x.iter().zip(y).map(|(a, b)| a * b).sum::<f64>();
+    // A start of every unknown, the same in every run.
+    let mut x: Vec<f64> = (0..n)
+        .map(|i| 0.5 + ((i * 7919) % 1000) as f64 / 1000.0)
+        .collect();
+    let mut lambda = None;
+    for _ in 0..80 {
+        let norm = dot(&x, &x).sqrt();
+        if !(norm.is_finite() && norm > 0.0) {
+            break;
+        }
+        x.iter_mut().for_each(|v| *v /= norm);
+        let Some(y) = p.solve(&b, &x) else {
+            break;
+        };
+        let grow = dot(&y, &y).sqrt();
+        if !(grow.is_finite() && grow > 0.0) {
+            break;
+        }
+        let next = (1.0 / grow - shift).max(0.0);
+        let settled = lambda.is_some_and(|l: f64| (next - l).abs() <= 1e-3 * shift.max(next));
+        lambda = Some(next);
+        x = y;
+        if settled {
+            break;
+        }
+    }
+    Ok(lambda)
 }
 
 /// The solved angles in which two solutions of the first step are two

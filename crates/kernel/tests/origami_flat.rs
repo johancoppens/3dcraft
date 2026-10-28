@@ -709,3 +709,63 @@ fn a_stack_folded_in_half_is_folded_on_by_a_crossing_crease() {
         );
     }
 }
+
+/// A stack whose 180-degree creases do not fold flat at a vertex where
+/// only they meet (two lines crossing at 80 degrees: Kawasaki fails) is
+/// refused with that reason, not as needing the creases folded by less
+/// (none meet there); where a crease folded by less meets the failing
+/// vertex, the reason says so.
+#[test]
+fn a_stack_not_flat_names_whether_creases_folded_by_less_meet_there() {
+    use craft3d_kernel::origami::fold_stacked;
+    for scale in SCALES {
+        let s = scale;
+        let t = 1e-9 * scale;
+        let boundary = polygon(&[[-s, -s], [s, -s], [s, s], [-s, s]]);
+        let (c, sn) = (80f64.to_radians().cos(), 80f64.to_radians().sin());
+        let k = s / sn;
+        let creases = [
+            crease(10, [-s, 0.0], [s, 0.0], CreaseKind::Valley),
+            crease(11, [-k * c, -s], [k * c, s], CreaseKind::Mountain),
+            crease(12, [0.8 * s, -s], [0.8 * s, s], CreaseKind::Valley),
+        ];
+        let arr = arrange(&boundary, &creases, t).unwrap();
+        let angles: Vec<Angle> = arr
+            .hinges
+            .iter()
+            .map(|h| match arr.creases[h.crease].id {
+                12 => Angle::Given(PI / 2.0),
+                _ => Angle::Given(PI * arr.creases[h.crease].kind.sign()),
+            })
+            .collect();
+        let fixed = arr.facet_at([-0.5 * s, -0.5 * s]).unwrap();
+        match fold_stacked(&arr, &angles, fixed, t, ANGULAR) {
+            Err(FoldError::StackNotFlat { why, .. }) => {
+                assert!(why.contains("only they meet"), "{why}");
+            }
+            other => panic!("{other:?}"),
+        }
+        // The crease folded by less through the same vertex instead.
+        let creases = [
+            crease(10, [-s, 0.0], [s, 0.0], CreaseKind::Valley),
+            crease(11, [-k * c, -s], [k * c, s], CreaseKind::Mountain),
+            crease(12, [0.0, -s], [0.0, s], CreaseKind::Valley),
+        ];
+        let arr = arrange(&boundary, &creases, t).unwrap();
+        let angles: Vec<Angle> = arr
+            .hinges
+            .iter()
+            .map(|h| match arr.creases[h.crease].id {
+                12 => Angle::Given(PI / 2.0),
+                _ => Angle::Given(PI * arr.creases[h.crease].kind.sign()),
+            })
+            .collect();
+        let fixed = arr.facet_at([-0.5 * s, -0.6 * s]).unwrap();
+        match fold_stacked(&arr, &angles, fixed, t, ANGULAR) {
+            Err(FoldError::StackNotFlat { why, .. }) => {
+                assert!(why.contains("folded by less meet them too"), "{why}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+}
