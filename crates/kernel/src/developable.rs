@@ -1955,7 +1955,7 @@ fn tube(a: &Rail, b: &Rail, tolerance: &Tolerance) -> Result<Connected, KernelEr
             signed_area(&samples_a, &frame),
             signed_area(&samples_b, &frame),
         );
-        if !(area_a * area_b > 0.0) {
+        if (area_a * area_b).partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
             return Err(refused(
                 "the two closed curves lie in one plane and run opposite ways round: draw them the same way round for the flat ring between them".to_string(),
             ));
