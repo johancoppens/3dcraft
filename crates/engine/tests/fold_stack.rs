@@ -89,13 +89,16 @@ fn a_square_folded_in_half_is_folded_again_across() {
         let mut r = session_in(&dir);
         run(&mut r, "file.open", json!({"path": "stack.3dcraft"}));
         assert_eq!(before["bbox"], body(&mut r, "Stack")["bbox"]);
-        // The crossing crease on one half only: the stack cannot fold
-        // there.
+        // The crossing crease a valley on both halves: the half that lies
+        // face over would have to turn against its kind.
         let why = failed(
             &mut s,
             "fold.edit",
-            json!({"fold": "Stack", "remove": [right]}),
+            json!({"fold": "Stack", "set": [{"line": right, "kind": "valley"}]}),
         );
-        assert!(why.contains("not rigidly foldable"), "{why}");
+        assert!(
+            why.contains("could not be followed") || why.contains("other way"),
+            "{why}"
+        );
     }
 }

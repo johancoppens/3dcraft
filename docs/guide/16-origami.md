@@ -248,8 +248,7 @@ solved:
   ["feature.fold", {"sketch": "Paper", "name": "Twice", "fixed": [-25, -25], "creases": [
     {"line": "e11", "kind": "valley", "angle": "180 deg"},
     {"line": "e14", "kind": "valley", "angle": "90 deg"},
-    {"line": "e17", "kind": "mountain"}]}],
-  ["fold.inspect", {"fold": "Twice"}]
+    {"line": "e17", "kind": "mountain"}]}]
 ]
 ```
 
