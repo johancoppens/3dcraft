@@ -606,9 +606,14 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                         },
                         offset: expr_to_manifest(offset),
                     },
-                    doc::SketchPlane::Face { face, offset } => manifest::SketchPlane::Face {
+                    doc::SketchPlane::Face {
+                        face,
+                        offset,
+                        x_axis,
+                    } => manifest::SketchPlane::Face {
                         face: name_to_manifest(face),
                         offset: expr_to_manifest(offset),
+                        x_axis: x_axis.as_ref().map(|axis| axis.clone().map(|e| e.0)),
                     },
                     doc::SketchPlane::Datum {
                         plane: doc::FeatureId(plane),
@@ -2173,9 +2178,14 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
                         },
                         offset: doc::Expr(offset),
                     },
-                    manifest::SketchPlane::Face { face, offset } => doc::SketchPlane::Face {
+                    manifest::SketchPlane::Face {
+                        face,
+                        offset,
+                        x_axis,
+                    } => doc::SketchPlane::Face {
                         face: name_to_doc(face),
                         offset: doc::Expr(offset),
+                        x_axis: x_axis.map(|axis| axis.map(doc::Expr)),
                     },
                     manifest::SketchPlane::Datum { plane, offset } => doc::SketchPlane::Datum {
                         plane: doc::FeatureId(plane),

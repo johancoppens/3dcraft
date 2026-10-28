@@ -1301,6 +1301,47 @@ fn made_face(
     .ok_or_else(|| format!("plane: the face {link} has a degenerate plane"))
 }
 
+/// The axes of a sketch on a face whose x axis is turned to the world
+/// direction `axis` (`SketchPlane::Face::x_axis`): its projection onto the
+/// plane of `normal`, and y = normal × x, so the frame keeps its normal and
+/// stays right-handed. A direction along the normal (within a part in
+/// 10^9 of its length) has no projection and is refused.
+fn turned_axes(
+    variables: &Evaluation,
+    axis: &[craft3d_doc::Expr; 3],
+    normal: Vec3,
+) -> Result<(Vec3, Vec3), String> {
+    let mut d = [0.0; 3];
+    for ((slot, expr), c) in d.iter_mut().zip(axis).zip(["x", "y", "z"]) {
+        let q = variables
+            .evaluate(expr.source())
+            .map_err(|e| format!("plane.xAxis.{c}: `{}`: {e}", expr.source()))?;
+        if !q.dimension.is_dimensionless() || !q.value.is_finite() {
+            return Err(format!(
+                "plane.xAxis.{c}: `{}` is not a plain number (a direction has no unit)",
+                expr.source()
+            ));
+        }
+        *slot = q.value;
+    }
+    let [x, y, z] = d;
+    let wanted = Vec3::new(x, y, z);
+    let along = wanted - normal * wanted.dot(normal);
+    if !(along.length() > 1e-9 * wanted.length()) {
+        return Err(format!(
+            "plane.xAxis: [{x}, {y}, {z}] is along the face's normal (or zero), so it gives the sketch no x axis on the face"
+        ));
+    }
+    let x_axis = along
+        .normalized()
+        .ok_or("plane.xAxis: the direction cannot be normalised")?;
+    let y_axis = normal
+        .cross(x_axis)
+        .normalized()
+        .ok_or("plane.xAxis: the face's normal and the direction give no y axis")?;
+    Ok((x_axis, y_axis))
+}
+
 /// Where the sketch lies: its plane with the offset applied.
 pub(crate) fn place(
     doc: &Document,
@@ -1322,13 +1363,18 @@ pub(crate) fn place(
                 normal,
             })
         }
-        SketchPlane::Face { face, .. } => {
+        SketchPlane::Face { face, x_axis, .. } => {
             let frame = resolve_face(doc, earlier, face)?;
+            let normal = frame.z();
+            let (x_axis, y_axis) = match x_axis {
+                None => (frame.x(), frame.y()),
+                Some(axis) => turned_axes(variables, axis, normal)?,
+            };
             Ok(Placement {
-                origin: frame.origin() + frame.z() * offset,
-                x_axis: frame.x(),
-                y_axis: frame.y(),
-                normal: frame.z(),
+                origin: frame.origin() + normal * offset,
+                x_axis,
+                y_axis,
+                normal,
             })
         }
         SketchPlane::Datum { plane, .. } => {

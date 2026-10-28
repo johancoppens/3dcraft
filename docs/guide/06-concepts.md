@@ -56,7 +56,11 @@ Every length, angle and count may be an **expression** in the document's variabl
 
 - Units: `um`, `mm`, `cm`, `m`, `in`, `ft` for lengths, `deg` and `rad` for angles, in lower case; a
   number without a unit is in the document's length unit (`file.new {"units": "mm"}`) where a length is
-  expected. Units mix freely (`1 in + 3 mm` is 28.4 mm). An expression that cannot be worked out
+  expected. Units mix freely (`1 in + 3 mm` is 28.4 mm). `document.setUnit {"units": "in", "keep":
+  "sizes"}` changes the document's unit later and keeps the model as large as it was (a plain `10` read as
+  a length becomes `10 mm`); `"keep": "numbers"` keeps every number and changes only the unit, so what has
+  no unit grows or shrinks with it. Keeping the sizes is proven on the result (every body as large as it
+  was) or refused, as it is for documents with outputs or formula curves. An expression that cannot be worked out
   (`width + 3 deg`, an unknown name) is kept, but the variable *fails*: its result and `document.check`
   carry the error, and what uses it fails too until it is fixed. A variable cannot be defined from itself:
   "make the wall 1 mm thicker" is `{"name": "wall", "expr": "3 mm"}`, not `wall + 1 mm` (refused). Only
@@ -98,7 +102,9 @@ plane's own `[x, y]`: on `xy` they are X and Y, on `yz` Y and Z, on `zx` Z and X
 the third axis (+Z, +X, +Y). On a face the axes follow the face, not the world: on the bottom of a block
 the sketch's x is world Y, its y world X, and its normal points down, out of the body. `sketch.create`
 answers with the `frame` (origin, x and y in world coordinates) and the `normal`; read them before
-placing anything on a face. To cut through a part from below, a sketch on the `xy` plane is often
+placing anything on a face. `"xAxis": [1, 0, 0]` turns the sketch's x axis to a world direction (projected
+onto the face, about its origin; y is then the normal × x), so on the bottom of a block x is world X and y
+world −Y. To cut through a part from below, a sketch on the `xy` plane is often
 simpler.
 
 Entities are added with `sketch.point`, `sketch.line`, `sketch.polyline`, `sketch.rect`, `sketch.circle`,

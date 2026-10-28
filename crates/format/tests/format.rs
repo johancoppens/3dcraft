@@ -1361,6 +1361,7 @@ fn a_sketch_on_a_face_is_written_like_this_and_round_trips() {
         FeatureKind::Sketch(Sketch::new(SketchPlane::Face {
             face: face.clone(),
             offset: Expr::new("half / 4"),
+            x_axis: None,
         })),
     )
     .unwrap();
@@ -1410,6 +1411,7 @@ fn a_sketch_on_a_face_is_written_like_this_and_round_trips() {
                 }
             },
             offset: Expr::new("0"),
+            x_axis: None,
         };
         let json = to_manifest_json(&doc).unwrap();
         assert!(
@@ -1497,6 +1499,7 @@ fn moved_mirrored_and_repeated_bodies_are_written_like_this_and_round_trip() {
         FeatureKind::Sketch(Sketch::new(SketchPlane::Face {
             face,
             offset: Expr::new("0"),
+            x_axis: None,
         })),
     )
     .unwrap();
@@ -1625,7 +1628,7 @@ fn a_version_4_file_opens_unchanged_and_is_saved_as_the_current_version() {
     let FeatureKind::Sketch(seat) = &doc.features[2].kind else {
         panic!()
     };
-    let SketchPlane::Face { face, offset } = &seat.plane else {
+    let SketchPlane::Face { face, offset, .. } = &seat.plane else {
         panic!()
     };
     assert_eq!(face.to_string(), "F2:endCap(e2)");
@@ -4101,6 +4104,7 @@ fn nested_sketch_patterns_are_written_like_this_and_round_trip() {
     let mut on = Sketch::new(SketchPlane::Face {
         face: "F9:side(e3[2][1])".parse().unwrap(),
         offset: Expr::new("0"),
+        x_axis: None,
     });
     on.add_point(0.0, 0.0).unwrap();
     doc.add_feature(Some("Mark"), FeatureKind::Sketch(on))
@@ -4181,6 +4185,7 @@ fn a_version_20_file_opens_unchanged_and_is_saved_as_the_current_version() {
     let mut on = Sketch::new(SketchPlane::Face {
         face: "F3:side(e3[2])".parse().unwrap(),
         offset: Expr::new("0"),
+        x_axis: None,
     });
     on.add_point(0.0, 0.0).unwrap();
     doc.add_feature(Some("Mark"), FeatureKind::Sketch(on))

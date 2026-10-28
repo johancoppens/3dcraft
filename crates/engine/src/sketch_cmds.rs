@@ -27,8 +27,8 @@ use serde_json::{Map, Value, json};
 const MAX_POLYLINE_POINTS: usize = 1_000;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
-    spec!("sketch.create", "New Sketch", r#"{"plane": "xy|yz|zx" or datum plane = "xy", "face": face name, "offset": expr = 0, "name": string = automatic}"#,
-        "Adds an empty sketch on a world plane, on a datum plane (plane: its name or id; the sketch has the datum's origin and axes and follows it), or on a flat face of a body given by its name from document.inspect (faceNames, such as \"F2:endCap(e7,e8,e9)\"; \"F2:endCap()\" is the plane where F2 ends, whatever its outline; an alias from faceAliases names the same face), moved by offset along the normal. A primitive's faces are numbered (\"F3:face(1)\"): for a block 0 bottom, 1 top, 2 front, 3 back, 4 left, 5 right in its own axes; for a cylinder 0 the wall, 1 the bottom, 2 the top. On xy the sketch axes are world X and Y, on yz they are Y and Z, on zx they are Z and X. On the end cap of an extrusion they are those of the extruded sketch; on a side face x runs along its line and y along the extrusion, from the extruded sketch's origin dropped onto the face.", doc: true, names: ["face", "plane"], sketch_create),
+    spec!("sketch.create", "New Sketch", r#"{"plane": "xy|yz|zx" or datum plane = "xy", "face": face name, "offset": expr = 0, "xAxis": [number, number, number] = the face's own, "name": string = automatic}"#,
+        "Adds an empty sketch on a world plane, on a datum plane (plane: its name or id; the sketch has the datum's origin and axes and follows it), or on a flat face of a body given by its name from document.inspect (faceNames, such as \"F2:endCap(e7,e8,e9)\"; \"F2:endCap()\" is the plane where F2 ends, whatever its outline; an alias from faceAliases names the same face), moved by offset along the normal. A primitive's faces are numbered (\"F3:face(1)\"): for a block 0 bottom, 1 top, 2 front, 3 back, 4 left, 5 right in its own axes; for a cylinder 0 the wall, 1 the bottom, 2 the top. On xy the sketch axes are world X and Y, on yz they are Y and Z, on zx they are Z and X. On the end cap of an extrusion they are those of the extruded sketch; on a side face x runs along its line and y along the extrusion, from the extruded sketch's origin dropped onto the face. xAxis (a face only) turns the sketch's x axis to a world direction projected onto the face (three plain numbers, any length; [1, 0, 0] puts x along world X on the bottom of a block, whose own x is along world Y), about the face's origin, with y the normal × x; the normal stays the face's. A direction along the normal fails the sketch. Without it the axes are the face's own.", doc: true, names: ["face", "plane"], sketch_create),
     spec!("sketch.point", "Sketch Point", r#"{"sketch": id or name, "at": [x, y]}"#,
         "Adds a point to a sketch. Coordinates [x, y] that are both numbers, in document units, are where the point is drawn; the solver may move it. When either is an expression (a string such as \"-width / 2\" or \"10 mm\"; signed, from the sketch origin along the sketch axes) the point is held: drawn at the values and kept there by an x and a y constraint (a number beside an expression is held at that number), so it follows the variables; to hold one coordinate only, use sketch.constrain with type x or y. Returns its entity id, held (true for a held point, false for a free one the solver may move: [0, 0] is free, [0, \"0 mm\"] is held) and the constraints that hold it. Everywhere a sketch command takes coordinates [x, y] for a new point (line, polyline, rect, circle, arc, path, spline) they work the same way.", doc: true, sketch_point),
     spec!("sketch.line", "Sketch Line", r#"{"sketch": id or name, "from": point id or [x, y], "to": point id or [x, y], "construction": boolean = false}"#,
@@ -459,6 +459,34 @@ fn plane_param(
 }
 
 /// The name of a face, as `document.inspect` lists it.
+/// `xAxis`: a world direction, three plain numbers or expressions without
+/// a unit; checked to evaluate when the sketch is placed.
+fn x_axis_param(p: &Params, command: &str) -> Result<Option<[Expr; 3]>, CommandError> {
+    let Some(value) = p.get("xAxis") else {
+        return Ok(None);
+    };
+    let items = value.as_array().filter(|a| a.len() == 3).ok_or_else(|| {
+        CommandError::new(format!(
+            "{command}: `xAxis` is a direction: three numbers [x, y, z] in world coordinates"
+        ))
+    })?;
+    let mut axis: [Expr; 3] = [Expr::new("0"), Expr::new("0"), Expr::new("0")];
+    for (slot, item) in axis.iter_mut().zip(items) {
+        *slot = match item {
+            Value::Number(n) if n.as_f64().is_some_and(f64::is_finite) => Expr::new(n.to_string()),
+            Value::String(text) if !text.trim().is_empty() && text.len() <= 256 => {
+                Expr::new(text.clone())
+            }
+            _ => {
+                return fail(format!(
+                    "{command}: `xAxis` is a direction: three numbers [x, y, z] in world coordinates"
+                ));
+            }
+        };
+    }
+    Ok(Some(axis))
+}
+
 fn face_param(p: &Params, command: &str) -> Result<Option<PersistentName>, CommandError> {
     match p.str("face")? {
         None => Ok(None),
@@ -576,8 +604,18 @@ pub(crate) fn change<T>(
 
 fn sketch_create(session: &mut Session, params: &Value) -> Run {
     const COMMAND: &str = "sketch.create";
-    let p = Params::new(COMMAND, params, &["plane", "face", "offset", "name"])?;
+    let p = Params::new(
+        COMMAND,
+        params,
+        &["plane", "face", "offset", "xAxis", "name"],
+    )?;
     let offset = Expr::new(p.expr("offset")?.unwrap_or_else(|| "0".to_string()));
+    let x_axis = x_axis_param(&p, COMMAND)?;
+    if x_axis.is_some() && !p.has("face") {
+        return fail(format!(
+            "{COMMAND}: `xAxis` turns the axes of a sketch on a face; a world or datum plane has axes of its own"
+        ));
+    }
     let doc = session.document()?.history.current();
     let plane = match (plane_param(doc, &p, COMMAND)?, face_param(&p, COMMAND)?) {
         (Some(_), Some(_)) => {
@@ -588,7 +626,11 @@ fn sketch_create(session: &mut Session, params: &Value) -> Run {
         (plane, None) => plane
             .unwrap_or(PlaneArg::World(WorldPlane::default()))
             .with(offset),
-        (None, Some(face)) => SketchPlane::Face { face, offset },
+        (None, Some(face)) => SketchPlane::Face {
+            face,
+            offset,
+            x_axis,
+        },
     };
     let name = p.str("name")?;
     let id = edit(session, COMMAND, "Add sketch", |doc| {
@@ -1102,7 +1144,16 @@ fn sketch_edit(session: &mut Session, params: &Value) -> Run {
         if let Some(plane) = plane {
             s.plane = plane.with(kept);
         } else if let Some(face) = face {
-            s.plane = SketchPlane::Face { face, offset: kept };
+            // A face given again keeps the x axis it was turned to.
+            let x_axis = match &s.plane {
+                SketchPlane::Face { x_axis, .. } => x_axis.clone(),
+                _ => None,
+            };
+            s.plane = SketchPlane::Face {
+                face,
+                offset: kept,
+                x_axis,
+            };
         }
         if let Some(offset) = offset {
             *s.plane.offset_mut() = offset;

@@ -1132,8 +1132,14 @@ pub enum SketchPlane {
     /// along its normal.
     World { plane: WorldPlane, offset: String },
     /// A flat face of a body made earlier in the history, moved by
-    /// `offset` along the face's outward normal.
-    Face { face: Name, offset: String },
+    /// `offset` along the face's outward normal; `x_axis`, a world
+    /// direction its x axis is turned to (absent: the face's own axes).
+    Face {
+        face: Name,
+        offset: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        x_axis: Option<[String; 3]>,
+    },
     /// A datum plane, by the id of its feature, moved by `offset` along
     /// its normal.
     Datum { plane: u64, offset: String },

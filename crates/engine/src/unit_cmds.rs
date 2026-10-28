@@ -124,7 +124,7 @@ fn is_length(name: &str) -> Option<bool> {
     ];
     const OTHERS: &[&str] = &[
         "angle", "axis", "normal", "count", "count2", "turns", "kFactor", "kind", "shape", "when",
-        "from", "to",
+        "xAxis", "from", "to",
     ];
     // A fold's angle at a crease (`crease.e7[2]`).
     if name.starts_with("crease.") {

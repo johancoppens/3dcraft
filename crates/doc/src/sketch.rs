@@ -419,6 +419,12 @@ pub enum SketchPlane {
     Face {
         face: crate::PersistentName,
         offset: Expr,
+        /// A direction in world coordinates (three plain numbers, any
+        /// length) the sketch's x axis is turned to: its projection onto
+        /// the face's plane, about the face's origin, y then the normal ×
+        /// x. `None`: the face's own axes, as every file before it has.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        x_axis: Option<[Expr; 3]>,
     },
     /// A datum plane made earlier in the history, moved by `offset` along
     /// its normal. The sketch's origin and axes are the datum's.
@@ -1757,6 +1763,17 @@ impl Sketch {
     /// Every expression of the sketch with a name that says where it is.
     pub fn exprs(&self) -> Vec<(String, &Expr)> {
         let mut out = vec![("plane.offset".to_string(), self.plane.offset())];
+        if let SketchPlane::Face {
+            x_axis: Some(axis), ..
+        } = &self.plane
+        {
+            out.extend(
+                ["x", "y", "z"]
+                    .into_iter()
+                    .zip(axis)
+                    .map(|(c, e)| (format!("plane.xAxis.{c}"), e)),
+            );
+        }
         out.extend(
             self.constraints
                 .iter()
@@ -1795,7 +1812,18 @@ impl Sketch {
     }
 
     pub(crate) fn exprs_mut(&mut self) -> Vec<&mut Expr> {
-        let mut out = vec![self.plane.offset_mut()];
+        let mut out = Vec::new();
+        match &mut self.plane {
+            SketchPlane::Face {
+                offset,
+                x_axis: Some(axis),
+                ..
+            } => {
+                out.push(offset);
+                out.extend(axis.iter_mut());
+            }
+            plane => out.push(plane.offset_mut()),
+        }
         out.extend(
             self.constraints
                 .iter_mut()
