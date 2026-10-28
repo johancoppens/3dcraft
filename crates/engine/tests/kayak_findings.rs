@@ -204,6 +204,44 @@ fn the_level_for_the_hull_displacement_is_found() {
     );
 }
 
+/// `measure.floating` on the hull (R1, 2026-10-28): with the centre of
+/// gravity on the vertical through the centre of buoyancy `levelFor`
+/// gives upright, started heeled by 4° and trimmed by 1°, it comes back
+/// to upright at the very level `levelFor` found.
+#[test]
+fn the_hull_floats_upright_at_the_level_for_its_displacement() {
+    let (mut s, failed) = steps("sea_kayak_9.steps.json");
+    assert!(failed.is_empty(), "{failed:#?}");
+    let level = s
+        .execute(
+            "measure.levelFor",
+            &json!({"of": "Hull", "volume": "98865474"}),
+        )
+        .unwrap();
+    let b = level["centroid"].as_array().unwrap();
+    let (bx, by, bz) = (
+        b[0].as_f64().unwrap(),
+        b[1].as_f64().unwrap(),
+        b[2].as_f64().unwrap(),
+    );
+    let found = s
+        .execute(
+            "measure.floating",
+            &json!({"of": "Hull", "volume": "98865474", "centerOfGravity": [bx, by, bz], "heel": 4, "trim": 1}),
+        )
+        .unwrap();
+    let e = &found["equilibria"][0];
+    let number = |v: &Value| v.as_f64().unwrap();
+    assert!(number(&e["tilt"]).abs() < 1e-5, "{found}");
+    let offset = number(&level["offset"]);
+    assert!(
+        (number(&e["offset"]) - offset).abs() < 1e-5,
+        "{offset} {found}"
+    );
+    assert_eq!(found["floats"], 0, "{found}");
+    assert!(e["settled"].as_bool().unwrap(), "{found}");
+}
+
 #[test]
 fn the_hull_is_cut_round_30_mm() {
     // The boolean refused the hull's cut at 30.28 mm as an invalid body

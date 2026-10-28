@@ -292,3 +292,110 @@ fn what_cannot_be_measured_is_refused() {
     );
     assert_eq!(bad["status"], "error", "{bad}");
 }
+
+/// `measure.floating` (docs/design/sections-and-levels.md › *A level with
+/// a tilt*) on a block 1000 × 200 × 200 mm of 20 kg in fresh water: a
+/// draft of 100 mm, BM = B² / (12 T) = 33.3 mm. With the centre of
+/// gravity at the centre of buoyancy it floats upright, GM = BM; at 90 mm
+/// it is unstable upright and lolls to tan² φ = −2 GM / BM each way.
+#[test]
+fn a_block_floats_upright_or_lolls_at_its_wall_sided_angle() {
+    let mut s = block(1000.0, 200.0, 200.0);
+    let upright = run(
+        &mut s,
+        "measure.floating",
+        json!({"mass": 20, "density": 1000, "centerOfGravity": [0, 0, 50], "heel": "10 deg", "trim": 2}),
+    );
+    assert_eq!(upright["floats"], 0, "{upright}");
+    assert_eq!(upright["neutral"], false);
+    let e = &upright["equilibria"][0];
+    close(&e["offset"], 100.0, "draft");
+    close(&e["heel"], 0.0, "heel");
+    close(&e["trim"], 0.0, "trim");
+    close(&e["volume"], 2.0e7, "volume");
+    assert_eq!(e["stable"], true);
+    let gms: Vec<f64> = e["principal"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["gm"].as_f64().unwrap())
+        .collect();
+    close(&json!(gms[0]), 40000.0 / 1200.0, "GM across = BM");
+    close(&json!(gms[1]), 1.0e6 / 1200.0, "GM along");
+    assert_eq!(upright["lengthUnit"], "mm");
+
+    let lolled = run(
+        &mut s,
+        "measure.floating",
+        json!({"volume": "2e7", "centerOfGravity": ["0 mm", "0 mm", "90 mm"]}),
+    );
+    let all = lolled["equilibria"].as_array().unwrap();
+    assert_eq!(all.len(), 3, "{lolled}");
+    assert_eq!(all[0]["stable"], false);
+    assert_eq!(lolled["floats"], 1);
+    let gm: f64 = 50.0 + 40000.0 / 1200.0 - 90.0;
+    let phi = (-2.0 * gm / (40000.0 / 1200.0)).sqrt().atan().to_degrees();
+    let mut heels: Vec<f64> = all[1..]
+        .iter()
+        .map(|e| e["heel"].as_f64().unwrap())
+        .collect();
+    heels.sort_by(f64::total_cmp);
+    close(&json!(heels[0]), -phi, "loll to one side");
+    close(&json!(heels[1]), phi, "and to the other");
+}
+
+#[test]
+fn what_cannot_float_is_refused() {
+    let mut s = block(1000.0, 200.0, 200.0);
+    let cog = json!([0, 0, 50]);
+    for (params, words) in [
+        (json!({"volume": "2e7"}), "centerOfGravity"),
+        (json!({"centerOfGravity": cog}), "`volume` is required"),
+        (
+            json!({"volume": "2e7", "mass": 20, "density": 1000, "centerOfGravity": cog}),
+            "not both",
+        ),
+        (json!({"mass": 20, "centerOfGravity": cog}), "`density`"),
+        (
+            json!({"mass": 20, "density": -1, "centerOfGravity": cog}),
+            "positive",
+        ),
+        (
+            json!({"volume": "5e7", "centerOfGravity": cog}),
+            "outside (0,",
+        ),
+        (
+            json!({"volume": "2e7", "centerOfGravity": [0, 0]}),
+            "[x, y, z]",
+        ),
+        (
+            json!({"volume": "2e7", "centerOfGravity": cog, "heel": "3 mm"}),
+            "angle",
+        ),
+        (
+            json!({"volume": "2e7", "centerOfGravity": cog, "heel": true}),
+            "angle",
+        ),
+        (
+            json!({"volume": "2e7", "centerOfGravity": cog, "offset": 3}),
+            "offset",
+        ),
+        (
+            json!({"volume": "2e7", "centerOfGravity": cog, "of": "Nothing"}),
+            "Nothing",
+        ),
+    ] {
+        let message = refused(&mut s, "measure.floating", params.clone());
+        assert!(message.contains(words), "{params}: {message}");
+        assert!(!message.contains("internal error"), "{params}: {message}");
+    }
+    let mut empty = Session::new(Workspace::none());
+    assert!(
+        empty
+            .execute(
+                "measure.floating",
+                &json!({"volume": 1, "centerOfGravity": [0, 0, 0]})
+            )
+            .is_err()
+    );
+}

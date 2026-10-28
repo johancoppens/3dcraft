@@ -265,7 +265,7 @@ impl<'a> Ctx<'a> {
             .ok_or_else(|| format!("`{key}` must be a finite number or an expression"))
     }
 
-    fn point(&self, value: Option<&Value>, key: &str) -> Result<Vec3, String> {
+    pub(crate) fn point(&self, value: Option<&Value>, key: &str) -> Result<Vec3, String> {
         let Some(Value::Array(items)) = value else {
             return Err(format!("`{key}` must be a point [x, y, z]"));
         };

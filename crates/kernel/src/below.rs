@@ -43,6 +43,12 @@ use std::collections::BinaryHeap;
 use std::f64::consts::PI;
 use std::fmt;
 
+mod float;
+pub use float::{
+    ARM_SETTLED, ARM_UNSETTLED, Equilibrium, Floating, LEAVE, MAX_ITERATIONS, MAX_LEVELS, MAX_TURN,
+    Principal, Stability, floating,
+};
+
 /// Most steps the search for an offset takes before it reports that it
 /// did not converge. Halving alone narrows a bracket by 2⁻⁶⁴, past the
 /// resolution of an `f64`, so a search that reaches it is not short of
@@ -244,6 +250,14 @@ pub enum CutError {
         high: f64,
         residual: f64,
     },
+    /// The search for a floating equilibrium ([`floating`]) did not
+    /// settle: after `steps`, the centre of gravity still `arm` off the
+    /// normal through the centroid below, at the plane of `normal`.
+    NoEquilibrium {
+        steps: usize,
+        arm: f64,
+        normal: Vec3,
+    },
 }
 
 impl fmt::Display for CutError {
@@ -297,6 +311,11 @@ impl fmt::Display for CutError {
             } => write!(
                 f,
                 "the offset did not converge in {steps} steps: it lies between {low} and {high}, the volume still {residual} off"
+            ),
+            CutError::NoEquilibrium { steps, arm, normal } => write!(
+                f,
+                "the floating equilibrium did not converge in {steps} steps: at the normal [{}, {}, {}] the centre of gravity is still {arm} off the normal through the centroid below",
+                normal.x, normal.y, normal.z
             ),
         }
     }

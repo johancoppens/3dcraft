@@ -13,7 +13,9 @@ use crate::verify_cmds::{
     Ctx, Dim, Outcome, all_bodies, direction, nonempty, plane, subject, whole_bodies,
 };
 use crate::{CommandError, CommandSpec, Session};
-use craft3d_kernel::below::{BelowPlane, CutPlane, Level, below, level_for, section_extent};
+use craft3d_kernel::below::{
+    BelowPlane, CutPlane, Equilibrium, Level, Stability, below, floating, level_for, section_extent,
+};
 use craft3d_math::Vec3;
 use craft3d_topo::Body;
 use serde_json::{Map, Value};
@@ -28,6 +30,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "The section of closed bodies by a plane (plane, moved by offset along its normal, as measure.below takes them), exactly: area, centroid, and the second moments about axes through the centroid, ix = ∫y² dA about the axis along xAxis (square to the normal; by default the world axis most square to it, made square), iy = ∫x² dA about the axis along y = normal × xAxis, ixy = ∫xy dA, and the principal moments (major, minor, and majorAxis, the direction of the axis about which the moment is largest), in the document's unit to the fourth power; xAxis and yAxis say the axes used. From Green's theorem along the curves in which the plane cuts the bodies (each edge summed by two Gauss–Legendre rules until they agree); a cross-section of a beam, the cut of a body at a level. Read-only.", doc: true, names: ["of"], measure_section),
     spec!("measure.levelFor", "Level for a Volume", r#"{"of": subject = all bodies, "plane": "xy|yz|zx" or datum plane (name or id) or a flat face by name or {point: [expr, expr, expr], normal: [number, number, number]} = "xy", "volume": volume expr, "xAxis": direction = the world axis most square to the normal}"#,
         "The offset along its normal of plane (as measure.below takes it; only its direction and the point it is measured from count) at which the volume of the bodies below it is volume (the fill level of a tank for a volume of liquid; the plane at which a body floating with a known volume under it lies): found by the kernel by Newton's method on the section's area within a bracket, an offset the boolean refuses stepped around by other points of the bracket, at most 64 steps (not converging is an error, and so is a volume not strictly between 0 and the bodies' whole volume). Returns offset, steps, residual (how far the volume below is from the one asked for) and everything measure.below gives at that offset. Read-only.", doc: true, names: ["of"], measure_level_for),
+    spec!("measure.floating", "Floating Equilibrium", r#"{"of": subject = all bodies, "plane": "xy|yz|zx" or datum plane (name or id) or a flat face by name or {point: [expr, expr, expr], normal: [number, number, number]} = "xy", "volume": volume expr, "mass": number, "density": number, "centerOfGravity": [expr, expr, expr], "heel": angle expr = 0, "trim": angle expr = 0, "xAxis": direction = the world axis most square to the normal}"#,
+        "The free-floating equilibrium of closed bodies: the plane, an offset and a tilt of its normal, below which the bodies have volume (or mass / density, the mass in any unit and the density in that unit per cubic metre, so kg and kg/m³) and whose centroid below (the centre of buoyancy) lies on the plane's normal through centerOfGravity. plane is the upright waterplane (as measure.below takes it, its normal up; xAxis its x axis, the length); heel (about xAxis) and trim (about y = normal × xAxis) tilt it for the start. Found by the kernel by Newton's method over the tilt, each step a measure.levelFor of the volume, with the exact derivative from the section's moments (the metacentric heights), at most 40 steps of at most 0.25 rad; not converging is an error. Returns equilibria, each with offset (along its normal from the plane's point), normal, heel, trim and tilt (degrees, from plane), centroid, arm (how far the centre of gravity is off the normal through the centroid), height (of the centre of gravity above the centroid along the normal), principal (the two metacentric heights gm, each with the axis it turns about and stable, unstable or neutral: within floor of zero), stable, iterations, settled and everything measure.below gives there. The first is the equilibrium reached from the start (the nearest one); where it is unstable, those the bodies fall to from it follow (one each way along each unstable direction: an upright box with its centre of gravity too high finds its two angles of loll); other equilibria are not searched. floats is the index of the first stable one (null when none is); neutral says whether the first turns freely in some direction (a sphere about its centre: any tilt is an equilibrium, to second order); unfinished lists the searches from an unstable equilibrium that ended without one. Read-only.", doc: true, names: ["of"], measure_floating),
 ];
 
 /// The assertion measures and their dimensions: the one list
@@ -289,6 +293,216 @@ fn measure_level_for(session: &mut Session, params: &Value) -> Run {
         },
         Asked::For,
     )
+}
+
+const FLOATING_KEYS: [&str; 9] = [
+    "of",
+    "plane",
+    "volume",
+    "mass",
+    "density",
+    "centerOfGravity",
+    "heel",
+    "trim",
+    "xAxis",
+];
+
+/// An angle parameter in radians: a plain number is degrees, an
+/// expression an angle (or a plain number, degrees).
+fn angle(ctx: &Ctx<'_>, p: &Map<String, Value>, key: &str) -> Result<f64, String> {
+    let Some(value) = given(p, key) else {
+        return Ok(0.0);
+    };
+    let radians = match value {
+        Value::Number(n) => n.as_f64().map(f64::to_radians),
+        Value::String(source) => {
+            let quantity = ctx.evaluate(source, key)?;
+            if quantity.dimension == craft3d_expr::Dimension::ANGLE {
+                Some(quantity.value)
+            } else if quantity.dimension.is_dimensionless() {
+                Some(quantity.value.to_radians())
+            } else {
+                return Err(format!("`{key}` must be an angle"));
+            }
+        }
+        _ => None,
+    };
+    radians
+        .filter(|a| a.is_finite())
+        .ok_or_else(|| format!("`{key}` must be a finite angle"))
+}
+
+/// The volume below: `volume`, or `mass` / `density` (the density per
+/// cubic metre) in the document's unit cubed.
+fn floating_volume(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<f64, String> {
+    let positive = |key: &str| -> Result<f64, String> {
+        let value = given(p, key).ok_or_else(|| format!("`{key}` is required with mass"))?;
+        let number = ctx.quantity(value, key, 0)?;
+        if number > 0.0 && number.is_finite() {
+            Ok(number)
+        } else {
+            Err(format!("`{key}` must be a positive number"))
+        }
+    };
+    match (given(p, "volume"), given(p, "mass"), given(p, "density")) {
+        (Some(v), None, None) => ctx.quantity(v, "volume", 3),
+        (None, Some(_), _) | (None, _, Some(_)) => {
+            let cubic_metres = positive("mass")? / positive("density")?;
+            let unit = ctx.doc.units.length.as_expr_unit().factor();
+            let volume = cubic_metres * (1000.0 / unit).powi(3);
+            if volume.is_finite() {
+                Ok(volume)
+            } else {
+                Err("mass / density is not a finite volume".into())
+            }
+        }
+        (None, None, None) => {
+            Err("`volume` is required (the volume below), or `mass` and `density`".into())
+        }
+        _ => Err("give `volume` or `mass` and `density`, not both".into()),
+    }
+}
+
+fn degrees(a: f64) -> Value {
+    num(a.to_degrees())
+}
+
+fn stability_name(s: Stability) -> &'static str {
+    match s {
+        Stability::Stable => "stable",
+        Stability::Unstable => "unstable",
+        Stability::Neutral => "neutral",
+    }
+}
+
+/// One equilibrium as `measure.floating` gives it; `start` is the
+/// upright plane, `base` the point of the plane given.
+fn equilibrium_json(e: &Equilibrium, start: &CutPlane, point: Vec3) -> Map<String, Value> {
+    let mut below = e.level.below;
+    below.offset -= point.dot(e.plane.normal);
+    let mut out = below_json(&below, &e.plane);
+    let n = e.plane.normal;
+    let (x0, y0, z0) = (start.x_axis, start.y_axis(), start.normal);
+    out.insert("heel".into(), degrees((-n.dot(y0)).atan2(n.dot(z0))));
+    out.insert("trim".into(), degrees(n.dot(x0).clamp(-1.0, 1.0).asin()));
+    out.insert("tilt".into(), degrees(n.dot(z0).clamp(-1.0, 1.0).acos()));
+    out.insert("arm".into(), num(e.arm));
+    out.insert("height".into(), num(e.energy));
+    out.insert(
+        "principal".into(),
+        Value::Array(
+            e.principal
+                .iter()
+                .map(|p| {
+                    let mut one = Map::new();
+                    one.insert("gm".into(), num(p.gm));
+                    one.insert("about".into(), vec3(p.about));
+                    one.insert("stability".into(), stability_name(p.stability).into());
+                    Value::Object(one)
+                })
+                .collect(),
+        ),
+    );
+    out.insert("stable".into(), e.is_stable().into());
+    out.insert("iterations".into(), e.iterations.into());
+    out.insert("settled".into(), e.settled.into());
+    out
+}
+
+fn measure_floating(session: &mut Session, params: &Value) -> Run {
+    const ID: &str = "measure.floating";
+    Params::new(ID, params, &FLOATING_KEYS)?;
+    let map = match params {
+        Value::Object(map) => map.clone(),
+        _ => Map::new(),
+    };
+    let open = session.document_mut()?;
+    let regen = open.regen();
+    let doc = open.history.current();
+    let err = |e: String| CommandError::new(format!("{ID}: {e}"));
+    let ctx = Ctx::new(doc, &regen).map_err(err)?;
+    let found = (|| -> Result<Map<String, Value>, String> {
+        let bodies = bodies_named(&ctx, &map)?;
+        let (upright, _) = cut_plane(&ctx, &map)?;
+        let point = match given(&map, "plane") {
+            None => Vec3::ZERO,
+            Some(v) => plane(&ctx, Some(v))?.0,
+        };
+        let volume = floating_volume(&ctx, &map)?;
+        let centre = ctx.point(
+            Some(
+                given(&map, "centerOfGravity")
+                    .ok_or("`centerOfGravity` is required: [x, y, z]")?,
+            ),
+            "centerOfGravity",
+        )?;
+        let (heel, trim) = (angle(&ctx, &map, "heel")?, angle(&ctx, &map, "trim")?);
+        // The start: the upright plane turned by trim about y, then by
+        // heel about x.
+        let (x0, y0, z0) = (upright.x_axis, upright.y_axis(), upright.normal);
+        let (sh, ch) = heel.sin_cos();
+        let (st, ct) = trim.sin_cos();
+        let normal = x0 * st - y0 * (ct * sh) + z0 * (ct * ch);
+        let x_axis = x0 * ct + y0 * (st * sh) - z0 * (st * ch);
+        let start = CutPlane::new(normal, x_axis).map_err(|e| e.to_string())?;
+        let plain: Vec<&Body> = bodies.iter().map(|(_, b)| b.as_ref()).collect();
+        let found =
+            floating(&plain, &start, volume, centre, &ctx.tolerance).map_err(|e| e.to_string())?;
+        let mut out = Map::new();
+        out.insert(
+            "equilibria".into(),
+            Value::Array(
+                found
+                    .equilibria
+                    .iter()
+                    .map(|e| Value::Object(equilibrium_json(e, &upright, point)))
+                    .collect(),
+            ),
+        );
+        out.insert(
+            "floats".into(),
+            found
+                .equilibria
+                .iter()
+                .position(Equilibrium::is_stable)
+                .map_or(Value::Null, Value::from),
+        );
+        out.insert(
+            "neutral".into(),
+            found
+                .equilibria
+                .first()
+                .is_some_and(|e| {
+                    e.principal
+                        .iter()
+                        .any(|p| p.stability == Stability::Neutral)
+                })
+                .into(),
+        );
+        out.insert(
+            "unfinished".into(),
+            Value::Array(
+                found
+                    .unfinished
+                    .iter()
+                    .map(|e| e.to_string().into())
+                    .collect(),
+            ),
+        );
+        out.insert("volumeAsked".into(), num(volume));
+        out.insert("centerOfGravity".into(), vec3(centre));
+        out.insert("levels".into(), found.levels.into());
+        out.insert("floor".into(), num(found.floor));
+        out.insert(
+            "note".into(),
+            "the equilibrium reached from the start (the nearest) first; where it is unstable, those the bodies fall to from it; other equilibria are not searched".into(),
+        );
+        Ok(out)
+    })()
+    .map_err(err)?;
+    let mut out = found;
+    out.insert("lengthUnit".into(), length_unit(doc).into());
+    Ok(Value::Object(out))
 }
 
 /// A coordinate of a point along `axis` (x, y or z).
