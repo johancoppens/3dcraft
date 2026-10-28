@@ -55,8 +55,9 @@ fail with `causedBy` naming the first one. `document.check` lists them all. Fix 
 - **A part that should disappear stays**: its condition is on a feature that changes the body (a
   transform, a fillet), which passes the body on unchanged when it is off. Put the condition on the
   feature that makes the part ([chapter 8](08-formulas.md#switching-parts-on-and-off)).
-- ***The body of `Bossed` already went into `Bevel`***: another feature took that body first, most often
-  one inserted at the rollback marker. Build on the newer feature: the message gives the `feature.edit`
+- ***The body of `Bossed` already went into `Bevel`***: another feature took that body first (one inserted at the
+  rollback marker re-points the features after it where it can, so this is left for a boolean of the two
+  bodies an inserted union joined, the tool of an inserted subtraction, or a body named twice). Build on the newer feature: the message gives the `feature.edit`
   (`{"feature": "Drilled", "target": "Bevel"}` for a boolean; for a fillet, a chamfer or a face operation
   its `edges` or `faces` named by faces of the newer body).
 - **Not built yet**: some cases are refused as *not supported* (a fillet of a radius that would make a

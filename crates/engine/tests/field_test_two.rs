@@ -73,50 +73,82 @@ fn plate(s: &mut craft3d_engine::Session) {
     );
 }
 
+/// A feature inserted at the rollback marker that takes a body: the
+/// features after it that took that body go on with the new feature's
+/// body (they failed with "already went into" before 2026-10-28, with the
+/// `feature.edit` that repaired them); where that cannot be done (a
+/// boolean whose target and tool an inserted union joined), the advice is
+/// still given.
 #[test]
-fn a_feature_inserted_at_the_marker_says_how_to_rethread_the_ones_after_it() {
+fn a_feature_inserted_at_the_marker_rethreads_the_ones_after_it() {
     let mut s = session();
     plate(&mut s);
     run(&mut s, "history.rollback", json!({"feature": "Bossed"}));
-    run(
+    let bevel = run(
         &mut s,
         "feature.chamfer",
         json!({"edges": [["F1:face(1)", "F1:face(3)"]], "distance": "1 mm", "name": "Bevel"}),
     );
-    let rolled = run(&mut s, "history.rollback", json!({"feature": null}));
-    let error = failed_of(&rolled, "Drilled");
-    // The parameter to change and its new value, and no `keep`: a chamfer
-    // has none.
-    assert!(
-        error.contains("build on `Bevel` instead (feature.edit with \"target\": \"Bevel\")"),
-        "{error}"
+    assert_eq!(
+        bevel["repointed"],
+        json!([{"feature": "Drilled", "param": "target"}]),
+        "{bevel}"
     );
-    assert!(!error.contains("keep"), "{error}");
-    // The fillet after the marker names faces, not a body: it follows them
-    // into the chamfer's body by itself and is not among the failures.
+    let rolled = run(&mut s, "history.rollback", json!({"feature": null}));
     assert!(
-        rolled["failed"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|f| f["feature"] != "Round"),
+        rolled["failed"].as_array().is_none_or(Vec::is_empty),
         "{rolled}"
     );
-    // Doing what it says repairs the part, the fillet with it.
-    run(
-        &mut s,
-        "feature.edit",
-        json!({"feature": "Drilled", "target": "Bevel"}),
-    );
     assert_eq!(run(&mut s, "document.check", json!({}))["ok"], true);
-    let round = run(&mut s, "document.inspect", json!({"measures": false}))["features"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|f| f["name"] == "Round")
-        .cloned()
-        .unwrap();
-    assert_eq!(round["status"], "ok", "{round}");
+    // The same part built in that order from the start.
+    let mut straight = session();
+    plate(&mut straight);
+    run(&mut straight, "feature.delete", json!({"feature": "Round"}));
+    run(
+        &mut straight,
+        "feature.delete",
+        json!({"feature": "Drilled"}),
+    );
+    run(
+        &mut straight,
+        "feature.chamfer",
+        json!({"edges": [["F1:face(1)", "F1:face(3)"]], "distance": "1 mm", "name": "Bevel"}),
+    );
+    run(
+        &mut straight,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Bevel", "tool": "HoleTool", "name": "Drilled"}),
+    );
+    run(
+        &mut straight,
+        "feature.fillet",
+        json!({"edges": [["F1:face(2)", "F1:face(4)"]], "radius": "3 mm", "name": "Round"}),
+    );
+    let volume = |s: &mut craft3d_engine::Session| {
+        run(s, "document.measure", json!({}))["volume"]
+            .as_f64()
+            .unwrap()
+    };
+    let (ours, theirs) = (volume(&mut s), volume(&mut straight));
+    assert!((ours - theirs).abs() <= 1e-9 * theirs, "{ours} vs {theirs}");
+
+    // Where it cannot be re-pointed, the advice: a union of Plate and Boss
+    // inserted before Bossed, which unites the same two.
+    let mut s = session();
+    plate(&mut s);
+    run(&mut s, "history.rollback", json!({"feature": "Boss"}));
+    let first = run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "union", "target": "Plate", "tool": "Boss", "name": "First"}),
+    );
+    assert!(first.get("repointed").is_none(), "{first}");
+    let rolled = run(&mut s, "history.rollback", json!({"feature": null}));
+    let error = failed_of(&rolled, "Bossed");
+    assert!(
+        error.contains("build on `First` instead (feature.edit with \"target\": \"First\")"),
+        "{error}"
+    );
 
     // A transform that took the body: `keep` is offered.
     let mut s = session();

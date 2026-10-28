@@ -99,7 +99,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("feature.delete", "Delete Feature", r#"{"feature": id or name}"#,
         "Deletes a feature (edit.undo brings it back). A feature that named it (as its target, tool, source or sketch) fails. The result lists the features that fail under failed. Where the host regenerates a piece at a time between its frames (the web page), the regeneration comes after the command: failed is left out then, and deferred: true says so.", doc: true, feature_delete),
     spec!("history.rollback", "Roll Back", r#"{"feature": id or name or null}"#,
-        "Regenerates only up to and including this feature; null removes the marker. While the marker is set, a feature added by any command goes in right after it, and the marker moves onto the new feature. A feature added there that takes a body (a fillet, a chamfer, a boolean) takes it from the features after the marker that were made from that body by naming it (a boolean's target or tool, the source of a transform, mirror, pattern or shell): those fail with \"already went into\" until they are pointed at the new feature (feature.edit with that target, tool or source). A fillet, a chamfer or a face operation names faces, not a body, and follows them into the new feature's body by itself. The result lists the features that fail now and did not before under failed. Where the host regenerates a piece at a time between its frames (the web page), the regeneration comes after the command: failed is left out then, and deferred: true says so.", doc: true, history_rollback),
+        "Regenerates only up to and including this feature; null removes the marker. While the marker is set, a feature added by any command goes in right after it, and the marker moves onto the new feature. A feature added there that takes a body (a fillet, a chamfer, a move, a boolean's target, a union's tool) takes it before the features after the marker that named that body (a boolean's target or tool, the source of a transform, mirror, pattern, shell or split): those are pointed at the new feature, so they go on with the body it changed, and the new feature's result lists them under repointed ([{feature, param}]). One that would then name it twice (a boolean of the two bodies an inserted union joined), and one that used the tool of an inserted subtraction or intersection, are left as they are and fail with \"already went into\", saying which feature.edit points them on. A fillet, a chamfer or a face operation names faces, not a body, and follows them into the new feature's body by itself. The result lists the features that fail now and did not before under failed. Where the host regenerates a piece at a time between its frames (the web page), the regeneration comes after the command: failed is left out then, and deferred: true says so.", doc: true, history_rollback),
     spec!("document.inspect", "Inspect", r#"{"measures": boolean = true, "named": boolean = false}"#,
         "Returns the whole document state (with named: true each feature's parameters also under named, in the commands' words: keys as the commands spell them, keepTool, and features by name, where they differ from params): units, variables with values, features with status (a failed one with the reason under error, which starts with the parameter and names the feature and the name it lost, and, when the reason is that something it is made from failed, under causedBy the feature at the start of that chain: the one to fix; a datum with where it lies, under datum), bodies with counts (shells: one per lump and one per cavity; a body a cut fell apart in, or one with a void, has several), mass properties (volume, area, centroid; with a material: mass and inertia) and bbox, appearance and material, and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), faceAppearances (the colours face.appearance gave single faces) and lostFaces (those whose face an edit took away, which colour nothing), assertions (when there are any: each with status passed, failed, notProven, error or pending (still being measured after two seconds), what was measured and what was expected, as assert.list), undo history. With measures: false the bodies are listed without what takes measuring them (volume, area, centroid, mass, inertia, bbox and bboxTolerance; a body with a spline face can take seconds the first time), the rest as always: the quick way to read the features, their status and the face names of a large model.", doc: true, document_inspect),
     spec!("document.check", "Check", r#"{"deep": boolean = false, "feature": id or name = every feature}"#,
@@ -288,8 +288,39 @@ pub(crate) fn insert_feature(
             .ok_or(DocError::UnknownFeature(marker))?;
         doc.move_feature(id, at.saturating_add(1))?;
         doc.set_rollback(Some(id))?;
+        // The features after it that took a body it now takes first go on
+        // with its body instead ([`Document::repoint_after`]); the result
+        // lists them (`repointed`).
+        doc.repoint_after(id)?;
     }
     Ok(id)
+}
+
+/// For a feature inserted at the rollback marker: the parameters of the
+/// features after it that [`Document::repoint_after`] pointed at it,
+/// `[{feature, param, was}]` (`None` when there are none). Features
+/// made before it that name it can only have been pointed there by the
+/// insertion, as long as the marker is on it.
+fn repointed(doc: &Document, id: FeatureId) -> Option<Value> {
+    if doc.rollback != Some(id) {
+        return None;
+    }
+    let at = doc.features.iter().position(|f| f.id == id)?;
+    let listed: Vec<Value> = doc
+        .features
+        .iter()
+        .skip(at.saturating_add(1))
+        .filter(|f| f.id < id)
+        .flat_map(|f| {
+            f.kind
+                .body_params()
+                .into_iter()
+                .filter(|(_, named)| *named == id)
+                .map(|(param, _)| json!({"feature": f.name, "param": param}))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    (!listed.is_empty()).then(|| listed.into())
 }
 
 pub(crate) fn add_feature(
@@ -402,6 +433,9 @@ pub(crate) fn feature_result(session: &mut Session, id: FeatureId) -> Run {
         if let Some(made) = &outcome.offset {
             map.insert("offset".into(), crate::offset_cmds::offset_json(made));
         }
+    }
+    if let (Some(map), Some(listed)) = (result.as_object_mut(), repointed(doc, id)) {
+        map.insert("repointed".into(), listed);
     }
     crate::assert_cmds::add_summary(session, &mut result);
     Ok(result)

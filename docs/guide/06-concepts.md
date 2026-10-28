@@ -32,12 +32,14 @@ Commands that change the history (`feature.edit`, `feature.suppress`, `feature.m
   everywhere it is used, assertions included.
 - `history.rollback {"feature": "Bored"}` rebuilds only up to that feature, and new features go in right
   after it: a way to insert something early in the history. `{"feature": null}` removes the marker. A
-  feature inserted there that takes a body (a fillet, a chamfer, a boolean) takes it from the features
-  after the marker that name that body (a boolean's `target` or `tool`, the `source` of a transform, mirror,
-  pattern or shell): when the marker is removed they fail with *the body of `Bored` already went into
-  `Bevel`*, and the message gives the `feature.edit` that points them at the new feature
-  (`{"feature": "Drilled", "target": "Bevel"}`). A fillet, a chamfer or a face operation after the marker
-  names faces, not a body, and follows them into the new body by itself; there is nothing to re-point.
+  feature inserted there that takes a body (a fillet, a chamfer, a move, a boolean) takes it before the
+  features after the marker that name that body (a boolean's `target` or `tool`, the `source` of a
+  transform, mirror, pattern, shell or split): they are pointed at the new feature, so they go on with
+  the body it changed, and the result lists them (`"repointed": [{"feature": "Drilled", "param":
+  "target"}]`). Where that cannot be done (a boolean of the two bodies an inserted union joined, or a
+  feature that used the tool of an inserted subtraction) they fail with *the body of `Bored` already went
+  into `Bevel`*, and the message gives the `feature.edit` that points them on. A fillet, a chamfer or a
+  face operation after the marker names faces, not a body, and follows them into the new body by itself.
 - `edit.undo` and `edit.redo` undo and redo any change, one command at a time.
 
 ## Variables, expressions and units

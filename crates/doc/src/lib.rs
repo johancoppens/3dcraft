@@ -1255,6 +1255,60 @@ impl FeatureKind {
         }
     }
 
+    /// The bodies this feature's own body grew from and takes: the source
+    /// it changes (when it does not keep it), a boolean's target, and a
+    /// union's tool (whose material the union keeps). Not a subtraction's
+    /// or an intersection's tool, whose body does not go on in the result,
+    /// and nothing for a split, whose body goes on in several pieces.
+    pub fn grows_from(&self) -> Vec<FeatureId> {
+        match self {
+            FeatureKind::Split(_) => Vec::new(),
+            FeatureKind::Boolean(b) => {
+                let mut out = vec![b.target];
+                if b.op == BooleanOp::Union && !b.keep_tool && b.tool != b.target {
+                    out.push(b.tool);
+                }
+                out
+            }
+            other => other
+                .source()
+                .filter(|(_, keeps)| !keeps)
+                .map(|(id, _)| id)
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    /// The parameters that name a body by its feature's id (a boolean's
+    /// `target` and `tool`; the `source` of a transform, mirror, pattern,
+    /// shell or split), each with its name. A fillet, a chamfer and a face
+    /// operation name faces instead, which are followed to newer bodies
+    /// by regeneration.
+    pub fn body_params(&self) -> Vec<(&'static str, FeatureId)> {
+        match self {
+            FeatureKind::Boolean(b) => vec![("target", b.target), ("tool", b.tool)],
+            FeatureKind::Transform(t) => vec![("source", t.source)],
+            FeatureKind::Mirror(m) => vec![("source", m.source)],
+            FeatureKind::Pattern(p) => vec![("source", p.source)],
+            FeatureKind::Shell(s) => vec![("source", s.source)],
+            FeatureKind::Split(s) => vec![("source", s.source)],
+            _ => Vec::new(),
+        }
+    }
+
+    /// [`FeatureKind::body_params`], to change.
+    pub fn body_params_mut(&mut self) -> Vec<(&'static str, &mut FeatureId)> {
+        match self {
+            FeatureKind::Boolean(b) => vec![("target", &mut b.target), ("tool", &mut b.tool)],
+            FeatureKind::Transform(t) => vec![("source", &mut t.source)],
+            FeatureKind::Mirror(m) => vec![("source", &mut m.source)],
+            FeatureKind::Pattern(p) => vec![("source", &mut p.source)],
+            FeatureKind::Shell(s) => vec![("source", &mut s.source)],
+            FeatureKind::Split(s) => vec![("source", &mut s.source)],
+            _ => Vec::new(),
+        }
+    }
+
     /// The one feature whose body this feature is made from (a transform,
     /// a mirror, a pattern, a chamfer, a fillet), and whether that feature keeps
     /// its own body.
@@ -2518,6 +2572,54 @@ impl Document {
         Ok(())
     }
 
+    /// After `id` was inserted before features that took a body it now
+    /// takes first ([`FeatureKind::grows_from`]): points each parameter
+    /// of a later feature that names such a body by id
+    /// ([`FeatureKind::body_params_mut`]) at `id`, as a modeller's later
+    /// features go on with the body an inserted feature changed. A later
+    /// feature that would then name `id` in two parameters (a boolean of
+    /// the target with the tool a union inserted before it joined) is left
+    /// as it is: it fails and says why. Returns `(feature, parameter, the
+    /// feature it named)` for each parameter changed, in history order.
+    pub fn repoint_after(
+        &mut self,
+        id: FeatureId,
+    ) -> Result<Vec<(FeatureId, &'static str, FeatureId)>, DocError> {
+        let at = self
+            .features
+            .iter()
+            .position(|f| f.id == id)
+            .ok_or(DocError::UnknownFeature(id))?;
+        let taken = self
+            .features
+            .get(at)
+            .map(|f| f.kind.grows_from())
+            .unwrap_or_default();
+        let mut changed = Vec::new();
+        if taken.is_empty() {
+            return Ok(changed);
+        }
+        for feature in self.features.iter_mut().skip(at.saturating_add(1)) {
+            let later = feature.id;
+            let mut params = feature.kind.body_params_mut();
+            let would_be: Vec<FeatureId> = params
+                .iter()
+                .map(|(_, named)| if taken.contains(named) { id } else { **named })
+                .collect();
+            let twice = would_be.iter().filter(|named| **named == id).count() > 1;
+            if twice {
+                continue;
+            }
+            for (param, named) in &mut params {
+                if taken.contains(named) {
+                    changed.push((later, *param, **named));
+                    **named = id;
+                }
+            }
+        }
+        Ok(changed)
+    }
+
     /// Sets the rollback marker; `None` regenerates everything.
     pub fn set_rollback(&mut self, id: Option<FeatureId>) -> Result<(), DocError> {
         if let Some(id) = id
@@ -3050,6 +3152,50 @@ mod tests {
         };
         sketch.next_entity_id = 1;
         assert!(matches!(doc.validate(), Err(DocError::Sketch(..))));
+    }
+
+    #[test]
+    fn a_feature_inserted_takes_over_the_bodies_it_grows_from() {
+        let boolean = |op, target, tool| {
+            FeatureKind::Boolean(Boolean {
+                op,
+                target,
+                tool,
+                keep_tool: false,
+            })
+        };
+        let mut doc = Document::new(Units::default());
+        let a = doc.add_feature(Some("A"), block(["1 mm"; 3])).unwrap();
+        let b = doc.add_feature(Some("B"), block(["1 mm"; 3])).unwrap();
+        let e = doc.add_feature(Some("E"), block(["1 mm"; 3])).unwrap();
+        let cut = doc
+            .add_feature(Some("Cut"), boolean(BooleanOp::Subtract, a, b))
+            .unwrap();
+        // Names E, which the union below joins.
+        let both = doc
+            .add_feature(Some("Both"), boolean(BooleanOp::Subtract, cut, e))
+            .unwrap();
+        let union = doc
+            .add_feature(Some("U"), boolean(BooleanOp::Union, a, e))
+            .unwrap();
+        doc.move_feature(union, 3).unwrap();
+        assert_eq!(
+            doc.repoint_after(union).unwrap(),
+            [(cut, "target", a), (both, "tool", e)]
+        );
+        let FeatureKind::Boolean(c) = &doc.feature(cut).unwrap().kind else {
+            panic!()
+        };
+        assert_eq!((c.target, c.tool), (union, b));
+        // `Both` named Cut and E: E became U, Cut did not.
+        let FeatureKind::Boolean(c) = &doc.feature(both).unwrap().kind else {
+            panic!()
+        };
+        assert_eq!((c.target, c.tool), (cut, union));
+        // A subtraction grows from its target only; a split from nothing.
+        assert_eq!(boolean(BooleanOp::Subtract, a, b).grows_from(), [a]);
+        assert_eq!(boolean(BooleanOp::Union, a, a).grows_from(), [a]);
+        assert!(doc.repoint_after(FeatureId(99)).is_err());
     }
 
     #[test]
