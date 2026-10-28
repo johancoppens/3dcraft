@@ -20,12 +20,17 @@ use serde_json::json;
 
 /// Blocks at scale `s` (mm), a hole, a sphere, a sketch, a datum plane, a
 /// coloured body, outputs in two stages and assertions; then `w` set to
-/// 41 (scaled), an edit whose regeneration is left to the host.
+/// 41 (scaled) by `param.set`, an edit whose regeneration is left to the
+/// host (as the Parameters form sets it).
 fn build(session: &mut Session, s: f64) {
     let mm = |v: f64| format!("{} mm", v * s);
     let steps = [
         ("file.new", json!({"units": "mm"})),
         ("variable.set", json!({"name": "w", "expr": mm(40.0)})),
+        (
+            "variable.publish",
+            json!({"name": "w", "min": mm(1.0), "max": mm(1000.0)}),
+        ),
         (
             "feature.block",
             json!({"size": ["w", mm(20.0), mm(5.0)], "name": "A"}),
@@ -79,13 +84,24 @@ fn build(session: &mut Session, s: f64) {
             "assert.add",
             json!({"name": "twice", "measure": "value", "expr": "VB2", "min": "(w / 4)^3"}),
         ),
-        ("variable.set", json!({"name": "w", "expr": mm(41.0)})),
+        ("param.set", json!({"values": {"w": mm(41.0)}})),
     ];
     for (id, params) in steps {
         session
             .execute(id, &params)
             .unwrap_or_else(|e| panic!("{id}: {}", e.message()));
     }
+}
+
+/// `w` set as the Parameters form sets it.
+fn set_w(session: &mut Session, value: &str) {
+    let done = session
+        .execute("param.set", &json!({"values": {"w": value}}))
+        .unwrap();
+    assert!(
+        !session.regen_elsewhere() || done["deferred"] == true,
+        "{done}"
+    );
 }
 
 /// A host that regenerates elsewhere.
@@ -148,11 +164,7 @@ fn here(s: f64, edit: Option<f64>) -> Session {
     let mut here = Session::new(Workspace::none());
     build(&mut here, s);
     if let Some(w) = edit {
-        here.execute(
-            "variable.set",
-            &json!({"name": "w", "expr": format!("{} mm", w * s)}),
-        )
-        .unwrap();
+        set_w(&mut here, &format!("{} mm", w * s));
     }
     here.execute("assert.list", &json!({"wait": true})).unwrap();
     here.execute("output.list", &json!({"wait": true})).unwrap();
@@ -204,12 +216,7 @@ fn scenes_built_elsewhere_are_those_built_here_bit_for_bit() {
 
         // An edit and back: new jobs, the same answers as here.
         for w in [40.0, 41.0] {
-            session
-                .execute(
-                    "variable.set",
-                    &json!({"name": "w", "expr": format!("{} mm", w * s)}),
-                )
-                .unwrap();
+            set_w(&mut session, &format!("{} mm", w * s));
             settle(&mut session);
             let mut want = here(s, Some(w));
             same(&mut session, &mut want, &format!("scale {s}, w {w}"));
@@ -225,9 +232,7 @@ fn an_edit_supersedes_the_job_and_a_late_answer_never_lands() {
     let request = session.scene_request(old).unwrap();
     let old_checks = session.checks_job().unwrap();
     let old_checks_request = session.checks_request(old_checks).unwrap();
-    session
-        .execute("variable.set", &json!({"name": "w", "expr": "47 mm"}))
-        .unwrap();
+    set_w(&mut session, "47 mm");
     let new = session.scene_job(SceneQuality::display()).unwrap();
     assert_ne!(new, old);
     assert!(session.scene_request(old).is_err());
@@ -265,9 +270,7 @@ fn a_worker_that_stops_leaves_errors_and_the_next_state_goes_on() {
     let error = session.scene_with(SceneQuality::display()).unwrap_err();
     assert!(error.message().contains("unreachable"), "{error}");
     // A part that is no scene is an error too, never a panic.
-    session
-        .execute("variable.set", &json!({"name": "w", "expr": "43 mm"}))
-        .unwrap();
+    set_w(&mut session, "43 mm");
     let token = session.scene_job(SceneQuality::display()).unwrap();
     // Two scenes that do not read: each an error, the job goes on.
     for junk in [&b"\x00S"[..], b"\x01Sjunk"] {
@@ -278,12 +281,7 @@ fn a_worker_that_stops_leaves_errors_and_the_next_state_goes_on() {
     assert!(session.scene_done(token));
     // A part that is no part at all ends the job.
     for (w, junk) in [(45, &b""[..]), (46, b"\x09\x09")] {
-        session
-            .execute(
-                "variable.set",
-                &json!({"name": "w", "expr": format!("{w} mm")}),
-            )
-            .unwrap();
+        set_w(&mut session, &format!("{w} mm"));
         let token = session.scene_job(SceneQuality::display()).unwrap();
         assert!(session.scene_answered(token, Ok(junk)));
         assert!(!session.scene_answered(token, Ok(junk)));
@@ -291,17 +289,13 @@ fn a_worker_that_stops_leaves_errors_and_the_next_state_goes_on() {
         assert!(session.scene_with(SceneQuality::display()).is_err());
     }
     // Given up (it took too long): errors that say so, no bug label.
-    session
-        .execute("variable.set", &json!({"name": "w", "expr": "44 mm"}))
-        .unwrap();
+    set_w(&mut session, "44 mm");
     let token = session.scene_job(SceneQuality::display()).unwrap();
     assert!(session.scene_failed(token, "too long"));
     let error = session.scene_with(SceneQuality::Preview).unwrap_err();
     assert_eq!(error.message(), "not regenerated: too long");
     // The next state goes on as before.
-    session
-        .execute("variable.set", &json!({"name": "w", "expr": "41 mm"}))
-        .unwrap();
+    set_w(&mut session, "41 mm");
     settle(&mut session);
     let mut want = here(1.0, None);
     same(&mut session, &mut want, "after the stop");
