@@ -1048,13 +1048,14 @@ mod tests {
         }
         let was = s.checks_and_outputs(Wait::All).unwrap();
         assert_eq!(was.0[0].state.status.name(), "failed");
-        assert_eq!(was.0[0].value, json!(6000.0));
+        let v = was.0[0].value.as_f64().unwrap();
+        assert!((v - 6000.0).abs() < 1e-9, "{v}");
         let k: f64 = 0.1;
         let mut scaled = was.clone();
-        scaled.0[0].value = json!(6000.0 * k.powi(3));
+        scaled.0[0].value = json!(v * k.powi(3));
         assert!(same_checks(&was, &scaled, &[Some(3)], k).is_ok());
         let mut unscaled = was.clone();
-        unscaled.0[0].value = json!(6000.0 * k);
+        unscaled.0[0].value = json!(v * k);
         let e = same_checks(&was, &unscaled, &[Some(3)], k).unwrap_err();
         assert!(e.contains("small") && e.contains("measured"), "{e}");
     }
