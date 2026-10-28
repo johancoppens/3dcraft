@@ -1356,7 +1356,10 @@ fn the_box_of_a_cut_spline_face_is_the_box_of_what_is_left() {
         // finer, down to ten linear tolerances (1e-5 mm). A tol of 1e-4 k
         // needs that at the scale 1; at the scale 1e-3 the floor makes it
         // 5e-5 mm.
-        let reached = f64::max(1e-6 * k, 2e-6);
+        // (Plus the rounding of the measure: the extent is shrunk on both
+        // sides, and came out 2.000000002e-6 short at the scale 1 when the
+        // fit of the formula took its ends' directions, 2026-10-28.)
+        let reached = f64::max(1e-6 * k, 2e-6) * (1.0 + 1e-6);
         let tol = f64::max(1e-4 * k, 5e-5);
         for (measure, axis, want) in [
             ("boxMax", "x", c),
