@@ -9,11 +9,14 @@
 //! it, `y` along the bisector of the two flats towards the inside). The
 //! part at a stage is the built part's pieces moved rigidly
 //! (`sheetmetal::sequence`). A step (a bend made after a set of others)
-//! clears when the proven distance between each tool and every piece but
-//! the bend's own strip and its two flats is at least the clearance over
+//! clears when the proven distance between the punch and every piece but
+//! the bend's own strip and its two flats, and between the die lowered by
+//! the clearance and the tolerance (so the sheet may rest on it) and
+//! every piece but the bend's own strip, is at least the clearance over
 //! the whole stroke: proven at sampled stroke angles, and between two of
 //! them less how far the part can move against the tools in between
-//! (`stroke_speed`), the interval halved until that holds. The order is
+//! (`stroke_speed`, from the pieces' farthest reach from the axis), the
+//! interval halved until that holds. The order is
 //! searched depth first, the bends whose flanges carry the fewest others
 //! first, each failed set of bends made remembered.
 
@@ -23,7 +26,8 @@ use crate::verify::{self, Part as Measured};
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_kernel::boolean::contains_points;
 use craft3d_kernel::sheetmetal::sequence::{
-    bend_faces, bend_frame, final_worlds, prism, stage_worlds, strip_slab, stroke_speed,
+    PieceOf, bend_faces, bend_frame, final_worlds, from_axis, inside_piece, prism, stage_worlds,
+    strip_slab, stroke_speed,
 };
 use craft3d_kernel::sheetmetal::{self, flange_length, flat_faces};
 use craft3d_math::{Tolerance, Transform, Vec3};
@@ -35,7 +39,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[spec!(
     "sheetMetal.bendSequence",
     "Bend Sequence",
     r#"{"feature": id or name, "punch": [[x, y], ...], "die": [[x, y], ...], "length": number = the part's reach, "clearance": number = the document's tolerance}"#,
-    "Checks whether a sheet-metal part (feature.sheetMetal) can be bent on a press brake with the punch and die given, and finds an order of its bends (changes nothing). punch and die are closed polygons (at least 3 points, in the document's length unit) in the plane square to a bend: the punch's with the centre of its tip at the origin and its body along +y, the die's with the point under the bend on the part's outer skin at the origin and its body below (y < 0); each is extruded length along the bend, centred on its middle (default: long enough to cover the whole part). At every bend both stand in the bend's frame: origin on the bend's axis (the die's R + T further out), y along the bisector of the two flats towards the inside (as on a press brake where both legs rise half the angle), z along the axis. A step, a bend made with some others already made and the rest still flat, clears when the proven distance (its lower bound) between each tool and every piece of the part but that bend's own strip and its two flats is at least clearance over the whole stroke from 0 to the bend's angle: proven at eight stroke angles, and between two of them less how far any point of the part can move against the tools in between, the interval halved (to 1/1024 of the stroke) until that holds; a piece wholly inside a tool counts as 0. The order is searched depth first over all orders, the bends whose flanges carry the fewest others first (then the shorter flange, then the lower index), every set of bends made that leads nowhere remembered. Returns feasible, order (the flanges by index, first bent first; null when none clears), steps (per bend of the order: flange, done (the flanges made before it), least (the least proven distance over its stroke) and at (the stroke angle of it, degrees)), collisions (every step tried that did not clear: flange, done, tool (punch or die), piece (the base, flange i, or the strip of flange i, bent or flat), angle (degrees), distance and lower (the distance found and what is proven below it), or notProven with the stroke interval no halving could prove), and work (distances measured). Refused: a part with a hole across a bend (owed), a polygon that crosses itself, a clearance that is not more than 0, and a search of more than 20000 distances. The closing of a bend's own two flats onto the punch (an acute bend with a punch of a wider angle) is not looked for: those flats are the tools' by design.",
+    "Checks whether a sheet-metal part (feature.sheetMetal) can be bent on a press brake with the punch and die given, and finds an order of its bends (changes nothing). punch and die are closed polygons (at least 3 points, in the document's length unit) in the plane square to a bend: the punch's with the centre of its tip at the origin and its body along +y, the die's with the point under the bend on the part's outer skin at the origin and its body below (y < 0); each is extruded length along the bend, centred on its middle (default: long enough to cover the whole part). At every bend both stand in the bend's frame: origin on the bend's axis (the die's R + T further out), y along the bisector of the two flats towards the inside (as on a press brake where both legs rise half the angle), z along the axis. A step, a bend made with some others already made and the rest still flat, clears when the proven distance (its lower bound) between the punch and every piece of the part but that bend's own strip and its two flats, and between the die counted lowered (moved away from the punch) by clearance plus the document's tolerance and every piece but the bend's own strip, is at least clearance over the whole stroke from 0 to the bend's angle (so the sheet may rest on the die's top, but not go into it by more than the tolerance nor come nearer than clearance from any other side): proven at eight stroke angles, and between two of them less how far any point of the part can move against the tools in between (half its distance from the bend's axis, the farthest at either end of the stroke, plus the bend's neutral radius, per radian), the interval halved (to 1/1024 of the stroke) until that holds; a piece and a tool wholly inside one another count as 0. The order is searched depth first over all orders, the bends whose flanges carry the fewest others first (then the shorter flange, then the lower index), every set of bends made that leads nowhere remembered. Returns feasible, order (the flanges by index, first bent first; null when none clears), steps (per bend of the order: flange, done (the flanges made before it), least (the least distance to the punch proven at the stroke angles measured), at (the stroke angle of it, degrees), proven (the least distance to the punch proven over the whole stroke, between the angles measured too) and die (least, at and proven for the lowered die)), collisions (every step tried that did not clear: flange, done, tool (punch or die), piece (the base, flange i, or the strip of flange i, bent or flat), angle (degrees), distance and lower (the distance found and what is proven below it; to the lowered die for the die), or notProven with the stroke interval no halving could prove), unchecked (what is not looked at) and work (distances measured). Refused: a part with a hole across a bend (owed), a polygon that crosses itself, a clearance that is not more than 0, and a search of more than 20000 distances. Not looked at (said in unchecked): a bend's own strip during its stroke, and its own two flats against the punch (an acute bend with a punch of a wider angle closing its flats onto it is not found).",
     doc: true,
     names: ["feature"],
     bend_sequence
@@ -53,6 +57,9 @@ const SAMPLES: usize = 8;
 /// Deepest an interval of the stroke is halved (1/1024 of it with the 8
 /// samples).
 const MAX_DEPTH: u32 = 7;
+
+/// What the check does not look at, said in its result.
+const UNCHECKED: &str = "each bend's own strip during its stroke (against both tools), and its two flats against the punch (its tip forms the bend between them)";
 
 /// Most collisions listed.
 const MAX_LISTED: usize = 200;
@@ -97,11 +104,26 @@ struct Piece<'a> {
     measured: Measured<'a>,
     /// Points of its faces, for whether it lies wholly inside a tool.
     points: Vec<Vec3>,
+    /// The corners of a box holding its exact faces, in the built part
+    /// (the faces' boxes, grown by what the mesh can be off by).
+    corners: Vec<Vec3>,
     /// The flat whose transform from built to stage moves it.
     carrier: usize,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+impl<'a> Piece<'a> {
+    fn new(what: Kind, measured: Measured<'a>, carrier: usize) -> Self {
+        Piece {
+            what,
+            points: points_of(&measured),
+            corners: corners_of(&measured),
+            measured,
+            carrier,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum Kind {
     Flat(usize),
     /// Bend `i` as built (made).
@@ -119,6 +141,14 @@ impl Kind {
             Kind::Strip(i) => format!("the strip of flange {i}, flat"),
         }
     }
+
+    fn piece(self) -> PieceOf {
+        match self {
+            Kind::Flat(f) => PieceOf::Flat(f),
+            Kind::Bend(i) => PieceOf::Bend(i),
+            Kind::Strip(i) => PieceOf::Strip(i),
+        }
+    }
 }
 
 fn points_of(m: &Measured<'_>) -> Vec<Vec3> {
@@ -127,6 +157,33 @@ fn points_of(m: &Measured<'_>) -> Vec<Vec3> {
         .filter_map(|t| t.first().map(|tri| tri[0]))
         .collect()
 }
+
+/// The eight corners of the union of a piece's face boxes.
+fn corners_of(m: &Measured<'_>) -> Vec<Vec3> {
+    let mut lo = Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+    let mut hi = -lo;
+    for (a, b) in m.boxes.values().filter_map(|b| b.corners()) {
+        lo = lo.min(a);
+        hi = hi.max(b);
+    }
+    if !(lo.x <= hi.x && lo.y <= hi.y && lo.z <= hi.z) {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(8);
+    for x in [lo.x, hi.x] {
+        for y in [lo.y, hi.y] {
+            for z in [lo.z, hi.z] {
+                out.push(Vec3::new(x, y, z));
+            }
+        }
+    }
+    out
+}
+
+/// The tools, in the order they are checked.
+const PUNCH: usize = 0;
+const DIE: usize = 1;
+const TOOLS: [&str; 2] = ["punch", "die"];
 
 #[derive(Clone, Debug)]
 enum Failure {
@@ -143,10 +200,23 @@ enum Failure {
     },
 }
 
+/// Per tool: the least distance proven at the stroke angles measured,
+/// the angle of it, and the least distance proven over the whole stroke
+/// (each interval's `min(la, lc) − v h / 2`).
 #[derive(Clone, Copy, Debug)]
 struct Cleared {
-    least: f64,
-    at: f64,
+    least: [f64; 2],
+    at: [f64; 2],
+    proven: [f64; 2],
+}
+
+/// What a step's stroke needs besides the stages: how fast the part can
+/// move against the tools per radian (`stroke_speed`) and how long the
+/// tools are.
+#[derive(Clone, Copy, Debug)]
+struct Stroke {
+    speed: f64,
+    length: f64,
 }
 
 struct Check<'a> {
@@ -156,26 +226,16 @@ struct Check<'a> {
     die: Vec<[f64; 2]>,
     length: Option<f64>,
     clearance: f64,
-    flats: Vec<Piece<'a>>,
-    bends: Vec<Piece<'a>>,
-    strips: Vec<Piece<'a>>,
+    pieces: Vec<Piece<'a>>,
     built: Vec<Transform>,
     work: std::cell::Cell<usize>,
 }
 
 impl Check<'_> {
-    /// The least proven distance between the tools and the pieces at
-    /// bend `b`'s stroke angle `rho`, with the others made (`done`) or
-    /// flat; a failure when it is below the clearance.
-    fn at(
-        &self,
-        done: &BTreeSet<usize>,
-        b: usize,
-        rho: f64,
-    ) -> Result<Result<f64, Failure>, String> {
-        let part = self.part;
-        let bend = part.bends.get(b).ok_or("a bend is missing")?;
-        let angles: Vec<f64> = part
+    /// The stage's bend angles: those made at theirs, `b` at `rho`, the
+    /// rest flat.
+    fn angles(&self, done: &BTreeSet<usize>, b: usize, rho: f64) -> Vec<f64> {
+        self.part
             .bends
             .iter()
             .enumerate()
@@ -188,46 +248,127 @@ impl Check<'_> {
                     0.0
                 }
             })
-            .collect();
-        let worlds = stage_worlds(part, &angles, &self.tol).map_err(|e| e.to_string())?;
+            .collect()
+    }
+
+    /// The pieces tool `tool` is checked against at bend `b` with `done`
+    /// made: every piece of the stage (the flats, the bends made, the
+    /// strips not yet bent) but `b`'s own strip (half rolled, half flat
+    /// on its child during the stroke: not a piece), and for the punch
+    /// not `b`'s two flats either (its tip forms the bend between them).
+    fn checked<'s>(
+        &'s self,
+        done: &'s BTreeSet<usize>,
+        b: usize,
+        tool: usize,
+    ) -> impl Iterator<Item = &'s Piece<'s>> + 's {
+        let own = self
+            .part
+            .bends
+            .get(b)
+            .map(|x| (x.parent, x.child))
+            .unwrap_or((usize::MAX, usize::MAX));
+        self.pieces.iter().filter(move |p| match p.what {
+            Kind::Flat(f) => tool != PUNCH || (f != own.0 && f != own.1),
+            Kind::Bend(i) => done.contains(&i),
+            Kind::Strip(i) => i != b && !done.contains(&i),
+        })
+    }
+
+    /// The speed bound and the tools' length of bend `b`'s stroke with
+    /// `done` made: the farthest any corner of a checked piece's box lies
+    /// from the axis at either end of the stroke (`stroke_speed`), and
+    /// (unless given) twice the farthest one lies along it from the
+    /// bend's middle, so the tools reach past every piece.
+    fn stroke(&self, done: &BTreeSet<usize>, b: usize) -> Result<Stroke, String> {
+        let part = self.part;
+        let theta = part.bends.get(b).ok_or("a bend is missing")?.theta();
+        let start =
+            stage_worlds(part, &self.angles(done, b, 0.0), &self.tol).map_err(|e| e.to_string())?;
+        let end = stage_worlds(part, &self.angles(done, b, theta), &self.tol)
+            .map_err(|e| e.to_string())?;
+        let frame = bend_frame(part, b, 0.0, &start).map_err(|e| e.to_string())?;
+        let mut reach = 0.0_f64;
+        let mut along = 0.0_f64;
+        let mut seen = BTreeSet::new();
+        for piece in self
+            .checked(done, b, PUNCH)
+            .chain(self.checked(done, b, DIE))
+        {
+            if !seen.insert(piece.what) {
+                continue;
+            }
+            let built = self
+                .built
+                .get(piece.carrier)
+                .and_then(Transform::inverse)
+                .ok_or("a flat's place cannot be undone")?;
+            for worlds in [&start, &end] {
+                let stage = worlds
+                    .get(piece.carrier)
+                    .ok_or("a flat's place is missing")?;
+                let moved = built.then(stage);
+                for &c in &piece.corners {
+                    let (d, a) = from_axis(frame.point, frame.axis, moved.point(c));
+                    reach = reach.max(d);
+                    along = along.max(a.abs());
+                }
+            }
+        }
+        let speed = stroke_speed(part, b, reach).ok_or("the part has no finite size")?;
+        let length = self
+            .length
+            .unwrap_or(2.0 * (along + self.tol.linear).max(frame.reach));
+        if !(length.is_finite() && length > 0.0) {
+            return Err("the part has no finite size".into());
+        }
+        Ok(Stroke { speed, length })
+    }
+
+    /// The least proven distance between each tool and the pieces it is
+    /// checked against at bend `b`'s stroke angle `rho`, with the others
+    /// made (`done`) or flat; a failure when one is below the clearance.
+    fn at(
+        &self,
+        done: &BTreeSet<usize>,
+        b: usize,
+        rho: f64,
+        stroke: Stroke,
+    ) -> Result<Result<[f64; 2], Failure>, String> {
+        let part = self.part;
+        let worlds =
+            stage_worlds(part, &self.angles(done, b, rho), &self.tol).map_err(|e| e.to_string())?;
         let frame = bend_frame(part, b, rho, &worlds).map_err(|e| e.to_string())?;
-        let speed = stroke_speed(part, b).ok_or("the part has no finite size")?;
-        let length = self.length.unwrap_or(2.0 * speed);
-        let exempt = |k: Kind| match k {
-            Kind::Flat(f) => f == bend.parent || f == bend.child,
-            Kind::Bend(i) | Kind::Strip(i) => i == b,
-        };
-        let mut least = f64::INFINITY;
-        for (tool, points, below) in [
-            ("punch", &self.punch, 0.0),
-            ("die", &self.die, frame.radius + frame.thickness),
-        ] {
-            let tool_frame = frame.tool(below).ok_or("a tool's frame is not finite")?;
-            let pieces = self
-                .flats
-                .iter()
-                .chain(
-                    self.bends
-                        .iter()
-                        .filter(|p| matches!(p.what, Kind::Bend(i) if done.contains(&i))),
+        let mut least = [f64::INFINITY; 2];
+        for (tool, name) in TOOLS.iter().enumerate() {
+            let (points, below) = if tool == PUNCH {
+                (&self.punch, 0.0)
+            } else {
+                // The die counted lowered (away from the punch) by the
+                // clearance and the tolerance: the sheet rests on its top
+                // (its outer skin on the die's top, from the punch's side,
+                // at distance 0), which then measures the clearance and
+                // the tolerance and clears, while a piece that goes into
+                // the die by more than the tolerance, or comes nearer than
+                // the clearance from any other side, does not.
+                (
+                    &self.die,
+                    frame.radius + frame.thickness + self.clearance + self.tol.linear,
                 )
-                .chain(
-                    self.strips
-                        .iter()
-                        .filter(|p| matches!(p.what, Kind::Strip(i) if !done.contains(&i))),
-                );
-            for piece in pieces {
-                if exempt(piece.what) {
-                    continue;
-                }
-                self.work.set(self.work.get().saturating_add(1));
-                if self.work.get() > MAX_WORK {
-                    return Err(format!(
-                        "more than {MAX_WORK} distances measured: the search over orders is too large (many bends, most orders colliding or close to it)"
-                    ));
-                }
-                let (Some(stage), Some(built)) =
-                    (worlds.get(piece.carrier), self.built.get(piece.carrier))
+            };
+            let tool_frame = frame.tool(below).ok_or("a tool's frame is not finite")?;
+            let pieces: Vec<&Piece<'_>> = self.checked(done, b, tool).collect();
+            // The tool carried into each carrier's built place, built once
+            // per carrier (every piece it carries shares it).
+            let carriers: Vec<usize> = pieces
+                .iter()
+                .map(|p| p.carrier)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            let mut bodies: Vec<(Body, craft3d_math::Frame)> = Vec::with_capacity(carriers.len());
+            for &carrier in &carriers {
+                let (Some(stage), Some(built)) = (worlds.get(carrier), self.built.get(carrier))
                 else {
                     return Err("a flat's place is missing".into());
                 };
@@ -239,24 +380,60 @@ impl Check<'_> {
                 let local = back
                     .frame(&tool_frame)
                     .ok_or("a tool's frame is not finite")?;
-                let body: Body = prism(points, &local, -0.5 * length, 0.5 * length, &self.tol)
-                    .map_err(|e| format!("the {tool}: {e}"))?;
-                let measured = Measured::new(&body, None, &self.tol)?;
-                let near = verify::distance(&[measured], std::slice::from_ref(&piece.measured))?;
-                let inside = contains_points(&body, &piece.points, &self.tol)
-                    .map_err(|e| e.to_string())?
-                    .contains(&Some(true));
+                let body = prism(
+                    points,
+                    &local,
+                    -0.5 * stroke.length,
+                    0.5 * stroke.length,
+                    &self.tol,
+                )
+                .map_err(|e| format!("the {name}: {e}"))?;
+                bodies.push((body, local));
+            }
+            let measured: Vec<Measured<'_>> = bodies
+                .iter()
+                .map(|(body, _)| Measured::new(body, None, &self.tol))
+                .collect::<Result<_, _>>()?;
+            for piece in pieces {
+                self.work.set(self.work.get().saturating_add(1));
+                if self.work.get() > MAX_WORK {
+                    return Err(format!(
+                        "more than {MAX_WORK} distances measured: the search over orders is too large (many bends, most orders colliding or close to it)"
+                    ));
+                }
+                let k = carriers
+                    .binary_search(&piece.carrier)
+                    .map_err(|_| "a piece's carrier is missing")?;
+                let (Some((body, local)), Some(tool_m)) = (bodies.get(k), measured.get(k)) else {
+                    return Err("a tool is missing".into());
+                };
+                let near = verify::distance(
+                    std::slice::from_ref(tool_m),
+                    std::slice::from_ref(&piece.measured),
+                )?;
+                // Wholly inside one another: a point of the piece inside
+                // the tool, or a point of the tool inside the piece.
+                let tool_point = points
+                    .first()
+                    .map(|q| local.point(q[0], q[1], 0.0))
+                    .ok_or("a tool has no points")?;
+                let inside = inside_piece(part, piece.what.piece(), tool_point)
+                    || contains_points(body, &piece.points, &self.tol)
+                        .map_err(|e| e.to_string())?
+                        .contains(&Some(true));
                 let lower = if inside { 0.0 } else { near.lower.max(0.0) };
                 if lower < self.clearance {
                     return Ok(Err(Failure::Collision {
-                        tool,
+                        tool: name,
                         piece: piece.what,
                         angle: rho,
                         distance: if inside { 0.0 } else { near.distance },
                         lower,
                     }));
                 }
-                least = least.min(lower);
+                if let Some(l) = least.get_mut(tool) {
+                    *l = l.min(lower);
+                }
             }
         }
         Ok(Ok(least))
@@ -267,23 +444,22 @@ impl Check<'_> {
     fn step(&self, done: &BTreeSet<usize>, b: usize) -> Result<Result<Cleared, Failure>, String> {
         let part = self.part;
         let theta = part.bends.get(b).ok_or("a bend is missing")?.theta();
-        let speed = stroke_speed(part, b).ok_or("the part has no finite size")?;
+        let stroke = self.stroke(done, b)?;
         let mut best = Cleared {
-            least: f64::INFINITY,
-            at: 0.0,
+            least: [f64::INFINITY; 2],
+            at: [0.0; 2],
+            proven: [f64::INFINITY; 2],
         };
-        let mut prev: Option<(f64, f64)> = None;
+        let mut prev: Option<(f64, [f64; 2])> = None;
         for j in 0..=SAMPLES {
             let rho = theta * j as f64 / SAMPLES as f64;
-            let l = match self.at(done, b, rho)? {
+            let l = match self.at(done, b, rho, stroke)? {
                 Ok(l) => l,
                 Err(f) => return Ok(Err(f)),
             };
-            if l < best.least {
-                best = Cleared { least: l, at: rho };
-            }
+            best.sampled(rho, l);
             if let Some((a, la)) = prev
-                && let Err(f) = self.between(done, b, (a, la), (rho, l), speed, 0, &mut best)?
+                && let Err(f) = self.between(done, b, (a, la), (rho, l), stroke, 0, &mut best)?
             {
                 return Ok(Err(f));
             }
@@ -299,30 +475,65 @@ impl Check<'_> {
         &self,
         done: &BTreeSet<usize>,
         b: usize,
-        (a, la): (f64, f64),
-        (c, lc): (f64, f64),
-        speed: f64,
+        (a, la): (f64, [f64; 2]),
+        (c, lc): (f64, [f64; 2]),
+        stroke: Stroke,
         depth: u32,
         best: &mut Cleared,
     ) -> Result<Result<(), Failure>, String> {
-        if la.min(lc) - speed * (c - a) * 0.5 >= self.clearance {
+        let slack = stroke.speed * (c - a) * 0.5;
+        let proven = [
+            la[PUNCH].min(lc[PUNCH]) - slack,
+            la[DIE].min(lc[DIE]) - slack,
+        ];
+        if proven.iter().all(|p| *p >= self.clearance) {
+            for (best, p) in best.proven.iter_mut().zip(proven) {
+                *best = best.min(p);
+            }
             return Ok(Ok(()));
         }
         if depth >= MAX_DEPTH {
             return Ok(Err(Failure::NotProven { from: a, to: c }));
         }
         let m = 0.5 * (a + c);
-        let lm = match self.at(done, b, m)? {
+        let lm = match self.at(done, b, m, stroke)? {
             Ok(l) => l,
             Err(f) => return Ok(Err(f)),
         };
-        if lm < best.least {
-            *best = Cleared { least: lm, at: m };
-        }
-        if let Err(f) = self.between(done, b, (a, la), (m, lm), speed, depth + 1, best)? {
+        best.sampled(m, lm);
+        if let Err(f) = self.between(done, b, (a, la), (m, lm), stroke, depth + 1, best)? {
             return Ok(Err(f));
         }
-        self.between(done, b, (m, lm), (c, lc), speed, depth + 1, best)
+        self.between(done, b, (m, lm), (c, lc), stroke, depth + 1, best)
+    }
+}
+
+impl Cleared {
+    fn sampled(&mut self, rho: f64, l: [f64; 2]) {
+        for ((least, at), l) in self.least.iter_mut().zip(self.at.iter_mut()).zip(l) {
+            if l < *least {
+                *least = l;
+                *at = rho;
+            }
+        }
+    }
+
+    /// `least`, `at` (degrees) and `proven` of tool `tool` (null where
+    /// the tool met no piece).
+    fn json(&self, tool: usize) -> serde_json::Map<String, Value> {
+        let finite = |v: Option<&f64>| match v {
+            Some(v) if v.is_finite() => json!(v),
+            _ => Value::Null,
+        };
+        let mut v = serde_json::Map::new();
+        v.insert("least".into(), finite(self.least.get(tool)));
+        let at = match (self.least.get(tool), self.at.get(tool)) {
+            (Some(l), Some(a)) if l.is_finite() => json!(degrees(*a)),
+            _ => Value::Null,
+        };
+        v.insert("at".into(), at);
+        v.insert("proven".into(), finite(self.proven.get(tool)));
+        v
     }
 }
 
@@ -391,6 +602,50 @@ fn degrees(r: f64) -> f64 {
     r.to_degrees()
 }
 
+/// Per bend, its strip not yet bent as a slab on its parent.
+fn slabs_of(part: &sheetmetal::Part, tol: &Tolerance) -> Result<Vec<Body>, String> {
+    (0..part.bends.len())
+        .map(|i| strip_slab(part, i, tol).map_err(|e| e.to_string()))
+        .collect()
+}
+
+/// Every piece a stage can have: the flats, the bends as built and the
+/// strips not yet bent (`slabs`, from [`slabs_of`]).
+fn pieces_of<'a>(
+    part: &'a sheetmetal::Part,
+    slabs: &'a [Body],
+    tol: &Tolerance,
+) -> Result<Vec<Piece<'a>>, String> {
+    let body = &part.solid.body;
+    let mut pieces = Vec::new();
+    let faces = (0..part.flats.len())
+        .map(|f| (Kind::Flat(f), flat_faces(part, f), f))
+        .chain(
+            part.bends
+                .iter()
+                .enumerate()
+                .map(|(i, b)| (Kind::Bend(i), bend_faces(part, i), b.parent)),
+        );
+    for (what, faces, carrier) in faces {
+        if faces.is_empty() {
+            continue;
+        }
+        pieces.push(Piece::new(
+            what,
+            Measured::new(body, Some(&faces), tol)?,
+            carrier,
+        ));
+    }
+    for (i, (b, slab)) in part.bends.iter().zip(slabs).enumerate() {
+        pieces.push(Piece::new(
+            Kind::Strip(i),
+            Measured::new(slab, None, tol)?,
+            b.parent,
+        ));
+    }
+    Ok(pieces)
+}
+
 fn bend_sequence(session: &mut Session, params: &Value) -> Run {
     const ID: &str = "sheetMetal.bendSequence";
     let p = Params::new(
@@ -442,54 +697,9 @@ fn bend_sequence(session: &mut Session, params: &Value) -> Run {
         prism(points, &unit, 0.0, size, &tol)
             .map_err(|e| CommandError::new(format!("{ID}: `{name}`: {e}")))?;
     }
-    let body = &part.solid.body;
-    let measured = |faces: Vec<usize>| -> Result<Option<(Measured<'_>, Vec<Vec3>)>, CommandError> {
-        if faces.is_empty() {
-            return Ok(None);
-        }
-        let m = Measured::new(body, Some(&faces), &tol)
-            .map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
-        let points = points_of(&m);
-        Ok(Some((m, points)))
-    };
-    let mut flats = Vec::new();
-    for f in 0..part.flats.len() {
-        if let Some((m, points)) = measured(flat_faces(part, f))? {
-            flats.push(Piece {
-                what: Kind::Flat(f),
-                measured: m,
-                points,
-                carrier: f,
-            });
-        }
-    }
-    let mut bends = Vec::new();
-    for (i, b) in part.bends.iter().enumerate() {
-        if let Some((m, points)) = measured(bend_faces(part, i))? {
-            bends.push(Piece {
-                what: Kind::Bend(i),
-                measured: m,
-                points,
-                carrier: b.parent,
-            });
-        }
-    }
-    let slabs: Vec<Body> = (0..part.bends.len())
-        .map(|i| strip_slab(part, i, &tol))
-        .collect::<Result<_, _>>()
-        .map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
-    let mut strips = Vec::new();
-    for (i, (b, slab)) in part.bends.iter().zip(&slabs).enumerate() {
-        let m =
-            Measured::new(slab, None, &tol).map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
-        let points = points_of(&m);
-        strips.push(Piece {
-            what: Kind::Strip(i),
-            measured: m,
-            points,
-            carrier: b.parent,
-        });
-    }
+    let slabs = slabs_of(part, &tol).map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
+    let pieces =
+        pieces_of(part, &slabs, &tol).map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
     let check = Check {
         part,
         tol,
@@ -497,9 +707,7 @@ fn bend_sequence(session: &mut Session, params: &Value) -> Run {
         die,
         length,
         clearance,
-        flats,
-        bends,
-        strips,
+        pieces,
         built: final_worlds(part),
         work: std::cell::Cell::new(0),
     };
@@ -525,12 +733,11 @@ fn bend_sequence(session: &mut Session, params: &Value) -> Run {
     let steps: Vec<Value> = order
         .iter()
         .map(|(b, before, c)| {
-            json!({
-                "flange": b,
-                "done": before.iter().collect::<Vec<_>>(),
-                "least": if c.least.is_finite() { json!(c.least) } else { Value::Null },
-                "at": degrees(c.at),
-            })
+            let mut v = c.json(PUNCH);
+            v.insert("flange".into(), json!(b));
+            v.insert("done".into(), json!(before.iter().collect::<Vec<_>>()));
+            v.insert("die".into(), Value::Object(c.json(DIE)));
+            Value::Object(v)
         })
         .collect();
     let collisions: Vec<Value> = tried
@@ -569,7 +776,183 @@ fn bend_sequence(session: &mut Session, params: &Value) -> Run {
         "steps": if feasible { json!(steps) } else { json!([]) },
         "collisions": collisions,
         "clearance": clearance,
+        "unchecked": UNCHECKED,
         "work": check.work.get(),
         "lengthUnit": length_unit(doc),
     }))
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+mod tests {
+    use super::*;
+    use crate::Workspace;
+
+    fn run(s: &mut Session, id: &str, params: Value) -> Value {
+        s.execute(id, &params)
+            .unwrap_or_else(|e| panic!("{id}: {e}"))
+    }
+
+    /// A hairpin: the base is a strip 100 long with a tab at its right
+    /// end, flange 0 (100 long) is bent 180 degrees up from the tab's left
+    /// edge so it runs on past the base's right end, flange 1 (10 long)
+    /// stands up at the base's left end. In the pattern flange 0 lies back
+    /// over the strip, so the part reaches about 190 from flange 1's axis
+    /// while the pattern's diagonal is about 119: a point's distance from
+    /// an axis is bounded by its distance along the sheet, not by the
+    /// pattern's size.
+    fn hairpin(s: &mut Session, k: f64) {
+        run(s, "file.new", json!({"units": "mm", "tolerance": 1e-6 * k}));
+        run(s, "sketch.create", json!({"plane": "xy", "name": "Base"}));
+        let points: Vec<[f64; 2]> = [
+            [0.0, 0.0],
+            [100.0, 0.0],
+            [100.0, 30.0],
+            [90.0, 30.0],
+            [90.0, 10.0],
+            [0.0, 10.0],
+        ]
+        .iter()
+        .map(|p| [p[0] * k, p[1] * k])
+        .collect();
+        let made = run(
+            s,
+            "sketch.polyline",
+            json!({"sketch": "Base", "points": points, "closed": true}),
+        );
+        let lines = made["lines"].as_array().unwrap().clone();
+        let mm = |v: f64| format!("{} mm", v * k);
+        let out = run(
+            s,
+            "feature.sheetMetal",
+            json!({"sketch": "Base", "name": "Hairpin", "thickness": mm(1.0), "radius": mm(1.0),
+                   "kFactor": 0.5, "flanges": [
+                       {"edge": lines[3], "length": mm(100.0), "angle": "180 deg",
+                        "insetEnd": mm(5.0)},
+                       {"edge": lines[5], "length": mm(10.0), "angle": "90 deg"}]}),
+        );
+        assert!(out.get("failed").is_none_or(Value::is_null), "{out}");
+    }
+
+    #[test]
+    fn the_stroke_speed_bounds_every_point_of_a_part_that_reaches_past_its_pattern() {
+        for k in [1e-3, 1.0, 1e6] {
+            let mut s = Session::new(Workspace::default());
+            hairpin(&mut s, k);
+            let params = json!({"feature": "Hairpin"});
+            let p = Params::new("test", &params, &["feature"]).unwrap();
+            let feature = {
+                let doc = s.document().unwrap().history.current();
+                crate::commands::feature_ref(doc, &p, "test", "feature").unwrap()
+            };
+            let open = s.document_mut().unwrap();
+            let regen = open.regen();
+            let doc = open.history.current();
+            let built = craft3d_regen::sheet_metal_part(doc, &regen, feature).unwrap();
+            let part = &built.part;
+            let tol = built.tolerance;
+            let slabs = slabs_of(part, &tol).unwrap();
+            let check = Check {
+                part,
+                tol,
+                punch: vec![[-k, 0.0], [k, 0.0], [k, 100.0 * k], [-k, 100.0 * k]],
+                die: vec![[-k, -k], [k, -k], [k, 0.0], [-k, 0.0]],
+                length: None,
+                clearance: tol.linear,
+                pieces: pieces_of(part, &slabs, &tol).unwrap(),
+                built: final_worlds(part),
+                work: std::cell::Cell::new(0),
+            };
+            // The pattern's diagonal (the old bound's premise): the flats'
+            // outlines and the strips.
+            let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+            let mut grow = |p: [f64; 2]| {
+                lo = [lo[0].min(p[0]), lo[1].min(p[1])];
+                hi = [hi[0].max(p[0]), hi[1].max(p[1])];
+            };
+            for flat in &part.flats {
+                for seg in &flat.outer {
+                    grow(seg.start);
+                }
+            }
+            for x in &part.bends {
+                for q in [x.start, x.end] {
+                    grow(q);
+                    grow([
+                        q[0] + x.allowance * x.across[0],
+                        q[1] + x.allowance * x.across[1],
+                    ]);
+                }
+            }
+            let diagonal = (hi[0] - lo[0]).hypot(hi[1] - lo[1]);
+            let b = 1;
+            let bend = &part.bends[b];
+            let old_premise = diagonal + 2.0 * (bend.radius + bend.thickness);
+            for done in [BTreeSet::from([0]), BTreeSet::new()] {
+                let stroke = check.stroke(&done, b).unwrap();
+                let steps = 256;
+                let theta = bend.theta();
+                let h = theta / steps as f64;
+                let mut farthest = 0.0_f64;
+                let mut fastest = 0.0_f64;
+                let mut previous: Option<Vec<Vec3>> = None;
+                for j in 0..=steps {
+                    let rho = h * j as f64;
+                    let worlds = stage_worlds(part, &check.angles(&done, b, rho), &tol).unwrap();
+                    let frame = bend_frame(part, b, rho, &worlds).unwrap();
+                    let into_tool = Transform::from_frame(&frame.tool(0.0).unwrap())
+                        .inverse()
+                        .unwrap();
+                    let mut now = Vec::new();
+                    let mut seen = BTreeSet::new();
+                    for piece in check
+                        .checked(&done, b, PUNCH)
+                        .chain(check.checked(&done, b, DIE))
+                    {
+                        if !seen.insert(piece.what) {
+                            continue;
+                        }
+                        let moved = check.built[piece.carrier]
+                            .inverse()
+                            .unwrap()
+                            .then(&worlds[piece.carrier]);
+                        for v in piece.measured.triangles.values().flatten().flatten() {
+                            let at = moved.point(*v);
+                            farthest = farthest.max(from_axis(frame.point, frame.axis, at).0);
+                            now.push(into_tool.point(at));
+                        }
+                    }
+                    if let Some(before) = &previous {
+                        for (a, c) in before.iter().zip(&now) {
+                            fastest = fastest.max(a.distance(*c) / h);
+                        }
+                    }
+                    previous = Some(now);
+                }
+                assert!(
+                    fastest <= stroke.speed * (1.0 + 1e-9),
+                    "scale {k}, done {done:?}: a point moves at {fastest} against the tools, the bound is {}",
+                    stroke.speed
+                );
+                assert!(
+                    2.0 * (stroke.speed - bend.neutral()) >= farthest * (1.0 - 1e-12),
+                    "scale {k}: the bound's reach {} against the farthest point {farthest}",
+                    2.0 * (stroke.speed - bend.neutral())
+                );
+                if done.contains(&0) {
+                    // Flange 0 folded out reaches past what the pattern's
+                    // diagonal allowed.
+                    assert!(
+                        farthest > 1.5 * old_premise,
+                        "scale {k}: farthest {farthest}, pattern diagonal bound {old_premise}"
+                    );
+                }
+            }
+        }
+    }
 }

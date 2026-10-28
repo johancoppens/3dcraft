@@ -16,7 +16,7 @@
 use super::{Part, SheetFace, flat_faces, fold, refuse, world};
 use crate::KernelError;
 use crate::extrude::extrude;
-use crate::profile::{Curve2, Shape, SketchCurve, detect_profiles, distance};
+use crate::profile::{Curve2, SketchCurve, detect_profiles, distance};
 use craft3d_math::{Frame, Tolerance, Transform, Vec3};
 use craft3d_topo::{Body, EdgeId, FaceId};
 
@@ -234,53 +234,121 @@ pub fn bend_frame(
     })
 }
 
-/// How far any point of the part can move against tools standing in a
-/// bend's frame, per radian of that bend's stroke: no more than its
-/// distance from the bend's axis plus the neutral radius `R + K T` (the
-/// fibre the strip takes up as it turns). The distance from the axis is
-/// bounded by the pattern's diagonal (a point's distance along the sheet
-/// from the bend's start, which folding does not lengthen) plus
-/// `2 (R + T)` for the skins. Between two stroke angles `h` apart a
-/// distance proven at both ends is proven, less this times `h / 2`, at
-/// every angle between.
-pub fn stroke_speed(part: &Part, bend: usize) -> Option<f64> {
+/// How fast any point of the part can move against tools standing in a
+/// bend's frame, per radian of that bend's stroke, given `reach`: no
+/// point of the pieces measured lies further than `reach` from the bend's
+/// axis at either end of the stroke.
+///
+/// Relative to its parent the bend's child turns about the axis by `ρ`
+/// after a shift back across the strip by `ρ r` (`r = R + K T`, the arc
+/// the neutral fibre takes up: the joint's motion), and the tools' frame
+/// turns about the same axis by `ρ/2` (its `y` is the bisector of the two
+/// legs). So against the tools a point carried by the parent turns at
+/// rate ½ about the axis, at speed `d/2` (`d` its distance from the
+/// axis), and one carried by the child at rate ½ the other way plus the
+/// shift's `r`. A parent point keeps its distance; a child point's
+/// distance is that of `x − ρ r û` (the turn keeps it), a convex function
+/// of `ρ`, so at most its larger value at `ρ = 0` and `ρ = θ`, which
+/// `reach` bounds. Between two stroke angles `h` apart a distance proven
+/// at both ends is proven, less this times `h / 2`, at every angle
+/// between.
+pub fn stroke_speed(part: &Part, bend: usize, reach: f64) -> Option<f64> {
     let b = part.bends.get(bend)?;
-    let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
-    let mut grow = |p: [f64; 2]| {
-        lo = [lo[0].min(p[0]), lo[1].min(p[1])];
-        hi = [hi[0].max(p[0]), hi[1].max(p[1])];
-    };
-    for flat in &part.flats {
-        for s in flat.outer.iter() {
-            grow(s.start);
-            grow(s.end);
-            // A round piece reaches as far as its circle, a spline no
-            // further than its control points.
-            match &s.shape {
-                Shape::Line => {}
-                Shape::Arc { center, radius } | Shape::Circle { center, radius } => {
-                    grow([center[0] - radius, center[1] - radius]);
-                    grow([center[0] + radius, center[1] + radius]);
-                }
-                Shape::Spline(spline) => {
-                    for p in &spline.control {
-                        grow(*p);
-                    }
-                }
-            }
-        }
-    }
-    for x in &part.bends {
-        for p in [x.start, x.end] {
-            let q = [
-                p[0] + x.allowance * x.across[0],
-                p[1] + x.allowance * x.across[1],
-            ];
-            grow(p);
-            grow(q);
-        }
-    }
-    let diagonal = (hi[0] - lo[0]).hypot(hi[1] - lo[1]);
-    let speed = diagonal + 2.0 * (b.radius + b.thickness) + b.neutral();
+    let speed = 0.5 * reach.max(0.0) + b.neutral();
     speed.is_finite().then_some(speed)
+}
+
+/// The distance of `p` from the line through `point` along the unit
+/// `axis`, and how far along it `p` lies from `point`.
+pub fn from_axis(point: Vec3, axis: Vec3, p: Vec3) -> (f64, f64) {
+    let w = p - point;
+    let along = w.dot(axis);
+    ((w - axis * along).length(), along)
+}
+
+/// A piece of the part at a stage, for [`inside_piece`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PieceOf {
+    /// A flat (0 the base, `i + 1` flange `i`'s).
+    Flat(usize),
+    /// Bend `i` as built.
+    Bend(usize),
+    /// Bend `i`'s strip not yet bent, flat on its parent.
+    Strip(usize),
+}
+
+/// Whether `p` (a point in the built part's world, carried there with the
+/// piece) lies strictly inside the material of `piece`: a flat's is its
+/// outline (less its holes) `T` thick, a strip's the rectangle over its
+/// strip `T` thick, a built bend's the sector of the ring between the
+/// radii `R` and `R + T` over its angle, along its length. Exact for any
+/// outline (the winding number of its loops); a point on a piece's
+/// boundary is on its faces, which the distance sees.
+pub fn inside_piece(part: &Part, piece: PieceOf, p: Vec3) -> bool {
+    let t = part.thickness;
+    let local_of = |flat: usize| {
+        part.flats
+            .get(flat)
+            .and_then(|f| world(&part.plane, f).inverse())
+            .map(|w| w.point(p))
+    };
+    match piece {
+        PieceOf::Flat(f) => {
+            let (Some(flat), Some(q)) = (part.flats.get(f), local_of(f)) else {
+                return false;
+            };
+            if !(q.z > 0.0 && q.z < t) {
+                return false;
+            }
+            let at = [q.x, q.y];
+            let outer = crate::profile::Loop2 {
+                segments: flat.outer.clone(),
+            };
+            outer.winding_about(at).abs() > 0.5
+                && flat.holes.iter().all(|h| {
+                    crate::profile::Loop2 {
+                        segments: h.clone(),
+                    }
+                    .winding_about(at)
+                    .abs()
+                        < 0.5
+                })
+        }
+        PieceOf::Bend(i) | PieceOf::Strip(i) => {
+            let Some(b) = part.bends.get(i) else {
+                return false;
+            };
+            let Some(q) = local_of(b.parent) else {
+                return false;
+            };
+            let len = distance(b.start, b.end);
+            let Some(d) =
+                (len > 0.0).then(|| [(b.end[0] - b.start[0]) / len, (b.end[1] - b.start[1]) / len])
+            else {
+                return false;
+            };
+            let w = [q.x - b.start[0], q.y - b.start[1]];
+            let along = w[0] * d[0] + w[1] * d[1];
+            let across = w[0] * b.across[0] + w[1] * b.across[1];
+            if !(along > 0.0 && along < len) {
+                return false;
+            }
+            if matches!(piece, PieceOf::Strip(_)) {
+                return across > 0.0 && across < b.allowance && q.z > 0.0 && q.z < t;
+            }
+            // The axis lies `R` beyond the inner skin: above the top skin
+            // for a bend up, below the bottom one for a bend down; the
+            // strip starts square under (over) it and turns towards
+            // `across`.
+            let up = b.angle > 0.0;
+            let h = if up {
+                q.z - (t + b.radius)
+            } else {
+                q.z + b.radius
+            };
+            let r = across.hypot(h);
+            let phi = across.atan2(if up { -h } else { h });
+            r > b.radius && r < b.radius + t && phi > 0.0 && phi < b.theta()
+        }
+    }
 }
