@@ -399,6 +399,8 @@ pub(crate) struct Registry {
     cap: usize,
     grid: BTreeMap<(i64, i64), Vec<usize>>,
     drawn: Vec<Drawn>,
+    /// The largest slack of a piece drawn.
+    widest: f64,
 }
 
 /// The cell of a grid of `cell` that `v` is in.
@@ -420,6 +422,7 @@ impl Registry {
             cap,
             grid: BTreeMap::new(),
             drawn: Vec::new(),
+            widest: 0.0,
         }
     }
 
@@ -427,6 +430,9 @@ impl Registry {
         let at = self.drawn.len();
         for key in crate::view_export::cells_crossed(piece.a, piece.b, self.cell, self.cap) {
             self.grid.entry(key).or_default().push(at);
+        }
+        if piece.slack.is_finite() {
+            self.widest = self.widest.max(piece.slack);
         }
         self.drawn.push(piece);
     }
@@ -463,9 +469,21 @@ impl Registry {
             }
             least <= width
         };
+        // The cells next to it only where it lies within reach of their
+        // border: the grid is at least as wide as the reach.
+        let reach = close + slack + self.widest;
+        let side = |v: f64, k: i64| -> (i64, i64) {
+            let low = v - k as f64 * self.cell;
+            let high = (k + 1) as f64 * self.cell - v;
+            (
+                if low <= reach { -1 } else { 0 },
+                if high <= reach { 1 } else { 0 },
+            )
+        };
+        let ((i0, i1), (j0, j1)) = (side(p[0], i), side(p[1], j));
         let mut seen: Vec<usize> = Vec::new();
-        for di in -1..=1 {
-            for dj in -1..=1 {
+        for di in i0..=i1 {
+            for dj in j0..=j1 {
                 if let Some(list) = self.grid.get(&(i + di, j + dj)) {
                     seen.extend(list.iter().copied());
                 }

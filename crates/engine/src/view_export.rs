@@ -1093,19 +1093,21 @@ fn paths_of(
             continue;
         };
         let mut lists: Vec<(Vec<(f64, f64)>, bool)> = Vec::new();
-        let wraps = track.closed
-            && groups.len() >= 2
-            && groups.first().is_some_and(|g| g.0 == start)
-            && groups.last().is_some_and(|g| g.1 == end);
-        if wraps {
-            if let (Some(first), Some(last)) = (groups.first().copied(), groups.pop()) {
-                groups.remove(0);
+        let ends = (groups.first().copied(), groups.last().copied());
+        let inner: &[(f64, f64)] = match ends {
+            (Some(first), Some(last))
+                if track.closed && groups.len() >= 2 && first.0 == start && last.1 == end =>
+            {
                 lists.push((vec![last, first], false));
+                groups
+                    .get(1..groups.len().saturating_sub(1))
+                    .unwrap_or_default()
             }
-        }
-        for g in groups {
+            _ => &groups,
+        };
+        for g in inner {
             let whole = track.closed && g.0 == start && g.1 == end;
-            lists.push((vec![g], whole));
+            lists.push((vec![*g], whole));
         }
         for (pieces, whole) in lists {
             if let Some((path, n)) = path_of(track, &pieces, whole, view, close) {
@@ -1562,7 +1564,7 @@ pub(crate) fn export(
         view: &view,
         tolerance,
         close,
-        registry: Registry::new((scale / 64.0).max(4.0 * reach), 4096),
+        registry: Registry::new((scale / 256.0).max(4.0 * reach), 1024),
     };
     let mut kept: Vec<Kept> = Vec::new();
     for (line, kind, t0, t1) in runs {

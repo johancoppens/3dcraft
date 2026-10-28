@@ -306,6 +306,67 @@ fn a_cylinder_seen_at_30_degrees_is_ellipses_of_r_and_r_cos_30() {
     );
     let ry = format!("{}", 5.0 * cos);
     assert!(svg.contains(&format!("A5,{}", &ry[..6])), "{svg}");
+    evidence("cylinder-30deg", &svg);
+}
+
+/// The SVG in the test's output, for a person to look at
+/// (`-- --nocapture`).
+fn evidence(name: &str, svg: &str) {
+    println!("SVG-BEGIN {name}\n{svg}\nSVG-END");
+}
+
+/// A block drilled through, in iso with what is behind dashed: its edges
+/// lines, the hole's rims elliptic arcs, the far rim's back half hidden.
+#[test]
+fn a_drilled_block_in_iso_has_its_rims_as_ellipses() {
+    let dir = workdir("view-export", "drilled");
+    let mut s = session_in(&dir);
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [40, 30, 10], "name": "Block"}),
+    );
+    run(
+        &mut s,
+        "feature.cylinder",
+        json!({"radius": 5, "height": 20, "position": [20, 15, -5], "name": "Drill"}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Block", "tool": "Drill", "name": "Hole"}),
+    );
+    let (result, dxf) = export(
+        &mut s,
+        &dir,
+        "iso.dxf",
+        json!({"view": "iso", "hidden": "dashed"}),
+    );
+    assert_eq!(lines(&dxf, "visible").len(), 9, "{result}");
+    // The block's three edges at the back, and the hole's hidden
+    // silhouettes.
+    assert!(lines(&dxf, "hidden").len() >= 3, "{result}");
+    let rims = entities(&dxf, "ELLIPSE", "visible");
+    assert!(!rims.is_empty(), "{result}");
+    let ratio = group(&rims[0], "40");
+    for e in rims.iter().chain(&entities(&dxf, "ELLIPSE", "hidden")) {
+        assert!(
+            (group(e, "11").hypot(group(e, "21")) - 5.0).abs() < 1e-9,
+            "{e:?}"
+        );
+        assert!((group(e, "40") - ratio).abs() < 1e-12, "{e:?}");
+    }
+    // Seen along (1, −1, 0.8): the rims' planes are square to z, so the
+    // ratio is the cosine between z and the view, 0.8 / √2.64.
+    assert!((ratio - 0.8 / 2.64f64.sqrt()).abs() < 1e-12, "{ratio}");
+    let (_, svg) = export(
+        &mut s,
+        &dir,
+        "iso.svg",
+        json!({"view": "iso", "hidden": "dashed"}),
+    );
+    evidence("drilled-block-iso", &svg);
 }
 
 /// A spline edge is drawn as the spline it is: a D of a cubic and a line,
@@ -336,6 +397,13 @@ fn a_spline_edge_is_a_spline() {
     assert_eq!(lines(&dxf, "visible").len(), 1, "{result}");
     let (_, svg) = export(&mut s, &dir, "d.svg", json!({"view": "top"}));
     assert!(svg.contains("C10,0 10,-10 0,-10"), "{svg}");
+    let (_, iso) = export(
+        &mut s,
+        &dir,
+        "d-iso.svg",
+        json!({"view": "iso", "hidden": "dashed"}),
+    );
+    evidence("spline-d-iso", &iso);
     // In perspective the spline is rational, still one entity.
     let (seen, dxf) = export(
         &mut s,
@@ -363,6 +431,13 @@ fn a_circle_in_perspective_is_an_ellipse() {
     assert_eq!(whole.len(), 1, "{result}");
     assert!(group(&whole[0], "40") < 1.0);
     assert!(!entities(&dxf, "ELLIPSE", "hidden").is_empty(), "{result}");
+    let (_, svg) = export(
+        &mut s,
+        &dir,
+        "p.svg",
+        json!({"view": "iso", "projection": "perspective", "hidden": "dashed"}),
+    );
+    evidence("cylinder-perspective", &svg);
 }
 
 #[test]
