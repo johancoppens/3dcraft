@@ -473,62 +473,74 @@ pub(crate) fn trace(
     }
     // The worst misfit of the last round: how far, where, at which point.
     let mut worst = (0.0_f64, 0.0_f64, Vec3::ZERO);
-    let mut middles: BTreeMap<u64, Vec<Vec3>> = BTreeMap::new();
-    for _ in 0..ROUNDS {
-        let fitted: Vec<NurbsCurve> = rows
-            .iter()
-            .map(|row| fit(&params, row))
-            .collect::<Result<_, _>>()?;
-        // Per step: its middle, the points there and how far the fits are
-        // off at worst.
-        let mut checked: Vec<(usize, f64, Vec<Vec3>, f64)> = Vec::new();
-        worst = (0.0, 0.0, Vec3::ZERO);
-        for (k, pair) in params.windows(2).enumerate() {
-            let [a, b] = pair else { continue };
-            let middle = 0.5 * (a + b);
-            // A step that stayed whole since the last round has the same
-            // middle: its points are kept, not traced again.
-            let points = match middles.remove(&middle.to_bits()) {
-                Some(points) => points,
-                None => at_param(middle)?,
-            };
-            let mut most = 0.0_f64;
-            for (curve, p) in fitted.iter().zip(&points) {
-                let misfit = curve.eval(middle).distance(*p);
-                if !(misfit <= most) {
-                    most = misfit;
+    // First as always: only the steps off by more than the share are
+    // halved (every curve that settled so before is traced the same, bit
+    // for bit). When the rounds run out, again from the first stations,
+    // halving whenever any step is off every step off by more than half
+    // the share (see `wide` below).
+    let first = (params.clone(), rows.clone());
+    for wide in [false, true] {
+        if wide {
+            (params, rows) = first.clone();
+        }
+        let mut middles: BTreeMap<u64, Vec<Vec3>> = BTreeMap::new();
+        for _ in 0..ROUNDS {
+            let fitted: Vec<NurbsCurve> = rows
+                .iter()
+                .map(|row| fit(&params, row))
+                .collect::<Result<_, _>>()?;
+            // Per step: its middle, the points there and how far the fits are
+            // off at worst.
+            let mut checked: Vec<(usize, f64, Vec<Vec3>, f64)> = Vec::new();
+            worst = (0.0, 0.0, Vec3::ZERO);
+            for (k, pair) in params.windows(2).enumerate() {
+                let [a, b] = pair else { continue };
+                let middle = 0.5 * (a + b);
+                // A step that stayed whole since the last round has the same
+                // middle: its points are kept, not traced again.
+                let points = match middles.remove(&middle.to_bits()) {
+                    Some(points) => points,
+                    None => at_param(middle)?,
+                };
+                let mut most = 0.0_f64;
+                for (curve, p) in fitted.iter().zip(&points) {
+                    let misfit = curve.eval(middle).distance(*p);
+                    if !(misfit <= most) {
+                        most = misfit;
+                    }
+                    if !(misfit <= SHARE * tol) && !(misfit <= worst.0) {
+                        worst = (misfit, middle, *p);
+                    }
                 }
-                if !(misfit <= SHARE * tol) && !(misfit <= worst.0) {
-                    worst = (misfit, middle, *p);
+                checked.push((k + 1, middle, points, most));
+            }
+            // In the second pass, when any step is off, every step off by more
+            // than half the share is halved too: steps all near the share (a circle whose first
+            // steps are just too long for its radius) would otherwise be halved
+            // one or two a round, each moving the global spline's misfit on to
+            // its neighbours, and the rounds run out with the misfit just over
+            // the share everywhere.
+            let any_off = checked.iter().any(|c| !(c.3 <= SHARE * tol));
+            let mut added: Vec<(usize, f64, Vec<Vec3>)> = Vec::new();
+            for (index, middle, points, most) in checked {
+                let past = if wide { 0.5 * SHARE * tol } else { SHARE * tol };
+                if any_off && !(most <= past) {
+                    added.push((index, middle, points));
+                } else {
+                    middles.insert(middle.to_bits(), points);
                 }
             }
-            checked.push((k + 1, middle, points, most));
-        }
-        // When any step is off, every step off by more than half the share
-        // is halved too: steps all near the share (a circle whose first
-        // steps are just too long for its radius) would otherwise be halved
-        // one or two a round, each moving the global spline's misfit on to
-        // its neighbours, and the rounds run out with the misfit just over
-        // the share everywhere.
-        let any_off = checked.iter().any(|c| !(c.3 <= SHARE * tol));
-        let mut added: Vec<(usize, f64, Vec<Vec3>)> = Vec::new();
-        for (index, middle, points, most) in checked {
-            if any_off && !(most <= 0.5 * SHARE * tol) {
-                added.push((index, middle, points));
-            } else {
-                middles.insert(middle.to_bits(), points);
+            if added.is_empty() {
+                return Ok((params, rows));
             }
-        }
-        if added.is_empty() {
-            return Ok((params, rows));
-        }
-        if params.len().saturating_add(added.len()) > MAX_STATIONS {
-            break;
-        }
-        for (index, t, points) in added.into_iter().rev() {
-            params.insert(index, t);
-            for (row, p) in rows.iter_mut().zip(points) {
-                row.insert(index, p);
+            if params.len().saturating_add(added.len()) > MAX_STATIONS {
+                break;
+            }
+            for (index, t, points) in added.into_iter().rev() {
+                params.insert(index, t);
+                for (row, p) in rows.iter_mut().zip(points) {
+                    row.insert(index, p);
+                }
             }
         }
     }

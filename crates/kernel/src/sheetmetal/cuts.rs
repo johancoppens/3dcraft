@@ -1132,12 +1132,12 @@ pub(super) fn folded_sheet(
                                     .ok_or_else(|| refuse(Some(bend), "a bend is missing"))?;
                                 wrapped_edge(&mut b, skin, &seg, from, to, tol)?
                             }
-                            (_, Cell::Flat(f)) => b.segment(&seg, &w_of(f)?, (from, to))?,
-                            (_, Cell::Strip(bend)) => {
-                                return Err(refuse(
-                                    Some(bend),
-                                    "a flat's edge was first met in a bend; this is a bug",
-                                ));
+                            // A flat's own edge is carried by that flat,
+                            // whichever face meets it first (a further face
+                            // of the flat comes after the bends).
+                            (ERef::Outline(f, ..) | ERef::Sub(f, ..) | ERef::Hole(f, ..), _)
+                            | (ERef::Cut(..), Cell::Flat(f)) => {
+                                b.segment(&seg, &w_of(f)?, (from, to))?
                             }
                         };
                         edges.insert(p.edge, made);
