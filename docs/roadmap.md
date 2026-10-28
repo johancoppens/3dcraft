@@ -519,13 +519,8 @@ The first version for people outside the project (0.1.0); it does not wait for t
 #### Open
 - [ ] Sheet metal, what is not built: flanges on holes' edges, on flanges' sides, inset or with outlines of their own, curved bends, sharp bends, mitred corners at reflex corners, holes across a bend, a later boolean's cut carried onto the flat pattern, bend sequence and press-brake collision ([`design/sheetmetal.md`](design/sheetmetal.md) › *Limits*)
 - [ ] A level with a tilt (the offset and the plane's turn for a given volume and centroid) is a Jig's loop over `measure.levelFor`, one plane per call
-<<<<<<< HEAD
-- [ ] Origami: curved creases and curved outlines, thickness, slits, a sparse solve for more than 400 angles ([`design/origami.md`](design/origami.md) › *Limits*)
-- [ ] The unfold of a folded sheet: the strip beside the fan and the end fans are refused (a layout graded towards where the parametrisation stands still or collapses is owed); the kayak's sheer panel (`DevTop4S`) is refused by the developable: the condition folds at its Hermite rails' knots (diagnosed 2026-10-28, [`design/developable.md`](design/developable.md))
-=======
 - [ ] Origami: curved creases and curved outlines, thickness, slits, a sparse solve for more than 400 angles, layers of a flat-folded stack folded on by other angles ([`design/origami.md`](design/origami.md) › *Limits*)
-- [ ] The unfold of a folded sheet: the strip beside the fan and the end fans are refused (a layout graded towards where the parametrisation stands still or collapses is owed); the kayak's sheer panel (`DevTop4S`) is refused by the developable ([`design/developable.md`](design/developable.md) › *Open*)
->>>>>>> dc8895b6 (Origami folded flat: reflections, the order of the layers, creases from sketch-pattern copies, fold measures, SVG stroke)
+- [ ] The unfold of a folded sheet: the strip beside the fan and the end fans are refused (a layout graded towards where the parametrisation stands still or collapses is owed); the kayak's sheer panel (`DevTop4S`) is refused by the developable: the condition folds at its Hermite rails' knots (diagnosed 2026-10-28, [`design/developable.md`](design/developable.md) › *Open*)
 - [ ] Developables: rails that close on themselves (a tube) or have a corner, a connection split where the rulings would cross, an approximate flatten of a doubly curved face, marks drawn on a pattern carried onto the part as geometry ([`design/developable.md`](design/developable.md) › *Open*)
 - [ ] Projected views: edges written as the arcs, circles and ellipses they are instead of fine polylines
 - [ ] The web build on more than one thread: the engine in a Web Worker (the page stays responsive during a long regeneration), or a threaded build (atomics, `SharedArrayBuffer`, which needs COOP/COEP headers on every host); a first run of the Release workflow's web job
