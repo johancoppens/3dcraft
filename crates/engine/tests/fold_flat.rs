@@ -271,6 +271,43 @@ fn a_crease_patterned_in_the_sketch_folds_every_copy() {
                 (format!("{line}[2]"), "valley".to_string()),
             ]
         );
+        // The crease pattern drawn: every copy, each with its own kind
+        // (the export drew only the seed line before, 2026-10-28).
+        let count = |kind: &str| {
+            inspect["creases"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|c| c["kind"] == kind)
+                .count()
+        };
+        for path in ["pleats.svg", "pleats.dxf"] {
+            let out = run(
+                &mut s,
+                "file.export",
+                json!({"path": path, "fold": "Pleats"}),
+            );
+            assert_eq!(out["mountains"], count("mountain"), "{out}");
+            assert_eq!(out["valleys"], count("valley"), "{out}");
+        }
+        let svg = std::fs::read_to_string(dir.join("pleats.svg")).unwrap();
+        let drawn = |layer: &str| {
+            svg.lines()
+                .find(|l| l.contains(&format!("id=\"layer-{layer}\"")))
+                .map_or(0, |l| l.matches('M').count())
+        };
+        assert_eq!(drawn("valley"), count("valley"), "{svg}");
+        assert_eq!(drawn("mountain"), count("mountain"), "{svg}");
+        let dxf = std::fs::read_to_string(dir.join("pleats.dxf")).unwrap();
+        let on = |layer: &str| {
+            let lines: Vec<&str> = dxf.lines().map(str::trim).collect();
+            lines
+                .windows(12)
+                .filter(|w| w[0] == "LINE" && w.contains(&layer))
+                .count()
+        };
+        assert_eq!(on("valley"), count("valley"), "{dxf}");
+        assert_eq!(on("mountain"), count("mountain"), "{dxf}");
         // One copy set apart wins over [*].
         built(
             &mut s,

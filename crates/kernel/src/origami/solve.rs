@@ -188,6 +188,11 @@ const FIRST_STEP: f64 = PI / 180.0;
 /// taken is decided by the half-step test, not by the guess.
 const FIRST_GUESSES: [f64; 5] = [1.0, 3.0, 10.0, 30.0, 100.0];
 const FIRST_CAP: f64 = PI * 17.0 / 18.0;
+/// Two solutions of the first step closer than this fraction of their
+/// size are one branch found twice (the solve's play near the flat
+/// sheet, where the derivative is near singular); two branches through
+/// the flat sheet part at the rate of the step.
+const BRANCH_APART: f64 = 1e-3;
 /// Unknowns without a kind whose sign patterns are all tried at the first
 /// step, at most (2^6 patterns); beyond, all one way and all the other.
 const OPEN_PATTERN_BITS: usize = 6;
@@ -609,7 +614,18 @@ pub fn fold_linkage(
                     let Some((solved, ran_out)) = attempt(&base, guess, &mut budget)? else {
                         continue;
                     };
-                    if passed.iter().any(|(p, _)| max_diff(p, &solved) <= same) {
+                    // One branch found twice: near the flat sheet the loops'
+                    // derivative is near singular, so solutions that close
+                    // within the tolerance may differ by more than the
+                    // tolerance's angle (a Miura sheet of 3 × 12 cells:
+                    // 4.5e-8 rad apart at a 1-degree step); two branches
+                    // through the flat sheet part at the rate of the step
+                    // itself. Within a thousandth of the solution's size
+                    // they are one.
+                    let one_branch = |p: &[f64], q: &[f64]| {
+                        max_diff(p, q) <= same + BRANCH_APART * size_of(p).max(size_of(q))
+                    };
+                    if passed.iter().any(|(p, _)| one_branch(p, &solved)) {
                         continue;
                     }
                     let half_guess: Vec<f64> = solved.iter().map(|v| v / 2.0).collect();
@@ -647,11 +663,12 @@ pub fn fold_linkage(
                             ids.dedup();
                             return Err(FoldError::Undetermined { ids });
                         }
+                        let apart = same + BRANCH_APART * size_of(&a.0).max(size_of(&b.0));
                         let mut ids: Vec<u64> =
                             a.0.iter()
                                 .zip(&b.0)
                                 .zip(&free)
-                                .filter(|((x, y), _)| (*x - *y).abs() > same)
+                                .filter(|((x, y), _)| (*x - *y).abs() > apart)
                                 .map(|(_, &k)| source(k))
                                 .collect();
                         ids.sort_unstable();

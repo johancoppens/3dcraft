@@ -458,7 +458,7 @@ pub(crate) fn crease_pattern(
     command: &str,
 ) -> Result<crate::drawing_cmds::Source, CommandError> {
     use craft3d_drawing::{Color, Layer, Path, Segment};
-    let (id, fold) = fold_ref(session, p, "fold")?;
+    let (id, _) = fold_ref(session, p, "fold")?;
     let open = session.document_mut()?;
     let regen = open.regen();
     let doc = open.history.current();
@@ -493,15 +493,9 @@ pub(crate) fn crease_pattern(
         1.0
     };
     let mut by_kind: [Vec<Path>; 3] = [Vec::new(), Vec::new(), Vec::new()];
-    for c in &fold.creases {
-        let Some(k) = analysis
-            .arrangement
-            .creases
-            .iter()
-            .find(|k| k.id == c.line.0)
-        else {
-            continue;
-        };
+    // Every crease as the pattern resolved it: a line and each copy a
+    // sketch pattern made of it, each with its own kind.
+    for (c, k) in analysis.creases.iter().zip(&analysis.arrangement.creases) {
         let slot = match c.kind {
             CreaseKind::Mountain => 0,
             CreaseKind::Valley => 1,

@@ -165,7 +165,9 @@ number of folds is a variable:
 `fold.inspect` lists `e11` (valley), `e11[1]` (mountain) and `e11[2]` (valley); set `fold` to `180 deg`
 and the strip lies flat in four layers. A crease that names one copy (`e11[1]` with its own kind or angle,
 through `fold.edit` with `set`) wins over `e11[*]` for that copy. A crease line whose copies are not all
-creases is refused, naming the copies left out: they would otherwise be dropped without a word.
+creases is refused, naming the copies left out: they would otherwise be dropped without a word. A copy is
+named by its number; there is no `e11[last]`, because a name must keep naming the same line when the
+pattern's count changes (draw the last one as a line of its own if it needs another kind).
 
 ## Checking a crease pattern: Kawasaki and Maekawa
 
