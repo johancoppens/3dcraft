@@ -12,6 +12,7 @@
 //! autosave thread of a session that was given a recovery directory
 //! (`recovery.rs`).
 
+mod angle_warnings;
 mod appearance;
 mod appearance_cmds;
 mod assert_check;

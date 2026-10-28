@@ -67,15 +67,22 @@ Every length, angle and count may be an **expression** in the document's variabl
   that direct self-reference is refused: a cycle through other variables (`a` = `b + 1 mm`, then `b` =
   `a + 1 mm`) is kept, and every variable on it fails with *circular definition* until one is changed.
 - **A unit belongs to the number just before it.** `1/16 in` is 1 / (16 in), an inverse length, and
-  `pi / 4 rad` is pi / (4 rad): write `1 in / 16` and `pi / 4 * 1 rad`. A unit after a parenthesis or a
-  name is refused (`(pi / 4) rad`); multiply by one instead (`(pi / 4) * 1 rad`). When a variable comes
-  out as an inverse length or angle because a `/` is followed by a number with a unit, its result has a
-  `warning`; an inverse written as meant (`1 / (2 mm)`, `10 mm / (360 deg)`) has none.
-- **Angles.** A number without a unit where an angle is expected (a pattern's `angle`, a transform's) is
-  in degrees. `pi` is a plain number, so `2 * pi / n` there is a few degrees, not a turn: write
-  `360 deg / n`. Inside `sin`, `cos` and `tan` a plain number is in radians: write `sin(30 deg)`; a
-  plain number there larger than a full turn in radians (`sin(30)`) gives the variable's result a
-  `warning` that says so. An angle variable's `value` is in radians (`angleUnit: "rad"`); its result also gives `degrees`.
+  `pi / 4 rad` is pi / (4 rad): write `1 in / 16` and `pi / 4 * 1 rad`. A unit may also follow a
+  parenthesis, a function's call or `pi`, and gives the plain number there its unit: `(a + b) mm`,
+  `(360 / n) deg`, `sqrt(2) mm`, `2 * pi rad / n`. The value inside has to be a plain number (with `a`
+  a length, `(a + b) mm` is an error, not an area). After a variable's name a unit is refused
+  (`width mm`): multiply by one instead (`width * 1 mm`). When a variable comes out as an inverse length
+  or angle because a `/` is followed by a number with a unit, its result has a `warning`; an inverse
+  written as meant (`1 / (2 mm)`, `10 mm / (360 deg)`) has none.
+- **Angles.** A number without a unit where an angle is expected (a pattern's `angle`, a transform's, an
+  angle constraint's value) is in degrees (the document's angle unit). `pi` is a plain number, so
+  `2 * pi / n` there is a few degrees, not a turn: write `360 deg / n` or `2 * pi rad / n`. Such a
+  parameter, a plain number with a `pi` in it that has no unit (itself or in a variable it uses), is
+  kept as it is, as files rely on it, and `document.check` lists it under `warnings` (`kind:
+  "plainAngle"`). Inside `sin`, `cos` and `tan` a plain number is in radians and an angle is an angle:
+  `sin(30 deg)`, `sin(pi / 6)` and `sin(pi rad / 6)` are all 0.5; a plain number there larger than a
+  full turn in radians (`sin(30)`) gives the variable's result a `warning` that says so. An angle
+  variable's `value` is in radians (`angleUnit: "rad"`); its result also gives `degrees`.
 - The variables and their values are listed by `document.inspect` (`variables`); there is no separate
   list command.
 - **Reserved names.** A variable name is ASCII letters, digits and `_`, not starting with a digit, and

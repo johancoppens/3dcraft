@@ -73,6 +73,13 @@ pub enum ErrorKind {
     UnitAfterExpression {
         unit: Unit,
     },
+    /// A unit after a parenthesis, a call or `pi` whose value has a
+    /// dimension already: `(a + b) mm` with `a` a length. Such a unit gives
+    /// a plain number its unit; it does not multiply.
+    UnitOnQuantity {
+        unit: Unit,
+        dimension: Dimension,
+    },
     /// A word right after a number that is not a unit: `2 inch`, `3 MM`.
     UnknownUnit {
         name: String,
@@ -249,8 +256,16 @@ impl fmt::Display for ErrorKind {
             ),
             ErrorKind::UnitAfterExpression { unit } => write!(
                 f,
-                "the unit `{unit}` must follow a number directly, as in `45 {unit}`; to give \
-                 a whole expression a unit, multiply by one: `(pi / 4) * 1 {unit}`"
+                "the unit `{unit}` must follow a number, a parenthesis or `pi` directly, as in \
+                 `45 {unit}` or `(a + b) {unit}`; to give a variable a unit, multiply by one: \
+                 `width * 1 {unit}`"
+            ),
+            ErrorKind::UnitOnQuantity { unit, dimension } => write!(
+                f,
+                "the unit `{unit}` after a parenthesis gives a plain number a unit, but this \
+                 value is {} already; leave the unit out, or multiply by one if a product is \
+                 meant: `(...) * 1 {unit}`",
+                dimension.described()
             ),
             ErrorKind::UnknownUnit { name, meant } => write!(
                 f,

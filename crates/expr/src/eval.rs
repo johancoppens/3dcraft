@@ -99,6 +99,7 @@ fn operation_name(kind: &NodeKind) -> &'static str {
     match kind {
         NodeKind::Number { .. } => "number",
         NodeKind::Pi => "pi",
+        NodeKind::WithUnit { .. } => "unit",
         NodeKind::Variable(_) => "variable",
         NodeKind::Neg(_) => "-",
         NodeKind::Not(_) => "!",
@@ -146,6 +147,16 @@ fn eval_node(
             unit: Some(unit),
         } => Quantity::from_unit(*value, *unit),
         NodeKind::Pi => Quantity::dimensionless(std::f64::consts::PI),
+        NodeKind::WithUnit { inner, unit } => {
+            let inner = operand(*inner)?;
+            if !inner.dimension.is_dimensionless() {
+                return Err(Fail::Here(ErrorKind::UnitOnQuantity {
+                    unit: *unit,
+                    dimension: inner.dimension,
+                }));
+            }
+            Quantity::from_unit(inner.value, *unit)
+        }
         NodeKind::Variable(name) => {
             lookup(name).ok_or_else(|| ErrorKind::UnknownVariable { name: name.clone() })?
         }
@@ -903,6 +914,42 @@ mod tests {
         check("90 deg / 1 rad", PI / 2.0, NONE);
         check("r * tilt", 5.0 * PI / 6.0, Dimension::new(1, 1));
         check("n * wall", 12.0, LENGTH);
+    }
+
+    /// A unit after a parenthesis, a call or `pi` gives a plain number its
+    /// unit, exactly as a literal's unit does; on a value that has a
+    /// dimension it is an error, never a product.
+    #[test]
+    fn a_unit_after_a_parenthesis_gives_a_plain_number_its_unit() {
+        check("(360 / n) deg", PI / 3.0, ANGLE);
+        check("2 * pi rad / n", PI / 3.0, ANGLE);
+        check("(pi / 4) rad", PI / 4.0, ANGLE);
+        check("pi rad", PI, ANGLE);
+        check("(1 + 2) mm", 3.0, LENGTH);
+        check("(1 + 2) in", 3.0 * 25.4, LENGTH);
+        check("(a / 1 mm + 1) mm", 4.0, LENGTH);
+        check("sqrt(4) cm", 20.0, LENGTH);
+        check("(2) mm ^ 2", 4.0, AREA);
+        check("sin((90) deg)", 1.0, NONE);
+        check("sin(pi rad / 2)", 1.0, NONE);
+        // Bit for bit what the literal gives.
+        assert_eq!(eval("(30) deg").value, eval("30 deg").value);
+        assert_eq!(eval("(12.5) in").value, eval("12.5 in").value);
+        for (source, unit, dimension) in [
+            ("(a + b) mm", Unit::Millimetre, LENGTH),
+            ("(tilt) deg", Unit::Degree, ANGLE),
+            ("abs(r) mm", Unit::Millimetre, LENGTH),
+        ] {
+            let e = err(source);
+            assert_eq!(
+                e.kind,
+                ErrorKind::UnitOnQuantity { unit, dimension },
+                "{source}"
+            );
+            assert!(e.to_string().contains("plain number"), "{source}: {e}");
+        }
+        // Not finite with the unit applied.
+        assert!(matches!(err("(1e308) m").kind, ErrorKind::NonFinite { .. }));
     }
 
     #[test]

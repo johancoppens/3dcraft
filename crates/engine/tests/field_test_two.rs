@@ -212,12 +212,22 @@ fn a_unit_in_the_wrong_place_or_spelled_otherwise_says_what_to_write() {
     let set = |s: &mut craft3d_engine::Session, expr: &str| {
         run(s, "variable.set", json!({"name": "v", "expr": expr}))
     };
+    // What the field test wrote is accepted since 2026-10-28: a unit
+    // after a parenthesis gives the plain number inside it that unit.
     let after = set(&mut s, "(pi / 4) rad");
+    assert_eq!(after["dimension"], "angle", "{after}");
+    assert!(
+        (after["degrees"].as_f64().unwrap() - 45.0).abs() < 1e-9,
+        "{after}"
+    );
+    // After a variable a unit is still refused, with what to write.
+    run(&mut s, "variable.set", json!({"name": "w", "expr": "3"}));
+    let after = set(&mut s, "w rad");
     assert!(
         after["error"]
             .as_str()
             .unwrap()
-            .contains("multiply by one: `(pi / 4) * 1 rad`"),
+            .contains("multiply by one: `width * 1 rad`"),
         "{after}"
     );
     let inch = set(&mut s, "2 inch");

@@ -32,7 +32,7 @@ The document is unchanged. The message starts with the command and usually the p
 | *variable.delete: \`t\` is still used by the feature \`Plate\` (F1: size.z), …* | Change those first, or give `"force": true` to delete it anyway |
 | *file.save: '/tmp/x.3dcraft' is outside the write root …* | Save or export beneath the directory the server or window was given |
 | *variable.set: \`wall + 1 mm\` uses \`wall\` itself …* | Give the new value (`3 mm`); the message says what it is now |
-| *the unit \`rad\` must follow a number directly …*, *\`inch\` is not a unit: write \`in\`* | Units are `um mm cm m in ft deg rad`, in lower case, right after a number |
+| *the unit \`rad\` must follow a number, a parenthesis or \`pi\` directly …*, *\`inch\` is not a unit: write \`in\`* | Units are `um mm cm m in ft deg rad`, in lower case, right after a number, a `)` or `pi` (`(360 / n) deg`); after a variable, multiply by one (`width * 1 mm`) |
 | *an angle constraint takes a line and a line, but 1 entity was given* | Give the entities the message lists, in that order |
 
 `command_list` (or `craft3d-cli commands --filter …`) shows what parameters a command takes.

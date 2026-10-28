@@ -234,6 +234,14 @@ pub enum NodeKind {
         unit: Option<Unit>,
     },
     Pi,
+    /// `(expr) unit`, `pi unit`, `f(x) unit`: a plain number given a unit
+    /// as a literal is (`(360 / n) deg` is `360 / n` degrees). The inner
+    /// value must be a plain number: a unit after a value that has one
+    /// already is an error, not a product.
+    WithUnit {
+        inner: NodeId,
+        unit: Unit,
+    },
     Variable(String),
     Neg(NodeId),
     /// `!x`: 1 when `x` is 0, else 0.
@@ -303,6 +311,53 @@ impl Expr {
             NodeKind::Variable(name) => Some((name.as_str(), node.pos)),
             _ => None,
         })
+    }
+
+    /// True when a `pi` stands in the expression as a plain number: not
+    /// given a unit (`pi rad`, `(2 * pi / n) rad`) and not inside the
+    /// argument of `sin`, `cos` or `tan` (which take a plain number as
+    /// radians). Such an expression, used where an angle is expected and
+    /// evaluating to a plain number, is in degrees there: `2 * pi / n` is
+    /// a few degrees, which is seldom what was meant. Only the tree is
+    /// looked at, not the variables it uses.
+    pub fn has_bare_pi(&self) -> bool {
+        let Some(root) = self.nodes.len().checked_sub(1) else {
+            return false;
+        };
+        // Every node is an operand of at most one later node, so the
+        // walk visits each once; the cap bounds it for any tree.
+        let mut stack = vec![(root, false)];
+        let mut visits = 0usize;
+        while let Some((id, shielded)) = stack.pop() {
+            visits += 1;
+            if visits > self.nodes.len() {
+                break;
+            }
+            let Some(node) = self.nodes.get(id) else {
+                continue;
+            };
+            match &node.kind {
+                NodeKind::Pi if !shielded => return true,
+                NodeKind::Pi | NodeKind::Number { .. } | NodeKind::Variable(_) => {}
+                NodeKind::WithUnit { inner, .. } => stack.push((*inner, true)),
+                NodeKind::Neg(inner) | NodeKind::Not(inner) => stack.push((*inner, shielded)),
+                NodeKind::Pow { base, .. } => stack.push((*base, shielded)),
+                NodeKind::Binary { left, right, .. } => {
+                    stack.push((*left, shielded));
+                    stack.push((*right, shielded));
+                }
+                NodeKind::Call { function, args } => {
+                    let trig = matches!(function, Function::Sin | Function::Cos | Function::Tan);
+                    stack.extend(args.iter().map(|a| (*a, shielded || trig)));
+                }
+                NodeKind::Lookup { row, .. } => {
+                    if let LookupRow::Number(id) = row {
+                        stack.push((*id, shielded));
+                    }
+                }
+            }
+        }
+        false
     }
 
     /// Every lookup's table, with the byte offset of its name, in source
@@ -665,7 +720,8 @@ impl Parser<'_> {
             TokenKind::Ident => {
                 self.advance();
                 if self.peek().kind == TokenKind::LParen {
-                    return self.call(token);
+                    let called = self.call(token)?;
+                    return Ok(self.unit_after(called));
                 }
                 if self.peek().kind == TokenKind::LBracket {
                     return self.lookup(token);
@@ -683,7 +739,11 @@ impl Parser<'_> {
                 } else {
                     NodeKind::Variable(name.to_string())
                 };
-                Ok(self.push(kind, token.pos))
+                let is_pi = kind == NodeKind::Pi;
+                let node = self.push(kind, token.pos);
+                // `pi rad`, as `(pi) rad`; a unit after a variable stays
+                // refused (`width mm`).
+                Ok(if is_pi { self.unit_after(node) } else { node })
             }
             TokenKind::LParen => {
                 self.enter(token.pos)?;
@@ -695,9 +755,25 @@ impl Parser<'_> {
                 }
                 self.advance();
                 self.leave();
-                Ok(inner)
+                Ok(self.unit_after(inner))
             }
             _ => Err(self.expected("a number, a variable, a function or `(`", token)),
+        }
+    }
+
+    /// `node`, or `node` given the unit that follows it (`(a + b) mm`).
+    fn unit_after(&mut self, node: NodeId) -> NodeId {
+        let next = self.peek();
+        let unit = match next.kind {
+            TokenKind::Ident => Unit::from_symbol(self.text(next)),
+            _ => None,
+        };
+        match unit {
+            Some(unit) => {
+                self.advance();
+                self.push(NodeKind::WithUnit { inner: node, unit }, next.pos)
+            }
+            None => node,
         }
     }
 
@@ -1008,6 +1084,7 @@ mod tests {
                     format!("{}({})", function.name(), args.join(", "))
                 }
                 NodeKind::Pi => "pi".to_string(),
+                NodeKind::WithUnit { inner, unit } => format!("({} {unit})", show(expr, *inner)),
                 NodeKind::Lookup { table, row, column } => match row {
                     LookupRow::Number(id) => format!("{table}[{}].{column}", show(expr, *id)),
                     LookupRow::Key(key) => format!("{table}[{key:?}].{column}"),
@@ -1105,6 +1182,42 @@ mod tests {
         assert_eq!(expr.variables(), ["a", "b", "c", "n", "d", "e", "f", "g"]);
     }
 
+    /// A unit after a parenthesis, a call or `pi` gives the plain number
+    /// inside it that unit, as a literal's unit does, and binds as tightly:
+    /// `(360 / n) deg`, `(a + b) mm`, `2 * pi rad / n`.
+    #[test]
+    fn unit_after_a_parenthesis() {
+        assert_eq!(tree("(a + b) mm"), "((a + b) mm)");
+        assert_eq!(tree("(360 / n) deg"), "((360 / n) deg)");
+        assert_eq!(tree("2 * pi rad / n"), "((2 * (pi rad)) / n)");
+        assert_eq!(tree("-(a) mm ^ 2"), "-((a mm) ^ 2)");
+        assert_eq!(tree("sqrt(2) mm + 1"), "((sqrt(2) mm) + 1)");
+        assert_eq!(tree("(a) * 2 mm"), "(a * 2)");
+        assert!(Expr::parse("(pi / 4) rad").is_ok());
+        assert!(Expr::parse("pi rad / 4").is_ok());
+    }
+
+    #[test]
+    fn a_bare_pi_is_found_outside_units_and_trigonometry() {
+        for (source, bare) in [
+            ("2 * pi / n", true),
+            ("pi", true),
+            ("-pi / 2", true),
+            ("if(a > 0, pi, 0)", true),
+            ("t[pi].a", true),
+            ("2 * pi rad / n", false),
+            ("(2 * pi / n) rad", false),
+            ("pi / 4 * 1 rad", true),
+            ("sin(2 * pi / n)", false),
+            ("cos(pi) * 30", false),
+            ("asin(pi / 4)", true),
+            ("360 / n", false),
+            ("pi_half", false),
+        ] {
+            assert_eq!(Expr::parse(source).unwrap().has_bare_pi(), bare, "{source}");
+        }
+    }
+
     #[test]
     fn unit_without_number() {
         assert_eq!(
@@ -1116,11 +1229,12 @@ mod tests {
                 }
             )
         );
-        // A unit after a parenthesis is still refused, now with its own
-        // error that says how to give an expression a unit (the second
-        // field test; this pins wording, not mathematics).
+        // A unit after a variable is still refused, with its own error
+        // that says how to give an expression a unit (the second field
+        // test; this pins wording, not mathematics). After a parenthesis
+        // it is accepted since 2026-10-28 (`unit_after_a_parenthesis`).
         assert_eq!(
-            err("(1 + 2) mm").kind,
+            err("(1 + 2) * width mm").kind,
             ErrorKind::UnitAfterExpression {
                 unit: Unit::Millimetre
             }
@@ -1204,9 +1318,10 @@ mod tests {
 
     #[test]
     fn a_unit_in_the_wrong_place_or_a_unit_that_does_not_exist_is_named() {
-        // A unit after a parenthesis or a name: the error says a unit
-        // belongs to a number, and how to give an expression a unit.
-        for source in ["(pi / 4) rad", "pi rad / 4", "(a + b) mm", "width mm"] {
+        // A unit after a name: the error says a unit belongs to a number,
+        // and how to give an expression a unit. (After a parenthesis or
+        // `pi` it is accepted since 2026-10-28.)
+        for source in ["width mm", "2 * n deg", "t[1].a mm"] {
             let e = err(source);
             assert!(
                 matches!(e.kind, ErrorKind::UnitAfterExpression { .. }),
