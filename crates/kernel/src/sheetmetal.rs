@@ -1716,8 +1716,8 @@ fn split_at_seats(
         groups.entry(key).or_default().push(i);
     }
     for (f, flat) in flats.iter_mut().enumerate() {
-        let loops = std::iter::once(None).chain((0..flat.holes.len()).map(Some));
-        for hole in loops.collect::<Vec<_>>() {
+        let n_holes = flat.holes.len();
+        for hole in std::iter::once(None).chain((0..n_holes).map(Some)) {
             let segs = match hole {
                 None => &flat.outer,
                 Some(h) => match flat.holes.get(h) {
