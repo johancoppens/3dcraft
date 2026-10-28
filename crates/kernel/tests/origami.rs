@@ -1362,7 +1362,11 @@ fn the_sparse_solve_agrees_with_the_dense_one_and_the_closed_forms() {
 fn a_large_miura_sheet_folds_by_the_sparse_solve() {
     let (l, d, h): (f64, f64, f64) = (1.0, 0.5, 1.0);
     let gamma = (h / d).atan();
-    for (n, degrees) in [(16usize, [20.0f64, 70.0]), (24, [60.0, 60.0])] {
+    for (n, degrees) in [
+        (16usize, &[20.0f64, 70.0][..]),
+        (24, &[60.0]),
+        (40, &[60.0]),
+    ] {
         let (boundary, creases) = miura(1.0, n, n, l, d, h);
         let arr = arrange(&boundary, &creases, tol(1.0)).unwrap();
         assert!(arr.hinges.len() > 401, "{}", arr.hinges.len());
@@ -1371,8 +1375,32 @@ fn a_large_miura_sheet_folds_by_the_sparse_solve() {
             .find(|c| c.start[1] > 0.0 && c.start[1] == c.end[1])
             .unwrap()
             .id;
-        for degrees in degrees {
+        for &degrees in degrees {
             let rho = degrees.to_radians();
+            if n == 16 {
+                // The dense solve of the same sheet, for the timing.
+                let clock = std::time::Instant::now();
+                let dense = fold_with(
+                    &arr,
+                    &angles(&arr, &[(driver, rho)]),
+                    0,
+                    tol(1.0),
+                    ANGULAR,
+                    usize::MAX,
+                )
+                .unwrap();
+                println!(
+                    "Miura {n} x {n}, dense: {} angles at {degrees} degrees in {:.3} s",
+                    arr.hinges.len() - 1,
+                    clock.elapsed().as_secs_f64()
+                );
+                let zig = 2.0 * ((rho / 2.0).tan() / gamma.cos()).atan();
+                for (hinge, a) in arr.hinges.iter().zip(&dense.angles) {
+                    let c = &arr.creases[hinge.crease];
+                    let want = c.kind.sign() * if c.start[1] == c.end[1] { rho } else { zig };
+                    assert!(close(*a, want, 1e-8));
+                }
+            }
             let clock = std::time::Instant::now();
             let folded = fold(&arr, &angles(&arr, &[(driver, rho)]), 0, tol(1.0), ANGULAR).unwrap();
             println!(
