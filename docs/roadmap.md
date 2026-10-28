@@ -517,6 +517,7 @@ The first version for people outside the project (0.1.0); it does not wait for t
 - Plates on long developable panels (the sea kayak's repro 14): a freeform skin held to the tolerance only within the plate's reach of its face, measured along the surface, and the offset fit bound by its work (2¹⁸ samples); `topo::mass` measures a face whose parametrisation stands still at a corner in u against the rates of v (a plane square there was 0.56 % short) ([`design/plates.md`](design/plates.md), [`design/developable.md`](design/developable.md)) (2026-10-27)
 - A plate's spline edge continued past its ends without the rounding of evaluating a short end span far out (the sea kayak's sheer plate `Top4S`, repro 12; 2026-10-28, [`design/plates.md`](design/plates.md)).
 - `document.inspect` gives an assertion's `measured` and `unit` as `assert.list` does, a number (or yes or no) with its unit apart (2026-10-28).
+- A subject that follows a body to the newest body that grew from it (`{"body": "Case", "follow": true}`), for assertions, outputs and measures; a body named as before keeps its exact meaning ([`design/verification.md`](design/verification.md) › *What is measured*) (2026-10-28).
 
 #### Open
 - [ ] Sheet metal, what is not built: flanges on holes' edges, on flanges' sides, inset or with outlines of their own, curved bends, sharp bends, mitred corners at reflex corners, holes across a bend, a later boolean's cut carried onto the flat pattern, bend sequence and press-brake collision ([`design/sheetmetal.md`](design/sheetmetal.md) › *Limits*)
@@ -527,7 +528,6 @@ The first version for people outside the project (0.1.0); it does not wait for t
 - [ ] Projected views: edges written as the arcs, circles and ellipses they are instead of fine polylines
 - [ ] The web build's regeneration and meshing off the page's thread: the shell over a session in the worker, or bodies that cross to the page (the checks are there since 2026-10-28; [`design/engine.md`](design/engine.md) › *Checks in a Web Worker*)
 - [ ] A feature inserted at the rollback marker that takes a body leaves the features after it that used that body failing (*already went into*); re-point them, or offer to
-- [ ] An assertion on a feature's body errors as soon as a feature is added on top; a subject that follows the chain to its newest body
 - [ ] A formula curve or live spline takes no `tangent` or `pointOn` constraint yet
 - [ ] A sketch on a face takes the face's axes (the bottom of a block has x along world Y); a way to choose them (`xAxis`, or world-aligned where it can be)
 - [ ] Plain numbers as angles are degrees in parameters but radians inside `sin`/`cos`, and `pi` is a plain number, so `2 * pi / n` is a few degrees (kept, as files rely on it; `sin(30)` warns since 2026-10-23); a unit after a parenthesis is refused

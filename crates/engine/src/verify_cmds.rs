@@ -32,7 +32,7 @@ const MAX_BODY_PAIRS: usize = 500;
 /// Most hits a ray lists.
 const MAX_HITS: usize = 1_000;
 
-const SUBJECT: &str = "a body (feature name or id), a list of them, a query {kind, where} as select.query takes, or a filter (with the measure's own kind)";
+const SUBJECT: &str = "a body (feature name or id; {body, follow: true} for the newest body that grew from it), a list of them, a query {kind, where} as select.query takes, or a filter (with the measure's own kind)";
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("measure.distance", "Distance", r#"{"from": subject, "to": subject}"#,
@@ -106,12 +106,55 @@ impl<'a> Ctx<'a> {
             let name = self.feature_name(id);
             match outcome.consumed_by {
                 Some(taker) => format!(
-                    "the body of `{name}` went into {taker}, `{}`; name that feature",
+                    "the body of `{name}` went into {taker}, `{}`; name that feature, or follow the body: {{\"body\": \"{name}\", \"follow\": true}}",
                     self.feature_name(taker)
                 ),
                 None => format!("`{name}` has no body"),
             }
         })
+    }
+
+    /// The feature whose body is now the newest body that grew from the
+    /// body of `start`: the body followed through every later feature it
+    /// went into as the body that feature changes (its source, a
+    /// boolean's target, or a union's tool, whose material the union
+    /// keeps). `start` itself while its body is its own. A body that went
+    /// into a subtraction or an intersection as the tool did not grow
+    /// into the result, and one split into several bodies grew into each
+    /// of them: both are errors that say which feature to name instead.
+    fn grown_from(&self, start: FeatureId) -> Result<FeatureId, String> {
+        use craft3d_doc::{BooleanOp, FeatureKind};
+        let mut at = start;
+        // Each feature takes a body made before it, so the way is no
+        // longer than the history; bounded all the same.
+        for _ in 0..=self.regen.features.len() {
+            let Some(taker) = self.regen.feature(at).and_then(|r| r.consumed_by) else {
+                return Ok(at);
+            };
+            let (name, by) = (self.feature_name(at), self.feature_name(taker));
+            match self.doc.feature(taker).map(|f| &f.kind) {
+                Some(FeatureKind::Split(split)) if split.source == at => {
+                    return Err(format!(
+                        "the body of `{name}` was split by `{by}` into several bodies; name the piece meant"
+                    ));
+                }
+                Some(FeatureKind::Boolean(b)) if b.tool == at && b.op != BooleanOp::Union => {
+                    return Err(format!(
+                        "the body of `{name}` went into `{by}` as the tool of a {}, so no body grew from it",
+                        if b.op == BooleanOp::Subtract {
+                            "subtraction"
+                        } else {
+                            "intersection"
+                        }
+                    ));
+                }
+                _ => at = taker,
+            }
+        }
+        Err(format!(
+            "the bodies `{}` went into do not end (a bug in 3DCraft, please report it)",
+            self.feature_name(start)
+        ))
     }
 
     /// The persistent name of face `face` of the body of `id`.
@@ -355,8 +398,7 @@ fn feature_of(doc: &Document, text: &str) -> Result<FeatureId, String> {
 
 /// What a subject names, as a query would list it.
 pub(crate) fn subject(ctx: &Ctx<'_>, value: &Value, kind: &[&str]) -> Result<Vec<Found>, String> {
-    let body_item = |text: &str| -> Result<Found, String> {
-        let id = feature_of(ctx.doc, text)?;
+    let found = |id: FeatureId| -> Result<Found, String> {
         ctx.body(id)?;
         Ok(Found {
             kind: SelectionKind::Body,
@@ -364,6 +406,25 @@ pub(crate) fn subject(ctx: &Ctx<'_>, value: &Value, kind: &[&str]) -> Result<Vec
             indices: Vec::new(),
             name: ctx.feature_name(id),
         })
+    };
+    let body_item = |text: &str| -> Result<Found, String> { found(feature_of(ctx.doc, text)?) };
+    // `{body, follow}`: the body of a feature, or (`follow`, the default
+    // of this form) the newest body that grew from it.
+    let followed = |map: &Map<String, Value>| -> Result<Found, String> {
+        if let Some(key) = map.keys().find(|k| *k != "body" && *k != "follow") {
+            let key: String = key.chars().take(40).collect();
+            return Err(format!("a body to follow is {{body, follow}}, not `{key}`"));
+        }
+        let Some(Value::String(text)) = map.get("body") else {
+            return Err("`body` names a feature by name or id".into());
+        };
+        let follow = match map.get("follow") {
+            None | Some(Value::Null) => true,
+            Some(Value::Bool(b)) => *b,
+            Some(_) => return Err("`follow` is true or false".into()),
+        };
+        let id = feature_of(ctx.doc, text)?;
+        found(if follow { ctx.grown_from(id)? } else { id })
     };
     match value {
         Value::String(text) => Ok(vec![body_item(text)?]),
@@ -375,10 +436,15 @@ pub(crate) fn subject(ctx: &Ctx<'_>, value: &Value, kind: &[&str]) -> Result<Vec
                 .iter()
                 .map(|item| match item {
                     Value::String(text) => body_item(text),
-                    _ => Err("a list names bodies by feature name or id".to_string()),
+                    Value::Object(map) if map.contains_key("body") => followed(map),
+                    _ => Err(
+                        "a list names bodies by feature name or id, or as {body, follow}"
+                            .to_string(),
+                    ),
                 })
                 .collect()
         }
+        Value::Object(map) if map.contains_key("body") => Ok(vec![followed(map)?]),
         Value::Object(map) => {
             let (kinds, filter) = if map.contains_key("where") {
                 if let Some(key) = map.keys().find(|k| *k != "kind" && *k != "where") {

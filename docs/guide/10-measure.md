@@ -107,7 +107,12 @@ As assertions: `volumeBelow`, `centroidBelow` (with `axis`), `sectionArea`, `sec
   hole cut into `Case`, giving `Vented`) takes that body, and the assertion turns to *error*: *the body
   of `Case` went into F6, `Vented`; name that feature*. Point it at the new end of the chain, with the
   bound changed if the change was meant: `assert.edit {"name": "volume", "of": "Vented", "eq": "…"}`.
-  Queries (`{"hole": true}`, a named set) look at whatever bodies there are and need no edit.
+  Or let the subject follow the body: `{"body": "Case"}` (short for `{"body": "Case", "follow": true}`)
+  is the newest body that grew from `Case`, through every feature that took it since (a hole, a fillet,
+  a move, a boolean with it as the target or as a union's tool), so it needs no edit when one is added.
+  A body that went into a subtraction or an intersection as the tool, or was split into pieces, did not
+  grow into one body: that is an error that says so. Queries (`{"hole": true}`, a named set) look at
+  whatever bodies there are and need no edit.
 
 Each assertion has a status: **passed**; **failed** (with what was measured and expected);
 **notProven** (a thickness or distance whose found value is within the bound but whose proven bound is
