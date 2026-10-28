@@ -390,9 +390,26 @@ fn freecad_reads_a_projected_view() {
             .map(|v| v.parse().unwrap())
             .collect();
         let size = (bbox[2] - bbox[0]).max(bbox[3] - bbox[1]);
-        for (got, expected) in bbox.iter().zip(ours["bbox"].as_array().unwrap()) {
+        // Our box of a spline is the box of its Bézier pieces' control
+        // points (`Drawing::bbox`), which holds the curve: FreeCAD's tight
+        // box lies inside it.
+        let splined = report["kinds"].contains("BSpline") || report["kinds"].contains("Bezier");
+        for (k, (got, expected)) in bbox
+            .iter()
+            .zip(ours["bbox"].as_array().unwrap())
+            .enumerate()
+        {
             let expected = expected.as_f64().unwrap();
-            assert!((got - expected).abs() <= 1e-9 * size, "{file}: {bbox:?}");
+            if splined {
+                let inside = if k < 2 {
+                    *got >= expected - 1e-9 * size
+                } else {
+                    *got <= expected + 1e-9 * size
+                };
+                assert!(inside, "{file}: {bbox:?}");
+            } else {
+                assert!((got - expected).abs() <= 1e-9 * size, "{file}: {bbox:?}");
+            }
         }
     }
 }
