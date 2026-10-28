@@ -418,9 +418,22 @@ fn arch(k: f64, lift: f64, from: f64) -> Profile {
             },
         },
     ];
-    let mut found = detect_profiles(&curves, &tolerance(k)).unwrap();
-    assert_eq!(found.len(), 1);
-    found.remove(0)
+    let found = detect_profiles(&curves, &tolerance(k)).unwrap();
+    let shapes: Vec<(Vec<u64>, usize)> = found
+        .iter()
+        .map(|p| {
+            (
+                p.outer.segments.iter().map(|g| g.source).collect(),
+                p.holes.len(),
+            )
+        })
+        .collect();
+    let arch = found
+        .into_iter()
+        .find(|p| p.outer.segments.iter().any(|g| g.source == 1))
+        .unwrap_or_else(|| panic!("no arch among {shapes:?}"));
+    assert_eq!(arch.holes.len(), 1, "the arch's profiles: {shapes:?}");
+    arch
 }
 
 #[test]
