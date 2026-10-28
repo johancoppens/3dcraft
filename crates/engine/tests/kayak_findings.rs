@@ -57,7 +57,7 @@
 //!     ruling needs, and the offset fitted to the tolerance over all of
 //!     it. Now the offset is held to the tolerance only within the length
 //!     along the surface that the plate uses.
-//! 16.–19. The overlap assertions of neighbouring plates (repro 16: the
+//! 16. The overlap assertions of neighbouring plates (repros 16 to 19: the
 //!     garboards either side of the keel, 17 and 18: planks above one
 //!     another and the sheer plate, 19: the deck plates either side of
 //!     the centreline), each from the steps that make the two plates with
