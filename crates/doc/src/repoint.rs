@@ -128,13 +128,16 @@ impl Document {
         given
     }
 
-    /// Drops what the document keeps of `id` as an inserted feature and as
-    /// a later feature re-pointed by one, after its parameters were given
-    /// back ([`Document::restore_repointed`]); for [`Document::remove_feature`].
+    /// Drops what the document keeps of `id` as an inserted feature, as a
+    /// later feature re-pointed by one and as the feature a parameter named
+    /// before (deleting the inserted feature then leaves that parameter as
+    /// it is rather than naming a feature that is gone), after its
+    /// parameters were given back ([`Document::restore_repointed`]); for
+    /// [`Document::remove_feature`].
     pub(crate) fn forget_inserted(&mut self, id: FeatureId) {
         self.inserted.retain(|e| e.feature != id);
         for entry in &mut self.inserted {
-            entry.repointed.retain(|r| r.feature != id);
+            entry.repointed.retain(|r| r.feature != id && r.was != id);
         }
     }
 
@@ -170,6 +173,9 @@ impl Document {
             for r in &entry.repointed {
                 if self.feature(r.feature).is_none() {
                     return Err(DocError::UnknownFeature(r.feature));
+                }
+                if self.feature(r.was).is_none() {
+                    return Err(DocError::UnknownFeature(r.was));
                 }
                 if !matches!(r.param.as_str(), "target" | "tool" | "source") {
                     return Err(DocError::Invalid(format!(
@@ -309,5 +315,39 @@ mod tests {
         bad.record_inserted(x, &[(cut, "target", a)]);
         bad.inserted[0].repointed[0].param = "faces".into();
         assert!(bad.validate().is_err());
+        let mut bad = doc.clone();
+        bad.record_inserted(x, &[(cut, "target", FeatureId(999))]);
+        assert!(bad.validate().is_err());
+    }
+
+    /// Deleting the feature a re-pointed parameter named before forgets
+    /// it: deleting the inserted feature afterwards leaves the parameter
+    /// naming the inserted feature (gone, so it fails as any feature
+    /// naming a deleted one), never a feature that no longer exists.
+    #[test]
+    fn deleting_what_a_parameter_named_before_forgets_it() {
+        let mut doc = Document::new(Units::default());
+        let a = doc.add_feature(Some("A"), block()).unwrap();
+        let b = doc.add_feature(Some("B"), block()).unwrap();
+        let cut = doc
+            .add_feature(
+                Some("Cut"),
+                FeatureKind::Boolean(Boolean {
+                    op: BooleanOp::Subtract,
+                    target: a,
+                    tool: b,
+                    keep_tool: false,
+                }),
+            )
+            .unwrap();
+        let x = insert(&mut doc, b, "X", moved(a));
+        assert_eq!(target(&doc, cut), x);
+        doc.remove_feature(a).unwrap();
+        assert!(doc.inserted(x).unwrap().repointed.is_empty());
+        doc.validate().unwrap();
+        doc.remove_feature(x).unwrap();
+        assert_eq!(target(&doc, cut), x);
+        assert!(doc.inserted.is_empty());
+        doc.validate().unwrap();
     }
 }
