@@ -56,7 +56,12 @@
 //!     its rulings by a box of parameters as wide as the tip's short
 //!     ruling needs, and the offset fitted to the tolerance over all of
 //!     it. Now the offset is held to the tolerance only within the length
-//!     along the surface that the plate uses.
+//!     along the surface that the plate uses. The sheer panel itself
+//!     (`DevTop4S`) was refused, "the rulings between two found ones
+//!     cannot be followed": near each end its condition has a second
+//!     branch whose rulings run across the panel's, and the two pass each
+//!     other a millimetre apart; the walk stepped from one to the other.
+//!     Now such a place is approached and stepped over (2026-10-28).
 //! 16. The overlap assertions of neighbouring plates (repros 16 to 19: the
 //!     garboards either side of the keel, 17 and 18: planks above one
 //!     another and the sheer plate, 19: the deck plates either side of
@@ -309,16 +314,11 @@ fn plates_on_the_long_developable_panels_are_built() {
     let started = std::time::Instant::now();
     let (mut s, failed) = steps("sea_kayak_14.steps.json");
     eprintln!("repro 14 (starboard plates) in {:?}", started.elapsed());
-    // Owed, not a plate: the sheer panel (DevTop4S, chine to sheer) is
-    // refused by the developable ("the rulings between two found ones
-    // cannot be followed"), and its plate with it.
-    for f in &failed {
-        assert!(f.contains("DevTop4S"), "{failed:#?}");
-    }
-    assert!(
-        !failed.is_empty(),
-        "the sheer panel was built: update this test"
-    );
+    // The sheer panel (DevTop4S, chine to sheer) was refused by the
+    // developable until 2026-10-28 ("the rulings between two found ones
+    // cannot be followed": branches of its condition that pass each other
+    // near both ends, stepped over since), and its plate with it.
+    assert!(failed.is_empty(), "{failed:#?}");
     // The same panels plated square (no joints): the plate's volume is
     // the panel's area times the thickness, less the mean curvature's
     // term (`t² ∫H dA`, under one per cent for a hull's radii of a few
@@ -341,6 +341,9 @@ fn plates_on_the_long_developable_panels_are_built() {
             .find(|b| b["name"] == name)
             .unwrap_or_else(|| panic!("no body {name}"))
     };
+    let top = body("Top4S");
+    assert_eq!(top["valid"], true, "{top}");
+    assert!(top["volume"].as_f64().unwrap() > 0.0, "{top}");
     for (plate, panel) in [("Plank1S", "Dev1S"), ("Plank2S", "Dev2S")] {
         let square = body(&format!("Square{panel}"));
         let (plate, panel) = (body(plate), body(panel));

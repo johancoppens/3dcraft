@@ -987,3 +987,114 @@ fn a_plate_on_a_long_developable_that_tapers_to_a_tip_has_its_closed_form_volume
         );
     }
 }
+
+/// The sea kayak's sheer panel (`DevTop4S`, 2026-10-28): the developable
+/// between its chine and its sheer, edges of a boolean of the hull, cubic
+/// Hermite splines of 522 and 532 control points (every inner knot double)
+/// 5 m long (`developable_rails/sea_kayak_sheer.json`, in millimetres).
+/// Besides the developable's own branch the condition has, near each end,
+/// a branch of rulings across it (from near one end of A to farther along
+/// B and back), and the two pass each other where they meet: 1.7e-4 of
+/// the rails (0.85 mm) apart at the bow, the model's value at the saddle
+/// 3e-8 over a ruling of 21 mm (a twist of 6.8e-7 mm, more than half the
+/// tolerance), and 1e-7 over 24 mm at the stern (2.4e-6 mm). The walk
+/// stepped from one branch to the other in one step and no ruling could be
+/// put between the two it found: refused, "the rulings between two found
+/// ones cannot be followed". Now the walk approaches such a saddle and
+/// steps over it where the rulings interpolated across lie flat within
+/// the tolerance (a stepped stretch), so the panel is one face, as the
+/// kayak's plate on it (`face(0)`, its edges by number) needs. Held to the
+/// condition at every ruling outside the stepped stretches, rulings that
+/// never cross, no curvature, a fit within half the tolerance, and an
+/// unfold that keeps every edge's length; at three scales (the curves
+/// scaled about the origin, at 1 the kayak's own).
+#[test]
+fn rails_whose_condition_has_branches_that_pass_each_other_are_stepped_over() {
+    let text = std::fs::read_to_string(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/developable_rails/sea_kayak_sheer.json"),
+    )
+    .unwrap();
+    let data: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let rail_of = |name: &str, k: f64| -> Rail {
+        let d = &data[name];
+        let floats = |v: &serde_json::Value| -> Vec<f64> {
+            v.as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x.as_f64().unwrap())
+                .collect()
+        };
+        let ctrl: Vec<Vec3> = d["ctrl"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| {
+                let p = floats(p);
+                Vec3::new(p[0], p[1], p[2]) * k
+            })
+            .collect();
+        let curve = NurbsCurve::new(
+            d["degree"].as_u64().unwrap() as usize,
+            floats(&d["knots"]),
+            ctrl,
+            floats(&d["weights"]),
+        )
+        .unwrap();
+        let range = floats(&d["range"]);
+        rail(Curve3::Nurbs(curve), (range[0], range[1]))
+    };
+    for k in SCALES {
+        let (a, b) = (rail_of("A", k), rail_of("B", k));
+        let made = connect(&a, &b, &tol(k)).unwrap_or_else(|e| panic!("{k}: {e}"));
+        eprintln!(
+            "{k}: faces {:?}, {} rulings, stepped {:?}, deviation {:e}, K {:e}",
+            made.faces,
+            made.rulings.len(),
+            made.stepped,
+            made.deviation,
+            made.curvature
+        );
+        assert_eq!(made.faces, vec![Piece::Rulings], "{k}");
+        assert!(!made.reversed_b, "{k}");
+        // One stepped stretch by each end, each a few millimetres long.
+        assert_eq!(made.stepped.len(), 2, "{k}: {:?}", made.stepped);
+        for &((s0, t0), (s1, t1)) in &made.stepped {
+            assert!(s1 > s0 && t1 > t0, "{k}");
+            let along = (at(&a, s1).0 - at(&a, s0).0)
+                .length()
+                .max((at(&b, t1).0 - at(&b, t0).0).length());
+            assert!(along < 20.0 * k, "{k}: a stepped stretch {along} long");
+        }
+        let inside = |&(s, t): &(f64, f64)| {
+            made.stepped
+                .iter()
+                .any(|&((s0, t0), (s1, t1))| s > s0 && s < s1 && t > t0 && t < t1)
+        };
+        for ruling in made.rulings.iter().filter(|r| !inside(r)) {
+            let f = condition(&a, &b, *ruling);
+            assert!(f.abs() < 1e-8, "{k}: condition {f} at {ruling:?}");
+        }
+        assert!(
+            made.rulings
+                .windows(2)
+                .all(|w| w[1].0 >= w[0].0 && w[1].1 >= w[0].1),
+            "{k}: rulings are monotone"
+        );
+        assert!(made.curvature * k * k < 1e-6, "{k}: K {}", made.curvature);
+        assert!(made.deviation <= 0.5e-6 * k, "{k}: {}", made.deviation);
+        // Laid flat, every edge keeps its length.
+        let dev = develop(&made.body, &[FaceId(0)], &tol(k)).unwrap_or_else(|e| panic!("{k}: {e}"));
+        let e = dev.error();
+        eprintln!("{k}: unfolded, {e:?}");
+        assert!(e.map <= 1e-6 * k, "{k}: {e:?}");
+        for c in dev.outline() {
+            assert!(
+                (c.length_flat - c.length_3d).abs() <= 1e-6 * k,
+                "{k}: an edge {} long on the part, {} flat",
+                c.length_3d,
+                c.length_flat
+            );
+        }
+    }
+}
