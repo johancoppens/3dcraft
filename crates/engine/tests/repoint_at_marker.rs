@@ -217,7 +217,7 @@ fn a_subtraction_inserted_does_not_take_over_its_tool() {
     run(
         &mut s,
         "feature.block",
-        json!({"size": [5, 5, 4], "position": [8, 3, 3], "name": "Spare"}),
+        json!({"size": [5, 5, 4], "position": [9, 4, 3], "name": "Spare"}),
     );
     let early = run(
         &mut s,

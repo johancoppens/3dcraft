@@ -79,6 +79,7 @@ mod sweep_path_cmds;
 mod table_cmds;
 pub mod task_score;
 mod typed;
+mod unit_cmds;
 mod verify;
 mod verify_bound;
 mod verify_cmds;
@@ -519,6 +520,7 @@ impl Session {
                 when_cmds::SPECS,
                 scrub::SPECS,
                 report::SPECS,
+                unit_cmds::SPECS,
             ]
             .concat()
         })
