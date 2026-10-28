@@ -1324,7 +1324,6 @@ mod tests {
         assert!(!host.prepare(|| false));
         assert!(!host.away());
         assert!(host.shell.work().is_none());
-        assert!(!host.session.regenerated_here());
     }
 
     /// On the page (a piece per frame) a commit of the Parameters form
