@@ -85,6 +85,8 @@ The kernel measures, the limits are the caller's (the developer, 2026-10-26: gen
 - `relief`: whether every corner where two flanged edges meet has a relief;
 - `cornerGap`: the least gap at the closed corners, measured on the solid (*Closed corners*).
 
+**Measures over nothing.** `cornerGap` with no closed corner (every corner open, or chosen open by a Jig) and `holeToBend` with no hole on a flat beside a bend have no value: a least over an empty set is no number, and taking it as a pass would also pass a part that lost its hole by mistake. Each is an error that says what the parts have (*`Plate` has no holes*, *none of the 2 holes of `Plate` lies on a flat beside a bend*, *no corner of `Box` is closed*) and how an assertion written for a design that sometimes has none is switched off: by a condition, `when` (verification.md › *Conditions*). A part's holes are those it was built with (its base sketch's inner loops and its `cutouts`); a hole a later feature cuts into the part's body (a boolean) is not one of them, and the error names the feature the body went on into (2026-10-28).
+
 The minimum radius for a material and a thickness, a die's minimum flange, the hole distance a shop asks for are expressions in the assertions' `min` and `max`, a document table among them (`steel["S235"].minRadius`). There is no material table in 3DCraft.
 
 ### Names

@@ -141,8 +141,8 @@ fn subjects_into(ctx: &Ctx<'_>, value: &Value, out: &mut String, held: &mut Vec<
 /// outputs it uses as they are computed.
 fn key_of(doc: &Document, regen: &Regen, assertion: &Assertion, outputs: &Resolved) -> Key {
     let mut text = format!(
-        "{}|{:?}|{:?}|{:?}|",
-        assertion.measure, assertion.expect, doc.units, doc.tolerance
+        "{}|{:?}|{:?}|{:?}|{:?}|",
+        assertion.measure, assertion.expect, assertion.when, doc.units, doc.tolerance
     );
     // The variables its bounds and its measure's own expressions name.
     let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();

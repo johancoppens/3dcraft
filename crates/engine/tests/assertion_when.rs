@@ -68,7 +68,7 @@ fn an_assertion_whose_condition_is_zero_is_inactive_and_counts_as_nothing() {
     let added = run(
         &mut s,
         "assert.add",
-        json!({"name": "vol", "measure": "volume", "of": "B", "eq": "6000 mm^3", "when": "on"}),
+        json!({"name": "vol", "measure": "volume", "of": "B", "eq": "6000", "when": "on"}),
     );
     assert_eq!(added["status"], "passed", "{added}");
     assert_eq!(added["when"], "on");
@@ -103,7 +103,10 @@ fn an_assertion_whose_condition_is_zero_is_inactive_and_counts_as_nothing() {
     );
     let summary = &edit["assertions"];
     assert_eq!(summary["inactive"], 1, "{edit}");
-    assert_eq!(summary["broken"], json!([]), "{edit}");
+    // The one switched on is measured, and broken.
+    assert_eq!(summary["broken"][0]["name"], "wrong", "{edit}");
+    assert_eq!(summary["broken"].as_array().unwrap().len(), 1, "{edit}");
+    assert_eq!(summary["passed"], 0, "{edit}");
     assert_eq!(listed(&mut s, "vol")["status"], "inactive");
     assert_eq!(listed(&mut s, "wrong")["status"], "failed");
     let check = run(&mut s, "document.check", json!({}));
@@ -119,11 +122,7 @@ fn an_assertion_whose_condition_is_zero_is_inactive_and_counts_as_nothing() {
         (json!(2), json!(true))
     );
     // assert.edit without when keeps it; null takes it away.
-    run(
-        &mut s,
-        "assert.edit",
-        json!({"name": "vol", "eq": "6000 mm^3"}),
-    );
+    run(&mut s, "assert.edit", json!({"name": "vol", "eq": "6000"}));
     assert_eq!(listed(&mut s, "vol")["when"], "on");
     let edited = run(&mut s, "assert.edit", json!({"name": "vol", "when": null}));
     assert_eq!(edited["status"], "passed", "{edited}");
@@ -185,7 +184,7 @@ fn a_bad_condition_is_refused_or_an_error_never_a_crash() {
     let with_unit = run(
         &mut s,
         "assert.add",
-        json!({"name": "unit", "measure": "volume", "eq": "6000 mm^3", "when": "2 mm"}),
+        json!({"name": "unit", "measure": "volume", "eq": "6000", "when": "2 mm"}),
     );
     assert_eq!(with_unit["status"], "error", "{with_unit}");
     assert!(
@@ -198,7 +197,7 @@ fn a_bad_condition_is_refused_or_an_error_never_a_crash() {
     let unknown = run(
         &mut s,
         "assert.add",
-        json!({"name": "typo", "measure": "volume", "eq": "6000 mm^3", "when": "nosuch"}),
+        json!({"name": "typo", "measure": "volume", "eq": "6000", "when": "nosuch"}),
     );
     assert_eq!(unknown["status"], "error", "{unknown}");
     let list = run(&mut s, "assert.list", json!({}));

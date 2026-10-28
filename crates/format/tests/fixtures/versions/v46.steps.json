@@ -1,0 +1,8 @@
+[
+ ["variable.set", {"name": "lid", "expr": "0"}],
+ ["feature.block", {"name": "Box", "size": [10, 20, 30]}],
+ ["assert.add", {"name": "with lid", "measure": "volume", "of": "Box", "eq": "1 mm^3", "when": "lid"}],
+ ["assert.add", {"name": "without lid", "measure": "volume", "of": "Box", "eq": "6000", "when": "lid == 0"}],
+ ["variable.measure", {"name": "V", "measure": "volume", "of": "Box"}],
+ ["assert.add", {"name": "lazy", "measure": "value", "expr": "if(lid == 0, 6000 * (1 mm)^3, V)", "eq": "6000"}]
+]

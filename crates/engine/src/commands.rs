@@ -1806,7 +1806,6 @@ pub(crate) fn variable_users_kinds(doc: &Document, name: &str) -> Vec<(bool, Str
     }
     for assertion in &doc.assertions {
         let in_bound = assertion
-            .expect
             .exprs()
             .iter()
             .any(|expr| mentions(expr.source(), name));
