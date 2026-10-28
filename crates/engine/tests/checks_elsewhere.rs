@@ -90,8 +90,7 @@ fn elsewhere() -> Session {
 /// Does the pieces, then hands every job over and answers it with
 /// `measure_checks`, until none waits. Returns how many jobs there were.
 fn settle(session: &mut Session) -> usize {
-    let mut jobs = 0;
-    for _ in 0..100 {
+    for jobs in 0..100 {
         while let Some(p) = session.prepare_some(SceneQuality::display(), || false) {
             assert_ne!(p.phase, "checking", "measured on the host's thread");
         }
@@ -106,7 +105,6 @@ fn settle(session: &mut Session) -> usize {
         assert!(session.checks_answered(token, Ok(&answer)), "{answer}");
         // Answered once: a second answer is dropped.
         assert!(!session.checks_answered(token, Ok(&answer)));
-        jobs += 1;
     }
     panic!("jobs without end");
 }
