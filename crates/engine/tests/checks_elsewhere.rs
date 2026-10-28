@@ -174,8 +174,6 @@ fn an_edit_replaces_the_job_handed_out() {
     session
         .execute("variable.set", &json!({"name": "w", "expr": "50 mm"}))
         .unwrap();
-    // Regenerating first: no job while the state is not built.
-    assert_eq!(session.checks_job(), None);
     while session
         .prepare_some(SceneQuality::display(), || false)
         .is_some()

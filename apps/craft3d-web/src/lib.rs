@@ -24,8 +24,11 @@
 //!   closed, and the graphics device's errors.
 //! - `pickers` (wasm32 only): the system's file dialogs and writing to
 //!   the file one chose.
+//! - [`checks`]: the assertions and outputs measured in a Web Worker;
+//!   `worker` (wasm32 only) is that worker and its messages.
 //!
-//! The page runs on one thread: no `SharedArrayBuffer`, so no
+//! The page runs on its own thread plus one Web Worker for the checks,
+//! which share no memory (messages only): no `SharedArrayBuffer`, so no
 //! cross-origin isolation headers. The viewport is drawn by the GPU
 //! renderer on the page's own device (WebGPU, else WebGL2; `?webgl`
 //! forces WebGL2), with the CPU reference renderer standing by on the same

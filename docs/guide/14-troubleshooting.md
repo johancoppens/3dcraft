@@ -130,8 +130,10 @@ the CPU renderer, which is the reference for what the window shows.
 
 ## The web version
 
-- **It is slow on a big model**: in the browser 3DCraft works on one thread, so a long rebuild holds up
-  the page until it is done. Jigs rebuild when you let go of a field for that reason.
+- **It is slow on a big model**: in the browser 3DCraft rebuilds the model on the page's own thread, a
+  feature at a time with the page drawn in between, so one slow feature holds up the page until it is
+  done. Jigs rebuild when you let go of a field for that reason. The checks (assertions and outputs) are
+  measured beside the page, in a worker of their own, so the page stays usable while they run.
 - **The page stays blank or the model does not show**: the page needs WebGPU or WebGL2. Try a recent
   Chrome, Edge or Firefox; add `?webgl` to the address to use WebGL2 instead of WebGPU.
 - **Save makes a download** instead of asking where: that is how Firefox and Safari work

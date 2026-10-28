@@ -523,7 +523,7 @@ The first version for people outside the project (0.1.0); it does not wait for t
 - [ ] The unfold of a folded sheet: the strip beside the fan and the end fans are refused (a layout graded towards where the parametrisation stands still or collapses is owed); the kayak's sheer panel (`DevTop4S`) is refused by the developable: the condition folds at its Hermite rails' knots (diagnosed 2026-10-28, [`design/developable.md`](design/developable.md) › *Open*)
 - [ ] Developables: rails that close on themselves (a tube) or have a corner, a connection split where the rulings would cross, an approximate flatten of a doubly curved face, marks drawn on a pattern carried onto the part as geometry ([`design/developable.md`](design/developable.md) › *Open*)
 - [ ] Projected views: edges written as the arcs, circles and ellipses they are instead of fine polylines
-- [ ] The web build on more than one thread: the engine in a Web Worker (the page stays responsive during a long regeneration), or a threaded build (atomics, `SharedArrayBuffer`, which needs COOP/COEP headers on every host); a first run of the Release workflow's web job
+- [ ] The web build's regeneration and meshing off the page's thread: the shell over a session in the worker, or bodies that cross to the page (the checks are there since 2026-10-28; [`design/engine.md`](design/engine.md) › *Checks in a Web Worker*)
 - [ ] A feature inserted at the rollback marker that takes a body leaves the features after it that used that body failing (*already went into*); re-point them, or offer to
 - [ ] An assertion on a feature's body errors as soon as a feature is added on top; a subject that follows the chain to its newest body
 - [ ] A formula curve or live spline takes no `tangent` or `pointOn` constraint yet

@@ -275,12 +275,15 @@ mod tests {
         let late = fake.answers();
         s.execute("variable.set", &json!({"name": "w", "expr": "12 mm"}))
             .unwrap();
-        // While regenerating there is no job: the old one is cancelled.
+        // The old job is no longer wanted: cancelled.
         let frame = checks.frame(&mut s, Vec::new());
         assert_eq!(frame.cancelled, Some(old));
         assert_eq!(*fake.stops.borrow(), 1);
         pieces(&mut s);
-        let new = checks.frame(&mut s, Vec::new()).posted.unwrap();
+        let new = frame
+            .posted
+            .or_else(|| checks.frame(&mut s, Vec::new()).posted)
+            .unwrap();
         assert_ne!(new, old);
         // The old answer arrives late: dropped.
         assert!(checks.frame(&mut s, late).answered.is_empty());
