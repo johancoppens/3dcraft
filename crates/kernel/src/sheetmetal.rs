@@ -61,6 +61,9 @@ use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, FaceId, VertexId};
 use std::collections::BTreeMap;
 use std::f64::consts::{PI, TAU};
 
+mod cuts;
+pub use cuts::Cut;
+
 /// The most flanges one part may have.
 pub const MAX_FLANGES: usize = 1024;
 
@@ -331,6 +334,19 @@ pub enum EdgeKey {
     },
     /// The arc at the start (0) or the end (1) of bend `bend`.
     Arc { bend: usize, end: usize },
+    /// Piece `piece` of segment `seg` of flat `flat`'s outline: a tangent
+    /// line a hole across its bend crosses.
+    Split {
+        flat: usize,
+        seg: usize,
+        piece: usize,
+    },
+    /// Piece `piece` of segment `seg` of cut `cut` (a hole across a bend).
+    Cut {
+        cut: usize,
+        seg: usize,
+        piece: usize,
+    },
 }
 
 /// The end of a flange's extension at a closed corner.
@@ -362,6 +378,10 @@ pub struct Corner {
 pub enum SheetFace {
     Flat(usize),
     Bend(usize),
+    /// The further faces (1, 2, ...) a flat or a bend is left in by a hole
+    /// across a bend (a slot across a whole strip leaves the bend in two).
+    FlatPiece(usize, usize),
+    BendPiece(usize, usize),
 }
 
 /// A sheet-metal part: its pattern, its folded bottom skin and the solid.
@@ -372,7 +392,12 @@ pub struct Part {
     pub flats: Vec<Flat>,
     pub bends: Vec<Bend>,
     pub corners: Vec<Corner>,
-    /// The folded bottom skin: one face per flat and per bend.
+    /// The holes across bends: cut-outs that lie in no one flat but in the
+    /// pattern, crossing tangent lines (docs/design/sheetmetal.md › *Holes
+    /// across a bend*).
+    pub cuts: Vec<Cut>,
+    /// The folded bottom skin: one face per flat and per bend (and the
+    /// further faces a hole across a bend leaves).
     pub sheet: Body,
     /// Per edge of `sheet`, what it is.
     pub edge_keys: Vec<EdgeKey>,
@@ -750,11 +775,12 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
         flat.transform = *transform;
     }
     close_corners(&mut flats, &bends, &corners, t, tolerance)?;
-    place_cutouts(&mut flats, &spec.cutouts, tolerance)?;
-    pattern_clear(&flats, &bends, tolerance)?;
+    let across = place_cutouts(&mut flats, &spec.cutouts, tolerance)?;
+    pattern_clear(&flats, &bends, &[], tolerance)?;
+    let cuts = place_cuts(&flats, &bends, &across, tolerance)?;
     let base_edges = base_edge_list(&base_edge, &on_segment);
     let (sheet, sheet_faces, ends, edge_keys) =
-        folded_sheet(spec, &flats, &bends, &base_edges, tolerance, true)?;
+        folded_sheet(spec, &flats, &bends, &base_edges, &cuts, tolerance, true)?;
     let open_sheet = if flats.iter().any(|f| !f.ends.is_empty()) {
         let open: Vec<Flat> = flats
             .iter()
@@ -776,7 +802,12 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
                 },
             )
             .collect();
-        let (body, _, _, keys) = folded_sheet(spec, &open, &bends, &base_edges, tolerance, false)?;
+        // Only named: with the cuts if they lie in the open pattern too,
+        // else without them (their edges are then named as they are).
+        let (body, _, _, keys) =
+            folded_sheet(spec, &open, &bends, &base_edges, &cuts, tolerance, false).or_else(
+                |_| folded_sheet(spec, &open, &bends, &base_edges, &[], tolerance, false),
+            )?;
         Some((body, keys))
     } else {
         None
@@ -796,6 +827,7 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
         flats,
         bends,
         corners,
+        cuts,
         sheet,
         edge_keys,
         open_sheet,
@@ -844,9 +876,14 @@ fn sketch_curve(seg: &Segment) -> crate::profile::Curve2 {
 /// wholly inside another leaves the area short. Either fails the part,
 /// naming the base or the flanges whose pieces meet; anything else the
 /// detection refuses fails it too (fail closed).
-fn pattern_clear(flats: &[Flat], bends: &[Bend], tolerance: &Tolerance) -> Result<(), KernelError> {
+fn pattern_clear(
+    flats: &[Flat],
+    bends: &[Bend],
+    cuts: &[Cut],
+    tolerance: &Tolerance,
+) -> Result<(), KernelError> {
     use crate::profile::{SketchCurve, detect_profiles};
-    let chains = tagged_outline(flats, bends, tolerance.linear);
+    let chains = tagged_outline(flats, bends, cuts, tolerance.linear);
     let tagged: Vec<&(Segment, usize)> = chains.iter().flatten().collect();
     let curves: Vec<SketchCurve> = tagged
         .iter()
@@ -898,8 +935,8 @@ fn pattern_clear(flats: &[Flat], bends: &[Bend], tolerance: &Tolerance) -> Resul
             ));
         }
     };
-    let holes: usize = flats.iter().map(|f| f.holes.len()).sum();
-    let area = pattern_area(flats, bends);
+    let holes: usize = flats.iter().map(|f| f.holes.len()).sum::<usize>() + cuts.len();
+    let area = pattern_area(flats, bends, cuts);
     match profiles.as_slice() {
         [one]
             if one.holes.len() == holes
@@ -939,7 +976,7 @@ fn place_cutouts(
     flats: &mut [Flat],
     cutouts: &[Cutout],
     tolerance: &Tolerance,
-) -> Result<(), KernelError> {
+) -> Result<Vec<Cut>, KernelError> {
     if cutouts.len() > MAX_CUTOUTS {
         return Err(refuse(
             None,
@@ -947,6 +984,7 @@ fn place_cutouts(
         ));
     }
     let tol = tolerance.linear;
+    let mut across = Vec::new();
     for Cutout { profile: cut, from } in cutouts {
         let named = format!("{} of {from}", curves_named(&cut.outer.sources(8)));
         if !cut.holes.is_empty() {
@@ -980,15 +1018,66 @@ fn place_cutouts(
             }
         }
         if !placed {
+            across.push(Cut {
+                segments: hole,
+                named,
+            });
+        }
+    }
+    Ok(across)
+}
+
+/// The cut-outs that lie in no one flat are holes across bends when they
+/// lie wholly inside the flat pattern, touching none of its edges, holes
+/// or earlier cuts: the pattern's outline (as [`pattern_clear`] checks it),
+/// with them, through the profile detection of the sketch, is one profile
+/// with one hole more and the area less by the cut's (the test
+/// [`hole_fits`] makes on one flat). One that does not (past or touching
+/// the pattern's edge, in a relief's notch, in or touching a hole) is
+/// refused naming its curves. How it crosses the tangent lines is checked
+/// when the sheet is folded ([`cuts`]).
+fn place_cuts(
+    flats: &[Flat],
+    bends: &[Bend],
+    across: &[Cut],
+    tolerance: &Tolerance,
+) -> Result<Vec<Cut>, KernelError> {
+    use crate::profile::{SketchCurve, detect_profiles};
+    let mut cuts: Vec<Cut> = Vec::with_capacity(across.len());
+    for cut in across {
+        let mut with = cuts.clone();
+        with.push(cut.clone());
+        let chains = tagged_outline(flats, bends, &with, tolerance.linear);
+        let curves: Vec<SketchCurve> = chains
+            .iter()
+            .flatten()
+            .enumerate()
+            .map(|(i, (seg, _))| SketchCurve {
+                id: i as u64 + 1,
+                curve: sketch_curve(seg),
+            })
+            .collect();
+        let holes: usize = flats.iter().map(|f| f.holes.len()).sum::<usize>() + with.len();
+        let area = pattern_area(flats, bends, &with);
+        let fits = match detect_profiles(&curves, tolerance).as_deref() {
+            Ok([one]) => {
+                one.holes.len() == holes
+                    && (one.area() - area).abs() <= tolerance.linear * area.abs().sqrt() * 8.0
+            }
+            _ => false,
+        };
+        if !fits {
             return Err(refuse(
                 None,
                 format!(
-                    "{named} lies wholly inside no one flat of the flat pattern (the base or a flange's flat): a hole or cut-out across a bend's strip, or past or touching the pattern's edge, is not supported (owed: a cut-out across a bend)"
+                    "{} lies wholly inside no one flat of the flat pattern (the base or a flange's flat) nor inside the pattern clear of its edges: a hole or cut-out past or touching the pattern's edge, in a relief's notch, or in or touching another hole is not supported",
+                    cut.named
                 ),
             ));
         }
+        cuts.push(cut.clone());
     }
-    Ok(())
+    Ok(cuts)
 }
 
 /// Whether `hole` lies wholly inside the flat of outline `outer` with the
@@ -1673,9 +1762,21 @@ fn folded_sheet(
     flats: &[Flat],
     bends: &[Bend],
     base_edge: &BTreeMap<usize, usize>,
+    cuts: &[Cut],
     tolerance: &Tolerance,
     checked: bool,
 ) -> Result<(Body, Vec<SheetFace>, Ends, Vec<EdgeKey>), KernelError> {
+    if !cuts.is_empty() {
+        return cuts::folded_sheet(
+            &spec.plane,
+            flats,
+            bends,
+            base_edge,
+            cuts,
+            tolerance,
+            checked,
+        );
+    }
     let mut b = Builder {
         body: Body::new(BodyKind::Sheet),
     };
@@ -2037,19 +2138,16 @@ pub fn measured_radius(part: &Part, bend: usize) -> Option<f64> {
 /// flat `flat` (0 the base, `i + 1` flange `i`'s): its two skins and the
 /// rims along its outline's edges that end the sheet.
 pub fn flat_faces(part: &Part, flat: usize) -> Vec<usize> {
-    let Some(face) = part
+    let faces: Vec<FaceId> = part
         .sheet_faces
         .iter()
-        .position(|f| *f == SheetFace::Flat(flat))
-        .and_then(|f| u32::try_from(f).ok())
-        .map(FaceId)
-    else {
-        return Vec::new();
-    };
-    let edges: Vec<EdgeId> = part
-        .sheet
-        .face(face)
-        .into_iter()
+        .enumerate()
+        .filter(|(_, f)| matches!(f, SheetFace::Flat(x) | SheetFace::FlatPiece(x, _) if *x == flat))
+        .filter_map(|(f, _)| u32::try_from(f).ok().map(FaceId))
+        .collect();
+    let edges: Vec<EdgeId> = faces
+        .iter()
+        .filter_map(|&face| part.sheet.face(face))
         .flat_map(|f| f.loops.iter())
         .filter_map(|l| part.sheet.loop_(*l))
         .flat_map(|l| l.coedges.iter().map(|c| c.edge))
@@ -2059,7 +2157,7 @@ pub fn flat_faces(part: &Part, flat: usize) -> Vec<usize> {
         .iter()
         .enumerate()
         .filter(|(_, made)| match made {
-            crate::plate::Made::Front(f) | crate::plate::Made::Back(f) => *f == face,
+            crate::plate::Made::Front(f) | crate::plate::Made::Back(f) => faces.contains(f),
             crate::plate::Made::Rim(e) => edges.contains(e),
         })
         .map(|(i, _)| i)
@@ -2229,10 +2327,10 @@ pub fn flange_length(part: &Part, bend: usize) -> Option<f64> {
 /// The area of the flat pattern: the flats' (holes taken out) and the
 /// bends' strips.
 pub fn flat_area(part: &Part) -> f64 {
-    pattern_area(&part.flats, &part.bends)
+    pattern_area(&part.flats, &part.bends, &part.cuts)
 }
 
-fn pattern_area(flats: &[Flat], bends: &[Bend]) -> f64 {
+fn pattern_area(flats: &[Flat], bends: &[Bend], cuts: &[Cut]) -> f64 {
     let ring = |segs: &[Segment]| {
         crate::profile::Loop2 {
             segments: segs.to_vec(),
@@ -2247,7 +2345,8 @@ fn pattern_area(flats: &[Flat], bends: &[Bend]) -> f64 {
         .iter()
         .map(|b| b.allowance * distance(b.start, b.end))
         .sum();
-    flats + strips
+    let cuts: f64 = cuts.iter().map(|c| ring(&c.segments)).sum();
+    flats + strips + cuts
 }
 
 /// The outline of the flat pattern, in the pattern's axes: closed chains
@@ -2256,15 +2355,21 @@ fn pattern_area(flats: &[Flat], bends: &[Bend]) -> f64 {
 /// edges that a bend's strip continues are left out; the strips' ends
 /// are lines across them.
 pub fn outline(part: &Part, tolerance: &Tolerance) -> Vec<Vec<Segment>> {
-    tagged_outline(&part.flats, &part.bends, tolerance.linear)
+    tagged_outline(&part.flats, &part.bends, &part.cuts, tolerance.linear)
         .into_iter()
         .map(|chain| chain.into_iter().map(|(s, _)| s).collect())
         .collect()
 }
 
 /// [`outline`] with, per segment, the flat it belongs to (0 the base,
-/// `i + 1` flange `i`, whose bend's strip is counted with it).
-fn tagged_outline(flats: &[Flat], bends: &[Bend], tol: f64) -> Vec<Vec<(Segment, usize)>> {
+/// `i + 1` flange `i`, whose bend's strip is counted with it; a cut across
+/// bends counts with the base).
+fn tagged_outline(
+    flats: &[Flat],
+    bends: &[Bend],
+    cuts: &[Cut],
+    tol: f64,
+) -> Vec<Vec<(Segment, usize)>> {
     // The edges a strip continues: per flat, the indices of its outer
     // segments.
     let mut inner: BTreeMap<(usize, usize), ()> = BTreeMap::new();
@@ -2339,6 +2444,10 @@ fn tagged_outline(flats: &[Flat], bends: &[Bend], tol: f64) -> Vec<Vec<(Segment,
         outer.push(chain);
     }
     outer.extend(loops);
+    outer.extend(
+        cuts.iter()
+            .map(|c| c.segments.iter().map(|s| (s.clone(), 0)).collect()),
+    );
     outer
 }
 

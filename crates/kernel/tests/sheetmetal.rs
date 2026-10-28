@@ -1105,9 +1105,11 @@ fn holes_in_flanges_are_cut_flat_and_folded() {
 }
 
 /// A hole or cut-out that lies in no one flat is refused, naming its
-/// curves: across a bend's strip, crossing a flat's edge, outside the
-/// pattern, touching a flat's edge; one with a profile inside it (an
-/// island, a loose piece of the sheet) too.
+/// curves: crossing a flat's edge, outside the pattern, touching a flat's
+/// edge; one with a profile inside it (an island, a loose piece of the
+/// sheet) too. One across a bend's strip was refused here until holes
+/// across a bend were built (2026-10-28); it is built and held to its
+/// closed forms in `sheetmetal_cuts.rs` now.
 #[test]
 fn a_cutout_that_lies_in_no_flat_is_refused() {
     for k in SCALES {
@@ -1133,7 +1135,6 @@ fn a_cutout_that_lies_in_no_flat_is_refused() {
             s
         };
         for (what, cut) in [
-            ("across the strip", vec![([40.0 + ba / 2.0, 15.0], 0.5)]),
             ("across the flat's edge", vec![([x0 + 15.0, 15.0], 1.0)]),
             ("outside the pattern", vec![([200.0, 15.0], 1.0)]),
             ("touching the tangent line", vec![([x0 + 1.0, 15.0], 1.0)]),

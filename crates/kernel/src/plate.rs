@@ -435,7 +435,7 @@ struct Traced {
     own: (f64, f64),
 }
 
-fn fit(params: &[f64], points: &[Vec3]) -> Result<NurbsCurve, KernelError> {
+pub(crate) fn fit(params: &[f64], points: &[Vec3]) -> Result<NurbsCurve, KernelError> {
     let degree = params.len().saturating_sub(1).clamp(1, 3);
     let values: Vec<Vec<f64>> = points.iter().map(|p| vec![p.x, p.y, p.z]).collect();
     let (knots, ctrl) = interpolate(params, degree, &values)?;
@@ -456,7 +456,7 @@ fn fit(params: &[f64], points: &[Vec3]) -> Result<NurbsCurve, KernelError> {
 /// with the middles of steps added where the spline through each is
 /// further than the share of the tolerance from the point there, until
 /// none is.
-fn trace(
+pub(crate) fn trace(
     mut params: Vec<f64>,
     count: usize,
     edge: Option<EdgeId>,

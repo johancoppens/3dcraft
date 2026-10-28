@@ -447,6 +447,12 @@ impl Loop2 {
         self.moments(self.origin()).0
     }
 
+    /// How many times the loop goes round `p`, counter-clockwise (a
+    /// whole number; `p` must not be on the loop).
+    pub(crate) fn winding_about(&self, p: P2) -> f64 {
+        Turns::new(self).winding(self, p)
+    }
+
     /// The loop run the other way, starting at the same segment.
     pub(crate) fn flipped(&self) -> Loop2 {
         let mut segments = Vec::with_capacity(self.segments.len());

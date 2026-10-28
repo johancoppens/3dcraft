@@ -40,12 +40,17 @@ pub struct SheetMetalPart {
 
 /// The name of a face of the folded bottom skin.
 pub fn sheet_face_name(feature: FeatureId, face: SheetFace) -> PersistentName {
-    let number = match face {
-        SheetFace::Flat(0) => 0,
-        SheetFace::Flat(i) => 2 * i as u64,
-        SheetFace::Bend(i) => 2 * i as u64 + 1,
+    let number = |face: SheetFace| match face {
+        SheetFace::Flat(i) | SheetFace::FlatPiece(i, _) => 2 * i as u64,
+        SheetFace::Bend(i) | SheetFace::BendPiece(i, _) => 2 * i as u64 + 1,
     };
-    PersistentName::new(feature, NameRole::Face, vec![number])
+    // The further faces a hole across a bend leaves a flat or a bend in
+    // are numbered after it: `F9:face(k, j)`.
+    let numbers = match face {
+        SheetFace::FlatPiece(_, j) | SheetFace::BendPiece(_, j) => vec![number(face), j as u64],
+        _ => vec![number(face)],
+    };
+    PersistentName::new(feature, NameRole::Face, numbers)
 }
 
 fn explain(error: KernelError) -> String {
@@ -451,7 +456,12 @@ pub(crate) fn build(
                 NameRole::Edge,
                 vec![*flat as u64, *seg as u64],
             )),
-            key => named.edge_name(*at.get(key)?),
+            // A piece of a hole across a bend that the open pattern does
+            // not have is named as it is.
+            key => match at.get(key) {
+                Some(&i) => named.edge_name(i),
+                None => sheet_names.edge_name(edge),
+            },
         }
     };
     let names = crate::plate::plate_names_with(
