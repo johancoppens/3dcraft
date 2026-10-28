@@ -712,17 +712,22 @@ fn check(doc: &Document, regen: &Regen, assertion: &Assertion, outputs: &Resolve
         ctx.outputs = Some(outputs);
         ctx
     });
-    // The dimension of `value` is its expression's.
+    // The dimension of `value` is its expression's; one that does not
+    // work out is kept, to be said before the bounds are read in a
+    // dimension that is not its own.
+    let mut expr_error: Option<String> = None;
     let dim = match (
         measure.as_str(),
         &ctx,
         parsed.as_ref().and_then(|p| p.get("expr")),
     ) {
-        ("value", Ok(ctx), Some(Value::String(source))) => ctx
-            .evaluate(source, "expr")
-            .map_or(Dim::Of(craft3d_expr::Dimension::NONE), |q| {
-                crate::verify_cmds::dim_of_dimension(q.dimension)
-            }),
+        ("value", Ok(ctx), Some(Value::String(source))) => match ctx.evaluate(source, "expr") {
+            Ok(q) => crate::verify_cmds::dim_of_dimension(q.dimension),
+            Err(e) => {
+                expr_error = Some(e);
+                Dim::Of(craft3d_expr::Dimension::NONE)
+            }
+        },
         _ => dim_of(&measure),
     };
     let unit = unit_of(dim, length);
@@ -794,6 +799,14 @@ fn check(doc: &Document, regen: &Regen, assertion: &Assertion, outputs: &Resolve
                 return checked;
             }
         }
+    }
+    // A `value` whose expression needs an unknown output is undecided
+    // (its dimension, and so its bounds, are not known either); any
+    // other error of it is the measure's own, said where it is taken.
+    if let Some(e) = &expr_error
+        && undecided(&mut checked, &ctx, e)
+    {
+        return checked;
     }
     let wanted = match dim {
         Dim::Length(k) => craft3d_expr::Dimension::new(k, 0),
