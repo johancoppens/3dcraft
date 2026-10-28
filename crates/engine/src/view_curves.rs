@@ -90,6 +90,23 @@ pub(crate) fn to_segment(p: Point, a: Point, b: Point) -> f64 {
     dist2(p, [a[0] + d[0] * t, a[1] + d[1] * t])
 }
 
+/// How far `p` is from the segment from `a` to `b` where it lies beside
+/// it (its foot on the segment, within `close` of its ends); `None` past
+/// its ends. A piece covers what runs beside it, not what goes on beyond
+/// its end.
+fn beside(p: Point, a: Point, b: Point, close: f64) -> Option<f64> {
+    let d = sub2(b, a);
+    let length = dot2(d, d).sqrt();
+    if length.is_nan() || length <= 0.0 {
+        return (dist2(p, a) <= close).then_some(dist2(p, a));
+    }
+    let along = dot2(sub2(p, a), d) / length;
+    if along < -close || along > length + close {
+        return None;
+    }
+    Some(cross2(d, sub2(p, a)).abs() / length)
+}
+
 /// The same in space.
 fn to_segment3(p: Vec3, a: Vec3, b: Vec3) -> f64 {
     let d = b - a;
@@ -503,7 +520,7 @@ impl Registry {
                 continue;
             }
             let reach = close + slack + d.slack;
-            if to_segment(p, d.a, d.b) > reach {
+            if beside(p, d.a, d.b, close).is_none_or(|off| off > reach) {
                 continue;
             }
             // Only a piece that runs along it: two chords within `reach`
