@@ -11,6 +11,7 @@ pub mod curvature;
 mod curve;
 mod extend;
 pub mod intersect;
+pub mod network;
 mod nurbs;
 pub mod offset;
 pub mod pole;
