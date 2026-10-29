@@ -181,7 +181,11 @@ pub fn segments_marked(
     // In a picture that is cut open an edge is drawn where it is kept, and
     // the outline of the cut is drawn as edges. A body's edges are drawn
     // in shades of its own colour (`Tokens::edge_colors`).
-    for (body, color) in scene.into_iter().flat_map(viewport::body_colors) {
+    for (body, color) in scene
+        .into_iter()
+        .filter(|_| !marks.hide_edges)
+        .flat_map(viewport::body_colors)
+    {
         let colors = tokens.edge_colors(color.unwrap_or(tokens.body));
         for edge in body.edges.iter() {
             let extent = edge.split_first().map(|(&first, rest)| {
@@ -343,6 +347,7 @@ pub fn edge_look(tokens: &Tokens, scale: f32) -> EdgeLook {
         dense_cap: f64::from(tokens.edge_dense_cap),
         fade_floor: f64::from(tokens.edge_fade_floor),
         tile: viewport::tile_pixels(tokens, scale),
+        soft: false,
     }
 }
 
@@ -680,7 +685,10 @@ impl Direct {
             slack: depth_slack(Backend::Gpu, scene, &wanted.camera),
             hidden_opacity: wanted.tokens.hidden_opacity,
             axis_length: wanted.camera.distance * AXIS_LENGTH,
-            edges: edge_look(&wanted.tokens, wanted.scale),
+            edges: EdgeLook {
+                soft: wanted.marks.soft_edges,
+                ..edge_look(&wanted.tokens, wanted.scale)
+            },
         };
         self.onscreen.set_studio(self.studio.clone());
         self.onscreen

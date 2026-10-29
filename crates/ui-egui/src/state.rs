@@ -293,7 +293,7 @@ pub struct Closing {
     pub jig: bool,
 }
 
-/// What the viewport draws besides the bodies and their edges.
+/// What the viewport draws besides the bodies' faces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
 pub struct Show {
@@ -301,6 +301,11 @@ pub struct Show {
     pub datums: bool,
     /// The sketches: their lines and points (shown by default).
     pub sketches: bool,
+    /// The bodies' edges, the outline of a section's cap with them
+    /// (shown by default). A highlighted or selected edge or vertex is
+    /// drawn either way: it points at something, it is not a line of the
+    /// model.
+    pub edges: bool,
 }
 
 impl Default for Show {
@@ -308,6 +313,7 @@ impl Default for Show {
         Self {
             datums: true,
             sketches: true,
+            edges: true,
         }
     }
 }
@@ -645,9 +651,10 @@ pub struct UiState {
     /// The last click in the viewport. Read-only over the control channel:
     /// `ui.pick` with `select` makes one.
     pub picked: Option<Picked>,
-    /// What the viewport draws besides the bodies and their edges:
+    /// What the viewport draws besides the bodies' faces:
     /// `ui.set {"show": {"datums": false}}` hides the datums,
-    /// `{"show": {"sketches": false}}` the sketches.
+    /// `{"show": {"sketches": false}}` the sketches, `{"show": {"edges":
+    /// false}}` the bodies' edges.
     pub show: Show,
     /// The Help menu's windows that are open.
     pub dialogs: Dialogs,
@@ -694,6 +701,27 @@ pub struct LookState {
     /// The frames averaged while the camera stands still (`None`:
     /// `craft3d_engine::look::VIEWPORT_ACCUMULATE`).
     pub accumulate: Option<u32>,
+    /// How the studio look draws the bodies' edges ([`EDGE_MODES`]):
+    /// `soft` (the default) fades them where the lens blurs the model,
+    /// `sharp` draws them as the plain look does, `off` leaves them out.
+    /// The window's own: `view.render` draws no edges, so the engine's
+    /// look does not have it.
+    pub edges: String,
+}
+
+/// The ways the studio look draws the bodies' edges (`look.edges`).
+pub const EDGE_MODES: [&str; 3] = ["soft", "sharp", "off"];
+
+/// How a look draws the bodies' edges ([`LookState::edge_mode`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EdgeMode {
+    /// Crisp over the picture, as the plain look draws them.
+    Sharp,
+    /// Faded where the lens blurs the model
+    /// (`viewport::EdgeBlur`); crisp without a lens.
+    Soft,
+    /// Not drawn.
+    Off,
 }
 
 impl Default for LookState {
@@ -729,14 +757,47 @@ impl LookState {
             bloom: look.bloom,
             dof: spec.json().get("dof").filter(|v| !v.is_null()).cloned(),
             accumulate: spec.accumulate,
+            edges: EDGE_MODES[0].to_string(),
         }
     }
 
     /// The look this state says, checked: an unknown mode, environment or
-    /// tone curve is an error.
+    /// tone curve is an error. (`edges` is the window's, not the
+    /// engine's: see [`Self::checked`].)
     pub fn spec(&self) -> Result<craft3d_engine::look::LookSpec, String> {
-        let value = serde_json::to_value(self).map_err(|e| e.to_string())?;
+        let mut value = serde_json::to_value(self).map_err(|e| e.to_string())?;
+        if let Some(map) = value.as_object_mut() {
+            map.remove("edges");
+        }
         craft3d_engine::look::LookSpec::patched(&craft3d_engine::look::LookSpec::default(), &value)
+    }
+
+    /// This look checked and as parsed (clamped, turned within 0 to 360
+    /// degrees), its `edges` kept: an unknown mode, environment, tone
+    /// curve or way of drawing the edges is an error.
+    pub fn checked(&self) -> Result<LookState, String> {
+        if !EDGE_MODES.contains(&self.edges.as_str()) {
+            let edges: String = self.edges.chars().take(40).collect();
+            return Err(format!(
+                "`look.edges` `{edges}` is not one of {}",
+                EDGE_MODES.join(", ")
+            ));
+        }
+        let spec = self.spec()?;
+        Ok(LookState {
+            edges: self.edges.clone(),
+            ..LookState::of(&spec)
+        })
+    }
+
+    /// How the bodies' edges are drawn in this look: as ever in the plain
+    /// look, as `edges` says in the studio look.
+    pub fn edge_mode(&self) -> EdgeMode {
+        match (self.is_studio(), self.edges.as_str()) {
+            (true, "off") => EdgeMode::Off,
+            (true, "soft") => EdgeMode::Soft,
+            _ => EdgeMode::Sharp,
+        }
     }
 
     pub fn is_studio(&self) -> bool {
@@ -1181,6 +1242,8 @@ mod tests {
             show: Show {
                 datums: false,
                 sketches: false,
+                // Added with the Edges toggle (2026-10-30).
+                edges: false,
             },
             // Added with the Help menu (2026-10-23).
             dialogs: Dialogs {
@@ -1237,6 +1300,8 @@ mod tests {
                 bloom: 0.1,
                 dof: Some(serde_json::json!({"fstop": 4.0, "focus": "picked"})),
                 accumulate: Some(8),
+                // The edges in the studio look (2026-10-30).
+                edges: "off".to_string(),
             },
         };
         let json = serde_json::to_value(&state).unwrap();
@@ -1264,7 +1329,7 @@ mod tests {
                                     "index": 1, "faces": ["F3:face(0)", "F3:face(2)"],
                                     "point": [1.0, 2.0, 3.0]},
                            "vertex": null},
-                "show": {"datums": false, "sketches": false},
+                "show": {"datums": false, "sketches": false, "edges": false},
                 "parameters": {"open": true, "collapsed": ["Finish"]},
                 "export": {"open": true, "what": {"sheetMetal": "Lid"}, "format": "dxf",
                            "quality": "fine",
@@ -1277,7 +1342,8 @@ mod tests {
                          "tonemap": "aces", "light": [30.0, 45.0], "background": "plain",
                          "reflections": false, "contactShadows": true, "specularShadow": true,
                          "groundReflection": 0.5, "bloom": 0.1,
-                         "dof": {"fstop": 4.0, "focus": "picked"}, "accumulate": 8},
+                         "dof": {"fstop": 4.0, "focus": "picked"}, "accumulate": 8,
+                         "edges": "off"},
             })
         );
         let back: UiState = serde_json::from_value(json).unwrap();

@@ -50,7 +50,9 @@ struct Lines {
     // The fade of an edge: x, y: short and long extent in pixels; z: the
     // share of a tile the edges' ink may cover together.
     fade: vec4<f32>,
-    // x: the opacity a fully faded edge keeps, 0 to 1.
+    // x: the opacity a fully faded edge keeps, 0 to 1. y, z, w: the lens
+    // the edges follow (`EdgeLook::soft`): the blur radius in pixels far
+    // away, the distance in focus and the largest radius; y 0 for none.
     more: vec4<f32>,
 }
 
@@ -341,6 +343,24 @@ fn density_at(p: vec2<f32>) -> f32 {
     return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
+// The share of its ink an edge `width` pixels wide keeps at view distance
+// `z` where the lens blurs it (`viewport::EdgeBlur::fade`): 1 without a
+// lens.
+fn lens_fade(z: f32, width: f32) -> f32 {
+    if !(lines.more.y > 0.0) {
+        return 1.0;
+    }
+    var c = lines.more.w;
+    if z > 0.0 {
+        c = min(lines.more.y * abs(z - lines.more.z) / z, lines.more.w);
+    }
+    if !(c > 0.0) {
+        return 1.0;
+    }
+    let w = max(width, 0.0);
+    return w / (w + 1.5707964 * c);
+}
+
 // The share of its opacity an edge keeps (`viewport::edge_fade`).
 fn edge_fade(long: f32, density: f32) -> f32 {
     let least = clamp(lines.more.x, 0.0, 1.0);
@@ -405,7 +425,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             color = in.outline_color;
             half = in.outline_half;
         }
-        opacity = opacity * edge_fade(in.long, density_at(p));
+        opacity = opacity * edge_fade(in.long, density_at(p)) * lens_fade(depth, half * 2.0);
     }
     let alpha = clamp(half + 0.5 - f.distance, 0.0, 1.0);
     if alpha <= 0.0 {

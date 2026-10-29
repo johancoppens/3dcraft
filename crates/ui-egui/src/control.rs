@@ -385,8 +385,8 @@ impl Shell {
         // changes nothing) and kept as parsed: clamped, turned within 0 to
         // 360 degrees.
         if patch.get("look").is_some() {
-            match self.state.look.spec() {
-                Ok(spec) => self.state.look = crate::state::LookState::of(&spec),
+            match self.state.look.checked() {
+                Ok(look) => self.state.look = look,
                 Err(why) => {
                     self.state = before;
                     return Err(format!("ui.set: {why}"));

@@ -118,6 +118,7 @@ fn every_control_is_reachable() {
                 let mut expected = vec![
                     "sketches",
                     "datums",
+                    "edges",
                     "see-through",
                     "section",
                     "fit",
@@ -140,6 +141,16 @@ fn every_control_is_reachable() {
                     on,
                     "{label}: the options only while on"
                 );
+                // Every chip but the display bar's toggles keeps its name
+                // (those three may show their icons in the smaller window).
+                assert!(!layout.compact, "{label}, section {on}");
+                let named = |r: Option<egui::Rect>| {
+                    r.is_some_and(|r| r.width() > shell.tokens.nav_height + 0.5)
+                };
+                println!(
+                    "{label}, section {on}: the display toggles named: {}",
+                    named(layout.edges)
+                );
             };
             check(&shell, false);
             // The display toggles.
@@ -150,6 +161,9 @@ fn every_control_is_reachable() {
             let at = hit(shell.show_hits(), "datums");
             window.click(&mut shell, &mut session, at);
             assert_eq!(shell.state.show.datums, !before.datums, "{label}");
+            let at = hit(shell.show_hits(), "edges");
+            window.click(&mut shell, &mut session, at);
+            assert_eq!(shell.state.show.edges, !before.edges, "{label}");
             // The projection, Iso and Fit.
             let at = hit(shell.camera_hits(), "orthographic");
             window.click(&mut shell, &mut session, at);

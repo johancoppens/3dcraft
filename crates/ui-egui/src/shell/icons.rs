@@ -16,6 +16,8 @@ pub enum Icon {
     Sketches,
     /// Datums: a plane seen at a slant.
     Datums,
+    /// Edges: a face with its edges inked.
+    Edges,
     /// The studio look: a lamp, a disc with rays.
     Studio,
     /// Section: a body cut by a plane, the half that is cut away hollow.
@@ -124,6 +126,27 @@ pub fn paint(painter: &egui::Painter, icon: Icon, place: Rect, ink: Color32, tok
             faint,
             stroke,
         )],
+        Icon::Edges => {
+            // A box seen from a corner, its faces faint, its edges bold.
+            let (x, y) = (0.82, 0.47);
+            let bold = Stroke::new(stroke.width * 1.4, ink);
+            vec![
+                Shape::convex_polygon(
+                    vec![
+                        p(0.0, -0.95),
+                        p(x, -y),
+                        p(x, y),
+                        p(0.0, 0.95),
+                        p(-x, y),
+                        p(-x, -y),
+                    ],
+                    faint,
+                    bold,
+                ),
+                Shape::line(vec![p(-x, -y), p(0.0, 0.0), p(x, -y)], bold),
+                Shape::line(vec![p(0.0, 0.0), p(0.0, 0.95)], bold),
+            ]
+        }
         Icon::Studio => {
             let mut shapes = vec![
                 Shape::circle_filled(c, half * 0.32, faint),

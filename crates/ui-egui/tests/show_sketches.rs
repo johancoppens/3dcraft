@@ -76,7 +76,7 @@ fn ui_set_hides_and_shows_the_sketches_and_shown_is_the_picture_of_before() {
     let got = call(&mut shell, &mut session, "ui.get", json!({}));
     assert_eq!(
         got["state"]["show"],
-        json!({"datums": true, "sketches": true})
+        json!({"datums": true, "sketches": true, "edges": true})
     );
     let before = screenshot(&mut shell, &mut session);
     call(
@@ -88,7 +88,7 @@ fn ui_set_hides_and_shows_the_sketches_and_shown_is_the_picture_of_before() {
     let got = call(&mut shell, &mut session, "ui.get", json!({}));
     assert_eq!(
         got["state"]["show"],
-        json!({"datums": true, "sketches": false})
+        json!({"datums": true, "sketches": false, "edges": true})
     );
     let hidden = screenshot(&mut shell, &mut session);
     let coverage = |shot: &Value| shot["overlayCoverage"].as_f64().unwrap();
@@ -193,7 +193,7 @@ fn the_sketches_toggle_in_the_window_flips_the_state() {
     };
     frame(&mut shell, &mut session, Vec::new());
     let names: Vec<&str> = shell.show_hits().iter().map(|(name, _)| *name).collect();
-    assert_eq!(names, ["sketches", "datums"]);
+    assert_eq!(names, ["sketches", "datums", "edges"]);
     let at = shell.show_hits()[0].1.center();
     let press = |pressed| Event::PointerButton {
         pos: at,
