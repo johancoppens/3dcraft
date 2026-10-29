@@ -25,6 +25,11 @@ pub(crate) const MAX_ITEMS: usize = 200_000;
 /// differences of sums of a few dozen such products.
 pub(crate) const FINEST_RELATIVE: f64 = 1e4 * f64::EPSILON;
 
+/// The largest angle (radians) a mate's angle or a driven angle may have:
+/// some 160 000 turns, far past any motion, and small enough that a turn's
+/// rounding stays below 1e-9 rad.
+pub(crate) const MAX_ANGLE: f64 = 1e6;
+
 /// A mate with its frames checked, made orthonormal and flipped.
 #[derive(Clone, Debug)]
 pub(crate) struct Mate {
@@ -859,7 +864,7 @@ fn check_mate(
             "{name}: the offset is not finite or too large"
         )));
     }
-    if !spec.angle.is_finite() || spec.angle.abs() > 1e6 {
+    if !spec.angle.is_finite() || spec.angle.abs() > MAX_ANGLE {
         return Err(invalid(format!(
             "{name}: the angle is not finite or too large"
         )));
@@ -888,7 +893,12 @@ fn check_mate(
                     spec.kind.label()
                 )));
             }
-            if !d.is_finite() || d.abs() > p.tolerance / FINEST_RELATIVE {
+            let cap = if spec.kind.variables().get(v).is_some_and(|k| k.is_angle()) {
+                MAX_ANGLE
+            } else {
+                p.tolerance / FINEST_RELATIVE
+            };
+            if !d.is_finite() || d.abs() > cap {
                 return Err(invalid(format!(
                     "{name}: the driven value is not finite or too large"
                 )));

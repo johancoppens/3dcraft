@@ -258,7 +258,12 @@ impl Solver {
         }
         let reach = self.sys.problem.tolerance / crate::system::FINEST_RELATIVE;
         for (&(m, v), &d) in self.sys.slots.iter().zip(drives) {
-            if !d.is_finite() || d.abs() > reach {
+            let cap = if self.sys.unit(m, v) == 1.0 {
+                crate::system::MAX_ANGLE
+            } else {
+                reach
+            };
+            if !d.is_finite() || d.abs() > cap {
                 return Err(Diagnosis::Invalid {
                     reason: format!(
                         "{}: the driven value is not finite or too large",
