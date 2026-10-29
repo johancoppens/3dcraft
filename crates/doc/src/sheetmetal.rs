@@ -295,6 +295,12 @@ pub struct SheetMetal {
     /// part has had, so a deleted flange's id never comes back.
     #[serde(default)]
     pub next_flange_id: u32,
+    /// The relief cut at every end of a bend that lies inside its edge (an
+    /// inset flange's, a tab's): a notch of its shape `size` deep into the
+    /// parent flat beside the bend's end and `size` along the edge
+    /// (`None`: none, the edge turns into the bend's end).
+    #[serde(default)]
+    pub bend_relief: Option<CornerRelief>,
 }
 
 /// The highest id a flange may have: its faces are named `face(2 · id −
@@ -361,6 +367,12 @@ impl SheetMetal {
             }
             out.push(("relief.size".to_string(), &relief.size));
         }
+        if let Some(relief) = &self.bend_relief {
+            if let Some(e) = relief.shape.expr() {
+                out.push(("bendRelief.shape".to_string(), e));
+            }
+            out.push(("bendRelief.size".to_string(), &relief.size));
+        }
         if let Some(corner) = &self.corner {
             if let Some(e) = corner.kind.expr() {
                 out.push(("corner.kind".to_string(), e));
@@ -400,6 +412,12 @@ impl SheetMetal {
             }
         }
         if let Some(relief) = &mut self.relief {
+            if let Some(e) = relief.shape.expr_mut() {
+                out.push(e);
+            }
+            out.push(&mut relief.size);
+        }
+        if let Some(relief) = &mut self.bend_relief {
             if let Some(e) = relief.shape.expr_mut() {
                 out.push(e);
             }

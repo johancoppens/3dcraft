@@ -767,6 +767,10 @@ pub enum FeatureKind {
         /// past the flanges' ids).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         next_flange_id: Option<u32>,
+        /// The relief at every end of a bend inside its edge (format
+        /// version 52, a TEMPORARY number).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bend_relief: Option<SheetRelief>,
     },
 }
 

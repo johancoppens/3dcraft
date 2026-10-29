@@ -239,12 +239,11 @@ pub(crate) fn analyse(
             },
         });
     }
-    let relief = match &made.relief {
-        None => None,
-        Some(r) => Some(Relief {
+    let relief_of = |what: &str, r: &craft3d_doc::CornerRelief| -> Result<Relief, String> {
+        Ok(Relief {
             kind: match pick(
                 variables,
-                "relief.shape",
+                &format!("{what}.shape"),
                 &r.shape,
                 &ReliefShape::ALL,
                 ReliefShape::name,
@@ -253,9 +252,19 @@ pub(crate) fn analyse(
                 ReliefShape::Round => ReliefKind::Round,
                 ReliefShape::Tear => ReliefKind::Tear,
             },
-            size: length(doc, variables, "relief.size", &r.size)?,
-        }),
+            size: length(doc, variables, &format!("{what}.size"), &r.size)?,
+        })
     };
+    let relief = made
+        .relief
+        .as_ref()
+        .map(|r| relief_of("relief", r))
+        .transpose()?;
+    let bend_relief = made
+        .bend_relief
+        .as_ref()
+        .map(|r| relief_of("bendRelief", r))
+        .transpose()?;
     let closing = |what: &str,
                    kind: &Pick<CornerKind>,
                    gap: Option<&craft3d_doc::Expr>,
@@ -311,6 +320,7 @@ pub(crate) fn analyse(
         thickness,
         flanges,
         relief,
+        bend_relief,
         corner,
         corners,
         cutouts,

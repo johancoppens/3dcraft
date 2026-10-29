@@ -745,7 +745,14 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 corner,
                 corners,
                 next_flange_id,
+                bend_relief,
             }) => manifest::FeatureKind::SheetMetal {
+                bend_relief: bend_relief
+                    .as_ref()
+                    .map(|doc::CornerRelief { shape, size }| manifest::SheetRelief {
+                        shape: pick_to_manifest(shape, relief_shape_to_manifest),
+                        size: expr_to_manifest(size),
+                    }),
                 // Written only when it is not past the flanges' ids, as a
                 // flange's id only when it is not its place plus 1.
                 next_flange_id: (*next_flange_id != next_past(flanges)).then_some(*next_flange_id),
@@ -2388,9 +2395,16 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
                 corner,
                 corners,
                 next_flange_id,
+                bend_relief,
             } => doc::FeatureKind::SheetMetal({
                 let mut part = doc::SheetMetal {
                     next_flange_id: 0,
+                    bend_relief: bend_relief.map(|manifest::SheetRelief { shape, size }| {
+                        doc::CornerRelief {
+                            shape: pick_to_doc(shape, relief_shape_to_doc),
+                            size: doc::Expr(size),
+                        }
+                    }),
                     corner: corner.map(|manifest::SheetCornerClose { kind, gap }| {
                         doc::CornerClose {
                             kind: pick_to_doc(kind, corner_kind_to_doc),

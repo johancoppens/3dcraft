@@ -171,6 +171,7 @@ fn spec(
         thickness: 1.0,
         flanges,
         relief,
+        bend_relief: None,
         corner: Closing::OPEN,
         corners: Vec::new(),
         cutouts,

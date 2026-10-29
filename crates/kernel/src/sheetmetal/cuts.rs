@@ -1194,7 +1194,10 @@ pub(super) fn folded_sheet(
                 .flatten()
             {
                 Some(open) => EdgeKey::Outline { flat, seg: open },
-                None => EdgeKey::Piece { flat, seg },
+                None => EdgeKey::Piece {
+                    flat,
+                    seg: super::added_number(flats, flat, seg),
+                },
             },
             ERef::Sub(flat, seg, piece) => EdgeKey::Split { flat, seg, piece },
             ERef::Hole(flat, hole, seg) => EdgeKey::Hole { flat, hole, seg },

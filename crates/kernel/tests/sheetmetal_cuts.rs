@@ -121,6 +121,7 @@ fn part_spec(k: f64, kf: f64, cutouts: Vec<Cutout>) -> Spec {
             outline: None,
         }],
         relief: None,
+        bend_relief: None,
         corner: Closing::OPEN,
         corners: Vec::new(),
         cutouts,
