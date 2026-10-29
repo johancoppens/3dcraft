@@ -146,9 +146,14 @@ pub(crate) fn color_word(color: Option<[u8; 3]>) -> u32 {
 
 /// A face's finish as the fragment shader takes it: the metallic byte in
 /// the low byte and the highlight's exponent ([`Finish::shininess`]) in
-/// the bits above it, 0 for the plain highlight. The plain finish is 0.
+/// the nine bits above it (at most [`craft3d_render::MAX_SHININESS`],
+/// 256), 0 for the plain highlight, and the roughness byte plus one from
+/// bit 20 (0 for none of its own), which the studio look reads. The plain
+/// finish is 0.
 pub(crate) fn finish_word(finish: Finish) -> u32 {
-    u32::from(finish.metallic) | (finish.shininess().unwrap_or(0) << 8)
+    u32::from(finish.metallic)
+        | ((finish.shininess().unwrap_or(0) & 511) << 8)
+        | (finish.roughness.map_or(0, |r| u32::from(r) + 1) << 20)
 }
 
 pub(crate) struct Chunk {
@@ -286,24 +291,25 @@ mod tests {
             assert_eq!(bytes[at..at + 4], [1, 2, 3, 1]);
             assert_eq!(bytes[at + 4..at + 8], [0, 0, 0, 0]);
         }
-        // With a finish: the metallic byte and the exponent above it.
+        // With a finish: the metallic byte, the exponent above it and the
+        // roughness byte plus one from bit 20.
         let finish = Finish {
             metallic: 200,
             roughness: Some(255),
         };
-        assert_eq!(finish_word(finish), 200 | (1 << 8));
+        assert_eq!(finish_word(finish), 200 | (1 << 8) | (256 << 20));
         assert!(colors.set_look(7, Some(([1, 2, 3], finish))));
         let bytes = &pack(&seven, &colors, 1000).unwrap().chunks[0];
         for corner in 0..3 {
             let at = corner * VERTEX_BYTES + 44;
-            assert_eq!(bytes[at..at + 4], [200, 1, 0, 0]);
+            assert_eq!(bytes[at..at + 4], [200, 1, 0, 0x10]);
         }
         assert_eq!(
             finish_word(Finish {
                 metallic: 0,
                 roughness: Some(0)
             }),
-            256 << 8
+            (256 << 8) | (1 << 20)
         );
         let (lo, hi) = packed.bounds.corners().unwrap();
         assert_eq!((lo, hi), (far, far + Vec3::new(2.0, 4.0, 0.0)));

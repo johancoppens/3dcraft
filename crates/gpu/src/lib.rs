@@ -82,6 +82,7 @@ mod onscreen;
 mod peel;
 mod readback;
 mod renderer;
+mod studio;
 
 pub use mesh::{GpuMesh, MAX_TRIANGLES};
 pub use offscreen::{AdapterSummary, Offscreen};
@@ -90,6 +91,7 @@ pub use onscreen::{
     Onscreen, OverlayParams, Segment, WANTED_SAMPLES,
 };
 pub use renderer::Renderer;
+pub use studio::Studio;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use offscreen::{adapters, render};

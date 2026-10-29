@@ -241,6 +241,24 @@ impl Offscreen {
         Ok(frame)
     }
 
+    /// The GPU counterpart of `craft3d_render::studio::render_studio`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn render_studio(
+        &mut self,
+        mesh: &Mesh,
+        colors: &craft3d_render::FaceColors,
+        camera: &Camera,
+        params: &RenderParams,
+        studio: &crate::Studio,
+    ) -> Result<Frame, GpuError> {
+        let uploaded = self.renderer.upload_colored(mesh, colors)?;
+        self.renderer
+            .draw_studio(&uploaded, camera, params, studio)?;
+        let frame = self.renderer.read_frame()?;
+        self.check_uncaptured()?;
+        Ok(frame)
+    }
+
     /// [`Offscreen::render`] for callers that cannot block (the browser).
     pub async fn render_async(
         &mut self,

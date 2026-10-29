@@ -49,8 +49,8 @@ use crate::{
     RenderError, RenderParams, View, edge, render_colored, sample_range, section_bounds,
     shared_edge,
 };
-use craft3d_math::Vec3;
-use shadow::{LightView, ShadowMap};
+use craft3d_math::{Bbox3, Vec3};
+pub use shadow::{LightView, ShadowMap};
 use std::f64::consts::PI;
 
 /// The roughness of a face without one of its own.
@@ -148,12 +148,30 @@ pub struct FrameLight<'a> {
     pub shadow: Option<ShadowMap>,
     /// The height of the ground, when there is one.
     pub ground: Option<f64>,
+    pub rest_up: f64,
+    pub key_luminance: f64,
 }
 
-impl<'a> FrameLight<'a> {
-    /// The light of a frame of `mesh`.
-    pub fn new(mesh: &Mesh, env: &'a Prepared, look: &Look) -> FrameLight<'a> {
-        let bounds = section_bounds(mesh);
+/// The numbers of a frame's light that do not depend on the samples: the
+/// key light in the model's axes, the light's view over the mesh's box,
+/// the ground's height and the two luminances the ground's shadow is
+/// weighed with. The GPU renderer takes them from here too.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LightNumbers {
+    /// Towards the key light, its irradiance and angular radius.
+    pub key: Option<(Vec3, [f64; 3], f64)>,
+    /// The light's view, when there are shadows.
+    pub view: Option<LightView>,
+    pub ground: Option<f64>,
+    /// The luminance of the irradiance without the key on an upward face.
+    pub rest_up: f64,
+    /// The luminance of the key's irradiance.
+    pub key_luminance: f64,
+}
+
+impl LightNumbers {
+    /// The numbers for a mesh within `bounds` (its triangles' corners).
+    pub fn new(bounds: &Bbox3, env: &Prepared, look: &Look) -> LightNumbers {
         let key = look.key_direction(env).zip(env.key).map(|(d, k)| {
             (
                 d,
@@ -161,21 +179,37 @@ impl<'a> FrameLight<'a> {
                 f64::from(k.radius).clamp(0.0, 1.0),
             )
         });
-        let shadow = key
+        let view = key
             .filter(|_| look.shadows)
-            .and_then(|(d, _, _)| LightView::new(&bounds, d))
-            .map(|view| ShadowMap::draw(mesh, view));
+            .and_then(|(d, _, _)| LightView::new(bounds, d));
+        let rotation = look.rotation_radians();
+        LightNumbers {
+            key,
+            view,
+            ground: look
+                .ground
+                .then(|| bounds.corners().map(|(lo, _)| lo.z))
+                .flatten(),
+            rest_up: env::luminance(env.irradiance(rotate_z(Vec3::Z, -rotation))),
+            key_luminance: key.map_or(0.0, |(_, e, _)| env::luminance(e)),
+        }
+    }
+}
+
+impl<'a> FrameLight<'a> {
+    /// The light of a frame of `mesh`.
+    pub fn new(mesh: &Mesh, env: &'a Prepared, look: &Look) -> FrameLight<'a> {
+        let numbers = LightNumbers::new(&section_bounds(mesh), env, look);
         FrameLight {
             env,
             look: *look,
             rotation: look.rotation_radians(),
             exposure: look.exposure_scale(),
-            key,
-            shadow,
-            ground: look
-                .ground
-                .then(|| bounds.corners().map(|(lo, _)| lo.z))
-                .flatten(),
+            key: numbers.key,
+            shadow: numbers.view.map(|view| ShadowMap::draw(mesh, view)),
+            ground: numbers.ground,
+            rest_up: numbers.rest_up,
+            key_luminance: numbers.key_luminance,
         }
     }
 
@@ -266,7 +300,7 @@ impl<'a> FrameLight<'a> {
     /// luminance of the irradiance without the key on an upward face and
     /// `K` the key's; 1 off the ground.
     pub fn ground_factor(&self, origin: Vec3, d: Vec3) -> f64 {
-        let (Some(z), Some(map), Some((l, e, radius))) = (self.ground, &self.shadow, self.key)
+        let (Some(z), Some(map), Some((l, _, radius))) = (self.ground, &self.shadow, self.key)
         else {
             return 1.0;
         };
@@ -279,8 +313,8 @@ impl<'a> FrameLight<'a> {
         }
         let g = origin + d * t;
         let lz = l.z.max(0.0);
-        let rest = env::luminance(self.irradiance(Vec3::Z));
-        let key = env::luminance(e) * lz;
+        let rest = self.rest_up;
+        let key = self.key_luminance * lz;
         if !(rest + key > 0.0) || lz <= 0.0 {
             return 1.0;
         }

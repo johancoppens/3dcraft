@@ -6,6 +6,7 @@ use crate::cut;
 use crate::mesh::{GpuMesh, VERTEX_BYTES};
 use crate::peel;
 use crate::readback;
+use crate::studio::{self, Passes, Studio, StudioGpu, StudioTargets};
 use craft3d_math::Bbox3;
 use craft3d_render::{
     Camera, Cut, FaceColors, Frame, MAX_SAMPLES, MAX_SIDE, MAX_SSAA, NO_FACE, Projection,
@@ -424,6 +425,9 @@ pub struct Renderer {
     cut: Option<Result<CutPipelines, String>>,
     /// The triangle of the cap, written every cut-open frame.
     cap_buffer: wgpu::Buffer,
+    /// What draws the studio look, or why this device does not; made for
+    /// the first studio picture.
+    studio: Option<Result<StudioReadback, String>>,
     /// The buffers frames are read back through, kept between frames.
     staging: Mutex<Option<readback::Staging>>,
     drawn: bool,
@@ -1042,6 +1046,7 @@ impl Renderer {
             see_through: Err("it was not set up".to_string()),
             cut: None,
             cap_buffer: cut::cap_buffer(device),
+            studio: None,
             staging: Mutex::new(None),
             drawn: false,
             token: Arc::new(()),
@@ -1671,6 +1676,271 @@ impl Renderer {
             });
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &targets.present_bind, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        self.queue.submit([encoder.finish()]);
+        Ok(())
+    }
+}
+
+/// The studio look of the readback renderer: the shared parts, the
+/// geometry pass and the surfaces at one sample per target sample, and the
+/// background, with the per-size targets.
+struct StudioReadback {
+    gpu: StudioGpu,
+    geometry: Drawing,
+    background: wgpu::RenderPipeline,
+    main: Drawing,
+    targets: Option<StudioTargets>,
+}
+
+impl StudioReadback {
+    fn build(device: &wgpu::Device, scene_layout: &wgpu::BindGroupLayout, two: bool) -> Self {
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("craft3d studio"),
+            source: wgpu::ShaderSource::Wgsl(
+                scene_source(device, &[include_str!("studio.wgsl")]).into(),
+            ),
+        });
+        let gpu = StudioGpu::new(device, &module, scene_layout);
+        let geometry = Drawing::build(two, |step| {
+            scene_pipeline(
+                device,
+                "craft3d geometry",
+                &module,
+                "fs_geometry",
+                &[Some(scene_layout)],
+                &[target(studio::GEOMETRY_FORMAT)],
+                1,
+                step,
+            )
+        });
+        let main = Drawing::build(two, |step| {
+            scene_pipeline(
+                device,
+                "craft3d studio scene",
+                &module,
+                "fs_studio",
+                &[Some(scene_layout), Some(&gpu.layout_main)],
+                &[target(COLOR_FORMAT), target(DATA_FORMAT)],
+                1,
+                step,
+            )
+        });
+        let background = studio::fullscreen_pipeline(
+            device,
+            "craft3d background",
+            &module,
+            "fs_background",
+            &[Some(scene_layout), Some(&gpu.layout_main)],
+            COLOR_FORMAT,
+            1,
+        );
+        StudioReadback {
+            gpu,
+            geometry,
+            background,
+            main,
+            targets: None,
+        }
+    }
+}
+
+impl Renderer {
+    /// [`Renderer::draw`] in the studio look (`craft3d_render::studio`,
+    /// `render_studio`): lit by `studio`'s environment, with its shadows,
+    /// occlusion and ground. A see-through or cut-open picture is drawn in
+    /// the plain look, as the CPU renderer does.
+    pub fn draw_studio(
+        &mut self,
+        mesh: &GpuMesh,
+        camera: &Camera,
+        params: &RenderParams,
+        studio: &Studio,
+    ) -> Result<(), GpuError> {
+        if params.opacity() < 1.0 || params.section.is_some() {
+            return self.draw(mesh, camera, params);
+        }
+        self.drawn = false;
+        if !Arc::ptr_eq(&mesh.owner, &self.token) {
+            return Err(GpuError::ForeignMesh);
+        }
+        check_params(params, self.device.limits().max_texture_dimension_2d)?;
+        if self.studio.is_none() {
+            let (device, layout, two) = (self.device.clone(), &self.scene_layout, self.two);
+            self.studio = Some(
+                guarded(&device, || StudioReadback::build(&device, layout, two))
+                    .map_err(|e| e.to_string()),
+            );
+        }
+        let scene = scene_uniforms(mesh, camera, params, None)?;
+        let size = (
+            params.width.saturating_mul(params.ssaa),
+            params.height.saturating_mul(params.ssaa),
+        );
+        let (light, passes) = studio::studio_uniforms(mesh, studio, size)?;
+        let device = self.device.clone();
+        guarded(&device, || {
+            self.ensure_frame_targets(params);
+            let queue = self.queue.clone();
+            let look = match &mut self.studio {
+                Some(Ok(look)) => look,
+                Some(Err(why)) => {
+                    return Err(GpuError::Device(format!(
+                        "the studio look cannot be drawn on this device: {why}"
+                    )));
+                }
+                None => return Err(GpuError::NothingDrawn),
+            };
+            look.gpu.ensure_env(&device, &queue, &studio.env)?;
+            if look.targets.as_ref().is_none_or(|t| t.size != size) {
+                look.targets = None;
+                look.targets = Some(StudioTargets::new(&device, size));
+            }
+            self.encode_studio(mesh, &scene, &light, &passes, params)
+        })??;
+        self.drawn = true;
+        Ok(())
+    }
+
+    fn encode_studio(
+        &self,
+        mesh: &GpuMesh,
+        scene: &[f32; SCENE_FLOATS],
+        light: &[f32; studio::STUDIO_FLOATS],
+        passes: &Passes,
+        params: &RenderParams,
+    ) -> Result<(), GpuError> {
+        let targets = self.targets.as_ref().ok_or(GpuError::NothingDrawn)?;
+        let Some(Ok(look)) = &self.studio else {
+            return Err(GpuError::NothingDrawn);
+        };
+        let sized = look.targets.as_ref().ok_or(GpuError::NothingDrawn)?;
+        self.queue
+            .write_buffer(&self.scene_uniforms, 0, &float_bytes(scene));
+        self.queue
+            .write_buffer(&look.gpu.uniforms, 0, &float_bytes(light));
+        let resolve: Vec<u8> = [params.ssaa, 0, 0, 0]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        self.queue.write_buffer(&self.resolve_uniforms, 0, &resolve);
+        let attachment = |view, load| {
+            Some(wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })
+        };
+        let nothing = wgpu::Color {
+            r: f64::from(NO_FACE),
+            g: f64::from(f32::INFINITY.to_bits()),
+            b: 0.0,
+            a: 0.0,
+        };
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("craft3d studio frame"),
+            });
+        let draw_mesh = |pass: &mut wgpu::RenderPass<'_>, pipeline: &wgpu::RenderPipeline| {
+            pass.set_pipeline(pipeline);
+            for chunk in &mesh.chunks {
+                pass.set_vertex_buffer(0, chunk.buffer.slice(..));
+                pass.draw(0..chunk.vertices, 0..1);
+            }
+        };
+        if passes.shadow {
+            look.gpu
+                .encode_shadow(&self.device, &mut encoder, &self.scene_bind, mesh);
+        }
+        if passes.ao {
+            let empty = wgpu::Color {
+                r: f64::from(f32::INFINITY.to_bits()),
+                g: 0.0,
+                b: 0.0,
+                a: 0.0,
+            };
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("craft3d geometry"),
+                    color_attachments: &[attachment(&sized.geometry, wgpu::LoadOp::Clear(empty))],
+                    depth_stencil_attachment: Some(depth_attachment(
+                        &targets.samples_depth,
+                        self.two,
+                        false,
+                    )),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_bind_group(0, &self.scene_bind, &[]);
+                draw_in_steps(&mut pass, &[(&look.geometry, &draw_mesh)]);
+            }
+            look.gpu.encode_ao(
+                &self.device,
+                &mut encoder,
+                &self.scene_bind,
+                &sized.geometry,
+                &sized.ao,
+            );
+        }
+        let bind = look.gpu.main_bind(&self.device, passes, &sized.ao)?;
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("craft3d background"),
+                color_attachments: &[attachment(
+                    &targets.samples_color,
+                    wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                )],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&look.background);
+            pass.set_bind_group(0, &self.scene_bind, &[]);
+            pass.set_bind_group(1, &bind, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("craft3d studio scene"),
+                color_attachments: &[
+                    attachment(&targets.samples_color, wgpu::LoadOp::Load),
+                    attachment(&targets.samples_data, wgpu::LoadOp::Clear(nothing)),
+                ],
+                depth_stencil_attachment: Some(depth_attachment(
+                    &targets.samples_depth,
+                    self.two,
+                    false,
+                )),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_bind_group(0, &self.scene_bind, &[]);
+            pass.set_bind_group(1, &bind, &[]);
+            draw_in_steps(&mut pass, &[(&look.main, &draw_mesh)]);
+        }
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("craft3d resolve"),
+                color_attachments: &[
+                    attachment(&targets.color_view, wgpu::LoadOp::Clear(wgpu::Color::BLACK)),
+                    attachment(&targets.data_view, wgpu::LoadOp::Clear(nothing)),
+                ],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.resolve_pipeline);
+            pass.set_bind_group(0, &targets.resolve_bind, &[]);
             pass.draw(0..3, 0..1);
         }
         self.queue.submit([encoder.finish()]);

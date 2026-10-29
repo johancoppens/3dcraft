@@ -66,8 +66,10 @@ struct VertexIn {
     // rgb in the low three bytes; the high byte is 1 when the face has a
     // colour of its own (`craft3d_render::FaceColors`).
     @location(4) color: u32,
-    // The metallic byte in the low byte, the highlight's exponent above it
-    // (0: the plain one): `craft3d_gpu::mesh::finish_word`.
+    // The metallic byte in the low byte, the highlight's exponent in the
+    // nine bits above it (0: the plain one), the roughness byte plus one
+    // from bit 20 (0: none of its own; read by the studio look):
+    // `craft3d_gpu::mesh::finish_word`.
     @location(5) finish: u32,
 }
 
@@ -226,7 +228,7 @@ fn shade_of(in: VertexOut) -> vec4<f32> {
     var metallic = f32(in.finish & 255u) / 255.0;
     var shininess = u32(scene.shade.w);
     var strength = 1.0;
-    let exponent = in.finish >> 8u;
+    let exponent = (in.finish >> 8u) & 511u;
     if exponent != 0u {
         shininess = exponent;
         strength = sqrt((f32(exponent) + 2.0) / (scene.shade.w + 2.0));
