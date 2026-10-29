@@ -1,0 +1,20 @@
+[
+ ["sketch.create", {"name": "Low"}],
+ ["sketch.arc", {"sketch": "Low", "center": [0, 0], "start": [20, 0], "end": [0, 20]}],
+ ["sketch.create", {"name": "High", "offset": "30 mm"}],
+ ["sketch.arc", {"sketch": "High", "center": [0, 0], "start": [20, 0], "end": [0, 20]}],
+ ["sketch.create", {"name": "Left", "plane": "zx"}],
+ ["sketch.line", {"sketch": "Left", "from": [0, 20], "to": [30, 20]}],
+ ["sketch.create", {"name": "Right", "plane": "yz"}],
+ ["sketch.line", {"sketch": "Right", "from": [20, 0], "to": [20, 30]}],
+ ["feature.surface.coons", {"curves": ["Low", "Right", "High", "Left"], "name": "Wall"}],
+ ["feature.loft", {"sections": ["Low", "High"], "guides": ["Left", "Right"], "name": "Guided"}],
+ ["feature.cylinder", {"radius": 20, "height": 30, "name": "Post"}],
+ ["sketch.create", {"name": "Far", "plane": "yz", "offset": "35 mm"}],
+ ["sketch.line", {"sketch": "Far", "from": [25, 0], "to": [25, 30]}],
+ ["sketch.create", {"name": "Bottom"}],
+ ["sketch.spline", {"sketch": "Bottom", "through": [[20, 0], [23, 6.5], [27, 13], [35, 25]]}],
+ ["sketch.create", {"name": "Top", "offset": "30 mm"}],
+ ["sketch.spline", {"sketch": "Top", "through": [[20, 0], [23, 6.5], [27, 13], [35, 25]]}],
+ ["feature.surface.network", {"u": ["Left", "Far"], "v": ["Bottom", "Top"], "edges": {"uFirst": {"kind": "tangent", "face": "F7:face(0)", "weight": "1.5"}}, "name": "Fin"}]
+]
