@@ -941,44 +941,35 @@ fn trace(
         }
         if let Some(f) = fold {
             let level = f.level();
-            // Back at the fan's parameter: the zero set crosses its line
-            // within this step. The fan along ends there; the one that
-            // covers less of its rail is taken, this one or the bridge
-            // across. A crossing whose fan along would cover no more than
-            // the tolerance is the fold's own point met again (the
-            // corrector's rounding puts the first step round a fold on the
-            // fan's line or past it: a fan of no width, review of
-            // 2026-10-29), as a zero by a fold's own is no bridge
-            // ([`bridge`]): the walk goes on round.
-            let crossing = if f.falls_t {
-                (qy >= level)
-                    .then(|| root_between(&|u| pair.f(u, level), x.min(qx), x.max(qx)))
-                    .flatten()
-                    .map(|u| (u, level))
-            } else {
-                (qx >= level)
-                    .then(|| root_between(&|v| pair.f(level, v), y.min(qy), y.max(qy)))
-                    .flatten()
-                    .map(|v| (level, v))
-            };
-            if let Some(end) = crossing {
-                let along = if f.falls_t {
-                    pair.a
-                        .length_between(pair.sa(f.at.0.min(end.0)), pair.sa(f.at.0.max(end.0)))
+            let back = if f.falls_t { qy >= level } else { qx >= level };
+            if back {
+                // Back at the fan's parameter: the fan along ends where
+                // the zero set crosses it; the one that covers less of its
+                // rail is taken, this one or the bridge across.
+                let end = if f.falls_t {
+                    (
+                        root_between(&|u| pair.f(u, level), x, qx).unwrap_or(qx),
+                        level,
+                    )
                 } else {
-                    pair.b
-                        .length_between(pair.tb(f.at.1.min(end.1)), pair.tb(f.at.1.max(end.1)))
+                    (
+                        level,
+                        root_between(&|v| pair.f(level, v), y, qy).unwrap_or(qy),
+                    )
                 };
-                if along > tolerance {
-                    let chosen = match f.bridge {
-                        Some(q) if bridge_length(pair, f.at, q, f.falls_t) < along => q,
-                        _ => end,
-                    };
-                    path.push_fan(chosen);
-                    (x, y) = chosen;
-                    fold = None;
-                    continue;
-                }
+                let along = if f.falls_t {
+                    pair.a.length_between(pair.sa(f.at.0), pair.sa(end.0))
+                } else {
+                    pair.b.length_between(pair.tb(f.at.1), pair.tb(end.1))
+                };
+                let chosen = match f.bridge {
+                    Some(q) if bridge_length(pair, f.at, q, f.falls_t) < along => q,
+                    _ => end,
+                };
+                path.push_fan(chosen);
+                (x, y) = chosen;
+                fold = None;
+                continue;
             }
             if qx >= 1.0 || qy >= 1.0 || qx <= 0.0 || qy <= 0.0 {
                 give_up!(refused(format!(
@@ -1084,6 +1075,36 @@ fn fold_start(pair: &Pair, path: &mut Path, here: (f64, f64), falls_t: bool) -> 
         *point = at;
     }
     at
+}
+
+/// The path with fans that follow one another with one apex made one:
+/// two such fans are one cone, and a face of each would split it at a
+/// ruling no geometry marks (review of 2026-10-29: the walk round a fold
+/// that starts where a fan landed can meet the fan's line again within
+/// rounding on its first step, and end a fan along of no width there,
+/// followed by the fan along it was going round to). A fan is at one `s`
+/// (apex on A) or one `t` (apex on B) between its two points.
+fn merged_fans(mut path: Path) -> Path {
+    let mut k = 1;
+    while k + 1 < path.points.len() {
+        let (Some(&p), Some(&q), Some(&r)) = (
+            path.points.get(k - 1),
+            path.points.get(k),
+            path.points.get(k + 1),
+        ) else {
+            break;
+        };
+        let both_fans = path.special_after(k - 1) && path.special_after(k);
+        let one_apex = (p.0 == q.0 && q.0 == r.0) || (p.1 == q.1 && q.1 == r.1);
+        if both_fans && one_apex && !path.break_at.get(k).copied().unwrap_or(false) {
+            path.points.remove(k);
+            path.fan_after.remove(k);
+            path.break_at.remove(k);
+        } else {
+            k += 1;
+        }
+    }
+    path
 }
 
 /// Where the walk reached a corner's line of one rail at `q` (of A when
@@ -2289,7 +2310,7 @@ fn along_pair(
         Start::FromA(y) => (0.0, y),
         Start::FromB(x) => (x, 0.0),
     };
-    let mut path = trace(pair, origin, tol, tips, REACH * tol)?;
+    let mut path = merged_fans(trace(pair, origin, tol, tips, REACH * tol)?);
     if snapped {
         if let Some(head) = path.points.first_mut() {
             *head = (0.0, 0.0);
@@ -3672,6 +3693,31 @@ mod tests {
         assert_eq!(at, (0.3, 0.5));
         assert_eq!(path.points, vec![(0.2, 0.2), (0.3, 0.3), (0.3, 0.5)]);
         assert_eq!(path.fan_after, vec![false, true, false]);
+    }
+
+    /// Two fans in a row with one apex are one fan; two with apexes on
+    /// different rails, or a fan and rulings, are kept.
+    #[test]
+    fn fans_in_a_row_with_one_apex_are_one() {
+        let mut path = Path::default();
+        path.push((0.1, 0.1));
+        path.push((0.2, 0.2));
+        path.push_fan((0.2, 0.3)); // apex on A, s = 0.2
+        path.push_fan((0.2, 0.300000001)); // the same apex
+        path.push_fan((0.4, 0.300000001)); // apex on B
+        path.push((0.5, 0.5));
+        let merged = merged_fans(path);
+        assert_eq!(
+            merged.points,
+            vec![
+                (0.1, 0.1),
+                (0.2, 0.2),
+                (0.2, 0.300000001),
+                (0.4, 0.300000001),
+                (0.5, 0.5)
+            ]
+        );
+        assert_eq!(merged.fan_after, vec![false, true, true, false, false]);
     }
 
     /// The step towards a saddle ahead is half its distance, never below
