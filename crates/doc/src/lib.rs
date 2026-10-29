@@ -2262,6 +2262,27 @@ impl Document {
                     names.extend(n.edges.all().into_iter().filter_map(|(_, h)| h.face()));
                     names
                 }
+                FeatureKind::Loft(loft) => {
+                    if loft.guides.len() > MAX_NETWORK_CURVES {
+                        return Err(DocError::Invalid(format!(
+                            "the loft `{}` has more than {MAX_NETWORK_CURVES} guides",
+                            feature.name
+                        )));
+                    }
+                    let mut names = Vec::new();
+                    for rail in &loft.guides {
+                        if let Rail::Edges(edges) = rail {
+                            if edges.len() > MAX_RAIL_EDGES {
+                                return Err(DocError::Invalid(format!(
+                                    "`{}` has a guide of more than {MAX_RAIL_EDGES} edges",
+                                    feature.name
+                                )));
+                            }
+                            names.extend(edges.iter());
+                        }
+                    }
+                    names
+                }
                 FeatureKind::Developable(d) => {
                     let mut names = Vec::new();
                     for rail in [&d.a, &d.b] {
@@ -3529,6 +3550,55 @@ mod tests {
         let mut bad_name = sample();
         bad_name.features[0].name = String::new();
         assert!(bad_name.validate().is_err());
+    }
+
+    #[test]
+    fn a_lofts_guides_are_checked_as_a_networks_curves_are() {
+        let guided = |guides: Vec<Rail>| {
+            let mut doc = sample();
+            doc.add_feature(
+                Some("Guided"),
+                FeatureKind::Loft(Loft {
+                    sections: vec![
+                        LoftSection {
+                            sketch: FeatureId(1),
+                            start: None,
+                        },
+                        LoftSection {
+                            sketch: FeatureId(2),
+                            start: None,
+                        },
+                    ],
+                    ruled: false,
+                    closed: false,
+                    guides,
+                }),
+            )
+            .unwrap();
+            doc
+        };
+        let edge = "F1:startCap()".parse::<PersistentName>().unwrap();
+        let fine = guided(vec![
+            Rail::Edges(vec![edge.clone()]),
+            Rail::Sketch(FeatureId(1)),
+        ]);
+        assert_eq!(fine.validate(), Ok(()));
+        // Too many edges in one guide.
+        let long = guided(vec![
+            Rail::Edges(vec![edge.clone(); MAX_RAIL_EDGES + 1]),
+            Rail::Sketch(FeatureId(1)),
+        ]);
+        let why = long.validate().unwrap_err().to_string();
+        assert!(why.contains("guide"), "{why}");
+        // A name that cannot be written and read back.
+        let mut bad = edge.clone();
+        bad.sources = vec![1; MAX_NAME_SOURCES + 1];
+        let broken = guided(vec![Rail::Edges(vec![bad]), Rail::Sketch(FeatureId(1))]);
+        let why = broken.validate().unwrap_err().to_string();
+        assert!(why.contains("not a name"), "{why}");
+        // Too many guides.
+        let many = guided(vec![Rail::Sketch(FeatureId(1)); MAX_NETWORK_CURVES + 1]);
+        assert!(many.validate().is_err());
     }
 
     #[test]

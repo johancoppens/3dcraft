@@ -182,13 +182,166 @@ impl Raw {
                 "raising the degree of a curve whose end knots are not repeated (not clamped)",
             ));
         }
-        let (a, b) = self.domain()?;
         let interior = self.interior();
         for &k in &interior {
             for _ in self.multiplicity(k)..p {
                 self.insert(k)?;
             }
         }
+        self.raise_cut()
+    }
+
+    /// [`Raw::elevate`] with the knots inserted all at once
+    /// ([`Raw::insert_all`]): the same curve, in time linear in its size
+    /// (the knots inserted one by one cost the size of the curve each).
+    pub(crate) fn elevate_batched(&mut self) -> Result<(), GeomError> {
+        let p = self.degree;
+        if p >= MAX_DEGREE {
+            return Err(GeomError::DegreeTooHigh {
+                degree: p + 1,
+                max: MAX_DEGREE,
+            });
+        }
+        if !self.clamped() {
+            return Err(GeomError::Unsupported(
+                "raising the degree of a curve whose end knots are not repeated (not clamped)",
+            ));
+        }
+        let missing = self.to_multiplicity(p);
+        self.insert_all(&missing)?;
+        self.raise_cut()
+    }
+
+    /// The knots strictly inside the domain, each once, ascending, with
+    /// how often each occurs: one pass over the knots.
+    pub(crate) fn knot_runs(&self) -> Vec<(f64, usize)> {
+        let Ok((a, b)) = self.domain() else {
+            return Vec::new();
+        };
+        let mut out: Vec<(f64, usize)> = Vec::new();
+        for &k in &self.knots {
+            if !(k > a && k < b) {
+                continue;
+            }
+            match out.last_mut() {
+                Some(last) if last.0 == k => last.1 += 1,
+                _ => out.push((k, 1)),
+            }
+        }
+        out
+    }
+
+    /// The knots to insert (ascending) so that every knot inside the
+    /// domain occurs `times` times (those that occur more often keep it).
+    pub(crate) fn to_multiplicity(&self, times: usize) -> Vec<f64> {
+        let mut out = Vec::new();
+        for (k, m) in self.knot_runs() {
+            out.extend(std::iter::repeat_n(k, times.saturating_sub(m)));
+        }
+        out
+    }
+
+    /// Inserts the knots `xs` (ascending, each strictly inside the domain)
+    /// all at once: the knot refinement of Boehm and Prautzsch (Piegl &
+    /// Tiller, *The NURBS Book*, A5.4), the same curve in time linear in
+    /// the sizes of the curve and of `xs`.
+    pub(crate) fn insert_all(&mut self, xs: &[f64]) -> Result<(), GeomError> {
+        let (Some(&x0), Some(&xr)) = (xs.first(), xs.last()) else {
+            return Ok(());
+        };
+        let p = self.degree;
+        let count = self.points.len();
+        let (a, b) = self.domain()?;
+        if xs.windows(2).any(|w| matches!(w, [x, y] if y < x)) || !(x0 > a && xr < b) {
+            return Err(GeomError::InvalidParameter(
+                "knots are inserted in order, strictly inside the parameter domain",
+            ));
+        }
+        let r = xs.len();
+        if count.saturating_add(r) > MAX_CONTROL_POINTS {
+            return Err(GeomError::InvalidParameter(
+                "the curve has too many control points to refine",
+            ));
+        }
+        let n = count.checked_sub(1).ok_or_else(internal)?;
+        let m = n + p + 1;
+        let u = &self.knots;
+        if u.len() != m + 1 {
+            return Err(internal());
+        }
+        let knot = |i: usize| u.get(i).copied().ok_or_else(internal);
+        // The span of x: knots[s] <= x < knots[s + 1], s in [p, n].
+        let span = |x: f64| -> Result<usize, GeomError> {
+            let (mut lo, mut hi) = (p, n + 1);
+            while hi - lo > 1 {
+                let mid = lo + (hi - lo) / 2;
+                if knot(mid)? <= x {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            Ok(lo)
+        };
+        let sa = span(x0)?;
+        let sb = span(xr)? + 1;
+        let pw = &self.points;
+        let point = |i: usize| pw.get(i).copied().ok_or_else(internal);
+        let mut q: Vec<H> = vec![[0.0; 4]; count + r];
+        let mut ub: Vec<f64> = vec![0.0; m + 1 + r];
+        let sub = |x: usize, y: usize| x.checked_sub(y).ok_or_else(internal);
+        for j in 0..=sub(sa, p)? {
+            *q.get_mut(j).ok_or_else(internal)? = point(j)?;
+        }
+        for j in sub(sb, 1)?..=n {
+            *q.get_mut(j + r).ok_or_else(internal)? = point(j)?;
+        }
+        for j in 0..=sa {
+            *ub.get_mut(j).ok_or_else(internal)? = knot(j)?;
+        }
+        for j in sb + p..=m {
+            *ub.get_mut(j + r).ok_or_else(internal)? = knot(j)?;
+        }
+        let mut i = sb + p - 1;
+        let mut k = sb + p + r - 1;
+        for &x in xs.iter().rev() {
+            while x <= knot(i)? && i > sa {
+                *q.get_mut(sub(k, p + 1)?).ok_or_else(internal)? = point(sub(i, p + 1)?)?;
+                *ub.get_mut(k).ok_or_else(internal)? = knot(i)?;
+                k = sub(k, 1)?;
+                i = sub(i, 1)?;
+            }
+            let next = q.get(sub(k, p)?).copied().ok_or_else(internal)?;
+            *q.get_mut(sub(k, p + 1)?).ok_or_else(internal)? = next;
+            for l in 1..=p {
+                let ind = sub(k + l, p)?;
+                let here = q.get(ind).copied().ok_or_else(internal)?;
+                let before = q.get(sub(ind, 1)?).copied().ok_or_else(internal)?;
+                let high = ub.get(k + l).copied().ok_or_else(internal)?;
+                let alfa = high - x;
+                let made = if alfa == 0.0 {
+                    here
+                } else {
+                    let low = knot(sub(i + l, p)?)?;
+                    // high > x ≥ low: the span is not empty.
+                    blend(here, before, alfa / (high - low))
+                };
+                *q.get_mut(sub(ind, 1)?).ok_or_else(internal)? = made;
+            }
+            *ub.get_mut(k).ok_or_else(internal)? = x;
+            k = k.saturating_sub(1);
+        }
+        self.points = q;
+        self.knots = ub;
+        Ok(())
+    }
+
+    /// One degree higher, every knot inside the domain already `degree`
+    /// times there (the curve in its Bézier pieces).
+    fn raise_cut(&mut self) -> Result<(), GeomError> {
+        let p = self.degree;
+        let (a, b) = self.domain()?;
+        let interior = self.interior();
         let pieces = interior.len() + 1;
         if self.points.len() != pieces * p + 1 {
             return Err(internal());
@@ -354,13 +507,34 @@ pub(crate) fn bezier_pieces_raw(mut raw: Raw) -> Result<(Vec<f64>, Vec<Vec<H>>),
         ));
     }
     let p = raw.degree;
-    let (a, b) = raw.domain()?;
     let interior = raw.interior();
     for &k in &interior {
         for _ in raw.multiplicity(k)..p {
             raw.insert(k)?;
         }
     }
+    cut_pieces(&raw)
+}
+
+/// [`bezier_pieces_raw`] with the knots inserted all at once
+/// ([`Raw::insert_all`]): in time linear in the size of the curve.
+pub(crate) fn bezier_pieces_batched(mut raw: Raw) -> Result<(Vec<f64>, Vec<Vec<H>>), GeomError> {
+    if !raw.clamped() {
+        return Err(GeomError::Unsupported(
+            "changing the parameter of a curve whose end knots are not repeated (not clamped)",
+        ));
+    }
+    let missing = raw.to_multiplicity(raw.degree);
+    raw.insert_all(&missing)?;
+    cut_pieces(&raw)
+}
+
+/// The Bézier pieces of a curve whose every knot inside the domain is
+/// there `degree` times.
+fn cut_pieces(raw: &Raw) -> Result<(Vec<f64>, Vec<Vec<H>>), GeomError> {
+    let p = raw.degree;
+    let (a, b) = raw.domain()?;
+    let interior = raw.interior();
     if raw.points.len() != (interior.len() + 1) * p + 1 {
         return Err(internal());
     }
@@ -1769,6 +1943,56 @@ mod tests {
                 assert_eq!(higher.degree(), degree);
                 assert!(apart(&curve, &higher) < 1e-13, "degree {degree}");
             }
+        }
+    }
+
+    #[test]
+    fn knots_inserted_all_at_once_are_the_knots_inserted_one_by_one() {
+        let circle = NurbsCurve::circle(&Frame::WORLD, 2.5).unwrap();
+        for curve in [spline(), circle] {
+            let raw = Raw::of(&curve);
+            let (a, b) = raw.domain().unwrap();
+            let at = |f: f64| a + (b - a) * f;
+            // New knots, an existing one again, and one twice.
+            let mut xs = vec![at(0.05), at(0.3), at(0.3), at(0.77), at(0.999)];
+            xs.extend(
+                raw.interior()
+                    .first()
+                    .copied()
+                    .filter(|k| raw.multiplicity(*k) < raw.degree),
+            );
+            xs.sort_by(f64::total_cmp);
+            let mut one = raw.clone();
+            for x in &xs {
+                one.insert(*x).unwrap();
+            }
+            let mut all = raw.clone();
+            all.insert_all(&xs).unwrap();
+            assert_eq!(all.knots, one.knots);
+            assert_eq!(all.points.len(), one.points.len());
+            for (p, q) in all.points.iter().zip(&one.points) {
+                for (x, y) in p.iter().zip(q) {
+                    assert!((x - y).abs() <= 1e-13 * (1.0 + x.abs()), "{p:?} {q:?}");
+                }
+            }
+            let mut up = raw.clone();
+            up.elevate().unwrap();
+            let mut fast = raw.clone();
+            fast.elevate_batched().unwrap();
+            assert_eq!(fast.knots, up.knots);
+            for (p, q) in fast.points.iter().zip(&up.points) {
+                for (x, y) in p.iter().zip(q) {
+                    assert!((x - y).abs() <= 1e-13 * (1.0 + x.abs()));
+                }
+            }
+            let (bounds, pieces) = bezier_pieces_raw(raw.clone()).unwrap();
+            let (bounds2, pieces2) = bezier_pieces_batched(raw.clone()).unwrap();
+            assert_eq!(bounds, bounds2);
+            assert_eq!(pieces.len(), pieces2.len());
+            // Out of order, or on the domain's end: refused.
+            assert!(raw.clone().insert_all(&[at(0.5), at(0.2)]).is_err());
+            assert!(raw.clone().insert_all(&[a]).is_err());
+            assert!(raw.clone().insert_all(&[]).is_ok());
         }
     }
 
