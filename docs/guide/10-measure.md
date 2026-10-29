@@ -278,6 +278,30 @@ and *stable* fails; only the assertion is measured again, since the waterline do
   and a Jig's Parameters tab, below the parameters. Outputs are saved with the document and are the same
   every time it is built.
 
+## Over a motion
+
+A design that moves (its timeline `t`, see [The window](04-window.md#playing-a-motion)) is checked over the
+whole motion with `motion.check`: every assertion is measured at evenly spaced moments of `t`, on a copy, and
+the result says per assertion whether it held everywhere, the first `t` it failed at, and its least and
+greatest value with their `t`. Any measure works: `overlap` with `is` false gives the first collision,
+`clearance` the least gap and where it is. `measure` checks an assertion written in place without keeping it.
+
+```json
+[
+ ["variable.set", {"name": "t", "expr": "0"}],
+ ["feature.block", {"name": "Wall", "size": ["10 mm", "10 mm", "10 mm"], "position": ["-10 mm", "0 mm", "0 mm"]}],
+ ["feature.block", {"name": "Slider", "size": ["10 mm", "10 mm", "10 mm"],
+   "position": ["15 mm + 10 mm * cos(360 deg * t)", "0 mm", "0 mm"]}],
+ ["assert.add", {"name": "gap", "measure": "clearance", "from": "Wall", "to": "Slider", "min": "6 mm"}],
+ ["motion.check", {"samples": 33}],
+ ["motion.check", {"measure": {"measure": "overlap", "of": "Wall", "to": "Slider", "is": false}}]
+]
+```
+
+The first check fails at `t` = 0.4375 with the least clearance 5 mm at `t` = 0.5 (the slider swings to within
+5 mm of the wall); the second passes. A collision shorter than the spacing of the samples can be missed: give
+more `samples` where it matters.
+
 ## Assertions that apply only sometimes
 
 A Jig's choices change what there is to check. With the corners of a sheet-metal box open, there is no

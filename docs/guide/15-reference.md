@@ -86,6 +86,7 @@ The full description of any command, with every value it takes and what it refus
 | `set.define`, `set.edit`, `set.remove`, `set.list` | Named sets |
 | `view.render`, `view.pick` | A picture, and what is at a point of it |
 | `view.scrub`, `view.replay` | The model at a step of its history; a video of how it was built |
+| `view.motion`, `view.trace`, `motion.check` | The model at a moment `t` of its motion (collisions in red); a point's path; assertions checked over the motion (`view.replay {motion}` films it) |
 
 ## MCP tools
 

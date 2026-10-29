@@ -99,11 +99,8 @@ fn a_crank_traced_is_its_closed_form_circle() {
             rest[2],
         ];
         let got = point(p);
-        for k in 0..3 {
-            assert!(
-                (got[k] - want[k]).abs() < 1e-9,
-                "t = {t}: {got:?} is not {want:?}"
-            );
+        for (g, w) in got.iter().zip(want) {
+            assert!((g - w).abs() < 1e-9, "t = {t}: {got:?} is not {want:?}");
         }
     }
     assert_eq!(out["closed"], true);

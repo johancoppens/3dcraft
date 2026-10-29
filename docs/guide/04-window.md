@@ -154,6 +154,23 @@ step. Playing stops at the end, when the document changes or when you switch tab
 step, and new features go in right after it, a way to insert something early in the history. **To end**
 takes the marker away again. While you look back, clicks in the view do not select; go **To end** first.
 
+### Playing a motion
+
+A design with a **timeline** can also be played as a motion. The timeline is a variable `t`, a plain number
+from 0 to 1 (`variable.set {"name": "t", "expr": "0"}`); formulas of `t` move the design, such as a crank angle
+`360 deg * t`. A `t` with a unit (a thickness called `t`) is not a timeline: rename it first.
+
+With a timeline, **History** and **Motion** appear above the player. In Motion the slider runs over `t`, and the
+player plays it: from 0 to 1 in 4 s at 1×, **Loop** starts again at 0, **Back and forth** turns round at the
+end, and **Collisions** draws the parts that overlap in red. The view names the moment, such as
+`t = 0.500 · collision: Wall and Crank`. As with the history, nothing in the document changes; only the
+features that use `t` are rebuilt for each moment, so a heavy model plays slower rather than skipping.
+
+An agent does the same with `view.motion {"t": 0.5, "collisions": true}`, draws a point's path with
+`view.trace` (exported with `file.export {"path": "path.svg", "trace": "Trace 1"}`), checks assertions over the
+motion with `motion.check` ([Measure and check](10-measure.md#over-a-motion)), and makes a video of it with
+`view.replay {"dir": "frames", "motion": {"frames": 120}}`.
+
 ## Looking around
 
 | Do | To |

@@ -18,6 +18,7 @@ The detail documents behind the map in [`../architecture.md`](../architecture.md
 | [`tessellator.md`](tessellator.md) | edges first, faces, seams, poles, angle, budgets, display and picture quality |
 | [`rendering.md`](rendering.md) | the CPU oracle, the GPU renderer and its tolerances, see-through, section, pointing, the viewport |
 | [`engine.md`](engine.md) | Session, commands, undo, threads, scenes, recovery, automation |
+| [`motion.md`](motion.md) | motion over the timeline `t`: a moment shown without changing the document, collisions drawn red, traces of points and their SVG/DXF, checks of any assertion over the motion, its video, the player |
 | [`selection.md`](selection.md) | the selection shared by the window and agents, picking through, and selecting by description (`select.query`) |
 | [`origami.md`](origami.md) | crease patterns on a flat sheet: facets of the arrangement, rigid folding by loop closure, contact between facets, Kawasaki and Maekawa (necessary, not sufficient), crease patterns to SVG and DXF |
 | [`verification.md`](verification.md) | checking a design by questions: distance, clearance, wall thickness, ray, through, symmetry, assertions kept in the document, and the proof of a Jig over its parameter range (`document.sample`, `check-range`) |
