@@ -614,6 +614,11 @@ impl OpenDocument {
     /// the state it is scrubbed to (`view.scrub`), or that at the `t` of
     /// its motion (`view.motion`).
     pub(crate) fn shown(&mut self) -> Arc<Document> {
+        // An assembly shows its placed bodies, as a part that holds them;
+        // a motion is a part's.
+        if let Some(placed) = self.placed() {
+            return Arc::clone(&placed.doc);
+        }
         match self.motion_state() {
             Some(state) => state.doc,
             None => self.scrubbed(),
@@ -622,6 +627,9 @@ impl OpenDocument {
 
     /// The regeneration of [`Self::shown`].
     pub(crate) fn shown_regen(&mut self) -> Arc<Regen> {
+        if let Some(placed) = self.placed() {
+            return Arc::clone(&placed.regen);
+        }
         match self.motion_state() {
             Some(state) => state.regen,
             None => self.scrubbed_regen(),

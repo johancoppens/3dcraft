@@ -883,7 +883,7 @@ pub(crate) fn length_unit(doc: &Document) -> &'static str {
 
 // ------------------------------------------------------------------- file
 
-fn file_new(session: &mut Session, params: &Value) -> Run {
+pub(crate) fn file_new(session: &mut Session, params: &Value) -> Run {
     let p = Params::new("file.new", params, &["units", "tolerance", "loosest"])?;
     let length = match p.str("units")? {
         None => LengthUnit::default(),
@@ -978,7 +978,7 @@ pub(crate) fn save_to_disk(
     }
 }
 
-fn file_open(session: &mut Session, params: &Value) -> Run {
+pub(crate) fn file_open(session: &mut Session, params: &Value) -> Run {
     let p = Params::new("file.open", params, &["path"])?;
     let path = p.required_str("path")?;
     let resolved = session.workspace.resolve_read(path)?;
@@ -992,6 +992,19 @@ fn file_open(session: &mut Session, params: &Value) -> Run {
     };
     let (document, read) =
         loaded.map_err(|e| CommandError::new(format!("file.open: cannot open `{path}`: {e}")))?;
+    // An assembly is a .3dcraftasm file, and a .3dcraftasm file holds an
+    // assembly (docs/decisions.md, 2026-10-29).
+    let asm_path = craft3d_format::is_assembly_path(path)
+        || craft3d_format::is_assembly_path(&resolved.to_string_lossy());
+    if document.is_assembly() != asm_path {
+        return fail(if asm_path {
+            format!("file.open: `{path}` is named as an assembly (.3dcraftasm) and holds a part")
+        } else {
+            format!(
+                "file.open: `{path}` holds an assembly, which is saved as a .3dcraftasm file only"
+            )
+        });
+    }
     let features = document.features.len();
     let kept = crate::workspace::kept_path(&session.workspace.read, path, &resolved);
     let mut open = OpenDocument::new(document, Some(kept.clone()));
@@ -1003,6 +1016,14 @@ fn file_open(session: &mut Session, params: &Value) -> Run {
     open.jig_in_use = jig;
     let index = session.add_document(open)?;
     let mut result = json!({ "document": index, "path": kept, "features": features });
+    // An assembly reads its sources as it opens: what it shows follows
+    // them (a source that cannot be read fails its instances, by name).
+    if session.document()?.history.current().is_assembly() {
+        session.read_sources(false)?;
+        if let Some(map) = result.as_object_mut() {
+            map.insert("assembly".into(), true.into());
+        }
+    }
     if let (true, Some(map)) = (jig, result.as_object_mut()) {
         map.insert("jigInUse".into(), true.into());
     }
@@ -1050,8 +1071,36 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
             "file.save: a .3dcraftjig file is a published Jig and is written by jig.export (File, Export as Jig…), never saved over; give a `path` ending in .3dcraft",
         );
     }
+    let is_assembly = session.document()?.history.current().is_assembly();
+    let asm_path = craft3d_format::is_assembly_path(&path);
+    if is_assembly && !asm_path {
+        return fail(format!(
+            "file.save: an assembly is saved as a .{} file; give a `path` ending in .{}",
+            craft3d_format::ASSEMBLY_EXTENSION,
+            craft3d_format::ASSEMBLY_EXTENSION
+        ));
+    }
+    if !is_assembly && asm_path {
+        return fail(format!(
+            "file.save: a .{} file holds an assembly, and this document is a part; give a `path` ending in .3dcraft",
+            craft3d_format::ASSEMBLY_EXTENSION
+        ));
+    }
     let resolved = session.workspace.resolve_write(&path)?;
     let access = session.workspace.write.clone();
+    // An assembly's source paths stay relative to its file: saved into
+    // another folder, they are rewritten for it (in the same save).
+    if is_assembly {
+        let old_base = session.asm_base()?;
+        let new_base = crate::asm::dir_of(&crate::workspace::kept_path(&access, &path, &resolved));
+        let doc = std::sync::Arc::clone(session.document()?.history.current());
+        if let Some(rebased) = crate::asm_cmds::rebased(&doc, &old_base, &new_base) {
+            edit(session, "file.save", "Rebase source paths", |doc| {
+                *doc = rebased;
+                Ok(())
+            })?;
+        }
+    }
     let in_memory = session.writes_to_memory();
     let open = session.document_mut()?;
     // A recovered document is older than its original file when that
@@ -1281,7 +1330,7 @@ fn meshes(
     only: Option<&[FeatureId]>,
 ) -> Result<Vec<BodyMesh>, CommandError> {
     let regen = open.regen();
-    let doc = open.history.current();
+    let doc = &open.bodies_doc();
     let values = crate::appearance::Values::new(doc);
     let mut out = Vec::new();
     for (id, body) in regen.bodies() {
@@ -1407,7 +1456,10 @@ fn file_export(session: &mut Session, params: &Value) -> Run {
         let resolved = session.workspace.resolve_write(path)?;
         let open = session.document_mut()?;
         let regen = open.regen();
-        let only = crate::export_bodies::chosen(&p, open.history.current(), &regen)?;
+        let only = crate::export_bodies::chosen(&p, &open.bodies_doc(), &regen)?;
+        if open.history.current().is_assembly() {
+            return crate::asm_export::step(session, path, &resolved, only.as_deref());
+        }
         return crate::step_cmds::export(session, path, &resolved, only.as_deref());
     }
     let format = match p.str("format")? {
@@ -1430,7 +1482,7 @@ fn file_export(session: &mut Session, params: &Value) -> Run {
     let resolved = session.workspace.resolve_write(path)?;
     let open = session.document_mut()?;
     let regen = open.regen();
-    let only = crate::export_bodies::chosen(&p, open.history.current(), &regen)?;
+    let only = crate::export_bodies::chosen(&p, &open.bodies_doc(), &regen)?;
     let (tess, quality, degrees) = export_tess(&p, &regen)?;
     let meshes = meshes(open, "file.export", &tess, only.as_deref())?;
     let unit = match open.history.current().units.length {

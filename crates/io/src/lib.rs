@@ -7,12 +7,14 @@
 
 pub mod drawing;
 pub mod step;
+pub mod step_assembly;
 
 pub use drawing::{
     DrawingFormat, FaceAxes, FaceOutline, FittedSpline, SketchOutline, encode_drawing,
     encode_drawing_stroked, face_frame, face_outline, face_outline_in, sketch_outline,
 };
 pub use step::{AngleUnit, StepBody, StepOptions, StepSummary, export_step, step_model};
+pub use step_assembly::{StepOccurrence, step_assembly};
 
 use craft3d_meshio::{self as meshio, MeshError, Model, Object, ObjectKind, Unit};
 use craft3d_tess::Mesh;

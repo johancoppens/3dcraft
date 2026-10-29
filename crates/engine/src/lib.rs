@@ -15,6 +15,10 @@
 mod angle_warnings;
 mod appearance;
 mod appearance_cmds;
+mod asm;
+mod asm_cmds;
+mod asm_export;
+mod asm_solve;
 mod assert_check;
 mod assert_cmds;
 mod base64;
@@ -242,6 +246,8 @@ pub(crate) struct OpenDocument {
     /// traces made over it: view state, not saved and not undone
     /// (`motion.rs`).
     pub(crate) motion: motion::Motion,
+    /// For an assembly: what was read and derived for it (`asm.rs`).
+    pub(crate) asm: asm::AsmState,
 }
 
 /// A regeneration cache with the budget of bodies the environment asks
@@ -289,7 +295,29 @@ impl OpenDocument {
             jig_in_use: false,
             state_checks: regen_elsewhere::StateChecks::default(),
             motion: motion::Motion::default(),
+            asm: asm::AsmState::default(),
         }
+    }
+
+    /// The document its bodies are named in: the document itself, or for
+    /// an assembly the part that holds its placed bodies (`asm.rs`), so
+    /// that an export or a measure names them after their instances.
+    pub(crate) fn bodies_doc(&mut self) -> Arc<Document> {
+        match self.placed() {
+            Some(placed) => Arc::clone(&placed.doc),
+            None => Arc::clone(self.history.current()),
+        }
+    }
+
+    /// For an assembly: its instances placed (`asm.rs`); `None` for a
+    /// part.
+    pub(crate) fn placed(&mut self) -> Option<Arc<asm::Placed>> {
+        let doc = Arc::clone(self.history.current());
+        if !doc.is_assembly() {
+            return None;
+        }
+        let revision = self.history.revision();
+        Some(self.asm.placed(&doc, self.path.as_deref(), revision))
     }
 
     /// Changes not on disk. A Jig in use has none: its file is never
@@ -329,6 +357,10 @@ impl OpenDocument {
     /// [`OpenDocument::regen`] with the bodies `need` asks for present:
     /// bodies the cache had let go of are derived again, the same bits.
     pub(crate) fn regen_needing(&mut self, need: Need) -> Arc<Regen> {
+        // An assembly's bodies are its instances', placed.
+        if let Some(placed) = self.placed() {
+            return Arc::clone(&placed.regen);
+        }
         let revision = self.history.revision();
         let missing = |regen: &Regen| {
             regen.features.iter().any(|f| {
@@ -508,6 +540,7 @@ impl Session {
             [
                 commands::SPECS,
                 file_cmds::SPECS,
+                asm_cmds::SPECS,
                 import_cmds::SPECS,
                 sketch_cmds::SPECS,
                 sketch_path_cmds::SPECS,

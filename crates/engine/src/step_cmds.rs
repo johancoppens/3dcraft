@@ -32,7 +32,7 @@ pub(crate) fn export(
 ) -> Run {
     let open = session.document_mut()?;
     let regen = open.regen();
-    let doc = open.history.current();
+    let doc = &open.bodies_doc();
     // Each body with its name and colours (`appearance`).
     #[allow(clippy::type_complexity)]
     let named: Vec<(

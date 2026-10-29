@@ -438,7 +438,12 @@ impl Session {
         let stepwise = self.stepwise;
         let elsewhere = self.regen_elsewhere() && !matches!(wait, Wait::All);
         let open = self.document_mut()?;
-        let doc = Arc::clone(open.history.current());
+        // An assembly is measured on its placed bodies, named after their
+        // instances (`asm.rs`).
+        let doc = match open.placed() {
+            Some(placed) => Arc::clone(&placed.doc),
+            None => Arc::clone(open.history.current()),
+        };
         if doc.assertions.is_empty() && doc.outputs.is_empty() {
             return Ok((Vec::new(), Arc::new(Resolved::default())));
         }

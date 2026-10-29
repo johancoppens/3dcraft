@@ -705,6 +705,38 @@ impl<'a> Resolver<'a> {
         Err(format!("no body has a {} `{shown}`", kind.name()))
     }
 
+    /// A face, an edge or a vertex by its persistent name, within the
+    /// body of `feature` when given: the feature whose body has it, its
+    /// kind and its index in that body (`asm.rs`, a mate's frame).
+    pub(crate) fn locate(
+        &mut self,
+        name: &str,
+        feature: Option<&str>,
+    ) -> Result<(FeatureId, SelectionKind, usize), String> {
+        let parsed: PersistentName = name.parse().map_err(|e| {
+            format!(
+                "`{}` is not a persistent name ({e})",
+                name.chars().take(80).collect::<String>()
+            )
+        })?;
+        let kind = if parsed.is_face() {
+            SelectionKind::Face
+        } else if parsed.is_edge() {
+            SelectionKind::Edge
+        } else if parsed.is_vertex() {
+            SelectionKind::Vertex
+        } else {
+            return Err(format!("`{parsed}` names no face, edge or vertex"));
+        };
+        let found = self.resolve(Some(kind), name, feature)?;
+        let id = feature_named(self.doc, &found.item.feature)
+            .ok_or_else(|| format!("there is no feature {}", found.item.feature))?;
+        let (_, index) = self
+            .lookup(id, kind, &found.item.name)
+            .ok_or_else(|| format!("no body has a {} `{}`", kind.name(), found.item.name))?;
+        Ok((id, kind, index))
+    }
+
     /// The feature's name, or its id when it has none.
     fn called(&self, id: FeatureId) -> String {
         self.doc

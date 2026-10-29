@@ -33,7 +33,7 @@ pub use appearance::{
 };
 pub use assembly::{
     Assembly, Coupling, CouplingKind, Instance, InstanceMode, Mate, MateKind, MateRef,
-    ParamOverride, Placement, Source,
+    ParamOverride, Placement, Source, WORLD,
 };
 pub use assertion::{Assertion, Expect, MAX_ASSERTION_TEXT, MAX_ASSERTIONS};
 pub use blob::{Blob, sha256};
