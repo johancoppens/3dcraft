@@ -1,10 +1,29 @@
 # Decisions
 
-> **Last updated:** 2026-10-27
+> **Last updated:** 2026-10-29
 
 Decisions that shape the project, newest first, each with its reason. An agent that needs something listed under *Open decisions* asks the developer; it does not pick silently. When one is settled, move it up with the date.
 
 ## Taken
+
+### 2026-10-29: One more week for R1, with assemblies and freeform surfacing stages 1–3 (decided by the developer)
+
+R1 gets one more full week, starting 2026-10-29. In that week:
+- the sea-kayak Jig work goes on;
+- assemblies get a first version: `.3dcraftasm`, instances with configurations, mates and couplings with our own solver, and motion over a timeline (`plan/assemblies.md`);
+- freeform (class-A) surfacing gets stages 1 to 3 (`plan/class-a.md`):
+  1. analysis: zebra stripes, curvature combs, reflection lines, a curvature map, a draft check;
+  2. surfaces from curve networks (Coons and Gordon, lofts over several rails) with G1 across their seams;
+  3. G2 across seams.
+
+Stage 4, curvature-continuous blends and n-sided corners, is R2. The coordinator had advised treating the kayak as a stress test and taking surfacing to R2; the developer chose to keep both in R1 within the week.
+
+The same day, the developer also put realistic rendering layers 1 to 3 into R1, taking a further week if needed (`plan/rendering.md`):
+1. a studio look: image-based lighting from HDR environments, tone mapping, soft shadows, ambient occlusion and a ground that catches shadows;
+2. polish: screen-space reflections, contact shadows, bloom and depth of field;
+3. materials: anisotropic metal, clearcoat paint, glass and subsurface.
+
+All of it is clean-room from public papers and books, never from Blender's GPL code, and holds to rule 8: the CPU oracle implements every term. Layer 4, a path tracer of our own, may come in R2 and is still to be discussed.
 
 ### 2026-10-28: JavaScript in the web build only as glue (decided by the developer)
 
