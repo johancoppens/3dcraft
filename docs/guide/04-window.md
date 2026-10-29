@@ -180,7 +180,7 @@ model first shows a quick picture, then the sharp one (the status bar says `refi
 
 ### The studio look
 
-**Studio** in the display bar switches between the plain look, which every picture had so far and
+**Studio** on the camera plate (top right, beside Persp | Ortho) switches between the plain look, which every picture had so far and
 which is best for modelling, and the studio look, which shows what a part will look like: its colours,
 how metal and how rough its faces are (Appearance), lit by a photographed environment. Three come with
 3DCraft: `studio` (soft boxes, the default), `outdoor` (sky and sun) and `workshop`. The light falls

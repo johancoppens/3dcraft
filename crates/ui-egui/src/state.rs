@@ -1215,6 +1215,9 @@ mod tests {
                            "width": "600 mm", "gap": "", "name": "box.dxf"},
                 "dialogs": {"about": true, "shortcuts": false},
                 "timeline": {"playing": true, "speed": 2.0, "loop": true, "orbit": false},
+                "look": {"mode": "studio", "environment": "workshop", "exposure": -0.5,
+                         "rotation": 90.0, "ground": false, "ao": true, "shadows": false,
+                         "tonemap": "aces", "light": [30.0, 45.0]},
             })
         );
         let back: UiState = serde_json::from_value(json).unwrap();

@@ -269,9 +269,10 @@ impl Nav<'_> {
         [pos2(mid, y + inset), pos2(mid, y + self.h() - inset)]
     }
 
-    /// The camera group (Fit, Iso, a divider, Persp | Ortho) from `x` on a
-    /// row whose top is `y`, `projection` wide for the choice; returns
-    /// where it ends.
+    /// The camera group (Fit, Iso, a divider, Persp | Ortho, then the
+    /// Studio look) from `x` on a row whose top is `y`, `projection` wide
+    /// for the choice; returns where it ends.
+    #[allow(clippy::too_many_arguments)]
     fn camera_row(
         &self,
         out: &mut ControlsLayout,
@@ -280,6 +281,7 @@ impl Nav<'_> {
         fit: f32,
         iso: f32,
         projection: f32,
+        studio: f32,
     ) -> f32 {
         let sp = self.tokens.nav_spacing;
         out.fit = Some(self.at(x, y, fit));
@@ -289,7 +291,9 @@ impl Nav<'_> {
         out.dividers[0] = Some(self.vertical(x, y));
         let x = x + self.tokens.nav_gap;
         out.projection = Some(self.at(x, y, projection));
-        x + projection
+        let x = x + projection + self.tokens.nav_gap;
+        out.studio = Some(self.at(x, y, studio));
+        x + studio
     }
 
     /// The camera plate top right over the cube; the display bar at the
@@ -302,7 +306,11 @@ impl Nav<'_> {
         // The cluster in the top right corner.
         let (fit, iso) = (self.chip(self.w.fit), self.chip(self.w.iso));
         let projection = 2.0 * self.w.projection;
-        let camera_w = pad + fit + sp + iso + gap + projection + pad;
+        // The Studio look beside the projection: how the view is drawn,
+        // on the plate with room to spare (the display bar is full at a
+        // window of 1280 × 800 with the section's options open).
+        let studio = self.chip(self.w.studio);
+        let camera_w = pad + fit + sp + iso + gap + projection + gap + studio + pad;
         let side = t.nav_cube_size;
         let middle = area.right() - camera_w.max(side) * 0.5;
         let camera = Rect::from_min_size(
@@ -322,15 +330,15 @@ impl Nav<'_> {
             fit,
             iso,
             projection,
+            studio,
         );
         // The display bar, centred on what it is with the section off.
         let triad = self.triad();
         out.triad = Some(triad);
         let (sketches, datums) = (self.chip(self.w.sketches), self.chip(self.w.datums));
-        let studio = self.chip(self.w.studio);
         let section = self.chip(self.w.section);
         let see = self.w.see_through;
-        let off_w = pad + sketches + sp + datums + sp + studio + sp + see + gap + section + pad;
+        let off_w = pad + sketches + sp + datums + sp + see + gap + section + pad;
         let flip = self.chip(self.w.flip);
         let axes = 3.0 * self.w.axis;
         let extra = gap + axes + sp + self.w.offset + sp + flip;
@@ -351,8 +359,6 @@ impl Nav<'_> {
         x += sketches + sp;
         out.datums = Some(self.at(x, y, datums));
         x += datums + sp;
-        out.studio = Some(self.at(x, y, studio));
-        x += studio + sp;
         out.see_through = Some(self.at(x, y, see));
         x += see;
         out.dividers[1] = Some(self.vertical(x, y));
@@ -729,6 +735,7 @@ impl Shell {
         }
         let named = !layout.compact;
         self.nav_camera(ui, &layout, named, scene);
+        self.nav_look(ui, &layout, named);
         self.nav_show(ui, &layout, named);
         self.nav_section(ui, &layout, named, scene);
         match layout.cube {
@@ -795,15 +802,40 @@ impl Shell {
         self.camera_clicks(ui, fit, iso, projection, scene);
     }
 
+    /// The Studio look's toggle, on the camera plate.
+    fn nav_look(&mut self, ui: &mut egui::Ui, layout: &ControlsLayout, named: bool) {
+        let Some(studio) = layout.studio else {
+            return;
+        };
+        let lit = self.state.look.is_studio();
+        if toggle(
+            ui,
+            studio,
+            Chip {
+                id: "studio",
+                icon: Icon::Studio,
+                label: "Studio",
+                named,
+            },
+            lit,
+            &self.tokens,
+        )
+        .on_hover_text(
+            "Light the model as in a photo studio: reflections, soft shadows and a ground",
+        )
+        .clicked()
+        {
+            self.state.look.mode = if lit { "plain" } else { "studio" }.to_string();
+            ui.ctx().request_repaint();
+        }
+    }
+
     /// Sketches, Datums and See-through.
     fn nav_show(&mut self, ui: &mut egui::Ui, layout: &ControlsLayout, named: bool) {
         let tokens = self.tokens;
-        let (Some(sketches), Some(datums), Some(studio), Some(field)) = (
-            layout.sketches,
-            layout.datums,
-            layout.studio,
-            layout.see_through,
-        ) else {
+        let (Some(sketches), Some(datums), Some(field)) =
+            (layout.sketches, layout.datums, layout.see_through)
+        else {
             self.show_hits.clear();
             self.transparency_rect = None;
             return;
@@ -843,32 +875,7 @@ impl Shell {
         {
             show.datums = !show.datums;
         }
-        let lit = self.state.look.is_studio();
-        if toggle(
-            ui,
-            studio,
-            Chip {
-                id: "studio",
-                icon: Icon::Studio,
-                label: "Studio",
-                named,
-            },
-            lit,
-            &tokens,
-        )
-        .on_hover_text(
-            "Light the model as in a photo studio: reflections, soft shadows and a ground",
-        )
-        .clicked()
-        {
-            self.state.look.mode = if lit { "plain" } else { "studio" }.to_string();
-            ui.ctx().request_repaint();
-        }
-        self.show_hits = vec![
-            ("sketches", sketches),
-            ("datums", datums),
-            ("studio", studio),
-        ];
+        self.show_hits = vec![("sketches", sketches), ("datums", datums)];
         self.see_through_field(ui, field);
         self.set_show(ui, show);
     }
@@ -998,6 +1005,7 @@ mod tests {
                     "fit",
                     "iso",
                     "projection",
+                    "studio",
                 ];
                 if on {
                     expected.extend(["axes", "offset", "side"]);
