@@ -1,4 +1,4 @@
-//! TEMPORARY: writes the version-50 (TEMPORARY number) fixture as `craft3d-cli run --new
+//! TEMPORARY: writes the version-50 fixture as `craft3d-cli run --new
 //! '{"units": "mm"}' --script v50.steps.json --out v50.3dcraft` does, and
 //! prints it (hex) and what document.inspect says of it opened again.
 //! Removed once the fixture is in.
