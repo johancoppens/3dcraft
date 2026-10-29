@@ -276,6 +276,9 @@ type Lowers = BTreeMap<(usize, Kind), f64>;
 /// sampling and halving).
 const MAX_REST_DEPTH: u32 = 40;
 
+/// A tool's outline in the plane square to a bend.
+type Polygon = Vec<[f64; 2]>;
+
 struct Check<'a> {
     part: &'a sheetmetal::Part,
     tol: Tolerance,
@@ -284,7 +287,7 @@ struct Check<'a> {
     /// The tools mirrored in `x` (`turned_tools`): where they stand
     /// against the part turned end for end; `None` when both are
     /// symmetric, so turning changes nothing.
-    turned_tools: Option<(Vec<[f64; 2]>, Vec<[f64; 2]>)>,
+    turned_tools: Option<(Polygon, Polygon)>,
     /// Whether the step being checked has the part turned (`Check::step`).
     turned: std::cell::Cell<bool>,
     length: Option<f64>,
