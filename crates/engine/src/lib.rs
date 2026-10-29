@@ -84,6 +84,7 @@ mod sketch_warnings;
 mod split_cmds;
 mod step_cmds;
 mod stepwise;
+mod surface_cmds;
 mod sweep_cmds;
 mod sweep_path_cmds;
 mod table_cmds;
@@ -555,6 +556,7 @@ impl Session {
                 sweep_cmds::SPECS,
                 loft_cmds::SPECS,
                 develop_cmds::SPECS,
+                surface_cmds::SPECS,
                 plate_cmds::SPECS,
                 sweep_path_cmds::SPECS,
                 body_cmds::SPECS,

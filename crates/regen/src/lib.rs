@@ -27,6 +27,7 @@ mod datum;
 mod delete_face;
 mod developable;
 pub use developable::{Developed, placement};
+
 mod derive;
 mod draft;
 mod entity;
@@ -37,6 +38,8 @@ mod fold;
 mod follow;
 mod loft;
 mod move_face;
+mod network;
+pub use network::Networked;
 mod offset_face;
 mod offset_profile;
 mod pass;
@@ -1230,6 +1233,9 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
         FeatureKind::Developable(_) => {
             return Err("a developable needs the curves it runs between".to_string());
         }
+        FeatureKind::SurfaceNetwork(_) => {
+            return Err("a network surface needs its curves".to_string());
+        }
         // Placed in `features`; reference geometry is not a body.
         FeatureKind::DatumPlane(_)
         | FeatureKind::DatumAxis(_)
@@ -1748,6 +1754,17 @@ fn build_feature(
             Ok((body, made_names, report)) => {
                 names = Some(Arc::new(made_names));
                 developed = Some(report);
+                (Status::Ok, Some(Arc::new(body)))
+            }
+            Err(reason) => (Status::Failed(reason), None),
+        }
+    } else if let FeatureKind::SurfaceNetwork(sheet) = &feature.kind {
+        match network::build(doc, variables, feature.id, sheet, earlier)
+            .and_then(|(body, names, report)| checked(doc, body).map(|body| (body, names, report)))
+        {
+            Ok((body, made_names, report)) => {
+                names = Some(Arc::new(made_names));
+                developed = Some(Developed::Network(report));
                 (Status::Ok, Some(Arc::new(body)))
             }
             Err(reason) => (Status::Failed(reason), None),

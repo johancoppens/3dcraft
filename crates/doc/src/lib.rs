@@ -636,6 +636,108 @@ pub struct Developable {
     pub b: Rail,
 }
 
+/// What one boundary of a network surface is held to.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum EdgeHold {
+    /// Nothing: the edge is where its curve is.
+    #[default]
+    Free,
+    /// The edge's curve lies on this face (checked).
+    Position { face: PersistentName },
+    /// The surface meets this face along the edge with one tangent plane
+    /// (G1); the curves crossing the edge leave it along the face with
+    /// their own speed times `weight`.
+    Tangent {
+        face: PersistentName,
+        #[serde(default = "one")]
+        weight: Expr,
+    },
+}
+
+fn one() -> Expr {
+    Expr::new("1")
+}
+
+impl EdgeHold {
+    /// The face it is held to, if any.
+    pub fn face(&self) -> Option<&PersistentName> {
+        match self {
+            EdgeHold::Free => None,
+            EdgeHold::Position { face } | EdgeHold::Tangent { face, .. } => Some(face),
+        }
+    }
+}
+
+/// The conditions of a network surface's four edges: its first and last
+/// u curve, its first and last v curve.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkEdges {
+    #[serde(default)]
+    pub u_first: EdgeHold,
+    #[serde(default)]
+    pub u_last: EdgeHold,
+    #[serde(default)]
+    pub v_first: EdgeHold,
+    #[serde(default)]
+    pub v_last: EdgeHold,
+}
+
+impl NetworkEdges {
+    /// The four conditions in their order, with their keys.
+    pub fn all(&self) -> [(&'static str, &EdgeHold); 4] {
+        [
+            ("uFirst", &self.u_first),
+            ("uLast", &self.u_last),
+            ("vFirst", &self.v_first),
+            ("vLast", &self.v_last),
+        ]
+    }
+
+    pub fn all_mut(&mut self) -> [(&'static str, &mut EdgeHold); 4] {
+        [
+            ("uFirst", &mut self.u_first),
+            ("uLast", &mut self.u_last),
+            ("vFirst", &mut self.v_first),
+            ("vLast", &mut self.v_last),
+        ]
+    }
+}
+
+/// Most curves in one family of a network surface.
+pub const MAX_NETWORK_CURVES: usize = 64;
+
+/// A sheet through a network of curves that cross (a Gordon surface; a
+/// Coons patch for two curves each way): `u` curves follow each other
+/// across `v` curves (docs/design/surfacing.md).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfaceNetwork {
+    pub u: Vec<Rail>,
+    pub v: Vec<Rail>,
+    #[serde(default)]
+    pub edges: NetworkEdges,
+}
+
+impl SurfaceNetwork {
+    /// The features it is made from, in order, each once.
+    pub fn inputs(&self) -> Vec<FeatureId> {
+        let mut out: Vec<FeatureId> = Vec::new();
+        let rails = self.u.iter().chain(&self.v).flat_map(Rail::inputs);
+        let faces = self
+            .edges
+            .all()
+            .into_iter()
+            .filter_map(|(_, h)| h.face().map(|f| f.feature));
+        for id in rails.chain(faces) {
+            if !out.contains(&id) {
+                out.push(id);
+            }
+        }
+        out
+    }
+}
+
 /// Faces of an earlier body laid flat as one piece, a flat sheet of its
 /// own in the plane `z = at.z`: the first face's first vertex at `at`,
 /// that vertex's first edge along +x turned by `angle` about +z. The
@@ -1176,6 +1278,7 @@ pub enum FeatureKind {
     SheetMetal(SheetMetal),
     Developable(Developable),
     Unfold(Unfold),
+    SurfaceNetwork(SurfaceNetwork),
 }
 
 impl FeatureKind {
@@ -1214,6 +1317,7 @@ impl FeatureKind {
             FeatureKind::Fill(_) => "fill",
             FeatureKind::Split(_) => "split",
             FeatureKind::Developable(_) => "developable",
+            FeatureKind::SurfaceNetwork(_) => "surfaceNetwork",
             FeatureKind::Unfold(_) => "unfold",
             FeatureKind::Import(_) => "import",
             FeatureKind::Fold(_) => "fold",
@@ -1360,6 +1464,7 @@ impl FeatureKind {
             | FeatureKind::Fold(_)
             | FeatureKind::SheetMetal(_)
             | FeatureKind::Developable(_)
+            | FeatureKind::SurfaceNetwork(_)
             | FeatureKind::Import(_) => None,
         }
     }
@@ -1396,6 +1501,7 @@ impl FeatureKind {
                 }
                 out
             }
+            FeatureKind::SurfaceNetwork(n) => n.inputs(),
             FeatureKind::Developable(d) => {
                 let mut out = d.a.inputs();
                 for id in d.b.inputs() {
@@ -1517,6 +1623,19 @@ impl FeatureKind {
             FeatureKind::Unfold(u) => {
                 out = triple("at", &u.at);
                 out.push(named("angle", &u.angle));
+            }
+            FeatureKind::SurfaceNetwork(n) => {
+                out = n
+                    .edges
+                    .all()
+                    .into_iter()
+                    .filter_map(|(key, hold)| match hold {
+                        EdgeHold::Tangent { weight, .. } => {
+                            Some((format!("edges.{key}.weight"), weight))
+                        }
+                        _ => None,
+                    })
+                    .collect();
             }
             FeatureKind::DatumPlane(d) => out = d.exprs(),
             FeatureKind::DatumAxis(d) => out = d.exprs(),
@@ -1660,6 +1779,15 @@ impl FeatureKind {
             | FeatureKind::Developable(_)
             | FeatureKind::Import(_) => Vec::new(),
             FeatureKind::Unfold(u) => u.at.iter_mut().chain([&mut u.angle]).collect(),
+            FeatureKind::SurfaceNetwork(n) => n
+                .edges
+                .all_mut()
+                .into_iter()
+                .filter_map(|(_, hold)| match hold {
+                    EdgeHold::Tangent { weight, .. } => Some(weight),
+                    _ => None,
+                })
+                .collect(),
             FeatureKind::DatumPlane(d) => d.exprs_mut(),
             FeatureKind::DatumAxis(d) => d.exprs_mut(),
             FeatureKind::DatumPoint(d) => d.exprs_mut(),
@@ -2098,6 +2226,28 @@ impl Document {
                 }
                 FeatureKind::Thread(thread) => vec![&thread.face, &thread.start],
                 FeatureKind::Split(split) => vec![&split.face],
+                FeatureKind::SurfaceNetwork(n) => {
+                    let mut names = Vec::new();
+                    if n.u.len() > MAX_NETWORK_CURVES || n.v.len() > MAX_NETWORK_CURVES {
+                        return Err(DocError::Invalid(format!(
+                            "`{}` has more than {MAX_NETWORK_CURVES} curves in a family",
+                            feature.name
+                        )));
+                    }
+                    for rail in n.u.iter().chain(&n.v) {
+                        if let Rail::Edges(edges) = rail {
+                            if edges.len() > MAX_RAIL_EDGES {
+                                return Err(DocError::Invalid(format!(
+                                    "`{}` has a curve of more than {MAX_RAIL_EDGES} edges",
+                                    feature.name
+                                )));
+                            }
+                            names.extend(edges.iter());
+                        }
+                    }
+                    names.extend(n.edges.all().into_iter().filter_map(|(_, h)| h.face()));
+                    names
+                }
                 FeatureKind::Developable(d) => {
                     let mut names = Vec::new();
                     for rail in [&d.a, &d.b] {

@@ -173,7 +173,7 @@ fn edge_rail(
     Ok(Rail { pieces })
 }
 
-fn rail_of(
+pub(crate) fn rail_of(
     doc: &Document,
     earlier: &[FeatureResult],
     rail: &DocRail,
@@ -293,6 +293,9 @@ pub enum Developed {
     /// A fold folded flat: the order of its layers and their display
     /// offsets (`fold::FlatFold`).
     FlatFold(Arc<crate::FlatFold>),
+    /// A network surface: how closely its curves crossed and how its held
+    /// edges meet their faces.
+    Network(crate::network::Networked),
 }
 
 /// The faces of an unfold in its source's body, in the order given.
