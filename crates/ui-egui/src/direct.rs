@@ -118,6 +118,8 @@ pub struct Direct {
     /// cannot draw see-through bodies refuses a frame below 1
     /// (`GpuError::SeeThrough`), which is then drawn another way.
     opacity: f64,
+    /// The studio look, or `None` for the plain one.
+    studio: Option<craft3d_gpu::Studio>,
 }
 
 fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
@@ -444,6 +446,7 @@ impl Direct {
             highlight: Highlight::NONE,
             marks: Marks::default(),
             opacity: 1.0,
+            studio: None,
         })
     }
 
@@ -479,6 +482,12 @@ impl Direct {
         self.opacity = opacity;
     }
 
+    /// The look of the frames drawn from now on, as
+    /// [`crate::backend::BodyRenderer::set_studio`].
+    pub fn set_studio(&mut self, studio: Option<craft3d_gpu::Studio>) {
+        self.studio = studio;
+    }
+
     /// As on a device that cannot draw see-through bodies: from now on a
     /// see-through frame is refused here and drawn another way. For tests
     /// of that fallback.
@@ -510,6 +519,15 @@ impl Direct {
         tokens: &Tokens,
         scale: f32,
     ) -> Result<Option<DirectFrame>, DirectFailure> {
+        // The studio look of an opaque, whole picture is drawn by the
+        // readback renderer (or the CPU's) for now: this frame the other
+        // way.
+        if self.studio.is_some() && self.opacity >= 1.0 && self.marks.section().is_none() {
+            self.shown = None;
+            return Err(DirectFailure::ThisFrame(
+                "the studio look is drawn by the readback renderer".to_string(),
+            ));
+        }
         let wanted = Shown {
             revision: scene.map(|s| s.revision),
             tolerance: scene.map(Scene::sampling),

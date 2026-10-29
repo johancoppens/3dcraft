@@ -1507,10 +1507,30 @@ pub fn picture_marked(
     opacity: f64,
     scale: f64,
 ) -> Result<Picture, String> {
+    picture_lit(
+        scene, camera, quality, tokens, selected, highlight, marks, opacity, None, scale,
+    )
+}
+
+/// [`picture_marked`] in the studio look when `studio` is given.
+#[allow(clippy::too_many_arguments)]
+pub fn picture_lit(
+    scene: Option<&Scene>,
+    camera: &CameraState,
+    quality: Quality,
+    tokens: &Tokens,
+    selected: Option<&str>,
+    highlight: Highlight,
+    marks: &Marks,
+    opacity: f64,
+    studio: Option<craft3d_gpu::Studio>,
+    scale: f64,
+) -> Result<Picture, String> {
     let mut renderer = BodyRenderer::cpu();
     renderer.set_highlight(highlight);
     renderer.set_marks(marks.clone());
     renderer.set_opacity(opacity);
+    renderer.set_studio(studio);
     let composed = compose_with(&mut renderer, scene, camera, quality, tokens, selected)?;
     Ok(rasterise(composed, tokens, scale))
 }

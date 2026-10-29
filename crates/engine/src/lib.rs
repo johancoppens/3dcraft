@@ -36,6 +36,7 @@ mod import_cmds;
 mod interference_cmds;
 mod jig_cmds;
 mod loft_cmds;
+pub mod look;
 mod mass;
 mod measure_pieces;
 mod memory_files;

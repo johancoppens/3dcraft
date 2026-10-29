@@ -241,6 +241,21 @@ impl Offscreen {
         Ok(frame)
     }
 
+    /// [`Offscreen::render_uploaded`] in the studio look.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn render_uploaded_studio(
+        &mut self,
+        mesh: &GpuMesh,
+        camera: &Camera,
+        params: &RenderParams,
+        studio: &crate::Studio,
+    ) -> Result<Frame, GpuError> {
+        self.renderer.draw_studio(mesh, camera, params, studio)?;
+        let frame = self.renderer.read_frame()?;
+        self.check_uncaptured()?;
+        Ok(frame)
+    }
+
     /// The GPU counterpart of `craft3d_render::studio::render_studio`.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn render_studio(

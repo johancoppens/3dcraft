@@ -368,6 +368,8 @@ struct FrameKey {
     datums: bool,
     /// The sketches are drawn.
     sketches: bool,
+    /// How the bodies are lit.
+    look: crate::state::LookState,
     tokens: Tokens,
 }
 
@@ -394,6 +396,8 @@ struct RenderJob {
     highlight: Highlight,
     marks: viewport::Marks,
     opacity: f64,
+    /// The studio look, or `None` for the plain one.
+    studio: Option<craft3d_gpu::Studio>,
     /// Asked to repaint when the image is ready.
     #[cfg(not(target_arch = "wasm32"))]
     wake: Option<egui::Context>,
@@ -414,6 +418,7 @@ impl RenderJob {
         renderer.set_highlight(self.highlight);
         renderer.set_marks(self.marks.clone());
         renderer.set_opacity(self.opacity);
+        renderer.set_studio(self.studio.clone());
         let composed = viewport::compose_with(
             renderer,
             self.scene.as_deref(),
@@ -851,6 +856,20 @@ fn stopwatch() -> impl FnOnce() -> Option<f64> {
 }
 
 impl Shell {
+    /// The studio look the viewport draws with, or `None` for the plain
+    /// look (and while the environment is not loaded yet, in the browser).
+    pub fn studio(&self) -> Option<craft3d_gpu::Studio> {
+        if !self.state.look.is_studio() {
+            return None;
+        }
+        let spec = self.state.look.spec().ok()?;
+        let env = spec.prepared().ok()??;
+        Some(craft3d_gpu::Studio {
+            env,
+            look: spec.look,
+        })
+    }
+
     /// A shell that renders on the CPU, where it draws: what tests and a
     /// host without threads use.
     pub fn new() -> Self {
@@ -2792,6 +2811,7 @@ impl Shell {
             section: self.section(),
             datums: self.state.show.datums,
             sketches: self.state.show.sketches,
+            look: self.state.look.clone(),
             tokens,
         };
         // The direct path draws the whole picture, lines included, on the
@@ -3150,6 +3170,7 @@ impl Shell {
     /// when the picture on screen is now the direct path's; false when
     /// there is no direct path, or this frame has to be made another way.
     fn direct_frame(&mut self, scene: Option<&Scene>, key: &FrameKey) -> bool {
+        let studio = self.studio();
         let cut = self.section_cut().filter(|_| key.section.is_some());
         let chosen = self.selection_marks().clone();
         let Some(direct) = &mut self.direct else {
@@ -3157,6 +3178,7 @@ impl Shell {
         };
         direct.set_highlight(key.highlight);
         direct.set_opacity(key.opacity);
+        direct.set_studio(studio);
         direct.set_marks(
             marks_of(
                 scene,
@@ -3234,6 +3256,7 @@ impl Shell {
         }
         let cut = self.section_cut().filter(|_| key.section.is_some());
         let chosen = self.selection_marks().clone();
+        let studio = self.studio();
         let job = |quality: Quality| RenderJob {
             scene: scene.cloned(),
             camera: key.camera,
@@ -3251,6 +3274,7 @@ impl Shell {
             )
             .with_selection(&chosen),
             opacity: key.opacity,
+            studio: studio.clone(),
             #[cfg(not(target_arch = "wasm32"))]
             wake: Some(ctx.clone()),
         };

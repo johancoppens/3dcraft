@@ -126,9 +126,18 @@ pub struct BodyRenderer {
     marks: crate::viewport::Marks,
     /// How opaque the bodies of the next frames are.
     opacity: f64,
+    /// The studio look of the next frames, or `None` for the plain one.
+    studio: Option<craft3d_gpu::Studio>,
 }
 
 impl BodyRenderer {
+    /// The look of the frames made from now on: the studio look
+    /// (`craft3d_render::studio`), which both renderers draw, or `None`
+    /// for the plain one.
+    pub fn set_studio(&mut self, studio: Option<craft3d_gpu::Studio>) {
+        self.studio = studio;
+    }
+
     /// What `viewport::compose_with` draws over the frames made from now
     /// on to point at something (the highlighted edges), and the section
     /// those frames are cut open with: both renderers draw that; a device
@@ -204,6 +213,7 @@ impl BodyRenderer {
             highlight: Highlight::NONE,
             marks: crate::viewport::Marks::default(),
             opacity: 1.0,
+            studio: None,
         }
     }
 
@@ -241,6 +251,7 @@ impl BodyRenderer {
                 highlight: Highlight::NONE,
                 marks: crate::viewport::Marks::default(),
                 opacity: 1.0,
+                studio: None,
             },
             Err(why) => {
                 let mut renderer = Self::cpu();
@@ -279,7 +290,7 @@ impl BodyRenderer {
         };
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(gpu) = &mut self.gpu {
-            match gpu.render(scene, camera, &params) {
+            match gpu.render(scene, camera, &params, self.studio.as_ref()) {
                 Ok(frame) => return Ok((frame, Backend::Gpu)),
                 Err(gpu::Failure::Frame(why)) => return Err(why),
                 // This frame on the CPU; the next one on the GPU again.
@@ -300,8 +311,18 @@ impl BodyRenderer {
         let mesh = scene.map_or(&empty, |scene| &scene.mesh);
         let colors = craft3d_render::FaceColors::new();
         let colors = scene.map_or(&colors, |scene| &scene.face_colors);
-        let frame = craft3d_render::render_colored(mesh, colors, &camera.to_render(), &params)
-            .map_err(|e| e.to_string())?;
+        let frame = match &self.studio {
+            Some(studio) => craft3d_render::studio::render_studio(
+                mesh,
+                colors,
+                &camera.to_render(),
+                &params,
+                &studio.look,
+                &studio.env,
+            ),
+            None => craft3d_render::render_colored(mesh, colors, &camera.to_render(), &params),
+        }
+        .map_err(|e| e.to_string())?;
         Ok((frame, Backend::Cpu))
     }
 }
@@ -378,6 +399,7 @@ mod gpu {
             scene: Option<&Scene>,
             camera: &CameraState,
             params: &RenderParams,
+            studio: Option<&craft3d_gpu::Studio>,
         ) -> Result<Frame, Failure> {
             let camera = camera.to_render();
             let empty = craft3d_tess::Mesh::default();
@@ -404,7 +426,12 @@ mod gpu {
                     self.uploaded = Some((revision, mesh));
                 }
                 let (_, uploaded) = self.uploaded.as_ref().ok_or(GpuError::NothingDrawn)?;
-                self.offscreen.render_uploaded(uploaded, &camera, params)
+                match studio {
+                    Some(studio) => self
+                        .offscreen
+                        .render_uploaded_studio(uploaded, &camera, params, studio),
+                    None => self.offscreen.render_uploaded(uploaded, &camera, params),
+                }
             }));
             match outcome {
                 Ok(Ok(frame)) => Ok(frame),

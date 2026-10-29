@@ -640,6 +640,63 @@ pub struct UiState {
     /// The export dialog: open or not, and what it has chosen (kept
     /// while it is closed, offered again next time).
     pub export: ExportState,
+    /// How the bodies are lit: the plain look or the studio look. View
+    /// state; the document does not change.
+    pub look: LookState,
+}
+
+/// How the viewport lights the bodies (`craft3d_engine::look`, the same
+/// fields as `view.render`'s `look`): `mode` plain (the default) or
+/// studio, with the studio look's environment and options. `ui.set
+/// {"look": {"mode": "studio"}}` and the Studio toggle of the display bar
+/// switch it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct LookState {
+    pub mode: String,
+    pub environment: String,
+    pub exposure: f64,
+    pub rotation: f64,
+    pub ground: bool,
+    pub ao: bool,
+    pub shadows: bool,
+    pub tonemap: String,
+    pub light: Option<[f64; 2]>,
+}
+
+impl Default for LookState {
+    fn default() -> Self {
+        LookState::of(&craft3d_engine::look::LookSpec::default())
+    }
+}
+
+impl LookState {
+    /// The state of a parsed look.
+    pub fn of(spec: &craft3d_engine::look::LookSpec) -> LookState {
+        let look = &spec.look;
+        LookState {
+            mode: if spec.studio { "studio" } else { "plain" }.to_string(),
+            environment: spec.environment.clone(),
+            exposure: look.exposure,
+            rotation: look.rotation,
+            ground: look.ground,
+            ao: look.ao,
+            shadows: look.shadows,
+            tonemap: look.tonemap.name().to_string(),
+            light: look.light,
+        }
+    }
+
+    /// The look this state says, checked: an unknown mode, environment or
+    /// tone curve is an error.
+    pub fn spec(&self) -> Result<craft3d_engine::look::LookSpec, String> {
+        let value = serde_json::to_value(self).map_err(|e| e.to_string())?;
+        craft3d_engine::look::LookSpec::patched(&craft3d_engine::look::LookSpec::default(), &value)
+    }
+
+    pub fn is_studio(&self) -> bool {
+        self.mode == "studio"
+    }
 }
 
 /// The export dialog (File › Export…, `shell/dialogs.rs`): what goes into

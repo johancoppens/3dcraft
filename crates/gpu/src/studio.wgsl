@@ -455,6 +455,7 @@ fn occlusion(at: vec2<i32>, p: vec3<f32>, n: vec3<f32>, v: vec3<f32>, radius: f3
         return 1.0;
     }
     var visible = 0.0;
+    var unblocked = 0.0;
     for (var k = 0; k < AO_SLICES; k++) {
         let phi = PI * (f32(k) + 0.5) / f32(AO_SLICES);
         let c = cos(phi);
@@ -503,8 +504,12 @@ fn occlusion(at: vec2<i32>, p: vec3<f32>, n: vec3<f32>, v: vec3<f32>, radius: f3
         let a1 = 0.25 * (-cos(2.0 * h1 - gamma) + cg + 2.0 * h1 * sg);
         let a2 = 0.25 * (-cos(2.0 * h2 - gamma) + cg + 2.0 * h2 * sg);
         visible += len * (a1 + a2);
+        unblocked += len * (cg + gamma * sg);
     }
-    return clamp(visible / f32(AO_SLICES), 0.0, 1.0);
+    if !(unblocked > 0.0) {
+        return 1.0;
+    }
+    return clamp(visible / unblocked, 0.0, 1.0);
 }
 
 // The occlusion of every sample, as the bits of an f32 (1 where there is

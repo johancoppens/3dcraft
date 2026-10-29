@@ -415,11 +415,54 @@ pub(crate) fn parse_size(text: &str) -> Result<(u64, u64), CliError> {
 
 pub(crate) fn render(args: Args) -> Result<Parsed<()>, CliError> {
     let mut params = Map::new();
+    // The studio look's options (view.render's `look`).
+    let mut look = Map::new();
     let parsed = parse_simple(
         args,
-        &["--out", "--size", "--view", "--mode", "--background"],
+        &[
+            "--out",
+            "--size",
+            "--view",
+            "--mode",
+            "--background",
+            "--look",
+            "--environment",
+            "--exposure",
+            "--rotation",
+            "--tonemap",
+            "--ground",
+            "--ao",
+            "--shadows",
+        ],
         |name, value| {
             match name {
+                "--look" => {
+                    look.insert("mode".into(), value.into());
+                }
+                "--environment" | "--tonemap" => {
+                    look.insert(name.trim_start_matches('-').into(), value.into());
+                }
+                "--exposure" | "--rotation" => {
+                    let number = value.parse::<f64>().ok().filter(|n| n.is_finite());
+                    let Some(number) = number else {
+                        return Err(CliError::Usage(format!(
+                            "`{name}` must be a number, got `{value}`"
+                        )));
+                    };
+                    look.insert(name.trim_start_matches('-').into(), number.into());
+                }
+                "--ground" | "--ao" | "--shadows" => {
+                    let on = match value.as_str() {
+                        "on" => true,
+                        "off" => false,
+                        _ => {
+                            return Err(CliError::Usage(format!(
+                                "`{name}` must be on or off, got `{value}`"
+                            )));
+                        }
+                    };
+                    look.insert(name.trim_start_matches('-').into(), on.into());
+                }
                 "--background" => {
                     params.insert("background".into(), value.into());
                 }
@@ -455,6 +498,9 @@ pub(crate) fn render(args: Args) -> Result<Parsed<()>, CliError> {
         // Without a path the engine would return the image as base64,
         // which is no use on a terminal.
         return Err(CliError::Usage("missing `--out PNG`".to_string()));
+    }
+    if !look.is_empty() {
+        params.insert("look".into(), Value::Object(look));
     }
     let mut session = Session::new(Workspace::unrestricted());
     open(&mut session, file)?;

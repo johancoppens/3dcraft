@@ -127,7 +127,9 @@ volume, area and centroid.";
 
 const HELP_RENDER: &str = "\
 Usage: craft3d-cli render FILE --out PNG [--size WxH] [--view V] [--mode M]
-                          [--background B]
+                          [--background B] [--look L] [--environment E]
+                          [--exposure X] [--rotation R] [--tonemap T]
+                          [--ground on|off] [--ao on|off] [--shadows on|off]
 
 Renders the bodies of a .3dcraft file to a PNG with the CPU renderer (no
 window, no GPU) and prints what it drew as one line of JSON. The bodies are
@@ -142,7 +144,17 @@ Options:
   --size WxH    Image size in pixels, each 16 to 4096. Default 800x600
   --view V      iso, front, back, left, right, top or bottom. Default iso
   --mode M      shaded, or ids (one flat colour per face). Default shaded
-  --background B  light (the window's viewport, the default) or dark";
+  --background B  light (the window's viewport, the default) or dark
+  --look L        plain (the default) or studio: lit by an environment
+                  with soft shadows, ambient occlusion and a ground that
+                  catches the shadows. Any of the options below means
+                  studio unless --look plain is given
+  --environment E studio (default), outdoor or workshop
+  --exposure X    Stops brighter (negative: darker). Default 0
+  --rotation R    The environment turned about z, in degrees. Default 0
+  --tonemap T     agx (default), aces or linear
+  --ground, --ao, --shadows on|off  The ground, the ambient occlusion and
+                  the shadows of the studio look. Default on";
 
 const HELP_CONVERT: &str = "\
 Usage: craft3d-cli convert IN OUT [--quality Q] [--tolerance T] [--angle A]

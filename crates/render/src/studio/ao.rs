@@ -6,8 +6,11 @@
 //! normal, and the cosine-weighted visible arc between them in closed
 //! form (their equation 10). The mean over the slices, each weighted by
 //! the length of the normal projected into it, is the share of the
-//! hemisphere's cosine-weighted light that is not blocked: 1 on a flat
-//! open surface, by construction (checked in the tests).
+//! hemisphere's cosine-weighted light that is not blocked. It is divided
+//! by the same sum for the slices with nothing in them (the closed form
+//! `cos γ + γ sin γ` per slice), so that a flat open surface is exactly 1
+//! with any number of slices (the plain mean is 1 only in the limit: 0.999
+//! with six slices on a tilted plane).
 //!
 //! Both renderers run this on their own buffers of normals and view
 //! distances, at the samples of the picture, with fixed slice angles and
@@ -43,7 +46,7 @@ pub fn occlusion(
     if !(reach >= 1.0 && radius > 0.0) {
         return 1.0;
     }
-    let mut visible = 0.0;
+    let (mut visible, mut open) = (0.0, 0.0);
     for k in 0..AO_SLICES {
         let phi = PI * (k as f64 + 0.5) / AO_SLICES as f64;
         let (c, s) = (phi.cos(), phi.sin());
@@ -87,8 +90,15 @@ pub fn occlusion(
         let (cg, sg) = (gamma.cos(), gamma.sin());
         let arc = |h: f64| 0.25 * (-(2.0 * h - gamma).cos() + cg + 2.0 * h * sg);
         visible += len * (arc(h1) + arc(h2));
+        // The same slice with nothing in it: the arcs to the edges of the
+        // normal's hemisphere, `cos γ + γ sin γ` in closed form.
+        open += len * (cg + gamma * sg);
     }
-    (visible / AO_SLICES as f64).clamp(0.0, 1.0)
+    if open > 0.0 {
+        (visible / open).clamp(0.0, 1.0)
+    } else {
+        1.0
+    }
 }
 
 #[cfg(test)]
