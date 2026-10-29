@@ -687,8 +687,8 @@ fn branches_that_pass_closer_than_a_step_are_followed_into_the_fold() {
 /// end) closes that. The two fans share their ruling, both on the zero
 /// set, so the sheet is smooth across it; every ruling on the zero set,
 /// the faces flat and tangent across every edge, laid flat as one piece
-/// keeping every edge's length or refused at the strip beside the fan (the
-/// owed layout); at three scales.
+/// keeping every edge's length or refused at the strip beside a fan (the
+/// owed layout of a standing corner); at three scales.
 #[test]
 fn a_fan_that_lands_where_the_other_branch_turns_back_is_followed_by_a_second() {
     for k in SCALES {
@@ -726,21 +726,29 @@ fn a_fan_that_lands_where_the_other_branch_turns_back_is_followed_by_a_second() 
         for v in [0.0, 0.5, 1.0] {
             assert!(close(first.eval(1.0, v), second.eval(0.0, v)), "{k}: {v}");
         }
-        // Laid flat as one piece, every edge keeping its length, at the
-        // scales 1e-3 and 1; at 1e6 the strip beside the second fan is
-        // refused instead, the owed layout of a face whose parametrisation
-        // stands still at a corner (docs/design/developable.md, Open),
-        // never a wrong pattern.
+        // Laid flat as one piece, every edge keeping its length, or the
+        // strip beside a fold's fan refused (face 1 before the first fan,
+        // face 4 after the second), the owed layout of a face whose
+        // parametrisation stands still at a corner (docs/design/
+        // developable.md, Open), never a wrong pattern. Since the rows
+        // leave their end rulings along the rails (2026-10-29) the row of
+        // B stands still where the zero set turned, as the true
+        // developable's does, at every scale; before, the fit's end
+        // tangents were off by its error, which let it unfold at 1e-3
+        // and 1.
         let faces: Vec<FaceId> = (0..made.body.faces.len() as u32).map(FaceId).collect();
         let dev = match develop(&made.body, &faces, &tol(k)) {
             Ok(dev) => dev,
-            // At 1e-3 and 1 it unfolds (measured 2026-10-29; review: the
-            // refusal was accepted at every scale).
-            Err(e) if k >= 1e6 => {
-                assert!(e.to_string().contains("converge"), "{k}: {e}");
+            Err(e) => {
+                let why = e.to_string();
+                eprintln!("{k}: refused: {why}");
+                assert!(
+                    why.contains("converge")
+                        && (why.contains("face 1 ") || why.contains("face 4 ")),
+                    "{k}: {e}"
+                );
                 continue;
             }
-            Err(e) => panic!("{k}: {e}"),
         };
         let e = dev.error();
         assert!(e.area < 1e-6 && e.length < 1e-6, "{k}: {e:?}");
@@ -1215,6 +1223,41 @@ fn assert_flat_within_tolerance(made: &Connected, k: f64) {
     }
 }
 
+/// What the rounding of the stored control points' coordinates resolves
+/// of the faces' normals at their end rulings, times the ruling's length:
+/// per face end, `ε |P| L / |ΔS|`, `|P|` the largest of the control points
+/// there, `ΔS` the first control leg at the middle of the ruling (the
+/// rows' legs averaged); the largest over the faces' ends. What
+/// [`Connected::unresolved`] measures is of this size: the normal there is
+/// the cross product of that leg and the ruling.
+fn end_rounding_estimate(made: &Connected) -> f64 {
+    let mut worst: f64 = 0.0;
+    for face in &made.body.faces {
+        let Surface::Nurbs(s) = &face.surface else {
+            continue;
+        };
+        let (n, across) = s.counts();
+        if across != 2 || n < 2 {
+            continue;
+        }
+        let c = s.control_points();
+        for (end, next) in [(0, 1), (n - 1, n - 2)] {
+            let (p_lo, p_hi, q_lo, q_hi) =
+                (c[2 * end], c[2 * end + 1], c[2 * next], c[2 * next + 1]);
+            let leg = ((q_lo - p_lo) + (q_hi - p_hi)) * 0.5;
+            let size = [p_lo, p_hi, q_lo, q_hi]
+                .iter()
+                .map(|p| p.length())
+                .fold(0.0, f64::max);
+            let estimate = f64::EPSILON * size * p_lo.distance(p_hi) / leg.length();
+            if estimate.is_finite() {
+                worst = worst.max(estimate);
+            }
+        }
+    }
+    worst
+}
+
 /// The sea kayak's sheer panel (`DevTop4S`, 2026-10-28): the developable
 /// between its chine and its sheer, edges of a boolean of the hull, cubic
 /// Hermite splines of 522 and 532 control points (every inner knot double)
@@ -1288,13 +1331,24 @@ fn rails_whose_condition_has_branches_that_pass_each_other_are_closed_by_fans() 
     for k in SCALES {
         let (a, b) = (rail_of("A", k, (0.0, 1.0)), rail_of("B", k, (0.0, 1.0)));
         let made = connect(&a, &b, &tol(k)).unwrap_or_else(|e| panic!("{k}: {e}"));
+        let estimate = end_rounding_estimate(&made);
         eprintln!(
-            "{k}: faces {:?}, {} rulings, deviation {:e}, unresolved {:e}, K {:e}",
+            "{k}: faces {:?}, {} rulings, deviation {:e}, unresolved {:e} ({:e} tolerances; the coordinates' rounding at the ends {:e}), K {:e}",
             made.faces,
             made.rulings.len(),
             made.deviation,
             made.unresolved,
+            made.unresolved / tol(k).linear,
+            estimate / tol(k).linear,
             made.curvature
+        );
+        // What is left unresolved at the faces' ends is what the rounding
+        // of their control points explains (review of 2026-10-29: it was
+        // an allowance that grew as the end intervals were refined).
+        assert!(
+            made.unresolved <= 16.0 * estimate,
+            "{k}: unresolved {:e}, the rounding {estimate:e}",
+            made.unresolved
         );
         assert!(!made.reversed_b, "{k}");
         // The end rulings are the corners' (the fans there lie within the

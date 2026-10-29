@@ -125,6 +125,14 @@ far the pattern is from the part (`lengthChange`, `areaChange`, `mapError`), and
 from the part to the pattern (`"to": "flat"`) or back (`"to": "part"`): a hole drawn on the pattern is found
 on the panel, and the other way round.
 
+- The feature's result says under `developable` how many rulings were found (`rulings`), whether `b` was
+  run the other way (`reversedB`), how far the faces were found from the true developable (`deviation`,
+  within half the document's tolerance), the largest curvature found (`curvature`) and `unresolved`: how
+  far the stored faces' tangent planes at the rulings where faces meet were found from the planes they were
+  built with, times the ruling's length. That is what the rounding of the numbers leaves unresolved, an
+  estimate and not part of the deviation: a small part of the tolerance near the origin, up to a few
+  tolerances for narrow faces billions of tolerances away from it (a 5 m boat at a tolerance of a
+  millionth of a millimetre). Positions are not affected; model nearer the origin to bring it down.
 - `measure.developability` tells how far faces are from developable: the largest Gaussian curvature found
   on each face (in 1/mm²; a sphere of radius r has 1/r² everywhere, planes, cylinders and cones 0) and
   whether the stretch a flat sheet would need over the face is within the document's tolerance. As
@@ -145,7 +153,8 @@ on the panel, and the other way round.
   appears at one end leaves the names at the other as they were. The count has a limit: one more fold
   nearer the same end (or a fold that moves across the middle) renumbers the folds counted from that end,
   and a reference to `face(20000000000)` then names the new fold's fan, without an error. Check the faces
-  a later feature takes after an edit that may add a fold near an end.
+  a later feature takes after an edit that may add a fold near an end. A fold at the very middle (as
+  symmetric curves give) counts from the start, also when rounding puts it a hair past the middle.
 - A developable is refused, with where, when its rulings would cross (a curve that winds about the
   other), when the curves lie in one plane over a stretch only, when they meet between their ends, when a
   curve turns back on itself, and when one curve is closed and the other is not. Two closed curves that

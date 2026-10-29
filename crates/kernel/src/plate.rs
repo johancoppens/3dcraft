@@ -1044,6 +1044,14 @@ fn build(
         let face = body
             .face(*id)
             .ok_or_else(|| refuse(None, "a face of the plate is missing"))?;
+        // A freeform face with a border drawn into a point has no offset
+        // (`craft3d_geom::offset::regular` refuses any pole): said at
+        // once, before the joints are traced to that point, where the
+        // face has no normal either.
+        let offset = levels.0 != 0.0 || levels.1 != 0.0;
+        if offset && !craft3d_geom::pole::poles(&face.surface).is_empty() {
+            return Err(refuse(None, format!("face {}: {NO_NORMAL}", id.0)));
+        }
         layered.push(Layered::probe(face, levels));
     }
     // How each edge is used.

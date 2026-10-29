@@ -3889,11 +3889,14 @@ mod tests {
     /// refinement halved the span). A cylinder of radius `k/10` and height
     /// `10 k` 2.4e9 tolerances from the origin (the sea kayak's sheer panel
     /// lies so far out), its end ruling from `A(0)` to `B(σ)`, twisted by
-    /// four tolerances, the next ruling 0.04 tolerances along A: the old
-    /// allowance there was some 40 tolerances. The rows' end tangents are
-    /// now the rails' and the end held with no allowance: refused, naming
-    /// the end ruling; the same strip with rulings 1e4 tolerances
-    /// apart and an end on the cylinder is built within half the tolerance,
+    /// four tolerances, the next ruling `(2e-5, 2e-5)` (an end interval of
+    /// four tolerances): the old allowance there was 1.3 tolerances, and
+    /// doubled with each refinement of the end interval, so that it passed
+    /// after two (rulings closer than that cannot be followed this far
+    /// out). The rows' end tangents are now the rails' and the end held
+    /// with no allowance: refused, naming the end ruling; the same strip
+    /// with rulings 1e4 tolerances apart and an end on the cylinder is
+    /// built within half the tolerance,
     /// what the stored face's end normals leave unresolved a small part of
     /// the tolerance. At three scales.
     #[test]
@@ -3905,7 +3908,7 @@ mod tests {
             let (a, b) = cylinder_at(center, r, h);
             let pair = Pair::new(&a, &b, tolerance.angular);
             let sigma = 4.0 * tolerance.linear / h;
-            let twisted = cylinder_strip((0.0, sigma), 2.0 * sigma);
+            let twisted = cylinder_strip((0.0, sigma), 2e-5);
             let e = build(&pair, vec![twisted], &tolerance, [false, false])
                 .map(|made| (made.deviation, made.unresolved))
                 .expect_err("the twisted end is refused");
