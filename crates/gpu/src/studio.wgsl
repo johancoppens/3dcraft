@@ -47,6 +47,9 @@ struct Studio {
     // x, y: the target in samples. z, w: the luminance of the irradiance
     // without the key on an upward face, and of the key's.
     size: vec4<f32>,
+    // rgb: the picture's plain background colour, linear. w: 1 when the
+    // background is that colour instead of the environment.
+    backdrop: vec4<f32>,
     sh: array<vec4<f32>, 9>,
 }
 
@@ -367,6 +370,12 @@ fn fs_background(in: FullscreenOut) -> @location(0) vec4<f32> {
         }
     } else {
         origin = scene.eye.xyz + a;
+    }
+    if studio.backdrop.w > 0.5 {
+        // The plain colour, darkened by the ground's shadow in linear
+        // light; no exposure, no tone curve (`FrameLight::background_bytes`).
+        let b = studio.backdrop.rgb * ground_factor(origin, d);
+        return vec4<f32>(srgb_encode(b.x), srgb_encode(b.y), srgb_encode(b.z), 1.0);
     }
     let c = radiance(d, BACKGROUND_ROUGHNESS * studio.look.w) * ground_factor(origin, d);
     return vec4<f32>(display(c), 1.0);

@@ -433,6 +433,7 @@ pub(crate) fn render(args: Args) -> Result<Parsed<()>, CliError> {
             "--ground",
             "--ao",
             "--shadows",
+            "--backdrop",
         ],
         |name, value| {
             match name {
@@ -465,6 +466,9 @@ pub(crate) fn render(args: Args) -> Result<Parsed<()>, CliError> {
                 }
                 "--background" => {
                     params.insert("background".into(), value.into());
+                }
+                "--backdrop" => {
+                    look.insert("background".into(), value.into());
                 }
                 "--out" => {
                     params.insert("path".into(), value.into());

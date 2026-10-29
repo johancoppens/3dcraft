@@ -1778,7 +1778,7 @@ impl Renderer {
             params.width.saturating_mul(params.ssaa),
             params.height.saturating_mul(params.ssaa),
         );
-        let (light, passes) = studio::studio_uniforms(mesh, studio, size)?;
+        let (light, passes) = studio::studio_uniforms(mesh, studio, size, params.background)?;
         let device = self.device.clone();
         guarded(&device, || {
             self.ensure_frame_targets(params);

@@ -1709,8 +1709,12 @@ impl Onscreen {
         let lit = match &self.look {
             Some(look) if options.bodies && !see_through && cut.is_none() => {
                 let drawn = self.studio_as_drawn(look);
-                let numbers =
-                    crate::studio::studio_uniforms(mesh, &drawn, (params.width, params.height))?;
+                let numbers = crate::studio::studio_uniforms(
+                    mesh,
+                    &drawn,
+                    (params.width, params.height),
+                    params.background,
+                )?;
                 Some((drawn, numbers))
             }
             _ => None,

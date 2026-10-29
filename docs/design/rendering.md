@@ -206,6 +206,24 @@ Per sample (the CPU's `render_studio`; the GPU's passes in brackets):
 A face without a roughness of its own is at 0.5, not metal; a highlighted face is its highlight colour at
 0.5. See-through and cut-open pictures stay in the plain look on both renderers (layer 2).
 
+**Plain background** (`Look::plain_background`, `look.background` `plain`, `craft3d-cli render
+--backdrop plain`): the environment lights the model as before, and the picture's own background colour
+(`RenderParams::background`, the theme's) stands behind it instead of the environment: decoded to linear
+light, times the ground's shadow factor, encoded to sRGB again, without exposure or tone curve, so that
+where no shadow falls it is the colour exactly (`FrameLight::background_bytes`; on the GPU one more `vec4`
+of the uniform block, `STUDIO_FLOATS` 76). Held by `a_plain_background_is_the_pictures_colour` and by one
+of the GPU parity scenes. Its reflection in a glossy ground is layer 2.
+
+**Degrading.** A studio look whose passes cannot be built or made ready on the viewport's device is drawn
+in the plain look, with the reason kept (`Onscreen::studio_failure`); the viewport keeps its GPU renderer
+(before, the error retired the direct path for good). The CPU fallback of the browser's viewport draws
+the simpler look (no shadows, no occlusion, `backend::cpu_look`): full PCSS and GTAO on its one thread
+would hold the page up. The window prepares an environment on a thread of its own
+(`LookSpec::prepared_if_ready`) and draws plain until it is ready, then again (the frame key has the
+environment's readiness; the window looks again every 100 ms while it waits); `ui.screenshot` and
+`view.render` wait for it. The split-sum table does not depend on the environment and is computed once
+per process (`brdf::shared_lut`).
+
 **WebGL2.** The simpler path (`studio::simpler`): in the browser on WebGL2 the viewport draws the studio
 look without shadows and without occlusion (`Onscreen::studio_as_drawn` turns them off, so the CPU
 reference of that frame is the same look with them off); image-based lighting, the ground's background
@@ -221,7 +239,20 @@ its radius on the ground; determinism; bad environments and numbers are errors. 
 against an independent midpoint quadrature over the hemisphere and against the closed form of a smooth
 surface (`A = 1 − (1 − n·v)⁵`, `B = (1 − n·v)⁵`); published tables were not at hand offline, so the
 reference points are these two independent methods. `ao.rs`: an open plane is 1, a groove's floor is
-occluded. `crates/gpu/tests/studio.rs`: the GPU against the CPU (below), the same input gives the same
+occluded, a step on the side a tilted normal leans to occludes more than the same step on the other side
+(0.84 against 1.0; a sign error in the slice's normal angle γ gives 1.0 against 0.80, worked out apart
+from the code). The key light's energy (`the_key_and_the_rest_carry_the_environments_light`, a bright cap
+and the three bundled environments, against brute force over the mirror level with exact solid angles):
+the mean over all normals of `irradiance(n) + K max(n·l, 0)` is a quarter of the environment's power
+`P`, within 0.2 % (neither the nine harmonics nor the key's single direction change a mean over the
+sphere, so this pins the key's scale: its solid angles, the excess's factor, its sum); and at sixteen
+normals each within a bound derived in the test: `3/32 (P − K)` for nine harmonics of the rest (the
+largest error of a point light's nine-term irradiance, at the horizon, `|1/4 + c/2 + 5/32 (3c² − 1) −
+max(c, 0)|` at `c = 0`, and any light is a sum of point lights), plus `K (1 − cos ρ)` on the key's lit side,
+`2 K sin(ρ/2)` across its horizon, 0 on its dark side, with `ρ = 2 KEY_CONE` (the excess lies within
+`KEY_CONE` of the brightest direction, so within twice that of the key's direction), plus 0.2 % of `P`.
+A band of a few percent at every normal cannot be derived: at the bright cap's horizon the part of the
+cap below the threshold, left in the harmonics, is about 30 % off by itself. `crates/gpu/tests/studio.rs`: the GPU against the CPU (below), the same input gives the same
 frame, the viewport's renderer against the CPU, the cost.
 
 **Tolerance, GPU against CPU** (`crates/gpu/tests/studio.rs`): face ids equal outside the band (as for

@@ -26,7 +26,7 @@ pub struct Studio {
 
 /// Number of `f32` in `studio.wgsl`'s uniform block: nine `vec4` and nine
 /// for the spherical harmonics.
-pub(crate) const STUDIO_FLOATS: usize = 72;
+pub(crate) const STUDIO_FLOATS: usize = 76;
 pub(crate) const GEOMETRY_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Uint;
 pub(crate) const BITS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
 const SHADOW_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -40,11 +40,13 @@ pub(crate) struct Passes {
 }
 
 /// The uniform block for a frame of `mesh` with a target of `size`
-/// samples, and which passes it needs.
+/// samples and the picture's plain `background`, and which passes it
+/// needs.
 pub(crate) fn studio_uniforms(
     mesh: &GpuMesh,
     studio: &Studio,
     size: (u32, u32),
+    background: [u8; 3],
 ) -> Result<([f32; STUDIO_FLOATS], Passes), GpuError> {
     let env = &studio.env;
     let look = &studio.look;
@@ -95,6 +97,10 @@ pub(crate) fn studio_uniforms(
             numbers.rest_up,
             numbers.key_luminance,
         ],
+        {
+            let [r, g, b] = background.map(craft3d_render::studio::tonemap::byte_to_linear);
+            [r, g, b, flag(look.plain_background)]
+        },
     ];
     for coef in &env.sh {
         let [r, g, b] = coef.map(f64::from);

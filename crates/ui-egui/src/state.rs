@@ -648,8 +648,8 @@ pub struct UiState {
 /// How the viewport lights the bodies (`craft3d_engine::look`, the same
 /// fields as `view.render`'s `look`): `mode` plain (the default) or
 /// studio, with the studio look's environment and options. `ui.set
-/// {"look": {"mode": "studio"}}` and the Studio toggle of the display bar
-/// switch it.
+/// {"look": {"mode": "studio"}}` and the Studio toggle of the camera
+/// plate switch it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
 pub struct LookState {
@@ -662,6 +662,9 @@ pub struct LookState {
     pub shadows: bool,
     pub tonemap: String,
     pub light: Option<[f64; 2]>,
+    /// `environment` (the default) or `plain`: the theme's background
+    /// colour behind a model the environment lights.
+    pub background: String,
 }
 
 impl Default for LookState {
@@ -684,6 +687,12 @@ impl LookState {
             shadows: look.shadows,
             tonemap: look.tonemap.name().to_string(),
             light: look.light,
+            background: if look.plain_background {
+                "plain"
+            } else {
+                "environment"
+            }
+            .to_string(),
         }
     }
 
@@ -1180,6 +1189,7 @@ mod tests {
                 shadows: false,
                 tonemap: "aces".to_string(),
                 light: Some([30.0, 45.0]),
+                background: "plain".to_string(),
             },
         };
         let json = serde_json::to_value(&state).unwrap();
@@ -1217,7 +1227,7 @@ mod tests {
                 "timeline": {"playing": true, "speed": 2.0, "loop": true, "orbit": false},
                 "look": {"mode": "studio", "environment": "workshop", "exposure": -0.5,
                          "rotation": 90.0, "ground": false, "ao": true, "shadows": false,
-                         "tonemap": "aces", "light": [30.0, 45.0]},
+                         "tonemap": "aces", "light": [30.0, 45.0], "background": "plain"},
             })
         );
         let back: UiState = serde_json::from_value(json).unwrap();

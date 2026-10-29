@@ -18,7 +18,7 @@ open, save, import and export files, and let you look, play, click and select.
 | 4 | **Eye** | Hides a feature's body, sketch or datum in the view |
 | 5 | **Assertions** | The checks the design must pass |
 | 6 | **History player** | Watch the design being built, step by step |
-| 7 | **View buttons** | **Fit**, **Iso**, **Persp** and **Ortho** |
+| 7 | **View buttons** | **Fit**, **Iso**, **Persp**, **Ortho** and **Studio** |
 | 8 | **View cube** | Click a side, edge or corner to look from there |
 | 9 | **Display bar** | **Sketches**, **Datums**, **See-through** and **Section** |
 
@@ -165,12 +165,11 @@ takes the marker away again. While you look back, clicks in the view do not sele
 | **Fit** | Frame the whole model |
 | **Iso**, or a click on the view cube | A standard view (Iso looks from the front-right corner) |
 | **Persp** / **Ortho** | Perspective, or orthographic (to scale, no vanishing point) |
+| **Studio** | The studio look on or off (see *The studio look* below) |
 
 The **display bar** at the bottom of the view:
 
 - **Sketches** and **Datums** show or hide sketches and construction planes, axes and points.
-- **Studio** lights the model as in a photo studio: reflections of a real environment, soft shadows, a
-  ground the model stands on and contact darkening in corners (see *The studio look* below).
 - **See-through** makes the bodies transparent (drag the percentage), to look at pockets and cavities.
 - **Section** cuts the view open with a plane across X, Y or Z; **Offset** moves it and **Flip side**
   keeps the other half.
@@ -180,8 +179,8 @@ model first shows a quick picture, then the sharp one (the status bar says `refi
 
 ### The studio look
 
-**Studio** on the camera plate (top right, beside Persp | Ortho) switches between the plain look, which every picture had so far and
-which is best for modelling, and the studio look, which shows what a part will look like: its colours,
+**Studio**, beside Persp and Ortho at the top right, switches between the plain look, which every
+picture had so far and which is best for modelling, and the studio look, which shows what a part will look like: its colours,
 how metal and how rough its faces are (Appearance), lit by a photographed environment. Three come with
 3DCraft: `studio` (soft boxes, the default), `outdoor` (sky and sun) and `workshop`. The light falls
 from the environment's brightest direction and casts soft shadows on the model and on a ground under
@@ -197,8 +196,9 @@ craft3d-cli render part.3dcraft --out part.png --look studio --environment works
 
 `exposure` makes the picture brighter in stops (negative darker), `rotation` turns the environment
 about the vertical axis, `ground`, `ao` and `shadows` switch the ground, the darkening in corners and
-the shadows off, and `tonemap` chooses how bright light is fitted into the picture (`agx`, the
-default, or `aces`). The look is a view: the document does not change. In the browser on older
+the shadows off, `tonemap` chooses how bright light is fitted into the picture (`agx`, the
+default, or `aces`), and `background` `plain` keeps the window's own background colour behind the
+model while the environment still lights it (`environment`, the default, shows the environment). The look is a view: the document does not change. In the browser on older
 graphics (WebGL2) the studio look has no shadows and no darkening in corners.
 
 ## Pointing at things

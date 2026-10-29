@@ -70,6 +70,7 @@ fn scenes() -> Vec<Scene> {
         Look {
             exposure: 1.0,
             light: Some([30.0, 50.0]),
+            plain_background: true,
             ..Look::default()
         },
     ];

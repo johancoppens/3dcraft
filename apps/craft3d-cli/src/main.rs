@@ -130,6 +130,7 @@ Usage: craft3d-cli render FILE --out PNG [--size WxH] [--view V] [--mode M]
                           [--background B] [--look L] [--environment E]
                           [--exposure X] [--rotation R] [--tonemap T]
                           [--ground on|off] [--ao on|off] [--shadows on|off]
+                          [--backdrop environment|plain]
 
 Renders the bodies of a .3dcraft file to a PNG with the CPU renderer (no
 window, no GPU) and prints what it drew as one line of JSON. The bodies are
@@ -154,7 +155,9 @@ Options:
   --rotation R    The environment turned about z, in degrees. Default 0
   --tonemap T     agx (default), aces or linear
   --ground, --ao, --shadows on|off  The ground, the ambient occlusion and
-                  the shadows of the studio look. Default on";
+                  the shadows of the studio look. Default on
+  --backdrop B    environment (default) or plain: the --background colour
+                  behind the model, which the environment still lights";
 
 const HELP_CONVERT: &str = "\
 Usage: craft3d-cli convert IN OUT [--quality Q] [--tolerance T] [--angle A]

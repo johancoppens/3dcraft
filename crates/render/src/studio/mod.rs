@@ -27,9 +27,9 @@
 //!      environment without its key (spherical harmonics) times `ao`,
 //!      plus the key's irradiance times `n·l` times its shadow.
 //! 4. Where no surface is: the environment blurred
-//!    ([`env::BACKGROUND_ROUGHNESS`]), darkened where the ray meets the
-//!    ground under the model by the share of the light the model keeps
-//!    from it.
+//!    ([`env::BACKGROUND_ROUGHNESS`]), or with [`Look::plain_background`]
+//!    the picture's own colour, darkened where the ray meets the ground
+//!    under the model by the share of the light the model keeps from it.
 //! 5. Exposure (`2^EV`), the tone curve, the sRGB encoding, rounded to
 //!    bytes per sample; the samples of a pixel are averaged as in the
 //!    plain picture.
@@ -79,6 +79,11 @@ pub struct Look {
     /// environment's brightest one; its strength stays the
     /// environment's.
     pub light: Option<[f64; 2]>,
+    /// The background is the picture's own plain colour
+    /// (`RenderParams::background`, the theme's) instead of the
+    /// environment, which still lights the model; the ground's shadow
+    /// darkens it.
+    pub plain_background: bool,
 }
 
 impl Default for Look {
@@ -91,6 +96,7 @@ impl Default for Look {
             shadows: true,
             tonemap: Tonemap::Agx,
             light: None,
+            plain_background: false,
         }
     }
 }
@@ -299,6 +305,22 @@ impl<'a> FrameLight<'a> {
         c.map(|v| v * factor)
     }
 
+    /// The bytes of the background along the ray from `origin` in the unit
+    /// direction `d`: the environment through the tone curve, or, with a
+    /// plain background, the colour `plain` darkened by the ground's
+    /// shadow in linear light and encoded again (no exposure, no tone
+    /// curve: unshadowed, it is `plain` exactly).
+    pub fn background_bytes(&self, plain: [u8; 3], origin: Vec3, d: Vec3) -> [u8; 3] {
+        if self.look.plain_background {
+            let factor = self.ground_factor(origin, d);
+            plain.map(|b| {
+                tonemap::to_byte(tonemap::srgb_encode(tonemap::byte_to_linear(b) * factor))
+            })
+        } else {
+            self.to_bytes(self.background(origin, d))
+        }
+    }
+
     /// The share of the ground's light the model leaves it where the ray
     /// meets it: `(E + K · l_z · vis) / (E + K · l_z)` with `E` the
     /// luminance of the irradiance without the key on an upward face and
@@ -399,7 +421,7 @@ pub fn render_studio(
                 };
                 let (origin, ray) = view.ray(px, py);
                 if surface.face == NO_FACE || !surface.dist.is_finite() {
-                    return light.to_bytes(light.background(origin, ray));
+                    return light.background_bytes(params.background, origin, ray);
                 }
                 let rel = view.point_at(px, py, surface.dist);
                 let p = view.eye + rel;

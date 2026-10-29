@@ -640,3 +640,79 @@ fn preparing_an_environment_costs() {
         );
     }
 }
+
+/// With a plain background the picture's own colour stands behind the
+/// model, exactly, where no shadow falls; the ground's shadow darkens it
+/// in linear light; the model is lit as before.
+#[test]
+fn a_plain_background_is_the_pictures_colour() {
+    let env = Prepared::new(&environment(128, |d| {
+        if d.z > 0.95 {
+            [200.0; 3]
+        } else {
+            [0.5, 0.6, 0.7]
+        }
+    }))
+    .unwrap();
+    let mesh = sphere(Vec3::ZERO, 1.0, 24, 48);
+    let params = RenderParams {
+        width: 96,
+        height: 96,
+        background: [235, 233, 229],
+        ..RenderParams::default()
+    };
+    // From above and to the side, so that the ground under the ball shows.
+    let camera = Camera {
+        eye: Vec3::new(0.0, -8.0, 6.0),
+        target: Vec3::new(0.0, 0.0, -0.5),
+        up: Vec3::Z,
+        projection: Projection::Orthographic { half_height: 2.5 },
+    };
+    let lit = Look {
+        ao: false,
+        ..Look::default()
+    };
+    let flat = Look {
+        plain_background: true,
+        ..lit
+    };
+    let colors = FaceColors::new();
+    let with_env = render_studio(&mesh, &colors, &camera, &params, &lit, &env).unwrap();
+    let plain = render_studio(&mesh, &colors, &camera, &params, &flat, &env).unwrap();
+    let no_ground = render_studio(
+        &mesh,
+        &colors,
+        &camera,
+        &params,
+        &Look {
+            ground: false,
+            ..flat
+        },
+        &env,
+    )
+    .unwrap();
+    let (mut shadowed, mut background) = (0, 0);
+    for i in 0..plain.ids.len() {
+        let px = |f: &craft3d_render::Frame| [f.rgb[3 * i], f.rgb[3 * i + 1], f.rgb[3 * i + 2]];
+        if plain.ids[i] == NO_FACE {
+            background += 1;
+            assert_eq!(px(&no_ground), params.background, "pixel {i}");
+            let p = px(&plain);
+            assert!(
+                p.iter().zip(params.background).all(|(a, b)| *a <= b),
+                "{p:?}"
+            );
+            if p != params.background {
+                shadowed += 1;
+            }
+        } else {
+            assert_eq!(
+                px(&plain),
+                px(&with_env),
+                "the model is lit alike: pixel {i}"
+            );
+        }
+    }
+    assert!(background > 1000, "{background}");
+    assert!(shadowed > 20, "the ground's shadow shows: {shadowed}");
+}

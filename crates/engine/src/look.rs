@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 /// The keys a look takes.
-pub const LOOK_KEYS: [&str; 9] = [
+pub const LOOK_KEYS: [&str; 10] = [
     "mode",
     "environment",
     "exposure",
@@ -20,10 +20,11 @@ pub const LOOK_KEYS: [&str; 9] = [
     "shadows",
     "tonemap",
     "light",
+    "background",
 ];
 
 /// The params text of a look, for the commands' documentation.
-pub const LOOK_PARAMS: &str = r#"{"mode": "plain|studio" = "studio", "environment": "studio|outdoor|workshop" = "studio", "exposure": stops from -10 to 10 = 0, "rotation": degrees = 0, "ground": boolean = true, "ao": boolean = true, "shadows": boolean = true, "tonemap": "agx|aces|linear" = "agx", "light": [azimuth, elevation] in degrees = the environment's brightest direction}"#;
+pub const LOOK_PARAMS: &str = r#"{"mode": "plain|studio" = "studio", "environment": "studio|outdoor|workshop" = "studio", "exposure": stops from -10 to 10 = 0, "rotation": degrees = 0, "ground": boolean = true, "ao": boolean = true, "shadows": boolean = true, "tonemap": "agx|aces|linear" = "agx", "light": [azimuth, elevation] in degrees = the environment's brightest direction, "background": "environment|plain" = "environment"}"#;
 
 /// A look: plain (the default) or studio with its options.
 #[derive(Clone, Debug, PartialEq)]
@@ -119,6 +120,16 @@ impl LookSpec {
             out.look.tonemap = Tonemap::from_name(&name)
                 .ok_or_else(|| format!("`look.tonemap` `{name}` is not agx, aces or linear"))?;
         }
+        match text("background")?.as_deref() {
+            None => {}
+            Some("environment") => out.look.plain_background = false,
+            Some("plain") => out.look.plain_background = true,
+            Some(other) => {
+                return Err(format!(
+                    "`look.background` `{other}` is not environment or plain"
+                ));
+            }
+        }
         match map.get("light") {
             None => {}
             Some(Value::Null) => out.look.light = None,
@@ -154,6 +165,7 @@ impl LookSpec {
             "shadows": self.look.shadows,
             "tonemap": self.look.tonemap.name(),
             "light": self.look.light,
+            "background": if self.look.plain_background { "plain" } else { "environment" },
         })
     }
 
@@ -271,10 +283,15 @@ mod tests {
             json!({"light": [1, 2, 3]}),
             json!({"ground": 1}),
             json!({"colour": 1}),
+            json!({"background": "black"}),
+            json!({"background": true}),
         ] {
             assert!(LookSpec::patched(&plain, &bad).is_err(), "{bad}");
         }
         let round = LookSpec::patched(&plain, &studio.json()).unwrap();
         assert_eq!(round, studio);
+        let flat = LookSpec::patched(&studio, &json!({"background": "plain"})).unwrap();
+        assert!(flat.look.plain_background && !studio.look.plain_background);
+        assert_eq!(LookSpec::patched(&plain, &flat.json()).unwrap(), flat);
     }
 }
