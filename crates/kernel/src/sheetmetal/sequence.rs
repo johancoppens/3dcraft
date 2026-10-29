@@ -16,7 +16,7 @@
 use super::{Part, SheetFace, flat_faces, fold, refuse, world};
 use crate::KernelError;
 use crate::extrude::extrude;
-use crate::profile::{Curve2, SketchCurve, detect_profiles, distance};
+use crate::profile::{Curve2, Segment, Shape, SketchCurve, detect_profiles, distance};
 use craft3d_math::{Frame, Tolerance, Transform, Vec3};
 use craft3d_topo::{Body, EdgeId, FaceId};
 
@@ -355,12 +355,15 @@ pub fn inside_piece(part: &Part, piece: PieceOf, p: Vec3) -> bool {
 
 /// Points (in the built part's world) whose convex hull holds the
 /// material of `piece` exactly as built, with no mesh slack: a flat's the
-/// eight corners of its outline's box (an arc's or circle's by its
-/// centre and radius, a spline's by its control points) at `z = 0` and
-/// `T`; a strip's the corners of its rectangle `T` thick; a built bend's
+/// points of its outline's own hull ([`outline_hull`]: the ends of its
+/// segments, an arc or circle by the ends of pieces of at most 90 degrees
+/// and where each piece's end tangents meet, a spline by its control
+/// points) at `z = 0` and `T`, whatever way the outline lies in its
+/// axes; a strip's the corners of its rectangle `T` thick; a built bend's
 /// the ends of its inner and outer arcs and, for the outer arc taken in
 /// two halves of at most 90 degrees, where each half's end tangents
-/// meet, at both ends of the bend.
+/// meet, at both ends of the bend. Empty for a piece the part does not
+/// have.
 pub fn piece_points(part: &Part, piece: PieceOf) -> Vec<Vec3> {
     let t = part.thickness;
     let to_world = |flat: usize, local: &[Vec3]| -> Vec<Vec3> {
@@ -375,37 +378,14 @@ pub fn piece_points(part: &Part, piece: PieceOf) -> Vec<Vec3> {
             let Some(flat) = part.flats.get(f) else {
                 return Vec::new();
             };
-            let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
-            let mut grow = |p: [f64; 2]| {
-                lo = [lo[0].min(p[0]), lo[1].min(p[1])];
-                hi = [hi[0].max(p[0]), hi[1].max(p[1])];
-            };
-            for s in &flat.outer {
-                grow(s.start);
-                grow(s.end);
-                match &s.shape {
-                    crate::profile::Shape::Line => {}
-                    crate::profile::Shape::Arc { center, radius }
-                    | crate::profile::Shape::Circle { center, radius } => {
-                        grow([center[0] - radius, center[1] - radius]);
-                        grow([center[0] + radius, center[1] + radius]);
-                    }
-                    crate::profile::Shape::Spline(spline) => {
-                        for p in &spline.control {
-                            grow(*p);
-                        }
-                    }
-                }
-            }
-            if !(lo[0] <= hi[0] && lo[1] <= hi[1]) {
+            let hull = outline_hull(&flat.outer);
+            if hull.iter().any(|p| !(p[0].is_finite() && p[1].is_finite())) {
                 return Vec::new();
             }
-            let mut local = Vec::with_capacity(8);
-            for x in [lo[0], hi[0]] {
-                for y in [lo[1], hi[1]] {
-                    for z in [0.0, t] {
-                        local.push(Vec3::new(x, y, z));
-                    }
+            let mut local = Vec::with_capacity(2 * hull.len());
+            for p in hull {
+                for z in [0.0, t] {
+                    local.push(Vec3::new(p[0], p[1], z));
                 }
             }
             to_world(f, &local)
@@ -462,4 +442,156 @@ pub fn piece_points(part: &Part, piece: PieceOf) -> Vec<Vec3> {
             to_world(b.parent, &local)
         }
     }
+}
+
+/// The counter-clockwise start angle and sweep (in `(0, 2π]`) of a
+/// segment along a circle about `center`: an arc's from its start to its
+/// end the way it runs, a circle's whole turn from angle 0.
+fn arc_span(segment: &Segment, center: [f64; 2], whole: bool) -> (f64, f64) {
+    use std::f64::consts::TAU;
+    if whole {
+        return (0.0, TAU);
+    }
+    let angle = |p: [f64; 2]| (p[1] - center[1]).atan2(p[0] - center[0]);
+    let (from, to) = if segment.reversed {
+        (angle(segment.end), angle(segment.start))
+    } else {
+        (angle(segment.start), angle(segment.end))
+    };
+    let sweep = (to - from).rem_euclid(TAU);
+    // Ends that are one point make the whole circle.
+    (from, if sweep > 0.0 { sweep } else { TAU })
+}
+
+/// Points whose convex hull holds the closed outline `outer` (and so the
+/// region it bounds, whatever its holes): every segment's ends; an arc or
+/// circle cut into pieces of at most 90 degrees, each piece's ends and
+/// where their tangents meet (the piece lies in that triangle); a
+/// spline's control points (a B-spline lies in their hull).
+pub fn outline_hull(outer: &[Segment]) -> Vec<[f64; 2]> {
+    let mut points = Vec::new();
+    for s in outer {
+        points.push(s.start);
+        points.push(s.end);
+        match &s.shape {
+            Shape::Line => {}
+            Shape::Arc { center, radius } | Shape::Circle { center, radius } => {
+                let (from, sweep) = arc_span(s, *center, matches!(s.shape, Shape::Circle { .. }));
+                let pieces = (sweep / std::f64::consts::FRAC_PI_2).ceil().clamp(1.0, 4.0);
+                let step = sweep / pieces;
+                let apex = radius / (0.5 * step).cos();
+                let at = |r: f64, a: f64| [center[0] + r * a.cos(), center[1] + r * a.sin()];
+                // `pieces` is 1 to 4.
+                for k in 0..(pieces as usize) {
+                    let a = from + step * k as f64;
+                    points.push(at(*radius, a));
+                    points.push(at(apex, a + 0.5 * step));
+                }
+                points.push(at(*radius, from + sweep));
+            }
+            Shape::Spline(spline) => points.extend(spline.control.iter().copied()),
+        }
+    }
+    points
+}
+
+/// The least of the affine function `height` over the material of
+/// `piece` as built: a flat's outline `T` thick (lines at their ends, an
+/// arc or circle at its ends or at the one angle where the function's
+/// gradient points into the circle, a spline over its control points, a
+/// lower bound), a strip's slab at its corners, a built bend's ring
+/// sector over its length at an end of its arcs or at that angle on
+/// either arc (the function is linear along the radius and the length,
+/// so least on the inner or outer arc at an end of the bend). Exact for
+/// lines and arcs, so a skin lying along a plane the function is 0 on
+/// gives 0, not less. `None` for a piece the part does not have or a
+/// value that is not finite.
+pub fn piece_lowest(part: &Part, piece: PieceOf, height: impl Fn(Vec3) -> f64) -> Option<f64> {
+    let t = part.thickness;
+    let flat_of = |piece: PieceOf| match piece {
+        PieceOf::Flat(f) => Some(f),
+        PieceOf::Bend(i) | PieceOf::Strip(i) => part.bends.get(i).map(|b| b.parent),
+    };
+    let w = part
+        .flats
+        .get(flat_of(piece)?)
+        .map(|f| world(&part.plane, f))?;
+    // The function in the flat's own axes, affine: its value at the origin
+    // and its gradient.
+    let f = |p: Vec3| height(w.point(p));
+    let o = f(Vec3::ZERO);
+    let g = [f(Vec3::X) - o, f(Vec3::Y) - o, f(Vec3::Z) - o];
+    let at = |x: f64, y: f64, z: f64| o + g[0] * x + g[1] * y + g[2] * z;
+    let low_z = g[2].min(0.0) * t;
+    let mut least = f64::INFINITY;
+    match piece {
+        PieceOf::Flat(i) => {
+            let flat = part.flats.get(i)?;
+            for s in &flat.outer {
+                for p in [s.start, s.end] {
+                    least = least.min(at(p[0], p[1], 0.0));
+                }
+                match &s.shape {
+                    Shape::Line => {}
+                    Shape::Arc { center, radius } | Shape::Circle { center, radius } => {
+                        let (from, sweep) =
+                            arc_span(s, *center, matches!(s.shape, Shape::Circle { .. }));
+                        // Least along the circle where the point lies
+                        // against the gradient.
+                        let down = (-g[1]).atan2(-g[0]);
+                        if (down - from).rem_euclid(std::f64::consts::TAU) <= sweep {
+                            least = least.min(at(
+                                center[0] + radius * down.cos(),
+                                center[1] + radius * down.sin(),
+                                0.0,
+                            ));
+                        }
+                    }
+                    Shape::Spline(spline) => {
+                        for p in &spline.control {
+                            least = least.min(at(p[0], p[1], 0.0));
+                        }
+                    }
+                }
+            }
+            least += low_z;
+        }
+        PieceOf::Strip(i) => {
+            let b = part.bends.get(i)?;
+            for p in [b.start, b.end] {
+                for u in [0.0, b.allowance] {
+                    least = least.min(at(p[0] + u * b.across[0], p[1] + u * b.across[1], 0.0));
+                }
+            }
+            least += low_z;
+        }
+        PieceOf::Bend(i) => {
+            let b = part.bends.get(i)?;
+            // As in `piece_points`: `u` across, `w` up from the axis, the
+            // strip starting square under (over) it and turning towards
+            // `across`: `(u, w) = (r sin φ, ∓ r cos φ)`.
+            let up = b.angle > 0.0;
+            let zc = if up { t + b.radius } else { -b.radius };
+            let sign = if up { -1.0 } else { 1.0 };
+            let gu = g[0] * b.across[0] + g[1] * b.across[1];
+            let gw = g[2] * sign;
+            // `gu sin φ + gw cos φ` is least at φ = atan2(−gu, −gw).
+            let down = (-gu).atan2(-gw);
+            let theta = b.theta();
+            let mut angles = vec![0.0, theta];
+            if down > 0.0 && down < theta {
+                angles.push(down);
+            }
+            for p in [b.start, b.end] {
+                for r in [b.radius, b.radius + t] {
+                    for &phi in &angles {
+                        let (u, wv) = (r * phi.sin(), sign * r * phi.cos());
+                        least =
+                            least.min(at(p[0] + u * b.across[0], p[1] + u * b.across[1], zc + wv));
+                    }
+                }
+            }
+        }
+    }
+    least.is_finite().then_some(least)
 }

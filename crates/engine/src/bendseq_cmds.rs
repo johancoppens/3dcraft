@@ -26,8 +26,8 @@ use crate::verify::{self, Part as Measured};
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_kernel::boolean::contains_points;
 use craft3d_kernel::sheetmetal::sequence::{
-    PieceOf, bend_faces, bend_frame, final_worlds, from_axis, inside_piece, piece_points, prism,
-    stage_worlds, strip_slab, stroke_speed,
+    PieceOf, bend_faces, bend_frame, final_worlds, from_axis, inside_piece, piece_lowest,
+    piece_points, prism, stage_worlds, strip_slab, stroke_speed,
 };
 use craft3d_kernel::sheetmetal::{self, flange_length, flat_faces};
 use craft3d_math::{Tolerance, Transform, Vec3};
@@ -297,6 +297,9 @@ impl Check<'_> {
                     .get(piece.carrier)
                     .ok_or("a flat's place is missing")?;
                 let moved = built.then(stage);
+                if piece.corners.is_empty() {
+                    return Err(format!("{} has no points to bound it", piece.what.text()));
+                }
                 for &c in &piece.corners {
                     let (d, a) = from_axis(frame.point, frame.axis, moved.point(c));
                     reach = reach.max(d);
@@ -545,8 +548,9 @@ impl Check<'_> {
 
     /// Per piece of `kinds`, the height of its lowest point above the
     /// die's top (the die's `y = 0`, before it is lowered) at stroke
-    /// angle `rho`: the least over its hull points
-    /// (`sequence::piece_points`), exact as the piece is rigid.
+    /// angle `rho`: the least over its material
+    /// (`sequence::piece_lowest`), exact as the piece is rigid (a lower
+    /// bound for a spline's flat).
     fn heights(
         &self,
         done: &BTreeSet<usize>,
@@ -580,11 +584,14 @@ impl Check<'_> {
                     .zip(worlds.get(piece.carrier))
                     .map(|(back, stage)| back.then(stage))
                     .ok_or("a flat's place is missing")?;
-                Ok(piece
-                    .corners
-                    .iter()
-                    .map(|c| (moved.point(*c) - top).dot(frame.inside))
-                    .fold(f64::INFINITY, f64::min))
+                // Exact over the piece's material (not its hull points,
+                // whose tangent apexes lie below a bend's skin), so a skin
+                // along the die's top is proven at 0; a piece with no
+                // material found fails closed.
+                piece_lowest(part, k.piece(), |p| {
+                    (moved.point(p) - top).dot(frame.inside)
+                })
+                .ok_or_else(|| format!("{} has no lowest point", k.text()))
             })
             .collect()
     }
