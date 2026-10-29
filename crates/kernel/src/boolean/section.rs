@@ -692,8 +692,8 @@ fn edge_cuts(
 
 /// The cuts `along` a curve over `(first, last)`, in order and with its
 /// ends (`end`) among them, with each end next to a place where an edge
-/// meets a surface taken to be that place; `guard` is the distance within
-/// which two points may be one.
+/// meets a surface taken to be that place; points within `merge` of each
+/// other are one, apart by `guard` two.
 ///
 /// A curve that begins and ends in one such place (a loop through it)
 /// has that place at each end, but a place is found on the curve once,
@@ -710,13 +710,14 @@ fn edge_cuts(
 /// stitch holes at the Jig's tolerance of 0.01 mm, repros 21 to 24: a
 /// hole's wall meets the plate beside it in a closed curve along the
 /// hole's rim, whose trace started one or two tolerances from the rim's
-/// own vertex).
+/// own vertex). A seam within `merge` of a place is one with it as any
+/// two cuts are, as before.
 fn ends_at_places(
     along: Vec<Cut>,
     curve: &Curve3,
     (first, last): (f64, f64),
     closed: bool,
-    guard: f64,
+    (merge, guard): (f64, f64),
 ) -> Vec<Cut> {
     let places: Vec<Cut> = along.iter().filter(|cut| !cut.end).copied().collect();
     let mut kept = Vec::with_capacity(along.len());
@@ -734,6 +735,10 @@ fn ends_at_places(
             // leaving it, from its start or back from its end.
             let stays =
                 |from: f64, to: f64| curve.eval(0.5 * (from + to)).distance(cut.point) < guard;
+            if near.iter().any(|p| p.point.distance(cut.point) <= merge) {
+                kept.push(cut);
+                continue;
+            }
             let reached = near
                 .iter()
                 .filter(|p| stays(first, p.t) || stays(p.t, last))
@@ -849,7 +854,13 @@ fn clip(
         }
     }
     along.sort_by(|p, q| p.t.total_cmp(&q.t));
-    let along = ends_at_places(along, curve, (first, last), closed, vertices.guard);
+    let along = ends_at_places(
+        along,
+        curve,
+        (first, last),
+        closed,
+        (vertices.merge, vertices.guard),
+    );
     let mut cuts: Vec<Cut> = Vec::new();
     for cut in along {
         let same = |other: &Cut| -> Result<bool, Stop> {
@@ -2051,7 +2062,8 @@ pub(super) mod tests {
     /// edge meets a surface, on either side of it, is that place
     /// (`ends_at_places`; the sea kayak's stitch holes, repros 21 to 24,
     /// refused "two points closer together than the tolerance can tell
-    /// apart" before); one further than the guard, or one the curve comes
+    /// apart" before); one further than the guard, one within half the
+    /// tolerance (one with it as any two cuts are, as before), or one the curve comes
     /// back to only round the loop, is not; an open curve's end is as it
     /// was. At three scales.
     #[test]
@@ -2062,7 +2074,7 @@ pub(super) mod tests {
             // The parameter `dt` from the seam is about `dt` times the
             // speed (about 2πr) away.
             let speed = std::f64::consts::TAU * r;
-            for (from_seam, taken) in [(1.5, true), (0.8, true), (2.5, false)] {
+            for (from_seam, taken) in [(1.5, true), (0.8, true), (2.5, false), (0.3, false)] {
                 let dt = from_seam * tol / speed;
                 for t in [dt, 1.0 - dt] {
                     let (curve, range, place) = loop_and_place(r, t);
@@ -2079,7 +2091,7 @@ pub(super) mod tests {
                         "{d} for {from_seam} tolerances at {k}"
                     );
                     let along = vec![seam, place];
-                    let found = ends_at_places(along, &curve, range, true, guard);
+                    let found = ends_at_places(along, &curve, range, true, (0.5 * tol, guard));
                     assert_eq!(found.len(), 2, "at {k}");
                     let first = found[0];
                     assert_eq!(first.t, 0.0, "the seam stays where it is, at {k}");
@@ -2111,7 +2123,7 @@ pub(super) mod tests {
                 b_edge: None,
                 end: true,
             };
-            let found = ends_at_places(vec![seam, far], &curve, range, true, guard);
+            let found = ends_at_places(vec![seam, far], &curve, range, true, (0.5 * tol, guard));
             assert!(found[0].end, "at {k}: {:?}", found[0]);
             // An open curve's end next to a place it stays at is dropped
             // for the place, as before.
@@ -2130,7 +2142,13 @@ pub(super) mod tests {
                 b_edge: None,
                 end: true,
             };
-            let found = ends_at_places(vec![start, place, end], &curve, (0.0, 0.5), false, guard);
+            let found = ends_at_places(
+                vec![start, place, end],
+                &curve,
+                (0.0, 0.5),
+                false,
+                (0.5 * tol, guard),
+            );
             assert_eq!(found.len(), 2, "at {k}: {found:?}");
             assert_eq!(found[0].point, place.point, "at {k}");
         }
