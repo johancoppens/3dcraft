@@ -2,6 +2,13 @@
 //! indices out of range, degenerate frames, contradictions and sequences
 //! of wild drives all return a solution or a diagnosis.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+
 use craft3d_assembly::{
     CouplingKind, CouplingSpec, Frame, Mat3, MateKind, MateSpec, Pose, Problem, Solver, solve,
 };

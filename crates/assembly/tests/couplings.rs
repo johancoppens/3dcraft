@@ -1,6 +1,13 @@
 //! Gear, rack and screw couplings against their closed forms at three
 //! scales, and a planetary stage as a linear coupling.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+
 mod common;
 
 use common::*;

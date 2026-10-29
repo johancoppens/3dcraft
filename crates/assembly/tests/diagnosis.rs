@@ -2,6 +2,13 @@
 //! redundant, over-constrained and infeasible assemblies, limits, flips and
 //! malformed problems.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+
 mod common;
 
 use common::*;

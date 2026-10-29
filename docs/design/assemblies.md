@@ -186,7 +186,8 @@ pub struct Solver;  // new(p), solve(), solve_at(drives), advance(drives), seque
 - **Unit tests:** the Jacobian against finite differences, the log map against exp, and the block factorisation.
 
 **Benchmark.** Twelve Jansen legs on one crankshaft (74 instances, 109 revolutes), one degree per frame over a turn,
-every foot checked: see the dev log entry of 2026-10-29 for the release timing on the Strix.
+every foot checked against the closed form: 5.2 ms mean and 5.6 ms worst per frame in release on the Strix
+(2026-10-29), against a target of 16 ms.
 
 ## Limits
 

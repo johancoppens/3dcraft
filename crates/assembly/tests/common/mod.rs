@@ -1,6 +1,12 @@
 //! Helpers for the assembly tests: planar linkages built in 3D from pin
 //! positions, closed-form circle intersections, and the three scales.
-#![allow(dead_code)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    dead_code
+)]
 
 use craft3d_assembly::{Frame, Mat3, MateKind, MateSpec, Pose, Problem};
 use craft3d_math::Vec3;

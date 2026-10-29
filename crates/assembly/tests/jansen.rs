@@ -3,6 +3,13 @@
 //! strandbeest-leg Jig's generator does, at three scales; and twelve legs
 //! on one crankshaft per frame as a benchmark.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+
 mod common;
 
 use common::*;

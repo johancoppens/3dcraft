@@ -5,6 +5,13 @@
 //! printed between `EVIDENCE-SVG-BEGIN <name>` / `EVIDENCE-SVG-END`.
 //! `cargo test -p craft3d-assembly --test evidence -- --ignored --nocapture`
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+
 mod common;
 
 use common::*;

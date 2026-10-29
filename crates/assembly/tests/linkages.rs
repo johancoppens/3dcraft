@@ -2,6 +2,13 @@
 //! over a full turn, dead points) and a slider-crank, against closed forms
 //! at three scales.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+
 mod common;
 
 use common::*;
