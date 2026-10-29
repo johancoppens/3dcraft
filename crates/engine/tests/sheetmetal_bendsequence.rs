@@ -712,3 +712,44 @@ fn the_cost_of_bendable_on_a_tray_of_four_flanges() {
         assert!(got["detail"]["work"].as_u64().unwrap() <= 20_000, "{got}");
     }
 }
+
+/// The gooseneck mirrored (`x → −x`), its throat open the other way: as
+/// the tools stand, the standing wall of the U channel 40 high meets it in
+/// either order (both walls lie on the same side of their bend's frame),
+/// but a press brake lets the part be turned end for end between bends,
+/// which for tools extruded symmetrically along the bend is the tools
+/// mirrored in `x`. So the part is bendable, the second step turned, with
+/// the closed form of the gooseneck as given (review 2026-10-29: the
+/// measure said no, for certain).
+#[test]
+fn a_mirrored_gooseneck_clears_with_the_part_turned_end_for_end() {
+    let mirrored: Vec<[f64; 2]> = GOOSENECK.iter().map(|p| [-p[0], p[1]]).collect();
+    for k in SCALES {
+        let dir = workdir("sheetmetal-bendsequence", &format!("turned-{k}"));
+        let mut s = session_in(&dir);
+        new_document(&mut s, k);
+        channel(&mut s, k, 40.0);
+        let goose = bendable(
+            &mut s,
+            "mirrored gooseneck",
+            json!({"of": "U", "punch": scaled(&mirrored, k), "die": scaled(&DIE, k), "is": true}),
+        );
+        assert_ne!(goose["status"], "failed", "scale {k}: {goose}");
+        assert_eq!(goose["status"], "passed", "scale {k}: {goose}");
+        let out = sequence(&mut s, k, &mirrored);
+        assert_eq!(out["feasible"], true, "{out}");
+        let steps = out["steps"].as_array().unwrap();
+        assert_eq!(steps.len(), 2, "{out}");
+        assert_eq!(steps[1]["turned"], true, "{out}");
+        let (a, b, p) = (41.0_f64, 40.0_f64, 5.0_f64);
+        let least = ((a - b) / SQRT_2 + p) * k;
+        let got = steps[1]["least"].as_f64().unwrap();
+        assert!(
+            (got - least).abs() <= 1e-6 * k,
+            "scale {k}: turned gooseneck least {got} against {least}: {out}"
+        );
+        // The gooseneck as given needs no turn.
+        let out = sequence(&mut s, k, &GOOSENECK);
+        assert_eq!(out["steps"][1]["turned"], false, "{out}");
+    }
+}
