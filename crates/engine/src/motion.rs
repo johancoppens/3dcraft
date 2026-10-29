@@ -57,6 +57,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         r#"{"point": vertex name or {sketch, entity}, "feature": id or name = the body that has the vertex, "t": [number, number] = [0, 1], "samples": integer = 65, "name": string = "Trace <n>", "clear": boolean or trace name}"#,
         "Traces the path of a point over the motion: the point is a vertex by its persistent name (document.edges lists them; feature says which body when several have it) or a point of a sketch ({sketch, entity}); its place is taken at samples values of t evenly from t[0] to t[1] (both included), each state regenerated as view.motion makes it, from the one before. The trace is view state of the document (not saved, not undone, let go of at the next edit): the viewport draws it as a line, and file.export {path: *.svg or *.dxf, trace: name} writes it in its plane. A trace with the name of one kept replaces it; at most 32 are kept. clear: true removes every trace, clear: name one of them (nothing is traced then). The document needs a timeline (view.motion). A point that is gone at some t fails the trace, naming that t. Returns name, point, t, samples, points ([x, y, z] in the document's unit), length (along the polyline), closed (it ends where it began, within the tolerance), box and plane ({point, normal} when the path lies in one plane within the tolerance, else null).",
         doc: true,
+        names: ["point"],
         view_trace
     ),
     spec!(
