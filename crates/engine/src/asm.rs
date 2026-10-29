@@ -930,10 +930,12 @@ pub(crate) fn frame_in(
                 && let Some(feature) = doc.feature(id)
                 && crate::selection::is_datum(&feature.kind)
             {
-                let datum = regen
-                    .feature(id)
-                    .and_then(|f| f.datum)
-                    .ok_or_else(|| format!("the datum `{name}` is not placed"))?;
+                let datum = regen.feature(id).and_then(|f| f.datum).ok_or_else(|| {
+                    match regen.feature(id).map(|f| &f.status) {
+                        Some(Status::Failed(why)) => format!("the datum `{name}` failed: {why}"),
+                        _ => format!("the datum `{name}` is not placed"),
+                    }
+                })?;
                 return datum_frame(&datum, name);
             }
             let only = picked.map(|id| id.to_string());

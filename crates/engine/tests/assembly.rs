@@ -596,6 +596,13 @@ fn a_joint_set_turns_a_revolute_mate() {
     );
     assert_eq!(joint["status"], "ok", "{joint}");
     assert_eq!(joint["variables"], json!(["Hinge_angle"]));
+    // Undriven, the arm stays where the solve finds it nearest its start;
+    // driven to 0 it lies along its frame's zero.
+    run(
+        &mut s,
+        "joint.set",
+        json!({ "mate": "Hinge", "value": "0 deg" }),
+    );
     let i = inspect(&mut s);
     let (lo0, hi0) = boxed(&i, "Arm");
     let set = run(
@@ -877,7 +884,7 @@ fn a_four_bar_linkage_of_one_bar_part_follows_its_crank() {
     run(
         &mut s,
         "datum.axis",
-        json!({ "name": "End2", "through": [["len - 2", 2, 0], ["len - 2", 2, 1]] }),
+        json!({ "name": "End2", "through": [["len - 2 mm", 2, 0], ["len - 2 mm", 2, 1]] }),
     );
     run(&mut s, "file.save", json!({ "path": "bar.3dcraft" }));
     run(&mut s, "file.close", json!({}));
