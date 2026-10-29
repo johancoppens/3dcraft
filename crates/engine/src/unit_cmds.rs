@@ -34,7 +34,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[spec!(
     "document.setUnit",
     "Set Length Unit",
     r#"{"units": "um|mm|cm|m|in|ft", "keep": "numbers|sizes"}"#,
-    "Changes the length unit of the active document (one undo step). A plain number read as a length is in the document's unit, so keep says what stays: numbers keeps every number as written and changes only the unit (a block of size 10 is then 10 of the new unit; a value written with a unit, 10 mm, keeps its size, and so does the tolerance's number); sizes keeps the model as large as it was: every plain number read as a length gets the old unit written on it (10 becomes 10 mm, w / 2 becomes (w / 2) * 1 mm; variables are left as they are, their uses get the unit), assertions' bounds likewise, the tolerance and the sketches' points and circles are converted, and the result is proven: regenerated in the new unit, every feature (also those rolled back or switched off) has the status it had and every body the volume, area, centroid and box it had, or the change is refused and the document stays as it was. Formula curves' x(t) and y(t) that are plain numbers get the unit too; so do the lengths in named sets' queries and in assertions' and measured outputs' subjects (volume, area, radius, length, inside, above, below) and the measures' own lengths (offset, a symmetry's tol, a level's volume, a plane's point); a value assertion's bounds get the unit to the power of its expression's dimension. Every assertion must then have the status it had and every output its value, or the change is refused. sizes refuses what it cannot convert for certain, naming it: a plain number whose dimension is not known (a parameter or a filter of a name not known, the bounds of a value assertion whose expression uses an output that is unknown), a formula curve whose dimension changes along t, a parameter whose expression does not evaluate. Returns {units, was, keep, rewritten: the expressions given a unit}.",
+    "Changes the length unit of the active document (one undo step). A plain number read as a length is in the document's unit, so keep says what stays: numbers keeps every number as written and changes only the unit (a block of size 10 is then 10 of the new unit; a value written with a unit, 10 mm, keeps its size, and so does the tolerance's number); sizes keeps the model as large as it was: every plain number read as a length gets the old unit written on it (10 becomes 10 mm, w / 2 becomes (w / 2) * 1 mm; variables are left as they are, their uses get the unit), assertions' bounds likewise, the tolerance and the sketches' points and circles are converted, and the result is proven: regenerated in the new unit, every feature (also those rolled back or switched off) has the status it had and every body the volume, area, centroid and box it had, or the change is refused and the document stays as it was. Formula curves' x(t) and y(t) that are plain numbers get the unit too; so do the lengths in named sets' queries and in assertions' and measured outputs' subjects (volume, area, radius, length, inside, above, below) and the measures' own lengths (offset, a symmetry's tol, a level's volume, a plane's point, a centre of gravity, a press brake's tools with their length and clearance; a mass, a density, a heel or trim and maxWork are not lengths and stay); a value assertion's bounds get the unit to the power of its expression's dimension. Every assertion must then have the status it had and every output its value, or the change is refused. sizes refuses what it cannot convert for certain, naming it: a plain number whose dimension is not known (a parameter or a filter of a name not known, the bounds of a value assertion whose expression uses an output that is unknown), a formula curve whose dimension changes along t, a parameter whose expression does not evaluate. Returns {units, was, keep, rewritten: the expressions given a unit}.",
     doc: true,
     set_unit
 )];
@@ -273,6 +273,21 @@ impl Sizer<'_> {
         Ok(Value::String(written))
     }
 
+    /// Every number or expression in `value`, a list of them or a list of
+    /// such lists (two deep at most), sized as a length.
+    fn lengths(&mut self, value: &Value, depth: usize, what: &str) -> Result<Value, String> {
+        match value {
+            Value::Array(items) if depth < 2 => Ok(Value::Array(
+                items
+                    .iter()
+                    .map(|item| self.lengths(item, depth + 1, what))
+                    .collect::<Result<_, String>>()?,
+            )),
+            Value::Array(_) => Ok(value.clone()),
+            other => self.sized(other, 1, what),
+        }
+    }
+
     /// A value or a range `{eq, tol}` / `{min, max}` of a filter.
     fn range(&mut self, value: &Value, power: i32, what: &str) -> Result<Value, String> {
         match value {
@@ -396,8 +411,15 @@ impl Sizer<'_> {
             let sized = match key.as_str() {
                 "measure" | "axis" | "xAxis" | "about" | "measured" | "expr" => v.clone(),
                 "of" | "from" | "to" => self.subject(v, &here)?,
-                "offset" | "tol" => self.sized(v, 1, &here)?,
+                // Not lengths: a mass in kg and a density per cubic metre
+                // whatever the unit, angles (a plain one in degrees), a
+                // count of distances.
+                "mass" | "density" | "heel" | "trim" | "maxWork" => v.clone(),
+                "offset" | "tol" | "length" | "clearance" => self.sized(v, 1, &here)?,
                 "volume" => self.sized(v, 3, &here)?,
+                // A point (the centre of gravity) and polygons of points
+                // (a press brake's tools): each coordinate a length.
+                "centerOfGravity" | "punch" | "die" => self.lengths(v, 0, &here)?,
                 "plane" => match v {
                     Value::Object(plane) => {
                         let mut sized = plane.clone();

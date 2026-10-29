@@ -567,3 +567,83 @@ fn keeping_the_numbers_from_mm_to_m_solves_the_same_sketch() {
     close(volume(&mut s), before, "the same numbers, in m^3");
     assert_eq!(run(&mut s, "document.check", json!({}))["ok"], true);
 }
+
+/// The floating measures' and the press-brake check's own lengths (a
+/// centre of gravity, a displacement, the tools' points, their length and
+/// clearance) keep their sizes; a mass, a density, a heel in degrees and
+/// the work are not lengths and stay as written. A barge 2000 × 600 × 400
+/// mm (GM 65 mm) and a U channel bendable with a punch 10 wide.
+#[test]
+fn floating_and_bendable_measures_keep_their_sizes() {
+    let mut s = common::session();
+    run(
+        &mut s,
+        "file.new",
+        json!({"units": "mm", "tolerance": 1e-6}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [2000, 600, 400], "position": [-1000, -300, 0], "name": "Barge"}),
+    );
+    run(
+        &mut s,
+        "assert.add",
+        json!({"name": "GM", "measure": "floatingGM", "of": "Barge", "volume": 3e8,
+               "centerOfGravity": [0, 0, 180], "heel": 2, "eq": 65}),
+    );
+    run(
+        &mut s,
+        "assert.add",
+        json!({"name": "GM by mass", "measure": "floatingGM", "of": "Barge", "mass": 300,
+               "density": 1000, "centerOfGravity": [0, 0, 180], "min": 60}),
+    );
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"plane": "xy", "name": "Base"}),
+    );
+    let made = run(
+        &mut s,
+        "sketch.rect",
+        json!({"sketch": "Base", "from": [0, 3000], "to": [40, 3030]}),
+    );
+    let lines = made["lines"].as_array().unwrap().clone();
+    run(
+        &mut s,
+        "feature.sheetMetal",
+        json!({"sketch": "Base", "name": "U", "thickness": "1 mm", "radius": "1 mm", "kFactor": 0.5,
+               "flanges": [{"edge": lines[3], "length": "20 mm", "angle": "90 deg"},
+                           {"edge": lines[1], "length": "20 mm", "angle": "90 deg"}]}),
+    );
+    run(
+        &mut s,
+        "assert.add",
+        json!({"name": "bends", "measure": "bendable", "of": "U",
+               "punch": [[-5, 0], [5, 0], [5, 100], [-5, 100]],
+               "die": [[-15, -20], [15, -20], [15, 0], [-15, 0]],
+               "length": 100, "clearance": 0.001, "maxWork": 20000, "is": true}),
+    );
+    let before = statuses(&mut s);
+    assert!(
+        before.iter().all(|(_, status)| status == "passed"),
+        "{before:?}"
+    );
+    run(
+        &mut s,
+        "document.setUnit",
+        json!({"units": "cm", "keep": "sizes"}),
+    );
+    assert_eq!(statuses(&mut s), before);
+    let listed = run(&mut s, "assert.list", json!({}));
+    let gm = &listed["assertions"][0];
+    close(gm["measured"].as_f64().unwrap(), 6.5, "GM in cm");
+    let stored = listed["assertions"].to_string();
+    assert!(
+        stored.contains("180 * 1 mm") || stored.contains("180 mm"),
+        "{stored}"
+    );
+    assert!(stored.contains("\"mass\":300"), "{stored}");
+    assert!(stored.contains("\"heel\":2"), "{stored}");
+    assert!(stored.contains("\"maxWork\":20000"), "{stored}");
+}
