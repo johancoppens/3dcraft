@@ -6,6 +6,24 @@ Decisions that shape the project, newest first, each with its reason. An agent t
 
 ## Taken
 
+### 2026-10-29: Assemblies in R1 (decided by the developer)
+
+Assemblies go into the first version, built by three agents (the document and the engine, the solver, motion and the
+UI). An assembly is its own document kind, `.3dcraftasm`, with its own MIME type (`application/x-craft3d-assembly`)
+and icon, in the same container and format versions as `.3dcraft`; a `.3dcraft` never holds one. Parts and assemblies
+both stay: a multi-body part is for things designed together, an assembly for reusable parts, many instances and
+motion. **An instance is a reference, not a copy**: the assembly never edits a part's history, the part is edited in
+its own document and the assembly follows it (a path and a content hash per source; a changed source is regenerated,
+and only it; an instance may be pinned). An instance may set the source's public parameters (a configuration, built
+once and cached), and may pick one body of a multi-body source by the feature that made it, starting where the source
+puts it; a body that is gone fails the instance by name. Mates name geometry through an instance
+(`Instance/Feature:name`), and **a name that is gone fails its mate by that name, never retargets** (rule 4 across
+files). What an assembly holds of its parts is derived (rule 2); a packed `.3dcraftasm` carries the source documents,
+not their meshes. Subassemblies are rigid or flexible per instance. The window shows, points and moves; building is
+done by commands. Animation over one timeline `t` is part of the first version. The solver is our own (no third-party
+solver). There is no automatic converter for existing Jigs: an instance picks one body of a multi-body Jig and mates
+go on top. How it is built: [`design/assemblies.md`](design/assemblies.md).
+
 ### 2026-10-29: One more week for R1, with assemblies and freeform surfacing stages 1–3 (decided by the developer)
 
 R1 gets one more full week, starting 2026-10-29. In that week:

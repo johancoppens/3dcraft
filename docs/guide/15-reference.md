@@ -8,14 +8,14 @@ The full description of any command, with every value it takes and what it refus
 
 ## Commands
 
-3DCraft 0.1.0 has 135 commands. A command's id is its family and its name: `feature.fillet`.
+3DCraft 0.1.0 has 151 commands. A command's id is its family and its name: `feature.fillet`.
 
 ### Documents and files
 
 | Command | Does |
 |---|---|
 | `file.new` | A new, empty document (`units`, `tolerance`) |
-| `file.open`, `file.save`, `file.close` | Open a `.3dcraft` or `.3dcraftjig`, save, close |
+| `file.open`, `file.save`, `file.close` | Open a `.3dcraft`, `.3dcraftjig` or `.3dcraftasm`, save, close |
 | `file.list`, `file.activate` | List the open documents, switch to one |
 | `file.import` | Read a STEP file into the document |
 | `file.export` | Write STEP, STL, 3MF, OBJ, DXF or SVG ([chapter 12](12-files.md)) |
@@ -71,6 +71,18 @@ The full description of any command, with every value it takes and what it refus
 | `datum.plane`, `datum.axis`, `datum.point`, `datum.helix`, `datum.references` | Construction geometry |
 | `body.appearance`, `face.appearance`, `body.material` | Colours and density |
 | `body.split` | One body per piece |
+
+### Assemblies
+
+| Command | Does |
+|---|---|
+| `assembly.new` | A new, empty assembly ([chapter 17](17-assemblies.md)) |
+| `instance.add`, `instance.edit`, `instance.delete`, `instance.open` | Place a part, a Jig or an assembly; change, remove, open its source |
+| `mate.add`, `mate.edit`, `mate.delete` | Join two instances (fixed, revolute, slider, cylindrical, planar, ball) |
+| `coupling.add`, `coupling.delete` | Gears, racks and screws between two mates |
+| `joint.set` | Set a mate's free motion (the variable `<mate>_angle`) |
+| `assembly.solve`, `assembly.inspect` | How the mates stand; the instances and configurations |
+| `assembly.reload`, `assembly.pack`, `assembly.unpack` | Follow changed parts; carry the parts in the file, or write them out |
 
 ### Looking, measuring and checking
 

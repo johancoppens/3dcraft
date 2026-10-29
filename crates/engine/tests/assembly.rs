@@ -476,7 +476,9 @@ fn the_step_export_of_an_assembly_reads_back_as_its_placed_bodies() {
     }
     run(&mut s, "file.new", json!({}));
     let imported = run(&mut s, "file.import", json!({ "path": "stack.step" }));
-    let features = imported.as_array().unwrap_or_else(|| panic!("{imported}"));
+    let features = imported["bodies"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{imported}"));
     assert_eq!(features.len(), 2, "{imported}");
     let doc = run(&mut s, "document.inspect", json!({}));
     let bodies = doc["bodies"].as_array().unwrap();

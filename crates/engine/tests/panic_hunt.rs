@@ -446,6 +446,49 @@ fn session(dir: &std::path::Path, state: usize) -> Session {
                 json!({"sketch": "Rows", "type": "coincident", "entities": ["e3", "e1[last]"]}),
             );
         }
+        // An assembly (docs/design/assemblies.md): two instances of a
+        // packed part, a picked body, a ground, a driven hinge, a mate on a
+        // face that is not there, a coupling.
+        4 => {
+            run("file.new", json!({}));
+            run("feature.block", json!({"name": "Bar", "size": [10, 2, 2]}));
+            run(
+                "feature.block",
+                json!({"name": "Peg", "size": [1, 1, 1], "position": [0, 5, 0]}),
+            );
+            run("file.save", json!({"path": "hunt-part.3dcraft"}));
+            run("assembly.new", json!({}));
+            run(
+                "instance.add",
+                json!({"source": "hunt-part.3dcraft", "name": "A", "body": "Bar"}),
+            );
+            run(
+                "instance.add",
+                json!({"source": "hunt-part.3dcraft", "name": "B", "body": "Bar"}),
+            );
+            run(
+                "instance.add",
+                json!({"source": "hunt-part.3dcraft", "name": "C"}),
+            );
+            run(
+                "mate.add",
+                json!({"kind": "fixed", "a": "world/xy", "b": "A/F1:face(0)", "name": "Ground"}),
+            );
+            run(
+                "mate.add",
+                json!({"kind": "revolute", "a": "A/F1:face(1)", "b": "B/F1:face(0)", "name": "Hinge"}),
+            );
+            run(
+                "mate.add",
+                json!({"kind": "slider", "a": "B/F1:face(1)", "b": "C/F9:face(0)", "name": "Lost"}),
+            );
+            run("joint.set", json!({"mate": "Hinge", "value": "30 deg"}));
+            run(
+                "coupling.add",
+                json!({"kind": "rack", "mates": ["Hinge", "Lost"], "value": 2}),
+            );
+            run("assembly.pack", json!({}));
+        }
         // A document full of things that fail: bad formulas, a cycle, a
         // suppressed and a rolled-back feature, undo and redo stacks.
         _ => {
@@ -526,7 +569,7 @@ fn no_command_panics_on_adversarial_parameters() {
     let dir = workdir("hunt");
     let values = adversarial();
     let commands = Session::commands();
-    let templates: Vec<Session> = (0..4).map(|state| session(&dir, state)).collect();
+    let templates: Vec<Session> = (0..5).map(|state| session(&dir, state)).collect();
     let seed = seed_recovery(&dir);
     // One case per command, state and adversarial value: the value as the
     // params itself, under each parameter, under all of them at once, and
@@ -536,7 +579,7 @@ fn no_command_panics_on_adversarial_parameters() {
     let mut light = Vec::new();
     let mut heavy = Vec::new();
     for (c, spec) in commands.iter().enumerate() {
-        for state in 0..4 {
+        for state in 0..5 {
             for v in 0..values.len() {
                 if HEAVY.contains(&spec.id) {
                     heavy.push((c, state, v));
