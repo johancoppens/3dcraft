@@ -980,9 +980,10 @@ fn v50_to_v51(manifest: Value) -> Result<Value, String> {
 
 /// Version 52 (a TEMPORARY number) adds a sheet-metal part's
 /// `bend_relief`: the notch cut at every end of a bend that lies inside
-/// its edge (docs/design/sheetmetal.md › *Bend reliefs*). A file of an
-/// older version has none, which is what a missing field reads as, so no
-/// part changes; and no name changes meaning: the notches' edges are new
+/// its edge (docs/design/sheetmetal.md › *Bend reliefs*), and a flange's
+/// `line`: on a line of an earlier flange's own outline. A file of an
+/// older version has neither, which is what a missing field reads as, so
+/// no part changes; and no name changes meaning: the notches' edges are new
 /// names (`edge(11, …)`), the pieces of a split edge keep theirs, and the
 /// pieces a closed corner's extension adds (`edge(6, flat, segment)`) are
 /// numbered as before on a flange whose tip and sides carry nothing, the

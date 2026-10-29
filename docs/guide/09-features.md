@@ -375,7 +375,9 @@ bent out of a cut-out, a louver; give it insets, or its bend's ends lie along th
 rectangle `length` long: draw it in the base sketch's plane as if the bend had no width (on a flange's tip
 or side, as if every bend from the base to it had none, so it follows a change of thickness or radius), one line of it
 on the edge's line and the rest beyond; the bend spans that line and the flat is laid out the bend
-allowance further on (give no `length`). The flat pattern is checked as a whole, so tabs whose flats would
+allowance further on (give no `length`). Such a flange has no tip or sides; a later flange sits on one of
+its outline's lines instead, `"line": {"flange": 0, "edge": "e14"}` (the line's id in the outline's
+sketch; not the line on the edge, which is the bend): a lip on a rail's leg. The flat pattern is checked as a whole, so tabs whose flats would
 overlap in it are refused naming them. A flange added later changes no name the part had but the end
 along the edge it is bent from. Corner reliefs and closed corners are for flanges that reach a corner of
 the base; a corner with an inset flange is not one. Where a bend ends inside its edge (an inset flange, a
