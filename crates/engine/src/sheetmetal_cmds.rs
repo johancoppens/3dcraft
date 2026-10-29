@@ -13,8 +13,8 @@ use crate::verify_cmds::{Ctx, Dim, Outcome};
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::{
     BendDirection, CornerClose, CornerKind, CornerRelief, Document, Expr, FeatureId, FeatureKind,
-    Flange, FlangeFrom, FlangeOn, FlangeSide, Geometry, MAX_SHEET_FLANGES, Pick, ReliefShape,
-    SheetCorner, SheetMetal,
+    Flange, FlangeFrom, FlangeOn, FlangeSide, Geometry, MAX_FLANGE_ID, MAX_SHEET_FLANGES, Pick,
+    ReliefShape, SheetCorner, SheetMetal,
 };
 use craft3d_kernel::profile::{Segment, Shape};
 use craft3d_kernel::sheetmetal::{
@@ -156,13 +156,13 @@ fn flange_value(
         None | Some(Value::Null) => 0,
         Some(v) => v
             .as_u64()
-            // Below u32::MAX: the part's next id must lie above every id.
-            .filter(|&n| n > 0 && n < u64::from(u32::MAX))
+            // At most MAX_FLANGE_ID: a flange's faces are numbered by it
+            // below 2³², and the part's next id lies above every id.
+            .filter(|&n| n > 0 && n <= u64::from(MAX_FLANGE_ID))
             .and_then(|n| u32::try_from(n).ok())
             .ok_or_else(|| {
                 CommandError::new(format!(
-                    "{id}: flanges.{index}.id is a flange's id (a whole number from 1 to {}, as sheetMetal.bends lists them)",
-                    u32::MAX - 1
+                    "{id}: flanges.{index}.id is a flange's id (a whole number from 1 to {MAX_FLANGE_ID}, as sheetMetal.bends lists them)"
                 ))
             })?,
     };
@@ -662,6 +662,11 @@ fn flanges_with_ids(
             Some(o) => o.id,
             None => {
                 let n = next;
+                if n > MAX_FLANGE_ID {
+                    return fail(format!(
+                        "{id}: the part has used up its flange ids (the highest is {MAX_FLANGE_ID})"
+                    ));
+                }
                 next = next.checked_add(1).ok_or_else(|| {
                     CommandError::new(format!("{id}: the part has used up its flange ids"))
                 })?;

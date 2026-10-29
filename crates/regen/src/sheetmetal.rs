@@ -4,8 +4,8 @@
 //! (`craft3d_kernel::sheetmetal`, docs/design/sheetmetal.md).
 //!
 //! **Names.** The folded bottom skin's faces are `F9:face(0)` (the base),
-//! `F9:face(2i + 1)` (the bend of flange `i`) and `F9:face(2i + 2)` (flange
-//! `i`'s flat); the part's faces are a plate's of that skin: the top skin
+//! `F9:face(2n − 1)` (the bend of the flange of id `n`) and `F9:face(2n)`
+//! (its flat), by the flanges' ids, not their places; the part's faces are a plate's of that skin: the top skin
 //! of a face `F9:copy(0)/F9:face(k)`, the bottom skin `F9:copy(1)/…`, the
 //! rim along an edge `F9:rim(h)/F9:face(k)` (`regen::plate`), its edge
 //! named by what it is (`sheetmetal::edge_numbers`), so a flange added
@@ -40,17 +40,20 @@ pub struct SheetMetalPart {
 }
 
 /// The name of a face of the folded bottom skin: the base `F9:face(0)`,
-/// bend `i` `F9:face(2i + 1)`, flange `i`'s flat `F9:face(2i + 2)`; the
+/// the bend of the flange of id `n` `F9:face(2n − 1)`, its flat
+/// `F9:face(2n)` (with the ids a part is made with, `n` is the flange's
+/// place plus 1: `face(2i + 1)` and `face(2i + 2)` for flange `i`); the
 /// further face `j` (1, 2, ...) a hole across a bend leaves of one of
 /// those has that face's number in its low 32 bits and `j` above
-/// (`F9:face(k + j * 2^32)`), so adding a flange or a cut elsewhere does
-/// not renumber it.
-pub fn sheet_face_name(feature: FeatureId, face: SheetFace) -> PersistentName {
+/// (`F9:face(k + j * 2^32)`), so adding, deleting or moving a flange or a
+/// cut elsewhere does not renumber it (ids stay below 2³¹, so `k` below
+/// 2³²).
+pub fn sheet_face_name(feature: FeatureId, part: &Part, face: SheetFace) -> PersistentName {
     let number = match face {
-        SheetFace::Flat(i) => 2 * i as u64,
-        SheetFace::Bend(i) => 2 * i as u64 + 1,
-        SheetFace::FlatPiece(i, j) => 2 * i as u64 + ((j as u64) << 32),
-        SheetFace::BendPiece(i, j) => 2 * i as u64 + 1 + ((j as u64) << 32),
+        SheetFace::Flat(f) => 2 * part.flat_number(f),
+        SheetFace::Bend(i) => 2 * part.flange_number(i) + 1,
+        SheetFace::FlatPiece(f, j) => 2 * part.flat_number(f) + ((j as u64) << 32),
+        SheetFace::BendPiece(i, j) => 2 * part.flange_number(i) + 1 + ((j as u64) << 32),
     };
     PersistentName::new(feature, NameRole::Face, vec![number])
 }
@@ -468,7 +471,7 @@ pub(crate) fn build(
     let (part, tolerance) = (&built.part, built.tolerance);
     let mut sheet_names = Names::default();
     for face in &part.sheet_faces {
-        sheet_names.faces.push(sheet_face_name(id, *face));
+        sheet_names.faces.push(sheet_face_name(id, part, *face));
     }
     let none = vec![None; part.sheet.edges.len()];
     let no_vertices = vec![None; part.sheet.vertices.len()];

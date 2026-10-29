@@ -428,12 +428,168 @@ fn split_edge_names_follow_their_flanges_not_their_places_in_the_list() {
     }
 }
 
+/// Per face of the panel, by its name, its edges' end points.
+fn face_edges(s: &mut Session) -> std::collections::BTreeMap<String, Vec<[f64; 6]>> {
+    let edges = run(s, "document.edges", json!({"feature": "Panel"}));
+    let mut out: std::collections::BTreeMap<String, Vec<[f64; 6]>> = Default::default();
+    for e in edges["edges"].as_array().unwrap() {
+        let p = |end: &str, i: usize| e[end][i].as_f64().unwrap();
+        let seg = [
+            p("start", 0),
+            p("start", 1),
+            p("start", 2),
+            p("end", 0),
+            p("end", 1),
+            p("end", 2),
+        ];
+        for f in e["faces"].as_array().unwrap() {
+            out.entry(f.as_str().unwrap().to_string())
+                .or_default()
+                .push(seg);
+        }
+    }
+    out
+}
+
+/// Every face name in both lies where it lay: it keeps at least one of
+/// its edges exactly (a name given to another face, elsewhere on the
+/// part, keeps none). How many names are lost.
+fn kept_in_place(
+    before: &std::collections::BTreeMap<String, Vec<[f64; 6]>>,
+    after: &std::collections::BTreeMap<String, Vec<[f64; 6]>>,
+    k: f64,
+    what: &str,
+) -> usize {
+    let same = |a: &[f64; 6], b: &[f64; 6]| {
+        let off = |x: &[f64], y: &[f64]| {
+            x.iter()
+                .zip(y)
+                .map(|(p, q)| (p - q).abs())
+                .fold(0.0, f64::max)
+        };
+        off(a, b) <= 1e-6 * k || off(&a[..3], &b[3..]).max(off(&a[3..], &b[..3])) <= 1e-6 * k
+    };
+    let mut lost = 0;
+    for (name, edges) in before {
+        let Some(now) = after.get(name) else {
+            lost += 1;
+            continue;
+        };
+        assert!(
+            edges.iter().any(|a| now.iter().any(|b| same(a, b))),
+            "{what} at scale {k}: {name} now names another face ({edges:?} before, {now:?} after)"
+        );
+    }
+    lost
+}
+
+/// Rule 4 for every kind of name of a part (review 2026-10-29: a
+/// flange's faces `face(2i + 1)`, `face(2i + 2)`, its tangent lines and
+/// arcs, its rectangle's sides and tip, its outline's curves and holes,
+/// and a relief's edges were numbered by the flanges' places in the list,
+/// so deleting or inserting an earlier flange gave their names to other
+/// flanges): a panel with a tab on the top edge first in the list, then a
+/// wall on the bottom edge and one on the right (a relieved corner), a
+/// flange on the right wall's tip, one on the bottom wall's start side,
+/// the arch (an outline of its own with a hole) and a louver on the
+/// hole's edge. Deleting the tab, or putting a new tab in front of the
+/// list (each flange sent with its id, the tip and side by their new
+/// places), leaves every name that is still there on the face it named;
+/// the names lost are only those of the tab and of the top edge's pieces
+/// it splits.
+#[test]
+fn every_name_stays_in_place_when_an_earlier_flange_is_deleted_or_inserted() {
+    for k in SCALES {
+        let dir = workdir("sheetmetal-flanges", &format!("rule4-{k}"));
+        let mut s = session_in(&dir);
+        new_document(&mut s, k);
+        let (base, hole) = sketches(&mut s, k);
+        let tab = |from: f64, to: f64| {
+            json!({"edge": base[2], "length": mm(8.0 * k), "angle": "90 deg",
+                   "insetStart": mm((60.0 - from) * k), "insetEnd": mm(to * k)})
+        };
+        let rest = |tip: usize, side: usize| {
+            vec![
+                json!({"edge": base[0], "length": mm(10.0 * k), "angle": "90 deg"}),
+                json!({"edge": base[1], "length": mm(10.0 * k), "angle": "90 deg"}),
+                json!({"tip": tip, "length": mm(4.0 * k), "angle": "90 deg", "direction": "down"}),
+                json!({"side": {"flange": side, "end": "start"}, "length": mm(6.0 * k),
+                       "angle": "90 deg"}),
+                json!({"edge": base[2], "outline": "Arch", "angle": "90 deg"}),
+                json!({"edge": hole[0], "length": mm(8.0 * k), "angle": "90 deg",
+                       "direction": "down", "insetStart": mm(2.0 * k), "insetEnd": mm(2.0 * k)}),
+            ]
+        };
+        let with_ids = |list: Vec<Value>, ids: &[u64]| -> Vec<Value> {
+            list.into_iter()
+                .zip(ids)
+                .map(|(mut f, id)| {
+                    f["id"] = json!(id);
+                    f
+                })
+                .collect()
+        };
+        let mut all = vec![tab(55.0, 45.0)];
+        all.extend(rest(2, 1));
+        built(
+            &mut s,
+            "feature.sheetMetal",
+            json!({"sketch": "Base", "name": "Panel", "thickness": mm(k), "radius": mm(k),
+                   "kFactor": 0.5, "relief": {"shape": "rect", "size": mm(2.0 * k)},
+                   "flanges": all.clone()}),
+        );
+        let first = face_edges(&mut s);
+        assert!(first.len() > 40, "scale {k}: {} faces", first.len());
+
+        // The tab deleted.
+        run(
+            &mut s,
+            "sheetMetal.edit",
+            json!({"feature": "Panel", "flanges": with_ids(rest(1, 0), &[2, 3, 4, 5, 6, 7])}),
+        );
+        let deleted = face_edges(&mut s);
+        let lost = kept_in_place(&first, &deleted, k, "the tab deleted");
+        assert!(lost > 0 && lost <= 16, "scale {k}: {lost} names lost");
+
+        // Back as it was (the tab a new flange, id 8), then a tab put in
+        // front of the list.
+        let mut again = vec![tab(55.0, 45.0)];
+        again.extend(with_ids(rest(2, 1), &[2, 3, 4, 5, 6, 7]));
+        run(
+            &mut s,
+            "sheetMetal.edit",
+            json!({"feature": "Panel", "flanges": again.clone()}),
+        );
+        let back = face_edges(&mut s);
+        kept_in_place(&deleted, &back, k, "the tab added again");
+        let mut front = vec![tab(12.0, 8.0)];
+        front.extend(with_ids(again[..1].to_vec(), &[8]));
+        front.extend(with_ids(rest(3, 2), &[2, 3, 4, 5, 6, 7]));
+        run(
+            &mut s,
+            "sheetMetal.edit",
+            json!({"feature": "Panel", "flanges": front}),
+        );
+        let inserted = face_edges(&mut s);
+        let lost = kept_in_place(&back, &inserted, k, "a tab put in front");
+        assert!(lost <= 6, "scale {k}: {lost} names lost");
+        let ids: Vec<Value> = run(&mut s, "sheetMetal.bends", json!({"feature": "Panel"}))["bends"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b["id"].clone())
+            .collect();
+        assert_eq!(ids, [9, 8, 2, 3, 4, 5, 6, 7].map(|n| json!(n)), "scale {k}");
+    }
+}
+
 /// The highest ids (review 2026-10-29: an id of 2³² − 1 was taken, the
 /// part's next id could not lie above it, and from then on every save
-/// and autosave failed): 2³² − 1 is refused when the part is made and on
-/// an edit, 2³² − 2 is taken and the document saves and opens, and a new
-/// flange past it is refused (the ids are used up) rather than given an
-/// id saving would refuse.
+/// and autosave failed): ids from 2³¹ on (a flange's faces are numbered
+/// `2 · id − 1` and `2 · id`, below 2³²) up to 2³² − 1 are refused when
+/// the part is made and on an edit, 2³¹ − 1 is taken and the document
+/// saves and opens, and a new flange past it is refused (the ids are used
+/// up) rather than given an id saving would refuse.
 #[test]
 fn the_highest_flange_ids_never_make_a_document_that_cannot_be_saved() {
     let k = 1.0;
@@ -457,36 +613,46 @@ fn the_highest_flange_ids_never_make_a_document_that_cannot_be_saved() {
         }
         f
     };
-    let max = u64::from(u32::MAX);
-    let got = error(
-        &mut s,
-        "feature.sheetMetal",
-        json!({"sketch": "Base", "name": "Panel", "thickness": "1 mm", "radius": "1 mm",
-               "flanges": [wall(0, Some(max))]}),
-    );
-    assert!(got.contains("flanges.0.id"), "{got}");
-    panel(&mut s, k, vec![wall(0, Some(max - 1))]);
+    let max = (1u64 << 31) - 1;
+    for too_high in [max + 1, u64::from(u32::MAX) - 1, u64::from(u32::MAX)] {
+        let got = error(
+            &mut s,
+            "feature.sheetMetal",
+            json!({"sketch": "Base", "name": "Panel", "thickness": "1 mm", "radius": "1 mm",
+                   "flanges": [wall(0, Some(too_high))]}),
+        );
+        assert!(got.contains("flanges.0.id"), "{too_high}: {got}");
+    }
+    panel(&mut s, k, vec![wall(0, Some(max))]);
     let bends = run(&mut s, "sheetMetal.bends", json!({"feature": "Panel"}));
-    assert_eq!(bends["bends"][0]["id"], max - 1, "{bends}");
+    assert_eq!(bends["bends"][0]["id"], max, "{bends}");
+    // Its faces are numbered by it, below 2³².
+    let faces = names(&mut s);
+    assert!(
+        faces
+            .iter()
+            .any(|n| n.contains(&format!("face({})", 2 * max))),
+        "{faces:?}"
+    );
     run(&mut s, "file.save", json!({"path": "highest.3dcraft"}));
-    // A new flange would need the id 2³² − 1.
+    // A new flange would need the id 2³¹.
     let got = error(
         &mut s,
         "sheetMetal.edit",
-        json!({"feature": "Panel", "flanges": [wall(0, Some(max - 1)), wall(1, None)]}),
+        json!({"feature": "Panel", "flanges": [wall(0, Some(max)), wall(1, None)]}),
     );
     assert!(got.contains("used up"), "{got}");
     let got = error(
         &mut s,
         "sheetMetal.edit",
-        json!({"feature": "Panel", "flanges": [wall(0, Some(max))]}),
+        json!({"feature": "Panel", "flanges": [wall(0, Some(u64::from(u32::MAX)))]}),
     );
     assert!(got.contains("flanges.0.id"), "{got}");
     run(&mut s, "file.save", json!({"path": "highest.3dcraft"}));
     let mut u = session_in(&dir);
     run(&mut u, "file.open", json!({"path": "highest.3dcraft"}));
     let bends = run(&mut u, "sheetMetal.bends", json!({"feature": "Panel"}));
-    assert_eq!(bends["bends"][0]["id"], max - 1, "{bends}");
+    assert_eq!(bends["bends"][0]["id"], max, "{bends}");
 }
 
 #[test]

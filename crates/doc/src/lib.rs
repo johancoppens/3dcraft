@@ -49,7 +49,7 @@ pub use public::{
 pub use sets::{MAX_SET_QUERY_BYTES, MAX_SETS, NamedSet};
 pub use sheetmetal::{
     BendDirection, CornerClose, CornerKind, CornerRelief, Flange, FlangeFrom, FlangeOn, FlangeSide,
-    MAX_SHEET_FLANGES, Pick, ReliefShape, SheetCorner, SheetMetal,
+    MAX_FLANGE_ID, MAX_SHEET_FLANGES, Pick, ReliefShape, SheetCorner, SheetMetal,
 };
 pub use table::{MAX_TABLES, Table, TableCell, TableColumn};
 

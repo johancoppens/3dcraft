@@ -815,12 +815,13 @@ fn v47_to_v48(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 
-/// Version 49 (TEMPORARY number) adds to a `sheetMetal` flange `side` (on
-/// a side of an earlier flange), `inset_start` and `inset_end` (a bend
-/// narrower than its edge) and `outline` (the sketch of the flange's own
-/// flat) (docs/design/sheetmetal.md › *Inset flanges*). A file of an
-/// older version has none, which reads as before (on its edge or tip, the
-/// whole edge, the rectangle).
+/// Version 49 adds to a `sheetMetal` flange `side` (on a side of an
+/// earlier flange), `inset_start` and `inset_end` (a bend narrower than
+/// its edge), `outline` (the sketch of the flange's own flat) and `id`
+/// (with the part's `next_flange_id`) (docs/design/sheetmetal.md ›
+/// *Inset flanges*, *Names*). A file of an older version has none, which
+/// reads as before (on its edge or tip, the whole edge, the rectangle,
+/// each flange's id its place in the list plus 1).
 ///
 /// It also **changes the names of a sheet-metal part's edges and rims**:
 /// they are named by what the edge is (a piece of a base curve, a side of
@@ -832,7 +833,15 @@ fn v47_to_v48(manifest: Value) -> Result<Value, String> {
 /// on a face; [`sheet_metal_edge_names`]) is reported as a load warning
 /// by `from_manifest_json_noted`, naming it, so it can be picked again;
 /// left as it is, it names nothing (the feature fails with the name it
-/// lost, a colour colours nothing). The part's faces keep their names.
+/// lost, a colour colours nothing).
+///
+/// Every other name of the part is numbered by the flanges' ids since 49
+/// (a flange's faces `face(2 · id − 1)` and `face(2 · id)`, a bend by `id −
+/// 1`, a flat by its flange's id), no longer by their places in the list,
+/// so deleting or inserting a flange retargets none. In an older file
+/// every id is the flange's place plus 1, so those numbers are the places
+/// they were: the part's faces, and every other name that is not an edge
+/// or a rim, name what they named, with no warning.
 fn v48_to_v49(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }

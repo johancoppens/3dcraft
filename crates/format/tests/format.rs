@@ -4998,7 +4998,7 @@ fn a_sheet_metal_part_is_written_like_this_and_round_trips() {
 }
 
 /// A flange's insets, its outline of its own and a flange on a side
-/// (format 49, TEMPORARY number) are written only when set, like this, and
+/// (format 49) are written only when set, like this, and
 /// load back the same; a side's end is start or end, nothing else.
 #[test]
 fn sheet_metal_insets_sides_and_outlines_are_written_like_this_and_round_trip() {
@@ -5075,7 +5075,7 @@ fn sheet_metal_insets_sides_and_outlines_are_written_like_this_and_round_trip() 
     assert!(from_manifest_json(odd.as_bytes()).is_err());
 }
 
-/// A file older than 49 (TEMPORARY number) that refers to a sheet-metal
+/// A file older than 49 that refers to a sheet-metal
 /// part's rim or edge (a fillet on an edge beside a rim, a colour on a
 /// rim) loads with a warning per name that says the names changed and
 /// names it; references to the part's skins, and the same file at the

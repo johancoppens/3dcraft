@@ -297,10 +297,22 @@ pub struct SheetMetal {
     pub next_flange_id: u32,
 }
 
+/// The highest id a flange may have: its faces are named `face(2 · id −
+/// 1)` and `face(2 · id)`, which stay below 2³² (docs/design/sheetmetal.md
+/// › *Names*).
+pub const MAX_FLANGE_ID: u32 = (1 << 31) - 1;
+
 impl SheetMetal {
-    /// Why the flanges' ids are not sound, if they are not: one is 0,
-    /// two are alike, or one is not below `next_flange_id`.
+    /// Why the flanges' ids are not sound, if they are not: one is 0 or
+    /// above [`MAX_FLANGE_ID`], two are alike, one is not below
+    /// `next_flange_id`, or that is past the highest id plus 1.
     pub fn flange_ids_fault(&self) -> Option<String> {
+        if self.next_flange_id > MAX_FLANGE_ID + 1 {
+            return Some(format!(
+                "the next flange id {} is past the highest, {MAX_FLANGE_ID}, plus 1",
+                self.next_flange_id
+            ));
+        }
         let mut seen = std::collections::BTreeSet::new();
         for (i, f) in self.flanges.iter().enumerate() {
             if f.id == 0 {

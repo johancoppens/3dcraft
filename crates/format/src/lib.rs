@@ -78,7 +78,7 @@ const FORMAT_VERSION_OF_CONDITION_FUNCTIONS: u32 = 31;
 const FORMAT_VERSION_OF_INVERSE_HYPERBOLIC_FUNCTIONS: u32 = 37;
 
 /// The version that renamed a sheet-metal part's edges and rims
-/// (TEMPORARY number; `migrate::v48_to_v49`): a stored name of one in an
+/// (`migrate::v48_to_v49`): a stored name of one in an
 /// older file is reported on reading.
 const FORMAT_VERSION_OF_SHEET_METAL_EDGE_NAMES: u32 = 49;
 
