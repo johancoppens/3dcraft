@@ -13,6 +13,37 @@ use craft3d_kernel::loft::{Options, Section, loft};
 use craft3d_kernel::profile::open_chain;
 use craft3d_topo::Body;
 
+/// A loft with guides: the network surface of its sections (open chains)
+/// as u curves and its guides as v curves.
+fn guided(
+    doc: &Document,
+    variables: &craft3d_expr::Evaluation,
+    id: FeatureId,
+    feature: &Loft,
+    earlier: &[FeatureResult],
+) -> Result<(Body, Names), String> {
+    if feature.ruled || feature.closed {
+        return Err(
+            "guides: a loft with guides is smooth and open (no ruled, no closed)".to_string(),
+        );
+    }
+    let network = craft3d_doc::SurfaceNetwork {
+        u: feature
+            .sections
+            .iter()
+            .map(|s| craft3d_doc::Rail::Sketch(s.sketch))
+            .collect(),
+        v: feature.guides.clone(),
+        edges: craft3d_doc::NetworkEdges::default(),
+    };
+    let (body, names, _) =
+        crate::network::build(doc, variables, id, &network, earlier).map_err(|e| {
+            e.replace("u: curve", "sections: section")
+                .replace("v: curve", "guides: guide")
+        })?;
+    Ok((body, names))
+}
+
 /// The persistent name of a face a loft made: `F9:side(e3,e7)` after the
 /// matched curves of the sections it passes through, `F9:startCap(…)` and
 /// `F9:endCap(…)` after the curves of the first and the last section.
@@ -28,10 +59,14 @@ fn name_of(feature: FeatureId, origin: &Origin) -> PersistentName {
 
 pub(crate) fn build(
     doc: &Document,
+    variables: &craft3d_expr::Evaluation,
     id: FeatureId,
     feature: &Loft,
     earlier: &[FeatureResult],
 ) -> Result<(Body, Names), String> {
+    if !feature.guides.is_empty() {
+        return guided(doc, variables, id, feature, earlier);
+    }
     let count = feature.sections.len();
     let least = if feature.closed { 3 } else { 2 };
     if count < least || count > MAX_LOFT_SECTIONS {

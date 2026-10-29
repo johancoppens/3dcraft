@@ -433,6 +433,12 @@ pub struct Loft {
     /// The last section joins the first: a ring without ends.
     #[serde(default)]
     pub closed: bool,
+    /// Guide curves the sheet follows across the sections (open sections
+    /// only): the loft is then the network surface of the sections as u
+    /// curves and the guides as v curves, the first and last guide its
+    /// edges (docs/design/surfacing.md).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub guides: Vec<Rail>,
 }
 
 /// How an offset outline goes round a corner where the offset curves of
@@ -1482,7 +1488,15 @@ impl FeatureKind {
                 RevolveAxis::Datum { axis } => vec![r.sketch, axis],
                 RevolveAxis::X | RevolveAxis::Y | RevolveAxis::Line { .. } => vec![r.sketch],
             },
-            FeatureKind::Loft(l) => l.sections.iter().map(|s| s.sketch).collect(),
+            FeatureKind::Loft(l) => {
+                let mut out: Vec<FeatureId> = l.sections.iter().map(|s| s.sketch).collect();
+                for id in l.guides.iter().flat_map(Rail::inputs) {
+                    if !out.contains(&id) {
+                        out.push(id);
+                    }
+                }
+                out
+            }
             FeatureKind::Sweep(s) => vec![s.sketch, s.path],
             FeatureKind::OffsetProfile(o) => vec![o.sketch],
             FeatureKind::Fill(f) => vec![f.sketch],

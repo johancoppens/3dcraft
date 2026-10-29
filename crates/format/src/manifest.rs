@@ -654,6 +654,10 @@ pub enum FeatureKind {
         /// The last section joins the first. Written only when set.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         closed: bool,
+        /// Guide curves, as a developable's rails (format version 54, a
+        /// TEMPORARY number). Written only when there are any.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        guides: Vec<Rail>,
     },
     /// A solid the one closed profile of sketch `sketch` sweeps along the
     /// curves of sketch `path` (format version 10), or along the datum

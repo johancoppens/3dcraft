@@ -2648,6 +2648,7 @@ fn a_loft_is_written_like_this_and_round_trips() {
             sections: vec![section(7, None), section(9, Some(3)), section(8, None)],
             ruled: false,
             closed: false,
+            guides: Vec::new(),
         }),
     )
     .unwrap();
@@ -2657,6 +2658,7 @@ fn a_loft_is_written_like_this_and_round_trips() {
             sections: vec![section(7, None), section(9, None), section(8, None)],
             ruled: true,
             closed: true,
+            guides: Vec::new(),
         }),
     )
     .unwrap();
@@ -2691,6 +2693,7 @@ fn a_loft_is_written_like_this_and_round_trips() {
             sections: vec![section(1, None); MAX_LOFT_SECTIONS + 1],
             ruled: false,
             closed: false,
+            guides: Vec::new(),
         }),
     )
     .unwrap();

@@ -19,7 +19,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
 ];
 
 /// A list of network curves.
-fn curves_value(
+pub(crate) fn curves_value(
     doc: &Document,
     p: &Params,
     command: &'static str,

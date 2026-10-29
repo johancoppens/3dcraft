@@ -1738,7 +1738,7 @@ fn build_feature(
             Err(reason) => (Status::Failed(reason), None),
         }
     } else if let FeatureKind::Loft(lofted) = &feature.kind {
-        match loft::build(doc, feature.id, lofted, earlier)
+        match loft::build(doc, variables, feature.id, lofted, earlier)
             .and_then(|(body, names)| checked(doc, body).map(|body| (body, names)))
         {
             Ok((body, made_names)) => {

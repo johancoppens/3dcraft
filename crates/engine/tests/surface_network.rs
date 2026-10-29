@@ -248,3 +248,34 @@ fn bad_network_parameters_are_errors() {
         json!({"curves": ["Low", "High", 3]}),
     );
 }
+
+#[test]
+fn a_loft_of_two_arcs_along_two_guides_is_the_quarter_cylinder() {
+    for k in SCALES {
+        let mut s = session_in(&workdir("surface-network", &format!("guided-{k}")));
+        new_document(&mut s, k);
+        let (r, h) = (20.0 * k, 30.0 * k);
+        quarter(&mut s, "Low", 0.0, r);
+        quarter(&mut s, "High", h, r);
+        line(&mut s, "Left", "zx", 0.0, [0.0, r], [h, r]);
+        line(&mut s, "Right", "yz", 0.0, [r, 0.0], [r, h]);
+        built(
+            &mut s,
+            "feature.loft",
+            json!({"sections": ["Low", "High"], "guides": ["Left", "Right"], "name": "Wall"}),
+        );
+        let sheet = body(&mut s, "Wall");
+        assert_eq!(sheet["kind"], "sheet", "{sheet}");
+        near(
+            number(&sheet["area"]),
+            FRAC_PI_2 * r * h,
+            1e-6,
+            "the wall's area",
+        );
+        error(
+            &mut s,
+            "feature.loft",
+            json!({"sections": ["Low", "High"], "guides": ["Left", "Right"], "ruled": true}),
+        );
+    }
+}

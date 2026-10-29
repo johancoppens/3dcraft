@@ -960,7 +960,9 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 sections,
                 ruled,
                 closed,
+                guides,
             }) => manifest::FeatureKind::Loft {
+                guides: guides.iter().map(rail_to_manifest).collect(),
                 sections: sections
                     .iter()
                     .map(
@@ -2674,7 +2676,9 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
                 sections,
                 ruled,
                 closed,
+                guides,
             } => doc::FeatureKind::Loft(doc::Loft {
+                guides: guides.into_iter().map(rail_to_doc).collect(),
                 sections: sections
                     .into_iter()
                     .map(|manifest::LoftSection { sketch, start }| doc::LoftSection {
