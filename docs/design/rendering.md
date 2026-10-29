@@ -12,6 +12,12 @@ Pictures: the CPU reference renderer (`craft3d-render`, the display oracle), the
 
 **The viewport.** The window draws on the GPU through `ui_egui::direct::Direct` on its own device, only when something the frame depends on changed; edges, sketches, axes and datums are lines drawn over it and tested against its depth. Where that cannot run, the shell falls back to the GPU on a device of its own read back, or to the CPU renderer (`--renderer cpu`), and says why. `ui.screenshot` always renders on the CPU: it is the oracle. The model's truth is the B-rep, not the picture: geometry is tested geometrically ([`../testing.md`](../testing.md)).
 
+**The studio look** (2026-10-29, layer 1 of `plan/rendering.md`; `craft3d_render::studio`, on the GPU
+`studio.rs` and `studio.wgsl`). A second look beside the plain one, view state only: image-based lighting
+from an environment, soft shadows from its key light, ambient occlusion, a ground that catches the
+shadow, a tone curve; see *The studio look* under the findings for the method, the sources and the
+tolerance. The plain look is untouched, bit for bit.
+
 ## Findings and history
 
 > Moved verbatim from `docs/architecture.md` on 2026-10-15. Section numbers (§4.1, §5.3, …) in the text are those of that file before the split; [README.md](README.md) says where each one is now.
@@ -104,3 +110,118 @@ The browser build (`apps/craft3d-web`) draws the viewport with the same `Onscree
 - **See-through and the section on WebGL2 (2026-10-26; `crates/gpu/src/peel.rs` › `sampled_front`, `peel_bind`; `renderer.rs` › `scene_source_for`, the markers `{{FRONT_SAMPLER}}` and `{{FRONT_DEPTH}}` of `peel.wgsl` and `cut_flat.wgsl`; `cut.rs` › `cap_layout`, `cap_bind`; `crates/gpu/tests/webgl2.rs`).** The developer's report: in the web build the See-through slider made every frame a CPU frame, slow on the page's one thread, because most Linux browsers have WebGPU off and run WebGL2. *What the web build drew on WebGL2 before:* the opaque picture and every line over it on the GPU (the shaders of the overlay take GLSL ES 3.00 since the depth test's array of arrays went on 2026-10-22, and the distance pass samples the depth buffer), see-through and cut-open frames on the CPU (`page.rs` called `without_gpu_see_through` and `without_gpu_section` on the GL backend). The pipelines themselves were built; what failed was the read: the pass behind the front (`fs_behind`, `fs_behind_cut`, `fs_cap_behind`) took the front's depth with `textureLoad`, which WebGL2 answers with 0 for a depth texture whose filter is linear, so nothing was ever behind the front. *The fix*, on the OpenGL backend only (the one whose fragments write their depth, `fragment_depth`, which always has one sample per pixel): the front's depth is sampled through a nearest sampler (group 1, binding 2, beside the front at 0 and a section's count at 1) at the texel's centre, `(floor(clip.xy) + 0.5) / size`, which gives the texel itself, as the distance pass does; the layouts and bind groups of the pass behind and the cap behind carry the sampler there. Vulkan, Metal, DX12 and WebGPU keep the load: their shader sources, layouts and bind groups are what they were, so their pictures are unchanged bit for bit; the multisampled peel (keys, not depths) is untouched. The page no longer hands either picture to the CPU. *Verified* three ways. (1) naga, without an adapter (`renderer.rs` › `template_tests::what_opengl_runs_translates_to_glsl_es_300`, `onscreen.rs` › `the_overlay_shaders_validate_without_an_adapter`): every single-sampled composition in OpenGL's variant (scene, scene + peel, scene + peel + cut + cut_flat), the blend and the overlay's shaders at one sample are validated with no optional capability and translated to GLSL ES 3.00 with `is_webgl`, entry point by entry point, as wgpu does in a browser (the overlay was translated to ES 3.10 before); and in naga's IR the front's depth is never loaded and always sampled in OpenGL's variant, loaded and never sampled in every other, and the distance pass samples the depth buffer at one sample (`template_tests::reads_of`). This is the test that failed before the fix (the OpenGL variant loaded `front_depth`). (2) A real OpenGL ES 3.0 context (`tests/webgl2.rs`): the test runs itself again in a child with `WGPU_BACKEND=gl MESA_GL_VERSION_OVERRIDE=3.0 MESA_GLES_VERSION_OVERRIDE=3.0` (wgpu takes a desktop context when EGL offers one; with the desktop version capped below 3.3 it falls back to OpenGL ES, and Mesa then reports ES 3.0 and GLSL ES 3.00, so wgpu translates every shader to `#version 300 es`), asserts the adapter is `OpenGL ES 3.0` without compute shaders, requests the device with `Limits::downlevel_webgl2_defaults()` as egui-wgpu does in a browser, and compares the viewport's picture with the CPU oracle under §7.2's tolerances: the teapot and a block opaque, the teapot, the block and a hollow block see-through at 0.1, 0.5 and 0.9 (every other with faces highlighted, one orthographic), the hollow block cut open across z and obliquely, opaque and at 0.5, and the lines over an opaque and a see-through picture (hidden, dimmed, left out). *Measured* on the Strix Halo (Radeon 8060S, radeonsi, Mesa 26.2, `OpenGL ES 3.0 Mesa 26.2.0-devel`): in all 15 pictures not one pixel off by a level away from the edges and seams, no id outside the band, at most one id and one colour in the band (block at 0.5 highlighted; the hollow cut obliquely at 0.5), the lines exactly as on the other backends. Mesa does not apply ES 3.0's rule for depth textures, so the same test passed before the fix with the same numbers: on Mesa it pins the shading language, the limits and the sampled read's picture (identical to the load's), not the rule; (1) pins that. (3) A browser: the developer opened the CubeSat in his own Linux browser with `?webgl` (2026-10-26): see-through and a section are drawn on the GPU and turn smoothly. Not tried yet: Windows (Chrome and Edge run WebGL2 on ANGLE over Direct3D 11) and macOS Safari; the recipe for a headless check is that of 2026-10-22 (`development.md` › *Web build*, headless Chrome with `--use-angle=swiftshader` and `?webgl`). *What a failure costs in a browser:* `guarded` captures nothing on wasm (WebGPU's error scopes can only be awaited), so a pipeline the browser refuses is not an `Err` from `Onscreen` but an error on the device's `on_uncaptured_error`, which the page answers with `Shell::leave_gpu` (`apps/craft3d-web/src/page.rs`): the *whole* viewport goes to the CPU renderer from then on, not just that frame as on the desktop. The see-through pipelines are built in `Onscreen::new`, so a browser that refused them would leave the GPU at the first frame; the cut-open ones are built for the first picture with a section (`Onscreen::ensure_cut`), so a refusal there moves the viewport to the CPU when a section is first switched on. Building them eagerly would not turn the refusal into an `Err` either (the same uncaptured path), only move it to the start, so they stay lazy; accepted for R1. *Cost*: the sampled read is one texture fetch as the load was; the early depth test was already lost on this backend (fragment-written depth). *Review* (2026-10-26, the coordinator's): the sampler is `Onscreen`'s own nearest one, the one the distance pass uses (`depth_sampler`); the readback renderer keeps one with its see-through pipelines.
 
 Errors WebGPU reports later go to the page's `on_uncaptured_error` handler (wgpu's default panics, which ends a WebAssembly page); the page then drops the direct path for the CPU renderer (`Shell::leave_gpu`).
+
+---
+
+### The studio look (2026-10-29)
+
+Layer 1 of `plan/rendering.md` (the developer's decision of 2026-10-29). `craft3d_render::studio` is the
+definition; `craft3d_gpu` repeats it in `studio.wgsl` on the readback renderer (`Renderer::draw_studio`,
+`Offscreen::render_studio`) and on the viewport's (`Onscreen::set_studio`). View state only: `ui.set
+{"look": …}` (`ui_egui::state::LookState`), `view.render`'s `look` and `craft3d-cli render --look …`
+parse the same object (`craft3d_engine::look::LookSpec`); the plain look stays the default everywhere,
+so every picture, thumbnail and test of the plain look is unchanged bit for bit.
+
+**Sources** (clean-room: no code of Blender's Eevee or Cycles, which are GPL, was read or transliterated):
+
+- B. Karis, *Real Shading in Unreal Engine 4*, SIGGRAPH 2013 Physically Based Shading course: the split
+  sum, GGX importance sampling of the half vector, the prefiltered environment with `n = v = r`.
+- Google Filament, *Physically Based Rendering in Filament*: GGX `D`, the height-correlated Smith
+  visibility (after E. Heitz, *Understanding the Masking-Shadowing Function*, JCGT 2014), perceptual
+  roughness `α = r²`, the DFG table's layout.
+- C. J. Fdez-Agüera, *A Multiple-Scattering Microfacet Model for Real-Time Image-Based Lighting*, JCGT
+  2019: the energy compensation `1 + F0 (1 / (A + B) − 1)`.
+- M. Colbert and J. Křivánek, *GPU-Based Importance Sampling*, GPU Gems 3 ch. 20: filtered importance
+  sampling (each sample reads the source at the level matching its solid angle).
+- R. Ramamoorthi and P. Hanrahan, *An Efficient Representation for Irradiance Environment Maps*,
+  SIGGRAPH 2001: nine spherical harmonics, convolved with `π, 2π/3, π/4`.
+- S. Lagarde and C. de Rousiers, *Moving Frostbite to Physically Based Rendering*, SIGGRAPH 2014:
+  specular occlusion from ambient occlusion.
+- J. Jimenez, X. Wu, A. Pesce, A. Jarabo, *Practical Real-Time Strategies for Accurate Indirect
+  Occlusion*, SIGGRAPH 2016 course (GTAO): horizons per slice and the closed-form cosine-weighted arc.
+- L. Williams, *Casting Curved Shadows on Curved Surfaces*, 1978 (shadow maps); W. Reeves, D. Salesin,
+  R. Cook 1987 (percentage-closer filtering); R. Fernando, *Percentage-Closer Soft Shadows*, NVIDIA 2005.
+- T. Sobotka's AgX as described by B. Wrensch, *Minimal AgX Implementation* (2023: the inset and outset
+  matrices, the log2 range of 16.5 stops, the sixth-order fit); K. Narkowicz, *ACES Filmic Tone Mapping
+  Curve* (2016); IEC 61966-2-1 (sRGB).
+- G. Ward, *Real Pixels*, Graphics Gems II (1991), and the Radiance file-format notes: the `.hdr` reader.
+- The environments: three 1k HDRs from Poly Haven, CC0 (`assets/environments/LICENSE.md`,
+  `ATTRIBUTION.md`): `studio` (Studio Small 09), `outdoor` (Kloofendal 48d Partly Cloudy, Pure Sky),
+  `workshop` (Abandoned Workshop 02). 4.8 MB together; the desktop programs carry them in the binary
+  (`studio::bundled`), the web page fetches the one chosen from `environments/` beside it (`cargo xtask
+  package --formats web` copies them there; the WebAssembly module does not grow by them).
+
+**Method.** At load (`Prepared::new`, once per environment and process, cached):
+
+1. Level 0: the picture resampled to 512 × 256 (an average of K × K bilinear lookups per texel, K the
+   ratio of the widths) and scaled so that its mean luminance over the sphere is 1: every environment
+   lights a model alike and the exposure means the same for all.
+2. The key light: the brightest texel of the 64 × 32 level, then within 0.5 rad of it the excess of each
+   texel of level 0 over `max(4, peak / 4)` times the mean luminance. Its sum (times the solid angle) is
+   the key's irradiance, its luminance-weighted direction the key's direction, `√(Ω / π)` its angular
+   radius. An even environment has none and casts no shadow.
+3. The diffuse light: level 0 minus the key, projected on nine spherical harmonics, convolved with the
+   clamped cosine. The key is added back as a directional light with its shadow; together they are the
+   environment, so no light is counted twice.
+4. Levels 1 to 5 (256 × 128 down to 16 × 8) for roughness `i / 5`: 128 GGX samples per texel (Hammersley),
+   each reading a box-filtered chain of level 0 at its solid angle.
+5. The split-sum table, 32 × 32 (`n·v` across, roughness down, at texel centres), 512 samples per texel.
+
+Everything either renderer reads is stored as `f32`: both read the same numbers, with the same manual
+bilinear and trilinear lookups (`textureLoad`, never a sampler).
+
+Per sample (the CPU's `render_studio`; the GPU's passes in brackets):
+
+- the nearest surface by the plain renderer's rules (the same coverage, key and ties);
+- [shadow map] the key's view: a square over the sphere around the mesh, 1024², the depth from the light
+  as `f32` bits; the CPU rasterises it with the top-left rule;
+- [geometry, occlusion] GTAO over the samples' view distances and normals: six slices, six steps per
+  side, a radius of 0.12 of the sphere around the mesh (at most a quarter of the picture's height); a
+  sample counts only when it rises above the tangent plane by more than a sine of 0.05 (else a tilted
+  flat face, sampled at texel centres a little off the slice, darkens itself by 0.1 %); the sum is
+  divided by the same sum for empty slices (`cos γ + γ sin γ` per slice), so a flat open face is 1
+  exactly with any number of slices;
+- [background] where no surface is: the environment at roughness 0.45; where the ray meets the ground
+  (the plane at the bottom of the mesh's box, seen from above) it is darkened by
+  `(E + K l_z vis) / (E + K l_z)`, `E` the luminance of the diffuse light on an upward face, `K` the
+  key's, `vis` the shadow there: a shadow catcher, no geometry;
+- [bodies] the light (the formula in `studio/mod.rs`): with `F0 = 0.04 (1 − m) + base m` and `(A, B)` from
+  the table, specular = prefiltered(reflection, `r · 5`) `· (F0 A + B) ·` multiple scattering `·` specular
+  occlusion; diffuse = `base (1 − m)(1 − Fs) / π · (E_sh(n) · ao + E_key n·l vis)`. The key's shadow
+  (PCSS: a 4 × 4 blocker search over the widest penumbra, then a 5 × 5 filter as wide as the gap times
+  the key's angular size, 1 to 24 texels; normal offset 1.5 texels, bias 2) darkens only the key's
+  diffuse light: the specular light keeps the key in the prefiltered map (layer 2's contact shadows and
+  screen-space reflections will refine this).
+- exposure `2^EV`, the tone curve (AgX by default, ACES, or linear for the tests), the sRGB encoding,
+  rounded per sample, averaged per pixel as in the plain picture.
+
+A face without a roughness of its own is at 0.5, not metal; a highlighted face is its highlight colour at
+0.5. See-through and cut-open pictures stay in the plain look on both renderers (layer 2).
+
+**WebGL2.** The simpler path (`studio::simpler`): in the browser on WebGL2 the viewport draws the studio
+look without shadows and without occlusion (`Onscreen::studio_as_drawn` turns them off, so the CPU
+reference of that frame is the same look with them off); image-based lighting, the ground's background
+and the tone curve are the same. Every studio shader translates to GLSL ES 3.00 (`renderer.rs`,
+`template_tests`, *scene + studio*); the passes use integer targets only, which WebGL2 renders.
+
+**Tests.** `crates/render/tests/studio.rs`: the furnace (white dielectric and metal, roughness 0 to 1, at
+20 angles, within 0.98 to 1.02 of the incoming light; the picture of a white rough sphere at exposure −1
+within the bytes of 0.49 to 0.51 everywhere); a Lambertian surface under `1 + 0.5 z` against the closed
+form `π + π/3 n_z` (within 0.2 %); a mirror sphere under a smooth environment against the environment
+itself along the reflection (within 2 levels); the shadow of a ball lit from straight above is the disc of
+its radius on the ground; determinism; bad environments and numbers are errors. `brdf.rs`: the split sum
+against an independent midpoint quadrature over the hemisphere and against the closed form of a smooth
+surface (`A = 1 − (1 − n·v)⁵`, `B = (1 − n·v)⁵`); published tables were not at hand offline, so the
+reference points are these two independent methods. `ao.rs`: an open plane is 1, a groove's floor is
+occluded. `crates/gpu/tests/studio.rs`: the GPU against the CPU (below), the same input gives the same
+frame, the viewport's renderer against the CPU, the cost.
+
+**Tolerance, GPU against CPU** (`crates/gpu/tests/studio.rs`): face ids equal outside the band (as for
+the plain look); outside the band at most 1/64 of the covered pixels more than one level apart and none
+more than 48 levels. Why looser than the plain look's single level: the GPU draws its own shadow map, and
+a texel along a triangle's border in the light's view may be covered by one renderer and not the other
+(the band of the light's view is not the picture's); a PCF tap on such a texel moves the shadow of a pixel
+by one tap, 1/25 of the key's light; the occlusion reads neighbouring samples, so a sample that the two
+renderers cover differently (inside the picture's band) moves the occlusion of pixels around it that are
+outside the band. Both are counted, not bounded per pixel; the share and the largest difference are the
+measured ones with a margin (*Measured* below).

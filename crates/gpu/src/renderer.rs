@@ -2056,8 +2056,8 @@ pub(crate) mod template_tests {
     use super::scene_source_for;
     use wgpu::naga;
 
-    /// The five compositions the renderers make of `scene.wgsl`
-    /// (`Renderer`/`Onscreen`, `peel::scene_module` and `cut::module`,
+    /// The compositions the renderers make of `scene.wgsl`
+    /// (`Renderer`/`Onscreen`, the studio look, `peel::scene_module` and `cut::module`,
     /// each for one sample per pixel or for several), with whether they
     /// are the multisampled ones.
     fn compositions() -> Vec<(&'static str, bool, Vec<&'static str>)> {
@@ -2066,6 +2066,7 @@ pub(crate) mod template_tests {
         let cut = include_str!("cut.wgsl");
         vec![
             ("scene", false, vec![]),
+            ("scene + studio", false, vec![include_str!("studio.wgsl")]),
             ("scene + peel", false, vec![peel]),
             ("scene + peel_samples", true, vec![peel_samples]),
             (

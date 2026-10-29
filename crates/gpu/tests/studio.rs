@@ -10,9 +10,13 @@
 )]
 
 mod common;
+mod devices;
 
 use common::{band, offscreens, orthographic, params, perspective};
-use craft3d_gpu::{Camera, FaceColors, Frame, Mesh, NO_FACE, RenderParams, Studio};
+use craft3d_gpu::{
+    Camera, DrawOptions, EdgeLook, FaceColors, Frame, Mesh, NO_FACE, Onscreen, OverlayParams,
+    RenderParams, Studio,
+};
 use craft3d_math::Vec3;
 use craft3d_render::Finish;
 use craft3d_render::studio::{Look, Tonemap, bundled::environment, render_studio};
@@ -294,4 +298,71 @@ fn studio_frames_on_a_thousand_faces() {
     let frame = render_studio(&mesh, &colors, &camera, &p, &Look::default(), &env).unwrap();
     eprintln!("COST cpu: {:?} for the studio frame", started.elapsed());
     craft3d_testkit::evidence::print("studio-grid-cpu.png", &frame.to_png().unwrap());
+}
+
+/// The viewport's renderer (`Onscreen`, multisampled) in the studio look
+/// against the CPU renderer at one sample per pixel, under the same
+/// tolerance; the first scenes of [`scenes`] at `ssaa` 1.
+#[test]
+fn the_viewport_draws_the_studio_look_as_the_cpu_renderer() {
+    let env = environment("studio").unwrap();
+    for (adapter, device, queue) in devices::devices() {
+        let name = adapter.get_info().name;
+        let mut onscreen = Onscreen::new(&device, &queue, &adapter).unwrap();
+        let lines = onscreen.upload_lines(&[]).unwrap();
+        for scene in scenes().into_iter().take(6) {
+            let params = RenderParams {
+                ssaa: 1,
+                ..scene.params
+            };
+            let studio = onscreen.studio_as_drawn(&Studio {
+                env: env.clone(),
+                look: scene.look,
+            });
+            let cpu = render_studio(
+                &scene.mesh,
+                &scene.colors,
+                &scene.camera,
+                &params,
+                &studio.look,
+                &env,
+            )
+            .unwrap();
+            let uploaded = onscreen.upload_colored(&scene.mesh, &scene.colors).unwrap();
+            onscreen.set_studio(Some(studio));
+            onscreen
+                .draw(
+                    &uploaded,
+                    &lines,
+                    &scene.camera,
+                    &params,
+                    &OverlayParams {
+                        slack: 0.0,
+                        hidden_opacity: 70,
+                        axis_length: 1.0,
+                        edges: EdgeLook::default(),
+                    },
+                    DrawOptions {
+                        bodies: true,
+                        capture: true,
+                    },
+                )
+                .unwrap();
+            let gpu = onscreen.read_frame().unwrap();
+            let s = Scene { params, ..scene };
+            let stats = compare(&s, &cpu, &gpu);
+            eprintln!(
+                "onscreen {name} {}: {} samples, {stats:?}",
+                s.name,
+                onscreen.samples()
+            );
+            assert_eq!(stats.id_outside, 0, "{name} {}", s.name);
+            assert!(
+                stats.over_one as f64 <= SHARE_OVER_ONE * stats.covered.max(1) as f64,
+                "{name} {}: {stats:?}",
+                s.name
+            );
+            assert!(stats.most <= MOST_LEVELS, "{name} {}: {stats:?}", s.name);
+        }
+    }
 }

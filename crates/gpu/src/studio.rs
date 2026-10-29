@@ -632,3 +632,216 @@ impl StudioTargets {
         }
     }
 }
+
+/// The studio look of the viewport renderer (`Onscreen`): the shared
+/// parts, the geometry pass at one sample per pixel with its depth, and
+/// the background and the surfaces at the viewport's samples.
+pub(crate) struct StudioOnscreen {
+    pub gpu: StudioGpu,
+    geometry: wgpu::RenderPipeline,
+    pub background: wgpu::RenderPipeline,
+    pub main: wgpu::RenderPipeline,
+    sized: Option<(StudioTargets, wgpu::TextureView)>,
+}
+
+impl StudioOnscreen {
+    pub(crate) fn build(
+        device: &wgpu::Device,
+        scene_layout: &wgpu::BindGroupLayout,
+        samples: u32,
+        color_format: wgpu::TextureFormat,
+    ) -> StudioOnscreen {
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("craft3d studio"),
+            source: wgpu::ShaderSource::Wgsl(
+                crate::renderer::scene_source(device, &[include_str!("studio.wgsl")]).into(),
+            ),
+        });
+        let gpu = StudioGpu::new(device, &module, scene_layout);
+        let mesh_pipeline = |label: &str,
+                             entry: &str,
+                             groups: &[Option<&wgpu::BindGroupLayout>],
+                             target: wgpu::TextureFormat,
+                             count: u32| {
+            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some(label),
+                bind_group_layouts: groups,
+                immediate_size: 0,
+            });
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("vs_main"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: VERTEX_BYTES as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &MESH_ATTRIBUTES,
+                    })],
+                },
+                primitive: crate::renderer::scene_primitive(),
+                // Reversed depth, as the viewport's bodies.
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: crate::renderer::DEPTH_FORMAT,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Greater),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState {
+                    count,
+                    mask: !0,
+                    alpha_to_coverage_enabled: false,
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some(entry),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    targets: &[crate::renderer::target(target)],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let geometry = mesh_pipeline(
+            "craft3d geometry",
+            "fs_geometry",
+            &[Some(scene_layout)],
+            GEOMETRY_FORMAT,
+            1,
+        );
+        let main = mesh_pipeline(
+            "craft3d studio bodies",
+            "fs_studio_color",
+            &[Some(scene_layout), Some(&gpu.layout_main)],
+            color_format,
+            samples,
+        );
+        let background = fullscreen_pipeline(
+            device,
+            "craft3d background",
+            &module,
+            "fs_background",
+            &[Some(scene_layout), Some(&gpu.layout_main)],
+            color_format,
+            samples,
+        );
+        StudioOnscreen {
+            gpu,
+            geometry,
+            background,
+            main,
+            sized: None,
+        }
+    }
+
+    /// The targets of a picture of `size` pixels.
+    pub(crate) fn ensure_size(&mut self, device: &wgpu::Device, size: (u32, u32)) {
+        if self.sized.as_ref().is_some_and(|(t, _)| t.size == size) {
+            return;
+        }
+        self.sized = None;
+        let depth = view(&texture(
+            device,
+            "craft3d geometry depth",
+            crate::renderer::DEPTH_FORMAT,
+            size,
+            1,
+            wgpu::TextureUsages::RENDER_ATTACHMENT,
+        ));
+        self.sized = Some((StudioTargets::new(device, size), depth));
+    }
+
+    /// The passes before the bodies (the shadow map, the geometry and the
+    /// occlusion, as `passes` asks) and the background into `color`, then
+    /// group 1 of the bodies' pass.
+    pub(crate) fn encode_before(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        scene_bind: &wgpu::BindGroup,
+        mesh: &GpuMesh,
+        passes: &Passes,
+        color: &wgpu::TextureView,
+    ) -> Result<wgpu::BindGroup, GpuError> {
+        let (sized, depth) = self.sized.as_ref().ok_or(GpuError::NothingDrawn)?;
+        if passes.shadow {
+            self.gpu.encode_shadow(device, encoder, scene_bind, mesh);
+        }
+        if passes.ao {
+            let empty = wgpu::Color {
+                r: f64::from(f32::INFINITY.to_bits()),
+                g: 0.0,
+                b: 0.0,
+                a: 0.0,
+            };
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("craft3d geometry"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &sized.geometry,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(empty),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: depth,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(0.0),
+                            store: wgpu::StoreOp::Discard,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_pipeline(&self.geometry);
+                pass.set_bind_group(0, scene_bind, &[]);
+                for chunk in &mesh.chunks {
+                    pass.set_vertex_buffer(0, chunk.buffer.slice(..));
+                    pass.draw(0..chunk.vertices, 0..1);
+                }
+            }
+            self.gpu
+                .encode_ao(device, encoder, scene_bind, &sized.geometry, &sized.ao);
+        }
+        let bind = self.gpu.main_bind(device, passes, &sized.ao)?;
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("craft3d background"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: color,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.background);
+            pass.set_bind_group(0, scene_bind, &[]);
+            pass.set_bind_group(1, &bind, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        Ok(bind)
+    }
+}
+
+/// Whether the studio look on `device` takes the simpler path of WebGL2:
+/// no shadows and no occlusion (their passes render into integer targets
+/// and loop over many texels, which the browsers' WebGL2 on small GPUs
+/// does slowly or not at all). The rest is the same.
+pub(crate) fn simpler(device: &wgpu::Device) -> bool {
+    cfg!(target_arch = "wasm32") && device.adapter_info().backend == wgpu::Backend::Gl
+}

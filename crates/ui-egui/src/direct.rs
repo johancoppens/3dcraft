@@ -97,6 +97,8 @@ struct Shown {
     highlight: Highlight,
     marks: Marks,
     opacity: f64,
+    /// The studio look: its environment (by address) and options.
+    look: Option<(usize, craft3d_render::studio::Look)>,
 }
 
 pub struct Direct {
@@ -519,15 +521,6 @@ impl Direct {
         tokens: &Tokens,
         scale: f32,
     ) -> Result<Option<DirectFrame>, DirectFailure> {
-        // The studio look of an opaque, whole picture is drawn by the
-        // readback renderer (or the CPU's) for now: this frame the other
-        // way.
-        if self.studio.is_some() && self.opacity >= 1.0 && self.marks.section().is_none() {
-            self.shown = None;
-            return Err(DirectFailure::ThisFrame(
-                "the studio look is drawn by the readback renderer".to_string(),
-            ));
-        }
         let wanted = Shown {
             revision: scene.map(|s| s.revision),
             tolerance: scene.map(Scene::sampling),
@@ -539,6 +532,10 @@ impl Direct {
             highlight: self.highlight,
             marks: self.marks.clone(),
             opacity: self.opacity,
+            look: self
+                .studio
+                .as_ref()
+                .map(|s| (Arc::as_ptr(&s.env) as usize, s.look)),
         };
         if self.shown.as_ref() == Some(&wanted) && self.texture.is_some() {
             return Ok(None);
@@ -666,6 +663,7 @@ impl Direct {
             axis_length: wanted.camera.distance * AXIS_LENGTH,
             edges: edge_look(&wanted.tokens, wanted.scale),
         };
+        self.onscreen.set_studio(self.studio.clone());
         self.onscreen
             .draw(
                 &uploaded.mesh,

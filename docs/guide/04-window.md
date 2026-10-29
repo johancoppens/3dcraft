@@ -169,12 +169,37 @@ takes the marker away again. While you look back, clicks in the view do not sele
 The **display bar** at the bottom of the view:
 
 - **Sketches** and **Datums** show or hide sketches and construction planes, axes and points.
+- **Studio** lights the model as in a photo studio: reflections of a real environment, soft shadows, a
+  ground the model stands on and contact darkening in corners (see *The studio look* below).
 - **See-through** makes the bodies transparent (drag the percentage), to look at pockets and cavities.
 - **Section** cuts the view open with a plane across X, Y or Z; **Offset** moves it and **Flip side**
   keeps the other half.
 
 None of this changes the document. Each tab remembers its own camera, section and see-through. A heavy
 model first shows a quick picture, then the sharp one (the status bar says `refining`).
+
+### The studio look
+
+**Studio** in the display bar switches between the plain look, which every picture had so far and
+which is best for modelling, and the studio look, which shows what a part will look like: its colours,
+how metal and how rough its faces are (Appearance), lit by a photographed environment. Three come with
+3DCraft: `studio` (soft boxes, the default), `outdoor` (sky and sun) and `workshop`. The light falls
+from the environment's brightest direction and casts soft shadows on the model and on a ground under
+it; corners and grooves darken where little light reaches. A see-through or cut-open view is drawn in
+the plain look.
+
+An agent sets the same look with `ui.set`, and pictures from the command line take it too:
+
+```text
+ui.set {"look": {"mode": "studio", "environment": "outdoor", "exposure": 0.5, "rotation": 90}}
+craft3d-cli render part.3dcraft --out part.png --look studio --environment workshop
+```
+
+`exposure` makes the picture brighter in stops (negative darker), `rotation` turns the environment
+about the vertical axis, `ground`, `ao` and `shadows` switch the ground, the darkening in corners and
+the shadows off, and `tonemap` chooses how bright light is fitted into the picture (`agx`, the
+default, or `aces`). The look is a view: the document does not change. In the browser on older
+graphics (WebGL2) the studio look has no shadows and no darkening in corners.
 
 ## Pointing at things
 

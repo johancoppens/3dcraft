@@ -778,6 +778,11 @@ pub struct Onscreen {
     depth_read_source: String,
     #[cfg(not(target_arch = "wasm32"))]
     depth_read_pipeline: Option<wgpu::RenderPipeline>,
+    /// The look of the next draws (`Onscreen::set_studio`), and what draws
+    /// the studio look, or why this device does not; made for the first
+    /// studio picture.
+    look: Option<crate::Studio>,
+    studio: Option<Result<crate::studio::StudioOnscreen, String>>,
     /// Identifies this renderer in what it uploads.
     token: Arc<()>,
 }
@@ -1494,8 +1499,30 @@ impl Onscreen {
             depth_read_source: sources.depth_read,
             #[cfg(not(target_arch = "wasm32"))]
             depth_read_pipeline: None,
+            look: None,
+            studio: None,
             token: Arc::new(()),
         }
+    }
+
+    /// The look of the draws from now on: the studio look
+    /// (`craft3d_render::studio`) for an opaque, whole picture of the
+    /// bodies, or `None` for the plain one. In the browser on WebGL2 the
+    /// studio look has no shadows and no occlusion
+    /// (docs/design/rendering.md, *The studio look*, *WebGL2*).
+    pub fn set_studio(&mut self, look: Option<crate::Studio>) {
+        self.look = look;
+    }
+
+    /// The studio look this device draws for `look`: on WebGL2 without
+    /// shadows and occlusion.
+    pub fn studio_as_drawn(&self, look: &crate::Studio) -> crate::Studio {
+        let mut drawn = look.clone();
+        if crate::studio::simpler(&self.device) {
+            drawn.look.shadows = false;
+            drawn.look.ao = false;
+        }
+        drawn
     }
 
     /// Samples per pixel of the picture.
@@ -1668,7 +1695,42 @@ impl Onscreen {
         let scene = scene_uniforms(mesh, camera, params, cut.as_ref())?;
         self.depth_numbers = [scene[11], scene[20], scene[21]];
         let line_uniforms = lines_uniforms(lines, camera, params, overlay, self.samples)?;
+        // The studio look: for an opaque, whole picture of the bodies.
+        let lit = match &self.look {
+            Some(look) if options.bodies && !see_through && cut.is_none() => {
+                let drawn = self.studio_as_drawn(look);
+                let numbers =
+                    crate::studio::studio_uniforms(mesh, &drawn, (params.width, params.height))?;
+                Some((drawn, numbers))
+            }
+            _ => None,
+        };
+        if lit.is_some() && self.studio.is_none() {
+            let (device, layout, samples) = (self.device.clone(), &self.scene_layout, self.samples);
+            self.studio = Some(
+                guarded(&device, || {
+                    crate::studio::StudioOnscreen::build(&device, layout, samples, COLOR_FORMAT)
+                })
+                .map_err(|e| e.to_string()),
+            );
+        }
         let device = self.device.clone();
+        if let Some((drawn, _)) = &lit {
+            let queue = self.queue.clone();
+            match &mut self.studio {
+                Some(Ok(studio)) => guarded(&device, || {
+                    studio.ensure_size(&device, (params.width, params.height));
+                    studio.gpu.ensure_env(&device, &queue, &drawn.env)
+                })??,
+                Some(Err(why)) => {
+                    return Err(GpuError::Device(format!(
+                        "the studio look cannot be drawn on this device: {why}"
+                    )));
+                }
+                None => return Err(GpuError::NothingDrawn),
+            }
+        }
+        let studio_numbers = lit.map(|(_, numbers)| numbers);
         guarded(&device, || {
             self.ensure_targets(params, options.capture, overlay.edges.tile());
             if see_through {
@@ -1686,6 +1748,7 @@ impl Onscreen {
                 overlay,
                 options,
                 cut.as_ref(),
+                studio_numbers.as_ref(),
             )
         })??;
         self.drawn = true;
@@ -2350,10 +2413,20 @@ impl Onscreen {
         overlay: &OverlayParams,
         options: DrawOptions,
         cut: Option<&Cut>,
+        studio: Option<&([f32; crate::studio::STUDIO_FLOATS], crate::studio::Passes)>,
     ) -> Result<(), GpuError> {
         let targets = self.targets.as_ref().ok_or(GpuError::NothingDrawn)?;
         self.queue
             .write_buffer(&self.scene_uniforms, 0, &float_bytes(scene));
+        let lit = match (studio, &self.studio) {
+            (Some((numbers, passes)), Some(Ok(look))) => {
+                self.queue
+                    .write_buffer(&look.gpu.uniforms, 0, &float_bytes(numbers));
+                Some((look, passes))
+            }
+            (Some(_), _) => return Err(GpuError::NothingDrawn),
+            (None, _) => None,
+        };
         self.queue
             .write_buffer(&self.lines_uniforms, 0, &float_bytes(line_uniforms));
         // The axes at this frame's length, when it changed.
@@ -2450,6 +2523,22 @@ impl Onscreen {
                 mesh,
             );
         }
+        // The studio look's passes before the bodies, with the background
+        // drawn into the colour target; and the bodies' group 1.
+        let lit = match lit {
+            Some((look, passes)) => Some((
+                look,
+                look.encode_before(
+                    &self.device,
+                    &mut encoder,
+                    &self.scene_bind,
+                    mesh,
+                    passes,
+                    color_view,
+                )?,
+            )),
+            None => None,
+        };
         {
             // The bodies. Seen through, this is the front layer: its alpha
             // says where it is seen through (0 where nothing is drawn).
@@ -2457,11 +2546,16 @@ impl Onscreen {
                 Some((_, peel)) => (&peel.front, wgpu::Color { r, g, b, a: 0.0 }),
                 None => (color_view, background),
             };
+            let load = if lit.is_some() {
+                wgpu::LoadOp::Load
+            } else {
+                wgpu::LoadOp::Clear(clear)
+            };
             // Where there is no front there is no fragment to compare a key
             // with: any clear value will do.
             let key = peeled.and_then(|(_, peel)| peel.key.as_ref());
             let attachments = [
-                color_attachment(view, wgpu::LoadOp::Clear(clear)),
+                color_attachment(view, load),
                 key.and_then(|key| color_attachment(key, wgpu::LoadOp::Clear(wgpu::Color::BLACK))),
             ];
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -2484,8 +2578,14 @@ impl Onscreen {
                 (None, _, None) if options.bodies => (&self.color_pipeline, None),
                 (None, _, None) => (&self.depth_only_pipeline, None),
             };
-            pass.set_pipeline(bodies);
             pass.set_bind_group(0, &self.scene_bind, &[]);
+            match &lit {
+                Some((look, bind)) => {
+                    pass.set_pipeline(&look.main);
+                    pass.set_bind_group(1, bind, &[]);
+                }
+                None => pass.set_pipeline(bodies),
+            }
             draw_mesh(&mut pass);
             if let (Some(cap), Some((_, count, true))) = (cap, cut_open) {
                 cut::draw_cap(&mut pass, cap, &count.cap_bind, &self.cap_buffer);
