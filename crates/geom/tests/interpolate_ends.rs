@@ -4,6 +4,9 @@
 //! increasing parameters and its derivatives at the ends; the end tangents
 //! are the given ones; bad input is an error, not a panic.
 
+// Test code: a failure in a helper is a failed test.
+#![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
+
 use craft3d_geom::NurbsCurve;
 use craft3d_geom::refine::interpolate_with_end_derivatives;
 use craft3d_math::Vec3;

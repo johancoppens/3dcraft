@@ -4056,7 +4056,7 @@ mod tests {
         for at in [0.5 + 2.0 * MIDDLE_MARGIN, 0.6, 0.9] {
             assert_eq!(fold_name_at(at), Piece::Fan(E(0)), "{at}");
         }
-        assert!(MIDDLE_MARGIN >= 1e-6);
+        const { assert!(MIDDLE_MARGIN >= 1e-6) };
     }
 
     /// An end's fan and a fan of the path beside it with the same apex are
