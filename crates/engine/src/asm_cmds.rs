@@ -48,6 +48,22 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Writes each packed source document as a file into folder (beneath the write root, relative to the assembly's file) and makes its instances refer to that file (one undo step). Returns the files written.", doc: true, assembly_unpack),
 ];
 
+/// [`edit`] of the active assembly, held to the rules of an assembly
+/// ([`craft3d_doc::Assembly::validate`]) in the same step: an edit that
+/// breaks one is refused whole.
+fn asm_edit<T>(
+    session: &mut Session,
+    command: &'static str,
+    label: &str,
+    change: impl FnOnce(&mut Document) -> Result<T, DocError>,
+) -> Result<T, CommandError> {
+    edit(session, command, label, |doc| {
+        let out = change(doc)?;
+        doc.assembly()?.validate()?;
+        Ok(out)
+    })
+}
+
 /// The assembly of the active document, or an error that says it is a
 /// part.
 fn assembly_of<'a>(session: &'a Session, command: &str) -> Result<&'a Assembly, CommandError> {
@@ -574,7 +590,7 @@ fn instance_add(session: &mut Session, params: &Value) -> Run {
         open.asm.files.insert(full, Ok(blob));
         open.asm.invalidate();
     }
-    edit(session, ID, &format!("Add instance {name}"), |doc| {
+    asm_edit(session, ID, &format!("Add instance {name}"), |doc| {
         let assembly = doc.assembly_mut()?;
         if assembly.instance(&instance.name).is_some() {
             return Err(DocError::Invalid(format!(
@@ -683,7 +699,7 @@ fn instance_edit(session: &mut Session, params: &Value) -> Run {
         instance.name = new.clone();
     }
     let shown = instance.name.clone();
-    edit(session, ID, &format!("Edit instance {name}"), |doc| {
+    asm_edit(session, ID, &format!("Edit instance {name}"), |doc| {
         let assembly = doc.assembly_mut()?;
         if let Some(new) = &rename
             && *new != name
@@ -734,7 +750,7 @@ fn instance_delete(session: &mut Session, params: &Value) -> Run {
             using.join(", ")
         ));
     }
-    edit(session, ID, &format!("Delete instance {name}"), |doc| {
+    asm_edit(session, ID, &format!("Delete instance {name}"), |doc| {
         let assembly = doc.assembly_mut()?;
         assembly.instances.retain(|i| i.name != name);
         assembly.drop_unused_packed();
@@ -855,7 +871,7 @@ fn mate_add(session: &mut Session, params: &Value) -> Run {
         limits: limits_param(&p)?,
         flip: p.bool("flip")?.unwrap_or(false),
     };
-    edit(session, ID, &format!("Add mate {name}"), |doc| {
+    asm_edit(session, ID, &format!("Add mate {name}"), |doc| {
         let assembly = doc.assembly_mut()?;
         if assembly.mate(&mate.name).is_some() || assembly.coupling(&mate.name).is_some() {
             return Err(DocError::Invalid(format!(
@@ -904,7 +920,7 @@ fn mate_edit(session: &mut Session, params: &Value) -> Run {
         mate.name = new.clone();
     }
     let shown = mate.name.clone();
-    edit(session, ID, &format!("Edit mate {name}"), |doc| {
+    asm_edit(session, ID, &format!("Edit mate {name}"), |doc| {
         if let Some(new) = &rename
             && *new != name
         {
@@ -961,7 +977,7 @@ fn mate_delete(session: &mut Session, params: &Value) -> Run {
             using.join(", ")
         ));
     }
-    edit(session, ID, &format!("Delete mate {name}"), |doc| {
+    asm_edit(session, ID, &format!("Delete mate {name}"), |doc| {
         doc.assembly_mut()?.mates.retain(|m| m.name != name);
         for which in ["angle", "distance", "x", "y"] {
             let var = asm::joint_variable(&name, which);
@@ -1009,7 +1025,7 @@ fn coupling_add(session: &mut Session, params: &Value) -> Run {
         value: Expr::new(value),
     };
     let shown = coupling_json(&coupling);
-    edit(session, ID, &format!("Add coupling {name}"), |doc| {
+    asm_edit(session, ID, &format!("Add coupling {name}"), |doc| {
         doc.assembly_mut()?.couplings.push(coupling);
         Ok(())
     })?;
@@ -1023,7 +1039,7 @@ fn coupling_delete(session: &mut Session, params: &Value) -> Run {
     if assembly_of(session, ID)?.coupling(&name).is_none() {
         return fail(format!("{ID}: there is no coupling `{name}`"));
     }
-    edit(session, ID, &format!("Delete coupling {name}"), |doc| {
+    asm_edit(session, ID, &format!("Delete coupling {name}"), |doc| {
         doc.assembly_mut()?.couplings.retain(|c| c.name != name);
         Ok(())
     })?;
@@ -1068,7 +1084,7 @@ fn joint_set(session: &mut Session, params: &Value) -> Run {
     }
     let value = p.expr("value")?;
     let var = asm::joint_variable(&name, &which);
-    edit(session, ID, &format!("Set {var}"), |doc| match &value {
+    asm_edit(session, ID, &format!("Set {var}"), |doc| match &value {
         Some(expr) => doc.set_variable(&var, expr),
         None => {
             if doc.variables.iter().any(|v| v.name == var) {
@@ -1248,7 +1264,7 @@ fn assembly_pack(session: &mut Session, params: &Value) -> Run {
     let packed = packed_document(session, &doc, &base, 0)
         .map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
     let new = packed.assembly.clone().unwrap_or_default();
-    edit(session, ID, "Pack sources", |doc| {
+    asm_edit(session, ID, "Pack sources", |doc| {
         doc.assembly = Some(new);
         Ok(())
     })?;
@@ -1353,7 +1369,7 @@ fn assembly_unpack(session: &mut Session, params: &Value) -> Run {
         written.push(json!({ "path": relative, "hash": hash }));
     }
     session.document_mut()?.asm.invalidate();
-    edit(session, ID, "Unpack sources", |doc| {
+    asm_edit(session, ID, "Unpack sources", |doc| {
         let assembly = doc.assembly_mut()?;
         for instance in &mut assembly.instances {
             if let Source::Packed { hash } = &instance.source

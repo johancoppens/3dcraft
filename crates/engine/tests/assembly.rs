@@ -476,9 +476,7 @@ fn the_step_export_of_an_assembly_reads_back_as_its_placed_bodies() {
     }
     run(&mut s, "file.new", json!({}));
     let imported = run(&mut s, "file.import", json!({ "path": "stack.step" }));
-    let features = imported["features"]
-        .as_array()
-        .unwrap_or_else(|| panic!("{imported}"));
+    let features = imported.as_array().unwrap_or_else(|| panic!("{imported}"));
     assert_eq!(features.len(), 2, "{imported}");
     let doc = run(&mut s, "document.inspect", json!({}));
     let bodies = doc["bodies"].as_array().unwrap();
@@ -532,9 +530,12 @@ fn interference_clearance_and_mass_of_instances_in_closed_form() {
     let mass = run(
         &mut s,
         "assert.add",
-        json!({ "name": "mass", "measure": "mass", "of": ["A", "B"], "eq": 16, "tol": 1e-6 }),
+        json!({ "name": "mass", "measure": "mass", "of": ["A", "B"], "eq": 0.016, "tol": 1e-9 }),
     );
-    assert_eq!(mass["status"], "passed", "8000 kg/m3 x 2 x 1e-6 m3: {mass}");
+    assert_eq!(
+        mass["status"], "passed",
+        "8000 kg/m3 x 2 x 1e-6 m3 is 0.016 kg: {mass}"
+    );
     // B moved into A by 3 mm: they overlap by 300 mm^3.
     run(
         &mut s,
