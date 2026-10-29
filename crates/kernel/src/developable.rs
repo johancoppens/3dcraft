@@ -3891,12 +3891,15 @@ mod tests {
     /// lies so far out), its end ruling from `A(0)` to `B(σ)`, twisted by
     /// four tolerances, the next ruling `(2e-5, 2e-5)` (an end interval of
     /// four tolerances): the old allowance there was 1.3 tolerances, and
-    /// doubled with each refinement of the end interval, so that it passed
-    /// after two (rulings closer than that cannot be followed this far
-    /// out). The rows' end tangents are now the rails' and the end held
-    /// with no allowance: refused, naming the end ruling; the same strip
-    /// with rulings 1e4 tolerances apart and an end on the cylinder is
-    /// built within half the tolerance,
+    /// doubled with each refinement of the end interval. The old code
+    /// refused this strip too, but only because rulings that close cannot
+    /// be followed this far out (measured 2026-10-29, run 40823084121: "the
+    /// rulings between two found ones cannot be followed"), so this test
+    /// pins the end check's refusal by name, not an acceptance before. The
+    /// rows' end tangents are now the rails' and the end held with no
+    /// allowance: refused, naming the end ruling; the same strip with
+    /// rulings 1e4 tolerances apart and an end on the cylinder is built
+    /// within half the tolerance,
     /// what the stored face's end normals leave unresolved a small part of
     /// the tolerance. At three scales.
     #[test]
