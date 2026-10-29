@@ -56,12 +56,18 @@
 //!    other edge keeps its position and cross derivative.
 //!
 //! **What is refused, with the curves named.** Curves that do not cross,
-//! cross out of order or run past the boundary; weights that cannot be
-//! made to agree; a curve crossing a tangent edge square to its face; a
-//! corner where two held edges ask different tangent planes; a tangent
-//! edge along a torus or along a spline face's curve that is not one of
-//! its parameter lines (owed: a tangent ribbon fitted with a proven
-//! bound); weights that would not stay positive.
+//! cross out of order or run past the boundary, or are crossed so
+//! unevenly that their speed would all but vanish at a crossing; a
+//! surface that would pass farther than the tolerance from a curve (a
+//! proven bound: crossing gaps, weights that no constants make agree, the
+//! interpolation's amplification); a network whose surface would exceed
+//! [`MAX_NETWORK_POINTS`] control points (estimated from the knots before
+//! anything that large is made); a curve crossing a tangent edge square
+//! to its face or along it, or curves leaving it to opposite sides; a
+//! corner where two held edges ask different tangent planes or twists; a
+//! tangent edge along a torus or along a spline face's curve that is not
+//! one of its parameter lines (owed: a tangent ribbon fitted with a
+//! proven bound); weights that would not stay positive.
 
 use crate::refine::{
     MAX_INTERPOLATED_BANDED, Raw, SAME_KNOT, basis, bernstein_product, bezier_pieces_batched,
@@ -177,12 +183,14 @@ pub struct Patch {
     /// edges (v = 0, v = 1, u = 0, u = 1), each running with its family;
     /// `None` where the boundary is a point.
     pub boundary: [Option<NurbsCurve>; 4],
-    /// The largest distance between two curves where they cross: the
-    /// surface passes through the u curves exactly and within this of the
-    /// v curves.
+    /// A proven bound on how far the surface passes from any curve of the
+    /// network (as built through it: after the curves crossing a tangent
+    /// edge were bent), at least the largest gap where two curves cross;
+    /// held to the tolerance.
     pub mismatch: f64,
-    /// Per edge held tangent: the largest angle between the tangent planes
-    /// found along it (radians, at 32 places per knot span and more).
+    /// Per edge held tangent: the largest angle between the oriented
+    /// tangent planes found along it (radians, 0 to π, at 32 places per
+    /// knot span and more); at most the angular tolerance.
     pub tangency: [Option<f64>; 4],
     /// Which curves were run the other way to follow the network.
     pub reversed_u: Vec<bool>,

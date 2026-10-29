@@ -18,7 +18,7 @@ use craft3d_geom::network::{
     Condition, MAX_NETWORK_POINTS, Network, NetworkError, Patch, arc, chain, gordon,
 };
 use craft3d_geom::refine::interpolate;
-use craft3d_geom::{NurbsCurve, NurbsSurface};
+use craft3d_geom::{NurbsCurve, NurbsSurface, Surface};
 use craft3d_math::{Frame, Vec3};
 use std::f64::consts::FRAC_PI_2;
 
@@ -151,21 +151,17 @@ fn crossings_spaced_too_unevenly_are_refused() {
     }
 }
 
-/// The largest distance between curve `curve` and the surface's iso-curve
-/// at `at` run with it (along v when `along_v`), at 257 places: what
-/// `mismatch` must bound.
-fn apart(surface: &NurbsSurface, curve: &NurbsCurve, along_v: bool, at: f64) -> f64 {
+/// The largest distance from curve `curve` to the surface, at 257
+/// places along it (each projected onto the surface): what `mismatch`
+/// must bound.
+fn apart(surface: &NurbsSurface, curve: &NurbsCurve) -> f64 {
+    let face = Surface::Nurbs(surface.clone());
     let (a, b) = curve.domain();
     (0..=256)
         .map(|k| {
-            let t = f64::from(k) / 256.0;
-            let p = curve.eval(a + (b - a) * t);
-            let q = if along_v {
-                surface.eval(at, t)
-            } else {
-                surface.eval(t, at)
-            };
-            p.distance(q)
+            let p = curve.eval(a + (b - a) * f64::from(k) / 256.0);
+            let (u, w) = face.project(p).unwrap();
+            p.distance(face.eval(u, w))
         })
         .fold(0.0, f64::max)
 }
@@ -205,8 +201,8 @@ fn weights_that_differ_by_little_are_held_to_the_tolerance_not_to_a_fixed_residu
         Err(other) => panic!("{other}"),
         Ok(patch) => {
             // Accepted only with a mismatch that bounds the truth.
-            for (j, (curve, at)) in vs.iter().zip([0.0, 0.5, 1.0]).enumerate() {
-                let off = apart(&patch.surface, curve, true, at);
+            for (j, curve) in vs.iter().enumerate() {
+                let off = apart(&patch.surface, curve);
                 assert!(
                     off <= patch.mismatch,
                     "v curve {j} is {off:e} off, the mismatch says {:e}",
@@ -256,11 +252,11 @@ fn the_mismatch_bounds_how_far_the_surface_passes_from_its_curves() {
         nudged[2] = nudged[2] + v(0.0, 0.0, 0.1 * tol);
         us[1] = NurbsCurve::polynomial(us[1].degree(), us[1].knots().to_vec(), nudged).unwrap();
         let patch = gordon(&network(&us, &vs, tol)).unwrap();
-        for (curve, y) in us.iter().zip([0.0, 0.5, 1.0]) {
-            assert!(apart(&patch.surface, curve, false, y) <= 1e-12 * scale);
+        for curve in &us {
+            assert!(apart(&patch.surface, curve) <= 1e-9 * scale);
         }
-        for (curve, x) in vs.iter().zip([0.0, 0.5, 1.0]) {
-            let off = apart(&patch.surface, curve, true, x);
+        for curve in &vs {
+            let off = apart(&patch.surface, curve);
             assert!(off <= patch.mismatch, "{off:e} > {:e}", patch.mismatch);
         }
         assert!(patch.mismatch <= tol, "{:e}", patch.mismatch);

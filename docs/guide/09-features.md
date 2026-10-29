@@ -188,8 +188,9 @@ curves make one open chain, or `{"edges": [...]}`. With two curves each way it i
 ```
 
 Two arcs and two lines give exactly a quarter of a cylinder, and the plate makes it a quarter tube. The
-sheet passes through every curve; the result says under `network` how far apart the curves were where they
-cross (`mismatch`). The curves may be drawn either way round.
+sheet passes through every curve; the result says under `network` how far at most the sheet passes from
+any of them (`mismatch`, a proven bound, never more than the tolerance). The curves may be drawn either way
+round.
 
 An edge can be held: `"edges": {"uFirst": {"kind": "tangent", "face": "F7:face(0)", "weight": 1}}`
 makes the sheet meet that face with one tangent plane all along the edge (G1, no crease; `tangency` in the
@@ -197,10 +198,14 @@ result is the largest angle found between the two), the curves crossing the edge
 the face, their speed there times `weight` (larger is fuller). `"kind": "position"` only checks that the
 edge lies on the face. The face may be a plane, cylinder, cone or sphere, or a spline face along one of
 its parameter lines, such as the edge of another network sheet: two sheets then join smoothly.
-`feature.loft` with `guides` lays a sheet through open sections along guide curves the same way.
+`feature.loft` with `guides` lays a sheet through open sections along guide curves the same way (its
+sections take no `start`).
 
 Refused, with the curves named: curves that do not cross (and how close they come), curves crossing out of
-order, a curve running past an edge, a curve leaving a tangent edge square to its face. The face is named
+order, a curve running past an edge, a curve leaving a tangent edge square to its face or along it, curves
+leaving it to opposite sides (the sheet would fold over the edge), two held edges whose corner asks two
+tangent planes or two twists, and a network too large for one sheet (more than 2^20 control points: many
+curves, each crossed at its own parameters, each bring their own knots). The face is named
 after its four edge curves (`F5:side(e1,e2,e3,e4)`: the ids of their sketches), so editing a curve or
 adding one inside the network keeps its name.
 
