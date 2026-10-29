@@ -156,11 +156,13 @@ fn flange_value(
         None | Some(Value::Null) => 0,
         Some(v) => v
             .as_u64()
-            .filter(|&n| n > 0)
+            // Below u32::MAX: the part's next id must lie above every id.
+            .filter(|&n| n > 0 && n < u64::from(u32::MAX))
             .and_then(|n| u32::try_from(n).ok())
             .ok_or_else(|| {
                 CommandError::new(format!(
-                    "{id}: flanges.{index}.id is a flange's id (a whole number above 0, as sheetMetal.bends lists them)"
+                    "{id}: flanges.{index}.id is a flange's id (a whole number from 1 to {}, as sheetMetal.bends lists them)",
+                    u32::MAX - 1
                 ))
             })?,
     };
@@ -633,7 +635,10 @@ fn flanges_with_ids(
         .map(|f| f.id)
         .max()
         .unwrap_or(0);
-    let mut next = part.next_flange_id.max(highest.saturating_add(1)).max(1);
+    let past = highest
+        .checked_add(1)
+        .ok_or_else(|| CommandError::new(format!("{id}: the part has used up its flange ids")))?;
+    let mut next = part.next_flange_id.max(past).max(1);
     let mut taken: std::collections::BTreeSet<u32> = given.clone();
     for i in 0..new.len() {
         let Some(f) = new.get(i) else { continue };
@@ -668,7 +673,17 @@ fn flanges_with_ids(
             f.id = assigned;
         }
     }
-    Ok((new, next))
+    // What saving checks, checked here: a command never makes a document
+    // that cannot be saved.
+    let made = SheetMetal {
+        flanges: new,
+        next_flange_id: next,
+        ..part.clone()
+    };
+    if let Some(fault) = made.flange_ids_fault() {
+        return fail(format!("{id}: {fault}"));
+    }
+    Ok((made.flanges, next))
 }
 
 /// Refuses corners named by flanges the list does not have, or on a tip

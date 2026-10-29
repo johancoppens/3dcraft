@@ -2502,6 +2502,13 @@ impl Document {
         if self.features.len() >= MAX_FEATURES {
             return Err(DocError::TooManyFeatures);
         }
+        // What `validate` (and so saving) refuses is refused here too, so
+        // no command can add a feature that makes the document unsaveable.
+        if let FeatureKind::SheetMetal(part) = &kind
+            && let Some(fault) = part.flange_ids_fault()
+        {
+            return Err(DocError::Invalid(format!("a sheet-metal part: {fault}")));
+        }
         let name = match name {
             Some(name) => {
                 check_new_feature_name(name)?;

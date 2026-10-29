@@ -428,6 +428,67 @@ fn split_edge_names_follow_their_flanges_not_their_places_in_the_list() {
     }
 }
 
+/// The highest ids (review 2026-10-29: an id of 2³² − 1 was taken, the
+/// part's next id could not lie above it, and from then on every save
+/// and autosave failed): 2³² − 1 is refused when the part is made and on
+/// an edit, 2³² − 2 is taken and the document saves and opens, and a new
+/// flange past it is refused (the ids are used up) rather than given an
+/// id saving would refuse.
+#[test]
+fn the_highest_flange_ids_never_make_a_document_that_cannot_be_saved() {
+    let k = 1.0;
+    let dir = workdir("sheetmetal-flanges", "highest-ids");
+    let mut s = session_in(&dir);
+    new_document(&mut s, k);
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"plane": "xy", "name": "Base"}),
+    );
+    let base = lines_of(&run(
+        &mut s,
+        "sketch.rect",
+        json!({"sketch": "Base", "from": [0.0, 0.0], "to": [60.0, 40.0]}),
+    ));
+    let wall = |edge: usize, id: Option<u64>| {
+        let mut f = json!({"edge": base[edge], "length": "10 mm", "angle": "90 deg"});
+        if let Some(id) = id {
+            f["id"] = json!(id);
+        }
+        f
+    };
+    let max = u64::from(u32::MAX);
+    let got = error(
+        &mut s,
+        "feature.sheetMetal",
+        json!({"sketch": "Base", "name": "Panel", "thickness": "1 mm", "radius": "1 mm",
+               "flanges": [wall(0, Some(max))]}),
+    );
+    assert!(got.contains("flanges.0.id"), "{got}");
+    panel(&mut s, k, vec![wall(0, Some(max - 1))]);
+    let bends = run(&mut s, "sheetMetal.bends", json!({"feature": "Panel"}));
+    assert_eq!(bends["bends"][0]["id"], max - 1, "{bends}");
+    run(&mut s, "file.save", json!({"path": "highest.3dcraft"}));
+    // A new flange would need the id 2³² − 1.
+    let got = error(
+        &mut s,
+        "sheetMetal.edit",
+        json!({"feature": "Panel", "flanges": [wall(0, Some(max - 1)), wall(1, None)]}),
+    );
+    assert!(got.contains("used up"), "{got}");
+    let got = error(
+        &mut s,
+        "sheetMetal.edit",
+        json!({"feature": "Panel", "flanges": [wall(0, Some(max))]}),
+    );
+    assert!(got.contains("flanges.0.id"), "{got}");
+    run(&mut s, "file.save", json!({"path": "highest.3dcraft"}));
+    let mut u = session_in(&dir);
+    run(&mut u, "file.open", json!({"path": "highest.3dcraft"}));
+    let bends = run(&mut u, "sheetMetal.bends", json!({"feature": "Panel"}));
+    assert_eq!(bends["bends"][0]["id"], max - 1, "{bends}");
+}
+
 #[test]
 fn bad_flanges_are_errors_or_fail_the_part() {
     let k = 1.0;
