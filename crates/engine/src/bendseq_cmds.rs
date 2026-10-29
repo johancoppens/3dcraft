@@ -1095,4 +1095,52 @@ mod tests {
             }
         }
     }
+
+    /// A piece with no points to bound it fails closed (review
+    /// 2026-10-29: its reach folded to 0, so the speed bound came out too
+    /// small, and its lowest point to +∞, a proof of nothing).
+    #[test]
+    fn a_piece_without_points_is_an_error_not_a_proof() {
+        let k = 1.0;
+        let mut s = Session::new(Workspace::default());
+        hairpin(&mut s, k);
+        let params = json!({"feature": "Hairpin"});
+        let p = Params::new("test", &params, &["feature"]).unwrap();
+        let feature = {
+            let doc = s.document().unwrap().history.current();
+            crate::commands::feature_ref(doc, &p, "test", "feature").unwrap()
+        };
+        let open = s.document_mut().unwrap();
+        let regen = open.regen();
+        let doc = open.history.current();
+        let built = craft3d_regen::sheet_metal_part(doc, &regen, feature).unwrap();
+        let part = &built.part;
+        let tol = built.tolerance;
+        let slabs = slabs_of(part, &tol).unwrap();
+        let mut check = Check {
+            part,
+            tol,
+            punch: vec![[-k, 0.0], [k, 0.0], [k, 100.0 * k], [-k, 100.0 * k]],
+            die: vec![[-k, -k], [k, -k], [k, 0.0], [-k, 0.0]],
+            length: None,
+            clearance: tol.linear,
+            pieces: pieces_of(part, &slabs, &tol).unwrap(),
+            built: final_worlds(part),
+            work: std::cell::Cell::new(0),
+        };
+        let done = BTreeSet::new();
+        assert!(check.stroke(&done, 1).is_ok());
+        assert!(check.heights(&done, 1, 0.1, &[Kind::Flat(0)]).is_ok());
+        // A piece the part does not have: no lowest point.
+        let err = check.heights(&done, 1, 0.1, &[Kind::Bend(7)]).unwrap_err();
+        assert!(err.contains("missing") || err.contains("lowest"), "{err}");
+        let base = check
+            .pieces
+            .iter_mut()
+            .find(|p| p.what == Kind::Flat(0))
+            .unwrap();
+        base.corners.clear();
+        let err = check.stroke(&done, 1).unwrap_err();
+        assert!(err.contains("no points"), "{err}");
+    }
 }
