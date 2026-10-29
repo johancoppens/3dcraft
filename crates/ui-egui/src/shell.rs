@@ -1358,6 +1358,10 @@ impl Shell {
             self.state.show.sketches,
         )
         .with_selection(self.selection_marks())
+        .with(viewport::Marks {
+            traces: self.timeline.traces.clone(),
+            ..viewport::Marks::default()
+        })
     }
 
     /// The plane the viewport's picture is cut open with, as the

@@ -30,7 +30,7 @@
 
 use super::Shell;
 use super::icons::{self, Icon};
-use crate::state::Playback;
+use crate::state::{MOTION_SECONDS, Playback};
 use crate::theme::{Tokens, color};
 use craft3d_engine::Session;
 use egui::{Sense, vec2};
@@ -77,6 +77,47 @@ pub(crate) struct Player {
     turned: Option<f64>,
     /// The document's revision at the last sync: another one is an edit.
     revision: Option<Option<u64>>,
+    /// The input time of the last moment of the motion asked for.
+    moved: Option<f64>,
+    /// The motion runs from 1 back to 0 (back and forth).
+    backwards: bool,
+}
+
+/// What the motion does next ([`motion_step`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum MotionStep {
+    /// Shows this `t`, going backwards when the flag says so.
+    Go(f64, bool),
+    /// At an end without loop: stops.
+    Stop,
+}
+
+/// The step of the motion after `seconds` at `t`: `t` runs from 0 to 1 in
+/// [`MOTION_SECONDS`] / `speed`. At 1 it starts again at 0 with loop, or
+/// turns back with bounce (and at 0 again turns forward with loop); at an
+/// end it would pass otherwise it stops there.
+pub(crate) fn motion_step(t: f64, backwards: bool, seconds: f64, play: Playback) -> MotionStep {
+    let delta = seconds.max(0.0) * play.speed / MOTION_SECONDS;
+    let t = t.clamp(0.0, 1.0);
+    if !backwards {
+        if t >= 1.0 {
+            return match (play.bounce, play.looping) {
+                (true, _) => MotionStep::Go((1.0 - delta).max(0.0), true),
+                (false, true) => MotionStep::Go(delta.min(1.0), false),
+                (false, false) => MotionStep::Stop,
+            };
+        }
+        MotionStep::Go((t + delta).min(1.0), false)
+    } else {
+        if t <= 0.0 {
+            return if play.looping {
+                MotionStep::Go(delta.min(1.0), false)
+            } else {
+                MotionStep::Stop
+            };
+        }
+        MotionStep::Go((t - delta).max(0.0), true)
+    }
 }
 
 /// What the player does at a tick.
@@ -101,6 +142,8 @@ impl Player {
         self.since = None;
         self.reached = false;
         self.turned = None;
+        self.moved = None;
+        self.backwards = false;
     }
 
     /// No scrub waits to be run and the view's scene is built: the step
@@ -243,9 +286,156 @@ impl Shell {
     pub(crate) fn toggle_playing(&mut self) {
         if self.state.timeline.playing {
             self.stop_playing();
-        } else if self.timeline.steps > 0 {
+        } else if self.playing_motion() || (!self.state.timeline.motion && self.timeline.steps > 0)
+        {
             self.state.timeline.playing = true;
         }
+    }
+
+    /// Whether the player plays the motion: asked for, and the document
+    /// has a timeline.
+    pub(crate) fn playing_motion(&self) -> bool {
+        self.state.timeline.motion && self.timeline.has_timeline
+    }
+
+    /// Shows the moment `t` of the motion (clamped to 0 to 1).
+    pub(crate) fn go_to_t(&mut self, t: f64) {
+        let t = if t.is_finite() {
+            t.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let collisions = self.state.timeline.collisions;
+        self.timeline
+            .queue("view.motion", json!({"t": t, "collisions": collisions}));
+    }
+
+    /// One frame of the motion while it plays: the next moment once the
+    /// one asked for is shown, by the time since the last.
+    fn advance_motion(&mut self, ctx: &egui::Context, now: f64) {
+        let play = self.state.timeline;
+        if !self.timeline.has_timeline {
+            self.stop_playing();
+            return;
+        }
+        if self.timeline.motion_waiting() {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(1.0 / ORBIT_FPS));
+            return;
+        }
+        let Some(t) = self.timeline.motion_t() else {
+            self.player.moved = Some(now);
+            self.go_to_t(0.0);
+            ctx.request_repaint();
+            return;
+        };
+        let starting = self.player.moved.is_none();
+        let last = self.player.moved.replace(now).unwrap_or(now);
+        // A window that was not drawn for a while does not jump.
+        let seconds = (now - last).clamp(0.0, 0.25);
+        // Play at the end: from the start again, as a video does.
+        let step = if starting && t >= 1.0 && !play.bounce {
+            MotionStep::Go(0.0, false)
+        } else {
+            motion_step(t, self.player.backwards, seconds, play)
+        };
+        match step {
+            MotionStep::Go(next, backwards) => {
+                self.player.backwards = backwards;
+                if next != t {
+                    self.go_to_t(next);
+                }
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(1.0 / ORBIT_FPS));
+            }
+            MotionStep::Stop => self.stop_playing(),
+        }
+    }
+
+    /// The motion's own row over the player: History or Motion, the
+    /// slider over `t`, back and forth, collisions, and what is shown.
+    pub(crate) fn motion_ui(&mut self, ui: &mut egui::Ui) {
+        if !self.timeline.has_timeline {
+            return;
+        }
+        let tokens = self.tokens;
+        let motion = self.state.timeline.motion;
+        ui.horizontal(|ui| {
+            if ui
+                .selectable_label(!motion, "History")
+                .on_hover_text("The player plays the history, step by step")
+                .clicked()
+                && motion
+            {
+                self.stop_playing();
+                self.state.timeline.motion = false;
+                self.timeline.queue("view.motion", json!({"t": null}));
+            }
+            if ui
+                .selectable_label(motion, "Motion")
+                .on_hover_text(
+                    "The player plays the motion: the timeline t runs from 0 to 1, \
+                     driving the formulas that use it. The document does not change.",
+                )
+                .clicked()
+                && !motion
+            {
+                self.stop_playing();
+                self.state.timeline.motion = true;
+                let t = self.timeline.motion_t().unwrap_or(0.0);
+                self.go_to_t(t);
+            }
+        });
+        if !motion {
+            return;
+        }
+        let shown = self.timeline.motion_t().unwrap_or(0.0);
+        let mut t = shown;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().slider_width = (ui.available_width() - 8.0).max(40.0);
+            ui.add(
+                egui::Slider::new(&mut t, 0.0..=1.0)
+                    .show_value(false)
+                    .trailing_fill(true),
+            )
+            .on_hover_text("Drag through the motion. The document does not change.");
+        });
+        if t != shown {
+            self.go_to_t(t);
+            ui.ctx().request_repaint();
+        }
+        let collisions_on = self.state.timeline.collisions;
+        ui.horizontal(|ui| {
+            if ui
+                .selectable_label(self.state.timeline.bounce, "Back and forth")
+                .on_hover_text("Play from 0 to 1 and back again")
+                .clicked()
+            {
+                self.state.timeline.bounce = !self.state.timeline.bounce;
+            }
+            if ui
+                .selectable_label(collisions_on, "Collisions")
+                .on_hover_text("Draw the bodies that overlap at this t in red")
+                .clicked()
+            {
+                self.state.timeline.collisions = !collisions_on;
+                self.go_to_t(shown);
+            }
+        });
+        let pairs = self
+            .timeline
+            .motion
+            .as_ref()
+            .map_or(0, |m| m.collisions.len());
+        let text = if pairs > 0 {
+            format!("t = {shown:.3}  ·  {pairs} colliding")
+        } else {
+            format!("t = {shown:.3}")
+        };
+        let ink = if pairs > 0 {
+            tokens.failed
+        } else {
+            tokens.attention
+        };
+        ui.label(egui::RichText::new(text).color(color(ink)));
     }
 
     /// After a sync with the session: an edit of the document stops
@@ -274,9 +464,13 @@ impl Shell {
     pub(crate) fn advance_player(&mut self, ctx: &egui::Context) {
         let now = ctx.input(|i| i.time);
         let play = self.state.timeline;
-        let tick = self
-            .player
-            .tick(play, now, self.timeline.shown_step(), self.timeline.steps);
+        let tick = if play.motion && play.playing {
+            self.advance_motion(ctx, now);
+            Tick::Idle
+        } else {
+            self.player
+                .tick(play, now, self.timeline.shown_step(), self.timeline.steps)
+        };
         match tick {
             Tick::Idle | Tick::Wait(None) => {}
             Tick::Wait(Some(seconds)) => {
@@ -346,6 +540,18 @@ impl Shell {
     /// The caption over the viewport while the view is scrubbed or
     /// playing: `Step 3/10 · Plate · block`.
     pub(crate) fn player_caption(&self) -> Option<String> {
+        if let Some(motion) = &self.timeline.motion {
+            let mut text = format!("t = {:.3}", motion.t);
+            if !motion.collisions.is_empty() {
+                let pairs: Vec<String> = motion
+                    .collisions
+                    .iter()
+                    .map(|(a, b)| format!("{a} and {b}"))
+                    .collect();
+                text.push_str(&format!(" · collision: {}", pairs.join(", ")));
+            }
+            return Some(text);
+        }
         let steps = self.timeline.steps;
         if steps == 0 || (self.timeline.position.is_none() && !self.state.timeline.playing) {
             return None;
@@ -583,6 +789,58 @@ mod tests {
             playing: true,
             ..Playback::default()
         }
+    }
+
+    #[test]
+    fn the_motion_runs_on_loops_turns_back_and_stops() {
+        use super::{MotionStep, motion_step};
+        let play = playing();
+        // Speed 1: 4 s from 0 to 1, so a second moves t by a quarter.
+        assert_eq!(
+            motion_step(0.0, false, 1.0, play),
+            MotionStep::Go(0.25, false)
+        );
+        assert_eq!(
+            motion_step(0.9, false, 1.0, play),
+            MotionStep::Go(1.0, false)
+        );
+        assert_eq!(motion_step(1.0, false, 1.0, play), MotionStep::Stop);
+        let looping = Playback {
+            looping: true,
+            ..play
+        };
+        assert_eq!(
+            motion_step(1.0, false, 1.0, looping),
+            MotionStep::Go(0.25, false)
+        );
+        let bounce = Playback {
+            bounce: true,
+            speed: 2.0,
+            ..play
+        };
+        assert_eq!(
+            motion_step(1.0, false, 1.0, bounce),
+            MotionStep::Go(0.5, true)
+        );
+        assert_eq!(
+            motion_step(0.5, true, 1.0, bounce),
+            MotionStep::Go(0.0, true)
+        );
+        assert_eq!(motion_step(0.0, true, 1.0, bounce), MotionStep::Stop);
+        let both = Playback {
+            looping: true,
+            ..bounce
+        };
+        assert_eq!(
+            motion_step(0.0, true, 0.5, both),
+            MotionStep::Go(0.25, false)
+        );
+        // Time does not run backwards, and t stays within 0 and 1.
+        assert_eq!(
+            motion_step(0.5, false, -3.0, play),
+            MotionStep::Go(0.5, false)
+        );
+        assert_eq!(motion_step(7.0, false, 0.0, play), MotionStep::Stop);
     }
 
     #[test]

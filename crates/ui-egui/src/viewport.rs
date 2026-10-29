@@ -47,6 +47,8 @@ pub enum LineKind {
     /// The outline of a datum plane, a datum axis, or (as a dot) a datum
     /// point.
     Datum,
+    /// A point's path over the motion (`view.trace`).
+    Trace,
 }
 
 /// A line in image pixels (x right, y down, from the top-left corner).
@@ -160,6 +162,7 @@ impl LineKind {
             LineKind::Edge => tokens.edge,
             LineKind::Highlight => tokens.face_highlight,
             LineKind::Datum => tokens.datum,
+            LineKind::Trace => tokens.trace,
         }
     }
 
@@ -172,6 +175,7 @@ impl LineKind {
             LineKind::Edge => tokens.edge_width,
             LineKind::Highlight => tokens.highlight_width,
             LineKind::Datum => tokens.datum_width,
+            LineKind::Trace => tokens.trace_width,
         }
     }
 
@@ -237,6 +241,9 @@ pub struct Marks {
     pub datums: Vec<SceneDatum>,
     /// The sketches are not drawn (`UiState::show`).
     pub hide_sketches: bool,
+    /// The paths of points over the motion (`view.trace`), as polylines,
+    /// tested against the bodies like a sketch.
+    pub traces: Vec<Vec<Vec3>>,
 }
 
 impl Marks {
@@ -281,6 +288,7 @@ impl Marks {
         self.datums.extend(other.datums);
         self.cut = self.cut.or(other.cut);
         self.hide_sketches |= other.hide_sketches;
+        self.traces.extend(other.traces);
         self
     }
 
@@ -1196,6 +1204,13 @@ fn build_overlay(
     // The datums, tested like a sketch, under the sketches.
     for [a, b] in marks.map(Marks::datum_lines).unwrap_or_default() {
         line_of(a, b, LineKind::Datum, true, true, None);
+    }
+    for trace in marks.into_iter().flat_map(|marks| &marks.traces) {
+        for pair in trace.windows(2) {
+            if let [a, b] = *pair {
+                line_of(a, b, LineKind::Trace, true, true, None);
+            }
+        }
     }
     for sketch in shown_sketches(scene, marks) {
         let chosen = selected == Some(sketch.feature.as_str());

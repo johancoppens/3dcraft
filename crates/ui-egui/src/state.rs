@@ -341,7 +341,22 @@ pub struct Playback {
     pub looping: bool,
     /// The camera turns slowly about the vertical while playing.
     pub orbit: bool,
+    /// Plays the motion instead of the history: the timeline `t` of the
+    /// document runs from 0 to 1 (`view.motion`) in
+    /// [`MOTION_SECONDS`] / `speed`, a frame as soon as the one before is
+    /// shown. Only for a document with a timeline (a variable `t` that is
+    /// a plain number).
+    pub motion: bool,
+    /// With `motion`: back and forth, from 1 back to 0 and on (with `loop`
+    /// for ever, else once there and back).
+    pub bounce: bool,
+    /// With `motion`: the bodies that overlap at the `t` shown are drawn
+    /// red (`view.motion {collisions}`).
+    pub collisions: bool,
 }
+
+/// How long the motion takes from `t` = 0 to 1 at speed 1, in seconds.
+pub const MOTION_SECONDS: f64 = 4.0;
 
 /// The speeds the player offers.
 pub const PLAYER_SPEEDS: [f64; 3] = [0.5, 1.0, 2.0];
@@ -356,6 +371,9 @@ impl Default for Playback {
             speed: 1.0,
             looping: false,
             orbit: false,
+            motion: false,
+            bounce: false,
+            collisions: false,
         }
     }
 }
@@ -1157,6 +1175,9 @@ mod tests {
                 speed: 2.0,
                 looping: true,
                 orbit: false,
+                motion: true,
+                bounce: true,
+                collisions: true,
             },
             // Added with the Jigs' parameter form (2026-10-23).
             parameters: ParametersView {

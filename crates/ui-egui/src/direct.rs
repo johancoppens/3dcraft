@@ -238,6 +238,13 @@ pub fn segments_marked(
     for [a, b] in marks.datum_lines() {
         line(a, b, LineKind::Datum, true, true, false);
     }
+    for trace in &marks.traces {
+        for pair in trace.windows(2) {
+            if let [a, b] = *pair {
+                line(a, b, LineKind::Trace, true, true, false);
+            }
+        }
+    }
     for sketch in scene
         .into_iter()
         .flat_map(|scene| &scene.sketches)

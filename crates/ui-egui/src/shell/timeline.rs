@@ -20,7 +20,7 @@
 use super::Shell;
 use super::views::FlyTo;
 use crate::theme::{Tokens, color};
-use craft3d_engine::{Scene, ScrubPosition, Session};
+use craft3d_engine::{MotionView, Scene, ScrubPosition, Session};
 use egui::{Color32, Pos2, Sense, Shape, Stroke, vec2};
 use serde_json::{Value, json};
 
@@ -46,6 +46,14 @@ pub(crate) struct Timeline {
     /// A flight waits for what was asked to show its target: the scene's
     /// revision when it was asked ([`Shell::prepare_fly`]).
     revealing: Option<u64>,
+    /// The moment of the motion the view shows (`view.motion`), as the
+    /// session said last.
+    pub(super) motion: Option<MotionView>,
+    /// Whether the document has a timeline (a variable `t` that is a
+    /// plain number), so the motion can be played.
+    pub(super) has_timeline: bool,
+    /// The paths of points over the motion (`view.trace`).
+    pub(super) traces: Vec<Vec<craft3d_math::Vec3>>,
 }
 
 impl Timeline {
@@ -64,10 +72,46 @@ impl Timeline {
         self.pending.iter().any(|(id, _)| *id == "view.scrub")
     }
 
-    pub(super) fn queue(&mut self, id: &'static str, params: Value) {
+    /// Whether a moment of the motion waits to be shown.
+    pub(super) fn motion_waiting(&self) -> bool {
+        self.pending.iter().any(|(id, _)| *id == "view.motion")
+    }
+
+    /// The `t` the view shows, or will once what is queued has run.
+    pub(super) fn motion_t(&self) -> Option<f64> {
+        let queued = self
+            .pending
+            .iter()
+            .rev()
+            .filter(|(id, _)| *id == "view.motion")
+            .find_map(|(_, params)| params.get("t"));
+        match queued {
+            Some(t) => t.as_f64(),
+            None => self.motion.as_ref().map(|m| m.t),
+        }
+    }
+
+    pub(super) fn queue(&mut self, id: &'static str, mut params: Value) {
         // Only the last scrub counts: an earlier one gives its place.
         if id == "view.scrub" {
             self.pending.retain(|(queued, _)| *queued != "view.scrub");
+        }
+        // One moment of the motion waits at most: a later one takes the
+        // place of an earlier one, keeping what the earlier one set and
+        // the later one does not (its collisions).
+        if id == "view.motion" {
+            if let Some(at) = self
+                .pending
+                .iter()
+                .position(|(queued, _)| *queued == "view.motion")
+            {
+                let (_, earlier) = self.pending.remove(at);
+                if let (Value::Object(mut merged), Value::Object(later)) = (earlier, params.clone())
+                {
+                    merged.extend(later);
+                    params = Value::Object(merged);
+                }
+            }
         }
         if self.pending.len() < MAX_PENDING {
             self.pending.push((id, params));
@@ -108,6 +152,9 @@ impl Shell {
         let (steps, rollback) = session.history_marker().unwrap_or((0, None));
         self.timeline.steps = steps;
         self.timeline.rollback = rollback;
+        self.timeline.motion = session.motion();
+        self.timeline.has_timeline = session.timeline().is_ok();
+        self.timeline.traces = session.traces().into_iter().map(|t| t.points).collect();
     }
 
     /// Marks the rows after the step the scrubbed view shows: greyed (the
@@ -225,6 +272,14 @@ impl Shell {
             "speed": self.state.timeline.speed,
             "loop": self.state.timeline.looping,
             "orbit": self.state.timeline.orbit,
+            "motion": self.state.timeline.motion,
+            "bounce": self.state.timeline.bounce,
+            "hasTimeline": self.timeline.has_timeline,
+            "t": self.timeline.motion.as_ref().map(|m| m.t),
+            "collisions": self.timeline.motion.as_ref().map(|m| {
+                m.collisions.iter().map(|(a, b)| json!([a, b])).collect::<Vec<_>>()
+            }),
+            "traces": self.timeline.traces.len(),
             "caption": self.player_caption(),
         })
     }
@@ -257,7 +312,7 @@ impl Shell {
                 Err(e) => {
                     self.timeline.problem = Some(e.message().to_string());
                     // A step that cannot be shown is never waited for.
-                    if *id == "view.scrub" {
+                    if *id == "view.scrub" || *id == "view.motion" {
                         self.stop_playing();
                     }
                 }
@@ -300,6 +355,7 @@ impl Shell {
             ui.ctx().request_repaint();
         }
         let scrubbed = self.timeline.position.clone();
+        self.motion_ui(ui);
         self.player_controls(ui);
         ui.horizontal(|ui| {
             let text = format!("Step {shown}/{steps}  {name}");

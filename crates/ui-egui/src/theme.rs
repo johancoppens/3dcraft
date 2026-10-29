@@ -79,6 +79,11 @@ pub struct Tokens {
     pub datum_width: f32,
     /// Radius of a datum point's dot, in points.
     pub datum_point_radius: f32,
+    /// A point's path over the motion (`view.trace`): purple, apart from
+    /// the sketches' blue, the datums' petrol and the selection's copper.
+    pub trace: Rgb,
+    /// Width of a trace, in points.
+    pub trace_width: f32,
     /// Opacity of sketch lines and points behind a body, 0 to 255.
     pub hidden_opacity: u8,
     /// The panels (the feature tree, a dialog) and their text.
@@ -385,6 +390,8 @@ impl Tokens {
             datum_fill_opacity: 48,
             datum_width: 1.25,
             datum_point_radius: 4.0,
+            trace: [128, 32, 140],
+            trace_width: 2.0,
             hidden_opacity: 70,
             panel_fill: [247, 246, 243],
             text: [27, 26, 25],
@@ -936,9 +943,12 @@ mod tests {
             let ratio = contrast(ink, bg);
             assert!(ratio >= least, "{what} on the viewport: {ratio:.2}");
         }
-        for ink in [tokens.sketch, tokens.datum] {
+        for ink in [tokens.sketch, tokens.datum, tokens.trace] {
             assert!(contrast(ink, tokens.body) >= 3.0, "{ink:?}");
         }
+        assert!(contrast(tokens.trace, bg) >= 3.0);
+        let [r, g, b] = tokens.trace.map(i32::from);
+        assert!(r > g && b > g);
         assert_eq!(tokens.sketch, tokens.info_accent);
         assert_eq!(tokens.sketch_selected, tokens.face_highlight);
         let [r, g, b] = tokens.sketch.map(i32::from);
