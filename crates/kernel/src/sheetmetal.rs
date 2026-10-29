@@ -115,6 +115,10 @@ pub enum On {
     /// A side of the flange at this index: its edge at the start of its
     /// bend (0) or at the end (1).
     Side(usize, usize),
+    /// The straight segment of the own outline of the flange at this index
+    /// made by the outline's sketch curve with this id (not the line on
+    /// its edge, which is its bend's tangent line).
+    Line(usize, u64),
 }
 
 /// Where a flange's length is measured from.
@@ -716,6 +720,24 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
                 }
                 on_base.entry((h, k)).or_default().push(i);
             }
+            On::Line(j, _) => {
+                if j >= i {
+                    return Err(refuse(
+                        Some(i),
+                        format!(
+                            "a flange sits on a line of an earlier flange's outline; flange {j} comes later"
+                        ),
+                    ));
+                }
+                if spec.flanges.get(j).is_some_and(|p| p.outline.is_none()) {
+                    return Err(refuse(
+                        Some(i),
+                        format!(
+                            "flange {j} has no outline of its own (it is a rectangle): put the flange on its tip or a side"
+                        ),
+                    ));
+                }
+            }
             On::Tip(j) | On::Side(j, _) => {
                 if j >= i {
                     return Err(refuse(
@@ -739,7 +761,7 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
                     return Err(refuse(
                         Some(i),
                         format!(
-                            "flange {j} has an outline of its own, whose tip and sides are not the rectangle's; a flange on one of its lines is not supported (owed)"
+                            "flange {j} has an outline of its own, whose tip and sides are not the rectangle's: put the flange on one of its lines (`line`)"
                         ),
                     ));
                 }
@@ -942,6 +964,51 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
             }
             On::Tip(j) => (j + 1, None, 2),
             On::Side(j, end) => (j + 1, None, if end == 0 { 1 } else { 3 }),
+            On::Line(j, curve) => {
+                let outer = flats.get(j + 1).map(|f| f.outer.as_slice()).unwrap_or(&[]);
+                let found: Vec<usize> = outer
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| s.source == curve)
+                    .map(|(k, _)| k)
+                    .collect();
+                let k = match found.as_slice() {
+                    [k] => *k,
+                    [] => {
+                        return Err(refuse(
+                            Some(i),
+                            format!(
+                                "the curve {curve} is no line of flange {j}'s outline (of its outer loop)"
+                            ),
+                        ));
+                    }
+                    _ => {
+                        return Err(refuse(
+                            Some(i),
+                            format!(
+                                "the curve {curve} is cut into several edges of flange {j}'s outline; a flange needs one straight edge"
+                            ),
+                        ));
+                    }
+                };
+                if k == 0 {
+                    return Err(refuse(
+                        Some(i),
+                        format!(
+                            "the curve {curve} is the line of flange {j}'s outline on its edge, its bend's tangent line: a flange sits on another line of the outline"
+                        ),
+                    ));
+                }
+                if !matches!(outer.get(k).map(|s| &s.shape), Some(Shape::Line)) {
+                    return Err(refuse(
+                        Some(i),
+                        format!(
+                            "the curve {curve} of flange {j}'s outline is not straight; a flange sits on a straight edge"
+                        ),
+                    ));
+                }
+                (j + 1, None, k)
+            }
         };
         let edge = flats
             .get(parent)

@@ -1492,9 +1492,9 @@ fn flange_to_manifest(place: usize, flange: &doc::Flange) -> manifest::SheetFlan
         outline,
         id,
     } = flange;
-    let (base, tip, side) = match on {
-        doc::FlangeOn::Base(doc::EntityId(id)) => (Some(*id), None, None),
-        doc::FlangeOn::Tip(i) => (None, Some(*i), None),
+    let (base, tip, side, line) = match on {
+        doc::FlangeOn::Base(doc::EntityId(id)) => (Some(*id), None, None, None),
+        doc::FlangeOn::Tip(i) => (None, Some(*i), None, None),
         doc::FlangeOn::Side(i, end) => (
             None,
             None,
@@ -1505,9 +1505,20 @@ fn flange_to_manifest(place: usize, flange: &doc::Flange) -> manifest::SheetFlan
                     doc::FlangeSide::End => manifest::FlangeSideEnd::End,
                 },
             }),
+            None,
+        ),
+        doc::FlangeOn::Line(i, doc::EntityId(l)) => (
+            None,
+            None,
+            None,
+            Some(manifest::SheetFlangeLine {
+                flange: *i,
+                line: *l,
+            }),
         ),
     };
     manifest::SheetFlange {
+        line,
         id: (*id != place_id(place)).then_some(*id),
         base,
         tip,
@@ -1550,13 +1561,15 @@ fn flange_to_doc(place: usize, flange: manifest::SheetFlange) -> doc::Flange {
         inset_end,
         outline,
         id,
+        line,
     } = flange;
     doc::Flange {
         id: id.unwrap_or_else(|| place_id(place)),
-        on: match (base, tip, side) {
-            (Some(id), None, None) => doc::FlangeOn::Base(doc::EntityId(id)),
-            (None, Some(i), None) => doc::FlangeOn::Tip(i),
-            (None, None, Some(side)) => doc::FlangeOn::Side(
+        on: match (base, tip, side, line) {
+            (Some(id), None, None, None) => doc::FlangeOn::Base(doc::EntityId(id)),
+            (None, Some(i), None, None) => doc::FlangeOn::Tip(i),
+            (None, None, None, Some(l)) => doc::FlangeOn::Line(l.flange, doc::EntityId(l.line)),
+            (None, None, Some(side), None) => doc::FlangeOn::Side(
                 side.flange,
                 match side.end {
                     manifest::FlangeSideEnd::Start => doc::FlangeSide::Start,

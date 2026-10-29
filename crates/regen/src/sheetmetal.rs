@@ -107,7 +107,7 @@ pub(crate) fn analyse(
         .iter()
         .filter_map(|f| match f.on {
             FlangeOn::Base(line) => profiles.iter().position(|p| holds(p, line.0)),
-            FlangeOn::Tip(_) | FlangeOn::Side(..) => None,
+            FlangeOn::Tip(_) | FlangeOn::Side(..) | FlangeOn::Line(..) => None,
         })
         .collect();
     on.sort_unstable();
@@ -193,6 +193,7 @@ pub(crate) fn analyse(
                     FlangeSide::End => 1,
                 },
             ),
+            FlangeOn::Line(j, line) => On::Line(usize::try_from(j).unwrap_or(usize::MAX), line.0),
         };
         let inset = |what: &str, e: &Option<craft3d_doc::Expr>| -> Result<f64, String> {
             match e {

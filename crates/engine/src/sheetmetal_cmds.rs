@@ -23,11 +23,12 @@ use craft3d_kernel::sheetmetal::{
 };
 use serde_json::{Map, Value, json};
 
-const FLANGE_KEYS: [&str; 13] = [
+const FLANGE_KEYS: [&str; 14] = [
     "id",
     "edge",
     "tip",
     "side",
+    "line",
     "insetStart",
     "insetEnd",
     "outline",
@@ -81,12 +82,36 @@ fn flange_value(
         }
         Ok(u32::try_from(n).unwrap_or(u32::MAX))
     };
-    let on = match (map.get("edge"), map.get("tip"), map.get("side")) {
-        (Some(edge), None, None) => {
+    let on = match (
+        map.get("edge"),
+        map.get("tip"),
+        map.get("side"),
+        map.get("line"),
+    ) {
+        (Some(edge), None, None, None) => {
             FlangeOn::Base(crate::sketch_cmds::entity_id(id, "edge", edge)?)
         }
-        (None, Some(tip), None) => FlangeOn::Tip(earlier("tip", tip.as_u64())?),
-        (None, None, Some(side)) => {
+        (None, Some(tip), None, None) => FlangeOn::Tip(earlier("tip", tip.as_u64())?),
+        (None, None, None, Some(line)) => {
+            let bad = || {
+                CommandError::new(format!(
+                    "{id}: flanges.{index}.line is {{\"flange\": the place of an earlier flange with an outline, \"edge\": a line's entity id in that outline's sketch}}"
+                ))
+            };
+            let Value::Object(line) = line else {
+                return Err(bad());
+            };
+            if line.keys().any(|k| k != "flange" && k != "edge") {
+                return Err(bad());
+            }
+            let flange = earlier("line.flange", line.get("flange").and_then(Value::as_u64))?;
+            let edge = line.get("edge").ok_or_else(bad)?;
+            FlangeOn::Line(
+                flange,
+                crate::sketch_cmds::entity_id(id, "line.edge", edge)?,
+            )
+        }
+        (None, None, Some(side), None) => {
             let bad = || {
                 CommandError::new(format!(
                     "{id}: flanges.{index}.side is {{\"flange\": the place of an earlier flange, \"end\": start or end (the side at its bend's start or end)}}"
@@ -108,7 +133,7 @@ fn flange_value(
         }
         _ => {
             return fail(format!(
-                "{id}: flanges.{index} sits on an `edge` of the base (a line's entity id), on the `tip` of an earlier flange or on a `side` of one: give one of them"
+                "{id}: flanges.{index} sits on an `edge` of the base (a line's entity id), on the `tip` of an earlier flange, on a `side` of one or on a `line` of an earlier flange's outline: give one of them"
             ));
         }
     };
@@ -525,6 +550,40 @@ fn check_flanges(
                     ));
                 }
             }
+            FlangeOn::Line(j, line) => {
+                if j as usize >= i {
+                    return fail(format!(
+                        "{id}: flanges.{i}: flange {j} is not an earlier one"
+                    ));
+                }
+                let Some(sketch) = flanges.get(j as usize).and_then(|f| f.outline) else {
+                    return fail(format!(
+                        "{id}: flanges.{i}: flange {j} has no outline of its own: put the flange on its tip or a side"
+                    ));
+                };
+                let drawn = match doc.feature(sketch).map(|f| &f.kind) {
+                    Some(FeatureKind::Sketch(drawn)) => drawn,
+                    _ => {
+                        return fail(format!(
+                            "{id}: flanges.{i}: flange {j}'s outline is no sketch"
+                        ));
+                    }
+                };
+                match drawn.entity(line).map(|e| &e.geometry) {
+                    Ok(Geometry::Line { .. }) => {}
+                    Ok(other) => {
+                        return fail(format!(
+                            "{id}: flanges.{i}: {line} is a {}, not a line: a flange sits on a straight edge",
+                            other.type_name()
+                        ));
+                    }
+                    Err(_) => {
+                        return fail(format!(
+                            "{id}: flanges.{i}: flange {j}'s outline has no {line}"
+                        ));
+                    }
+                }
+            }
             FlangeOn::Tip(j) | FlangeOn::Side(j, _) => {
                 if j as usize >= i {
                     return fail(format!(
@@ -637,6 +696,11 @@ fn flanges_with_ids(
                 FlangeSide::End => 1,
             },
         ),
+        FlangeOn::Line(j, line) => (
+            3,
+            u64::from(list.get(j as usize).map_or(0, |x| x.id)),
+            line.0,
+        ),
     };
     let highest = old
         .iter()
@@ -747,9 +811,9 @@ fn check_corners(
         for f in c.flanges {
             match flanges.get(f as usize).map(|f| f.on) {
                 Some(FlangeOn::Base(_)) => {}
-                Some(FlangeOn::Tip(_) | FlangeOn::Side(..)) => {
+                Some(FlangeOn::Tip(_) | FlangeOn::Side(..) | FlangeOn::Line(..)) => {
                     return fail(format!(
-                        "{id}: corners.{i}: flange {f} sits on a tip or a side; a corner is where two flanges on edges of the base meet"
+                        "{id}: corners.{i}: flange {f} sits on a tip, a side or an outline's line; a corner is where two flanges on edges of the base meet"
                     ));
                 }
                 None => {
@@ -860,6 +924,7 @@ fn on_text(made: &SheetMetal, i: usize) -> String {
         Some(FlangeOn::Base(line)) => line.to_string(),
         Some(FlangeOn::Tip(j)) => format!("tip of flange {j}"),
         Some(FlangeOn::Side(j, side)) => format!("{} side of flange {j}", side.name()),
+        Some(FlangeOn::Line(j, line)) => format!("{line} of flange {j}'s outline"),
         None => "?".to_string(),
     }
 }

@@ -859,6 +859,19 @@ pub struct SheetFlange {
     pub inset_end: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outline: Option<u64>,
+    /// On a line of the own outline of flange `flange` (format version 52,
+    /// a TEMPORARY number).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<SheetFlangeLine>,
+}
+
+/// The line of an earlier flange's own outline a flange sits on: the
+/// flange's place and the line's entity id in that outline's sketch.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SheetFlangeLine {
+    pub flange: u32,
+    pub line: u64,
 }
 
 /// The side of an earlier flange a flange sits on.

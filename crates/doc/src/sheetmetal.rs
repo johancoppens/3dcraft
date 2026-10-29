@@ -75,6 +75,10 @@ pub enum FlangeOn {
     /// A side of the flange at this place in the list (an earlier one):
     /// its edge at the start or at the end of its bend.
     Side(u32, FlangeSide),
+    /// A straight line of the own outline of the flange at this place in
+    /// the list (an earlier one with `outline`), by the line's entity id
+    /// in that outline's sketch (format version 52, a TEMPORARY number).
+    Line(u32, EntityId),
 }
 
 /// Which side of a flange's flat another flange sits on: the one at the
