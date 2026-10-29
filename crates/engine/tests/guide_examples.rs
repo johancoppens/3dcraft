@@ -308,7 +308,7 @@ fn the_outputs_of_the_measuring_chapter_are_as_it_says() {
     let text = read_text(&docs().join("guide/10-measure.md"));
     let block = json_blocks(&text)
         .into_iter()
-        .find(|b| b.contains("variable.measure"))
+        .find(|b| b.contains("variable.measure") && b.contains("levelFor"))
         .expect("the chapter has a block of outputs");
     let steps = steps(&serde_json::from_str(&block).unwrap()).unwrap();
     let mut s = Session::new(craft3d_engine::Workspace::unrestricted());
