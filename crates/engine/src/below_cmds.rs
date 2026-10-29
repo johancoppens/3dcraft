@@ -595,8 +595,9 @@ fn measure_floating(session: &mut Session, params: &Value) -> Run {
 /// centroid: the diagonal of the stiffness whose eigenvalues are the
 /// principal heights, so equal to them where the waterplane is symmetric
 /// about x; stable whether it is stable in both principal directions
-/// (neutral is not stable). A search that does not settle is not proven,
-/// with the kernel's reason.
+/// (neutral, a height within the floor of zero, is not proven either
+/// way, unless another direction is unstable). A search that does not
+/// settle is not proven, with the kernel's reason.
 fn floating_measure(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<Outcome, String> {
     crate::verify_cmds::only(p, &FLOATING_KEYS)?;
     let dim = dim_of(name).ok_or_else(|| format!("unknown measure `{name}`"))?;
@@ -633,7 +634,20 @@ fn floating_measure(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result
         }
     };
     let mut out = if name == "floatingStable" {
-        Outcome::flag(e.is_stable())
+        // Unstable in some direction is a no, stable in all a yes; a
+        // direction whose GM lies within the floor of zero (neutral) is
+        // neither for certain: the measurement cannot tell its sign.
+        if e.is_stable() || e.is_unstable() {
+            Outcome::flag(e.is_stable())
+        } else {
+            let floor = crate::assert_cmds::shown(solved.found.floor);
+            Outcome::unproven(
+                Dim::Flag,
+                format!(
+                    "neutral within measurement: a metacentric height lies within the floor ({floor}) of zero, so whether it turns back or further is not told"
+                ),
+            )
+        }
     } else {
         let value = match name {
             "floatingOffset" => below.offset - solved.point.dot(n),

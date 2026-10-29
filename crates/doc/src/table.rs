@@ -417,6 +417,16 @@ impl Document {
                 users.push(format!("the colour or material of {}", body.feature));
             }
         }
+        // As `rename_table` renames them. What an assertion or an output
+        // measures is text this crate keeps but does not read: the engine
+        // looks there.
+        for output in &self.outputs {
+            if let crate::OutputDef::Expr(expr) = &output.def
+                && uses(expr)
+            {
+                users.push(format!("output `{}`", output.name));
+            }
+        }
         users
     }
 
@@ -741,6 +751,19 @@ mod tests {
         assert_eq!(
             doc.table_users("belt"),
             ["the choices of parameter `profile`", "variable `pitch`"]
+        );
+        doc.set_output(crate::Output {
+            name: "pitchOut".into(),
+            def: crate::OutputDef::Expr(Expr::new("belt[1].pitch")),
+        })
+        .unwrap();
+        assert_eq!(
+            doc.table_users("belt"),
+            [
+                "the choices of parameter `profile`",
+                "variable `pitch`",
+                "output `pitchOut`"
+            ]
         );
         doc.rename_table("belt", "strap").unwrap();
         assert_eq!(

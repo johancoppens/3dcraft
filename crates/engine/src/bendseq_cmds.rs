@@ -40,7 +40,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[spec!(
     "sheetMetal.bendSequence",
     "Bend Sequence",
     r#"{"feature": id or name, "punch": [[x, y], ...], "die": [[x, y], ...], "length": number = the part's reach, "clearance": number = the document's tolerance}"#,
-    "Checks whether a sheet-metal part (feature.sheetMetal) can be bent on a press brake with the punch and die given, and finds an order of its bends (changes nothing). punch and die are closed polygons (at least 3 points, in the document's length unit) in the plane square to a bend: the punch's with the centre of its tip at the origin and its body along +y, the die's with the point under the bend on the part's outer skin at the origin and its body below (y < 0); each is extruded length along the bend, centred on its middle (default: long enough to cover the whole part). At every bend both stand in the bend's frame: origin on the bend's axis (the die's R + T further out), y along the bisector of the two flats towards the inside (as on a press brake where both legs rise half the angle), z along the axis. A step, a bend made with some others already made and the rest still flat, clears when the proven distance (its lower bound) between the punch and every piece of the part but that bend's own strip and its two flats, and between the die counted lowered (moved away from the punch) by clearance plus the document's tolerance and every piece but the bend's own strip, is at least clearance over the whole stroke from 0 to the bend's angle (so the sheet may rest on the die's top, but not go into it by more than the tolerance nor come nearer than clearance from any other side): proven at eight stroke angles, and between two of them less how far any point of the part can move against the tools in between (half its distance from the bend's axis, the farthest at either end of the stroke, plus the bend's neutral radius, per radian), the interval halved (to 1/1024 of the stroke) until that holds, or, for a die wholly below its top (y <= 0), by the piece's lowest point staying above the die's top less the tolerance between them (its height bounded by its heights there and how fast it can bend, halved as needed: what proves a piece lifting off the die); a piece and a tool wholly inside one another count as 0. The order is searched depth first over all orders, the bends whose flanges carry the fewest others first (then the shorter flange, then the lower index), every set of bends made that leads nowhere remembered. Returns feasible, order (the flanges by index, first bent first; null when none clears), steps (per bend of the order: flange, done (the flanges made before it), least (the least distance to the punch proven at the stroke angles measured), at (the stroke angle of it, degrees), proven (the least distance to the punch proven over the whole stroke, between the angles measured too) and die (least, at and proven for the lowered die)), collisions (every step tried that did not clear: flange, done, tool (punch or die), piece (the base, flange i, or the strip of flange i, bent or flat), angle (degrees), distance and lower (the distance found and what is proven below it; to the lowered die for the die), or notProven with the stroke interval no halving could prove; certain: whether it fails for certain, a tool and a piece found nearer than the clearance at a real place or wholly inside one another, where a collision only not proven clear is not), infeasibleProven (with feasible false: whether every step tried that failed failed for certain, so that no order exists; false means no order was found but one may exist), unchecked (what is not looked at) and work (distances measured). Refused: a part with a hole across a bend (owed), a polygon that crosses itself, a clearance that is not more than 0, and a search of more than 20000 distances. Not looked at (said in unchecked): a bend's own strip during its stroke, and its own two flats against the punch (an acute bend with a punch of a wider angle closing its flats onto it is not found).",
+    "Checks whether a sheet-metal part (feature.sheetMetal) can be bent on a press brake with the punch and die given, and finds an order of its bends (changes nothing). punch and die are closed polygons (at least 3 points, in the document's length unit) in the plane square to a bend: the punch's with the centre of its tip at the origin and its body along +y, the die's with the point under the bend on the part's outer skin at the origin and its body below (y < 0); each is extruded length along the bend, centred on its middle (default: long enough to cover the whole part). At every bend both stand in the bend's frame: origin on the bend's axis (the die's R + T further out), y along the bisector of the two flats towards the inside (as on a press brake where both legs rise half the angle), z along the axis. A step, a bend made with some others already made and the rest still flat, clears when the proven distance (its lower bound) between the punch and every piece of the part but that bend's own strip and its two flats, and between the die counted lowered (moved away from the punch) by clearance plus the document's tolerance and every piece but the bend's own strip, is at least clearance over the whole stroke from 0 to the bend's angle (so the sheet may rest on the die's top, but not go into it by more than the tolerance nor come nearer than clearance from any other side), with the part as it lies or turned end for end (about the tools' y, as an operator turns it: the tools mirrored in x): proven at eight stroke angles, and between two of them less how far any point of the part can move against the tools in between (half its distance from the bend's axis, the farthest at either end of the stroke, plus the bend's neutral radius, per radian), the interval halved (to 1/1024 of the stroke) until that holds, or, for a die wholly below its top (y <= 0), by the piece's lowest point staying above the die's top less the tolerance between them (its height bounded by its heights there and how fast it can bend, halved as needed: what proves a piece lifting off the die); a piece and a tool wholly inside one another count as 0. The order is searched depth first over all orders, the bends whose flanges carry the fewest others first (then the shorter flange, then the lower index), every set of bends made that leads nowhere remembered. Returns feasible, order (the flanges by index, first bent first; null when none clears), steps (per bend of the order: flange, done (the flanges made before it), least (the least distance to the punch proven at the stroke angles measured), at (the stroke angle of it, degrees), proven (the least distance to the punch proven over the whole stroke, between the angles measured too) die (least, at and proven for the lowered die) and turned (whether the part is turned end for end for it)), collisions (every step tried that did not clear: flange, done, tool (punch or die), piece (the base, flange i, or the strip of flange i, bent or flat), angle (degrees), distance and lower (the distance found and what is proven below it; to the lowered die for the die), or notProven with the stroke interval no halving could prove; certain: whether it fails for certain, a tool and a piece found nearer than the clearance at a real place or wholly inside one another, where a collision only not proven clear is not, both as the part lies and turned; turned: whether the failure listed is the turned one, the one not certain when only one is), infeasibleProven (with feasible false: whether every step tried that failed failed for certain, so that no order exists; false means no order was found but one may exist), unchecked (what is not looked at) and work (distances measured). Refused: a part with a hole across a bend (owed), a polygon that crosses itself, a clearance that is not more than 0, and a search of more than 20000 distances. Not looked at (said in unchecked): a bend's own strip during its stroke, and its own two flats against the punch (an acute bend with a punch of a wider angle closing its flats onto it is not found).",
     doc: true,
     names: ["feature"],
     bend_sequence
@@ -172,10 +172,13 @@ enum Failure {
         angle: f64,
         distance: f64,
         lower: f64,
+        /// Found with the part turned end for end (the tools mirrored).
+        turned: bool,
     },
     NotProven {
         from: f64,
         to: f64,
+        turned: bool,
     },
 }
 
@@ -198,6 +201,12 @@ impl Failure {
             let before: Vec<String> = done.iter().map(ToString::to_string).collect();
             format!("flange {b} after {}", before.join(", "))
         };
+        let step = match self {
+            Failure::Collision { turned: true, .. } | Failure::NotProven { turned: true, .. } => {
+                format!("{step} (the part turned end for end)")
+            }
+            _ => step,
+        };
         match self {
             Failure::Collision {
                 tool,
@@ -218,6 +227,7 @@ impl Failure {
                 angle,
                 distance,
                 lower,
+                ..
             } => format!(
                 "{step}: the {tool} and {} at {:.3} degrees, {} found apart and proven only above {}",
                 piece.text(),
@@ -225,7 +235,7 @@ impl Failure {
                 crate::assert_cmds::shown(*distance),
                 crate::assert_cmds::shown(*lower)
             ),
-            Failure::NotProven { from, to } => format!(
+            Failure::NotProven { from, to, .. } => format!(
                 "{step}: the stroke between {:.3} and {:.3} degrees is proven neither clear nor colliding",
                 degrees(*from),
                 degrees(*to)
@@ -242,6 +252,8 @@ struct Cleared {
     least: [f64; 2],
     at: [f64; 2],
     proven: [f64; 2],
+    /// Made with the part turned end for end (the tools mirrored).
+    turned: bool,
 }
 
 /// What a step's stroke needs besides the stages: how fast the part can
@@ -269,6 +281,12 @@ struct Check<'a> {
     tol: Tolerance,
     punch: Vec<[f64; 2]>,
     die: Vec<[f64; 2]>,
+    /// The tools mirrored in `x` (`turned_tools`): where they stand
+    /// against the part turned end for end; `None` when both are
+    /// symmetric, so turning changes nothing.
+    turned_tools: Option<(Vec<[f64; 2]>, Vec<[f64; 2]>)>,
+    /// Whether the step being checked has the part turned (`Check::step`).
+    turned: std::cell::Cell<bool>,
     length: Option<f64>,
     clearance: f64,
     pieces: Vec<Piece<'a>>,
@@ -403,9 +421,14 @@ impl Check<'_> {
         let frame = bend_frame(part, b, rho, &worlds).map_err(|e| e.to_string())?;
         let mut least = Lowers::new();
         let mut doubtful: Option<Failure> = None;
+        let turned = self.turned.get();
+        let (punch, die) = match &self.turned_tools {
+            Some((punch, die)) if turned => (punch, die),
+            _ => (&self.punch, &self.die),
+        };
         for (tool, name) in TOOLS.iter().enumerate() {
             let (points, below) = if tool == PUNCH {
-                (&self.punch, 0.0)
+                (punch, 0.0)
             } else {
                 // The die counted lowered (away from the punch) by the
                 // clearance and the tolerance: the sheet rests on its top
@@ -415,7 +438,7 @@ impl Check<'_> {
                 // the die by more than the tolerance, or comes nearer than
                 // the clearance from any other side, does not.
                 (
-                    &self.die,
+                    die,
                     frame.radius + frame.thickness + self.clearance + self.tol.linear,
                 )
             };
@@ -507,6 +530,7 @@ impl Check<'_> {
                         angle: rho,
                         distance: if inside { 0.0 } else { near.distance },
                         lower,
+                        turned,
                     };
                     // A collision found at a real place is the answer; one
                     // only not proven clear is kept while the other
@@ -526,9 +550,35 @@ impl Check<'_> {
         Ok(Ok(least))
     }
 
-    /// Whether bend `b` can be made with `done` made: over its whole
-    /// stroke.
+    /// Whether bend `b` can be made with `done` made, the part as it
+    /// lies or turned end for end. A press brake lets the operator turn
+    /// the part about the brake's vertical (the tools' `y`) between
+    /// bends; for tools extruded symmetrically along the bend (they are,
+    /// centred on its middle) that is the tools mirrored in `x`. So the
+    /// step clears when either clears, and fails for certain only when
+    /// both do; otherwise the failure reported is one not certain.
     fn step(&self, done: &BTreeSet<usize>, b: usize) -> Result<Result<Cleared, Failure>, String> {
+        self.turned.set(false);
+        let given = self.step_as(done, b)?;
+        let Err(failure) = given else {
+            return Ok(given);
+        };
+        if self.turned_tools.is_none() {
+            return Ok(Err(failure));
+        }
+        self.turned.set(true);
+        let turned = self.step_as(done, b);
+        self.turned.set(false);
+        Ok(turn_or(failure, turned?, self.clearance))
+    }
+
+    /// Whether bend `b` can be made with `done` made over its whole
+    /// stroke, the part turned as `turned` says.
+    fn step_as(
+        &self,
+        done: &BTreeSet<usize>,
+        b: usize,
+    ) -> Result<Result<Cleared, Failure>, String> {
         let part = self.part;
         let theta = part.bends.get(b).ok_or("a bend is missing")?.theta();
         let stroke = self.stroke(done, b)?;
@@ -536,6 +586,7 @@ impl Check<'_> {
             least: [f64::INFINITY; 2],
             at: [0.0; 2],
             proven: [f64::INFINITY; 2],
+            turned: self.turned.get(),
         };
         let mut prev: Option<(f64, Lowers)> = None;
         for j in 0..=SAMPLES {
@@ -606,7 +657,11 @@ impl Check<'_> {
             }
         }
         if depth >= MAX_DEPTH {
-            return Ok(Err(Failure::NotProven { from: a, to: c }));
+            return Ok(Err(Failure::NotProven {
+                from: a,
+                to: c,
+                turned: self.turned.get(),
+            }));
         }
         let m = 0.5 * (a + c);
         let lm = match self.at(done, b, m, stroke)? {
@@ -889,6 +944,30 @@ impl Proof {
             _ => None,
         })
     }
+
+    /// The measure's verdict on one part and why (`name` its feature):
+    /// `bendable` with the order, `notProven` while a step failed not for
+    /// certain, `collides` only when every step tried failed for certain.
+    fn verdict(&self, name: &str) -> Verdict {
+        if self.feasible {
+            Verdict::Bendable(self.order.iter().map(|(b, _, _)| *b).collect())
+        } else if let Some(why) = self.doubtful() {
+            Verdict::NotProven(format!("`{name}`: no order was found, but {why}"))
+        } else {
+            let why = self
+                .collision()
+                .unwrap_or_else(|| "no bend can be made first".into());
+            Verdict::Collides(format!("`{name}` cannot be bent in any order: {why}"))
+        }
+    }
+}
+
+/// What the measure says of one part.
+#[derive(Debug, PartialEq)]
+enum Verdict {
+    Bendable(Vec<usize>),
+    NotProven(String),
+    Collides(String),
 }
 
 /// Why a search over orders stopped without an answer.
@@ -905,6 +984,40 @@ struct Tools {
     length: Option<f64>,
     clearance: Option<f64>,
     max_work: usize,
+}
+
+/// A step that failed with the part as it lies (`given`), given what it
+/// does turned end for end: cleared when turned clears; failing for
+/// certain only when both fail for certain; otherwise the failure not
+/// certain (so no order is not proven while it stands).
+fn turn_or(
+    given: Failure,
+    turned: Result<Cleared, Failure>,
+    clearance: f64,
+) -> Result<Cleared, Failure> {
+    match turned {
+        Ok(cleared) => Ok(cleared),
+        Err(t) if given.certain(clearance) && !t.certain(clearance) => Err(t),
+        Err(_) => Err(given),
+    }
+}
+
+/// A tool's polygon mirrored in `x` (the part turned end for end), its
+/// points reversed so it keeps its sense of turning.
+fn mirrored(points: &[[f64; 2]]) -> Vec<[f64; 2]> {
+    points.iter().rev().map(|p| [-p[0], p[1]]).collect()
+}
+
+/// Whether two polygons have the same points (in any order): a tool
+/// symmetric in `x` is its own mirror image, so turning the part changes
+/// nothing and is not checked twice.
+fn same_points(a: &[[f64; 2]], b: &[[f64; 2]]) -> bool {
+    let sorted = |p: &[[f64; 2]]| {
+        let mut p = p.to_vec();
+        p.sort_by(|x, y| x[0].total_cmp(&y[0]).then(x[1].total_cmp(&y[1])));
+        p
+    };
+    a.len() == b.len() && sorted(a) == sorted(b)
 }
 
 /// Searches for an order in which part `feature` of `doc` can be bent
@@ -939,11 +1052,18 @@ fn prove(
     }
     let slabs = slabs_of(part, &tol).map_err(Stopped::Error)?;
     let pieces = pieces_of(part, &slabs, &tol).map_err(Stopped::Error)?;
+    let turned_tools = {
+        let (punch, die) = (mirrored(&tools.punch), mirrored(&tools.die));
+        (!(same_points(&punch, &tools.punch) && same_points(&die, &tools.die)))
+            .then_some((punch, die))
+    };
     let check = Check {
         part,
         tol,
         punch: tools.punch,
         die: tools.die,
+        turned_tools,
+        turned: std::cell::Cell::new(false),
         length: tools.length,
         clearance,
         pieces,
@@ -1032,6 +1152,7 @@ fn bend_sequence(session: &mut Session, params: &Value) -> Run {
             let mut v = c.json(PUNCH);
             v.insert("flange".into(), json!(b));
             v.insert("done".into(), json!(before.iter().collect::<Vec<_>>()));
+            v.insert("turned".into(), json!(c.turned));
             v.insert("die".into(), Value::Object(c.json(DIE)));
             Value::Object(v)
         })
@@ -1052,14 +1173,17 @@ fn bend_sequence(session: &mut Session, params: &Value) -> Run {
                     angle,
                     distance,
                     lower,
+                    turned,
                 } => {
+                    v.insert("turned".into(), json!(turned));
                     v.insert("tool".into(), json!(tool));
                     v.insert("piece".into(), json!(piece.text()));
                     v.insert("angle".into(), json!(degrees(*angle)));
                     v.insert("distance".into(), json!(distance));
                     v.insert("lower".into(), json!(lower));
                 }
-                Failure::NotProven { from, to } => {
+                Failure::NotProven { from, to, turned } => {
+                    v.insert("turned".into(), json!(turned));
                     v.insert("notProven".into(), json!([degrees(*from), degrees(*to)]));
                 }
             }
@@ -1072,7 +1196,7 @@ fn bend_sequence(session: &mut Session, params: &Value) -> Run {
     let proven = if feasible {
         Value::Null
     } else {
-        json!(proof.doubtful().is_none())
+        json!(matches!(proof.verdict(""), Verdict::Collides(_)))
     };
     Ok(json!({
         "feature": feature.to_string(),
@@ -1193,25 +1317,23 @@ pub(crate) fn take(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, Str
             Ok(proof) => {
                 left = left.saturating_sub(proof.work);
                 one.insert("work".into(), proof.work.into());
-                if proof.feasible {
-                    let order: Vec<usize> = proof.order.iter().map(|(b, _, _)| *b).collect();
-                    let words: Vec<String> = order.iter().map(ToString::to_string).collect();
-                    orders.push(format!("`{name}` in the order {}", words.join(", ")));
-                    one.insert("verdict".into(), "bendable".into());
-                    one.insert("order".into(), json!(order));
-                } else if let Some(why) = proof.doubtful() {
-                    let why = format!("`{name}`: no order was found, but {why}");
-                    one.insert("verdict".into(), "notProven".into());
-                    one.insert("why".into(), why.clone().into());
-                    doubts.push(why);
-                } else {
-                    let why = proof
-                        .collision()
-                        .unwrap_or_else(|| "no bend can be made first".into());
-                    let why = format!("`{name}` cannot be bent in any order: {why}");
-                    one.insert("verdict".into(), "collides".into());
-                    one.insert("why".into(), why.clone().into());
-                    fails.push(why);
+                match proof.verdict(&name) {
+                    Verdict::Bendable(order) => {
+                        let words: Vec<String> = order.iter().map(ToString::to_string).collect();
+                        orders.push(format!("`{name}` in the order {}", words.join(", ")));
+                        one.insert("verdict".into(), "bendable".into());
+                        one.insert("order".into(), json!(order));
+                    }
+                    Verdict::NotProven(why) => {
+                        one.insert("verdict".into(), "notProven".into());
+                        one.insert("why".into(), why.clone().into());
+                        doubts.push(why);
+                    }
+                    Verdict::Collides(why) => {
+                        one.insert("verdict".into(), "collides".into());
+                        one.insert("why".into(), why.clone().into());
+                        fails.push(why);
+                    }
                 }
             }
             Err(Stopped::OutOfWork(e)) => {
@@ -1323,6 +1445,8 @@ mod tests {
                 tol,
                 punch: vec![[-k, 0.0], [k, 0.0], [k, 100.0 * k], [-k, 100.0 * k]],
                 die: vec![[-k, -k], [k, -k], [k, 0.0], [-k, 0.0]],
+                turned_tools: None,
+                turned: std::cell::Cell::new(false),
                 length: None,
                 clearance: tol.linear,
                 pieces: pieces_of(part, &slabs, &tol).unwrap(),
@@ -1445,6 +1569,8 @@ mod tests {
             tol,
             punch: vec![[-k, 0.0], [k, 0.0], [k, 100.0 * k], [-k, 100.0 * k]],
             die: vec![[-k, -k], [k, -k], [k, 0.0], [-k, 0.0]],
+            turned_tools: None,
+            turned: std::cell::Cell::new(false),
             length: None,
             clearance: tol.linear,
             pieces: pieces_of(part, &slabs, &tol).unwrap(),
@@ -1467,5 +1593,95 @@ mod tests {
         base.corners.clear();
         let err = check.stroke(&done, 1).unwrap_err();
         assert!(err.contains("no points"), "{err}");
+    }
+
+    fn collision(distance: f64, lower: f64, turned: bool) -> Failure {
+        Failure::Collision {
+            tool: "punch",
+            piece: Kind::Flat(0),
+            angle: 1.0,
+            distance,
+            lower,
+            turned,
+        }
+    }
+
+    fn proof(tried: Vec<Result<Cleared, Failure>>) -> Proof {
+        Proof {
+            feasible: false,
+            order: Vec::new(),
+            tried: tried
+                .into_iter()
+                .enumerate()
+                .map(|(b, r)| ((BTreeSet::new(), b), r))
+                .collect(),
+            work: 0,
+            clearance: 0.1,
+        }
+    }
+
+    /// The decisive branch: a step whose collision is only not proven
+    /// clear (`lower < clearance <= distance`), or whose stroke has an
+    /// interval no halving proved, leaves no order not proven (the
+    /// measure's notProven, the command's infeasibleProven false); only
+    /// when every step failed for certain is it a no.
+    #[test]
+    fn a_doubtful_step_leaves_no_order_not_proven() {
+        let certain = collision(0.05, 0.0, false);
+        let doubtful = collision(0.2, 0.05, false);
+        let interval = Failure::NotProven {
+            from: 0.0,
+            to: 0.1,
+            turned: false,
+        };
+        assert!(certain.certain(0.1));
+        assert!(!doubtful.certain(0.1));
+        assert!(!interval.certain(0.1));
+        for other in [doubtful, interval] {
+            let p = proof(vec![Err(certain.clone()), Err(other)]);
+            let Verdict::NotProven(why) = p.verdict("U") else {
+                panic!("{:?}", p.verdict("U"));
+            };
+            assert!(why.contains("no order was found, but"), "{why}");
+        }
+        let p = proof(vec![Err(certain.clone()), Err(certain)]);
+        assert!(matches!(p.verdict("U"), Verdict::Collides(_)));
+    }
+
+    /// Turning the part end for end: a step clears when either way clears,
+    /// fails for certain only when both ways do, and otherwise reports the
+    /// way not certain.
+    #[test]
+    fn a_step_fails_for_certain_only_when_it_does_turned_too() {
+        let cleared = Cleared {
+            least: [1.0; 2],
+            at: [0.0; 2],
+            proven: [1.0; 2],
+            turned: true,
+        };
+        let certain = collision(0.05, 0.0, false);
+        let turned_certain = collision(0.0, 0.0, true);
+        let turned_doubtful = collision(0.2, 0.05, true);
+        let turned_interval = Failure::NotProven {
+            from: 0.0,
+            to: 0.1,
+            turned: true,
+        };
+        assert!(turn_or(certain.clone(), Ok(cleared), 0.1).is_ok_and(|c| c.turned));
+        let r = turn_or(certain.clone(), Err(turned_doubtful), 0.1).unwrap_err();
+        assert!(!r.certain(0.1) && matches!(r, Failure::Collision { turned: true, .. }));
+        let r = turn_or(certain.clone(), Err(turned_interval), 0.1).unwrap_err();
+        assert!(matches!(r, Failure::NotProven { turned: true, .. }));
+        let r = turn_or(certain.clone(), Err(turned_certain), 0.1).unwrap_err();
+        assert!(r.certain(0.1) && matches!(r, Failure::Collision { turned: false, .. }));
+        // Given doubtful: it stays, whatever turned finds.
+        let doubtful = collision(0.2, 0.05, false);
+        let r = turn_or(doubtful, Err(certain), 0.1).unwrap_err();
+        assert!(!r.certain(0.1));
+        // A symmetric tool is its own mirror image.
+        let straight = [[-5.0, 0.0], [5.0, 0.0], [5.0, 100.0], [-5.0, 100.0]];
+        assert!(same_points(&mirrored(&straight), &straight));
+        let goose = [[-25.0, 0.0], [5.0, 0.0], [5.0, 30.0], [-25.0, 30.0]];
+        assert!(!same_points(&mirrored(&goose), &goose));
     }
 }

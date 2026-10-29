@@ -108,8 +108,8 @@ waterline at its level) and `levelFor` (with `volume`), each with the same `of`,
 floats upright keeps doing so as it changes: `floatingOffset` (the waterplane's offset along its normal),
 `floatingHeel` and `floatingTrim` (its angles from the upright plane; write the bounds with a unit, `"3 deg"`),
 `floatingGM` and `floatingGML` (the metacentric heights for a heel, a turn about the plane's x axis, and for a
-trim, about its y axis) and `floatingStable` (`is`: stable both ways), all of the equilibrium reached from the
-start. They take the parameters of `measure.floating`, and every value may be a formula of the variables and
+trim, about its y axis) and `floatingStable` (`is`: stable both ways; *notProven* when it is neutral within measurement), all of the
+equilibrium reached from the start. They take the parameters of `measure.floating`, and every value may be a formula of the variables and
 the outputs, so the centre of gravity can be computed by the design:
 
 ```json

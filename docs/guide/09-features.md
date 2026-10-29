@@ -253,7 +253,8 @@ bent on a press brake with your punch and die (each a polygon in the plane squar
 tip centre and the die's top at the origin, `y` up into the punch) and finds an order of the bends: every
 step is proven to keep the punch at least `clearance` from every piece of the part but the bend and its
 two flats, and the die from every piece but the bend, over the whole stroke (the sheet may rest on the
-die's top, not go into it), and a step that does not is listed by bend, by the bends made before it, by
+die's top, not go into it), with the part as it lies or turned end for end (`turned` in the step, for a
+gooseneck whose throat faces the other way), and a step that does not is listed by bend, by the bends made before it, by
 tool and by piece; `unchecked` says what is not looked at (`certain` per step and `infeasibleProven` say
 whether no order is proven or only not found). As an assertion, `bendable` keeps that check with the part:
 `is` true holds when an order is found for every part named, fails when none exists (every step tried

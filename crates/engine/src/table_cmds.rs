@@ -177,7 +177,7 @@ fn table_delete(session: &mut Session, params: &Value) -> Run {
             known(doc)
         ));
     }
-    let users = doc.table_users(name);
+    let users = crate::assert_cmds::table_users(doc, name);
     let choosers: Vec<&String> = users
         .iter()
         .filter(|u| u.starts_with("the choices of"))
@@ -295,7 +295,7 @@ fn describe(doc: &Document, name: &str, rows: bool) -> Value {
         "columns": columns,
         "rows": table.rows.len(),
         "keys": table.keys(),
-        "usedBy": doc.table_users(name),
+        "usedBy": crate::assert_cmds::table_users(doc, name),
     });
     if rows && let Some(map) = out.as_object_mut() {
         let cells: Vec<Value> = table

@@ -178,6 +178,42 @@ pub(crate) fn rename_table_in_measures(doc: &mut Document, old: &str, new: &str)
     });
 }
 
+/// What uses table `name` in `doc`: what `Document::table_users` finds,
+/// and the assertions and outputs whose measure looks it up inside its
+/// own parameters (text the document keeps but does not read), each
+/// named once.
+pub(crate) fn table_users(doc: &Document, name: &str) -> Vec<String> {
+    let mut users = doc.table_users(name);
+    let uses = |measure: &str| {
+        let found = std::cell::Cell::new(false);
+        rewritten_measure(measure, &|text| {
+            if craft3d_expr::Expr::parse(text).is_ok_and(|e| e.tables().contains(&name)) {
+                found.set(true);
+            }
+            None
+        });
+        found.get()
+    };
+    let mut add = |user: String| {
+        if !users.contains(&user) {
+            users.push(user);
+        }
+    };
+    for assertion in &doc.assertions {
+        if uses(&assertion.measure) {
+            add(format!("assertion `{}`", assertion.name));
+        }
+    }
+    for output in &doc.outputs {
+        if let craft3d_doc::OutputDef::Measure(measure) = &output.def
+            && uses(measure)
+        {
+            add(format!("output `{}`", output.name));
+        }
+    }
+    users
+}
+
 /// Rewrites the expressions inside what the assertions and the outputs
 /// of `doc` measure by `rewrite` (`None`: left as it is).
 fn rewrite_measures(doc: &mut Document, rewrite: &dyn Fn(&str) -> Option<String>) {
@@ -857,8 +893,26 @@ fn check(doc: &Document, regen: &Regen, assertion: &Assertion, outputs: &Resolve
         Dim::Of(d) => d,
         _ => craft3d_expr::Dimension::NONE,
     };
-    let value_of =
-        |e: &Expr, key: &str| ctx.quantity_of(&Value::String(e.source().to_string()), key, wanted);
+    let value_of = |e: &Expr, key: &str| {
+        let source = Value::String(e.source().to_string());
+        // A plain number bounding an angle is neither degrees nor
+        // radians for certain (a measure's own angle parameters take one
+        // as degrees, the document's angle unit is radians): refused
+        // unless 0, which is both.
+        if wanted.angle != 0
+            && let Ok(q) = ctx.evaluate(e.source(), key)
+            && q.dimension.is_dimensionless()
+            && q.value != 0.0
+        {
+            return Err(format!(
+                "`{key}` is a plain number ({}), but an angle is needed: write it with its unit, such as `{} deg` or `{} rad`",
+                shown(q.value),
+                shown(q.value),
+                shown(q.value)
+            ));
+        }
+        ctx.quantity_of(&source, key, wanted)
+    };
     type Bounds = (Option<f64>, Option<f64>, Option<bool>);
     let bounds: Result<Bounds, String> = match &assertion.expect {
         Expect::Is(is) => {

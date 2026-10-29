@@ -288,6 +288,100 @@ fn an_unknown_centre_of_gravity_leaves_the_assertion_not_proven() {
     assert_eq!(assertion(&mut s, "sunk")["status"], "error");
 }
 
+/// A sphere with its centre of gravity at its centre floats neutral in
+/// every direction (every metacentric height 0, within the floor): stable
+/// is not proven either way, through the assertion and as an output
+/// (review 2026-10-29: it was a certain no). Off the centre, below it,
+/// it is stable.
+#[test]
+fn a_neutral_sphere_is_neither_stable_nor_unstable_for_certain() {
+    for k in SCALES {
+        let mut s = Session::new(Workspace::none());
+        run(
+            &mut s,
+            "file.new",
+            json!({"units": "mm", "tolerance": 1e-6 * k}),
+        );
+        run(
+            &mut s,
+            "feature.sphere",
+            json!({"radius": mm(100.0 * k), "name": "Ball"}),
+        );
+        let whole = 4.0 / 3.0 * std::f64::consts::PI * (100.0 * k).powi(3);
+        run(
+            &mut s,
+            "assert.add",
+            json!({"name": "stable", "measure": "floatingStable", "of": "Ball", "volume": 0.3 * whole,
+                   "centerOfGravity": [0, 0, 0], "is": true}),
+        );
+        let a = assertion(&mut s, "stable");
+        assert_eq!(a["status"], "notProven", "scale {k}: {a}");
+        assert!(
+            a["message"]
+                .as_str()
+                .unwrap()
+                .contains("neutral within measurement"),
+            "{a}"
+        );
+        run(
+            &mut s,
+            "variable.measure",
+            json!({"name": "upright", "measure": "floatingStable", "of": "Ball", "volume": 0.3 * whole,
+                   "centerOfGravity": [0, 0, 0]}),
+        );
+        assert_eq!(output(&mut s, "upright")["status"], "unknown");
+        run(
+            &mut s,
+            "assert.add",
+            json!({"name": "low", "measure": "floatingStable", "of": "Ball", "volume": 0.3 * whole,
+                   "centerOfGravity": [0, 0, mm(-30.0 * k)], "is": true}),
+        );
+        let a = assertion(&mut s, "low");
+        assert_eq!(a["status"], "passed", "scale {k}: {a}");
+    }
+}
+
+/// A table looked up only inside a measure's own parameters is used:
+/// `table.delete` without force refuses, naming the assertion and the
+/// output (review 2026-10-29: it saw only an assertion's bounds), and
+/// `table.list` lists them.
+#[test]
+fn a_table_used_inside_a_measure_is_not_deleted_without_force() {
+    let mut s = barge(1.0);
+    run(
+        &mut s,
+        "table.set",
+        json!({"name": "loads", "columns": ["load", "v"],
+               "rows": [["light", 3e8]]}),
+    );
+    run(
+        &mut s,
+        "assert.add",
+        json!({"name": "GM", "measure": "floatingGM", "of": "Barge", "volume": "loads[1].v",
+               "centerOfGravity": [0, 0, "zG"], "min": "0 mm"}),
+    );
+    run(
+        &mut s,
+        "variable.measure",
+        json!({"name": "draftOut", "measure": "floatingOffset", "of": "Barge", "volume": "loads[1].v",
+               "centerOfGravity": [0, 0, "zG"]}),
+    );
+    let e = refused(&mut s, "table.delete", json!({"name": "loads"}));
+    assert!(e.contains("assertion `GM`"), "{e}");
+    assert!(e.contains("output `draftOut`"), "{e}");
+    let got = run(&mut s, "table.list", json!({"name": "loads"}));
+    assert_eq!(
+        got["usedBy"],
+        json!(["assertion `GM`", "output `draftOut`"]),
+        "{got}"
+    );
+    run(
+        &mut s,
+        "table.delete",
+        json!({"name": "loads", "force": true}),
+    );
+}
+
 #[test]
 fn bad_parameters_are_errors_not_crashes() {
     let mut s = barge(1.0);
@@ -312,6 +406,16 @@ fn bad_parameters_are_errors_not_crashes() {
         (
             json!({"measure": "floatingTrim", "of": "Nowhere", "volume": 3e8, "centerOfGravity": cog, "max": "1 deg"}),
             "Nowhere",
+        ),
+        // A plain number bounding an angle: the heel's own 5 is degrees,
+        // but a bound of 5 would be 5 radians (review 2026-10-29).
+        (
+            json!({"measure": "floatingHeel", "of": "Barge", "volume": 3e8, "centerOfGravity": cog, "heel": 5, "max": 5}),
+            "plain number",
+        ),
+        (
+            json!({"measure": "floatingTrim", "of": "Barge", "volume": 3e8, "centerOfGravity": cog, "min": "-2", "max": "2 deg"}),
+            "plain number",
         ),
     ] {
         let mut p = params.clone();
