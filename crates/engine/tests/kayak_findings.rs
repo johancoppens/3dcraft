@@ -83,6 +83,17 @@
 //!     within the tolerance", as a march stepped over a stretch where the
 //!     curve runs past the edge of the other face's surface and back.
 //!     Now a branch is divided where it leaves the other surface.
+//! 21. The kayak Jig at its own tolerance (0.01 mm, its `new.json`; every
+//!     repro above runs at the default 1e-6 mm): the drilled sheer plate
+//!     and the deck over it (`Top4Sh`, `Deck4Sh`, at the defaults), the
+//!     sheer plate and the plank under it with the Fine and the Full ends
+//!     (22, 23: `Plank2Sh`, `Top4Sh`) and the garboards on a single-chine
+//!     hull (24: `Plank0Sh`, `Plank0Ph`) were refused, "two points closer
+//!     together than the tolerance can tell apart": a hole's wall meets
+//!     the plate beside it in a closed curve along the hole's rim, and
+//!     where its trace started (its seam) lay one or two tolerances from
+//!     the vertex of the rim's own edge. Now the seam of a closed curve is
+//!     the place next to it, as an end of an open curve is.
 
 #![allow(
     clippy::unwrap_used,
@@ -624,4 +635,49 @@ fn the_inner_hull_is_the_half_hull_cut_by_its_mirror_image() {
         (inner + outside - half).abs() <= 1e-6 * half,
         "{inner} + {outside} against {half}"
     );
+}
+
+/// Whether `a` and `b` share no volume, as the Jig asks it (the `overlap`
+/// assertion) and as `document.interference` tells it: a touch.
+fn touch(s: &mut Session, a: &str, b: &str) {
+    let added = s
+        .execute(
+            "assert.add",
+            &json!({"name": format!("{a} and {b} share no volume"), "measure": "overlap", "of": [a, b], "is": false}),
+        )
+        .unwrap();
+    assert_eq!(added["status"], "passed", "{added}");
+    let found = s
+        .execute(
+            "document.interference",
+            &json!({"pairs": [[a, b]], "details": false}),
+        )
+        .unwrap();
+    let summary = &found["summary"];
+    assert_eq!(summary["unknown"], 0, "{found}");
+    assert_eq!(summary["overlap"], 0, "{found}");
+    assert_eq!(summary["touch"], 1, "{found}");
+}
+
+#[test]
+fn the_drilled_sheer_plate_and_deck_touch_at_the_jigs_tolerance() {
+    let (mut s, failed) = steps("sea_kayak_21.steps.json");
+    assert!(failed.is_empty(), "{failed:#?}");
+    touch(&mut s, "Top4Sh", "Deck4Sh");
+}
+
+#[test]
+fn the_sheer_plate_and_the_plank_under_it_touch_with_fine_and_full_ends() {
+    for file in ["sea_kayak_22.steps.json", "sea_kayak_23.steps.json"] {
+        let (mut s, failed) = steps(file);
+        assert!(failed.is_empty(), "{file}: {failed:#?}");
+        touch(&mut s, "Plank2Sh", "Top4Sh");
+    }
+}
+
+#[test]
+fn the_garboards_of_a_single_chine_hull_touch_at_the_jigs_tolerance() {
+    let (mut s, failed) = steps("sea_kayak_24.steps.json");
+    assert!(failed.is_empty(), "{failed:#?}");
+    touch(&mut s, "Plank0Sh", "Plank0Ph");
 }

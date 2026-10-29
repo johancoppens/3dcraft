@@ -838,3 +838,81 @@ fn a_narrow_spike_on_a_face_is_not_taken_for_coincidence() {
         }
     }
 }
+
+/// Two plates stacked on one skin (as in
+/// [`plates_stacked_on_one_skin_touch`]), the lower one drilled through
+/// where the upper one covers it, at tolerances up to a fortieth of a
+/// percent of the plates' thickness (the sea-kayak Jig's 0.01 mm against
+/// 4 mm plates, repros 21 to 24): each hole's wall meets the upper plate's
+/// floor in a closed curve along the hole's rim, traced from wherever its
+/// trace happens to start, and the rim's own edge, which lies on that
+/// floor, has its vertex a tolerance or two from that start. The seam of
+/// the closed curve is no place of its own: it is the rim's vertex, and
+/// the plates touch (the intersection is empty, the union holds both).
+/// Refused before, "two points closer together than the tolerance can
+/// tell apart".
+#[test]
+fn holes_through_a_plate_under_another_on_one_skin() {
+    use craft3d_kernel::KernelError;
+    use craft3d_kernel::boolean::boolean;
+    use craft3d_math::Tolerance;
+    let shared = common(RA, RB);
+    for k in SCALES {
+        for relative in [1e-6, 1e-4, 1e-3, 2.5e-3] {
+            let tol = Tolerance::new(relative * k, 1e-9).unwrap();
+            let mut a = hexahedron(
+                k,
+                &Level::on(k, 0.0),
+                &Level::Skin {
+                    lift: H,
+                    surface: parted(&skin(k, H), RA, k),
+                },
+                RA,
+            );
+            let b = hexahedron(
+                k,
+                &Level::Skin {
+                    lift: H,
+                    surface: parted(&skin(k, H), RB, k),
+                },
+                &Level::on(k, 2.0 * H),
+                RB,
+            );
+            let ((u0, u1), (v0, v1)) = shared;
+            let mut drilled = 0.0;
+            for i in 0..3 {
+                for j in 0..4 {
+                    let u = u0 + (u1 - u0) * (0.2 + 0.3 * f64::from(i));
+                    let v = v0 + (v1 - v0) * (0.14 + 0.24 * f64::from(j));
+                    let r = 0.02 + 0.003 * f64::from(i + 2 * j);
+                    let drill = boolean_common::rod(k, [L * u, W * v, -1.0], r, 4.0);
+                    let what = format!("hole {i} {j} at scale {k}, tolerance {relative}");
+                    a = boolean(&a, &drill, Subtract, &tol)
+                        .unwrap_or_else(|e| panic!("{what}: {e}"))
+                        .body;
+                    drilled += 1.0;
+                }
+            }
+            let what = format!("scale {k}, tolerance {relative}");
+            let (va, vb) = (mass(&a).volume, mass(&b).volume);
+            assert!(
+                drilled > 0.0 && va < H * L * W * area(RA) * k * k * k,
+                "{what}"
+            );
+            for (x, y) in [(&a, &b), (&b, &a)] {
+                match boolean(x, y, Intersect, &tol) {
+                    Err(KernelError::EmptyResult { .. }) => {}
+                    other => panic!("{what}: expected an empty intersection, got {other:?}"),
+                }
+            }
+            let union = boolean(&a, &b, Union, &tol).unwrap_or_else(|e| panic!("{what}: {e}"));
+            assert_eq!(check(&union.body, &tol), [], "{what}");
+            let found = mass(&union.body).volume;
+            let expected = va + vb;
+            assert!(
+                (found - expected).abs() <= 1e-6 * expected,
+                "{what}: the union holds {found}, the plates {expected}"
+            );
+        }
+    }
+}
