@@ -464,6 +464,7 @@ version = "0.1.0"
 name = "craft3d-engine"
 version = "0.1.0"
 dependencies = [
+ "craft3d-assembly",
  "craft3d-doc",
  "craft3d-drawing",
  "craft3d-expr",
