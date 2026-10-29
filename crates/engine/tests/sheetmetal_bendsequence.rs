@@ -36,7 +36,7 @@ mod common;
 use common::checked::{built, error, new_document, run, session_in, workdir};
 use craft3d_engine::Session;
 use serde_json::{Value, json};
-use std::f64::consts::SQRT_2;
+use std::f64::consts::{PI, SQRT_2};
 
 const SCALES: [f64; 3] = [1e-3, 1.0, 1e6];
 
@@ -331,6 +331,71 @@ fn a_tool_wholly_inside_the_sheet_collides() {
             assert_eq!(c["tool"], "die", "{c}");
             assert_eq!(c["angle"], 0.0, "{c}");
             assert_eq!(c["lower"], 0.0, "{c}");
+        }
+    }
+}
+
+/// A part named `U` whose base is the closed polygon `points` (scaled by
+/// `k`), a flange `h` high bent 90 degrees up on its side `edge`.
+fn polygon_part(s: &mut Session, k: f64, points: &[[f64; 2]], edge: usize, h: f64) {
+    run(s, "sketch.create", json!({"plane": "xy", "name": "Base"}));
+    let made = run(
+        s,
+        "sketch.polyline",
+        json!({"sketch": "Base", "closed": true, "points": scaled(points, k)}),
+    );
+    let line = made["lines"][edge].as_str().unwrap().to_string();
+    built(
+        s,
+        "feature.sheetMetal",
+        json!({"sketch": "Base", "name": "U", "thickness": mm(k), "radius": mm(k),
+               "kFactor": 0.5,
+               "flanges": [{"edge": line, "length": mm(h * k), "angle": "90 deg"}]}),
+    );
+}
+
+/// A flange on a side that does not run along the sketch's axes (review
+/// 2026-10-29: the flats' hull was their box in the pattern's axes, whose
+/// corners stood past a slanted bend line and below the die's top as soon
+/// as the stroke began, so every such part was notProven): a triangle, a
+/// rectangle turned 30 degrees and a hexagon, each one bend that clears
+/// with the base lying on the die.
+#[test]
+fn a_flange_on_a_slanted_edge_is_proven_lying_on_the_die() {
+    let (c, s30) = ((PI / 6.0).cos(), (PI / 6.0).sin());
+    let turned: Vec<[f64; 2]> = [[0.0, 0.0], [40.0, 0.0], [40.0, 30.0], [0.0, 30.0]]
+        .iter()
+        .map(|p| [c * p[0] - s30 * p[1], s30 * p[0] + c * p[1]])
+        .collect();
+    let hexagon: Vec<[f64; 2]> = (0..6)
+        .map(|i| {
+            let a = PI / 3.0 * f64::from(i);
+            [20.0 * a.cos(), 20.0 * a.sin()]
+        })
+        .collect();
+    let shapes: [(&str, &[[f64; 2]]); 3] = [
+        ("triangle", &[[0.0, 0.0], [40.0, 0.0], [20.0, 30.0]]),
+        ("turned", &turned),
+        ("hexagon", &hexagon),
+    ];
+    for k in SCALES {
+        for (name, points) in shapes {
+            let dir = workdir("sheetmetal-bendsequence", &format!("slanted-{name}-{k}"));
+            let mut s = session_in(&dir);
+            new_document(&mut s, k);
+            polygon_part(&mut s, k, points, 1, 10.0);
+            let out = sequence(&mut s, k, &STRAIGHT);
+            assert_eq!(out["feasible"], true, "{name}, scale {k}: {out}");
+            assert_eq!(out["order"], json!([0]), "{name}, scale {k}: {out}");
+            assert!(
+                out["collisions"].as_array().unwrap().is_empty(),
+                "{name}, scale {k}: {out}"
+            );
+            // The base lies on the die: proven within the lowering.
+            let die = &out["steps"][0]["die"];
+            let lowered = out["clearance"].as_f64().unwrap() + 1e-6 * k;
+            let least = die["least"].as_f64().unwrap();
+            assert!(least <= lowered * (1.0 + 1e-9), "{name}, scale {k}: {die}");
         }
     }
 }
