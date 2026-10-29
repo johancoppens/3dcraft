@@ -2316,32 +2316,26 @@ mod tests {
     /// one (`ranked_strokes` with segmented tooling), the order is found.
     #[test]
     fn segmented_tooling_does_not_force_a_stroke() {
-        let cleared = Cleared {
-            least: [1.0; 2],
-            at: [0.0; 2],
-            proven: [1.0; 2],
-            turned: false,
-        };
-        let mut step = |done: &BTreeSet<usize>, g: &[usize]| {
+        fn step(done: &BTreeSet<usize>, g: &[usize]) -> Result<Result<Cleared, Failed>, String> {
             let blocked =
                 (g.contains(&0) && done.contains(&2)) || (g.contains(&2) && done.contains(&1));
             Ok(if blocked {
                 Err(Failed(vec![collision(0.0, 0.0, false)]))
             } else {
-                Ok(cleared)
+                Ok(Cleared {
+                    least: [1.0; 2],
+                    at: [0.0; 2],
+                    proven: [1.0; 2],
+                    turned: false,
+                })
             })
-        };
-        let run = |ranked: &[Vec<usize>],
-                   step: &mut dyn FnMut(
-            &BTreeSet<usize>,
-            &[usize],
-        ) -> Result<Result<Cleared, Failed>, String>| {
+        }
+        let run = |ranked: &[Vec<usize>]| {
             let mut p = proof(Vec::new());
             let (mut done, mut dead) = (BTreeSet::new(), BTreeSet::new());
             let mut order = Vec::new();
-            let mut call = |d: &BTreeSet<usize>, g: &[usize]| step(d, g);
             p.feasible = search(
-                &mut call,
+                &mut step,
                 &mut done,
                 &mut order,
                 &mut dead,
@@ -2352,9 +2346,9 @@ mod tests {
             p.order = order;
             p
         };
-        let forced = run(&[vec![0, 1], vec![2]], &mut step);
+        let forced = run(&[vec![0, 1], vec![2]]);
         assert!(matches!(forced.verdict("U"), Verdict::Collides(_)));
-        let options = run(&[vec![0, 1], vec![2], vec![0], vec![1]], &mut step);
+        let options = run(&[vec![0, 1], vec![2], vec![0], vec![1]]);
         assert_eq!(
             options.verdict("U"),
             Verdict::Bendable(vec![vec![0], vec![2], vec![1]])
