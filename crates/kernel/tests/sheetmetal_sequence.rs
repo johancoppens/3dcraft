@@ -350,7 +350,7 @@ fn the_hull_holds_arcs_either_way_round_and_whole_circles() {
         for (seg, from, to) in &cases {
             let hull = convex_hull(&outline_hull(std::slice::from_ref(seg)));
             let craft3d_kernel::profile::Shape::Arc { center, radius } = seg.shape else {
-                unreachable!()
+                panic!("an arc")
             };
             for j in 0..=256 {
                 let a = from + (to - from) * j as f64 / 256.0;
