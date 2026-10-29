@@ -187,7 +187,8 @@ fn a_trace_is_exported_in_its_plane_to_svg_and_dxf() {
     );
     assert_eq!(svg["paths"], 1);
     assert_eq!(svg["closed"], 1);
-    assert_eq!(svg["lines"], 32);
+    // 32 corners; the closing side is the chain's `closed`, not a line.
+    assert_eq!(svg["lines"], 31);
     let text = std::fs::read_to_string(dir.join("foot.svg")).unwrap();
     assert!(text.contains("<path"), "{text}");
     let dxf = run(

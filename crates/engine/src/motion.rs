@@ -560,10 +560,11 @@ fn view_motion(session: &mut Session, params: &Value) -> Run {
     const ID: &str = "view.motion";
     let p = Params::new(ID, params, &["t", "collisions"])?;
     let collisions = p.bool("collisions")?;
-    let t = match p.get("t") {
-        None => None,
-        Some(Value::Null) => Some(None),
-        Some(value) => Some(Some(t_value(ID, "t", value)?)),
+    // Null is asked for (the document as it is), not absent.
+    let t = match (p.has("t"), p.get("t")) {
+        (false, _) => None,
+        (true, None) => Some(None),
+        (true, Some(value)) => Some(Some(t_value(ID, "t", value)?)),
     };
     let open = session.document_mut()?;
     let rest = timeline(open.history.current());
