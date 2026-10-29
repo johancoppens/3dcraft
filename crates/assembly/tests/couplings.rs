@@ -183,3 +183,50 @@ fn a_coupling_without_its_variable_is_refused() {
         Err(craft3d_assembly::Diagnosis::Invalid { .. })
     ));
 }
+
+#[test]
+fn a_large_gear_ratio_advances_in_one_step_without_a_false_dead_point() {
+    // Review of 72d83671: with the predictor capped at half a radian, a
+    // gear train of ratio 1000 driven 2 rad in one advance ran out of
+    // sub-steps and claimed a dead point.
+    for s in SCALES {
+        let (ra, rb) = (0.005 * s, 5.0 * s);
+        let mut p = planar(3, s, 5.0);
+        pin(&mut p, 0, 1, Vec3::ZERO, "pinion");
+        pin(&mut p, 0, 2, v2(ra + rb, 0.0), "wheel");
+        p.couplings
+            .push(coupling(CouplingKind::Gear, 0, 1, rb / ra));
+        p.mates[1].driven[0] = Some(0.0);
+        let mut solver = craft3d_assembly::Solver::new(&p).unwrap();
+        solver.solve().unwrap();
+        let sol = solver.advance(&[2.0]).unwrap();
+        assert!(
+            (sol.values[0][0] + 2000.0).abs() < 1e-5,
+            "{}",
+            sol.values[0][0]
+        );
+    }
+}
+
+#[test]
+fn a_small_pinion_turns_many_times_for_one_rack_stroke() {
+    // The same with a pinion of radius L / 1000 driven by its rack.
+    for s in SCALES {
+        let r = 0.005 * s;
+        let mut p = planar(3, s, 5.0);
+        pin(&mut p, 0, 1, Vec3::ZERO, "pinion");
+        let f = Frame::from_z_x(v2(0.0, -r), Vec3::X, Vec3::Y).unwrap();
+        p.mates
+            .push(MateSpec::new(MateKind::Slider, (0, f), (2, f)).named("rack"));
+        p.couplings.push(coupling(CouplingKind::Rack, 1, 0, r));
+        p.mates[1].driven[0] = Some(0.0);
+        let mut solver = craft3d_assembly::Solver::new(&p).unwrap();
+        solver.solve().unwrap();
+        let sol = solver.advance(&[2.5 * s]).unwrap();
+        assert!(
+            (sol.values[0][0] - 2.5 * s / r).abs() < 1e-5,
+            "{}",
+            sol.values[0][0]
+        );
+    }
+}

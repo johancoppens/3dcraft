@@ -290,3 +290,62 @@ fn solving_is_deterministic() {
     let b = format!("{:?}", solve(&p));
     assert_eq!(a, b);
 }
+
+#[test]
+fn a_contradiction_beside_a_planar_four_bar_is_still_over_constrained() {
+    // Review of 72d83671: a planar four-bar elsewhere in the assembly has
+    // rank 21 of 22 at every planar state, so comparing the global rank
+    // with a perturbation that leaves the plane called this Infeasible.
+    for s in SCALES {
+        let mut p = planar(6, s, 5.0);
+        let o = Frame::IDENTITY;
+        p.mates
+            .push(MateSpec::new(MateKind::Fixed, (0, o), (1, o)).named("first"));
+        let g = Frame::at(v2(5.0 * s, 0.0));
+        p.mates
+            .push(MateSpec::new(MateKind::Fixed, (0, g), (1, o)).named("second"));
+        // An undriven four-bar on instances 2..5 (2 is welded to the ground).
+        p.mates
+            .push(MateSpec::new(MateKind::Fixed, (0, o), (2, o)).named("weld"));
+        pin(&mut p, 2, 3, v2(0.0, 0.0), "O");
+        pin(&mut p, 3, 4, v2(0.5 * s, 0.866 * s), "A");
+        pin(&mut p, 4, 5, v2(3.0 * s, 2.0 * s), "B");
+        pin(&mut p, 5, 2, v2(3.5 * s, 0.0), "D");
+        let Err(Diagnosis::OverConstrained { groups, gap }) = solve(&p) else {
+            panic!("expected over-constrained: {:?}", solve(&p));
+        };
+        assert_eq!(groups, vec![Group::Mate(0), Group::Mate(1)]);
+        assert!((gap.length - 5.0 * s).abs() < 1e-6 * s, "gap {gap:?}");
+    }
+}
+
+#[test]
+fn a_limited_hinge_starts_on_the_turn_nearest_its_limits() {
+    // Review of 72d83671: a lid hinge limited to 0..4.71 rad placed at
+    // 200° was measured as −160° and snapped to its bound 0.
+    for s in SCALES {
+        let mut p = one_body(MateKind::Revolute, s);
+        p.mates[0].limits[0] = Some((0.0, 4.71));
+        let c = v2(0.5 * s, 0.25 * s);
+        let r = Mat3::rotation(Vec3::Z, 200f64.to_radians());
+        p.start[1] = Pose::new(r, c - r.apply(c));
+        let sol = solve(&p).unwrap();
+        assert!(sol.at_limit.is_empty(), "{:?}", sol.at_limit);
+        assert!(
+            (sol.values[0][0] - 200f64.to_radians()).abs() < 1e-9,
+            "{}",
+            sol.values[0][0]
+        );
+        // Placed at 300° (beyond 4.71 rad = 270°): held at the nearer bound,
+        // 270° rather than 0 (300° is 30° from 270° and 60° from 360°).
+        let r = Mat3::rotation(Vec3::Z, 300f64.to_radians());
+        p.start[1] = Pose::new(r, c - r.apply(c));
+        let sol = solve(&p).unwrap();
+        assert_eq!(sol.at_limit, vec![(0, 0)]);
+        assert!(
+            (sol.values[0][0] - 4.71).abs() < 1e-9,
+            "{}",
+            sol.values[0][0]
+        );
+    }
+}

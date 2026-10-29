@@ -34,10 +34,21 @@ The other equations:
 - **Couplings** are linear: `Σ cᵢ qᵢ = value`, divided by the largest dimensionless coefficient.
   - gear: `θa + ratio θb = 0`;
   - rack: `da − r θb = 0`;
-  - screw: `da − lead θb / 2π = 0`. `a` and `b` may be the same cylindrical mate.
+  - screw: `da − lead θb / 2π = 0`, so `lead` is per turn of 2π radians (the plan's 360°). `a` and `b` may be the
+    same cylindrical mate.
   - `Linear` is any tie, such as a planetary stage.
 - **Drivers** are `q − value`.
 - **Limits** are `q − bound`. A limit is active only while it holds its variable.
+
+Couplings act on the variables as the solve carries them: unwrapped, measured from the mate's zero. The start value of
+an angle is its measured angle in (−π, π], with three exceptions:
+- a driven angle is taken the whole turns nearest its drive;
+- a limited one is taken the whole turns nearest its range (a lid hinge limited to 0..270° and placed at 200° starts
+  at 200°, not at −160°, which would be snapped to the bound 0);
+- every other angle stays in (−π, π].
+
+A coupling's phase is therefore fixed by the representative in (−π, π] of each start. Exactly at π this is +π, and it
+is deterministic.
 
 **Damped Newton (Levenberg–Marquardt).** The normal equations `(JᵀJ + μ D I) h = −Jᵀr` are assembled block-sparse.
 The blocks are an instance's six unknowns and a mate's variables. They are factored as `L D Lᵀ` in minimum-degree
@@ -56,7 +67,14 @@ driven value outside its limits is refused before solving (`OutOfLimits`).
 **Rank threshold.** An eigenvalue of `JᵀJ` (or of `J Jᵀ`) counts as zero at or below `ε`. In words: a direction
 whose singular value `σ ≤ √ε` can move by `√ε` of the scale while its residual stays within the tolerance to second
 order, so as far as the tolerance can tell, it is free. The threshold follows from the tolerance and the scale
-alone. A tolerance finer than double precision can resolve at that scale (`ε < 10⁴ f64::EPSILON`) is refused.
+alone. It is `ε` and not `ε²` because the rank is read from `JᵀJ`, which squares the singular values. Its rounding
+floor is about `10⁻¹⁶` times its largest entry, so `σ² ≤ ε²` could not be told from rounding at the finer
+tolerances. Two cases weaken the threshold:
+- **A hub with many mates** (a crankshaft with dozens of pins, a frame) sums all their rows into one pivot, so its
+  entries and its rounding grow with the number of mates;
+- **a short link held by ball mates at both ends** turns about the line between them with a singular value
+  proportional to its length over the scale: below `√ε` of the scale it reads as one degree of freedom too many or
+  too few. A tolerance finer than double precision can resolve at that scale (`ε < 10⁴ f64::EPSILON`) is refused.
 
 **Diagnosis.**
 - **The rank and the free motions.** The rank of `J` is the sum of the pivots' ranks (for a positive semi-definite
@@ -70,27 +88,44 @@ alone. A tolerance finer than double precision can resolve at that scale (`ε < 
   such dependency holds, and it is reported as `Solution::redundant`. A planar linkage built from revolutes in 3D
   always repeats three rows per loop.
 - **At rest without meeting the tolerance**, the dependency with the largest `|yᵀr| / |y|` is the contradiction. The
-  rank of `J` is then compared there with its rank at a generic nearby state: every unknown is moved by a fixed,
-  irregular 1 % of the scale or 0.01 rad.
-  - If the rank is lower where the solve stopped, the configuration lost it: a loop stretched or folded as far as it
-    goes. That is `Infeasible`, with the loop's mates.
+  rank of that contradiction's own rows (its groups only) is compared there with their rank a little way along the
+  motions `J` leaves free there. The step is a fixed, irregular combination of the null vectors, its largest
+  component 2 % of the scale or 0.02 rad.
+  - Moving along real motions keeps what the mates keep everywhere: a planar linkage stays planar, and a linkage
+    elsewhere in the assembly is not counted.
+  - So the rank goes up only when the configuration itself lost it: a loop stretched or folded as far as it goes,
+    which bends there. That is `Infeasible`, with the loop's mates.
+  - An earlier version perturbed every unknown at random and compared the global rank. That left the plane, so a
+    regular planar four-bar anywhere in the assembly made a contradiction read as `Infeasible`. The regression test
+    is `a_contradiction_beside_a_planar_four_bar_is_still_over_constrained`.
   - Otherwise the equations contradict each other everywhere. That is `OverConstrained`, with the groups.
   - The gap is the sum, over the groups involved, of their position misses (model units) and their angle misses
     (radians). For a loop that misses by `g`, the least-squares rest spreads `g` over its joints along the line, and
     the sum gives back `g`. The tests check this for a stretched four-bar and for two fixed mates 5 apart.
 
-**Continuation over a motion** (`Solver::advance`, `Solver::sequence`). Each frame starts from the previous solution, and the first from a solve at the problem's own drives,
-where its start poses are.
-The drives go from the last values to the new ones in sub-steps, the first a whole step. A sub-step's first Newton
-step from the last solution is its predictor. The tangent `−J⁺ (∂r/∂d) Δd` and the first Gauss–Newton step at the
-new drives are the same step. The corrected solution is accepted when it lies within half the predicted motion (plus
-`√ε`) of the prediction. A corrector that travels further has left the branch the prediction follows. A sub-step not
-accepted is halved, and an accepted one doubles the next.
+**Continuation over a motion** (`Solver::advance`, `Solver::sequence`). Each frame starts from the previous solution, and the
+first from a solve at the problem's own drives, where its start poses are.
+The drives go from the last values to the new ones in sub-steps, the first a whole step.
+- **The predictor** is the secant of the last two solutions, scaled to the new drives, when the drives go on in the
+  same direction (within 10⁻⁶ of parallel). Otherwise it is the tangent: one undamped, unshortened Gauss–Newton step
+  at the new drives (from a solution, that step is `−J⁺ (∂r/∂d) Δd`).
+- **The corrector** is the damped Newton solve, started from the predictor.
+- **Acceptance.** The sub-step is accepted when the corrected solution lies within half the predicted motion (plus
+  100 ε) of the prediction. A corrector that travels further has left the branch the prediction follows.
+- **Step size.** A sub-step not accepted is halved, and an accepted one doubles the next.
+
+Because the predictor is not shortened, a gear train of ratio 1000 turned 2 rad, or a rack driving a pinion of radius
+L/1000 through hundreds of turns, takes one sub-step. The secant carries a branch through a point where branches
+cross: a parallelogram four-bar keeps its rocker parallel to its crank through the flat position, whether or not a
+frame lands on it (tested at 5° and 7° frames).
 - **A dead point** is either of two things:
   - a frame where the rank drops: it is reported with its frame, drives, extra degrees of freedom and free motions,
     and the sequence goes on;
   - a drive that cannot get past a limit position: the sub-step shrank below `ε` of the drive without a solution. It
     is reported at the last value reached (`Diagnosis::DeadPoint`, with the cause), and the sequence stops there.
+  - Both name the loop: the mates of the redundancies that involve a driver there (`loop_mates`).
+- **Running out of work is not a dead point.** More than 4096 sub-steps, or more than 20 000 Newton iterations in one
+  advance, is `DidNotConverge`.
 - **Jumps count as failures too.** A sub-step whose corrector converges but jumps off the branch fails like one that
   comes to rest. At a fold the corrector still converges past the limit, but further than predicted. When the
   sub-step shrinks to nothing, the result is a `DeadPoint`, and its cause is `BranchLost` or the solver's error.
@@ -141,10 +176,10 @@ pub struct Solver;  // new(p), solve(), solve_at(drives), advance(drives), seque
   - `residual` (model units) and `iterations`.
 - **`Diagnosis`** is one of `Invalid { reason }`, `OverConstrained { groups, gap }`,
   `Infeasible { blamed, loop_mates, gap }`, `OutOfLimits`, `DidNotConverge`, `BranchLost`, `TooLarge` or
-  `DeadPoint { drives, cause }`.
+  `DeadPoint { drives, loop_mates, cause }`.
   - A `Group` is a `Mate(i)`, a `Coupling(i)`, a `Driver { mate, variable }` or a `Limit { mate, variable }`.
   - `Diagnosis::message(&Problem)` and `Group::describe` name them by the problem's names.
-- **`Sequence`** holds `frames`, `dead_points` (`DeadPoint { frame, drives, extra_dof, free }`) and
+- **`Sequence`** holds `frames`, `dead_points` (`DeadPoint { frame, drives, extra_dof, loop_mates, free }`) and
   `stopped: Option<(frame, Diagnosis)>`.
 - **Under-constrained is not an error.** The solution carries `dof > 0` and the free motions. A part that nothing
   fixes stays where `start` puts it.
@@ -200,12 +235,13 @@ every foot checked against the closed form: 5.2 ms mean and 5.6 ms worst per fra
   later move back inside it. Each new frame starts with every limit released.
 - **Dead points need a drive to pass them.** A rank drop at a frame is reported only when the frame lands within about
   `ε` of it, which happens at a limit position the drive cannot pass. A change point the motion passes through
-  between frames (the flat configuration of a parallelogram) is not detected. Continuation keeps the branch across
-  it, because the corrector must stay near the predictor.
+  between frames (the flat configuration of a parallelogram) is not reported. The secant keeps the branch across
+  it.
 - **Which mates are blamed** is the dependency with the largest inconsistency, and its groups are those with a weight
   above 10⁻⁶ of the largest. With several independent contradictions, only the worst is named.
-- **Infeasible against over-constrained** rests on comparing the rank at the stopping point with the rank at one fixed
-  generic perturbation. A contrived problem whose rank happens to drop at that very perturbation would be misnamed.
+- **Infeasible against over-constrained** rests on comparing the contradiction's rank at the stopping point with its
+  rank one fixed step along the free motions. A contrived problem whose rank happens to drop at that very step would
+  be misnamed. A loop that is stretched where nothing is free (every motion driven) reads as over-constrained.
 - **Size.** The factorisation is sparse in minimum-degree order. Its arithmetic is capped at 2·10⁹ multiply-adds per
   factorisation and 4·10⁹ for the symbolic analysis, after which the problem is `TooLarge`. Assemblies of thousands
   of instances in long chains have not been measured.

@@ -566,6 +566,10 @@ pub enum Diagnosis {
     /// value has no solution.
     DeadPoint {
         drives: Vec<f64>,
+        /// The mates whose equations come to depend on the driver's there
+        /// (the loop at its limit position); empty when the last value
+        /// reached is not close enough to tell.
+        loop_mates: Vec<usize>,
         cause: Box<Diagnosis>,
     },
 }
@@ -580,6 +584,8 @@ pub struct DeadPoint {
     /// How many more degrees of freedom the solution has there than at the
     /// sequence's start.
     pub extra_dof: usize,
+    /// The mates whose equations depend on a driver's there (the loop).
+    pub loop_mates: Vec<usize>,
     /// The motions free there.
     pub free: Vec<FreeMotion>,
 }

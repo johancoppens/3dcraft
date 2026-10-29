@@ -226,6 +226,22 @@ pub(crate) fn redundancies(sys: &System, deps: &[Dependency]) -> Vec<Redundancy>
         .collect()
 }
 
+/// The mates of the redundancies that involve a driver, sorted: at a
+/// limit position, the loop whose equations come to depend on the drive.
+pub(crate) fn driver_loop_mates(redundant: &[Redundancy]) -> Vec<usize> {
+    let mut out = std::collections::BTreeSet::new();
+    for r in redundant {
+        if r.groups.iter().any(|g| matches!(g, Group::Driver { .. })) {
+            for g in &r.groups {
+                if let Group::Mate(m) = g {
+                    out.insert(*m);
+                }
+            }
+        }
+    }
+    out.into_iter().collect()
+}
+
 /// How far the groups are from holding, summed: lengths in model units,
 /// angles in radians.
 fn gap(sys: &System, evals: &Evals, groups: &[usize]) -> Gap {
@@ -271,17 +287,32 @@ fn gap(sys: &System, evals: &Evals, groups: &[usize]) -> Gap {
     Gap { length, angle }
 }
 
-/// A state moved off `s` by a fixed, irregular step of 1 % of the scale
-/// and 0.01 rad per unknown: generic, so a rank the configuration loses
-/// at `s` comes back there.
-fn perturbed(sys: &System, s: &State) -> Option<State> {
+/// A state moved off `s` along the motions `J` leaves free there: a
+/// fixed, irregular combination of the null vectors, its largest component
+/// 2 % (of the scale, or radians). Moving along real motions keeps what
+/// the mates keep everywhere (a planar linkage stays planar), so only a
+/// rank the configuration itself lost (a loop stretched straight) comes
+/// back. `None` when nothing is free.
+fn moved_along_free(sys: &System, s: &State, nulls: &[Vec<f64>]) -> Option<State> {
     let golden = 0.618_033_988_749_895_f64;
-    let h: Vec<f64> = (0..sys.unknowns)
-        .map(|k| {
-            let f = ((k as f64 + 1.0) * golden).fract();
-            0.02 * (f - 0.5)
-        })
-        .collect();
+    let mut h = vec![0.0; sys.unknowns];
+    for (k, n) in nulls.iter().enumerate() {
+        let big = n.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+        if !(big.is_finite() && big > 0.0) {
+            continue;
+        }
+        let c = ((k as f64 + 1.0) * golden).fract() + 0.5;
+        for (x, y) in h.iter_mut().zip(n) {
+            *x += c * y / big;
+        }
+    }
+    let big = h.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+    if !(big.is_finite() && big > 0.0) {
+        return None;
+    }
+    for x in &mut h {
+        *x *= 0.02 / big;
+    }
     sys.step(s, &h)
 }
 
@@ -317,12 +348,24 @@ pub(crate) fn diagnose_rest(
         .iter()
         .filter_map(|&g| sys.groups.get(g).map(|gi| gi.group))
         .collect();
-    let rank_here = rank_and_nulls(sys, &evals).map(|(r, _)| r);
-    let rank_generic = perturbed(sys, state)
-        .and_then(|p| evaluate(sys, &p, drives, active))
-        .and_then(|e| rank_and_nulls(sys, &e))
-        .map(|(r, _)| r);
-    let configuration = matches!((rank_here, rank_generic), (Some(h), Some(g)) if h < g);
+    // Compare the rank of the contradiction's own rows here with their rank
+    // a little way along the motions left free here.
+    let mut mask = vec![false; sys.groups.len()];
+    for &g in &worst.groups {
+        if let Some(m) = mask.get_mut(g) {
+            *m = active.get(g).copied().unwrap_or(false);
+        }
+    }
+    let rank_of = |s: &State| {
+        evaluate(sys, s, drives, &mask)
+            .and_then(|e| rank_and_nulls(sys, &e))
+            .map(|(r, _)| r)
+    };
+    let rank_here = rank_of(state);
+    let rank_moved = rank_and_nulls(sys, &evals)
+        .and_then(|(_, nulls)| moved_along_free(sys, state, &nulls))
+        .and_then(|moved| rank_of(&moved));
+    let configuration = matches!((rank_here, rank_moved), (Some(h), Some(g)) if h < g);
     if configuration {
         let loop_mates = groups
             .iter()

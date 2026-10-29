@@ -1,13 +1,23 @@
 //! The solver: one solve, and a sequence of driven values solved by
 //! continuation on one branch.
 
-use crate::analysis::{dependencies, diagnose_rest, free_motions, rank_and_nulls, redundancies};
-use crate::newton::{MAX_ITERATIONS, evaluate, run};
+use crate::analysis::{
+    dependencies, diagnose_rest, driver_loop_mates, free_motions, rank_and_nulls, redundancies,
+};
+use crate::newton::{MAX_ITERATIONS, evaluate, gauss_newton, run};
 use crate::system::{Rows, State, System};
 use crate::types::{DeadPoint, Diagnosis, Problem, Sequence, Solution};
 
 /// Sub-steps allowed for one advance (halvings and doublings together).
 const MAX_SUBSTEPS: usize = 4096;
+
+/// Newton iterations allowed for one advance, all sub-steps together.
+const MAX_ADVANCE_ITERATIONS: usize = 20_000;
+
+/// The corrector may land this many tolerances (relative) off the
+/// prediction beyond [`CONTINUITY`] of the motion: the accuracy of a
+/// solution, so a sub-step of any size is still checked.
+const CONTINUITY_FLOOR: f64 = 100.0;
 
 /// A continuation step is accepted when the corrected solution lies within
 /// this fraction of the predicted motion from the prediction: a corrector
@@ -22,12 +32,13 @@ pub struct Solver {
     state: Option<State>,
     drives: Vec<f64>,
     last: Option<Solution>,
+    /// The solution before the last and its drives, for the secant.
+    prev: Option<(State, Vec<f64>)>,
 }
 
 /// A solved state and how it was reached.
 struct Corrected {
     state: State,
-    first_step: Option<State>,
     iterations: usize,
     active: Vec<bool>,
     drives: Vec<f64>,
@@ -42,6 +53,7 @@ impl Solver {
             state: None,
             drives: Vec::new(),
             last: None,
+            prev: None,
         })
     }
 
@@ -84,6 +96,7 @@ impl Solver {
         let c = self.correct(&start, drives)?;
         let sol = self.solution(&c)?;
         self.state = Some(c.state);
+        self.prev = None;
         self.drives = drives.to_vec();
         self.last = Some(sol.clone());
         Ok(sol)
@@ -104,53 +117,54 @@ impl Solver {
             return self.solve_at(drives);
         };
         let from = self.drives.clone();
-        let units: Vec<f64> = self
-            .sys
-            .slots
-            .iter()
-            .map(|&(m, v)| self.sys.unit(m, v))
-            .collect();
         // The largest change of a drive, dimensionless.
-        let span = from
-            .iter()
-            .zip(drives)
-            .zip(&units)
-            .fold(0.0f64, |m, ((a, b), u)| m.max(((b - a) / u).abs()));
+        let span = self.drive_distance(&from, drives);
         let at = |s: f64| -> Vec<f64> {
             from.iter()
                 .zip(drives)
                 .map(|(a, b)| if s >= 1.0 { *b } else { a + (b - a) * s })
                 .collect()
         };
-        let floor = self.sys.eps.sqrt();
+        let floor = CONTINUITY_FLOOR * self.sys.eps;
         let min_step = if span > 0.0 { self.sys.eps / span } else { 1.0 };
+        let base = self.base_active();
         let mut s = 0.0f64;
         let mut step = 1.0f64;
         let mut reached: Option<Corrected> = None;
         let mut failure: Option<Diagnosis> = None;
         let mut substeps = 0usize;
+        let mut iterations = 0usize;
+        let mut exhausted = false;
         while s < 1.0 {
             substeps += 1;
-            if substeps > MAX_SUBSTEPS {
-                failure = Some(Diagnosis::DidNotConverge {
-                    iterations: substeps,
-                    residual: f64::NAN,
-                });
+            if substeps > MAX_SUBSTEPS || iterations > MAX_ADVANCE_ITERATIONS {
+                exhausted = true;
                 break;
             }
             let s_try = (s + step).min(1.0);
             let d_try = at(s_try);
-            let tried = self.correct(&state, &d_try);
+            // Predict: along the secant of the last two solutions when the
+            // drives keep their direction, else along the tangent.
+            let predicted = self
+                .secant(&state, &d_try)
+                .or_else(|| gauss_newton(&self.sys, &state, &d_try, &base))
+                .unwrap_or_else(|| state.clone());
+            let tried = self.correct(&predicted, &d_try);
+            iterations += match &tried {
+                Ok(c) => c.iterations,
+                Err(Diagnosis::DidNotConverge { iterations, .. }) => *iterations,
+                Err(_) => MAX_ITERATIONS,
+            };
             let ok = match &tried {
                 Ok(c) => {
-                    let pred = c.first_step.as_ref().unwrap_or(&state);
-                    let predicted = self.sys.distance(&state, pred);
-                    self.sys.distance(&c.state, pred) <= CONTINUITY * predicted + floor
+                    let motion = self.sys.distance(&state, &predicted);
+                    self.sys.distance(&c.state, &predicted) <= CONTINUITY * motion + floor
                 }
                 Err(_) => false,
             };
             match tried {
                 Ok(c) if ok => {
+                    self.prev = Some((state.clone(), self.drives.clone()));
                     state = c.state.clone();
                     s = s_try;
                     reached = Some(c);
@@ -174,25 +188,105 @@ impl Solver {
             if let Ok(sol) = self.solution(c) {
                 self.last = Some(sol);
             }
-            self.state = Some(state);
+            self.state = Some(state.clone());
         }
         if s >= 1.0 {
             return self.last.clone().ok_or(Diagnosis::DidNotConverge {
-                iterations: 0,
+                iterations,
+                residual: f64::NAN,
+            });
+        }
+        if exhausted {
+            // Out of work, not at a limit position: the motion asks for more
+            // sub-steps than allowed (a step too large for one advance).
+            return Err(Diagnosis::DidNotConverge {
+                iterations,
                 residual: f64::NAN,
             });
         }
         let cause = failure.unwrap_or(Diagnosis::DidNotConverge {
-            iterations: substeps,
+            iterations,
             residual: f64::NAN,
         });
         // The sub-step shrank to nothing: whether the last try came to rest
         // or jumped off the branch, the drive cannot go on from here (at a
         // fold the corrector converges, but beyond the motion predicted).
+        let loop_mates = self.driver_loop(&state);
         Err(Diagnosis::DeadPoint {
             drives: self.drives.clone(),
+            loop_mates,
             cause: Box::new(cause),
         })
+    }
+
+    /// The mates whose equations depend on a driver's at `state`: the loop
+    /// the drive moves, at a limit position.
+    fn driver_loop(&self, state: &State) -> Vec<usize> {
+        let base = self.base_active();
+        evaluate(&self.sys, state, &self.drives, &base)
+            .and_then(|e| dependencies(&self.sys, &e))
+            .map(|deps| driver_loop_mates(&redundancies(&self.sys, &deps)))
+            .unwrap_or_default()
+    }
+
+    /// The largest change between two sets of drives, dimensionless.
+    fn drive_distance(&self, a: &[f64], b: &[f64]) -> f64 {
+        self.sys
+            .slots
+            .iter()
+            .zip(a.iter().zip(b))
+            .fold(0.0f64, |m, (&(mt, v), (x, y))| {
+                m.max(((y - x) / self.sys.unit(mt, v)).abs())
+            })
+    }
+
+    /// The secant predictor: the last solution moved on by the motion from
+    /// the one before, in proportion to the drives, when the new drives go
+    /// on in the same direction (within 1e-6 of parallel).
+    fn secant(&self, state: &State, d_new: &[f64]) -> Option<State> {
+        let (prev_state, prev_drives) = self.prev.as_ref()?;
+        let units: Vec<f64> = self
+            .sys
+            .slots
+            .iter()
+            .map(|&(m, v)| self.sys.unit(m, v))
+            .collect();
+        let back: Vec<f64> = self
+            .drives
+            .iter()
+            .zip(prev_drives)
+            .zip(&units)
+            .map(|((c, p), u)| (c - p) / u)
+            .collect();
+        let ahead: Vec<f64> = d_new
+            .iter()
+            .zip(&self.drives)
+            .zip(&units)
+            .map(|((n, c), u)| (n - c) / u)
+            .collect();
+        let bb: f64 = back.iter().map(|x| x * x).sum();
+        let aa: f64 = ahead.iter().map(|x| x * x).sum();
+        let ab: f64 = back.iter().zip(&ahead).map(|(x, y)| x * y).sum();
+        if !(bb > 0.0 && aa > 0.0) || ab <= 0.0 || ab * ab < (1.0 - 1e-6) * aa * bb {
+            return None;
+        }
+        let ratio = ab / bb;
+        let h: Vec<f64> = self
+            .sys
+            .difference(prev_state, state)?
+            .iter()
+            .map(|x| x * ratio)
+            .collect();
+        self.sys.step(state, &h)
+    }
+
+    /// The groups active before any limit is met: all but the limits.
+    fn base_active(&self) -> Vec<bool> {
+        self.sys
+            .groups
+            .iter()
+            .map(|g| !matches!(g.rows, Rows::Limit { .. }))
+            .collect()
     }
 
     /// Solves a sequence of driven values in order by [`Solver::advance`]
@@ -222,17 +316,25 @@ impl Solver {
                             frame: k,
                             drives: sol.drives.clone(),
                             extra_dof: sol.dof - b,
+                            loop_mates: driver_loop_mates(&sol.redundant),
                             free: sol.free.clone(),
                         });
                     }
                     out.frames.push(sol);
                 }
                 Err(e) => {
-                    if let (Diagnosis::DeadPoint { drives, .. }, Some(last)) = (&e, &self.last) {
+                    if let (
+                        Diagnosis::DeadPoint {
+                            drives, loop_mates, ..
+                        },
+                        Some(last),
+                    ) = (&e, &self.last)
+                    {
                         out.dead_points.push(DeadPoint {
                             frame: k,
                             drives: drives.clone(),
                             extra_dof: base.map_or(0, |b| last.dof.saturating_sub(b)),
+                            loop_mates: loop_mates.clone(),
                             free: last.free.clone(),
                         });
                     }
@@ -301,7 +403,6 @@ impl Solver {
         let limits = active.iter().filter(|a| !**a).count();
         let mut state = start.clone();
         let mut used = 0usize;
-        let mut first_step = None;
         for _pass in 0..=limits {
             let budget = MAX_ITERATIONS.saturating_sub(used);
             let Some(r) = run(sys, &state, drives, &active, budget) else {
@@ -311,9 +412,6 @@ impl Solver {
                 });
             };
             used += r.iterations;
-            if first_step.is_none() {
-                first_step = r.first_step.clone();
-            }
             if !r.converged {
                 return Err(if r.stalled {
                     diagnose_rest(sys, &r.state, drives, &active, used, r.residual)
@@ -353,7 +451,6 @@ impl Solver {
             if !newly {
                 return Ok(Corrected {
                     state,
-                    first_step,
                     iterations: used,
                     active,
                     drives: drives.to_vec(),

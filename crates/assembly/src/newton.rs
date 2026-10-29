@@ -108,27 +108,27 @@ pub(crate) struct Run {
     /// At rest without meeting the tolerance (a least-squares minimum).
     pub(crate) stalled: bool,
     pub(crate) iterations: usize,
-    /// Where the first, undamped step leads: the predictor of a
-    /// continuation step.
-    pub(crate) first_step: Option<State>,
     pub(crate) residual: f64,
 }
 
 /// The step `−(JᵀJ + μ D I)⁺ Jᵀr`, directions of `JᵀJ` at or below the
 /// rank threshold left out (they do not change the residuals: free motion
 /// stays where it is). `None` when the factorisation failed.
-fn step_for(sys: &System, a: &[f64], g: &[f64], mu: f64, scale_d: f64) -> Option<Vec<f64>> {
+fn raw_step(sys: &System, a: &[f64], g: &[f64], mu: f64, scale_d: f64) -> Option<Vec<f64>> {
     let mut vals = a.to_vec();
     let shift = mu * scale_d;
     sys.normal.add_identity(&mut vals, shift)?;
     let mut budget = Budget::new(FACTOR_BUDGET);
     let f = factor(&sys.normal, vals, sys.rank_threshold() + shift, &mut budget).ok()?;
     let x = f.solve(g)?;
-    let mut h: Vec<f64> = x.iter().map(|v| -v).collect();
+    let h: Vec<f64> = x.iter().map(|v| -v).collect();
+    h.iter().all(|v| v.is_finite()).then_some(h)
+}
+
+/// [`raw_step`] shortened to [`MAX_STEP`].
+fn step_for(sys: &System, a: &[f64], g: &[f64], mu: f64, scale_d: f64) -> Option<Vec<f64>> {
+    let mut h = raw_step(sys, a, g, mu, scale_d)?;
     let big = h.iter().fold(0.0f64, |m, v| m.max(v.abs()));
-    if !big.is_finite() {
-        return None;
-    }
     if big > MAX_STEP {
         let k = MAX_STEP / big;
         for v in &mut h {
@@ -136,6 +136,23 @@ fn step_for(sys: &System, a: &[f64], g: &[f64], mu: f64, scale_d: f64) -> Option
         }
     }
     Some(h)
+}
+
+/// Where one undamped Gauss–Newton step from `s` at `drives` leads, not
+/// shortened: the tangent predictor of a continuation step (the first
+/// Newton step at the new drives is the tangent `−J⁺ (∂r/∂d) Δd` from a
+/// solution).
+pub(crate) fn gauss_newton(
+    sys: &System,
+    s: &State,
+    drives: &[f64],
+    active: &[bool],
+) -> Option<State> {
+    let evals = evaluate(sys, s, drives, active)?;
+    let (a, g) = normal_equations(sys, &evals)?;
+    let scale_d = sys.normal.max_diagonal(&a).max(1.0);
+    let h = raw_step(sys, &a, &g, MU_START, scale_d)?;
+    sys.step(s, &h)
 }
 
 /// Runs damped Newton from `start` at `drives` over the `active` groups,
@@ -152,7 +169,6 @@ pub(crate) fn run(
     let mut res = max_residual(&evals);
     let mut c = cost(&evals);
     let mut mu = MU_START;
-    let mut first_step = None;
     let mut slow = 0usize;
     let tol = sys.eps;
     for it in 0..budget {
@@ -162,7 +178,6 @@ pub(crate) fn run(
                 converged: true,
                 stalled: false,
                 iterations: it,
-                first_step,
                 residual: res,
             });
         }
@@ -178,9 +193,6 @@ pub(crate) fn run(
                 continue;
             };
             let next = sys.step(&state, &h)?;
-            if first_step.is_none() {
-                first_step = Some(next.clone());
-            }
             let Some(ne) = evaluate(sys, &next, drives, active) else {
                 mu *= 8.0;
                 if mu > MU_MAX {
@@ -216,7 +228,6 @@ pub(crate) fn run(
                 converged,
                 stalled: !converged,
                 iterations: it + 1,
-                first_step,
                 residual: res,
             });
         }
@@ -227,7 +238,6 @@ pub(crate) fn run(
         converged,
         stalled: false,
         iterations: budget,
-        first_step,
         residual: res,
     })
 }

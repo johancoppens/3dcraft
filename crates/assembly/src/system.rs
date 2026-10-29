@@ -372,8 +372,10 @@ impl System {
     }
 
     /// The state the problem starts from: its poses, and each mate's
-    /// variables measured there (a driven angle taken the full turns
-    /// nearest its driven value).
+    /// variables measured there. A driven angle is taken the full turns
+    /// nearest its driven value, a limited one the full turns nearest its
+    /// range (a lid hinge limited to 0..270° and placed at 200° starts at
+    /// 200°, not at −160°), any other one in (−π, π].
     pub(crate) fn start_state(&self, drives: &[f64]) -> State {
         let poses = self.problem.start.clone();
         let mut values = Vec::with_capacity(self.mates.len());
@@ -385,10 +387,18 @@ impl System {
                     .iter()
                     .position(|&s| s == (m, v))
                     .and_then(|k| drives.get(k).copied());
-                if let (Some(target), Some(VarKind::Angle)) =
-                    (driven, mate.kind.variables().get(v).copied())
-                {
+                if mate.kind.variables().get(v).copied() != Some(VarKind::Angle) {
+                    continue;
+                }
+                let limits = self
+                    .problem
+                    .mates
+                    .get(m)
+                    .and_then(|s| s.limits.get(v).copied().flatten());
+                if let Some(target) = driven {
                     *val += (2.0 * PI) * ((target - *val) / (2.0 * PI)).round();
+                } else if let Some((lo, hi)) = limits {
+                    *val = nearest_turn(*val, lo, hi);
                 }
             }
             values.push(vals);
@@ -668,6 +678,31 @@ impl System {
         Some(out)
     }
 
+    /// The dimensionless step that takes `a` to `b` (block order): the
+    /// inverse of [`System::step`], rotations by `log(R_b R_aᵀ)`.
+    pub(crate) fn difference(&self, a: &State, b: &State) -> Option<Vec<f64>> {
+        let mut h = vec![0.0; self.unknowns];
+        for (blk, owner) in self.block_owner.iter().enumerate() {
+            let o = *self.block_offsets.get(blk)?;
+            match *owner {
+                BlockOwner::Body(i) => {
+                    let (pa, pb) = (a.poses.get(i)?, b.poses.get(i)?);
+                    let t = (pb.translation - pa.translation) * (1.0 / self.scale);
+                    let w = log_so3(&pb.rotation.mul(&pa.rotation.transpose()));
+                    h.get_mut(o..o + 6)?
+                        .copy_from_slice(&[t.x, t.y, t.z, w.x, w.y, w.z]);
+                }
+                BlockOwner::Vars(m) => {
+                    let (va, vb) = (a.values.get(m)?, b.values.get(m)?);
+                    for (k, (x, y)) in va.iter().zip(vb).enumerate() {
+                        *h.get_mut(o + k)? = (y - x) / self.unit(m, k);
+                    }
+                }
+            }
+        }
+        Some(h)
+    }
+
     /// How far apart two states are, dimensionless, largest over the
     /// unknowns (rotations by their angle).
     pub(crate) fn distance(&self, a: &State, b: &State) -> f64 {
@@ -704,6 +739,22 @@ pub(crate) fn rotation_angle(r: &Mat3) -> f64 {
     let tr = r.x().x + r.y().y + r.z().z;
     let s = Vec3::new(r.y().z - r.z().y, r.z().x - r.x().z, r.x().y - r.y().x).length() * 0.5;
     s.atan2((tr - 1.0) * 0.5)
+}
+
+/// `a` plus the whole turns that bring it into `[lo, hi]`, or nearest to it
+/// when no turn does.
+pub(crate) fn nearest_turn(a: f64, lo: f64, hi: f64) -> f64 {
+    let turn = 2.0 * PI;
+    let k = ((lo - a) / turn).ceil();
+    if !k.is_finite() {
+        return a;
+    }
+    let up = a + k * turn; // the smallest representative ≥ lo
+    if up <= hi {
+        return up;
+    }
+    let down = up - turn; // below lo
+    if up - hi <= lo - down { up } else { down }
 }
 
 /// An angle wrapped into (−π, π].
@@ -1119,6 +1170,14 @@ mod tests {
             } else {
                 assert!((back.length() - angle).abs() < 1e-9);
             }
+        }
+        // Just short of a half turn, where the axis comes from the
+        // symmetric part.
+        for k in 0..20 {
+            let axis = g.vec().normalized().unwrap();
+            let w = axis * (std::f64::consts::PI - 1e-3);
+            let back = log_so3(&Mat3::exp(w));
+            assert!((back - w).length() < 1e-9, "{back:?} vs {w:?} ({k})");
         }
         // A half turn is π, not a false zero.
         let half = Mat3::from_cols(Vec3::X, -Vec3::Y, -Vec3::Z);

@@ -152,10 +152,22 @@ impl Diagnosis {
                 "the motion cannot be followed on one branch past the drives {drives:?} (a branch point)"
             ),
             Diagnosis::TooLarge { reason } => format!("the assembly is too large: {reason}"),
-            Diagnosis::DeadPoint { drives, cause } => format!(
-                "a dead point at the drives {drives:?}: the drive cannot go further ({})",
-                cause.message(p)
-            ),
+            Diagnosis::DeadPoint {
+                drives,
+                loop_mates,
+                cause,
+            } => {
+                let mates: Vec<String> = loop_mates.iter().map(|&m| p.mate_name(m)).collect();
+                format!(
+                    "a dead point at the drives {drives:?}{}: the drive cannot go further ({})",
+                    if mates.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" in the loop through {}", mates.join(", "))
+                    },
+                    cause.message(p)
+                )
+            }
         }
     }
 }

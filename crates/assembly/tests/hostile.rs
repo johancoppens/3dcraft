@@ -123,6 +123,86 @@ fn random_problem(g: &mut Lcg) -> Problem {
     p
 }
 
+/// A consistent problem: a random tree (with a few extra loop mates) of
+/// bodies placed at random reference poses, every mate's frames taken
+/// where the reference puts them, so it has a solution; started away
+/// from it and driven.
+fn tame_problem(g: &mut Lcg) -> Problem {
+    let n = 2 + g.pick(6) as usize;
+    let mut p = Problem::new(n, 1e-7, 10.0);
+    p.grounded = vec![0];
+    let reference: Vec<Pose> = (0..n)
+        .map(|i| {
+            if i == 0 {
+                Pose::IDENTITY
+            } else {
+                Pose::new(Mat3::exp(g.v(false) * 0.3), g.v(false))
+            }
+        })
+        .collect();
+    let extra = g.pick(3) as usize;
+    for k in 0..(n - 1 + extra) {
+        let (a, b) = if k < n - 1 {
+            (g.pick(k as u64 + 1) as usize, k + 1)
+        } else {
+            let a = g.pick(n as u64) as usize;
+            (a, (a + 1 + g.pick(n as u64 - 1) as usize) % n)
+        };
+        // A world frame, expressed in each body's own coordinates.
+        let world = Frame::new(g.v(false), Mat3::exp(g.v(false)));
+        let local = |pose: &Pose| {
+            let inv = pose.rotation.transpose();
+            Frame::new(
+                inv.apply(world.origin - pose.translation),
+                inv.mul(&world.axes),
+            )
+        };
+        let kind = KINDS[g.pick(6) as usize];
+        let mut m = MateSpec::new(kind, (a, local(&reference[a])), (b, local(&reference[b])));
+        if g.pick(3) == 0 && !kind.variables().is_empty() {
+            m.driven[0] = Some(0.0);
+        }
+        p.mates.push(m);
+    }
+    for (i, pose) in p.start.iter_mut().enumerate() {
+        let r = reference[i];
+        *pose = if i == 0 {
+            r
+        } else {
+            Pose::new(
+                Mat3::exp(g.v(false) * 0.02).mul(&r.rotation),
+                r.translation + g.v(false) * 0.02,
+            )
+        };
+    }
+    p
+}
+
+#[test]
+fn consistent_problems_solve_or_diagnose_and_move() {
+    let mut g = Lcg(77);
+    let mut solved = 0;
+    for _ in 0..300 {
+        let p = tame_problem(&mut g);
+        let Ok(mut s) = Solver::new(&p) else {
+            panic!("a tame problem is well formed");
+        };
+        if let Ok(sol) = s.solve() {
+            solved += 1;
+            assert!(sol.residual <= p.tolerance);
+            assert_eq!(sol.free.len(), sol.dof);
+            let k = p.driven_slots().len();
+            let frames: Vec<Vec<f64>> = (1..=4).map(|j| vec![0.1 * j as f64; k]).collect();
+            let seq = s.sequence(&frames);
+            for f in &seq.frames {
+                assert!(f.residual <= p.tolerance);
+            }
+        }
+    }
+    // Started 2 % away from a solution, nearly all solve.
+    assert!(solved > 250, "{solved} of 300");
+}
+
 #[test]
 fn random_problems_never_panic() {
     let mut g = Lcg(2026);

@@ -146,6 +146,12 @@ fn dead_point(seq: &Sequence) -> f64 {
         seq.stopped
     );
     assert_eq!(seq.dead_points.len(), 1);
+    // The loop the drive moves is named.
+    assert!(
+        !seq.dead_points[0].loop_mates.is_empty(),
+        "{:?}",
+        seq.dead_points[0]
+    );
     seq.dead_points[0].drives[0]
 }
 
@@ -288,4 +294,42 @@ fn a_solver_advances_frame_by_frame() {
         solver.advance(&[f64::NAN]),
         Err(Diagnosis::Invalid { .. })
     ));
+}
+
+#[test]
+fn a_parallelogram_stays_a_parallelogram_through_its_flat_position() {
+    // a = c, b = d: at θ = 0 the links lie on one line, where the
+    // parallelogram and the anti-parallelogram branches cross. The rocker
+    // must keep turning with the crank.
+    for s in SCALES {
+        for step_deg in [7.0, 5.0] {
+            let th0 = 60f64.to_radians();
+            let a0 = v2(s * th0.cos(), s * th0.sin());
+            let d = v2(3.0 * s, 0.0);
+            let b0 = a0 + d;
+            let mut p = planar(4, s, 3.0);
+            pin(&mut p, 0, 1, Vec3::ZERO, "crank");
+            pin(&mut p, 1, 2, a0, "A");
+            pin(&mut p, 2, 3, b0, "B");
+            pin(&mut p, 3, 0, d, "D");
+            p.mates[0].driven[0] = Some(0.0);
+            disturb(&mut p, 0.01);
+            let frames: Vec<Vec<f64>> = (1..=24)
+                .map(|k| vec![-(step_deg * k as f64).to_radians()])
+                .collect();
+            let seq = solve_sequence(&p, &frames).unwrap();
+            assert!(seq.stopped.is_none(), "{:?}", seq.stopped);
+            for sol in &seq.frames {
+                let crank = turn(&sol.poses[1]);
+                let rocker = turn(&sol.poses[3]);
+                assert!(
+                    (crank - rocker).abs() < 1e-6,
+                    "step {step_deg}: crank {crank} rocker {rocker} at drive {}",
+                    sol.drives[0]
+                );
+                // The coupler only translates.
+                assert!(turn(&sol.poses[2]).abs() < 1e-6);
+            }
+        }
+    }
 }
