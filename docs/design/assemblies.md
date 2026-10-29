@@ -91,7 +91,9 @@ accepted is halved, and an accepted one doubles the next.
     and the sequence goes on;
   - a drive that cannot get past a limit position: the sub-step shrank below `ε` of the drive without a solution. It
     is reported at the last value reached (`Diagnosis::DeadPoint`, with the cause), and the sequence stops there.
-- **A branch point** where every sub-step jumps is `BranchLost`.
+- **Jumps count as failures too.** A sub-step whose corrector converges but jumps off the branch fails like one that
+  comes to rest. At a fold the corrector still converges past the limit, but further than predicted. When the
+  sub-step shrinks to nothing, the result is a `DeadPoint`, and its cause is `BranchLost` or the solver's error.
 - Angles are not wrapped: they follow the motion continuously, and a full crank turn ends at 2π.
 
 **Determinism.** Fixed orders everywhere: blocks, groups, `BTreeSet` patterns and ties broken by index. No hash map

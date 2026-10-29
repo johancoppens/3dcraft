@@ -186,14 +186,12 @@ impl Solver {
             iterations: substeps,
             residual: f64::NAN,
         });
-        Err(match cause {
-            Diagnosis::BranchLost { .. } => Diagnosis::BranchLost {
-                drives: self.drives.clone(),
-            },
-            other => Diagnosis::DeadPoint {
-                drives: self.drives.clone(),
-                cause: Box::new(other),
-            },
+        // The sub-step shrank to nothing: whether the last try came to rest
+        // or jumped off the branch, the drive cannot go on from here (at a
+        // fold the corrector converges, but beyond the motion predicted).
+        Err(Diagnosis::DeadPoint {
+            drives: self.drives.clone(),
+            cause: Box::new(cause),
         })
     }
 
