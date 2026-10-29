@@ -18,6 +18,7 @@ pub const LAYERS: &[(&str, u32)] = &[
     ("doc", 2),
     ("ops", 3),
     ("solve", 3),
+    ("assembly", 3),
     ("kernel", 3),
     ("tess", 3),
     ("stepread", 3),

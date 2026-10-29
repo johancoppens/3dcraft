@@ -418,6 +418,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft3d-assembly"
+version = "0.1.0"
+dependencies = [
+ "craft3d-math",
+]
+
+[[package]]
 name = "craft3d-automation"
 version = "0.1.0"
 dependencies = [
