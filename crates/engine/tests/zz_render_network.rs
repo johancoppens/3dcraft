@@ -17,6 +17,23 @@ use serde_json::json;
 
 #[test]
 fn render_network_mouse() {
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let worker = std::thread::spawn(move || build_and_render(&tx));
+    let start = std::time::Instant::now();
+    loop {
+        match rx.recv_timeout(std::time::Duration::from_secs(300)) {
+            Ok(stage) => println!("STAGE {stage} at {:.1} s", start.elapsed().as_secs_f64()),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(_) => {
+                println!("STUCK after {:.1} s", start.elapsed().as_secs_f64());
+                std::process::exit(1);
+            }
+        }
+    }
+    worker.join().unwrap();
+}
+
+fn build_and_render(tx: &std::sync::mpsc::Sender<String>) {
     let dir = workdir("render", "mouse");
     let mut s = session_in(&dir);
     new_document(&mut s, 1.0);
@@ -75,6 +92,13 @@ fn render_network_mouse() {
         json!({"u": ["Section0", "Section1", "Section2"], "v": ["Left", "Top", "Right"], "name": "Dome"}),
     );
     println!("DOME {dome}");
+    tx.send("dome built".into()).unwrap();
+    run(
+        &mut s,
+        "view.render",
+        json!({"path": "dome-small.png", "width": 160, "height": 120, "view": "iso"}),
+    );
+    tx.send("dome rendered small".into()).unwrap();
     let shell = body(&mut s, "Dome");
     println!("DOME-BODY {shell}");
     let face = shell["faceNames"][0].as_str().unwrap().to_string();
@@ -86,6 +110,7 @@ fn render_network_mouse() {
                "edges": {"uFirst": {"kind": "tangent", "face": face}}, "name": "Tail"}),
     );
     println!("TAIL {tail}");
+    tx.send("tail built".into()).unwrap();
     for (view, file) in [("iso", "mouse-iso.png"), ("left", "mouse-left.png")] {
         run(
             &mut s,
@@ -95,5 +120,6 @@ fn render_network_mouse() {
         let bytes = std::fs::read(dir.join(file)).unwrap();
         let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
         println!("PNG-HEX {file} {hex}");
+        tx.send(format!("rendered {file}")).unwrap();
     }
 }
