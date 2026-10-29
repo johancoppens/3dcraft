@@ -1,7 +1,6 @@
 //! Network surfaces through the commands (docs/design/surfacing.md): a
 //! Coons patch of two arcs and two lines is the quarter cylinder (its area
-//! in closed form) and thickens into the quarter tube (its volume in
-//! closed form); a patch held tangent to a cylinder's wall meets it with
+//! in closed form); a patch held tangent to a cylinder's wall meets it with
 //! one tangent plane; the document saves and reopens to the same bodies;
 //! curves that do not cross fail the feature by name; bad parameters are
 //! errors. At three scales.
@@ -68,7 +67,7 @@ fn quarter(s: &mut Session, name: &str, z: f64, r: f64) {
 }
 
 #[test]
-fn a_coons_patch_of_arcs_and_lines_is_the_quarter_cylinder_and_thickens() {
+fn a_coons_patch_of_arcs_and_lines_is_the_quarter_cylinder_and_makes_a_plate() {
     for k in SCALES {
         let dir = workdir("surface-network", &format!("coons-{k}"));
         let mut s = session_in(&dir);
@@ -99,12 +98,12 @@ fn a_coons_patch_of_arcs_and_lines_is_the_quarter_cylinder_and_thickens() {
         let face = faces[0].as_str().unwrap().to_string();
         assert!(face.contains(":side("), "{face}");
 
-        // Thickened outwards: the quarter of a tube.
+        // A plate on it, outwards: the quarter of a tube.
         let t = 2.0 * k;
         built(
             &mut s,
-            "feature.thicken",
-            json!({"faces": [face], "thickness": mm(t), "side": "outside", "name": "Tube"}),
+            "feature.plate",
+            json!({"faces": [face], "thickness": mm(t), "side": "out", "name": "Tube"}),
         );
         let tube = body(&mut s, "Tube");
         assert_eq!(tube["valid"], true, "{tube}");
@@ -165,7 +164,7 @@ fn a_patch_held_tangent_to_a_cylinder_meets_its_wall_with_one_tangent_plane() {
             run(
                 &mut s,
                 "sketch.spline",
-                json!({"sketch": name, "through": [[r, 0.0], [r + 6.0 * k, 12.0 * k], [r + 15.0 * k, 25.0 * k]]}),
+                json!({"sketch": name, "through": [[r, 0.0], [r + 3.0 * k, 6.5 * k], [r + 7.0 * k, 13.0 * k], [r + 15.0 * k, 25.0 * k]]}),
             );
         }
         let made = built(
