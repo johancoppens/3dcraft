@@ -131,9 +131,9 @@ impl Level {
         };
         let (a, b, c, d) = (at(xa, ya), at(xb, ya), at(xa, yb), at(xb, yb));
         let mut out = [0.0; 3];
-        for (k, o) in out.iter_mut().enumerate() {
-            let top = a[k] + (b[k] - a[k]) * fx;
-            let bottom = c[k] + (d[k] - c[k]) * fx;
+        for (o, (((a, b), c), d)) in out.iter_mut().zip(a.iter().zip(&b).zip(&c).zip(&d)) {
+            let top = a + (b - a) * fx;
+            let bottom = c + (d - c) * fx;
             *o = top + (bottom - top) * fy;
         }
         out
@@ -321,11 +321,9 @@ impl Prepared {
             let d = texel_direction(x, y, w0, h0);
             let dw = texel_solid_angle(y, w0, h0);
             let mut c = to64(*t);
-            if let Some((_, ref excess)) = key {
-                if let Some(e) = excess.get(i) {
-                    for (c, e) in c.iter_mut().zip(e) {
-                        *c -= e;
-                    }
+            if let Some(e) = key.as_ref().and_then(|(_, excess)| excess.get(i)) {
+                for (c, e) in c.iter_mut().zip(e) {
+                    *c -= e;
                 }
             }
             for (coef, y) in sh.iter_mut().zip(sh_basis(d)) {

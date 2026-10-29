@@ -128,11 +128,11 @@ struct Stats {
 fn compare(scene: &Scene, cpu: &Frame, gpu: &Frame) -> Stats {
     let band = band(&scene.mesh, &scene.camera, cpu);
     let mut stats = Stats::default();
-    for i in 0..cpu.ids.len() {
+    for (i, &in_band) in band.iter().enumerate().take(cpu.ids.len()) {
         if cpu.ids[i] != NO_FACE {
             stats.covered += 1;
         }
-        if band[i] {
+        if in_band {
             continue;
         }
         stats.outside += 1;

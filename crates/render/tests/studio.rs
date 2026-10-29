@@ -225,12 +225,11 @@ fn a_mirror_sphere_shows_the_environment() {
             let want =
                 tonemap::display(f(r).map(|c| c * scale), Tonemap::Agx).map(tonemap::to_byte);
             let i = 3 * (y * 120 + x) as usize;
-            for k in 0..3 {
+            for (k, &want) in want.iter().enumerate() {
                 let got = frame.rgb[i + k];
                 assert!(
-                    got.abs_diff(want[k]) <= 2,
-                    "({x}, {y}) channel {k}: {got} vs {}",
-                    want[k]
+                    got.abs_diff(want) <= 2,
+                    "({x}, {y}) channel {k}: {got} vs {want}"
                 );
             }
             checked += 1;

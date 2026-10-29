@@ -315,7 +315,8 @@ impl<'a> FrameLight<'a> {
         let lz = l.z.max(0.0);
         let rest = self.rest_up;
         let key = self.key_luminance * lz;
-        if !(rest + key > 0.0) || lz <= 0.0 {
+        // Not above zero, NaN included.
+        if (rest + key).partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) || lz <= 0.0 {
             return 1.0;
         }
         let vis = map.visibility(g, Vec3::Z, radius);
@@ -522,7 +523,8 @@ fn rasterise(mesh: &Mesh, view: &View, w: usize, h: usize) -> Result<Vec<Surface
                 let Some(slot) = out.get_mut(y * w + x) else {
                     continue;
                 };
-                if !(key < slot.key) {
+                // Not nearer, NaN included.
+                if key.partial_cmp(&slot.key) != Some(std::cmp::Ordering::Less) {
                     continue;
                 }
                 let (qa, qb, qc) = (wa * a.inv_w, wb * b.inv_w, wc * c.inv_w);

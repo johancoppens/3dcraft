@@ -226,7 +226,7 @@ mod tests {
         assert_eq!(studio.look.exposure, 10.0);
         let back = LookSpec::patched(&studio, &json!({"mode": "plain"})).unwrap();
         assert!(!back.studio && back.environment == "outdoor");
-        assert_eq!(LookSpec::patched(&back, &json!({})).unwrap().studio, false);
+        assert!(!LookSpec::patched(&back, &json!({})).unwrap().studio);
         for bad in [
             json!(1),
             json!({"mode": "photo"}),

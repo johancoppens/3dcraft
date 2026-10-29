@@ -111,7 +111,7 @@ impl ShadowMap {
                 let first = (lo - 0.5).ceil().max(0.0);
                 let last = (hi - 0.5).floor().min(n as f64 - 1.0);
                 // Within 0..n before the casts.
-                (first <= last).then(|| (first as usize, last as usize))
+                (first <= last).then_some((first as usize, last as usize))
             };
             let (Some((x0, x1)), Some((y0, y1))) = (range(lo_x, hi_x), range(lo_y, hi_y)) else {
                 continue;
