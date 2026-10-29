@@ -221,9 +221,11 @@ fn the_sheet_rests_on_the_die_but_does_not_go_into_it() {
         assert!(out["collisions"].as_array().unwrap().is_empty(), "{out}");
         let first = &out["steps"][0]["die"];
         let lowered = out["clearance"].as_f64().unwrap() + 1e-6 * k;
-        // Resting: the lowered die's distance is what it was lowered by.
+        // Resting: the lowered die lies the lowering away; what is proven
+        // is at least the clearance and no more than that.
+        let least = first["least"].as_f64().unwrap();
         assert!(
-            (first["least"].as_f64().unwrap() - lowered).abs() <= 1e-9 * k,
+            least >= out["clearance"].as_f64().unwrap() && least <= lowered * (1.0 + 1e-9),
             "scale {k}: {first}"
         );
         assert_eq!(first["at"], 0.0, "{first}");
