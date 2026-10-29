@@ -104,6 +104,32 @@ waterline at its level) and `levelFor` (with `volume`), each with the same `of`,
 ]
 ```
 
+**Floating, as assertions and outputs.** What `measure.floating` finds can be asserted too, so a design that
+floats upright keeps doing so as it changes: `floatingOffset` (the waterplane's offset along its normal),
+`floatingHeel` and `floatingTrim` (its angles from the upright plane; write the bounds with a unit, `"3 deg"`),
+`floatingGM` and `floatingGML` (the metacentric heights for a heel, a turn about the plane's x axis, and for a
+trim, about its y axis) and `floatingStable` (`is`: stable both ways), all of the equilibrium reached from the
+start. They take the parameters of `measure.floating`, and every value may be a formula of the variables and
+the outputs, so the centre of gravity can be computed by the design:
+
+```json
+[
+ ["feature.block", {"size": [2000, 600, 400], "position": [-1000, -300, 0], "name": "Barge"}],
+ ["variable.set", {"name": "KG", "expr": "180 mm"}],
+ ["variable.set", {"name": "xg", "expr": "64 mm"}],
+ ["variable.output", {"name": "zG", "expr": "KG"}],
+ ["assert.add", {"name": "upright", "measure": "floatingGM", "of": "Barge", "mass": 300, "density": 1000, "centerOfGravity": ["xg", 0, "zG"], "min": "0 mm"}],
+ ["assert.add", {"name": "trim", "measure": "floatingTrim", "of": "Barge", "mass": 300, "density": 1000, "centerOfGravity": ["xg", 0, "zG"], "min": "-3 deg", "max": "3 deg"}],
+ ["variable.measure", {"name": "GMf", "measure": "floatingGM", "of": "Barge", "mass": 300, "density": 1000, "centerOfGravity": ["xg", 0, "zG"]}]
+]
+```
+
+The barge settles 2.86° down towards +x, where its centre of gravity lies (a trim of tan⁻¹ 0.05, the wall-sided closed form) with a GM of
+66.75 mm, so both pass; with `KG` at 300 mm its GM is negative and `upright` fails. A search for the
+equilibrium that does not settle makes such an assertion *notProven*, with the reason, never passed, and
+an output of it unknown; a displacement more than the body holds is an error (it sinks). Each assertion
+solves the equilibrium itself, and again only when what it depends on changes.
+
 ## Assertions
 
 `assert.add` keeps a measure and what it must be:
@@ -121,7 +147,9 @@ waterline at its level) and `levelFor` (with `volume`), each with the same `of`,
   (where the box begins and ends along `axis`, so each side is bounded on its own), `centerOfMass`
   (its coordinate along `axis`; every body needs a material), `distance`, `clearance`, `thickness`,
   `through`, `overlap` (whether bodies overlap), `symmetric`, and `volumeBelow`, `centroidBelow`,
-  `sectionArea`, `sectionCentroid`, `sectionInertia`, `sectionExtent`, `levelFor` ([above](#below-a-plane-sections-and-levels)),
+  `sectionArea`, `sectionCentroid`, `sectionInertia`, `sectionExtent`, `levelFor`, `floatingOffset`, `floatingHeel`,
+  `floatingTrim`, `floatingGM`, `floatingGML`, `floatingStable` ([above](#below-a-plane-sections-and-levels)), the
+  sheet-metal measures and `bendable` (the press-brake check, [chapter 9](09-features.md#sheet-metal)),
   and `value`, a formula of the variables and outputs (`expr`, [below](#outputs-measures-in-formulas)).
 - Bounds: `eq` (with `tol`, by default a millionth of the value; `0` is allowed), or `min` and/or
   `max`; `is` for the yes-or-no measures (`true` by default, except for `overlap`, which wants it

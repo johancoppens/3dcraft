@@ -254,7 +254,26 @@ tip centre and the die's top at the origin, `y` up into the punch) and finds an 
 step is proven to keep the punch at least `clearance` from every piece of the part but the bend and its
 two flats, and the die from every piece but the bend, over the whole stroke (the sheet may rest on the
 die's top, not go into it), and a step that does not is listed by bend, by the bends made before it, by
-tool and by piece; `unchecked` says what is not looked at. `sheetMetal.edit` changes a part (flanges as a
+tool and by piece; `unchecked` says what is not looked at (`certain` per step and `infeasibleProven` say
+whether no order is proven or only not found). As an assertion, `bendable` keeps that check with the part:
+`is` true holds when an order is found for every part named, fails when none exists (every step tried
+collides for certain), and is *notProven* otherwise, never passed: a step that is neither proven clear nor
+colliding, or a search that used up its `maxWork` (distances measured, 20000 at most, shared by the parts).
+The tools' points may be formulas, so a Jig keeps its tools in a table and picks one with a choice:
+
+```json
+[
+ ["table.set", {"name": "punches", "columns": ["tool", {"name": "half", "unit": "mm"}, {"name": "h", "unit": "mm"}],
+                "rows": [["straight", 5, 100], ["wide", 30, 100]]}],
+ ["variable.set", {"name": "tool", "expr": "1"}],
+ ["assert.add", {"name": "Bendable", "measure": "bendable", "of": "Box",
+   "punch": [["-punches[tool].half", 0], ["punches[tool].half", 0], ["punches[tool].half", "punches[tool].h"], ["-punches[tool].half", "punches[tool].h"]],
+   "die": [[-15, -20], [15, -20], [15, 0], [-15, 0]], "length": "60 mm", "maxWork": 10000, "is": true}]
+]
+```
+
+Each check of it searches the orders again (only when the part, the tools or the bounds change): on a
+tray of four flanges some 2600 distances when an order is found and 7400 when none is, a second or two. `sheetMetal.edit` changes a part (flanges as a
 whole list). Each flange has an `id` (`sheetMetal.bends` lists them, 1, 2, … in the order the part was
 made, a new flange's never one used before): every name of the flange's faces and edges is numbered by it
 (its bend `face(2 · id − 1)`, its flat `face(2 · id)`, its rims and edges), not by its place in the list,

@@ -397,3 +397,48 @@ fn the_conditions_of_the_measuring_chapter_are_as_it_says() {
     assert_eq!(status(&listed, "gap or open"), "passed", "{listed}");
     assert_eq!(listed["ok"], true, "{listed}");
 }
+
+/// The floating assertions of the measuring chapter (`10-measure.md` ›
+/// *Floating, as assertions and outputs*) run as written and say what the
+/// text says: the barge trimmed by tan⁻¹ 0.05 (the wall-sided closed form,
+/// xg = tan θ (GML + BML tan² θ / 2) with xg 64 mm) passes both, its GM
+/// 66.75 mm (B² / (12 T cos θ) less the height of G above B, 53.4 mm);
+/// with KG at 300 mm `upright` fails.
+#[test]
+fn the_floating_assertions_of_the_measuring_chapter_are_as_it_says() {
+    let text = read_text(&docs().join("guide/10-measure.md"));
+    let block = json_blocks(&text)
+        .into_iter()
+        .find(|b| b.contains("floatingGM"))
+        .expect("the chapter has a block of floating assertions");
+    let steps = steps(&serde_json::from_str(&block).unwrap()).unwrap();
+    let mut s = Session::new(craft3d_engine::Workspace::unrestricted());
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    for (id, params) in steps {
+        run(&mut s, &id, params);
+    }
+    let listed = run(&mut s, "assert.list", json!({}));
+    assert_eq!(listed["ok"], true, "{listed}");
+    let trim = listed["assertions"][1]["measured"].as_f64().unwrap();
+    assert!(
+        (trim.abs() - 0.05_f64.atan()).abs() < 1e-7,
+        "trim {trim}: {listed}"
+    );
+    let outputs = run(&mut s, "output.list", json!({}));
+    let gm = outputs["outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["name"] == "GMf")
+        .unwrap()["value"]
+        .as_f64()
+        .unwrap();
+    assert!((gm - 66.75).abs() < 1e-4, "GM {gm}: {outputs}");
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "KG", "expr": "300 mm"}),
+    );
+    let listed = run(&mut s, "assert.list", json!({}));
+    assert_eq!(listed["assertions"][0]["status"], "failed", "{listed}");
+}
