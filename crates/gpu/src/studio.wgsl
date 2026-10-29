@@ -277,7 +277,8 @@ fn studio_shade(base_bytes: vec3<f32>, metallic: f32, roughness: f32, p: vec3<f3
         key_light = studio.key_light.rgb;
         key_dot = nl * vis;
     }
-    let occlusion = pow(nv + ao, exp2(-16.0 * roughness - 1.0)) - 1.0 + ao;
+    // Specular occlusion (Lagarde and de Rousiers) with alpha = r * r.
+    let occlusion = pow(nv + ao, exp2(-16.0 * roughness * roughness - 1.0)) - 1.0 + ao;
     let specular_occlusion = clamp(occlusion, 0.0, 1.0);
     let sum_ab = ab.x + ab.y;
     let f0 = vec3<f32>(DIELECTRIC_F0 * (1.0 - metallic)) + base * metallic;

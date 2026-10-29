@@ -9,7 +9,10 @@ pub enum Tonemap {
     /// Implementation* (2023): an inset matrix, a log2 encoding over
     /// 16.5 stops and a sixth-order fit of the sigmoid, then the outset
     /// matrix. Bright colours desaturate towards white instead of
-    /// clipping to a hue. The default.
+    /// clipping to a hue. The default. The snippet's last `pow(x, 2.2)`
+    /// and the framebuffer's sRGB encoding after it are both skipped: the
+    /// outset value is the display value (docs/design/rendering.md,
+    /// *Sources*: lighter darks than with the two steps).
     #[default]
     Agx,
     /// The ACES filmic curve as fitted by K. Narkowicz, *ACES Filmic Tone

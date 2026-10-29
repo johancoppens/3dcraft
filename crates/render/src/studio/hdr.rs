@@ -105,7 +105,10 @@ pub fn decode_hdr(bytes: &[u8]) -> Result<HdrImage, HdrError> {
         .filter(|&n| n <= MAX_HDR_PIXELS)
         .ok_or_else(|| err("picture too large"))?;
     let data = bytes.get(at..).ok_or_else(|| err("no pixel data"))?;
-    let mut pixels = Vec::with_capacity(count);
+    // Reserved for no more pixels than there are bytes: run-length
+    // encoding lets a few bytes claim many pixels, and a header alone must
+    // not reserve hundreds of megabytes (an abort on WebAssembly).
+    let mut pixels = Vec::with_capacity(count.min(data.len()));
     let mut pos = 0_usize;
     let mut scan = vec![[0_u8; 4]; width];
     for _ in 0..height {
@@ -221,6 +224,12 @@ mod tests {
         assert!(decode_hdr(&f).is_err());
         let mut f = header(2, 2);
         f.extend([1, 2, 3]);
+        assert!(decode_hdr(&f).is_err());
+        // The largest size allowed, with almost no pixel data: an error,
+        // and no reservation for 2^26 pixels (805 MB, an abort on
+        // WebAssembly) before it.
+        let mut f = header(8192, 8192);
+        f.extend([2, 2, 32, 0]);
         assert!(decode_hdr(&f).is_err());
         for cut in 0..40 {
             let mut f = header(8, 2);

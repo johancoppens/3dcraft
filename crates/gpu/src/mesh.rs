@@ -93,6 +93,14 @@ pub(crate) fn pack(
         let [ia, ib, ic] = *tri;
         let corners = [vertex(ia)?, vertex(ib)?, vertex(ic)?];
         let [(pa, _), (pb, _), (pc, _)] = corners;
+        // The box of every triangle with finite corners, drawn or not:
+        // the CPU renderer's `section_bounds`, so that both frame the
+        // studio light alike.
+        if pa.is_finite() && pb.is_finite() && pc.is_finite() {
+            for p in [pa, pb, pc] {
+                packed.bounds.add(p);
+            }
+        }
         let (Some(a), Some(b), Some(c)) = (
             narrow(pa - origin),
             narrow(pb - origin),
@@ -117,7 +125,7 @@ pub(crate) fn pack(
         }
         let color = color_word(colors.get(face));
         let finish = finish_word(colors.finish(face));
-        for (position, (world, normal)) in [a, b, c].into_iter().zip(corners) {
+        for (position, (_, normal)) in [a, b, c].into_iter().zip(corners) {
             push(&mut current, position);
             // A normal that cannot be narrowed counts as "no normal".
             push(&mut current, narrow(normal).unwrap_or([0.0; 3]));
@@ -125,7 +133,6 @@ pub(crate) fn pack(
             current.extend_from_slice(&face.to_le_bytes());
             current.extend_from_slice(&color.to_le_bytes());
             current.extend_from_slice(&finish.to_le_bytes());
-            packed.bounds.add(world);
         }
         packed.triangles += 1;
     }

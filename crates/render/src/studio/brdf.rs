@@ -94,6 +94,14 @@ pub fn split_sum(n_dot_v: f64, roughness: f64) -> (f64, f64) {
     (a / n, b / n)
 }
 
+/// [`brdf_lut`], computed once per process: it does not depend on the
+/// environment, and computing it is a pure function, so sharing it changes
+/// no result.
+pub fn shared_lut() -> &'static [[f32; 2]] {
+    static LUT: std::sync::OnceLock<Vec<[f32; 2]>> = std::sync::OnceLock::new();
+    LUT.get_or_init(brdf_lut)
+}
+
 /// The split-sum table, [`LUT_SIZE`] × [`LUT_SIZE`] texels, row-major:
 /// texel `(i, j)` holds `A` and `B` at `n·v = (i + 0.5) / LUT_SIZE` and
 /// roughness `(j + 0.5) / LUT_SIZE`, as `f32` (what both renderers read).

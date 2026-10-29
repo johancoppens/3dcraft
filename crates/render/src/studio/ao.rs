@@ -68,7 +68,10 @@ pub fn occlusion(
         if len <= 1e-9 {
             continue;
         }
-        let gamma = (projected.dot(v) / len).clamp(-1.0, 1.0).acos() * n.dot(t).signum();
+        // The side of the normal: +1 at zero (and −0), as the GPU's
+        // `select(-1, 1, x >= 0)`.
+        let side = if n.dot(t) >= 0.0 { 1.0 } else { -1.0 };
+        let gamma = (projected.dot(v) / len).clamp(-1.0, 1.0).acos() * side;
         let mut horizon = [0.0; 2];
         for (side, sign) in [(0, 1.0), (1, -1.0)] {
             let mut highest = -1.0_f64;
@@ -163,5 +166,33 @@ mod tests {
             12.0,
         );
         assert!(ao < 0.8, "{ao}");
+    }
+
+    /// A floor tilted by 34° towards +x, with a step two units up
+    /// (vertically) beyond |x| = 2 on one side. On the side the normal
+    /// leans to, the step's top seen from the sample rises into the
+    /// normal's hemisphere and blocks cosine-weighted light; on the other
+    /// side its horizon, lowered by the distance falloff, stays under the
+    /// tangent plane and blocks nothing. A sign error in the normal's angle within
+    /// a slice (γ) turns the order round (worked through outside the
+    /// code: about 0.84 and 1.0, with the error 1.0 and 0.80).
+    #[test]
+    fn a_step_on_the_side_the_normal_leans_to_occludes_more() {
+        let tilt: f64 = 0.6;
+        let n = Vec3::new(tilt.sin(), 0.0, tilt.cos());
+        let occluded = |side: f64| {
+            let point = move |x: i64, y: i64| {
+                let px = x as f64 + 0.5;
+                // The floor through (0, 0, −10) with normal n, two units
+                // higher beyond |x| = 2 on `side`.
+                let floor = -10.0 - tilt.tan() * px;
+                let z = if px * side >= 2.0 { floor + 2.0 } else { floor };
+                Some(Vec3::new(px, -(y as f64 + 0.5), z))
+            };
+            let p = point(0, 0).unwrap();
+            occlusion(point, (0, 0), p, n, Vec3::Z, (Vec3::X, Vec3::Y), 12.0, 10.0)
+        };
+        let (towards, away) = (occluded(1.0), occluded(-1.0));
+        assert!(towards < away - 0.1, "{towards} {away}");
     }
 }

@@ -15,8 +15,10 @@
 //!    [`DEFAULT_ROUGHNESS`]). With `n` facing the viewer, `v` towards the
 //!    viewer, `F0 = 0.04 (1 − m) + base · m`, `(A, B)` the split sum at
 //!    `n·v` and `r`, `Fs = F0 A + B` and the multiple-scattering factor
-//!    `1 + F0 (1 / (A + B) − 1)` (Fdez-Agüera, *A Multiple-Scattering
-//!    Microfacet Model for Real-Time Image-Based Lighting*, 2019):
+//!    `1 + F0 (1 / (A + B) − 1)` (the energy compensation of Google
+//!    Filament's *Physically Based Rendering in Filament*, § Energy loss
+//!    in specular reflectance, after Kulla and Conty, *Revisiting
+//!    Physically Based Shading at Imageworks*, 2017):
 //!    - specular: the prefiltered environment along the reflection at
 //!      level `r · (levels − 1)`, times `Fs`, the factor, and the
 //!      specular occlusion of `ao` (Lagarde and de Rousiers, *Moving
@@ -261,7 +263,9 @@ impl<'a> FrameLight<'a> {
             }
             None => ([0.0; 3], 0.0),
         };
-        let occlusion = (nv + ao).powf((-16.0 * r - 1.0).exp2()) - 1.0 + ao;
+        // Lagarde and de Rousiers' specular occlusion, with their
+        // roughness α = r² (as Filament).
+        let occlusion = (nv + ao).powf((-16.0 * r * r - 1.0).exp2()) - 1.0 + ao;
         let specular_occlusion = occlusion.clamp(0.0, 1.0);
         let sum_ab = a + b;
         let mut out = [0.0; 3];

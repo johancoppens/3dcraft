@@ -480,3 +480,137 @@ fn the_bundled_environments_light_a_row_of_finishes() {
         evidence(&format!("balls-{name}.png"), &frame);
     }
 }
+
+/// The light of `level` (luminance) on a surface of unit normal `n`, by
+/// brute force over its texels: ∫ L(ω) max(n·ω, 0) dω, with each texel's
+/// exact solid angle (its band of latitude), apart from the code's own.
+fn brute_irradiance(level: &craft3d_render::studio::Level, n: Vec3) -> f64 {
+    use std::f64::consts::PI;
+    let (w, h) = (level.width, level.height);
+    let mut sum = 0.0;
+    for y in 0..h {
+        let (t0, t1) = (y as f64 / h as f64 * PI, (y + 1) as f64 / h as f64 * PI);
+        let dw = 2.0 * PI / w as f64 * (t0.cos() - t1.cos());
+        let theta = (y as f64 + 0.5) / h as f64 * PI;
+        for x in 0..w {
+            let phi = ((x as f64 + 0.5) / w as f64 - 0.5) * 2.0 * PI;
+            let d = Vec3::new(
+                theta.sin() * phi.cos(),
+                theta.sin() * phi.sin(),
+                theta.cos(),
+            );
+            let c = level.texels[y * w + x];
+            sum += lum(c) * n.dot(d).max(0.0) * dw;
+        }
+    }
+    sum
+}
+
+/// The power of `level` (luminance): ∫ L dω, with the same solid angles.
+fn power(level: &craft3d_render::studio::Level) -> f64 {
+    use std::f64::consts::PI;
+    let (w, h) = (level.width, level.height);
+    let mut sum = 0.0;
+    for y in 0..h {
+        let (t0, t1) = (y as f64 / h as f64 * PI, (y + 1) as f64 / h as f64 * PI);
+        let dw = 2.0 * PI / w as f64 * (t0.cos() - t1.cos());
+        for x in 0..w {
+            sum += lum(level.texels[y * w + x]) * dw;
+        }
+    }
+    sum
+}
+
+fn lum(c: [f32; 3]) -> f64 {
+    0.2126 * f64::from(c[0]) + 0.7152 * f64::from(c[1]) + 0.0722 * f64::from(c[2])
+}
+
+/// The key light and the irradiance without it carry the environment's
+/// light (docs/design/rendering.md, *The studio look*, *Tests*): the
+/// environment (its mirror level, as both renderers read it) against
+/// brute force, for a bright cap and every bundled environment.
+///
+/// - Over all normals: the mean irradiance of any light is a quarter of
+///   its power `P = ∫ L dω`, and of the model it is the spherical
+///   harmonics' constant term plus a quarter of the key's irradiance `K`
+///   (neither the truncation to nine terms nor the key's single direction
+///   changes a mean over the sphere). Equal up to rounding: 0.2 %.
+/// - At fourteen normals (the axes and the diagonals) and towards and away
+///   from the key: `irradiance(n) + K max(n·l, 0)` within the sum of two
+///   bounds of the brute force. (a) Nine harmonics of a light of power
+///   `Q ≥ 0` are off by at most `3/32 Q` anywhere: for a point light the
+///   error is `|1/4 + c/2 + 5/32 (3c² − 1) − max(c, 0)|`, largest at
+///   `c = 0`, and any light is a sum of point lights; here `Q = P − K`.
+///   (b) The key's excess lies within `KEY_CONE` of the brightest
+///   direction, so within `ρ = 2 KEY_CONE` of `l`: on the lit side
+///   (`n·l ≥ sin ρ`) the cosine is linear over it and the single direction
+///   is off by at most `K (1 − cos ρ)`; on the dark side (`n·l ≤ −sin ρ`)
+///   both are 0; between, the clamped cosine moves by at most the chord,
+///   `2 K sin(ρ / 2)`. Plus 0.2 % of `P` for rounding. A scale error in
+///   the key (its solid angles, the excess's factor, its sum) breaks the
+///   mean by far more than its band; the bounds catch a key in the wrong
+///   place or the irradiance of the wrong light.
+#[test]
+fn the_key_and_the_rest_carry_the_environments_light() {
+    use craft3d_render::studio::bundled::{ENVIRONMENTS, environment as bundled};
+    use craft3d_render::studio::env::KEY_CONE;
+    let cap = Prepared::new(&environment(256, |d| {
+        if d.z > 0.99 { [400.0; 3] } else { [0.5; 3] }
+    }))
+    .unwrap();
+    let mut all = vec![("bright cap".to_string(), std::sync::Arc::new(cap))];
+    for name in ENVIRONMENTS {
+        all.push((name.to_string(), bundled(name).unwrap()));
+    }
+    let rho = 2.0 * KEY_CONE;
+    for (name, env) in &all {
+        let level = &env.levels[0];
+        let p = power(level);
+        let (k, l) = env.key.map_or((0.0, Vec3::Z), |key| {
+            let [x, y, z] = key.direction.map(f64::from);
+            (lum(key.irradiance), Vec3::new(x, y, z))
+        });
+        assert!(k <= p, "{name}: key {k} of {p}");
+        let mean = lum(env.sh[0]) * 0.282_094_791 + k / 4.0;
+        assert!(
+            (mean - p / 4.0).abs() <= 2e-3 * p / 4.0,
+            "{name}: mean {mean} against {}",
+            p / 4.0
+        );
+        let mut normals = Vec::new();
+        for axis in [Vec3::X, Vec3::Y, Vec3::Z] {
+            normals.extend([axis, -axis]);
+        }
+        for sx in [-1.0, 1.0] {
+            for sy in [-1.0, 1.0] {
+                for sz in [-1.0, 1.0] {
+                    normals.push(Vec3::new(sx, sy, sz).normalized().unwrap());
+                }
+            }
+        }
+        if env.key.is_some() {
+            normals.extend([l, -l]);
+        }
+        for n in normals {
+            let brute = brute_irradiance(level, n);
+            let e = env.irradiance(n);
+            let model = 0.2126 * e[0] + 0.7152 * e[1] + 0.0722 * e[2] + k * n.dot(l).max(0.0);
+            let nl = n.dot(l);
+            let key_bound = if env.key.is_none() || nl <= -rho.sin() {
+                0.0
+            } else if nl >= rho.sin() {
+                k * (1.0 - rho.cos())
+            } else {
+                2.0 * k * (rho / 2.0).sin()
+            };
+            let bound = 3.0 / 32.0 * (p - k) + key_bound + 2e-3 * p;
+            eprintln!(
+                "{name} n {n:?}: brute {brute:.4} model {model:.4} (bound {bound:.4}, P {p:.3}, K {k:.3})"
+            );
+            assert!(
+                (model - brute).abs() <= bound,
+                "{name} at {n:?}: {model} against {brute} (bound {bound})"
+            );
+        }
+    }
+}

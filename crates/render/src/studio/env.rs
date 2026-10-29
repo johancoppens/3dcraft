@@ -8,7 +8,7 @@
 //! `φ = ((x + 0.5) / W − 0.5) · 2π` around z from +x and
 //! `θ = (y + 0.5) / H · π` from +z.
 
-use super::brdf::{LUT_SIZE, brdf_lut, ggx_d, hammersley, sample_ggx};
+use super::brdf::{LUT_SIZE, ggx_d, hammersley, sample_ggx, shared_lut};
 use super::hdr::HdrImage;
 use crate::RenderError;
 use craft3d_math::Vec3;
@@ -65,7 +65,7 @@ pub struct Prepared {
     pub sh: [[f32; 3]; 9],
     /// The key light, when the environment has a distinct bright region.
     pub key: Option<Key>,
-    /// The split-sum table ([`brdf_lut`]).
+    /// The split-sum table ([`super::brdf::brdf_lut`], shared).
     pub lut: Vec<[f32; 2]>,
 }
 
@@ -239,7 +239,7 @@ impl Prepared {
     /// ([`Key`]); the other levels are prefiltered with GGX for their
     /// roughness.
     pub fn new(image: &HdrImage) -> Result<Prepared, RenderError> {
-        Self::with_lut(image, brdf_lut())
+        Self::with_lut(image, shared_lut().to_vec())
     }
 
     /// [`Self::new`] with a split-sum table already computed (it does not

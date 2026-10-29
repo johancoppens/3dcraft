@@ -129,8 +129,11 @@ so every picture, thumbnail and test of the plain look is unchanged bit for bit.
 - Google Filament, *Physically Based Rendering in Filament*: GGX `D`, the height-correlated Smith
   visibility (after E. Heitz, *Understanding the Masking-Shadowing Function*, JCGT 2014), perceptual
   roughness `α = r²`, the DFG table's layout.
-- C. J. Fdez-Agüera, *A Multiple-Scattering Microfacet Model for Real-Time Image-Based Lighting*, JCGT
-  2019: the energy compensation `1 + F0 (1 / (A + B) − 1)`.
+- Google Filament, *Physically Based Rendering in Filament*, § Energy loss in specular reflectance, after
+  C. Kulla and A. Conty, *Revisiting Physically Based Shading at Imageworks*, SIGGRAPH 2017: the energy
+  compensation `1 + F0 (1 / (A + B) − 1)` of the specular part (the diffuse part is not reduced by the
+  energy it adds; C. J. Fdez-Agüera's *A Multiple-Scattering Microfacet Model for Real-Time Image-Based
+  Lighting*, JCGT 2019, which also takes it from the diffuse part, is not implemented).
 - M. Colbert and J. Křivánek, *GPU-Based Importance Sampling*, GPU Gems 3 ch. 20: filtered importance
   sampling (each sample reads the source at the level matching its solid angle).
 - R. Ramamoorthi and P. Hanrahan, *An Efficient Representation for Irradiance Environment Maps*,
@@ -142,8 +145,13 @@ so every picture, thumbnail and test of the plain look is unchanged bit for bit.
 - L. Williams, *Casting Curved Shadows on Curved Surfaces*, 1978 (shadow maps); W. Reeves, D. Salesin,
   R. Cook 1987 (percentage-closer filtering); R. Fernando, *Percentage-Closer Soft Shadows*, NVIDIA 2005.
 - T. Sobotka's AgX as described by B. Wrensch, *Minimal AgX Implementation* (2023: the inset and outset
-  matrices, the log2 range of 16.5 stops, the sixth-order fit); K. Narkowicz, *ACES Filmic Tone Mapping
-  Curve* (2016); IEC 61966-2-1 (sRGB).
+  matrices, the log2 range of 16.5 stops, the sixth-order fit; credited in `ATTRIBUTION.md`); K. Narkowicz,
+  *ACES Filmic Tone Mapping Curve* (2016); IEC 61966-2-1 (sRGB). Wrensch's snippet ends with `pow(x, 2.2)`
+  after the outset matrix, for a framebuffer that then encodes to sRGB; both steps are skipped here and the
+  outset value is the display value, as for a display of gamma 2.2, which the sigmoid is fitted for. The
+  two agree from the mid-tones up (0.5 becomes 0.504) and differ in the darks, where sRGB's linear toe is:
+  a display value of 0.1 (byte 26) would be 0.073 with the steps (byte 19), 0.02 would be 0.002. The
+  shadows of the studio look are therefore a little lighter than a renderer that keeps the steps.
 - G. Ward, *Real Pixels*, Graphics Gems II (1991), and the Radiance file-format notes: the `.hdr` reader.
 - The environments: three 1k HDRs from Poly Haven, CC0 (`assets/environments/LICENSE.md`,
   `ATTRIBUTION.md`): `studio` (Studio Small 09), `outdoor` (Kloofendal 48d Partly Cloudy, Pure Sky),
