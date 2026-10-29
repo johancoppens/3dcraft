@@ -179,6 +179,37 @@ impl History {
         Some(label)
     }
 
+    /// Rewrites the current document and every snapshot of the undo and
+    /// redo stacks with `f` (`None`: kept as it is), as no undo step of its
+    /// own: for a change that holds for every state of the document alike,
+    /// such as the paths an assembly's sources are written relative to
+    /// once its file moved. A snapshot shared by two steps stays shared.
+    /// Returns whether the current document changed.
+    pub fn rewrite_all(&mut self, mut f: impl FnMut(&Document) -> Option<Document>) -> bool {
+        // Each snapshot rewritten once; the old one is held until the end,
+        // so its address is not reused while it is looked up by it.
+        let mut done: Vec<(Arc<Document>, Arc<Document>)> = Vec::new();
+        let mut map = |doc: &Arc<Document>| -> Arc<Document> {
+            if let Some((_, new)) = done.iter().find(|(old, _)| Arc::ptr_eq(old, doc)) {
+                return Arc::clone(new);
+            }
+            let new = f(doc).map_or_else(|| Arc::clone(doc), Arc::new);
+            done.push((Arc::clone(doc), Arc::clone(&new)));
+            new
+        };
+        let current = map(&self.current);
+        for step in self.undo.iter_mut().chain(self.redo.iter_mut()) {
+            step.before = map(&step.before);
+            step.after = map(&step.after);
+        }
+        let changed = !Arc::ptr_eq(&current, &self.current);
+        self.current = current;
+        if changed {
+            self.revision += 1;
+        }
+        changed
+    }
+
     /// Labels of the steps that can be undone, oldest first.
     pub fn undo_labels(&self) -> impl Iterator<Item = &str> {
         self.undo.iter().map(|s| s.label.as_str())
@@ -263,6 +294,42 @@ mod tests {
         assert!(Arc::ptr_eq(h.current(), &before));
         assert_eq!(h.revision(), revision);
         assert_eq!(h.undo_labels().count(), 1);
+    }
+
+    #[test]
+    fn a_rewrite_of_all_states_is_no_step_and_undo_keeps_it() {
+        let mut h = history();
+        set(&mut h, "a", "1 mm").unwrap();
+        set(&mut h, "b", "2 mm").unwrap();
+        h.undo();
+        let revision = h.revision();
+        // Every state gains `z`; the empty first one too.
+        let changed = h.rewrite_all(|doc| {
+            let mut doc = doc.clone();
+            doc.set_variable("z", "9 mm").ok()?;
+            Some(doc)
+        });
+        assert!(changed);
+        assert_eq!(h.revision(), revision + 1);
+        assert_eq!(h.undo_labels().collect::<Vec<_>>(), ["Set a"]);
+        assert_eq!(h.redo_labels().collect::<Vec<_>>(), ["Set b"]);
+        let has_z = |h: &History| h.current().variables.iter().any(|v| v.name == "z");
+        assert!(has_z(&h));
+        h.undo();
+        assert!(has_z(&h), "the state before the first step is rewritten");
+        h.redo();
+        h.redo();
+        assert!(has_z(&h), "the redone state is rewritten");
+        // The shared snapshot (after `a`, before `b`) stays one.
+        h.undo();
+        let shared = Arc::clone(h.current());
+        h.redo();
+        h.undo();
+        assert!(Arc::ptr_eq(h.current(), &shared));
+        // Nothing to rewrite: nothing changes.
+        let revision = h.revision();
+        assert!(!h.rewrite_all(|_| None));
+        assert_eq!(h.revision(), revision);
     }
 
     #[test]

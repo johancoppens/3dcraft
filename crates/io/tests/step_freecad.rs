@@ -634,3 +634,119 @@ fn freecad_reads_booleans_of_domed_blocks() {
         bad.join("\n")
     );
 }
+
+/// An assembly (`step_assembly`): a block placed twice, the second turned
+/// a quarter about z, and a smaller block turned a quarter about x, read
+/// by FreeCAD as the three placed solids: their total volume, area and
+/// centre, and the box around them, which the turns change (a placement
+/// written wrong moves it).
+#[test]
+#[ignore = "needs FreeCAD: set CRAFT3D_FREECAD"]
+fn freecad_reads_an_assembly_as_its_placed_parts() {
+    use craft3d_io::{StepOccurrence, step_assembly};
+    use craft3d_math::Transform;
+    let quarter = std::f64::consts::FRAC_PI_2;
+    let mut cases = Vec::new();
+    for k in [1e-2, 1.0, 1e3] {
+        let tol = options(k);
+        let block = primitives::block(&Frame::WORLD, 20.0 * k, 10.0 * k, 6.0 * k).unwrap();
+        let small = primitives::block(&Frame::WORLD, 8.0 * k, 4.0 * k, 2.0 * k).unwrap();
+        let poses = [
+            (0, Transform::IDENTITY, "A"),
+            (
+                0,
+                Transform::rotation(Vec3::Z, quarter)
+                    .unwrap()
+                    .then(&Transform::translation(Vec3::new(0.0, 0.0, 30.0 * k))),
+                "B",
+            ),
+            (
+                1,
+                Transform::rotation(Vec3::X, quarter)
+                    .unwrap()
+                    .then(&Transform::translation(Vec3::new(40.0 * k, 0.0, 0.0))),
+                "C",
+            ),
+        ];
+        let parts = [&block, &small];
+        let occurrences: Vec<StepOccurrence> = poses
+            .iter()
+            .map(|(part, pose, name)| StepOccurrence {
+                part: *part,
+                pose: *pose,
+                name: (*name).to_string(),
+            })
+            .collect();
+        let file = format!("assembly-{k:e}");
+        let (bytes, _) = step_assembly(
+            &file,
+            &[
+                StepBody::new("Block", &block),
+                StepBody::new("Small", &small),
+            ],
+            &occurrences,
+            &tol,
+        )
+        .unwrap();
+        // What FreeCAD should find: the bodies where they are placed.
+        let placed: Vec<Body> = poses
+            .iter()
+            .map(|(part, pose, _)| parts[*part].transformed(pose).unwrap())
+            .collect();
+        let (mut volume, mut area, mut moment) = (0.0, 0.0, Vec3::ZERO);
+        let mut lo = [f64::INFINITY; 3];
+        let mut hi = [f64::NEG_INFINITY; 3];
+        let mut counts = (0, 0, 0, 0);
+        for body in &placed {
+            let m = mass_properties(body).unwrap();
+            volume += m.volume;
+            area += m.area;
+            moment = moment + m.centroid.unwrap() * m.volume;
+            let (a, b) = body.bbox().unwrap().corners().unwrap();
+            for (i, (a, b)) in [(a.x, b.x), (a.y, b.y), (a.z, b.z)].into_iter().enumerate() {
+                lo[i] = lo[i].min(a);
+                hi[i] = hi[i].max(b);
+            }
+            counts.0 += body.faces.len();
+            counts.1 += body.edges.len();
+            counts.2 += body.vertices.len();
+            counts.3 += body.shells.len();
+        }
+        // The turns are in the box: B reaches x = -10, C z = 4.
+        assert!((lo[0] + 10.0 * k).abs() < 1e-9 * k && (hi[2] - 36.0 * k).abs() < 1e-9 * k);
+        let centre = moment * (1.0 / volume);
+        cases.push(Case {
+            file: format!("{file}.step"),
+            bytes,
+            to_mm: 1.0,
+            solid: true,
+            solids: 3,
+            volume,
+            area,
+            centroid: Some([centre.x, centre.y, centre.z]),
+            bbox: Some([lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]]),
+            bbox_slack: 0.0,
+            extent: Extent::Exact,
+            counts,
+            names: vec![file.clone(), "Block".to_string(), "Small".to_string()],
+            relative: RELATIVE,
+            parts: Vec::new(),
+        });
+    }
+    let rows = harness::check(
+        "step-io-assembly",
+        "STEP: an assembly read by FreeCAD",
+        &cases,
+    );
+    let bad: Vec<String> = rows
+        .iter()
+        .filter(|r| !r.problems.is_empty())
+        .map(|r| format!("{}: {}", r.file, r.problems.join("; ")))
+        .collect();
+    assert!(
+        bad.is_empty(),
+        "{} files with problems:\n{}",
+        bad.len(),
+        bad.join("\n")
+    );
+}

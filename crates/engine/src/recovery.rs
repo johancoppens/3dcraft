@@ -371,7 +371,8 @@ fn worth(open: &OpenDocument) -> bool {
         || (open.dirty()
             && (open.path.is_some()
                 || !document.features.is_empty()
-                || !document.variables.is_empty()))
+                || !document.variables.is_empty()
+                || document.assembly.as_ref().is_some_and(|a| !a.is_empty())))
 }
 
 #[cfg(not(target_arch = "wasm32"))]

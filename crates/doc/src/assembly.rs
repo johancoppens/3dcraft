@@ -391,6 +391,12 @@ impl Assembly {
         self.couplings.iter().find(|c| c.name == name)
     }
 
+    /// True when it holds no instance, mate or coupling: nothing worth
+    /// keeping was added to it (its packed documents follow its instances).
+    pub fn is_empty(&self) -> bool {
+        self.instances.is_empty() && self.mates.is_empty() && self.couplings.is_empty()
+    }
+
     /// The packed document with this SHA-256.
     pub fn packed(&self, hash: &str) -> Option<&Blob> {
         self.packed.iter().find(|b| b.sha256() == hash)
@@ -405,14 +411,19 @@ impl Assembly {
         }
     }
 
-    /// Drops the packed documents no instance uses.
+    /// Drops the packed documents no instance uses: neither as its packed
+    /// source nor as the bytes it is pinned to (a pinned instance keeps
+    /// them, so it shows them whatever its file holds later).
     pub fn drop_unused_packed(&mut self) {
         let used: std::collections::BTreeSet<String> = self
             .instances
             .iter()
-            .filter_map(|i| match &i.source {
-                Source::Packed { hash } => Some(hash.clone()),
-                Source::File { .. } => None,
+            .flat_map(|i| {
+                let packed = match &i.source {
+                    Source::Packed { hash } => Some(hash.clone()),
+                    Source::File { .. } => None,
+                };
+                packed.into_iter().chain(i.pinned.clone())
             })
             .collect();
         self.packed.retain(|b| used.contains(&b.sha256()));
@@ -688,6 +699,26 @@ mod tests {
         assert!(a.packed[0].sha256() < a.packed[1].sha256());
         a.drop_unused_packed();
         assert!(a.packed.is_empty());
+        a.validate().unwrap();
+    }
+
+    #[test]
+    fn the_bytes_an_instance_is_pinned_to_stay_packed() {
+        let mut a = Assembly::default();
+        let pinned = Blob::new(b"pinned".to_vec());
+        a.pack(pinned.clone());
+        a.pack(Blob::new(b"unused".to_vec()));
+        a.instances.push(Instance {
+            source: Source::File {
+                path: "a.3dcraft".into(),
+                hash: pinned.sha256(),
+            },
+            pinned: Some(pinned.sha256()),
+            ..instance("A")
+        });
+        a.drop_unused_packed();
+        assert_eq!(a.packed.len(), 1);
+        assert!(a.packed(&pinned.sha256()).is_some());
         a.validate().unwrap();
     }
 }

@@ -19,9 +19,9 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("instance.add", "Add Instance", r#"{"source": path of a .3dcraft or .3dcraftasm file, "name": string = the file's stem with [n], "body": feature name or id of the source = all its bodies, "params": {name: expr} = none, "position": [number, number, number] = [0, 0, 0], "rotation": [number, number, number] (a rotation vector, degrees) = [0, 0, 0], "mode": "rigid|flexible" = "rigid", "pinned": boolean = false, "visible": boolean = true, "colour": [r, g, b] = the source's}"#,
         "Adds an instance of a source document to the active assembly (one undo step): a reference, never a copy; the source is read from the read root, and its path is kept relative to the assembly's file, with the SHA-256 of its bytes. body picks one body of a multi-body source (a Jig), by the feature that made it: the instance shows only that body, where the source puts it, and fails by its name when it is gone. params sets the source's public parameters, as expressions of the assembly's variables: each distinct set (a configuration) is regenerated once and shared by every instance that uses it, whichever body they pick. pinned keeps the instance to the source's bytes of now. Returns the instance as assembly.inspect shows it.", doc: true, instance_add),
     spec!("instance.edit", "Edit Instance", r#"{"name": string, "rename": string, "source": path, "body": feature name or id or null, "params": {name: expr or null}, "position": [number, number, number], "rotation": [number, number, number], "mode": "rigid|flexible", "pinned": boolean, "visible": boolean, "colour": [r, g, b] or null}"#,
-        "Changes an instance (one undo step): what is given replaces what it had; params merges, a null removes an override; pinned true pins it to the source's bytes of now, false follows the file again (and takes its new hash). A rename rewrites the mates that name it. Returns the instance.", doc: true, instance_edit),
+        "Changes an instance (one undo step): what is given replaces what it had; params merges, a null removes an override; pinned true pins it to the source's bytes of now, false follows the file again (and takes its new hash). A rename rewrites the mates, assertions and outputs that name it, and is refused while an assertion or output names the new name already. Returns the instance.", doc: true, instance_edit),
     spec!("instance.delete", "Delete Instance", r#"{"name": string}"#,
-        "Removes an instance (one undo step). An instance a mate still names is refused, with the mates named: delete them first.", doc: true, instance_delete),
+        "Removes an instance (one undo step). An instance a mate, an assertion or an output still names is refused, with them named: delete them first.", doc: true, instance_delete),
     spec!("instance.open", "Open Instance Source", r#"{"name": string}"#,
         "Opens an instance's source document in its own tab, as file.open does, so it is edited there (an assembly never edits a part's history); a packed source opens as a new document without a file. The assembly follows the file once it is saved (assembly.reload).", doc: true, instance_open),
     spec!("mate.add", "Add Mate", r#"{"kind": "fixed|revolute|slider|cylindrical|planar|ball", "a": "Instance/Feature:name" or "world/xy|yz|zx|x|y|z|origin", "b": same, "name": string = Mate<n>, "offset": length expr = 0, "angle": angle expr = 0, "limits": [expr, expr], "flip": boolean = false}"#,
@@ -31,7 +31,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("mate.delete", "Delete Mate", r#"{"name": string}"#,
         "Removes a mate and the variables that drive it (one undo step). A mate a coupling still names is refused.", doc: true, mate_delete),
     spec!("coupling.add", "Add Coupling", r#"{"kind": "gear|rack|screw", "mates": [mate, mate], "value": expr (the ratio, the radius or the lead), "name": string = Coupling<n>}"#,
-        "Ties two mates' motions (one undo step): gear θa = −ratio·θb, rack d = radius·θ, screw d = lead·θ/360°. Returns the coupling.", doc: true, coupling_add),
+        "Ties two mates' motions (one undo step): gear θa = −ratio·θb, rack d = radius·θ, screw d = lead·θ/360°. Returns the coupling with its status: a coupling whose mate takes no part, or whose value does not evaluate, fails by name and the solve is not ok.", doc: true, coupling_add),
     spec!("coupling.delete", "Delete Coupling", r#"{"name": string}"#,
         "Removes a coupling (one undo step).", doc: true, coupling_delete),
     spec!("joint.set", "Set Joint", r#"{"mate": string, "value": expr or null, "which": "angle|distance|x|y" = the mate's main free motion}"#,
@@ -90,10 +90,17 @@ fn assembly_new(session: &mut Session, params: &Value) -> Run {
     }
     let result = crate::commands::file_new(session, &Value::Object(given))
         .map_err(|e| CommandError::new(e.message().replace("file.new", "assembly.new")))?;
+    let budget = session.body_budget;
     let open = session.document_mut()?;
     let mut doc = Document::clone(open.history.current());
     doc.assembly = Some(Assembly::default());
+    // The same tab: its number and the session's settings stay.
+    let id = open.id;
     *open = OpenDocument::new(doc, None);
+    open.id = id;
+    if let Some(budget) = budget {
+        open.cache.set_body_budget(budget);
+    }
     let mut result = result;
     if let Some(map) = result.as_object_mut() {
         map.insert("assembly".into(), true.into());
@@ -284,6 +291,21 @@ impl Session {
         Ok(())
     }
 
+    /// Bytes with the SHA-256 `hash` that the active assembly has at hand:
+    /// a source file read for it, or a document packed into it.
+    fn blob_with(&self, hash: &str) -> Option<Blob> {
+        let open = self.document().ok()?;
+        if let Some(blob) = open.history.current().assembly.as_ref()?.packed(hash) {
+            return Some(blob.clone());
+        }
+        open.asm
+            .files
+            .values()
+            .filter_map(|f| f.as_ref().ok())
+            .find(|b| b.sha256() == hash)
+            .cloned()
+    }
+
     /// The active assembly placed.
     pub(crate) fn placed(&mut self) -> Result<Arc<Placed>, CommandError> {
         self.document_mut()?
@@ -366,12 +388,24 @@ fn mate_json(placed: &Placed, mate: &Mate) -> Value {
     })
 }
 
-fn coupling_json(c: &Coupling) -> Value {
+fn coupling_json(placed: &Placed, c: &Coupling) -> Value {
+    let failed = placed
+        .couplings
+        .iter()
+        .find(|s| s.name == c.name)
+        .and_then(|s| s.error.clone());
+    let status = match (&failed, &placed.solve_error) {
+        (Some(_), _) => "failed",
+        (None, Some(_)) => "unsolved",
+        (None, None) => "ok",
+    };
     json!({
         "name": c.name,
         "kind": c.kind.name(),
         "mates": [c.mates.0, c.mates.1],
         "value": c.value.source(),
+        "status": status,
+        "error": failed,
     })
 }
 
@@ -392,6 +426,12 @@ fn solve_json(placed: &Placed, assembly: &Assembly) -> Value {
                 .iter()
                 .filter_map(|m| Some(json!({ "mate": m.name, "error": m.error.clone()? }))),
         )
+        .chain(
+            placed
+                .couplings
+                .iter()
+                .filter_map(|c| Some(json!({ "coupling": c.name, "error": c.error.clone()? }))),
+        )
         .collect();
     json!({
         "ok": placed.solve_error.is_none() && failed.is_empty(),
@@ -402,6 +442,7 @@ fn solve_json(placed: &Placed, assembly: &Assembly) -> Value {
         "dof": placed.dof.as_ref().map(|(dof, _)| *dof),
         "free": placed.dof.as_ref().map(|(_, free)| free.clone()).unwrap_or_default(),
         "mates": assembly.mates.iter().map(|m| mate_json(placed, m)).collect::<Vec<_>>(),
+        "couplings": assembly.couplings.iter().map(|c| coupling_json(placed, c)).collect::<Vec<_>>(),
     })
 }
 
@@ -610,6 +651,8 @@ fn instance_add(session: &mut Session, params: &Value) -> Run {
         colour: colour_param(&p, "colour")?,
         placement,
     };
+    // Pinned, its bytes of now are kept in the assembly's file.
+    let keep = instance.pinned.is_some().then(|| blob.clone());
     {
         let open = session.document_mut()?;
         open.asm.files.insert(full, Ok(blob));
@@ -624,6 +667,9 @@ fn instance_add(session: &mut Session, params: &Value) -> Run {
             )));
         }
         assembly.instances.push(instance);
+        if let Some(blob) = keep {
+            assembly.pack(blob);
+        }
         Ok(())
     })?;
     session.read_sources(false)?;
@@ -701,17 +747,25 @@ fn instance_edit(session: &mut Session, params: &Value) -> Run {
     if p.has("colour") {
         instance.colour = colour_param(&p, "colour")?;
     }
+    // The bytes a pin keeps in the assembly's file.
+    let mut keep: Option<Blob> = None;
     if let Some(pinned) = p.bool("pinned")? {
         // Pinned to the bytes the instance is built from now; unpinned,
         // it follows its file and takes the file's hash.
         let placed = session.placed()?;
         let now = placed.instance(&name).and_then(|s| s.hash.clone());
         if pinned {
-            instance.pinned = Some(now.ok_or_else(|| {
+            let now = now.ok_or_else(|| {
                 CommandError::new(format!(
                     "{ID}: `{name}` has no source read to pin it to; assembly.reload reads it"
                 ))
+            })?;
+            keep = Some(session.blob_with(&now).ok_or_else(|| {
+                CommandError::new(format!(
+                    "{ID}: the bytes `{name}` is built from are not at hand; assembly.reload reads them"
+                ))
             })?);
+            instance.pinned = Some(now);
         } else {
             instance.pinned = None;
             if let (Source::File { hash, .. }, Some(now)) = (&mut instance.source, now) {
@@ -721,6 +775,16 @@ fn instance_edit(session: &mut Session, params: &Value) -> Run {
     }
     let rename = p.str("rename")?.map(str::to_string);
     if let Some(new) = &rename {
+        // Checks that name the new name already (left from an instance of
+        // that name) would land on this one.
+        let checks =
+            crate::assert_cmds::measures_naming(session.document()?.history.current(), new);
+        if *new != name && !checks.is_empty() {
+            return fail(format!(
+                "{ID}: {} name `{new}` already; delete them first, or give another name",
+                checks.join(", ")
+            ));
+        }
         instance.name = new.clone();
     }
     let shown = instance.name.clone();
@@ -740,6 +804,11 @@ fn instance_edit(session: &mut Session, params: &Value) -> Run {
             .find(|i| i.name == name)
             .ok_or_else(|| DocError::Invalid(format!("there is no instance `{name}`")))?;
         *slot = instance;
+        if let Some(blob) = keep {
+            assembly.pack(blob);
+        }
+        // Unpinned, or pinned to other bytes: what no one uses goes.
+        assembly.drop_unused_packed();
         if let Some(new) = &rename {
             for mate in &mut assembly.mates {
                 for r in [&mut mate.a, &mut mate.b] {
@@ -748,6 +817,7 @@ fn instance_edit(session: &mut Session, params: &Value) -> Run {
                     }
                 }
             }
+            crate::assert_cmds::rename_instance_in_measures(doc, &name, new);
         }
         Ok(())
     })?;
@@ -773,6 +843,14 @@ fn instance_delete(session: &mut Session, params: &Value) -> Run {
         return fail(format!(
             "{ID}: the mates {} name `{name}`; delete them first (mate.delete)",
             using.join(", ")
+        ));
+    }
+    // A check left naming it would land on the next instance given its name.
+    let checks = crate::assert_cmds::measures_naming(session.document()?.history.current(), &name);
+    if !checks.is_empty() {
+        return fail(format!(
+            "{ID}: {} name `{name}`; delete them first (assert.delete, variable.delete)",
+            checks.join(", ")
         ));
     }
     asm_edit(session, ID, &format!("Delete instance {name}"), |doc| {
@@ -1049,12 +1127,16 @@ fn coupling_add(session: &mut Session, params: &Value) -> Run {
         mates,
         value: Expr::new(value),
     };
-    let shown = coupling_json(&coupling);
     asm_edit(session, ID, &format!("Add coupling {name}"), |doc| {
         doc.assembly_mut()?.couplings.push(coupling);
         Ok(())
     })?;
-    Ok(shown)
+    let placed = session.placed()?;
+    let assembly = assembly_of(session, ID)?;
+    let added = assembly
+        .coupling(&name)
+        .ok_or_else(|| CommandError::new(format!("{ID}: the coupling `{name}` was not added")))?;
+    Ok(coupling_json(&placed, added))
 }
 
 fn coupling_delete(session: &mut Session, params: &Value) -> Run {
@@ -1181,7 +1263,7 @@ fn assembly_inspect(session: &mut Session, params: &Value) -> Run {
             entry
         }).collect::<Vec<_>>(),
         "mates": assembly.mates.iter().map(|m| mate_json(&placed, m)).collect::<Vec<_>>(),
-        "couplings": assembly.couplings.iter().map(coupling_json).collect::<Vec<_>>(),
+        "couplings": assembly.couplings.iter().map(|c| coupling_json(&placed, c)).collect::<Vec<_>>(),
         "configurations": configurations.len(),
         "regenerations": builds,
         "packed": assembly.packed.iter().map(|b| json!({ "hash": b.sha256(), "bytes": b.len() })).collect::<Vec<_>>(),
@@ -1240,19 +1322,35 @@ fn packed_document(
         .asm
         .files;
     let mut packs = Vec::new();
+    let kept = assembly.packed.clone();
     for instance in &mut assembly.instances {
         let (blob, sub_base) = match &instance.source {
             Source::Packed { .. } => continue,
             Source::File { path, .. } => {
                 let full = asm::join(base, path)?;
-                let blob = match files.get(&full) {
-                    Some(Ok(blob)) => blob.clone(),
-                    _ => session.read_source_file(&full).map_err(|e| {
-                        format!(
+                let read = match files.get(&full) {
+                    Some(Ok(blob)) => Ok(blob.clone()),
+                    _ => session.read_source_file(&full),
+                };
+                // A pinned instance is packed with the bytes it is pinned
+                // to, never with what its file holds now.
+                let blob = match (&instance.pinned, read) {
+                    (Some(pinned), read) if !read.as_ref().is_ok_and(|b| b.sha256() == *pinned) => {
+                        kept.iter().find(|b| b.sha256() == *pinned).cloned().ok_or_else(|| {
+                            format!(
+                                "instance `{}` is pinned to {}…, which neither its source `{path}` nor the assembly holds; instance.edit with pinned: false follows the file",
+                                instance.name,
+                                pinned.get(..12).unwrap_or(pinned)
+                            )
+                        })?
+                    }
+                    (_, Ok(blob)) => blob,
+                    (_, Err(e)) => {
+                        return Err(format!(
                             "instance `{}`: its source `{path}` cannot be read: {e}",
                             instance.name
-                        )
-                    })?,
+                        ));
+                    }
                 };
                 (blob, asm::dir_of(&full))
             }

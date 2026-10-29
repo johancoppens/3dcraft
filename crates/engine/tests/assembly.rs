@@ -465,6 +465,12 @@ fn the_step_export_of_an_assembly_reads_back_as_its_placed_bodies() {
         "instance.add",
         json!({ "source": "block.3dcraft", "name": "B", "position": [0, 0, 30], "rotation": [0, 0, 90] }),
     );
+    // Invisible: left out of every export, as of the scene.
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "block.3dcraft", "name": "C", "position": [100, 0, 0], "visible": false }),
+    );
     let i = inspect(&mut s);
     let exported = run(&mut s, "file.export", json!({ "path": "stack.step" }));
     assert_eq!(exported["parts"], 1, "{exported}");
@@ -483,13 +489,26 @@ fn the_step_export_of_an_assembly_reads_back_as_its_placed_bodies() {
     let doc = run(&mut s, "document.inspect", json!({}));
     let bodies = doc["bodies"].as_array().unwrap();
     assert_eq!(bodies.len(), 2, "{doc}");
+    // Each body read back where its instance is placed: A as the part
+    // is, B turned a quarter about z and raised by 30.
+    let mut wanted = vec![boxed(&i, "A"), boxed(&i, "B")];
+    assert!(close(wanted[1].0[0], -10.0, 1.0), "{i}");
     for body in bodies {
         assert!(
             close(body["volume"].as_f64().unwrap(), 1200.0, 1.0),
             "{body}"
         );
+        let b = &body["bbox"];
+        let got: [[f64; 3]; 2] = [0, 1].map(|k| [0, 1, 2].map(|j| b[k][j].as_f64().unwrap()));
+        let at = wanted
+            .iter()
+            .position(|(lo, hi)| {
+                (0..3).all(|j| close(lo[j], got[0][j], 100.0) && close(hi[j], got[1][j], 100.0))
+            })
+            .unwrap_or_else(|| panic!("a body at {got:?}, the instances at {wanted:?}"));
+        wanted.remove(at);
     }
-    let _ = i;
+    assert!(wanted.is_empty());
 }
 
 /// The assembly's measures on its placed bodies, by instance name:
@@ -1022,6 +1041,411 @@ fn an_absolute_source_path_stays_absolute() {
             let e = e.to_string();
             assert!(!e.contains("cannot be read"), "{e}");
             assert!(e.contains("read root") || e.contains("absolute"), "{e}");
+        }
+    }
+}
+
+/// The width along x of an instance's placed bodies.
+fn width(inspected: &Value, name: &str) -> f64 {
+    let (lo, hi) = boxed(inspected, name);
+    hi[0] - lo[0]
+}
+
+/// A subassembly is placed again when one of its own sources changes
+/// (`assembly.reload` lists it), and two copies of one subassembly file
+/// in two folders are two configurations, each with its own folder's
+/// parts.
+#[test]
+fn a_subassembly_follows_its_own_parts_and_its_folder() {
+    let dir = workdir("assembly", "subcache");
+    std::fs::create_dir_all(dir.join("a")).unwrap();
+    std::fs::create_dir_all(dir.join("b")).unwrap();
+    let mut s = session_in(&dir);
+    block_part(&mut s, "a/part.3dcraft", [2.0, 2.0, 2.0], 1e-6);
+    block_part(&mut s, "b/part.3dcraft", [4.0, 4.0, 4.0], 1e-6);
+    block_part(&mut s, "big.3dcraft", [8.0, 8.0, 8.0], 1e-6);
+    run(&mut s, "assembly.new", json!({}));
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "a/part.3dcraft", "name": "P" }),
+    );
+    run(&mut s, "file.save", json!({ "path": "a/sub.3dcraftasm" }));
+    run(&mut s, "file.close", json!({}));
+    // The same bytes in another folder, beside another part.
+    std::fs::copy(dir.join("a/sub.3dcraftasm"), dir.join("b/sub.3dcraftasm")).unwrap();
+    run(&mut s, "assembly.new", json!({}));
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "a/sub.3dcraftasm", "name": "SubA" }),
+    );
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "b/sub.3dcraftasm", "name": "SubB", "position": [20, 0, 0] }),
+    );
+    let i = inspect(&mut s);
+    assert!(close(width(&i, "SubA"), 2.0, 1.0), "{i}");
+    assert!(close(width(&i, "SubB"), 4.0, 1.0), "{i}");
+    assert_ne!(
+        instance(&i, "SubA")["configuration"],
+        instance(&i, "SubB")["configuration"]
+    );
+    // The part of the first subassembly edited.
+    std::fs::copy(dir.join("big.3dcraft"), dir.join("a/part.3dcraft")).unwrap();
+    let reloaded = run(&mut s, "assembly.reload", json!({}));
+    assert_eq!(reloaded["changed"], json!(["SubA"]), "{reloaded}");
+    let i = inspect(&mut s);
+    assert!(close(width(&i, "SubA"), 8.0, 1.0), "{i}");
+    assert!(close(width(&i, "SubB"), 4.0, 1.0), "{i}");
+}
+
+/// The source paths are rewritten for the folder an assembly is saved
+/// into only once its file is written, and for every state undo can go
+/// back to: a failed save and an undo after Save As keep each instance
+/// on its own file.
+#[test]
+fn a_failed_save_and_an_undo_after_save_as_keep_the_sources() {
+    let dir = workdir("assembly", "rebase");
+    std::fs::create_dir_all(dir.join("parts")).unwrap();
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    // A file where a folder would have to be: a save beneath it fails.
+    std::fs::write(dir.join("blocked"), b"not a folder").unwrap();
+    let mut s = session_in(&dir);
+    block_part(&mut s, "parts/block.3dcraft", [3.0, 2.0, 1.0], 1e-6);
+    run(&mut s, "assembly.new", json!({}));
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "parts/block.3dcraft", "name": "A" }),
+    );
+    run(&mut s, "file.save", json!({ "path": "top.3dcraftasm" }));
+    run(
+        &mut s,
+        "instance.edit",
+        json!({ "name": "A", "position": [5, 0, 0] }),
+    );
+    let failed = s.execute("file.save", &json!({ "path": "blocked/top.3dcraftasm" }));
+    assert!(failed.is_err(), "{failed:?}");
+    let i = inspect(&mut s);
+    assert_eq!(instance(&i, "A")["status"], "ok", "{i}");
+    assert_eq!(instance(&i, "A")["source"]["path"], "parts/block.3dcraft");
+    // Save As into another folder, then undo the move.
+    run(&mut s, "file.save", json!({ "path": "sub/top.3dcraftasm" }));
+    let i = inspect(&mut s);
+    assert_eq!(instance(&i, "A")["status"], "ok", "{i}");
+    assert_eq!(
+        instance(&i, "A")["source"]["path"],
+        "../parts/block.3dcraft"
+    );
+    run(&mut s, "edit.undo", json!({}));
+    let i = inspect(&mut s);
+    assert_eq!(instance(&i, "A")["status"], "ok", "{i}");
+    assert_eq!(
+        instance(&i, "A")["source"]["path"],
+        "../parts/block.3dcraft"
+    );
+    assert!(close(boxed(&i, "A").0[0], 0.0, 1.0), "{i}");
+    run(&mut s, "edit.redo", json!({}));
+    let i = inspect(&mut s);
+    assert_eq!(instance(&i, "A")["status"], "ok", "{i}");
+    assert!(close(boxed(&i, "A").0[0], 5.0, 1.0), "{i}");
+}
+
+/// A coupling that cannot take part (a mate it names failed, or its value
+/// does not evaluate) fails by name, and the solve is not ok.
+#[test]
+fn a_coupling_that_cannot_take_part_fails_by_name() {
+    let dir = workdir("assembly", "couplings");
+    let mut s = session_in(&dir);
+    block_part(&mut s, "block.3dcraft", [10.0, 2.0, 2.0], 1e-6);
+    run(&mut s, "assembly.new", json!({}));
+    for name in ["Base", "Arm", "Arm2"] {
+        run(
+            &mut s,
+            "instance.add",
+            json!({ "source": "block.3dcraft", "name": name }),
+        );
+    }
+    run(
+        &mut s,
+        "mate.add",
+        json!({ "kind": "fixed", "a": "world/xy", "b": "Base/F1:face(0)" }),
+    );
+    run(
+        &mut s,
+        "mate.add",
+        json!({ "kind": "revolute", "a": "Base/F1:face(1)", "b": "Arm/F1:face(0)", "name": "Hinge" }),
+    );
+    run(
+        &mut s,
+        "mate.add",
+        json!({ "kind": "revolute", "a": "Arm/F1:face(1)", "b": "Arm2/F1:face(0)", "name": "Hinge2" }),
+    );
+    let broken = run(
+        &mut s,
+        "mate.add",
+        json!({ "kind": "revolute", "a": "Base/F1:face(1)", "b": "Arm/F1:face(77)", "name": "Broken" }),
+    );
+    assert_eq!(broken["status"], "failed", "{broken}");
+    let added = run(
+        &mut s,
+        "coupling.add",
+        json!({ "kind": "gear", "mates": ["Hinge", "Broken"], "value": 2, "name": "Lost" }),
+    );
+    assert_eq!(added["status"], "failed", "{added}");
+    let why = added["error"].as_str().unwrap();
+    assert!(
+        why.contains("Broken") && why.contains("face(77)"),
+        "{added}"
+    );
+    run(
+        &mut s,
+        "coupling.add",
+        json!({ "kind": "gear", "mates": ["Hinge", "Hinge2"], "value": "nosuch * 2", "name": "Unvalued" }),
+    );
+    let solved = run(&mut s, "assembly.solve", json!({}));
+    assert_eq!(solved["ok"], false, "{solved}");
+    let failed = solved["failed"].as_array().unwrap();
+    for name in ["Lost", "Unvalued"] {
+        assert!(
+            failed.iter().any(|f| f["coupling"] == name),
+            "{name}: {solved}"
+        );
+    }
+    let i = inspect(&mut s);
+    let unvalued = i["couplings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "Unvalued")
+        .unwrap();
+    assert_eq!(unvalued["status"], "failed", "{i}");
+    assert!(
+        unvalued["error"].as_str().unwrap().contains("nosuch"),
+        "{i}"
+    );
+}
+
+/// A pinned instance keeps the bytes it is pinned to in the assembly: it
+/// shows them after its file changed, `assembly.pack` packs them (never
+/// the file's new bytes), and the saved assembly shows them without the
+/// file.
+#[test]
+fn a_pinned_instance_keeps_its_bytes_through_a_change_and_a_pack() {
+    let dir = workdir("assembly", "pin");
+    let mut s = session_in(&dir);
+    block_part(&mut s, "part.3dcraft", [2.0, 2.0, 2.0], 1e-6);
+    block_part(&mut s, "big.3dcraft", [8.0, 8.0, 8.0], 1e-6);
+    run(&mut s, "assembly.new", json!({}));
+    let pinned = run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "part.3dcraft", "name": "P", "pinned": true }),
+    );
+    let hash = pinned["pinned"].clone();
+    assert!(hash.is_string(), "{pinned}");
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "part.3dcraft", "name": "F", "position": [20, 0, 0] }),
+    );
+    let i = inspect(&mut s);
+    assert_eq!(i["packed"][0]["hash"], hash, "{i}");
+    std::fs::copy(dir.join("big.3dcraft"), dir.join("part.3dcraft")).unwrap();
+    let reloaded = run(&mut s, "assembly.reload", json!({}));
+    assert_eq!(reloaded["failed"], json!([]), "{reloaded}");
+    let i = inspect(&mut s);
+    assert!(close(width(&i, "P"), 2.0, 1.0), "{i}");
+    assert!(close(width(&i, "F"), 8.0, 1.0), "{i}");
+    run(&mut s, "assembly.pack", json!({}));
+    let i = inspect(&mut s);
+    assert_eq!(instance(&i, "P")["source"]["hash"], hash, "{i}");
+    assert_eq!(instance(&i, "P")["pinned"], hash, "{i}");
+    assert!(close(width(&i, "P"), 2.0, 1.0), "{i}");
+    assert!(close(width(&i, "F"), 8.0, 1.0), "{i}");
+    run(&mut s, "file.save", json!({ "path": "pinned.3dcraftasm" }));
+    run(&mut s, "file.close", json!({}));
+    std::fs::remove_file(dir.join("part.3dcraft")).unwrap();
+    run(&mut s, "file.open", json!({ "path": "pinned.3dcraftasm" }));
+    let i = inspect(&mut s);
+    assert!(close(width(&i, "P"), 2.0, 1.0), "{i}");
+    assert!(close(width(&i, "F"), 8.0, 1.0), "{i}");
+}
+
+/// Assertions follow an instance's rename; an instance an assertion names
+/// is not deleted, so a later rename can never hand its checks to
+/// another instance.
+#[test]
+fn a_rename_takes_the_checks_along_and_never_hands_them_on() {
+    let dir = workdir("assembly", "rename");
+    let mut s = session_in(&dir);
+    block_part(&mut s, "cube.3dcraft", [10.0, 10.0, 10.0], 1e-6);
+    run(&mut s, "assembly.new", json!({}));
+    for (name, x) in [("A", 0), ("B", 15), ("C", 40)] {
+        run(
+            &mut s,
+            "instance.add",
+            json!({ "source": "cube.3dcraft", "name": name, "position": [x, 0, 0] }),
+        );
+    }
+    let gap = run(
+        &mut s,
+        "assert.add",
+        json!({ "name": "gap", "measure": "clearance", "from": "A", "to": "B", "min": "1 mm" }),
+    );
+    assert!(close(gap["measured"].as_f64().unwrap(), 5.0, 1.0), "{gap}");
+    let refused = error(&mut s, "instance.delete", json!({ "name": "B" }));
+    assert!(refused.contains("gap"), "{refused}");
+    run(
+        &mut s,
+        "instance.edit",
+        json!({ "name": "A", "rename": "Left" }),
+    );
+    // C takes the old name: the check stays on Left.
+    run(
+        &mut s,
+        "instance.edit",
+        json!({ "name": "C", "rename": "A" }),
+    );
+    let listed = run(&mut s, "assert.list", json!({}));
+    let gap = &listed["assertions"][0];
+    assert_eq!(gap["status"], "passed", "{listed}");
+    assert!(
+        close(gap["measured"].as_f64().unwrap(), 5.0, 1.0),
+        "{listed}"
+    );
+}
+
+/// A mate on a body the source hides fails by name (the instance shows
+/// only the visible bodies), unless the instance picks that body.
+#[test]
+fn a_mate_on_a_hidden_body_of_the_source_fails_unless_it_is_picked() {
+    let dir = workdir("assembly", "hidden");
+    let mut s = session_in(&dir);
+    run(&mut s, "file.new", json!({}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({ "name": "Shown", "size": [2, 2, 2] }),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({ "name": "Kept", "size": [1, 1, 1], "position": [5, 0, 0] }),
+    );
+    run(
+        &mut s,
+        "feature.visible",
+        json!({ "feature": "Kept", "visible": false }),
+    );
+    run(&mut s, "file.save", json!({ "path": "two.3dcraft" }));
+    run(&mut s, "file.close", json!({}));
+    run(&mut s, "assembly.new", json!({}));
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "two.3dcraft", "name": "All" }),
+    );
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "two.3dcraft", "name": "Picked", "body": "Kept" }),
+    );
+    let hidden = run(
+        &mut s,
+        "mate.add",
+        json!({ "kind": "fixed", "a": "world/xy", "b": "All/F2:face(0)", "name": "OnHidden" }),
+    );
+    assert_eq!(hidden["status"], "failed", "{hidden}");
+    assert!(
+        hidden["error"].as_str().unwrap().contains("hides"),
+        "{hidden}"
+    );
+    let picked = run(
+        &mut s,
+        "mate.add",
+        json!({ "kind": "fixed", "a": "world/xy", "b": "Picked/F2:face(0)", "name": "OnPicked" }),
+    );
+    assert_eq!(picked["status"], "ok", "{picked}");
+}
+
+/// The window's case: an assembly opened with unrestricted access, then
+/// the workspace narrowed to a root, the display scene refined
+/// elsewhere; the Preview and Display scenes it is drawn from follow
+/// joint.set, directly and built a piece at a time.
+#[test]
+fn the_shown_scenes_follow_the_joints_after_the_workspace_narrows() {
+    use craft3d_engine::{Access, SceneQuality, Workspace};
+    let dir = workdir("assembly", "window");
+    {
+        let mut s = session_in(&dir);
+        block_part(&mut s, "block.3dcraft", [10.0, 2.0, 2.0], 1e-6);
+        run(&mut s, "assembly.new", json!({}));
+        for name in ["Base", "Arm"] {
+            run(
+                &mut s,
+                "instance.add",
+                json!({ "source": "block.3dcraft", "name": name }),
+            );
+        }
+        run(
+            &mut s,
+            "mate.add",
+            json!({ "kind": "fixed", "a": "world/xy", "b": "Base/F1:face(0)" }),
+        );
+        run(
+            &mut s,
+            "mate.add",
+            json!({ "kind": "revolute", "a": "Base/F1:face(1)", "b": "Arm/F1:face(0)", "name": "Hinge" }),
+        );
+        run(&mut s, "file.save", json!({ "path": "arm.3dcraftasm" }));
+    }
+    for stepwise in [false, true] {
+        let mut s = Session::new(Workspace {
+            read: Access::Unrestricted,
+            write: Access::Unrestricted,
+        });
+        let absolute = dir.join("arm.3dcraftasm").to_string_lossy().to_string();
+        run(&mut s, "file.open", json!({ "path": absolute }));
+        s.set_workspace(Workspace {
+            read: Access::Root(dir.clone()),
+            write: Access::Root(dir.clone()),
+        });
+        s.set_refine_elsewhere(true);
+        s.set_stepwise(stepwise);
+        let mut boxes = Vec::new();
+        for angle in ["0 deg", "90 deg"] {
+            run(
+                &mut s,
+                "joint.set",
+                json!({ "mate": "Hinge", "value": angle }),
+            );
+            for _ in 0..1000 {
+                if s.prepare_some(SceneQuality::display(), || false).is_none() {
+                    break;
+                }
+            }
+            for quality in [SceneQuality::Preview, SceneQuality::display()] {
+                let scene = s.scene_with(quality).unwrap().expect("a scene");
+                assert_eq!(scene.bodies.len(), 2, "{angle} {quality:?}");
+                let (lo, hi) = scene.bbox.corners().expect("a box");
+                boxes.push((quality, lo, hi));
+            }
+        }
+        let i = inspect(&mut s);
+        assert_eq!(i["solve"]["ok"], true, "{i}");
+        for k in 0..2 {
+            let (q, lo0, hi0) = boxes[k];
+            let (_, lo1, hi1) = boxes[k + 2];
+            assert!(
+                (lo0.x - lo1.x).abs() > 1.0
+                    || (lo0.y - lo1.y).abs() > 1.0
+                    || (hi0.x - hi1.x).abs() > 1.0
+                    || (hi0.y - hi1.y).abs() > 1.0,
+                "stepwise {stepwise}, {q:?}: the drawn box did not move: {boxes:?}"
+            );
         }
     }
 }

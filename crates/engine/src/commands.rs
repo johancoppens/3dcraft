@@ -1089,18 +1089,16 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
     let resolved = session.workspace.resolve_write(&path)?;
     let access = session.workspace.write.clone();
     // An assembly's source paths stay relative to its file: saved into
-    // another folder, they are rewritten for it (in the same save).
-    if is_assembly {
+    // another folder, they are rewritten for it. The rewritten document is
+    // what is written; the open one takes it (with every undo state) only
+    // once the file is written, together with its new path.
+    let rebase = if is_assembly {
         let old_base = session.asm_base()?;
         let new_base = crate::asm::dir_of(&crate::workspace::kept_path(&access, &path, &resolved));
-        let doc = std::sync::Arc::clone(session.document()?.history.current());
-        if let Some(rebased) = crate::asm_cmds::rebased(&doc, &old_base, &new_base) {
-            edit(session, "file.save", "Rebase source paths", |doc| {
-                *doc = rebased;
-                Ok(())
-            })?;
-        }
-    }
+        Some((old_base, new_base))
+    } else {
+        None
+    };
     let in_memory = session.writes_to_memory();
     let open = session.document_mut()?;
     // A recovered document is older than its original file when that
@@ -1130,8 +1128,12 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
         (None, None)
     };
     let open = session.document_mut()?;
-    let document = std::sync::Arc::clone(open.history.current());
-    let revision = open.history.revision();
+    let mut document = std::sync::Arc::clone(open.history.current());
+    if let Some((old_base, new_base)) = &rebase
+        && let Some(rebased) = crate::asm_cmds::rebased(&document, old_base, new_base)
+    {
+        document = std::sync::Arc::new(rebased);
+    }
     if in_memory {
         let bytes =
             craft3d_format::to_bytes_with_thumbnail(&document, png.as_deref().map(Vec::as_slice))
@@ -1143,7 +1145,11 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
         save_to_disk(&resolved, &document, png.as_deref().map(Vec::as_slice)).map_err(cannot)?;
     }
     let open = session.document_mut()?;
-    open.saved_revision = Some(revision);
+    if let Some((old_base, new_base)) = &rebase {
+        open.history
+            .rewrite_all(|doc| crate::asm_cmds::rebased(doc, old_base, new_base));
+    }
+    open.saved_revision = Some(open.history.revision());
     let kept = crate::workspace::kept_path(&access, &path, &resolved);
     open.path = Some(kept.clone());
     open.disk = file_stamp(in_memory, &resolved);

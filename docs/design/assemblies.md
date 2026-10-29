@@ -301,7 +301,10 @@ What an open assembly shows is derived and may be thrown away (rule 2). `OpenDoc
   (`resolve_read`, `read_input`: the session's memory in the browser), recursively through subassemblies to
   `MAX_DEPTH` (8) levels with a seen-set, at most `MAX_SOURCE_FILES` (1000) files. Everything after it is pure.
 - **the documents parsed**, by hash, and **the configurations built**, by key: the source's SHA-256 and each
-  overridden parameter's name and the text it was set to. A configuration is the source with its public parameters set
+  overridden parameter's name and the text it was set to; for a subassembly also the folder its own sources are read
+  from (two copies of one file in two folders are two configurations). A subassembly's placement depends on the files
+  read for its own sources, which the key does not hold, so every change of the files read drops the subassemblies'
+  entries (parts stay: their key is their bytes), and a subassembly whose own sources changed is `changed` too. A configuration is the source with its public parameters set
   as `param.set` sets them (the same checks: a parameter that is not public, or a value outside its range, fails the
   instance by name), regenerated once. Instances of one configuration share it whichever body they pick. The
   configurations not built yet are regenerated side by side (`interference_cmds::in_order` on the shared thread pool)
@@ -312,8 +315,10 @@ What an open assembly shows is derived and may be thrown away (rule 2). `OpenDoc
 
 The placement, in order:
 
-1. each instance's source bytes: the file read, or the packed document. A **pinned** instance whose file changed uses
-   the packed copy of the pinned bytes when the file holds one, and fails naming both hashes otherwise; an unpinned one
+1. each instance's source bytes: the file read, or the packed document. A **pinned** instance keeps the bytes it is
+   pinned to packed in the assembly (`instance.add {pinned: true}` and `instance.edit {pinned: true}` pack them,
+   `drop_unused_packed` keeps them), so when its file changes it uses that copy; an older file without it fails naming
+   both hashes; an unpinned one
    follows the file and is marked `changed` (its stored hash is the one it was added with until `instance.edit
    {pinned: false}` takes the new one). A source in another length unit than the assembly is refused by name (a body is
    moved by rigid transforms only; scaling it is owed). A hash already on the chain of assemblies above is a cycle,
@@ -327,7 +332,8 @@ The placement, in order:
    as z and the surface frame's x; a cylindrical or conical face's axis at the point of the axis nearest the face's
    centroid; a circular edge's centre and axis; a vertex as a point with the world's axes; a datum plane, axis or point
    of the source by its name or id. Anything else (a sphere, a freeform face, a straight edge) fails the mate naming
-   what it is. The name is resolved by `selection::Resolver::locate`, the same resolution as a selection: its aliases
+   what it is. A face of a body the source hides fails the mate (the instance shows only the visible bodies) unless the
+   instance picks that body. The name is resolved by `selection::Resolver::locate`, the same resolution as a selection: its aliases
    and the short names of caps hold, and **a name that is gone fails the mate with that name; it never retargets**
    (rule 4 across files). Through a subassembly the name goes on through its instance (`Sub/Inner/F1:face(0)`) and the
    frame is moved by that instance's pose in it. The world has `world/xy`, `yz`, `zx` (planes), `x`, `y`, `z` (axes)
@@ -364,7 +370,11 @@ a coupling names it), `coupling.add`, `coupling.delete`, `joint.set` (sets or re
 `<mate>_angle`, `_distance`, `_x` or `_y`, which formulas may use and `variable.publish` may publish),
 `assembly.solve`, `assembly.inspect` (`measures`: each instance's volume and box), `assembly.reload`,
 `assembly.pack`, `assembly.unpack`. A mate whose name or geometry fails is kept and reported failed by name, as a
-feature is.
+feature is; so is a coupling whose mate takes no part or whose value does not evaluate (`status`, `error`, and in
+`assembly.solve`'s `failed`). A rename of an instance also rewrites the assertions and outputs that name it (`Inst`,
+`Inst/...`), and is refused onto a name a check names already; `instance.delete` is refused while a check names it, so
+checks never pass to another instance that later takes the name. `assembly.new` keeps the tab's number and the
+session's body budget.
 
 A free motion's variable is written `<mate>_angle`, not `<mate>.angle` as the plan has it: a dot in a name is a table
 lookup in expressions (`scales[scale].maxNotes`).
@@ -372,10 +382,15 @@ lookup in expressions (`scales[scale].maxNotes`).
 ### Pack and unpack
 
 `assembly.pack` replaces every file source by the packed document, its subassemblies packed first the same way (to
-`MAX_DEPTH`), and a pinned hash by the packed bytes' hash; the file then rebuilds anywhere. `assembly.unpack {folder}`
+`MAX_DEPTH`), and a pinned hash by the packed bytes' hash; the file then rebuilds anywhere. A pinned instance is packed
+with the bytes it is pinned to, never with what its file holds now; when neither the file nor the assembly holds them
+the pack is refused by name. `assembly.unpack {folder}`
 writes each packed document beneath the write root, relative to the assembly's file, named after its first instance,
 refuses to overwrite unless asked, and refers to the files again with the same hashes. Saving an assembly into another
-folder rewrites its source paths so they stay relative to its file, in the same save.
+folder rewrites its source paths so they stay relative to its file: the document written is rewritten, and the open
+one takes the rewrite only once the file is written, for its current state and every state undo and redo reach
+(`History::rewrite_all`, no undo step of its own), together with its new path. A failed write changes nothing; an
+undo after Save As keeps paths relative to the new folder.
 
 ### Export (`crates/engine/src/asm_export.rs`, `crates/io/src/step_assembly.rs`)
 
@@ -383,7 +398,8 @@ folder rewrites its source paths so they stay relative to its file, in the same 
 with its B-rep as for a part, and one product named after the file that places them, each placement a
 `NEXT_ASSEMBLY_USAGE_OCCURRENCE` with a `CONTEXT_DEPENDENT_SHAPE_REPRESENTATION` whose `ITEM_DEFINED_TRANSFORMATION`
 maps the part's origin frame onto its pose (the structure `craft3d-stepread` reads, so `file.import` of the file gives
-one body per placement where the assembly put it). Subassemblies are written flat. STL, 3MF and OBJ hold the placed
+one body per placement where the assembly put it). Subassemblies are written flat. An invisible instance, and a
+subassembly's invisible ones, are left out, as the mesh exports and the scene leave them out. STL, 3MF and OBJ hold the placed
 bodies, named after their instances.
 
 ### Measures
@@ -406,6 +422,14 @@ mate's variables are its values (`assembly.solve` reports the main one), the deg
 in words are reported as they come; a `Diagnosis` fails the solve with its message (the mates, couplings, drivers and
 limits by name), and the instances then stay where they are placed.
 
+### Regeneration elsewhere
+
+A host that regenerates elsewhere (the web page's worker, `Session::set_regen_elsewhere`) never gets an assembly's
+jobs: `regen_elsewhere()` is false while the active document is an assembly, because what it shows is placed from the
+source files this session read, which the document sent to a worker does not carry. The page then builds it here a
+piece at a time, as a host without a worker does. Shipping the assembly with the files it read is the alternative,
+owed if placing a large assembly on the page's thread is too slow.
+
 ### Tests (track A)
 
 `crates/engine/tests/assembly.rs`: a stack placed by fixed mates at 1e-3, 1 and 1e6, saved and reopened; two
@@ -413,7 +437,12 @@ configurations of one source built once each and only the changed one rebuilt; t
 one regeneration and a body that is gone failing by name; an edited source followed after a reload and a removed face
 failing its mate by name; a rigid subassembly and a mate through it, and cycles refused; a flexible subassembly solved
 with its parent; pack and unpack equality with the source file deleted; the STEP export read back by our import, and
-the mesh exports; clearance, overlap and mass in closed form; a revolute driven by `joint.set`; the refusals.
+the mesh exports, each imported body's box against its instance's; clearance, overlap and mass in closed form; a
+revolute driven by `joint.set`; the refusals; a subassembly following its own part and its folder; a failed save and an
+undo after Save As; couplings that fail by name; a pin through a file change, a pack and a reopen; checks through a
+rename; a mate on a hidden body; the shown scenes after the workspace narrows. `regen_elsewhere.rs` has the assembly
+built here by a host that regenerates elsewhere, `recovery.rs` the unsaved assembly that asks, is autosaved and comes
+back with its sources, `crates/io/tests/step_freecad.rs` FreeCAD reading an assembly (`cargo xtask freecad`).
 `crates/engine/tests/panic_hunt.rs` runs every command with adversarial parameters. `crates/doc/src/assembly.rs` and
 `crates/engine/src/asm.rs` have the unit tests of the rules and the paths. The format: `crates/format/tests/versions.rs`
 (the fixture) and `crates/engine/tests/format_versions.rs` (its regeneration).
@@ -423,4 +452,11 @@ the mesh exports; clearance, overlap and mass in closed form; a revolute driven 
 - 2026-10-29: first version (track A): the document kind, format 53 (TEMPORARY), instances with configurations, picked
   bodies, pins and subassemblies, cross-file names and frames, a stand-in solver, placement into the scene, pack and
   unpack, the structured STEP export, measures by instance.
+- 2026-10-30 (review fixes): subassembly configurations keyed by their folder and dropped when the files read change;
+  the save rebase applied only after the write, to every undo state; assemblies built here by a host that regenerates
+  elsewhere; an unsaved assembly asks before closing and is autosaved, and a recovered one reads its sources; coupling
+  status; pinned bytes kept packed and used by `assembly.pack`; the STEP export skips invisible instances; checks
+  follow instance renames; mates on hidden source bodies fail. The window's scene not following `joint.set` was not
+  reproduced in the engine (test `the_shown_scenes_follow_the_joints_after_the_workspace_narrows`: absolute open,
+  workspace narrowed to a root, display refined elsewhere, Preview and Display scenes, stepwise and not).
 - 2026-10-29: the stand-in replaced by track B's `craft3d-assembly` (on main since 3c885c35): closed loops, couplings, limits and the diagnosis now come from the solver; the engine maps its frames, drives and the world onto the crate's `Problem`.

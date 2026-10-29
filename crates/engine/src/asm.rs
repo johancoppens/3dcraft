@@ -110,6 +110,13 @@ pub(crate) struct MateState {
     pub driven: bool,
 }
 
+/// A coupling as solved: why it takes no part, when it does not.
+#[derive(Clone)]
+pub(crate) struct CouplingState {
+    pub name: String,
+    pub error: Option<String>,
+}
+
 /// An assembly placed.
 pub(crate) struct Placed {
     /// A part with one feature per placed body: what is drawn, picked,
@@ -118,6 +125,7 @@ pub(crate) struct Placed {
     pub regen: Arc<Regen>,
     pub instances: Vec<InstanceState>,
     pub mates: Vec<MateState>,
+    pub couplings: Vec<CouplingState>,
     /// Why the solve failed, when it did (the instances then stay at
     /// their placements).
     pub solve_error: Option<String>,
@@ -494,16 +502,23 @@ pub(crate) fn place(
         });
         match prepared {
             Ok((hash, source, params)) => {
-                let key = config_key(&hash, &params);
+                let sub_base = match &instance.source {
+                    Source::File { path, .. } => {
+                        join(base, path).map(|p| dir_of(&p)).unwrap_or_default()
+                    }
+                    Source::Packed { .. } => base.to_string(),
+                };
+                let mut key = config_key(&hash, &params);
+                if source.is_assembly() {
+                    // A subassembly's placement also depends on the folder
+                    // its own sources are read from: two copies of one file
+                    // in two folders are two configurations.
+                    key.push('@');
+                    key.push_str(&sub_base);
+                }
                 st.hash = Some(hash.clone());
                 st.config = Some(key.clone());
                 if !state.configs.contains_key(&key) && wanted.insert(key.clone()) {
-                    let sub_base = match &instance.source {
-                        Source::File { path, .. } => {
-                            join(base, path).map(|p| dir_of(&p)).unwrap_or_default()
-                        }
-                        Source::Packed { .. } => base.to_string(),
-                    };
                     jobs.push(Job {
                         key,
                         doc: configured(&source, &params),
@@ -544,7 +559,12 @@ pub(crate) fn place(
     for job in subs {
         let result = match &job.doc {
             Ok(sub) => {
-                let hash = job.key.split('|').next().unwrap_or_default().to_string();
+                let hash = job
+                    .key
+                    .split(['|', '@'])
+                    .next()
+                    .unwrap_or_default()
+                    .to_string();
                 chain.push(hash);
                 let placed = place(sub, &job.base, state, chain);
                 chain.pop();
@@ -563,6 +583,12 @@ pub(crate) fn place(
         match state.configs.get(key) {
             Some(Ok(built)) => {
                 st.built = Some(Arc::clone(built));
+                // A subassembly whose own sources changed has changed too.
+                if let Built::Assembly(sub) = &**built
+                    && sub.instances.iter().any(|i| i.changed)
+                {
+                    st.changed = true;
+                }
                 if let Some(body) = &instance.body {
                     match pick(built, body) {
                         Ok(id) => st.picked = Some(id),
@@ -577,12 +603,13 @@ pub(crate) fn place(
     // A flexible subassembly gives its instances and mates to the solve.
     let extra = flex(assembly, &mut instances);
     // 3. and 4. Frames and the solve.
-    let (mates, solve_error, floating, dof, specs) =
+    let (mates, couplings, solve_error, floating, dof, specs) =
         solve_mates(doc, assembly, values.as_ref(), &mut instances, &extra);
     // 5. Placed bodies.
     let mut placed = build_shown(doc, assembly, &mut instances);
     placed.specs = specs;
     placed.mates = mates;
+    placed.couplings = couplings;
     placed.solve_error = solve_error;
     placed.floating = floating;
     placed.dof = dof;
@@ -657,6 +684,7 @@ fn empty(doc: &Document, error: Option<String>) -> Placed {
         regen: Arc::new(Regen::default()),
         instances: Vec::new(),
         mates: Vec::new(),
+        couplings: Vec::new(),
         solve_error: error,
         floating: false,
         dof: None,
@@ -844,6 +872,7 @@ fn build_shown(doc: &Document, assembly: &Assembly, instances: &mut [InstanceSta
         }),
         instances: instances.to_vec(),
         mates: Vec::new(),
+        couplings: Vec::new(),
         solve_error: None,
         floating: false,
         dof: None,
@@ -941,6 +970,17 @@ pub(crate) fn frame_in(
             let only = picked.map(|id| id.to_string());
             let mut resolver = Resolver::new(doc, regen);
             let (feature, kind, index) = resolver.locate(name, only.as_deref())?;
+            // The instance shows only the source's visible bodies (or the
+            // one picked): a mate on a hidden one would hold to nothing
+            // drawn.
+            if picked != Some(feature) && doc.is_hidden(feature) {
+                let shown = doc
+                    .feature(feature)
+                    .map_or_else(|| feature.to_string(), |f| f.name.clone());
+                return Err(format!(
+                    "`{name}` is on the body of `{shown}`, which the source hides; an instance shows only the visible bodies (body: \"{shown}\" picks it)"
+                ));
+            }
             let body = regen
                 .feature(feature)
                 .and_then(FeatureResult::own_body)
@@ -1203,6 +1243,7 @@ fn mate_spec(
 
 type Solved = (
     Vec<MateState>,
+    Vec<CouplingState>,
     Option<String>,
     bool,
     Option<(usize, Vec<String>)>,
@@ -1254,22 +1295,42 @@ fn solve_mates(
         states.push(st);
     }
     let mut couplings = Vec::new();
+    let mut coupling_states = Vec::with_capacity(assembly.couplings.len());
     for c in &assembly.couplings {
-        let at = |name: &str| {
-            assembly
+        // The mate's spec, or why the coupling cannot take it.
+        let at = |name: &str| -> Result<usize, String> {
+            let m = assembly
                 .mates
                 .iter()
                 .position(|m| m.name == name)
-                .and_then(|m| spec_mate.iter().position(|&s| s == m))
+                .ok_or_else(|| format!("its mate `{name}` is not in the assembly"))?;
+            spec_mate.iter().position(|&s| s == m).ok_or_else(|| {
+                match states.get(m).and_then(|s| s.error.as_deref()) {
+                    Some(why) => format!("its mate `{name}` takes no part: {why}"),
+                    None => format!("its mate `{name}` takes no part"),
+                }
+            })
         };
-        let value = eval(values, c.value.source()).map(|q| {
-            if q.dimension == Dimension::LENGTH {
-                length(q)
-            } else {
-                q.value
-            }
+        let value = eval(values, c.value.source())
+            .map_err(|e| format!("its value {}: {e}", c.value.source()))
+            .and_then(|q| {
+                let v = if q.dimension == Dimension::LENGTH {
+                    length(q)
+                } else {
+                    q.value
+                };
+                if v.is_finite() {
+                    Ok(v)
+                } else {
+                    Err(format!("its value {} is not finite", c.value.source()))
+                }
+            });
+        let taken = at(&c.mates.0).and_then(|a| Ok((a, at(&c.mates.1)?, value?)));
+        coupling_states.push(CouplingState {
+            name: c.name.clone(),
+            error: taken.as_ref().err().cloned(),
         });
-        if let (Some(a), Some(b), Ok(value)) = (at(&c.mates.0), at(&c.mates.1), value) {
+        if let Ok((a, b, value)) = taken {
             couplings.push(solver::CouplingSpec {
                 kind: match c.kind {
                     craft3d_doc::CouplingKind::Gear => solver::CouplingKind::Gear,
@@ -1351,13 +1412,16 @@ fn solve_mates(
             }
             (
                 states,
+                coupling_states,
                 None,
                 floating,
                 Some((solution.dof, solution.free)),
                 named,
             )
         }
-        Err(solver::Diagnosis(text)) => (states, Some(text), floating, None, named),
+        Err(solver::Diagnosis(text)) => {
+            (states, coupling_states, Some(text), floating, None, named)
+        }
     }
 }
 
@@ -1399,9 +1463,14 @@ impl AsmState {
     }
 
     /// Forgets the placement, so the next one is worked out again.
+    /// A subassembly's placement depends on the files read for its own
+    /// sources, which its key does not hold, so those are placed again
+    /// too; parts are kept (their key is their bytes).
     pub(crate) fn invalidate(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.placed = None;
+        self.configs
+            .retain(|_, built| !matches!(built, Ok(b) if matches!(**b, Built::Assembly(_))));
     }
 }
 

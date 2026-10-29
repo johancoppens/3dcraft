@@ -33,7 +33,8 @@ it. This is how the bodies of an existing Jig become parts of an assembly. If th
 body any more, the instance says so by name; it never shows another body instead.
 
 **Following the part.** `assembly.reload` reads the sources again and lists the instances whose part changed.
-`"pinned": true` keeps an instance to the part as it is now. `instance.open` opens an instance's part in its own tab.
+`"pinned": true` keeps an instance to the part as it is now: those bytes are kept in the assembly's file, so the
+instance shows them whatever the part's file holds later, and `assembly.pack` packs them. `instance.open` opens an instance's part in its own tab.
 
 ## Mates
 
@@ -67,7 +68,8 @@ publish as a parameter (it then shows as a slider). `assembly.solve` says whethe
 instance can still do. A mate on a face that is gone from the part fails with that face's name and never moves to
 another face.
 
-Gears, racks and screws couple two mates: `coupling.add {"kind": "gear", "mates": ["A", "B"], "value": 2}`.
+Gears, racks and screws couple two mates: `coupling.add {"kind": "gear", "mates": ["A", "B"], "value": 2}`. A
+coupling whose mate fails, or whose value does not evaluate, fails by name and `assembly.solve` is not ok.
 
 Closed loops (a four-bar linkage) are solved as a whole, and `assembly.solve` says which mates contradict each other
 and by how much when they cannot all be met.
@@ -83,7 +85,8 @@ An instance of a `.3dcraftasm` is a **subassembly**. By default it moves as one 
 - `assembly.pack` puts copies of all parts into the `.3dcraftasm` file, so it opens anywhere; `assembly.unpack`
   writes them out as files again.
 - `file.export` to `.step` writes the assembly with its structure: each part once, placed by every instance. STL, 3MF
-  and OBJ hold the placed bodies.
+  and OBJ hold the placed bodies. Invisible instances are left out of all of them.
 - Checks name instances: `assert.add {"name": "gap", "measure": "clearance", "from": "Bar[1]", "to": "Bar[2]", "min": "1 mm"}`,
-  `overlap` for interference and `mass` work as in a part ([chapter 10](10-measure.md)).
+  `overlap` for interference and `mass` work as in a part ([chapter 10](10-measure.md)). Renaming an instance renames
+  it in its checks; an instance a check names is not deleted until the check is.
 - `assembly.inspect` lists the instances, their configurations, the mates and how they stand.

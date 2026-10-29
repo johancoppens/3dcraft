@@ -327,8 +327,9 @@ impl OpenDocument {
     }
 
     /// True when `file.close` refuses it without `discard`: it has changes
-    /// that are not on disk and are worth keeping (it has a file, or
-    /// features). A new document nothing was added to closes freely.
+    /// that are not on disk and are worth keeping (it has a file, features,
+    /// or an assembly's instances, mates or couplings). A new document
+    /// nothing was added to closes freely.
     ///
     /// A Jig in use asks when its parameters changed since it was opened
     /// (docs/decisions.md, 2026-10-23): its file is never written, so the
@@ -337,7 +338,11 @@ impl OpenDocument {
         if self.jig_in_use {
             return self.parameters_changed();
         }
-        self.dirty() && (self.path.is_some() || !self.history.current().features.is_empty())
+        let doc = self.history.current();
+        self.dirty()
+            && (self.path.is_some()
+                || !doc.features.is_empty()
+                || doc.assembly.as_ref().is_some_and(|a| !a.is_empty()))
     }
 
     /// A Jig in use whose parameters were changed since it was opened (or

@@ -909,3 +909,44 @@ fn a_jig_in_use_comes_back_as_a_model_with_its_values() {
         json!({"name": "w", "expr": "50 mm"}),
     );
 }
+
+/// An assembly never saved, with an instance, is worth keeping: closing
+/// it asks, it is autosaved, and the recovered one reads its sources as
+/// it opens, so its instance is placed without an assembly.reload.
+#[test]
+fn an_unsaved_assembly_asks_is_autosaved_and_comes_back_with_its_sources() {
+    let dir = workdir("assembly");
+    let (mut first, clock) = session(&dir);
+    run(&mut first, "file.new", json!({}));
+    run(
+        &mut first,
+        "feature.block",
+        json!({ "name": "Base", "size": [4, 3, 2] }),
+    );
+    run(&mut first, "file.save", json!({ "path": "block.3dcraft" }));
+    run(&mut first, "file.close", json!({}));
+    run(&mut first, "assembly.new", json!({}));
+    // With an instance it asks.
+    run(
+        &mut first,
+        "instance.add",
+        json!({ "source": "block.3dcraft", "name": "A", "position": [10, 0, 0] }),
+    );
+    let refused = error(&mut first, "file.close", json!({}));
+    assert!(refused.contains("discard"), "{refused}");
+    clock.advance(INTERVAL);
+    first.autosave_poll();
+    drop(first);
+
+    let (mut second, _) = session(&dir);
+    let listed = run(&mut second, "recovery.list", json!({}));
+    let documents = documents(&listed);
+    assert_eq!(documents.len(), 1, "{listed}");
+    let id = documents[0]["id"].as_str().unwrap().to_string();
+    run(&mut second, "recovery.open", json!({ "id": id }));
+    let inspected = run(&mut second, "assembly.inspect", json!({ "measures": true }));
+    let a = &inspected["instances"][0];
+    assert_eq!(a["status"], "ok", "{inspected}");
+    let x = a["measured"]["box"][0][0].as_f64().unwrap();
+    assert!((x - 10.0).abs() < 1e-6, "{inspected}");
+}

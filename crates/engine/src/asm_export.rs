@@ -65,7 +65,7 @@ fn leaves_of(
             for inner in placed
                 .instances
                 .iter()
-                .filter(|i| i.error.is_none() && !i.flexed)
+                .filter(|i| i.error.is_none() && !i.flexed && shows(placed, i))
             {
                 leaves_of(
                     inner,
@@ -79,13 +79,19 @@ fn leaves_of(
     }
 }
 
+/// True when the instance shows a body in `placed`: an invisible one is
+/// left out, as the mesh exports and the scene leave it out.
+fn shows(placed: &Placed, st: &InstanceState) -> bool {
+    st.bodies.iter().any(|b| !placed.doc.is_hidden(*b))
+}
+
 fn leaves(placed: &Placed, only: Option<&[FeatureId]>) -> Vec<Leaf> {
     let mut out = Vec::new();
     // A flexible subassembly's bodies are its instances'.
     for st in placed
         .instances
         .iter()
-        .filter(|i| i.error.is_none() && !i.flexed)
+        .filter(|i| i.error.is_none() && !i.flexed && shows(placed, i))
     {
         if only.is_some_and(|only| !st.bodies.iter().any(|b| only.contains(b))) {
             continue;

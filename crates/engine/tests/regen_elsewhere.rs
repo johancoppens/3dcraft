@@ -433,3 +433,88 @@ fn a_scrubbed_state_built_elsewhere_is_the_one_built_here() {
         }
     }
 }
+
+/// An assembly is never handed to a worker: what it shows is placed from
+/// the source files this session read, which the document sent elsewhere
+/// does not carry. A host that regenerates elsewhere builds it here, a
+/// piece at a time, and shows its placed bodies, following its joints.
+#[test]
+fn an_assembly_is_built_here_by_a_host_that_regenerates_elsewhere() {
+    use craft3d_engine::Access;
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("regen-elsewhere-asm");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut session = Session::new(Workspace {
+        read: Access::Root(dir.clone()),
+        write: Access::Root(dir.clone()),
+    });
+    session.set_stepwise(true);
+    session.set_checks_elsewhere(true);
+    session.set_regen_elsewhere(true);
+    let run = |s: &mut Session, id: &str, params: serde_json::Value| {
+        s.execute(id, &params)
+            .unwrap_or_else(|e| panic!("{id} {params}: {e}"))
+    };
+    run(&mut session, "file.new", json!({}));
+    run(
+        &mut session,
+        "feature.block",
+        json!({ "name": "Base", "size": [10, 2, 2] }),
+    );
+    run(
+        &mut session,
+        "file.save",
+        json!({ "path": "block.3dcraft" }),
+    );
+    run(&mut session, "file.close", json!({}));
+    run(&mut session, "assembly.new", json!({}));
+    for name in ["Base", "Arm"] {
+        run(
+            &mut session,
+            "instance.add",
+            json!({ "source": "block.3dcraft", "name": name }),
+        );
+    }
+    run(
+        &mut session,
+        "mate.add",
+        json!({ "kind": "fixed", "a": "world/xy", "b": "Base/F1:face(0)" }),
+    );
+    run(
+        &mut session,
+        "mate.add",
+        json!({ "kind": "revolute", "a": "Base/F1:face(1)", "b": "Arm/F1:face(0)", "name": "Hinge" }),
+    );
+    assert!(!session.regen_elsewhere());
+    let mut boxes = Vec::new();
+    for angle in ["0 deg", "90 deg"] {
+        run(
+            &mut session,
+            "joint.set",
+            json!({ "mate": "Hinge", "value": angle }),
+        );
+        assert_eq!(session.scene_job(SceneQuality::display()), None);
+        for _ in 0..1000 {
+            if session
+                .prepare_some(SceneQuality::display(), || false)
+                .is_none()
+            {
+                break;
+            }
+        }
+        for quality in [SceneQuality::Preview, SceneQuality::display()] {
+            let scene = session.scene_with(quality).unwrap().unwrap();
+            assert_eq!(scene.bodies.len(), 2, "{angle} {quality:?}");
+            boxes.push(scene.bbox.corners().unwrap());
+        }
+    }
+    for k in 0..2 {
+        let ((lo0, hi0), (lo1, hi1)) = (boxes[k], boxes[k + 2]);
+        assert!(
+            (lo0.y - lo1.y).abs() > 1.0
+                || (hi0.y - hi1.y).abs() > 1.0
+                || (hi0.x - hi1.x).abs() > 1.0,
+            "the drawn box did not move: {boxes:?}"
+        );
+    }
+}

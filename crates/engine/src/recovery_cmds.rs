@@ -104,6 +104,11 @@ mod native {
             original: adopted.original,
         });
         let index = session.add_document(open)?;
+        // A recovered assembly reads its sources as one opened does.
+        let assembly = session.document()?.history.current().is_assembly();
+        if assembly {
+            session.read_sources(false)?;
+        }
         if let Some(store) = &session.recovery.store {
             store.scan();
         }

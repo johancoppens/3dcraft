@@ -103,9 +103,17 @@ impl Session {
     /// ([`Session::set_regen_elsewhere`]), with the long work done a
     /// piece at a time and the checks measured elsewhere (without those,
     /// the host has to regenerate to measure them: it regenerates
-    /// here).
+    /// here). Never for an assembly: what it shows is placed from the
+    /// files read for it in this session, which a document sent elsewhere
+    /// does not carry, so it is built here a piece at a time.
     pub fn regen_elsewhere(&self) -> bool {
-        self.regen_elsewhere && self.stepwise && self.checks_elsewhere
+        self.regen_elsewhere
+            && self.stepwise
+            && self.checks_elsewhere
+            && !self
+                .documents
+                .get(self.active)
+                .is_some_and(|open| open.history.current().is_assembly())
     }
 
     /// True when the active document's current state is regenerated in

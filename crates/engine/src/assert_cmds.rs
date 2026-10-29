@@ -69,6 +69,12 @@ fn by_id(doc: &Document, value: &Value, depth: usize) -> Value {
         doc.feature_by_name(text)
             .map_or_else(|| text.to_string(), |f| f.id.to_string())
     };
+    names_mapped(value, &id_of, depth)
+}
+
+/// `value` (a subject or a plane of a stored measure) with each feature
+/// it names by text written as `id_of` gives it.
+fn names_mapped(value: &Value, id_of: &dyn Fn(&str) -> String, depth: usize) -> Value {
     if depth > 64 {
         return value.clone();
     }
@@ -80,13 +86,16 @@ fn by_id(doc: &Document, value: &Value, depth: usize) -> Value {
                 .map(|item| match item {
                     Value::String(text) => Value::String(id_of(text)),
                     // `{body, follow}` in a list.
-                    other => by_id(doc, other, depth + 1),
+                    other => names_mapped(other, id_of, depth + 1),
                 })
                 .collect(),
         ),
-        Value::Array(items) => {
-            Value::Array(items.iter().map(|v| by_id(doc, v, depth + 1)).collect())
-        }
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|v| names_mapped(v, id_of, depth + 1))
+                .collect(),
+        ),
         Value::Object(map) => Value::Object(
             map.iter()
                 .map(|(k, v)| {
@@ -94,7 +103,7 @@ fn by_id(doc: &Document, value: &Value, depth: usize) -> Value {
                         Value::String(text) if FEATURE_KEYS.contains(&k.as_str()) => {
                             Value::String(id_of(text))
                         }
-                        other => by_id(doc, other, depth + 1),
+                        other => names_mapped(other, id_of, depth + 1),
                     };
                     (k.clone(), v)
                 })
@@ -138,19 +147,94 @@ pub(crate) fn assertions_by_id(doc: &mut Document) {
 /// The stored measure `measure` with the features its subjects and plane
 /// name by name written as their ids.
 fn measure_by_id(doc: &Document, measure: &str) -> String {
-    {
-        let Ok(Value::Object(mut map)) = serde_json::from_str::<Value>(measure) else {
-            return measure.to_string();
-        };
-        for key in ["of", "from", "to"] {
-            if let Some(v) = map.get_mut(key) {
-                *v = by_id(doc, v, 0);
+    let id_of = |text: &str| {
+        doc.feature_by_name(text)
+            .map_or_else(|| text.to_string(), |f| f.id.to_string())
+    };
+    measure_mapped(measure, &id_of)
+}
+
+/// The stored measure `measure` with the features its subjects and plane
+/// name written as `id_of` gives them.
+fn measure_mapped(measure: &str, id_of: &dyn Fn(&str) -> String) -> String {
+    let Ok(Value::Object(mut map)) = serde_json::from_str::<Value>(measure) else {
+        return measure.to_string();
+    };
+    for key in ["of", "from", "to"] {
+        if let Some(v) = map.get_mut(key) {
+            *v = names_mapped(v, id_of, 0);
+        }
+    }
+    if let Some(v @ Value::String(_)) = map.get_mut("plane") {
+        *v = names_mapped(v, id_of, 0);
+    }
+    serde_json::to_string(&Value::Object(map)).unwrap_or_else(|_| measure.to_string())
+}
+
+/// The assertions and outputs whose subjects name the instance `name`
+/// (or one of its bodies or inner instances, `name/...`), each once.
+pub(crate) fn measures_naming(doc: &Document, name: &str) -> Vec<String> {
+    let names = |measure: &str| {
+        let found = std::cell::Cell::new(false);
+        measure_mapped(measure, &|text| {
+            if text == name
+                || text
+                    .strip_prefix(name)
+                    .is_some_and(|rest| rest.starts_with('/'))
+            {
+                found.set(true);
+            }
+            text.to_string()
+        });
+        found.get()
+    };
+    let mut users: Vec<String> = doc
+        .assertions
+        .iter()
+        .filter(|a| names(&a.measure))
+        .map(|a| format!("assertion `{}`", a.name))
+        .collect();
+    for output in &doc.outputs {
+        if let craft3d_doc::OutputDef::Measure(measure) = &output.def
+            && names(measure)
+        {
+            users.push(format!("output `{}`", output.name));
+        }
+    }
+    users
+}
+
+/// Renames the instance `old` to `new` in what the assertions and the
+/// outputs of an assembly measure: a subject that names it (`old`, or one
+/// of its bodies or inner instances, `old/...`) names `new` (a rename
+/// never leaves a check to land on another instance that takes the old
+/// name later).
+pub(crate) fn rename_instance_in_measures(doc: &mut Document, old: &str, new: &str) {
+    let renamed = |text: &str| {
+        if text == old {
+            return new.to_string();
+        }
+        match text
+            .strip_prefix(old)
+            .and_then(|rest| rest.strip_prefix('/'))
+        {
+            Some(rest) => format!("{new}/{rest}"),
+            None => text.to_string(),
+        }
+    };
+    for assertion in &mut doc.assertions {
+        let text = measure_mapped(&assertion.measure, &renamed);
+        if text.len() <= craft3d_doc::MAX_ASSERTION_TEXT {
+            assertion.measure = text;
+        }
+    }
+    for output in &mut doc.outputs {
+        if let craft3d_doc::OutputDef::Measure(measure) = &mut output.def {
+            let text = measure_mapped(measure, &renamed);
+            if text.len() <= craft3d_doc::MAX_ASSERTION_TEXT {
+                *measure = text;
             }
         }
-        if let Some(v @ Value::String(_)) = map.get_mut("plane") {
-            *v = by_id(doc, v, 0);
-        }
-        serde_json::to_string(&Value::Object(map)).unwrap_or_else(|_| measure.to_string())
     }
 }
 
