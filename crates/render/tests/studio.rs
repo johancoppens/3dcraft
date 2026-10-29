@@ -265,19 +265,42 @@ fn the_ground_under_a_lit_ball_is_in_its_shadow() {
     };
     let light = FrameLight::new(&mesh, &env, &look);
     let down = Vec3::new(0.0, 0.0, -1.0);
-    // Under the ball's centre, in the umbra; well outside it, lit.
-    let under = light.ground_factor(Vec3::new(0.0, 0.0, 5.0), down);
-    let outside = light.ground_factor(Vec3::new(-2.5, -2.5, 5.0), down);
-    assert!(under < 0.3, "{under}");
-    assert_eq!(outside, 1.0);
-    // The shadow of a ball lit from straight above is the disc of its
-    // radius: lit beyond it, dark well within it.
+    // The ground's factor is (rest + key · v) / (rest + key), with v the
+    // key's visibility and rest the light from everywhere else (what the
+    // key extraction leaves in the irradiance, the cap below its
+    // threshold among it); v is read back from it.
+    let key_light = light.key_luminance * light.key.map_or(0.0, |(l, _, _)| l.z.max(0.0));
+    let rest = light.rest_up;
+    assert!(
+        key_light > rest,
+        "the key is the main light: {key_light} {rest}"
+    );
+    let visibility = |x: f64, y: f64| {
+        let f = light.ground_factor(Vec3::new(x, y, 5.0), down);
+        (f * (rest + key_light) - rest) / key_light
+    };
+    // The light is the cap z > 0.99, of angular radius α = acos 0.99 ≈
+    // 0.1415. A ray from the ground (z = −3) at distance ρ from the axis,
+    // tilted by θ towards or away from it, passes the ball's centre at
+    // |3 sin θ + ρ cos θ|: blocked below 1. Within ρ = 0.5 every ray to
+    // the cap is blocked (3 sin α + 0.5 cos α ≈ 0.92); at ρ = 0.8 about a
+    // fifth of the cap is seen; at ρ = 1.35 all but about 4 %; at ρ = 3.5
+    // all of it. The filter's width is capped (`MAX_PENUMBRA` texels), so
+    // the drawn penumbra is narrower than this: the bounds below hold for
+    // both.
+    let under = visibility(0.0, 0.0);
+    assert!(under < 0.05, "under the centre: {under}");
+    assert_eq!(light.ground_factor(Vec3::new(-2.5, -2.5, 5.0), down), 1.0);
     for k in 0..16 {
         let a = f64::from(k) / 16.0 * std::f64::consts::TAU;
         let (c, s) = (a.cos(), a.sin());
-        let inside = light.ground_factor(Vec3::new(0.8 * c, 0.8 * s, 5.0), down);
-        let beyond = light.ground_factor(Vec3::new(1.35 * c, 1.35 * s, 5.0), down);
-        assert!(inside < 0.5 && beyond > 0.95, "at {a}: {inside} {beyond}");
+        let umbra = visibility(0.3 * c, 0.3 * s);
+        let inside = visibility(0.8 * c, 0.8 * s);
+        let beyond = visibility(1.35 * c, 1.35 * s);
+        assert!(
+            umbra < 0.05 && inside < 0.5 && beyond > 0.9,
+            "at {a}: {umbra} {inside} {beyond}"
+        );
     }
 }
 
@@ -365,8 +388,9 @@ fn bad_environments_and_numbers_are_errors_not_crashes() {
         &env,
     )
     .unwrap();
+    // A corner past the last vertex.
     let broken = Mesh {
-        triangles: vec![[0, 1, 99]],
+        triangles: vec![[0, 1, mesh.positions.len() as u32]],
         face_ids: vec![0],
         ..mesh.clone()
     };

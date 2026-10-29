@@ -217,11 +217,16 @@ occluded. `crates/gpu/tests/studio.rs`: the GPU against the CPU (below), the sam
 frame, the viewport's renderer against the CPU, the cost.
 
 **Tolerance, GPU against CPU** (`crates/gpu/tests/studio.rs`): face ids equal outside the band (as for
-the plain look); outside the band at most 1/64 of the covered pixels more than one level apart and none
-more than 48 levels. Why looser than the plain look's single level: the GPU draws its own shadow map, and
+the plain look); outside the band at most 1/1024 of the covered pixels more than one level apart and
+none more than 4 levels. Why looser than the plain look's single level: the GPU draws its own shadow map, and
 a texel along a triangle's border in the light's view may be covered by one renderer and not the other
 (the band of the light's view is not the picture's); a PCF tap on such a texel moves the shadow of a pixel
 by one tap, 1/25 of the key's light; the occlusion reads neighbouring samples, so a sample that the two
 renderers cover differently (inside the picture's band) moves the occlusion of pixels around it that are
-outside the band. Both are counted, not bounded per pixel; the share and the largest difference are the
-measured ones with a margin (*Measured* below).
+outside the band. Both are counted, not bounded per pixel. *Measured* (Strix, run 40927686269,
+2026-10-29; the provisional 1/64 and 48 were set before any measurement): the readback renderer on its
+three adapters (Radeon 8060S over Vulkan and over GL, llvmpipe), ten scenes in the four test looks, never
+more than one level apart outside the band (no pixel over one); the viewport's renderer (four samples on
+Vulkan, one on GL) on six scenes, at most 2 levels and at most 2 pixels over one level (the torus: 2 of
+7 541 covered, 1/3 770). The bounds are those numbers with a margin of two (the largest difference)
+and of about four (the share); ids equal everywhere outside the band.

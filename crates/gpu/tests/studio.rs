@@ -26,8 +26,8 @@ use craft3d_testkit::{solids, trimmed};
 /// The studio tolerance (docs/design/rendering.md, *The studio look*):
 /// outside the band, at most this share of the covered pixels may differ
 /// by more than one level, and none by more than [`MOST_LEVELS`].
-const SHARE_OVER_ONE: f64 = 1.0 / 64.0;
-const MOST_LEVELS: u8 = 48;
+const SHARE_OVER_ONE: f64 = 1.0 / 1024.0;
+const MOST_LEVELS: u8 = 4;
 
 struct Scene {
     name: String,
@@ -225,13 +225,13 @@ fn studio_frames_on_a_thousand_faces() {
     let env = environment("studio").unwrap();
     let mut mesh = Mesh::default();
     let mut faces = 0_u32;
-    'grid: for gy in 0..12 {
-        for gx in 0..12_usize {
+    'grid: for gy in 0..20 {
+        for gx in 0..20_usize {
             let origin = Vec3::new(gx as f64 * 5.0, gy as f64 * 5.0, 0.0);
             let frame = craft3d_math::Frame::new(origin, Vec3::Z, Vec3::X).unwrap();
             let mut all = solids::all(&frame, 1.0).unwrap();
             all.extend(trimmed::all(&frame, 1.0).unwrap());
-            let solid = &all[(gx + gy * 12) % all.len()];
+            let solid = &all[(gx + gy * 20) % all.len()];
             let part = tessellate_body(&solid.body, &TessParams::default()).unwrap();
             let base = mesh.positions.len() as u32;
             let first = faces;
