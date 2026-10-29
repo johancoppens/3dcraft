@@ -87,7 +87,7 @@ pub struct Document {
     /// The features inserted at the rollback marker that take a body, with
     /// the parameters of later features each pointed at itself, in the
     /// order they were inserted. Absent when there are none (and in files
-    /// before version 50, a TEMPORARY number).
+    /// before version 50).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inserted: Vec<Inserted>,
 }
