@@ -5387,7 +5387,8 @@ fn a_manifest_with_unsound_flange_ids_is_an_invalid_document() {
         change(&mut v["document"]["features"][part]["kind"]);
         from_manifest_json(v.to_string().as_bytes())
     };
-    let cases: [(&str, &dyn Fn(&mut serde_json::Value)); 4] = [
+    type Change<'a> = &'a dyn Fn(&mut serde_json::Value);
+    let cases: [(&str, Change); 4] = [
         ("one id twice", &|k| {
             k["flanges"][1]["id"] = serde_json::json!(7)
         }),
