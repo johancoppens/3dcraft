@@ -618,7 +618,7 @@ fn the_highest_flange_ids_never_make_a_document_that_cannot_be_saved() {
         let got = error(
             &mut s,
             "feature.sheetMetal",
-            json!({"sketch": "Base", "name": "Panel", "thickness": "1 mm", "radius": "1 mm",
+            json!({"sketch": "Base", "name": "Panel", "thickness": "1 mm", "radius": "1 mm", "kFactor": 0.5,
                    "flanges": [wall(0, Some(too_high))]}),
         );
         assert!(got.contains("flanges.0.id"), "{too_high}: {got}");
