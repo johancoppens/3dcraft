@@ -11,7 +11,9 @@
 //!   measure passes with them and fails without, and lists each end by
 //!   its flange's place (`bend`) and id (`id`);
 //! - a closed corner of a wall whose tip carries a tab spanning the tip
-//!   to its end at that corner;
+//!   from its start (no inset): built, the tab 18 long from x = 3, and
+//!   as the closed corner runs the tip on past the tab's start both ends
+//!   of its bend lie inside the edge;
 //! - a bend relief's size of the wrong kind is an error naming
 //!   `bendRelief.size`.
 
@@ -185,24 +187,32 @@ fn a_closed_corner_whose_tip_flange_spans_the_tips_end() {
                    "kFactor": 0.5, "relief": {"shape": "round", "size": mm(3.0 * k)},
                    "corner": {"kind": "overlap", "gap": mm(0.25 * k)}, "flanges": flanges}),
         );
-        eprintln!("scale {k}: tip flange to the tip's end: {made}");
-        if made["status"] == "ok" {
-            let found = body(&mut s, "Tray");
-            assert_eq!(found["valid"], true, "scale {k}: {found}");
-            let a = flat_area(&mut s, "Tray");
-            let v = number(&found["volume"]);
-            assert!(
-                (v - a * k).abs() <= 1e-9 * v,
-                "scale {k}: {v} against {}",
-                a * k
-            );
-            let table = run(&mut s, "sheetMetal.bends", json!({"feature": "Tray"}));
-            eprintln!("scale {k}: bends {}", table["bends"][4]);
-        } else {
-            assert_eq!(made["status"], "failed", "scale {k}: {made}");
-            let why = made["error"].as_str().unwrap_or_default();
-            assert!(!why.is_empty() && !why.contains("internal"), "{made}");
-        }
+        // It is built: the tab runs from the tip's start (3, past the
+        // round relief) for 54 − 36 = 18, and as the closed
+        // corner runs the wall's tip on past the tab's start, both ends
+        // of the tab's bend lie inside its edge (listed, no relief).
+        assert_eq!(made["status"], "ok", "scale {k}: {made}");
+        let found = body(&mut s, "Tray");
+        assert_eq!(found["valid"], true, "scale {k}: {found}");
+        let a = flat_area(&mut s, "Tray");
+        let v = number(&found["volume"]);
+        assert!(
+            (v - a * k).abs() <= 1e-9 * v,
+            "scale {k}: {v} against {}",
+            a * k
+        );
+        let table = run(&mut s, "sheetMetal.bends", json!({"feature": "Tray"}));
+        let tab = &table["bends"][4];
+        assert!(
+            (number(&tab["length"]) - 18.0 * k).abs() <= 1e-9 * k * 60.0,
+            "scale {k}: {tab}"
+        );
+        let ends = tab["ends"].as_array().unwrap();
+        assert_eq!(ends.len(), 2, "scale {k}: {tab}");
+        assert!(
+            (number(&ends[0]["point"][0]) - 3.0 * k).abs() <= 1e-9 * k * 60.0,
+            "scale {k}: {tab}"
+        );
     }
 }
 
