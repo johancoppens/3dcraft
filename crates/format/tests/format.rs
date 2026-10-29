@@ -5335,3 +5335,75 @@ fn a_fold_of_thick_panels_is_written_like_this_and_round_trips() {
     assert_ne!(odd, json);
     assert!(from_manifest_json(odd.as_bytes()).is_err());
 }
+
+/// A hand-edited manifest whose flange ids are not sound is refused as an
+/// invalid document (review 2026-10-29): two flanges with one id, an id
+/// of 0, one above the highest (2³¹ − 1, so a face's number stays below
+/// 2³²), and a next id not above every id.
+#[test]
+fn a_manifest_with_unsound_flange_ids_is_an_invalid_document() {
+    use craft3d_doc::{BendDirection, Flange, FlangeFrom, FlangeOn, SheetMetal};
+    let wall = |line: u64, id: u32| Flange {
+        on: FlangeOn::Base(EntityId(line)),
+        length: Expr::new("20 mm"),
+        angle: Expr::new("90 deg"),
+        direction: BendDirection::Up,
+        radius: None,
+        k_factor: None,
+        from: FlangeFrom::Tangent,
+        inset_start: None,
+        inset_end: None,
+        outline: None,
+        id,
+    };
+    let mut doc = small();
+    doc.add_feature(
+        Some("Tray"),
+        FeatureKind::SheetMetal(SheetMetal {
+            sketch: FeatureId(1),
+            thickness: Expr::new("1 mm"),
+            radius: Expr::new("1 mm"),
+            k_factor: Expr::new("0.5"),
+            flanges: vec![wall(5, 7), wall(6, 3)],
+            relief: None,
+            cutouts: Vec::new(),
+            corner: None,
+            corners: Vec::new(),
+            next_flange_id: 9,
+        }),
+    )
+    .unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let part = value["document"]["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|f| f["kind"]["type"] == "sheetMetal")
+        .unwrap();
+    let edited = |change: &dyn Fn(&mut serde_json::Value)| {
+        let mut v = value.clone();
+        change(&mut v["document"]["features"][part]["kind"]);
+        from_manifest_json(v.to_string().as_bytes())
+    };
+    let cases: [(&str, &dyn Fn(&mut serde_json::Value)); 4] = [
+        ("one id twice", &|k| {
+            k["flanges"][1]["id"] = serde_json::json!(7)
+        }),
+        ("id 0", &|k| k["flanges"][0]["id"] = serde_json::json!(0)),
+        ("id 2^31", &|k| {
+            k["flanges"][0]["id"] = serde_json::json!(1u64 << 31);
+            k["next_flange_id"] = serde_json::json!((1u64 << 31) + 1);
+        }),
+        ("next not above", &|k| {
+            k["next_flange_id"] = serde_json::json!(5)
+        }),
+    ];
+    for (what, change) in cases {
+        match edited(change) {
+            Err(FormatError::InvalidDocument(_)) => {}
+            other => panic!("{what}: {other:?}"),
+        }
+    }
+}

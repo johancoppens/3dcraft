@@ -229,8 +229,9 @@ made, a new flange's never one used before): every name of the flange's faces an
 (its bend `face(2 · id − 1)`, its flat `face(2 · id)`, its rims and edges), not by its place in the list,
 so a fillet, a colour or a set on it stays with it whatever else you add, delete or move. Give the id back
 with the flange in `sheetMetal.edit`; a flange sent back unchanged keeps its id without it, and one changed
-without it is a new flange (its old names then name nothing, an error where used). `tip` and `side` name
-flanges by their places in the list you send. Refused, with the flange: a radius below zero or of zero (a sharp bend is not supported: give the radius the tooling makes), a K-factor
+without it is a new flange (its old names then name nothing, an error where used). `tip`, `side` and `corners` name
+flanges by their places in the list you send; corners you do not send again are kept and follow their
+flanges by id to their new places (one whose flange you deleted is refused, naming it). Refused, with the flange: a radius below zero or of zero (a sharp bend is not supported: give the radius the tooling makes), a K-factor
 outside 0 to 1, an angle outside 0 to 180 degrees, an edge that is not a straight line of the base's
 outline (a flange on a curved edge is a formed flange, not a bend: it has no flat pattern that keeps
 lengths), flanged edges meeting at an inside corner, a relief that does not fit, and flanges that run into

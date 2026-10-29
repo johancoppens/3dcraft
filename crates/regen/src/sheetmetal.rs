@@ -47,15 +47,15 @@ pub struct SheetMetalPart {
 /// those has that face's number in its low 32 bits and `j` above
 /// (`F9:face(k + j * 2^32)`), so adding, deleting or moving a flange or a
 /// cut elsewhere does not renumber it (ids stay below 2³¹, so `k` below
-/// 2³²).
-pub fn sheet_face_name(feature: FeatureId, part: &Part, face: SheetFace) -> PersistentName {
+/// 2³²). `None` for a flange with no id.
+pub fn sheet_face_name(feature: FeatureId, part: &Part, face: SheetFace) -> Option<PersistentName> {
     let number = match face {
-        SheetFace::Flat(f) => 2 * part.flat_number(f),
-        SheetFace::Bend(i) => 2 * part.flange_number(i) + 1,
-        SheetFace::FlatPiece(f, j) => 2 * part.flat_number(f) + ((j as u64) << 32),
-        SheetFace::BendPiece(i, j) => 2 * part.flange_number(i) + 1 + ((j as u64) << 32),
+        SheetFace::Flat(f) => 2 * part.flat_number(f)?,
+        SheetFace::Bend(i) => 2 * part.flange_number(i)? + 1,
+        SheetFace::FlatPiece(f, j) => 2 * part.flat_number(f)? + ((j as u64) << 32),
+        SheetFace::BendPiece(i, j) => 2 * part.flange_number(i)? + 1 + ((j as u64) << 32),
     };
-    PersistentName::new(feature, NameRole::Face, vec![number])
+    Some(PersistentName::new(feature, NameRole::Face, vec![number]))
 }
 
 fn explain(error: KernelError) -> String {
@@ -471,7 +471,10 @@ pub(crate) fn build(
     let (part, tolerance) = (&built.part, built.tolerance);
     let mut sheet_names = Names::default();
     for face in &part.sheet_faces {
-        sheet_names.faces.push(sheet_face_name(id, part, *face));
+        sheet_names.faces.push(
+            sheet_face_name(id, part, *face)
+                .ok_or_else(|| "a flange of the part has no id".to_string())?,
+        );
     }
     let none = vec![None; part.sheet.edges.len()];
     let no_vertices = vec![None; part.sheet.vertices.len()];
@@ -500,7 +503,7 @@ pub(crate) fn build(
         Some(PersistentName::new(
             id,
             NameRole::Edge,
-            sheetmetal::edge_numbers(part, key),
+            sheetmetal::edge_numbers(part, key)?,
         ))
     };
     let names = crate::plate::plate_names_with(

@@ -502,29 +502,27 @@ impl Part {
     /// The number flange `i`'s names carry: its id less 1, which is its
     /// place in the list for a part whose ids are its places plus 1 (so
     /// such a part is named as before ids were kept).
-    pub fn flange_number(&self, i: usize) -> u64 {
+    pub fn flange_number(&self, i: usize) -> Option<u64> {
         flange_number(&self.marks, i)
     }
 
     /// The number flat `f`'s names carry: 0 the base, flange `f − 1`'s id
     /// for a flange's flat.
-    pub fn flat_number(&self, f: usize) -> u64 {
+    pub fn flat_number(&self, f: usize) -> Option<u64> {
         flat_number(&self.marks, f)
     }
 }
 
-fn flange_number(marks: &[u64], i: usize) -> u64 {
-    marks
-        .get(i)
-        .copied()
-        .unwrap_or(i as u64 + 1)
-        .saturating_sub(1)
+/// `None` for a flange with no id (no number is made up for it, which
+/// could be another flange's).
+fn flange_number(marks: &[u64], i: usize) -> Option<u64> {
+    marks.get(i)?.checked_sub(1)
 }
 
-fn flat_number(marks: &[u64], f: usize) -> u64 {
+fn flat_number(marks: &[u64], f: usize) -> Option<u64> {
     match f.checked_sub(1) {
-        None => 0,
-        Some(i) => flange_number(marks, i) + 1,
+        None => Some(0),
+        Some(i) => marks.get(i).copied().filter(|&m| m > 0),
     }
 }
 
@@ -844,7 +842,11 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
             let p = corners.get(c).map_or(seg.end, |c| c.point);
             let [fa, fb] = corners.get(c).map_or([0, 0], |c| c.bends);
             let pieces = notch(p, scale(d, -1.0), dn, relief)?;
-            let (na, nb) = (flange_number(&marks, fa), flange_number(&marks, fb));
+            let unmarked = || refuse(None, "a flange has no id");
+            let (na, nb) = (
+                flange_number(&marks, fa).ok_or_else(unmarked)?,
+                flange_number(&marks, fb).ok_or_else(unmarked)?,
+            );
             base_ids.extend((0..pieces.len()).map(|j| [2, na, nb, j as u64]));
             base_outer.extend(pieces);
         }
@@ -921,7 +923,7 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
         let neutral = f.radius + f.k * t;
         let allowance = theta * neutral;
         let shift = scale(across, allowance);
-        let number = flange_number(&marks, i);
+        let number = flange_number(&marks, i).ok_or_else(|| refuse(Some(i), "it has no id"))?;
         let rect: Vec<SegId> = (0..4).map(|side| [3, number, side, 0]).collect();
         let (start, end, outer, holes, flat_length, (ids, hole_ids)) = match &f.outline {
             None => {
@@ -2147,16 +2149,16 @@ fn own_outline(
 /// hole across a bend crosses, `[10, cut, segment, piece]` a piece of such
 /// a hole; any other segment of a flat's outline or hole is its
 /// [`SegId`] (`[12, flat, segment]` or `[13, flat, hole, segment]` should
-/// a flat not know it). A bend is numbered by its flange's id less 1, a
+/// a flat not know it); `None` for a flange with no id. A bend is numbered by its flange's id less 1, a
 /// flat by 0 (the base) or its flange's id ([`Part::flange_number`],
 /// [`Part::flat_number`]), never by a place in the list.
-pub fn edge_numbers(part: &Part, key: EdgeKey) -> Vec<u64> {
-    let outline = |flat: usize, seg: usize| -> Vec<u64> {
+pub fn edge_numbers(part: &Part, key: EdgeKey) -> Option<Vec<u64>> {
+    let outline = |flat: usize, seg: usize| -> Option<Vec<u64>> {
         let Some(f) = part.flats.get(flat) else {
-            return vec![12, part.flat_number(flat), seg as u64];
+            return Some(vec![12, part.flat_number(flat)?, seg as u64]);
         };
         if flat > 0 && seg == 0 {
-            return vec![7, part.flange_number(flat - 1), 1];
+            return Some(vec![7, part.flange_number(flat - 1)?, 1]);
         }
         // A closed flat's key counts its open rectangle's sides: its tip is
         // side 2, wherever the extensions put it now.
@@ -2166,16 +2168,16 @@ pub fn edge_numbers(part: &Part, key: EdgeKey) -> Vec<u64> {
             .iter()
             .find(|s| s.hole.is_none() && if closed { seg == 2 } else { s.seg == seg })
         {
-            return vec![7, part.flange_number(s.bend), 0];
+            return Some(vec![7, part.flange_number(s.bend)?, 0]);
         }
-        f.ids.get(seg).map_or_else(
-            || vec![12, part.flat_number(flat), seg as u64],
-            |id| id.to_vec(),
-        )
+        match f.ids.get(seg) {
+            Some(id) => Some(id.to_vec()),
+            None => Some(vec![12, part.flat_number(flat)?, seg as u64]),
+        }
     };
     match key {
         EdgeKey::Outline { flat, seg } => outline(flat, seg),
-        EdgeKey::Piece { flat, seg } => vec![6, part.flat_number(flat), seg as u64],
+        EdgeKey::Piece { flat, seg } => Some(vec![6, part.flat_number(flat)?, seg as u64]),
         EdgeKey::Hole { flat, hole, seg } => {
             let f = part.flats.get(flat);
             if let Some(s) = f.and_then(|f| {
@@ -2183,23 +2185,24 @@ pub fn edge_numbers(part: &Part, key: EdgeKey) -> Vec<u64> {
                     .iter()
                     .find(|s| s.hole == Some(hole) && s.seg == seg)
             }) {
-                return vec![7, part.flange_number(s.bend), 0];
+                return Some(vec![7, part.flange_number(s.bend)?, 0]);
             }
-            f.and_then(|f| f.hole_ids.get(hole))
+            match f
+                .and_then(|f| f.hole_ids.get(hole))
                 .and_then(|h| h.get(seg))
-                .map_or_else(
-                    || vec![13, part.flat_number(flat), hole as u64, seg as u64],
-                    |id| id.to_vec(),
-                )
+            {
+                Some(id) => Some(id.to_vec()),
+                None => Some(vec![13, part.flat_number(flat)?, hole as u64, seg as u64]),
+            }
         }
-        EdgeKey::Arc { bend, end } => vec![8, part.flange_number(bend), end as u64],
+        EdgeKey::Arc { bend, end } => Some(vec![8, part.flange_number(bend)?, end as u64]),
         EdgeKey::Split { flat, seg, piece } => {
             let mut out = vec![9];
-            out.extend(outline(flat, seg));
+            out.extend(outline(flat, seg)?);
             out.push(piece as u64);
-            out
+            Some(out)
         }
-        EdgeKey::Cut { cut, seg, piece } => vec![10, cut as u64, seg as u64, piece as u64],
+        EdgeKey::Cut { cut, seg, piece } => Some(vec![10, cut as u64, seg as u64, piece as u64]),
     }
 }
 

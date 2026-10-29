@@ -274,3 +274,110 @@ fn an_arched_flats_lowest_point_is_its_arcs_least() {
         }
     }
 }
+
+/// The convex hull of `points` (counter-clockwise), by the monotone chain.
+fn convex_hull(points: &[[f64; 2]]) -> Vec<[f64; 2]> {
+    let mut p = points.to_vec();
+    p.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+    let cross = |o: [f64; 2], a: [f64; 2], b: [f64; 2]| {
+        (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+    };
+    let mut hull: Vec<[f64; 2]> = Vec::new();
+    for pass in 0..2 {
+        let start = hull.len();
+        let list: Vec<[f64; 2]> = if pass == 0 {
+            p.clone()
+        } else {
+            p.iter().rev().copied().collect()
+        };
+        for q in list {
+            while hull.len() >= start + 2
+                && cross(hull[hull.len() - 2], hull[hull.len() - 1], q) <= 0.0
+            {
+                hull.pop();
+            }
+            hull.push(q);
+        }
+        hull.pop();
+    }
+    hull
+}
+
+fn arc_segment(
+    center: [f64; 2],
+    radius: f64,
+    from: f64,
+    to: f64,
+    reversed: bool,
+) -> craft3d_kernel::profile::Segment {
+    let at = |a: f64| [center[0] + radius * a.cos(), center[1] + radius * a.sin()];
+    // Counter-clockwise from `from` to `to`; a reversed one runs back.
+    let (start, end) = if reversed {
+        (at(to), at(from))
+    } else {
+        (at(from), at(to))
+    };
+    craft3d_kernel::profile::Segment {
+        source: 1,
+        piece: 0,
+        reversed,
+        start,
+        end,
+        shape: craft3d_kernel::profile::Shape::Arc { center, radius },
+    }
+}
+
+/// The hull holds every arc of an outline whichever way it runs and
+/// bulges (review 2026-10-29): a counter-clockwise arc, a reversed
+/// (clockwise) one, one bulging inwards (its sweep the short way round
+/// the far side), and a whole circle; 256 points of each lie in the
+/// convex hull of `outline_hull`'s points, at three scales.
+#[test]
+fn the_hull_holds_arcs_either_way_round_and_whole_circles() {
+    use craft3d_kernel::sheetmetal::sequence::outline_hull;
+    for k in SCALES {
+        let cases = [
+            (arc_segment([0.0, 0.0], 10.0 * k, 0.3, 2.6, false), 0.3, 2.6),
+            (arc_segment([0.0, 0.0], 10.0 * k, 0.3, 2.6, true), 0.3, 2.6),
+            // Inward: the arc about a centre outside the region, its
+            // reversed run the long way (here 300 degrees).
+            (
+                arc_segment([5.0 * k, 5.0 * k], 4.0 * k, -2.0, 3.236, true),
+                -2.0,
+                3.236,
+            ),
+        ];
+        for (seg, from, to) in &cases {
+            let hull = convex_hull(&outline_hull(std::slice::from_ref(seg)));
+            let craft3d_kernel::profile::Shape::Arc { center, radius } = seg.shape else {
+                unreachable!()
+            };
+            for j in 0..=256 {
+                let a = from + (to - from) * j as f64 / 256.0;
+                let p = [center[0] + radius * a.cos(), center[1] + radius * a.sin()];
+                assert!(
+                    in_convex(&hull, p, 1e-9 * k),
+                    "scale {k}: {p:?} of {seg:?} outside the hull {hull:?}"
+                );
+            }
+        }
+        let (c, r) = ([3.0 * k, -2.0 * k], 7.0 * k);
+        let circle = craft3d_kernel::profile::Segment {
+            source: 2,
+            piece: 0,
+            reversed: true,
+            start: [c[0] + r, c[1]],
+            end: [c[0] + r, c[1]],
+            shape: craft3d_kernel::profile::Shape::Circle {
+                center: c,
+                radius: r,
+            },
+        };
+        let hull = convex_hull(&outline_hull(&[circle]));
+        for j in 0..256 {
+            let a = std::f64::consts::TAU * j as f64 / 256.0;
+            let p = [c[0] + r * a.cos(), c[1] + r * a.sin()];
+            assert!(in_convex(&hull, p, 1e-9 * k), "scale {k}: {p:?} outside");
+        }
+    }
+}

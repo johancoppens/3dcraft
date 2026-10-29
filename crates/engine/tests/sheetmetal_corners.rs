@@ -498,3 +498,81 @@ fn names_keep_their_targets_when_corners_open_and_close() {
     run(&mut s, "variable.set", json!({"name": "how", "expr": "1"}));
     assert_eq!(names(&mut s), open);
 }
+
+/// A corner treatment stays at its corner when the flanges move in the
+/// list (review 2026-10-29: corners name flanges by their places, and an
+/// edit of the flanges without corners kept the old places, so moving A
+/// to the end gave the overlap of corner A-B to corner B-C, which also
+/// meets): moved, the overlap stays at A-B covered by A, its gap the
+/// same; deleting B (whose corner it is) is refused naming the corner,
+/// and the part is left as it was. At three scales.
+#[test]
+fn a_corner_follows_its_flanges_when_they_move_in_the_list() {
+    for k in [1e-3, 1.0, 1e6] {
+        let dir = workdir("sheetmetal-corners", &format!("moved-{k}"));
+        let mut s = session_in(&dir);
+        new_document(&mut s, k);
+        let lines = rect(&mut s, "Base", 60.0 * k, 40.0 * k);
+        let mm = |v: f64| format!("{} mm", v * k);
+        let wall = |i: usize, id: u64| json!({"edge": lines[i], "length": mm(10.0), "angle": "90 deg", "id": id});
+        built(
+            &mut s,
+            "feature.sheetMetal",
+            json!({"sketch": "Base", "name": "Tray", "thickness": mm(1.0), "radius": mm(1.0),
+                   "kFactor": 0.5, "relief": {"shape": "round", "size": mm(2.0)},
+                   "flanges": [wall(0, 1), wall(1, 2), wall(2, 3), wall(3, 4)],
+                   "corners": [{"flanges": [0, 1], "kind": "overlap", "gap": mm(0.5), "over": 0}]}),
+        );
+        let overlap = |s: &mut Session| -> Value {
+            let table = run(s, "sheetMetal.bends", json!({"feature": "Tray"}));
+            let found: Vec<Value> = table["corners"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|c| c["kind"] == "overlap")
+                .cloned()
+                .collect();
+            assert_eq!(found.len(), 1, "{table}");
+            found[0].clone()
+        };
+        let before = overlap(&mut s);
+        let at = |c: &Value| [number(&c["point"][0]), number(&c["point"][1])];
+        let [x, y] = at(&before);
+        assert!(
+            (x - 60.0 * k).abs() < 1e-9 * k && y.abs() < 1e-9 * k,
+            "{before}"
+        );
+        let volume = number(&body(&mut s, "Tray")["volume"]);
+        // A moved to the end: the overlap is still A-B's, covered by A.
+        run(
+            &mut s,
+            "sheetMetal.edit",
+            json!({"feature": "Tray", "flanges": [wall(1, 2), wall(2, 3), wall(3, 4), wall(0, 1)]}),
+        );
+        let after = overlap(&mut s);
+        assert_eq!(at(&after), at(&before), "scale {k}: {after}");
+        assert_eq!(after["over"], 3, "scale {k}: {after}");
+        assert_eq!(after["gap"], before["gap"], "scale {k}: {after}");
+        let moved = number(&body(&mut s, "Tray")["volume"]);
+        assert!(
+            (moved - volume).abs() <= 1e-9 * volume,
+            "scale {k}: {moved} against {volume}"
+        );
+        // B deleted: its corner cannot follow; refused, naming it.
+        let got = error(
+            &mut s,
+            "sheetMetal.edit",
+            json!({"feature": "Tray", "flanges": [wall(2, 3), wall(3, 4), wall(0, 1)]}),
+        );
+        assert!(got.contains("corners.0"), "{got}");
+        let still = overlap(&mut s);
+        assert_eq!(at(&still), at(&before), "scale {k}: {still}");
+        // Deleted with corners given for the new list, it is made.
+        run(
+            &mut s,
+            "sheetMetal.edit",
+            json!({"feature": "Tray", "flanges": [wall(2, 3), wall(3, 4), wall(0, 1)],
+                   "corners": []}),
+        );
+    }
+}

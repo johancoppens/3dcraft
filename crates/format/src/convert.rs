@@ -1477,7 +1477,10 @@ fn flange_to_manifest(place: usize, flange: &doc::Flange) -> manifest::SheetFlan
 
 // A flange on neither or both is read as on the tip of flange u32::MAX,
 // which the part refuses by its place, rather than dropped.
-fn flange_to_doc(flange: manifest::SheetFlange) -> doc::Flange {
+/// A flange without an id is its place plus 1 (a part written before
+/// ids, or one written compactly); one written with an id keeps it, also
+/// a 0, which validation refuses.
+fn flange_to_doc(place: usize, flange: manifest::SheetFlange) -> doc::Flange {
     let manifest::SheetFlange {
         base,
         tip,
@@ -1494,7 +1497,7 @@ fn flange_to_doc(flange: manifest::SheetFlange) -> doc::Flange {
         id,
     } = flange;
     doc::Flange {
-        id: id.unwrap_or(0),
+        id: id.unwrap_or_else(|| place_id(place)),
         on: match (base, tip, side) {
             (Some(id), None, None) => doc::FlangeOn::Base(doc::EntityId(id)),
             (None, Some(i), None) => doc::FlangeOn::Tip(i),
@@ -2337,7 +2340,7 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
                 next_flange_id,
             } => doc::FeatureKind::SheetMetal({
                 let mut part = doc::SheetMetal {
-                    next_flange_id: next_flange_id.unwrap_or(0),
+                    next_flange_id: 0,
                     corner: corner.map(|manifest::SheetCornerClose { kind, gap }| {
                         doc::CornerClose {
                             kind: pick_to_doc(kind, corner_kind_to_doc),
@@ -2365,24 +2368,20 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
                     thickness: doc::Expr(thickness),
                     radius: doc::Expr(radius),
                     k_factor: doc::Expr(k_factor),
-                    flanges: flanges.into_iter().map(flange_to_doc).collect(),
+                    flanges: flanges
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, f)| flange_to_doc(i, f))
+                        .collect(),
                     relief: relief.map(|manifest::SheetRelief { shape, size }| doc::CornerRelief {
                         shape: pick_to_doc(shape, relief_shape_to_doc),
                         size: doc::Expr(size),
                     }),
                 };
-                // A flange without an id is its place plus 1 (a part
-                // written before ids, whose split edges were named so, or
-                // one written compactly); the next id, without one, is
-                // past them.
-                for (i, f) in part.flanges.iter_mut().enumerate() {
-                    if f.id == 0 {
-                        f.id = place_id(i);
-                    }
-                }
-                if part.next_flange_id == 0 {
-                    part.next_flange_id = next_past(&part.flanges);
-                }
+                // The next id, without one, is past the flanges' (one
+                // written keeps its value, also a 0, which validation
+                // refuses).
+                part.next_flange_id = next_flange_id.unwrap_or_else(|| next_past(&part.flanges));
                 part
             }),
             manifest::FeatureKind::Fold {
