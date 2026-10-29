@@ -77,6 +77,11 @@ use crate::{GeomError, MAX_CONTROL_POINTS, MAX_DEGREE, NurbsCurve, NurbsSurface,
 use craft3d_math::{Frame, Vec3};
 use std::fmt;
 
+mod continuity;
+pub use continuity::{
+    Continuity, Gap, MAX_SEAM_DEGREE, MAX_SEAM_PIECES, Order, continuity, describe, thresholds,
+};
+
 type H = [f64; 4];
 
 /// Most curves in one family of a network.
@@ -140,6 +145,12 @@ pub enum Condition<'a> {
     /// plane (G1); the curves that cross the edge leave it along the
     /// surface with their own speed times `weight` (positive).
     Tangent { surface: &'a Surface, weight: f64 },
+    /// As `Tangent`, and the patch takes the surface's normal curvature
+    /// across the edge too (G2): the curves crossing the edge leave it with
+    /// the face's normal curvature in their direction, and the patch's
+    /// second derivative across the edge is put where the face's second
+    /// order asks it, all along.
+    Curvature { surface: &'a Surface, weight: f64 },
 }
 
 impl Condition<'_> {
@@ -147,7 +158,19 @@ impl Condition<'_> {
         match self {
             Condition::Free => None,
             Condition::Position(s) => Some(s),
-            Condition::Tangent { surface, .. } => Some(surface),
+            Condition::Tangent { surface, .. } | Condition::Curvature { surface, .. } => {
+                Some(surface)
+            }
+        }
+    }
+
+    /// The face a tangent or curvature edge is held to, its weight, and
+    /// whether it is held in curvature (G2).
+    fn held(&self) -> Option<(&Surface, f64, bool)> {
+        match self {
+            Condition::Tangent { surface, weight } => Some((surface, *weight, false)),
+            Condition::Curvature { surface, weight } => Some((surface, *weight, true)),
+            _ => None,
         }
     }
 }
@@ -192,6 +215,9 @@ pub struct Patch {
     /// tangent planes found along it (radians, 0 to π, at 32 places per
     /// knot span and more); at most the angular tolerance.
     pub tangency: [Option<f64>; 4],
+    /// Per edge held in curvature: how the surface meets its face there,
+    /// proven ([`continuity`]); G2 is required.
+    pub seams: [Option<Continuity>; 4],
     /// Which curves were run the other way to follow the network.
     pub reversed_u: Vec<bool>,
     pub reversed_v: Vec<bool>,
@@ -541,6 +567,12 @@ fn concat(pieces: &[Raw], bounds: &[f64]) -> Result<Raw, NetworkError> {
 struct Track {
     raw: Raw,
     fields: Vec<Raw>,
+    /// A spline face's second derivative across its line, carried along
+    /// as `fields` are (curvature edges).
+    second: Vec<Raw>,
+    /// The constant the curve's homogeneous points were multiplied by
+    /// after `fields` and `second` were taken (step 3).
+    scale: f64,
     point: bool,
     reversed: bool,
 }
@@ -567,6 +599,8 @@ impl Track {
         Ok(Track {
             raw,
             fields: Vec::new(),
+            second: Vec::new(),
+            scale: 1.0,
             point,
             reversed: false,
         })
@@ -575,6 +609,7 @@ impl Track {
     fn reverse(&mut self) {
         self.raw = reverse(&self.raw);
         self.fields = self.fields.iter().map(reverse).collect();
+        self.second = self.second.iter().map(reverse).collect();
         self.reversed = !self.reversed;
     }
 
@@ -689,6 +724,7 @@ impl Track {
         };
         self.raw = redo(&self.raw)?;
         self.fields = self.fields.iter().map(&redo).collect::<Result<_, _>>()?;
+        self.second = self.second.iter().map(&redo).collect::<Result<_, _>>()?;
         Ok(())
     }
 }
@@ -1079,6 +1115,47 @@ fn iso_rows(surface: &NurbsSurface, along_v: bool, at: f64) -> Result<(Raw, Raw)
     Ok((iso, field))
 }
 
+/// The surface's homogeneous second derivative across its iso-curve at
+/// `at` (along v when `along_v`): the across splines of the control net,
+/// differentiated twice and evaluated there.
+fn iso_second(surface: &NurbsSurface, along_v: bool, at: f64) -> Result<Raw, NetworkError> {
+    let (pu, pv) = surface.degrees();
+    let (nu, nv) = surface.counts();
+    let h: Vec<H> = surface
+        .control_points()
+        .iter()
+        .zip(surface.weights())
+        .map(|(p, w)| h_of(*p, *w))
+        .collect();
+    let get = |i: usize, j: usize| h.get(i * nv + j).copied().unwrap_or([0.0; 4]);
+    let (knots, p, n, count, other_knots, other_degree) = if along_v {
+        (surface.knots_u(), pu, nu, nv, surface.knots_v(), pv)
+    } else {
+        (surface.knots_v(), pv, nv, nu, surface.knots_u(), pu)
+    };
+    let mut points = Vec::with_capacity(count);
+    for k in 0..count {
+        let across = Raw {
+            degree: p,
+            knots: knots.to_vec(),
+            points: (0..n)
+                .map(|i| if along_v { get(i, k) } else { get(k, i) })
+                .collect(),
+        };
+        let second = derivative(&derivative(&across)?)?;
+        points.push(if second.points.is_empty() {
+            [0.0; 4]
+        } else {
+            eval(&second, at)?
+        });
+    }
+    Ok(Raw {
+        degree: other_degree,
+        knots: other_knots.to_vec(),
+        points,
+    })
+}
+
 /// The iso-curve of `surface` along u at `v = at` (`along_u`), or along v
 /// at `u = at`: exactly the surface there.
 pub fn iso_curve(
@@ -1105,7 +1182,7 @@ fn iso_track(
     surface: &NurbsSurface,
     curve: &Track,
     tol: f64,
-) -> Result<Option<(Raw, Raw)>, NetworkError> {
+) -> Result<Option<[Raw; 3]>, NetworkError> {
     let wrapped = Surface::Nurbs(surface.clone());
     let mut ts = samples(&curve.raw, 4, 33);
     if ts.len() > 1025 {
@@ -1236,12 +1313,18 @@ fn iso_track(
             continue;
         }
         let (iso, field) = iso_rows(surface, along_v, at)?;
-        let (mut iso, mut field) = (piece_raw(iso, a, b)?, piece_raw(field, a, b)?);
+        let second = iso_second(surface, along_v, at)?;
+        let (mut iso, mut field, mut second) = (
+            piece_raw(iso, a, b)?,
+            piece_raw(field, a, b)?,
+            piece_raw(second, a, b)?,
+        );
         if s > e {
             iso = reverse(&iso);
             field = reverse(&field);
+            second = reverse(&second);
         }
-        return Ok(Some((iso, field)));
+        return Ok(Some([iso, field, second]));
     }
     Ok(None)
 }
@@ -1387,10 +1470,38 @@ fn localize(raw: &mut Raw, next: f64) -> Result<(), NetworkError> {
     Err(internal())
 }
 
+/// Knots inserted so that the first `rows` basis functions from the start
+/// of `raw` end at or before `next` (2: the point beside the end, as
+/// [`localize`]; 3: the one after it as well, for curvature).
+fn localize_rows(raw: &mut Raw, next: f64, rows: usize) -> Result<(), NetworkError> {
+    localize(raw, next)?;
+    for _ in 2..rows {
+        let p = raw.degree;
+        let (Some(&first), Some(&last)) = (raw.knots.get(p + 1), raw.knots.get(p + rows)) else {
+            return Err(internal());
+        };
+        if last <= next + SAME_KNOT || next >= 1.0 - SAME_KNOT || next <= SAME_KNOT {
+            return Ok(());
+        }
+        // One more knot below every inner one.
+        raw.insert(0.5 * first)?;
+    }
+    let p = raw.degree;
+    match raw.knots.get(p + rows) {
+        Some(&last) if last <= next + SAME_KNOT || next >= 1.0 - SAME_KNOT || next <= SAME_KNOT => {
+            Ok(())
+        }
+        _ => Err(internal()),
+    }
+}
+
 /// Makes the cross derivative of `net` along v = 0 lie in the tangent
 /// planes the `fields` (with the edge curve and its derivative) span,
 /// matching it at the crossings `at` (in u) and changing the second row of
-/// control points only, within `[0, next]` in v.
+/// control points only, within `[0, next]` in v (the first `rows` rows'
+/// basis functions end there: 3 leaves the third row to a curvature hold).
+/// Returns the scalar splines the columns (`fields`, then the edge curve's
+/// derivative, then the edge curve) are taken with.
 #[allow(clippy::too_many_arguments)]
 fn hold_tangent(
     net: &mut Net,
@@ -1400,7 +1511,8 @@ fn hold_tangent(
     angular: f64,
     tol: f64,
     edge: usize,
-) -> Result<(), NetworkError> {
+    rows: usize,
+) -> Result<Vec<Raw>, NetworkError> {
     let label = EDGE_NAMES.get(edge).copied().unwrap_or("an edge");
     // At least cubic across, so the change blends in smoothly.
     let mut v = net.v_raw();
@@ -1408,7 +1520,7 @@ fn hold_tangent(
         v.elevate()?;
     }
     // The second row's basis function must end at or before `next`.
-    localize(&mut v, next)?;
+    localize_rows(&mut v, next, rows)?;
     let q = v.degree;
     within_budget(net.rows.len(), count(q, &runs(&v)))?;
     net.refine_v(q, &runs(&v))?;
@@ -1486,6 +1598,7 @@ fn hold_tangent(
     }
     let degree = (at.len() - 1).min(3);
     let mut target: Option<Raw> = None;
+    let mut scalars = Vec::with_capacity(columns.len());
     for (field, row) in columns.iter().zip(&table) {
         let values: Vec<Vec<f64>> = row.iter().map(|x| vec![*x, 0.0, 0.0, 0.0]).collect();
         let (knots, ctrl) = interpolate(at, degree, &values)?;
@@ -1498,6 +1611,7 @@ fn hold_tangent(
                 .collect(),
         };
         let term = times(&scalar, field)?;
+        scalars.push(scalar);
         target = Some(match target {
             None => term,
             Some(t) => combined(&t, &term, 1.0, 1.0)?,
@@ -1536,7 +1650,7 @@ fn hold_tangent(
         }
         *slot = moved;
     }
-    Ok(())
+    Ok(scalars)
 }
 
 /// The largest angle between the oriented tangent planes of `patch` along
@@ -1636,8 +1750,8 @@ pub fn gordon(net: &Network<'_>) -> Result<Patch, NetworkError> {
         );
     }
     for (e, c) in net.edges.iter().enumerate() {
-        if let Condition::Tangent { weight, .. } = c
-            && !(weight.is_finite() && *weight > 0.0)
+        if let Some((_, weight, _)) = c.held()
+            && !(weight.is_finite() && weight > 0.0)
         {
             return refuse(format!(
                 "{}: the weight of a tangent edge is positive, not {weight}",
@@ -1724,8 +1838,88 @@ pub fn gordon(net: &Network<'_>) -> Result<Patch, NetworkError> {
     orient(&mut us, &mut s, 'u', 'v', tol)?;
     let mut tt = transpose(&t);
     orient(&mut vs, &mut tt, 'v', 'u', tol)?;
-    let common_u = means(&mut s, &us)?;
-    let common_v = means(&mut tt, &vs)?;
+    let mut common_u = means(&mut s, &us)?;
+    let mut common_v = means(&mut tt, &vs)?;
+    // An edge held in curvature to a spline face: its family's crossing
+    // parameters are the face line's own, so the line needs no change of
+    // parameter and the seam has one parametrisation on both sides (what
+    // `continuity` compares at).
+    let mut dictated = [false; 2];
+    for e in 0..4 {
+        let Some(Condition::Curvature { surface, .. }) = net.edges.get(e) else {
+            continue;
+        };
+        let sf = match surface {
+            Surface::Nurbs(sf) => sf.clone(),
+            Surface::Bezier(b) => NurbsSurface::from_bezier(b)?,
+            _ => continue,
+        };
+        let label = EDGE_NAMES.get(e).copied().unwrap_or("an edge");
+        let (family, index) = edge_track(e, m, n);
+        let slot = usize::from(family == 'v');
+        if dictated.get(slot).copied().unwrap_or(true) {
+            return refuse(format!(
+                "{label}: both edges of one family are held in curvature to spline faces; only one face's line can give the family its crossing parameters (owed: comparing the seam through a change of parameter)"
+            ));
+        }
+        if let Some(d) = dictated.get_mut(slot) {
+            *d = true;
+        }
+        let (track, row) = if family == 'u' {
+            (us.get(index), s.get(index))
+        } else {
+            (vs.get(index), tt.get(index))
+        };
+        let (Some(track), Some(row)) = (track, row) else {
+            return Err(internal());
+        };
+        let Some([iso, _, _]) = iso_track(&sf, track, tol).map_err(|err| match err {
+            NetworkError::Refused(why) => NetworkError::Refused(format!("{label}: {why}")),
+            other => other,
+        })?
+        else {
+            return refuse(format!(
+                "{label}: it does not run along one of its face's parameter lines; curvature to a spline face along any other curve is not supported yet (owed: a ribbon fitted with a proven bound)"
+            ));
+        };
+        let line = Track {
+            raw: iso,
+            fields: Vec::new(),
+            second: Vec::new(),
+            scale: 1.0,
+            point: false,
+            reversed: false,
+        };
+        let mut own: Vec<f64> = row
+            .iter()
+            .map(|t| project_on(&line, track.at(*t)?))
+            .collect::<Result<_, _>>()?;
+        if let Some(f) = own.first_mut() {
+            *f = 0.0;
+        }
+        if let Some(l) = own.last_mut() {
+            *l = 1.0;
+        }
+        if own
+            .windows(2)
+            .any(|w| !matches!(w, [a, b] if b - a > SAME_KNOT))
+        {
+            return refuse(format!(
+                "{label}: the curves crossing it are not in order along its face's parameter line"
+            ));
+        }
+        let (common, rows, tracks) = if family == 'u' {
+            (&mut common_u, &mut s, &us)
+        } else {
+            (&mut common_v, &mut tt, &vs)
+        };
+        for (r, t) in rows.iter_mut().zip(tracks.iter()) {
+            if t.point {
+                *r = own.clone();
+            }
+        }
+        *common = own;
+    }
     for (i, track) in us.iter_mut().enumerate() {
         if !track.point {
             track.align(
@@ -1750,7 +1944,7 @@ pub fn gordon(net: &Network<'_>) -> Result<Patch, NetworkError> {
     // Tangent edges along spline faces follow the face's own parameter
     // line: the edge curve is that line, with its cross derivative.
     for e in 0..4 {
-        let Some(Condition::Tangent { surface, .. }) = net.edges.get(e) else {
+        let Some((surface, _, _)) = net.edges.get(e).and_then(Condition::held) else {
             continue;
         };
         let spline = match surface {
@@ -1778,7 +1972,7 @@ pub fn gordon(net: &Network<'_>) -> Result<Patch, NetworkError> {
             NetworkError::Refused(why) => NetworkError::Refused(format!("{label}: {why}")),
             other => other,
         })?;
-        let Some((iso, field)) = found else {
+        let Some([iso, field, second]) = found else {
             return refuse(format!(
                 "{}: it does not run along one of its face's parameter lines; tangency to a spline face along any other curve is not supported yet (owed: a tangent ribbon fitted with a proven bound)",
                 EDGE_NAMES.get(e).copied().unwrap_or("an edge")
@@ -1787,6 +1981,8 @@ pub fn gordon(net: &Network<'_>) -> Result<Patch, NetworkError> {
         let mut swap = Track {
             raw: iso,
             fields: vec![field],
+            second: vec![second],
+            scale: 1.0,
             point: false,
             reversed: track.reversed,
         };
@@ -1858,20 +2054,22 @@ pub fn gordon(net: &Network<'_>) -> Result<Patch, NetworkError> {
     // u curve i times e^(−row mean), v curve j times e^(col mean − all).
     for (track, a) in us.iter_mut().zip(&row_mean) {
         track.raw = scaled(&track.raw, (-a).exp());
+        track.scale *= (-a).exp();
     }
     for (track, b) in vs.iter_mut().zip(&col_mean) {
         track.raw = scaled(&track.raw, (b - all).exp());
+        track.scale *= (b - all).exp();
     }
 
     // 5a. Curves crossing a tangent edge leave it along the face, to the
     // side each edge's curves all leave to.
     let mut sides = [1.0; 4];
     for (e, side) in sides.iter_mut().enumerate() {
-        let Some(Condition::Tangent { surface, weight }) = net.edges.get(e) else {
+        let Some((surface, weight, g2)) = net.edges.get(e).and_then(Condition::held) else {
             continue;
         };
         *side = bend(
-            e, surface, *weight, net, &mut us, &mut vs, &common_u, &common_v,
+            e, surface, weight, g2, net, &mut us, &mut vs, &common_u, &common_v,
         )?;
     }
 
@@ -1970,17 +2168,18 @@ pub fn gordon(net: &Network<'_>) -> Result<Patch, NetworkError> {
 
     // 5b. Each tangent edge's cross derivative put into the face's planes.
     for e in 0..4 {
-        let Some(Condition::Tangent { surface, .. }) = net.edges.get(e) else {
+        let Some((surface, _, g2)) = net.edges.get(e).and_then(Condition::held) else {
             continue;
         };
         let (family, index) = edge_track(e, m, n);
-        let carried = if family == 'u' {
+        let edge_track_ref = if family == 'u' {
             us.get(index)
         } else {
             vs.get(index)
-        }
-        .map(|t| t.fields.clone())
-        .unwrap_or_default();
+        };
+        let carried = edge_track_ref.map(|t| t.fields.clone()).unwrap_or_default();
+        let second = edge_track_ref.and_then(|t| t.second.first().cloned());
+        let kappa = edge_track_ref.map_or(1.0, |t| t.scale);
         let (at, next) = match e {
             0 => (common_u.clone(), common_v.get(1).copied().unwrap_or(1.0)),
             1 => (
@@ -1999,13 +2198,42 @@ pub fn gordon(net: &Network<'_>) -> Result<Patch, NetworkError> {
             2 => sum.transposed(),
             _ => sum.transposed().reversed_v(),
         };
+        let spline_face = !carried.is_empty();
         let fields = if carried.is_empty() {
             let c = work.column(0)?;
             analytic_fields(surface, &c).ok_or_else(internal)?
         } else {
             carried
         };
-        hold_tangent(&mut work, &fields, &at, next, net.angular, tol, e)?;
+        let scalars = hold_tangent(
+            &mut work,
+            &fields,
+            &at,
+            next,
+            net.angular,
+            tol,
+            e,
+            if g2 { 3 } else { 2 },
+        )?;
+        if g2 {
+            match (spline_face, &second, fields.first()) {
+                (true, Some(g), Some(f)) => hold_curvature_fields(
+                    &mut work,
+                    f,
+                    g,
+                    kappa,
+                    &scalars,
+                    &at,
+                    net.angular,
+                    tol,
+                    e,
+                )?,
+                (false, _, _) => {
+                    hold_curvature_implicit(&mut work, surface, &at, net.angular, tol, e)?;
+                }
+                _ => return Err(internal()),
+            }
+        }
         sum = match e {
             0 => work,
             1 => work.reversed_v(),
@@ -2025,7 +2253,7 @@ pub fn gordon(net: &Network<'_>) -> Result<Patch, NetworkError> {
     let mut held = [None; 4];
     for (e, condition) in net.edges.iter().enumerate() {
         let label = EDGE_NAMES.get(e).copied().unwrap_or("an edge");
-        if let Condition::Tangent { surface: face, .. } = condition {
+        if let Some((face, _, _)) = condition.held() {
             let (first, last) = if e < 2 {
                 (vs.first(), vs.last())
             } else {
@@ -2057,6 +2285,38 @@ pub fn gordon(net: &Network<'_>) -> Result<Patch, NetworkError> {
             }
         }
     }
+    // Edges held in curvature, measured on the result by the proven
+    // measure: G2 is required.
+    let mut seams = [None; 4];
+    for (e, condition) in net.edges.iter().enumerate() {
+        let Condition::Curvature { surface: face, .. } = condition else {
+            continue;
+        };
+        let label = EDGE_NAMES.get(e).copied().unwrap_or("an edge");
+        let Some(Some(curve)) = boundary.get(e) else {
+            return Err(internal());
+        };
+        let found = continuity(
+            &Surface::Nurbs(surface.clone()),
+            face,
+            curve,
+            tol,
+            net.angular,
+        )
+        .map_err(|err| match err {
+            NetworkError::Refused(why) => NetworkError::Refused(format!("{label}: {why}")),
+            other => other,
+        })?;
+        if found.order != Order::G2 {
+            return refuse(format!(
+                "{label}: the surface could not be proven to meet its face in curvature (G2): {}",
+                describe(&found)
+            ));
+        }
+        if let Some(slot) = seams.get_mut(e) {
+            *slot = Some(found);
+        }
+    }
     // Every curve of the network, as the surface was built through it
     // (after the bending), against the surface's own iso-curve there:
     // a proven bound, held to the tolerance. The u curves are passed
@@ -2081,6 +2341,7 @@ pub fn gordon(net: &Network<'_>) -> Result<Patch, NetworkError> {
         boundary,
         mismatch: mismatch.max(gap),
         tangency: held,
+        seams,
         reversed_u: us.iter().map(|t| t.reversed).collect(),
         reversed_v: vs.iter().map(|t| t.reversed).collect(),
     })
@@ -2253,12 +2514,15 @@ fn project_on(track: &Track, p: Vec3) -> Result<f64, NetworkError> {
     Ok(t)
 }
 
-/// Makes the curves crossing tangent edge `e` leave it along `face`.
+/// Makes the curves crossing tangent edge `e` leave it along `face` (and,
+/// held in curvature, `g2`, with the face's normal curvature in their
+/// direction).
 #[allow(clippy::too_many_arguments)]
 fn bend(
     e: usize,
     face: &Surface,
     weight: f64,
+    g2: bool,
     net: &Network<'_>,
     us: &mut [Track],
     vs: &mut [Track],
@@ -2281,6 +2545,37 @@ fn bend(
         at.iter()
             .map(|t| Ok(point_and_tangent(&edge.raw, &d, *t)?.1))
             .collect::<Result<_, NetworkError>>()?
+    };
+    // For curvature along a spline face: the edge's line, its derivatives
+    // and the face's derivatives across it, where each curve crosses.
+    let lines: Vec<Option<SplineAt>> = {
+        let (edge, at) = if edge_family == 'u' {
+            (us.get(edge_index), common_u)
+        } else {
+            (vs.get(edge_index), common_v)
+        };
+        let edge = edge.ok_or_else(internal)?;
+        match (g2, edge.fields.first(), edge.second.first()) {
+            (true, Some(f), Some(g)) => {
+                let c1 = derivative(&edge.raw)?;
+                let c2 = derivative(&c1)?;
+                let f1 = derivative(f)?;
+                at.iter()
+                    .map(|t| {
+                        Ok(Some(SplineAt {
+                            c: eval(&edge.raw, *t)?,
+                            c1: eval(&c1, *t)?,
+                            c2: eval(&c2, *t)?,
+                            f: eval(f, *t)?,
+                            f1: eval(&f1, *t)?,
+                            g: eval(g, *t)?,
+                            kappa: edge.scale,
+                        }))
+                    })
+                    .collect::<Result<_, NetworkError>>()?
+            }
+            _ => vec![None; at.len()],
+        }
     };
     let (crossing, family, inner): (&mut [Track], char, &[f64]) = if e < 2 {
         (vs, 'v', common_v)
@@ -2378,9 +2673,14 @@ fn bend(
         while raw.degree < 3 {
             raw.elevate_batched()?;
         }
-        // Only the control point beside the end moves: its basis function
-        // must stop short of the next crossing.
-        localize(&mut raw, if at_start { next } else { 1.0 - next })?;
+        // Only the control point beside the end moves (and the one after
+        // it, in curvature): their basis functions must stop short of the
+        // next crossing.
+        localize_rows(
+            &mut raw,
+            if at_start { next } else { 1.0 - next },
+            if g2 { 3 } else { 2 },
+        )?;
         let p_deg = raw.degree;
         let (Some(&h0), Some(&h1), Some(&k1), Some(&kp1)) = (
             raw.points.first(),
@@ -2395,6 +2695,15 @@ fn bend(
         if let Some(slot) = raw.points.get_mut(1) {
             *slot = h_of(p1, w1);
         }
+        if g2 {
+            bend_curvature(
+                &mut raw,
+                face,
+                lines.get(k).copied().flatten(),
+                net,
+                &format!("{label}: {}", name(family, k)),
+            )?;
+        }
         track.raw = if at_start { raw } else { reverse(&raw) };
     }
     side.map(|(s, _)| s).ok_or_else(|| {
@@ -2402,6 +2711,723 @@ fn bend(
             "{label}: every {family} curve crossing it is a point, so no curve leaves it along the face"
         ))
     })
+}
+
+/// A spline face along an edge's line where a curve crosses it: the line
+/// (`c`, as the edge curve, times `kappa`), its first and second
+/// derivatives, the face's homogeneous derivative across (`f`, unscaled),
+/// its derivative along, and the second derivative across (`g`).
+#[derive(Clone, Copy, Debug)]
+struct SplineAt {
+    c: H,
+    c1: H,
+    c2: H,
+    f: H,
+    f1: H,
+    g: H,
+    kappa: f64,
+}
+
+/// `[x − o w, w]`.
+fn h_about(h: H, o: Vec3) -> H {
+    [
+        h[0] - o.x * h[3],
+        h[1] - o.y * h[3],
+        h[2] - o.z * h[3],
+        h[3],
+    ]
+}
+
+fn h_dot(a: H, b: H) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]
+}
+
+/// `det[a, b, c, d]` of four homogeneous columns.
+fn h_det(a: H, b: H, c: H, d: H) -> f64 {
+    let m = |x: H, y: H, i: usize, j: usize| {
+        let (xi, xj, yi, yj) = (
+            x.get(i).copied().unwrap_or(0.0),
+            x.get(j).copied().unwrap_or(0.0),
+            y.get(i).copied().unwrap_or(0.0),
+            y.get(j).copied().unwrap_or(0.0),
+        );
+        xi * yj - xj * yi
+    };
+    m(a, b, 0, 1) * m(c, d, 2, 3) - m(a, b, 0, 2) * m(c, d, 1, 3)
+        + m(a, b, 0, 3) * m(c, d, 1, 2)
+        + m(a, b, 1, 2) * m(c, d, 0, 3)
+        - m(a, b, 1, 3) * m(c, d, 0, 2)
+        + m(a, b, 2, 3) * m(c, d, 0, 1)
+}
+
+/// The covector `N` with `N·x = det[x, a, b, c]`: it annihilates `a`, `b`
+/// and `c`.
+fn annihilator(a: H, b: H, c: H) -> H {
+    let e = |k: usize| {
+        let mut h = [0.0; 4];
+        if let Some(slot) = h.get_mut(k) {
+            *slot = 1.0;
+        }
+        h
+    };
+    [
+        h_det(e(0), a, b, c),
+        h_det(e(1), a, b, c),
+        h_det(e(2), a, b, c),
+        h_det(e(3), a, b, c),
+    ]
+}
+
+/// The second order a curve leaving a spline face's line must have, for
+/// the cross derivative `d1` there: `N·X₂ = N·T`, `T = b² C″ + 2ab F′ +
+/// (a²/κ) G` with `d1 = a F + b C′ + c C` (the face's parametrisation
+/// `X = λ Φ(σ, τ)` to second order; `N` annihilates `C`, `C′`, `F`, which
+/// span its tangent space in four dimensions).
+fn spline_second_order(at: &SplineAt, d1: H, length: f64, cutoff: f64) -> (H, f64) {
+    let n = annihilator(at.c, at.c1, at.f);
+    let (x, _) = coefficients(&[at.f, at.c1, at.c], d1, Vec3::ZERO, length, cutoff);
+    let a = x.first().copied().unwrap_or(0.0);
+    let b = x.get(1).copied().unwrap_or(0.0);
+    let kappa = if at.kappa.is_finite() && at.kappa > 0.0 {
+        at.kappa
+    } else {
+        1.0
+    };
+    let t = h_add(
+        h_add(at.c2, at.f1, b * b, 2.0 * a * b),
+        at.g,
+        1.0,
+        a * a / kappa,
+    );
+    (n, h_dot(n, t))
+}
+
+/// The second derivative at the start of a clamped spline of degree `q`
+/// with knots `k`: `X₂ = α R₀ + β R₁ + γ R₂` (its coefficients).
+fn second_at_start(q: usize, knots: &[f64]) -> Option<[f64; 3]> {
+    let (k1, k2, kq1, kq2) = (
+        *knots.get(1)?,
+        *knots.get(2)?,
+        *knots.get(q + 1)?,
+        *knots.get(q + 2)?,
+    );
+    if q < 2 || !(kq1 > k1 && kq1 > k2 && kq2 > k2) {
+        return None;
+    }
+    let qf = q as f64;
+    let a = qf / (kq1 - k1);
+    let b = qf / (kq2 - k2);
+    let c = (qf - 1.0) / (kq1 - k2);
+    Some([c * a, -c * (a + b), c * b])
+}
+
+/// Moves the third control point of a curve leaving an edge (at its start)
+/// along the face's normal so that it takes the face's normal curvature in
+/// its direction: the condition is linear in that point, one number.
+fn bend_curvature(
+    raw: &mut Raw,
+    face: &Surface,
+    line: Option<SplineAt>,
+    net: &Network<'_>,
+    label: &str,
+) -> Result<(), NetworkError> {
+    let tol = net.tolerance;
+    let d1raw = derivative(raw)?;
+    let d2raw = derivative(&d1raw)?;
+    let h0 = raw.points.first().copied().ok_or_else(internal)?;
+    let p0 = point(h0).ok_or_else(internal)?;
+    let x1 = h_about(eval(&d1raw, 0.0)?, p0);
+    let x2 = h_about(eval(&d2raw, 0.0)?, p0);
+    let x0 = h_about(h0, p0);
+    let length = raw
+        .points
+        .iter()
+        .filter_map(|h| point(*h))
+        .fold(0.0_f64, |l, p| l.max(p.distance(p0)));
+    if !(length.is_finite() && length > 0.0) {
+        return Err(internal());
+    }
+    let (n, r) = match line {
+        Some(at) => {
+            let moved = SplineAt {
+                c: h_about(at.c, p0),
+                c1: h_about(at.c1, p0),
+                c2: h_about(at.c2, p0),
+                f: h_about(at.f, p0),
+                f1: h_about(at.f1, p0),
+                g: h_about(at.g, p0),
+                kappa: at.kappa,
+            };
+            spline_second_order(&moved, x1, length, net.angular.max(tol / length))
+        }
+        None => {
+            let Some(form) = continuity::implicit_of(face, p0) else {
+                return refuse(format!(
+                    "{label}: curvature to this kind of face is not supported (owed: its implicit form)"
+                ));
+            };
+            form.second_order(x0, x1)
+        }
+    };
+    let q = raw.degree;
+    let [_, _, c2] = second_at_start(q, &raw.knots).ok_or_else(internal)?;
+    let h2 = raw.points.get(2).copied().ok_or_else(internal)?;
+    let p2 = point(h2).ok_or_else(internal)?;
+    let normal = Vec3::new(n[0], n[1], n[2]);
+    let len = normal.length();
+    let w2 = h2[3];
+    let gap = r - h_dot(n, x2);
+    let s = gap / (c2 * w2 * len);
+    if !(s.is_finite() && len > 0.0) {
+        return refuse(format!(
+            "{label}: the face has no normal where it crosses the edge, so its curvature there is not known"
+        ));
+    }
+    if let Some(slot) = raw.points.get_mut(2) {
+        *slot = h_of(p2 + normal * (s / len), w2);
+    }
+    Ok(())
+}
+
+/// The dot product of two homogeneous splines, a scalar spline (its first
+/// coordinate), exactly.
+fn dot_raw(a: &Raw, b: &Raw) -> Result<Raw, NetworkError> {
+    let mut out: Option<Raw> = None;
+    for k in 0..4 {
+        let pick = |h: H| [h.get(k).copied().unwrap_or(0.0), 0.0, 0.0, 0.0];
+        let t = times(&mapped(a, pick), &mapped(b, pick))?;
+        out = Some(match out {
+            None => t,
+            Some(o) => combined(&o, &t, 1.0, 1.0)?,
+        });
+    }
+    out.ok_or_else(internal)
+}
+
+/// The rows of `net` along v = 0 about `o`: the edge `R₀`, `R₁`, `R₂`, the
+/// cross derivatives `X₁`, `X₂`, and `X₂`'s coefficient of `R₂`.
+struct EdgeRows {
+    r2: Raw,
+    x1: Raw,
+    x2: Raw,
+    c2: f64,
+}
+
+fn edge_rows(net: &Net, o: Vec3) -> Result<EdgeRows, NetworkError> {
+    let q = net.pv;
+    let [a, b, c] = second_at_start(q, &net.kv).ok_or_else(internal)?;
+    let (Some(&k1), Some(&kq1)) = (net.kv.get(1), net.kv.get(q + 1)) else {
+        return Err(internal());
+    };
+    let f = q as f64 / (kq1 - k1);
+    let row = |j: usize| -> Result<Raw, NetworkError> {
+        let r = net.column(j)?;
+        Ok(mapped(&r, |h| h_about(h, o)))
+    };
+    let (r0, r1, r2) = (row(0)?, row(1)?, row(2)?);
+    let zip3 = |fa: f64, fb: f64, fc: f64| Raw {
+        degree: r0.degree,
+        knots: r0.knots.clone(),
+        points: r0
+            .points
+            .iter()
+            .zip(&r1.points)
+            .zip(&r2.points)
+            .map(|((x, y), z)| h_add(h_add(*x, *y, fa, fb), *z, 1.0, fc))
+            .collect(),
+    };
+    Ok(EdgeRows {
+        x1: zip3(-f, f, 0.0),
+        x2: zip3(a, b, c),
+        r2,
+        c2: c,
+    })
+}
+
+/// Puts the change `delta` (of the second derivative across, about `o`)
+/// on the third row of control points of `net`.
+fn put_on_third_row(net: &mut Net, delta: &Raw, o: Vec3, c2: f64) -> Result<(), NetworkError> {
+    let mut delta = mapped(delta, |h| {
+        [
+            h[0] + o.x * h[3],
+            h[1] + o.y * h[3],
+            h[2] + o.z * h[3],
+            h[3],
+        ]
+    });
+    let (du, tu) = union(&[&delta, &net.u_raw()])?;
+    within_budget(count(du, &tu), net.count_v())?;
+    refine_to(&mut delta, du, &tu)?;
+    net.refine_u(du, &tu)?;
+    if delta.points.len() != net.rows.len() || !(c2.is_finite() && c2 != 0.0) {
+        return Err(internal());
+    }
+    for (row, d) in net.rows.iter_mut().zip(&delta.points) {
+        let slot = row.get_mut(2).ok_or_else(internal)?;
+        *slot = h_add(*slot, *d, 1.0, 1.0 / c2);
+    }
+    Ok(())
+}
+
+/// Curvature along a spline face's line (after `hold_tangent`, whose
+/// scalars `[a, b, c]` give `X₁ = a F + b C′ + c C`): the second derivative
+/// across becomes `T + α C + β C′ + γ F`, `T = b² C″ + 2ab F′ + (a²/κ) G`
+/// exactly (the face's own second order, see `spline_second_order`), the
+/// scalars `α, β, γ` interpolating at the crossings the parts of the
+/// derivative the surface already has there; the change goes on the third
+/// row of control points only.
+#[allow(clippy::too_many_arguments)]
+fn hold_curvature_fields(
+    net: &mut Net,
+    f: &Raw,
+    g: &Raw,
+    kappa: f64,
+    scalars: &[Raw],
+    at: &[f64],
+    angular: f64,
+    tol: f64,
+    edge: usize,
+) -> Result<(), NetworkError> {
+    let label = EDGE_NAMES.get(edge).copied().unwrap_or("an edge");
+    let (Some(a), Some(b)) = (scalars.first(), scalars.get(1)) else {
+        return Err(internal());
+    };
+    let origin = net
+        .column(0)?
+        .points
+        .first()
+        .copied()
+        .and_then(point)
+        .ok_or_else(internal)?;
+    let rows = edge_rows(net, origin)?;
+    let c = mapped(&net.column(0)?, |h| h_about(h, origin));
+    let (f, g) = (
+        mapped(f, |h| h_about(h, origin)),
+        mapped(g, |h| h_about(h, origin)),
+    );
+    let dc = derivative(&c)?;
+    let ddc = derivative(&dc)?;
+    let df = derivative(&f)?;
+    let kappa = if kappa.is_finite() && kappa > 0.0 {
+        kappa
+    } else {
+        1.0
+    };
+    let bb = times(b, b)?;
+    let ab = times(a, b)?;
+    let aa = times(a, a)?;
+    let t = combined(
+        &combined(&times(&bb, &ddc)?, &times(&ab, &df)?, 1.0, 2.0)?,
+        &times(&aa, &g)?,
+        1.0,
+        1.0 / kappa,
+    )?;
+    let columns = [c.clone(), dc, f];
+    let length = c
+        .points
+        .iter()
+        .chain(&rows.r2.points)
+        .filter_map(|h| point(*h))
+        .fold(0.0_f64, |l, p| l.max(p.length()));
+    if !(length.is_finite() && length > 0.0) {
+        return Err(internal());
+    }
+    let cutoff = angular.max(tol / length);
+    let mut table: Vec<Vec<f64>> = vec![Vec::with_capacity(at.len()); columns.len()];
+    for &u in at {
+        let cols: Vec<H> = columns
+            .iter()
+            .map(|x| eval(x, u))
+            .collect::<Result<_, _>>()?;
+        let y = h_add(eval(&rows.x2, u)?, eval(&t, u)?, 1.0, -1.0);
+        let (x, left) = coefficients(&cols, y, Vec3::ZERO, length, cutoff);
+        let h2 = eval(&rows.r2, u)?;
+        let moved = match (point(h2), point(h_add(h2, left, 1.0, -1.0 / rows.c2))) {
+            (Some(p), Some(q)) => p.distance(q),
+            _ => f64::INFINITY,
+        };
+        if moved.is_nan() || moved > tol {
+            return refuse(format!(
+                "{label}: the surface cannot take its face's curvature at u = {u:.6}: the curve crossing it there does not have it (it would be moved {moved:.3e}, the tolerance is {tol:.3e})"
+            ));
+        }
+        for (row, xi) in table.iter_mut().zip(x) {
+            row.push(xi);
+        }
+    }
+    let degree = (at.len() - 1).min(3);
+    let mut target = t;
+    for (field, row) in columns.iter().zip(&table) {
+        let values: Vec<Vec<f64>> = row.iter().map(|x| vec![*x, 0.0, 0.0, 0.0]).collect();
+        let (knots, ctrl) = interpolate(at, degree, &values)?;
+        let scalar = Raw {
+            degree,
+            knots,
+            points: ctrl
+                .iter()
+                .map(|c| [c.first().copied().unwrap_or(0.0), 0.0, 0.0, 0.0])
+                .collect(),
+        };
+        target = combined(&target, &times(&scalar, field)?, 1.0, 1.0)?;
+    }
+    let delta = combined(&target, &rows.x2, 1.0, -1.0)?;
+    put_on_third_row(net, &delta, origin, rows.c2)
+}
+
+/// Most floating-point work (multiplications) one curvature hold along an
+/// analytic face may do in its least-squares solve.
+pub const MAX_CURVATURE_WORK: usize = 1 << 33;
+
+/// Curvature along a plane, cylinder, cone or sphere (after
+/// `hold_tangent`): the face's second order is one linear equation in the
+/// second derivative across, `N·X₂ = r` (`N = L` and `r = 0` for a plane
+/// `L·X = 0`; `N = Q X₀` and `r = −X₁ᵀ Q X₁` for a quadric `XᵀQX = 0`), so
+/// the change `Δ` of `X₂` must satisfy `N·Δ = ρ = r − N·X₂` as splines,
+/// exactly. `Δ` is sought in splines of degree `D ≥ P` (the edge's), twice
+/// continuously differentiable at every knot of the edge and every
+/// crossing, which leaves more unknowns than equations on every piece; it
+/// must take at each crossing the least change that puts that crossing
+/// curve right (the curves were bent to the face's curvature, so that is
+/// rounding); of all such `Δ` the one of least size (in lengths about the
+/// edge's first point, the weight times its extent) is taken: a
+/// constrained least squares on the third row with the first two fixed,
+/// solved by Householder QR with pivoting of the equations (an equation
+/// within the angular tolerance of the others' span is dependent).
+fn hold_curvature_implicit(
+    net: &mut Net,
+    face: &Surface,
+    at: &[f64],
+    angular: f64,
+    tol: f64,
+    edge: usize,
+) -> Result<(), NetworkError> {
+    let label = EDGE_NAMES.get(edge).copied().unwrap_or("an edge");
+    let origin = net
+        .column(0)?
+        .points
+        .first()
+        .copied()
+        .and_then(point)
+        .ok_or_else(internal)?;
+    let Some(form) = continuity::implicit_of(face, origin) else {
+        return refuse(format!(
+            "{label}: curvature to this kind of face is not supported (owed: its implicit form)"
+        ));
+    };
+    let rows = edge_rows(net, origin)?;
+    let r0 = mapped(&net.column(0)?, |h| h_about(h, origin));
+    let (n_raw, r_raw) = match form {
+        continuity::ImplicitForm::Plane(l) => (constant(l), constant([0.0; 4])),
+        continuity::ImplicitForm::Quadric(q, _) | continuity::ImplicitForm::Cone(q, ..) => {
+            let qx = |h: H| -> H {
+                let r = |i: usize| q.get(i).copied().unwrap_or([0.0; 4]);
+                [
+                    h_dot(r(0), h),
+                    h_dot(r(1), h),
+                    h_dot(r(2), h),
+                    h_dot(r(3), h),
+                ]
+            };
+            let n = mapped(&r0, qx);
+            let r = scaled(&dot_raw(&rows.x1, &mapped(&rows.x1, qx))?, -1.0);
+            (n, r)
+        }
+    };
+    let rho = combined(&r_raw, &dot_raw(&n_raw, &rows.x2)?, 1.0, -1.0)?;
+    let length = r0
+        .points
+        .iter()
+        .chain(&rows.r2.points)
+        .filter_map(|h| point(*h))
+        .fold(0.0_f64, |l, p| l.max(p.length()));
+    if !(length.is_finite() && length > 0.0) {
+        return Err(internal());
+    }
+    // The least change at each crossing (in lengths: the weight times L).
+    let scale = [1.0, 1.0, 1.0, length];
+    let mut fixed: Vec<(f64, H)> = Vec::with_capacity(at.len());
+    for &u in at {
+        let nn = eval(&n_raw, u)?;
+        let hat = [nn[0], nn[1], nn[2], nn[3] / length];
+        let size = h_dot(hat, hat);
+        let rh = eval(&rho, u)?[0];
+        if !(size.is_finite() && size > 0.0) {
+            return refuse(format!(
+                "{label}: its face has no normal at u = {u:.6} along it, so its curvature there is not known"
+            ));
+        }
+        // Δ̂ = ρ N̂ / |N̂|², back to Δ (its weight over L).
+        let d = [
+            rh * hat[0] / size,
+            rh * hat[1] / size,
+            rh * hat[2] / size,
+            rh * hat[3] / size / length,
+        ];
+        let h2 = eval(&rows.r2, u)?;
+        let moved = match (point(h2), point(h_add(h2, d, 1.0, 1.0 / rows.c2))) {
+            (Some(p), Some(q)) => p.distance(q),
+            _ => f64::INFINITY,
+        };
+        if moved.is_nan() || moved > tol {
+            return refuse(format!(
+                "{label}: the surface cannot take its face's curvature at u = {u:.6}: the curve crossing it there does not have it (it would be moved {moved:.3e}, the tolerance is {tol:.3e})"
+            ));
+        }
+        fixed.push((u, d));
+    }
+    // The space of the change: degree D, C² at every break.
+    let p = r0.degree;
+    let big_d = p.max((p + 11).div_ceil(3));
+    let mut breaks: Vec<f64> = r0.interior();
+    breaks.extend(
+        at.iter()
+            .copied()
+            .filter(|u| *u > SAME_KNOT && *u < 1.0 - SAME_KNOT),
+    );
+    breaks.sort_by(f64::total_cmp);
+    breaks.dedup_by(|x, y| (*x - *y).abs() <= SAME_KNOT);
+    let mut knots = vec![0.0; big_d + 1];
+    for b in &breaks {
+        knots.extend(std::iter::repeat_n(*b, big_d - 2));
+    }
+    knots.extend(vec![1.0; big_d + 1]);
+    let count_d = knots.len() - big_d - 1;
+    let unknowns = 4 * count_d;
+    // The pieces of N and ρ, and of each basis function of the change.
+    let on_breaks = |raw: &Raw| -> Result<Vec<Vec<H>>, NetworkError> {
+        let mut raw = raw.clone();
+        let mut have = raw.knots.clone();
+        have.dedup();
+        let missing: Vec<f64> = breaks
+            .iter()
+            .copied()
+            .filter(|b| !have.iter().any(|k| (k - b).abs() <= SAME_KNOT))
+            .collect();
+        raw.insert_all(&missing)?;
+        let (_, pieces) = bezier_pieces_batched(raw)?;
+        if pieces.len() != breaks.len() + 1 {
+            return Err(internal());
+        }
+        Ok(pieces)
+    };
+    let dn = n_raw.degree.max(rho.degree.saturating_sub(big_d));
+    let mut n_up = n_raw.clone();
+    while n_up.degree < dn {
+        n_up.elevate()?;
+    }
+    let out = dn + big_d;
+    let mut rho_up = rho.clone();
+    while rho_up.degree < out {
+        rho_up.elevate()?;
+    }
+    let n_pieces = on_breaks(&n_up)?;
+    let rho_pieces = on_breaks(&rho_up)?;
+    let pieces = breaks.len() + 1;
+    let equations = pieces * (out + 1) + 4 * at.len();
+    let work = unknowns
+        .saturating_mul(equations)
+        .saturating_mul(unknowns.min(equations));
+    if work > MAX_CURVATURE_WORK {
+        return refuse(format!(
+            "{label}: the edge has too many pieces to put its face's curvature on ({unknowns} unknowns, {equations} equations; at most {MAX_CURVATURE_WORK} multiplications): fewer knots along it"
+        ));
+    }
+    let mut extraction: Vec<Vec<Vec<f64>>> = Vec::with_capacity(count_d);
+    for i in 0..count_d {
+        let mut pts = vec![[0.0; 4]; count_d];
+        if let Some(slot) = pts.get_mut(i) {
+            *slot = [1.0, 0.0, 0.0, 0.0];
+        }
+        let unit = Raw {
+            degree: big_d,
+            knots: knots.clone(),
+            points: pts,
+        };
+        let (_, ps) = bezier_pieces_batched(unit)?;
+        if ps.len() != pieces {
+            return Err(internal());
+        }
+        extraction.push(
+            ps.iter()
+                .map(|piece| piece.iter().map(|h| h[0]).collect())
+                .collect(),
+        );
+    }
+    let binom = |n: usize| -> Vec<f64> {
+        let mut row = Vec::with_capacity(n + 1);
+        let mut v = 1.0_f64;
+        for k in 0..=n {
+            row.push(v);
+            v = v * (n - k) as f64 / (k + 1) as f64;
+        }
+        row
+    };
+    let (bn, bd, bo) = (binom(dn), binom(big_d), binom(out));
+    let mut a_rows: Vec<Vec<f64>> = Vec::with_capacity(equations);
+    let mut rhs: Vec<f64> = Vec::with_capacity(equations);
+    for k in 0..pieces {
+        let (Some(np), Some(rp)) = (n_pieces.get(k), rho_pieces.get(k)) else {
+            return Err(internal());
+        };
+        for m in 0..=out {
+            let mut row = vec![0.0; unknowns];
+            for (i, basis_pieces) in extraction.iter().enumerate() {
+                let Some(e) = basis_pieces.get(k) else {
+                    return Err(internal());
+                };
+                for (j, ej) in e.iter().enumerate() {
+                    if *ej == 0.0 || j > m || m - j > dn {
+                        continue;
+                    }
+                    let s = m - j;
+                    let (Some(cn), Some(cd), Some(co), Some(nv)) =
+                        (bn.get(s), bd.get(j), bo.get(m), np.get(s))
+                    else {
+                        continue;
+                    };
+                    let lam = cn * cd / co * ej;
+                    for (comp, sc) in scale.iter().enumerate() {
+                        if let Some(slot) = row.get_mut(4 * i + comp) {
+                            *slot += lam * nv.get(comp).copied().unwrap_or(0.0) / sc;
+                        }
+                    }
+                }
+            }
+            a_rows.push(row);
+            rhs.push(rp.get(m).map_or(0.0, |h| h[0]));
+        }
+    }
+    for (u, d) in &fixed {
+        let values = basis(&knots, big_d, count_d, *u)?;
+        for (comp, sc) in scale.iter().enumerate() {
+            let mut row = vec![0.0; unknowns];
+            for (i, b) in values.iter().enumerate() {
+                if let Some(slot) = row.get_mut(4 * i + comp) {
+                    *slot = *b;
+                }
+            }
+            a_rows.push(row);
+            rhs.push(d.get(comp).copied().unwrap_or(0.0) * sc);
+        }
+    }
+    let solution = least_norm(&mut a_rows, &mut rhs, angular)?;
+    let delta = Raw {
+        degree: big_d,
+        knots,
+        points: (0..count_d)
+            .map(|i| {
+                let g = |c: usize| solution.get(4 * i + c).copied().unwrap_or(0.0);
+                [g(0), g(1), g(2), g(3) / length]
+            })
+            .collect(),
+    };
+    put_on_third_row(net, &delta, origin, rows.c2)
+}
+
+/// The solution of least norm of `A x = b` (rows of `A`): every equation
+/// scaled to unit length, Householder QR of `Aᵀ` with the equations
+/// pivoted, an equation whose part outside the span of those taken is
+/// `cutoff` of its length or less taken as dependent (and left out: what
+/// it asks is then checked on the result), `Rᵀ y = b`, `x = Q y`.
+fn least_norm(
+    rows: &mut [Vec<f64>],
+    rhs: &mut [f64],
+    cutoff: f64,
+) -> Result<Vec<f64>, NetworkError> {
+    let m = rows.len();
+    let n = rows.first().map_or(0, Vec::len);
+    for (row, b) in rows.iter_mut().zip(rhs.iter_mut()) {
+        let len = row.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if len > 0.0 && len.is_finite() {
+            for x in row.iter_mut() {
+                *x /= len;
+            }
+            *b /= len;
+        }
+    }
+    let mut order: Vec<usize> = (0..m).collect();
+    let mut reflectors: Vec<(usize, Vec<f64>, f64)> = Vec::new();
+    let tail = |c: &[f64], from: usize| {
+        c.get(from..)
+            .map_or(0.0, |t| t.iter().map(|x| x * x).sum::<f64>().sqrt())
+    };
+    for step in 0..m.min(n) {
+        let best = (step..m)
+            .max_by(|x, z| {
+                let nx = order
+                    .get(*x)
+                    .and_then(|i| rows.get(*i))
+                    .map_or(0.0, |c| tail(c, step));
+                let nz = order
+                    .get(*z)
+                    .and_then(|i| rows.get(*i))
+                    .map_or(0.0, |c| tail(c, step));
+                nx.total_cmp(&nz)
+            })
+            .unwrap_or(step);
+        order.swap(step, best);
+        let Some(&pivot) = order.get(step) else { break };
+        let Some(col) = rows.get(pivot).cloned() else {
+            break;
+        };
+        let alpha = tail(&col, step);
+        if alpha.is_nan() || alpha <= cutoff {
+            break;
+        }
+        let x0 = col.get(step).copied().unwrap_or(0.0);
+        let beta = if x0 >= 0.0 { -alpha } else { alpha };
+        let mut v: Vec<f64> = col.get(step..).map(<[f64]>::to_vec).unwrap_or_default();
+        if let Some(s0) = v.first_mut() {
+            *s0 -= beta;
+        }
+        let vv: f64 = v.iter().map(|x| x * x).sum();
+        if vv > 0.0 {
+            for &j in order.iter().skip(step) {
+                if let Some(c) = rows.get_mut(j)
+                    && let Some(part) = c.get_mut(step..)
+                {
+                    let d: f64 = part.iter().zip(&v).map(|(x, y)| x * y).sum::<f64>() * 2.0 / vv;
+                    for (x, y) in part.iter_mut().zip(&v) {
+                        *x -= d * y;
+                    }
+                }
+            }
+        }
+        reflectors.push((step, v, vv));
+    }
+    let rank = reflectors.len();
+    // Rᵀ y = b for the equations taken: R[i][j] = rows[order[j]][i].
+    let mut y = vec![0.0; n];
+    for j in 0..rank {
+        let Some(&cj) = order.get(j) else {
+            return Err(internal());
+        };
+        let mut value = rhs.get(cj).copied().unwrap_or(0.0);
+        for i in 0..j {
+            let rij = rows.get(cj).and_then(|c| c.get(i)).copied().unwrap_or(0.0);
+            value -= rij * y.get(i).copied().unwrap_or(0.0);
+        }
+        let rjj = rows.get(cj).and_then(|c| c.get(j)).copied().unwrap_or(0.0);
+        if rjj == 0.0 || !rjj.is_finite() {
+            return Err(internal());
+        }
+        if let Some(slot) = y.get_mut(j) {
+            *slot = value / rjj;
+        }
+    }
+    // x = H₀ H₁ … y.
+    for (step, v, vv) in reflectors.iter().rev() {
+        if *vv <= 0.0 {
+            continue;
+        }
+        if let Some(part) = y.get_mut(*step..) {
+            let d: f64 = part.iter().zip(v).map(|(x, w)| x * w).sum::<f64>() * 2.0 / vv;
+            for (x, w) in part.iter_mut().zip(v) {
+                *x -= d * w;
+            }
+        }
+    }
+    Ok(y)
 }
 
 /// A proven bound on the distance between the curve `raw` (homogeneous,
