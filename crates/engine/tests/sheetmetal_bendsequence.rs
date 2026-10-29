@@ -113,8 +113,7 @@ fn sequence(s: &mut Session, k: f64, punch: &[[f64; 2]]) -> Value {
 }
 
 /// Every step's distance proven over the whole stroke is at least the
-/// clearance and at most the least distance measured (within rounding: the
-/// die's rest proof reckons from heights, not distances), for both tools.
+/// clearance and at most the least distance measured, for both tools.
 fn proven_below_least(out: &Value, k: f64) {
     let clearance = out["clearance"].as_f64().unwrap();
     assert!((clearance - 1e-6 * k).abs() <= 1e-12 * k, "{out}");
@@ -126,7 +125,7 @@ fn proven_below_least(out: &Value, k: f64) {
             let least = tool["least"].as_f64().unwrap();
             let proven = tool["proven"].as_f64().unwrap();
             assert!(
-                proven >= clearance && proven <= least + 1e-9 * k,
+                proven >= clearance && proven <= least,
                 "proven {proven}, least {least}: {step}"
             );
         }

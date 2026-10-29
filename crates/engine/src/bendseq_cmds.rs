@@ -420,7 +420,20 @@ impl Check<'_> {
                     || contains_points(body, &piece.points, &self.tol)
                         .map_err(|e| e.to_string())?
                         .contains(&Some(true));
-                let lower = if inside { 0.0 } else { near.lower.max(0.0) };
+                let mut lower = if inside { 0.0 } else { near.lower.max(0.0) };
+                // A piece lying on a die below its top: what the mesh
+                // cannot prove (a bend's skin along the die's top), its
+                // lowest point's height does (`Check::rest`).
+                if !inside && lower < self.clearance && tool == DIE && stroke.die_below {
+                    let low = self
+                        .heights(done, b, rho, &[piece.what])?
+                        .first()
+                        .copied()
+                        .unwrap_or(f64::NEG_INFINITY);
+                    if low >= -self.tol.linear {
+                        lower = low + self.clearance + self.tol.linear;
+                    }
+                }
                 if lower < self.clearance {
                     return Ok(Err(Failure::Collision {
                         tool: name,
@@ -645,7 +658,12 @@ impl Cleared {
             _ => Value::Null,
         };
         v.insert("at".into(), at);
-        v.insert("proven".into(), finite(self.proven.get(tool)));
+        // Both are proven below the distance: the less of the two.
+        let proven = match (self.proven.get(tool), self.least.get(tool)) {
+            (Some(p), Some(l)) => Some(p.min(*l)),
+            (p, _) => p.copied(),
+        };
+        v.insert("proven".into(), finite(proven.as_ref()));
         v
     }
 }
