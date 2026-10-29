@@ -516,20 +516,23 @@ pub fn piece_lowest(part: &Part, piece: PieceOf, height: impl Fn(Vec3) -> f64) -
         .flats
         .get(flat_of(piece)?)
         .map(|f| world(&part.plane, f))?;
-    // The function in the flat's own axes, affine: its value at the origin
-    // and its gradient.
+    // The function in the flat's own axes: its gradient (affine, so the
+    // same everywhere) only picks the candidate points, each of which is
+    // measured by the function itself (an extrapolation from the origin
+    // would carry the gradient's rounding over the part's distance from
+    // it), at the lower of its two skins for a flat or a strip.
     let f = |p: Vec3| height(w.point(p));
     let o = f(Vec3::ZERO);
     let g = [f(Vec3::X) - o, f(Vec3::Y) - o, f(Vec3::Z) - o];
-    let at = |x: f64, y: f64, z: f64| o + g[0] * x + g[1] * y + g[2] * z;
-    let low_z = g[2].min(0.0) * t;
+    let at = |x: f64, y: f64, z: f64| f(Vec3::new(x, y, z));
+    let skins = |x: f64, y: f64| at(x, y, 0.0).min(at(x, y, t));
     let mut least = f64::INFINITY;
     match piece {
         PieceOf::Flat(i) => {
             let flat = part.flats.get(i)?;
             for s in &flat.outer {
                 for p in [s.start, s.end] {
-                    least = least.min(at(p[0], p[1], 0.0));
+                    least = least.min(skins(p[0], p[1]));
                 }
                 match &s.shape {
                     Shape::Line => {}
@@ -540,30 +543,27 @@ pub fn piece_lowest(part: &Part, piece: PieceOf, height: impl Fn(Vec3) -> f64) -
                         // against the gradient.
                         let down = (-g[1]).atan2(-g[0]);
                         if (down - from).rem_euclid(std::f64::consts::TAU) <= sweep {
-                            least = least.min(at(
+                            least = least.min(skins(
                                 center[0] + radius * down.cos(),
                                 center[1] + radius * down.sin(),
-                                0.0,
                             ));
                         }
                     }
                     Shape::Spline(spline) => {
                         for p in &spline.control {
-                            least = least.min(at(p[0], p[1], 0.0));
+                            least = least.min(skins(p[0], p[1]));
                         }
                     }
                 }
             }
-            least += low_z;
         }
         PieceOf::Strip(i) => {
             let b = part.bends.get(i)?;
             for p in [b.start, b.end] {
                 for u in [0.0, b.allowance] {
-                    least = least.min(at(p[0] + u * b.across[0], p[1] + u * b.across[1], 0.0));
+                    least = least.min(skins(p[0] + u * b.across[0], p[1] + u * b.across[1]));
                 }
             }
-            least += low_z;
         }
         PieceOf::Bend(i) => {
             let b = part.bends.get(i)?;
