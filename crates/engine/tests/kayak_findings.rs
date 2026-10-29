@@ -94,6 +94,15 @@
 //!     where its trace started (its seam) lay one or two tolerances from
 //!     the vertex of the rim's own edge. Now the seam of a closed curve is
 //!     the place next to it, as an end of an open curve is.
+//! 25. The least distance from a plate's stitch holes to its own rim
+//!     (`Plank0S` at the defaults and the Jig's tolerance) ran for
+//!     thirteen minutes: the settling of a hole's wall against the rim,
+//!     faces that run beside each other along the plate's normal and part
+//!     only by rounding along it, took all of its steps, creeping along
+//!     that line, each projection onto the five-metre rim costing up to a
+//!     fifth of a second. Now a settling stops when the steps it has left
+//!     could gain no more than a ten-thousandth of the tolerance at the
+//!     rate of its last ones.
 
 #![allow(
     clippy::unwrap_used,
@@ -680,4 +689,29 @@ fn the_garboards_of_a_single_chine_hull_touch_at_the_jigs_tolerance() {
     let (mut s, failed) = steps("sea_kayak_24.steps.json");
     assert!(failed.is_empty(), "{failed:#?}");
     touch(&mut s, "Plank0Sh", "Plank0Ph");
+}
+
+#[test]
+fn the_holes_of_a_plate_are_measured_to_its_own_rim_in_seconds() {
+    let (mut s, failed) = steps("sea_kayak_25.steps.json");
+    assert!(failed.is_empty(), "{failed:#?}");
+    let started = std::time::Instant::now();
+    let found = s
+        .execute(
+            "measure.distance",
+            &json!({"from": {"kind": "face", "where": {"all": [{"in": "Plank0Sh"}, {"hole": true}]}},
+                    "to": {"kind": "face", "where": {"all": [{"madeBy": "Plank0S"}, {"name": "*rim(*"}]}}}),
+        )
+        .unwrap();
+    eprintln!("repro 25: {:?}: {found}", started.elapsed());
+    // Measured before (release, thirteen minutes): 6.9830674 mm, proven
+    // at least 6.9806185 mm; the hole's edge distance is 8 mm less the
+    // radius, 1 mm, less what the plate's turn takes.
+    let distance = found["distance"].as_f64().unwrap();
+    let at_least = found["atLeast"].as_f64().unwrap();
+    assert!((distance - 6.983_067).abs() < 1e-4, "{found}");
+    assert!(
+        at_least <= distance && at_least > distance - 0.01,
+        "{found}"
+    );
 }

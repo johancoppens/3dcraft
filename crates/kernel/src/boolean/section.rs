@@ -466,7 +466,7 @@ pub(super) fn passage(
 }
 
 /// A place where an intersection curve may enter or leave a face.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Cut {
     t: f64,
     point: Vec3,
@@ -690,6 +690,89 @@ fn edge_cuts(
     Ok(())
 }
 
+/// The cuts `along` a curve over `(first, last)`, in order and with its
+/// ends (`end`) among them, with each end next to a place where an edge
+/// meets a surface taken to be that place; `guard` is the distance within
+/// which two points may be one.
+///
+/// A curve that begins and ends in one such place (a loop through it)
+/// has that place at each end, but a place is found on the curve once,
+/// at whichever end is nearer: the other end is the place too, and is
+/// kept as it (a figure eight of a torus and the plane it touches,
+/// through the pole of a patch, lost the lobe back into the face).
+///
+/// The seam of a closed spline is where its trace happened to start, no
+/// place of its own; it stays a cut (no stretch may run across it), but
+/// next to a place that the curve reaches from the seam without leaving
+/// it (on either side of the seam) it is that place, as an end is: else
+/// the place and the seam, a tolerance or two apart, are two points
+/// closer together than the tolerance can tell apart (the sea kayak's
+/// stitch holes at the Jig's tolerance of 0.01 mm, repros 21 to 24: a
+/// hole's wall meets the plate beside it in a closed curve along the
+/// hole's rim, whose trace started one or two tolerances from the rim's
+/// own vertex).
+fn ends_at_places(
+    along: Vec<Cut>,
+    curve: &Curve3,
+    (first, last): (f64, f64),
+    closed: bool,
+    guard: f64,
+) -> Vec<Cut> {
+    let places: Vec<Cut> = along.iter().filter(|cut| !cut.end).copied().collect();
+    let mut kept = Vec::with_capacity(along.len());
+    for cut in along {
+        if !cut.end {
+            kept.push(cut);
+            continue;
+        }
+        let near: Vec<&Cut> = places
+            .iter()
+            .filter(|p| p.point.distance(cut.point) < guard)
+            .collect();
+        if closed {
+            // The nearest place the curve reaches from the seam without
+            // leaving it, from its start or back from its end.
+            let stays =
+                |from: f64, to: f64| curve.eval(0.5 * (from + to)).distance(cut.point) < guard;
+            let reached = near
+                .iter()
+                .filter(|p| stays(first, p.t) || stays(p.t, last))
+                .min_by(|p, q| {
+                    p.point
+                        .distance(cut.point)
+                        .total_cmp(&q.point.distance(cut.point))
+                        .then(p.t.total_cmp(&q.t))
+                });
+            kept.push(match reached {
+                Some(&&place) => Cut {
+                    t: cut.t,
+                    end: false,
+                    ..place
+                },
+                None => cut,
+            });
+            continue;
+        }
+        let Some(&&place) = near.first() else {
+            kept.push(cut);
+            continue;
+        };
+        // Found at this end: the curve stays at the place between the
+        // two.
+        let here = near
+            .iter()
+            .any(|p| curve.eval(0.5 * (p.t + cut.t)).distance(cut.point) < guard);
+        if !here {
+            kept.push(Cut {
+                t: cut.t,
+                end: false,
+                ..place
+            });
+        }
+    }
+    kept
+}
+
 /// The stretches of `meeting`, a curve in which the surfaces of face `fa`
 /// of A and `fb` of B meet, that are within both faces. `found` are the
 /// places where an edge of either face meets the other's surface.
@@ -766,73 +849,7 @@ fn clip(
         }
     }
     along.sort_by(|p, q| p.t.total_cmp(&q.t));
-    // An end of the curve next to a place where an edge meets a surface
-    // is that place.
-    // A curve that begins and ends in one such place (a loop through it)
-    // has that place at each end, but a place is found on the curve once,
-    // at whichever end is nearer: the other end is the place too, and is
-    // kept as it (a figure eight of a torus and the plane it touches,
-    // through the pole of a patch, lost the lobe back into the face).
-    // The seam of a closed spline is where its trace happened to start,
-    // no place of its own; it stays a cut (no stretch may run across it),
-    // but next to a place that the curve reaches from the seam without
-    // leaving it (on either side of the seam) it is that place, as an end
-    // is: else the place and the seam, a tolerance or two apart, are two
-    // points closer together than the tolerance can tell apart.
-    let places: Vec<Cut> = along.iter().filter(|cut| !cut.end).copied().collect();
-    let mut kept = Vec::with_capacity(along.len());
-    for cut in along {
-        if !cut.end {
-            kept.push(cut);
-            continue;
-        }
-        let near: Vec<&Cut> = places
-            .iter()
-            .filter(|p| p.point.distance(cut.point) < vertices.guard)
-            .collect();
-        if closed {
-            // The nearest place the curve reaches from the seam without
-            // leaving it, from its start or back from its end.
-            let stays = |from: f64, to: f64| {
-                curve.eval(0.5 * (from + to)).distance(cut.point) < vertices.guard
-            };
-            let reached = near
-                .iter()
-                .filter(|p| stays(first, p.t) || stays(p.t, last))
-                .min_by(|p, q| {
-                    p.point
-                        .distance(cut.point)
-                        .total_cmp(&q.point.distance(cut.point))
-                        .then(p.t.total_cmp(&q.t))
-                });
-            kept.push(match reached {
-                Some(&&place) => Cut {
-                    t: cut.t,
-                    end: false,
-                    ..place
-                },
-                None => cut,
-            });
-            continue;
-        }
-        let Some(&&place) = near.first() else {
-            kept.push(cut);
-            continue;
-        };
-        // Found at this end: the curve stays at the place between the
-        // two.
-        let here = near
-            .iter()
-            .any(|p| curve.eval(0.5 * (p.t + cut.t)).distance(cut.point) < vertices.guard);
-        if !here {
-            kept.push(Cut {
-                t: cut.t,
-                end: false,
-                ..place
-            });
-        }
-    }
-    along = kept;
+    let along = ends_at_places(along, curve, (first, last), closed, vertices.guard);
     let mut cuts: Vec<Cut> = Vec::new();
     for cut in along {
         let same = |other: &Cut| -> Result<bool, Stop> {
@@ -2003,6 +2020,121 @@ pub(super) mod tests {
 
     use super::*;
     use craft3d_geom::{Cylinder, Plane, Sphere, Torus};
+
+    /// A closed spline (a cubic through eight points round a circle of
+    /// radius `r`, clamped where it starts and ends, as a trace of a
+    /// closed meeting curve is) and the cut at parameter `t` of it, an
+    /// edge's crossing (`a_edge` 7).
+    fn loop_and_place(r: f64, t: f64) -> (Curve3, (f64, f64), Cut) {
+        let mut ctrl: Vec<Vec3> = (0..8)
+            .map(|i| {
+                let a = std::f64::consts::TAU * f64::from(i) / 8.0;
+                Vec3::new(r * a.cos(), r * a.sin(), 0.0)
+            })
+            .collect();
+        ctrl.push(ctrl[0]);
+        let mut knots = vec![0.0; 4];
+        knots.extend((1..6).map(|i| f64::from(i) / 6.0));
+        knots.extend([1.0; 4]);
+        let curve = Curve3::Nurbs(craft3d_geom::NurbsCurve::polynomial(3, knots, ctrl).unwrap());
+        let place = Cut {
+            t,
+            point: curve.eval(t),
+            a_edge: Some(EdgeId(7)),
+            b_edge: None,
+            end: false,
+        };
+        (curve, (0.0, 1.0), place)
+    }
+
+    /// The seam of a closed curve a tolerance or two from a place where an
+    /// edge meets a surface, on either side of it, is that place
+    /// (`ends_at_places`; the sea kayak's stitch holes, repros 21 to 24,
+    /// refused "two points closer together than the tolerance can tell
+    /// apart" before); one further than the guard, or one the curve comes
+    /// back to only round the loop, is not; an open curve's end is as it
+    /// was. At three scales.
+    #[test]
+    fn the_seam_of_a_closed_curve_next_to_a_place_is_that_place() {
+        for k in [1e-3, 1.0, 1e6] {
+            let (tol, r) = (1e-2 * k, 10.0 * k);
+            let guard = 2.0 * tol;
+            // The parameter `dt` from the seam is about `dt` times the
+            // speed (about 2πr) away.
+            let speed = std::f64::consts::TAU * r;
+            for (from_seam, taken) in [(1.5, true), (0.8, true), (2.5, false)] {
+                let dt = from_seam * tol / speed;
+                for t in [dt, 1.0 - dt] {
+                    let (curve, range, place) = loop_and_place(r, t);
+                    let seam = Cut {
+                        t: 0.0,
+                        point: curve.eval(0.0),
+                        a_edge: None,
+                        b_edge: None,
+                        end: true,
+                    };
+                    let d = seam.point.distance(place.point);
+                    assert!(
+                        (d - from_seam * tol).abs() < 0.1 * tol,
+                        "{d} for {from_seam} tolerances at {k}"
+                    );
+                    let along = vec![seam, place];
+                    let found = ends_at_places(along, &curve, range, true, guard);
+                    assert_eq!(found.len(), 2, "at {k}");
+                    let first = found[0];
+                    assert_eq!(first.t, 0.0, "the seam stays where it is, at {k}");
+                    if taken {
+                        assert!(!first.end, "at {k}, {from_seam} from the seam at {t}");
+                        assert_eq!(first.point, place.point, "at {k}");
+                        assert_eq!(first.a_edge, Some(EdgeId(7)), "at {k}");
+                    } else {
+                        assert!(first.end, "at {k}, {from_seam} from the seam at {t}");
+                        assert_eq!(first.point, seam.point, "at {k}");
+                    }
+                }
+            }
+            // A place halfway round the loop that the seam is near in
+            // space only (the loop pinched there) is not taken: a loop
+            // whose control points come back past the seam.
+            let (curve, range, _) = loop_and_place(r, 0.5);
+            let far = Cut {
+                t: 0.5,
+                point: curve.eval(0.0) + Vec3::new(0.0, tol, 0.0),
+                a_edge: Some(EdgeId(7)),
+                b_edge: None,
+                end: false,
+            };
+            let seam = Cut {
+                t: 0.0,
+                point: curve.eval(0.0),
+                a_edge: None,
+                b_edge: None,
+                end: true,
+            };
+            let found = ends_at_places(vec![seam, far], &curve, range, true, guard);
+            assert!(found[0].end, "at {k}: {:?}", found[0]);
+            // An open curve's end next to a place it stays at is dropped
+            // for the place, as before.
+            let (curve, _, place) = loop_and_place(r, 1.5 * tol / speed);
+            let start = Cut {
+                t: 0.0,
+                point: curve.eval(0.0),
+                a_edge: None,
+                b_edge: None,
+                end: true,
+            };
+            let end = Cut {
+                t: 0.5,
+                point: curve.eval(0.5),
+                a_edge: None,
+                b_edge: None,
+                end: true,
+            };
+            let found = ends_at_places(vec![start, place, end], &curve, (0.0, 0.5), false, guard);
+            assert_eq!(found.len(), 2, "at {k}: {found:?}");
+            assert_eq!(found[0].point, place.point, "at {k}");
+        }
+    }
 
     /// The re-ask with the smaller face's room (`in_room`, the Garabit
     /// valley's finding 5), held without a terrain: a meeting that cannot
