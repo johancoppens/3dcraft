@@ -768,7 +768,7 @@ pub enum FeatureKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         next_flange_id: Option<u32>,
         /// The relief at every end of a bend inside its edge (format
-        /// version 52, a TEMPORARY number).
+        /// version 51).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bend_relief: Option<SheetRelief>,
     },
@@ -859,8 +859,7 @@ pub struct SheetFlange {
     pub inset_end: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outline: Option<u64>,
-    /// On a line of the own outline of flange `flange` (format version 52,
-    /// a TEMPORARY number).
+    /// On a line of the own outline of flange `flange` (format version 51).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line: Option<SheetFlangeLine>,
 }

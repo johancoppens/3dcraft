@@ -36,7 +36,7 @@ const STEPS: &[Step] = &[
     v26_to_v27, v27_to_v28, v28_to_v29, v29_to_v30, v30_to_v31, v31_to_v32, v32_to_v33, v33_to_v34,
     v34_to_v35, v35_to_v36, v36_to_v37, v37_to_v38, v38_to_v39, v39_to_v40, v40_to_v41, v41_to_v42,
     v42_to_v43, v43_to_v44, v44_to_v45, v45_to_v46, v46_to_v47, v47_to_v48, v48_to_v49, v49_to_v50,
-    v50_to_v51, v51_to_v52,
+    v50_to_v51,
 ];
 
 /// Version 2 adds the `cone` and `torus` feature kinds and an optional
@@ -972,25 +972,25 @@ fn v49_to_v50(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 
-/// Version 51: a PLACEHOLDER for another branch's version (TEMPORARY
-/// numbers; the coordinator renumbers at merge). Changes nothing.
+/// Version 51 adds a sheet-metal part's `bend_relief`: the notch cut at
+/// every end of a bend that lies inside its edge (docs/design/sheetmetal.md
+/// › *Bend reliefs*), and a flange's `line`: on a line of an earlier
+/// flange's own outline. A file of an older version has neither, which is
+/// what a missing field reads as, so no part's geometry changes (a bend
+/// end inside its edge still has no notch), and no name changes meaning:
+/// the notches' edges are new names (`edge(11, …)`), the pieces of a
+/// split edge keep theirs, and the pieces a closed corner's extension adds
+/// (`edge(6, flat, segment)`) are numbered as before on a flange whose tip
+/// and sides carry nothing, the only flanges an older file could close a
+/// corner of. What does change for an older file is the `relief`
+/// assertion measure: it now also counts every end of a bend inside its
+/// edge, which has no relief unless `bend_relief` is set, so an older part
+/// with inset flanges (tabs) and `relief is: true` now fails it, as it
+/// should: those ends never had a relief (accepted by the developer,
+/// 2026-10-29, as no file has been released). The version was raised so
+/// that an older build says a newer 3DCraft is needed instead of refusing
+/// the field.
 fn v50_to_v51(manifest: Value) -> Result<Value, String> {
-    Ok(manifest)
-}
-
-/// Version 52 (a TEMPORARY number) adds a sheet-metal part's
-/// `bend_relief`: the notch cut at every end of a bend that lies inside
-/// its edge (docs/design/sheetmetal.md › *Bend reliefs*), and a flange's
-/// `line`: on a line of an earlier flange's own outline. A file of an
-/// older version has neither, which is what a missing field reads as, so
-/// no part changes; and no name changes meaning: the notches' edges are new
-/// names (`edge(11, …)`), the pieces of a split edge keep theirs, and the
-/// pieces a closed corner's extension adds (`edge(6, flat, segment)`) are
-/// numbered as before on a flange whose tip and sides carry nothing, the
-/// only flanges an older file could close a corner of. The version was
-/// raised so that an older build says a newer 3DCraft is needed instead
-/// of refusing the field.
-fn v51_to_v52(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 

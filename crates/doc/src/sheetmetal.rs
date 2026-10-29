@@ -77,7 +77,7 @@ pub enum FlangeOn {
     Side(u32, FlangeSide),
     /// A straight line of the own outline of the flange at this place in
     /// the list (an earlier one with `outline`), by the line's entity id
-    /// in that outline's sketch (format version 52, a TEMPORARY number).
+    /// in that outline's sketch (format version 51).
     Line(u32, EntityId),
 }
 

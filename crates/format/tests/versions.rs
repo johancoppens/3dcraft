@@ -83,9 +83,6 @@ const FROZEN: &[(u32, usize, u64)] = &[
     (48, 3727, 0xb062_60cc_cc64_6028),
     (49, 11032, 0x3cce_9596_c521_0489),
     (50, 2432, 0x8778_28c2_a363_e5ed),
-    // TEMPORARY number 52 (another branch takes 51; the coordinator
-    // renumbers at merge).
-    (52, 11363, 0xd47d_4e99_661e_8191),
 ];
 
 fn dir() -> PathBuf {
