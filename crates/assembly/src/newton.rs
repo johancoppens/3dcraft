@@ -177,9 +177,7 @@ pub(crate) fn run(
                 }
                 continue;
             };
-            let Some(next) = sys.step(&state, &h) else {
-                return None;
-            };
+            let next = sys.step(&state, &h)?;
             if first_step.is_none() {
                 first_step = Some(next.clone());
             }

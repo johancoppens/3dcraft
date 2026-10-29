@@ -95,7 +95,7 @@ impl Mat3 {
         let x_raw = self.x();
         let x_len = x_raw.length();
         let x_perp = x_raw - z * x_raw.dot(z);
-        if !(x_len > 0.0) || x_perp.length() <= epsilon * x_len {
+        if x_len <= 0.0 || x_perp.length() <= epsilon * x_len {
             return None;
         }
         let x = x_perp.normalized()?;

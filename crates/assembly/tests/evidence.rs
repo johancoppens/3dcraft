@@ -118,7 +118,7 @@ impl Svg {
 fn shade(k: usize, n: usize) -> String {
     let t = k as f64 / (n.max(2) - 1) as f64;
     let (r, g, b) = (40.0 + 200.0 * t, 90.0 + 60.0 * t, 200.0 - 170.0 * t);
-    format!("rgb({:.0},{:.0},{:.0})", r, g, b)
+    format!("rgb({r:.0},{g:.0},{b:.0})")
 }
 
 fn emit(name: &str, svg: &str) {
@@ -159,7 +159,7 @@ fn evidence_jansen_leg_and_four_bar() {
         svg.dot(r[k], "black", 1.5);
     }
     svg.text(
-        Vec3::new(-95.0, 25.0, 0.0),
+        Vec3::new(-105.0, -102.0, 0.0),
         "Jansen leg, 72 frames: bars every 45 deg, foot path in red",
         4.0,
     );
@@ -183,7 +183,7 @@ fn evidence_jansen_leg_and_four_bar() {
         }
         strip.dot(j[7] + shift, "firebrick", 2.2);
         strip.text(
-            Vec3::new(-30.0, 25.0, 0.0) + shift,
+            Vec3::new(-60.0, -104.0, 0.0) + shift,
             &format!("crank {} deg", 90 * n),
             6.0,
         );

@@ -275,7 +275,7 @@ fn gap(sys: &System, evals: &Evals, groups: &[usize]) -> Gap {
 /// and 0.01 rad per unknown: generic, so a rank the configuration loses
 /// at `s` comes back there.
 fn perturbed(sys: &System, s: &State) -> Option<State> {
-    let golden = 0.618_033_988_749_894_9_f64;
+    let golden = 0.618_033_988_749_895_f64;
     let h: Vec<f64> = (0..sys.unknowns)
         .map(|k| {
             let f = ((k as f64 + 1.0) * golden).fract();

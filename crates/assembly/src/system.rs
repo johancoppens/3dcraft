@@ -178,7 +178,7 @@ impl System {
             return Err(invalid("the tolerance must be positive and finite"));
         }
         let eps = p.tolerance / p.scale;
-        if !(eps < 1.0) {
+        if eps >= 1.0 {
             return Err(invalid("the tolerance must be smaller than the scale"));
         }
         if eps < FINEST_RELATIVE {
