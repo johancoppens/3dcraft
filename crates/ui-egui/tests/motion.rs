@@ -156,11 +156,17 @@ fn colliding_bodies_are_drawn_red_by_the_window() {
         "view.motion",
         json!({"t": 0.25, "collisions": true}),
     );
+    // Only the world's x axis is red while nothing collides.
     let clear = screenshot(&mut shell, &mut session, "motion-clear");
-    assert_eq!(reds(&clear), 0);
+    assert!(reds(&clear) < 100, "{} red pixels", reds(&clear));
     run(&mut session, "view.motion", json!({"t": 0.5}));
     let hit = screenshot(&mut shell, &mut session, "motion-collision");
-    assert!(reds(&hit) > 300, "{} red pixels", reds(&hit));
+    assert!(
+        reds(&hit) > reds(&clear) + 300,
+        "{} red pixels, {} without the collision",
+        reds(&hit),
+        reds(&clear)
+    );
     let got = call(&mut shell, &mut session, "ui.get", json!({}));
     assert_eq!(got["timeline"]["t"], 0.5);
     assert_eq!(got["timeline"]["collisions"], json!([["Wall", "Crank"]]));
@@ -228,7 +234,8 @@ fn the_player_plays_the_motion_back_and_forth_and_stops_at_the_end() {
     assert!(seen.windows(2).all(|w| w[1] > w[0]), "{seen:?}");
     assert!(seen.len() >= 15, "{seen:?}");
     // The document did not change on the way.
-    assert_eq!(session.document_revision(), Some(4));
+    // file.new, t and two blocks: three edits after the new document.
+    assert_eq!(session.document_revision(), Some(3));
 
     // Back and forth: from 1 back to 0, then it stops (no loop).
     call(

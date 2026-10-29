@@ -1245,7 +1245,7 @@ mod tests {
                            "drawing": {"view": "top", "perspective": false, "dashed": true},
                            "width": "600 mm", "gap": "", "name": "box.dxf"},
                 "dialogs": {"about": true, "shortcuts": false},
-                "timeline": {"playing": true, "speed": 2.0, "loop": true, "orbit": false},
+                "timeline": {"playing": true, "speed": 2.0, "loop": true, "orbit": false, "motion": true, "bounce": true, "collisions": true},
                 "look": {"mode": "studio", "environment": "workshop", "exposure": -0.5,
                          "rotation": 90.0, "ground": false, "ao": true, "shadows": false,
                          "tonemap": "aces", "light": [30.0, 45.0], "background": "plain"},
