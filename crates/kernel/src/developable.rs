@@ -3891,11 +3891,15 @@ mod tests {
     /// lies so far out), its end ruling from `A(0)` to `B(σ)`, twisted by
     /// four tolerances, the next ruling `(2e-5, 2e-5)` (an end interval of
     /// four tolerances): the old allowance there was 1.3 tolerances, and
-    /// doubled with each refinement of the end interval. The old code
-    /// refused this strip too, but only because rulings that close cannot
-    /// be followed this far out (measured 2026-10-29, run 40823084121: "the
-    /// rulings between two found ones cannot be followed"), so this test
-    /// pins the end check's refusal by name, not an acceptance before. The
+    /// doubled with each refinement of the end interval. Measured on the
+    /// old code (2026-10-29, run 40833807405): at `k = 1e6` it accepted
+    /// this strip, the whole four-tolerance twist booked as unresolved; at
+    /// `1e-3` and `1` it refused it only because rulings that close cannot
+    /// be followed this far out ("the rulings between two found ones cannot
+    /// be followed", run 40823084121). Over 96 such strips (2.4e3 and
+    /// 2.4e5 out, heights 10 and 1000, twists of 4 and 16 tolerances, next
+    /// rulings 2e-5 to 2e-2 along, three scales) it accepted 35; the end
+    /// check now refuses all 96 (run 40833810558). The
     /// rows' end tangents are now the rails' and the end held with no
     /// allowance: refused, naming the end ruling; the same strip with
     /// rulings 1e4 tolerances apart and an end on the cylinder is built
