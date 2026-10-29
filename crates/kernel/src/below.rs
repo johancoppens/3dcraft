@@ -44,6 +44,7 @@ use std::f64::consts::PI;
 use std::fmt;
 
 mod float;
+pub mod torsion;
 pub use float::{
     ARM_SETTLED, ARM_UNSETTLED, Equilibrium, Floating, LEAVE, MAX_ITERATIONS, MAX_LEVELS, MAX_TURN,
     Principal, Stability, floating,
@@ -258,6 +259,8 @@ pub enum CutError {
         arm: f64,
         normal: Vec3,
     },
+    /// The torsion of the section could not be solved for ([`torsion`]).
+    Torsion(String),
 }
 
 impl fmt::Display for CutError {
@@ -317,6 +320,7 @@ impl fmt::Display for CutError {
                 "the floating equilibrium did not converge in {steps} steps: at the normal [{}, {}, {}] the centre of gravity is still {arm} off the normal through the centroid below",
                 normal.x, normal.y, normal.z
             ),
+            CutError::Torsion(why) => write!(f, "the torsion of the section: {why}"),
         }
     }
 }
@@ -469,6 +473,17 @@ fn below_in(
     offset: f64,
     tolerance: &Tolerance,
 ) -> Result<BelowPlane, CutError> {
+    below_parts(bodies, side, offset, tolerance).map(|(found, _)| found)
+}
+
+/// [`below_in`], with each body's part below the plane, whose section
+/// faces [`torsion`] meshes.
+fn below_parts(
+    bodies: &[Prepared<'_>],
+    side: &CutPlane,
+    offset: f64,
+    tolerance: &Tolerance,
+) -> Result<(BelowPlane, Vec<Part>), CutError> {
     let mut parts = Vec::with_capacity(bodies.len());
     for one in bodies {
         parts.push(part_one(one, side, offset, tolerance)?);
@@ -495,13 +510,16 @@ fn below_in(
     }
     let centroid = (volume > 0.0).then(|| moment * (1.0 / volume));
     let section = section_of(&parts, side, offset, &extent)?;
-    Ok(BelowPlane {
-        offset,
-        volume,
-        centroid,
-        surface: (area - section.area).max(0.0),
-        section,
-    })
+    Ok((
+        BelowPlane {
+            offset,
+            volume,
+            centroid,
+            surface: (area - section.area).max(0.0),
+            section,
+        },
+        parts,
+    ))
 }
 
 /// The section's integrals over every part's section faces about `o`,

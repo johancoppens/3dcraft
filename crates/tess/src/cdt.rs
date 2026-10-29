@@ -1121,19 +1121,23 @@ impl Cdt {
 /// between them (index pairs), with extra interior points. Triangles are
 /// counter-clockwise index triples into the returned points, which are the
 /// distinct input points followed by the interior points that were kept;
-/// `map` gives the returned index of each input point.
-#[cfg(test)]
+/// `map` gives the returned index of each input point, and `kept` that of
+/// each interior point (`None` for one that was skipped: outside the
+/// region, on a constraint or on top of another point).
 pub(crate) struct Triangulation {
     pub points: Vec<P2>,
     pub triangles: Vec<[usize; 3]>,
     pub map: Vec<usize>,
+    pub kept: Vec<Option<usize>>,
 }
 
-#[cfg(test)]
-pub(crate) fn triangulate(
+/// [`triangulate`] with every interior point kept at least its own
+/// clearance from every constraint (`clearance` beside `interior`, or 0).
+pub(crate) fn triangulate_with_clearance(
     points: &[P2],
     segments: &[(usize, usize)],
     interior: &[P2],
+    clearance: &[f64],
 ) -> Result<Triangulation, CdtError> {
     let (mut min, mut max) = (
         (f64::INFINITY, f64::INFINITY),
@@ -1160,21 +1164,54 @@ pub(crate) fn triangulate(
     if cdt.classify()? == 0 {
         return Err(CdtError::Degenerate);
     }
-    for &p in interior {
-        cdt.insert_interior(p, 0.0)?;
-    }
     let first = FIRST_VERTEX as usize;
+    let mut kept = Vec::with_capacity(interior.len());
+    for (k, &p) in interior.iter().enumerate() {
+        let clear = clearance.get(k).copied().unwrap_or(0.0);
+        let clear = if clear.is_finite() {
+            clear.max(0.0)
+        } else {
+            0.0
+        };
+        kept.push(match cdt.insert_interior(p, clear)? {
+            Interior::Added(v) => (v as usize).checked_sub(first),
+            Interior::Skipped => None,
+        });
+    }
     let mut triangles = Vec::new();
     for t in 0..cdt.triangle_count() {
         if let Some(view) = cdt.triangle(t).filter(|view| view.inside) {
-            triangles.push(view.v.map(|v| v as usize - first));
+            let [a, b, c] = view.v.map(|v| (v as usize).checked_sub(first));
+            let (Some(a), Some(b), Some(c)) = (a, b, c) else {
+                return Err(CdtError::Internal);
+            };
+            triangles.push([a, b, c]);
         }
+    }
+    let mut map = Vec::with_capacity(vertex.len());
+    for v in &vertex {
+        map.push((*v as usize).checked_sub(first).ok_or(CdtError::Internal)?);
     }
     Ok(Triangulation {
         points: cdt.pts.iter().skip(first).copied().collect(),
         triangles,
-        map: vertex.iter().map(|v| *v as usize - first).collect(),
+        map,
+        kept,
     })
+}
+
+/// The triangles of a region given by points and closed chains of segments
+/// between them (index pairs), with extra interior points. Triangles are
+/// counter-clockwise index triples into the returned points, which are the
+/// distinct input points followed by the interior points that were kept;
+/// `map` gives the returned index of each input point.
+#[cfg(test)]
+pub(crate) fn triangulate(
+    points: &[P2],
+    segments: &[(usize, usize)],
+    interior: &[P2],
+) -> Result<Triangulation, CdtError> {
+    triangulate_with_clearance(points, segments, interior, &[])
 }
 
 #[cfg(test)]
