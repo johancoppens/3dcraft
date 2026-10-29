@@ -3944,6 +3944,32 @@ mod tests {
         }
     }
 
+    /// A long twisted end ruling far from the origin, which the old end
+    /// check accepted at every scale (a cylinder of radius `k/10` and
+    /// height `1000 k`, 2.4e9 tolerances out, its end ruling twisted by
+    /// four tolerances, the next ruling `(2e-4, 2e-4)`: accepted with the
+    /// twist booked as unresolved, 4 to 16 tolerances, run 40833807405), is
+    /// refused naming the end ruling at each.
+    #[test]
+    fn a_long_twisted_end_far_from_the_origin_is_refused() {
+        for k in [1e-3, 1.0, 1e6] {
+            let tolerance = Tolerance::new(1e-6 * k, 1e-9).unwrap();
+            let center = Vec3::new(2.4e3 * k, 0.0, 0.0);
+            let (r, h) = (0.1 * k, 1e3 * k);
+            let (a, b) = cylinder_at(center, r, h);
+            let pair = Pair::new(&a, &b, tolerance.angular);
+            let sigma = 4.0 * tolerance.linear / h;
+            let twisted = cylinder_strip((0.0, sigma), 2e-4);
+            let e = build(&pair, vec![twisted], &tolerance, [false, false])
+                .map(|made| (made.deviation, made.unresolved))
+                .expect_err("the twisted end is refused");
+            assert!(
+                matches!(e, KernelError::Refused { .. }) && e.to_string().contains("end ruling"),
+                "{k}: {e}"
+            );
+        }
+    }
+
     /// A fold noticed where a fan has just landed (the fan across a fold
     /// landing on a branch that already turns back) starts at the fan's
     /// end, which is kept (review of 2026-10-29: it was overwritten by a
