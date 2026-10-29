@@ -559,14 +559,26 @@ fn a_generalised_cylinder_whose_section_inflects_is_joined_through_the_inflectio
 /// curvature, the faces tangent across every edge they share, laid flat
 /// as one piece with lengths and area kept; at three scales.
 fn passing_branches(k: f64) -> (Rail, Rail) {
+    passing(k, 1.1, 0.0, 1.0)
+}
+
+/// [`passing_branches`] with B's profile scaled by `sigma` against its
+/// plan, A bent out of its plane by `alpha x²` (`A(x) = k (100 x, alpha
+/// x², 20 x³)`), and both rails run over the first `cut` of their range
+/// (from `x = −1`).
+fn passing(k: f64, sigma: f64, alpha: f64, cut: f64) -> (Rail, Rail) {
     let x = [-1.0, -1.0 / 3.0, 1.0 / 3.0, 1.0];
     let x2 = [1.0, -1.0 / 3.0, -1.0 / 3.0, 1.0];
     let x3 = [-1.0, 1.0, -1.0, 1.0];
     let sin60 = 60f64.to_radians().sin();
-    let (c3, c2, c0) = (20.0 / 1.331, 20.0 * sin60 / 1.21, 40.0 * sin60);
+    let (c3, c2, c0) = (
+        20.0 / sigma.powi(3),
+        20.0 * sin60 / sigma.powi(2),
+        40.0 * sin60,
+    );
     let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
     let a: Vec<Vec3> = (0..4)
-        .map(|i| Vec3::new(100.0 * x[i], 0.0, 20.0 * x3[i]) * k)
+        .map(|i| Vec3::new(100.0 * x[i], alpha * x2[i], 20.0 * x3[i]) * k)
         .collect();
     let b: Vec<Vec3> = (0..4)
         .map(|i| {
@@ -579,8 +591,153 @@ fn passing_branches(k: f64) -> (Rail, Rail) {
         .collect();
     let a = NurbsCurve::polynomial(3, knots.clone(), a).unwrap();
     let b = NurbsCurve::polynomial(3, knots, b).unwrap();
-    let (ra, rb) = (a.domain(), b.domain());
+    let part = |(lo, hi): (f64, f64)| (lo, lo + cut * (hi - lo));
+    let (ra, rb) = (part(a.domain()), part(b.domain()));
     (rail(Curve3::Nurbs(a), ra), rail(Curve3::Nurbs(b), rb))
+}
+
+/// Faces that share an edge meet tangent there (at its middle, within
+/// `1e-6` rad); how many edges they share.
+fn assert_tangent_across_shared_edges(made: &Connected, k: f64) -> usize {
+    let body = &made.body;
+    let mut shared = 0;
+    for (edge, faces) in craft3d_topo::edge_uses(body).iter().enumerate() {
+        let [first, second] = faces.as_slice() else {
+            continue;
+        };
+        shared += 1;
+        let e = &body.edges[edge];
+        let mid = e.curve.eval(0.5 * (e.range.0 + e.range.1));
+        let normal = |use_: &craft3d_topo::EdgeUse| {
+            let face = body.face(use_.face).unwrap();
+            let (u, v) = face.surface.project(mid).unwrap();
+            let n = face.surface.normal(u, v).unwrap();
+            if face.reversed { -n } else { n }
+        };
+        let (n0, n1) = (normal(first), normal(second));
+        assert!(
+            n0.cross(n1).length() < 1e-6 && n0.dot(n1) > 0.0,
+            "{k}: faces {:?} and {:?} meet at an angle of {} rad",
+            first.face,
+            second.face,
+            n0.cross(n1).length()
+        );
+    }
+    shared
+}
+
+/// Branches of the condition that pass each other closer than a step of
+/// the walk (review of 2026-10-29: the step control at a saddle was pinned
+/// only by the kayak's rails). [`passing_branches`] with B's profile
+/// scaled by 1.002: the two arcs at A's inflection pass about 0.0012 of
+/// the square apart, under the walk's largest step of 1/128, while the
+/// model's value at their saddle, about 2e-6 over a ruling of 40 (80
+/// tolerances), is far more than `cross` steps over. The rails run over
+/// the first 80 % of their range, so the fold lies in the sheet's second
+/// half. The walk keeps to its branch, meets the fold and closes it with
+/// the fan from A's inflection (the origin): every ruling on the zero
+/// set, the faces tangent across their edges and flat, at three scales.
+/// With the saddle guards of the walk switched off (`saddle_ahead` and
+/// `split_between`) the corrector lands on the other arc and the
+/// connection is refused, "the rulings between two found ones cannot be
+/// followed" (measured on the Strix, 2026-10-29); with `saddle_ahead`
+/// alone off, `split_between` still catches the step.
+#[test]
+fn branches_that_pass_closer_than_a_step_are_followed_into_the_fold() {
+    for k in SCALES {
+        let (a, b) = passing(k, 1.002, 0.0, 0.8);
+        let made = connect(&a, &b, &tol(k)).unwrap_or_else(|e| panic!("{k}: {e}"));
+        assert_eq!(
+            made.faces,
+            vec![
+                Piece::StartFan,
+                Piece::Rulings,
+                Piece::Fan(Mark::FoldFromEnd(0)),
+                Piece::Last,
+                Piece::EndFan,
+            ],
+            "{k}"
+        );
+        check_rulings(&made, &a, &b);
+        assert_flat_within_tolerance(&made, k);
+        assert!(made.deviation <= 0.5e-6 * k, "{k}: {}", made.deviation);
+        assert!(
+            made.unresolved <= 1e-2 * 1e-6 * k,
+            "{k}: {}",
+            made.unresolved
+        );
+        assert!(assert_tangent_across_shared_edges(&made, k) >= 4, "{k}");
+        let surface = &made.body.faces[2].surface;
+        for u in [0.0, 0.3, 0.7, 1.0] {
+            let apex = surface.eval(u, 0.0);
+            assert!(apex.length() <= 1e-6 * k, "{k}: the fan's apex at {apex:?}");
+        }
+    }
+}
+
+/// A fan across a fold that lands on the other branch where that branch
+/// already turns back, closed by a second fan right after it (review of
+/// 2026-10-29: the chain of two fans was pinned only by the kayak's
+/// stern). [`passing_branches`] with B's profile scaled by 1.01 and A bent
+/// out of its plane by `2 x²`, over the first 80 % of their range: the two
+/// arcs pass each other left and right, and the turning point of the arc
+/// beyond lies a little higher along B than the fold of the walk's own, so
+/// the fan across that fold (apex on B) lands on the arc beyond while it
+/// still turns back in A, and a fan along (apex on A, from the first fan's
+/// end) closes that. The two fans share their ruling, both on the zero
+/// set, so the sheet is smooth across it; every ruling on the zero set,
+/// the faces flat and tangent across every edge, laid flat as one piece
+/// keeping every edge's length; at three scales.
+#[test]
+fn a_fan_that_lands_where_the_other_branch_turns_back_is_followed_by_a_second() {
+    for k in SCALES {
+        let (a, b) = passing(k, 1.01, 2.0, 0.8);
+        let made = connect(&a, &b, &tol(k)).unwrap_or_else(|e| panic!("{k}: {e}"));
+        assert_eq!(
+            made.faces,
+            vec![
+                Piece::StartFan,
+                Piece::Rulings,
+                Piece::Fan(Mark::FoldFromEnd(1)),
+                Piece::Fan(Mark::FoldFromEnd(0)),
+                Piece::Last,
+                Piece::EndFan,
+            ],
+            "{k}"
+        );
+        check_rulings(&made, &a, &b);
+        assert_flat_within_tolerance(&made, k);
+        assert!(made.deviation <= 0.5e-6 * k, "{k}: {}", made.deviation);
+        assert!(
+            made.unresolved <= 1e-2 * 1e-6 * k,
+            "{k}: {}",
+            made.unresolved
+        );
+        assert!(assert_tangent_across_shared_edges(&made, k) >= 5, "{k}");
+        // The first fan's apex on B (its row at v = 1 stands), the second's
+        // on A (v = 0), and the first's last ruling the second's first.
+        let (first, second) = (&made.body.faces[2].surface, &made.body.faces[3].surface);
+        let close = |p: Vec3, q: Vec3| p.distance(q) <= 1e-6 * k;
+        assert!(close(first.eval(0.0, 1.0), first.eval(1.0, 1.0)), "{k}");
+        assert!(!close(first.eval(0.0, 0.0), first.eval(1.0, 0.0)), "{k}");
+        assert!(close(second.eval(0.0, 0.0), second.eval(1.0, 0.0)), "{k}");
+        assert!(!close(second.eval(0.0, 1.0), second.eval(1.0, 1.0)), "{k}");
+        for v in [0.0, 0.5, 1.0] {
+            assert!(close(first.eval(1.0, v), second.eval(0.0, v)), "{k}: {v}");
+        }
+        let faces: Vec<FaceId> = (0..made.body.faces.len() as u32).map(FaceId).collect();
+        let dev = develop(&made.body, &faces, &tol(k)).unwrap_or_else(|e| panic!("{k}: {e}"));
+        let e = dev.error();
+        assert!(e.area < 1e-6 && e.length < 1e-6, "{k}: {e:?}");
+        for c in dev.outline() {
+            assert!(
+                (c.length_flat - c.length_3d).abs() <= 1e-6 * k,
+                "{k}: an edge {} long on the part, {} flat",
+                c.length_3d,
+                c.length_flat
+            );
+        }
+    }
 }
 
 #[test]
@@ -1084,10 +1241,11 @@ fn rails_whose_condition_has_branches_that_pass_each_other_are_closed_by_fans() 
         let (a, b) = (rail_of("A", k, (0.0, 1.0)), rail_of("B", k, (0.0, 1.0)));
         let made = connect(&a, &b, &tol(k)).unwrap_or_else(|e| panic!("{k}: {e}"));
         eprintln!(
-            "{k}: faces {:?}, {} rulings, deviation {:e}, K {:e}",
+            "{k}: faces {:?}, {} rulings, deviation {:e}, unresolved {:e}, K {:e}",
             made.faces,
             made.rulings.len(),
             made.deviation,
+            made.unresolved,
             made.curvature
         );
         assert!(!made.reversed_b, "{k}");
@@ -1752,4 +1910,91 @@ fn a_closed_and_an_open_rail_are_refused() {
     let b = arc(Vec3::new(0.0, 0.0, 1.0), 1.0, 0.0, 3.0);
     let e = connect(&a, &b, &tol(1.0)).unwrap_err();
     assert!(e.to_string().contains("closed"), "{e}");
+}
+
+/// A closed loop with corners at `(±2 s k, 0, z k)`: the upper half of the
+/// circle of radius `2 s k` about the axis, then the lower arc of the
+/// circle about `(0, s k)` through the same two points. It starts at a
+/// corner, `(2 s k, 0)`.
+fn lens(k: f64, z: f64, s: f64) -> Rail {
+    let r5 = 5f64.sqrt();
+    let c1 = Frame::new(Vec3::new(0.0, 0.0, z * k), Vec3::Z, Vec3::X).unwrap();
+    let c2 = Frame::new(Vec3::new(0.0, s * k, z * k), Vec3::Z, Vec3::X).unwrap();
+    let (t0, t1) = ((-1.0f64).atan2(-2.0) + TAU, (-1.0f64).atan2(2.0) + TAU);
+    chain(vec![
+        (
+            Curve3::Circle(Circle::new(c1, 2.0 * s * k).unwrap()),
+            (0.0, std::f64::consts::PI),
+        ),
+        (
+            Curve3::Circle(Circle::new(c2, r5 * s * k).unwrap()),
+            (t0, t1),
+        ),
+    ])
+}
+
+/// A tube whose first loop closes at a corner (review of 2026-10-29: it
+/// was refused, "start the curve where it is smooth", though a loop's
+/// start is where its curves were found to close): the seam is started in
+/// the middle of its first piece instead. Two lenses, the second half the
+/// size and `k` higher, centred on the axis: a cone with its apex at
+/// `(0, 0, 2k)`, every ruling through it, creased on the rulings through
+/// the corners, laid flat keeping every edge's length; at three scales.
+#[test]
+fn a_closed_rail_that_closes_at_a_corner_is_started_where_it_is_smooth() {
+    for k in SCALES {
+        let (a, b) = (lens(k, 0.0, 1.0), lens(k, 1.0, 0.5));
+        let made = connect(&a, &b, &tol(k)).unwrap_or_else(|e| panic!("{k}: {e}"));
+        let apex = Vec3::new(0.0, 0.0, 2.0 * k);
+        for f in &made.body.faces {
+            for u in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                let (pa, pb) = (f.surface.eval(u, 0.0), f.surface.eval(u, 1.0));
+                let d = (pb - pa).normalized().unwrap();
+                let off = (apex - pa) - d * (apex - pa).dot(d);
+                assert!(
+                    off.length() <= 1e-6 * k,
+                    "{k}: a ruling misses the apex by {}",
+                    off.length()
+                );
+            }
+        }
+        assert!(made.faces.len() >= 2, "{k}: {:?}", made.faces);
+        let faces: Vec<FaceId> = (0..made.body.faces.len() as u32).map(FaceId).collect();
+        let dev = develop(&made.body, &faces, &tol(k)).unwrap_or_else(|e| panic!("{k}: {e}"));
+        for c in dev.outline() {
+            assert!(
+                (c.length_flat - c.length_3d).abs() <= 1e-6 * k,
+                "{k}: an edge {} long on the part, {} flat",
+                c.length_3d,
+                c.length_flat
+            );
+        }
+    }
+}
+
+/// Two closed rails refused both ways round are refused with both reasons
+/// (review of 2026-10-29: only the way given was told). A circle and a
+/// smaller one tilted out of its plane: as given the fit does not reach
+/// the tolerance, the other way round the rulings do not move along the
+/// curves; at three scales.
+#[test]
+fn closed_rails_refused_both_ways_round_tell_both_reasons() {
+    for k in SCALES {
+        let a = loop_rail(0.0, 0.0, 0.0, k);
+        let frame = Frame::new(
+            Vec3::new(0.0, 0.0, 0.3 * k),
+            Vec3::new(1.0, 0.0, 0.2).normalized().unwrap(),
+            Vec3::Y,
+        )
+        .unwrap();
+        let b = chain(vec![(
+            Curve3::Circle(Circle::new(frame, 0.5 * k).unwrap()),
+            (0.0, TAU),
+        )]);
+        let e = connect(&a, &b, &tol(k)).unwrap_err().to_string();
+        assert!(
+            e.contains("; with the second curve run the other way round: "),
+            "{k}: {e}"
+        );
+    }
 }

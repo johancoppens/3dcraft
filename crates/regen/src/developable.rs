@@ -187,42 +187,45 @@ fn rail_of(
 }
 
 /// The unit of the numbers of the marks between a developable's runs of
-/// rulings ([`piece_number`]): a fold's count or a rail piece's source is
-/// below it.
+/// rulings ([`piece_words`]): a fold's count is below it.
 const MARK: u64 = 10_000_000_000;
 
-/// The number of a mark ([`Mark`]): `MARK + n` for the `n`-th fold from
-/// the start, `2 MARK + n` from the end, `3 MARK + source` for a corner of
-/// `a` before its piece `source`, `4 MARK + source` for one of `b`.
-fn mark_number(mark: Mark) -> Result<u64, String> {
-    let (kind, value) = match mark {
-        Mark::FoldFromStart(n) => (1, u64::from(n)),
-        Mark::FoldFromEnd(n) => (2, u64::from(n)),
-        Mark::Corner { rail, source } => (3 + u64::from(rail.min(1)), source),
-    };
-    if value >= MARK {
-        return Err(format!(
-            "a corner of a rail is on a curve whose id ({value}) is too large to name the faces by"
-        ));
+/// The words of a mark ([`Mark`]): `MARK + n` for the `n`-th fold from the
+/// start, `2 MARK + n` from the end; a corner of `a` `3 MARK` and of `b`
+/// `4 MARK`, followed by the source of the rail's piece after it, as a
+/// word of its own (a source is any `u64`: a sketch curve's id, with a
+/// pattern's instance in its upper bits, or an edge's place in a list).
+fn mark_words(mark: Mark) -> Vec<u64> {
+    match mark {
+        Mark::FoldFromStart(n) => vec![MARK + u64::from(n)],
+        Mark::FoldFromEnd(n) => vec![2 * MARK + u64::from(n)],
+        Mark::Corner { rail, source } => vec![(3 + u64::from(rail.min(1))) * MARK, source],
     }
-    Ok(kind * MARK + value)
 }
 
-/// The number a face of a developable is named by (2026-10-28, by place):
+/// The words a face of a developable is named by (2026-10-28, by place):
 /// 0 the first run of rulings, 1 the fan at the start, 2 the fan at the
-/// end; a fan at a fold or a corner its mark's number ([`mark_number`]);
-/// a run of rulings after a mark `10 MARK` plus the mark's number, before
-/// one `20 MARK` plus it, and the run that reaches the end `30 MARK`.
-fn piece_number(piece: Piece) -> Result<u64, String> {
-    Ok(match piece {
-        Piece::Rulings => 0,
-        Piece::StartFan => 1,
-        Piece::EndFan => 2,
-        Piece::Fan(mark) => mark_number(mark)?,
-        Piece::After(mark) => 10 * MARK + mark_number(mark)?,
-        Piece::Before(mark) => 20 * MARK + mark_number(mark)?,
-        Piece::Last => 30 * MARK,
-    })
+/// end; a fan at a fold or a corner its mark's words ([`mark_words`]); a
+/// run of rulings after a mark `10 MARK` plus the mark's first word, before
+/// one `20 MARK` plus it (a corner's source following), and the run that
+/// reaches the end `30 MARK`.
+fn piece_words(piece: Piece) -> Vec<u64> {
+    let offset = |by: u64, mark: Mark| {
+        let mut words = mark_words(mark);
+        if let Some(first) = words.first_mut() {
+            *first += by * MARK;
+        }
+        words
+    };
+    match piece {
+        Piece::Rulings => vec![0],
+        Piece::StartFan => vec![1],
+        Piece::EndFan => vec![2],
+        Piece::Fan(mark) => mark_words(mark),
+        Piece::After(mark) => offset(10, mark),
+        Piece::Before(mark) => offset(20, mark),
+        Piece::Last => vec![30 * MARK],
+    }
 }
 
 pub(crate) fn build_developable(
@@ -235,11 +238,7 @@ pub(crate) fn build_developable(
     let a = rail_of(doc, earlier, &feature.a, "a", tolerance.linear)?;
     let b = rail_of(doc, earlier, &feature.b, "b", tolerance.linear)?;
     let made = connect(&a, &b, &tolerance).map_err(|e| e.to_string())?;
-    let numbers: Vec<u64> = made
-        .faces
-        .iter()
-        .map(|p| piece_number(*p))
-        .collect::<Result<_, _>>()?;
+    let numbers: Vec<Vec<u64>> = made.faces.iter().map(|p| piece_words(*p)).collect();
     // Two faces with one name would be taken as pieces of one face.
     if numbers
         .iter()
@@ -254,7 +253,7 @@ pub(crate) fn build_developable(
     }
     let faces: Vec<PersistentName> = numbers
         .into_iter()
-        .map(|n| PersistentName::new(id, NameRole::Face, vec![n]))
+        .map(|n| PersistentName::new(id, NameRole::Face, n))
         .collect();
     let names = Names::by_faces(id, &made.body, faces, tolerance.linear)?;
     let report = Developed::Sheet {
@@ -360,4 +359,61 @@ pub(crate) fn build_unfold(
     let faces = vec![PersistentName::new(id, NameRole::Face, vec![0])];
     let names = Names::by_faces(id, &made.body, faces, tolerance.linear)?;
     Ok((made.body, names, dev))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A corner's source is a word of the face's name of its own, so any
+    /// source names a face (review of 2026-10-29: one packed into the same
+    /// word as the kind was refused as "too large" for a sketch pattern's
+    /// instance `e7[2]`, whose instance lies in bits 32 and up, and for a
+    /// nested pattern's bit 63), and different sources give different
+    /// names.
+    #[test]
+    fn a_corner_on_any_source_names_its_faces() {
+        let sources = [
+            0,
+            7,
+            (2u64 << 32) | 7,
+            (3u64 << 32) | 7,
+            (1u64 << 63) | 7,
+            u64::MAX,
+        ];
+        let mut names = std::collections::BTreeSet::new();
+        for source in sources {
+            for rail in [0, 1] {
+                let mark = Mark::Corner { rail, source };
+                for piece in [Piece::Fan(mark), Piece::After(mark), Piece::Before(mark)] {
+                    let words = piece_words(piece);
+                    assert_eq!(words.last(), Some(&source), "{piece:?}");
+                    assert!(names.insert(words), "{piece:?} named twice");
+                }
+            }
+        }
+        // Folds and the fixed pieces keep their one word, apart from those.
+        for piece in [
+            Piece::Rulings,
+            Piece::StartFan,
+            Piece::EndFan,
+            Piece::Last,
+            Piece::Fan(Mark::FoldFromStart(0)),
+            Piece::Fan(Mark::FoldFromEnd(u32::MAX)),
+            Piece::After(Mark::FoldFromStart(u32::MAX)),
+            Piece::Before(Mark::FoldFromEnd(0)),
+        ] {
+            let words = piece_words(piece);
+            assert_eq!(words.len(), 1, "{piece:?}");
+            assert!(names.insert(words), "{piece:?} named twice");
+        }
+        assert_eq!(
+            piece_words(Piece::Fan(Mark::FoldFromStart(3))),
+            vec![MARK + 3]
+        );
+        assert_eq!(
+            piece_words(Piece::Before(Mark::FoldFromEnd(1))),
+            vec![22 * MARK + 1]
+        );
+    }
 }
