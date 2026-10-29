@@ -209,11 +209,14 @@ pub(crate) struct Collision {
 /// or why it could not say.
 type Answer = Result<f64, String>;
 
+/// An answer with the two bodies it is about, held.
+type Held = (Arc<Body>, Arc<Body>, Answer);
+
 /// Answers about pairs of bodies by the bodies' addresses, holding the
 /// bodies so that the addresses are not taken by others.
 #[derive(Clone, Default)]
 pub(crate) struct PairMemo {
-    answers: BTreeMap<(usize, usize), (Arc<Body>, Arc<Body>, Answer)>,
+    answers: BTreeMap<(usize, usize), Held>,
 }
 
 fn address(body: &Arc<Body>) -> usize {
