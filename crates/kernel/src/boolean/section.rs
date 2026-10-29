@@ -2058,6 +2058,24 @@ pub(super) mod tests {
         (curve, (0.0, 1.0), place)
     }
 
+    /// The parameter on `curve` (over 0 to 1) whose point is `d` from its
+    /// start (`from_end`: from its end), by bisection over the first
+    /// tenth, where the distance from that end grows.
+    fn at_distance(curve: &Curve3, from_end: bool, d: f64) -> f64 {
+        let end = curve.eval(if from_end { 1.0 } else { 0.0 });
+        let at = |s: f64| if from_end { 1.0 - s } else { s };
+        let (mut lo, mut hi) = (0.0, 0.1);
+        for _ in 0..200 {
+            let mid = 0.5 * (lo + hi);
+            if curve.eval(at(mid)).distance(end) < d {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        at(0.5 * (lo + hi))
+    }
+
     /// The seam of a closed curve a tolerance or two from a place where an
     /// edge meets a surface, on either side of it, is that place
     /// (`ends_at_places`; the sea kayak's stitch holes, repros 21 to 24,
@@ -2071,12 +2089,12 @@ pub(super) mod tests {
         for k in [1e-3, 1.0, 1e6] {
             let (tol, r) = (1e-2 * k, 10.0 * k);
             let guard = 2.0 * tol;
-            // The parameter `dt` from the seam is about `dt` times the
-            // speed (about 2πr) away.
-            let speed = std::f64::consts::TAU * r;
+            let (curve, ..) = loop_and_place(r, 0.0);
             for (from_seam, taken) in [(1.5, true), (0.8, true), (2.5, false), (0.3, false)] {
-                let dt = from_seam * tol / speed;
-                for t in [dt, 1.0 - dt] {
+                for t in [
+                    at_distance(&curve, false, from_seam * tol),
+                    at_distance(&curve, true, from_seam * tol),
+                ] {
                     let (curve, range, place) = loop_and_place(r, t);
                     let seam = Cut {
                         t: 0.0,
@@ -2127,7 +2145,7 @@ pub(super) mod tests {
             assert!(found[0].end, "at {k}: {:?}", found[0]);
             // An open curve's end next to a place it stays at is dropped
             // for the place, as before.
-            let (curve, _, place) = loop_and_place(r, 1.5 * tol / speed);
+            let (curve, _, place) = loop_and_place(r, at_distance(&curve, false, 1.5 * tol));
             let start = Cut {
                 t: 0.0,
                 point: curve.eval(0.0),

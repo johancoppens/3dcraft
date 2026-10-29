@@ -550,7 +550,10 @@ pub(crate) fn distance(a: &[Part<'_>], b: &[Part<'_>]) -> Answer<Nearest> {
         .chain(b.iter())
         .map(|p| p.linear)
         .fold(0.0_f64, f64::max);
-    let mut answer: Option<Nearest> = None;
+    // Each candidate first takes a few steps; then, in order, the ones
+    // that at the rate of their last steps could still come nearer than
+    // the nearest settled so far take the rest of theirs ([`Settling`]).
+    let mut settling: Vec<(f64, Key, Settling)> = Vec::new();
     for (mesh_d, (ka, kb), p0, _) in found {
         let (Some(pa), Some(pb)) = (a.get(ka.0), b.get(kb.0)) else {
             continue;
@@ -560,21 +563,53 @@ pub(crate) fn distance(a: &[Part<'_>], b: &[Part<'_>]) -> Answer<Nearest> {
         } else {
             face_box(pa.body(), ka.1).center().unwrap_or(p0)
         };
-        let Ok((p, q)) = settle(&pa.probe, ka.1, &pb.probe, kb.1, start_p, linear) else {
+        let Ok(mut s) = Settling::start(&pa.probe, ka.1, &pb.probe, kb.1, start_p) else {
             continue;
         };
-        let d = p.distance(q);
-        // The exact places are no further apart than the mesh's, beyond
-        // what the mesh can be off by.
-        if mesh_d.is_finite() && d > mesh_d + slack {
+        if s.advance(
+            &pa.probe,
+            ka.1,
+            &pb.probe,
+            kb.1,
+            FIRST_STEPS,
+            linear,
+            f64::INFINITY,
+        )
+        .is_ok()
+        {
+            settling.push((mesh_d, (ka, kb), s));
+        }
+    }
+    // The exact places are no further apart than the mesh's, beyond what
+    // the mesh can be off by.
+    let fits = |mesh_d: f64, d: f64| !(mesh_d.is_finite() && d > mesh_d + slack);
+    let mut nearest = settling
+        .iter()
+        .map(|(mesh_d, _, s)| (*mesh_d, s.distance()))
+        .filter(|(mesh_d, d)| fits(*mesh_d, *d))
+        .fold(f64::INFINITY, |n, (_, d)| n.min(d));
+    let mut answer: Option<Nearest> = None;
+    for (mesh_d, (ka, kb), mut s) in settling {
+        let (Some(pa), Some(pb)) = (a.get(ka.0), b.get(kb.0)) else {
+            continue;
+        };
+        let steps = MAX_STEPS.saturating_sub(s.taken);
+        if s.advance(&pa.probe, ka.1, &pb.probe, kb.1, steps, linear, nearest)
+            .is_err()
+        {
             continue;
         }
+        let d = s.distance();
+        if !fits(mesh_d, d) {
+            continue;
+        }
+        nearest = nearest.min(d);
         if answer.is_none_or(|n| d < n.distance) {
             answer = Some(Nearest {
                 distance: d,
                 lower: 0.0,
-                a: p,
-                b: q,
+                a: s.p,
+                b: s.q,
                 face_a: ka,
                 face_b: kb,
             });
@@ -644,9 +679,29 @@ const STALL_WINDOW: usize = 8;
 /// What the steps a settling has left may still gain, at the rate of its
 /// last [`STALL_WINDOW`], before it stops: this fraction of the tolerance.
 const STALL: f64 = 1e-4;
+/// The steps every candidate of a [`distance`] takes before those that
+/// can no longer come nearer than the nearest one so far are left.
+const FIRST_STEPS: usize = 2 * STALL_WINDOW;
 
 /// Nearest points of two faces by projecting onto each in turn from the
-/// mesh's nearest pair.
+/// mesh's nearest pair: [`Settling`] taken to its end.
+#[cfg(test)]
+fn settle(
+    a: &Probe<'_>,
+    fa: usize,
+    b: &Probe<'_>,
+    fb: usize,
+    p0: Vec3,
+    tol: f64,
+) -> Answer<(Vec3, Vec3)> {
+    let mut s = Settling::start(a, fa, b, fb, p0)?;
+    s.advance(a, fa, b, fb, MAX_STEPS, tol, f64::INFINITY)?;
+    Ok((s.p, s.q))
+}
+
+/// The settling of the nearest points of two faces, `p` on face `fa` of
+/// `a` and `q` on `fb` of `b`, projecting onto each in turn from the
+/// mesh's nearest pair, which can be taken further ([`Settling::advance`]).
 ///
 /// Projecting in turn closes in on the nearest points at a constant ratio
 /// per step, which is near 1 where the faces run nearly parallel (the
@@ -668,26 +723,82 @@ const STALL: f64 = 1e-4;
 /// of a second (the sea kayak's holes to their own plate's rim, repro 25:
 /// thirteen minutes). So a settling also stops when what it came nearer
 /// over its last [`STALL_WINDOW`] steps, spread over the steps it has
-/// left, is less than [`STALL`] times `tol`: a settling that closes in at
-/// a ratio, or at a rate that falls, gains no more than that by going on
-/// to the end of its steps. (Where it closes in fast, the jumps ahead
-/// take it there first, and it stops as before.)
-fn settle(
-    a: &Probe<'_>,
-    fa: usize,
-    b: &Probe<'_>,
-    fb: usize,
-    p0: Vec3,
-    tol: f64,
-) -> Answer<(Vec3, Vec3)> {
-    let (mut near_a, mut near_b) = (Near::default(), Near::default());
-    let mut p = nearest_on_face_near(a, fa, p0, &mut near_a)?;
-    let mut q = nearest_on_face_near(b, fb, p, &mut near_b)?;
-    // The distance after each step taken, the first before any.
-    let mut came: Vec<f64> = vec![p.distance(q)];
-    for step in 0..MAX_STEPS {
-        let mut p2 = nearest_on_face_near(a, fa, q, &mut near_a)?;
-        let mut q2 = nearest_on_face_near(b, fb, p2, &mut near_b)?;
+/// left, is less than [`STALL`] times the tolerance: a settling that
+/// closes in at a ratio, or at a rate that falls, gains no more than that
+/// by going on to the end of its steps. (Where it closes in fast, the
+/// jumps ahead take it there first, and it stops as before.) By the same
+/// rate, one that could not come nearer than `beat` (the nearest pair of
+/// another settling) in the steps it has left stops too: it is not the
+/// nearest (repro 25 again: the walls of a few holes crept beside the rim
+/// for all their steps, a seventh of a millimetre further than the
+/// nearest hole).
+struct Settling {
+    p: Vec3,
+    q: Vec3,
+    near_a: Near,
+    near_b: Near,
+    /// The distance after each step taken, the first before any.
+    came: Vec<f64>,
+    /// The steps taken, of [`MAX_STEPS`].
+    taken: usize,
+    /// It has settled, or stopped for good.
+    done: bool,
+}
+
+impl Settling {
+    fn start(a: &Probe<'_>, fa: usize, b: &Probe<'_>, fb: usize, p0: Vec3) -> Answer<Self> {
+        let (mut near_a, mut near_b) = (Near::default(), Near::default());
+        let p = nearest_on_face_near(a, fa, p0, &mut near_a)?;
+        let q = nearest_on_face_near(b, fb, p, &mut near_b)?;
+        Ok(Settling {
+            p,
+            q,
+            near_a,
+            near_b,
+            came: vec![p.distance(q)],
+            taken: 0,
+            done: false,
+        })
+    }
+
+    fn distance(&self) -> f64 {
+        self.p.distance(self.q)
+    }
+
+    /// At most `steps` more steps (and [`MAX_STEPS`] in all), stopping
+    /// where it has settled, where it has stalled (to `tol`) or where it
+    /// could not come nearer than `beat` ([`Settling`]).
+    #[allow(clippy::too_many_arguments)]
+    fn advance(
+        &mut self,
+        a: &Probe<'_>,
+        fa: usize,
+        b: &Probe<'_>,
+        fb: usize,
+        steps: usize,
+        tol: f64,
+        beat: f64,
+    ) -> Answer<()> {
+        let mut steps = steps.min(MAX_STEPS.saturating_sub(self.taken));
+        while !self.done && steps > 0 {
+            steps -= 1;
+            self.step(a, fa, b, fb, tol, beat)?;
+        }
+        Ok(())
+    }
+
+    fn step(
+        &mut self,
+        a: &Probe<'_>,
+        fa: usize,
+        b: &Probe<'_>,
+        fb: usize,
+        tol: f64,
+        beat: f64,
+    ) -> Answer<()> {
+        let (p, q) = (self.p, self.q);
+        let mut p2 = nearest_on_face_near(a, fa, q, &mut self.near_a)?;
+        let mut q2 = nearest_on_face_near(b, fb, p2, &mut self.near_b)?;
         let better = p2.distance(q2) <= p.distance(q);
         if better {
             let way = p2 - p;
@@ -698,7 +809,7 @@ fn settle(
                     break;
                 }
                 // A jump that cannot be projected is not taken.
-                let (mut na, mut nb) = (near_a, near_b);
+                let (mut na, mut nb) = (self.near_a, self.near_b);
                 let Ok(p3) = nearest_on_face_near(a, fa, target, &mut na) else {
                     break;
                 };
@@ -708,34 +819,37 @@ fn settle(
                 if p3.distance(q3) >= p2.distance(q2) {
                     break;
                 }
-                (p2, q2, near_a, near_b) = (p3, q3, na, nb);
+                (p2, q2, self.near_a, self.near_b) = (p3, q3, na, nb);
                 ahead *= 2.0;
             }
         }
+        self.taken += 1;
         let scale = 1.0 + p2.length().max(q2.length());
         let moved = p2.distance(p).max(q2.distance(q));
         if better {
-            p = p2;
-            q = q2;
+            self.p = p2;
+            self.q = q2;
         }
-        if moved <= 1e-13 * scale || !better {
-            break;
+        if moved <= 1e-13 * scale || !better || self.taken >= MAX_STEPS {
+            self.done = true;
+            return Ok(());
         }
-        came.push(p.distance(q));
-        let left = MAX_STEPS - step - 1;
-        if let (Some(&last), Some(&before)) = (
-            came.last(),
-            came.len()
-                .checked_sub(STALL_WINDOW + 1)
-                .and_then(|i| came.get(i)),
-        ) {
+        let last = self.distance();
+        self.came.push(last);
+        let left = MAX_STEPS.saturating_sub(self.taken) as f64;
+        if let Some(&before) = self
+            .came
+            .len()
+            .checked_sub(STALL_WINDOW + 1)
+            .and_then(|i| self.came.get(i))
+        {
             let rate = (before - last) / STALL_WINDOW as f64;
-            if rate * left as f64 <= STALL * tol {
-                break;
+            if rate * left <= STALL * tol || last - rate * left > beat {
+                self.done = true;
             }
         }
+        Ok(())
     }
-    Ok((p, q))
 }
 
 // ------------------------------------------------ triangle distances
