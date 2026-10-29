@@ -90,6 +90,142 @@ pub struct Document {
     /// before version 50).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inserted: Vec<Inserted>,
+    /// For an assembly (a `.3dcraftasm` file): its instances, mates and
+    /// couplings. Absent for a part (and in files before version 53,
+    /// a TEMPORARY number).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assembly: Option<Assembly>,
+}
+
+/// An assembly: `{"instances": [...], "mates": [...], "couplings": [...],
+/// "packed": ["<sha256>", ...]}`. Each packed document is the archive
+/// entry `blobs/<sha256>.3dcraft`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Assembly {
+    pub instances: Vec<Instance>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mates: Vec<Mate>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub couplings: Vec<Coupling>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub packed: Vec<String>,
+}
+
+/// One instance of a source document.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Instance {
+    pub name: String,
+    pub source: Source,
+    /// One body of the source, by the name or id of the feature that made
+    /// it; absent for all of them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    /// `[{"name": "length", "expr": "80 mm"}]`, in the order given.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub params: Vec<ParamOverride>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned: Option<String>,
+    #[serde(default, skip_serializing_if = "InstanceMode::is_rigid")]
+    pub mode: InstanceMode,
+    #[serde(default = "visible", skip_serializing_if = "is_visible")]
+    pub visible: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colour: Option<[u8; 3]>,
+    pub placement: Placement,
+}
+
+fn visible() -> bool {
+    true
+}
+
+fn is_visible(visible: &bool) -> bool {
+    *visible
+}
+
+/// `{"file": {"path": "bar.3dcraft", "hash": "<sha256>"}}` or
+/// `{"packed": {"hash": "<sha256>"}}`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub enum Source {
+    File { path: String, hash: String },
+    Packed { hash: String },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum InstanceMode {
+    #[default]
+    Rigid,
+    Flexible,
+}
+
+impl InstanceMode {
+    fn is_rigid(&self) -> bool {
+        *self == InstanceMode::Rigid
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParamOverride {
+    pub name: String,
+    pub expr: String,
+}
+
+/// A rotation vector in degrees, then a position in the length unit.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Placement {
+    pub position: [f64; 3],
+    pub rotation: [f64; 3],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MateKind {
+    Fixed,
+    Revolute,
+    Slider,
+    Cylindrical,
+    Planar,
+    Ball,
+}
+
+/// A mate: its references written `Instance/Feature:name`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Mate {
+    pub name: String,
+    pub kind: MateKind,
+    pub a: String,
+    pub b: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub angle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits: Option<[String; 2]>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub flip: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CouplingKind {
+    Gear,
+    Rack,
+    Screw,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Coupling {
+    pub name: String,
+    pub kind: CouplingKind,
+    pub mates: [String; 2],
+    pub value: String,
 }
 
 /// A feature inserted at the rollback marker: `{"feature": 7,

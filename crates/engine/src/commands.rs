@@ -188,6 +188,13 @@ pub(crate) fn edit_merging<T>(
             // choice from now on (`Document::forget_hand_edits`).
             let recorded = (!doc.inserted.is_empty()).then(|| doc.recorded());
             let out = change(doc)?;
+            // An assembly's bodies are its instances': a command that
+            // would give it a feature of its own is refused whole.
+            if doc.is_assembly() && !doc.features.is_empty() {
+                return Err(DocError::Invalid(format!(
+                    "an assembly has no features of its own; open the part with instance.open and edit it there ({command} is for parts)"
+                )));
+            }
             if let Some(recorded) = &recorded {
                 doc.forget_hand_edits(recorded);
             }

@@ -60,7 +60,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 /// The format version this build writes, and the newest it reads.
-pub const FORMAT_VERSION: u32 = 51;
+pub const FORMAT_VERSION: u32 = 53;
 
 /// The version that made `floor`, `ceil`, `round`, `trunc` and `mod`
 /// function names: a variable of an older file with such a name is
@@ -112,6 +112,21 @@ pub fn is_jig_path(path: &str) -> bool {
         .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case(JIG_EXTENSION))
 }
 
+/// The extension of an assembly, without the dot: the same container and
+/// format versions as a `.3dcraft` file, with a document whose `assembly`
+/// is set (docs/decisions.md, 2026-10-29). A `.3dcraft` file never holds
+/// an assembly.
+pub const ASSEMBLY_EXTENSION: &str = "3dcraftasm";
+
+/// Whether `path` names an assembly: its file name ends in `.3dcraftasm`,
+/// in any case, trailing dots and spaces left out (as [`is_jig_path`]).
+pub fn is_assembly_path(path: &str) -> bool {
+    let trimmed = path.trim_end_matches(['.', ' ']);
+    let name = trimmed.rsplit(['/', '\\']).next().unwrap_or(trimmed);
+    name.rsplit_once('.')
+        .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case(ASSEMBLY_EXTENSION))
+}
+
 /// Name of the ZIP entry that holds the document.
 pub const MANIFEST_NAME: &str = "manifest.json";
 
@@ -125,6 +140,9 @@ pub const MAX_THUMBNAIL_BYTES: usize = 4 * 1024 * 1024;
 /// Where the bytes of imported files are: `blobs/<sha256>.step`.
 pub const BLOB_DIR: &str = "blobs/";
 const BLOB_EXTENSION: &str = ".step";
+/// Where the source documents packed into an assembly are:
+/// `blobs/<sha256>.3dcraft` (format version 53, a TEMPORARY number).
+const PACKED_EXTENSION: &str = ".3dcraft";
 
 /// Largest `.3dcraft` file that is read: 256 MiB. Checked before the file
 /// is read or parsed.
@@ -275,8 +293,9 @@ impl fmt::Display for FormatError {
             ),
             FormatError::MissingBlob { sha256 } => write!(
                 f,
-                "the file has an imported STEP file whose bytes are missing: there is no entry \
-                 `{BLOB_DIR}{sha256}{BLOB_EXTENSION}`; open an earlier copy of the file"
+                "the file has an imported STEP file or a packed source document whose bytes are \
+                 missing: there is no entry `{BLOB_DIR}{sha256}{BLOB_EXTENSION}` (or \
+                 `{PACKED_EXTENSION}`); open an earlier copy of the file"
             ),
             FormatError::DamagedBlob { name } => write!(
                 f,
@@ -413,6 +432,13 @@ fn blobs_of(document: &Document) -> BTreeMap<String, &craft3d_doc::Blob> {
                 .or_insert(&import.data);
         }
     }
+    if let Some(assembly) = &document.assembly {
+        for blob in &assembly.packed {
+            blobs
+                .entry(format!("{BLOB_DIR}{}{PACKED_EXTENSION}", blob.sha256()))
+                .or_insert(blob);
+        }
+    }
     blobs
 }
 
@@ -474,11 +500,10 @@ pub fn from_bytes_noted(bytes: &[u8]) -> Result<(Document, Vec<String>), FormatE
     // those the manifest names are hashed and read (`read_manifest`).
     let mut raw: BTreeMap<String, (&str, &[u8])> = BTreeMap::new();
     for entry in &entries {
-        if let Some(hash) = entry
-            .name
-            .strip_prefix(BLOB_DIR)
-            .and_then(|rest| rest.strip_suffix(BLOB_EXTENSION))
-        {
+        if let Some(hash) = entry.name.strip_prefix(BLOB_DIR).and_then(|rest| {
+            rest.strip_suffix(BLOB_EXTENSION)
+                .or_else(|| rest.strip_suffix(PACKED_EXTENSION))
+        }) {
             raw.insert(hash.to_string(), (entry.name, entry.data));
         }
     }
@@ -640,6 +665,24 @@ fn read_manifest(
             }
             blobs.insert(sha256.clone(), blob);
         }
+    }
+    // Each document packed into an assembly, the same way.
+    for sha256 in document.assembly.iter().flat_map(|a| &a.packed) {
+        if blobs.contains_key(sha256) {
+            continue;
+        }
+        let Some((name, data)) = raw.get(sha256) else {
+            return Err(FormatError::MissingBlob {
+                sha256: sha256.clone(),
+            });
+        };
+        let blob = craft3d_doc::Blob::new(data.to_vec());
+        if blob.sha256() != *sha256 {
+            return Err(FormatError::DamagedBlob {
+                name: (*name).to_string(),
+            });
+        }
+        blobs.insert(sha256.clone(), blob);
     }
     let blobs = &blobs;
     // An output is computed from a measure or from an expression, one of

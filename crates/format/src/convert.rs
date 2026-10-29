@@ -48,6 +48,7 @@ pub(crate) fn to_manifest(document: &doc::Document) -> manifest::Document {
         tables,
         outputs,
         inserted,
+        assembly,
     } = document;
     let doc::Units { length, angle } = units;
     let doc::Tolerance {
@@ -104,6 +105,250 @@ pub(crate) fn to_manifest(document: &doc::Document) -> manifest::Document {
         tables: tables.iter().map(table_to_manifest).collect(),
         outputs: outputs.iter().map(output_to_manifest).collect(),
         inserted: inserted.iter().map(inserted_to_manifest).collect(),
+        assembly: assembly.as_ref().map(assembly_to_manifest),
+    }
+}
+
+fn assembly_to_manifest(assembly: &doc::Assembly) -> manifest::Assembly {
+    let doc::Assembly {
+        instances,
+        mates,
+        couplings,
+        packed,
+    } = assembly;
+    manifest::Assembly {
+        instances: instances
+            .iter()
+            .map(|instance| {
+                let doc::Instance {
+                    name,
+                    source,
+                    body,
+                    params,
+                    pinned,
+                    mode,
+                    visible,
+                    colour,
+                    placement: doc::Placement { position, rotation },
+                } = instance;
+                manifest::Instance {
+                    name: name.clone(),
+                    source: match source {
+                        doc::Source::File { path, hash } => manifest::Source::File {
+                            path: path.clone(),
+                            hash: hash.clone(),
+                        },
+                        doc::Source::Packed { hash } => {
+                            manifest::Source::Packed { hash: hash.clone() }
+                        }
+                    },
+                    body: body.clone(),
+                    params: params
+                        .iter()
+                        .map(
+                            |doc::ParamOverride { name, expr }| manifest::ParamOverride {
+                                name: name.clone(),
+                                expr: expr_to_manifest(expr),
+                            },
+                        )
+                        .collect(),
+                    pinned: pinned.clone(),
+                    mode: match mode {
+                        doc::InstanceMode::Rigid => manifest::InstanceMode::Rigid,
+                        doc::InstanceMode::Flexible => manifest::InstanceMode::Flexible,
+                    },
+                    visible: *visible,
+                    colour: *colour,
+                    placement: manifest::Placement {
+                        position: *position,
+                        rotation: *rotation,
+                    },
+                }
+            })
+            .collect(),
+        mates: mates
+            .iter()
+            .map(|mate| {
+                let doc::Mate {
+                    name,
+                    kind,
+                    a,
+                    b,
+                    offset,
+                    angle,
+                    limits,
+                    flip,
+                } = mate;
+                manifest::Mate {
+                    name: name.clone(),
+                    kind: match kind {
+                        doc::MateKind::Fixed => manifest::MateKind::Fixed,
+                        doc::MateKind::Revolute => manifest::MateKind::Revolute,
+                        doc::MateKind::Slider => manifest::MateKind::Slider,
+                        doc::MateKind::Cylindrical => manifest::MateKind::Cylindrical,
+                        doc::MateKind::Planar => manifest::MateKind::Planar,
+                        doc::MateKind::Ball => manifest::MateKind::Ball,
+                    },
+                    a: a.to_string(),
+                    b: b.to_string(),
+                    offset: offset.as_ref().map(expr_to_manifest),
+                    angle: angle.as_ref().map(expr_to_manifest),
+                    limits: limits
+                        .as_ref()
+                        .map(|(lo, hi)| [expr_to_manifest(lo), expr_to_manifest(hi)]),
+                    flip: *flip,
+                }
+            })
+            .collect(),
+        couplings: couplings
+            .iter()
+            .map(|coupling| {
+                let doc::Coupling {
+                    name,
+                    kind,
+                    mates: (first, second),
+                    value,
+                } = coupling;
+                manifest::Coupling {
+                    name: name.clone(),
+                    kind: match kind {
+                        doc::CouplingKind::Gear => manifest::CouplingKind::Gear,
+                        doc::CouplingKind::Rack => manifest::CouplingKind::Rack,
+                        doc::CouplingKind::Screw => manifest::CouplingKind::Screw,
+                    },
+                    mates: [first.clone(), second.clone()],
+                    value: expr_to_manifest(value),
+                }
+            })
+            .collect(),
+        packed: packed.iter().map(doc::Blob::sha256).collect(),
+    }
+}
+
+/// A mate's reference as written; one that does not read as
+/// `instance/name` is kept whole as the instance part, for validation to
+/// refuse by its text.
+fn mate_ref_to_doc(text: String) -> doc::MateRef {
+    match text.split_once('/') {
+        Some((instance, name)) => doc::MateRef {
+            instance: instance.to_string(),
+            name: name.to_string(),
+        },
+        None => doc::MateRef {
+            instance: text,
+            name: String::new(),
+        },
+    }
+}
+
+fn assembly_to_doc(assembly: manifest::Assembly, blobs: &Blobs) -> doc::Assembly {
+    let manifest::Assembly {
+        instances,
+        mates,
+        couplings,
+        packed,
+    } = assembly;
+    doc::Assembly {
+        instances: instances
+            .into_iter()
+            .map(|instance| {
+                let manifest::Instance {
+                    name,
+                    source,
+                    body,
+                    params,
+                    pinned,
+                    mode,
+                    visible,
+                    colour,
+                    placement: manifest::Placement { position, rotation },
+                } = instance;
+                doc::Instance {
+                    name,
+                    source: match source {
+                        manifest::Source::File { path, hash } => doc::Source::File { path, hash },
+                        manifest::Source::Packed { hash } => doc::Source::Packed { hash },
+                    },
+                    body,
+                    params: params
+                        .into_iter()
+                        .map(
+                            |manifest::ParamOverride { name, expr }| doc::ParamOverride {
+                                name,
+                                expr: doc::Expr(expr),
+                            },
+                        )
+                        .collect(),
+                    pinned,
+                    mode: match mode {
+                        manifest::InstanceMode::Rigid => doc::InstanceMode::Rigid,
+                        manifest::InstanceMode::Flexible => doc::InstanceMode::Flexible,
+                    },
+                    visible,
+                    colour,
+                    placement: doc::Placement { position, rotation },
+                }
+            })
+            .collect(),
+        mates: mates
+            .into_iter()
+            .map(|mate| {
+                let manifest::Mate {
+                    name,
+                    kind,
+                    a,
+                    b,
+                    offset,
+                    angle,
+                    limits,
+                    flip,
+                } = mate;
+                doc::Mate {
+                    name,
+                    kind: match kind {
+                        manifest::MateKind::Fixed => doc::MateKind::Fixed,
+                        manifest::MateKind::Revolute => doc::MateKind::Revolute,
+                        manifest::MateKind::Slider => doc::MateKind::Slider,
+                        manifest::MateKind::Cylindrical => doc::MateKind::Cylindrical,
+                        manifest::MateKind::Planar => doc::MateKind::Planar,
+                        manifest::MateKind::Ball => doc::MateKind::Ball,
+                    },
+                    a: mate_ref_to_doc(a),
+                    b: mate_ref_to_doc(b),
+                    offset: offset.map(doc::Expr),
+                    angle: angle.map(doc::Expr),
+                    limits: limits.map(|[lo, hi]| (doc::Expr(lo), doc::Expr(hi))),
+                    flip,
+                }
+            })
+            .collect(),
+        couplings: couplings
+            .into_iter()
+            .map(|coupling| {
+                let manifest::Coupling {
+                    name,
+                    kind,
+                    mates: [first, second],
+                    value,
+                } = coupling;
+                doc::Coupling {
+                    name,
+                    kind: match kind {
+                        manifest::CouplingKind::Gear => doc::CouplingKind::Gear,
+                        manifest::CouplingKind::Rack => doc::CouplingKind::Rack,
+                        manifest::CouplingKind::Screw => doc::CouplingKind::Screw,
+                    },
+                    mates: (first, second),
+                    value: doc::Expr(value),
+                }
+            })
+            .collect(),
+        // Every one is in `blobs`: `read_manifest` refuses a file without
+        // one first.
+        packed: packed
+            .iter()
+            .filter_map(|hash| blobs.get(hash).cloned())
+            .collect(),
     }
 }
 
@@ -2186,6 +2431,7 @@ pub(crate) fn to_doc(document: manifest::Document, blobs: &Blobs) -> doc::Docume
         tables,
         outputs,
         inserted,
+        assembly,
     } = document;
     doc::Document {
         units: doc::Units {
@@ -2238,6 +2484,7 @@ pub(crate) fn to_doc(document: manifest::Document, blobs: &Blobs) -> doc::Docume
         tables: tables.into_iter().map(table_to_doc).collect(),
         outputs: outputs.into_iter().map(output_to_doc).collect(),
         inserted: inserted.into_iter().map(inserted_to_doc).collect(),
+        assembly: assembly.map(|a| assembly_to_doc(a, blobs)),
     }
 }
 

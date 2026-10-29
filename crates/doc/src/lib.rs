@@ -12,6 +12,7 @@
 //! here without being saved (AGENTS.md §8).
 
 pub mod appearance;
+pub mod assembly;
 pub mod assertion;
 pub mod blob;
 pub mod datum;
@@ -29,6 +30,10 @@ pub mod visibility;
 pub use appearance::{
     Appearance, BodyAppearance, BodyColor, BodyProperties, FaceProperties, MAX_FACE_APPEARANCES,
     Material,
+};
+pub use assembly::{
+    Assembly, Coupling, CouplingKind, Instance, InstanceMode, Mate, MateKind, MateRef,
+    ParamOverride, Placement, Source,
 };
 pub use assertion::{Assertion, Expect, MAX_ASSERTION_TEXT, MAX_ASSERTIONS};
 pub use blob::{Blob, sha256};
@@ -1876,6 +1881,11 @@ pub struct Document {
     /// regeneration.
     #[serde(default)]
     pub inserted: Vec<Inserted>,
+    /// For an assembly (a `.3dcraftasm` file): its instances, mates and
+    /// couplings ([`assembly`]). `None` for a part. An assembly has no
+    /// features of its own.
+    #[serde(default)]
+    pub assembly: Option<Assembly>,
 }
 
 fn check_feature_name(name: &str) -> Result<(), DocError> {
@@ -2176,6 +2186,7 @@ impl Document {
         self.validate_tables()?;
         self.validate_outputs()?;
         self.validate_inserted()?;
+        self.validate_assembly()?;
         match self.rollback {
             Some(id) if !ids.contains(&id) => Err(DocError::UnknownFeature(id)),
             _ => Ok(()),
