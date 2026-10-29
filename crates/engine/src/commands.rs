@@ -3302,7 +3302,9 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
     let index = session.active;
     let open = session.document_mut()?;
     let regen = open.regen();
-    let doc = open.history.current();
+    // An assembly is described by the part that shows its placed bodies,
+    // one feature per body named after its instance (`asm.rs`).
+    let doc = &open.bodies_doc();
     let unit = length_unit(doc);
 
     let variables: Vec<Value> = regen

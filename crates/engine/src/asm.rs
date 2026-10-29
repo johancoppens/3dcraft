@@ -837,7 +837,8 @@ fn build_shown(doc: &Document, assembly: &Assembly, instances: &mut [InstanceSta
     Placed {
         doc: Arc::new(shown),
         regen: Arc::new(Regen {
-            variables: Vec::new(),
+            // The assembly's own variables, evaluated as a part's are.
+            variables: craft3d_regen::regenerate(doc).variables,
             features: results,
         }),
         instances: instances.to_vec(),
