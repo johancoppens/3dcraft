@@ -638,7 +638,7 @@ impl Track {
                 return Err(internal());
             };
             let slowest = (m0 / d).min(m1 / d);
-            if !(slowest >= least) {
+            if slowest.is_nan() || slowest < least {
                 return refuse(format!(
                     "{label}: its crossings are spaced too unevenly against the rest of its family's (between two of them its parameter would slow to {slowest:.1e} of its mean rate, below the {least:.1e} at which its direction is known within the angular tolerance)"
                 ));
@@ -1290,7 +1290,7 @@ fn coefficients(a: &[H], y: H, centre: Vec3, length: f64, cutoff: f64) -> (Vec<f
             break;
         };
         let alpha = tail(&col, step);
-        if !(alpha > cutoff) {
+        if alpha.is_nan() || alpha <= cutoff {
             break;
         }
         // The reflection taking the column's tail to −sign(x) α e_step.
@@ -1454,7 +1454,7 @@ fn hold_tangent(
             (Some(p), Some(q)) => p.distance(q),
             _ => f64::INFINITY,
         };
-        if !(moved <= tol) {
+        if moved.is_nan() || moved > tol {
             return refuse(format!(
                 "{label}: the surface cannot leave it along its face at u = {u:.6}: the curve crossing it there is not tangent to the face (it would be moved {moved:.3e}, the tolerance is {tol:.3e})"
             ));
@@ -1555,7 +1555,9 @@ fn tangency(
         };
         let n = along.cross(into);
         let scale = along.length() * into.length();
-        if !(n.length() > angular * scale) {
+        // NaN fails too: no tangent plane.
+        let planar = n.length() > angular * scale;
+        if !planar {
             return refuse(format!(
                 "{label}: the surface has no tangent plane at {t:.6} along it (its derivative across the edge vanishes there or runs along the edge), so it cannot be held tangent there"
             ));
@@ -2024,7 +2026,7 @@ pub fn gordon(net: &Network<'_>) -> Result<Patch, NetworkError> {
         for (i, track) in tracks.iter().enumerate() {
             let t = at.get(i).copied().ok_or_else(internal)?;
             let off = off_track(&surface, family == 'v', t, &track.raw)?;
-            if !(off <= tol) {
+            if off.is_nan() || off > tol {
                 return refuse(format!(
                     "{}: the surface would pass up to {off:.3e} from it (the tolerance is {tol:.3e}): where it crosses the other curves their points or their weights disagree by more than one surface can take up (rational curves whose weights cannot be made to agree by constants are not one rational surface's)",
                     name(family, i)
@@ -2289,7 +2291,7 @@ fn bend(
             ))
         })?;
         let sine = edge_dir.cross(tangent).dot(normal) / speed;
-        if !(sine.abs() > net.angular) {
+        if sine.is_nan() || sine.abs() <= net.angular {
             return refuse(format!(
                 "{label}: {} leaves it square to its face or along the edge itself, so it cannot be made to leave along the face",
                 name(family, k)
@@ -2321,7 +2323,7 @@ fn bend(
         {
             let sine =
                 tangent.cross(flat).length() / (speed * flat.length()).max(f64::MIN_POSITIVE);
-            if !(sine <= net.angular) {
+            if sine.is_nan() || sine > net.angular {
                 return refuse(format!(
                     "the corner of {label} and {}: {} is held to its own face and leaves {label} at {:.3e} rad off its face; at a corner both faces must share the tangent plane",
                     EDGE_NAMES.get(other).copied().unwrap_or("an edge"),
