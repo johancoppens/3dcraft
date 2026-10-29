@@ -686,9 +686,9 @@ fn branches_that_pass_closer_than_a_step_are_followed_into_the_fold() {
 /// still turns back in A, and a fan along (apex on A, from the first fan's
 /// end) closes that. The two fans share their ruling, both on the zero
 /// set, so the sheet is smooth across it; every ruling on the zero set,
-/// the faces flat and tangent across every edge, laid flat as one piece
-/// keeping every edge's length or refused at the strip beside a fan (the
-/// owed layout of a standing corner); at three scales.
+/// the faces flat and tangent across every edge, its unfold refused at
+/// the strip beside a fan (the owed layout of a standing corner); at
+/// three scales.
 #[test]
 fn a_fan_that_lands_where_the_other_branch_turns_back_is_followed_by_a_second() {
     for k in SCALES {
@@ -726,40 +726,28 @@ fn a_fan_that_lands_where_the_other_branch_turns_back_is_followed_by_a_second() 
         for v in [0.0, 0.5, 1.0] {
             assert!(close(first.eval(1.0, v), second.eval(0.0, v)), "{k}: {v}");
         }
-        // Laid flat as one piece, every edge keeping its length, or the
-        // strip beside a fold's fan refused (face 1 before the first fan,
-        // face 4 after the second), the owed layout of a face whose
-        // parametrisation stands still at a corner (docs/design/
-        // developable.md, Open), never a wrong pattern. Since the rows
-        // leave their end rulings along the rails (2026-10-29) the row of
-        // B stands still where the zero set turned, as the true
+        // The unfold is refused at the strip beside a fold's fan (face 1
+        // before the first fan, face 4 after the second), the owed layout
+        // of a face whose parametrisation stands still at a corner
+        // (docs/design/developable.md, Open), never a wrong pattern. Since
+        // the rows leave their end rulings along the rails (2026-10-29)
+        // the row of B stands still where the zero set turned, as the true
         // developable's does, at every scale; before, the fit's end
-        // tangents were off by its error, which let it unfold at 1e-3
-        // and 1.
+        // tangents were off by its error, which let it unfold at 1e-3 and
+        // 1. Pinned as a refusal at every scale (final review of
+        // 2026-10-29): the unfold of the standing-corner layout, when it
+        // lands, flips this deliberately to a laid-flat piece whose area
+        // and every edge's length are kept within 1e-6 (as
+        // `a_fan_is_laid_flat_about_its_apex` checks).
         let faces: Vec<FaceId> = (0..made.body.faces.len() as u32).map(FaceId).collect();
-        let dev = match develop(&made.body, &faces, &tol(k)) {
-            Ok(dev) => dev,
-            Err(e) => {
-                let why = e.to_string();
-                eprintln!("{k}: refused: {why}");
-                assert!(
-                    why.contains("converge")
-                        && (why.contains("face 1 ") || why.contains("face 4 ")),
-                    "{k}: {e}"
-                );
-                continue;
-            }
-        };
-        let e = dev.error();
-        assert!(e.area < 1e-6 && e.length < 1e-6, "{k}: {e:?}");
-        for c in dev.outline() {
-            assert!(
-                (c.length_flat - c.length_3d).abs() <= 1e-6 * k,
-                "{k}: an edge {} long on the part, {} flat",
-                c.length_3d,
-                c.length_flat
-            );
-        }
+        let refused = develop(&made.body, &faces, &tol(k))
+            .map(|dev| dev.error())
+            .expect_err("the strip beside a fold's fan is refused (owed layout)");
+        let why = refused.to_string();
+        assert!(
+            why.contains("converge") && (why.contains("face 1 ") || why.contains("face 4 ")),
+            "{k}: {refused}"
+        );
     }
 }
 

@@ -43,6 +43,12 @@ const MAX_STEPS: usize = 1 << 16;
 const STEP_MAX: f64 = 1.0 / 128.0;
 /// Rounds of adding rulings where the fit is not yet within tolerance.
 const MAX_ROUNDS: usize = 16;
+/// The step into a piece (of the rail's parameter, one per piece) at which
+/// a vanishing tangent's limit is taken ([`Rail::tangent_side`]): its
+/// error is of the order of its square, its rounding of `ε / LIMIT_STEP`,
+/// both relative and below 1e-9 rad for a piece that does not turn by a
+/// radian over a ten-thousandth of itself.
+const LIMIT_STEP: f64 = 1e-5;
 
 /// One curve of a rail, run from `range.0` to `range.1` in the curve's
 /// own direction, or back when `reversed`.
@@ -195,6 +201,34 @@ impl Rail {
         Some((p, d * rate))
     }
 
+    /// The unit tangent at `s` in the rail's direction, on the side before
+    /// a joint when `before` ([`Rail::locate_side`]). Where `d/ds`
+    /// vanishes (a NURBS whose first or last control points coincide, a
+    /// curve run at a parameter where it stands still) the tangent is its
+    /// limit from inside the piece: the unit derivative at `h` and `2h`
+    /// into it ([`LIMIT_STEP`]), extrapolated to `h = 0`
+    /// (`2 u(h) - u(2h)`, exact to second order in `h` whichever
+    /// derivative is the first that does not vanish, as the unit tangent
+    /// is smooth in `h` there). `None` where the curve has no direction
+    /// there either (it stands still over that stretch).
+    fn tangent_side(&self, s: f64, before: bool) -> Option<Vec3> {
+        let (_, d) = self.at_side(s, before)?;
+        if let Some(unit) = d.normalized() {
+            return Some(unit);
+        }
+        // Into the piece on the side asked: back from a joint taken
+        // before it, else forward, except at the rail's last end.
+        let len = self.len();
+        let back = if s >= len { true } else { before && s > 0.0 };
+        let step = if back { -LIMIT_STEP } else { LIMIT_STEP };
+        let unit_at = |h: f64| {
+            self.at_side(s + h, before)
+                .and_then(|(_, d)| d.normalized())
+        };
+        let (near, far) = (unit_at(step)?, unit_at(2.0 * step)?);
+        (near * 2.0 - far).normalized()
+    }
+
     /// The joints where the rail has a corner: the tangent turns there by
     /// more than `angular` (as whole-number rail parameters, in order).
     fn corners(&self, angular: f64) -> Vec<f64> {
@@ -202,9 +236,7 @@ impl Rail {
         (1..self.pieces.len())
             .filter_map(|k| {
                 let s = k as f64;
-                let (_, before) = self.at_side(s, true)?;
-                let (_, after) = self.at_side(s, false)?;
-                let (u, w) = (before.normalized()?, after.normalized()?);
+                let (u, w) = (self.tangent_side(s, true)?, self.tangent_side(s, false)?);
                 (turn(u, w) > angular).then_some(s)
             })
             .collect()
@@ -298,17 +330,14 @@ impl Rail {
                 }
                 // A cusp: the tangent turns back where two curves meet (a
                 // corner is a fan from it, [`trace`]).
-                let (_, d_out) = piece.curve.derivatives(if piece.reversed { a } else { b });
-                let (_, d_in) = next.curve.derivatives(if next.reversed {
-                    next.range.1
-                } else {
-                    next.range.0
-                });
-                let d_out = if piece.reversed { -d_out } else { d_out };
-                let d_in = if next.reversed { -d_in } else { d_in };
+                // The tangents on both sides of the joint (their limits
+                // where a curve stands still there).
+                let joint = (index + 1) as f64;
                 let turn = |u: Vec3, w: Vec3| u.cross(w).length().atan2(u.dot(w));
-                if let (Some(u), Some(w)) = (d_out.normalized(), d_in.normalized())
-                    && turn(u, w) >= std::f64::consts::PI - angular
+                if let (Some(u), Some(w)) = (
+                    self.tangent_side(joint, true),
+                    self.tangent_side(joint, false),
+                ) && turn(u, w) >= std::f64::consts::PI - angular
                 {
                     return Err(refused(format!(
                         "{name} turns back on itself at {} between curves {} and {} (a cusp: the tangent turns by {:.3} degrees); no sheet follows it there",
@@ -383,9 +412,14 @@ impl Pair<'_> {
     /// The condition with each rail's tangent taken before a joint where
     /// asked (the two sides of a corner, [`Rail::locate_side`]).
     fn f_side(&self, x: f64, y: f64, before_a: bool, before_b: bool) -> Option<f64> {
-        let (pa, da) = self.a.at_side(self.sa(x), before_a)?;
-        let (pb, db) = self.b.at_side(self.tb(y), before_b)?;
-        let (ua, ub, ud) = (da.normalized()?, db.normalized()?, (pb - pa).normalized()?);
+        let (sa, tb) = (self.sa(x), self.tb(y));
+        let (pa, pb) = (
+            self.a.at_side(sa, before_a)?.0,
+            self.b.at_side(tb, before_b)?.0,
+        );
+        let ua = self.a.tangent_side(sa, before_a)?;
+        let ub = self.b.tangent_side(tb, before_b)?;
+        let ud = (pb - pa).normalized()?;
         let value = ua.dot(ub.cross(ud));
         value.is_finite().then_some(value)
     }
@@ -1121,7 +1155,9 @@ fn merged_fans(mut path: Path) -> Path {
 /// (`end` the fan from the last end of A, [`Start::FromA`], or of B). The
 /// path's fan is taken into the end's fan, which keeps its name (the
 /// faces that hold the sheet's ends keep theirs, [`middle_strips`]); a
-/// path of only that fan is left as it is (it would have no rulings).
+/// path of only that fan is left as it is (it would have no rulings), and
+/// so are fans whose joint is a point where the faces part (as in
+/// [`merged_fans`]: a corner there keeps its faces apart).
 fn merged_end_fans(
     mut path: Path,
     start: Start,
@@ -1129,7 +1165,11 @@ fn merged_end_fans(
 ) -> (Path, Start, Option<Start>) {
     let start = match (start, path.points.first(), path.points.get(1)) {
         (Start::FromA(_), Some(&p), Some(&q))
-            if path.points.len() >= 3 && path.special_after(0) && p.0 == 0.0 && q.0 == 0.0 =>
+            if path.points.len() >= 3
+                && path.special_after(0)
+                && !path.break_at.first().copied().unwrap_or(false)
+                && p.0 == 0.0
+                && q.0 == 0.0 =>
         {
             path.points.remove(0);
             path.fan_after.remove(0);
@@ -1137,7 +1177,11 @@ fn merged_end_fans(
             Start::FromA(q.1)
         }
         (Start::FromB(_), Some(&p), Some(&q))
-            if path.points.len() >= 3 && path.special_after(0) && p.1 == 0.0 && q.1 == 0.0 =>
+            if path.points.len() >= 3
+                && path.special_after(0)
+                && !path.break_at.first().copied().unwrap_or(false)
+                && p.1 == 0.0
+                && q.1 == 0.0 =>
         {
             path.points.remove(0);
             path.fan_after.remove(0);
@@ -1152,7 +1196,11 @@ fn merged_end_fans(
         .and_then(|k| Some((k, *path.points.get(k)?, *path.points.get(k + 1)?)));
     let end = match (end, last_two) {
         (Some(Start::FromA(_)), Some((k, p, q)))
-            if n >= 3 && path.special_after(k) && p.0 >= 1.0 && q.0 >= 1.0 =>
+            if n >= 3
+                && path.special_after(k)
+                && !path.break_at.get(k + 1).copied().unwrap_or(false)
+                && p.0 >= 1.0
+                && q.0 >= 1.0 =>
         {
             path.points.pop();
             path.fan_after.pop();
@@ -1163,7 +1211,11 @@ fn merged_end_fans(
             Some(Start::FromA(p.1))
         }
         (Some(Start::FromB(_)), Some((k, p, q)))
-            if n >= 3 && path.special_after(k) && p.1 >= 1.0 && q.1 >= 1.0 =>
+            if n >= 3
+                && path.special_after(k)
+                && !path.break_at.get(k + 1).copied().unwrap_or(false)
+                && p.1 >= 1.0
+                && q.1 >= 1.0 =>
         {
             path.points.pop();
             path.fan_after.pop();
@@ -2079,16 +2131,19 @@ fn signed_area(samples: &[(f64, Vec3)], frame: &Frame) -> f64 {
 fn tube(a: &Rail, b: &Rail, tolerance: &Tolerance) -> Result<Connected, KernelError> {
     let tol = tolerance.linear;
     let closes_at_corner = |rail: &Rail| -> Result<bool, KernelError> {
-        let (Some((_, d_start)), Some((_, d_end))) =
-            (rail.at_side(0.0, false), rail.at_side(rail.len(), false))
-        else {
+        if rail.at_side(0.0, false).is_none() || rail.at_side(rail.len(), false).is_none() {
             return Err(no_point());
-        };
+        }
         let turn = |u: Vec3, w: Vec3| u.cross(w).length().atan2(u.dot(w));
-        Ok(match (d_end.normalized(), d_start.normalized()) {
-            (Some(u), Some(w)) => turn(u, w) > tolerance.angular,
-            _ => false,
-        })
+        Ok(
+            match (
+                rail.tangent_side(rail.len(), true),
+                rail.tangent_side(0.0, false),
+            ) {
+                (Some(u), Some(w)) => turn(u, w) > tolerance.angular,
+                _ => false,
+            },
+        )
     };
     let started;
     let a = if closes_at_corner(a)? {
@@ -2886,10 +2941,15 @@ fn ruling_turn_side(
     before_a: bool,
     before_b: bool,
 ) -> Option<(f64, f64)> {
-    let (pa, da) = pair.a.at_side(pair.sa(x), before_a)?;
-    let (pb, db) = pair.b.at_side(pair.tb(y), before_b)?;
+    let (s, t) = (pair.sa(x), pair.tb(y));
+    let (pa, pb) = (
+        pair.a.at_side(s, before_a)?.0,
+        pair.b.at_side(t, before_b)?.0,
+    );
     let d = pb - pa;
-    let (ua, ub, ud) = (da.normalized()?, db.normalized()?, d.normalized()?);
+    let ua = pair.a.tangent_side(s, before_a)?;
+    let ub = pair.b.tangent_side(t, before_b)?;
+    let ud = d.normalized()?;
     let (sa, sb) = (ua.cross(ud).length(), ub.cross(ud).length());
     if !(sa > 1e-9 && sb > 1e-9) {
         return None;
@@ -3126,7 +3186,7 @@ fn end_derivatives(
             };
             let rail = rail_of(pair, side);
             let at = if side == 0 { s } else { t };
-            let tangent = rail.at_side(at, before).and_then(|(_, d)| d.normalized());
+            let tangent = rail.tangent_side(at, before);
             *d = match tangent {
                 Some(unit) => unit * rate.dot(unit).max(0.0),
                 None => rate,
@@ -3373,16 +3433,26 @@ fn build(
                     continue;
                 };
                 let [d_lo, d_hi] = if before { ends[1] } else { ends[0] };
+                // Never skipped: an end whose plane has no direction is
+                // refused with the reason (final review of 2026-10-29: a
+                // rail standing still at its end left it unchecked).
+                let where_ = || pair.where_(s / pair.a.len(), t / pair.b.len());
                 let Some(intended) = (d_lo + d_hi).cross(pb - pa).normalized() else {
-                    continue;
+                    return Err(refused(format!(
+                        "the face's tangent plane at its end ruling {} has no direction: its rows do not leave the ruling across it",
+                        where_()
+                    )));
                 };
                 let Some(off) = end_turn(pair, intended, (s, t), before, moving) else {
-                    continue;
+                    return Err(refused(format!(
+                        "the developable's tangent plane at the end ruling {} cannot be measured: the ruling or a curve's tangent there has no direction",
+                        where_()
+                    )));
                 };
                 if off > 0.5 * tol {
                     return Err(refused(format!(
                         "the face's tangent plane at its end ruling {} turns from the developable's by {off} over the ruling (more than half the tolerance): the ruling and its curves' tangents there are not in one plane",
-                        pair.where_(s / pair.a.len(), t / pair.b.len())
+                        where_()
                     )));
                 }
                 worst = worst.max(off);
@@ -3476,17 +3546,16 @@ fn end_turn(
     before: bool,
     moving: [bool; 2],
 ) -> Option<f64> {
-    let (pa, da) = pair.a.at_side(s, before)?;
-    let (pb, db) = pair.b.at_side(t, before)?;
+    let (pa, pb) = (pair.a.at_side(s, before)?.0, pair.b.at_side(t, before)?.0);
     let d = pb - pa;
     let ud = d.normalized()?;
     let n = normal.normalized()?;
     let mut angle: f64 = 0.0;
-    for (row, tangent) in [(moving[0], da), (moving[1], db)] {
+    for (row, rail, at) in [(moving[0], pair.a, s), (moving[1], pair.b, t)] {
         if !row {
             continue;
         }
-        let expected = tangent.normalized()?.cross(ud).normalized()?;
+        let expected = rail.tangent_side(at, before)?.cross(ud).normalized()?;
         angle = angle.max(n.cross(expected).length().min(1.0).asin());
     }
     let off = angle * d.length();
@@ -3970,6 +4039,97 @@ mod tests {
         }
     }
 
+    /// A plane cubic of size `k` at height `z` whose first two and last two
+    /// control points coincide, so that `d/ds` vanishes at both its ends:
+    /// its tangent there is the limit, along `P2 - P0` at the first end and
+    /// `P5 - P3` at the last (returned with the rail).
+    fn standing_rail(k: f64, z: f64) -> (Rail, Vec3, Vec3) {
+        let p = |x: f64, y: f64| Vec3::new(x * k, y * k, z);
+        let ctrl = vec![
+            p(1.0, 0.0),
+            p(1.0, 0.0),
+            p(1.0, 0.5),
+            p(0.6, 0.9),
+            p(0.0, 1.0),
+            p(0.0, 1.0),
+        ];
+        let first = (ctrl[2] - ctrl[0]).normalized().unwrap();
+        let last = (ctrl[5] - ctrl[3]).normalized().unwrap();
+        let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0, 1.0, 1.0];
+        let curve = craft3d_geom::NurbsCurve::polynomial(3, knots, ctrl).unwrap();
+        let rail = Rail {
+            pieces: vec![RailPiece {
+                curve: Curve3::Nurbs(curve),
+                range: (0.0, 1.0),
+                reversed: false,
+                source: 0,
+            }],
+        };
+        (rail, first, last)
+    }
+
+    /// A rail whose derivative vanishes at an end ruling has that end
+    /// checked against its limit tangent (final review of 2026-10-29: the
+    /// tangent had no direction there, so the end check skipped the end
+    /// and a twisted end went through). The generalised cylinder over
+    /// [`standing_rail`] (height `k`, rulings `(s, s)`): its limit tangents
+    /// are `P2 - P0` and `P5 - P3` within 1e-9 rad; the strip from `(0, 0)`
+    /// is built within half the tolerance; its end ruling moved to
+    /// `(0, σ)`, where B's tangent has turned from A's limit tangent by
+    /// four tolerances over the ruling, is refused naming the end ruling.
+    /// At three scales.
+    #[test]
+    fn a_rail_that_stands_still_at_an_end_ruling_has_that_end_checked() {
+        for k in [1e-3, 1.0, 1e6] {
+            let tolerance = Tolerance::new(1e-6 * k, 1e-9).unwrap();
+            let h = k;
+            let (a, first, last) = standing_rail(k, 0.0);
+            let (b, _, _) = standing_rail(k, h);
+            assert!(a.at(0.0).unwrap().1.normalized().is_none(), "{k}");
+            let angle = |u: Vec3, w: Vec3| u.cross(w).length().atan2(u.dot(w));
+            assert!(
+                angle(a.tangent_side(0.0, false).unwrap(), first) < 1e-9,
+                "{k}"
+            );
+            assert!(
+                angle(a.tangent_side(1.0, true).unwrap(), last) < 1e-9,
+                "{k}"
+            );
+            let pair = Pair::new(&a, &b, tolerance.angular);
+            let exact = cylinder_strip((0.0, 0.0), 1e-3);
+            let made = build(&pair, vec![exact], &tolerance, [false, false])
+                .unwrap_or_else(|e| panic!("{k}: {e}"));
+            assert!(
+                made.deviation <= 0.5 * tolerance.linear,
+                "{k}: {}",
+                made.deviation
+            );
+            // B's tangent turns from the limit by four tolerances over
+            // the ruling at sigma (bisection on the turn, which grows
+            // from zero).
+            let target = 4.0 * tolerance.linear / h;
+            let turn = |s: f64| angle(b.at(s).unwrap().1.normalized().unwrap(), first);
+            let (mut lo, mut hi) = (0.0, 0.5);
+            for _ in 0..200 {
+                let mid = 0.5 * (lo + hi);
+                if turn(mid) < target {
+                    lo = mid
+                } else {
+                    hi = mid
+                }
+            }
+            let sigma = hi;
+            let twisted = cylinder_strip((0.0, sigma), 2.0 * sigma);
+            let e = build(&pair, vec![twisted], &tolerance, [false, false])
+                .map(|made| (made.deviation, made.unresolved))
+                .expect_err("the twisted end is refused");
+            assert!(
+                matches!(e, KernelError::Refused { .. }) && e.to_string().contains("end ruling"),
+                "{k} (sigma {sigma:e}): {e}"
+            );
+        }
+    }
+
     /// A fold noticed where a fan has just landed (the fan across a fold
     /// landing on a branch that already turns back) starts at the fan's
     /// end, which is kept (review of 2026-10-29: it was overwritten by a
@@ -4132,6 +4292,33 @@ mod tests {
         path.push_fan((1.0, 0.8));
         let (kept, _, _) = merged_end_fans(path, Start::Corner, Some(Start::FromA(0.8)));
         assert_eq!(kept.points.len(), 2);
+    }
+
+    /// An end's fan and the path's fan beside it with one apex stay two
+    /// where the faces part at their joint (a corner there, as
+    /// [`merged_fans`] keeps them; review of 2026-10-29), at either end.
+    #[test]
+    fn an_end_fan_is_not_merged_across_a_point_where_the_faces_part() {
+        let mut path = Path::default();
+        path.push((0.0, 0.0));
+        path.push((0.5, 0.5));
+        path.push((1.0, 0.7));
+        path.push_fan((1.0, 0.8));
+        path.mark_break();
+        let (kept, _, end) = merged_end_fans(path, Start::Corner, Some(Start::FromA(0.8)));
+        assert_eq!(kept.points.len(), 4);
+        assert_eq!(kept.break_at, vec![false, false, false, true]);
+        assert!(matches!(end, Some(Start::FromA(y)) if y == 0.8));
+        let mut path = Path::default();
+        path.push((0.0, 0.2));
+        path.mark_break();
+        path.push_fan((0.0, 0.3));
+        path.push((0.5, 0.5));
+        path.push((1.0, 1.0));
+        let (kept, start, _) = merged_end_fans(path, Start::FromA(0.2), None);
+        assert_eq!(kept.points.len(), 4);
+        assert_eq!(kept.break_at, vec![true, false, false, false]);
+        assert!(matches!(start, Start::FromA(y) if y == 0.2));
     }
 
     /// Faces are named by place (2026-10-28): a fold that appears or goes
