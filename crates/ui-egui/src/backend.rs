@@ -317,13 +317,29 @@ impl BodyRenderer {
                 colors,
                 &camera.to_render(),
                 &params,
-                &studio.look,
+                &cpu_look(studio.look),
                 &studio.env,
             ),
             None => craft3d_render::render_colored(mesh, colors, &camera.to_render(), &params),
         }
         .map_err(|e| e.to_string())?;
         Ok((frame, Backend::Cpu))
+    }
+}
+
+/// The studio look as the CPU draws it in the viewport: in the browser,
+/// on its one thread, the simpler look (no shadows, no occlusion), as on
+/// WebGL2 (`craft3d_gpu::Onscreen::studio_as_drawn`); on the desktop, as
+/// asked.
+fn cpu_look(look: craft3d_render::studio::Look) -> craft3d_render::studio::Look {
+    if cfg!(target_arch = "wasm32") {
+        craft3d_render::studio::Look {
+            shadows: false,
+            ao: false,
+            ..look
+        }
+    } else {
+        look
     }
 }
 

@@ -783,6 +783,8 @@ pub struct Onscreen {
     /// studio picture.
     look: Option<crate::Studio>,
     studio: Option<Result<crate::studio::StudioOnscreen, String>>,
+    /// Why the last frame asked for in the studio look was drawn plain.
+    studio_failure: Option<String>,
     /// Identifies this renderer in what it uploads.
     token: Arc<()>,
 }
@@ -1501,6 +1503,7 @@ impl Onscreen {
             depth_read_pipeline: None,
             look: None,
             studio: None,
+            studio_failure: None,
             token: Arc::new(()),
         }
     }
@@ -1512,6 +1515,13 @@ impl Onscreen {
     /// (docs/design/rendering.md, *The studio look*, *WebGL2*).
     pub fn set_studio(&mut self, look: Option<crate::Studio>) {
         self.look = look;
+    }
+
+    /// Why the last frame asked for in the studio look was drawn in the
+    /// plain look instead (its passes could not be built or made ready on
+    /// this device), or `None` when it was drawn as asked.
+    pub fn studio_failure(&self) -> Option<&str> {
+        self.studio_failure.as_deref()
     }
 
     /// The studio look this device draws for `look`: on WebGL2 without
@@ -1715,21 +1725,36 @@ impl Onscreen {
             );
         }
         let device = self.device.clone();
-        if let Some((drawn, _)) = &lit {
-            let queue = self.queue.clone();
-            match &mut self.studio {
-                Some(Ok(studio)) => guarded(&device, || {
-                    studio.ensure_size(&device, (params.width, params.height));
-                    studio.gpu.ensure_env(&device, &queue, &drawn.env)
-                })??,
-                Some(Err(why)) => {
-                    return Err(GpuError::Device(format!(
+        // A studio look that cannot be made ready draws the plain look:
+        // the viewport keeps its renderer, and the reason is kept
+        // (`studio_failure`).
+        let lit = match lit {
+            Some((drawn, numbers)) => {
+                let queue = self.queue.clone();
+                let ready = match &mut self.studio {
+                    Some(Ok(studio)) => guarded(&device, || {
+                        studio.ensure_size(&device, (params.width, params.height));
+                        studio.gpu.ensure_env(&device, &queue, &drawn.env)
+                    })
+                    .and_then(|r| r),
+                    Some(Err(why)) => Err(GpuError::Device(format!(
                         "the studio look cannot be drawn on this device: {why}"
-                    )));
+                    ))),
+                    None => Err(GpuError::NothingDrawn),
+                };
+                match ready {
+                    Ok(()) => {
+                        self.studio_failure = None;
+                        Some((drawn, numbers))
+                    }
+                    Err(why) => {
+                        self.studio_failure = Some(why.to_string());
+                        None
+                    }
                 }
-                None => return Err(GpuError::NothingDrawn),
             }
-        }
+            None => None,
+        };
         let studio_numbers = lit.map(|(_, numbers)| numbers);
         guarded(&device, || {
             self.ensure_targets(params, options.capture, overlay.edges.tile());

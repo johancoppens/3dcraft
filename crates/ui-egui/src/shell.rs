@@ -370,6 +370,9 @@ struct FrameKey {
     sketches: bool,
     /// How the bodies are lit.
     look: crate::state::LookState,
+    /// The studio look's environment is prepared (always true for the
+    /// plain look): the frame drawn plain while it was not is redrawn.
+    look_ready: bool,
     tokens: Tokens,
 }
 
@@ -857,8 +860,31 @@ fn stopwatch() -> impl FnOnce() -> Option<f64> {
 
 impl Shell {
     /// The studio look the viewport draws with, or `None` for the plain
-    /// look (and while the environment is not loaded yet, in the browser).
+    /// look, and while the environment is being prepared (on a thread of
+    /// its own on the desktop, fetched by the page in the browser): a frame
+    /// never waits for it.
     pub fn studio(&self) -> Option<craft3d_gpu::Studio> {
+        if !self.state.look.is_studio() {
+            return None;
+        }
+        let spec = self.state.look.spec().ok()?;
+        let env = spec.prepared_if_ready()?;
+        Some(craft3d_gpu::Studio {
+            env,
+            look: spec.look,
+        })
+    }
+
+    /// Whether the look can be drawn as asked now: the plain look, or the
+    /// studio look with its environment prepared.
+    fn look_ready(&self) -> bool {
+        !self.state.look.is_studio()
+            || craft3d_engine::look::environment_ready(&self.state.look.environment)
+    }
+
+    /// [`Self::studio`], waiting for the environment to be prepared: for a
+    /// picture asked for (`ui.screenshot`), which must show the look.
+    pub fn studio_now(&self) -> Option<craft3d_gpu::Studio> {
         if !self.state.look.is_studio() {
             return None;
         }
@@ -2812,8 +2838,17 @@ impl Shell {
             datums: self.state.show.datums,
             sketches: self.state.show.sketches,
             look: self.state.look.clone(),
+            look_ready: self.look_ready(),
             tokens,
         };
+        // The environment is being prepared on a thread, which cannot
+        // wake the window: look again soon. (In the browser the page asks
+        // for a repaint when it has prepared it.)
+        #[cfg(not(target_arch = "wasm32"))]
+        if !key.look_ready {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(100));
+        }
         // The direct path draws the whole picture, lines included, on the
         // window's device, every frame in full; the other paths make a
         // preview here and the sharp image elsewhere.

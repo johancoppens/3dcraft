@@ -614,3 +614,29 @@ fn the_key_and_the_rest_carry_the_environments_light() {
         }
     }
 }
+
+/// What preparing an environment costs, printed for the design document
+/// (*Cost*): the split-sum table (once per process) and each bundled
+/// environment's preparation, the moment the desktop's thread or the
+/// browser's page spends before the studio look can be drawn.
+#[test]
+fn preparing_an_environment_costs() {
+    use craft3d_render::studio::brdf::brdf_lut;
+    use craft3d_render::studio::bundled::{ENVIRONMENTS, bundled};
+    let started = std::time::Instant::now();
+    let lut = brdf_lut();
+    eprintln!("PREPARE split-sum table: {:?}", started.elapsed());
+    for name in ENVIRONMENTS {
+        let bytes = bundled(name).unwrap();
+        let started = std::time::Instant::now();
+        let image = craft3d_render::studio::decode_hdr(bytes).unwrap();
+        let decoded = started.elapsed();
+        Prepared::with_lut(&image, lut.clone()).unwrap();
+        eprintln!(
+            "PREPARE {name}: decoded in {decoded:?}, prepared in {:?} ({}x{})",
+            started.elapsed() - decoded,
+            image.width,
+            image.height
+        );
+    }
+}

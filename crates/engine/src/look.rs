@@ -157,6 +157,40 @@ impl LookSpec {
         })
     }
 
+    /// The prepared environment of a studio look, without waiting: when it
+    /// is not prepared yet, `None`, and on the desktop its preparation is
+    /// started on a thread of its own (once per environment; in the
+    /// browser the page fetches and prepares it). What the window draws
+    /// with, so that preparing never holds up a frame.
+    pub fn prepared_if_ready(&self) -> Option<Arc<Prepared>> {
+        if !self.studio {
+            return None;
+        }
+        if let Some(env) = craft3d_render::studio::bundled::ready(&self.environment) {
+            return Some(env);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            static STARTED: std::sync::Mutex<std::collections::BTreeSet<String>> =
+                std::sync::Mutex::new(std::collections::BTreeSet::new());
+            let first = STARTED
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(self.environment.clone());
+            if first {
+                let name = self.environment.clone();
+                // A failure is the same failure when it is asked for
+                // again where it is waited for (`prepared`).
+                let _ = std::thread::Builder::new()
+                    .name("craft3d environment".to_string())
+                    .spawn(move || {
+                        let _ = environment(&name);
+                    });
+            }
+        }
+        None
+    }
+
     /// The prepared environment of a studio look (`None` for the plain
     /// look). Preparing takes a moment the first time per environment.
     pub fn prepared(&self) -> Result<Option<Arc<Prepared>>, String> {

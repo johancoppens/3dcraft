@@ -1014,7 +1014,7 @@ impl Shell {
                 .map_err(|e| format!("{method}: {e}"))?;
         }
         let scene = self.sync(session);
-        let studio = self.studio();
+        let studio = self.studio_now();
         let picture = viewport::picture_lit(
             scene.as_deref(),
             &self.state.camera,
