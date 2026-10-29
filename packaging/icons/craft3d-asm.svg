@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- The icon of an assembly (.3dcraftasm): the Prompt Prism of
+       craft3d.svg with two parts joined by a pin in the top right corner.
+       Original work, MIT (ATTRIBUTION.md). The craft3d-asm-<n>.png beside
+       it are rendered from this file (docs/development.md, Packaging). -->
+  <title>3DCraft Assembly</title>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="#151413"/>
+  <rect x="9" y="9" width="238" height="238" rx="55" fill="none" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="2"/>
+  <path d="M89.9,174 L134.6,135.5 L154.2,122.8 L109.5,161.2 Z" fill="#3A1F03" stroke="#3A1F03" stroke-width="0.6" stroke-linejoin="round"/>
+  <path d="M89.9,74.3 L57,65.9 L76.6,53.2 L109.5,61.5 Z" fill="#F3CF7E" stroke="#F3CF7E" stroke-width="0.6" stroke-linejoin="round"/>
+  <path d="M134.6,135.5 L89.9,74.3 L109.5,61.5 L154.2,122.8 Z" fill="#F3CF7E" stroke="#F3CF7E" stroke-width="0.6" stroke-linejoin="round"/>
+  <path d="M57,165.6 L89.9,174 L134.6,135.5 L89.9,74.3 L57,65.9 L101.8,127.2 Z" fill="#E0A93E"/>
+  <path d="M180.9,175.4 L130.2,162.5 L149.8,149.8 L200.5,162.6 Z" fill="#F3CF7E" stroke="#F3CF7E" stroke-width="0.6" stroke-linejoin="round"/>
+  <path d="M180.9,197.1 L180.9,175.4 L200.5,162.6 L200.5,184.4 Z" fill="#9F6018" stroke="#9F6018" stroke-width="0.6" stroke-linejoin="round"/>
+  <path d="M130.2,184.2 L180.9,197.1 L180.9,175.4 L130.2,162.5 Z" fill="#E0A93E"/>
+  <rect x="140" y="52" width="46" height="46" rx="8" fill="#E0A93E" stroke="#151413" stroke-width="4"/>
+  <rect x="172" y="80" width="46" height="46" rx="8" fill="#F3CF7E" stroke="#151413" stroke-width="4"/>
+  <circle cx="179" cy="89" r="9" fill="#9F6018" stroke="#151413" stroke-width="3"/>
+</svg>

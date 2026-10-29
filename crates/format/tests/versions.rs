@@ -90,8 +90,19 @@ fn dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/versions")
 }
 
+/// The fixture's file: `vN.3dcraft`, or `vN.3dcraftasm` for a version
+/// whose fixture is an assembly (version 53, a TEMPORARY number).
+fn fixture_path(version: u32) -> PathBuf {
+    let assembly = dir().join(format!("v{version}.3dcraftasm"));
+    if assembly.is_file() {
+        assembly
+    } else {
+        dir().join(format!("v{version}.3dcraft"))
+    }
+}
+
 fn fixture(version: u32) -> Vec<u8> {
-    let path = dir().join(format!("v{version}.3dcraft"));
+    let path = fixture_path(version);
     std::fs::read(&path).unwrap_or_else(|e| {
         panic!(
             "format version {version} has no fixture `{}` ({e}): write it with the build that \
@@ -140,6 +151,7 @@ fn every_format_version_has_a_frozen_fixture() {
     // Nothing for a version this build does not know.
     let next = FORMAT_VERSION + 1;
     assert!(!dir().join(format!("v{next}.3dcraft")).exists());
+    assert!(!dir().join(format!("v{next}.3dcraftasm")).exists());
 }
 
 #[test]
@@ -148,7 +160,15 @@ fn every_fixture_opens_and_saves_as_the_current_version() {
         let bytes = fixture(version);
         let (document, warnings) = from_bytes_noted(&bytes)
             .unwrap_or_else(|e| panic!("v{version}.3dcraft does not open: {e}"));
-        assert!(!document.features.is_empty(), "v{version}");
+        // An assembly has no features of its own: its instances.
+        assert!(
+            !document.features.is_empty()
+                || document
+                    .assembly
+                    .as_ref()
+                    .is_some_and(|a| !a.instances.is_empty()),
+            "v{version}"
+        );
         // Only version 16 has something a later version reads differently:
         // its variable `floor`, a function since version 17.
         if version == 16 {

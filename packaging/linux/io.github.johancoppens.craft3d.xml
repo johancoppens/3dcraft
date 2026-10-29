@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- The .3dcraft document type and the .3dcraftjig published Jig for
+<!-- The .3dcraft document type, the .3dcraftjig published Jig and the
+     .3dcraftasm assembly for
      shared-mime-info (freedesktop.org Shared MIME-info Database
      specification). Both are a ZIP of stored entries (docs/file-formats.md),
      so the types are subclasses of application/zip and are recognised by
@@ -16,5 +17,11 @@
     <sub-class-of type="application/zip"/>
     <icon name="io.github.johancoppens.craft3d-jig"/>
     <glob pattern="*.3dcraftjig" weight="80"/>
+  </mime-type>
+  <mime-type type="application/x-craft3d-assembly">
+    <comment>3DCraft assembly</comment>
+    <sub-class-of type="application/zip"/>
+    <icon name="io.github.johancoppens.craft3d-asm"/>
+    <glob pattern="*.3dcraftasm" weight="80"/>
   </mime-type>
 </mime-info>

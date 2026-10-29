@@ -2,13 +2,13 @@
 <!-- The Windows installer of 3DCraft, for the WiX Toolset v5 (`wix build`,
      MS-RL; a build tool, not a dependency). `cargo xtask package` passes the
      variables: Version (numeric, x.y.z), BinDir (with craft3d.exe and
-     craft3d-cli.exe), Icon (craft3d.ico), JigIcon (craft3d-jig.ico) and
-     Licence (LICENSE).
+     craft3d-cli.exe), Icon (craft3d.ico), JigIcon (craft3d-jig.ico), AsmIcon
+     (craft3d-asm.ico) and Licence (LICENSE).
 
      It installs both programs into Program Files\3DCraft for all users,
      adds that folder to the system PATH (so `craft3d-cli` works in a new
      terminal), a Start menu entry, and opens .3dcraft documents and
-     .3dcraftjig Jigs with 3DCraft.
+     .3dcraftjig Jigs and .3dcraftasm assemblies with 3DCraft.
      The UpgradeCode never changes: a newer MSI replaces an older one. -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package Name="3DCraft"
@@ -23,6 +23,7 @@
 
     <Icon Id="craft3d.ico" SourceFile="$(var.Icon)" />
     <Icon Id="craft3d_jig.ico" SourceFile="$(var.JigIcon)" />
+    <Icon Id="craft3d_asm.ico" SourceFile="$(var.AsmIcon)" />
     <Property Id="ARPPRODUCTICON" Value="craft3d.ico" />
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/johancoppens/3dcraft" />
 
@@ -46,6 +47,11 @@
           </ProgId>
           <ProgId Id="Craft3D.Jig.1" Description="3DCraft Jig" Icon="craft3d_jig.ico" Advertise="yes">
             <Extension Id="3dcraftjig" ContentType="application/x-craft3d-jig">
+              <Verb Id="open" Command="Open" Argument="&quot;%1&quot;" />
+            </Extension>
+          </ProgId>
+          <ProgId Id="Craft3D.Assembly.1" Description="3DCraft assembly" Icon="craft3d_asm.ico" Advertise="yes">
+            <Extension Id="3dcraftasm" ContentType="application/x-craft3d-assembly">
               <Verb Id="open" Command="Open" Argument="&quot;%1&quot;" />
             </Extension>
           </ProgId>

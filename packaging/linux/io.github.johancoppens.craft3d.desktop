@@ -8,5 +8,5 @@ Icon=io.github.johancoppens.craft3d
 Terminal=false
 Categories=Graphics;3DGraphics;Engineering;
 Keywords=CAD;3D;parametric;modelling;STEP;STL;
-MimeType=application/x-craft3d;application/x-craft3d-jig;
+MimeType=application/x-craft3d;application/x-craft3d-jig;application/x-craft3d-assembly;
 StartupWMClass=io.github.johancoppens.craft3d

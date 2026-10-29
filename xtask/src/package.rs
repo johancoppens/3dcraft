@@ -365,6 +365,11 @@ impl Packer {
         self.packaging(&format!("icons/craft3d-jig-{size}.png"))
     }
 
+    /// The icon of an assembly (`.3dcraftasm`).
+    fn asm_icon(&self, size: u32) -> PathBuf {
+        self.packaging(&format!("icons/craft3d-asm-{size}.png"))
+    }
+
     fn binary(&self, name: &str) -> Result<PathBuf, String> {
         let file = self
             .bin_dir
@@ -428,6 +433,21 @@ impl Packer {
         copy(
             &self.packaging("icons/craft3d-jig.svg"),
             &share.join(format!("icons/hicolor/scalable/mimetypes/{APP_ID}-jig.svg")),
+            false,
+        )?;
+        // And so has the assembly's.
+        for size in ICON_SIZES.iter().filter(|s| **s <= 512) {
+            copy(
+                &self.asm_icon(*size),
+                &share.join(format!(
+                    "icons/hicolor/{size}x{size}/mimetypes/{APP_ID}-asm.png"
+                )),
+                false,
+            )?;
+        }
+        copy(
+            &self.packaging("icons/craft3d-asm.svg"),
+            &share.join(format!("icons/hicolor/scalable/mimetypes/{APP_ID}-asm.svg")),
             false,
         )
     }
@@ -541,6 +561,8 @@ impl Packer {
         write(&contents.join("Resources").join("craft3d.icns"), &icns)?;
         let jig = icns_of(&self.jig_icon_pngs(&ICNS_SIZES)?)?;
         write(&contents.join("Resources").join("craft3d-jig.icns"), &jig)?;
+        let asm = icns_of(&self.asm_icon_pngs(&ICNS_SIZES)?)?;
+        write(&contents.join("Resources").join("craft3d-asm.icns"), &asm)?;
         copy(
             &self.repo.join("LICENSE"),
             &contents.join("Resources").join("LICENSE"),
@@ -610,6 +632,8 @@ impl Packer {
         write(&dir.join("craft3d.ico"), &ico)?;
         let jig = ico_of(&self.jig_icon_pngs(&ICO_SIZES)?)?;
         write(&dir.join("craft3d-jig.ico"), &jig)?;
+        let asm = ico_of(&self.asm_icon_pngs(&ICO_SIZES)?)?;
+        write(&dir.join("craft3d-asm.ico"), &asm)?;
         Ok(dir)
     }
 
@@ -662,6 +686,8 @@ impl Packer {
                 .arg("-d")
                 .arg(format!("JigIcon={}", dir.join("craft3d-jig.ico").display()))
                 .arg("-d")
+                .arg(format!("AsmIcon={}", dir.join("craft3d-asm.ico").display()))
+                .arg("-d")
                 .arg(format!("Licence={}", dir.join("LICENSE.txt").display()))
                 .arg("-o")
                 .arg(&file),
@@ -677,6 +703,10 @@ impl Packer {
 
     fn jig_icon_pngs(&self, sizes: &[u32]) -> Result<Vec<Vec<u8>>, String> {
         sizes.iter().map(|s| read(&self.jig_icon(*s))).collect()
+    }
+
+    fn asm_icon_pngs(&self, sizes: &[u32]) -> Result<Vec<Vec<u8>>, String> {
+        sizes.iter().map(|s| read(&self.asm_icon(*s))).collect()
     }
 }
 
@@ -1014,6 +1044,18 @@ mod tests {
             ICO_SIZES.len()
         );
         assert_eq!(&icns_of(&jig(&ICNS_SIZES)).unwrap()[..4], b"icns");
+        // And the assembly's.
+        let asm = |sizes: &[u32]| -> Vec<Vec<u8>> {
+            sizes
+                .iter()
+                .map(|n| std::fs::read(root.join(format!("craft3d-asm-{n}.png"))).unwrap())
+                .collect()
+        };
+        assert_eq!(
+            usize::from(ico_of(&asm(&ICO_SIZES)).unwrap()[4]),
+            ICO_SIZES.len()
+        );
+        assert_eq!(&icns_of(&asm(&ICNS_SIZES)).unwrap()[..4], b"icns");
     }
 
     /// The files the packages carry are in the repository and agree with
@@ -1026,11 +1068,19 @@ mod tests {
             assert_eq!(png_size(&png).unwrap(), (size, size), "icon {size}");
             let png = std::fs::read(root.join(format!("icons/craft3d-jig-{size}.png"))).unwrap();
             assert_eq!(png_size(&png).unwrap(), (size, size), "Jig icon {size}");
+            let png = std::fs::read(root.join(format!("icons/craft3d-asm-{size}.png"))).unwrap();
+            assert_eq!(
+                png_size(&png).unwrap(),
+                (size, size),
+                "assembly icon {size}"
+            );
         }
         let desktop =
             std::fs::read_to_string(root.join(format!("linux/{APP_ID}.desktop"))).unwrap();
         assert!(desktop.contains(&format!("Icon={APP_ID}\n")));
-        assert!(desktop.contains("MimeType=application/x-craft3d;application/x-craft3d-jig;"));
+        assert!(desktop.contains(
+            "MimeType=application/x-craft3d;application/x-craft3d-jig;application/x-craft3d-assembly;"
+        ));
         let mime = std::fs::read_to_string(root.join(format!("linux/{APP_ID}.xml"))).unwrap();
         assert!(mime.contains("type=\"application/x-craft3d\""));
         assert!(mime.contains("*.3dcraft\""));
@@ -1039,12 +1089,20 @@ mod tests {
         assert!(mime.contains("type=\"application/x-craft3d-jig\""));
         assert!(mime.contains("*.3dcraftjig\""));
         assert!(mime.contains(&format!("<icon name=\"{APP_ID}-jig\"/>")));
+        // The assembly: its own type, glob and icon (docs/decisions.md,
+        // 2026-10-29).
+        assert!(mime.contains("type=\"application/x-craft3d-assembly\""));
+        assert!(mime.contains("*.3dcraftasm\""));
+        assert!(mime.contains(&format!("<icon name=\"{APP_ID}-asm\"/>")));
         let plist = std::fs::read_to_string(root.join("macos/Info.plist")).unwrap();
         assert!(plist.contains(&format!("<string>{APP_ID}</string>")));
         assert!(plist.contains("<string>3dcraft</string>"));
         assert!(plist.contains("<string>3dcraftjig</string>"));
         assert!(plist.contains(&format!("<string>{APP_ID}.jig</string>")));
         assert!(plist.contains("<string>craft3d-jig</string>"));
+        assert!(plist.contains("<string>3dcraftasm</string>"));
+        assert!(plist.contains(&format!("<string>{APP_ID}.assembly</string>")));
+        assert!(plist.contains("<string>craft3d-asm</string>"));
         assert!(plist.contains("@VERSION@"));
         let wxs = std::fs::read_to_string(root.join("windows/craft3d.wxs")).unwrap();
         assert!(wxs.contains("Extension Id=\"3dcraft\""));
@@ -1052,8 +1110,13 @@ mod tests {
             wxs.contains("Extension Id=\"3dcraftjig\" ContentType=\"application/x-craft3d-jig\"")
         );
         assert!(wxs.contains("$(var.JigIcon)"));
+        assert!(wxs.contains(
+            "Extension Id=\"3dcraftasm\" ContentType=\"application/x-craft3d-assembly\""
+        ));
+        assert!(wxs.contains("$(var.AsmIcon)"));
         let install = std::fs::read_to_string(root.join("linux/install.sh")).unwrap();
         assert!(install.contains("mimetypes/$id-jig.*"));
+        assert!(install.contains("mimetypes/$id-asm.*"));
         // The window's app id is the desktop file's name, so a Wayland
         // compositor finds the icon and the entry.
         let app = std::fs::read_to_string(repo_root().join("apps/craft3d/src/app.rs")).unwrap();
@@ -1071,6 +1134,8 @@ mod tests {
             "craft3d-small.svg",
             "craft3d-jig.svg",
             "craft3d-jig-small.svg",
+            "craft3d-asm.svg",
+            "craft3d-asm-small.svg",
         ] {
             let svg =
                 std::fs::read_to_string(repo_root().join("packaging/icons").join(name)).unwrap();

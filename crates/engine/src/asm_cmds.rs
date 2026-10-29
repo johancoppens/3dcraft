@@ -367,7 +367,7 @@ fn solve_json(placed: &Placed, assembly: &Assembly) -> Value {
     let dof: Vec<Value> = placed
         .instances
         .iter()
-        .filter(|i| i.error.is_none())
+        .filter(|i| i.error.is_none() && !i.flexed)
         .zip(placed.dof.iter().map(Some).chain(std::iter::repeat(None)))
         .map(|(i, d)| json!({ "instance": i.name, "dof": d }))
         .collect();

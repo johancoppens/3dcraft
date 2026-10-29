@@ -210,7 +210,13 @@ fn the_file_of_every_format_version_regenerates_to_what_its_build_made() {
     for version in 1..=FORMAT_VERSION {
         let want = expected(version);
         assert_eq!(want["format_version"], version, "v{version}.expected.json");
-        let name = format!("v{version}.3dcraft");
+        // An assembly's fixture is a .3dcraftasm file (version 53, a
+        // TEMPORARY number).
+        let name = if fixtures().join(format!("v{version}.3dcraftasm")).is_file() {
+            format!("v{version}.3dcraftasm")
+        } else {
+            format!("v{version}.3dcraft")
+        };
         std::fs::copy(fixtures().join(&name), dir.join(&name)).unwrap();
         let mut s = session_in(&dir);
         run(&mut s, "file.open", json!({"path": name}));
@@ -253,7 +259,8 @@ fn the_file_of_every_format_version_regenerates_to_what_its_build_made() {
         }
 
         // Saved again: the current version, and the same bodies, exactly.
-        let again = format!("v{version}-saved.3dcraft");
+        let extension = name.rsplit('.').next().unwrap_or("3dcraft");
+        let again = format!("v{version}-saved.{extension}");
         run(&mut s, "file.save", json!({"path": again}));
         let text = String::from_utf8_lossy(&std::fs::read(dir.join(&again)).unwrap()).to_string();
         assert!(

@@ -755,3 +755,88 @@ fn the_assembly_commands_refuse_what_they_cannot_do() {
     run(&mut s, "assembly.new", json!({}));
     assert!(error(&mut s, "feature.block", json!({ "size": [1, 1, 1] })).contains("assembly"));
 }
+
+/// A flexible subassembly gives its instances and mates to the parent's
+/// solve (named `Sub/Inner`); placed the same as rigid while nothing in
+/// the parent moves them, and a parent's mate can name its instances.
+#[test]
+fn a_flexible_subassembly_is_solved_with_its_parent() {
+    let dir = workdir("assembly", "flexible");
+    let mut s = session_in(&dir);
+    block_part(&mut s, "block.3dcraft", [10.0, 2.0, 2.0], 1e-6);
+    run(&mut s, "assembly.new", json!({}));
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "block.3dcraft", "name": "Base" }),
+    );
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "block.3dcraft", "name": "Arm" }),
+    );
+    run(
+        &mut s,
+        "mate.add",
+        json!({ "kind": "fixed", "a": "world/xy", "b": "Base/F1:face(0)" }),
+    );
+    run(
+        &mut s,
+        "mate.add",
+        json!({ "kind": "revolute", "a": "Base/F1:face(1)", "b": "Arm/F1:face(0)", "name": "Hinge" }),
+    );
+    run(
+        &mut s,
+        "joint.set",
+        json!({ "mate": "Hinge", "value": "90 deg" }),
+    );
+    run(&mut s, "file.save", json!({ "path": "leg.3dcraftasm" }));
+    let mut boxes = Vec::new();
+    for mode in ["rigid", "flexible"] {
+        run(&mut s, "assembly.new", json!({}));
+        run(
+            &mut s,
+            "instance.add",
+            json!({ "source": "leg.3dcraftasm", "name": "Leg", "mode": mode, "position": [0, 0, 5] }),
+        );
+        run(
+            &mut s,
+            "instance.add",
+            json!({ "source": "block.3dcraft", "name": "Lid" }),
+        );
+        let m = run(
+            &mut s,
+            "mate.add",
+            json!({ "kind": "fixed", "a": "Leg/Arm/F1:face(1)", "b": "Lid/F1:face(0)" }),
+        );
+        assert_eq!(m["status"], "ok", "{mode}: {m}");
+        let i = inspect(&mut s);
+        assert_eq!(i["bodies"], 3, "{mode}: {i}");
+        let solved = run(&mut s, "assembly.solve", json!({}));
+        assert_eq!(solved["ok"], true, "{mode}: {solved}");
+        if mode == "flexible" {
+            let names: Vec<&str> = solved["dof"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|d| d["instance"].as_str().unwrap())
+                .collect();
+            assert!(names.contains(&"Leg/Arm"), "{solved}");
+        }
+        boxes.push((boxed(&i, "Leg"), boxed(&i, "Lid")));
+    }
+    let ((l0, h0), (l1, h1)) = (boxes[0].0, boxes[1].0);
+    for k in 0..3 {
+        assert!(
+            close(l0[k], l1[k], 1.0) && close(h0[k], h1[k], 1.0),
+            "{boxes:?}"
+        );
+    }
+    let ((a, b), (c, d)) = (boxes[0].1, boxes[1].1);
+    for k in 0..3 {
+        assert!(
+            close(a[k], c[k], 1.0) && close(b[k], d[k], 1.0),
+            "{boxes:?}"
+        );
+    }
+}

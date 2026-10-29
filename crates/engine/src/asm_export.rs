@@ -62,7 +62,11 @@ fn leaves_of(
             if depth > crate::asm::MAX_DEPTH {
                 return;
             }
-            for inner in placed.instances.iter().filter(|i| i.error.is_none()) {
+            for inner in placed
+                .instances
+                .iter()
+                .filter(|i| i.error.is_none() && !i.flexed)
+            {
                 leaves_of(
                     inner,
                     &inner.pose.then(pose),
@@ -77,7 +81,12 @@ fn leaves_of(
 
 fn leaves(placed: &Placed, only: Option<&[FeatureId]>) -> Vec<Leaf> {
     let mut out = Vec::new();
-    for st in placed.instances.iter().filter(|i| i.error.is_none()) {
+    // A flexible subassembly's bodies are its instances'.
+    for st in placed
+        .instances
+        .iter()
+        .filter(|i| i.error.is_none() && !i.flexed)
+    {
         if only.is_some_and(|only| !st.bodies.iter().any(|b| only.contains(b))) {
             continue;
         }

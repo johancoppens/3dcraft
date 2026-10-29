@@ -10,7 +10,8 @@ rm -f "$prefix/bin/craft3d" "$prefix/bin/craft3d-cli" \
   "$prefix/share/mime/packages/$id.xml" \
   "$prefix/share/metainfo/$id.metainfo.xml" \
   "$prefix"/share/icons/hicolor/*/apps/$id.* \
-  "$prefix"/share/icons/hicolor/*/mimetypes/$id-jig.*
+  "$prefix"/share/icons/hicolor/*/mimetypes/$id-jig.* \
+  "$prefix"/share/icons/hicolor/*/mimetypes/$id-asm.*
 
 command -v update-mime-database >/dev/null 2>&1 && update-mime-database "$prefix/share/mime" || true
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$prefix/share/applications" || true

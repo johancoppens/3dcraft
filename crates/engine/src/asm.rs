@@ -90,6 +90,12 @@ pub(crate) struct InstanceState {
     pub built: Option<Arc<Built>>,
     /// The picked body's feature in the source, when one is picked.
     pub picked: Option<FeatureId>,
+    /// A flexible subassembly: its own instances take its place in the
+    /// solve (named `Sub/Inner`), with its mates; it is not solved itself.
+    pub flexed: bool,
+    /// For an instance of a flexible subassembly: that subassembly's
+    /// instance name.
+    pub flex_of: Option<String>,
 }
 
 /// A mate as solved.
@@ -120,6 +126,19 @@ pub(crate) struct Placed {
     pub floating: bool,
     /// Degrees of freedom left, per instance (in order), when solved.
     pub dof: Vec<usize>,
+    /// Its own mates as the solver took them, each side by the name of
+    /// its instance (`None`: the world): what a parent that holds it as a
+    /// flexible subassembly solves with its own.
+    pub specs: Vec<NamedSpec>,
+}
+
+/// A mate as the solver takes it, its two sides by instance name (`None`
+/// for the world) rather than by index.
+#[derive(Clone)]
+pub(crate) struct NamedSpec {
+    pub a: Option<String>,
+    pub b: Option<String>,
+    pub spec: solver::MateSpec,
 }
 
 impl Placed {
@@ -407,6 +426,8 @@ pub(crate) fn place(
             bodies: Vec::new(),
             built: None,
             picked: None,
+            flexed: false,
+            flex_of: None,
         };
         let prepared = (|| -> Result<(String, Arc<Document>, BTreeMap<String, String>), String> {
             let (blob, changed) = source_bytes(assembly, instance, base, &files)?;
@@ -513,11 +534,14 @@ pub(crate) fn place(
             None => st.error = Some("its configuration was not built".to_string()),
         }
     }
+    // A flexible subassembly gives its instances and mates to the solve.
+    let extra = flex(assembly, &mut instances);
     // 3. and 4. Frames and the solve.
-    let (mates, solve_error, floating, dof) =
-        solve_mates(doc, assembly, values.as_ref(), &mut instances);
+    let (mates, solve_error, floating, dof, specs) =
+        solve_mates(doc, assembly, values.as_ref(), &mut instances, &extra);
     // 5. Placed bodies.
     let mut placed = build_shown(doc, assembly, &mut instances);
+    placed.specs = specs;
     placed.mates = mates;
     placed.solve_error = solve_error;
     placed.floating = floating;
@@ -534,6 +558,55 @@ pub(crate) fn place(
     placed
 }
 
+/// Each flexible subassembly's instances added to `instances` as
+/// `Sub/Inner`, starting where the subassembly puts them, and its mates
+/// (by those names), its world being the subassembly's placement. The
+/// subassembly itself is then not solved.
+fn flex(assembly: &Assembly, instances: &mut Vec<InstanceState>) -> Vec<NamedSpec> {
+    let mut extra = Vec::new();
+    let mut added = Vec::new();
+    for (st, instance) in instances.iter_mut().zip(&assembly.instances) {
+        if st.error.is_some() || instance.mode != craft3d_doc::InstanceMode::Flexible {
+            continue;
+        }
+        let Some(Built::Assembly(sub)) = st.built.as_deref() else {
+            continue;
+        };
+        st.flexed = true;
+        let anchor = st.pose;
+        let prefixed = |inner: &str| format!("{}/{inner}", st.name);
+        for inner in sub
+            .instances
+            .iter()
+            .filter(|i| i.error.is_none() && !i.flexed)
+        {
+            let mut child = inner.clone();
+            child.name = prefixed(&inner.name);
+            child.pose = inner.pose.then(&anchor);
+            child.bodies = Vec::new();
+            child.flex_of = Some(st.name.clone());
+            added.push(child);
+        }
+        for named in &sub.specs {
+            let mut spec = named.spec.clone();
+            // The subassembly's world is where it is placed.
+            if named.a.is_none() {
+                spec.a.1 = spec.a.1.moved(&anchor);
+            }
+            if named.b.is_none() {
+                spec.b.1 = spec.b.1.moved(&anchor);
+            }
+            extra.push(NamedSpec {
+                a: named.a.as_deref().map(prefixed),
+                b: named.b.as_deref().map(prefixed),
+                spec,
+            });
+        }
+    }
+    instances.extend(added);
+    extra
+}
+
 /// The placement of a document that has nothing to place.
 fn empty(doc: &Document, error: Option<String>) -> Placed {
     let mut shown = doc.clone();
@@ -547,6 +620,7 @@ fn empty(doc: &Document, error: Option<String>) -> Placed {
         solve_error: error,
         floating: false,
         dof: Vec::new(),
+        specs: Vec::new(),
     }
 }
 
@@ -632,10 +706,14 @@ fn build_shown(doc: &Document, assembly: &Assembly, instances: &mut [InstanceSta
     shown.inserted.clear();
     let mut results = Vec::new();
     let mut next = 1u64;
-    for (st, instance) in instances.iter_mut().zip(&assembly.instances) {
-        if st.error.is_some() {
+    for st in instances.iter_mut() {
+        // A flexible subassembly is drawn through its instances.
+        if st.error.is_some() || st.flexed {
             continue;
         }
+        let Some(instance) = assembly.instance(st.flex_of.as_deref().unwrap_or(&st.name)) else {
+            continue;
+        };
         let bodies = bodies_of(st);
         let several = bodies.len() > 1;
         let file_name = match &instance.source {
@@ -714,6 +792,16 @@ fn build_shown(doc: &Document, assembly: &Assembly, instances: &mut [InstanceSta
         }
     }
     shown.next_feature_id = next;
+    // A flexible subassembly holds its instances' bodies.
+    let children: Vec<(String, Vec<FeatureId>)> = instances
+        .iter()
+        .filter_map(|i| Some((i.flex_of.clone()?, i.bodies.clone())))
+        .collect();
+    for (parent, ids) in children {
+        if let Some(st) = instances.iter_mut().find(|i| i.name == parent) {
+            st.bodies.extend(ids);
+        }
+    }
     Placed {
         doc: Arc::new(shown),
         regen: Arc::new(Regen {
@@ -725,6 +813,7 @@ fn build_shown(doc: &Document, assembly: &Assembly, instances: &mut [InstanceSta
         solve_error: None,
         floating: false,
         dof: Vec::new(),
+        specs: Vec::new(),
     }
 }
 
@@ -773,9 +862,23 @@ pub(crate) fn frame_in(
             let (inner, rest) = name.split_once('/').ok_or_else(|| {
                 format!("`{name}` names no instance of the subassembly: write `Inner/Feature:name`")
             })?;
-            let st = placed
+            let mut st = placed
                 .instance(inner)
                 .ok_or_else(|| format!("the subassembly has no instance `{inner}`"))?;
+            let mut rest = rest;
+            // Through a flexible subassembly of it: its instance.
+            if st.flexed {
+                let (deeper, after) = rest.split_once('/').ok_or_else(|| {
+                    format!(
+                        "`{inner}` is a flexible subassembly: write `{inner}/Inner/Feature:name`"
+                    )
+                })?;
+                let child = format!("{inner}/{deeper}");
+                st = placed
+                    .instance(&child)
+                    .ok_or_else(|| format!("the subassembly has no instance `{child}`"))?;
+                rest = after;
+            }
             if let Some(why) = &st.error {
                 return Err(format!(
                     "the subassembly's instance `{inner}` is not placed: {why}"
@@ -963,29 +1066,48 @@ fn side(
     if r.instance == WORLD {
         return Ok((solver::WORLD, world_frame(&r.name)?));
     }
-    let st = instances
+    let mut st = instances
         .iter()
         .find(|i| i.name == r.instance)
         .ok_or_else(|| format!("there is no instance `{}`", r.instance))?;
+    let mut name = r.name.as_str();
+    // Through a flexible subassembly: the instance of it that is solved.
+    if st.flexed {
+        let (inner, rest) = name.split_once('/').ok_or_else(|| {
+            format!(
+                "`{}` is a flexible subassembly: write `{}/Inner/Feature:name`",
+                r.instance, r.instance
+            )
+        })?;
+        let child = format!("{}/{inner}", r.instance);
+        st = instances
+            .iter()
+            .find(|i| i.name == child)
+            .ok_or_else(|| format!("the subassembly `{}` has no instance `{inner}`", r.instance))?;
+        name = rest;
+    }
     if let Some(why) = &st.error {
-        return Err(format!(
-            "its instance `{}` is not placed: {why}",
-            r.instance
-        ));
+        return Err(format!("its instance `{}` is not placed: {why}", st.name));
     }
     let built = st
         .built
         .as_ref()
-        .ok_or_else(|| format!("its instance `{}` is not built", r.instance))?;
-    let frame = frame_in(built, st.picked, &r.name).map_err(|e| format!("`{r}`: {e}"))?;
+        .ok_or_else(|| format!("its instance `{}` is not built", st.name))?;
+    let frame = frame_in(built, st.picked, name).map_err(|e| format!("`{r}`: {e}"))?;
     let at = index
-        .get(&r.instance)
+        .get(&st.name)
         .copied()
-        .ok_or_else(|| format!("its instance `{}` is not placed", r.instance))?;
+        .ok_or_else(|| format!("its instance `{}` is not placed", st.name))?;
     Ok((at, frame))
 }
 
-type Solved = (Vec<MateState>, Option<String>, bool, Vec<usize>);
+type Solved = (
+    Vec<MateState>,
+    Option<String>,
+    bool,
+    Vec<usize>,
+    Vec<NamedSpec>,
+);
 
 /// The mates' frames and the solve; the poses go into `instances`.
 fn solve_mates(
@@ -993,17 +1115,19 @@ fn solve_mates(
     assembly: &Assembly,
     values: Option<&craft3d_expr::Evaluation>,
     instances: &mut [InstanceState],
+    extra: &[NamedSpec],
 ) -> Solved {
+    let solvable = |i: &InstanceState| i.error.is_none() && !i.flexed;
     let index: BTreeMap<String, usize> = instances
         .iter()
-        .filter(|i| i.error.is_none())
+        .filter(|i| solvable(i))
         .enumerate()
         .map(|(k, i)| (i.name.clone(), k))
         .collect();
     let solved: Vec<usize> = instances
         .iter()
         .enumerate()
-        .filter(|(_, i)| i.error.is_none())
+        .filter(|(_, i)| solvable(i))
         .map(|(k, _)| k)
         .collect();
     let mut states = Vec::with_capacity(assembly.mates.len());
@@ -1122,6 +1246,40 @@ fn solve_mates(
             });
         }
     }
+    // Its own mates by instance name, for a parent that holds it as a
+    // flexible subassembly.
+    let name_of = |k: usize| -> Option<String> {
+        if k == solver::WORLD {
+            None
+        } else {
+            solved
+                .get(k)
+                .and_then(|&i| instances.get(i))
+                .map(|i| i.name.clone())
+        }
+    };
+    let named: Vec<NamedSpec> = specs
+        .iter()
+        .map(|spec| NamedSpec {
+            a: name_of(spec.a.0),
+            b: name_of(spec.b.0),
+            spec: spec.clone(),
+        })
+        .collect();
+    // The mates of its flexible subassemblies, by the names of their
+    // instances here.
+    for e in extra {
+        let at = |name: &Option<String>| match name {
+            None => Some(solver::WORLD),
+            Some(n) => index.get(n).copied(),
+        };
+        if let (Some(a), Some(b)) = (at(&e.a), at(&e.b)) {
+            let mut spec = e.spec.clone();
+            spec.a.0 = a;
+            spec.b.0 = b;
+            specs.push(spec);
+        }
+    }
     let touches_world = specs
         .iter()
         .any(|s| s.a.0 == solver::WORLD || s.b.0 == solver::WORLD);
@@ -1152,7 +1310,7 @@ fn solve_mates(
                     st.free = solution.free.get(s).copied().flatten();
                 }
             }
-            (states, None, floating, solution.dof)
+            (states, None, floating, solution.dof, named)
         }
         Err(diagnosis) => {
             let text = match diagnosis {
@@ -1171,7 +1329,7 @@ fn solve_mates(
                 }
                 solver::Diagnosis::Unsupported(why) | solver::Diagnosis::Invalid(why) => why,
             };
-            (states, Some(text), floating, Vec::new())
+            (states, Some(text), floating, Vec::new(), named)
         }
     }
 }

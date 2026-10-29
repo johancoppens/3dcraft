@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <!-- The assembly icon drawn for 16 pixels: craft3d-small.svg with the
+       two joined parts of craft3d-asm.svg on the pixel grid. Original work,
+       MIT (ATTRIBUTION.md). craft3d-asm-16.png is rendered from this file
+       (docs/development.md, Packaging). -->
+  <title>3DCraft Assembly</title>
+  <rect x="0" y="0" width="16" height="16" rx="3.5" fill="#151413"/>
+  <path d="M3 3 L8 8 L3 13 L1.6 11.6 L5.2 8 L1.6 4.4 Z" fill="#9F6018" transform="translate(1 1)"/>
+  <path d="M3 3 L8 8 L3 13 L1.6 11.6 L5.2 8 L1.6 4.4 Z" fill="#E0A93E" transform="translate(0.5 0)"/>
+  <rect x="9" y="2" width="4" height="4" fill="#E0A93E"/>
+  <rect x="11" y="4" width="4" height="4" fill="#F3CF7E"/>
+  <rect x="11" y="4" width="2" height="2" fill="#9F6018"/>
+</svg>

@@ -12,7 +12,7 @@ install -Dm755 "$here/bin/craft3d" "$prefix/bin/craft3d"
 install -Dm755 "$here/bin/craft3d-cli" "$prefix/bin/craft3d-cli"
 install -Dm644 "$here/share/mime/packages/$id.xml" "$prefix/share/mime/packages/$id.xml"
 install -Dm644 "$here/share/metainfo/$id.metainfo.xml" "$prefix/share/metainfo/$id.metainfo.xml"
-for icon in "$here"/share/icons/hicolor/*/apps/$id.* "$here"/share/icons/hicolor/*/mimetypes/$id-jig.*; do
+for icon in "$here"/share/icons/hicolor/*/apps/$id.* "$here"/share/icons/hicolor/*/mimetypes/$id-jig.* "$here"/share/icons/hicolor/*/mimetypes/$id-asm.*; do
   rel="${icon#"$here"/}"
   install -Dm644 "$icon" "$prefix/$rel"
 done

@@ -62,6 +62,20 @@
         <string>io.github.johancoppens.craft3d.jig</string>
       </array>
     </dict>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>3DCraft Assembly</string>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>CFBundleTypeIconFile</key>
+      <string>craft3d-asm</string>
+      <key>LSHandlerRank</key>
+      <string>Owner</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>io.github.johancoppens.craft3d.assembly</string>
+      </array>
+    </dict>
   </array>
   <key>UTExportedTypeDeclarations</key>
   <array>
@@ -110,6 +124,30 @@
         <key>public.mime-type</key>
         <array>
           <string>application/x-craft3d-jig</string>
+        </array>
+      </dict>
+    </dict>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>io.github.johancoppens.craft3d.assembly</string>
+      <key>UTTypeDescription</key>
+      <string>3DCraft assembly</string>
+      <key>UTTypeIconFile</key>
+      <string>craft3d-asm</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.data</string>
+        <string>public.content</string>
+      </array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
+          <string>3dcraftasm</string>
+        </array>
+        <key>public.mime-type</key>
+        <array>
+          <string>application/x-craft3d-assembly</string>
         </array>
       </dict>
     </dict>
