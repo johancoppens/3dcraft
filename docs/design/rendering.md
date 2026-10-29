@@ -230,3 +230,20 @@ more than one level apart outside the band (no pixel over one); the viewport's r
 Vulkan, one on GL) on six scenes, at most 2 levels and at most 2 pixels over one level (the torus: 2 of
 7 541 covered, 1/3 770). The bounds are those numbers with a margin of two (the largest difference)
 and of about four (the share); ids equal everywhere outside the band.
+
+**Cost** (`studio_frames_on_a_thousand_faces`, Strix run 40933205051, 2026-10-29): a grid of the
+reference solids, 1 002 faces and 190 096 triangles, at 1020×777, on the Strix's Radeon 8060S. The
+viewport's renderer, until the GPU is done: plain 1.03 ms, studio 3.94 ms, studio without shadows and
+occlusion 2.13 ms (Vulkan, four samples); 0.58, 2.67 and 0.74 ms (GL, one sample). The readback renderer
+with the read back: 13.5 ms plain, 16.0 ms studio (Vulkan). The CPU renderer: 183 ms for the studio
+frame. llvmpipe, for scale: 49 ms plain, 186 ms studio in the viewport.
+
+**Looked at** (2026-10-29, `target/evidence/render-rl1/`: flange, gear, bracket and a gear reducer, plain
+and studio, the gear in the other environments and in ACES): no banding in the background, no shadow
+acne, no occlusion halos. Two findings, left as they are for the developer: in `studio` (Studio Small 09)
+the key the extraction finds is low (13° above the horizon) and weak beside the rest of the light
+(irradiance 0.70 against about 3), so its shadows are faint; `outdoor` gives clear ones. And AgX lifts and
+desaturates dark saturated colours, as it is made to: a navy housing (sRGB 86, 108, 145) reads paler in
+the studio look than in the plain one (AgX alone maps it to about 100, 119, 149 before the light's
+specular part is added); ACES keeps more of its colour (about 65, 92, 137). A punchier default (ACES, or
+AgX with a saturation look) is a choice of taste, not a fix.
