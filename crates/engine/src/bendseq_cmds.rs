@@ -40,7 +40,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[spec!(
     "sheetMetal.bendSequence",
     "Bend Sequence",
     r#"{"feature": id or name, "punch": [[x, y], ...], "die": [[x, y], ...], "length": number or [number or null, ...] (one per flange) = the part's reach, "segmented": boolean = false, "clearance": number = the document's tolerance, "order": [flange or [flange, ...], ...] = searched, "maxWork": number = 20000}"#,
-    "Checks whether a sheet-metal part (feature.sheetMetal) can be bent on a press brake with the punch and die given, and finds an order of its bends (changes nothing). punch and die are closed polygons (at least 3 points, in the document's length unit) in the plane square to a bend: the punch's with the centre of its tip at the origin and its body along +y, the die's with the point under the bend on the part's outer skin at the origin and its body below (y < 0); each is extruded along the bend: one piece length long centred on the middle of the bends made in the stroke (default: long enough to cover the whole part), or, with segmented true or a list of lengths, segmented tooling set up per bend, a segment per bend centred on its middle, as long as length gives for it (one number for every bend, or a list of one per flange with null for the bend's own) or else as long as the bend; unchecked states which. Bends on one line of one flat with the same angle, direction, radius and K-factor (tabs on one edge) are made in one stroke. At every bend both stand in the bend's frame: origin on the bend's axis (the die's R + T further out), y along the bisector of the two flats towards the inside (as on a press brake where both legs rise half the angle), z along the axis. A step, a bend made with some others already made and the rest still flat, clears when the proven distance (its lower bound) between the punch and every piece of the part but that bend's own strip and its two flats, and between the die counted lowered (moved away from the punch) by clearance plus the document's tolerance and every piece but the bend's own strip, is at least clearance over the whole stroke from 0 to the bend's angle (so the sheet may rest on the die's top, but not go into it by more than the tolerance nor come nearer than clearance from any other side), with the part as it lies or turned end for end (about the tools' y, as an operator turns it: the tools mirrored in x; segments stay at their bends), unless both tools are their own mirror image (the same polygon, compared as a cyclic list of points): proven at eight stroke angles, and between two of them less how far any point of the part can move against the tools in between (half its distance from the bend's axis, the farthest at either end of the stroke, plus the bend's neutral radius, per radian), the interval halved (to 1/1024 of the stroke) until that holds, or, for a die wholly below its top (y <= 0), by the piece's lowest point staying above the die's top less the tolerance between them (its height bounded by its heights there and how fast it can bend, halved as needed: what proves a piece lifting off the die); a piece and a tool wholly inside one another count as 0. With order (a list of strokes, each a flange or a list of flanges on one line; every flange once) that order is checked step by step, every step, instead of a search. Otherwise the order is searched depth first over all orders of the strokes, the bends whose flanges carry the fewest others first (then the shorter flange, then the lower index), every set of bends made that leads nowhere remembered. Returns feasible, given (whether the order was given), order (the strokes, first bent first: a flange by index, or a list for a stroke of several; null when none clears), steps (per stroke of the order, also those that cleared of an order given that does not: flange (its first), flanges, segments (with segmented tooling: the tools' length at each of its bends), done (the flanges made before it), least (the least distance to the punch proven at the stroke angles measured), at (the stroke angle of it, degrees), proven (the least distance to the punch proven over the whole stroke, between the angles measured too) die (least, at and proven for the lowered die) and turned (whether the part is turned end for end for it)), collisions (every step tried that did not clear, per orientation tried: flange, flanges, done, tool (punch or die), piece (the base, flange i, or the strip of flange i, bent or flat), angle (degrees), distance and lower (the distance found and what is proven below it; to the lowered die for the die), or notProven with the stroke interval no halving could prove; certain: whether the step fails for certain, a tool and a piece found nearer than the clearance at a real place or wholly inside one another, where a collision only not proven clear is not, both as the part lies and turned; turned: whether this failure is the turned one), infeasibleProven (with feasible false: whether every step tried that failed failed for certain, so that no order exists, or for an order given whether a step of it fails for certain; false means no order was found but one may exist), unchecked (what is not looked at) and work (distances measured). Refused: a part with a hole across a bend (owed), a polygon that crosses itself, a clearance that is not more than 0, and more distances and heights measured than maxWork (default 20000, at most 10000000; give the order, or raise it). Not looked at (said in unchecked): a bend's own strip during its stroke, and its own two flats against the punch (an acute bend with a punch of a wider angle closing its flats onto it is not found).",
+    "Checks whether a sheet-metal part (feature.sheetMetal) can be bent on a press brake with the punch and die given, and finds an order of its bends (changes nothing). punch and die are closed polygons (at least 3 points, in the document's length unit) in the plane square to a bend: the punch's with the centre of its tip at the origin and its body along +y, the die's with the point under the bend on the part's outer skin at the origin and its body below (y < 0); each is extruded along the bend: one piece length long centred on the middle of the bends made in the stroke (default: long enough to cover the whole part), or, with segmented true or a list of lengths, segmented tooling set up per bend, a segment per bend centred on its middle, as long as length gives for it (one number for every bend, or a list of one per flange with null for the bend's own) or else as long as the bend; unchecked states which. Bends on one line of one flat with the same angle, direction, radius and K-factor (tabs on one edge) are made in one stroke. At every bend both stand in the bend's frame: origin on the bend's axis (the die's R + T further out), y along the bisector of the two flats towards the inside (as on a press brake where both legs rise half the angle), z along the axis. A step, a bend made with some others already made and the rest still flat, clears when the proven distance (its lower bound) between the punch and every piece of the part but that bend's own strip and its two flats, and between the die counted lowered (moved away from the punch) by clearance plus the document's tolerance and every piece but the bend's own strip, is at least clearance over the whole stroke from 0 to the bend's angle (so the sheet may rest on the die's top, but not go into it by more than the tolerance nor come nearer than clearance from any other side), with the part as it lies or turned end for end (about the tools' y, as an operator turns it: the tools mirrored in x; segments stay at their bends), unless both tools are their own mirror image (the same polygon, compared as a cyclic list of points): proven at eight stroke angles, and between two of them less how far any point of the part can move against the tools in between (half its distance from the bend's axis, the farthest at either end of the stroke, plus the bend's neutral radius, per radian), the interval halved (to 1/1024 of the stroke) until that holds, or, for a die wholly below its top (y <= 0), by the piece's lowest point staying above the die's top less the tolerance between them (its height bounded by its heights there and how fast it can bend, halved as needed: what proves a piece lifting off the die); a piece and a tool wholly inside one another count as 0. With order (a list of strokes, each a flange or a list of flanges on one line; every flange once) that order is checked step by step, every step, instead of a search. Otherwise the order is searched depth first over all orders of the strokes (with one-piece tools a stroke is every bend on its line, and an order given must keep them together; with segmented tooling the bends of a line are tried together and one by one), the bends whose flanges carry the fewest others first (then the shorter flange, then the lower index), every set of bends made that leads nowhere remembered. Returns feasible, given (whether the order was given), order (the strokes, first bent first: a flange by index, or a list for a stroke of several; null when none clears), steps (per stroke of the order, also those that cleared of an order given that does not: flange (its first), flanges, segments (with segmented tooling: the tools' length at each of its bends), done (the flanges made before it), least (the least distance to the punch proven at the stroke angles measured), at (the stroke angle of it, degrees), proven (the least distance to the punch proven over the whole stroke, between the angles measured too) die (least, at and proven for the lowered die) and turned (whether the part is turned end for end for it)), collisions (every step tried that did not clear, per orientation tried: flange, flanges, done, tool (punch or die), piece (the base, flange i, or the strip of flange i, bent or flat), angle (degrees), distance and lower (the distance found and what is proven below it; to the lowered die for the die), or notProven with the stroke interval no halving could prove; certain: whether this failure is certain, a tool and a piece found nearer than the clearance at a real place or wholly inside one another, where a collision only not proven clear is not; stepCertain: whether the step fails for certain, both as the part lies and turned; turned: whether this failure is the turned one), infeasibleProven (with feasible false: whether every step tried that failed failed for certain, so that no order exists with these tools, or for an order given whether a step of it fails for certain; false means no order was found but one may exist), unchecked (what is not looked at) and work (distances measured). Refused: a part with a hole across a bend (owed), a polygon that crosses itself, a clearance that is not more than 0, and more distances and heights measured than maxWork (default 20000, at most 10000000; give the order, or raise it). Not looked at (said in unchecked): a bend's own strip during its stroke, and its own two flats against the punch (an acute bend with a punch of a wider angle closing its flats onto it is not found).",
     doc: true,
     names: ["feature"],
     bend_sequence
@@ -303,6 +303,12 @@ enum Tooling {
     /// Segmented tooling set up per stroke: a segment per bend, centred
     /// on its middle, per bend this long (`None`: the bend's own length).
     Segmented(Vec<Option<f64>>),
+}
+
+impl Tooling {
+    fn segmented(&self) -> bool {
+        matches!(self, Tooling::Segmented(_))
+    }
 }
 
 /// Per tool and piece checked: the distance proven at one stroke angle.
@@ -953,7 +959,12 @@ type Step = (Vec<usize>, BTreeSet<usize>, Cleared);
 /// radius and neutral fibre (within the tolerance), and its tangent line
 /// on `b`'s line running the same way (both ends within the tolerance of
 /// it). Then both turn about the same axis by the same motion, so one
-/// punch and die along that line make both.
+/// punch and die along that line make both. Running the same way is not
+/// a restriction but the test of the same side: a bend's tangent line
+/// runs with its parent on its left (`sheetmetal::Bend::start`), so two
+/// bends of one parent on one line listed opposite ways have their
+/// children on opposite sides of it (one bends towards `+across`, the
+/// other away), and no one punch and die make both.
 fn one_line(part: &sheetmetal::Part, b: usize, i: usize, tol: &Tolerance) -> bool {
     let (Some(x), Some(y)) = (part.bends.get(b), part.bends.get(i)) else {
         return false;
@@ -989,15 +1000,20 @@ fn strokes(part: &sheetmetal::Part, tol: &Tolerance) -> Vec<Vec<usize>> {
 }
 
 /// The first order (depth first) of the strokes `ranked` whose every step
-/// clears.
-fn search(
-    check: &Check<'_>,
+/// clears (`step`: [`Check::step`]). `ranked` may hold a stroke and its
+/// bends one by one as well (segmented tooling): a step skips every
+/// stroke with a bend already made.
+fn search<F>(
+    step: &mut F,
     done: &mut BTreeSet<usize>,
     order: &mut Vec<Step>,
     dead: &mut BTreeSet<BTreeSet<usize>>,
     tried: &mut Tried,
     ranked: &[Vec<usize>],
-) -> Result<bool, String> {
+) -> Result<bool, String>
+where
+    F: FnMut(&BTreeSet<usize>, &[usize]) -> Result<Result<Cleared, Failed>, String>,
+{
     if ranked.iter().all(|g| g.iter().all(|b| done.contains(b))) {
         return Ok(true);
     }
@@ -1012,7 +1028,7 @@ fn search(
         let result = match tried.get(&key) {
             Some(r) => r.clone(),
             None => {
-                let r = check.step(done, g)?;
+                let r = step(done, g)?;
                 tried.insert(key, r.clone());
                 r
             }
@@ -1020,7 +1036,7 @@ fn search(
         if let Ok(cleared) = result {
             order.push((g.clone(), done.clone(), cleared));
             done.extend(g.iter().copied());
-            if search(check, done, order, dead, tried, ranked)? {
+            if search(step, done, order, dead, tried, ranked)? {
                 return Ok(true);
             }
             for b in g {
@@ -1031,6 +1047,42 @@ fn search(
     }
     dead.insert(done.clone());
     Ok(false)
+}
+
+/// The strokes the search tries, best first. One-piece tools along a line
+/// bend every bend on it at once, so with them the strokes are exactly
+/// the groups of [`strokes`]; segmented tooling may bend a group's bends
+/// together or one by one (a segment set up only at the bend made), so
+/// with it every group of more than one bend is an option beside each
+/// bend alone, and no order is missed for having been forced into a
+/// stroke. Ranked: the strokes whose flanges carry the fewest others
+/// first, then the shorter flange, then the larger stroke, then the lower
+/// index.
+fn ranked_strokes(part: &sheetmetal::Part, tol: &Tolerance, segmented: bool) -> Vec<Vec<usize>> {
+    let groups = strokes(part, tol);
+    let mut ranked: Vec<Vec<usize>> = if segmented {
+        let mut all: Vec<Vec<usize>> = groups.iter().filter(|g| g.len() > 1).cloned().collect();
+        all.extend((0..part.bends.len()).map(|b| vec![b]));
+        all
+    } else {
+        groups
+    };
+    let key = |g: &Vec<usize>| {
+        let carries = g.iter().map(|&b| carried(part, b)).min().unwrap_or(0);
+        let short = g
+            .iter()
+            .map(|&b| flange_length(part, b).unwrap_or(f64::INFINITY))
+            .fold(f64::INFINITY, f64::min);
+        (carries, short, g.len(), g.first().copied().unwrap_or(0))
+    };
+    ranked.sort_by(|a, b| {
+        let (ka, kb) = (key(a), key(b));
+        ka.0.cmp(&kb.0)
+            .then(ka.1.total_cmp(&kb.1))
+            .then(kb.2.cmp(&ka.2))
+            .then(ka.3.cmp(&kb.3))
+    });
+    ranked
 }
 
 /// `v` scaled to unit length, if it has one.
@@ -1178,7 +1230,9 @@ impl Proof {
             let why = self
                 .collision()
                 .unwrap_or_else(|| "no bend can be made first".into());
-            Verdict::Collides(format!("`{name}` cannot be bent in any order: {why}"))
+            Verdict::Collides(format!(
+                "`{name}` cannot be bent in any order with these tools: {why}"
+            ))
         }
     }
 }
@@ -1262,11 +1316,16 @@ fn symmetric(points: &[[f64; 2]]) -> bool {
 }
 
 /// The order given, checked against the part: each stroke's flanges on
-/// one line with its first ([`one_line`]), every flange once.
+/// one line with its first ([`one_line`]), every flange once; with
+/// one-piece tools (not `segmented`) each stroke the whole of its group
+/// of [`strokes`], since a punch along the line bends every bend on it at
+/// once (a group split would check a step with a bend flat that the
+/// brake has bent).
 fn checked_order(
     part: &sheetmetal::Part,
     tol: &Tolerance,
     order: &[Vec<usize>],
+    segmented: bool,
 ) -> Result<Vec<Vec<usize>>, String> {
     let n = part.bends.len();
     let mut seen = BTreeSet::new();
@@ -1294,6 +1353,25 @@ fn checked_order(
     if seen.len() != n {
         let missing: Vec<usize> = (0..n).filter(|i| !seen.contains(i)).collect();
         return Err(format!("`order` leaves out flanges {missing:?}"));
+    }
+    if !segmented {
+        let groups = strokes(part, tol);
+        for g in order {
+            let mut given: Vec<usize> = g.clone();
+            given.sort_unstable();
+            let Some(group) = g
+                .first()
+                .and_then(|b| groups.iter().find(|x| x.contains(b)))
+            else {
+                continue;
+            };
+            if given != *group {
+                return Err(format!(
+                    "`order`: with one-piece tools a punch along the line bends flanges {} in one stroke: give them together as one stroke, or set `segmented` true to bend them one by one",
+                    stroke_words(group)
+                ));
+            }
+        }
     }
     Ok(order.to_vec())
 }
@@ -1341,7 +1419,9 @@ fn prove(
     let n = part.bends.len();
     let tooling = tooling_of(&tools.length, tools.segmented, n).map_err(Stopped::Error)?;
     let given = match &tools.order {
-        Some(order) => Some(checked_order(part, &tol, order).map_err(Stopped::Error)?),
+        Some(order) => {
+            Some(checked_order(part, &tol, order, tooling.segmented()).map_err(Stopped::Error)?)
+        }
         None => None,
     };
     // The tools must be simple outlines: checked once here, so a bad one
@@ -1412,27 +1492,11 @@ fn prove(
             every
         }
         None => {
-            // The bends on one line in one stroke; the strokes whose
-            // flanges carry the fewest others first, then the shorter,
-            // then the lower index.
-            let key = |g: &Vec<usize>| {
-                let carries = g.iter().map(|&b| carried(part, b)).min().unwrap_or(0);
-                let short = g
-                    .iter()
-                    .map(|&b| flange_length(part, b).unwrap_or(f64::INFINITY))
-                    .fold(f64::INFINITY, f64::min);
-                (carries, short, g.first().copied().unwrap_or(0))
-            };
-            let mut ranked = strokes(part, &tol);
-            ranked.sort_by(|a, b| {
-                let (ka, kb) = (key(a), key(b));
-                ka.0.cmp(&kb.0)
-                    .then(ka.1.total_cmp(&kb.1))
-                    .then(ka.2.cmp(&kb.2))
-            });
+            let ranked = ranked_strokes(part, &tol, check.tooling.segmented());
             let mut dead = BTreeSet::new();
+            let mut step = |done: &BTreeSet<usize>, g: &[usize]| check.step(done, g);
             search(
-                &check, &mut done, &mut order, &mut dead, &mut tried, &ranked,
+                &mut step, &mut done, &mut order, &mut dead, &mut tried, &ranked,
             )
             .map_err(stopped)?
         }
@@ -1629,7 +1693,10 @@ fn bend_sequence(session: &mut Session, params: &Value) -> Run {
                     v.insert("notProven".into(), json!([degrees(*from), degrees(*to)]));
                 }
             }
-            v.insert("certain".into(), json!(failed.certain(proof.clearance)));
+            // This orientation's failure, and the step's (every
+            // orientation tried fails for certain).
+            v.insert("certain".into(), json!(f.certain(proof.clearance)));
+            v.insert("stepCertain".into(), json!(failed.certain(proof.clearance)));
             Value::Object(v)
         })
         .collect();
@@ -2220,5 +2287,77 @@ mod tests {
             panic!("{:?}", p.verdict("U"));
         };
         assert!(why.contains("order given"), "{why}");
+    }
+
+    /// A step that fails for certain as the part lies but only doubtfully
+    /// turned is not a certain failure: no order is not proven
+    /// (`notProven`, the command's infeasibleProven false).
+    #[test]
+    fn a_step_certain_one_way_and_doubtful_the_other_is_not_proven() {
+        let certain = collision(0.05, 0.0, false);
+        let doubtful = collision(0.2, 0.05, true);
+        let mut p = proof(Vec::new());
+        p.tried.insert(
+            (BTreeSet::new(), vec![0]),
+            Err(Failed(vec![certain, doubtful])),
+        );
+        let Verdict::NotProven(why) = p.verdict("U") else {
+            panic!("{:?}", p.verdict("U"));
+        };
+        assert!(why.contains("turned end for end"), "{why}");
+        assert!(!matches!(p.verdict(""), Verdict::Collides(_)));
+    }
+
+    /// Segmented tooling must not force a line's bends into one stroke
+    /// (review 2026-10-29). Bends 0 and 1 lie on one line, 2 elsewhere:
+    /// 0 is blocked once 2 stands, and 2 once 1 stands, so the only order
+    /// is 0, 2, 1. Searched with the line as one stroke, both orders fail
+    /// for certain, a false "cannot be bent"; with the bends also one by
+    /// one (`ranked_strokes` with segmented tooling), the order is found.
+    #[test]
+    fn segmented_tooling_does_not_force_a_stroke() {
+        let cleared = Cleared {
+            least: [1.0; 2],
+            at: [0.0; 2],
+            proven: [1.0; 2],
+            turned: false,
+        };
+        let mut step = |done: &BTreeSet<usize>, g: &[usize]| {
+            let blocked =
+                (g.contains(&0) && done.contains(&2)) || (g.contains(&2) && done.contains(&1));
+            Ok(if blocked {
+                Err(Failed(vec![collision(0.0, 0.0, false)]))
+            } else {
+                Ok(cleared)
+            })
+        };
+        let run = |ranked: &[Vec<usize>],
+                   step: &mut dyn FnMut(
+            &BTreeSet<usize>,
+            &[usize],
+        ) -> Result<Result<Cleared, Failed>, String>| {
+            let mut p = proof(Vec::new());
+            let (mut done, mut dead) = (BTreeSet::new(), BTreeSet::new());
+            let mut order = Vec::new();
+            let mut call = |d: &BTreeSet<usize>, g: &[usize]| step(d, g);
+            p.feasible = search(
+                &mut call,
+                &mut done,
+                &mut order,
+                &mut dead,
+                &mut p.tried,
+                ranked,
+            )
+            .unwrap();
+            p.order = order;
+            p
+        };
+        let forced = run(&[vec![0, 1], vec![2]], &mut step);
+        assert!(matches!(forced.verdict("U"), Verdict::Collides(_)));
+        let options = run(&[vec![0, 1], vec![2], vec![0], vec![1]], &mut step);
+        assert_eq!(
+            options.verdict("U"),
+            Verdict::Bendable(vec![vec![0], vec![2], vec![1]])
+        );
     }
 }

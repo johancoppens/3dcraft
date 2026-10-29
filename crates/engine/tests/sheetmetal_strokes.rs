@@ -115,6 +115,12 @@ fn tabs_on_one_line_are_bent_in_one_stroke() {
         tabs(&mut s, k);
         let out = sequence(&mut s, k, json!({}));
         assert_ne!(out["order"], json!([2, [0, 1]]), "scale {k}: {out}");
+        // In either order the one-piece tools meet what stands: the
+        // tabs' punch the wall, and the wall's punch the second tab, its
+        // top swinging past the wall's axis as the base rises: no order
+        // with these tools, for certain.
+        assert_eq!(out["feasible"], false, "scale {k}: {out}");
+        assert_eq!(out["infeasibleProven"], true, "scale {k}: {out}");
         let unchecked = out["unchecked"].as_str().unwrap();
         assert!(unchecked.contains("one-piece tools"), "{unchecked}");
         let steps = out["steps"].as_array().unwrap();
@@ -172,6 +178,10 @@ fn tabs_on_one_line_are_bent_in_one_stroke() {
             (json!([0, 1, 7]), "index"),
             (json!([[], 0, 1, 2]), "empty stroke"),
             (json!("0, 1, 2"), "list of flanges"),
+            // One-piece tools bend both tabs at once: an order that
+            // splits them is not an order of this brake.
+            (json!([0, 2, 1]), "segmented"),
+            (json!([2, 0, 1]), "segmented"),
         ] {
             let mut params = json!({"feature": "Tabs", "punch": scaled(&STRAIGHT, k),
                                     "die": scaled(&DIE, k)});
@@ -208,6 +218,8 @@ fn an_order_given_that_collides_names_its_step() {
             assert_eq!(collisions[0]["flange"], second, "{out}");
             assert_eq!(collisions[0]["done"], json!([first]), "{out}");
             assert_eq!(collisions[0]["tool"], "punch", "{out}");
+            assert_eq!(out["given"], true, "{out}");
+            assert_eq!(out["infeasibleProven"], true, "{out}");
         }
     }
 }

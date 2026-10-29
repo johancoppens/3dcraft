@@ -280,7 +280,8 @@ angle, direction and radius (two tabs on one edge) are made in one stroke; the t
 per bend. By default the tools are one piece reaching past the whole part; `segmented: true` makes each
 bend's tools as long as the bend (segmented tooling set up per bend), and `length` gives one length for all,
 or a list of one per flange (`null` for the bend's own, segmented). `order` checks the order you give
-(each step a flange, or a list of flanges bent in one stroke) instead of searching for one, and `maxWork`
+(each step a flange, or a list of flanges bent in one stroke; with one-piece tools the flanges of one line
+always together) instead of searching for one, and `maxWork`
 raises the search's cap of 20000 distances. `sheetMetal.edit` changes a part (flanges as a
 whole list). Each flange has an `id` (`sheetMetal.bends` lists them, 1, 2, … in the order the part was
 made, a new flange's never one used before): every name of the flange's faces and edges is numbered by it
