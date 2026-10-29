@@ -136,18 +136,24 @@ on the panel, and the other way round.
   is the first run of rulings, `face(1)` and `face(2)` the fans at the start and the end. Where the rulings
   turn back, a fan closes the gap: the `n`-th such fan (from 0) in the first half of the sheet, counted
   from the start, is `face(10000000000 + n)`, in the second half, counted from the end,
-  `face(20000000000 + n)`; a fan from a corner of `a` is `face(30000000000 + c)` (of `b`,
-  `40000000000 + c`), `c` the id of the sketch curve after the corner, or the place of the edge after it in
-  the list from 0. A run of rulings after one of these is `face(100000000000 + m)` with `m` that fan's
-  number (a corner where the faces part counts as its fan's), one after a fan counted from the end is
-  named by the next one, `face(200000000000 + m)`, and the run that reaches the end is
-  `face(300000000000)`. So a fan that appears at one end leaves the names at the other as they were.
+  `face(20000000000 + n)`; a fan from a corner of `a` is `face(30000000000,c)` (of `b`,
+  `face(40000000000,c)`), `c` the id of the sketch curve after the corner, or the place of the edge after
+  it in the list from 0. A run of rulings after one of these is `face(100000000000 + m)` with `m` that
+  fan's first number (a corner where the faces part counts as its fan's, its `c` following:
+  `face(130000000000,c)`), one after a fan counted from the end is named by the next one,
+  `face(200000000000 + m)`, and the run that reaches the end is `face(300000000000)`. So a fan that
+  appears at one end leaves the names at the other as they were. The count has a limit: one more fold
+  nearer the same end (or a fold that moves across the middle) renumbers the folds counted from that end,
+  and a reference to `face(20000000000)` then names the new fold's fan, without an error. Check the faces
+  a later feature takes after an edit that may add a fold near an end.
 - A developable is refused, with where, when its rulings would cross (a curve that winds about the
   other), when the curves lie in one plane over a stretch only, when they meet between their ends, when a
   curve turns back on itself, and when one curve is closed and the other is not. Two closed curves that
   are the same are refused, and so are two closed curves in one plane that touch, cross or lie side by
-  side. The fans at the ends and at the corners unfold; a strip beside a fan where the rulings turned back
-  does not yet (unfold the faces one by one).
+  side. The fans at the ends and at the corners unfold, and so does each fan where the rulings turned
+  back; the strip of rulings beside such a fan does not yet, laid flat with the rest or on its own (where
+  the rulings turned it has a corner the layout does not handle yet), so unfolding the faces one by one
+  leaves that strip out. Cut the curves short of the fold to unfold the rest in one piece.
 ## Plates and joints
 
 `feature.plate` gives faces a thickness: a sheet (a fill, a loft of open sections, a developable) becomes a
