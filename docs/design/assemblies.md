@@ -249,3 +249,178 @@ every foot checked against the closed form: 5.2 ms mean and 5.6 ms worst per fra
 - **Size.** The factorisation is sparse in minimum-degree order. Its arithmetic is capped at 2·10⁹ multiply-adds per
   factorisation and 4·10⁹ for the symbolic analysis, after which the problem is `TooLarge`. Assemblies of thousands
   of instances in long chains have not been measured.
+
+## The document and the engine (track A)
+
+The document kind, its format, the engine's derived state, its commands, pack and export (track A, 2026-10-29).
+
+### The document (`crates/doc/src/assembly.rs`)
+
+An assembly is a `Document` whose `assembly` is set: it keeps the document's variables, tables, assertions, outputs,
+named sets and info as a part does, and has **no features of its own** (a command that would add one is refused whole,
+`commands::edit_merging`). It is saved as a `.3dcraftasm` file, the same container and format versions as `.3dcraft`;
+a `.3dcraft` file never holds an assembly and a `.3dcraftasm` file never a part (`file.open` and `file.save` refuse the
+wrong extension both ways).
+
+- **`Instance`**: a unique `name` (not `world`, no `/`, which separates it from what follows in a reference); a
+  `source`, either `File {path, hash}` (the path relative to the assembly's file with `/` between its parts, `..`
+  allowed, and the SHA-256 of the bytes when it was added or last followed) or `Packed {hash}` (one of the documents
+  the file carries); an optional `body` (the name or id of the source feature whose body the instance shows); `params`
+  (public parameter overrides, as expressions of the assembly's variables); an optional `pinned` hash; `mode` (rigid or
+  flexible, for a subassembly); `visible`; `colour`; `placement` (a position and a rotation vector in degrees: the
+  solver's start and the pose of an instance nothing constrains).
+- **`Mate`**: a `name` that is a variable name (so `<name>_angle` is one too), a `kind` (fixed, revolute, slider,
+  cylindrical, planar, ball), references `a` and `b` written `Instance/name` (`Bar[2]/F1:face(1)`, `world/xy`), an
+  optional `offset` and `angle` expression, `limits`, and `flip`.
+- **`Coupling`**: a `kind` (gear, rack, screw), the two mates by name and a value expression.
+- **`packed`**: the source documents carried in the file, each the bytes of a `.3dcraft` or `.3dcraftasm` file, in
+  ascending order of their SHA-256, each once; written as the archive entries `blobs/<sha256>.3dcraft` beside the
+  imported STEP files' `blobs/<sha256>.step`, read back and checked against their hash.
+
+`Assembly::validate` holds the rules (unique names, references to instances that exist, no mate joining an instance
+to itself, couplings naming mates, hashes in lowercase hex, relative paths, the packed list in order and complete).
+Every assembly command edits through `asm_cmds::asm_edit`, which validates in the same step.
+
+### Format (version 53, a TEMPORARY number)
+
+`manifest.rs` and `convert.rs` carry the assembly exhaustively (a new field does not compile until it is written).
+The version was raised so that an older build refuses an assembly by naming the version it needs instead of an
+unknown field; a file of an older version is a part and holds none, so the migration changes nothing. 51 and 52 are
+placeholders in this branch for the numbers other branches take; the coordinator renumbers at merge. The fixture of
+the version is `v53.3dcraftasm`, a packed assembly (two configurations of one source, a picked body, a pinned and a
+hidden instance, a fixed, a revolute and a slider mate, a joint variable, a rack coupling), written by the engine of
+its own build on the Strix.
+
+### Derived state (`crates/engine/src/asm.rs`)
+
+What an open assembly shows is derived and may be thrown away (rule 2). `OpenDocument::asm` keeps:
+
+- **the files read** (`AsmState::files`), by their path as `asm::join` writes it from the read root. Reading is the one
+  part that touches files: `Session::read_sources` (on `file.open`, `instance.add`, `instance.edit`,
+  `assembly.reload`, `assembly.pack`) goes through the workspace's read root and the platform's file access
+  (`resolve_read`, `read_input`: the session's memory in the browser), recursively through subassemblies to
+  `MAX_DEPTH` (8) levels with a seen-set, at most `MAX_SOURCE_FILES` (1000) files. Everything after it is pure.
+- **the documents parsed**, by hash, and **the configurations built**, by key: the source's SHA-256 and each
+  overridden parameter's name and the text it was set to. A configuration is the source with its public parameters set
+  as `param.set` sets them (the same checks: a parameter that is not public, or a value outside its range, fails the
+  instance by name), regenerated once. Instances of one configuration share it whichever body they pick. The
+  configurations not built yet are regenerated side by side (`interference_cmds::in_order` on the shared thread pool)
+  and merged in the order of their keys; a subassembly's are built one after the other, each building its own parts
+  side by side. `assembly.inspect` reports the number of distinct configurations and how many regenerations they cost
+  so far (`regenerations`).
+- **the placement** of the current revision (and generation of the files read): one `Placed`.
+
+The placement, in order:
+
+1. each instance's source bytes: the file read, or the packed document. A **pinned** instance whose file changed uses
+   the packed copy of the pinned bytes when the file holds one, and fails naming both hashes otherwise; an unpinned one
+   follows the file and is marked `changed` (its stored hash is the one it was added with until `instance.edit
+   {pinned: false}` takes the new one). A source in another length unit than the assembly is refused by name (a body is
+   moved by rigid transforms only; scaling it is owed). A hash already on the chain of assemblies above is a cycle,
+   refused by name; `instance.add` and `instance.edit` refuse a source that contains the assembly's own file or itself
+   before anything is changed (`refuse_cycle`).
+2. the configurations built or taken from the cache;
+3. each instance's picked body: **by the source feature's name or id, never another one**. A feature that is gone, or
+   whose body went into a later feature or failed, fails the instance by its name; the instance shows nothing then.
+4. the **frames** of each mate, in the instance's own coordinates (`frame_in`), from the plan's table: a planar face's
+   plane at the face's centroid (area-weighted, over a mesh at a thousandth of the body's size) with its outward normal
+   as z and the surface frame's x; a cylindrical or conical face's axis at the point of the axis nearest the face's
+   centroid; a circular edge's centre and axis; a vertex as a point with the world's axes; a datum plane, axis or point
+   of the source by its name or id. Anything else (a sphere, a freeform face, a straight edge) fails the mate naming
+   what it is. The name is resolved by `selection::Resolver::locate`, the same resolution as a selection: its aliases
+   and the short names of caps hold, and **a name that is gone fails the mate with that name; it never retargets**
+   (rule 4 across files). Through a subassembly the name goes on through its instance (`Sub/Inner/F1:face(0)`) and the
+   frame is moved by that instance's pose in it. The world has `world/xy`, `yz`, `zx` (planes), `x`, `y`, `z` (axes)
+   and `origin`.
+5. the **solve** (`asm_solve`, see *Solver* below): the mates as the contract's `MateSpec` (b's frame turned over
+   about its x unless `flip`, `offset` along and `angle` about a's z, the main free motion driven by the assembly
+   variable `<mate>_<motion>` when it exists), the couplings, a start pose per instance; when no mate reaches the
+   world the first instance is held where it is placed and the result says `floating`.
+6. the bodies **placed by transforms only** (`Body::transformed`): a part `Placed::doc` with one feature per placed
+   body (named after its instance, `Instance/Body` when it shows several) and its regeneration `Placed::regen`, with
+   the source's names, its fixed appearance and material, and the instance's colour over them.
+
+`OpenDocument::regen` and `OpenDocument::shown`/`shown_regen` of an assembly are that part and its regeneration, so the
+scene, `view.render`, picking, selection, `file.export` of meshes and the assertions read an assembly as they read any
+part. A picked face of an assembly is `F<n>:<the source's name>`; `assembly.inspect` lists which features of the shown
+part hold each instance's bodies, so a frontend writes the mate reference `Instance/<name>`.
+
+### Subassemblies
+
+An instance whose source is an assembly is a subassembly, placed recursively with the same caches.
+
+- **Rigid** (the default): it moves as one block; its bodies are its instances' bodies where it placed them.
+- **Flexible**: its instances join the parent's solve as `Sub/Inner`, starting where the subassembly puts them, with its
+  own mates (by those names) and its world taken as where the subassembly is placed; the subassembly itself is not
+  solved, so its free motions stay free in the parent; it places the same as rigid while nothing in the parent
+  moves its instances.
+
+### Commands (`crates/engine/src/asm_cmds.rs`)
+
+`assembly.new`, `instance.add`, `instance.edit` (a rename rewrites the mates that name it), `instance.delete` (refused
+while a mate names it), `instance.open` (the source in its own tab, so it is edited there; a packed one as a new
+document), `mate.add`, `mate.edit` (a rename takes its variables along), `mate.delete` (with its variables; refused while
+a coupling names it), `coupling.add`, `coupling.delete`, `joint.set` (sets or removes the assembly variable
+`<mate>_angle`, `_distance`, `_x` or `_y`, which formulas may use and `variable.publish` may publish),
+`assembly.solve`, `assembly.inspect` (`measures`: each instance's volume and box), `assembly.reload`,
+`assembly.pack`, `assembly.unpack`. A mate whose name or geometry fails is kept and reported failed by name, as a
+feature is.
+
+A free motion's variable is written `<mate>_angle`, not `<mate>.angle` as the plan has it: a dot in a name is a table
+lookup in expressions (`scales[scale].maxNotes`).
+
+### Pack and unpack
+
+`assembly.pack` replaces every file source by the packed document, its subassemblies packed first the same way (to
+`MAX_DEPTH`), and a pinned hash by the packed bytes' hash; the file then rebuilds anywhere. `assembly.unpack {folder}`
+writes each packed document beneath the write root, relative to the assembly's file, named after its first instance,
+refuses to overwrite unless asked, and refers to the files again with the same hashes. Saving an assembly into another
+folder rewrites its source paths so they stay relative to its file, in the same save.
+
+### Export (`crates/engine/src/asm_export.rs`, `crates/io/src/step_assembly.rs`)
+
+`file.export` of an assembly to STEP writes its structure: each distinct body of a configuration once, as a product
+with its B-rep as for a part, and one product named after the file that places them, each placement a
+`NEXT_ASSEMBLY_USAGE_OCCURRENCE` with a `CONTEXT_DEPENDENT_SHAPE_REPRESENTATION` whose `ITEM_DEFINED_TRANSFORMATION`
+maps the part's origin frame onto its pose (the structure `craft3d-stepread` reads, so `file.import` of the file gives
+one body per placement where the assembly put it). Subassemblies are written flat. STL, 3MF and OBJ hold the placed
+bodies, named after their instances.
+
+### Measures
+
+The assertions of an assembly are measured on the shown part, so a subject is an instance by its name: `clearance`
+(`from`, `to`), `overlap` (interference, with the common volume in its message) and `mass` (from the source bodies'
+fixed materials) work as on a part. Subjects are stored by name, never by the shown part's feature ids, which follow
+the order of the instances.
+
+### The solver in the engine (`crates/engine/src/asm_solve.rs`)
+
+The engine hands track B's `craft3d-assembly` its problem: the instances that are placed (a flexible subassembly's
+own instances among them), each mate with its two frames in its instances' coordinates, its offset and angle, its main
+free motion's limits, and every free motion that has its variable (`<mate>_angle`, `_distance`, `_x`, `_y`) driven to
+that variable's value; the couplings by mate index. The world is one more instance after them, grounded at the
+identity, and a mate to `world/...` is a mate to it; when no mate reaches the world, the first instance is grounded
+where it is placed and the result says `floating`. A mate of the engine puts `b`'s frame against `a`'s turned over
+(face to face), so it is handed to the solver with `flip` negated. The solution's poses place the instances, each
+mate's variables are its values (`assembly.solve` reports the main one), the degrees of freedom and the free motions
+in words are reported as they come; a `Diagnosis` fails the solve with its message (the mates, couplings, drivers and
+limits by name), and the instances then stay where they are placed.
+
+### Tests (track A)
+
+`crates/engine/tests/assembly.rs`: a stack placed by fixed mates at 1e-3, 1 and 1e6, saved and reopened; two
+configurations of one source built once each and only the changed one rebuilt; two bodies picked from one source with
+one regeneration and a body that is gone failing by name; an edited source followed after a reload and a removed face
+failing its mate by name; a rigid subassembly and a mate through it, and cycles refused; a flexible subassembly solved
+with its parent; pack and unpack equality with the source file deleted; the STEP export read back by our import, and
+the mesh exports; clearance, overlap and mass in closed form; a revolute driven by `joint.set`; the refusals.
+`crates/engine/tests/panic_hunt.rs` runs every command with adversarial parameters. `crates/doc/src/assembly.rs` and
+`crates/engine/src/asm.rs` have the unit tests of the rules and the paths. The format: `crates/format/tests/versions.rs`
+(the fixture) and `crates/engine/tests/format_versions.rs` (its regeneration).
+
+### Findings and history (track A)
+
+- 2026-10-29: first version (track A): the document kind, format 53 (TEMPORARY), instances with configurations, picked
+  bodies, pins and subassemblies, cross-file names and frames, a stand-in solver, placement into the scene, pack and
+  unpack, the structured STEP export, measures by instance.
+- 2026-10-29: the stand-in replaced by track B's `craft3d-assembly` (on main since 3c885c35): closed loops, couplings, limits and the diagnosis now come from the solver; the engine maps its frames, drives and the world onto the crate's `Problem`.

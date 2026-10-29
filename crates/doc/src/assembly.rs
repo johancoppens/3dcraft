@@ -198,7 +198,7 @@ impl MateKind {
             MateKind::Revolute => &["angle"],
             MateKind::Slider => &["distance"],
             MateKind::Cylindrical => &["angle", "distance"],
-            MateKind::Planar => &["angle", "x", "y"],
+            MateKind::Planar => &["x", "y", "angle"],
         }
     }
 }

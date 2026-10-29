@@ -69,8 +69,8 @@ another face.
 
 Gears, racks and screws couple two mates: `coupling.add {"kind": "gear", "mates": ["A", "B"], "value": 2}`.
 
-> **In this version** the solver is a first one: mates are followed from the world outwards. Closed loops (a four-bar
-> linkage), couplings and limits come with the full solver.
+Closed loops (a four-bar linkage) are solved as a whole, and `assembly.solve` says which mates contradict each other
+and by how much when they cannot all be met.
 
 ## Subassemblies
 

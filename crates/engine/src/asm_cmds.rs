@@ -37,7 +37,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("joint.set", "Set Joint", r#"{"mate": string, "value": expr or null, "which": "angle|distance|x|y" = the mate's main free motion}"#,
         "Drives a mate's free motion (one undo step): sets the assembly variable <mate>_<which> to value (an angle or a length expression), creating it, so it can be used in formulas and published as a parameter (variable.publish); null removes the variable and leaves the motion free. Returns the mate with its status.", doc: true, joint_set),
     spec!("assembly.solve", "Solve Assembly", r#"{}"#,
-        "Solves the active assembly as it is and says how: ok, each mate's status and the value of its free motion, each instance's degrees of freedom left and pose, floating when no mate reaches the world (the first instance is then held where it is placed), and the error that names the mates that contradict each other.", doc: true, assembly_solve),
+        "Solves the active assembly as it is and says how: ok, each mate's status and the value of its main free motion, the instances solved, the degrees of freedom left and each free motion in words (\"Bar[3] can still turn about z …\"), floating when no mate reaches the world (the first instance is then held where it is placed), and the error that names the mates that contradict each other.", doc: true, assembly_solve),
     spec!("assembly.inspect", "Inspect Assembly", r#"{"measures": boolean = false}"#,
         "Describes the active assembly: its instances (source, hash, whether the file changed since, pinned, body, parameters, configuration, status, pose, the features of the shown part that hold its bodies), its mates and couplings, the number of distinct configurations and how many regenerations they cost so far, and the packed sources; with measures each instance's placed volume and box.", doc: true, assembly_inspect),
     spec!("assembly.reload", "Reload Sources", r#"{}"#,
@@ -364,12 +364,11 @@ fn coupling_json(c: &Coupling) -> Value {
 }
 
 fn solve_json(placed: &Placed, assembly: &Assembly) -> Value {
-    let dof: Vec<Value> = placed
+    let solved: Vec<Value> = placed
         .instances
         .iter()
         .filter(|i| i.error.is_none() && !i.flexed)
-        .zip(placed.dof.iter().map(Some).chain(std::iter::repeat(None)))
-        .map(|(i, d)| json!({ "instance": i.name, "dof": d }))
+        .map(|i| Value::from(i.name.clone()))
         .collect();
     let failed: Vec<Value> = placed
         .instances
@@ -387,9 +386,10 @@ fn solve_json(placed: &Placed, assembly: &Assembly) -> Value {
         "error": placed.solve_error,
         "floating": placed.floating,
         "failed": failed,
-        "dof": dof,
+        "solved": solved,
+        "dof": placed.dof.as_ref().map(|(dof, _)| *dof),
+        "free": placed.dof.as_ref().map(|(_, free)| free.clone()).unwrap_or_default(),
         "mates": assembly.mates.iter().map(|m| mate_json(placed, m)).collect::<Vec<_>>(),
-        "stand_in": "the assembly solver of track B has not landed; a forward-kinematics stand-in solved this (no couplings, open chains only)",
     })
 }
 

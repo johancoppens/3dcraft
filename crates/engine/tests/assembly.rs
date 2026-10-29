@@ -2,8 +2,8 @@
 //! configurations, bodies picked from a multi-body source, mates through
 //! persistent names across files, subassemblies, pack and unpack, the
 //! STEP export with structure, the assembly's measures, and the
-//! commands' refusals. The solver is the stand-in (`asm_solve.rs`) until
-//! track B's lands.
+//! commands' refusals; and a four-bar linkage of one bar part in two
+//! configurations, solved by track B's `craft3d-assembly`.
 
 #![allow(
     clippy::unwrap_used,
@@ -817,11 +817,11 @@ fn a_flexible_subassembly_is_solved_with_its_parent() {
         let solved = run(&mut s, "assembly.solve", json!({}));
         assert_eq!(solved["ok"], true, "{mode}: {solved}");
         if mode == "flexible" {
-            let names: Vec<&str> = solved["dof"]
+            let names: Vec<&str> = solved["solved"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .map(|d| d["instance"].as_str().unwrap())
+                .map(|d| d.as_str().unwrap())
                 .collect();
             assert!(names.contains(&"Leg/Arm"), "{solved}");
         }
@@ -839,6 +839,115 @@ fn a_flexible_subassembly_is_solved_with_its_parent() {
         assert!(
             close(a[k], c[k], 1.0) && close(b[k], d[k], 1.0),
             "{boxes:?}"
+        );
+    }
+}
+
+/// The acceptance example: a four-bar linkage made from one bar part in
+/// two configurations (a long bar for the ground and the coupler, a short
+/// one for the crank and the rocker: a parallelogram), its pivots datum
+/// axes of the part. Driven by the crank, the closed loop is solved as a
+/// whole, and the coupler stays parallel to the ground, carried by the
+/// crank's tip: closed form.
+#[test]
+fn a_four_bar_linkage_of_one_bar_part_follows_its_crank() {
+    let dir = workdir("assembly", "four-bar");
+    let mut s = session_in(&dir);
+    run(&mut s, "file.new", json!({}));
+    run(
+        &mut s,
+        "variable.set",
+        json!({ "name": "len", "expr": "24 mm" }),
+    );
+    run(
+        &mut s,
+        "variable.publish",
+        json!({ "name": "len", "min": "10 mm", "max": "500 mm" }),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({ "name": "Bar", "size": ["len", 4, 2] }),
+    );
+    run(
+        &mut s,
+        "datum.axis",
+        json!({ "name": "End1", "through": [[2, 2, 0], [2, 2, 1]] }),
+    );
+    run(
+        &mut s,
+        "datum.axis",
+        json!({ "name": "End2", "through": [["len - 2", 2, 0], ["len - 2", 2, 1]] }),
+    );
+    run(&mut s, "file.save", json!({ "path": "bar.3dcraft" }));
+    run(&mut s, "file.close", json!({}));
+    let (a, d) = (20.0_f64, 60.0_f64);
+    for theta in [60.0_f64, 135.0, 250.0] {
+        let t = theta.to_radians();
+        let (c, n) = (t.cos(), t.sin());
+        let tip = [a * c, a * n];
+        // Starts near the parallelogram, off by a little.
+        let crank = [-(2.0 * c - 2.0 * n) + 0.3, -(2.0 * n + 2.0 * c) - 0.2, 0.0];
+        let coupler = [tip[0] - 2.0 + 0.4, tip[1] - 2.0 + 0.3, 0.0];
+        let rocker = [
+            d - (2.0 * c - 2.0 * n) - 0.2,
+            -(2.0 * n + 2.0 * c) + 0.4,
+            0.0,
+        ];
+        run(&mut s, "assembly.new", json!({}));
+        let bar = |name: &str, len: &str, position: [f64; 3], rotation: f64| {
+            json!({ "source": "bar.3dcraft", "name": name, "body": "Bar", "params": { "len": len },
+                    "position": position, "rotation": [0, 0, rotation] })
+        };
+        run(
+            &mut s,
+            "instance.add",
+            bar("Ground", "64 mm", [-2.0, -2.0, 0.0], 0.0),
+        );
+        run(&mut s, "instance.add", bar("Crank", "24 mm", crank, theta));
+        run(
+            &mut s,
+            "instance.add",
+            bar("Coupler", "64 mm", coupler, 0.0),
+        );
+        run(
+            &mut s,
+            "instance.add",
+            bar("Rocker", "24 mm", rocker, theta),
+        );
+        for (name, a, b) in [
+            ("Base", "world/z", "Ground/End1"),
+            ("Drive", "Ground/End1", "Crank/End1"),
+            ("Elbow", "Crank/End2", "Coupler/End1"),
+            ("Knee", "Coupler/End2", "Rocker/End2"),
+            ("Hip", "Ground/End2", "Rocker/End1"),
+        ] {
+            let kind = if name == "Base" { "fixed" } else { "revolute" };
+            run(
+                &mut s,
+                "mate.add",
+                json!({ "kind": kind, "a": a, "b": b, "name": name, "flip": true }),
+            );
+        }
+        run(
+            &mut s,
+            "joint.set",
+            json!({ "mate": "Drive", "value": format!("{theta} deg") }),
+        );
+        let i = inspect(&mut s);
+        assert_eq!(i["configurations"], 2, "{i}");
+        let solved = run(&mut s, "assembly.solve", json!({}));
+        assert_eq!(solved["ok"], true, "{theta}: {solved}");
+        assert_eq!(solved["dof"], 0, "{theta}: {solved}");
+        let (lo, hi) = boxed(&i, "Coupler");
+        let want = [tip[0] - 2.0, tip[1] - 2.0];
+        assert!(
+            close(lo[0], want[0], 100.0) && close(lo[1], want[1], 100.0),
+            "{theta}: {lo:?} {want:?}"
+        );
+        assert!(
+            close(hi[0] - lo[0], 64.0, 100.0) && close(hi[1] - lo[1], 4.0, 100.0),
+            "{theta}: parallel {lo:?} {hi:?}"
         );
     }
 }

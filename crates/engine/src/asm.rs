@@ -13,7 +13,7 @@
 //! 3. each mate's two frames, from the geometry the mate names through
 //!    its instance (`Instance/Feature:name`), in that instance's own
 //!    coordinates;
-//! 4. solved (`asm_solve`, the stand-in for track B's solver);
+//! 4. solved (`asm_solve`, track B's `craft3d-assembly`);
 //! 5. the bodies placed by their instance's pose, by transforms only.
 //!
 //! The result is a part ([`Placed::doc`], one feature per placed body,
@@ -124,8 +124,9 @@ pub(crate) struct Placed {
     /// No mate reaches the world: the first instance was held where it
     /// is placed.
     pub floating: bool,
-    /// Degrees of freedom left, per instance (in order), when solved.
-    pub dof: Vec<usize>,
+    /// When solved: the degrees of freedom left in the whole assembly, and
+    /// each free motion in words.
+    pub dof: Option<(usize, Vec<String>)>,
     /// Its own mates as the solver took them, each side by the name of
     /// its instance (`None`: the world): what a parent that holds it as a
     /// flexible subassembly solves with its own.
@@ -658,7 +659,7 @@ fn empty(doc: &Document, error: Option<String>) -> Placed {
         mates: Vec::new(),
         solve_error: error,
         floating: false,
-        dof: Vec::new(),
+        dof: None,
         specs: Vec::new(),
     }
 }
@@ -845,7 +846,7 @@ fn build_shown(doc: &Document, assembly: &Assembly, instances: &mut [InstanceSta
         mates: Vec::new(),
         solve_error: None,
         floating: false,
-        dof: Vec::new(),
+        dof: None,
         specs: Vec::new(),
     }
 }
@@ -1145,11 +1146,7 @@ fn mate_spec(
 ) -> Result<solver::MateSpec, String> {
     let length = |q: Quantity| in_units(doc, q.value);
     let a = side(&mate.a, instances, index)?;
-    let mut b = side(&mate.b, instances, index)?;
-    if mate.flip {
-        b.1.z = -b.1.z;
-        b.1.y = -b.1.y;
-    }
+    let b = side(&mate.b, instances, index)?;
     let number = |e: &craft3d_doc::Expr, what: &str| -> Result<Quantity, String> {
         eval(values, e.source()).map_err(|err| format!("its {what} {}: {err}", e.source()))
     };
@@ -1161,50 +1158,42 @@ fn mate_spec(
         Some(e) => number(e, "angle")?.value,
         None => 0.0,
     };
-    // The main free motion, driven when its variable exists.
-    let main = mate.kind.free().first().copied();
-    let driven = match main {
-        Some(which) => {
-            let var = joint_variable(&mate.name, which);
-            match doc.variables.iter().find(|v| v.name == var) {
-                Some(v) => {
-                    let q = eval(values, v.expr.source())
-                        .map_err(|e| format!("its variable `{var}`: {e}"))?;
-                    Some(if which == "angle" { q.value } else { length(q) })
-                }
-                None => None,
+    // Each free motion is driven when its variable exists.
+    let mut driven = [None; solver::VARIABLES];
+    for (slot, which) in driven.iter_mut().zip(mate.kind.free().iter().copied()) {
+        let var = joint_variable(&mate.name, which);
+        if let Some(v) = doc.variables.iter().find(|v| v.name == var) {
+            let q =
+                eval(values, v.expr.source()).map_err(|e| format!("its variable `{var}`: {e}"))?;
+            *slot = Some(if which == "angle" { q.value } else { length(q) });
+        }
+    }
+    // The limits hold the main free motion.
+    let mut limits = [None; solver::VARIABLES];
+    if let Some((lo, hi)) = &mate.limits {
+        let lo = number(lo, "lower limit")?;
+        let hi = number(hi, "upper limit")?;
+        let convert = |q: Quantity| {
+            if q.dimension == Dimension::LENGTH {
+                length(q)
+            } else {
+                q.value
             }
+        };
+        if let Some(slot) = limits.first_mut() {
+            *slot = Some((convert(lo), convert(hi)));
         }
-        None => None,
-    };
-    let limits = match &mate.limits {
-        Some((lo, hi)) => {
-            let lo = number(lo, "lower limit")?;
-            let hi = number(hi, "upper limit")?;
-            let convert = |q: Quantity| {
-                if q.dimension == Dimension::LENGTH {
-                    length(q)
-                } else {
-                    q.value
-                }
-            };
-            Some((convert(lo), convert(hi)))
-        }
-        None => None,
-    };
-    if let (Some(v), Some((lo, hi))) = (driven, limits)
-        && !(lo..=hi).contains(&v)
-    {
-        return Err(format!(
-            "its driven value {v} lies outside its limits [{lo}, {hi}]"
-        ));
     }
     Ok(solver::MateSpec {
+        name: mate.name.clone(),
         kind: solver_kind(mate.kind),
         a,
         b,
         offset,
         angle,
+        // A mate puts b's frame against a's, turned over (face to face),
+        // unless `flip` keeps it as it is.
+        flip: !mate.flip,
         limits,
         driven,
     })
@@ -1214,7 +1203,7 @@ type Solved = (
     Vec<MateState>,
     Option<String>,
     bool,
-    Vec<usize>,
+    Option<(usize, Vec<String>)>,
     Vec<NamedSpec>,
 );
 
@@ -1254,7 +1243,7 @@ fn solve_mates(
         let spec = mate_spec(doc, mate, instances, &index, values);
         match spec {
             Ok(spec) => {
-                st.driven = spec.driven.is_some();
+                st.driven = spec.driven.iter().any(Option::is_some);
                 specs.push(spec);
                 spec_mate.push(m);
             }
@@ -1335,6 +1324,10 @@ fn solve_mates(
     let size = model_scale(instances);
     let problem = solver::Problem {
         instances: solved.len(),
+        names: solved
+            .iter()
+            .filter_map(|&k| instances.get(k).map(|i| i.name.clone()))
+            .collect(),
         grounded: if floating { vec![0] } else { Vec::new() },
         mates: specs,
         couplings,
@@ -1351,30 +1344,18 @@ fn solve_mates(
             }
             for (s, &m) in spec_mate.iter().enumerate() {
                 if let Some(st) = states.get_mut(m) {
-                    st.free = solution.free.get(s).copied().flatten();
+                    st.free = solution.values.get(s).and_then(|v| v.first()).copied();
                 }
             }
-            (states, None, floating, solution.dof, named)
+            (
+                states,
+                None,
+                floating,
+                Some((solution.dof, solution.free)),
+                named,
+            )
         }
-        Err(diagnosis) => {
-            let text = match diagnosis {
-                solver::Diagnosis::Infeasible { mates, gap } => {
-                    let names: Vec<String> = mates
-                        .iter()
-                        .filter_map(|&s| spec_mate.get(s))
-                        .filter_map(|&m| assembly.mates.get(m))
-                        .map(|m| format!("`{}`", m.name))
-                        .collect();
-                    format!(
-                        "the mates {} contradict each other: the loop does not close by {gap:.6} {}",
-                        names.join(", "),
-                        doc.units.length.symbol()
-                    )
-                }
-                solver::Diagnosis::Unsupported(why) | solver::Diagnosis::Invalid(why) => why,
-            };
-            (states, Some(text), floating, Vec::new(), named)
-        }
+        Err(solver::Diagnosis(text)) => (states, Some(text), floating, None, named),
     }
 }
 
