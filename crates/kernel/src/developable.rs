@@ -25,7 +25,7 @@
 //! and its oracles: docs/design/developable.md.
 
 use crate::KernelError;
-use craft3d_geom::refine::interpolate;
+use craft3d_geom::refine::interpolate_with_end_derivatives;
 use craft3d_geom::{Curve3, Line, NurbsSurface, Plane, Surface};
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, FaceId, VertexId};
@@ -115,16 +115,22 @@ pub struct Connected {
     pub rulings: Vec<(f64, f64)>,
     /// The largest distance found between the faces and the true
     /// developable (its rails and its rulings), in model units. At a
-    /// face's end rulings the turn of its tangent plane is counted beyond
-    /// what the rounding of the coordinates leaves unresolved there
-    /// ([`Connected::unresolved`]).
+    /// face's end rulings: the turn of the tangent plane it is built with
+    /// (from the rails' tangents) from the developable's, times the
+    /// ruling's length, which is at most half the tolerance (else refused).
     pub deviation: f64,
-    /// The largest part of a face's turn at an end ruling (times the
-    /// ruling's length, model units) that the rounding of the coordinates
-    /// accounts for, `ε |p| L / span` over the end interval's `span`: not
-    /// resolved, so allowed beyond half the tolerance and not counted in
-    /// `deviation`. Near the origin a small fraction of the tolerance; far
-    /// from it, over a short end interval, it can exceed it.
+    /// An estimate, not a bound, and not counted in `deviation`: the
+    /// largest angle found between a stored face's normal at an end ruling
+    /// and the tangent plane it was built with there, times the ruling's
+    /// length (model units). The face's rows leave their end rulings along
+    /// the rails' tangents; the stored control points next to the end
+    /// carry the rounding of their coordinates, about `ε |p|` each, over a
+    /// first control leg as short as a third of the end interval, which
+    /// turns the stored normal by about `ε |p| / leg`. Measured, so
+    /// whatever the rounding does at that end; near the origin a small
+    /// fraction of the tolerance, far from it over a short end interval
+    /// (the sea kayak's panels lie some 2e9 tolerances out) it can reach
+    /// the tolerance. Positions are not affected beyond `ε |p|`.
     pub unresolved: f64,
     /// The largest |K| found on the faces.
     pub curvature: f64,
@@ -1105,6 +1111,71 @@ fn merged_fans(mut path: Path) -> Path {
         }
     }
     path
+}
+
+/// The fans at the sheet's ends with a fan of the path beside them that
+/// has the same apex made one (as [`merged_fans`] makes fans in a row
+/// with one apex one; review of 2026-10-29): the start's fan (apex at the
+/// first end of A for [`Start::FromA`], of B for [`Start::FromB`]) and a
+/// fan the path starts with whose apex is that end, likewise at the end
+/// (`end` the fan from the last end of A, [`Start::FromA`], or of B). The
+/// path's fan is taken into the end's fan, which keeps its name (the
+/// faces that hold the sheet's ends keep theirs, [`middle_strips`]); a
+/// path of only that fan is left as it is (it would have no rulings).
+fn merged_end_fans(
+    mut path: Path,
+    start: Start,
+    end: Option<Start>,
+) -> (Path, Start, Option<Start>) {
+    let start = match (start, path.points.first(), path.points.get(1)) {
+        (Start::FromA(_), Some(&p), Some(&q))
+            if path.points.len() >= 3 && path.special_after(0) && p.0 == 0.0 && q.0 == 0.0 =>
+        {
+            path.points.remove(0);
+            path.fan_after.remove(0);
+            path.break_at.remove(0);
+            Start::FromA(q.1)
+        }
+        (Start::FromB(_), Some(&p), Some(&q))
+            if path.points.len() >= 3 && path.special_after(0) && p.1 == 0.0 && q.1 == 0.0 =>
+        {
+            path.points.remove(0);
+            path.fan_after.remove(0);
+            path.break_at.remove(0);
+            Start::FromB(q.0)
+        }
+        (start, _, _) => start,
+    };
+    let n = path.points.len();
+    let last_two = n
+        .checked_sub(2)
+        .and_then(|k| Some((k, *path.points.get(k)?, *path.points.get(k + 1)?)));
+    let end = match (end, last_two) {
+        (Some(Start::FromA(_)), Some((k, p, q)))
+            if n >= 3 && path.special_after(k) && p.0 >= 1.0 && q.0 >= 1.0 =>
+        {
+            path.points.pop();
+            path.fan_after.pop();
+            path.break_at.pop();
+            if let Some(f) = path.fan_after.last_mut() {
+                *f = false;
+            }
+            Some(Start::FromA(p.1))
+        }
+        (Some(Start::FromB(_)), Some((k, p, q)))
+            if n >= 3 && path.special_after(k) && p.1 >= 1.0 && q.1 >= 1.0 =>
+        {
+            path.points.pop();
+            path.fan_after.pop();
+            path.break_at.pop();
+            if let Some(f) = path.fan_after.last_mut() {
+                *f = false;
+            }
+            Some(Start::FromB(p.0))
+        }
+        (end, _) => end,
+    };
+    (path, start, end)
 }
 
 /// Where the walk reached a corner's line of one rail at `q` (of A when
@@ -2360,6 +2431,7 @@ fn along_pair(
     } else {
         Some(Start::FromB(ex))
     };
+    let (path, kind, end) = merged_end_fans(path, kind, end);
     let path = thinned(pair, path, tol);
     if path.points.len() < 2 {
         return Err(refused(format!(
@@ -2704,7 +2776,7 @@ fn middle_strips(
         .collect();
     let mut from_start = 0u32;
     for &(i, at) in &folds {
-        if at < 0.5
+        if from_start_side(at)
             && let Some(m) = marks.get_mut(i)
         {
             *m = Some(Mark::FoldFromStart(from_start));
@@ -2713,7 +2785,7 @@ fn middle_strips(
     }
     let mut from_end = 0u32;
     for &(i, at) in folds.iter().rev() {
-        if at >= 0.5
+        if !from_start_side(at)
             && let Some(m) = marks.get_mut(i)
         {
             *m = Some(Mark::FoldFromEnd(from_end));
@@ -2758,6 +2830,26 @@ fn middle_strips(
         }
     }
     strips
+}
+
+/// How far past the sheet's middle (in the parameter square's diagonal,
+/// `(s/len_a + t/len_b)/2`, which runs over `[0, 1]`) a fold is still
+/// counted from the start ([`from_start_side`]).
+const MIDDLE_MARGIN: f64 = 1e-6;
+
+/// Whether a fold at `at` (its place along the sheet, `0` at the start and
+/// `1` at the end) is counted from the start: below the middle plus
+/// [`MIDDLE_MARGIN`]. Rails that are symmetric about the sheet's middle
+/// (a boat's chine and sheer nearly are) put a fold at the middle itself,
+/// where the rounding of the walk would turn a test at `1/2` either way
+/// from one edit to the next and retarget the fold's name (rule 4; review
+/// of 2026-10-29). Off the middle by a millionth of the sheet, far more
+/// than that rounding and than any place symmetry gives a fold, the
+/// choice is fixed under such edits; a fold that does move across it is
+/// renumbered (the limit of counting from the nearer end, as a fold that
+/// appears nearer the same end).
+fn from_start_side(at: f64) -> bool {
+    at < 0.5 + MIDDLE_MARGIN
 }
 
 fn no_point() -> KernelError {
@@ -2973,14 +3065,96 @@ fn path_params(points: &[(Vec3, Vec3)]) -> Option<Vec<f64>> {
     Some(params)
 }
 
-/// The surface of degree 3 (or less, for few points) along and 1 across
-/// whose rows interpolate `points` at `params`.
-fn fitted(params: &[f64], points: &[(Vec3, Vec3)]) -> Result<NurbsSurface, KernelError> {
-    let degree = 3.min(points.len().saturating_sub(1)).max(1);
+/// The end derivatives of a face's two rows along the path's parameter
+/// (`[[lower at start, upper at start], [lower at end, upper at end]]`,
+/// [`fitted`]): each a rail's own tangent at the end ruling (on the face's
+/// side of a joint, [`Rail::at_side`]), so the face's tangent plane there
+/// is the plane of the ruling and the rails' tangents, as the
+/// developable's is, to the relative rounding of those tangents and not to
+/// the rounding of points a short end interval apart (review of
+/// 2026-10-29: a natural interpolation's end derivatives come from such
+/// points). The length is the row's rate at that end as the quadratic
+/// through its first (last) three points has it (Bessel's end condition),
+/// taken along the tangent and never backward; zero for a row that stays
+/// at one point (a fan's apex). The direction of a rail whose tangent
+/// vanishes there is the quadratic's own.
+fn end_derivatives(
+    pair: &Pair,
+    rulings: &[(f64, f64)],
+    points: &[(Vec3, Vec3)],
+    params: &[f64],
+    moving: [bool; 2],
+) -> Option<[[Vec3; 2]; 2]> {
+    let last = points.len().checked_sub(1)?;
+    let mut out = [[Vec3::ZERO; 2]; 2];
+    for (end, slot) in out.iter_mut().enumerate() {
+        let before = end == 1;
+        // The three points nearest the end, in the order from the end
+        // inward, and their parameters' distances from the end.
+        let order: Vec<usize> = if before {
+            (0..=last).rev().take(3).collect()
+        } else {
+            (0..=last).take(3).collect()
+        };
+        let &first = order.first()?;
+        let &(s, t) = rulings.get(first)?;
+        let u_at = |i: usize| params.get(i).copied();
+        let u0 = u_at(first)?;
+        for (side, d) in slot.iter_mut().enumerate() {
+            if !moving.get(side).copied().unwrap_or(false) {
+                continue;
+            }
+            let value = |i: usize| points.get(i).map(|(p, q)| if side == 0 { *p } else { *q });
+            // The rate along the path at the end: the quadratic through
+            // the three points (two: the chord), differentiated at the end.
+            let rate = match order.as_slice() {
+                [i0, i1, i2] => {
+                    let (h1, h2) = ((u_at(*i1)? - u0).abs(), (u_at(*i2)? - u_at(*i1)?).abs());
+                    let (q0, q1, q2) = (value(*i0)?, value(*i1)?, value(*i2)?);
+                    let f01 = (q1 - q0) * (1.0 / h1);
+                    let f12 = (q2 - q1) * (1.0 / h2);
+                    // Divided differences taken inward from the end.
+                    let rate_in = f01 - (f12 - f01) * (h1 / (h1 + h2));
+                    if before { -rate_in } else { rate_in }
+                }
+                [i0, i1] => {
+                    let h = (u_at(*i1)? - u0).abs();
+                    let inward = (value(*i1)? - value(*i0)?) * (1.0 / h);
+                    if before { -inward } else { inward }
+                }
+                _ => return None,
+            };
+            let rail = rail_of(pair, side);
+            let at = if side == 0 { s } else { t };
+            let tangent = rail.at_side(at, before).and_then(|(_, d)| d.normalized());
+            *d = match tangent {
+                Some(unit) => unit * rate.dot(unit).max(0.0),
+                None => rate,
+            };
+            if !(d.x.is_finite() && d.y.is_finite() && d.z.is_finite()) {
+                return None;
+            }
+        }
+    }
+    Some(out)
+}
+
+/// The surface of degree 3 along and 1 across whose rows interpolate
+/// `points` at `params`, each row with the end derivatives given
+/// (`ends[end][row]`, [`end_derivatives`]).
+fn fitted(
+    params: &[f64],
+    points: &[(Vec3, Vec3)],
+    ends: [[Vec3; 2]; 2],
+) -> Result<NurbsSurface, KernelError> {
     let lower: Vec<Vec<f64>> = points.iter().map(|(p, _)| vec![p.x, p.y, p.z]).collect();
     let upper: Vec<Vec<f64>> = points.iter().map(|(_, q)| vec![q.x, q.y, q.z]).collect();
-    let (knots, lo) = interpolate(params, degree, &lower).map_err(KernelError::Geometry)?;
-    let (_, hi) = interpolate(params, degree, &upper).map_err(KernelError::Geometry)?;
+    let v = |d: Vec3| vec![d.x, d.y, d.z];
+    let [[lo0, hi0], [lo1, hi1]] = ends;
+    let (knots, lo) = interpolate_with_end_derivatives(params, &lower, &v(lo0), &v(lo1))
+        .map_err(KernelError::Geometry)?;
+    let (_, hi) = interpolate_with_end_derivatives(params, &upper, &v(hi0), &v(hi1))
+        .map_err(KernelError::Geometry)?;
     let at = |v: &Vec<f64>| {
         Vec3::new(
             v.first().copied().unwrap_or(f64::NAN),
@@ -2995,7 +3169,7 @@ fn fitted(params: &[f64], points: &[(Vec3, Vec3)]) -> Result<NurbsSurface, Kerne
     }
     let count = lo.len();
     NurbsSurface::new(
-        degree,
+        3,
         1,
         knots,
         vec![0.0, 0.0, 1.0, 1.0],
@@ -3038,6 +3212,7 @@ fn build(
     for strip in &strips {
         let mut rulings = strip_rulings(strip, 16);
         let mut fit = None;
+        let moving = [!strip.lower.is_point(), !strip.upper.is_point()];
         for _round in 0..MAX_ROUNDS {
             let points: Vec<(Vec3, Vec3)> = rulings
                 .iter()
@@ -3046,7 +3221,9 @@ fn build(
                 .ok_or_else(no_point)?;
             let params = path_params(&points)
                 .ok_or_else(|| refused("the rulings do not move along the curves".to_string()))?;
-            let surface = fitted(&params, &points)?;
+            let ends = end_derivatives(pair, &rulings, &points, &params, moving)
+                .ok_or_else(|| refused("the rows' end tangents cannot be taken".to_string()))?;
+            let surface = fitted(&params, &points, ends)?;
             // Where the fit is farther than half the tolerance from the
             // true developable, a ruling is added at the middle.
             // Per interval: the true ruling at its middle, and whether the
@@ -3174,48 +3351,47 @@ fn build(
             // developable's (the plane of the ruling and its rails'
             // tangents, on the face's side of a corner), the turn between
             // them over the ruling's length within half the tolerance, so
-            // that faces meeting there are tangent to within the tolerance
-            // (an interpolation's end derivatives are its least accurate).
+            // that faces meeting there are tangent to within the tolerance.
+            // The rows' end derivatives are the rails' tangents
+            // ([`end_derivatives`]), so the face's tangent plane along its
+            // end ruling is the plane of the ruling and those derivatives
+            // (`S_u = (D_A + D_B)/2`, `S_v = B - A` at `v = 1/2`): taken
+            // from them it is exact to their relative rounding, and held
+            // with no allowance. A face whose end ruling is twisted (its
+            // rails' tangents and the ruling not in one plane) cannot be
+            // made tangent there by more rulings: refused. The stored
+            // surface's normal there departs from that plane by what the
+            // rounding of its control points (`ε |p|` each, over the first
+            // control leg) leaves unresolved: measured, reported as
+            // `unresolved`, not counted in `deviation`.
             let last = rulings.len().saturating_sub(1);
             let fitted = Surface::Nurbs(surface.clone());
-            for (end, interval, before) in [(0, 0, false), (last, last.saturating_sub(1), true)] {
-                let (Some(&(s, t)), Some(&u)) = (rulings.get(end), params.get(end)) else {
+            for (end, before) in [(0, false), (last, true)] {
+                let (Some(&(s, t)), Some(&u), Some(&(pa, pb))) =
+                    (rulings.get(end), params.get(end), points.get(end))
+                else {
                     continue;
                 };
-                let moving = [!strip.lower.is_point(), !strip.upper.is_point()];
-                let Some(off) = end_turn(pair, &fitted, (s, t), u, before, moving) else {
+                let [d_lo, d_hi] = if before { ends[1] } else { ends[0] };
+                let Some(intended) = (d_lo + d_hi).cross(pb - pa).normalized() else {
                     continue;
                 };
-                let ends = points.get(interval).zip(points.get(interval + 1));
-                let span = ends.map_or(0.0, |((a0, b0), (a1, b1))| {
-                    a0.distance(*a1) + b0.distance(*b1)
-                });
-                let size = ends.map_or(f64::INFINITY, |((a0, b0), (a1, b1))| {
-                    a0.length()
-                        .max(b0.length())
-                        .max(a1.length())
-                        .max(b1.length())
-                });
-                let length = ends
-                    .map_or(0.0, |((a0, b0), _)| a0.distance(*b0))
-                    .max(ends.map_or(0.0, |(_, (a1, b1))| a1.distance(*b1)));
-                // What the coordinates resolve: the fitted normal comes
-                // from the rows' derivatives across the end interval, whose
-                // points carry the rounding of their coordinates, `ε |p|`,
-                // so it is known only to about `ε |p| / span` radians, times
-                // the ruling's length ([`end_rounding`]). Far from the origin
-                // over a short end interval that is more than the tolerance
-                // (the kayak's sheer panel lies 2.4e9 tolerances out); near
-                // it, a fraction. The end is held to half the tolerance
-                // beyond it and refined otherwise, whatever its span; what
-                // the rounding accounts for is not counted as found.
-                let rounding = end_rounding(span, size, length);
-                worst = worst.max((off - rounding).max(0.0));
-                rounded = rounded.max(off.min(rounding));
-                if off > 0.5 * tol + rounding
-                    && let Some(b) = bad.get_mut(interval)
-                {
-                    *b = true;
+                let Some(off) = end_turn(pair, intended, (s, t), before, moving) else {
+                    continue;
+                };
+                if off > 0.5 * tol {
+                    return Err(refused(format!(
+                        "the face's tangent plane at its end ruling {} turns from the developable's by {off} over the ruling (more than half the tolerance): the ruling and its curves' tangents there are not in one plane",
+                        pair.where_(s / pair.a.len(), t / pair.b.len())
+                    )));
+                }
+                worst = worst.max(off);
+                if let Some(stored) = fitted.normal(u, 0.5).and_then(|n| n.normalized()) {
+                    let turn = stored.cross(intended).length().atan2(stored.dot(intended));
+                    let gap = turn * pa.distance(pb);
+                    if gap.is_finite() {
+                        rounded = rounded.max(gap);
+                    }
                 }
             }
             // Refined where off and beside it, so that neighbouring
@@ -3284,40 +3460,19 @@ fn build(
     Ok(made)
 }
 
-/// What the rounding of the coordinates leaves unresolved of a face's
-/// tangent plane at an end ruling, as the fit's end check measures it
-/// (the turn times the ruling's length): the fitted normal is taken from
-/// the rows' derivatives across the end interval, whose points each carry
-/// a rounding of about `ε |p|` (`size` the largest coordinate's distance
-/// from the origin), over a `span` (both rows' moves added) of the
-/// interval, so it is known to about `ε |p| / span` radians; over a ruling
-/// of `length` that is `ε |p| L / span`. Infinite for an interval of no
-/// span (nothing resolves its plane), and so for none that is not finite.
-fn end_rounding(span: f64, size: f64, length: f64) -> f64 {
-    let rounding = f64::EPSILON * size * length / span;
-    if rounding.is_finite() && span > 0.0 {
-        rounding
-    } else {
-        f64::INFINITY
-    }
-}
-
-/// How far the fitted face's tangent plane along its end ruling `(s, t)`
-/// (rail parameters, at `u` on the face) strays from the developable's:
-/// the angle between the fitted normal at the ruling's middle and the
-/// normal of the plane of the ruling and a rail's tangent (at a joint, on
-/// the side given), the larger over the rails whose rows move along the
-/// face, times the ruling's length. A developable's tangent plane along a
-/// ruling holds both rails' tangents; a ruling snapped to a corner within
-/// the tolerance holds each within the tolerance. The middle, as a row
-/// may stand still at the end ruling (the strip beside a fold's fan) and
-/// a fan's apex row has no normal; a fan's apex row has no tangent either
-/// (`moving` false). `None` where a normal has no direction.
+/// How far a face's tangent plane along its end ruling `(s, t)` (rail
+/// parameters; `normal` the face's unit normal there) strays from the
+/// developable's: the angle between `normal` and the normal of the plane
+/// of the ruling and a rail's tangent (at a joint, on the side given), the
+/// larger over the rails whose rows move along the face, times the
+/// ruling's length. A developable's tangent plane along a ruling holds
+/// both rails' tangents; a ruling snapped to a corner within the
+/// tolerance holds each within the tolerance. A fan's apex row has no
+/// tangent (`moving` false). `None` where a normal has no direction.
 fn end_turn(
     pair: &Pair,
-    fitted: &Surface,
+    normal: Vec3,
     (s, t): (f64, f64),
-    u: f64,
     before: bool,
     moving: [bool; 2],
 ) -> Option<f64> {
@@ -3325,7 +3480,7 @@ fn end_turn(
     let (pb, db) = pair.b.at_side(t, before)?;
     let d = pb - pa;
     let ud = d.normalized()?;
-    let n = fitted.normal(u, 0.5)?.normalized()?;
+    let n = normal.normalized()?;
     let mut angle: f64 = 0.0;
     for (row, tangent) in [(moving[0], da), (moving[1], db)] {
         if !row {
@@ -3664,16 +3819,119 @@ mod tests {
         }
     }
 
-    /// The rounding allowance at a face's end grows as the end interval
-    /// shrinks and with the distance from the origin, and none resolves an
-    /// interval of no span.
+    /// A face's rows leave its end rulings along the rails' own tangents
+    /// (Hermite end conditions, review of 2026-10-29), so the stored face's
+    /// tangent plane there is the developable's to the rounding of its
+    /// control points: a strip of a cylinder whose rulings are spaced
+    /// unevenly (doubling from the end), its rows' derivatives at both ends
+    /// along the arcs' tangents within 1e-12 rad, at three scales.
     #[test]
-    fn the_end_rounding_is_what_the_coordinates_resolve() {
-        let near = end_rounding(1e-6, 1.0, 1.0);
-        assert!((near - f64::EPSILON * 1e6).abs() <= 1e-24, "{near}");
-        assert!(end_rounding(1e-6, 1e9, 1.0) > 1e3 * near);
-        assert_eq!(end_rounding(0.0, 1.0, 1.0), f64::INFINITY);
-        assert_eq!(end_rounding(f64::NAN, 1.0, 1.0), f64::INFINITY);
+    fn a_faces_rows_leave_its_ends_along_the_rails() {
+        for k in [1e-3, 1.0, 1e6] {
+            let tolerance = Tolerance::new(1e-6 * k, 1e-9).unwrap();
+            let (a, b) = cylinder(0.1 * k, k);
+            let pair = Pair::new(&a, &b, tolerance.angular);
+            let made = build(
+                &pair,
+                vec![cylinder_strip((0.0, 0.0), 1e-3)],
+                &tolerance,
+                [false, false],
+            )
+            .unwrap_or_else(|e| panic!("{k}: {e}"));
+            let Surface::Nurbs(surface) = &made.body.faces[0].surface else {
+                panic!("{k}: a face of rulings is a spline");
+            };
+            let ctrl = surface.control_points();
+            let n = surface.counts().0;
+            for (u, s, end, next) in [(0.0, 0.0, 0, 1), (1.0, 1.0, n - 1, n - 2)] {
+                for (v, rail, row) in [(0.0, &a, 0), (1.0, &b, 1)] {
+                    let (_, du, _) = surface.derivatives(u, v);
+                    let (_, tangent) = rail.at(s).unwrap();
+                    let angle = du.cross(tangent).length().atan2(du.dot(tangent));
+                    // What the control points' coordinates resolve of the
+                    // direction of the first control leg.
+                    let (p0, p1) = (ctrl[2 * end + row], ctrl[2 * next + row]);
+                    let resolved =
+                        16.0 * f64::EPSILON * p0.length().max(p1.length()) / p0.distance(p1);
+                    assert!(
+                        angle <= resolved && resolved < 1e-9,
+                        "{k}: ({u}, {v}) leaves at {angle} rad ({resolved} resolved)"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A cylinder of radius `r` and height `h` about a vertical axis
+    /// through `center`, its arcs over one radian from the +x side.
+    fn cylinder_at(center: Vec3, r: f64, h: f64) -> (Rail, Rail) {
+        let arc = |z: f64| Rail {
+            pieces: vec![RailPiece {
+                curve: Curve3::Circle(
+                    craft3d_geom::Circle::new(
+                        Frame::new(center + Vec3::new(0.0, 0.0, z), Vec3::Z, Vec3::X).unwrap(),
+                        r,
+                    )
+                    .unwrap(),
+                ),
+                range: (0.0, 1.0),
+                reversed: false,
+                source: 0,
+            }],
+        };
+        (arc(0.0), arc(h))
+    }
+
+    /// A twisted end ruling far from the origin is refused (review of
+    /// 2026-10-29: the end check allowed the rounding of the coordinates
+    /// over the end interval, `ε |p| L / span`, which far from the origin
+    /// over a short end interval outgrew any real defect, and grew as
+    /// refinement halved the span). A cylinder of radius `k/10` and height
+    /// `10 k` 2.4e9 tolerances from the origin (the sea kayak's sheer panel
+    /// lies so far out), its end ruling from `A(0)` to `B(σ)`, twisted by
+    /// four tolerances, the next ruling 0.04 tolerances along A: the old
+    /// allowance there was some 40 tolerances. The rows' end tangents are
+    /// now the rails' and the end held with no allowance: refused, naming
+    /// the end ruling; the same strip with rulings 1e4 tolerances
+    /// apart and an end on the cylinder is built within half the tolerance,
+    /// what the stored face's end normals leave unresolved a small part of
+    /// the tolerance. At three scales.
+    #[test]
+    fn a_twisted_end_far_from_the_origin_is_refused() {
+        for k in [1e-3, 1.0, 1e6] {
+            let tolerance = Tolerance::new(1e-6 * k, 1e-9).unwrap();
+            let center = Vec3::new(2.4e3 * k, 0.0, 0.0);
+            let (r, h) = (0.1 * k, 10.0 * k);
+            let (a, b) = cylinder_at(center, r, h);
+            let pair = Pair::new(&a, &b, tolerance.angular);
+            let sigma = 4.0 * tolerance.linear / h;
+            let twisted = cylinder_strip((0.0, sigma), 2.0 * sigma);
+            let e = build(&pair, vec![twisted], &tolerance, [false, false])
+                .map(|made| (made.deviation, made.unresolved))
+                .expect_err("the twisted end is refused");
+            assert!(
+                matches!(e, KernelError::Refused { .. }) && e.to_string().contains("end ruling"),
+                "{k}: {e}"
+            );
+            let exact = cylinder_strip((0.0, 0.0), 0.1);
+            let made = build(&pair, vec![exact], &tolerance, [false, false])
+                .unwrap_or_else(|e| panic!("{k}: {e}"));
+            eprintln!(
+                "{k}: deviation {:e}, unresolved {:e} (tolerances)",
+                made.deviation / tolerance.linear,
+                made.unresolved / tolerance.linear
+            );
+            assert!(
+                made.deviation <= 0.5 * tolerance.linear,
+                "{k}: {}",
+                made.deviation
+            );
+            assert!(
+                made.unresolved <= 5e-2 * tolerance.linear,
+                "{k}: {}",
+                made.unresolved
+            );
+        }
     }
 
     /// A fold noticed where a fan has just landed (the fan across a fold
@@ -3753,6 +4011,91 @@ mod tests {
             .into_iter()
             .map(|s| s.piece)
             .collect()
+    }
+
+    /// The name of the fan at a fold whose place along the sheet is `at`
+    /// (the fan's first ruling `(at, at)` on rails of one piece each, apex
+    /// on A).
+    fn fold_name_at(at: f64) -> Piece {
+        let a = line_rail(Vec3::ZERO, Vec3::X);
+        let b = line_rail(Vec3::Z, Vec3::new(1.0, 0.0, 1.0));
+        let pair = Pair::new(&a, &b, 1e-9);
+        let rulings = vec![(0.0, 0.0), (at, at), (at, at + 0.02), (1.0, 1.0)];
+        let fan_after = vec![false, true, false, false];
+        let break_at = vec![false; rulings.len()];
+        middle_strips(&pair, &rulings, &fan_after, &break_at)[1].piece
+    }
+
+    /// A fold at the sheet's middle keeps its name when rounding moves it
+    /// either way (review of 2026-10-29: `at < 1/2` counted it from the
+    /// start and `at >= 1/2` from the end, so symmetric rails, whose fold
+    /// lies at the middle, had its name turned by the rounding of an edit
+    /// elsewhere, rule 4). At the middle and within a millionth of the
+    /// sheet of it, the first fold from the start; past that margin, from
+    /// the end.
+    #[test]
+    fn a_fold_at_the_middle_keeps_its_name() {
+        use Mark::{FoldFromEnd as E, FoldFromStart as S};
+        for at in [
+            0.5 - 1e-9,
+            0.5 - 1e-15,
+            0.5,
+            0.5 + 1e-15,
+            0.5 + 1e-12,
+            0.5 + 1e-9,
+            0.5 + 0.5 * MIDDLE_MARGIN,
+        ] {
+            assert_eq!(fold_name_at(at), Piece::Fan(S(0)), "{at}");
+        }
+        for at in [0.5 + 2.0 * MIDDLE_MARGIN, 0.6, 0.9] {
+            assert_eq!(fold_name_at(at), Piece::Fan(E(0)), "{at}");
+        }
+        assert!(MIDDLE_MARGIN >= 1e-6);
+    }
+
+    /// An end's fan and a fan of the path beside it with the same apex are
+    /// one fan, named as the end's (review of 2026-10-29: an end fan added
+    /// after [`merged_fans`] was not merged with the fold's fan beside it);
+    /// fans with other apexes, and a path that is only the fan, are kept.
+    #[test]
+    fn an_end_fan_with_the_apex_of_the_fan_beside_it_is_one() {
+        // The path ends in a fan along A's last end (apex A(1)), and the end
+        // fan from A's last end runs on to B's: one cone.
+        let mut path = Path::default();
+        path.push((0.0, 0.0));
+        path.push((0.5, 0.5));
+        path.push((1.0, 0.7));
+        path.push_fan((1.0, 0.8));
+        let (merged, _, end) = merged_end_fans(path, Start::Corner, Some(Start::FromA(0.8)));
+        assert_eq!(merged.points, vec![(0.0, 0.0), (0.5, 0.5), (1.0, 0.7)]);
+        assert_eq!(merged.fan_after, vec![false, false, false]);
+        assert!(matches!(end, Some(Start::FromA(y)) if y == 0.7));
+        // At the start: the start's fan from A's first end, and a fan along
+        // A's first end the path starts with.
+        let mut path = Path::default();
+        path.push((0.0, 0.2));
+        path.push_fan((0.0, 0.3));
+        path.push((0.5, 0.5));
+        path.push((1.0, 1.0));
+        let (merged, start, _) = merged_end_fans(path, Start::FromA(0.2), None);
+        assert_eq!(merged.points, vec![(0.0, 0.3), (0.5, 0.5), (1.0, 1.0)]);
+        assert_eq!(merged.fan_after, vec![false, false, false]);
+        assert!(matches!(start, Start::FromA(y) if y == 0.3));
+        // The path's last fan has its apex on B: two cones, kept.
+        let mut path = Path::default();
+        path.push((0.0, 0.0));
+        path.push((0.5, 0.5));
+        path.push((0.9, 0.8));
+        path.push_fan((1.0, 0.8));
+        let (kept, _, end) = merged_end_fans(path, Start::Corner, Some(Start::FromA(0.8)));
+        assert_eq!(kept.points.len(), 4);
+        assert!(matches!(end, Some(Start::FromA(y)) if y == 0.8));
+        // Only the fan: kept (no rulings would be left).
+        let mut path = Path::default();
+        path.push((1.0, 0.7));
+        path.push_fan((1.0, 0.8));
+        let (kept, _, _) = merged_end_fans(path, Start::Corner, Some(Start::FromA(0.8)));
+        assert_eq!(kept.points.len(), 2);
     }
 
     /// Faces are named by place (2026-10-28): a fold that appears or goes

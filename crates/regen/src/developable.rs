@@ -260,6 +260,7 @@ pub(crate) fn build_developable(
         reversed_b: made.reversed_b,
         rulings: made.rulings.len(),
         deviation: made.deviation,
+        unresolved: made.unresolved,
         curvature: made.curvature,
     };
     Ok((made.body, names, report))
@@ -270,12 +271,18 @@ pub(crate) fn build_developable(
 #[derive(Clone, Debug, PartialEq)]
 pub enum Developed {
     /// A developable: whether `b` was run the other way, how many rulings
-    /// it has, how far the faces were found from the true developable and
-    /// the largest |K| found on them.
+    /// it has, how far the faces were found from the true developable, how
+    /// far the stored faces' normals at their end rulings were found from
+    /// the tangent planes they were built with, times the ruling's length
+    /// (what the rounding of their control points leaves unresolved, an
+    /// estimate, not counted in the deviation:
+    /// `craft3d_kernel::developable::Connected::unresolved`) and the
+    /// largest |K| found on them.
     Sheet {
         reversed_b: bool,
         rulings: usize,
         deviation: f64,
+        unresolved: f64,
         curvature: f64,
     },
     /// An unfold: its development, with the map between pattern and part.

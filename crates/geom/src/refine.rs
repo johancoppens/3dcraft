@@ -943,6 +943,144 @@ pub fn interpolate_on(
     solve_banded(params, degree, knots, values)
 }
 
+/// The cubic B-spline through `values` at the increasing `params` whose
+/// first derivatives at the first and the last parameter are `start` and
+/// `end` (clamped end conditions: the NURBS Book, §9.2.2, the cubic case).
+/// Returns its knots (the first and the last parameter four times each,
+/// every inner parameter once) and its `params.len() + 2` control values.
+/// The two control values beside each end are fixed by the end values and
+/// derivatives (`P1 = Q0 + (u1 − u0)/3 · D0`, and likewise at the end), so
+/// the curve's end tangents are the given ones to the rounding of those
+/// control values; the inner ones solve a tridiagonal system (each inner
+/// parameter is a knot, where only three basis functions are not zero),
+/// totally positive, so eliminated without pivoting. Two points give the
+/// cubic Hermite segment.
+pub fn interpolate_with_end_derivatives(
+    params: &[f64],
+    values: &[Vec<f64>],
+    start: &[f64],
+    end: &[f64],
+) -> Result<(Vec<f64>, Vec<Vec<f64>>), GeomError> {
+    let count = params.len();
+    if !(2..MAX_INTERPOLATED_BANDED).contains(&count) || values.len() != count {
+        return Err(GeomError::InvalidParameter(
+            "interpolation needs at least two points, a value for each (and no more than the supported maximum)",
+        ));
+    }
+    if params.iter().any(|v| !v.is_finite())
+        || params.windows(2).any(|w| !matches!(w, [a, b] if a < b))
+    {
+        return Err(GeomError::InvalidParameter(
+            "the parameters of interpolated points must be finite and increasing",
+        ));
+    }
+    let width = values.first().map_or(0, Vec::len);
+    if values.iter().any(|v| v.len() != width)
+        || start.len() != width
+        || end.len() != width
+        || values
+            .iter()
+            .flatten()
+            .chain(start)
+            .chain(end)
+            .any(|v| !v.is_finite())
+    {
+        return Err(GeomError::InvalidParameter(
+            "the interpolated values and end derivatives must all be finite and have the same length",
+        ));
+    }
+    let n = count - 1;
+    let (Some(&u0), Some(&u1), Some(&ul), Some(&un)) = (
+        params.first(),
+        params.get(1),
+        params.get(n - 1),
+        params.last(),
+    ) else {
+        return Err(internal());
+    };
+    let mut knots = vec![u0; 4];
+    knots.extend(params.iter().skip(1).take(n - 1).copied());
+    knots.extend([un; 4]);
+    let (Some(q0), Some(qn)) = (values.first(), values.last()) else {
+        return Err(internal());
+    };
+    let along = |q: &[f64], d: &[f64], f: f64| -> Vec<f64> {
+        q.iter().zip(d).map(|(q, d)| q + f * d).collect()
+    };
+    let p1 = along(q0, start, (u1 - u0) / 3.0);
+    let pn1 = along(qn, end, -(un - ul) / 3.0);
+    let mut out = Vec::with_capacity(count + 2);
+    out.push(q0.clone());
+    out.push(p1.clone());
+    // The inner control values P2..=Pn: row i (inner parameter u_i, its span
+    // i + 3) reads N_i P_i + N_{i+1} P_{i+1} + N_{i+2} P_{i+2} = Q_i, with
+    // P1 and P_{n+1} known. Forward elimination (Thomas), then back.
+    let inner = n - 1;
+    let mut diag = Vec::with_capacity(inner);
+    let mut upper = Vec::with_capacity(inner);
+    let mut rhs: Vec<Vec<f64>> = Vec::with_capacity(inner);
+    for i in 1..n {
+        let u = params.get(i).copied().ok_or_else(internal)?;
+        let local = basis_local(&knots, 3, i + 3, u)?;
+        let (Some(&a), Some(&diagonal), Some(&c)) = (local.first(), local.get(1), local.get(2))
+        else {
+            return Err(internal());
+        };
+        let mut b = diagonal;
+        let mut r = values.get(i).cloned().ok_or_else(internal)?;
+        if i == 1 {
+            for (v, p) in r.iter_mut().zip(&p1) {
+                *v -= a * p;
+            }
+        }
+        if i == n - 1 {
+            for (v, p) in r.iter_mut().zip(&pn1) {
+                *v -= c * p;
+            }
+        }
+        // Eliminate the entry below the diagonal with the row before.
+        if i > 1 {
+            let (Some(&d), Some(&up), Some(prev)) = (diag.last(), upper.last(), rhs.last()) else {
+                return Err(internal());
+            };
+            let factor = a / d;
+            b -= factor * up;
+            for (v, p) in r.iter_mut().zip(prev) {
+                *v -= factor * p;
+            }
+        }
+        if !(b.abs() > 1e-300 && b.is_finite()) {
+            return Err(singular());
+        }
+        diag.push(b);
+        upper.push(if i == n - 1 { 0.0 } else { c });
+        rhs.push(r);
+    }
+    let mut solved = vec![vec![0.0; width]; inner];
+    for k in (0..inner).rev() {
+        let (Some(&d), Some(&up), Some(r)) = (diag.get(k), upper.get(k), rhs.get(k)) else {
+            return Err(internal());
+        };
+        let mut value = r.clone();
+        if let Some(next) = solved.get(k + 1) {
+            for (v, x) in value.iter_mut().zip(next) {
+                *v -= up * x;
+            }
+        }
+        for v in &mut value {
+            *v /= d;
+        }
+        *solved.get_mut(k).ok_or_else(internal)? = value;
+    }
+    out.extend(solved);
+    out.push(pn1);
+    out.push(qn.clone());
+    if out.iter().flatten().any(|v| !v.is_finite()) {
+        return Err(singular());
+    }
+    Ok((knots, out))
+}
+
 /// The banded solve of [`interpolate`] and [`interpolate_on`], on checked
 /// input.
 fn solve_banded(

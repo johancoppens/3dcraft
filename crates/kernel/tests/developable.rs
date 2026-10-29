@@ -726,19 +726,21 @@ fn a_fan_that_lands_where_the_other_branch_turns_back_is_followed_by_a_second() 
         for v in [0.0, 0.5, 1.0] {
             assert!(close(first.eval(1.0, v), second.eval(0.0, v)), "{k}: {v}");
         }
-        // Laid flat as one piece: where it is, every edge keeps its length
-        // (at the scales 1e-3 and 1, measured 2026-10-29); the strip beside
-        // the second fan may be refused instead, the owed layout of a face
-        // whose parametrisation stands still at a corner
-        // (docs/design/developable.md, Open: at the scale 1e6), never a
-        // wrong pattern.
+        // Laid flat as one piece, every edge keeping its length, at the
+        // scales 1e-3 and 1; at 1e6 the strip beside the second fan is
+        // refused instead, the owed layout of a face whose parametrisation
+        // stands still at a corner (docs/design/developable.md, Open),
+        // never a wrong pattern.
         let faces: Vec<FaceId> = (0..made.body.faces.len() as u32).map(FaceId).collect();
         let dev = match develop(&made.body, &faces, &tol(k)) {
             Ok(dev) => dev,
-            Err(e) => {
+            // At 1e-3 and 1 it unfolds (measured 2026-10-29; review: the
+            // refusal was accepted at every scale).
+            Err(e) if k >= 1e6 => {
                 assert!(e.to_string().contains("converge"), "{k}: {e}");
                 continue;
             }
+            Err(e) => panic!("{k}: {e}"),
         };
         let e = dev.error();
         assert!(e.area < 1e-6 && e.length < 1e-6, "{k}: {e:?}");
@@ -750,6 +752,39 @@ fn a_fan_that_lands_where_the_other_branch_turns_back_is_followed_by_a_second() 
                 c.length_flat
             );
         }
+    }
+}
+
+/// A fold at the middle of the sheet keeps its name under edits that do
+/// not move it (review of 2026-10-29: a fold was counted from the start
+/// below the sheet's middle and from the end at or above it, so on rails
+/// whose fold lies at the middle the rounding of an edit elsewhere turned
+/// its name, rule 4). [`passing`] with B's profile scaled by 1.01 over the
+/// whole range, whose fold the walk meets at A's inflection, the middle
+/// of A: the faces and their names are the same at three scales (each a
+/// different rounding of the same rails) and with A bent out of its
+/// plane by a millionth (an edit away from the fold).
+#[test]
+fn a_fold_at_the_middle_of_the_sheet_keeps_its_name() {
+    let mut seen: Vec<(f64, f64, Vec<Piece>)> = Vec::new();
+    for k in SCALES {
+        for alpha in [0.0, 1e-6] {
+            let (a, b) = passing(k, 1.01, alpha, 1.0);
+            let made = connect(&a, &b, &tol(k)).unwrap_or_else(|e| panic!("{k} {alpha}: {e}"));
+            eprintln!("{k} {alpha}: faces {:?}", made.faces);
+            check_rulings(&made, &a, &b);
+            seen.push((k, alpha, made.faces));
+        }
+    }
+    let (_, _, first) = &seen[0];
+    assert!(
+        first
+            .iter()
+            .any(|p| matches!(p, Piece::Fan(Mark::FoldFromStart(_) | Mark::FoldFromEnd(_)))),
+        "a fold: {first:?}"
+    );
+    for (k, alpha, faces) in &seen {
+        assert_eq!(faces, first, "{k} {alpha}");
     }
 }
 

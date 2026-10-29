@@ -147,11 +147,12 @@ pub(crate) fn report_json(map: &mut Map<String, Value>, made: &craft3d_regen::De
             reversed_b,
             rulings,
             deviation,
+            unresolved,
             curvature,
         } => {
             map.insert(
                 "developable".into(),
-                json!({"reversedB": reversed_b, "rulings": rulings, "deviation": deviation, "curvature": curvature}),
+                json!({"reversedB": reversed_b, "rulings": rulings, "deviation": deviation, "unresolved": unresolved, "curvature": curvature}),
             );
         }
         craft3d_regen::Developed::SheetMetal(_) | craft3d_regen::Developed::FlatFold(_) => {}

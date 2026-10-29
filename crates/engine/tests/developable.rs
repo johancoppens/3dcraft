@@ -61,11 +61,20 @@ fn arc(s: &mut Session, name: &str, z: f64, r: f64, from: f64, to: f64) {
 fn panel(s: &mut Session, k: f64) {
     arc(s, "Low", 0.0, 20.0 * k, 10.0, 120.0);
     arc(s, "High", 15.0 * k, 10.0 * k, 10.0, 120.0);
-    built(
+    let made = built(
         s,
         "feature.developable",
         json!({"a": "Low", "b": "High", "name": "Panel"}),
     );
+    // The report: how far the faces were found from the developable, and
+    // what the rounding of their control points leaves unresolved at the
+    // faces' end rulings (an estimate, beside the deviation; review of
+    // 2026-10-29: it was not reported).
+    let report = &made["developable"];
+    let tolerance = 1e-6 * k;
+    assert!(number(&report["deviation"]) <= 0.5 * tolerance, "{made}");
+    let unresolved = number(&report["unresolved"]);
+    assert!((0.0..=1e-3 * tolerance).contains(&unresolved), "{made}");
 }
 
 #[test]
