@@ -245,7 +245,7 @@ the bend's neutral band laid flat by the unfold), the outside setback and the be
 flange's length; and the flat pattern's area and size. The **manufacturability** measures for assertions
 are `bendRadius` (the smallest inner radius), `flangeLength` (the shortest flange; `"measured": "mould"`
 from the virtual sharp), `holeToBend` (the least distance from a hole to a bend's tangent line) and
-`relief` (every corner where two bends meet is relieved) and `cornerGap` (the least gap at the closed corners). 3DCraft has no material catalogue: the limits
+`relief` (every corner where two bends meet, and every end of a bend inside its edge, is relieved) and `cornerGap` (the least gap at the closed corners). 3DCraft has no material catalogue: the limits
 for a material and a thickness are yours, as expressions or a table, as above. `file.export` with
 `sheetMetal` writes the flat pattern (.dxf or .svg): the outline on the layer `outline`, the bend lines
 on `bendUp` (dashed) and `bendDown` (dash-dot). `sheetMetal.bendSequence` checks whether the part can be
@@ -274,7 +274,14 @@ The tools' points may be formulas, so a Jig keeps its tools in a table and picks
 ```
 
 Each check of it searches the orders again (only when the part, the tools or the bounds change): on a
-tray of four flanges some 2600 distances when an order is found and 7400 when none is, a second or two. `sheetMetal.edit` changes a part (flanges as a
+tray of four flanges some 2600 distances when an order is found and 7400 when none is, a second or two.
+Bends on one line of one flat with the same
+angle, direction and radius (two tabs on one edge) are made in one stroke; the tools are then a segment
+per bend. By default the tools are one piece reaching past the whole part; `segmented: true` makes each
+bend's tools as long as the bend (segmented tooling set up per bend), and `length` gives one length for all,
+or a list of one per flange (`null` for the bend's own, segmented). `order` checks the order you give
+(each step a flange, or a list of flanges bent in one stroke) instead of searching for one, and `maxWork`
+raises the search's cap of 20000 distances. `sheetMetal.edit` changes a part (flanges as a
 whole list). Each flange has an `id` (`sheetMetal.bends` lists them, 1, 2, … in the order the part was
 made, a new flange's never one used before): every name of the flange's faces and edges is numbered by it
 (its bend `face(2 · id − 1)`, its flat `face(2 · id)`, its rims and edges), not by its place in the list,
@@ -371,7 +378,12 @@ on the edge's line and the rest beyond; the bend spans that line and the flat is
 allowance further on (give no `length`). The flat pattern is checked as a whole, so tabs whose flats would
 overlap in it are refused naming them. A flange added later changes no name the part had but the end
 along the edge it is bent from. Corner reliefs and closed corners are for flanges that reach a corner of
-the base; a corner with an inset flange is not one. A cover with an inset wall, a tab on its side, an ear
+the base; a corner with an inset flange is not one. Where a bend ends inside its edge (an inset flange, a
+tab), `bendRelief` (`{"shape": "rect", "size": "1.5 mm"}`, the shapes of `relief`) cuts a notch beside the
+bend's end, `size` along the edge and `size` deep into the flat it is bent from, so the sheet does not tear
+there; the bend table lists each bend's `ends` inside its edge with their relief, and its `length`. A
+wall whose tip carries tabs (screw tabs) closes its corners like any other; a side that carries a flange
+cannot be closed at that end (it would be the corner's end). A cover with an inset wall, a tab on its side, an ear
 of its own outline with a hole, and a tab bent down out of a cut-out:
 
 ```json
@@ -390,6 +402,27 @@ of its own outline with a hole, and a tab bent down out of a cut-out:
                {"edge": "e13", "length": "12 mm", "angle": "90 deg", "direction": "down",
                 "insetStart": "3 mm", "insetEnd": "3 mm"}]}],
  ["file.export", {"path": "cover.svg", "sheetMetal": "Cover"}]
+]
+```
+
+A tray closed by overlap whose front wall carries two screw tabs with bend reliefs, checked on a press
+brake in the order a shop would bend it (the walls, then both tabs):
+
+```json
+[
+ ["sketch.create", {"plane": "xy", "name": "TrayBase"}],
+ ["sketch.rect", {"sketch": "TrayBase", "from": [0, 0], "to": [60, 40]}],
+ ["feature.sheetMetal", {"sketch": "TrayBase", "name": "Tray", "thickness": "1 mm", "radius": "1 mm",
+   "kFactor": 0.42, "relief": {"shape": "round", "size": "3 mm"},
+   "corner": {"kind": "overlap", "gap": "0.25 mm"}, "bendRelief": {"shape": "rect", "size": "1.5 mm"},
+   "flanges": [{"edge": "e5", "length": "10 mm", "angle": "90 deg"},
+               {"edge": "e6", "length": "10 mm", "angle": "90 deg"},
+               {"edge": "e7", "length": "10 mm", "angle": "90 deg"},
+               {"edge": "e8", "length": "10 mm", "angle": "90 deg"},
+               {"tip": 0, "length": "6 mm", "angle": "90 deg", "insetStart": "8 mm", "insetEnd": "36 mm"},
+               {"tip": 0, "length": "6 mm", "angle": "90 deg", "insetStart": "36 mm", "insetEnd": "8 mm"}]}],
+ ["assert.add", {"name": "Relieved", "measure": "relief", "of": "Tray", "is": true}],
+ ["sheetMetal.bends", {"feature": "Tray"}]
 ]
 ```
 

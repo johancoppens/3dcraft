@@ -1,0 +1,16 @@
+[
+ ["sketch.create", {"plane": "xy", "name": "TrayBase"}],
+ ["sketch.rect", {"sketch": "TrayBase", "from": [0, 0], "to": [60, 40]}],
+ ["feature.sheetMetal", {"sketch": "TrayBase", "name": "Tray", "thickness": "1 mm", "radius": "1 mm",
+   "kFactor": 0.42, "relief": {"shape": "round", "size": "3 mm"},
+   "corner": {"kind": "overlap", "gap": "0.25 mm"},
+   "bendRelief": {"shape": "rect", "size": "1.5 mm"},
+   "flanges": [{"edge": "e5", "length": "10 mm", "angle": "90 deg"},
+               {"edge": "e6", "length": "10 mm", "angle": "90 deg"},
+               {"edge": "e7", "length": "10 mm", "angle": "90 deg"},
+               {"edge": "e8", "length": "10 mm", "angle": "90 deg"},
+               {"tip": 0, "length": "6 mm", "angle": "90 deg", "insetStart": "8 mm", "insetEnd": "36 mm"},
+               {"tip": 0, "length": "6 mm", "angle": "90 deg", "insetStart": "36 mm", "insetEnd": "8 mm"}]}],
+ ["assert.add", {"name": "Reliefs", "measure": "relief", "of": "Tray", "is": true}],
+ ["assert.add", {"name": "Gap", "measure": "cornerGap", "of": "Tray", "eq": "0.25 mm"}]
+]
