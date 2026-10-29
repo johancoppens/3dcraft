@@ -60,10 +60,18 @@ pub(crate) fn export(
     resolved: &Path,
     format: DrawingFormat,
 ) -> Run {
-    let given: Vec<&str> = ["sketch", "face", "faces", "set", "fold", "sheetMetal"]
-        .into_iter()
-        .filter(|key| p.has(key))
-        .collect();
+    let given: Vec<&str> = [
+        "sketch",
+        "face",
+        "faces",
+        "set",
+        "fold",
+        "sheetMetal",
+        "trace",
+    ]
+    .into_iter()
+    .filter(|key| p.has(key))
+    .collect();
     let refuse = |keys: &[&str], why: &str| -> Result<(), CommandError> {
         match keys.iter().find(|key| p.has(key)) {
             Some(key) => fail(format!("{ID}: `{key}` {why}")),
@@ -106,6 +114,13 @@ pub(crate) fn export(
                 "is about the outline of a sketch or of faces; a flat pattern is drawn in its sketch's axes",
             )?;
             crate::sheetmetal_cmds::flat_pattern(session, p, ID)?
+        }
+        ["trace"] => {
+            refuse(
+                &["feature", "construction", "xAxis", "origin", "gap", "width"],
+                "is about the outline of a sketch or of faces; a trace is drawn in its own plane",
+            )?;
+            crate::motion::trace_drawing(session, p, ID)?
         }
         ["sketch"] => {
             refuse(

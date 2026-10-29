@@ -21,8 +21,8 @@ use serde_json::Value;
 pub(crate) static SPECS: &[CommandSpec] = &[spec!(
     "view.replay",
     "Replay",
-    r#"{"dir": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the finished model, "tolerance": number = the picture's at to, as view.render, "from": id or name = the first feature, "to": id or name = the rollback marker or the last feature, "every": boolean = false, "framesPerStep": integer = 1, "hold": integer = 0, "orbit": number = 0, "fps": integer = 30}"#,
-    "Renders how the document is built, for a showcase video: the history is rolled back to nothing and forward one feature at a time, from from to to, and each step is drawn with the CPU renderer as view.render would, from one camera framed on the model as it is at to, so the picture stays put. Writes the frames as dir/frame-00000.png, frame-00001.png, ... under the write root (frames of an earlier, longer replay there are removed) and dir/captions.srt, a subtitle per step with the feature's place, name and type, timed at fps. The first framesPerStep frames show the model before from (nothing, from the first feature), then framesPerStep frames per step, then hold more of the end; without an orbit the last frame is the picture view.render gives of the document with the same view, projection, zoom, box and tolerance. Without tolerance every step is meshed at the tolerance view.render chooses for the model as it is at to, for the camera of the replay. A step that changes no body (a sketch, a datum, a failed or suppressed feature) gets no frames unless every is true. orbit turns the camera that many degrees about the vertical over the whole replay (the model is then framed so that it stays in the picture all round). The document does not change: not its rollback marker, not its undo history. At most 3600 frames, and 8e9 pixels in all. Returns the frame count, the steps (with the frames each got, or none) and the captions. craft3d-cli replay makes an MP4 or a GIF of it.",
+    r#"{"dir": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the finished model, "tolerance": number = the picture's at to, as view.render, "from": id or name = the first feature, "to": id or name = the rollback marker or the last feature, "every": boolean = false, "framesPerStep": integer = 1, "hold": integer = 0, "orbit": number = 0, "fps": integer = 30, "motion": {"t": [number, number] = [0, 1], "frames": integer = 61, "collisions": boolean = false}}"#,
+    "Renders how the document is built, for a showcase video: the history is rolled back to nothing and forward one feature at a time, from from to to, and each step is drawn with the CPU renderer as view.render would, from one camera framed on the model as it is at to, so the picture stays put. Writes the frames as dir/frame-00000.png, frame-00001.png, ... under the write root (frames of an earlier, longer replay there are removed) and dir/captions.srt, a subtitle per step with the feature's place, name and type, timed at fps. The first framesPerStep frames show the model before from (nothing, from the first feature), then framesPerStep frames per step, then hold more of the end; without an orbit the last frame is the picture view.render gives of the document with the same view, projection, zoom, box and tolerance. Without tolerance every step is meshed at the tolerance view.render chooses for the model as it is at to, for the camera of the replay. A step that changes no body (a sketch, a datum, a failed or suppressed feature) gets no frames unless every is true. orbit turns the camera that many degrees about the vertical over the whole replay (the model is then framed so that it stays in the picture all round). The document does not change: not its rollback marker, not its undo history. At most 3600 frames, and 8e9 pixels in all. Returns the frame count, the steps (with the frames each got, or none) and the captions. craft3d-cli replay makes an MP4 or a GIF of it. With motion it replays the motion instead of the history: frames values of t evenly from t[0] to t[1] (both included), each state made as view.motion makes it from the one before (only the features that depend on t are rebuilt and meshed again), framed on the box around every state, one frame each (hold more of the last), captioned t = ...; collisions: true draws the bodies that overlap at each t red. from, to, every and framesPerStep do not go with motion, and the document needs a timeline (view.motion). The result then has motion.frames: per frame its t and how many pairs collide.",
     doc: true,
     view_replay
 )];
@@ -340,6 +340,248 @@ mod native {
         }
     }
 
+    /// The bodies of `doc` as `regen` built them, each with its faces'
+    /// colours, without those the view hides.
+    fn bodies_of(doc: &craft3d_doc::Document, regen: &craft3d_regen::Regen) -> Bodies {
+        regen
+            .bodies()
+            .filter(|(id, _)| !doc.is_hidden(*id))
+            .map(|(id, b)| {
+                let colors = crate::appearance::face_appearances(doc, regen, id, b.faces.len())
+                    .into_iter()
+                    .map(|a| a.map(|a| (a.color, crate::appearance::finish(&a))))
+                    .collect();
+                (id, Arc::clone(b), Arc::new(colors))
+            })
+            .collect()
+    }
+
+    /// `view.replay` over the motion (`motion`): a frame per value of `t`,
+    /// each state made as `view.motion` makes it, from the one before.
+    fn motion_replay(session: &mut Session, p: &Params) -> Run {
+        const ID: &str = "view.replay";
+        if let Some(key) = ["from", "to", "every", "framesPerStep"]
+            .into_iter()
+            .find(|key| p.has(key))
+        {
+            return fail(format!(
+                "{ID}: `{key}` is about replaying the history; with `motion` the frames are the moments of the motion"
+            ));
+        }
+        let motion_value = p.get("motion").cloned().unwrap_or(Value::Null);
+        if !motion_value.is_object() {
+            return fail(format!(
+                "{ID}: `motion` is {{\"t\": [from, to], \"frames\": integer, \"collisions\": boolean}}"
+            ));
+        }
+        let m = Params::new(ID, &motion_value, &["t", "frames", "collisions"])?;
+        let range = crate::motion::t_range(ID, &m)?;
+        let count = m.integer("frames", 2, MAX_REPLAY_FRAMES)?.unwrap_or(61);
+        let red = m.bool("collisions")?.unwrap_or(false);
+        let dir_param = p.required_str("dir")?;
+        let width = p.integer("width", 16, 4096)?.unwrap_or(800);
+        let height = p.integer("height", 16, 4096)?.unwrap_or(600);
+        let framing = Framing::from_params(p, ID)?;
+        let hold = p.integer("hold", 0, MAX_REPLAY_FRAMES)?.unwrap_or(0);
+        let fps = p.integer("fps", 1, 240)?.unwrap_or(30);
+        let orbit = match p.number("orbit")? {
+            None => 0.0,
+            Some(o) if o.is_finite() && o.abs() <= 3600.0 => o,
+            Some(_) => {
+                return fail(format!(
+                    "{ID}: `orbit` must be a number of degrees within ±3600"
+                ));
+            }
+        };
+        let given = match p.number("tolerance")? {
+            Some(t) if t > 0.0 => Some(t),
+            Some(_) => return fail(format!("{ID}: `tolerance` must be positive")),
+            None => None,
+        };
+        let frames = count.saturating_add(hold);
+        if frames > MAX_REPLAY_FRAMES {
+            return fail(format!(
+                "{ID}: {frames} frames (frames {count} plus hold {hold}) exceed the limit of {MAX_REPLAY_FRAMES}"
+            ));
+        }
+        let pixels = frames.saturating_mul(width).saturating_mul(height);
+        if pixels > MAX_REPLAY_PIXELS {
+            return fail(format!(
+                "{ID}: {frames} frames of {width}x{height} are {pixels} pixels, more than the limit of {MAX_REPLAY_PIXELS}; make them smaller or fewer"
+            ));
+        }
+        if session.writes_to_memory() {
+            return fail(format!(
+                "{ID}: the frames go to a folder on disk, and this session keeps its files in memory"
+            ));
+        }
+        let dir = session.workspace.resolve_write(dir_param)?;
+        let store = session.scene.meshes.clone();
+        let open = session.document_mut()?;
+        let base = Arc::clone(open.history.current());
+        crate::motion::timeline(&base).map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
+        open.regen();
+        let mut sweep = crate::motion::Sweep::new(&base, open.cache.clone());
+        let mut memo = crate::motion::PairMemo::default();
+        let mut states: Vec<(f64, Bodies, usize)> = Vec::new();
+        let mut model = Bbox3::EMPTY;
+        let mut last = None;
+        for t in crate::motion::samples_of(range, count) {
+            let (doc, regen) = sweep
+                .at(t)
+                .map_err(|e| CommandError::new(format!("{ID}: at t = {t}: {e}")))?;
+            let (doc, collided) = if red {
+                let found = crate::motion::collisions(&doc, &regen, &mut memo)
+                    .map_err(|e| CommandError::new(format!("{ID}: at t = {t}: {e}")))?;
+                let overlapping = found.iter().filter(|c| c.volume.is_some()).count();
+                (Arc::new(crate::motion::marked(&doc, &found)), overlapping)
+            } else {
+                (doc, 0)
+            };
+            let framed = crate::scene::bodies_box(&doc, &regen);
+            if let Some((lo, hi)) = framed.corners() {
+                model.add(lo);
+                model.add(hi);
+            }
+            states.push((t, bodies_of(&doc, &regen), collided));
+            last = Some((doc, regen));
+        }
+        let Some((last_doc, last_regen)) = last else {
+            return fail(format!("{ID}: nothing to replay"));
+        };
+        if model.is_empty() {
+            return fail(format!(
+                "{ID}: there are no bodies over the motion; check document.inspect for failed features"
+            ));
+        }
+        let aspect = width as f64 / height as f64;
+        let framed = framing.look_at.unwrap_or(model);
+        let camera = if orbit == 0.0 {
+            framing.camera(&framed, aspect)?
+        } else {
+            orbit_camera(&framing, &framed, orbit, aspect)
+                .ok_or_else(|| CommandError::new(format!("{ID}: cannot frame the model")))?
+        };
+        let tess = match given {
+            Some(chordal_tolerance) => TessParams {
+                chordal_tolerance,
+                ..TessParams::default()
+            },
+            None => {
+                // Both are within 16..=4096.
+                let rung = crate::scene::picture_tolerance(&last_regen, &last_doc, |model| {
+                    crate::scene::pixel_footprint(&camera, height as u32, model)
+                });
+                let settled =
+                    crate::scene::picture_scene_of(&last_doc, &last_regen, 0, rung, &store);
+                if let Some(problem) = settled.problems.first() {
+                    return fail(format!("{ID}: {problem}"));
+                }
+                TessParams {
+                    chordal_tolerance: settled.tolerance,
+                    max_angle: settled.max_angle,
+                    max_triangles: Some(crate::scene::DISPLAY_MAX_TRIANGLES),
+                    ..TessParams::default()
+                }
+            }
+        };
+        let names = |id: FeatureId| {
+            base.feature(id)
+                .map_or_else(|| id.to_string(), |f| f.name.clone())
+        };
+        let mut meshes = Meshes::default();
+        for (_, bodies, _) in &states {
+            meshes.fill(bodies, &names, &tess)?;
+        }
+        let render_params = RenderParams {
+            width: width as u32,
+            height: height as u32,
+            background: crate::commands::VIEWPORT_BACKGROUND,
+            ..RenderParams::default()
+        };
+        std::fs::create_dir_all(&dir).map_err(|e| {
+            CommandError::new(format!(
+                "{ID}: cannot create the directory `{dir_param}`: {e}"
+            ))
+        })?;
+        let mut srt = String::new();
+        let mut jobs: Vec<(&Bodies, u64, u64)> = Vec::new();
+        let mut frames_json = Vec::new();
+        let mut frame = 0_u64;
+        let last_index = states.len().saturating_sub(1);
+        for (k, (t, bodies, collided)) in states.iter().enumerate() {
+            let n = if k == last_index { 1 + hold } else { 1 };
+            let text = format!("t = {}", crate::assert_cmds::shown(*t));
+            srt.push_str(&format!(
+                "{}\n{} --> {}\n{text}\n\n",
+                k + 1,
+                srt_time(frame, fps),
+                srt_time(frame.saturating_add(n), fps)
+            ));
+            frames_json.push(json!({"t": t, "frame": frame, "collisions": collided}));
+            if orbit == 0.0 {
+                jobs.push((bodies, frame, n));
+            } else {
+                for f in frame..frame.saturating_add(n) {
+                    jobs.push((bodies, f, 1));
+                }
+            }
+            frame = frame.saturating_add(n);
+        }
+        let meshes = &meshes;
+        let (dir, camera, render_params) = (&dir, &camera, &render_params);
+        let draw = |job: usize| -> Result<(), CommandError> {
+            let Some(&(bodies, first, n)) = jobs.get(job) else {
+                return Ok(());
+            };
+            let (mesh, colors) = meshes.joined(bodies)?;
+            let angle = orbit * first as f64 / frames.saturating_sub(1).max(1) as f64;
+            let png = craft3d_render::render_colored(
+                &mesh,
+                &colors,
+                &turned(camera, angle),
+                render_params,
+            )
+            .and_then(|f| f.to_png())
+            .map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
+            for f in first..first.saturating_add(n) {
+                crate::workspace::write_atomic(&dir.join(frame_name(f)), &png)?;
+            }
+            Ok(())
+        };
+        in_parallel(
+            jobs.len(),
+            threads_for(width, height, render_params.ssaa),
+            draw,
+        )?;
+        crate::workspace::write_atomic(&dir.join("captions.srt"), srt.as_bytes())?;
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                if name
+                    .to_str()
+                    .and_then(frame_index)
+                    .is_some_and(|index| index >= frame)
+                {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+        Ok(json!({
+            "dir": dir_param,
+            "frames": frame,
+            "framePattern": "frame-%05d.png",
+            "fps": fps,
+            "width": width,
+            "height": height,
+            "view": framing.view,
+            "orbit": orbit,
+            "box": model.corners().map(|(lo, hi)| json!([vec3(lo), vec3(hi)])),
+            "motion": {"t": [range.0, range.1], "frames": frames_json, "collisions": red},
+            "captions": "captions.srt",
+        }))
+    }
+
     pub(super) fn view_replay(session: &mut Session, params: &Value) -> Run {
         let p = Params::new(
             "view.replay",
@@ -360,8 +602,12 @@ mod native {
                 "hold",
                 "orbit",
                 "fps",
+                "motion",
             ],
         )?;
+        if p.has("motion") {
+            return motion_replay(session, &p);
+        }
         let dir_param = p.required_str("dir")?;
         let width = p.integer("width", 16, 4096)?.unwrap_or(800);
         let height = p.integer("height", 16, 4096)?.unwrap_or(600);

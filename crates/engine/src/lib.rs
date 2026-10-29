@@ -41,6 +41,7 @@ mod mass;
 mod measure_pieces;
 mod memory_files;
 mod meshes;
+mod motion;
 mod name_refs;
 mod offset_cmds;
 mod output_cmds;
@@ -100,6 +101,7 @@ pub use commands::{DARK_BACKGROUND, EXPORT_QUALITIES, VIEWPORT_BACKGROUND};
 pub use craft3d_regen::progress::Progress;
 pub use memory_files::{MAX_MEMORY_BYTES, MAX_MEMORY_FILE_BYTES, MAX_MEMORY_FILES};
 pub use meshes::{BodyFacts, EdgePolylines};
+pub use motion::{COLLISION_COLOR, MotionView, TIMELINE, TraceView};
 pub use output_cmds::{OutputState, OutputStatus};
 pub use param_cmds::step_grid;
 pub use pick_cmds::{
@@ -236,6 +238,10 @@ pub(crate) struct OpenDocument {
     /// The assertions and outputs of a state measured elsewhere, whole
     /// (`regen_elsewhere.rs`): the job handed out and the last answer.
     pub(crate) state_checks: regen_elsewhere::StateChecks,
+    /// Where the view is in the motion over `t` (`view.motion`), and the
+    /// traces made over it: view state, not saved and not undone
+    /// (`motion.rs`).
+    pub(crate) motion: motion::Motion,
 }
 
 /// A regeneration cache with the budget of bodies the environment asks
@@ -282,6 +288,7 @@ impl OpenDocument {
             thumbnail: None,
             jig_in_use: false,
             state_checks: regen_elsewhere::StateChecks::default(),
+            motion: motion::Motion::default(),
         }
     }
 
@@ -542,6 +549,7 @@ impl Session {
                 visibility_cmds::SPECS,
                 when_cmds::SPECS,
                 scrub::SPECS,
+                motion::SPECS,
                 report::SPECS,
                 unit_cmds::SPECS,
             ]

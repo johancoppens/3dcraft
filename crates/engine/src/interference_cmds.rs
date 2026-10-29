@@ -338,7 +338,7 @@ fn part_of(doc: &Document, regen: &Regen, id: FeatureId) -> Result<Part, Command
 
 /// The boxes, grown by `margin`, meet. A body without a box is taken to
 /// meet everything, so that the kernel decides and reports it.
-fn boxes_meet(a: Option<&Bbox3>, b: Option<&Bbox3>, margin: f64) -> bool {
+pub(crate) fn boxes_meet(a: Option<&Bbox3>, b: Option<&Bbox3>, margin: f64) -> bool {
     let (Some((alo, ahi)), Some((blo, bhi))) =
         (a.and_then(Bbox3::corners), b.and_then(Bbox3::corners))
     else {

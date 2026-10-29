@@ -132,9 +132,10 @@ impl OpenDocument {
         self.scrub.at = at.map(|id| (id, key));
     }
 
-    /// The state of the document the view shows: the document itself, or
-    /// the copy of it with the marker where the view is scrubbed to.
-    pub(crate) fn shown(&mut self) -> Arc<Document> {
+    /// The state of the document the view shows below its motion
+    /// (`motion.rs`): the document itself, or the copy of it with the
+    /// marker where the view is scrubbed to.
+    pub(crate) fn scrubbed(&mut self) -> Arc<Document> {
         let current = Arc::clone(self.history.current());
         // States of another document state can no longer be shown: let go
         // of them (and of the old document each holds) at once.
@@ -169,9 +170,9 @@ impl OpenDocument {
         doc
     }
 
-    /// The regeneration of [`Self::shown`].
-    pub(crate) fn shown_regen(&mut self) -> Arc<Regen> {
-        let doc = self.shown();
+    /// The regeneration of [`Self::scrubbed`].
+    pub(crate) fn scrubbed_regen(&mut self) -> Arc<Regen> {
+        let doc = self.scrubbed();
         if Arc::ptr_eq(&doc, self.history.current()) {
             return self.regen();
         }
