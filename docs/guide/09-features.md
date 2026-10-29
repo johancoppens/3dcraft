@@ -130,8 +130,8 @@ on the panel, and the other way round.
   within half the document's tolerance), the largest curvature found (`curvature`) and `unresolved`: how
   far the stored faces' tangent planes at the rulings where faces meet were found from the planes they were
   built with, times the ruling's length. That is what the rounding of the numbers leaves unresolved, an
-  estimate and not part of the deviation: a small part of the tolerance near the origin, up to a few
-  tolerances for narrow faces billions of tolerances away from it (a 5 m boat at a tolerance of a
+  estimate and not part of the deviation: a small part of the tolerance near the origin, up to some tens
+  of tolerances for narrow faces billions of tolerances away from it (a 5 m boat at a tolerance of a
   millionth of a millimetre). Positions are not affected; model nearer the origin to bring it down.
 - `measure.developability` tells how far faces are from developable: the largest Gaussian curvature found
   on each face (in 1/mm²; a sphere of radius r has 1/r² everywhere, planes, cylinders and cones 0) and
