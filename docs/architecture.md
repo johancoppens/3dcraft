@@ -37,7 +37,7 @@ These are the invariants. Every part is built so that they hold by construction,
  L6  engine        Session: open documents, commands, undo, scenes
  L5  io            bodies and meshes <-> STEP, STL, 3MF, OBJ, DXF, SVG
  L4  derivation    regen (history -> bodies), render (CPU oracle), gpu (wgpu), format (.3dcraft)
- L3  algorithms    kernel (operations on bodies), tess (meshes), solve (sketch solver), ops (undo history), stepread (STEP -> bodies)
+ L3  algorithms    kernel (operations on bodies), tess (meshes), solve (sketch solver), assembly (assembly solver), ops (undo history), stepread (STEP -> bodies)
  L2  document      doc (pure data: the recipe)
  L1  model data    topo (B-rep, checks, measures), expr (units, formulas)
  L0  foundation    math, geom (curves, surfaces, intersections); step, meshio, drawing, zipstore (standalone formats); buildinfo (the programs' build scripts)
@@ -59,6 +59,7 @@ These are the invariants. Every part is built so that they hold by construction,
 | `doc` | L2 | the document as pure data: variables, features (sketches, datums, solids, operations), persistent names as data, appearance and material | runs a geometry algorithm |
 | `ops` | L3 | the undo history, as `Arc<Document>` snapshots | knows bodies |
 | `solve` | L3 | the 2D constraint solver, on plain numbers | knows the document |
+| `assembly` | L3 | the assembly solver: instance poses from mates, couplings and drivers, on plain frames | knows the document or the kernel |
 | `kernel` | L3 | every modelling operation on bodies (§5): primitives, profiles, sweeps, booleans, blends, face operations; an origin for every entity it makes | meshes, reads the document, or registers a command |
 | `tess` | L3 | meshes of bodies and edges, the triangle budgets, the mesh self-intersection and self-touch checks | knows the kernel's operations |
 | `regen` | L4 | history → bodies: expressions, references and names, the cache, statuses and reasons, the self-intersection check per feature | changes the document (the engine writes solved sketches back) |
@@ -158,6 +159,7 @@ Kept here on purpose, short, so the developer sees where the structure is weakes
 | [`design/engine.md`](design/engine.md) | Session, commands, threads, scenes, recovery, automation |
 | [`design/selection.md`](design/selection.md) | the selection shared by the window and agents, selecting by description, named sets |
 | [`design/verification.md`](design/verification.md) | checking a design by questions (`measure.*`), assertions kept in the document, the proof of a Jig over its parameter range |
+| [`design/assemblies.md`](design/assemblies.md) | the assembly solver: mates, couplings, damped Newton, diagnosis, continuation over a motion |
 | [`design/step-import.md`](design/step-import.md) | STEP files read into bodies: typed reading, sewing, the import feature |
 | [`design/files.md`](design/files.md) | the formats as built (their specification: [`file-formats.md`](file-formats.md)) |
 | [`design/plan.md`](design/plan.md) | the design plan of 2026-10-12 as written, and the revision history of the old single file |

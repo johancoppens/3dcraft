@@ -41,6 +41,7 @@ crates/
   topo expr                  L1 B-rep topology (pure data + validity checks); units, variables, formulas
   doc                        L2 document model (variables, sketches, constraints, feature history: pure data)
   ops solve kernel tess      L3 history/undo, sketch constraint solver, modelling operations, tessellator
+  assembly                   L3 assembly solver (poses from mates, couplings and drivers)
   stepread                   L3 STEP solids read into bodies (typed reading, sewing)
   regen render gpu format    L4 history -> B-rep regeneration, CPU reference renderer (the oracle), wgpu renderer, .3dcraft
   io                         L5 document/bodies <-> STEP and mesh formats

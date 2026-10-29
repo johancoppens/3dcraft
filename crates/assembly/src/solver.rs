@@ -91,14 +91,18 @@ impl Solver {
 
     /// Moves the drives to `drives` from the last solution, following the
     /// motion on its branch: the step is cut while the solution jumps
-    /// further than the motion predicts. Without an earlier solution this
-    /// is [`Solver::solve_at`]. On an error the solver keeps the last
+    /// further than the motion predicts. Without an earlier solution it
+    /// first solves at the problem's own drives (where its start poses
+    /// are) and moves from there. On an error the solver keeps the last
     /// state it reached, and [`Diagnosis::DeadPoint`] gives its drives.
     pub fn advance(&mut self, drives: &[f64]) -> Result<Solution, Diagnosis> {
+        self.check_drives(drives)?;
+        if self.state.is_none() {
+            self.solve()?;
+        }
         let Some(mut state) = self.state.clone() else {
             return self.solve_at(drives);
         };
-        self.check_drives(drives)?;
         let from = self.drives.clone();
         let units: Vec<f64> = self
             .sys
@@ -194,8 +198,7 @@ impl Solver {
     }
 
     /// Solves a sequence of driven values in order by [`Solver::advance`]
-    /// (the first from the problem's start poses when nothing is solved
-    /// yet). A frame where the rank drops is a dead point; a frame the
+    /// (from the problem's own drives when nothing is solved yet). A frame where the rank drops is a dead point; a frame the
     /// drive cannot reach stops the sequence, with a dead point at the
     /// last value reached when the mechanism came to a limit position.
     pub fn sequence(&mut self, frames: &[Vec<f64>]) -> Sequence {
@@ -204,19 +207,25 @@ impl Solver {
             dead_points: Vec::new(),
             stopped: None,
         };
-        let mut base: Option<usize> = self.last.as_ref().map(|s| s.dof);
+        if self.state.is_none()
+            && let Err(e) = self.solve()
+        {
+            out.stopped = Some((0, e));
+            return out;
+        }
+        let base: Option<usize> = self.last.as_ref().map(|s| s.dof);
         for (k, d) in frames.iter().enumerate() {
             match self.advance(d) {
                 Ok(sol) => {
-                    match base {
-                        None => base = Some(sol.dof),
-                        Some(b) if sol.dof > b => out.dead_points.push(DeadPoint {
+                    if let Some(b) = base
+                        && sol.dof > b
+                    {
+                        out.dead_points.push(DeadPoint {
                             frame: k,
                             drives: sol.drives.clone(),
                             extra_dof: sol.dof - b,
                             free: sol.free.clone(),
-                        }),
-                        Some(_) => {}
+                        });
                     }
                     out.frames.push(sol);
                 }
