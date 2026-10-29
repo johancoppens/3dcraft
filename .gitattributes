@@ -4,3 +4,4 @@
 docs/examples/*.json text eol=lf
 docs/examples/thumbs/STAMPS.txt text eol=lf
 *.png binary
+*.hdr binary

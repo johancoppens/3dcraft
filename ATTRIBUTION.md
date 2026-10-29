@@ -13,3 +13,6 @@ Every third-party or original asset and dataset in this repository.
 | `docs/field-test/2026-10-12/img/*.png` | Renders of the field-test models (plate with post, spur gears) | 3DCraft (modelled by an agent over MCP and rendered with `view.render`; generator scripts in `docs/field-test/2026-10-12/scripts/`) | This repository | MIT |
 | `docs/img/part.png` | Render of a demo part | 3DCraft (modelled and rendered with `craft3d-cli`, see `docs/development.md`) | This repository | MIT |
 | `docs/img/solids.png`, `docs/img/demo-primitives.png` | Renders of the reference solids and of a demo part | 3DCraft (`cargo run --release -p craft3d-render --example solids`; `craft3d-cli render`) | This repository | MIT |
+| `assets/environments/studio.hdr` | Studio Small 09 (1k HDR) | Sergej Majboroda | [Poly Haven](https://polyhaven.com/a/studio_small_09); licence in `assets/environments/LICENSE.md` | CC0 1.0 |
+| `assets/environments/outdoor.hdr` | Kloofendal 48d Partly Cloudy (Pure Sky) (1k HDR) | Greg Zaal, Jarod Guest | [Poly Haven](https://polyhaven.com/a/kloofendal_48d_partly_cloudy_puresky); licence in `assets/environments/LICENSE.md` | CC0 1.0 |
+| `assets/environments/workshop.hdr` | Abandoned Workshop 02 (1k HDR) | Sergej Majboroda | [Poly Haven](https://polyhaven.com/a/abandoned_workshop_02); licence in `assets/environments/LICENSE.md` | CC0 1.0 |

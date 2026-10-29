@@ -6,6 +6,7 @@
 //! arithmetic, triangles drawn in mesh order.
 
 mod section;
+pub mod studio;
 
 pub use section::{Cut, SECTION_FACE, SECTION_MARGIN, SECTION_SNAP, Section, section_bounds};
 
@@ -49,6 +50,8 @@ pub enum RenderError {
         triangle: usize,
     },
     Png(String),
+    /// An environment of the studio look could not be prepared or used.
+    Environment(String),
 }
 
 impl fmt::Display for RenderError {
@@ -72,6 +75,7 @@ impl fmt::Display for RenderError {
                 write!(f, "mesh is inconsistent at triangle {triangle}")
             }
             RenderError::Png(e) => write!(f, "PNG encoding failed: {e}"),
+            RenderError::Environment(e) => write!(f, "studio environment: {e}"),
         }
     }
 }
