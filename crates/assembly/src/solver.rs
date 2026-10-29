@@ -2,7 +2,7 @@
 //! continuation on one branch.
 
 use crate::analysis::{
-    dependencies, diagnose_rest, driver_loop_mates, free_motions, rank_and_nulls, redundancies,
+    dependencies, diagnose_rest, free_motions, moved_mates, rank_and_nulls, redundancies,
 };
 use crate::newton::{MAX_ITERATIONS, evaluate, gauss_newton, run};
 use crate::system::{Rows, State, System};
@@ -211,7 +211,7 @@ impl Solver {
         // The sub-step shrank to nothing: whether the last try came to rest
         // or jumped off the branch, the drive cannot go on from here (at a
         // fold the corrector converges, but beyond the motion predicted).
-        let loop_mates = self.driver_loop(&state);
+        let loop_mates = self.driver_loop();
         Err(Diagnosis::DeadPoint {
             drives: self.drives.clone(),
             loop_mates,
@@ -219,13 +219,12 @@ impl Solver {
         })
     }
 
-    /// The mates whose equations depend on a driver's at `state`: the loop
-    /// the drive moves, at a limit position.
-    fn driver_loop(&self, state: &State) -> Vec<usize> {
-        let base = self.base_active();
-        evaluate(&self.sys, state, &self.drives, &base)
-            .and_then(|e| dependencies(&self.sys, &e))
-            .map(|deps| driver_loop_mates(&redundancies(&self.sys, &deps)))
+    /// The mates the motions free at the last solution move: at a limit
+    /// position, the loop the drive no longer controls.
+    fn driver_loop(&self) -> Vec<usize> {
+        self.last
+            .as_ref()
+            .map(|l| moved_mates(&self.sys, &l.free))
             .unwrap_or_default()
     }
 
@@ -316,7 +315,7 @@ impl Solver {
                             frame: k,
                             drives: sol.drives.clone(),
                             extra_dof: sol.dof - b,
-                            loop_mates: driver_loop_mates(&sol.redundant),
+                            loop_mates: moved_mates(&self.sys, &sol.free),
                             free: sol.free.clone(),
                         });
                     }

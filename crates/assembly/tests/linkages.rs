@@ -322,13 +322,17 @@ fn a_parallelogram_stays_a_parallelogram_through_its_flat_position() {
             for sol in &seq.frames {
                 let crank = turn(&sol.poses[1]);
                 let rocker = turn(&sol.poses[3]);
+                // On the flat position itself the Jacobian is singular and the
+                // rocker is fixed only to about √ε (second order).
+                let flat = (th0 + sol.drives[0]).abs() < 1e-9;
+                let tol = if flat { 1e-3 } else { 1e-6 };
                 assert!(
-                    (crank - rocker).abs() < 1e-6,
+                    (crank - rocker).abs() < tol,
                     "step {step_deg}: crank {crank} rocker {rocker} at drive {}",
                     sol.drives[0]
                 );
                 // The coupler only translates.
-                assert!(turn(&sol.poses[2]).abs() < 1e-6);
+                assert!(turn(&sol.poses[2]).abs() < tol);
             }
         }
     }

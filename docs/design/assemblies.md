@@ -117,13 +117,15 @@ The drives go from the last values to the new ones in sub-steps, the first a who
 Because the predictor is not shortened, a gear train of ratio 1000 turned 2 rad, or a rack driving a pinion of radius
 L/1000 through hundreds of turns, takes one sub-step. The secant carries a branch through a point where branches
 cross: a parallelogram four-bar keeps its rocker parallel to its crank through the flat position, whether or not a
-frame lands on it (tested at 5° and 7° frames).
+frame lands on it (tested at 5° and 7° frames). On the flat position itself the Jacobian is singular, and the rocker
+is fixed there only to about `√ε`.
 - **A dead point** is either of two things:
   - a frame where the rank drops: it is reported with its frame, drives, extra degrees of freedom and free motions,
     and the sequence goes on;
   - a drive that cannot get past a limit position: the sub-step shrank below `ε` of the drive without a solution. It
     is reported at the last value reached (`Diagnosis::DeadPoint`, with the cause), and the sequence stops there.
-  - Both name the loop: the mates of the redundancies that involve a driver there (`loop_mates`).
+  - Both name the loop (`loop_mates`): the mates the motions free there move (variables at 10⁻³ of the fastest or
+    more, and mates without variables on a moving instance).
 - **Running out of work is not a dead point.** More than 4096 sub-steps, or more than 20 000 Newton iterations in one
   advance, is `DidNotConverge`.
 - **Jumps count as failures too.** A sub-step whose corrector converges but jumps off the branch fails like one that
