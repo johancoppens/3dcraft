@@ -81,9 +81,6 @@ const FROZEN: &[(u32, usize, u64)] = &[
     (46, 1760, 0xb86c_fb2c_d874_d5d6),
     (47, 3477, 0xea83_1465_b3b2_0ad7),
     (48, 3727, 0xb062_60cc_cc64_6028),
-    // TEMPORARY number (sheetmetal-r2): 48 is origami's, in flight;
-    // renumbered when this one merges.
-    (49, 10292, 0x2998_879b_24d2_dbaf),
 ];
 
 fn dir() -> PathBuf {

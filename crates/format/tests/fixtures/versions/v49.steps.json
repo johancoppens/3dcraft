@@ -12,5 +12,21 @@
                {"side": {"flange": 0, "end": "end"}, "length": "10 mm", "angle": "90 deg"},
                {"edge": "e7", "outline": "Ear", "angle": "90 deg"},
                {"edge": "e13", "length": "12 mm", "angle": "90 deg", "direction": "down",
-                "insetStart": "3 mm", "insetEnd": "3 mm"}]}]
+                "insetStart": "3 mm", "insetEnd": "3 mm"}]}],
+ ["sheetMetal.edit", {"feature": "Cover",
+   "flanges": [{"edge": "e8", "length": "8 mm", "angle": "90 deg"},
+               {"edge": "e7", "length": "6 mm", "angle": "90 deg", "insetStart": "10 mm", "insetEnd": "70 mm"},
+               {"id": 1, "edge": "e5", "length": "15 mm", "angle": "90 deg", "insetStart": "gap", "insetEnd": "gap"},
+               {"id": 2, "side": {"flange": 2, "end": "end"}, "length": "10 mm", "angle": "90 deg"},
+               {"id": 3, "edge": "e7", "outline": "Ear", "angle": "90 deg"},
+               {"id": 4, "edge": "e13", "length": "12 mm", "angle": "90 deg", "direction": "down",
+                "insetStart": "3 mm", "insetEnd": "3 mm"}]}],
+ ["sheetMetal.edit", {"feature": "Cover",
+   "flanges": [{"id": 5, "edge": "e8", "length": "8 mm", "angle": "90 deg"},
+               {"id": 1, "edge": "e5", "length": "15 mm", "angle": "90 deg", "insetStart": "gap", "insetEnd": "gap"},
+               {"id": 2, "side": {"flange": 1, "end": "end"}, "length": "10 mm", "angle": "90 deg"},
+               {"id": 3, "edge": "e7", "outline": "Ear", "angle": "90 deg"},
+               {"id": 4, "edge": "e13", "length": "12 mm", "angle": "90 deg", "direction": "down",
+                "insetStart": "3 mm", "insetEnd": "3 mm"}]}],
+ ["face.appearance", {"faces": ["F3:copy(0)/F3:face(6)"], "color": "#c8102e"}]
 ]
