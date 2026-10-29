@@ -78,18 +78,11 @@ fn render_network_mouse() {
     let shell = body(&mut s, "Dome");
     println!("DOME-BODY {shell}");
     let face = shell["faceNames"][0].as_str().unwrap().to_string();
-    let seam = shell["edgeNames"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|e| e.as_str().unwrap().to_string())
-        .find(|e| e.contains("endEdge(e0,") || e.contains("endEdge(0,"))
-        .unwrap();
-    println!("SEAM {seam}");
+
     let tail = run(
         &mut s,
         "feature.surface.network",
-        json!({"u": [{"edges": [seam]}, "Section3"], "v": ["LeftTail", "TopTail", "RightTail"],
+        json!({"u": ["Section2", "Section3"], "v": ["LeftTail", "TopTail", "RightTail"],
                "edges": {"uFirst": {"kind": "tangent", "face": face}}, "name": "Tail"}),
     );
     println!("TAIL {tail}");
