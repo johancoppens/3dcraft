@@ -430,13 +430,13 @@ fn prune(layout: &mut ControlsLayout, area: Rect) {
         layout.fit = None;
         layout.iso = None;
         layout.projection = None;
+        layout.studio = None;
         layout.dividers[0] = None;
     }
     if layout.bar.is_none() {
         for slot in [
             &mut layout.sketches,
             &mut layout.datums,
-            &mut layout.studio,
             &mut layout.see_through,
             &mut layout.section_toggle,
             &mut layout.axes,
