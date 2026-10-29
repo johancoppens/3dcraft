@@ -389,6 +389,54 @@ fn configured(source: &Document, params: &BTreeMap<String, String>) -> Result<Do
     Ok(doc)
 }
 
+/// An instance's source document and the parameters it gives it, and
+/// whether its file changed since the document took its hash.
+#[allow(clippy::too_many_arguments)]
+fn prepare(
+    assembly: &Assembly,
+    instance: &Instance,
+    base: &str,
+    files: &BTreeMap<String, Result<Blob, String>>,
+    chain: &[String],
+    state: &mut AsmState,
+    doc: &Document,
+    values: Option<&craft3d_expr::Evaluation>,
+) -> Result<Prepared, String> {
+    let (blob, changed) = source_bytes(assembly, instance, base, files)?;
+    let hash = blob.sha256();
+    if chain.contains(&hash) {
+        return Err(
+            "its source contains this assembly: a subassembly cycle is refused".to_string(),
+        );
+    }
+    let source = parse(state, &blob)?;
+    if source.is_assembly() && chain.len() >= MAX_DEPTH {
+        return Err(format!("subassemblies nest deeper than {MAX_DEPTH} levels"));
+    }
+    if source.units.length != doc.units.length {
+        return Err(format!(
+            "its source is in {} and the assembly in {}: a source in another length unit is not supported yet",
+            source.units.length.symbol(),
+            doc.units.length.symbol()
+        ));
+    }
+    let params = override_values(instance, values)?;
+    Ok((hash, source, params, changed))
+}
+
+/// A body an instance shows: what to call it, the body in the instance's
+/// own coordinates, its names and the source's appearance and material.
+pub(crate) type ShownBody = (
+    String,
+    Arc<Body>,
+    Option<Arc<Names>>,
+    Option<BodyProperties>,
+);
+
+/// An instance's source: its hash, its document, the parameters it is
+/// given, and whether its file changed.
+type Prepared = (String, Arc<Document>, BTreeMap<String, String>, bool);
+
 /// What one configuration needs to be built: its source document (set)
 /// and, for a subassembly, the folder its own sources are relative to.
 struct Job {
@@ -429,29 +477,20 @@ pub(crate) fn place(
             flexed: false,
             flex_of: None,
         };
-        let prepared = (|| -> Result<(String, Arc<Document>, BTreeMap<String, String>), String> {
-            let (blob, changed) = source_bytes(assembly, instance, base, &files)?;
+        let prepared = prepare(
+            assembly,
+            instance,
+            base,
+            &files,
+            chain,
+            state,
+            doc,
+            values.as_ref(),
+        )
+        .map(|(hash, source, params, changed)| {
             st.changed = changed;
-            let hash = blob.sha256();
-            if chain.contains(&hash) {
-                return Err(
-                    "its source contains this assembly: a subassembly cycle is refused".to_string(),
-                );
-            }
-            let source = parse(state, &blob)?;
-            if source.is_assembly() && chain.len() >= MAX_DEPTH {
-                return Err(format!("subassemblies nest deeper than {MAX_DEPTH} levels"));
-            }
-            if source.units.length != doc.units.length {
-                return Err(format!(
-                    "its source is in {} and the assembly in {}: a source in another length unit is not supported yet",
-                    source.units.length.symbol(),
-                    doc.units.length.symbol()
-                ));
-            }
-            let params = override_values(instance, values.as_ref())?;
-            Ok((hash, source, params))
-        })();
+            (hash, source, params)
+        });
         match prepared {
             Ok((hash, source, params)) => {
                 let key = config_key(&hash, &params);
@@ -645,14 +684,7 @@ fn pick(built: &Built, body: &str) -> Result<FeatureId, String> {
 
 /// The bodies an instance shows, in its own coordinates, each with the
 /// names of its entities and what to call it.
-pub(crate) fn bodies_of(
-    st: &InstanceState,
-) -> Vec<(
-    String,
-    Arc<Body>,
-    Option<Arc<Names>>,
-    Option<BodyProperties>,
-)> {
+pub(crate) fn bodies_of(st: &InstanceState) -> Vec<ShownBody> {
     let Some(built) = &st.built else {
         return Vec::new();
     };
@@ -1101,6 +1133,82 @@ fn side(
     Ok((at, frame))
 }
 
+/// A mate as the solver takes it: its frames, offset, angle, driven
+/// value and limits, in the assembly's units.
+fn mate_spec(
+    doc: &Document,
+    mate: &craft3d_doc::Mate,
+    instances: &[InstanceState],
+    index: &BTreeMap<String, usize>,
+    values: Option<&craft3d_expr::Evaluation>,
+) -> Result<solver::MateSpec, String> {
+    let length = |q: Quantity| in_units(doc, q.value);
+    let a = side(&mate.a, instances, index)?;
+    let mut b = side(&mate.b, instances, index)?;
+    if mate.flip {
+        b.1.z = -b.1.z;
+        b.1.y = -b.1.y;
+    }
+    let number = |e: &craft3d_doc::Expr, what: &str| -> Result<Quantity, String> {
+        eval(values, e.source()).map_err(|err| format!("its {what} {}: {err}", e.source()))
+    };
+    let offset = match &mate.offset {
+        Some(e) => length(number(e, "offset")?),
+        None => 0.0,
+    };
+    let angle = match &mate.angle {
+        Some(e) => number(e, "angle")?.value,
+        None => 0.0,
+    };
+    // The main free motion, driven when its variable exists.
+    let main = mate.kind.free().first().copied();
+    let driven = match main {
+        Some(which) => {
+            let var = joint_variable(&mate.name, which);
+            match doc.variables.iter().find(|v| v.name == var) {
+                Some(v) => {
+                    let q = eval(values, v.expr.source())
+                        .map_err(|e| format!("its variable `{var}`: {e}"))?;
+                    Some(if which == "angle" { q.value } else { length(q) })
+                }
+                None => None,
+            }
+        }
+        None => None,
+    };
+    let limits = match &mate.limits {
+        Some((lo, hi)) => {
+            let lo = number(lo, "lower limit")?;
+            let hi = number(hi, "upper limit")?;
+            let convert = |q: Quantity| {
+                if q.dimension == Dimension::LENGTH {
+                    length(q)
+                } else {
+                    q.value
+                }
+            };
+            Some((convert(lo), convert(hi)))
+        }
+        None => None,
+    };
+    if let (Some(v), Some((lo, hi))) = (driven, limits)
+        && !(lo..=hi).contains(&v)
+    {
+        return Err(format!(
+            "its driven value {v} lies outside its limits [{lo}, {hi}]"
+        ));
+    }
+    Ok(solver::MateSpec {
+        kind: solver_kind(mate.kind),
+        a,
+        b,
+        offset,
+        angle,
+        limits,
+        driven,
+    })
+}
+
 type Solved = (
     Vec<MateState>,
     Option<String>,
@@ -1142,72 +1250,7 @@ fn solve_mates(
             free: None,
             driven: false,
         };
-        let spec = (|| -> Result<solver::MateSpec, String> {
-            let a = side(&mate.a, instances, &index)?;
-            let mut b = side(&mate.b, instances, &index)?;
-            if mate.flip {
-                b.1.z = -b.1.z;
-                b.1.y = -b.1.y;
-            }
-            let number = |e: &craft3d_doc::Expr, what: &str| -> Result<Quantity, String> {
-                eval(values, e.source()).map_err(|err| format!("its {what} {}: {err}", e.source()))
-            };
-            let offset = match &mate.offset {
-                Some(e) => length(number(e, "offset")?),
-                None => 0.0,
-            };
-            let angle = match &mate.angle {
-                Some(e) => number(e, "angle")?.value,
-                None => 0.0,
-            };
-            // The main free motion, driven when its variable exists.
-            let main = mate.kind.free().first().copied();
-            let driven = match main {
-                Some(which) => {
-                    let var = joint_variable(&mate.name, which);
-                    match doc.variables.iter().find(|v| v.name == var) {
-                        Some(v) => {
-                            let q = eval(values, v.expr.source())
-                                .map_err(|e| format!("its variable `{var}`: {e}"))?;
-                            Some(if which == "angle" { q.value } else { length(q) })
-                        }
-                        None => None,
-                    }
-                }
-                None => None,
-            };
-            let limits = match &mate.limits {
-                Some((lo, hi)) => {
-                    let lo = number(lo, "lower limit")?;
-                    let hi = number(hi, "upper limit")?;
-                    let convert = |q: Quantity| {
-                        if q.dimension == Dimension::LENGTH {
-                            length(q)
-                        } else {
-                            q.value
-                        }
-                    };
-                    Some((convert(lo), convert(hi)))
-                }
-                None => None,
-            };
-            if let (Some(v), Some((lo, hi))) = (driven, limits)
-                && !(lo..=hi).contains(&v)
-            {
-                return Err(format!(
-                    "its driven value {v} lies outside its limits [{lo}, {hi}]"
-                ));
-            }
-            Ok(solver::MateSpec {
-                kind: solver_kind(mate.kind),
-                a,
-                b,
-                offset,
-                angle,
-                limits,
-                driven,
-            })
-        })();
+        let spec = mate_spec(doc, mate, instances, &index, values);
         match spec {
             Ok(spec) => {
                 st.driven = spec.driven.is_some();
