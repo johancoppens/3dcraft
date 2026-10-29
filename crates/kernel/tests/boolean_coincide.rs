@@ -849,8 +849,11 @@ fn a_narrow_spike_on_a_face_is_not_taken_for_coincidence() {
 /// floor, has its vertex a tolerance or two from that start. The seam of
 /// the closed curve is no place of its own: it is the rim's vertex, and
 /// the plates touch (the intersection is empty, the union holds both).
-/// Refused before, "two points closer together than the tolerance can
-/// tell apart".
+/// A guard only: this solid passes on the code before the rule too (its
+/// trace does not start beside the rim's vertex). The rule itself is held
+/// by section.rs's unit test and by repros 21 to 24 in
+/// crates/engine/tests/kayak_findings.rs, which were refused before
+/// ("two points closer together than the tolerance can tell apart").
 #[test]
 fn holes_through_a_plate_under_another_on_one_skin() {
     use craft3d_kernel::KernelError;
