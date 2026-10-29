@@ -473,11 +473,11 @@ fn mode_param(p: &Params) -> Result<Option<InstanceMode>, CommandError> {
     }
 }
 
+/// Parameter overrides by name; `None` removes one.
+type Overrides = Vec<(String, Option<String>)>;
+
 /// `params`: `{name: expr}`, a null for one to remove (with `nulls`).
-fn overrides_param(
-    p: &Params,
-    nulls: bool,
-) -> Result<Option<Vec<(String, Option<String>)>>, CommandError> {
+fn overrides_param(p: &Params, nulls: bool) -> Result<Option<Overrides>, CommandError> {
     let Some(value) = p.get("params") else {
         return Ok(None);
     };

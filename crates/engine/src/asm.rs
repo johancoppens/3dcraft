@@ -988,7 +988,7 @@ fn face_centroid(body: &Body, index: usize, tolerance: f64) -> Option<Vec3> {
         let [a, b, c] = mesh.corners(t)?;
         let w = (b - a).cross(c - a).length() * 0.5;
         area += w;
-        sum = sum + (a + b + c) * (w / 3.0);
+        sum += (a + b + c) * (w / 3.0);
     }
     (area > 0.0 && area.is_finite()).then(|| sum * (1.0 / area))
 }
