@@ -445,7 +445,7 @@ fn relief_named(p: &Params, key: &str) -> Result<Option<Option<CornerRelief>>, C
                 .ok_or_else(|| CommandError::new(format!("{id}: {key} needs its `size`")))?;
             Ok(Some(Some(CornerRelief {
                 shape,
-                size: Expr::new(p.expr_of("size", size)?),
+                size: Expr::new(p.expr_of(&format!("{key}.size"), size)?),
             })))
         }
         Some(_) => fail(format!(
@@ -1676,13 +1676,22 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
                 }
                 // Every end of a bend inside its edge needs one too (a
                 // bend relief), or the parent turns into the bend's end at
-                // a concave corner a press brake tears.
+                // a concave corner a press brake tears. `bend` is the
+                // flange's place in the list, `id` its id (as
+                // sheetMetal.bends gives them).
+                let ids: Vec<u32> = match ctx.doc.feature(id).map(|f| &f.kind) {
+                    Some(FeatureKind::SheetMetal(made)) => {
+                        made.flanges.iter().map(|f| f.id).collect()
+                    }
+                    _ => Vec::new(),
+                };
                 for e in &part.bend_ends {
                     every &= e.relief.is_some();
                     listed.push(json!({
                         "part": fname,
                         "point": e.point,
                         "bend": e.bend,
+                        "id": ids.get(e.bend),
                         "end": if e.end == 0 { "start" } else { "end" },
                         "relief": e.relief.map(|r| r.kind.name()),
                     }));
