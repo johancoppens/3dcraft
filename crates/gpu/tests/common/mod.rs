@@ -741,35 +741,82 @@ fn compare_layered(
 impl Parity {
     /// The assertions of oracle 7.
     pub fn check(&self, scene: &str) {
+        if let Some(failure) = self.failure(scene) {
+            panic!("{failure}");
+        }
+    }
+
+    /// The first assertion of oracle 7 that fails, as its report; `None`
+    /// when all hold.
+    pub fn failure(&self, scene: &str) -> Option<String> {
         let report = format!("{scene}: {self:?}");
         // The comparison must not be hollow: most of the picture, and most
         // of the model in it, is compared strictly.
-        assert!(self.covered > self.pixels / 50, "nothing to see: {report}");
-        assert!(
-            self.band < self.pixels / 2,
-            "the band covers half the picture: {report}"
-        );
-        assert_eq!(
-            self.id_outside, 0,
-            "face ids differ outside the band: {report}"
-        );
-        assert_eq!(self.depth_outside, 0, "distances differ: {report}");
-        assert_eq!(self.color_outside, 0, "colours differ: {report}");
-        let differing: usize = self.color_histogram.iter().skip(1).sum();
-        assert!(
-            differing as f64 <= self.color_differ_allowed.ceil(),
-            "{differing} colours differ by a level where rounding explains at most {}: {report}",
-            self.color_differ_allowed.ceil()
-        );
+        if self.covered <= self.pixels / 50 {
+            return Some(format!("nothing to see: {report}"));
+        }
+        if self.band >= self.pixels / 2 {
+            return Some(format!("the band covers half the picture: {report}"));
+        }
+        if self.id_outside != 0 {
+            return Some(format!("face ids differ outside the band: {report}"));
+        }
+        if self.depth_outside != 0 {
+            return Some(format!("distances differ: {report}"));
+        }
+        if self.color_outside != 0 {
+            return Some(format!("colours differ: {report}"));
+        }
+        let differing = self.color_differing();
+        if differing as f64 > self.color_differ_allowed.ceil() {
+            return Some(format!(
+                "{differing} colours differ by a level where rounding explains at most {}: {report}",
+                self.color_differ_allowed.ceil()
+            ));
+        }
         let allowed = (self.band as f64 * BAND_MISMATCH).ceil() as usize;
-        assert!(
-            self.id_band <= allowed,
-            "more than {allowed} face ids differ inside the band: {report}"
-        );
-        assert!(
-            self.color_band <= allowed,
-            "more than {allowed} colours differ inside the band: {report}"
-        );
+        if self.id_band > allowed {
+            return Some(format!(
+                "more than {allowed} face ids differ inside the band: {report}"
+            ));
+        }
+        if self.color_band > allowed {
+            return Some(format!(
+                "more than {allowed} colours differ inside the band: {report}"
+            ));
+        }
+        None
+    }
+
+    /// Outside the band: the pixels whose colour differs at all.
+    pub fn color_differing(&self) -> usize {
+        self.color_histogram.iter().skip(1).sum()
+    }
+
+    /// The counts of what differs from the CPU frame that are larger in
+    /// `self` than in `other`, by name: empty when `self` is nowhere
+    /// further from the oracle than `other` (two comparisons of one scene).
+    pub fn worse_than(&self, other: &Parity) -> Vec<String> {
+        [
+            ("ids outside the band", self.id_outside, other.id_outside),
+            ("distances", self.depth_outside, other.depth_outside),
+            (
+                "colours over the tolerance",
+                self.color_outside,
+                other.color_outside,
+            ),
+            (
+                "colours a level off",
+                self.color_differing(),
+                other.color_differing(),
+            ),
+            ("ids inside the band", self.id_band, other.id_band),
+            ("colours inside the band", self.color_band, other.color_band),
+        ]
+        .into_iter()
+        .filter(|(_, a, b)| a > b)
+        .map(|(what, a, b)| format!("{what} {a} > {b}"))
+        .collect()
     }
 }
 
