@@ -658,6 +658,9 @@ fn a_plain_background_is_the_pictures_colour() {
     let params = RenderParams {
         width: 96,
         height: 96,
+        // One sample per pixel: a pixel at the ball's rim is not averaged
+        // with the ball.
+        ssaa: 1,
         background: [235, 233, 229],
         ..RenderParams::default()
     };
