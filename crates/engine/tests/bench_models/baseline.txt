@@ -53,7 +53,7 @@ impeller mass_evaluations 135770240
 impeller mass_faces 77
 impeller mesh_faces 260
 impeller meshes 12
-impeller patch_trees 28
+impeller patch_trees 29
 impeller refusals 0
 impeller regenerations 82
 impeller sketch_solves 63
@@ -72,7 +72,7 @@ rotor mass_evaluations 7688320
 rotor mass_faces 48
 rotor mesh_faces 55
 rotor meshes 6
-rotor patch_trees 4
+rotor patch_trees 6
 rotor refusals 0
 rotor regenerations 33
 rotor sketch_solves 28
