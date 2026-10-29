@@ -18,6 +18,7 @@ const DEPTH_BIAS: f32 = 2.0;
 const NORMAL_OFFSET: f32 = 1.5;
 const AO_SLICES: i32 = 6;
 const AO_STEPS: i32 = 6;
+const AO_BIAS: f32 = 0.05;
 const DEFAULT_ROUGHNESS: f32 = 0.5;
 const DIELECTRIC_F0: f32 = 0.04;
 const BACKGROUND_ROUGHNESS: f32 = 0.45;
@@ -488,7 +489,7 @@ fn occlusion(at: vec2<i32>, p: vec3<f32>, n: vec3<f32>, v: vec3<f32>, radius: f3
                 }
                 let d = q.xyz - p;
                 let l = length(d);
-                if l <= 0.0 {
+                if l <= 0.0 || dot(d, n) <= AO_BIAS * l {
                     continue;
                 }
                 let cos_h = dot(d, v) / l;

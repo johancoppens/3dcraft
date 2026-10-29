@@ -11,6 +11,8 @@
 //!                                    that loads the glue), named by the page
 //!   manifest.webmanifest, icon-256.png, icon-512.png   installable app
 //!   HOSTING.md, _headers, .htaccess  server settings
+//!   environments/*.hdr, LICENSE.md   the studio look's environments (CC0),
+//!                                    fetched when chosen
 //!   LICENSE
 //! ```
 //!
@@ -296,6 +298,13 @@ pub fn package(
     }
     let licence = crate::package::read(&repo.join("LICENSE"))?;
     crate::package::write(&site.join("LICENSE"), &licence)?;
+    // The studio look's environments, fetched by the page when chosen
+    // (not in the module: they would weigh on every load).
+    let environments = repo.join("assets").join("environments");
+    for name in ["studio.hdr", "outdoor.hdr", "workshop.hdr", "LICENSE.md"] {
+        let bytes = crate::package::read(&environments.join(name))?;
+        crate::package::write(&site.join("environments").join(name), &bytes)?;
+    }
 
     std::fs::create_dir_all(out).map_err(|e| format!("cannot create {}: {e}", out.display()))?;
     let zip_name = format!("{folder}.zip");

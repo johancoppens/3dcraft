@@ -1169,6 +1169,18 @@ mod tests {
                 gap: String::new(),
                 name: "box.dxf".to_string(),
             },
+            // Added with the studio look (2026-10-29).
+            look: LookState {
+                mode: "studio".to_string(),
+                environment: "workshop".to_string(),
+                exposure: -0.5,
+                rotation: 90.0,
+                ground: false,
+                ao: true,
+                shadows: false,
+                tonemap: "aces".to_string(),
+                light: Some([30.0, 45.0]),
+            },
         };
         let json = serde_json::to_value(&state).unwrap();
         assert_eq!(

@@ -16,6 +16,8 @@ pub enum Icon {
     Sketches,
     /// Datums: a plane seen at a slant.
     Datums,
+    /// The studio look: a lamp, a disc with rays.
+    Studio,
     /// Section: a body cut by a plane, the half that is cut away hollow.
     Section,
     /// Flip the kept side: an arrow up and one down.
@@ -122,6 +124,21 @@ pub fn paint(painter: &egui::Painter, icon: Icon, place: Rect, ink: Color32, tok
             faint,
             stroke,
         )],
+        Icon::Studio => {
+            let mut shapes = vec![
+                Shape::circle_filled(c, half * 0.32, faint),
+                Shape::circle_stroke(c, half * 0.32, stroke),
+            ];
+            for k in 0..8 {
+                let a = std::f32::consts::FRAC_PI_4 * k as f32;
+                let (sin, cos) = a.sin_cos();
+                shapes.push(Shape::line_segment(
+                    [p(0.55 * cos, 0.55 * sin), p(0.9 * cos, 0.9 * sin)],
+                    stroke,
+                ));
+            }
+            shapes
+        }
         Icon::Section => vec![
             // The half that stays, filled; the half cut away, an outline.
             Shape::convex_polygon(

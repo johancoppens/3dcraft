@@ -45,6 +45,7 @@ pub struct ControlWidths {
     pub iso: f32,
     pub sketches: f32,
     pub datums: f32,
+    pub studio: f32,
     pub section: f32,
     pub flip: f32,
     /// One segment of Persp | Ortho.
@@ -87,6 +88,7 @@ impl ControlWidths {
             iso: with_icon("Iso"),
             sketches: with_icon("Sketches"),
             datums: with_icon("Datums"),
+            studio: with_icon("Studio"),
             section: with_icon("Section"),
             flip: with_icon("Flip side"),
             projection: widest(&["Persp", "Ortho"], &plain),
@@ -107,6 +109,7 @@ impl ControlWidths {
             self.iso,
             self.sketches,
             self.datums,
+            self.studio,
             self.section,
             self.flip,
             self.projection,
@@ -128,6 +131,7 @@ impl ControlWidths {
             iso: icon + chars(3.0),
             sketches: icon + chars(8.0),
             datums: icon + chars(6.0),
+            studio: icon + chars(6.0),
             section: icon + chars(7.0),
             flip: icon + chars(9.0),
             projection: 2.0 * tokens.nav_inset + chars(5.0) + 4.0,
@@ -323,9 +327,10 @@ impl Nav<'_> {
         let triad = self.triad();
         out.triad = Some(triad);
         let (sketches, datums) = (self.chip(self.w.sketches), self.chip(self.w.datums));
+        let studio = self.chip(self.w.studio);
         let section = self.chip(self.w.section);
         let see = self.w.see_through;
-        let off_w = pad + sketches + sp + datums + sp + see + gap + section + pad;
+        let off_w = pad + sketches + sp + datums + sp + studio + sp + see + gap + section + pad;
         let flip = self.chip(self.w.flip);
         let axes = 3.0 * self.w.axis;
         let extra = gap + axes + sp + self.w.offset + sp + flip;
@@ -346,6 +351,8 @@ impl Nav<'_> {
         x += sketches + sp;
         out.datums = Some(self.at(x, y, datums));
         x += datums + sp;
+        out.studio = Some(self.at(x, y, studio));
+        x += studio + sp;
         out.see_through = Some(self.at(x, y, see));
         x += see;
         out.dividers[1] = Some(self.vertical(x, y));
@@ -372,6 +379,7 @@ fn complete(layout: &ControlsLayout, area: Rect, section_on: bool) -> bool {
     let controls = [
         layout.sketches,
         layout.datums,
+        layout.studio,
         layout.see_through,
         layout.section_toggle,
         layout.fit,
@@ -422,6 +430,7 @@ fn prune(layout: &mut ControlsLayout, area: Rect) {
         for slot in [
             &mut layout.sketches,
             &mut layout.datums,
+            &mut layout.studio,
             &mut layout.see_through,
             &mut layout.section_toggle,
             &mut layout.axes,
@@ -438,6 +447,7 @@ fn prune(layout: &mut ControlsLayout, area: Rect) {
     for slot in [
         &mut layout.sketches,
         &mut layout.datums,
+        &mut layout.studio,
         &mut layout.see_through,
         &mut layout.section_toggle,
         &mut layout.axes,
@@ -788,9 +798,12 @@ impl Shell {
     /// Sketches, Datums and See-through.
     fn nav_show(&mut self, ui: &mut egui::Ui, layout: &ControlsLayout, named: bool) {
         let tokens = self.tokens;
-        let (Some(sketches), Some(datums), Some(field)) =
-            (layout.sketches, layout.datums, layout.see_through)
-        else {
+        let (Some(sketches), Some(datums), Some(studio), Some(field)) = (
+            layout.sketches,
+            layout.datums,
+            layout.studio,
+            layout.see_through,
+        ) else {
             self.show_hits.clear();
             self.transparency_rect = None;
             return;
@@ -830,7 +843,32 @@ impl Shell {
         {
             show.datums = !show.datums;
         }
-        self.show_hits = vec![("sketches", sketches), ("datums", datums)];
+        let lit = self.state.look.is_studio();
+        if toggle(
+            ui,
+            studio,
+            Chip {
+                id: "studio",
+                icon: Icon::Studio,
+                label: "Studio",
+                named,
+            },
+            lit,
+            &tokens,
+        )
+        .on_hover_text(
+            "Light the model as in a photo studio: reflections, soft shadows and a ground",
+        )
+        .clicked()
+        {
+            self.state.look.mode = if lit { "plain" } else { "studio" }.to_string();
+            ui.ctx().request_repaint();
+        }
+        self.show_hits = vec![
+            ("sketches", sketches),
+            ("datums", datums),
+            ("studio", studio),
+        ];
         self.see_through_field(ui, field);
         self.set_show(ui, show);
     }

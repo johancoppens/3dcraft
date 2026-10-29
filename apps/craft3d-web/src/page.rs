@@ -452,6 +452,11 @@ struct Page {
     unsaved: Rc<Cell<bool>>,
     /// The first error the graphics device reported, for the next frame.
     gpu_error: Arc<Mutex<Option<String>>>,
+    /// The studio look's environments asked for (fetched from
+    /// `environments/<name>.hdr` beside the page, not carried in the
+    /// module), and what came of it: `None` while it is on its way, the
+    /// error when it failed.
+    environments: Rc<RefCell<BTreeMap<String, Option<String>>>>,
     title: String,
     stored: String,
     /// The assertions and outputs, measured in the checking worker
@@ -569,6 +574,7 @@ impl Page {
             ctx: creation.egui_ctx.clone(),
             unsaved,
             gpu_error,
+            environments: Rc::new(RefCell::new(BTreeMap::new())),
             title: String::new(),
             stored,
             checks,
@@ -933,8 +939,55 @@ impl Page {
     }
 }
 
+impl Page {
+    /// Fetches the studio look's environment when the look asks for one
+    /// that is not here yet: once per environment; a failure is said once
+    /// and the viewport stays in the plain look.
+    fn fetch_environment(&mut self, ctx: &egui::Context) {
+        // A failure is said once (and then kept as an empty text).
+        let failed: Vec<(String, String)> = self
+            .environments
+            .borrow()
+            .iter()
+            .filter_map(|(name, why)| Some((name.clone(), why.clone().filter(|w| !w.is_empty())?)))
+            .collect();
+        for (name, why) in failed {
+            self.host.note(
+                "look",
+                false,
+                format!("the studio look's environment {name} is not available: {why}"),
+            );
+            self.environments
+                .borrow_mut()
+                .insert(name, Some(String::new()));
+        }
+        let look = &self.host.shell.state.look;
+        if !look.is_studio() || craft3d_engine::look::environment_ready(&look.environment) {
+            return;
+        }
+        let name = look.environment.clone();
+        if self.environments.borrow().contains_key(&name) {
+            return;
+        }
+        self.environments.borrow_mut().insert(name.clone(), None);
+        let (environments, ctx) = (Rc::clone(&self.environments), ctx.clone());
+        wasm_bindgen_futures::spawn_local(async move {
+            let url = format!("environments/{name}.hdr");
+            let outcome = match fetch(&url).await {
+                Ok(bytes) => craft3d_engine::look::register_environment(&name, &bytes),
+                Err(why) => Err(why),
+            };
+            if let Err(why) = outcome {
+                environments.borrow_mut().insert(name, Some(why));
+            }
+            ctx.request_repaint();
+        });
+    }
+}
+
 impl eframe::App for Page {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.fetch_environment(ctx);
         // Files dropped on the page are read in the background.
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         for file in dropped {

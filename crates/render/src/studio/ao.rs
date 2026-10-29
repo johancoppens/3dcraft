@@ -4,7 +4,8 @@
 //! through the view direction; in each, the highest horizon on either
 //! side within a radius in model units, clamped to the hemisphere of the
 //! normal, and the cosine-weighted visible arc between them in closed
-//! form (their equation 10). The mean over the slices, each weighted by
+//! form (their equation 10); a sample counts only when it rises above
+//! the tangent plane ([`AO_BIAS`]). The mean over the slices, each weighted by
 //! the length of the normal projected into it, is the share of the
 //! hemisphere's cosine-weighted light that is not blocked. It is divided
 //! by the same sum for the slices with nothing in them (the closed form
@@ -25,6 +26,13 @@ pub const AO_STEPS: usize = 6;
 /// The radius of the search as a share of the radius of the sphere
 /// around the mesh.
 pub const AO_RADIUS: f64 = 0.12;
+/// A sample blocks light only when it rises above the surface's tangent
+/// plane by more than this sine (about 3°). The samples are taken at the
+/// centres of the samples of the picture, a little off the slice, so on a
+/// tilted flat face they would see a horizon a little above the face's
+/// own and darken it (0.999 instead of 1 with six slices); a real
+/// occluder rises far more.
+pub const AO_BIAS: f64 = 0.05;
 
 /// The occlusion of one sample. `point(x, y)` gives the surface point at
 /// sample `(x, y)` relative to the eye (`None` for none), `at` is the
@@ -73,7 +81,7 @@ pub fn occlusion(
                 };
                 let d = q - p;
                 let l = d.length();
-                if l <= 0.0 {
+                if l <= 0.0 || d.dot(n) <= AO_BIAS * l {
                     continue;
                 }
                 let cos_h = d.dot(v) / l;

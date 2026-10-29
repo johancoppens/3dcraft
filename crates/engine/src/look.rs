@@ -169,6 +169,23 @@ impl LookSpec {
     }
 }
 
+/// Whether the environment `name` is prepared already (always, on the
+/// desktop, after its first use; in the browser once its page fetched it).
+pub fn environment_ready(name: &str) -> bool {
+    craft3d_render::studio::bundled::ready(name).is_some()
+}
+
+/// Prepares the environment `name` from the bytes of its `.hdr` file (the
+/// browser's page, which fetches the bundled ones on demand).
+pub fn register_environment(name: &str, bytes: &[u8]) -> Result<(), String> {
+    if !ENVIRONMENTS.contains(&name) {
+        return Err(format!("no environment {name:?}"));
+    }
+    craft3d_render::studio::bundled::register(name, bytes)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 /// `view.render`'s `look`, or the plain look when it is not given.
 pub(crate) fn look_param(cmd: &str, value: Option<&Value>) -> Result<LookSpec, CommandError> {
     match value {
