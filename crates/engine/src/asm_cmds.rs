@@ -129,6 +129,18 @@ impl Session {
     /// otherwise.
     fn full_source_path(&self, path: &str) -> Result<String, CommandError> {
         let resolved = self.workspace.resolve_read(path)?;
+        // Beneath a root, an absolute path inside it is kept relative to
+        // the root, as every other path there is.
+        if let crate::Access::Root(root) = &self.workspace.read
+            && std::path::Path::new(path).is_absolute()
+            && let Ok(inside) = resolved.strip_prefix(root)
+        {
+            let parts: Vec<String> = inside
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().to_string())
+                .collect();
+            return asm::join("", &parts.join("/")).map_err(CommandError::new);
+        }
         let kept = crate::workspace::kept_path(&self.workspace.read, path, &resolved);
         asm::join("", &kept).map_err(CommandError::new)
     }
@@ -519,6 +531,19 @@ fn default_instance_name(assembly: &Assembly, path: &str) -> String {
         .unwrap_or_else(|| format!("{stem}[{}]", assembly.instances.len().saturating_add(1)))
 }
 
+/// The path of the source `full` relative to the assembly's folder
+/// `base`: refused, never turned into another path, when one of the two is
+/// absolute and the other is not.
+fn source_relative(id: &str, base: &str, full: &str) -> Result<String, CommandError> {
+    let absolute = |p: &str| p.starts_with('/') || p.starts_with('\\') || p.get(1..2) == Some(":");
+    if absolute(full) != absolute(base) {
+        return fail(format!(
+            "{id}: the source `{full}` cannot be kept relative to the assembly's folder `{base}`; give its path relative to the read root"
+        ));
+    }
+    Ok(asm::relative_to(base, full))
+}
+
 fn instance_add(session: &mut Session, params: &Value) -> Run {
     const ID: &str = "instance.add";
     let p = Params::new(
@@ -539,7 +564,7 @@ fn instance_add(session: &mut Session, params: &Value) -> Run {
     // Something a document reads as, or nothing is added.
     let source_doc = craft3d_format::from_bytes(blob.bytes())
         .map_err(|e| CommandError::new(format!("{ID}: `{path}` is not a 3DCraft document: {e}")))?;
-    let relative = asm::relative_to(&base, &full);
+    let relative = source_relative(ID, &base, &full)?;
     craft3d_doc::assembly::check_source_path(&relative)
         .map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
     session
@@ -632,7 +657,7 @@ fn instance_edit(session: &mut Session, params: &Value) -> Run {
         craft3d_format::from_bytes(blob.bytes()).map_err(|e| {
             CommandError::new(format!("{ID}: `{path}` is not a 3DCraft document: {e}"))
         })?;
-        let relative = asm::relative_to(&base, &full);
+        let relative = source_relative(ID, &base, &full)?;
         session
             .refuse_cycle(&full, &blob)
             .map_err(|e| CommandError::new(format!("{ID}: {e}")))?;

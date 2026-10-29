@@ -958,3 +958,70 @@ fn a_four_bar_linkage_of_one_bar_part_follows_its_crank() {
         );
     }
 }
+
+/// What a viewer draws follows the solve: the scene of an assembly holds
+/// its placed bodies, and a joint set moves its box (the window's view
+/// and `ui.fit` frame that box).
+#[test]
+fn the_scene_of_an_assembly_follows_its_joints() {
+    let dir = workdir("assembly", "scene");
+    let mut s = session_in(&dir);
+    block_part(&mut s, "block.3dcraft", [10.0, 2.0, 2.0], 1e-6);
+    run(&mut s, "assembly.new", json!({}));
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "block.3dcraft", "name": "Base" }),
+    );
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "block.3dcraft", "name": "Arm" }),
+    );
+    run(
+        &mut s,
+        "mate.add",
+        json!({ "kind": "fixed", "a": "world/xy", "b": "Base/F1:face(0)" }),
+    );
+    run(
+        &mut s,
+        "mate.add",
+        json!({ "kind": "revolute", "a": "Base/F1:face(1)", "b": "Arm/F1:face(0)", "name": "Hinge" }),
+    );
+    let mut boxes = Vec::new();
+    for angle in ["0 deg", "90 deg"] {
+        run(
+            &mut s,
+            "joint.set",
+            json!({ "mate": "Hinge", "value": angle }),
+        );
+        let scene = s.scene(None).unwrap().expect("a scene");
+        assert_eq!(scene.bodies.len(), 2, "{angle}");
+        let (lo, hi) = scene.bbox.corners().expect("a box");
+        boxes.push((lo, hi));
+    }
+    let ((lo0, hi0), (lo1, hi1)) = (boxes[0], boxes[1]);
+    assert!(
+        (lo0.x - lo1.x).abs() > 1.0 || (lo0.y - lo1.y).abs() > 1.0 || (hi0.x - hi1.x).abs() > 1.0,
+        "the drawn box did not move: {boxes:?}"
+    );
+}
+
+/// An absolute source path is kept absolute, never turned into a
+/// relative one.
+#[test]
+fn an_absolute_source_path_stays_absolute() {
+    let dir = workdir("assembly", "absolute");
+    let mut s = common::session_in(&dir);
+    block_part(&mut s, "block.3dcraft", [1.0, 1.0, 1.0], 1e-6);
+    run(&mut s, "assembly.new", json!({}));
+    let absolute = dir.join("block.3dcraft").to_string_lossy().to_string();
+    match s.execute("instance.add", &json!({ "source": absolute })) {
+        Ok(added) => assert_eq!(added["status"], "ok", "{added}"),
+        Err(e) => {
+            let e = e.to_string();
+            assert!(!e.contains("cannot be read"), "{e}");
+            assert!(e.contains("read root") || e.contains("absolute"), "{e}");
+        }
+    }
+}
