@@ -99,18 +99,16 @@ impl Timeline {
         // One moment of the motion waits at most: a later one takes the
         // place of an earlier one, keeping what the earlier one set and
         // the later one does not (its collisions).
-        if id == "view.motion" {
-            if let Some(at) = self
+        if id == "view.motion"
+            && let Some(at) = self
                 .pending
                 .iter()
                 .position(|(queued, _)| *queued == "view.motion")
-            {
-                let (_, earlier) = self.pending.remove(at);
-                if let (Value::Object(mut merged), Value::Object(later)) = (earlier, params.clone())
-                {
-                    merged.extend(later);
-                    params = Value::Object(merged);
-                }
+        {
+            let (_, earlier) = self.pending.remove(at);
+            if let (Value::Object(mut merged), Value::Object(later)) = (earlier, params.clone()) {
+                merged.extend(later);
+                params = Value::Object(merged);
             }
         }
         if self.pending.len() < MAX_PENDING {
