@@ -294,6 +294,52 @@ fn studio_frames_on_a_thousand_faces() {
             );
         }
     }
+    // The viewport's renderer: the frame until the GPU is done, nothing
+    // read back.
+    for (adapter, device, queue) in devices::devices() {
+        let name = adapter.get_info().name;
+        let mut onscreen = Onscreen::new(&device, &queue, &adapter).unwrap();
+        let lines = onscreen.upload_lines(&[]).unwrap();
+        let uploaded = onscreen.upload_colored(&mesh, &colors).unwrap();
+        let overlay = OverlayParams {
+            slack: 0.0,
+            hidden_opacity: 70,
+            axis_length: 1.0,
+            edges: EdgeLook::default(),
+        };
+        for look in [
+            None,
+            Some(Look::default()),
+            Some(Look {
+                ao: false,
+                shadows: false,
+                ..Look::default()
+            }),
+        ] {
+            onscreen.set_studio(look.map(|look| Studio {
+                env: env.clone(),
+                look,
+            }));
+            let mut frame = || {
+                onscreen
+                    .draw(&uploaded, &lines, &camera, &p, &overlay, DrawOptions::default())
+                    .unwrap();
+                device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            };
+            frame();
+            let started = std::time::Instant::now();
+            for _ in 0..20 {
+                frame();
+            }
+            let ms = started.elapsed().as_secs_f64() * 1000.0 / 20.0;
+            eprintln!(
+                "COST viewport {name} ({} samples): {} triangles, 1020x777, look {:?}: {ms:.2} ms",
+                onscreen.samples(),
+                mesh.triangles.len(),
+                look.map(|l| (l.ao, l.shadows))
+            );
+        }
+    }
     let started = std::time::Instant::now();
     let frame = render_studio(&mesh, &colors, &camera, &p, &Look::default(), &env).unwrap();
     eprintln!("COST cpu: {:?} for the studio frame", started.elapsed());
