@@ -6,7 +6,9 @@
 //! 2026-10-29 a flange could sit on an outlined flange's tip or side only,
 //! which it has not ("not supported"). Held to closed forms at 1e-3, 1 and
 //! 1e6: the flat area (base 3000, leg 1400, the strips `w BA`, the lip
-//! `50 × 8`, the notches `r²` each), the volume `A T` at K = ½, the names
+//! `50 × 8`, less a notch `r²` at each of the four bend ends inside their
+//! edges: the leg's two on the base's edge, the lip's two on the leg's far
+//! line), the volume `A T` at K = ½, the names
 //! of the part without the lip kept but the rim along the far line; bad
 //! lines are errors.
 
@@ -101,7 +103,8 @@ fn a_lip_on_the_far_line_of_an_outlined_leg() {
             (Value::Null, 0.0),
             (
                 json!({"shape": "rect", "size": mm(1.5 * k)}),
-                2.0 * 2.25 * k * k,
+                // Both bends end inside their edges: four notches.
+                4.0 * 2.25 * k * k,
             ),
         ] {
             run(
@@ -128,6 +131,7 @@ fn a_lip_on_the_far_line_of_an_outlined_leg() {
             let bends = table["bends"].as_array().unwrap();
             assert_eq!(bends[1]["on"], format!("{} of flange 0's outline", leg[2]));
             assert!((number(&bends[1]["length"]) - 50.0 * k).abs() <= 1e-9 * k * 100.0);
+            assert_eq!(bends[0]["ends"].as_array().unwrap().len(), 2, "{table}");
             assert_eq!(bends[1]["ends"].as_array().unwrap().len(), 2, "{table}");
             // The leg's names are kept but the rim along its far line.
             let after = names(&mut s);

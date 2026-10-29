@@ -12,5 +12,15 @@
                {"tip": 0, "length": "6 mm", "angle": "90 deg", "insetStart": "8 mm", "insetEnd": "36 mm"},
                {"tip": 0, "length": "6 mm", "angle": "90 deg", "insetStart": "36 mm", "insetEnd": "8 mm"}]}],
  ["assert.add", {"name": "Reliefs", "measure": "relief", "of": "Tray", "is": true}],
- ["assert.add", {"name": "Gap", "measure": "cornerGap", "of": "Tray", "eq": "0.25 mm"}]
+ ["assert.add", {"name": "Gap", "measure": "cornerGap", "of": "Tray", "eq": "0.25 mm"}],
+ ["sketch.create", {"plane": "xy", "name": "RailBase"}],
+ ["sketch.rect", {"sketch": "RailBase", "from": [100, 0], "to": [200, 30]}],
+ ["sketch.create", {"plane": "xy", "name": "RailLeg"}],
+ ["sketch.polyline", {"sketch": "RailLeg", "points": [[110, 0], [190, 0], [180, -20], [120, -20]], "closed": true}],
+ ["feature.sheetMetal", {"sketch": "RailBase", "name": "Rail", "thickness": "1 mm", "radius": "1 mm",
+   "kFactor": 0.5, "bendRelief": {"shape": "round", "size": "1.5 mm"},
+   "flanges": [{"edge": "e5", "outline": "RailLeg", "angle": "90 deg"},
+               {"line": {"flange": 0, "edge": "e7"}, "length": "8 mm", "angle": "90 deg",
+                "insetStart": "5 mm", "insetEnd": "5 mm"}]}],
+ ["assert.add", {"name": "Rail reliefs", "measure": "relief", "of": "Rail", "is": true}]
 ]
