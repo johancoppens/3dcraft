@@ -1,7 +1,7 @@
 {
   "format_version": 52,
-  "written_by": "2497d1f45973c1d53c234ced38df796d65c3abf4",
-  "how": "the engine of that commit (on the Strix, Check run 40894085484, by a temporary test, crates/engine/tests/zz_write_fixture_v52.rs, that ran v52.steps.json in a session as craft3d-cli run --new '{\"units\": \"mm\"}' --script does, saved v52.3dcraft and printed it), then document.inspect of the file opened again; format 52 is a TEMPORARY number (the coordinator renumbers at merge): a tray closed by overlap whose front wall carries two screw tabs on its tip, with rect bend reliefs at the tabs' ends, its relief and cornerGap assertions passing",
+  "written_by": "5a2fe6c71245918c869b065e5e8868c242195d3d",
+  "how": "the engine of that commit (on the Strix, Check run 40909242660, by a temporary test, crates/engine/tests/zz_write_fixture_v52.rs, that ran v52.steps.json in a session as craft3d-cli run --new '{\"units\": \"mm\"}' --script does, saved v52.3dcraft and printed it), then document.inspect of the file opened again; format 52 is a TEMPORARY number (the coordinator renumbers at merge): a tray closed by overlap whose front wall carries two screw tabs on its tip, with rect bend reliefs at the tabs' ends, its relief and cornerGap assertions passing; and a rail whose leg has an outline of its own (a trapezoid) with a lip bent from the leg's far line (a flange on an outline's line), round bend reliefs at both bends' ends, its relief assertion passing",
   "rollback": null,
   "features": [
     {
@@ -14,6 +14,23 @@
       "id": "F2",
       "name": "Tray",
       "status": "ok"
+    },
+    {
+      "id": "F3",
+      "name": "RailBase",
+      "status": "ok",
+      "dof": 4
+    },
+    {
+      "id": "F4",
+      "name": "RailLeg",
+      "status": "ok",
+      "dof": 8
+    },
+    {
+      "id": "F5",
+      "name": "Rail",
+      "status": "ok"
     }
   ],
   "bodies": [
@@ -25,6 +42,15 @@
       "vertices": 128,
       "volume": 5054.539786195382,
       "area": 10518.203462194624
+    },
+    {
+      "feature": "F5",
+      "kind": "solid",
+      "faces": 34,
+      "edges": 80,
+      "vertices": 48,
+      "volume": 5099.236700254474,
+      "area": 10518.044315980416
     }
   ],
   "assertions": [
@@ -39,6 +65,12 @@
       "measure": "cornerGap",
       "status": "passed",
       "expected": "0.25 mm ± 0.00001"
+    },
+    {
+      "name": "Rail reliefs",
+      "measure": "relief",
+      "status": "passed",
+      "expected": "true"
     }
   ]
 }
