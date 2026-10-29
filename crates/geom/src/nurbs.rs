@@ -2062,7 +2062,73 @@ impl NurbsSurface {
         }
         NurbsSurface::new(du, dv, knots_u, knots_v, count_u, count_v, ctrl, weights).ok()
     }
+
+    /// The same surface with u drawn at about the pace of v: the knots of
+    /// u times the ratio `r` of the paces (`u ↦ r u`, the same point set
+    /// and the same net, only the parameter of u stretched), where the
+    /// paces differ by more than [`PACES_APART`]. The pace of a direction
+    /// is the mean length of the net's polygons along it over the width
+    /// of its knots. `None` where they do not differ that much, or where
+    /// a pace is no positive finite number.
+    ///
+    /// For a chart of winding numbers (`PatchTree::evened`): the chart's
+    /// speed is bounded by the least singular value of the surface's
+    /// Jacobian, the slower direction's pace, and a boundary along the
+    /// faster direction takes as many steps as the ratio says too many
+    /// (a plate's rim, four millimetres by five metres: a thousand times).
+    pub fn paces_matched(&self) -> Option<NurbsSurface> {
+        let (count_u, count_v) = self.counts();
+        let at = |i: usize, j: usize| self.ctrl.get(i.checked_mul(count_v)?.checked_add(j)?);
+        let polygon = |along_u: bool| -> Option<f64> {
+            let (n, across) = if along_u {
+                (count_u, count_v)
+            } else {
+                (count_v, count_u)
+            };
+            let mut total = 0.0;
+            for k in 0..across {
+                for i in 1..n {
+                    let (a, b) = if along_u {
+                        (at(i - 1, k)?, at(i, k)?)
+                    } else {
+                        (at(k, i - 1)?, at(k, i)?)
+                    };
+                    total += a.distance(*b);
+                }
+            }
+            Some(total / across.max(1) as f64)
+        };
+        let width = |knots: &[f64]| Some(knots.last()? - knots.first()?);
+        let pace_u = polygon(true)? / width(&self.knots_u)?;
+        let pace_v = polygon(false)? / width(&self.knots_v)?;
+        let ratio = pace_u / pace_v;
+        if !(ratio.is_finite() && ratio > 0.0) {
+            return None;
+        }
+        if (1.0 / PACES_APART..=PACES_APART).contains(&ratio) {
+            return None;
+        }
+        let knots_u: Vec<f64> = self.knots_u.iter().map(|k| k * ratio).collect();
+        if !knots_u.iter().all(|k| k.is_finite()) {
+            return None;
+        }
+        NurbsSurface::new(
+            self.degree_u,
+            self.degree_v,
+            knots_u,
+            self.knots_v.clone(),
+            count_u,
+            count_v,
+            self.ctrl.clone(),
+            self.weights.clone(),
+        )
+        .ok()
+    }
 }
+
+/// How far apart the paces of u and v of a surface may be before
+/// [`NurbsSurface::paces_matched`] draws u at the pace of v.
+pub const PACES_APART: f64 = 16.0;
 
 impl Bits for NurbsCurve {
     fn push_bits(&self, out: &mut Vec<u64>) {
@@ -2928,6 +2994,55 @@ mod tests {
                 surface.eval(span.u.1, span.v.1),
                 1e-11
             ));
+        }
+    }
+
+    /// A strip far longer one way than the other (a plate's rim, 4 by
+    /// 5000) drawn with u at the pace of v is the same surface: the same
+    /// net, the knots of u times the ratio of the paces, every point at
+    /// `(r u, v)` the point at `(u, v)`; a square patch, or one only a few
+    /// times longer, is left as it is. At three scales.
+    #[test]
+    fn a_long_strip_is_drawn_with_both_directions_at_one_pace() {
+        for k in [1e-3, 1.0, 1e6] {
+            let strip = |long: f64, wide: f64| {
+                let mut ctrl = Vec::new();
+                for i in 0..4 {
+                    let x = long * k * f64::from(i) / 3.0;
+                    for j in 0..2 {
+                        let y = wide * k * f64::from(j);
+                        ctrl.push(Vec3::new(x, y, 0.1 * x * (x / (long * k)) + 0.01 * y));
+                    }
+                }
+                NurbsSurface::new(
+                    3,
+                    1,
+                    vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                    vec![0.0, 0.0, 1.0, 1.0],
+                    4,
+                    2,
+                    ctrl,
+                    vec![1.0; 8],
+                )
+                .unwrap()
+            };
+            let rim = strip(5000.0, 4.0);
+            let matched = rim.paces_matched().unwrap();
+            let ((u0, u1), v) = matched.domain();
+            assert_eq!(v, (0.0, 1.0), "at {k}");
+            assert_eq!(u0, 0.0, "at {k}");
+            // The polygon along u is a little longer than 5000 (the net
+            // bends), across it 4.
+            let r = u1;
+            assert!(r > 1250.0 && r < 1260.0, "at {k}: {r}");
+            assert_eq!(matched.control_points(), rim.control_points());
+            for (u, v) in [(0.0, 0.0), (0.3, 0.7), (0.77, 0.1), (1.0, 1.0)] {
+                let (a, b) = (rim.eval(u, v), matched.eval(r * u, v));
+                assert!(a.distance(b) <= 1e-12 * k * 5000.0, "at {k}: {a:?} {b:?}");
+            }
+            assert!(strip(10.0, 10.0).paces_matched().is_none(), "at {k}");
+            assert!(strip(40.0, 4.0).paces_matched().is_none(), "at {k}");
+            assert!(strip(4.0, 5000.0).paces_matched().is_some(), "at {k}");
         }
     }
 

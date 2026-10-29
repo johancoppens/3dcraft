@@ -731,7 +731,10 @@ fn settle(
 /// another settling) in the steps it has left stops too: it is not the
 /// nearest (repro 25 again: the walls of a few holes crept beside the rim
 /// for all their steps, a seventh of a millimetre further than the
-/// nearest hole).
+/// nearest hole). Most of the time there went in telling the rim's
+/// points in or out of the rim face, a winding number on a strip four
+/// millimetres by five metres; that is the chart's matter
+/// (`PatchTree::evened` in the kernel), and takes milliseconds now.
 struct Settling {
     p: Vec3,
     q: Vec3,

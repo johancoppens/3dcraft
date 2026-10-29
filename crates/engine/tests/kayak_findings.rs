@@ -102,7 +102,11 @@
 //!     that line, each projection onto the five-metre rim costing up to a
 //!     fifth of a second. Now a settling stops when the steps it has left
 //!     could gain no more than a ten-thousandth of the tolerance at the
-//!     rate of its last ones.
+//!     rate of its last ones, or could not come nearer than another's;
+//!     and nearly all of the time was telling the rim's points in or out
+//!     (a winding number on a strip 4 mm by 5 m, whose chart was bounded
+//!     by its slow direction: six thousand steps a winding): the chart
+//!     of a surface draws u at the pace of v where they are far apart.
 
 #![allow(
     clippy::unwrap_used,
@@ -703,7 +707,11 @@ fn the_holes_of_a_plate_are_measured_to_its_own_rim_in_seconds() {
                     "to": {"kind": "face", "where": {"all": [{"madeBy": "Plank0S"}, {"name": "*rim(*"}]}}}),
         )
         .unwrap();
-    eprintln!("repro 25: {:?}: {found}", started.elapsed());
+    let took = started.elapsed();
+    eprintln!("repro 25: {took:?}: {found}");
+    // Thirteen minutes before; two seconds in release now. A minute
+    // leaves room for a slow, busy machine and a test build.
+    assert!(took.as_secs() < 60, "{took:?}");
     // Measured before (release, thirteen minutes): 6.9830674 mm, proven
     // at least 6.9806185 mm; the hole's edge distance is 8 mm less the
     // radius, 1 mm, less what the plate's turn takes.

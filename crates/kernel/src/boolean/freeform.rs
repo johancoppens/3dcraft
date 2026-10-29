@@ -2369,7 +2369,14 @@ impl PatchTree {
     /// apart in a product form, as on a surface of revolution skewed
     /// span by span) the parameters move a thousand times faster on one
     /// side than on the other, and a stretch of a boundary along the knot
-    /// takes the bound of the fast side; drawn evenly they do not.
+    /// takes the bound of the fast side; drawn evenly they do not. And
+    /// with u drawn at the pace of v where the two are far apart
+    /// ([`NurbsSurface::paces_matched`]): the chart's speed is the slower
+    /// direction's, and a boundary along the faster one took as many
+    /// times too many steps as the paces are apart (the sea kayak's plate
+    /// rims, four millimetres by five metres: six thousand steps a
+    /// winding, a seventh of a second for each point told in or out, kayak
+    /// repro 25).
     ///
     /// What is remembered with the tree is what the surface gives: the
     /// evened tree, or none where the surface has no evened form or that
@@ -2391,7 +2398,9 @@ impl PatchTree {
             let Surface::Nurbs(s) = &tree.surface else {
                 return tree.evened.get_or_init(|| None).clone();
             };
-            let Some(even) = s.evened() else {
+            let evened = s.evened();
+            let matched = evened.as_ref().unwrap_or(s).paces_matched();
+            let Some(even) = matched.or(evened) else {
                 return tree.evened.get_or_init(|| None).clone();
             };
             // On the shelf like any other tree, so that what it holds is
