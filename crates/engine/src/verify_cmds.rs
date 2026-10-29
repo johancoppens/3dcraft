@@ -636,6 +636,12 @@ pub(crate) struct Outcome {
     pub lower: Option<f64>,
     pub upper: Option<f64>,
     pub detail: Map<String, Value>,
+    /// Why the measure has no answer it can stand by: a search that did
+    /// not settle (a floating equilibrium), a proof that ran out of work
+    /// or could tell neither way (a bend sequence). An assertion on it is
+    /// notProven with this reason, never passed or failed, and an output
+    /// of it unknown.
+    pub unproven: Option<String>,
 }
 
 impl Outcome {
@@ -648,6 +654,7 @@ impl Outcome {
             lower: Some(value),
             upper: Some(value),
             detail: Map::new(),
+            unproven: None,
         }
     }
 
@@ -660,12 +667,28 @@ impl Outcome {
             lower: None,
             upper: None,
             detail: Map::new(),
+            unproven: None,
+        }
+    }
+
+    /// A measure of dimension `dim` that found no answer it can stand by,
+    /// and why (see [`Outcome::unproven`]).
+    pub(crate) fn unproven(dim: Dim, why: String) -> Self {
+        Outcome {
+            dim,
+            number: None,
+            flag: None,
+            note: None,
+            lower: None,
+            upper: None,
+            detail: Map::new(),
+            unproven: Some(why),
         }
     }
 }
 
 /// The measures, by name: what `assert.add` takes under `measure`.
-pub(crate) const MEASURES: [&str; 32] = [
+pub(crate) const MEASURES: [&str; 39] = [
     "volume",
     "area",
     "mass",
@@ -698,6 +721,13 @@ pub(crate) const MEASURES: [&str; 32] = [
     "flatFoldable",
     "value",
     "cornerGap",
+    "floatingOffset",
+    "floatingHeel",
+    "floatingTrim",
+    "floatingGM",
+    "floatingGML",
+    "floatingStable",
+    "bendable",
 ];
 
 /// Takes the measure `name` with the parameters `p`.
@@ -714,12 +744,16 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
         "overlap" => overlap(ctx, p),
         "symmetric" => symmetric(ctx, p),
         "volumeBelow" | "centroidBelow" | "sectionArea" | "sectionCentroid" | "sectionInertia"
-        | "sectionExtent" | "levelFor" => crate::below_cmds::measure(ctx, name, p),
+        | "sectionExtent" | "levelFor" | "floatingOffset" | "floatingHeel" | "floatingTrim"
+        | "floatingGM" | "floatingGML" | "floatingStable" => {
+            crate::below_cmds::measure(ctx, name, p)
+        }
         "curvature" | "developable" => crate::develop_cmds::take(ctx, name, p),
         "bendRadius" | "flangeLength" | "holeToBend" | "relief" | "cornerGap" => {
             crate::sheetmetal_cmds::take(ctx, name, p)
         }
         "kawasakiFails" | "maekawaFails" | "flatFoldable" => crate::fold_cmds::take(ctx, name, p),
+        "bendable" => crate::bendseq_cmds::take(ctx, p),
         "value" => value(ctx, p),
         _ => Err(format!(
             "unknown measure `{}`; one of {}",

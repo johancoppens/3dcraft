@@ -1411,7 +1411,7 @@ fn part_named(ctx: &Ctx<'_>, text: &str) -> Result<FeatureId, String> {
 /// (one, or a list), or a query of bodies. When it names none, every part
 /// in the model as it stands: a part switched off (`when`, suppressed) or
 /// rolled back is left out; one named is refused with that reason.
-fn parts_of(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Vec<FeatureId>, String> {
+pub(crate) fn parts_of(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Vec<FeatureId>, String> {
     let ids: Vec<FeatureId> = match p.get("of") {
         None | Some(Value::Null) => {
             let all: Vec<FeatureId> = ctx

@@ -448,3 +448,267 @@ fn bad_parameters_are_errors() {
         assert!(got.contains(why), "{params}: {got}");
     }
 }
+
+/// The assertion of the press-brake check, `bendable` (as an output too).
+fn bendable(s: &mut Session, name: &str, params: Value) -> Value {
+    let mut p = params;
+    p["name"] = json!(name);
+    p["measure"] = json!("bendable");
+    run(s, "assert.add", p);
+    let listed = run(s, "assert.list", json!({"details": true}));
+    listed["assertions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == name)
+        .cloned()
+        .unwrap_or_else(|| panic!("no assertion {name}: {listed}"))
+}
+
+/// `bendable` agrees with the closed forms of the U channel at three
+/// scales: walls 20 high are bendable with the straight punch, walls 40
+/// high collide in either order (no order, for certain: the command says
+/// `infeasibleProven`), and clear the gooseneck; the punch's points are
+/// looked up in a tool table; a search cut short by its work is not
+/// proven, never passed, and its output unknown.
+#[test]
+fn bendable_follows_the_closed_forms_of_the_u_channel() {
+    for k in SCALES {
+        let dir = workdir("sheetmetal-bendsequence", &format!("bendable-{k}"));
+        let mut s = session_in(&dir);
+        new_document(&mut s, k);
+        channel(&mut s, k, 20.0);
+        let (punch, die) = (scaled(&STRAIGHT, k), scaled(&DIE, k));
+        let short = bendable(
+            &mut s,
+            "short",
+            json!({"of": "U", "punch": punch, "die": die, "is": true}),
+        );
+        assert_eq!(short["status"], "passed", "scale {k}: {short}");
+        assert_eq!(
+            short["detail"]["parts"][0]["order"],
+            json!([0, 1]),
+            "{short}"
+        );
+        assert_eq!(
+            short["detail"]["parts"][0]["verdict"], "bendable",
+            "{short}"
+        );
+
+        // The punch from a tool table: its half width and height by row.
+        run(
+            &mut s,
+            "table.set",
+            json!({"name": "punches", "columns": ["tool", {"name": "half", "unit": "mm"}, {"name": "h", "unit": "mm"}],
+                   "rows": [["straight", 5.0 * k, 100.0 * k], ["wide", 30.0 * k, 100.0 * k]]}),
+        );
+        run(&mut s, "variable.set", json!({"name": "tool", "expr": "1"}));
+        let from_table = json!([
+            ["-punches[tool].half", "0 mm"],
+            ["punches[tool].half", "0 mm"],
+            ["punches[tool].half", "punches[tool].h"],
+            ["-punches[tool].half", "punches[tool].h"]
+        ]);
+        let tabled = bendable(
+            &mut s,
+            "tabled",
+            json!({"of": "U", "punch": from_table, "die": die, "is": true}),
+        );
+        assert_eq!(tabled["status"], "passed", "scale {k}: {tabled}");
+        // A punch 60 wide fills the channel between the walls once one
+        // stands: the second bend meets it.
+        run(&mut s, "variable.set", json!({"name": "tool", "expr": "2"}));
+        let tabled = bendable(
+            &mut s,
+            "tabled wide",
+            json!({"of": "U", "punch": from_table, "die": die, "is": true}),
+        );
+        assert_eq!(tabled["status"], "failed", "scale {k}: {tabled}");
+        // Renaming the table renames its lookups inside the measure.
+        run(
+            &mut s,
+            "table.rename",
+            json!({"name": "punches", "to": "tools"}),
+        );
+        let listed = run(&mut s, "assert.list", json!({}));
+        let stored = listed["assertions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["name"] == "tabled")
+            .unwrap()["measure"]
+            .to_string();
+        assert!(stored.contains("tools[tool].half"), "{stored}");
+        assert!(!stored.contains("punches"), "{stored}");
+
+        // Out of work: not proven, and an output of it unknown.
+        let cut = bendable(
+            &mut s,
+            "cut short",
+            json!({"of": "U", "punch": punch, "die": die, "maxWork": 1, "is": true}),
+        );
+        assert_eq!(cut["status"], "notProven", "scale {k}: {cut}");
+        assert!(
+            cut["message"].as_str().unwrap().contains("distances"),
+            "{cut}"
+        );
+        run(
+            &mut s,
+            "variable.measure",
+            json!({"name": "canBend", "measure": "bendable", "of": "U", "punch": punch, "die": die, "maxWork": 1}),
+        );
+        let listed = run(&mut s, "output.list", json!({}));
+        assert_eq!(listed["outputs"][0]["status"], "unknown", "{listed}");
+
+        // Walls 40 high: no order, for certain.
+        new_document(&mut s, k);
+        channel(&mut s, k, 40.0);
+        let tall = bendable(
+            &mut s,
+            "tall",
+            json!({"of": "U", "punch": punch, "die": die, "is": true}),
+        );
+        assert_eq!(tall["status"], "failed", "scale {k}: {tall}");
+        assert_eq!(tall["detail"]["parts"][0]["verdict"], "collides", "{tall}");
+        assert!(
+            tall["message"]
+                .as_str()
+                .unwrap()
+                .contains("punch meets flange"),
+            "{tall}"
+        );
+        let out = sequence(&mut s, k, &STRAIGHT);
+        assert_eq!(out["infeasibleProven"], true, "{out}");
+        assert!(
+            out["collisions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|c| c["certain"] == true),
+            "{out}"
+        );
+        let goose = bendable(
+            &mut s,
+            "gooseneck",
+            json!({"of": "U", "punch": scaled(&GOOSENECK, k), "die": die, "is": true}),
+        );
+        assert_eq!(goose["status"], "passed", "scale {k}: {goose}");
+        // As an output: 1 for yes.
+        run(
+            &mut s,
+            "variable.measure",
+            json!({"name": "canBend", "measure": "bendable", "of": "U", "punch": scaled(&GOOSENECK, k), "die": die}),
+        );
+        let listed = run(&mut s, "output.list", json!({}));
+        assert_eq!(listed["outputs"][0]["value"], 1.0, "{listed}");
+    }
+}
+
+#[test]
+fn bendable_with_bad_parameters_is_an_error_not_a_crash() {
+    let k = 1.0;
+    let dir = workdir("sheetmetal-bendsequence", "bendable-bad");
+    let mut s = session_in(&dir);
+    new_document(&mut s, k);
+    channel(&mut s, k, 20.0);
+    let (punch, die) = (scaled(&STRAIGHT, k), scaled(&DIE, k));
+    for (params, why) in [
+        (json!({"of": "U", "die": die}), "punch"),
+        (
+            json!({"of": "U", "punch": [[0, 0], [1, 0]], "die": die}),
+            "at least 3",
+        ),
+        (
+            json!({"of": "U", "punch": [[0, 0], [1, "nowhere"], [0, 1]], "die": die}),
+            "nowhere",
+        ),
+        (
+            json!({"of": "U", "punch": [[0, 0], [1, "5 deg"], [0, 1]], "die": die}),
+            "length",
+        ),
+        (
+            json!({"of": "U", "punch": [[0, 0], [1, 1], [1, 0], [0, 1]], "die": die}),
+            "punch",
+        ),
+        (
+            json!({"of": "U", "punch": punch, "die": die, "clearance": 0}),
+            "clearance",
+        ),
+        (
+            json!({"of": "U", "punch": punch, "die": die, "length": "-1 mm"}),
+            "length",
+        ),
+        (
+            json!({"of": "U", "punch": punch, "die": die, "maxWork": 0}),
+            "maxWork",
+        ),
+        (
+            json!({"of": "U", "punch": punch, "die": die, "maxWork": 1e9}),
+            "maxWork",
+        ),
+        (json!({"of": "Base", "punch": punch, "die": die}), "Base"),
+        (
+            json!({"of": "Nowhere", "punch": punch, "die": die}),
+            "Nowhere",
+        ),
+    ] {
+        let got = bendable(&mut s, "bad", {
+            let mut p = params.clone();
+            p["is"] = json!(true);
+            p
+        });
+        assert_eq!(got["status"], "error", "{params}: {got}");
+        let message = got["message"].as_str().unwrap();
+        assert!(message.contains(why), "{params}: {message}");
+        assert!(!message.contains("internal error"), "{params}: {message}");
+        run(&mut s, "assert.delete", json!({"name": "bad"}));
+    }
+    // A bound where yes or no is asked, a key it does not take: refused.
+    for params in [
+        json!({"name": "x", "measure": "bendable", "of": "U", "punch": punch, "die": die, "min": 1}),
+        json!({"name": "x", "measure": "bendable", "of": "U", "punch": punch, "die": die, "order": [0], "is": true}),
+    ] {
+        assert!(s.execute("assert.add", &params).is_err(), "{params}");
+    }
+}
+
+/// What `bendable` costs on a part of four flanges (a tray 60 × 40 with
+/// walls 10 high on every edge, tools 30 long): the search's work and
+/// time, printed for the design note; an assertion measures it again
+/// only when what it depends on changes.
+#[test]
+fn the_cost_of_bendable_on_a_tray_of_four_flanges() {
+    let k = 1.0;
+    let dir = workdir("sheetmetal-bendsequence", "bendable-cost");
+    let mut s = session_in(&dir);
+    new_document(&mut s, k);
+    part(
+        &mut s,
+        k,
+        60.0,
+        &[
+            (0, 10.0, "up"),
+            (1, 10.0, "up"),
+            (2, 10.0, "up"),
+            (3, 10.0, "up"),
+        ],
+    );
+    for length in [30.0, 200.0] {
+        let started = std::time::Instant::now();
+        let got = bendable(
+            &mut s,
+            &format!("tray {length}"),
+            json!({"of": "U", "punch": scaled(&NARROW, k), "die": scaled(&DIE, k), "length": length, "is": true}),
+        );
+        let ms = started.elapsed().as_millis();
+        eprintln!(
+            "bendable on a four-flange tray, tools {length} long: {} in {ms} ms, work {}: {}",
+            got["status"], got["detail"]["work"], got["message"]
+        );
+        assert!(
+            ["passed", "failed", "notProven"].contains(&got["status"].as_str().unwrap()),
+            "{got}"
+        );
+        assert!(got["detail"]["work"].as_u64().unwrap() <= 20_000, "{got}");
+    }
+}

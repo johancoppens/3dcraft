@@ -232,7 +232,13 @@ fn table_rename(session: &mut Session, params: &Value) -> Run {
         session,
         ID,
         &format!("Rename table {name} to {to}"),
-        |doc| doc.rename_table(name, to),
+        |doc| {
+            doc.rename_table(name, to)?;
+            // The lookups inside what assertions and outputs measure,
+            // which the document keeps as text it does not read.
+            crate::assert_cmds::rename_table_in_measures(doc, name, to);
+            Ok(())
+        },
     )?;
     let doc = session.document()?.history.current();
     Ok(describe(doc, to, false))

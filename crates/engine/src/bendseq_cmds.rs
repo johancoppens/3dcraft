@@ -23,6 +23,7 @@
 use crate::commands::{Run, fail, length_unit, spec};
 use crate::params::Params;
 use crate::verify::{self, Part as Measured};
+use crate::verify_cmds::{Ctx, Dim, Outcome};
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_kernel::boolean::contains_points;
 use craft3d_kernel::sheetmetal::sequence::{
@@ -32,14 +33,14 @@ use craft3d_kernel::sheetmetal::sequence::{
 use craft3d_kernel::sheetmetal::{self, flange_length, flat_faces};
 use craft3d_math::{Tolerance, Transform, Vec3};
 use craft3d_topo::Body;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) static SPECS: &[CommandSpec] = &[spec!(
     "sheetMetal.bendSequence",
     "Bend Sequence",
     r#"{"feature": id or name, "punch": [[x, y], ...], "die": [[x, y], ...], "length": number = the part's reach, "clearance": number = the document's tolerance}"#,
-    "Checks whether a sheet-metal part (feature.sheetMetal) can be bent on a press brake with the punch and die given, and finds an order of its bends (changes nothing). punch and die are closed polygons (at least 3 points, in the document's length unit) in the plane square to a bend: the punch's with the centre of its tip at the origin and its body along +y, the die's with the point under the bend on the part's outer skin at the origin and its body below (y < 0); each is extruded length along the bend, centred on its middle (default: long enough to cover the whole part). At every bend both stand in the bend's frame: origin on the bend's axis (the die's R + T further out), y along the bisector of the two flats towards the inside (as on a press brake where both legs rise half the angle), z along the axis. A step, a bend made with some others already made and the rest still flat, clears when the proven distance (its lower bound) between the punch and every piece of the part but that bend's own strip and its two flats, and between the die counted lowered (moved away from the punch) by clearance plus the document's tolerance and every piece but the bend's own strip, is at least clearance over the whole stroke from 0 to the bend's angle (so the sheet may rest on the die's top, but not go into it by more than the tolerance nor come nearer than clearance from any other side): proven at eight stroke angles, and between two of them less how far any point of the part can move against the tools in between (half its distance from the bend's axis, the farthest at either end of the stroke, plus the bend's neutral radius, per radian), the interval halved (to 1/1024 of the stroke) until that holds, or, for a die wholly below its top (y <= 0), by the piece's lowest point staying above the die's top less the tolerance between them (its height bounded by its heights there and how fast it can bend, halved as needed: what proves a piece lifting off the die); a piece and a tool wholly inside one another count as 0. The order is searched depth first over all orders, the bends whose flanges carry the fewest others first (then the shorter flange, then the lower index), every set of bends made that leads nowhere remembered. Returns feasible, order (the flanges by index, first bent first; null when none clears), steps (per bend of the order: flange, done (the flanges made before it), least (the least distance to the punch proven at the stroke angles measured), at (the stroke angle of it, degrees), proven (the least distance to the punch proven over the whole stroke, between the angles measured too) and die (least, at and proven for the lowered die)), collisions (every step tried that did not clear: flange, done, tool (punch or die), piece (the base, flange i, or the strip of flange i, bent or flat), angle (degrees), distance and lower (the distance found and what is proven below it; to the lowered die for the die), or notProven with the stroke interval no halving could prove), unchecked (what is not looked at) and work (distances measured). Refused: a part with a hole across a bend (owed), a polygon that crosses itself, a clearance that is not more than 0, and a search of more than 20000 distances. Not looked at (said in unchecked): a bend's own strip during its stroke, and its own two flats against the punch (an acute bend with a punch of a wider angle closing its flats onto it is not found).",
+    "Checks whether a sheet-metal part (feature.sheetMetal) can be bent on a press brake with the punch and die given, and finds an order of its bends (changes nothing). punch and die are closed polygons (at least 3 points, in the document's length unit) in the plane square to a bend: the punch's with the centre of its tip at the origin and its body along +y, the die's with the point under the bend on the part's outer skin at the origin and its body below (y < 0); each is extruded length along the bend, centred on its middle (default: long enough to cover the whole part). At every bend both stand in the bend's frame: origin on the bend's axis (the die's R + T further out), y along the bisector of the two flats towards the inside (as on a press brake where both legs rise half the angle), z along the axis. A step, a bend made with some others already made and the rest still flat, clears when the proven distance (its lower bound) between the punch and every piece of the part but that bend's own strip and its two flats, and between the die counted lowered (moved away from the punch) by clearance plus the document's tolerance and every piece but the bend's own strip, is at least clearance over the whole stroke from 0 to the bend's angle (so the sheet may rest on the die's top, but not go into it by more than the tolerance nor come nearer than clearance from any other side): proven at eight stroke angles, and between two of them less how far any point of the part can move against the tools in between (half its distance from the bend's axis, the farthest at either end of the stroke, plus the bend's neutral radius, per radian), the interval halved (to 1/1024 of the stroke) until that holds, or, for a die wholly below its top (y <= 0), by the piece's lowest point staying above the die's top less the tolerance between them (its height bounded by its heights there and how fast it can bend, halved as needed: what proves a piece lifting off the die); a piece and a tool wholly inside one another count as 0. The order is searched depth first over all orders, the bends whose flanges carry the fewest others first (then the shorter flange, then the lower index), every set of bends made that leads nowhere remembered. Returns feasible, order (the flanges by index, first bent first; null when none clears), steps (per bend of the order: flange, done (the flanges made before it), least (the least distance to the punch proven at the stroke angles measured), at (the stroke angle of it, degrees), proven (the least distance to the punch proven over the whole stroke, between the angles measured too) and die (least, at and proven for the lowered die)), collisions (every step tried that did not clear: flange, done, tool (punch or die), piece (the base, flange i, or the strip of flange i, bent or flat), angle (degrees), distance and lower (the distance found and what is proven below it; to the lowered die for the die), or notProven with the stroke interval no halving could prove; certain: whether it fails for certain, a tool and a piece found nearer than the clearance at a real place or wholly inside one another, where a collision only not proven clear is not), infeasibleProven (with feasible false: whether every step tried that failed failed for certain, so that no order exists; false means no order was found but one may exist), unchecked (what is not looked at) and work (distances measured). Refused: a part with a hole across a bend (owed), a polygon that crosses itself, a clearance that is not more than 0, and a search of more than 20000 distances. Not looked at (said in unchecked): a bend's own strip during its stroke, and its own two flats against the punch (an acute bend with a punch of a wider angle closing its flats onto it is not found).",
     doc: true,
     names: ["feature"],
     bend_sequence
@@ -178,6 +179,61 @@ enum Failure {
     },
 }
 
+impl Failure {
+    /// Whether the step fails for certain: a tool and a piece found at a
+    /// real pair of places (or wholly inside one another) nearer than the
+    /// clearance, so the true distance is nearer too. A collision only
+    /// not proven clear (the distance found at least the clearance, what
+    /// is proven below it), or an interval of the stroke no halving
+    /// proved, is not.
+    fn certain(&self, clearance: f64) -> bool {
+        matches!(self, Failure::Collision { distance, .. } if *distance < clearance)
+    }
+
+    /// The failure in words, for a step: flange `b` after `done`.
+    fn words(&self, b: usize, done: &BTreeSet<usize>, clearance: f64) -> String {
+        let step = if done.is_empty() {
+            format!("flange {b} first")
+        } else {
+            let before: Vec<String> = done.iter().map(ToString::to_string).collect();
+            format!("flange {b} after {}", before.join(", "))
+        };
+        match self {
+            Failure::Collision {
+                tool,
+                piece,
+                angle,
+                distance,
+                ..
+            } if self.certain(clearance) => format!(
+                "{step}: the {tool} meets {} at {:.3} degrees ({} apart, the clearance {})",
+                piece.text(),
+                degrees(*angle),
+                crate::assert_cmds::shown(*distance),
+                crate::assert_cmds::shown(clearance)
+            ),
+            Failure::Collision {
+                tool,
+                piece,
+                angle,
+                distance,
+                lower,
+            } => format!(
+                "{step}: the {tool} and {} at {:.3} degrees, {} found apart and proven only above {}",
+                piece.text(),
+                degrees(*angle),
+                crate::assert_cmds::shown(*distance),
+                crate::assert_cmds::shown(*lower)
+            ),
+            Failure::NotProven { from, to } => format!(
+                "{step}: the stroke between {:.3} and {:.3} degrees is proven neither clear nor colliding",
+                degrees(*from),
+                degrees(*to)
+            ),
+        }
+    }
+}
+
 /// Per tool: the least distance proven at the stroke angles measured,
 /// the angle of it, and the least distance proven over the whole stroke
 /// (each interval's `min(la, lc) − v h / 2`).
@@ -218,6 +274,10 @@ struct Check<'a> {
     pieces: Vec<Piece<'a>>,
     built: Vec<Transform>,
     work: std::cell::Cell<usize>,
+    /// Most distances and heights this check measures.
+    max_work: usize,
+    /// Whether it stopped for measuring more than `max_work`.
+    ran_out: std::cell::Cell<bool>,
 }
 
 impl Check<'_> {
@@ -342,6 +402,7 @@ impl Check<'_> {
             stage_worlds(part, &self.angles(done, b, rho), &self.tol).map_err(|e| e.to_string())?;
         let frame = bend_frame(part, b, rho, &worlds).map_err(|e| e.to_string())?;
         let mut least = Lowers::new();
+        let mut doubtful: Option<Failure> = None;
         for (tool, name) in TOOLS.iter().enumerate() {
             let (points, below) = if tool == PUNCH {
                 (&self.punch, 0.0)
@@ -398,9 +459,11 @@ impl Check<'_> {
                 .collect::<Result<_, _>>()?;
             for piece in pieces {
                 self.work.set(self.work.get().saturating_add(1));
-                if self.work.get() > MAX_WORK {
+                if self.work.get() > self.max_work {
+                    self.ran_out.set(true);
                     return Err(format!(
-                        "more than {MAX_WORK} distances measured: the search over orders is too large (many bends, most orders colliding or close to it)"
+                        "more than {} distances measured: the search over orders is too large (many bends, most orders colliding or close to it)",
+                        self.max_work
                     ));
                 }
                 let k = carriers
@@ -438,16 +501,27 @@ impl Check<'_> {
                     }
                 }
                 if lower < self.clearance {
-                    return Ok(Err(Failure::Collision {
+                    let failure = Failure::Collision {
                         tool: name,
                         piece: piece.what,
                         angle: rho,
                         distance: if inside { 0.0 } else { near.distance },
                         lower,
-                    }));
+                    };
+                    // A collision found at a real place is the answer; one
+                    // only not proven clear is kept while the other
+                    // pieces are looked at for a real one.
+                    if failure.certain(self.clearance) {
+                        return Ok(Err(failure));
+                    }
+                    doubtful.get_or_insert(failure);
+                    continue;
                 }
                 least.insert((tool, piece.what), lower);
             }
+        }
+        if let Some(failure) = doubtful {
+            return Ok(Err(failure));
         }
         Ok(Ok(least))
     }
@@ -560,9 +634,11 @@ impl Check<'_> {
     ) -> Result<Vec<f64>, String> {
         let part = self.part;
         self.work.set(self.work.get().saturating_add(1));
-        if self.work.get() > MAX_WORK {
+        if self.work.get() > self.max_work {
+            self.ran_out.set(true);
             return Err(format!(
-                "more than {MAX_WORK} distances and heights measured: the search over orders is too large (many bends, most orders colliding or close to it)"
+                "more than {} distances and heights measured: the search over orders is too large (many bends, most orders colliding or close to it)",
+                self.max_work
             ));
         }
         let worlds =
@@ -786,6 +862,130 @@ fn pieces_of<'a>(
     Ok(pieces)
 }
 
+/// What the search over orders found for one part.
+struct Proof {
+    feasible: bool,
+    order: Vec<(usize, BTreeSet<usize>, Cleared)>,
+    tried: Tried,
+    work: usize,
+    clearance: f64,
+}
+
+impl Proof {
+    /// A step tried that failed not for certain (a collision only not
+    /// proven clear, or an interval no halving proved), with its words:
+    /// while there is one, no order is not proven either.
+    fn doubtful(&self) -> Option<String> {
+        self.tried.iter().find_map(|((done, b), r)| match r {
+            Err(f) if !f.certain(self.clearance) => Some(f.words(*b, done, self.clearance)),
+            _ => None,
+        })
+    }
+
+    /// The first step that failed for certain, in words.
+    fn collision(&self) -> Option<String> {
+        self.tried.iter().find_map(|((done, b), r)| match r {
+            Err(f) if f.certain(self.clearance) => Some(f.words(*b, done, self.clearance)),
+            _ => None,
+        })
+    }
+}
+
+/// Why a search over orders stopped without an answer.
+enum Stopped {
+    /// It measured more than its work allows: not proven either way.
+    OutOfWork(String),
+    Error(String),
+}
+
+/// The tools and bounds a check is made with.
+struct Tools {
+    punch: Vec<[f64; 2]>,
+    die: Vec<[f64; 2]>,
+    length: Option<f64>,
+    clearance: Option<f64>,
+    max_work: usize,
+}
+
+/// Searches for an order in which part `feature` of `doc` can be bent
+/// with `tools` (the command's and the measure's one search).
+fn prove(
+    doc: &craft3d_doc::Document,
+    regen: &craft3d_regen::Regen,
+    feature: craft3d_doc::FeatureId,
+    tools: Tools,
+) -> Result<Proof, Stopped> {
+    let built = craft3d_regen::sheet_metal_part(doc, regen, feature).map_err(Stopped::Error)?;
+    let part = &built.part;
+    let tol = built.tolerance;
+    if !part.cuts.is_empty() {
+        return Err(Stopped::Error(
+            "the part has a hole across a bend; a strip not yet bent with a hole in it is not built as a piece (not supported)".into(),
+        ));
+    }
+    let clearance = tools.clearance.unwrap_or(tol.linear);
+    // The tools must be simple outlines: checked once here, so a bad one
+    // is an error before any search.
+    let unit = craft3d_math::Frame::WORLD;
+    for (name, points) in [("punch", &tools.punch), ("die", &tools.die)] {
+        // As tall as the polygon is wide, so the check holds at any scale.
+        let size = points
+            .iter()
+            .flat_map(|q| q.iter())
+            .fold(0.0_f64, |m, v| m.max(v.abs()))
+            .max(tol.linear * 1e3);
+        prism(points, &unit, 0.0, size, &tol)
+            .map_err(|e| Stopped::Error(format!("`{name}`: {e}")))?;
+    }
+    let slabs = slabs_of(part, &tol).map_err(Stopped::Error)?;
+    let pieces = pieces_of(part, &slabs, &tol).map_err(Stopped::Error)?;
+    let check = Check {
+        part,
+        tol,
+        punch: tools.punch,
+        die: tools.die,
+        length: tools.length,
+        clearance,
+        pieces,
+        built: final_worlds(part),
+        work: std::cell::Cell::new(0),
+        max_work: tools.max_work,
+        ran_out: std::cell::Cell::new(false),
+    };
+    let mut ranked: Vec<usize> = (0..part.bends.len()).collect();
+    ranked.sort_by(|&a, &b| {
+        carried(part, a)
+            .cmp(&carried(part, b))
+            .then(
+                flange_length(part, a)
+                    .unwrap_or(f64::INFINITY)
+                    .total_cmp(&flange_length(part, b).unwrap_or(f64::INFINITY)),
+            )
+            .then(a.cmp(&b))
+    });
+    let mut done = BTreeSet::new();
+    let mut order = Vec::new();
+    let mut dead = BTreeSet::new();
+    let mut tried: Tried = BTreeMap::new();
+    let feasible = search(
+        &check, &mut done, &mut order, &mut dead, &mut tried, &ranked,
+    )
+    .map_err(|e| {
+        if check.ran_out.get() {
+            Stopped::OutOfWork(e)
+        } else {
+            Stopped::Error(e)
+        }
+    })?;
+    Ok(Proof {
+        feasible,
+        order,
+        tried,
+        work: check.work.get(),
+        clearance,
+    })
+}
+
 fn bend_sequence(session: &mut Session, params: &Value) -> Run {
     const ID: &str = "sheetMetal.bendSequence";
     let p = Params::new(
@@ -814,63 +1014,19 @@ fn bend_sequence(session: &mut Session, params: &Value) -> Run {
     let open = session.document_mut()?;
     let regen = open.regen();
     let doc = open.history.current();
-    let built = craft3d_regen::sheet_metal_part(doc, &regen, feature)
-        .map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
-    let part = &built.part;
-    let tol = built.tolerance;
-    if !part.cuts.is_empty() {
-        return fail(format!(
-            "{ID}: the part has a hole across a bend; a strip not yet bent with a hole in it is not built as a piece (not supported)"
-        ));
-    }
-    let clearance = clearance.unwrap_or(tol.linear);
-    // The tools must be simple outlines: checked once here, so a bad one
-    // is an error before any search.
-    let unit = craft3d_math::Frame::WORLD;
-    for (name, points) in [("punch", &punch), ("die", &die)] {
-        // As tall as the polygon is wide, so the check holds at any scale.
-        let size = points
-            .iter()
-            .flat_map(|q| q.iter())
-            .fold(0.0_f64, |m, v| m.max(v.abs()))
-            .max(tol.linear * 1e3);
-        prism(points, &unit, 0.0, size, &tol)
-            .map_err(|e| CommandError::new(format!("{ID}: `{name}`: {e}")))?;
-    }
-    let slabs = slabs_of(part, &tol).map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
-    let pieces =
-        pieces_of(part, &slabs, &tol).map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
-    let check = Check {
-        part,
-        tol,
+    let tools = Tools {
         punch,
         die,
         length,
         clearance,
-        pieces,
-        built: final_worlds(part),
-        work: std::cell::Cell::new(0),
+        max_work: MAX_WORK,
     };
-    let mut ranked: Vec<usize> = (0..part.bends.len()).collect();
-    ranked.sort_by(|&a, &b| {
-        carried(part, a)
-            .cmp(&carried(part, b))
-            .then(
-                flange_length(part, a)
-                    .unwrap_or(f64::INFINITY)
-                    .total_cmp(&flange_length(part, b).unwrap_or(f64::INFINITY)),
-            )
-            .then(a.cmp(&b))
-    });
-    let mut done = BTreeSet::new();
-    let mut order = Vec::new();
-    let mut dead = BTreeSet::new();
-    let mut tried: Tried = BTreeMap::new();
-    let feasible = search(
-        &check, &mut done, &mut order, &mut dead, &mut tried, &ranked,
-    )
-    .map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
-    let steps: Vec<Value> = order
+    let proof = prove(doc, &regen, feature, tools).map_err(|e| match e {
+        Stopped::OutOfWork(e) | Stopped::Error(e) => CommandError::new(format!("{ID}: {e}")),
+    })?;
+    let feasible = proof.feasible;
+    let steps: Vec<Value> = proof
+        .order
         .iter()
         .map(|(b, before, c)| {
             let mut v = c.json(PUNCH);
@@ -880,7 +1036,8 @@ fn bend_sequence(session: &mut Session, params: &Value) -> Run {
             Value::Object(v)
         })
         .collect();
-    let collisions: Vec<Value> = tried
+    let collisions: Vec<Value> = proof
+        .tried
         .iter()
         .filter_map(|((before, b), r)| r.as_ref().err().map(|f| (before, b, f)))
         .take(MAX_LISTED)
@@ -906,20 +1063,184 @@ fn bend_sequence(session: &mut Session, params: &Value) -> Run {
                     v.insert("notProven".into(), json!([degrees(*from), degrees(*to)]));
                 }
             }
+            v.insert("certain".into(), json!(f.certain(proof.clearance)));
             Value::Object(v)
         })
         .collect();
+    // Whether no order is proven: every step that failed failed for
+    // certain (null when an order was found).
+    let proven = if feasible {
+        Value::Null
+    } else {
+        json!(proof.doubtful().is_none())
+    };
     Ok(json!({
         "feature": feature.to_string(),
         "feasible": feasible,
-        "order": if feasible { json!(order.iter().map(|(b, _, _)| b).collect::<Vec<_>>()) } else { Value::Null },
+        "infeasibleProven": proven,
+        "order": if feasible { json!(proof.order.iter().map(|(b, _, _)| b).collect::<Vec<_>>()) } else { Value::Null },
         "steps": if feasible { json!(steps) } else { json!([]) },
         "collisions": collisions,
-        "clearance": clearance,
+        "clearance": proof.clearance,
         "unchecked": UNCHECKED,
-        "work": check.work.get(),
+        "work": proof.work,
         "lengthUnit": length_unit(doc),
     }))
+}
+
+// ------------------------------------------------------------- the measure
+
+/// The parameters of the assertion measure `bendable`.
+pub(crate) const MEASURE_KEYS: [&str; 6] = ["of", "punch", "die", "length", "clearance", "maxWork"];
+
+/// Its keys whose values are expressions (lists of points of them for a
+/// tool).
+pub(crate) const EXPRS: [&str; 4] = ["punch", "die", "length", "clearance"];
+
+/// A tool's polygon for the measure: points `[x, y]`, each coordinate a
+/// number in the document's unit or a length expression (of the
+/// variables, a table's row, the outputs).
+fn tool_points(ctx: &Ctx<'_>, p: &Map<String, Value>, key: &str) -> Result<Vec<[f64; 2]>, String> {
+    let bad = || {
+        format!(
+            "`{key}` must be a list of at least 3 points [x, y] (numbers or length expressions, at most {MAX_POINTS})"
+        )
+    };
+    let list = p
+        .get(key)
+        .filter(|v| !v.is_null())
+        .ok_or_else(|| format!("`{key}` is required: a polygon [[x, y], ...]"))?
+        .as_array()
+        .ok_or_else(bad)?;
+    if list.len() < 3 || list.len() > MAX_POINTS {
+        return Err(bad());
+    }
+    list.iter()
+        .map(|q| {
+            let [x, y] = q.as_array().map(Vec::as_slice).ok_or_else(bad)? else {
+                return Err(bad());
+            };
+            Ok([ctx.quantity(x, key, 1)?, ctx.quantity(y, key, 1)?])
+        })
+        .collect()
+}
+
+/// An optional length more than 0, a number or an expression.
+fn positive(ctx: &Ctx<'_>, p: &Map<String, Value>, key: &str) -> Result<Option<f64>, String> {
+    let Some(v) = p.get(key).filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let value = ctx.quantity(v, key, 1)?;
+    if value > 0.0 && value.is_finite() {
+        Ok(Some(value))
+    } else {
+        Err(format!("`{key}` must be more than 0, got {value}"))
+    }
+}
+
+/// The assertion measure `bendable`: whether every part of `of` (as the
+/// other sheet-metal measures take it) can be bent with the tools, as
+/// `sheetMetal.bendSequence` proves it. Yes when an order is found for
+/// each; no when for one of them none is, and every step the search
+/// tried that failed failed for certain (a tool and a piece found nearer
+/// than the clearance at a real place); otherwise not proven, with the
+/// step that could not be told and why: a collision only not proven
+/// clear, an interval of the stroke no halving proved, or the search
+/// running out of its work (`maxWork`, shared by the parts, at most
+/// 20000 distances).
+pub(crate) fn take(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
+    crate::verify_cmds::only(p, &MEASURE_KEYS)?;
+    let punch = tool_points(ctx, p, "punch")?;
+    let die = tool_points(ctx, p, "die")?;
+    let length = positive(ctx, p, "length")?;
+    let clearance = positive(ctx, p, "clearance")?;
+    let max_work = match p.get("maxWork").filter(|v| !v.is_null()) {
+        None => MAX_WORK,
+        Some(v) => v
+            .as_u64()
+            .and_then(|n| usize::try_from(n).ok())
+            .filter(|n| (1..=MAX_WORK).contains(n))
+            .ok_or_else(|| format!("`maxWork` must be a whole number from 1 to {MAX_WORK}"))?,
+    };
+    let parts = crate::sheetmetal_cmds::parts_of(ctx, p)?;
+    let mut left = max_work;
+    let mut listed = Vec::new();
+    let mut fails = Vec::new();
+    let mut doubts = Vec::new();
+    let mut orders = Vec::new();
+    for id in parts {
+        let name = ctx.feature_name(id);
+        let mut one = Map::new();
+        one.insert("feature".into(), name.clone().into());
+        if left == 0 {
+            let why = format!(
+                "`{name}`: the work ({max_work} distances) was used up by the parts before it"
+            );
+            one.insert("verdict".into(), "notProven".into());
+            one.insert("why".into(), why.clone().into());
+            doubts.push(why);
+            listed.push(Value::Object(one));
+            continue;
+        }
+        let tools = Tools {
+            punch: punch.clone(),
+            die: die.clone(),
+            length,
+            clearance,
+            max_work: left,
+        };
+        match prove(ctx.doc, ctx.regen, id, tools) {
+            Ok(proof) => {
+                left = left.saturating_sub(proof.work);
+                one.insert("work".into(), proof.work.into());
+                if proof.feasible {
+                    let order: Vec<usize> = proof.order.iter().map(|(b, _, _)| *b).collect();
+                    let words: Vec<String> = order.iter().map(ToString::to_string).collect();
+                    orders.push(format!("`{name}` in the order {}", words.join(", ")));
+                    one.insert("verdict".into(), "bendable".into());
+                    one.insert("order".into(), json!(order));
+                } else if let Some(why) = proof.doubtful() {
+                    let why = format!("`{name}`: no order was found, but {why}");
+                    one.insert("verdict".into(), "notProven".into());
+                    one.insert("why".into(), why.clone().into());
+                    doubts.push(why);
+                } else {
+                    let why = proof
+                        .collision()
+                        .unwrap_or_else(|| "no bend can be made first".into());
+                    let why = format!("`{name}` cannot be bent in any order: {why}");
+                    one.insert("verdict".into(), "collides".into());
+                    one.insert("why".into(), why.clone().into());
+                    fails.push(why);
+                }
+            }
+            Err(Stopped::OutOfWork(e)) => {
+                left = 0;
+                let why = format!("`{name}`: {e}");
+                one.insert("verdict".into(), "notProven".into());
+                one.insert("why".into(), why.clone().into());
+                doubts.push(why);
+            }
+            Err(Stopped::Error(e)) => return Err(format!("`{name}`: {e}")),
+        }
+        listed.push(Value::Object(one));
+    }
+    let mut out = if !fails.is_empty() {
+        let mut out = Outcome::flag(false);
+        out.note = Some(fails.join("; "));
+        out
+    } else if !doubts.is_empty() {
+        Outcome::unproven(Dim::Flag, doubts.join("; "))
+    } else {
+        let mut out = Outcome::flag(true);
+        out.note = Some(orders.join("; "));
+        out
+    };
+    out.detail.insert("parts".into(), Value::Array(listed));
+    out.detail
+        .insert("work".into(), max_work.saturating_sub(left).into());
+    out.detail.insert("unchecked".into(), UNCHECKED.into());
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -1007,6 +1328,8 @@ mod tests {
                 pieces: pieces_of(part, &slabs, &tol).unwrap(),
                 built: final_worlds(part),
                 work: std::cell::Cell::new(0),
+                max_work: MAX_WORK,
+                ran_out: std::cell::Cell::new(false),
             };
             // The pattern's diagonal (the old bound's premise): the flats'
             // outlines and the strips.
@@ -1127,6 +1450,8 @@ mod tests {
             pieces: pieces_of(part, &slabs, &tol).unwrap(),
             built: final_worlds(part),
             work: std::cell::Cell::new(0),
+            max_work: MAX_WORK,
+            ran_out: std::cell::Cell::new(false),
         };
         let done = BTreeSet::new();
         assert!(check.stroke(&done, 1).is_ok());

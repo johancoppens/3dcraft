@@ -14,7 +14,8 @@ use crate::verify_cmds::{
 };
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_kernel::below::{
-    BelowPlane, CutPlane, Equilibrium, Level, Stability, below, floating, level_for, section_extent,
+    BelowPlane, CutError, CutPlane, Equilibrium, Level, Stability, below, floating, level_for,
+    section_extent,
 };
 use craft3d_math::Vec3;
 use craft3d_topo::Body;
@@ -36,7 +37,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
 
 /// The assertion measures and their dimensions: the one list
 /// `assert_cmds` reads them from.
-pub(crate) const MEASURES: [(&str, Dim); 7] = [
+pub(crate) const MEASURES: [(&str, Dim); 13] = [
     ("volumeBelow", Dim::Length(3)),
     ("centroidBelow", Dim::Length(1)),
     ("sectionArea", Dim::Length(2)),
@@ -44,6 +45,12 @@ pub(crate) const MEASURES: [(&str, Dim); 7] = [
     ("sectionInertia", Dim::Length(4)),
     ("sectionExtent", Dim::Length(1)),
     ("levelFor", Dim::Length(1)),
+    ("floatingOffset", Dim::Length(1)),
+    ("floatingHeel", Dim::Of(craft3d_expr::Dimension::ANGLE)),
+    ("floatingTrim", Dim::Of(craft3d_expr::Dimension::ANGLE)),
+    ("floatingGM", Dim::Length(1)),
+    ("floatingGML", Dim::Length(1)),
+    ("floatingStable", Dim::Flag),
 ];
 
 /// The dimension of assertion measure `name`, when it is one of these.
@@ -59,12 +66,23 @@ pub(crate) fn keys_of(measure: &str) -> &'static [&'static str] {
         "sectionInertia" => &["of", "plane", "offset", "xAxis", "about"],
         "sectionExtent" => &["of", "plane", "offset", "axis"],
         "levelFor" => &["of", "plane", "volume", "xAxis"],
+        "floatingOffset" | "floatingHeel" | "floatingTrim" | "floatingGM" | "floatingGML"
+        | "floatingStable" => &FLOATING_KEYS,
         _ => &[],
     }
 }
 
-/// The keys of these measures whose values are expressions.
-pub(crate) const EXPRS: [&str; 2] = ["offset", "volume"];
+/// The keys of these measures whose values are expressions (a list of
+/// them for `centerOfGravity`).
+pub(crate) const EXPRS: [&str; 7] = [
+    "offset",
+    "volume",
+    "mass",
+    "density",
+    "centerOfGravity",
+    "heel",
+    "trim",
+];
 
 fn given<'v>(p: &'v Map<String, Value>, key: &str) -> Option<&'v Value> {
     p.get(key).filter(|v| !v.is_null())
@@ -409,6 +427,87 @@ fn equilibrium_json(e: &Equilibrium, start: &CutPlane, point: Vec3) -> Map<Strin
     out
 }
 
+/// Why a floating equilibrium was not had: the search did not settle
+/// (no equilibrium within its steps, or a level that did not converge),
+/// which an assertion takes as not proven, or any other error.
+enum FloatFailed {
+    Unsettled(String),
+    Error(String),
+}
+
+impl From<String> for FloatFailed {
+    fn from(e: String) -> Self {
+        FloatFailed::Error(e)
+    }
+}
+
+impl From<&str> for FloatFailed {
+    fn from(e: &str) -> Self {
+        FloatFailed::Error(e.to_string())
+    }
+}
+
+/// How a floating search's error counts: the search not settling (no
+/// equilibrium within its steps or its levels, or a level whose search
+/// did not converge) leaves the answer unknown, not proven either way;
+/// anything else is an error of the question (no bodies, a volume more
+/// than they hold, a sheet).
+fn failed(e: CutError) -> FloatFailed {
+    let text = e.to_string();
+    match e {
+        CutError::NoEquilibrium { .. } | CutError::NotConverged { .. } => {
+            FloatFailed::Unsettled(text)
+        }
+        _ => FloatFailed::Error(text),
+    }
+}
+
+/// A floating equilibrium found, with what it was found for.
+struct Floated {
+    found: craft3d_kernel::below::Floating,
+    /// The upright plane (before `heel` and `trim`).
+    upright: CutPlane,
+    /// The point of the plane given.
+    point: Vec3,
+    volume: f64,
+    centre: Vec3,
+}
+
+/// The floating equilibria of `measure.floating` and of the assertion
+/// measures `floating…`: their parameters read in `ctx` (expressions of
+/// the variables, and of the outputs where `ctx` has them).
+fn solve_floating(ctx: &Ctx<'_>, map: &Map<String, Value>) -> Result<Floated, FloatFailed> {
+    let bodies = bodies_named(ctx, map)?;
+    let (upright, _) = cut_plane(ctx, map)?;
+    let point = match given(map, "plane") {
+        None => Vec3::ZERO,
+        Some(v) => plane(ctx, Some(v))?.0,
+    };
+    let volume = floating_volume(ctx, map)?;
+    let centre = ctx.point(
+        Some(given(map, "centerOfGravity").ok_or("`centerOfGravity` is required: [x, y, z]")?),
+        "centerOfGravity",
+    )?;
+    let (heel, trim) = (angle(ctx, map, "heel")?, angle(ctx, map, "trim")?);
+    // The start: the upright plane turned by trim about y, then by
+    // heel about x.
+    let (x0, y0, z0) = (upright.x_axis, upright.y_axis(), upright.normal);
+    let (sh, ch) = heel.sin_cos();
+    let (st, ct) = trim.sin_cos();
+    let normal = x0 * st - y0 * (ct * sh) + z0 * (ct * ch);
+    let x_axis = x0 * ct + y0 * (st * sh) - z0 * (st * ch);
+    let start = CutPlane::new(normal, x_axis).map_err(|e| e.to_string())?;
+    let plain: Vec<&Body> = bodies.iter().map(|(_, b)| b.as_ref()).collect();
+    let found = floating(&plain, &start, volume, centre, &ctx.tolerance).map_err(failed)?;
+    Ok(Floated {
+        found,
+        upright,
+        point,
+        volume,
+        centre,
+    })
+}
+
 fn measure_floating(session: &mut Session, params: &Value) -> Run {
     const ID: &str = "measure.floating";
     Params::new(ID, params, &FLOATING_KEYS)?;
@@ -421,88 +520,150 @@ fn measure_floating(session: &mut Session, params: &Value) -> Run {
     let doc = open.history.current();
     let err = |e: String| CommandError::new(format!("{ID}: {e}"));
     let ctx = Ctx::new(doc, &regen).map_err(err)?;
-    let found = (|| -> Result<Map<String, Value>, String> {
-        let bodies = bodies_named(&ctx, &map)?;
-        let (upright, _) = cut_plane(&ctx, &map)?;
-        let point = match given(&map, "plane") {
-            None => Vec3::ZERO,
-            Some(v) => plane(&ctx, Some(v))?.0,
-        };
-        let volume = floating_volume(&ctx, &map)?;
-        let centre = ctx.point(
-            Some(
-                given(&map, "centerOfGravity")
-                    .ok_or("`centerOfGravity` is required: [x, y, z]")?,
-            ),
-            "centerOfGravity",
-        )?;
-        let (heel, trim) = (angle(&ctx, &map, "heel")?, angle(&ctx, &map, "trim")?);
-        // The start: the upright plane turned by trim about y, then by
-        // heel about x.
-        let (x0, y0, z0) = (upright.x_axis, upright.y_axis(), upright.normal);
-        let (sh, ch) = heel.sin_cos();
-        let (st, ct) = trim.sin_cos();
-        let normal = x0 * st - y0 * (ct * sh) + z0 * (ct * ch);
-        let x_axis = x0 * ct + y0 * (st * sh) - z0 * (st * ch);
-        let start = CutPlane::new(normal, x_axis).map_err(|e| e.to_string())?;
-        let plain: Vec<&Body> = bodies.iter().map(|(_, b)| b.as_ref()).collect();
-        let found =
-            floating(&plain, &start, volume, centre, &ctx.tolerance).map_err(|e| e.to_string())?;
-        let mut out = Map::new();
-        out.insert(
-            "equilibria".into(),
-            Value::Array(
-                found
-                    .equilibria
-                    .iter()
-                    .map(|e| Value::Object(equilibrium_json(e, &upright, point)))
-                    .collect(),
-            ),
-        );
-        out.insert(
-            "floats".into(),
+    let Floated {
+        found,
+        upright,
+        point,
+        volume,
+        centre,
+    } = solve_floating(&ctx, &map).map_err(|e| match e {
+        FloatFailed::Unsettled(e) | FloatFailed::Error(e) => err(e),
+    })?;
+    let mut out = Map::new();
+    out.insert(
+        "equilibria".into(),
+        Value::Array(
             found
                 .equilibria
                 .iter()
-                .position(Equilibrium::is_stable)
-                .map_or(Value::Null, Value::from),
-        );
-        out.insert(
-            "neutral".into(),
-            found
-                .equilibria
-                .first()
-                .is_some_and(|e| {
-                    e.principal
-                        .iter()
-                        .any(|p| p.stability == Stability::Neutral)
-                })
-                .into(),
-        );
-        out.insert(
-            "unfinished".into(),
-            Value::Array(
-                found
-                    .unfinished
+                .map(|e| Value::Object(equilibrium_json(e, &upright, point)))
+                .collect(),
+        ),
+    );
+    out.insert(
+        "floats".into(),
+        found
+            .equilibria
+            .iter()
+            .position(Equilibrium::is_stable)
+            .map_or(Value::Null, Value::from),
+    );
+    out.insert(
+        "neutral".into(),
+        found
+            .equilibria
+            .first()
+            .is_some_and(|e| {
+                e.principal
                     .iter()
-                    .map(|e| e.to_string().into())
-                    .collect(),
-            ),
-        );
-        out.insert("volumeAsked".into(), num(volume));
-        out.insert("centerOfGravity".into(), vec3(centre));
-        out.insert("levels".into(), found.levels.into());
-        out.insert("floor".into(), num(found.floor));
-        out.insert(
-            "note".into(),
-            "the equilibrium reached from the start (the nearest) first; where it is unstable, those the bodies fall to from it; other equilibria are not searched".into(),
-        );
-        Ok(out)
-    })()
-    .map_err(err)?;
-    let mut out = found;
+                    .any(|p| p.stability == Stability::Neutral)
+            })
+            .into(),
+    );
+    out.insert(
+        "unfinished".into(),
+        Value::Array(
+            found
+                .unfinished
+                .iter()
+                .map(|e| e.to_string().into())
+                .collect(),
+        ),
+    );
+    out.insert("volumeAsked".into(), num(volume));
+    out.insert("centerOfGravity".into(), vec3(centre));
+    out.insert("levels".into(), found.levels.into());
+    out.insert("floor".into(), num(found.floor));
+    out.insert(
+        "note".into(),
+        "the equilibrium reached from the start (the nearest) first; where it is unstable, those the bodies fall to from it; other equilibria are not searched".into(),
+    );
     out.insert("lengthUnit".into(), length_unit(doc).into());
     Ok(Value::Object(out))
+}
+
+/// The assertion measures `floatingOffset`, `floatingHeel`,
+/// `floatingTrim`, `floatingGM`, `floatingGML` and `floatingStable`: of
+/// the equilibrium `measure.floating` reaches from the start (its first,
+/// the nearest), with the same parameters. The offset along the
+/// equilibrium's normal from the plane's point; heel and trim (radians)
+/// from the upright plane as `measure.floating` gives them in degrees;
+/// GM and GML the metacentric heights for a turn about the equilibrium
+/// plane's x axis (`xAxis` turned with it: a heel, for a hull with its
+/// length along x) and about its y axis (a trim), `I / V − KG + KB` with
+/// I the waterplane's second moment about that axis through its
+/// centroid: the diagonal of the stiffness whose eigenvalues are the
+/// principal heights, so equal to them where the waterplane is symmetric
+/// about x; stable whether it is stable in both principal directions
+/// (neutral is not stable). A search that does not settle is not proven,
+/// with the kernel's reason.
+fn floating_measure(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<Outcome, String> {
+    crate::verify_cmds::only(p, &FLOATING_KEYS)?;
+    let dim = dim_of(name).ok_or_else(|| format!("unknown measure `{name}`"))?;
+    let solved = match solve_floating(ctx, p) {
+        Ok(solved) => solved,
+        Err(FloatFailed::Unsettled(why)) => {
+            return Ok(Outcome::unproven(
+                dim,
+                format!("no floating equilibrium was settled from the start: {why}"),
+            ));
+        }
+        Err(FloatFailed::Error(e)) => return Err(e),
+    };
+    let e = solved
+        .found
+        .equilibria
+        .first()
+        .ok_or("no floating equilibrium was found")?;
+    let detail = equilibrium_json(e, &solved.upright, solved.point);
+    let below = e.level.below;
+    let section = below.section;
+    let v = below.volume;
+    let n = e.plane.normal;
+    let (x0, y0, z0) = (
+        solved.upright.x_axis,
+        solved.upright.y_axis(),
+        solved.upright.normal,
+    );
+    let gm_of = |i: f64| {
+        if v > 0.0 && v.is_finite() {
+            Ok(i / v - e.energy)
+        } else {
+            Err("the volume below is not positive".to_string())
+        }
+    };
+    let mut out = if name == "floatingStable" {
+        Outcome::flag(e.is_stable())
+    } else {
+        let value = match name {
+            "floatingOffset" => below.offset - solved.point.dot(n),
+            "floatingHeel" => (-n.dot(y0)).atan2(n.dot(z0)),
+            "floatingTrim" => n.dot(x0).clamp(-1.0, 1.0).asin(),
+            "floatingGM" => gm_of(section.i_x)?,
+            "floatingGML" => gm_of(section.i_y)?,
+            _ => return Err(format!("unknown measure `{name}`")),
+        };
+        if !value.is_finite() {
+            return Err(format!("{name} is not a finite number"));
+        }
+        Outcome::number(dim, value)
+    };
+    out.detail = detail;
+    if name == "floatingStable" {
+        let words: Vec<String> = e
+            .principal
+            .iter()
+            .map(|p| {
+                format!(
+                    "{} (GM {})",
+                    stability_name(p.stability),
+                    crate::assert_cmds::shown(p.gm)
+                )
+            })
+            .collect();
+        out.note = Some(words.join(", "));
+    }
+    Ok(out)
 }
 
 /// A coordinate of a point along `axis` (x, y or z).
@@ -532,6 +693,9 @@ pub(crate) fn measure(
     };
     if name == "sectionExtent" {
         return extent_measure(ctx, p);
+    }
+    if name.starts_with("floating") {
+        return floating_measure(ctx, name, p);
     }
     let (found, plane, _) = measured(ctx, p, asked, keys_of(name))?;
     let s = found.section;
@@ -602,6 +766,38 @@ fn extent_measure(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A search that does not settle is not proven; an error of the
+    /// question stays an error.
+    #[test]
+    fn a_search_that_does_not_settle_is_unsettled_not_an_error() {
+        let unsettled = [
+            CutError::NoEquilibrium {
+                steps: 40,
+                arm: 1.0,
+                normal: Vec3::new(0.0, 0.0, 1.0),
+            },
+            CutError::NotConverged {
+                steps: 64,
+                low: 0.0,
+                high: 1.0,
+                residual: 0.5,
+            },
+        ];
+        for e in unsettled {
+            assert!(matches!(failed(e), FloatFailed::Unsettled(_)));
+        }
+        for e in [
+            CutError::NoBodies,
+            CutError::OutOfRange {
+                volume: 2.0,
+                total: 1.0,
+            },
+            CutError::NotSolid { body: 0 },
+        ] {
+            assert!(matches!(failed(e), FloatFailed::Error(_)));
+        }
+    }
 
     #[test]
     fn every_measure_has_its_keys() {
