@@ -119,7 +119,9 @@ fn build_and_render(tx: &std::sync::mpsc::Sender<String>) {
         );
         let bytes = std::fs::read(dir.join(file)).unwrap();
         let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-        println!("PNG-HEX {file} {hex}");
+        for (k, chunk) in hex.as_bytes().chunks(3000).enumerate() {
+            println!("PNG-HEX {file} {k} {}", String::from_utf8_lossy(chunk));
+        }
         tx.send(format!("rendered {file}")).unwrap();
     }
 }
