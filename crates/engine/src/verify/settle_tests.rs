@@ -64,7 +64,7 @@ fn nearly_parallel_faces_settle_on_the_closed_form() {
             Probe::new(&round, &tol(k)).unwrap(),
         );
         let start = Vec3::new(20.0 * k, 5.0 * k, 101.0 * k);
-        let (p, q) = settle(&pa, bottom, &pb, side, start, start).unwrap();
+        let (p, q) = settle(&pa, bottom, &pb, side, start, tol(k).linear).unwrap();
         let d = p.distance(q);
         assert!((d - k).abs() <= 1e-9 * k, "at {k}: {d} for {k}");
         // On the faces: the plane's height, the round's radius.

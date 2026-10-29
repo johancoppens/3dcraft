@@ -768,43 +768,71 @@ fn clip(
     along.sort_by(|p, q| p.t.total_cmp(&q.t));
     // An end of the curve next to a place where an edge meets a surface
     // is that place.
-    // (Not the seam of a closed spline: no stretch may run across that.)
     // A curve that begins and ends in one such place (a loop through it)
     // has that place at each end, but a place is found on the curve once,
     // at whichever end is nearer: the other end is the place too, and is
     // kept as it (a figure eight of a torus and the plane it touches,
     // through the pole of a patch, lost the lobe back into the face).
-    if !closed {
-        let places: Vec<Cut> = along.iter().filter(|cut| !cut.end).copied().collect();
-        let mut kept = Vec::with_capacity(along.len());
-        for cut in along {
-            if !cut.end {
-                kept.push(cut);
-                continue;
-            }
-            let near: Vec<&Cut> = places
-                .iter()
-                .filter(|p| p.point.distance(cut.point) < vertices.guard)
-                .collect();
-            let Some(&&place) = near.first() else {
-                kept.push(cut);
-                continue;
+    // The seam of a closed spline is where its trace happened to start,
+    // no place of its own; it stays a cut (no stretch may run across it),
+    // but next to a place that the curve reaches from the seam without
+    // leaving it (on either side of the seam) it is that place, as an end
+    // is: else the place and the seam, a tolerance or two apart, are two
+    // points closer together than the tolerance can tell apart.
+    let places: Vec<Cut> = along.iter().filter(|cut| !cut.end).copied().collect();
+    let mut kept = Vec::with_capacity(along.len());
+    for cut in along {
+        if !cut.end {
+            kept.push(cut);
+            continue;
+        }
+        let near: Vec<&Cut> = places
+            .iter()
+            .filter(|p| p.point.distance(cut.point) < vertices.guard)
+            .collect();
+        if closed {
+            // The nearest place the curve reaches from the seam without
+            // leaving it, from its start or back from its end.
+            let stays = |from: f64, to: f64| {
+                curve.eval(0.5 * (from + to)).distance(cut.point) < vertices.guard
             };
-            // Found at this end: the curve stays at the place between the
-            // two.
-            let here = near
+            let reached = near
                 .iter()
-                .any(|p| curve.eval(0.5 * (p.t + cut.t)).distance(cut.point) < vertices.guard);
-            if !here {
-                kept.push(Cut {
+                .filter(|p| stays(first, p.t) || stays(p.t, last))
+                .min_by(|p, q| {
+                    p.point
+                        .distance(cut.point)
+                        .total_cmp(&q.point.distance(cut.point))
+                        .then(p.t.total_cmp(&q.t))
+                });
+            kept.push(match reached {
+                Some(&&place) => Cut {
                     t: cut.t,
                     end: false,
                     ..place
-                });
-            }
+                },
+                None => cut,
+            });
+            continue;
         }
-        along = kept;
+        let Some(&&place) = near.first() else {
+            kept.push(cut);
+            continue;
+        };
+        // Found at this end: the curve stays at the place between the
+        // two.
+        let here = near
+            .iter()
+            .any(|p| curve.eval(0.5 * (p.t + cut.t)).distance(cut.point) < vertices.guard);
+        if !here {
+            kept.push(Cut {
+                t: cut.t,
+                end: false,
+                ..place
+            });
+        }
     }
+    along = kept;
     let mut cuts: Vec<Cut> = Vec::new();
     for cut in along {
         let same = |other: &Cut| -> Result<bool, Stop> {

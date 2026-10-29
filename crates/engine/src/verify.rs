@@ -544,8 +544,14 @@ pub(crate) fn distance(a: &[Part<'_>], b: &[Part<'_>]) -> Answer<Nearest> {
     found.retain(|(d, ..)| *d <= best + slack || !d.is_finite());
     found.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)));
     found.truncate(MAX_REFINED);
+    // The document's tolerance (the largest of the parts').
+    let linear = a
+        .iter()
+        .chain(b.iter())
+        .map(|p| p.linear)
+        .fold(0.0_f64, f64::max);
     let mut answer: Option<Nearest> = None;
-    for (mesh_d, (ka, kb), p0, q0) in found {
+    for (mesh_d, (ka, kb), p0, _) in found {
         let (Some(pa), Some(pb)) = (a.get(ka.0), b.get(kb.0)) else {
             continue;
         };
@@ -554,7 +560,7 @@ pub(crate) fn distance(a: &[Part<'_>], b: &[Part<'_>]) -> Answer<Nearest> {
         } else {
             face_box(pa.body(), ka.1).center().unwrap_or(p0)
         };
-        let Ok((p, q)) = settle(&pa.probe, ka.1, &pb.probe, kb.1, start_p, q0) else {
+        let Ok((p, q)) = settle(&pa.probe, ka.1, &pb.probe, kb.1, start_p, linear) else {
             continue;
         };
         let d = p.distance(q);
@@ -577,11 +583,6 @@ pub(crate) fn distance(a: &[Part<'_>], b: &[Part<'_>]) -> Answer<Nearest> {
     let mut answer = answer.ok_or("the nearest places could not be settled on the exact faces")?;
     // What the mesh cannot prove close enough, the exact faces do
     // (verify_bound.rs): per pair of faces the better of the two.
-    let linear = a
-        .iter()
-        .chain(b.iter())
-        .map(|p| p.linear)
-        .fold(0.0_f64, f64::max);
     let close = (0.25 * linear).max(1e-12 * answer.distance);
     let short: Vec<Key> = meshed
         .iter()
@@ -637,6 +638,12 @@ pub(crate) fn mesh_proves(
 
 /// Most times one step of [`settle`] doubles its jump ahead.
 const MAX_JUMPS: usize = 30;
+/// The steps over which [`settle`] measures how fast it still comes
+/// nearer.
+const STALL_WINDOW: usize = 8;
+/// What the steps a settling has left may still gain, at the rate of its
+/// last [`STALL_WINDOW`], before it stops: this fraction of the tolerance.
+const STALL: f64 = 1e-4;
 
 /// Nearest points of two faces by projecting onto each in turn from the
 /// mesh's nearest pair.
@@ -652,18 +659,33 @@ const MAX_JUMPS: usize = 30;
 /// and is no further apart than the one before, so the answer is never
 /// worse than projecting in turn alone. Each projection starts from where
 /// the last one on the same face landed ([`nearest_on_face_near`]).
+///
+/// Where the two faces run beside each other along a line and part only
+/// slowly along it (a hole's wall beside a plate's rim, both nearly along
+/// the plate's normal), each step creeps along that line and comes nearer
+/// by a hundred-billionth of the distance, and every one of the steps was
+/// taken, each projection onto a long freeform face costing up to a fifth
+/// of a second (the sea kayak's holes to their own plate's rim, repro 25:
+/// thirteen minutes). So a settling also stops when what it came nearer
+/// over its last [`STALL_WINDOW`] steps, spread over the steps it has
+/// left, is less than [`STALL`] times `tol`: a settling that closes in at
+/// a ratio, or at a rate that falls, gains no more than that by going on
+/// to the end of its steps. (Where it closes in fast, the jumps ahead
+/// take it there first, and it stops as before.)
 fn settle(
     a: &Probe<'_>,
     fa: usize,
     b: &Probe<'_>,
     fb: usize,
     p0: Vec3,
-    _q0: Vec3,
+    tol: f64,
 ) -> Answer<(Vec3, Vec3)> {
     let (mut near_a, mut near_b) = (Near::default(), Near::default());
     let mut p = nearest_on_face_near(a, fa, p0, &mut near_a)?;
     let mut q = nearest_on_face_near(b, fb, p, &mut near_b)?;
-    for _ in 0..MAX_STEPS {
+    // The distance after each step taken, the first before any.
+    let mut came: Vec<f64> = vec![p.distance(q)];
+    for step in 0..MAX_STEPS {
         let mut p2 = nearest_on_face_near(a, fa, q, &mut near_a)?;
         let mut q2 = nearest_on_face_near(b, fb, p2, &mut near_b)?;
         let better = p2.distance(q2) <= p.distance(q);
@@ -698,6 +720,19 @@ fn settle(
         }
         if moved <= 1e-13 * scale || !better {
             break;
+        }
+        came.push(p.distance(q));
+        let left = MAX_STEPS - step - 1;
+        if let (Some(&last), Some(&before)) = (
+            came.last(),
+            came.len()
+                .checked_sub(STALL_WINDOW + 1)
+                .and_then(|i| came.get(i)),
+        ) {
+            let rate = (before - last) / STALL_WINDOW as f64;
+            if rate * left as f64 <= STALL * tol {
+                break;
+            }
         }
     }
     Ok((p, q))
