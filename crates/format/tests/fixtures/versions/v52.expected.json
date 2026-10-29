@@ -1,0 +1,39 @@
+{
+  "format_version": 52,
+  "written_by": "8ba86e44f59c193cf69e544e27a3688ad82525a3",
+  "how": "PLACEHOLDER (branch r1-asm-doc): the v50 fixture with its format_version raised to 52, written by the TEMPORARY writer crates/engine/tests/zz_write_fixture_v53.rs (Check run 40921873010), until the branch that takes 52 brings its own; the coordinator replaces it at merge. Same bodies as v50.",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Base",
+      "status": "ok"
+    },
+    {
+      "id": "F2",
+      "name": "Tool",
+      "status": "ok"
+    },
+    {
+      "id": "F4",
+      "name": "Bevel",
+      "status": "ok"
+    },
+    {
+      "id": "F3",
+      "name": "Cut",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F3",
+      "kind": "solid",
+      "faces": 8,
+      "edges": 17,
+      "vertices": 12,
+      "volume": 1122.1017763138457,
+      "area": 804.1576180811682
+    }
+  ]
+}
