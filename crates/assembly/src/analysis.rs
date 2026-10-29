@@ -226,6 +226,22 @@ pub(crate) fn redundancies(sys: &System, deps: &[Dependency]) -> Vec<Redundancy>
         .collect()
 }
 
+/// The mates of the redundancies that involve a driver, sorted: at a
+/// limit position where the drive's row comes to depend on the loop's.
+pub(crate) fn driver_loop_mates(redundant: &[Redundancy]) -> Vec<usize> {
+    let mut out = std::collections::BTreeSet::new();
+    for r in redundant {
+        if r.groups.iter().any(|g| matches!(g, Group::Driver { .. })) {
+            for g in &r.groups {
+                if let Group::Mate(m) = g {
+                    out.insert(*m);
+                }
+            }
+        }
+    }
+    out.into_iter().collect()
+}
+
 /// The mates a set of free motions moves, sorted: those whose variables
 /// change at 10⁻³ of the fastest or more, and those without variables
 /// whose instances move. At a dead point, the loop that the drive no

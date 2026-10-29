@@ -124,8 +124,10 @@ is fixed there only to about `√ε`.
     and the sequence goes on;
   - a drive that cannot get past a limit position: the sub-step shrank below `ε` of the drive without a solution. It
     is reported at the last value reached (`Diagnosis::DeadPoint`, with the cause), and the sequence stops there.
-  - Both name the loop (`loop_mates`): the mates the motions free there move (variables at 10⁻³ of the fastest or
-    more, and mates without variables on a moving instance).
+  - Both name the loop (`loop_mates`) as the union of two sets: the mates whose rows came to depend on a driver's
+    there (the drive at its reach, as at a slider's top dead centre), and the mates that the motions free there move
+    (a loop that lost rank on its own, such as a coupler and rocker in line). A mate counts as moved when its
+    variables change at 10⁻³ of the fastest or more, or when it has no variables and sits on a moving instance.
 - **Running out of work is not a dead point.** More than 4096 sub-steps, or more than 20 000 Newton iterations in one
   advance, is `DidNotConverge`.
 - **Jumps count as failures too.** A sub-step whose corrector converges but jumps off the branch fails like one that

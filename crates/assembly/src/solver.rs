@@ -2,7 +2,8 @@
 //! continuation on one branch.
 
 use crate::analysis::{
-    dependencies, diagnose_rest, free_motions, moved_mates, rank_and_nulls, redundancies,
+    dependencies, diagnose_rest, driver_loop_mates, free_motions, moved_mates, rank_and_nulls,
+    redundancies,
 };
 use crate::newton::{MAX_ITERATIONS, evaluate, gauss_newton, run};
 use crate::system::{Rows, State, System};
@@ -224,8 +225,20 @@ impl Solver {
     fn driver_loop(&self) -> Vec<usize> {
         self.last
             .as_ref()
-            .map(|l| moved_mates(&self.sys, &l.free))
+            .map(|l| self.loop_of(l))
             .unwrap_or_default()
+    }
+
+    /// The loop at a dead point, both ways it shows: the mates the free
+    /// motions move (a loop that lost rank on its own, such as a coupler and
+    /// rocker in line) and the mates whose rows came to depend on a
+    /// driver's (the drive at its reach).
+    fn loop_of(&self, sol: &Solution) -> Vec<usize> {
+        let mut m = moved_mates(&self.sys, &sol.free);
+        m.extend(driver_loop_mates(&sol.redundant));
+        m.sort_unstable();
+        m.dedup();
+        m
     }
 
     /// The largest change between two sets of drives, dimensionless.
@@ -315,7 +328,7 @@ impl Solver {
                             frame: k,
                             drives: sol.drives.clone(),
                             extra_dof: sol.dof - b,
-                            loop_mates: moved_mates(&self.sys, &sol.free),
+                            loop_mates: self.loop_of(&sol),
                             free: sol.free.clone(),
                         });
                     }
