@@ -224,10 +224,13 @@ step is proven to keep the punch at least `clearance` from every piece of the pa
 two flats, and the die from every piece but the bend, over the whole stroke (the sheet may rest on the
 die's top, not go into it), and a step that does not is listed by bend, by the bends made before it, by
 tool and by piece; `unchecked` says what is not looked at. `sheetMetal.edit` changes a part (flanges as a
-whole list). Each flange has an `id` (`sheetMetal.bends` lists them): give it back with the flange in
-`sheetMetal.edit` and the names of the edge pieces beside its bend stay with it whatever else you add,
-delete or move; a flange sent back unchanged keeps its id without it, and one changed without it is a
-new flange. Refused, with the flange: a radius below zero or of zero (a sharp bend is not supported: give the radius the tooling makes), a K-factor
+whole list). Each flange has an `id` (`sheetMetal.bends` lists them, 1, 2, … in the order the part was
+made, a new flange's never one used before): every name of the flange's faces and edges is numbered by it
+(its bend `face(2 · id − 1)`, its flat `face(2 · id)`, its rims and edges), not by its place in the list,
+so a fillet, a colour or a set on it stays with it whatever else you add, delete or move. Give the id back
+with the flange in `sheetMetal.edit`; a flange sent back unchanged keeps its id without it, and one changed
+without it is a new flange (its old names then name nothing, an error where used). `tip` and `side` name
+flanges by their places in the list you send. Refused, with the flange: a radius below zero or of zero (a sharp bend is not supported: give the radius the tooling makes), a K-factor
 outside 0 to 1, an angle outside 0 to 180 degrees, an edge that is not a straight line of the base's
 outline (a flange on a curved edge is a formed flange, not a bend: it has no flat pattern that keeps
 lengths), flanged edges meeting at an inside corner, a relief that does not fit, and flanges that run into
