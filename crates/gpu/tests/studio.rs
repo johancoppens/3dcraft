@@ -322,7 +322,14 @@ fn studio_frames_on_a_thousand_faces() {
             }));
             let mut frame = || {
                 onscreen
-                    .draw(&uploaded, &lines, &camera, &p, &overlay, DrawOptions::default())
+                    .draw(
+                        &uploaded,
+                        &lines,
+                        &camera,
+                        &p,
+                        &overlay,
+                        DrawOptions::default(),
+                    )
                     .unwrap();
                 device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
             };

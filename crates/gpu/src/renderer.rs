@@ -2301,7 +2301,11 @@ pub(crate) mod template_tests {
                 let fragments = entries.iter().filter(|e| e.starts_with("fs_")).count();
                 // The count pass of a section (`fs_parity`) draws without a
                 // depth attachment and never writes a depth.
-                let with_depth = fragments - usize::from(entries.contains(&"fs_parity"));
+                // The studio look's background and occlusion draw without
+                // one too, and its shadow map tests the light's own depth,
+                // which is not the view's key.
+                let own = ["fs_parity", "fs_background", "fs_ao", "fs_shadow"];
+                let with_depth = fragments - own.iter().filter(|e| entries.contains(e)).count();
                 let expected = if fragment_depth { with_depth } else { 0 };
                 assert_eq!(writes_depth, expected, "{label}: entries {entries:?}");
             }
