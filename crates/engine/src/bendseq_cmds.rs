@@ -39,15 +39,18 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(crate) static SPECS: &[CommandSpec] = &[spec!(
     "sheetMetal.bendSequence",
     "Bend Sequence",
-    r#"{"feature": id or name, "punch": [[x, y], ...], "die": [[x, y], ...], "length": number = the part's reach, "clearance": number = the document's tolerance}"#,
-    "Checks whether a sheet-metal part (feature.sheetMetal) can be bent on a press brake with the punch and die given, and finds an order of its bends (changes nothing). punch and die are closed polygons (at least 3 points, in the document's length unit) in the plane square to a bend: the punch's with the centre of its tip at the origin and its body along +y, the die's with the point under the bend on the part's outer skin at the origin and its body below (y < 0); each is extruded length along the bend, centred on its middle (default: long enough to cover the whole part). At every bend both stand in the bend's frame: origin on the bend's axis (the die's R + T further out), y along the bisector of the two flats towards the inside (as on a press brake where both legs rise half the angle), z along the axis. A step, a bend made with some others already made and the rest still flat, clears when the proven distance (its lower bound) between the punch and every piece of the part but that bend's own strip and its two flats, and between the die counted lowered (moved away from the punch) by clearance plus the document's tolerance and every piece but the bend's own strip, is at least clearance over the whole stroke from 0 to the bend's angle (so the sheet may rest on the die's top, but not go into it by more than the tolerance nor come nearer than clearance from any other side), with the part as it lies or turned end for end (about the tools' y, as an operator turns it: the tools mirrored in x): proven at eight stroke angles, and between two of them less how far any point of the part can move against the tools in between (half its distance from the bend's axis, the farthest at either end of the stroke, plus the bend's neutral radius, per radian), the interval halved (to 1/1024 of the stroke) until that holds, or, for a die wholly below its top (y <= 0), by the piece's lowest point staying above the die's top less the tolerance between them (its height bounded by its heights there and how fast it can bend, halved as needed: what proves a piece lifting off the die); a piece and a tool wholly inside one another count as 0. The order is searched depth first over all orders, the bends whose flanges carry the fewest others first (then the shorter flange, then the lower index), every set of bends made that leads nowhere remembered. Returns feasible, order (the flanges by index, first bent first; null when none clears), steps (per bend of the order: flange, done (the flanges made before it), least (the least distance to the punch proven at the stroke angles measured), at (the stroke angle of it, degrees), proven (the least distance to the punch proven over the whole stroke, between the angles measured too) die (least, at and proven for the lowered die) and turned (whether the part is turned end for end for it)), collisions (every step tried that did not clear: flange, done, tool (punch or die), piece (the base, flange i, or the strip of flange i, bent or flat), angle (degrees), distance and lower (the distance found and what is proven below it; to the lowered die for the die), or notProven with the stroke interval no halving could prove; certain: whether it fails for certain, a tool and a piece found nearer than the clearance at a real place or wholly inside one another, where a collision only not proven clear is not, both as the part lies and turned; turned: whether the failure listed is the turned one, the one not certain when only one is), infeasibleProven (with feasible false: whether every step tried that failed failed for certain, so that no order exists; false means no order was found but one may exist), unchecked (what is not looked at) and work (distances measured). Refused: a part with a hole across a bend (owed), a polygon that crosses itself, a clearance that is not more than 0, and a search of more than 20000 distances. Not looked at (said in unchecked): a bend's own strip during its stroke, and its own two flats against the punch (an acute bend with a punch of a wider angle closing its flats onto it is not found).",
+    r#"{"feature": id or name, "punch": [[x, y], ...], "die": [[x, y], ...], "length": number or [number or null, ...] (one per flange) = the part's reach, "segmented": boolean = false, "clearance": number = the document's tolerance, "order": [flange or [flange, ...], ...] = searched, "maxWork": number = 20000}"#,
+    "Checks whether a sheet-metal part (feature.sheetMetal) can be bent on a press brake with the punch and die given, and finds an order of its bends (changes nothing). punch and die are closed polygons (at least 3 points, in the document's length unit) in the plane square to a bend: the punch's with the centre of its tip at the origin and its body along +y, the die's with the point under the bend on the part's outer skin at the origin and its body below (y < 0); each is extruded along the bend: one piece length long centred on the middle of the bends made in the stroke (default: long enough to cover the whole part), or, with segmented true or a list of lengths, segmented tooling set up per bend, a segment per bend centred on its middle, as long as length gives for it (one number for every bend, or a list of one per flange with null for the bend's own) or else as long as the bend; unchecked states which. Bends on one line of one flat with the same angle, direction, radius and K-factor (tabs on one edge) are made in one stroke. At every bend both stand in the bend's frame: origin on the bend's axis (the die's R + T further out), y along the bisector of the two flats towards the inside (as on a press brake where both legs rise half the angle), z along the axis. A step, a bend made with some others already made and the rest still flat, clears when the proven distance (its lower bound) between the punch and every piece of the part but that bend's own strip and its two flats, and between the die counted lowered (moved away from the punch) by clearance plus the document's tolerance and every piece but the bend's own strip, is at least clearance over the whole stroke from 0 to the bend's angle (so the sheet may rest on the die's top, but not go into it by more than the tolerance nor come nearer than clearance from any other side), with the part as it lies or turned end for end (about the tools' y, as an operator turns it: the tools mirrored in x; segments stay at their bends), unless both tools are their own mirror image (the same polygon, compared as a cyclic list of points): proven at eight stroke angles, and between two of them less how far any point of the part can move against the tools in between (half its distance from the bend's axis, the farthest at either end of the stroke, plus the bend's neutral radius, per radian), the interval halved (to 1/1024 of the stroke) until that holds, or, for a die wholly below its top (y <= 0), by the piece's lowest point staying above the die's top less the tolerance between them (its height bounded by its heights there and how fast it can bend, halved as needed: what proves a piece lifting off the die); a piece and a tool wholly inside one another count as 0. With order (a list of strokes, each a flange or a list of flanges on one line; every flange once) that order is checked step by step, every step, instead of a search. Otherwise the order is searched depth first over all orders of the strokes, the bends whose flanges carry the fewest others first (then the shorter flange, then the lower index), every set of bends made that leads nowhere remembered. Returns feasible, given (whether the order was given), order (the strokes, first bent first: a flange by index, or a list for a stroke of several; null when none clears), steps (per stroke of the order, also those that cleared of an order given that does not: flange (its first), flanges, segments (with segmented tooling: the tools' length at each of its bends), done (the flanges made before it), least (the least distance to the punch proven at the stroke angles measured), at (the stroke angle of it, degrees), proven (the least distance to the punch proven over the whole stroke, between the angles measured too) die (least, at and proven for the lowered die) and turned (whether the part is turned end for end for it)), collisions (every step tried that did not clear, per orientation tried: flange, flanges, done, tool (punch or die), piece (the base, flange i, or the strip of flange i, bent or flat), angle (degrees), distance and lower (the distance found and what is proven below it; to the lowered die for the die), or notProven with the stroke interval no halving could prove; certain: whether the step fails for certain, a tool and a piece found nearer than the clearance at a real place or wholly inside one another, where a collision only not proven clear is not, both as the part lies and turned; turned: whether this failure is the turned one), infeasibleProven (with feasible false: whether every step tried that failed failed for certain, so that no order exists, or for an order given whether a step of it fails for certain; false means no order was found but one may exist), unchecked (what is not looked at) and work (distances measured). Refused: a part with a hole across a bend (owed), a polygon that crosses itself, a clearance that is not more than 0, and more distances and heights measured than maxWork (default 20000, at most 10000000; give the order, or raise it). Not looked at (said in unchecked): a bend's own strip during its stroke, and its own two flats against the punch (an acute bend with a punch of a wider angle closing its flats onto it is not found).",
     doc: true,
     names: ["feature"],
     bend_sequence
 )];
 
-/// Most distances one check measures.
+/// Most distances one check measures, unless the caller gives more.
 const MAX_WORK: usize = 20_000;
+
+/// Most distances a caller of the command may ask for (`maxWork`).
+const MAX_WORK_ASKED: u64 = 10_000_000;
 
 /// Most points in a tool's polygon.
 const MAX_POINTS: usize = 1_000;
@@ -61,6 +64,16 @@ const MAX_DEPTH: u32 = 7;
 
 /// What the check does not look at, said in its result.
 const UNCHECKED: &str = "each bend's own strip during its stroke (against both tools), and its two flats against the punch (its tip forms the bend between them)";
+
+/// The tooling a check assumes, said in its result after [`UNCHECKED`].
+fn unchecked(segmented: bool) -> String {
+    let tooling = if segmented {
+        "segmented tooling assumed: the tools are a segment per bend, centred on its middle and as long as given or as the bend, set up for each stroke; whatever lies beyond a segment's ends, or between two segments, is not met by the tools, so a tool run longer than its bend may collide where this check does not"
+    } else {
+        "one-piece tools assumed: centred on the middle of the bends of each stroke and as long as given (by default reaching past the whole part, so everything along the bend line is met)"
+    };
+    format!("{UNCHECKED}; {tooling}")
+}
 
 /// Most collisions listed.
 const MAX_LISTED: usize = 200;
@@ -193,13 +206,17 @@ impl Failure {
         matches!(self, Failure::Collision { distance, .. } if *distance < clearance)
     }
 
-    /// The failure in words, for a step: flange `b` after `done`.
-    fn words(&self, b: usize, done: &BTreeSet<usize>, clearance: f64) -> String {
+    /// The failure in words, for a step: the stroke `g` after `done`.
+    fn words(&self, g: &[usize], done: &BTreeSet<usize>, clearance: f64) -> String {
+        let b = match g {
+            [one] => format!("flange {one}"),
+            many => format!("flanges {}", stroke_words(many)),
+        };
         let step = if done.is_empty() {
-            format!("flange {b} first")
+            format!("{b} first")
         } else {
             let before: Vec<String> = done.iter().map(ToString::to_string).collect();
-            format!("flange {b} after {}", before.join(", "))
+            format!("{b} after {}", before.join(", "))
         };
         let step = match self {
             Failure::Collision { turned: true, .. } | Failure::NotProven { turned: true, .. } => {
@@ -259,14 +276,33 @@ struct Cleared {
 /// What a step's stroke needs besides the stages: how fast the part can
 /// move against the tools per radian (`stroke_speed`), how fast that
 /// motion can turn (`bow`: no point's acceleration against the tools per
-/// radian² is more), how long the tools are, and whether the die lies
-/// wholly below its top (`y ≤ 0`), so the rest proof holds.
-#[derive(Clone, Copy, Debug)]
+/// radian² is more), where the tools are along the axis, whether the
+/// die lies wholly below its top (`y ≤ 0`), so the rest proof holds, and
+/// whether the part is turned end for end.
+#[derive(Clone, Debug)]
 struct Stroke {
     speed: f64,
     bow: f64,
-    length: f64,
+    /// The tools' pieces along the axis from the first bend's middle:
+    /// one for one-piece tools, one per bend of the stroke for segmented
+    /// tooling ([`Tooling`]).
+    segments: Vec<(f64, f64)>,
     die_below: bool,
+    /// The part turned end for end: the tools' polygons mirrored in `x`
+    /// against it (`Check::turned_tools`); the segments stay where they
+    /// are, set up at the bends either way.
+    turned: bool,
+}
+
+/// How long the tools are along the bends.
+#[derive(Clone, Debug)]
+enum Tooling {
+    /// One piece per stroke, centred on the middle of its bends, this
+    /// long (`None`: reaching past the whole part, the default).
+    Whole(Option<f64>),
+    /// Segmented tooling set up per stroke: a segment per bend, centred
+    /// on its middle, per bend this long (`None`: the bend's own length).
+    Segmented(Vec<Option<f64>>),
 }
 
 /// Per tool and piece checked: the distance proven at one stroke angle.
@@ -284,13 +320,11 @@ struct Check<'a> {
     tol: Tolerance,
     punch: Vec<[f64; 2]>,
     die: Vec<[f64; 2]>,
-    /// The tools mirrored in `x` (`turned_tools`): where they stand
-    /// against the part turned end for end; `None` when both are
-    /// symmetric, so turning changes nothing.
+    /// The tools mirrored in `x` (`mirrored`): where they stand against
+    /// the part turned end for end; `None` when both are their own
+    /// mirror image (`symmetric`), so turning changes nothing.
     turned_tools: Option<(Polygon, Polygon)>,
-    /// Whether the step being checked has the part turned (`Check::step`).
-    turned: std::cell::Cell<bool>,
-    length: Option<f64>,
+    tooling: Tooling,
     clearance: f64,
     pieces: Vec<Piece<'a>>,
     built: Vec<Transform>,
@@ -302,9 +336,9 @@ struct Check<'a> {
 }
 
 impl Check<'_> {
-    /// The stage's bend angles: those made at theirs, `b` at `rho`, the
-    /// rest flat.
-    fn angles(&self, done: &BTreeSet<usize>, b: usize, rho: f64) -> Vec<f64> {
+    /// The stage's bend angles: those made at theirs, the stroke's `g` at
+    /// `rho`, the rest flat.
+    fn angles(&self, done: &BTreeSet<usize>, g: &[usize], rho: f64) -> Vec<f64> {
         self.part
             .bends
             .iter()
@@ -312,7 +346,7 @@ impl Check<'_> {
             .map(|(i, x)| {
                 if done.contains(&i) {
                     x.angle
-                } else if i == b {
+                } else if g.contains(&i) {
                     rho * x.angle.signum()
                 } else {
                     0.0
@@ -321,49 +355,76 @@ impl Check<'_> {
             .collect()
     }
 
-    /// The pieces tool `tool` is checked against at bend `b` with `done`
-    /// made: every piece of the stage (the flats, the bends made, the
-    /// strips not yet bent) but `b`'s own strip (half rolled, half flat
-    /// on its child during the stroke: not a piece), and for the punch
-    /// not `b`'s two flats either (its tip forms the bend between them).
+    /// The pieces tool `tool` is checked against at the stroke of the
+    /// bends `g` with `done` made: every piece of the stage (the flats,
+    /// the bends made, the strips not yet bent) but the stroke's own
+    /// strips (half rolled, half flat on their children during the
+    /// stroke: not pieces), and for the punch not their flats either (its
+    /// tip forms each bend between them).
     fn checked<'s>(
         &'s self,
         done: &'s BTreeSet<usize>,
-        b: usize,
+        g: &'s [usize],
         tool: usize,
     ) -> impl Iterator<Item = &'s Piece<'s>> + 's {
-        let own = self
-            .part
-            .bends
-            .get(b)
-            .map(|x| (x.parent, x.child))
-            .unwrap_or((usize::MAX, usize::MAX));
+        let own: Vec<usize> = g
+            .iter()
+            .filter_map(|&b| self.part.bends.get(b))
+            .flat_map(|x| [x.parent, x.child])
+            .collect();
         self.pieces.iter().filter(move |p| match p.what {
-            Kind::Flat(f) => tool != PUNCH || (f != own.0 && f != own.1),
+            Kind::Flat(f) => tool != PUNCH || !own.contains(&f),
             Kind::Bend(i) => done.contains(&i),
-            Kind::Strip(i) => i != b && !done.contains(&i),
+            Kind::Strip(i) => !g.contains(&i) && !done.contains(&i),
         })
     }
 
-    /// The speed bound and the tools' length of bend `b`'s stroke with
-    /// `done` made: the farthest any corner of a checked piece's box lies
-    /// from the axis at either end of the stroke (`stroke_speed`), and
-    /// (unless given) twice the farthest one lies along it from the
-    /// bend's middle, so the tools reach past every piece.
-    fn stroke(&self, done: &BTreeSet<usize>, b: usize) -> Result<Stroke, String> {
+    /// The speed bound and the tools' pieces of the stroke of the bends
+    /// `g` (on one line, [`strokes`]; the first's frame) with `done` made:
+    /// the farthest any hull point of a checked piece lies from the axis
+    /// at either end of the stroke (`stroke_speed`), and the tools along
+    /// the axis ([`Tooling`]): one piece centred on the middle of the
+    /// stroke's bends, as long as given or else twice the farthest a hull
+    /// point lies along the axis from that middle (so it reaches past
+    /// every piece), or per bend a segment centred on its middle, as long
+    /// as given for it or else the bend itself.
+    fn stroke(&self, done: &BTreeSet<usize>, g: &[usize]) -> Result<Stroke, String> {
         let part = self.part;
-        let theta = part.bends.get(b).ok_or("a bend is missing")?.theta();
+        let b = *g.first().ok_or("a stroke has no bend")?;
+        let first = part.bends.get(b).ok_or("a bend is missing")?;
+        let theta = first.theta();
         let start =
-            stage_worlds(part, &self.angles(done, b, 0.0), &self.tol).map_err(|e| e.to_string())?;
-        let end = stage_worlds(part, &self.angles(done, b, theta), &self.tol)
+            stage_worlds(part, &self.angles(done, g, 0.0), &self.tol).map_err(|e| e.to_string())?;
+        let end = stage_worlds(part, &self.angles(done, g, theta), &self.tol)
             .map_err(|e| e.to_string())?;
         let frame = bend_frame(part, b, 0.0, &start).map_err(|e| e.to_string())?;
+        // In the pattern the bends of a stroke lie on one line along the
+        // first's direction, which the frame's axis carries.
+        let d = unit2([first.end[0] - first.start[0], first.end[1] - first.start[1]])
+            .ok_or("a bend has no length")?;
+        let middle =
+            |x: &sheetmetal::Bend| [0.5 * (x.start[0] + x.end[0]), 0.5 * (x.start[1] + x.end[1])];
+        let m0 = middle(first);
+        let along_line = |q: [f64; 2]| (q[0] - m0[0]) * d[0] + (q[1] - m0[1]) * d[1];
+        // The middle of the stroke's bends along the axis.
+        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        for &i in g {
+            let x = part.bends.get(i).ok_or("a bend is missing")?;
+            for q in [x.start, x.end] {
+                lo = lo.min(along_line(q));
+                hi = hi.max(along_line(q));
+            }
+        }
+        let centre = 0.5 * (lo + hi);
+        if !centre.is_finite() {
+            return Err("a bend has no finite length".into());
+        }
         let mut reach = 0.0_f64;
         let mut along = 0.0_f64;
         let mut seen = BTreeSet::new();
         for piece in self
-            .checked(done, b, PUNCH)
-            .chain(self.checked(done, b, DIE))
+            .checked(done, g, PUNCH)
+            .chain(self.checked(done, g, DIE))
         {
             if !seen.insert(piece.what) {
                 continue;
@@ -382,19 +443,35 @@ impl Check<'_> {
                     return Err(format!("{} has no points to bound it", piece.what.text()));
                 }
                 for &c in &piece.corners {
-                    let (d, a) = from_axis(frame.point, frame.axis, moved.point(c));
-                    reach = reach.max(d);
-                    along = along.max(a.abs());
+                    let (r, a) = from_axis(frame.point, frame.axis, moved.point(c));
+                    reach = reach.max(r);
+                    along = along.max((a - centre).abs());
                 }
             }
         }
         let speed = stroke_speed(part, b, reach).ok_or("the part has no finite size")?;
-        let length = self
-            .length
-            .unwrap_or(2.0 * (along + self.tol.linear).max(frame.reach));
-        if !(length.is_finite() && length > 0.0) {
-            return Err("the part has no finite size".into());
-        }
+        let segments = match &self.tooling {
+            Tooling::Whole(given) => {
+                let length = given.unwrap_or(2.0 * (along + self.tol.linear).max(frame.reach));
+                if !(length.is_finite() && length > 0.0) {
+                    return Err("the part has no finite size".into());
+                }
+                vec![(centre - 0.5 * length, centre + 0.5 * length)]
+            }
+            Tooling::Segmented(lengths) => {
+                let mut segments = Vec::with_capacity(g.len());
+                for &i in g {
+                    let x = part.bends.get(i).ok_or("a bend is missing")?;
+                    let length = segment_length(x, lengths.get(i).copied().flatten());
+                    if !(length.is_finite() && length > 0.0) {
+                        return Err(format!("bend {i} has no length"));
+                    }
+                    let at = along_line(middle(x));
+                    segments.push((at - 0.5 * length, at + 0.5 * length));
+                }
+                segments
+            }
+        };
         // Against the tools a parent point turns at rate ½ about the axis
         // (acceleration d/4) and a child point also takes up the shift
         // back across the strip, `ρ r` turned with it (r more): no point
@@ -403,28 +480,45 @@ impl Check<'_> {
         Ok(Stroke {
             speed,
             bow,
-            length,
+            segments,
             die_below: self.die.iter().all(|p| p[1] <= 0.0),
+            turned: false,
         })
     }
 
+    /// One more distance or height measured; an error past the cap.
+    fn count(&self) -> Result<(), String> {
+        self.work.set(self.work.get().saturating_add(1));
+        if self.work.get() > self.max_work {
+            self.ran_out.set(true);
+            return Err(format!(
+                "more than {} distances and heights measured: the search over orders is too large (many bends, most orders colliding or close to it); raise `maxWork`, or give the command the `order` to check",
+                self.max_work
+            ));
+        }
+        Ok(())
+    }
+
     /// The least proven distance between each tool and the pieces it is
-    /// checked against at bend `b`'s stroke angle `rho`, with the others
-    /// made (`done`) or flat; a failure when one is below the clearance.
+    /// checked against at the stroke angle `rho` of the bends `g`, with
+    /// the others made (`done`) or flat, the part turned as `stroke`
+    /// says; a failure when one is below the clearance (one found for
+    /// certain before one only not proven clear).
     fn at(
         &self,
         done: &BTreeSet<usize>,
-        b: usize,
+        g: &[usize],
         rho: f64,
-        stroke: Stroke,
+        stroke: &Stroke,
     ) -> Result<Result<Lowers, Failure>, String> {
         let part = self.part;
+        let b = *g.first().ok_or("a stroke has no bend")?;
         let worlds =
-            stage_worlds(part, &self.angles(done, b, rho), &self.tol).map_err(|e| e.to_string())?;
+            stage_worlds(part, &self.angles(done, g, rho), &self.tol).map_err(|e| e.to_string())?;
         let frame = bend_frame(part, b, rho, &worlds).map_err(|e| e.to_string())?;
         let mut least = Lowers::new();
         let mut doubtful: Option<Failure> = None;
-        let turned = self.turned.get();
+        let turned = stroke.turned;
         let (punch, die) = match &self.turned_tools {
             Some((punch, die)) if turned => (punch, die),
             _ => (&self.punch, &self.die),
@@ -446,16 +540,17 @@ impl Check<'_> {
                 )
             };
             let tool_frame = frame.tool(below).ok_or("a tool's frame is not finite")?;
-            let pieces: Vec<&Piece<'_>> = self.checked(done, b, tool).collect();
+            let pieces: Vec<&Piece<'_>> = self.checked(done, g, tool).collect();
             // The tool carried into each carrier's built place, built once
-            // per carrier (every piece it carries shares it).
+            // per carrier and segment (every piece it carries shares it).
             let carriers: Vec<usize> = pieces
                 .iter()
                 .map(|p| p.carrier)
                 .collect::<BTreeSet<_>>()
                 .into_iter()
                 .collect();
-            let mut bodies: Vec<(Body, craft3d_math::Frame)> = Vec::with_capacity(carriers.len());
+            let mut bodies: Vec<(usize, Body, craft3d_math::Frame, f64)> =
+                Vec::with_capacity(carriers.len().saturating_mul(stroke.segments.len()));
             for &carrier in &carriers {
                 let (Some(stage), Some(built)) = (worlds.get(carrier), self.built.get(carrier))
                 else {
@@ -469,56 +564,54 @@ impl Check<'_> {
                 let local = back
                     .frame(&tool_frame)
                     .ok_or("a tool's frame is not finite")?;
-                let body = prism(
-                    points,
-                    &local,
-                    -0.5 * stroke.length,
-                    0.5 * stroke.length,
-                    &self.tol,
-                )
-                .map_err(|e| format!("the {name}: {e}"))?;
-                bodies.push((body, local));
+                for &(z0, z1) in &stroke.segments {
+                    let body = prism(points, &local, z0, z1, &self.tol)
+                        .map_err(|e| format!("the {name}: {e}"))?;
+                    bodies.push((carrier, body, local, 0.5 * (z0 + z1)));
+                }
             }
             let measured: Vec<Measured<'_>> = bodies
                 .iter()
-                .map(|(body, _)| Measured::new(body, None, &self.tol))
+                .map(|(_, body, _, _)| Measured::new(body, None, &self.tol))
                 .collect::<Result<_, _>>()?;
             for piece in pieces {
-                self.work.set(self.work.get().saturating_add(1));
-                if self.work.get() > self.max_work {
-                    self.ran_out.set(true);
-                    return Err(format!(
-                        "more than {} distances measured: the search over orders is too large (many bends, most orders colliding or close to it)",
-                        self.max_work
-                    ));
+                // The least over the tool's pieces along the axis.
+                let mut lower = f64::INFINITY;
+                let mut found = f64::INFINITY;
+                let mut inside = false;
+                for ((carrier, body, local, zmid), tool_m) in bodies.iter().zip(&measured) {
+                    if *carrier != piece.carrier {
+                        continue;
+                    }
+                    self.count()?;
+                    let near = verify::distance(
+                        std::slice::from_ref(tool_m),
+                        std::slice::from_ref(&piece.measured),
+                    )?;
+                    // Wholly inside one another: a point of the piece
+                    // inside the tool, or a point of the tool (its
+                    // middle section) inside the piece.
+                    let tool_point = points
+                        .first()
+                        .map(|q| local.point(q[0], q[1], *zmid))
+                        .ok_or("a tool has no points")?;
+                    let within = inside_piece(part, piece.what.piece(), tool_point)
+                        || contains_points(body, &piece.points, &self.tol)
+                            .map_err(|e| e.to_string())?
+                            .contains(&Some(true));
+                    inside |= within;
+                    lower = lower.min(if within { 0.0 } else { near.lower.max(0.0) });
+                    found = found.min(if within { 0.0 } else { near.distance });
                 }
-                let k = carriers
-                    .binary_search(&piece.carrier)
-                    .map_err(|_| "a piece's carrier is missing")?;
-                let (Some((body, local)), Some(tool_m)) = (bodies.get(k), measured.get(k)) else {
+                if !lower.is_finite() {
                     return Err("a tool is missing".into());
-                };
-                let near = verify::distance(
-                    std::slice::from_ref(tool_m),
-                    std::slice::from_ref(&piece.measured),
-                )?;
-                // Wholly inside one another: a point of the piece inside
-                // the tool, or a point of the tool inside the piece.
-                let tool_point = points
-                    .first()
-                    .map(|q| local.point(q[0], q[1], 0.0))
-                    .ok_or("a tool has no points")?;
-                let inside = inside_piece(part, piece.what.piece(), tool_point)
-                    || contains_points(body, &piece.points, &self.tol)
-                        .map_err(|e| e.to_string())?
-                        .contains(&Some(true));
-                let mut lower = if inside { 0.0 } else { near.lower.max(0.0) };
+                }
                 // A piece lying on a die below its top: what the mesh
                 // cannot prove (a bend's skin along the die's top), its
                 // lowest point's height does (`Check::rest`).
                 if !inside && lower < self.clearance && tool == DIE && stroke.die_below {
                     let low = self
-                        .heights(done, b, rho, &[piece.what])?
+                        .heights(done, g, rho, &[piece.what])?
                         .first()
                         .copied()
                         .unwrap_or(f64::NEG_INFINITY);
@@ -531,7 +624,7 @@ impl Check<'_> {
                         tool: name,
                         piece: piece.what,
                         angle: rho,
-                        distance: if inside { 0.0 } else { near.distance },
+                        distance: found,
                         lower,
                         turned,
                     };
@@ -553,54 +646,58 @@ impl Check<'_> {
         Ok(Ok(least))
     }
 
-    /// Whether bend `b` can be made with `done` made, the part as it
-    /// lies or turned end for end. A press brake lets the operator turn
-    /// the part about the brake's vertical (the tools' `y`) between
-    /// bends; for tools extruded symmetrically along the bend (they are,
-    /// centred on its middle) that is the tools mirrored in `x`. So the
-    /// step clears when either clears, and fails for certain only when
-    /// both do; otherwise the failure reported is one not certain.
-    fn step(&self, done: &BTreeSet<usize>, b: usize) -> Result<Result<Cleared, Failure>, String> {
-        self.turned.set(false);
-        let given = self.step_as(done, b)?;
-        let Err(failure) = given else {
-            return Ok(given);
+    /// Whether the bends `g` (one stroke) can be made with `done` made,
+    /// the part as it lies or turned end for end. A press brake lets the
+    /// operator turn the part about the brake's vertical (the tools' `y`)
+    /// between bends; for tools extruded along the bend and set up at
+    /// its bends that is the tools' polygons mirrored in `x`. So the step
+    /// clears when either clears, and fails for certain only when both
+    /// do (`turn_or`); both orientations' failures are kept for the
+    /// listing.
+    fn step(&self, done: &BTreeSet<usize>, g: &[usize]) -> Result<Result<Cleared, Failed>, String> {
+        let stroke = self.stroke(done, g)?;
+        let given = match self.step_as(done, g, &stroke)? {
+            Ok(cleared) => return Ok(Ok(cleared)),
+            Err(f) => f,
         };
         if self.turned_tools.is_none() {
-            return Ok(Err(failure));
+            return Ok(Err(Failed(vec![given])));
         }
-        self.turned.set(true);
-        let turned = self.step_as(done, b);
-        self.turned.set(false);
-        Ok(turn_or(failure, turned?, self.clearance))
+        let turned = Stroke {
+            turned: true,
+            ..stroke
+        };
+        let other = self.step_as(done, g, &turned)?;
+        Ok(turn_or(given, other))
     }
 
-    /// Whether bend `b` can be made with `done` made over its whole
-    /// stroke, the part turned as `turned` says.
+    /// Whether the bends `g` can be made with `done` made over their
+    /// whole stroke, the part turned as `stroke.turned` says.
     fn step_as(
         &self,
         done: &BTreeSet<usize>,
-        b: usize,
+        g: &[usize],
+        stroke: &Stroke,
     ) -> Result<Result<Cleared, Failure>, String> {
         let part = self.part;
+        let b = *g.first().ok_or("a stroke has no bend")?;
         let theta = part.bends.get(b).ok_or("a bend is missing")?.theta();
-        let stroke = self.stroke(done, b)?;
         let mut best = Cleared {
             least: [f64::INFINITY; 2],
             at: [0.0; 2],
             proven: [f64::INFINITY; 2],
-            turned: self.turned.get(),
+            turned: stroke.turned,
         };
         let mut prev: Option<(f64, Lowers)> = None;
         for j in 0..=SAMPLES {
             let rho = theta * j as f64 / SAMPLES as f64;
-            let l = match self.at(done, b, rho, stroke)? {
+            let l = match self.at(done, g, rho, stroke)? {
                 Ok(l) => l,
                 Err(f) => return Ok(Err(f)),
             };
             best.sampled(rho, &l);
             if let Some((a, la)) = &prev
-                && let Err(f) = self.between(done, b, (*a, la), (rho, &l), stroke, 0, &mut best)?
+                && let Err(f) = self.between(done, g, (*a, la), (rho, &l), stroke, 0, &mut best)?
             {
                 return Ok(Err(f));
             }
@@ -617,10 +714,10 @@ impl Check<'_> {
     fn between(
         &self,
         done: &BTreeSet<usize>,
-        b: usize,
+        g: &[usize],
         (a, la): (f64, &Lowers),
         (c, lc): (f64, &Lowers),
-        stroke: Stroke,
+        stroke: &Stroke,
         depth: u32,
         best: &mut Cleared,
     ) -> Result<Result<(), Failure>, String> {
@@ -645,9 +742,9 @@ impl Check<'_> {
             let rested = if resting.is_empty() {
                 Some(f64::INFINITY)
             } else {
-                let ya = self.heights(done, b, a, &resting)?;
-                let yc = self.heights(done, b, c, &resting)?;
-                self.rest(done, b, &resting, (a, &ya), (c, &yc), stroke, 0)?
+                let ya = self.heights(done, g, a, &resting)?;
+                let yc = self.heights(done, g, c, &resting)?;
+                self.rest(done, g, &resting, (a, &ya), (c, &yc), stroke, 0)?
             };
             if let Some(r) = rested {
                 for (best, p) in best.proven.iter_mut().zip(proven) {
@@ -663,19 +760,19 @@ impl Check<'_> {
             return Ok(Err(Failure::NotProven {
                 from: a,
                 to: c,
-                turned: self.turned.get(),
+                turned: stroke.turned,
             }));
         }
         let m = 0.5 * (a + c);
-        let lm = match self.at(done, b, m, stroke)? {
+        let lm = match self.at(done, g, m, stroke)? {
             Ok(l) => l,
             Err(f) => return Ok(Err(f)),
         };
         best.sampled(m, &lm);
-        if let Err(f) = self.between(done, b, (a, la), (m, &lm), stroke, depth + 1, best)? {
+        if let Err(f) = self.between(done, g, (a, la), (m, &lm), stroke, depth + 1, best)? {
             return Ok(Err(f));
         }
-        self.between(done, b, (m, &lm), (c, lc), stroke, depth + 1, best)
+        self.between(done, g, (m, &lm), (c, lc), stroke, depth + 1, best)
     }
 
     /// Per piece of `kinds`, the height of its lowest point above the
@@ -686,21 +783,15 @@ impl Check<'_> {
     fn heights(
         &self,
         done: &BTreeSet<usize>,
-        b: usize,
+        g: &[usize],
         rho: f64,
         kinds: &[Kind],
     ) -> Result<Vec<f64>, String> {
         let part = self.part;
-        self.work.set(self.work.get().saturating_add(1));
-        if self.work.get() > self.max_work {
-            self.ran_out.set(true);
-            return Err(format!(
-                "more than {} distances and heights measured: the search over orders is too large (many bends, most orders colliding or close to it)",
-                self.max_work
-            ));
-        }
+        self.count()?;
+        let b = *g.first().ok_or("a stroke has no bend")?;
         let worlds =
-            stage_worlds(part, &self.angles(done, b, rho), &self.tol).map_err(|e| e.to_string())?;
+            stage_worlds(part, &self.angles(done, g, rho), &self.tol).map_err(|e| e.to_string())?;
         let frame = bend_frame(part, b, rho, &worlds).map_err(|e| e.to_string())?;
         let top = frame.point - frame.inside * (frame.radius + frame.thickness);
         kinds
@@ -744,11 +835,11 @@ impl Check<'_> {
     fn rest(
         &self,
         done: &BTreeSet<usize>,
-        b: usize,
+        g: &[usize],
         kinds: &[Kind],
         (a, ya): (f64, &[f64]),
         (c, yc): (f64, &[f64]),
-        stroke: Stroke,
+        stroke: &Stroke,
         depth: u32,
     ) -> Result<Option<f64>, String> {
         let tol = self.tol.linear;
@@ -763,12 +854,12 @@ impl Check<'_> {
             return Ok(None);
         }
         let m = 0.5 * (a + c);
-        let ym = self.heights(done, b, m, kinds)?;
-        let Some(left) = self.rest(done, b, kinds, (a, ya), (m, &ym), stroke, depth + 1)? else {
+        let ym = self.heights(done, g, m, kinds)?;
+        let Some(left) = self.rest(done, g, kinds, (a, ya), (m, &ym), stroke, depth + 1)? else {
             return Ok(None);
         };
         Ok(self
-            .rest(done, b, kinds, (m, &ym), (c, yc), stroke, depth + 1)?
+            .rest(done, g, kinds, (m, &ym), (c, yc), stroke, depth + 1)?
             .map(|right| left.min(right)))
     }
 }
@@ -826,48 +917,151 @@ fn carried(part: &sheetmetal::Part, i: usize) -> usize {
     count
 }
 
-type Tried = BTreeMap<(BTreeSet<usize>, usize), Result<Cleared, Failure>>;
+/// How a step failed: its failure with the part as it lies, then the
+/// turned one when that was tried (tools that are not their own mirror
+/// image).
+#[derive(Clone, Debug)]
+struct Failed(Vec<Failure>);
 
-/// The first order (depth first) whose every step clears.
+impl Failed {
+    /// Whether the step fails for certain: every orientation tried does.
+    fn certain(&self, clearance: f64) -> bool {
+        !self.0.is_empty() && self.0.iter().all(|f| f.certain(clearance))
+    }
+
+    /// The failure the step is reported by: one not certain while there
+    /// is one (so no order is not proven while it stands), else the
+    /// first (as the part lies).
+    fn reported(&self, clearance: f64) -> Option<&Failure> {
+        self.0
+            .iter()
+            .find(|f| !f.certain(clearance))
+            .or_else(|| self.0.first())
+    }
+}
+
+/// Per stroke tried (the bends made before it, the stroke's bends), how
+/// it went.
+type Tried = BTreeMap<(BTreeSet<usize>, Vec<usize>), Result<Cleared, Failed>>;
+
+/// A step of an order: the stroke's bends, those made before it, and how
+/// it cleared.
+type Step = (Vec<usize>, BTreeSet<usize>, Cleared);
+
+/// Whether bend `i` is made in one stroke with bend `b`: the same parent
+/// flat, the same signed angle (within the angular tolerance), the same
+/// radius and neutral fibre (within the tolerance), and its tangent line
+/// on `b`'s line running the same way (both ends within the tolerance of
+/// it). Then both turn about the same axis by the same motion, so one
+/// punch and die along that line make both.
+fn one_line(part: &sheetmetal::Part, b: usize, i: usize, tol: &Tolerance) -> bool {
+    let (Some(x), Some(y)) = (part.bends.get(b), part.bends.get(i)) else {
+        return false;
+    };
+    let Some(d) = unit2([x.end[0] - x.start[0], x.end[1] - x.start[1]]) else {
+        return false;
+    };
+    let off = |p: [f64; 2]| ((p[0] - x.start[0]) * d[1] - (p[1] - x.start[1]) * d[0]).abs();
+    let ahead = (y.end[0] - y.start[0]) * d[0] + (y.end[1] - y.start[1]) * d[1] > 0.0;
+    x.parent == y.parent
+        && (x.angle - y.angle).abs() <= tol.angular
+        && (x.radius - y.radius).abs() <= tol.linear
+        && ((x.k - y.k) * x.thickness).abs() <= tol.linear
+        && ahead
+        && off(y.start) <= tol.linear
+        && off(y.end) <= tol.linear
+}
+
+/// The strokes the search makes: the bends grouped by [`one_line`] with
+/// the first of each group, in order of their first bend.
+fn strokes(part: &sheetmetal::Part, tol: &Tolerance) -> Vec<Vec<usize>> {
+    let mut out: Vec<Vec<usize>> = Vec::new();
+    for i in 0..part.bends.len() {
+        match out
+            .iter_mut()
+            .find(|g| g.first().is_some_and(|&b| one_line(part, b, i, tol)))
+        {
+            Some(g) => g.push(i),
+            None => out.push(vec![i]),
+        }
+    }
+    out
+}
+
+/// The first order (depth first) of the strokes `ranked` whose every step
+/// clears.
 fn search(
     check: &Check<'_>,
     done: &mut BTreeSet<usize>,
-    order: &mut Vec<(usize, BTreeSet<usize>, Cleared)>,
+    order: &mut Vec<Step>,
     dead: &mut BTreeSet<BTreeSet<usize>>,
     tried: &mut Tried,
-    ranked: &[usize],
+    ranked: &[Vec<usize>],
 ) -> Result<bool, String> {
-    if done.len() == ranked.len() {
+    if ranked.iter().all(|g| g.iter().all(|b| done.contains(b))) {
         return Ok(true);
     }
     if dead.contains(done) {
         return Ok(false);
     }
-    for &b in ranked {
-        if done.contains(&b) {
+    for g in ranked {
+        if g.iter().any(|b| done.contains(b)) {
             continue;
         }
-        let key = (done.clone(), b);
+        let key = (done.clone(), g.clone());
         let result = match tried.get(&key) {
             Some(r) => r.clone(),
             None => {
-                let r = check.step(done, b)?;
+                let r = check.step(done, g)?;
                 tried.insert(key, r.clone());
                 r
             }
         };
         if let Ok(cleared) = result {
-            order.push((b, done.clone(), cleared));
-            done.insert(b);
+            order.push((g.clone(), done.clone(), cleared));
+            done.extend(g.iter().copied());
             if search(check, done, order, dead, tried, ranked)? {
                 return Ok(true);
             }
-            done.remove(&b);
+            for b in g {
+                done.remove(b);
+            }
             order.pop();
         }
     }
     dead.insert(done.clone());
     Ok(false)
+}
+
+/// `v` scaled to unit length, if it has one.
+fn unit2(v: [f64; 2]) -> Option<[f64; 2]> {
+    let l = v[0].hypot(v[1]);
+    (l.is_finite() && l > 0.0).then(|| [v[0] / l, v[1] / l])
+}
+
+/// A stroke as the result lists it: its flange, or a list of them.
+fn stroke_json(g: &[usize]) -> Value {
+    match g {
+        [one] => json!(one),
+        many => json!(many),
+    }
+}
+
+/// A stroke in words: `3`, or `[0, 1]` for several bent at once.
+fn stroke_words(g: &[usize]) -> String {
+    match g {
+        [one] => one.to_string(),
+        many => {
+            let each: Vec<String> = many.iter().map(ToString::to_string).collect();
+            format!("[{}]", each.join(", "))
+        }
+    }
+}
+
+/// The length of a segment of segmented tooling at bend `x`: as given,
+/// or else the bend's own.
+fn segment_length(x: &sheetmetal::Bend, given: Option<f64>) -> f64 {
+    given.unwrap_or_else(|| (x.end[0] - x.start[0]).hypot(x.end[1] - x.start[1]))
 }
 
 fn degrees(r: f64) -> f64 {
@@ -920,41 +1114,65 @@ fn pieces_of<'a>(
     Ok(pieces)
 }
 
-/// What the search over orders found for one part.
+/// What the search over orders (or the check of an order given) found
+/// for one part.
 struct Proof {
     feasible: bool,
-    order: Vec<(usize, BTreeSet<usize>, Cleared)>,
+    /// Whether the order was given (checked, not searched).
+    given: bool,
+    order: Vec<Step>,
     tried: Tried,
     work: usize,
     clearance: f64,
+    /// With segmented tooling, the tools' length at each bend.
+    segments: Option<Vec<f64>>,
 }
 
 impl Proof {
     /// A step tried that failed not for certain (a collision only not
-    /// proven clear, or an interval no halving proved), with its words:
-    /// while there is one, no order is not proven either.
+    /// proven clear, or an interval no halving proved, in either
+    /// orientation tried), with its words: while there is one, no order
+    /// is not proven either.
     fn doubtful(&self) -> Option<String> {
-        self.tried.iter().find_map(|((done, b), r)| match r {
-            Err(f) if !f.certain(self.clearance) => Some(f.words(*b, done, self.clearance)),
+        self.tried.iter().find_map(|((done, g), r)| match r {
+            Err(f) if !f.certain(self.clearance) => f
+                .reported(self.clearance)
+                .map(|x| x.words(g, done, self.clearance)),
             _ => None,
         })
     }
 
     /// The first step that failed for certain, in words.
     fn collision(&self) -> Option<String> {
-        self.tried.iter().find_map(|((done, b), r)| match r {
-            Err(f) if f.certain(self.clearance) => Some(f.words(*b, done, self.clearance)),
+        self.tried.iter().find_map(|((done, g), r)| match r {
+            Err(f) if f.certain(self.clearance) => f
+                .reported(self.clearance)
+                .map(|x| x.words(g, done, self.clearance)),
             _ => None,
         })
     }
 
-    /// The measure's verdict on one part and why (`name` its feature):
-    /// `bendable` with the order, `notProven` while a step failed not for
-    /// certain, `collides` only when every step tried failed for certain.
+    /// The verdict on one part and why (`name` its feature): `bendable`
+    /// with the order; for a search, `notProven` while a step failed not
+    /// for certain and `collides` only when every step tried failed for
+    /// certain; for an order given, `collides` when a step of it fails
+    /// for certain, else `notProven`.
     fn verdict(&self, name: &str) -> Verdict {
         if self.feasible {
-            Verdict::Bendable(self.order.iter().map(|(b, _, _)| *b).collect())
-        } else if let Some(why) = self.doubtful() {
+            return Verdict::Bendable(self.order.iter().map(|(g, _, _)| g.clone()).collect());
+        }
+        if self.given {
+            return match (self.collision(), self.doubtful()) {
+                (Some(why), _) => {
+                    Verdict::Collides(format!("`{name}` cannot be bent in the order given: {why}"))
+                }
+                (None, why) => Verdict::NotProven(format!(
+                    "`{name}`: the order given is not proven: {}",
+                    why.unwrap_or_else(|| "a step does not clear".into())
+                )),
+            };
+        }
+        if let Some(why) = self.doubtful() {
             Verdict::NotProven(format!("`{name}`: no order was found, but {why}"))
         } else {
             let why = self
@@ -968,7 +1186,8 @@ impl Proof {
 /// What the measure says of one part.
 #[derive(Debug, PartialEq)]
 enum Verdict {
-    Bendable(Vec<usize>),
+    /// The strokes in order.
+    Bendable(Vec<Vec<usize>>),
     NotProven(String),
     Collides(String),
 }
@@ -980,28 +1199,37 @@ enum Stopped {
     Error(String),
 }
 
+/// The tools' length as asked for: one for every bend (`None`: the
+/// default of the tooling), or one per flange (`None`: the bend's own).
+#[derive(Clone, Debug)]
+enum Length {
+    One(Option<f64>),
+    PerFlange(Vec<Option<f64>>),
+}
+
 /// The tools and bounds a check is made with.
 struct Tools {
     punch: Vec<[f64; 2]>,
     die: Vec<[f64; 2]>,
-    length: Option<f64>,
+    length: Length,
+    /// Segmented tooling asked for (`None`: as `length` implies, one
+    /// piece unless it lists a length per flange).
+    segmented: Option<bool>,
     clearance: Option<f64>,
+    /// The order to check, as given (flange indices per stroke).
+    order: Option<Vec<Vec<usize>>>,
     max_work: usize,
 }
 
 /// A step that failed with the part as it lies (`given`), given what it
-/// does turned end for end: cleared when turned clears; failing for
-/// certain only when both fail for certain; otherwise the failure not
-/// certain (so no order is not proven while it stands).
-fn turn_or(
-    given: Failure,
-    turned: Result<Cleared, Failure>,
-    clearance: f64,
-) -> Result<Cleared, Failure> {
+/// does turned end for end: cleared when turned clears; otherwise both
+/// failures, so the step fails for certain only when both fail for
+/// certain ([`Failed::certain`]) and is reported by the one not certain
+/// ([`Failed::reported`]).
+fn turn_or(given: Failure, turned: Result<Cleared, Failure>) -> Result<Cleared, Failed> {
     match turned {
         Ok(cleared) => Ok(cleared),
-        Err(t) if given.certain(clearance) && !t.certain(clearance) => Err(t),
-        Err(_) => Err(given),
+        Err(t) => Err(Failed(vec![given, t])),
     }
 }
 
@@ -1011,20 +1239,90 @@ fn mirrored(points: &[[f64; 2]]) -> Vec<[f64; 2]> {
     points.iter().rev().map(|p| [-p[0], p[1]]).collect()
 }
 
-/// Whether two polygons have the same points (in any order): a tool
-/// symmetric in `x` is its own mirror image, so turning the part changes
-/// nothing and is not checked twice.
-fn same_points(a: &[[f64; 2]], b: &[[f64; 2]]) -> bool {
-    let sorted = |p: &[[f64; 2]]| {
-        let mut p = p.to_vec();
-        p.sort_by(|x, y| x[0].total_cmp(&y[0]).then(x[1].total_cmp(&y[1])));
-        p
-    };
-    a.len() == b.len() && sorted(a) == sorted(b)
+/// Whether a tool's polygon is its own mirror image in `x`: the mirrored
+/// polygon is the same cyclic list of points (any first point, either
+/// sense), compared exactly (−0 equal to 0). The same SET of points is
+/// not enough: an asymmetric outline can have a symmetric set of
+/// corners. Any difference, however small, has the turned orientation
+/// checked as well.
+fn symmetric(points: &[[f64; 2]]) -> bool {
+    let key = |q: &[f64; 2]| ((q[0] + 0.0).to_bits(), (q[1] + 0.0).to_bits());
+    let a: Vec<(u64, u64)> = points.iter().map(key).collect();
+    let m: Vec<(u64, u64)> = mirrored(points).iter().map(key).collect();
+    let back: Vec<(u64, u64)> = m.iter().rev().copied().collect();
+    let n = a.len();
+    if n == 0 || m.len() != n {
+        return false;
+    }
+    (0..n).any(|shift| {
+        [&m, &back]
+            .iter()
+            .any(|c| (0..n).all(|i| a.get(i) == c.get((i + shift) % n)))
+    })
+}
+
+/// The order given, checked against the part: each stroke's flanges on
+/// one line with its first ([`one_line`]), every flange once.
+fn checked_order(
+    part: &sheetmetal::Part,
+    tol: &Tolerance,
+    order: &[Vec<usize>],
+) -> Result<Vec<Vec<usize>>, String> {
+    let n = part.bends.len();
+    let mut seen = BTreeSet::new();
+    for g in order {
+        let Some(&first) = g.first() else {
+            return Err("`order` has an empty stroke".into());
+        };
+        for &b in g {
+            if b >= n {
+                return Err(format!(
+                    "`order` names flanges by their index, 0 to {}; got {b}",
+                    n.saturating_sub(1)
+                ));
+            }
+            if !seen.insert(b) {
+                return Err(format!("`order` lists flange {b} twice"));
+            }
+            if !one_line(part, first, b, tol) {
+                return Err(format!(
+                    "`order`: flanges {first} and {b} cannot be bent in one stroke: they are not on one line of one flat with the same angle, direction, radius and K-factor"
+                ));
+            }
+        }
+    }
+    if seen.len() != n {
+        let missing: Vec<usize> = (0..n).filter(|i| !seen.contains(i)).collect();
+        return Err(format!("`order` leaves out flanges {missing:?}"));
+    }
+    Ok(order.to_vec())
+}
+
+/// The tooling asked for, per bend of a part of `n`.
+fn tooling_of(length: &Length, segmented: Option<bool>, n: usize) -> Result<Tooling, String> {
+    match (length, segmented) {
+        (Length::One(l), None | Some(false)) => Ok(Tooling::Whole(*l)),
+        (Length::One(l), Some(true)) => Ok(Tooling::Segmented(vec![*l; n])),
+        (Length::PerFlange(_), Some(false)) => Err(
+            "`length` lists a length per flange, which is segmented tooling: leave out `segmented` or set it true"
+                .into(),
+        ),
+        (Length::PerFlange(list), _) => {
+            if list.len() == n {
+                Ok(Tooling::Segmented(list.clone()))
+            } else {
+                Err(format!(
+                    "`length` lists one length per flange ({n}), got {}",
+                    list.len()
+                ))
+            }
+        }
+    }
 }
 
 /// Searches for an order in which part `feature` of `doc` can be bent
-/// with `tools` (the command's and the measure's one search).
+/// with `tools`, or checks the order given (the command's and the
+/// measure's one proof).
 fn prove(
     doc: &craft3d_doc::Document,
     regen: &craft3d_regen::Regen,
@@ -1040,6 +1338,12 @@ fn prove(
         ));
     }
     let clearance = tools.clearance.unwrap_or(tol.linear);
+    let n = part.bends.len();
+    let tooling = tooling_of(&tools.length, tools.segmented, n).map_err(Stopped::Error)?;
+    let given = match &tools.order {
+        Some(order) => Some(checked_order(part, &tol, order).map_err(Stopped::Error)?),
+        None => None,
+    };
     // The tools must be simple outlines: checked once here, so a bad one
     // is an error before any search.
     let unit = craft3d_math::Frame::WORLD;
@@ -1047,7 +1351,7 @@ fn prove(
         // As tall as the polygon is wide, so the check holds at any scale.
         let size = points
             .iter()
-            .flat_map(|q| q.iter())
+            .flat_map(|p| p.iter())
             .fold(0.0_f64, |m, v| m.max(v.abs()))
             .max(tol.linear * 1e3);
         prism(points, &unit, 0.0, size, &tol)
@@ -1055,10 +1359,17 @@ fn prove(
     }
     let slabs = slabs_of(part, &tol).map_err(Stopped::Error)?;
     let pieces = pieces_of(part, &slabs, &tol).map_err(Stopped::Error)?;
-    let turned_tools = {
-        let (punch, die) = (mirrored(&tools.punch), mirrored(&tools.die));
-        (!(same_points(&punch, &tools.punch) && same_points(&die, &tools.die)))
-            .then_some((punch, die))
+    let turned_tools = (!(symmetric(&tools.punch) && symmetric(&tools.die)))
+        .then(|| (mirrored(&tools.punch), mirrored(&tools.die)));
+    let segments = match &tooling {
+        Tooling::Whole(_) => None,
+        Tooling::Segmented(lengths) => Some(
+            part.bends
+                .iter()
+                .enumerate()
+                .map(|(i, x)| segment_length(x, lengths.get(i).copied().flatten()))
+                .collect(),
+        ),
     };
     let check = Check {
         part,
@@ -1066,8 +1377,7 @@ fn prove(
         punch: tools.punch,
         die: tools.die,
         turned_tools,
-        turned: std::cell::Cell::new(false),
-        length: tools.length,
+        tooling,
         clearance,
         pieces,
         built: final_worlds(part),
@@ -1075,38 +1385,137 @@ fn prove(
         max_work: tools.max_work,
         ran_out: std::cell::Cell::new(false),
     };
-    let mut ranked: Vec<usize> = (0..part.bends.len()).collect();
-    ranked.sort_by(|&a, &b| {
-        carried(part, a)
-            .cmp(&carried(part, b))
-            .then(
-                flange_length(part, a)
-                    .unwrap_or(f64::INFINITY)
-                    .total_cmp(&flange_length(part, b).unwrap_or(f64::INFINITY)),
-            )
-            .then(a.cmp(&b))
-    });
-    let mut done = BTreeSet::new();
-    let mut order = Vec::new();
-    let mut dead = BTreeSet::new();
-    let mut tried: Tried = BTreeMap::new();
-    let feasible = search(
-        &check, &mut done, &mut order, &mut dead, &mut tried, &ranked,
-    )
-    .map_err(|e| {
+    let stopped = |e: String| {
         if check.ran_out.get() {
             Stopped::OutOfWork(e)
         } else {
             Stopped::Error(e)
         }
-    })?;
+    };
+    let mut done = BTreeSet::new();
+    let mut order: Vec<Step> = Vec::new();
+    let mut tried: Tried = BTreeMap::new();
+    let feasible = match &given {
+        // The caller's order, checked step by step (every step, so each
+        // one that does not clear is listed).
+        Some(strokes) => {
+            let mut every = true;
+            for g in strokes {
+                let r = check.step(&done, g).map_err(stopped)?;
+                match &r {
+                    Ok(cleared) => order.push((g.clone(), done.clone(), *cleared)),
+                    Err(_) => every = false,
+                }
+                tried.insert((done.clone(), g.clone()), r);
+                done.extend(g.iter().copied());
+            }
+            every
+        }
+        None => {
+            // The bends on one line in one stroke; the strokes whose
+            // flanges carry the fewest others first, then the shorter,
+            // then the lower index.
+            let key = |g: &Vec<usize>| {
+                let carries = g.iter().map(|&b| carried(part, b)).min().unwrap_or(0);
+                let short = g
+                    .iter()
+                    .map(|&b| flange_length(part, b).unwrap_or(f64::INFINITY))
+                    .fold(f64::INFINITY, f64::min);
+                (carries, short, g.first().copied().unwrap_or(0))
+            };
+            let mut ranked = strokes(part, &tol);
+            ranked.sort_by(|a, b| {
+                let (ka, kb) = (key(a), key(b));
+                ka.0.cmp(&kb.0)
+                    .then(ka.1.total_cmp(&kb.1))
+                    .then(ka.2.cmp(&kb.2))
+            });
+            let mut dead = BTreeSet::new();
+            search(
+                &check, &mut done, &mut order, &mut dead, &mut tried, &ranked,
+            )
+            .map_err(stopped)?
+        }
+    };
     Ok(Proof {
         feasible,
+        given: given.is_some(),
         order,
         tried,
         work: check.work.get(),
         clearance,
+        segments,
     })
+}
+
+/// `length` of the command: one number for every bend, or a list of one
+/// per flange (a number, or null for the bend's own length).
+fn length_param(p: &Params) -> Result<Length, CommandError> {
+    let id = p.command();
+    let positive = |v: &Value| v.as_f64().filter(|l| l.is_finite() && *l > 0.0);
+    match p.get("length") {
+        None | Some(Value::Null) => Ok(Length::One(None)),
+        Some(Value::Array(list)) => list
+            .iter()
+            .enumerate()
+            .map(|(i, v)| match v {
+                Value::Null => Ok(None),
+                v => positive(v).map(Some).ok_or_else(|| {
+                    CommandError::new(format!(
+                        "{id}: `length` of flange {i} must be more than 0 or null"
+                    ))
+                }),
+            })
+            .collect::<Result<_, _>>()
+            .map(Length::PerFlange),
+        Some(v) => match positive(v) {
+            Some(l) => Ok(Length::One(Some(l))),
+            None => fail(format!(
+                "{id}: `length` must be more than 0, or a list of one per flange"
+            )),
+        },
+    }
+}
+
+/// `order` of the command as given: strokes, each a flange index or a
+/// list of them (checked against the part in [`checked_order`]).
+fn order_param(p: &Params) -> Result<Option<Vec<Vec<usize>>>, CommandError> {
+    let id = p.command();
+    let list = match p.get("order") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::Array(list)) => list,
+        Some(_) => {
+            return fail(format!(
+                "{id}: `order` is a list of flanges (indices), each a number or a list of flanges bent in one stroke"
+            ));
+        }
+    };
+    let index = |v: &Value| -> Result<usize, CommandError> {
+        v.as_u64()
+            .and_then(|i| usize::try_from(i).ok())
+            .ok_or_else(|| {
+                CommandError::new(format!(
+                    "{id}: `order` names flanges by their index (whole numbers from 0)"
+                ))
+            })
+    };
+    let mut out = Vec::with_capacity(list.len());
+    for item in list {
+        out.push(match item {
+            Value::Array(many) => many.iter().map(index).collect::<Result<_, _>>()?,
+            one => vec![index(one)?],
+        });
+    }
+    Ok(Some(out))
+}
+
+/// `segmented` as given: true or false, or left out.
+fn segmented_param(v: Option<&Value>) -> Result<Option<bool>, String> {
+    match v {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(b)) => Ok(Some(*b)),
+        Some(_) => Err("`segmented` must be true or false".into()),
+    }
 }
 
 fn bend_sequence(session: &mut Session, params: &Value) -> Run {
@@ -1114,16 +1523,34 @@ fn bend_sequence(session: &mut Session, params: &Value) -> Run {
     let p = Params::new(
         ID,
         params,
-        &["feature", "punch", "die", "length", "clearance"],
+        &[
+            "feature",
+            "punch",
+            "die",
+            "length",
+            "segmented",
+            "clearance",
+            "order",
+            "maxWork",
+        ],
     )?;
     let punch = polygon(&p, "punch")?;
     let die = polygon(&p, "die")?;
-    let length = p.number("length")?;
-    if let Some(l) = length
-        && !(l.is_finite() && l > 0.0)
-    {
-        return fail(format!("{ID}: `length` must be more than 0, got {l}"));
-    }
+    let length = length_param(&p)?;
+    let segmented =
+        segmented_param(p.get("segmented")).map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
+    let order = order_param(&p)?;
+    let max_work = match p.get("maxWork") {
+        None | Some(Value::Null) => MAX_WORK,
+        Some(v) => match v.as_u64() {
+            Some(n) if (1..=MAX_WORK_ASKED).contains(&n) => usize::try_from(n).unwrap_or(MAX_WORK),
+            _ => {
+                return fail(format!(
+                    "{ID}: `maxWork` is a whole number from 1 to {MAX_WORK_ASKED}"
+                ));
+            }
+        },
+    };
     let clearance = p.number("clearance")?;
     if let Some(c) = clearance
         && !(c.is_finite() && c > 0.0)
@@ -1141,8 +1568,10 @@ fn bend_sequence(session: &mut Session, params: &Value) -> Run {
         punch,
         die,
         length,
+        segmented,
         clearance,
-        max_work: MAX_WORK,
+        order,
+        max_work,
     };
     let proof = prove(doc, &regen, feature, tools).map_err(|e| match e {
         Stopped::OutOfWork(e) | Stopped::Error(e) => CommandError::new(format!("{ID}: {e}")),
@@ -1151,11 +1580,19 @@ fn bend_sequence(session: &mut Session, params: &Value) -> Run {
     let steps: Vec<Value> = proof
         .order
         .iter()
-        .map(|(b, before, c)| {
+        .map(|(g, before, c)| {
             let mut v = c.json(PUNCH);
-            v.insert("flange".into(), json!(b));
+            v.insert("flange".into(), json!(g.first()));
+            v.insert("flanges".into(), json!(g));
             v.insert("done".into(), json!(before.iter().collect::<Vec<_>>()));
             v.insert("turned".into(), json!(c.turned));
+            if let Some(lengths) = &proof.segments {
+                let each: Vec<Value> = g
+                    .iter()
+                    .map(|&i| lengths.get(i).map_or(Value::Null, |l| json!(l)))
+                    .collect();
+                v.insert("segments".into(), Value::Array(each));
+            }
             v.insert("die".into(), Value::Object(c.json(DIE)));
             Value::Object(v)
         })
@@ -1163,11 +1600,13 @@ fn bend_sequence(session: &mut Session, params: &Value) -> Run {
     let collisions: Vec<Value> = proof
         .tried
         .iter()
-        .filter_map(|((before, b), r)| r.as_ref().err().map(|f| (before, b, f)))
+        .filter_map(|((before, g), r)| r.as_ref().err().map(|f| (before, g, f)))
+        .flat_map(|(before, g, failed)| failed.0.iter().map(move |f| (before, g, failed, f)))
         .take(MAX_LISTED)
-        .map(|(before, b, f)| {
+        .map(|(before, g, failed, f)| {
             let mut v = serde_json::Map::new();
-            v.insert("flange".into(), json!(b));
+            v.insert("flange".into(), json!(g.first()));
+            v.insert("flanges".into(), json!(g));
             v.insert("done".into(), json!(before.iter().collect::<Vec<_>>()));
             match f {
                 Failure::Collision {
@@ -1190,12 +1629,12 @@ fn bend_sequence(session: &mut Session, params: &Value) -> Run {
                     v.insert("notProven".into(), json!([degrees(*from), degrees(*to)]));
                 }
             }
-            v.insert("certain".into(), json!(f.certain(proof.clearance)));
+            v.insert("certain".into(), json!(failed.certain(proof.clearance)));
             Value::Object(v)
         })
         .collect();
-    // Whether no order is proven: every step that failed failed for
-    // certain (null when an order was found).
+    // Whether no order is proven (for an order given: that it fails);
+    // null when it clears.
     let proven = if feasible {
         Value::Null
     } else {
@@ -1205,11 +1644,12 @@ fn bend_sequence(session: &mut Session, params: &Value) -> Run {
         "feature": feature.to_string(),
         "feasible": feasible,
         "infeasibleProven": proven,
-        "order": if feasible { json!(proof.order.iter().map(|(b, _, _)| b).collect::<Vec<_>>()) } else { Value::Null },
-        "steps": if feasible { json!(steps) } else { json!([]) },
+        "given": proof.given,
+        "order": if feasible { json!(proof.order.iter().map(|(g, _, _)| stroke_json(g)).collect::<Vec<_>>()) } else { Value::Null },
+        "steps": if feasible || proof.given { json!(steps) } else { json!([]) },
         "collisions": collisions,
         "clearance": proof.clearance,
-        "unchecked": UNCHECKED,
+        "unchecked": unchecked(proof.segments.is_some()),
         "work": proof.work,
         "lengthUnit": length_unit(doc),
     }))
@@ -1218,7 +1658,15 @@ fn bend_sequence(session: &mut Session, params: &Value) -> Run {
 // ------------------------------------------------------------- the measure
 
 /// The parameters of the assertion measure `bendable`.
-pub(crate) const MEASURE_KEYS: [&str; 6] = ["of", "punch", "die", "length", "clearance", "maxWork"];
+pub(crate) const MEASURE_KEYS: [&str; 7] = [
+    "of",
+    "punch",
+    "die",
+    "length",
+    "segmented",
+    "clearance",
+    "maxWork",
+];
 
 /// Its keys whose values are expressions (lists of points of them for a
 /// tool).
@@ -1274,13 +1722,16 @@ fn positive(ctx: &Ctx<'_>, p: &Map<String, Value>, key: &str) -> Result<Option<f
 /// step that could not be told and why: a collision only not proven
 /// clear, an interval of the stroke no halving proved, or the search
 /// running out of its work (`maxWork`, shared by the parts, at most
-/// 20000 distances).
+/// 20000 distances). The tools are one piece reaching past the part
+/// unless `length` says how long or `segmented` asks for segmented
+/// tooling (a segment per bend), as in the command.
 pub(crate) fn take(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
     crate::verify_cmds::only(p, &MEASURE_KEYS)?;
     let punch = tool_points(ctx, p, "punch")?;
     let die = tool_points(ctx, p, "die")?;
     let length = positive(ctx, p, "length")?;
     let clearance = positive(ctx, p, "clearance")?;
+    let segmented = segmented_param(p.get("segmented"))?;
     let max_work = match p.get("maxWork").filter(|v| !v.is_null()) {
         None => MAX_WORK,
         Some(v) => v
@@ -1312,8 +1763,10 @@ pub(crate) fn take(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, Str
         let tools = Tools {
             punch: punch.clone(),
             die: die.clone(),
-            length,
+            length: Length::One(length),
+            segmented,
             clearance,
+            order: None,
             max_work: left,
         };
         match prove(ctx.doc, ctx.regen, id, tools) {
@@ -1322,10 +1775,17 @@ pub(crate) fn take(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, Str
                 one.insert("work".into(), proof.work.into());
                 match proof.verdict(&name) {
                     Verdict::Bendable(order) => {
-                        let words: Vec<String> = order.iter().map(ToString::to_string).collect();
+                        let words: Vec<String> = order.iter().map(|g| stroke_words(g)).collect();
                         orders.push(format!("`{name}` in the order {}", words.join(", ")));
                         one.insert("verdict".into(), "bendable".into());
-                        one.insert("order".into(), json!(order));
+                        one.insert(
+                            "order".into(),
+                            order
+                                .iter()
+                                .map(|g| stroke_json(g))
+                                .collect::<Vec<_>>()
+                                .into(),
+                        );
                     }
                     Verdict::NotProven(why) => {
                         one.insert("verdict".into(), "notProven".into());
@@ -1364,7 +1824,10 @@ pub(crate) fn take(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, Str
     out.detail.insert("parts".into(), Value::Array(listed));
     out.detail
         .insert("work".into(), max_work.saturating_sub(left).into());
-    out.detail.insert("unchecked".into(), UNCHECKED.into());
+    out.detail.insert(
+        "unchecked".into(),
+        unchecked(segmented == Some(true)).into(),
+    );
     Ok(out)
 }
 
@@ -1449,8 +1912,7 @@ mod tests {
                 punch: vec![[-k, 0.0], [k, 0.0], [k, 100.0 * k], [-k, 100.0 * k]],
                 die: vec![[-k, -k], [k, -k], [k, 0.0], [-k, 0.0]],
                 turned_tools: None,
-                turned: std::cell::Cell::new(false),
-                length: None,
+                tooling: Tooling::Whole(None),
                 clearance: tol.linear,
                 pieces: pieces_of(part, &slabs, &tol).unwrap(),
                 built: final_worlds(part),
@@ -1484,7 +1946,7 @@ mod tests {
             let bend = &part.bends[b];
             let old_premise = diagonal + 2.0 * (bend.radius + bend.thickness);
             for done in [BTreeSet::from([0]), BTreeSet::new()] {
-                let stroke = check.stroke(&done, b).unwrap();
+                let stroke = check.stroke(&done, &[b]).unwrap();
                 let steps = 256;
                 let theta = bend.theta();
                 let h = theta / steps as f64;
@@ -1493,16 +1955,17 @@ mod tests {
                 let mut previous: Option<Vec<Vec3>> = None;
                 for j in 0..=steps {
                     let rho = h * j as f64;
-                    let worlds = stage_worlds(part, &check.angles(&done, b, rho), &tol).unwrap();
+                    let worlds = stage_worlds(part, &check.angles(&done, &[b], rho), &tol).unwrap();
                     let frame = bend_frame(part, b, rho, &worlds).unwrap();
                     let into_tool = Transform::from_frame(&frame.tool(0.0).unwrap())
                         .inverse()
                         .unwrap();
                     let mut now = Vec::new();
                     let mut seen = BTreeSet::new();
-                    for piece in check
-                        .checked(&done, b, PUNCH)
-                        .chain(check.checked(&done, b, DIE))
+                    for piece in
+                        check
+                            .checked(&done, &[b], PUNCH)
+                            .chain(check.checked(&done, &[b], DIE))
                     {
                         if !seen.insert(piece.what) {
                             continue;
@@ -1573,8 +2036,7 @@ mod tests {
             punch: vec![[-k, 0.0], [k, 0.0], [k, 100.0 * k], [-k, 100.0 * k]],
             die: vec![[-k, -k], [k, -k], [k, 0.0], [-k, 0.0]],
             turned_tools: None,
-            turned: std::cell::Cell::new(false),
-            length: None,
+            tooling: Tooling::Whole(None),
             clearance: tol.linear,
             pieces: pieces_of(part, &slabs, &tol).unwrap(),
             built: final_worlds(part),
@@ -1583,10 +2045,12 @@ mod tests {
             ran_out: std::cell::Cell::new(false),
         };
         let done = BTreeSet::new();
-        assert!(check.stroke(&done, 1).is_ok());
-        assert!(check.heights(&done, 1, 0.1, &[Kind::Flat(0)]).is_ok());
+        assert!(check.stroke(&done, &[1]).is_ok());
+        assert!(check.heights(&done, &[1], 0.1, &[Kind::Flat(0)]).is_ok());
         // A piece the part does not have: no lowest point.
-        let err = check.heights(&done, 1, 0.1, &[Kind::Bend(7)]).unwrap_err();
+        let err = check
+            .heights(&done, &[1], 0.1, &[Kind::Bend(7)])
+            .unwrap_err();
         assert!(err.contains("missing") || err.contains("lowest"), "{err}");
         let base = check
             .pieces
@@ -1594,7 +2058,7 @@ mod tests {
             .find(|p| p.what == Kind::Flat(0))
             .unwrap();
         base.corners.clear();
-        let err = check.stroke(&done, 1).unwrap_err();
+        let err = check.stroke(&done, &[1]).unwrap_err();
         assert!(err.contains("no points"), "{err}");
     }
 
@@ -1612,14 +2076,16 @@ mod tests {
     fn proof(tried: Vec<Result<Cleared, Failure>>) -> Proof {
         Proof {
             feasible: false,
+            given: false,
             order: Vec::new(),
             tried: tried
                 .into_iter()
                 .enumerate()
-                .map(|(b, r)| ((BTreeSet::new(), b), r))
+                .map(|(b, r)| ((BTreeSet::new(), vec![b]), r.map_err(|f| Failed(vec![f]))))
                 .collect(),
             work: 0,
             clearance: 0.1,
+            segments: None,
         }
     }
 
@@ -1670,21 +2136,89 @@ mod tests {
             to: 0.1,
             turned: true,
         };
-        assert!(turn_or(certain.clone(), Ok(cleared), 0.1).is_ok_and(|c| c.turned));
-        let r = turn_or(certain.clone(), Err(turned_doubtful), 0.1).unwrap_err();
-        assert!(!r.certain(0.1) && matches!(r, Failure::Collision { turned: true, .. }));
-        let r = turn_or(certain.clone(), Err(turned_interval), 0.1).unwrap_err();
-        assert!(matches!(r, Failure::NotProven { turned: true, .. }));
-        let r = turn_or(certain.clone(), Err(turned_certain), 0.1).unwrap_err();
-        assert!(r.certain(0.1) && matches!(r, Failure::Collision { turned: false, .. }));
+        let c = 0.1;
+        assert!(turn_or(certain.clone(), Ok(cleared)).is_ok_and(|c| c.turned));
+        // Both failures are kept; the step is reported by the one not
+        // certain and fails for certain only when both do.
+        let f = turn_or(certain.clone(), Err(turned_doubtful)).unwrap_err();
+        assert_eq!(f.0.len(), 2);
+        assert!(!f.certain(c));
+        let r = f.reported(c).unwrap();
+        assert!(!r.certain(c) && matches!(r, Failure::Collision { turned: true, .. }));
+        let f = turn_or(certain.clone(), Err(turned_interval)).unwrap_err();
+        assert!(!f.certain(c));
+        assert!(matches!(
+            f.reported(c),
+            Some(Failure::NotProven { turned: true, .. })
+        ));
+        let f = turn_or(certain.clone(), Err(turned_certain)).unwrap_err();
+        assert!(f.certain(c));
+        let r = f.reported(c).unwrap();
+        assert!(r.certain(c) && matches!(r, Failure::Collision { turned: false, .. }));
         // Given doubtful: it stays, whatever turned finds.
         let doubtful = collision(0.2, 0.05, false);
-        let r = turn_or(doubtful, Err(certain), 0.1).unwrap_err();
-        assert!(!r.certain(0.1));
-        // A symmetric tool is its own mirror image.
+        let f = turn_or(doubtful, Err(certain)).unwrap_err();
+        assert!(!f.certain(c));
+        assert!(matches!(
+            f.reported(c),
+            Some(Failure::Collision { turned: false, .. })
+        ));
+        // A symmetric tool is its own mirror image, whichever point it
+        // starts at and either way round; −0 is 0.
         let straight = [[-5.0, 0.0], [5.0, 0.0], [5.0, 100.0], [-5.0, 100.0]];
-        assert!(same_points(&mirrored(&straight), &straight));
+        assert!(symmetric(&straight));
+        assert!(symmetric(&[
+            [5.0, 100.0],
+            [-5.0, 100.0],
+            [-5.0, 0.0],
+            [5.0, 0.0]
+        ]));
+        assert!(symmetric(&[
+            [0.0, 0.0],
+            [5.0, 10.0],
+            [-0.0, 20.0],
+            [-5.0, 10.0]
+        ]));
         let goose = [[-25.0, 0.0], [5.0, 0.0], [5.0, 30.0], [-25.0, 30.0]];
-        assert!(!same_points(&mirrored(&goose), &goose));
+        assert!(!symmetric(&goose));
+    }
+
+    /// An asymmetric outline whose set of points is symmetric (review
+    /// 2026-10-29): compared as a set it was taken for its own mirror
+    /// image, so the part was never turned and a step could be a false
+    /// certain collision. As a cyclic list it is not symmetric.
+    #[test]
+    fn a_symmetric_set_of_points_is_not_a_symmetric_tool() {
+        let tool = [[-2.0, 0.0], [2.0, 0.0], [1.0, 2.0], [-1.0, 2.0], [0.0, 1.0]];
+        let mut set: Vec<[f64; 2]> = mirrored(&tool);
+        let mut own = tool.to_vec();
+        let order = |p: &[f64; 2], q: &[f64; 2]| p[0].total_cmp(&q[0]).then(p[1].total_cmp(&q[1]));
+        set.sort_by(order);
+        own.sort_by(order);
+        let zero = |v: Vec<[f64; 2]>| -> Vec<[f64; 2]> {
+            v.into_iter().map(|q| [q[0] + 0.0, q[1] + 0.0]).collect()
+        };
+        assert_eq!(zero(set), zero(own), "the same set of points");
+        assert!(!symmetric(&tool));
+        // Its mirror image is a polygon of its own, not symmetric either.
+        assert!(!symmetric(&mirrored(&tool)));
+    }
+
+    /// An order given fails for certain when a step of it does, and is
+    /// otherwise not proven.
+    #[test]
+    fn an_order_given_collides_when_a_step_of_it_does() {
+        let mut p = proof(vec![Err(collision(0.2, 0.05, false))]);
+        p.given = true;
+        assert!(matches!(p.verdict("U"), Verdict::NotProven(_)));
+        let mut p = proof(vec![
+            Err(collision(0.2, 0.05, false)),
+            Err(collision(0.0, 0.0, false)),
+        ]);
+        p.given = true;
+        let Verdict::Collides(why) = p.verdict("U") else {
+            panic!("{:?}", p.verdict("U"));
+        };
+        assert!(why.contains("order given"), "{why}");
     }
 }

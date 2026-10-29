@@ -18,9 +18,10 @@
 //!   tangent lines, the other strip flat on the die, clears with a narrow
 //!   punch; a tray with flanges on two edges that meet clears its first
 //!   bend in either order (the other strip lies on the die along the
-//!   bend), its second only with a punch shorter than the edge (the
-//!   standing wall at the corner is in the punch's way, as on a press
-//!   brake), while a Z as narrow (one wall up, one down) cannot be bent in
+//!   bend), its second only with a punch shorter than the edge or with
+//!   segmented tooling (the standing wall at the corner is in the way of
+//!   the default tools, which reach past the part, as on a press brake;
+//!   a saved `bendable` without `length` keeps that meaning), while a Z as narrow (one wall up, one down) cannot be bent in
 //!   either order: the made wall goes into the die.
 //! - Bad parameters are errors.
 
@@ -300,7 +301,83 @@ fn a_tray_corner_clears_its_first_bend_and_its_second_with_a_short_punch() {
         );
         proven_below_least(&out, k);
         assert_eq!(out["feasible"], true, "scale {k}: {out}");
+        // Segmented tooling, asked for: each bend's tools as long as the
+        // bend (40), ending where it does, short of the wall standing
+        // beyond it. Never the default: a tool longer than its bend on
+        // the brake would meet that wall (the default fails closed).
+        let out = run(
+            &mut s,
+            "sheetMetal.bendSequence",
+            json!({"feature": "U", "punch": scaled(&NARROW, k), "die": scaled(&DIE, k),
+                   "segmented": true}),
+        );
+        proven_below_least(&out, k);
+        assert_eq!(out["feasible"], true, "scale {k}: {out}");
+        assert!(
+            out["unchecked"]
+                .as_str()
+                .unwrap()
+                .contains("segmented tooling assumed"),
+            "{out}"
+        );
     }
+}
+
+/// A `bendable` assertion without `length`, saved and opened again,
+/// keeps its meaning: the tools reach past the whole part (as they did
+/// when `bendable` was made), so the tray's second bend meets the wall
+/// standing at the corner, in either order: it fails. Only `segmented`
+/// asks for tools as long as each bend, which clear it (review
+/// 2026-10-29: per-bend lengths as the default changed what saved
+/// assertions said).
+#[test]
+fn a_saved_bendable_without_length_keeps_its_meaning() {
+    let k = 1.0;
+    let dir = workdir("sheetmetal-bendsequence", "bendable-saved");
+    let mut s = session_in(&dir);
+    new_document(&mut s, k);
+    part(&mut s, k, 40.0, &[(0, 10.0, "up"), (1, 10.0, "up")]);
+    let (punch, die) = (scaled(&NARROW, k), scaled(&DIE, k));
+    let whole = bendable(
+        &mut s,
+        "whole",
+        json!({"of": "U", "punch": punch, "die": die, "is": true}),
+    );
+    assert_eq!(whole["status"], "failed", "{whole}");
+    assert!(
+        whole["detail"]["unchecked"]
+            .as_str()
+            .unwrap()
+            .contains("one-piece tools"),
+        "{whole}"
+    );
+    let segmented = bendable(
+        &mut s,
+        "segmented",
+        json!({"of": "U", "punch": punch, "die": die, "segmented": true, "is": true}),
+    );
+    assert_eq!(segmented["status"], "passed", "{segmented}");
+    run(&mut s, "file.save", json!({"path": "tray.3dcraft"}));
+    run(&mut s, "file.open", json!({"path": "tray.3dcraft"}));
+    let listed = run(&mut s, "assert.list", json!({"details": true}));
+    let status = |name: &str| {
+        listed["assertions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["name"] == name)
+            .unwrap_or_else(|| panic!("no assertion {name}: {listed}"))["status"]
+            .clone()
+    };
+    assert_eq!(status("whole"), "failed", "{listed}");
+    assert_eq!(status("segmented"), "passed", "{listed}");
+    // `segmented` is a yes or no.
+    let bad = bendable(
+        &mut s,
+        "bad",
+        json!({"of": "U", "punch": punch, "die": die, "segmented": 1, "is": true}),
+    );
+    assert_eq!(bad["status"], "error", "{bad}");
 }
 
 /// A die wholly inside the sheet (a bar a quarter of the thickness thin,
@@ -440,7 +517,7 @@ fn bad_parameters_are_errors() {
             "Nowhere",
         ),
         (
-            json!({"feature": "U", "punch": punch, "die": die, "order": [0]}),
+            json!({"feature": "U", "punch": punch, "die": die, "orders": [0]}),
             "unknown parameter",
         ),
     ] {
@@ -748,8 +825,22 @@ fn a_mirrored_gooseneck_clears_with_the_part_turned_end_for_end() {
             (got - least).abs() <= 1e-6 * k,
             "scale {k}: turned gooseneck least {got} against {least}: {out}"
         );
+        // A step that clears turned is not a collision: none is listed.
+        assert_eq!(out["collisions"], json!([]), "scale {k}: {out}");
+        // Mirrored with its points reversed (the same polygon, as the
+        // check mirrors it): the same result.
+        let reversed: Vec<[f64; 2]> = mirrored.iter().rev().copied().collect();
+        let again = sequence(&mut s, k, &reversed);
+        assert_eq!(again["steps"][1]["turned"], true, "{again}");
         // The gooseneck as given needs no turn.
         let out = sequence(&mut s, k, &GOOSENECK);
-        assert_eq!(out["steps"][1]["turned"], false, "{out}");
+        let steps = out["steps"].as_array().unwrap();
+        assert!(steps.iter().all(|st| st["turned"] == false), "{out}");
+        // A symmetric punch is never tried turned.
+        let out = sequence(&mut s, k, &STRAIGHT);
+        assert_eq!(out["feasible"], false, "{out}");
+        let collisions = out["collisions"].as_array().unwrap();
+        assert!(!collisions.is_empty(), "{out}");
+        assert!(collisions.iter().all(|c| c["turned"] == false), "{out}");
     }
 }
