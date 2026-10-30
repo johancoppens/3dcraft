@@ -1047,7 +1047,7 @@ fn fs_ao(in: FullscreenOut) -> @location(0) u32 {
 }
 
 // The fragment's normal turned towards the viewer `v`.
-fn facing_normal(in: VertexOut, v: vec3<f32>) -> vec3<f32> {
+fn fragment_normal(in: VertexOut, v: vec3<f32>) -> vec3<f32> {
     var n = normal_of(in);
     if !(length(n) > 0.0) {
         n = v;
@@ -1100,7 +1100,7 @@ fn through(in: VertexOut, shaded: Shaded) -> vec3<f32> {
     let py = in.clip.y;
     let pixel = vec2<i32>(floor(in.clip.xy));
     let v = toward_viewer(in.rel);
-    let n = facing_normal(in, v);
+    let n = fragment_normal(in, v);
     let back = bitcast<f32>(textureLoad(backs_map, pixel, 0).r);
     var seen = light_behind(pixel);
     var absorbed = vec3<f32>(1.0);
@@ -1152,7 +1152,7 @@ fn studio_of(in: VertexOut) -> Shaded {
     }
     let p = scene.eye.xyz + in.rel;
     let v = toward_viewer(in.rel);
-    let n = facing_normal(in, v);
+    let n = fragment_normal(in, v);
     var ao = 1.0;
     if studio.lv_w.w > 0.5 {
         ao = bitcast<f32>(textureLoad(ao_map, vec2<u32>(u32(in.clip.x), u32(in.clip.y)), 0).r);
