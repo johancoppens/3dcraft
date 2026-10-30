@@ -37,23 +37,24 @@ use craft3d_tess::{TessParams, tessellate_body};
 use craft3d_testkit::solids;
 use std::sync::Arc;
 
-/// The bounds, measured (Strix run 41125607083, 2026-10-30: the readback
-/// renderer on RADV, radeonsi and llvmpipe, the viewport on RADV, radeonsi
-/// and llvmpipe; two scenes, three kinds, two looks): at most 2 of 56 840
-/// pixels compared more than one level apart (the housing cut open, 2
-/// levels), the largest difference 7 levels at one pixel (RADV's
-/// orthographic scene seen through, as its plain studio picture has), at
-/// most 24 of 56 850 pixels in doubt (0.042 %: reflections traced in the
-/// cut-open housing), the mean share in doubt at most 1.4 · 10⁻⁴. The
-/// bounds: the share 1/4096 (a margin of 7), 8 levels (layer 2's bound,
-/// 1 over the measured), a share in doubt of 1/256 (a margin of 9), layer
-/// 2's mean share in doubt (1/512) and its threshold for a pixel in doubt
-/// (1/64).
+/// The bounds, measured (Strix run 41142710329, 2026-10-31: the readback
+/// renderer and the viewport on RADV, radeonsi and llvmpipe; two scenes,
+/// the first with a glass ball and highlighted faces, the second with a
+/// block standing on the plate; three kinds, two looks): ids equal; at
+/// most 2 pixels more than one level apart, 2 levels at most; at most
+/// 0.27 % of the pixels in doubt, all of them where two faces in one plane
+/// lie behind a see-through front (the block on the plate: 21 to 22 levels
+/// apart there, the other face's light), the mean share in doubt as much
+/// (0.24 %: such pixels are wholly in doubt). The bounds: 1/4096 over one
+/// level, 8 levels (layer 2's), 1/256 in doubt and in the mean share (a
+/// margin of 1.4 and 1.6; layer 2's 1/512 for the mean is for traced rays,
+/// which leave a pixel partly in doubt), layer 2's threshold for a pixel
+/// in doubt (1/64).
 const SHARE_OVER_ONE: f64 = 1.0 / 4096.0;
 const MOST_LEVELS: u8 = 8;
 const DOUBT_SHARE: f32 = 1.0 / 64.0;
 const MOST_DOUBT: f64 = 1.0 / 256.0;
-const MOST_MEAN_DOUBT: f64 = 1.0 / 512.0;
+const MOST_MEAN_DOUBT: f64 = 1.0 / 256.0;
 
 struct Scene {
     name: &'static str,

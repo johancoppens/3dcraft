@@ -1004,14 +1004,25 @@ and come out "behind"); such samples lie in the band of the changes of the face 
 
 *Tolerance* (`crates/gpu/tests/studio_cut.rs`): layer 2's comparison with the plain look's band of a
 cut-open, see-through picture (`common::band_of`: silhouettes, the section's outline, the changes of
-the face behind). Measured (run 41125607083; readback and viewport on RADV, radeonsi and llvmpipe; a
-housing over parts in perspective and a plate, globe and cone in orthographic; seen through, cut open,
-both; layer 1 and polished): ids equal; at most 2 of 56 840 pixels over one level; at most 7 levels
-(one pixel, RADV's orthographic see-through, as its plain studio picture has); at most 0.042 % of the
-pixels in doubt (traced reflections), mean share 1.4 · 10⁻⁴. Bounds: 1/4096, 8 levels, 1/256 in doubt,
-mean 1/512. A first run found the cap's light 7 to 36 levels off on every adapter: the cap's triangle
-carries no normals, so the GPU shaded it with the view direction; `normal_of` now gives the cap the
-plane's normal.
+the face behind). Measured (run 41142710329; readback and viewport on RADV, radeonsi and llvmpipe; a
+housing over parts in perspective, its ball glass and the post's faces highlighted, and a plate,
+globe, cone and a block standing on the plate in orthographic; seen through, cut open, both; layer 1
+and polished): ids equal; at most 2 pixels over one level, 2 levels at most; at most 0.27 % of the
+pixels in doubt, all where two faces in one plane lie behind a see-through front (the block's bottom
+on the plate's top: 21 to 22 levels apart there, the other face's light), mean share 0.24 %. Bounds:
+1/4096, 8 levels, 1/256 in doubt and in the mean share. A first run found the cap's light 7 to 36
+levels off on every adapter: the cap's triangle carries no normals, so the GPU shaded it with the
+view direction; `normal_of` now gives the cap the plane's normal. A second found the coplanar faces
+behind the front decided otherwise in `f32` (90 pixels, 22 levels): `peel_doubt` marks a sample where
+a fragment lies within the margin of the surface behind as well as of the front.
+
+*Cost* (`see_through_and_cut_open_frames_on_a_thousand_faces`, run 41142710329: 1 002 faces, 190 096
+triangles, 1020 × 777, the viewport until the GPU is done; a new camera every draw, so every draw is
+frame 0). RADV (4 samples when opaque in layer 1, else the deferred path at one): layer 1 opaque 1.30
+ms, see-through 2.52, cut open 1.81, both 2.60; polished 2.22, 3.32, 2.30, 3.06. radeonsi (GL, one
+sample): layer 1 1.25, 2.65, 1.81, 2.62; polished 2.95, 3.97, 3.05, 3.86. Seen through costs about
+1 to 1.4 ms more (the surface behind: its geometry, occlusion and light), cut open 0.1 to 0.6 ms (the
+count and the cap); llvmpipe, for scale, 135 to 241 ms a frame either way.
 
 **Looked at** (2026-10-30, `target/evidence/studio-cut/`, the CPU renderer, polished, 8 frames;
 `crates/engine/tests/studio_cut_evidence.rs`, ignored, run on the Strix): `turbofan-cut.png` and
