@@ -1,7 +1,7 @@
 {
   "format_version": 57,
-  "written_by": "c43533b674be4220da5c832f0d31739c2a855614",
-  "how": "the CLI of that commit, built on the Strix (cargo build --release -p craft3d-cli in ~/3dcraft-evidence/solid-tex): craft3d-cli run --new '{\"units\": \"mm\"}' --script v57.steps.json --out v57.3dcraft, then craft3d-cli run v57.3dcraft --cmd document.inspect; a walnut board, a marble ball, a carbon tube (the presets, fitted to each body's box) and a cube with a noise texture of its own and two faces with granite and speckle: the solid textures of format 57 (TEMPORARY number: 55 and 56 belong to other branches); document.inspect by the CLI of a415330657dc277d7e2b59768748dfac98130063, which no longer says a pattern's mean colour back (the file is unchanged)",
+  "written_by": "5e08a4e8635f20067ce635eabefac5ac2b5525e7",
+  "how": "the engine of that commit (r1-solid-tex rebased onto main 67400436, with the temporary writer), on the Strix: Check run 41126700996, by a temporary test (crates/engine/tests/zz_write_fixture_v57.rs) that ran v57.steps.json in a session as craft3d-cli run --new '{\"units\": \"mm\"}' --script does, saved v57.3dcraft and printed it, then document.inspect of the file opened again; a walnut board, a marble ball, a carbon tube (the presets, fitted to each body's box) and a cube with a noise texture of its own and two faces with granite and speckle: the solid textures of format 57",
   "rollback": null,
   "features": [
     {
@@ -108,9 +108,7 @@
       "volume": 480000.0000000001,
       "area": 63200.00000000003,
       "appearance": {
-        "clearcoat": 0.3,
-        "clearcoatRoughness": 0.3,
-        "color": "#6c4a30",
+        "color": "#68462c",
         "metallic": 0.0,
         "pattern": {
           "alongAxis": true,
@@ -120,13 +118,13 @@
             0.06
           ],
           "colors": [
-            "#7c5638",
-            "#5e3e28",
-            "#382316"
+            "#7c5436",
+            "#5c3c26",
+            "#321f13"
           ],
           "detail": 4,
           "distortion": 0.7,
-          "grain": 0.5,
+          "grain": 0.6,
           "kind": "wood",
           "origin": [
             150.0,
@@ -134,14 +132,18 @@
             -38.000000000005116
           ],
           "rays": 0.1,
+          "roughness": [
+            0.55,
+            0.48
+          ],
           "scale": 4.000000000000426,
           "seed": 2,
           "spot": 0.5,
           "wrap": true
         },
-        "roughness": 0.5,
+        "roughness": 0.55,
         "subsurface": 0.1,
-        "subsurfaceColor": "#965028"
+        "subsurfaceColor": "#784224"
       },
       "material": {
         "density": 640.0,
@@ -158,7 +160,7 @@
       "volume": 268082.57310632925,
       "area": 20106.192982974702,
       "appearance": {
-        "color": "#e8e7e3",
+        "color": "#e2e0dd",
         "metallic": 0.0,
         "pattern": {
           "alongAxis": false,
@@ -169,11 +171,11 @@
           ],
           "colors": [
             "#f2f0ec",
-            "#d6d4d0",
-            "#606268"
+            "#dedcd8",
+            "#6e7076"
           ],
           "detail": 4,
-          "distortion": 2.0,
+          "distortion": 0.8,
           "grain": 0.0,
           "kind": "marble",
           "origin": [
@@ -182,7 +184,7 @@
             40.0
           ],
           "rays": 0.0,
-          "scale": 32.00000000000216,
+          "scale": 20.00000000000135,
           "seed": 0,
           "spot": 0.5,
           "wrap": true
@@ -207,7 +209,7 @@
       "appearance": {
         "clearcoat": 1.0,
         "clearcoatRoughness": 0.03,
-        "color": "#3a3a3f",
+        "color": "#121214",
         "metallic": 0.0,
         "pattern": {
           "alongAxis": false,
@@ -217,9 +219,9 @@
             1.0
           ],
           "colors": [
-            "#0e0e10",
-            "#28282c",
-            "#56565c"
+            "#060607",
+            "#121214",
+            "#2c2c30"
           ],
           "detail": 4,
           "distortion": 0.0,
