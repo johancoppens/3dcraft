@@ -251,8 +251,11 @@ largest error of a point light's nine-term irradiance, at the horizon, `|1/4 + c
 max(c, 0)|` at `c = 0`, and any light is a sum of point lights), plus `K (1 − cos ρ)` on the key's lit side,
 `2 K sin(ρ/2)` across its horizon, 0 on its dark side, with `ρ = 2 KEY_CONE` (the excess lies within
 `KEY_CONE` of the brightest direction, so within twice that of the key's direction), plus 0.2 % of `P`.
-A band of a few percent at every normal cannot be derived: at the bright cap's horizon the part of the
-cap below the threshold, left in the harmonics, is about 30 % off by itself. `crates/gpu/tests/studio.rs`: the GPU against the CPU (below), the same input gives the same
+A band of a few percent at every normal cannot be derived, and is not met either: measured (Strix run
+40976593867) the largest difference is 1.5 % of the mean irradiance `P/4` for `outdoor`, 6.8 % for the
+bright cap (straight up), 7.1 % for `studio` and 15 % for `workshop` (straight up: 1.32 against 0.86,
+the nine harmonics of a bright window at the horizon), each within its derived bound, which is four to
+eight times larger. `crates/gpu/tests/studio.rs`: the GPU against the CPU (below), the same input gives the same
 frame, the viewport's renderer against the CPU, the cost.
 
 **Tolerance, GPU against CPU** (`crates/gpu/tests/studio.rs`): face ids equal outside the band (as for
@@ -275,7 +278,15 @@ reference solids, 1 002 faces and 190 096 triangles, at 1020×777, on the Strix'
 viewport's renderer, until the GPU is done: plain 1.03 ms, studio 3.94 ms, studio without shadows and
 occlusion 2.13 ms (Vulkan, four samples); 0.58, 2.67 and 0.74 ms (GL, one sample). The readback renderer
 with the read back: 13.5 ms plain, 16.0 ms studio (Vulkan). The CPU renderer: 183 ms for the studio
-frame. llvmpipe, for scale: 49 ms plain, 186 ms studio in the viewport.
+frame. llvmpipe, for scale: 49 ms plain, 186 ms studio in the viewport. (A second run, 40976593867,
+after the review's changes, on a quieter machine: 0.26, 0.89 and 0.28 ms on Vulkan, the CPU frame 162
+ms.)
+
+**Preparing an environment** (`preparing_an_environment_costs`, the same run, test profile, Strix CPU):
+the split-sum table 24 ms once per process; `studio` 400 ms, `outdoor` 123 ms, `workshop` 129 ms
+(decoding the 1024×512 `.hdr` about 6 ms of each). The window spends it on its own thread and draws
+plain meanwhile; the browser's page spends it on its one thread when the fetched picture arrives (a
+hitch of that order, once per environment and session).
 
 **Looked at** (2026-10-29, `target/evidence/render-rl1/`: flange, gear, bracket and a gear reducer, plain
 and studio, the gear in the other environments and in ACES): no banding in the background, no shadow
