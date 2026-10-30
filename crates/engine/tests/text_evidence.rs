@@ -125,12 +125,13 @@ fn text_evidence() {
         json!({"sketch": "Strokes", "font": "stroke", "size": 6, "width": 200,
                "text": "ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz 0123456789 .,;:!?-+=/\\()[]{{}}'\"#%&*_<>@$^~|°€ àáâãäåèéêëìíîïòóôõöøùúûüýÿñçšžčřňÀÅÉÖØÜÑÇŠŽ"}),
     );
-    picture(&mut s, &dir, "stroke-top.png", "top");
+    // A sketch alone has no body to render: its SVG is the picture.
     run(
         &mut s,
         "file.export",
         json!({"path": "stroke.svg", "sketch": "Strokes"}),
     );
     let svg = std::fs::read(dir.join("stroke.svg")).unwrap();
+    craft3d_testkit::evidence::print("stroke.svg", &svg);
     std::fs::write(evidence_dir().join("stroke.svg"), &svg).unwrap();
 }
