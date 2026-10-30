@@ -1459,12 +1459,11 @@ fn the_shown_scenes_follow_the_joints_after_the_workspace_narrows() {
     }
 }
 
-/// An assembly shows its placed parts; a motion over `t` is a part's
-/// (motion of assemblies is phase 2): `view.motion` is refused by name
-/// even when the assembly has a variable `t`, and what is shown stays
-/// the placed instance.
+/// An assembly shows its placed parts; with a timeline it plays over `t`
+/// (motion of assemblies, docs/design/motion.md › *Assemblies*), and
+/// what `document.inspect` sees stays the placed instance at rest.
 #[test]
-fn an_assembly_shows_its_placed_parts_and_refuses_a_motion() {
+fn an_assembly_shows_its_placed_parts_and_plays_over_t() {
     let dir = workdir("assembly", "no-motion");
     let mut s = session_in(&dir);
     block_part(&mut s, "base.3dcraft", [10.0, 4.0, 2.0], 1e-6);
@@ -1475,9 +1474,9 @@ fn an_assembly_shows_its_placed_parts_and_refuses_a_motion() {
         "instance.add",
         json!({ "source": "base.3dcraft", "name": "B1" }),
     );
-    let refused = error(&mut s, "view.motion", json!({ "t": 0.5 }));
-    assert!(refused.contains("assembly"), "{refused}");
-    assert!(s.timeline().is_err());
+    let shown = run(&mut s, "view.motion", json!({ "t": 0.5 }));
+    assert_eq!(shown["t"], 0.5, "{shown}");
+    assert!(s.timeline().is_ok());
     let shown = run(&mut s, "document.inspect", json!({}));
     let bodies = shown["bodies"].as_array().unwrap();
     assert_eq!(bodies.len(), 1, "{shown}");

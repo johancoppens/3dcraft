@@ -101,6 +101,9 @@ pub(crate) struct Solution {
     pub dof: usize,
     /// Each free motion in words ("Bar[3] can still turn about z …").
     pub free: Vec<String>,
+    /// The driven values solved for, in the order of the driven
+    /// variables of the problem's mates.
+    pub drives: Vec<f64>,
 }
 
 /// Why the solve failed, in words that name the mates and instances.
@@ -123,6 +126,19 @@ fn pose_from_solver(p: &asm::Pose) -> Option<Transform> {
 }
 
 pub(crate) fn solve(p: &Problem) -> Result<Solution, Diagnosis> {
+    solve_from(p, None)
+}
+
+/// Solves `p` as a moment of a motion: from its start poses, which a
+/// solve at the driven values `from` holds, the drives are moved to the
+/// problem's own along the branch ([`asm::Solver::advance`], which cuts
+/// the step while the solution jumps). With `from` of another length
+/// than the problem's drives, a plain solve.
+pub(crate) fn advance(p: &Problem, from: &[f64]) -> Result<Solution, Diagnosis> {
+    solve_from(p, Some(from))
+}
+
+fn solve_from(p: &Problem, from: Option<&[f64]>) -> Result<Solution, Diagnosis> {
     if p.start.len() != p.instances {
         return Err(Diagnosis("a start pose is needed per instance".to_string()));
     }
@@ -173,7 +189,18 @@ pub(crate) fn solve(p: &Problem) -> Result<Solution, Diagnosis> {
         tolerance: p.tolerance,
         scale: p.scale,
     };
-    let solution = asm::solve(&problem).map_err(|d| Diagnosis(d.message(&problem)))?;
+    let solution = match from {
+        Some(from) if from.len() == problem.driven_slots().len() => {
+            let mut solver =
+                asm::Solver::new(&problem).map_err(|d| Diagnosis(d.message(&problem)))?;
+            let to = solver.problem_drives();
+            solver
+                .solve_at(from)
+                .and_then(|_| solver.advance(&to))
+                .map_err(|d| Diagnosis(d.message(&problem)))?
+        }
+        _ => asm::solve(&problem).map_err(|d| Diagnosis(d.message(&problem)))?,
+    };
     let poses = solution
         .poses
         .iter()
@@ -188,6 +215,7 @@ pub(crate) fn solve(p: &Problem) -> Result<Solution, Diagnosis> {
         values: solution.values.clone(),
         dof: solution.dof,
         free: solution.free.iter().map(|f| f.describe(&problem)).collect(),
+        drives: solution.drives.clone(),
     })
 }
 
