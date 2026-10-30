@@ -535,18 +535,15 @@ fn two_selected_faces_offer_the_mates_that_join_them() {
         .project(Vec3::new(10.0 * a.cos(), 10.0 * a.sin(), 2.0))
         .unwrap();
     let ground = projector.project(Vec3::new(30.0, 0.0, 2.0)).unwrap();
-    call(
-        &mut shell,
-        &mut s,
-        "ui.pick",
-        json!({ "x": crank.x, "y": crank.y, "select": true }),
-    );
-    call(
-        &mut shell,
-        &mut s,
-        "ui.pick",
-        json!({ "x": ground.x, "y": ground.y, "select": true, "shift": true }),
-    );
+    // The two faces under the pointer, selected as the window's clicks
+    // select them.
+    let mut items = Vec::new();
+    for p in [crank, ground] {
+        let picked = call(&mut shell, &mut s, "ui.pick", json!({ "x": p.x, "y": p.y }));
+        assert_eq!(picked["hit"], true, "{picked}");
+        items.push(json!({ "kind": "face", "name": picked["face"], "feature": picked["feature"] }));
+    }
+    call(&mut shell, &mut s, "ui.select", json!({ "items": items }));
     for _ in 0..2 {
         window.frame(&mut shell, &mut s);
     }
