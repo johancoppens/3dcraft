@@ -553,3 +553,125 @@ and sharp pictures differ by 24 levels or more, at least two thirds of the GPU's
 soft one); the layout tests with the *Edges* chip. With it the 1280 × 800 window's display bar is too
 narrow for the three toggles' names with the section open: those three show their icons (their names as
 tooltips) before any other chip loses its name.
+
+### Layer 3: materials (2026-10-30)
+
+Layer 3 of `plan/rendering.md`: the layers of a material beyond its colour, metallic and roughness,
+kept in the document (`craft3d_doc::Optics` on `Appearance` and `BodyAppearance`, format 54) and
+shaded by the studio look in both renderers. `craft3d_render::studio::layers` is the definition (the
+closed forms), `FrameLight::shade_layered` and `studio::refract` the shading; the GPU repeats them
+(`studio.wgsl`). A face without layers (`FaceColors::optics_slot` 0) is shaded as before bit for bit:
+every layer enters as a factor of 1 or a term of 0, and the plain look does not read them.
+
+**Sources** (clean-room: nothing of Blender's Eevee or Cycles, which are GPL, was read or transliterated):
+
+- B. Burley, *Physically-Based Shading at Disney*, SIGGRAPH 2012 course: the clear coat as a second,
+  fixed-index specular lobe over the base, and the anisotropy parameter.
+- C. Kulla and A. Conty, *Revisiting Physically Based Shading at Imageworks*, SIGGRAPH 2017: layering a
+  coat by weakening the base by the coat's directional albedo, and `αt = α (1 + a)`, `αb = α (1 − a)`.
+- Google Filament, *Physically Based Rendering in Filament*: § Anisotropic model (the anisotropic GGX
+  `D` and the anisotropic height-correlated visibility, after E. Heitz 2014; the bent normal for
+  image-based light), § Clear coat model (the coat at `F0` = 0.04, the base times `1 − Fc`), §
+  Transmission and refraction (the screen-space refraction of a solid or thin object, the transmitted
+  light tinted by the base colour and absorbed by Beer–Lambert's law).
+- B. Walter, S. Marschner, H. Li, K. Torrance, *Microfacet Models for Refraction through Rough
+  Surfaces*, EGSR 2007: the rough dielectric interface. Its transmitted lobe is not traced here (the
+  refracted ray is the smooth one); named as the method for blurred refraction.
+- The wrap profile is the normalised wrapped cosine `max(0, n·l + w) / (1 + w)²`; its spherical
+  harmonic weights were derived here (below), checked against quadrature.
+
+**Data.** `Optics`: `anisotropy` (−1 to 1) and its `direction` (`Parametric`, or `Axis([x, y, z])`),
+`clearcoat` and `clearcoat_roughness` (0 to 1), `transmission` (0 to 1), `ior` (1 to 3, default 1.5),
+`thin_walled`, `absorption` (an sRGB colour or none) after `absorption_distance` millimetres
+(default 10, whatever the document's unit, as the density is in kg/m³), `subsurface` (0 to 1) and
+`subsurface_color` (the base colour when none). The manifest writes `optics` only when it is not the
+default and each field only when it is not its default; an unknown field is refused, a value out of
+range too (`Optics::check`). Format 54, `v53_to_v54` an identity step (the developer's pre-release
+policy: older files have no layers, which is what a missing field reads as). The engine turns it into
+`craft3d_render::studio::layers::Optics` per face (`appearance::render_optics`): `f32` numbers (both
+renderers read the same), the absorption as coefficients `σ = −ln(c) / d` per model unit, and the
+tangent field from the face's surface (`appearance::tangent_field`): a plane's first axis; around the
+axis of a cylinder, cone, sphere or torus (`axis × (p − origin)`, the `u` direction of each). A
+freeform face takes its `u` direction at the middle of its domain as a fixed axis: an approximation;
+the general method, per-point tangents from the tessellator's parameters, is open. A field that gives
+no tangent at a point (a fixed axis along the normal; a point on the axis) shades that point without
+anisotropy (`TANGENT_EPSILON`, 10⁻⁴ of the field's length: scale-free).
+
+**Method** (per sample, after layer 1's light and before layer 2's reflections; `shade_layered`):
+
+1. *Anisotropy* `a` with the tangent `t` (the field projected on the tangent plane) and `b = n × t`.
+   The environment along Filament's bent reflection: `n' = normalize(mix(n, n_a, |a| · saturate(5r)))`
+   with `n_a` the normal the stretched lobe sees. The key light is part of the prefiltered
+   environment, so its isotropic share there (the lobe widened by the key's size, estimated at the bent
+   normal, where that light is centred) is taken out, `env · (1 − share)`, and the key's anisotropic
+   lobe added instead: `E · n·l · vis · D_aniso V_aniso F` with `αt, αb` from `α' = r² + radius/2`
+   (as layer 2's specular shadow widens it), at least 0.002 each. No reflection replaces the bent
+   lobe (its weight is 0): it is no mirror.
+2. *Subsurface* `w`: the diffuse light becomes `(1 − w) · base · E₀ + w · c_s · E_w` (times the usual
+   `(1 − m)(1 − Fs) / π`), `E_w` the irradiance through the wrapped kernel: the nine harmonics weighed
+   per band by `1`, `(1 + 3w/2 − w³/2) / (1 + w)²` and `(1 − w)²` against the clamped cosine's (from
+   `2π ∫ k(t) P_l(t) dt` over `−w ≤ t ≤ 1`; `the_wrap_bands_are_the_kernels_harmonics` checks them
+   against quadrature), the key through the wrapped cosine with its shadow where `n·l + w > 0`. Both
+   kernels integrate to π, so a white surface in a furnace stays white at any `w`.
+3. *Transmission* `T`: the diffuse light times `1 − T`; the light behind times
+   `T (1 − m)(1 − Fs) · base` (`Shaded::transmit`), added by `refract::pass_through`.
+4. *Clear coat* `c` of roughness `r_c`: with `(A, B)` the split sum at `n·v, r_c`, `Fc = c (0.04 A + B)`;
+   everything so far (and the transmitted factor) times `1 − Fc`, plus the environment along the mirror
+   direction at `r_c` times `Fc` times its specular occlusion. The reflections then replace the coat's
+   light (weight `Fc`, roughness `r_c`): the coat is the sharpest layer. The coat is weakened by the
+   view direction's albedo only (Filament's simplification of Kulla–Conty's `(1 − E(μo))(1 − E(μi))`,
+   the incoming direction being integrated by the environment); the base's `F0` is not corrected for
+   the coat's index.
+
+**Through transmissive faces, in screen space** (`refract.rs`; Filament's approximation, documented as
+such). A face with `T > 0` is *transmissive*: it casts no shadow (the key's shadow map is drawn
+without it) and is left out of the picture it sees. When a picture has one, the frame is drawn twice
+more: the picture without the transmissive faces (its own occlusion and contact shadows), and the
+nearest back faces of the transmissive faces (by the triangle's own normal against the direction from
+the eye). A transmissive sample then adds `transmit · exp(−σ L) · behind(x)`:
+
+- thin-walled, or no back face behind it (an open sheet): `x` is the sample itself, `L` 0;
+- solid: the view ray refracted at the front surface (Snell, index 1 to `ior`), along it
+  `L = Δ · cos θi / cos θt`, `Δ` the view ray's length between the front surface and the back face
+  under the sample: the path a slab with parallel faces would give; its end projected to the sample
+  it lies in (`floor`). Off the picture, the background along the view ray from that end.
+
+For a slab of parallel faces in an orthographic picture this is exact: the ray leaves parallel to the
+view, so what it sees lies behind its exit point, which is offset by the textbook
+`t sin θ (1 − cos θ / √(n² − sin² θ))`. Elsewhere its limits are the method's: one transmissive layer
+(glass behind glass is not seen), the back face taken as parallel to the front, only what is on the
+picture refracted, no blur for a rough interface. A picture with transmission always takes layer 2's
+path through the buffers (the light behind is light, not bytes). *Doubt*: the exit's sample is a
+decision the GPU's `f32` may take otherwise; within `TRACE_DOUBT · ε_f32 · max(w, h)` samples of a
+sample's border with another face across it (or of the picture's border), the sample is marked as
+layer 2 marks a traced ray, and `render_studio_doubt` merges both marks.
+
+**Exports** (what each keeps; the `.3dcraft` file keeps all):
+
+| | keeps | drops |
+|---|---|---|
+| OBJ (material library) | colour `Kd`, `Pr`, `Pm`, clear coat `Pc`, `Pcr`, anisotropy's size `aniso` (with `anisor 0.25` for a negative one), transmission as dissolve `d = 1 − T` and filter `Tf` (the absorption colour, else white), `Ni` | the anisotropy's direction, the absorption's length, thin-walled, subsurface |
+| 3MF (core base materials) | the display colour, with alpha `1 − T` (`#RRGGBBAA`) for a transmissive one | metallic, roughness, every other layer |
+| STEP (AP214 presentation) | the colour; a transmissive one's `SURFACE_STYLE_TRANSPARENT` (`T`) in a `SURFACE_STYLE_RENDERING_WITH_PROPERTIES` beside the fill | metallic, roughness, every other layer |
+
+**Presets** (`crates/engine/src/material_presets.json`, data read as a command's parameters):
+`steel`, `aluminium-brushed`, `abs`, `glass`, `car-paint`, `wood`, each an appearance and a material
+(name and density). `material.preset` gives one to a body in one undo step, any parameter beside it
+replacing the preset's number; `material.presets` lists them. There is no material panel in the
+window yet; the presets are commands only.
+
+**Tests** (`crates/render/tests/layers.rs`): the white furnace for every layer, dielectric and metal,
+roughness 0 to 1, at 20 angles (anisotropy −0.8 to 0.95, clear coats, subsurface, transmission with
+the light behind the furnace's own): within 0.98 to 1.02, as layer 1's; the clear coat weakens the
+base by exactly `1 − Fc` and adds `Fc` times the environment at its roughness (to 10⁻⁹); the
+anisotropic highlight of a point key behind the viewer: the ratio of its half-maximum widths along and
+across the tangent against the closed form of GGX's `D`,
+`α √((√2 − 1) / (1 − √2 α²))` for `αt` over the same for `αb` (within 3 %; the visibility and `n·l`,
+which the closed form leaves out, move it by about 1 %), and the widest of 72 directions is the
+tangent's (the one across it for a negative anisotropy), for four tangents; a glass slab of thickness
+`t` and index `n` turned by `θ` in front of a red and blue plate, orthographic: the plate's edge seen
+through it moves by the closed-form offset within 1.5 pixels, not at all when thin-walled; a
+layered scene is the same twice and marking doubt does not change it. `layers.rs` unit tests: the wrap
+bands against quadrature, Snell, the fields, sanitising. Engine: `tests/materials.rs` (the presets,
+the parameters said back, saving and opening, bad values refused, the exports' keys), the scene's
+wire form carries the layers, a format round trip and the v54 fixture.
