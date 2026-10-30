@@ -1,0 +1,23 @@
+[
+ ["variable.set", {"name": "len", "expr": "30 mm"}],
+ ["variable.publish", {"name": "len", "min": "1 mm", "max": "500 mm"}],
+ ["feature.block", {"name": "Bar", "size": ["len", 4, 2]}],
+ ["datum.axis", {"name": "Axis", "through": [[2, 2, 0], [2, 2, 1]]}],
+ ["file.save", {"path": "bar.3dcraft"}],
+ ["assembly.new", {"units": "mm"}],
+ ["instance.add", {"source": "bar.3dcraft", "name": "Base", "body": "Bar"}],
+ ["instance.add", {"source": "bar.3dcraft", "name": "Arm", "body": "Bar"}],
+ ["mate.add", {"kind": "fixed", "a": "world/xy", "b": "Base/F1:face(0)", "name": "Ground"}],
+ ["mate.add", {"kind": "revolute", "a": "Base/F1:face(1)", "b": "Arm/F1:face(0)", "name": "Hinge"}],
+ ["joint.set", {"mate": "Hinge", "value": "45 deg"}],
+ ["file.save", {"path": "leg.3dcraftasm"}],
+ ["assembly.new", {"units": "mm"}],
+ ["instance.add", {"source": "leg.3dcraftasm", "name": "Leg", "mode": "flexible"}],
+ ["instance.add", {"source": "bar.3dcraft", "name": "A", "body": "Bar", "position": [0, 20, 0]}],
+ ["instance.add", {"source": "bar.3dcraft", "name": "B", "body": "Bar", "params": {"len": "50 mm"}, "position": [0, 40, 0]}],
+ ["mate.add", {"kind": "slider", "a": "world/x", "b": "A/Axis", "name": "SA", "flip": true}],
+ ["mate.add", {"kind": "slider", "a": "world/y", "b": "B/Axis", "name": "SB", "flip": true}],
+ ["coupling.add", {"kind": "linear", "name": "Twice", "terms": [{"mate": "SA"}, {"mate": "SB", "motion": "distance", "coefficient": "-2"}]}],
+ ["joint.set", {"mate": "SB", "value": "5 mm"}],
+ ["assembly.pack", {}]
+]
