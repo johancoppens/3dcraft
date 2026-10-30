@@ -162,8 +162,9 @@ mod tests {
         std::fs::write(&binary, [0xff, 0xfe, 0x00]).unwrap();
         assert!(load_or_create(&binary).is_err());
         assert!(load_or_create(&dir).is_err());
+        // (Reading beneath a file is "not a directory", not "not found".)
         let error = load_or_create(&binary.join("under/a/file/t")).unwrap_err();
-        assert!(error.contains("cannot create"), "{error}");
+        assert!(error.contains("control token file"), "{error}");
         // Missing folders are made (2026-10-30: the suggested token file's
         // configuration folder may not exist yet).
         let deep = dir.join("no/such/dir/t");
