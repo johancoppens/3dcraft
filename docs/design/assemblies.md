@@ -456,7 +456,10 @@ back with its sources, `crates/io/tests/step_freecad.rs` FreeCAD reading an asse
   the save rebase applied only after the write, to every undo state; assemblies built here by a host that regenerates
   elsewhere; an unsaved assembly asks before closing and is autosaved, and a recovered one reads its sources; coupling
   status; pinned bytes kept packed and used by `assembly.pack`; the STEP export skips invisible instances; checks
-  follow instance renames; mates on hidden source bodies fail. The window's scene not following `joint.set` was not
+  follow instance renames; mates on hidden source bodies fail. FreeCAD (`cargo xtask freecad`) read the first STEP
+  assembly export as no shape: each part's origin frame sat in a separate shape representation its definition does
+  not name; it is now an item of the part's B-rep representation, which the occurrences relate (as OpenCASCADE's own
+  writer does), and FreeCAD reads the three placed solids to 1e-15. The window's scene not following `joint.set` was not
   reproduced in the engine (test `the_shown_scenes_follow_the_joints_after_the_workspace_narrows`: absolute open,
   workspace narrowed to a root, display refined elsewhere, Preview and Display scenes, stepwise and not).
 - 2026-10-29: the stand-in replaced by track B's `craft3d-assembly` (on main since 3c885c35): closed loops, couplings, limits and the diagnosis now come from the solver; the engine maps its frames, drives and the world onto the crate's `Problem`.
