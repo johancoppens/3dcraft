@@ -1,8 +1,9 @@
 //! Text wrapped onto a cylinder and a cone (`feature.extrude {wrap}`),
 //! embossed and engraved, against closed forms: the development is an
-//! isometry, so the wrapped region has the glyphs' own area, and the solid
-//! a distance `d` out from a cylinder of radius `r` over it has the volume
-//! `A (d + d² / 2r)` (in: `A (d − d² / 2r)`).
+//! isometry, so the wrapped region has the glyphs' own area: the wrapped
+//! body (reaching `d` to both sides of the surface) has the volume `2 A d`,
+//! and the part of it outside a cylinder of radius `r`, `A (d + d² / 2r)`
+//! (inside: `A (d − d² / 2r)`).
 
 #![allow(
     clippy::unwrap_used,
@@ -86,7 +87,11 @@ fn text_wrapped_onto_a_cylinder_has_the_closed_form_volume() {
                 "feature.extrude",
                 json!({"sketch": "Label", "wrap": "F1:face(0)", "distance": d, "name": "Wrapped"}),
             );
-            let expected = a * (d.abs() + d * d.abs() / (2.0 * r));
+            // The wrapped body reaches |d| to both sides of the surface
+            // (the tool a join or a cut takes): A · 2|d| exactly, the
+            // curvature's terms cancelling.
+            let _ = r;
+            let expected = 2.0 * a * d.abs();
             let v = volume_of(&mut s, "Wrapped");
             assert!(
                 (v - expected).abs() <= 1e-5 * expected,
@@ -129,7 +134,7 @@ fn embossed_and_engraved_on_a_cylinder() {
 }
 
 #[test]
-fn text_wrapped_onto_a_cone_is_within_its_bounds() {
+fn text_wrapped_onto_a_cone_keeps_its_area() {
     let mut s = session();
     run(&mut s, "file.new", json!({"units": "mm"}));
     built(
@@ -149,19 +154,11 @@ fn text_wrapped_onto_a_cone_is_within_its_bounds() {
         json!({"sketch": "Label", "wrap": "F1:face(0)", "distance": 0.5, "name": "OnCone"}),
     );
     deep(&mut s);
-    // Between the volumes over the widest and the narrowest circle the
-    // text reaches (its slant band from 8 − 1 to 8 + 7 along the cone).
+    // The body reaches the depth to both sides of the cone: A · 2d
+    // exactly (one principal curvature is zero, the other's term cancels).
     let a = text_area("CONE", 6.0);
-    let half = (30.0f64 / 60.0).atan();
-    let (d, c) = (0.5, half.cos());
-    let radius = |slant: f64| 30.0 - slant * half.sin();
-    let low = a * (d + d * d * c / (2.0 * radius(-1.0 + 8.0 - 8.0).max(radius(-1.0))));
-    let high = a * (d + d * d * c / (2.0 * radius(16.0)));
     let v = volume_of(&mut s, "OnCone");
-    assert!(
-        v >= low * (1.0 - 1e-6) && v <= high * (1.0 + 1e-6),
-        "{low} ≤ {v} ≤ {high}"
-    );
+    assert!((v - 2.0 * a * 0.5).abs() <= 1e-5 * a, "{v} vs {}", a);
 }
 
 #[test]

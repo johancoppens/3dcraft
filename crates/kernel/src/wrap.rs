@@ -20,8 +20,10 @@
 //! doubled until the curve is within a tenth of the tolerance of the
 //! mapped points at every midpoint between samples. The fitted loops bound
 //! a face on the surface itself (a sheet, one face per profile), and
-//! [`crate::plate`] gives it the thickness along the surface's normal with
-//! square rims: out for a positive depth, in for a negative one. The
+//! [`crate::plate`] gives it the depth to both sides of the surface along
+//! its normal, with square rims: the body to join to the surface's body
+//! (raised, a positive depth) or to cut from it (engraved, a negative
+//! one), which then meet it across the surface, never along it. The
 //! plates of the profiles are disjoint (the profiles neither touch nor
 //! cross, and the normals of a cylinder or cone spread them apart outward
 //! and inward up to the axis), so they are one body of several lumps.
@@ -33,6 +35,7 @@
 use crate::KernelError;
 use crate::extrude::{OpResult, Origin, Origins, Role};
 use crate::plate::{Made, Side, plate};
+
 use crate::profile::{Profile, Segment};
 use craft3d_geom::{Curve3, NurbsCurve, Surface};
 use craft3d_math::{Tolerance, Vec3};
@@ -320,24 +323,31 @@ fn plate_of(
     tolerance: &Tolerance,
 ) -> Result<OpResult, KernelError> {
     let (sheet, _, parts) = sheet(profile, surface, reversed, dev, tolerance.linear)?;
-    let side = if depth > 0.0 { Side::Out } else { Side::In };
+    // The plate reaches the depth to both sides of the surface, so that a
+    // union or a difference with the body the surface is a face of meets
+    // it across the surface, never along it (a skin on the face itself
+    // makes slivers where the rims meet the face): out, the part inside
+    // the body goes in the union; in, the part outside takes nothing away.
     let made = plate(
         &sheet,
         &[FaceId(0)],
-        depth.abs(),
-        side,
+        2.0 * depth.abs(),
+        Side::Mid,
         &BTreeMap::new(),
         tolerance,
     )?;
     let body = made.body;
-    // The skin on the surface is the start; out, that is the back skin.
+    // The end cap is the far skin: the front (outside) for a positive
+    // depth, the back for a negative one; the other is the start.
+    let out = depth > 0.0;
     let kinds: Vec<Kind> = made
         .faces
         .iter()
-        .map(|m| match (m, side) {
-            (Made::Back(_), Side::Out) | (Made::Front(_), Side::In) => Kind::Start,
-            (Made::Front(_), _) | (Made::Back(_), _) => Kind::End,
-            (Made::Rim(e), _) => match parts.edges.get(e) {
+        .map(|m| match m {
+            Made::Front(_) if out => Kind::End,
+            Made::Back(_) if !out => Kind::End,
+            Made::Front(_) | Made::Back(_) => Kind::Start,
+            Made::Rim(e) => match parts.edges.get(e) {
                 Some(&(c, p, b, bp)) => Kind::Rim(c, p, b, bp),
                 None => Kind::End,
             },

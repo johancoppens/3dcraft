@@ -1940,3 +1940,120 @@ fn a_dash_dot_layer_has_its_own_line_type_beside_a_dashed_one() {
     assert!(matches!(write_dxf(&both), Err(DrawingError::Option(_))));
     assert!(write_svg(&both, &SvgOptions::default()).is_err());
 }
+
+/// A glyph as the engine writes it (docs/design/text.md): each Bézier
+/// piece of a contour a SPLINE of its own, cubic. Read back by our own
+/// reader, the pieces enclose the glyph's area: an "O" of eight quadratic
+/// pieces each way, raised to cubic exactly, outer ring less hole.
+#[test]
+fn a_glyph_written_as_spline_pieces_reads_back_with_its_area() {
+    // A ring of quadratic Béziers through points on a circle of radius r,
+    // control points on the tangents' crossings, raised to cubic.
+    fn ring(r: f64, ccw: bool) -> (Path, f64) {
+        let n = 8;
+        let mut segments = Vec::new();
+        let point = |k: usize| {
+            let a = k as f64 * std::f64::consts::TAU / n as f64 * if ccw { 1.0 } else { -1.0 };
+            [r * a.cos(), r * a.sin()]
+        };
+        let half = std::f64::consts::PI / n as f64;
+        let mut area = 0.0;
+        for k in 0..n {
+            let (a, c) = (point(k), point(k + 1));
+            let mid = [(a[0] + c[0]) / 2.0, (a[1] + c[1]) / 2.0];
+            let s = 1.0 / half.cos() / (mid[0].hypot(mid[1]) / r);
+            let b = [mid[0] * s, mid[1] * s];
+            let q = [
+                a,
+                [
+                    a[0] + 2.0 / 3.0 * (b[0] - a[0]),
+                    a[1] + 2.0 / 3.0 * (b[1] - a[1]),
+                ],
+                [
+                    c[0] + 2.0 / 3.0 * (b[0] - c[0]),
+                    c[1] + 2.0 / 3.0 * (b[1] - c[1]),
+                ],
+                c,
+            ];
+            // The quadratic's area term in closed form:
+            // (a×b + b×c)/3 + (a×c)/6 halves of the shoelace.
+            let x = |p: Point, q: Point| p[0] * q[1] - p[1] * q[0];
+            area += (2.0 * x(a, b) + 2.0 * x(b, c) + x(a, c)) / 6.0;
+            segments.push(Segment::Spline(
+                Spline::new(
+                    3,
+                    vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                    q.to_vec(),
+                    None,
+                )
+                .unwrap(),
+            ));
+        }
+        (closed(point(0), segments), area)
+    }
+    let (outer, a_out) = ring(10.0, true);
+    let (inner, a_in) = ring(6.0, false);
+    let expected = a_out + a_in;
+    assert!(a_out > 0.0 && a_in < 0.0);
+    let dxf = write_dxf(&drawing(vec![outer, inner])).unwrap();
+    let entities = Dxf::read(&dxf).entities();
+    assert_eq!(entities.len(), 16);
+    // The area each cubic piece encloses with the origin, by Gauss–Legendre
+    // (exact for the degree-5 integrand), from the control points read.
+    let mut area = 0.0;
+    for (_, e) in &entities {
+        let Entity::Spline {
+            degree,
+            knots,
+            control,
+            ..
+        } = e
+        else {
+            panic!("{e:?}")
+        };
+        assert_eq!((*degree, knots.len(), control.len()), (3, 8, 4));
+        let at = |t: f64| {
+            let u = 1.0 - t;
+            let w = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
+            let dw = [
+                -3.0 * u * u,
+                3.0 * u * u - 6.0 * u * t,
+                6.0 * u * t - 3.0 * t * t,
+                3.0 * t * t,
+            ];
+            let mut p = [0.0; 2];
+            let mut d = [0.0; 2];
+            for k in 0..4 {
+                for c in 0..2 {
+                    p[c] += w[k] * control[k][c];
+                    d[c] += dw[k] * control[k][c];
+                }
+            }
+            (p, d)
+        };
+        let (xs, ws) = (
+            [
+                0.046_910_077_030_668,
+                0.230_765_344_947_158,
+                0.5,
+                0.769_234_655_052_842,
+                0.953_089_922_969_332,
+            ],
+            [
+                0.118_463_442_528_095,
+                0.239_314_335_249_683,
+                0.284_444_444_444_444,
+                0.239_314_335_249_683,
+                0.118_463_442_528_095,
+            ],
+        );
+        for (t, w) in xs.iter().zip(ws) {
+            let (p, d) = at(*t);
+            area += w * (p[0] * d[1] - p[1] * d[0]) / 2.0;
+        }
+    }
+    assert!(
+        (area - expected).abs() < 1e-9 * expected.abs(),
+        "{area} vs {expected}"
+    );
+}
