@@ -135,6 +135,22 @@ fn every_layer_keeps_the_furnaces_energy() {
                     },
                 ));
             }
+            // Every layer at once but the anisotropy: a coat over glass
+            // that also wraps its light.
+            for (c, t, w) in [(1.0_f32, 1.0_f32, 0.5_f32), (0.5, 0.5, 1.0)] {
+                cases.push((
+                    format!("coat {c} transmission {t} subsurface {w} m {metallic} r {roughness}"),
+                    f,
+                    Optics {
+                        clearcoat: c,
+                        clearcoat_roughness: 0.3,
+                        transmission: t,
+                        subsurface: w,
+                        subsurface_color: Some([255; 3]),
+                        ..Optics::default()
+                    },
+                ));
+            }
             for t in [0.5_f32, 1.0] {
                 cases.push((
                     format!("transmission {t} m {metallic} r {roughness}"),
@@ -158,6 +174,76 @@ fn every_layer_keeps_the_furnaces_energy() {
         "layers' furnace: {} cases, worst departure {worst:.4}",
         cases.len()
     );
+}
+
+#[test]
+fn the_anisotropic_key_lobe_reflects_no_more_than_it_receives() {
+    // The white furnace for the key's lobe: its directional albedo
+    // `∫ D V (n·l) dω_l` (F = 1) is at most 1 for every view, roughness
+    // and anisotropy (single scattering loses energy, it never makes it).
+    // Integrated over the half vector, drawn from the anisotropic GGX
+    // itself: in the slopes scaled by (α_t, α_b), `D (n·h) dω_h` is the
+    // isotropic `1 / (π (1 + ρ²)²)`, whose share within ρ is
+    // `ρ² / (1 + ρ²)`; with `dω_l = 4 (v·h) dω_h` each sample weighs
+    // `D V (n·l) 4 (v·h) / (D (n·h))`. As a check of the integration, a
+    // smooth isotropic lobe seen straight on gives back nearly all.
+    let (t, b, n) = (Vec3::X, Vec3::Y, Vec3::Z);
+    let albedo = |alpha: f64, a: f64, v: Vec3| {
+        let (at, ab) = layers::aniso_alphas(alpha, a);
+        let (nq, np) = (400, 400);
+        let mut sum = 0.0;
+        for i in 0..nq {
+            let q = (f64::from(i) + 0.5) / f64::from(nq);
+            let rho = (q / (1.0 - q)).sqrt();
+            for j in 0..np {
+                let phi = (f64::from(j) + 0.5) / f64::from(np) * std::f64::consts::TAU;
+                let (u, w) = (rho * phi.cos(), rho * phi.sin());
+                let h = (t * (-at * u) + b * (-ab * w) + n).normalized().unwrap();
+                let vh = v.dot(h);
+                if vh <= 0.0 {
+                    continue;
+                }
+                let l = h * (2.0 * vh) - v;
+                let nl = n.dot(l);
+                if nl <= 0.0 {
+                    continue;
+                }
+                let (th, bh, nh) = (t.dot(h), b.dot(h), n.dot(h));
+                let k = (th / at).powi(2) + (bh / ab).powi(2) + nh * nh;
+                let d = 1.0 / (std::f64::consts::PI * at * ab * k * k);
+                let dv = layers::aniso_ggx_dv(at, ab, t, b, n, h, v, l);
+                sum += dv * nl * 4.0 * vh / (d * nh);
+            }
+        }
+        sum / f64::from(nq * np)
+    };
+    let smooth = albedo(0.05, 0.0, n);
+    assert!(
+        (0.95..=1.0).contains(&smooth),
+        "smooth lobe straight on: {smooth}"
+    );
+    let mut most: f64 = 0.0;
+    for alpha in [0.05_f64, 0.2, 0.5, 1.0] {
+        for a in [-0.9_f64, -0.5, 0.0, 0.5, 0.95] {
+            for nv in [1.0_f64, 0.7, 0.3, 0.1] {
+                let side = (1.0 - nv * nv).sqrt();
+                for v in [
+                    Vec3::new(side, 0.0, nv),
+                    Vec3::new(0.0, side, nv),
+                    Vec3::new(side, side, nv * std::f64::consts::SQRT_2)
+                        .normalized()
+                        .unwrap(),
+                ] {
+                    let e = albedo(alpha, a, v);
+                    most = most.max(e);
+                    // The quadrature's own error, measured on the smooth
+                    // lobe, is well under a percent.
+                    assert!(e <= 1.01, "α {alpha} a {a} v {v:?}: albedo {e}");
+                }
+            }
+        }
+    }
+    eprintln!("the anisotropic key lobe's largest albedo: {most:.4}");
 }
 
 #[test]
@@ -451,6 +537,69 @@ fn a_glass_slab_shifts_what_is_behind_it_by_the_closed_form() {
             assert!(
                 (shift - want).abs() <= 1.5 * pixel,
                 "θ {theta} n {ior} t {thickness} thin {thin}: shift {shift:.4} against {want:.4} (pixel {pixel})"
+            );
+        }
+    }
+}
+
+/// A glass slab larger than the picture, turned by `theta` about z, seen
+/// straight along +y in an orthographic picture of half height 2.
+fn glass_over_the_picture(theta: f64) -> (Mesh, Camera) {
+    let u = Vec3::new(theta.cos(), theta.sin(), 0.0);
+    let normal = Vec3::new(-theta.sin(), theta.cos(), 0.0);
+    let glass = slab(Vec3::ZERO, (u, 5.0), (normal, 0.3), (Vec3::Z, 5.0), 0);
+    let camera = Camera {
+        eye: Vec3::new(0.0, -10.0, 0.0),
+        target: Vec3::ZERO,
+        up: Vec3::Z,
+        projection: Projection::Orthographic { half_height: 2.0 },
+    };
+    (glass, camera)
+}
+
+#[test]
+fn clear_glass_on_a_plain_white_background_stays_white() {
+    // Nothing behind the glass but the plain white background, which the
+    // picture shows as it is: through clear glass it must stay white, not
+    // be toned a second time (grey under AgX), on the picture and where a
+    // refracted ray leaves it (the slab turned by 0.7 shifts what it
+    // shows by about 8 pixels, so the samples along one border look off
+    // the picture).
+    let env = furnace();
+    let params = RenderParams {
+        width: 200,
+        height: 200,
+        ssaa: 1,
+        background: [255; 3],
+        ..RenderParams::default()
+    };
+    for tonemap in [Tonemap::Agx, Tonemap::Aces, Tonemap::Linear] {
+        for (theta, thin) in [(0.0, false), (0.7, false), (0.7, true)] {
+            let (mesh, camera) = glass_over_the_picture(theta);
+            let mut colors = FaceColors::new();
+            for face in 0..6 {
+                colors.set_look(face, Some(([255; 3], finish(0, 0))));
+                assert!(colors.set_optics(
+                    face,
+                    Some(Optics {
+                        transmission: 1.0,
+                        ior: 1.5,
+                        thin_walled: thin,
+                        ..Optics::default()
+                    })
+                ));
+            }
+            let look = Look {
+                plain_background: true,
+                tonemap,
+                ..plain_look()
+            };
+            let frame = render_studio(&mesh, &colors, &camera, &params, &look, &env).unwrap();
+            assert!(frame.ids.iter().all(|&id| id != craft3d_render::NO_FACE));
+            let darkest = frame.rgb.iter().copied().min().unwrap();
+            assert!(
+                darkest >= 250,
+                "{tonemap:?} θ {theta} thin {thin}: the darkest byte is {darkest}"
             );
         }
     }
