@@ -46,18 +46,28 @@ use std::sync::Arc;
 /// within one sample of a border between two faces of the picture behind
 /// (`render_studio_doubt` with a margin of one sample, [`refraction_band`]).
 ///
-/// Measured: see the dev log entry of 2026-10-30 (render-rl3-gpu) and
-/// docs/design/rendering.md, *Layer 3: materials*.
-const SHARE_OVER_ONE: f64 = 1.0 / 512.0;
+/// Measured (Check runs 41022429587 and 41023163195, 2026-10-30: the
+/// Radeon 8060S on RADV and on radeonsi, llvmpipe; two scenes, seven terms,
+/// readback and viewport): ids equal everywhere compared; at most 2 of
+/// 59 000 pixels compared over one level (3.4 · 10⁻⁵); at most 6 levels
+/// anywhere (RADV, the orthographic scene, also for the terms without a
+/// layer on the parts that differ), 1 on llvmpipe and radeonsi; the pixels
+/// of transmissive faces at most 3 levels; at most 0.73 % of the pixels in
+/// doubt; no pixel differing between two draws of the same picture. The
+/// bounds: the share 1/4096 (a margin of 7), 8 levels (a margin of 2, as
+/// layer 2's), the transmissive pixels 5 (a margin of 2), the doubt 1/64
+/// (a margin of 2), the unsteady pixels 4 (none measured; `parity.rs`
+/// saw one in a frame).
+const SHARE_OVER_ONE: f64 = 1.0 / 4096.0;
 const MOST_LEVELS: u8 = 8;
+const MOST_THROUGH: u8 = 5;
 /// As layer 2's: a share of a pixel's light in doubt above which it is
-/// left out, and the most pixels left out so.
+/// left out; and the most pixels left out so.
 const DOUBT_SHARE: f32 = 1.0 / 64.0;
-const MOST_DOUBT: f64 = 1.0 / 32.0;
+const MOST_DOUBT: f64 = 1.0 / 64.0;
 /// The most pixels of a viewport picture that may differ between two
-/// draws of it (one step's lost writes, rare: one in a frame at most has
-/// been seen, `tests/parity.rs`).
-const MOST_UNSTEADY: usize = 8;
+/// draws of it (one step's lost writes, `tests/parity.rs`).
+const MOST_UNSTEADY: usize = 4;
 
 /// The parts of a scene by name.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -481,6 +491,7 @@ fn check(failures: &mut Vec<String>, label: &str, stats: &Stats) {
         || stats.most > MOST_LEVELS
         || stats.doubt_share() > MOST_DOUBT
         || stats.unsteady > MOST_UNSTEADY
+        || stats.most_through > MOST_THROUGH
     {
         failures.push(format!(
             "{label}: {stats:?}, share {}, in doubt {}",
@@ -627,8 +638,33 @@ fn overlay() -> OverlayParams {
     }
 }
 
+/// The look of a term on the viewport: layer 2's polish without the
+/// traced effects for a layer alone, and with them (the polished look,
+/// four frames) with everything together. A layer alone is held to the
+/// CPU without a reflection's decision in the way: on the Radeon's RADV
+/// one reflected ray of the plate (perspective bench, the anisotropic
+/// post and ring) is decided otherwise than on the CPU outside the
+/// samples `polish::TRACE_DOUBT` marks (13 levels at one pixel; 1 without
+/// the traced effects, and llvmpipe and radeonsi 1 with them): layer 2's
+/// doubt, not layer 3's shading (docs/design/rendering.md, *Layer 3*).
+fn viewport_look(term: &str, frames: u32) -> Look {
+    let polished = Look {
+        accumulate: frames,
+        ..Look::polished()
+    };
+    if term == "all" {
+        polished
+    } else {
+        Look {
+            ssr: false,
+            ground_reflection: 0.0,
+            ..polished
+        }
+    }
+}
+
 /// The viewport's renderer (its deferred path, one sample per pixel)
-/// against the CPU at `ssaa` 1, every term in the polished look: one
+/// against the CPU at `ssaa` 1, every term in [`viewport_look`]: one
 /// frame, then the mean of four.
 #[test]
 fn the_viewport_draws_layer_three_as_the_cpu_renderer() {
@@ -648,10 +684,7 @@ fn the_viewport_draws_layer_three_as_the_cpu_renderer() {
                 let frames = if *term == "all" { 4 } else { 1 };
                 let studio = onscreen.studio_as_drawn(&Studio {
                     env: scene.env.clone(),
-                    look: Look {
-                        accumulate: frames,
-                        ..Look::polished()
-                    },
+                    look: viewport_look(term, frames),
                 });
                 let uploaded = onscreen.upload_colored(&scene.mesh, &colors).unwrap();
                 onscreen.set_studio(Some(studio.clone()));
@@ -701,62 +734,6 @@ fn the_viewport_draws_layer_three_as_the_cpu_renderer() {
                     stats.doubt_share()
                 );
                 report(&label, &cpu, &gpu);
-                if stats.most > MOST_LEVELS {
-                    // Diagnosis: the same without the traced effects, and
-                    // without the specular shadow.
-                    for (what, look) in [
-                        (
-                            "untraced",
-                            Look {
-                                ssr: false,
-                                ground_reflection: 0.0,
-                                ..studio.look
-                            },
-                        ),
-                        (
-                            "no specular shadow",
-                            Look {
-                                specular_shadow: false,
-                                ..studio.look
-                            },
-                        ),
-                    ] {
-                        onscreen.set_studio(Some(Studio {
-                            env: scene.env.clone(),
-                            look,
-                        }));
-                        let gpu = picture(&mut onscreen);
-                        let cpu = cpu_render(&scene, &colors, &params, &look);
-                        let stats = compare(&scene, &colors, &cpu, &gpu);
-                        eprintln!("DIAGNOSE {label} | {what}: {stats:?}");
-                        report(&format!("{label} | {what}"), &cpu, &gpu);
-                    }
-                    let w = cpu.frame.width as usize;
-                    for i in 0..cpu.frame.ids.len() {
-                        let d = (0..3)
-                            .map(|k| cpu.frame.rgb[3 * i + k].abs_diff(gpu.rgb[3 * i + k]))
-                            .max()
-                            .unwrap();
-                        if d > MOST_LEVELS && !cpu.band[i] {
-                            let (x, y) = ((i % w) as i64, (i / w) as i64);
-                            for dy in -2..=2_i64 {
-                                let row: Vec<String> = (-2..=2_i64)
-                                    .map(|dx| {
-                                        let j = ((y + dy) * w as i64 + x + dx) as usize;
-                                        format!(
-                                            "{}{}{:?}/{:?}",
-                                            cpu.frame.ids[j],
-                                            if cpu.band[j] { "b" } else { "" },
-                                            &cpu.frame.rgb[3 * j..3 * j + 3],
-                                            &gpu.rgb[3 * j..3 * j + 3]
-                                        )
-                                    })
-                                    .collect();
-                                eprintln!("AROUND {label} | {}", row.join(" "));
-                            }
-                        }
-                    }
-                }
                 check(&mut failures, &label, &stats);
             }
         }
