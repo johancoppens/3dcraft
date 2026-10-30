@@ -214,13 +214,12 @@ fn other_surfaces_and_bad_wraps_are_refused_by_name() {
 }
 
 /// "3DCraft" on a cylinder of radius 20 (the evidence case of 2026-10-30):
-/// the wrapped body had a face whose loops bound no region, which passed
-/// the checks. Ignored until fixed (open bug, devlog 2026-10-30); the
-/// diagnosis below wraps each glyph alone at its place to find which.
+/// the wrapped body had rims facing inward (their loops bound no region),
+/// which passed the checks then; `topo::check` now refuses such a face.
 #[test]
-#[ignore = "open bug: a malformed face in the wrapped body of 3DCraft (devlog 2026-10-30)"]
 fn three_d_craft_on_a_cylinder_is_rendered_and_joined() {
-    let mut s = session();
+    let dir = common::workdir("wrap", "three-d-craft");
+    let mut s = common::session_in(&dir);
     run(&mut s, "file.new", json!({"units": "mm"}));
     built(
         &mut s,
@@ -239,8 +238,8 @@ fn three_d_craft_on_a_cylinder_is_rendered_and_joined() {
         json!({"sketch": "Label", "wrap": "F1:face(0)", "distance": 1, "join": "Body", "name": "Text"}),
     );
     deep(&mut s);
-    let out = run(&mut s, "file.export", json!({"path": "/dev/null.stl"}));
-    let _ = out;
+    run(&mut s, "file.export", json!({"path": "text.stl"}));
+    assert!(dir.join("text.stl").metadata().unwrap().len() > 0);
 }
 
 /// The wrapped feature `name`'s body, regenerated from the saved document.
@@ -397,12 +396,12 @@ fn diagnose_three_d_craft() {
     }
 }
 
-/// Diagnosis: every printable glyph of the sans and mono fonts, at two
-/// sizes, wrapped on a cylinder and a cone; prints each that fails to wrap
-/// or to mesh.
+/// Every printable glyph of the sans and mono fonts, at two sizes, wraps
+/// onto a cylinder and a cone into a body that meshes (21 of the sans
+/// glyphs at 2 mm had rims facing inward, 2026-10-30); each that fails is
+/// printed.
 #[test]
-#[ignore = "diagnosis: run with --ignored --nocapture"]
-fn diagnose_every_glyph() {
+fn every_glyph_wraps_and_meshes() {
     let mut failures = 0;
     let mut total = 0;
     for surface in ["cylinder", "cone"] {
@@ -463,4 +462,5 @@ fn diagnose_every_glyph() {
         }
     }
     println!("EVERY: {failures} of {total} failed");
+    assert_eq!(failures, 0, "{failures} of {total} glyphs failed");
 }
