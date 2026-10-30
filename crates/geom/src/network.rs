@@ -3152,7 +3152,7 @@ fn hold_curvature_fields(
 
 /// Most floating-point work (multiplications) one curvature hold along an
 /// analytic face may do in its least-squares solve.
-pub const MAX_CURVATURE_WORK: usize = 1 << 33;
+pub const MAX_CURVATURE_WORK: u64 = 1 << 33;
 
 /// Curvature along a plane, cylinder, cone or sphere (after
 /// `hold_tangent`): the face's second order is one linear equation in the
@@ -3314,9 +3314,8 @@ fn hold_curvature_implicit(
     let rho_pieces = on_breaks(&rho_up)?;
     let pieces = breaks.len() + 1;
     let equations = pieces * (out + 1) + 4 * at.len();
-    let work = unknowns
-        .saturating_mul(equations)
-        .saturating_mul(unknowns.min(equations));
+    let (n64, m64) = (unknowns as u64, equations as u64);
+    let work = n64.saturating_mul(m64).saturating_mul(n64.min(m64));
     if work > MAX_CURVATURE_WORK {
         return refuse(format!(
             "{label}: the edge has too many pieces to put its face's curvature on ({unknowns} unknowns, {equations} equations; at most {MAX_CURVATURE_WORK} multiplications): fewer knots along it"
