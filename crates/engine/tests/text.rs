@@ -607,7 +607,7 @@ fn a_text_in_a_sweep_path_is_refused() {
     run(
         &mut s,
         "sketch.create",
-        json!({"name": "Path", "plane": "xz"}),
+        json!({"name": "Path", "plane": "zx"}),
     );
     run(
         &mut s,
