@@ -188,6 +188,9 @@ struct Drag {
     during: usize,
     /// The last value's display scene, from the last value.
     last: f64,
+    /// The page's last scene is the one a session that builds it itself
+    /// shows.
+    same: bool,
 }
 
 fn drag(name: &str, values: &[String], interval: Duration, before: bool) -> Drag {
@@ -243,6 +246,7 @@ fn drag(name: &str, values: &[String], interval: Duration, before: bool) -> Drag
                 first,
                 during,
                 last: now.duration_since(last).as_secs_f64() * 1000.0,
+                same: true,
             };
             // The last value is shown as a session that builds it itself
             // shows it after the same values, one after another (each
@@ -292,11 +296,10 @@ fn drag(name: &str, values: &[String], interval: Duration, before: bool) -> Drag
                     "DIFFERS from"
                 },
             );
-            assert!(
-                shown == stepped || shown == fresh,
-                "{name}: the page's scene is neither"
-            );
-            return done;
+            return Drag {
+                same: shown == stepped || shown == fresh,
+                ..done
+            };
         }
         assert!(start.elapsed() < Duration::from_secs(900), "never done");
         std::thread::sleep(FRAME.saturating_sub(now.elapsed()));
@@ -307,6 +310,7 @@ fn drag(name: &str, values: &[String], interval: Duration, before: bool) -> Drag
 #[ignore = "timings: run in release with --ignored --nocapture"]
 fn a_slider_dragged_over_the_turbofan() {
     let interval = Duration::from_millis(250);
+    let mut differ = Vec::new();
     for (name, unit, from, step) in [
         ("scallopR", "mm", 2.5, 0.1),
         ("filletM", "mm", 1.5, 0.05),
@@ -317,6 +321,12 @@ fn a_slider_dragged_over_the_turbofan() {
             .collect();
         for before in [true, false] {
             let d = drag(name, &values, interval, before);
+            if !d.same {
+                differ.push(format!(
+                    "{name} {}",
+                    if before { "before" } else { "after" }
+                ));
+            }
             println!(
                 "drag {name} x{} every {} ms, {}: first new state shown at {}, {} of {} values shown during the drag, last value's display scene {:.0} ms after it was set",
                 values.len(),
@@ -334,6 +344,10 @@ fn a_slider_dragged_over_the_turbofan() {
             );
         }
     }
+    assert!(
+        differ.is_empty(),
+        "the page's last scene is not a session's: {differ:?}"
+    );
 }
 
 /// Where a difference between the scene the worker built and a session's
