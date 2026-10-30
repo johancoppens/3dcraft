@@ -359,7 +359,11 @@ fn dot4(a: &P4, b: &P4) -> Poly {
 /// `det[a, b, c, d]` of four homogeneous columns (Laplace along the first
 /// two).
 fn det4(a: &P4, b: &P4, c: &P4, d: &P4) -> Poly {
-    let m = |x: &P4, y: &P4, i: usize, j: usize| x[i].mul(&y[j]).sub(&x[j].mul(&y[i]));
+    let zero = Poly::konst(0.0);
+    let m = |x: &P4, y: &P4, i: usize, j: usize| {
+        let at = |h: &P4, k: usize| h.get(k).unwrap_or(&zero).clone();
+        at(x, i).mul(&at(y, j)).sub(&at(x, j).mul(&at(y, i)))
+    };
     let pairs = [
         (0, 1, 2, 3, 1.0),
         (0, 2, 1, 3, -1.0),
@@ -1110,7 +1114,8 @@ fn measure(
                 .first()
                 .map(|x| {
                     let w = x[3].c.first().copied().unwrap_or(0.0);
-                    let c = |k: usize| x[k].c.first().copied().unwrap_or(0.0) / w;
+                    let c =
+                        |k: usize| x.get(k).and_then(|p| p.c.first()).copied().unwrap_or(0.0) / w;
                     Vec3::new(c(0), c(1), c(2)) + origin
                 })
                 .unwrap_or(origin);

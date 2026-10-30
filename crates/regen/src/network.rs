@@ -28,7 +28,7 @@ pub struct Networked {
     pub tangency: [Option<f64>; 4],
     /// Per edge held in curvature: how the sheet meets its face there,
     /// proven (`network::continuity`).
-    pub seams: [Option<network::Continuity>; 4],
+    pub seams: Box<[Option<network::Continuity>; 4]>,
 }
 
 /// The curve of an edge over its range as a spline (lines and arcs
@@ -170,7 +170,9 @@ pub(crate) fn build(
     }
     // The faces held to, then the conditions that borrow them.
     let holds = feature.edges.all();
-    let mut faces: Vec<Option<(Surface, Option<(f64, bool)>)>> = Vec::with_capacity(4);
+    // Each edge's face, with its weight and whether held in curvature.
+    type Held = Option<(Surface, Option<(f64, bool)>)>;
+    let mut faces: Vec<Held> = Vec::with_capacity(4);
     for (key, hold) in &holds {
         let role = format!("edges.{key}");
         faces.push(match hold {
@@ -234,7 +236,7 @@ pub(crate) fn build(
         Networked {
             mismatch: made.mismatch,
             tangency: made.tangency,
-            seams: made.seams,
+            seams: Box::new(made.seams),
         },
     ))
 }

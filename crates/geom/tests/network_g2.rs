@@ -315,7 +315,7 @@ fn disturbed(s: &NurbsSurface, delta: f64) -> NurbsSurface {
     let (nu, nv) = s.counts();
     let mut points = s.control_points().to_vec();
     for i in 0..nu {
-        points[i * nv + 2] = points[i * nv + 2] + v(0.0, delta, 0.0);
+        points[i * nv + 2] += v(0.0, delta, 0.0);
     }
     NurbsSurface::new(
         pu,

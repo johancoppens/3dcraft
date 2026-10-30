@@ -248,7 +248,7 @@ pub(crate) fn report_json(map: &mut Map<String, Value>, made: &craft3d_regen::Ne
     let mut seams = Map::new();
     for (key, value) in ["uFirst", "uLast", "vFirst", "vLast"]
         .iter()
-        .zip(&made.seams)
+        .zip(made.seams.iter())
     {
         if let Some(c) = value {
             seams.insert(
