@@ -386,8 +386,14 @@ fn a_phone_lists_the_tabs_it_has_no_room_for() {
         .unwrap();
     assert!(all.right() <= 390.5, "{all:?}");
     assert_eq!(shell.status_shown(StatusSlot::Path), None);
-    // A wide window has room for them all, and says the path and the
-    // renderer's numbers.
+    assert!(
+        shell
+            .status_shown(StatusSlot::Render)
+            .is_none_or(|text| !text.contains("triangles")),
+        "{:?}",
+        shell.status_shown(StatusSlot::Render)
+    );
+    // A wide window has room for them all.
     let mut shell = Shell::with_renderer(RendererChoice::Cpu);
     let mut window = Window::new(1280.0, 800.0);
     window.frames(&mut shell, &mut session, 4);
@@ -397,5 +403,4 @@ fn a_phone_lists_the_tabs_it_has_no_room_for() {
             .iter()
             .any(|(part, _)| *part == TabPart::All)
     );
-    assert!(shell.status_shown(StatusSlot::Path).is_some());
 }

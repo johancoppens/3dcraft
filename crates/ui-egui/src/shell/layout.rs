@@ -866,11 +866,18 @@ impl Shell {
         // The narrow layout's compact player, while the drawer with the
         // whole player is shut.
         let timeline = self.timeline.steps > 0 || self.timeline.has_timeline;
+        // A popover that is shown has the room first: the player only
+        // where it leaves the popover a place.
+        let popover_shown = self.state.analysis.is_on() || self.state.look.is_studio();
         if self.narrow() && timeline && !self.state.panels.drawer {
             let side = (tokens.touch_target + 6.0).max(tokens.nav_height);
             let width = self.compact_player_width(side, super::player::COMPACT_LABEL)
                 + 2.0 * tokens.nav_padding;
+            let before = layout;
             compact_player_place(&mut layout, rect, &tokens, width, side);
+            if popover_shown && super::popover_place(rect, &layout, &tokens).is_none() {
+                layout = before;
+            }
         }
         self.controls_layout = Some(layout);
         for place in [
