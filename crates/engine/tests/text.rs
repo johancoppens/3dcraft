@@ -342,7 +342,7 @@ fn text_on_a_circle_keeps_each_glyph_baseline_tangent() {
             // The middle of the glyph's baseline.
             let m = [o[0] + d[0] * half, o[1] + d[1] * half];
             let dist = m[0].hypot(m[1]);
-            // On the circle grown (left, outside) or shrunk (right, inside)
+            // On the circle shrunk (left, inside) or grown (right, outside)
             // by the offset ...
             assert!((dist - (r + sign * offset)).abs() < 1e-9, "{g}: {dist}");
             // ... and the baseline along the circle's tangent there.
@@ -380,6 +380,110 @@ fn text_scales_from_a_thousandth_to_a_thousand() {
     for k in [1e-3, 1.0, 1e3] {
         let mut s = session();
         new_document(&mut s, k);
+        run(&mut s, "sketch.create", json!({"name": "S"}));
+        run(
+            &mut s,
+            "sketch.text",
+            json!({"sketch": "S", "text": "Ag8", "size": 10.0 * k, "at": [3.0 * k, -2.0 * k], "rotation": 30}),
+        );
+        built(
+            &mut s,
+            "feature.extrude",
+            json!({"sketch": "S", "distance": 2.0 * k, "name": "T"}),
+        );
+        let v = volume_of(&mut s, "T") / (k * k * k);
+        assert!((v - base).abs() <= 1e-6 * base, "k = {k}: {v} vs {base}");
+    }
+}
+
+#[test]
+fn single_stroke_text_is_open_curves_for_engraving_and_export() {
+    let dir = workdir("text", "stroke");
+    let mut s = common::checked::session_in(&dir);
+    new_document(&mut s, 1.0);
+    run(&mut s, "sketch.create", json!({"name": "Engrave"}));
+    let made = run(
+        &mut s,
+        "sketch.text",
+        json!({"sketch": "Engrave", "text": "CNC 3DCraft é!", "font": "stroke", "size": 7}),
+    );
+    assert_eq!(made["status"], "ok", "{made}");
+    assert!(made["layout"]["curves"].as_u64().unwrap() > 15, "{made}");
+    for format in ["dxf", "svg"] {
+        let path = format!("engrave.{format}");
+        let out = run(
+            &mut s,
+            "file.export",
+            json!({"path": path, "sketch": "Engrave"}),
+        );
+        assert!(out.get("error").is_none(), "{out}");
+        assert!(std::fs::metadata(dir.join(&path)).unwrap().len() > 1000);
+    }
+    // Open strokes are not a profile.
+    let why = failed(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "Engrave", "distance": 1}),
+    );
+    assert!(why.contains("glyph("), "{why}");
+}
+
+#[test]
+fn the_text_extent_is_a_measure() {
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    run(&mut s, "sketch.create", json!({"name": "S"}));
+    run(
+        &mut s,
+        "sketch.text",
+        json!({"sketch": "S", "text": "Width\nTwo lines", "size": 10, "font": "mono"}),
+    );
+    let bytes = font_bytes("JetBrainsMono-Regular.ttf");
+    let f = FontFile::parse(&bytes).unwrap();
+    let scale = 10.0 / f.cap_height();
+    let advance = f.advance(f.glyph('W').unwrap()) * scale;
+    let out = run(
+        &mut s,
+        "variable.measure",
+        json!({"name": "w", "measure": "textExtent", "sketch": "S", "text": "e2", "what": "width"}),
+    );
+    assert!(out.get("error").is_none(), "{out}");
+    run(
+        &mut s,
+        "assert.add",
+        json!({"name": "wide", "measure": "textExtent", "sketch": "S", "text": "e2", "eq": format!("{} mm", 9.0 * advance)}),
+    );
+    run(
+        &mut s,
+        "assert.add",
+        json!({"name": "two", "measure": "textExtent", "sketch": "S", "text": "e2", "what": "lines", "eq": 2}),
+    );
+    let list = run(&mut s, "assert.list", json!({}));
+    assert_eq!(list["ok"], true, "{list}");
+}
+
+#[test]
+fn bad_text_parameters_are_errors_not_crashes() {
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    run(&mut s, "sketch.create", json!({"name": "S"}));
+    for params in [
+        json!({"sketch": "S", "text": "x"}),
+        json!({"sketch": "S", "size": 5}),
+        json!({"sketch": "S", "text": "{", "size": 5}),
+        json!({"sketch": "S", "text": "a}", "size": 5}),
+        json!({"sketch": "S", "text": "x", "size": 5, "font": "nope"}),
+        json!({"sketch": "S", "text": "x", "size": 5, "anchor": "sideways"}),
+        json!({"sketch": "S", "text": "x", "size": 5, "align": 3}),
+        json!({"sketch": "S", "text": "x", "size": 5, "at": "e99"}),
+        json!({"sketch": "Nope", "text": "x", "size": 5}),
+    ] {
+        error(&mut s, "sketch.text", params);
+    }
+    // Accepted, but the sketch fails with a reason: a size that is not a
+    // positive length, a character the font does not have, a formula of
+    // an unknown variable.
+    for (text, size) in [("x", "-1"), ("ж\u{10FFFF}", "5"), ("{nothing}", "5")] {
         let name = format!("T{}", text.len());
         run(&mut s, "sketch.create", json!({ "name": name }));
         let made = run(
