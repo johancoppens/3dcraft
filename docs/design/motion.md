@@ -268,5 +268,5 @@ moment of an assembly.
   hold the bodies weakly and drop answers whose bodies are gone (*Memory streams* above), which holds for every
   check, not only over a motion. Measured (`crates/engine/tests/motion_check_memory.rs`, two wheels of 258 faces,
   an overlap and a volume, peak resident memory after 9 and after 129 more moments, debug build on the Strix):
-  before +60 MiB (35 → 95 MiB, about half a megabyte a moment, growing until 256 answers are kept), after: see the
-  dev log of 2026-10-30.
+  before +60 MiB (35 → 95 MiB, about half a megabyte a moment, growing until 256 answers are kept), after +13 MiB
+  (34 → 47 MiB, what the allocator keeps; the test holds it under 24 MiB).
