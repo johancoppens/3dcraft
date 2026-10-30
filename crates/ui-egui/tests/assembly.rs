@@ -365,6 +365,8 @@ fn a_free_joint_is_a_slider_on_the_parameters_tab() {
         "joint.set",
         json!({ "mate": "Drive", "value": "60 deg" }),
     );
+    // The assembly opens on its tree; the tab is opened once it is shown.
+    window.frame(&mut shell, &mut s);
     call(
         &mut shell,
         &mut s,
