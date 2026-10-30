@@ -19,7 +19,7 @@ Pick one (details and pictures in [chapter 1](01-install.md)):
 | Linux (64-bit) | `3DCraft-0.1.0-x86_64.AppImage` | yes |
 | A Chromebook, or no rights to install | the web address you were given | not yet |
 
-You get the files or the web address from whoever invited you to the test. The installers are not
+The developer sends you the installer or the web address himself; nothing is downloaded from a public page. The installers are not
 signed yet, so Windows and macOS warn the first time: [chapter 1 › Why your computer warns
 you](01-install.md#why-your-computer-warns-you) shows the two clicks to get past it.
 
@@ -186,8 +186,7 @@ whole message. **Read it before you share it**: it contains file paths and the v
 gave. Add the `.3dcraft` file if you can share it. [Chapter 14](14-troubleshooting.md#reporting-a-problem)
 has the details.
 
-Send it to whoever invited you to the test, or open an issue on GitHub if you were given access to the
-repository. Things that went well are worth a line too: they tell us what not to break.
+Send it by mail to the developer, or through the shared form you were given with the invitation. Things that went well are worth a line too: they tell us what not to break.
 
 If 3DCraft ever closes by itself, start it again: it offers to recover your work ([chapter
 14](14-troubleshooting.md#after-a-crash)). A crash is the most important thing you can report.
