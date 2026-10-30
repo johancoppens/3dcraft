@@ -195,7 +195,7 @@ impl Shell {
     /// The traces as the viewport draws them: a growing one
     /// (`view.trace {grow: true}`) only as far as the moment of the motion
     /// the view shows, whole while it shows none.
-    pub(crate) fn drawn_traces(&self) -> Vec<Vec<craft3d_math::Vec3>> {
+    pub fn drawn_traces(&self) -> Vec<Vec<craft3d_math::Vec3>> {
         let shown = self.timeline.motion.as_ref().map(|m| m.t);
         self.timeline
             .traces

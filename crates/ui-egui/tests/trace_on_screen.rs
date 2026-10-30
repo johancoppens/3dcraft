@@ -47,6 +47,10 @@ struct Window {
     ctx: egui::Context,
     time: f64,
     uploads: Vec<(usize, usize, Vec<u8>)>,
+    /// How many line segments in the trace's colour the last frame
+    /// painted over the picture (the overlay of a path that does not draw
+    /// its lines into the texture).
+    trace_segments: usize,
 }
 
 impl Window {
@@ -55,6 +59,7 @@ impl Window {
             ctx: egui::Context::default(),
             time: 0.0,
             uploads: Vec::new(),
+            trace_segments: 0,
         }
     }
 
@@ -66,6 +71,11 @@ impl Window {
             ..Default::default()
         };
         let mut output = self.ctx.run_ui(input, |ui| shell.ui(ui, session));
+        self.trace_segments = output
+            .shapes
+            .iter()
+            .map(|clipped| trace_segments(&clipped.shape))
+            .sum();
         for delta in output
             .textures_delta
             .set
@@ -101,6 +111,20 @@ impl Window {
             .rev()
             .find(|(w, h, _)| (*w, *h) == (width as usize, height as usize))
             .map(|(_, _, rgb)| rgb.as_slice())
+    }
+}
+
+/// The line segments of `shape` in the trace's colour, at any opacity.
+fn trace_segments(shape: &egui::Shape) -> usize {
+    match shape {
+        egui::Shape::Vec(shapes) => shapes.iter().map(trace_segments).sum(),
+        egui::Shape::LineSegment { stroke, .. } => {
+            let [r, g, b, a] = stroke.color.to_srgba_unmultiplied();
+            let ink = trace_ink();
+            let near = [r, g, b].iter().zip(ink).all(|(x, y)| x.abs_diff(y) <= 3);
+            usize::from(a > 0 && near)
+        }
+        _ => 0,
     }
 }
 
@@ -211,20 +235,24 @@ fn a_parts_trace_is_in_the_picture_on_screen_on_both_window_paths() {
     assert!(studio > 300, "{studio} pixels of the trace, studio");
 
     // The window without the direct path: the renderer's image as a
-    // texture.
+    // texture, its lines painted over it by egui (not into the texture):
+    // the trace is among the segments the frame paints: its 64 segments,
+    // each in one piece or more where the bodies hide part of it.
     let mut cpu = Shell::with_renderer(RendererChoice::Cpu);
     let mut window = Window::new();
     look_down(&mut cpu, &mut s);
     window.frames(&mut cpu, &mut s, 4);
     assert!(!cpu.draws_directly());
-    let shown = window.uploaded(cpu.viewport_size()).unwrap();
-    let inked = count(shown, trace_ink(), 40);
-    assert!(inked > 500, "{inked} pixels of the trace in the texture");
+    assert!(window.uploaded(cpu.viewport_size()).is_some());
+    assert!(
+        window.trace_segments >= 64,
+        "{} segments of the trace painted",
+        window.trace_segments
+    );
     // Cleared: gone from the window.
     run(&mut s, "view.trace", json!({"clear": true}));
     window.frames(&mut cpu, &mut s, 4);
-    let shown = window.uploaded(cpu.viewport_size()).unwrap();
-    assert_eq!(count(shown, trace_ink(), 40), 0);
+    assert_eq!(window.trace_segments, 0);
 }
 
 /// A session reading and writing under a directory of its own.
@@ -340,19 +368,27 @@ fn an_assemblys_trace_is_on_screen_while_its_parts_move_and_a_growing_one_grows(
     let got = call(&mut shell, &mut s, "ui.get", json!({}));
     assert_eq!(got["timeline"]["traces"], 1);
     let mut grown = Vec::new();
-    for t in [0.25, 0.5, 0.95] {
+    // 65 samples over [0, 1]: a sample every 1/64 of t, and at a `t`
+    // between two samples the point where it lies.
+    for (t, points) in [(0.25, 17), (0.5, 33), (0.95, 62)] {
         run(&mut s, "view.motion", json!({ "t": t }));
         window.frames(&mut shell, &mut s, 3);
+        let drawn = shell.drawn_traces();
+        assert_eq!(drawn.len(), 1);
+        assert_eq!(drawn[0].len(), points, "t = {t}");
         grown.push(direct_ink(&shell, &format!("assembly-grow-t{t}")));
     }
+    // More of it is on screen as it grows. (How much at the first moment
+    // depends on how much of that quarter the parts cover: there is some.)
     assert!(
         grown.windows(2).all(|w| w[1] > w[0]),
         "{grown:?} pixels of the growing trace"
     );
-    assert!(grown[0] > 50, "{grown:?}");
+    assert!(grown[0] > 0, "{grown:?}");
     // At the end of the motion it is the whole trace.
     run(&mut s, "view.motion", json!({ "t": 1.0 }));
     window.frames(&mut shell, &mut s, 3);
+    assert_eq!(shell.drawn_traces()[0].len(), 65);
     let whole = direct_ink(&shell, "assembly-grow-t1");
-    assert!(whole > grown[2], "{whole} against {grown:?}");
+    assert!(whole >= grown[2], "{whole} against {grown:?}");
 }

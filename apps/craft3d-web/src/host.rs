@@ -342,6 +342,9 @@ pub struct WebHost {
     /// The scene to show is not there yet: the window is drawn as it was
     /// (`Shell::ui_away`), with the work over it.
     away: bool,
+    /// The whole answer of the last action reported, which the status bar
+    /// says in words (`answer::summary`).
+    last_answer: Option<Value>,
 }
 
 /// The budget of scenes the page keeps (`Session::set_scene_budget`),
@@ -377,6 +380,7 @@ impl WebHost {
             about: None,
             fetching: None,
             away: false,
+            last_answer: None,
         }
     }
 
@@ -645,6 +649,7 @@ impl WebHost {
     }
 
     fn report(&mut self, label: &str, outcome: &Result<Value, String>) {
+        self.last_answer = outcome.as_ref().ok().cloned();
         let (ok, text) = match outcome {
             Ok(result) => (true, craft3d_ui_egui::answer::summary(label, result)),
             Err(error) => {
@@ -1363,9 +1368,15 @@ mod tests {
         let report = host.shell.last_command.clone().unwrap();
         assert_eq!(report.label, "param.set");
         assert!(
-            report.ok && report.text.contains("\"deferred\":true"),
-            "{}",
-            report.text
+            report.ok
+                && !craft3d_ui_egui::answer::looks_like_json(&report.text)
+                && host
+                    .last_answer
+                    .as_ref()
+                    .is_some_and(|a| a.to_string().contains("\"deferred\":true")),
+            "{} {:?}",
+            report.text,
+            host.last_answer
         );
         assert!(host.away(), "the new state is not there yet");
         let mut said = Vec::new();
@@ -1681,9 +1692,15 @@ mod tests {
                     assert_eq!(downloads.len(), 1, "{format}");
                     let report = host.shell.last_command.as_ref().unwrap();
                     assert!(
-                        report.ok && report.text.contains("\"bodies\":1"),
-                        "{}",
-                        report.text
+                        report.ok
+                            && !craft3d_ui_egui::answer::looks_like_json(&report.text)
+                            && host
+                                .last_answer
+                                .as_ref()
+                                .is_some_and(|a| a.to_string().contains("\"bodies\":1")),
+                        "{} {:?}",
+                        report.text,
+                        host.last_answer
                     );
                 }
                 "obj" => {
@@ -1771,9 +1788,15 @@ mod tests {
         assert_eq!(outcome.downloads[0].name, "plate.stl");
         let report = host.shell.last_command.as_ref().unwrap();
         assert!(
-            report.ok && report.text.contains("\"angle\":20.0"),
-            "{}",
-            report.text
+            report.ok
+                && !craft3d_ui_egui::answer::looks_like_json(&report.text)
+                && host
+                    .last_answer
+                    .as_ref()
+                    .is_some_and(|a| a.to_string().contains("\"angle\":20.0")),
+            "{} {:?}",
+            report.text,
+            host.last_answer
         );
         // The format chosen last is kept for the page's preferences.
         assert_eq!(host.shell.state.export.format, ExportFormat::Stl);
