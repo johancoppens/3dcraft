@@ -1813,7 +1813,85 @@ fn tangency(
 // The Gordon surface.
 
 /// The surface through a network (see the module docs).
+///
+/// A network farther from the origin than its own extent is built about
+/// its centre (the middle of its control points' box) and moved back:
+/// every hold and fit then works on numbers of the network's own size,
+/// not on differences of coordinates a million times larger, whose
+/// rounding (`|c| ε`, about 2e-10 at a million) the least squares of a
+/// curvature hold would amplify (found: a dome of 1.5e-3 a million units
+/// out, its third row's change 12.3 in weight against 0.004). Moving back
+/// rounds each control point by at most `|c| ε`, far below any tolerance
+/// such coordinates can carry.
 pub fn gordon(net: &Network<'_>) -> Result<Patch, NetworkError> {
+    let points = || {
+        net.u
+            .iter()
+            .chain(net.v)
+            .flat_map(|c| c.control_points().iter().copied())
+    };
+    let (lo, hi) = points().fold(
+        (
+            Vec3::new(f64::MAX, f64::MAX, f64::MAX),
+            Vec3::new(f64::MIN, f64::MIN, f64::MIN),
+        ),
+        |(lo, hi), p| (lo.min(p), hi.max(p)),
+    );
+    let centre = (lo + hi) * 0.5;
+    let extent = (hi - lo).length();
+    if !(centre.is_finite() && extent.is_finite()) || centre.length() <= extent {
+        return gordon_here(net);
+    }
+    let there = craft3d_math::Transform::translation(-centre);
+    let back = craft3d_math::Transform::translation(centre);
+    let u: Vec<NurbsCurve> = net
+        .u
+        .iter()
+        .map(|c| c.transformed(&there))
+        .collect::<Result<_, _>>()?;
+    let v: Vec<NurbsCurve> = net
+        .v
+        .iter()
+        .map(|c| c.transformed(&there))
+        .collect::<Result<_, _>>()?;
+    let faces: Vec<Option<Surface>> = net
+        .edges
+        .iter()
+        .map(|e| e.surface().map(|s| s.transformed(&there)).transpose())
+        .collect::<Result<_, _>>()?;
+    let face = |k: usize| faces.get(k).and_then(Option::as_ref);
+    let mut edges = [Condition::Free; 4];
+    for (k, (slot, e)) in edges.iter_mut().zip(&net.edges).enumerate() {
+        *slot = match (e, face(k)) {
+            (Condition::Position(_), Some(s)) => Condition::Position(s),
+            (Condition::Tangent { weight, .. }, Some(s)) => Condition::Tangent {
+                surface: s,
+                weight: *weight,
+            },
+            (Condition::Curvature { weight, .. }, Some(s)) => Condition::Curvature {
+                surface: s,
+                weight: *weight,
+            },
+            _ => Condition::Free,
+        };
+    }
+    let mut patch = gordon_here(&Network {
+        u: &u,
+        v: &v,
+        edges,
+        tolerance: net.tolerance,
+        angular: net.angular,
+    })?;
+    patch.surface = patch.surface.transformed(&back)?;
+    for b in patch.boundary.iter_mut() {
+        if let Some(c) = b.take() {
+            *b = Some(c.transformed(&back)?);
+        }
+    }
+    Ok(patch)
+}
+
+fn gordon_here(net: &Network<'_>) -> Result<Patch, NetworkError> {
     let (m, n) = (net.u.len(), net.v.len());
     if !(2..=MAX_NETWORK_CURVES).contains(&m) || !(2..=MAX_NETWORK_CURVES).contains(&n) {
         return refuse(format!(
