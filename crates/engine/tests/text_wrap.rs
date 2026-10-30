@@ -212,3 +212,88 @@ fn other_surfaces_and_bad_wraps_are_refused_by_name() {
         common::checked::error(&mut s, "feature.extrude", params);
     }
 }
+
+/// "3DCraft" on a cylinder of radius 20 (the evidence case of 2026-10-30):
+/// the wrapped body had a face whose loops bound no region, which passed
+/// the checks. Ignored until fixed (open bug, devlog 2026-10-30); the
+/// diagnosis below wraps each glyph alone at its place to find which.
+#[test]
+#[ignore = "open bug: a malformed face in the wrapped body of 3DCraft (devlog 2026-10-30)"]
+fn three_d_craft_on_a_cylinder_is_rendered_and_joined() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    built(
+        &mut s,
+        "feature.cylinder",
+        json!({"radius": 20, "height": 40, "name": "Body"}),
+    );
+    run(&mut s, "sketch.create", json!({"name": "Label"}));
+    run(
+        &mut s,
+        "sketch.text",
+        json!({"sketch": "Label", "text": "3DCraft", "size": 6, "at": [0, 12], "align": "center"}),
+    );
+    built(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "Label", "wrap": "F1:face(0)", "distance": 1, "join": "Body", "name": "Text"}),
+    );
+    deep(&mut s);
+    let out = run(&mut s, "file.export", json!({"path": "/dev/null.stl"}));
+    let _ = out;
+}
+
+/// Diagnosis: each glyph of "3DCraft" wrapped alone, where the text puts
+/// it; prints which ones fail to mesh (a malformed face) or to join.
+#[test]
+#[ignore = "diagnosis of the open bug: run with --ignored --nocapture"]
+fn diagnose_three_d_craft() {
+    for (i, c) in "3DCraft".chars().enumerate() {
+        let mut s = session();
+        run(&mut s, "file.new", json!({"units": "mm"}));
+        built(
+            &mut s,
+            "feature.cylinder",
+            json!({"radius": 20, "height": 40, "name": "Body"}),
+        );
+        run(&mut s, "sketch.create", json!({"name": "Label"}));
+        // The whole text, every other glyph a space: the glyph at its own place.
+        let text: String = "3DCraft"
+            .chars()
+            .enumerate()
+            .map(|(k, d)| if k == i { d } else { ' ' })
+            .collect();
+        let _ = c;
+        run(
+            &mut s,
+            "sketch.text",
+            json!({"sketch": "Label", "text": text, "size": 6, "at": [0, 12], "align": "center"}),
+        );
+        let alone = run(
+            &mut s,
+            "feature.extrude",
+            json!({"sketch": "Label", "wrap": "F1:face(0)", "distance": 1, "name": "Alone"}),
+        );
+        let shown = run(
+            &mut s,
+            "view.render",
+            json!({"path": "/tmp/x.png", "width": 100, "height": 80}),
+        );
+        let joined = run(
+            &mut s,
+            "feature.boolean",
+            json!({"target": "Body", "tool": "Alone", "op": "union"}),
+        );
+        println!(
+            "DIAG {c}: alone {} | render {} | join {}",
+            alone["status"],
+            shown
+                .get("error")
+                .map_or("ok".to_string(), |e| e.to_string()),
+            joined
+                .get("error")
+                .or(joined.get("status"))
+                .map_or(String::new(), |e| e.to_string())
+        );
+    }
+}
