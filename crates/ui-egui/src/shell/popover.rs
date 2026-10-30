@@ -35,7 +35,12 @@ pub fn popover_place(rect: Rect, layout: &ControlsLayout, tokens: &Tokens) -> Op
     }
     // The plates and the triad below it: the popover ends a gap above
     // those its columns cross.
-    let below = [layout.bar, layout.section_plate, layout.triad];
+    let below = [
+        layout.bar,
+        layout.section_plate,
+        layout.player_plate,
+        layout.triad,
+    ];
     let bottom = |left: f32, right: f32| {
         below
             .into_iter()

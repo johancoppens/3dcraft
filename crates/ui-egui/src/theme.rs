@@ -229,6 +229,12 @@ pub struct Tokens {
     pub plate_fill: Rgb,
     pub plate_text: Rgb,
     pub plate_text_dim: Rgb,
+    /// A toggle that is off (Studio, Analysis, Section, …): enabled, so
+    /// nearly as bright as `plate_text`, with a faint rim of it at
+    /// `nav_off_rim_opacity`; the accent fill says which are on
+    /// (2026-10-30: `plate_text_dim` read as disabled).
+    pub nav_off_text: Rgb,
+    pub nav_off_rim_opacity: u8,
     pub plate_opacity: u8,
     pub plate_glass_opacity: u8,
     pub plate_rim: Rgb,
@@ -537,6 +543,8 @@ impl Tokens {
             plate_fill: [22, 21, 20],
             plate_text: [245, 242, 236],
             plate_text_dim: [168, 163, 155],
+            nav_off_text: [232, 228, 220],
+            nav_off_rim_opacity: 52,
             // Black plates and cube over a light viewport: nearly opaque,
             // so light text on them keeps its contrast.
             plate_opacity: 240,
@@ -812,6 +820,7 @@ impl Tokens {
             ),
             ("plate_text on a plate", self.plate_text, plate),
             ("plate_text_dim on a plate", self.plate_text_dim, plate),
+            ("nav_off_text on a plate", self.nav_off_text, plate),
             (
                 "plate_text on field_typing",
                 self.plate_text,

@@ -439,11 +439,14 @@ impl Shell {
             .motion
             .as_ref()
             .map_or(0, |m| m.collisions.len());
+        // The `t` of the pose drawn, as the caption and `ui.get` say it.
+        let drawn = self.shown_t().unwrap_or(shown);
         let text = if pairs > 0 {
-            format!("t = {shown:.3}  ·  {pairs} colliding")
+            format!("{}  ·  {pairs} colliding", t_text(drawn))
         } else {
-            format!("t = {shown:.3}")
+            t_text(drawn)
         };
+        self.player_shown = true;
         let ink = if pairs > 0 {
             tokens.failed
         } else {
@@ -555,7 +558,7 @@ impl Shell {
     /// playing: `Step 3/10 · Plate · block`.
     pub(crate) fn player_caption(&self) -> Option<String> {
         if let Some(motion) = &self.timeline.motion {
-            let mut text = format!("t = {:.3}", motion.t);
+            let mut text = t_text(motion.t);
             if !motion.collisions.is_empty() {
                 let pairs: Vec<String> = motion
                     .collisions
@@ -606,6 +609,73 @@ impl Shell {
                 row(ui, settings, &mut |ui| self.setting_buttons(ui));
             }
         }
+    }
+
+    /// The `t` of the motion's pose that is drawn: the one `t` the player,
+    /// the caption, the status bar and `ui.get` say.
+    pub(crate) fn shown_t(&self) -> Option<f64> {
+        self.timeline
+            .motion
+            .as_ref()
+            .map(|m| m.t)
+            .filter(|t| t.is_finite())
+    }
+
+    /// The width the compact player of the narrow layout needs, in points:
+    /// the five transport buttons and the label of its step or `t`.
+    pub(crate) fn compact_player_width(&self, side: f32, label: f32) -> f32 {
+        5.0 * side + 4.0 * PLAYER_GAP + PLAYER_GROUP_GAP + label
+    }
+
+    /// The compact player of the narrow layout (a phone), in `rect` on its
+    /// plate over the viewport while the drawer, which holds the whole
+    /// player, is shut: a motion's play or pause, its slider and its `t`;
+    /// a history's five transport buttons and its step.
+    pub(crate) fn compact_player(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+        let tokens = self.tokens;
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            |ui| {
+                ui.spacing_mut().item_spacing.x = PLAYER_GAP;
+                ui.style_mut().visuals.override_text_color = Some(color(tokens.plate_text));
+                if self.state.timeline.motion {
+                    let playing = self.state.timeline.playing;
+                    let (icon, name) = if playing {
+                        (Icon::Pause, "Pause")
+                    } else {
+                        (Icon::Play, "Play")
+                    };
+                    if icon_button(ui, icon, name, false, true, &tokens).clicked() {
+                        self.toggle_playing();
+                    }
+                    let shown = self.timeline.motion_t().unwrap_or(0.0);
+                    let label = t_text(self.shown_t().unwrap_or(shown));
+                    let room = (ui.available_width() - COMPACT_LABEL - PLAYER_GROUP_GAP).max(40.0);
+                    ui.spacing_mut().slider_width = room;
+                    let mut t = shown;
+                    ui.add(
+                        egui::Slider::new(&mut t, 0.0..=1.0)
+                            .show_value(false)
+                            .trailing_fill(true),
+                    );
+                    if t != shown {
+                        self.go_to_t(t);
+                        ui.ctx().request_repaint();
+                    }
+                    ui.add_space(PLAYER_GROUP_GAP);
+                    ui.label(label);
+                } else {
+                    self.transport_buttons(ui);
+                    ui.add_space(PLAYER_GROUP_GAP);
+                    let steps = self.timeline.steps;
+                    let shown = self.timeline.shown_step().clamp(1, steps.max(1));
+                    ui.label(format!("Step {shown}/{steps}"));
+                }
+            },
+        );
+        self.player_shown = true;
     }
 
     /// First step, step back, play or pause, step forward, to end.
@@ -696,6 +766,9 @@ impl Shell {
 
 /// The space between two of the player's buttons, in points.
 const PLAYER_GAP: f32 = 2.0;
+/// The width kept for the compact player's label (`t = 0.000`,
+/// `Step 12/40`).
+pub(crate) const COMPACT_LABEL: f32 = 84.0;
 /// The extra space between the five that move and the settings.
 const PLAYER_GROUP_GAP: f32 = 4.0;
 /// The speed button's width, the same for 0.5×, 1× and 2× (wide enough
@@ -789,6 +862,13 @@ fn icon_button(
         }
     });
     response
+}
+
+/// How every place that shows a motion's `t` writes it (the player, the
+/// caption, the status bar's answer to `view.motion`): one source,
+/// `Shell::shown_t`, rounded the same way.
+pub(crate) fn t_text(t: f64) -> String {
+    format!("t = {t:.3}")
 }
 
 #[cfg(test)]

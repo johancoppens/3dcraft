@@ -456,6 +456,52 @@ impl Nav<'_> {
 /// True when every control is there (the section's options too when the
 /// section is on), and every plate, the cube and the triad are inside
 /// `area` and clear of each other.
+/// Where the narrow layout's compact player goes in the viewport `rect`
+/// whose controls are `layout`: a plate `width` wide (at most the
+/// viewport's less its margins) for a row of buttons `side` high, a gap
+/// above the display bar or the section's plate, centred on the bar. Left
+/// out where it would reach the cube or the camera plate; the triad makes
+/// way for it.
+pub fn compact_player_place(
+    layout: &mut ControlsLayout,
+    rect: Rect,
+    tokens: &Tokens,
+    width: f32,
+    side: f32,
+) {
+    layout.player_plate = None;
+    let area = rect.shrink(tokens.nav_margin);
+    let Some(bar) = layout.bar else {
+        return;
+    };
+    let width = width.min(area.width());
+    let height = side + 2.0 * tokens.nav_padding;
+    if !(width.is_finite() && height.is_finite() && width > 0.0) {
+        return;
+    }
+    let below = layout
+        .section_plate
+        .map_or(bar.top(), |p| p.top().min(bar.top()));
+    let left = (bar.center().x - width * 0.5)
+        .max(area.left())
+        .min(area.right() - width);
+    let plate = Rect::from_min_size(
+        pos2(left, below - tokens.nav_gap - height),
+        vec2(width, height),
+    );
+    let clear = [layout.cube, layout.camera_plate]
+        .into_iter()
+        .flatten()
+        .all(|r| !r.intersects(plate));
+    if !(clear && area.expand(0.5).contains_rect(plate)) {
+        return;
+    }
+    if layout.triad.is_some_and(|t| t.intersects(plate)) {
+        layout.triad = None;
+    }
+    layout.player_plate = Some(plate);
+}
+
 /// The display bar (and the section's plate, when it has one) fit inside
 /// `area`: what a wrapped layout must do to be worth taking.
 fn fits_bar(layout: &ControlsLayout, area: Rect) -> bool {
@@ -629,6 +675,17 @@ fn toggle(
             ),
             egui::StrokeKind::Inside,
         );
+    } else {
+        // Off but enabled: a faint rim, bright text.
+        painter.rect_stroke(
+            rect.shrink(0.5),
+            radius,
+            egui::Stroke::new(
+                1.0,
+                color_alpha(tokens.nav_off_text, tokens.nav_off_rim_opacity),
+            ),
+            egui::StrokeKind::Inside,
+        );
     }
     if response.hovered() {
         painter.rect_filled(
@@ -637,11 +694,7 @@ fn toggle(
             color_alpha(tokens.glass, tokens.control_opacity),
         );
     }
-    let ink = color(if on {
-        tokens.knob
-    } else {
-        tokens.plate_text_dim
-    });
+    let ink = color(if on { tokens.knob } else { tokens.nav_off_text });
     content(painter, rect, icon, label, named, ink, tokens);
     if named {
         response
@@ -809,11 +862,24 @@ impl Shell {
         let tokens = self.tokens;
         let painter = ui.painter_at(rect);
         let widths = ControlWidths::measure(&painter, &tokens);
-        let layout = controls_layout(rect, &tokens, &widths, self.state.section.on);
+        let mut layout = controls_layout(rect, &tokens, &widths, self.state.section.on);
+        // The narrow layout's compact player, while the drawer with the
+        // whole player is shut.
+        if self.narrow() && self.timeline.has_timeline && !self.state.panels.drawer {
+            let side = (tokens.touch_target + 6.0).max(tokens.nav_height);
+            let width = self.compact_player_width(side, super::player::COMPACT_LABEL)
+                + 2.0 * tokens.nav_padding;
+            compact_player_place(&mut layout, rect, &tokens, width, side);
+        }
         self.controls_layout = Some(layout);
-        for place in [layout.bar, layout.section_plate, layout.camera_plate]
-            .into_iter()
-            .flatten()
+        for place in [
+            layout.bar,
+            layout.section_plate,
+            layout.player_plate,
+            layout.camera_plate,
+        ]
+        .into_iter()
+        .flatten()
         {
             plate(&painter, place, &tokens);
             // A click between two controls is not a pick in the viewport.
@@ -834,6 +900,9 @@ impl Shell {
             );
         }
         let named = !layout.compact;
+        if let Some(plate) = layout.player_plate {
+            self.compact_player(ui, plate.shrink(tokens.nav_padding));
+        }
         let popover = super::popover_place(rect, &layout, &tokens);
         self.nav_camera(ui, &layout, named, scene);
         self.nav_look(ui, &layout, named, popover);

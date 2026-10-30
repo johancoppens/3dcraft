@@ -722,6 +722,10 @@ pub struct Shell {
     /// Two fingers were on the viewport: the finger left on it does not
     /// turn the camera until it is lifted.
     touch_gesture: bool,
+    /// The player drew its `t` this frame, and in the last one: the
+    /// caption over the viewport leaves it to the player then.
+    player_shown: bool,
+    player_shown_last: bool,
     /// The point a zoom at the pointer keeps in place, while the pointer
     /// and the camera stay as that zoom left them: one look at the model
     /// per turn of the wheel, not one per frame of it.
@@ -1133,6 +1137,8 @@ impl Shell {
             wide: None,
             drawer_button: None,
             touch_gesture: false,
+            player_shown: false,
+            player_shown_last: false,
             cause_hits: Vec::new(),
             section_cache: None,
             section_lost: None,
@@ -2171,6 +2177,7 @@ impl Shell {
             self.tokens.apply(ui.ctx());
             self.themed = true;
         }
+        self.player_shown_last = std::mem::take(&mut self.player_shown);
         let width = ui.ctx().content_rect().width();
         let narrow = width.is_finite() && width < self.tokens.narrow_width;
         if narrow != self.narrow {
@@ -2286,7 +2293,7 @@ impl Shell {
         }
         // In the narrow layout the side panel is a drawer over the
         // viewport, opened by the button in the menu bar.
-        if drawer && self.state.panels.drawer {
+        if drawer {
             self.drawer(ui, status.is_some());
         } else if self.narrow {
             self.tree_panel = None;
@@ -2581,13 +2588,16 @@ impl Shell {
                     units,
                     color(tokens.chrome_text),
                 ));
-                let name = status.path.as_deref().unwrap_or("untitled");
-                let dirty = if status.dirty { " *" } else { "" };
-                items.push(StatusItem::elided(
-                    StatusSlot::Path,
-                    format!("{name}{dirty}"),
-                    color(tokens.chrome_text),
-                ));
+                // In the narrow layout the tab names the document.
+                if !self.narrow {
+                    let name = status.path.as_deref().unwrap_or("untitled");
+                    let dirty = if status.dirty { " *" } else { "" };
+                    items.push(StatusItem::elided(
+                        StatusSlot::Path,
+                        format!("{name}{dirty}"),
+                        color(tokens.chrome_text),
+                    ));
+                }
             }
             None => items.push(StatusItem::fixed(
                 StatusSlot::Units,
@@ -2616,20 +2626,19 @@ impl Shell {
                     .request_repaint_after(std::time::Duration::from_secs(30));
             }
         }
-        // While the motion plays: one steady line, `Playing  t = 0.420`,
-        // not each moment's answer; a moment asked for by `view.motion`
-        // says its `t` the same way.
+        // While the motion plays: one steady word, `Playing`, not each
+        // moment's answer (its `t` is the player's, which shows it as it
+        // runs; 2026-10-30); a moment asked for by `view.motion` says its
+        // `t` as the player does.
         let shown_t = self.timeline.motion_t().filter(|t| t.is_finite());
         let line = if self.state.timeline.playing && self.playing_motion() {
-            Some((
-                "Playing".to_string(),
-                format!("t = {:.3}", shown_t.unwrap_or(0.0)),
-                true,
-            ))
+            Some(("Playing".to_string(), String::new(), true))
         } else {
             self.last_command.as_ref().map(|report| {
                 let answer = match shown_t {
-                    Some(t) if report.ok && report.label == "view.motion" => format!("t = {t:.3}"),
+                    Some(_) if report.ok && report.label == "view.motion" => {
+                        player::t_text(self.shown_t().or(shown_t).unwrap_or(0.0))
+                    }
                     // An answer is said in words where it is made
                     // (`answer::summary`); raw JSON that still gets here
                     // is not shown.
@@ -2689,13 +2698,19 @@ impl Shell {
             } else {
                 ""
             };
-            let text = format!(
-                "{refining}{} {}×{} · {} triangles{time}",
-                stats.renderer.name().to_uppercase(),
-                stats.width,
-                stats.height,
-                stats.triangles
-            );
+            // In the narrow layout only what a person acts on: that the
+            // sharp picture is still coming.
+            let text = if self.narrow {
+                refining.trim_end_matches(" · ").to_string()
+            } else {
+                format!(
+                    "{refining}{} {}×{} · {} triangles{time}",
+                    stats.renderer.name().to_uppercase(),
+                    stats.width,
+                    stats.height,
+                    stats.triangles
+                )
+            };
             let (text, wait) = self.calm.render.frame(now, &text, false, every);
             let text = text.to_string();
             soon(wait);
@@ -2929,7 +2944,20 @@ impl Shell {
             self.tree_panel = None;
             return;
         }
-        let rect = egui::Rect::from_min_size(viewport.min, egui::vec2(width, viewport.height()));
+        // It slides in from the left and out again, in a tenth of a second.
+        let shown = ui.ctx().animate_bool_with_time(
+            egui::Id::new("craft3d-drawer-open"),
+            self.state.panels.drawer,
+            0.1,
+        );
+        if shown <= 0.0 || !shown.is_finite() {
+            self.tree_panel = None;
+            return;
+        }
+        let rect = egui::Rect::from_min_size(
+            viewport.min - egui::vec2((1.0 - shown) * width, 0.0),
+            egui::vec2(width, viewport.height()),
+        );
         let frame = egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin {
             left: side_inset(&tokens),
             right: 0,
@@ -2941,7 +2969,7 @@ impl Shell {
             .fixed_pos(rect.min)
             .constrain(false)
             .show(ui.ctx(), |ui| {
-                ui.set_clip_rect(rect);
+                ui.set_clip_rect(rect.intersect(viewport));
                 let inner = rect - frame.total_margin();
                 frame.show(ui, |ui| {
                     ui.set_min_size(inner.size());
@@ -2956,7 +2984,7 @@ impl Shell {
                     egui::Stroke::new(tokens.divider_width, color(tokens.plate_rim)),
                 );
             });
-        self.tree_panel = Some(rect);
+        self.tree_panel = Some(rect.intersect(viewport));
     }
 
     /// The split on the right of the side panel `panel`: dragged, it sets
@@ -3711,7 +3739,9 @@ impl Shell {
         let captions = [
             (!self.state.notice.is_empty())
                 .then(|| (self.state.notice.clone(), tokens.notice_font)),
+            // A motion's `t` is the player's while the player is in view.
             self.player_caption()
+                .filter(|_| !(self.timeline.motion.is_some() && self.player_shown_last))
                 .map(|text| (text, tokens.caption_font)),
         ];
         let plate = self.controls_layout.and_then(|l| l.camera_plate);

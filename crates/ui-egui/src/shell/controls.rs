@@ -27,6 +27,10 @@ pub struct ControlsLayout {
     /// bar, where the viewport is too narrow for them on the bar (a
     /// phone); `None` while they are inline or off.
     pub section_plate: Option<Rect>,
+    /// The compact player of the narrow layout, on its plate above the
+    /// display bar (and the section's plate), while the document has a
+    /// timeline and the drawer with the whole player is shut.
+    pub player_plate: Option<Rect>,
     pub sketches: Option<Rect>,
     pub datums: Option<Rect>,
     /// The Edges toggle: the bodies' edges shown or not.
@@ -62,6 +66,7 @@ impl ControlsLayout {
         [
             ("bar", self.bar),
             ("section", self.section_plate),
+            ("player", self.player_plate),
             ("camera", self.camera_plate),
             ("cube", self.cube),
             ("triad", self.triad),
@@ -392,6 +397,24 @@ pub(super) fn choose_axis(
 }
 
 impl Shell {
+    /// A section switched on (by `ui.set`) without saying where: across Z
+    /// when it names no plane, and through the middle of the model's box
+    /// along the normal of a base plane (X, Y or Z) when it gives no
+    /// offset, as the Section chip and the axis choice do.
+    pub(crate) fn section_through_the_middle(&mut self, offset_given: bool) {
+        let scene = self.shown_scene.clone();
+        let section = &mut self.state.section;
+        if section.plane.is_none() && section.normal.is_none() && section.point.is_none() {
+            section.plane = Some("xy".to_string());
+        }
+        if offset_given || section.feature.is_some() {
+            return;
+        }
+        if let Some(axis) = chosen_axis(section) {
+            section.offset = model_middle(scene.as_deref(), axis);
+        }
+    }
+
     /// What a click on Fit, on Iso or on one half of the projection does.
     pub(super) fn camera_clicks(
         &mut self,

@@ -205,7 +205,7 @@ The **display bar** at the bottom of the view:
   **Edges** shows or hides the dark lines along the bodies' edges (an edge you point at or select is
   still drawn). In a narrow window these three show their icons only; hover for the name.
 - **See-through** makes the bodies transparent (drag the percentage), to look at pockets and cavities.
-- **Section** cuts the view open with a plane across X, Y or Z; **Offset** moves it and **Flip side**
+- **Section** cuts the view open with a plane across X, Y or Z, through the middle of the model at first; **Offset** moves it and **Flip side**
   keeps the other half.
 
 On a phone or a tablet (in the browser), and in any window narrower than about 800 points:
@@ -221,7 +221,10 @@ On a phone or a tablet (in the browser), and in any window narrower than about 8
 | **☰** at the left of the menu bar | Open or close the feature list, Parameters and the player as a drawer (a tap beside it, or Escape, closes it too) |
 
 The buttons over the view are then large enough for a finger, and where the display bar has no room for
-the section's options they get a row of their own just above it.
+the section's options they get a row of their own just above it. A model with a history or a motion gets a
+small player above the bar (play or pause, the steps or the slider, and where it is) while the drawer is
+shut; the drawer holds the whole player. When the tabs do not fit, **All** at the end of their row lists
+every open document, and the status bar keeps to what you act on.
 
 None of this changes the document. Each tab remembers its own camera, section and see-through. A heavy
 model first shows a quick picture, then the sharp one (the status bar says `refining`).

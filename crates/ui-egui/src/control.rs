@@ -420,6 +420,21 @@ impl Shell {
                 t.tree_width
             };
         }
+        // A first section switched on without a place cuts through the
+        // middle of the model, not at the origin; one switched on again
+        // keeps its plane and offset.
+        if let Some(section) = patch.get("section").and_then(Value::as_object)
+            && section.get("on") == Some(&Value::Bool(true))
+            && !before.section.on
+            && before.section.plane.is_none()
+            && before.section.normal.is_none()
+            && before.section.point.is_none()
+            && !["normal", "point", "feature"]
+                .iter()
+                .any(|k| section.contains_key(*k))
+        {
+            self.section_through_the_middle(section.contains_key("offset"));
+        }
         // The look is checked (an unknown environment or tone curve
         // changes nothing) and kept as parsed: clamped, turned within 0 to
         // 360 degrees.

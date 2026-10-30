@@ -65,7 +65,13 @@ impl CloseAnswer {
 pub enum TabPart {
     Tab(usize),
     Close(usize),
+    /// The button that lists every open document, when the tabs do not
+    /// all fit.
+    All,
 }
+
+/// The width of that button, in points.
+const OVERFLOW_WIDTH: f32 = 56.0;
 
 /// The mark before the name of a document with unsaved changes, and the
 /// close button. Both are in egui's default fonts (a test checks).
@@ -440,127 +446,170 @@ impl Shell {
         // one becomes active. (It is asked again until it is: the first
         // frames of a panel lay it out without showing it.)
         let mut in_view = false;
-        egui::ScrollArea::horizontal()
-            .id_salt("craft3d-tabs")
-            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.x = tokens.tab_gap;
-                ui.horizontal(|ui| {
-                    for (at, tab) in self.tabs.iter().enumerate() {
-                        let (rect, response) = ui.allocate_exact_size(
-                            egui::vec2(width, tokens.tab_height),
-                            egui::Sense::click(),
-                        );
-                        let side = tokens.tab_height - 8.0;
-                        let close_rect = egui::Rect::from_center_size(
-                            egui::pos2(rect.right() - side * 0.5 - 4.0, rect.center().y),
-                            egui::vec2(side, side),
-                        );
-                        let closer = ui.interact(
-                            close_rect,
-                            ui.id().with(("craft3d-tab-close", at)),
-                            egui::Sense::click(),
-                        );
-                        let hint = match &tab.path {
-                            Some(path) => path.clone(),
-                            None => "Not saved yet".to_string(),
-                        };
-                        let response = response.on_hover_text(hint);
-                        if scroll_to == Some(at) {
-                            response
-                                .scroll_to_me_animation(None, egui::style::ScrollAnimation::none());
-                            in_view = ui.clip_rect().contains_rect(rect);
-                        }
-                        let fill = if tab.active {
-                            tokens.tab_active_fill
-                        } else if response.hovered() || closer.hovered() {
-                            tokens.tab_hover_fill
-                        } else {
-                            tokens.tab_fill
-                        };
-                        let painter = ui.painter_at(rect);
-                        let round = egui::CornerRadius {
-                            nw: tokens.radius,
-                            ne: tokens.radius,
-                            sw: 0,
-                            se: 0,
-                        };
-                        painter.rect_filled(rect, round, color(fill));
-                        if tab.active {
-                            let line = egui::Rect::from_min_max(
-                                egui::pos2(rect.left(), rect.bottom() - tokens.tab_accent_width),
-                                rect.right_bottom(),
-                            );
-                            painter.rect_filled(line, 0.0, color(tokens.tab_accent));
-                        }
-                        // The unsaved mark, then the name, cut to the room
-                        // left of the close button.
-                        let mut left = rect.left() + 8.0;
-                        if tab.dirty {
-                            let mark = painter.layout_no_wrap(
-                                UNSAVED_MARK.to_string(),
-                                egui::FontId::proportional(20.0),
-                                color(tokens.attention),
-                            );
-                            let size = mark.size();
-                            painter.galley(
-                                egui::pos2(left, rect.center().y - size.y * 0.5),
-                                mark,
-                                color(tokens.attention),
-                            );
-                            left += size.x + 4.0;
-                        }
-                        let room = (close_rect.left() - 4.0 - left).max(0.0);
-                        let text = if tab.active {
-                            tokens.chrome_text
-                        } else {
-                            tokens.chrome_text_dim
-                        };
-                        let mut job = egui::text::LayoutJob::simple_singleline(
-                            tab.name.clone(),
-                            font.clone(),
-                            color(text),
-                        );
-                        job.wrap = egui::text::TextWrapping::truncate_at_width(room);
-                        let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
-                        let size = galley.size();
-                        painter.galley(
-                            egui::pos2(left, rect.center().y - size.y * 0.5),
-                            galley,
-                            color(text),
-                        );
-                        // The close button: dim until the pointer is on
-                        // the tab, with a plate under the pointer.
-                        if closer.hovered() {
-                            painter.rect_filled(
-                                close_rect,
-                                egui::CornerRadius::same(tokens.radius),
-                                color_alpha(tokens.chrome_text_dim, 60),
-                            );
-                        }
-                        let tint = if closer.hovered() || response.hovered() || tab.active {
-                            tokens.chrome_text
-                        } else {
-                            tokens.chrome_text_dim
-                        };
-                        painter.text(
-                            close_rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            CLOSE_MARK,
-                            egui::FontId::proportional(15.0),
-                            color(tint),
-                        );
-                        let closer = closer.on_hover_text("Close");
-                        hits.push((TabPart::Tab(tab.document), rect));
-                        hits.push((TabPart::Close(tab.document), close_rect));
-                        if closer.clicked() || response.middle_clicked() {
-                            close = Some(tab.document);
-                        } else if response.clicked() {
-                            clicked = Some(tab.document);
-                        }
-                    }
-                });
+        // When even the narrowest tabs do not fit (a phone, many
+        // documents), a button at the row's end lists them all.
+        let overflow = fair < tokens.tab_min_width && count > 1;
+        let menu_width = if overflow { OVERFLOW_WIDTH } else { 0.0 };
+        let row = ui.available_size();
+        let mut chosen = None;
+        ui.horizontal(|ui| {
+            ui.allocate_ui(egui::vec2((row.x - menu_width).max(0.0), row.y), |ui| {
+                egui::ScrollArea::horizontal()
+                    .id_salt("craft3d-tabs")
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.x = tokens.tab_gap;
+                        ui.horizontal(|ui| {
+                            for (at, tab) in self.tabs.iter().enumerate() {
+                                let (rect, response) = ui.allocate_exact_size(
+                                    egui::vec2(width, tokens.tab_height),
+                                    egui::Sense::click(),
+                                );
+                                let side = tokens.tab_height - 8.0;
+                                let close_rect = egui::Rect::from_center_size(
+                                    egui::pos2(rect.right() - side * 0.5 - 4.0, rect.center().y),
+                                    egui::vec2(side, side),
+                                );
+                                let closer = ui.interact(
+                                    close_rect,
+                                    ui.id().with(("craft3d-tab-close", at)),
+                                    egui::Sense::click(),
+                                );
+                                let hint = match &tab.path {
+                                    Some(path) => path.clone(),
+                                    None => "Not saved yet".to_string(),
+                                };
+                                let response = response.on_hover_text(hint);
+                                if scroll_to == Some(at) {
+                                    response.scroll_to_me_animation(
+                                        None,
+                                        egui::style::ScrollAnimation::none(),
+                                    );
+                                    in_view = ui.clip_rect().contains_rect(rect);
+                                }
+                                let fill = if tab.active {
+                                    tokens.tab_active_fill
+                                } else if response.hovered() || closer.hovered() {
+                                    tokens.tab_hover_fill
+                                } else {
+                                    tokens.tab_fill
+                                };
+                                let painter = ui.painter_at(rect);
+                                let round = egui::CornerRadius {
+                                    nw: tokens.radius,
+                                    ne: tokens.radius,
+                                    sw: 0,
+                                    se: 0,
+                                };
+                                painter.rect_filled(rect, round, color(fill));
+                                if tab.active {
+                                    let line = egui::Rect::from_min_max(
+                                        egui::pos2(
+                                            rect.left(),
+                                            rect.bottom() - tokens.tab_accent_width,
+                                        ),
+                                        rect.right_bottom(),
+                                    );
+                                    painter.rect_filled(line, 0.0, color(tokens.tab_accent));
+                                }
+                                // The unsaved mark, then the name, cut to the room
+                                // left of the close button.
+                                let mut left = rect.left() + 8.0;
+                                if tab.dirty {
+                                    let mark = painter.layout_no_wrap(
+                                        UNSAVED_MARK.to_string(),
+                                        egui::FontId::proportional(20.0),
+                                        color(tokens.attention),
+                                    );
+                                    let size = mark.size();
+                                    painter.galley(
+                                        egui::pos2(left, rect.center().y - size.y * 0.5),
+                                        mark,
+                                        color(tokens.attention),
+                                    );
+                                    left += size.x + 4.0;
+                                }
+                                let room = (close_rect.left() - 4.0 - left).max(0.0);
+                                let text = if tab.active {
+                                    tokens.chrome_text
+                                } else {
+                                    tokens.chrome_text_dim
+                                };
+                                let mut job = egui::text::LayoutJob::simple_singleline(
+                                    tab.name.clone(),
+                                    font.clone(),
+                                    color(text),
+                                );
+                                job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+                                let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+                                let size = galley.size();
+                                painter.galley(
+                                    egui::pos2(left, rect.center().y - size.y * 0.5),
+                                    galley,
+                                    color(text),
+                                );
+                                // The close button: dim until the pointer is on
+                                // the tab, with a plate under the pointer.
+                                if closer.hovered() {
+                                    painter.rect_filled(
+                                        close_rect,
+                                        egui::CornerRadius::same(tokens.radius),
+                                        color_alpha(tokens.chrome_text_dim, 60),
+                                    );
+                                }
+                                let tint = if closer.hovered() || response.hovered() || tab.active {
+                                    tokens.chrome_text
+                                } else {
+                                    tokens.chrome_text_dim
+                                };
+                                painter.text(
+                                    close_rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    CLOSE_MARK,
+                                    egui::FontId::proportional(15.0),
+                                    color(tint),
+                                );
+                                let closer = closer.on_hover_text("Close");
+                                hits.push((TabPart::Tab(tab.document), rect));
+                                hits.push((TabPart::Close(tab.document), close_rect));
+                                if closer.clicked() || response.middle_clicked() {
+                                    close = Some(tab.document);
+                                } else if response.clicked() {
+                                    clicked = Some(tab.document);
+                                }
+                            }
+                        });
+                    });
             });
+            if overflow {
+                let all = ui
+                    .menu_button(format!("All {count}"), |ui| {
+                        for tab in &self.tabs {
+                            let mark = if tab.dirty {
+                                format!(" {UNSAVED_MARK}")
+                            } else {
+                                String::new()
+                            };
+                            if ui
+                                .add(
+                                    egui::Button::new(format!("{}{mark}", tab.name))
+                                        .selected(tab.active),
+                                )
+                                .clicked()
+                            {
+                                chosen = Some(tab.document);
+                                ui.close();
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text("Every open document");
+                hits.push((TabPart::All, all.rect));
+            }
+        });
+        if let Some(document) = chosen {
+            self.request_activate(document);
+        }
         self.tab_hits = hits;
         if in_view {
             self.tab_scrolled = scroll_to;

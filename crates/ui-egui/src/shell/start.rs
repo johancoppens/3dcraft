@@ -334,6 +334,10 @@ pub struct StartLayout {
     pub spacing: f32,
 }
 
+/// Below this card width (in points) the Recent files and the agent
+/// block stand one under the other.
+pub const STACKED_WIDTH: f32 = 600.0;
+
 /// The least height (of the room for the card, in points) for the roomy
 /// layout.
 pub const ROOMY_HEIGHT: f32 = 760.0;
@@ -463,7 +467,7 @@ impl Shell {
         }
         // Less space between the parts in the compact layout.
         let space = tokens.inset * self.start.layout.map_or(1.0, |l| l.spacing);
-        card.show(ui, |ui| {
+        let shown = card.show(ui, |ui| {
             ui.set_width(width - 48.0);
             ui.vertical_centered(|ui| {
                 let side = self.start.layout.map_or(64.0, |l| l.logo);
@@ -512,8 +516,20 @@ impl Shell {
             ui.add_space(space * 1.4);
             ui.separator();
             ui.add_space(space * 0.6);
-            let left = 200.0_f32.min(ui.available_width() * 0.3);
-            ui.horizontal_top(|ui| {
+            // Side by side; on a narrow card (a phone) one under the other,
+            // so nothing runs past the card's edge.
+            let stacked = width < STACKED_WIDTH;
+            let left = if stacked {
+                ui.available_width()
+            } else {
+                200.0_f32.min(ui.available_width() * 0.3)
+            };
+            let row = if stacked {
+                egui::Layout::top_down(egui::Align::Min)
+            } else {
+                egui::Layout::left_to_right(egui::Align::Min)
+            };
+            ui.with_layout(row, |ui| {
                 ui.allocate_ui_with_layout(
                     egui::vec2(left, 0.0),
                     egui::Layout::top_down(egui::Align::Min),
@@ -528,7 +544,7 @@ impl Shell {
                         }
                     },
                 );
-                ui.add_space(tokens.inset * 1.5);
+                ui.add_space(tokens.inset * if stacked { 0.8 } else { 1.5 });
                 // The agent block with the info accent's bar beside it.
                 let pad = (tokens.info_bar_width + tokens.inset * 0.9).round();
                 let block = egui::Frame::new()
@@ -550,6 +566,10 @@ impl Shell {
                 );
             });
         });
+        // The whole card, for the test that it stays inside the window.
+        self.start
+            .hits
+            .push(("card".to_string(), shown.response.rect));
     }
 
     /// The examples as cards: the thumbnail and the name; a click builds
@@ -723,7 +743,8 @@ impl Shell {
                     });
             });
         ui.add_space(tokens.inset * 0.4);
-        ui.horizontal(|ui| {
+        // Wrapped: on a phone the three do not fit on one line.
+        ui.horizontal_wrapped(|ui| {
             if ui.button("Copy configuration").clicked() {
                 ui.ctx().copy_text(config.clone());
             }
