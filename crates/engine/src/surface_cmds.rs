@@ -12,9 +12,9 @@ use craft3d_doc::{
 use serde_json::{Map, Value, json};
 
 pub(crate) static SPECS: &[CommandSpec] = &[
-    spec!("feature.surface.network", "Network Surface", r#"{"u": [curve, ...], "v": [curve, ...], "edges": {uFirst|uLast|vFirst|vLast: {kind: free|position|tangent, face: face name, weight: expr = 1}} = all free, "name": string = automatic, "when": expr = always on}"#,
-        "Adds a sheet through a network of curves that cross (a Gordon surface): the u curves follow each other across the v curves, 2 to 64 of each. A curve is a sketch whose curves make one open chain (lines, arcs, splines end to end) or edges of earlier bodies end to end ({\"edges\": [...]}). Every u curve must cross every v curve within the tolerance; the first and last curve of each family are the sheet's edges, so the others end on them; curves are run the network's way whatever way they were drawn, and a family must cross the other in its order. The sheet passes through every curve within mismatch (a proven bound, held to the tolerance: the gaps where they cross and what the sum makes of them) and is an exact B-spline: two curves each way give the Coons patch, curves along a cylinder or sphere give that surface exactly. edges holds an edge: position checks that its curve lies on the face; tangent makes the sheet meet the face with one tangent plane (G1) all along the edge, the curves crossing the edge bent to leave it along the face with their own speed times weight (a spline face along one of its parameter lines, a plane, cylinder, cone or sphere along any curve on it). The face is F9:side(eA,eB,eC,eD), its numbers the feature ids of the sketches (or of the first edges' features) of the first and last u curve and the first and last v curve; its edges F9:startEdge(0, key) and F9:endEdge(0, key) along the first and last u curve, F9:startEdge(1, key) and F9:endEdge(1, key) along the v curves. The result reports network: mismatch and the tangency found on each held edge. Refused with the curves named: curves that do not cross, cross out of order or run past an edge, or are crossed far more unevenly than the rest of their family, rational curves whose weights cannot agree, a sheet that would need more than 2^20 control points (curves crossed at their own parameters each bring their own knots), a curve leaving a tangent edge square to its face or along it, curves leaving it to opposite sides, a corner where two held edges ask different tangent planes or twists, tangency to a torus or along a spline face's curve that is not a parameter line (or one crossing its seam). Give it a thickness with feature.plate. feature.edit changes u, v and edges.", doc: true, names: ["u", "v", "edges"], feature_network),
-    spec!("feature.surface.coons", "Coons Patch", r#"{"curves": [curve, curve, curve, curve], "edges": {uFirst|uLast|vFirst|vLast: {kind: free|position|tangent, face: face name, weight: expr = 1}} = all free, "name": string = automatic, "when": expr = always on}"#,
+    spec!("feature.surface.network", "Network Surface", r#"{"u": [curve, ...], "v": [curve, ...], "edges": {uFirst|uLast|vFirst|vLast: {kind: free|position|tangent|curvature, face: face name, weight: expr = 1}} = all free, "name": string = automatic, "when": expr = always on}"#,
+        "Adds a sheet through a network of curves that cross (a Gordon surface): the u curves follow each other across the v curves, 2 to 64 of each. A curve is a sketch whose curves make one open chain (lines, arcs, splines end to end) or edges of earlier bodies end to end ({\"edges\": [...]}). Every u curve must cross every v curve within the tolerance; the first and last curve of each family are the sheet's edges, so the others end on them; curves are run the network's way whatever way they were drawn, and a family must cross the other in its order. The sheet passes through every curve within mismatch (a proven bound, held to the tolerance: the gaps where they cross and what the sum makes of them) and is an exact B-spline: two curves each way give the Coons patch, curves along a cylinder or sphere give that surface exactly. edges holds an edge: position checks that its curve lies on the face; tangent makes the sheet meet the face with one tangent plane (G1) all along the edge, the curves crossing the edge bent to leave it along the face with their own speed times weight (a spline face along one of its parameter lines, a plane, cylinder, cone or sphere along any curve on it); curvature does that and makes the sheet take the face's normal curvature across the edge too (G2): the curves crossing it get the face's curvature in their direction, the sheet's second derivative across is put where the face asks it all along (exactly), and the result is measured by the proven measure.continuity, refused unless G2 (along a spline face the family crossing the edge takes its crossing parameters from the face's line, so only one edge of a family may be held in curvature to a spline face). The face is F9:side(eA,eB,eC,eD), its numbers the feature ids of the sketches (or of the first edges' features) of the first and last u curve and the first and last v curve; its edges F9:startEdge(0, key) and F9:endEdge(0, key) along the first and last u curve, F9:startEdge(1, key) and F9:endEdge(1, key) along the v curves. The result reports network: mismatch, the tangency found on each held edge, and continuity (as measure.continuity reports it) on each edge held in curvature. Refused with the curves named: curves that do not cross, cross out of order or run past an edge, or are crossed far more unevenly than the rest of their family, rational curves whose weights cannot agree, a sheet that would need more than 2^20 control points (curves crossed at their own parameters each bring their own knots), a curve leaving a tangent edge square to its face or along it, curves leaving it to opposite sides, a corner where two held edges ask different tangent planes or twists, tangency to a torus or along a spline face's curve that is not a parameter line (or one crossing its seam). Give it a thickness with feature.plate. feature.edit changes u, v and edges.", doc: true, names: ["u", "v", "edges"], feature_network),
+    spec!("feature.surface.coons", "Coons Patch", r#"{"curves": [curve, curve, curve, curve], "edges": {uFirst|uLast|vFirst|vLast: {kind: free|position|tangent|curvature, face: face name, weight: expr = 1}} = all free, "name": string = automatic, "when": expr = always on}"#,
         "Adds the Coons patch of four curves round a patch, end to end in order (each a sketch's open chain or edges of earlier bodies, as feature.surface.network takes them): the network of curves 1 and 3 as its u curves (uFirst, uLast) and curves 4 and 2 as its v curves (vFirst, vLast), so the bilinearly blended surface between them; it is a feature.surface.network and is edited as one.", doc: true, names: ["curves", "edges"], feature_coons),
 ];
 
@@ -85,7 +85,7 @@ fn edges_value(p: &Params, command: &'static str) -> Result<NetworkEdges, Comman
 fn hold_value(command: &str, key: &str, item: &Value) -> Result<EdgeHold, CommandError> {
     let Some(obj) = item.as_object() else {
         return fail(format!(
-            "{command}: `edges.{key}` must be {{\"kind\": \"free|position|tangent\", \"face\": face name, \"weight\": expr}}"
+            "{command}: `edges.{key}` must be {{\"kind\": \"free|position|tangent|curvature\", \"face\": face name, \"weight\": expr}}"
         ));
     };
     if let Some(other) = obj
@@ -122,7 +122,7 @@ fn hold_value(command: &str, key: &str, item: &Value) -> Result<EdgeHold, Comman
         "position" => {
             if obj.contains_key("weight") {
                 return fail(format!(
-                    "{command}: `edges.{key}`: a weight is for a tangent edge"
+                    "{command}: `edges.{key}`: a weight is for a tangent or curvature edge"
                 ));
             }
             let face = face(true)?.ok_or_else(|| {
@@ -130,7 +130,7 @@ fn hold_value(command: &str, key: &str, item: &Value) -> Result<EdgeHold, Comman
             })?;
             Ok(EdgeHold::Position { face })
         }
-        "tangent" => {
+        "tangent" | "curvature" => {
             let face = face(true)?.ok_or_else(|| {
                 CommandError::new(format!("{command}: `edges.{key}` needs a face"))
             })?;
@@ -152,10 +152,14 @@ fn hold_value(command: &str, key: &str, item: &Value) -> Result<EdgeHold, Comman
                     ));
                 }
             };
-            Ok(EdgeHold::Tangent { face, weight })
+            Ok(if kind == "curvature" {
+                EdgeHold::Curvature { face, weight }
+            } else {
+                EdgeHold::Tangent { face, weight }
+            })
         }
         other => fail(format!(
-            "{command}: `edges.{key}.kind` is free, position or tangent, not `{other}`"
+            "{command}: `edges.{key}.kind` is free, position, tangent or curvature, not `{other}`"
         )),
     }
 }
@@ -241,8 +245,20 @@ pub(crate) fn report_json(map: &mut Map<String, Value>, made: &craft3d_regen::Ne
             tangency.insert((*key).to_string(), json!(angle));
         }
     }
+    let mut seams = Map::new();
+    for (key, value) in ["uFirst", "uLast", "vFirst", "vLast"]
+        .iter()
+        .zip(&made.seams)
+    {
+        if let Some(c) = value {
+            seams.insert(
+                (*key).to_string(),
+                crate::continuity_cmds::continuity_json(c),
+            );
+        }
+    }
     map.insert(
         "network".into(),
-        json!({"mismatch": made.mismatch, "tangency": tangency}),
+        json!({"mismatch": made.mismatch, "tangency": tangency, "continuity": seams}),
     );
 }

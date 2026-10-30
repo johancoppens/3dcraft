@@ -26,6 +26,35 @@ pub struct Networked {
     /// Per edge held tangent: the largest angle found between the tangent
     /// planes along it.
     pub tangency: [Option<f64>; 4],
+    /// Per edge held in curvature: how the sheet meets its face there,
+    /// proven (`network::continuity`).
+    pub seams: [Option<network::Continuity>; 4],
+}
+
+/// The curve of an edge over its range as a spline (lines and arcs
+/// exactly), for measures along it.
+pub fn edge_spline(curve: &Curve3, range: (f64, f64)) -> Result<NurbsCurve, String> {
+    let (a, b) = range;
+    match curve {
+        Curve3::Line(_) => NurbsCurve::polynomial(
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![curve.eval(a), curve.eval(b)],
+        ),
+        Curve3::Circle(circle) => network::arc(circle.frame(), circle.radius(), a, b - a),
+        Curve3::Nurbs(spline) => {
+            let (lo, hi) = spline.domain();
+            if a <= lo && b >= hi {
+                Ok(spline.clone())
+            } else {
+                piece(spline, a.max(lo), b.min(hi))
+            }
+        }
+        Curve3::Ellipse(_) => {
+            return Err("an ellipse is not measured along yet".to_string());
+        }
+    }
+    .map_err(|e| e.to_string())
 }
 
 /// One spline of a rail, its pieces joined end to end.
@@ -141,7 +170,7 @@ pub(crate) fn build(
     }
     // The faces held to, then the conditions that borrow them.
     let holds = feature.edges.all();
-    let mut faces: Vec<Option<(Surface, Option<f64>)>> = Vec::with_capacity(4);
+    let mut faces: Vec<Option<(Surface, Option<(f64, bool)>)>> = Vec::with_capacity(4);
     for (key, hold) in &holds {
         let role = format!("edges.{key}");
         faces.push(match hold {
@@ -149,14 +178,22 @@ pub(crate) fn build(
             EdgeHold::Position { face } => Some((face_surface(doc, earlier, face, &role)?, None)),
             EdgeHold::Tangent { face, weight } => Some((
                 face_surface(doc, earlier, face, &role)?,
-                Some(ratio(variables, &format!("{role}.weight"), weight)?),
+                Some((ratio(variables, &format!("{role}.weight"), weight)?, false)),
+            )),
+            EdgeHold::Curvature { face, weight } => Some((
+                face_surface(doc, earlier, face, &role)?,
+                Some((ratio(variables, &format!("{role}.weight"), weight)?, true)),
             )),
         });
     }
     let condition = |k: usize| -> Condition<'_> {
         match faces.get(k) {
             Some(Some((surface, None))) => Condition::Position(surface),
-            Some(Some((surface, Some(weight)))) => Condition::Tangent {
+            Some(Some((surface, Some((weight, false))))) => Condition::Tangent {
+                surface,
+                weight: *weight,
+            },
+            Some(Some((surface, Some((weight, true))))) => Condition::Curvature {
                 surface,
                 weight: *weight,
             },
@@ -197,6 +234,7 @@ pub(crate) fn build(
         Networked {
             mismatch: made.mismatch,
             tangency: made.tangency,
+            seams: made.seams,
         },
     ))
 }

@@ -659,6 +659,13 @@ pub enum EdgeHold {
         #[serde(default = "one")]
         weight: Expr,
     },
+    /// As `Tangent`, and with the face's normal curvature across the edge
+    /// too (G2).
+    Curvature {
+        face: PersistentName,
+        #[serde(default = "one")]
+        weight: Expr,
+    },
 }
 
 fn one() -> Expr {
@@ -670,7 +677,9 @@ impl EdgeHold {
     pub fn face(&self) -> Option<&PersistentName> {
         match self {
             EdgeHold::Free => None,
-            EdgeHold::Position { face } | EdgeHold::Tangent { face, .. } => Some(face),
+            EdgeHold::Position { face }
+            | EdgeHold::Tangent { face, .. }
+            | EdgeHold::Curvature { face, .. } => Some(face),
         }
     }
 }
@@ -1644,7 +1653,7 @@ impl FeatureKind {
                     .all()
                     .into_iter()
                     .filter_map(|(key, hold)| match hold {
-                        EdgeHold::Tangent { weight, .. } => {
+                        EdgeHold::Tangent { weight, .. } | EdgeHold::Curvature { weight, .. } => {
                             Some((format!("edges.{key}.weight"), weight))
                         }
                         _ => None,
@@ -1798,7 +1807,9 @@ impl FeatureKind {
                 .all_mut()
                 .into_iter()
                 .filter_map(|(_, hold)| match hold {
-                    EdgeHold::Tangent { weight, .. } => Some(weight),
+                    EdgeHold::Tangent { weight, .. } | EdgeHold::Curvature { weight, .. } => {
+                        Some(weight)
+                    }
                     _ => None,
                 })
                 .collect(),

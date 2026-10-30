@@ -39,7 +39,7 @@ mod follow;
 mod loft;
 mod move_face;
 mod network;
-pub use network::Networked;
+pub use network::{Networked, edge_spline};
 mod offset_face;
 mod offset_profile;
 mod pass;

@@ -209,6 +209,38 @@ curves, each crossed at its own parameters, each bring their own knots). The fac
 after its four edge curves (`F5:side(e1,e2,e3,e4)`: the ids of their sketches), so editing a curve or
 adding one inside the network keeps its name.
 
+### Curvature-continuous seams (G2)
+
+A tangent seam (G1) has no crease, but the curvature still jumps across it: reflections bend there. For
+class-A work hold the edge in **curvature** instead: `"kind": "curvature"` makes the sheet meet the face
+with one tangent plane *and* the same normal curvature across the edge (G2), so reflections run on
+smoothly. The curves crossing the edge are bent to take the face's curvature in their direction, and the
+sheet's second derivative across the edge is put exactly where the face asks it, all along:
+
+```json
+[
+ ["feature.cylinder", {"radius": "20 mm", "height": "30 mm", "name": "Post"}],
+ ["sketch.create", {"name": "Seam", "plane": "zx"}],
+ ["sketch.line", {"sketch": "Seam", "from": [0, 20], "to": [30, 20]}],
+ ["sketch.create", {"name": "Far", "plane": "yz", "offset": "35 mm"}],
+ ["sketch.line", {"sketch": "Far", "from": [25, 0], "to": [25, 30]}],
+ ["sketch.create", {"name": "Bottom"}],
+ ["sketch.spline", {"sketch": "Bottom", "through": [[20, 0], [23, 6.5], [27, 13], [35, 25]]}],
+ ["sketch.create", {"name": "Top", "offset": "30 mm"}],
+ ["sketch.spline", {"sketch": "Top", "through": [[20, 0], [23, 6.5], [27, 13], [35, 25]]}],
+ ["feature.surface.network", {"u": ["Seam", "Far"], "v": ["Bottom", "Top"], "edges": {"uFirst": {"kind": "curvature", "face": "F1:side(0)"}}, "name": "Fin"}],
+ ["measure.continuity", {"edge": "F7:startEdge(0,2)", "face": "F1:side(0)"}]
+]
+```
+
+The result says under `network` › `continuity` how the seam was proven to meet the face, and
+`measure.continuity` measures any such seam (below). The face may be a plane, cylinder, cone or sphere, or a
+spline face along one of its parameter lines, such as another network sheet's edge: two sheets then join in
+curvature. Along a spline face the curves crossing the edge take their crossing parameters from the face's
+line, so that both sides of the seam share one parametrisation; only one edge of a family can be held that
+way. The sheet is refused unless the measure proves G2, with the gaps it found; a torus, or a spline face
+along a curve that is not one of its parameter lines, is refused as for tangency.
+
 ## Plates and joints
 
 `feature.plate` gives faces a thickness: a sheet (a fill, a loft of open sections, a developable) becomes a

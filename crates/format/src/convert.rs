@@ -1880,6 +1880,10 @@ fn hold_to_manifest(hold: &doc::EdgeHold) -> manifest::EdgeHold {
             face: name_to_manifest(face),
             weight: expr_to_manifest(weight),
         },
+        doc::EdgeHold::Curvature { face, weight } => manifest::EdgeHold::Curvature {
+            face: name_to_manifest(face),
+            weight: expr_to_manifest(weight),
+        },
     }
 }
 
@@ -1890,6 +1894,10 @@ fn hold_to_doc(hold: manifest::EdgeHold) -> doc::EdgeHold {
             face: name_to_doc(face),
         },
         manifest::EdgeHold::Tangent { face, weight } => doc::EdgeHold::Tangent {
+            face: name_to_doc(face),
+            weight: doc::Expr(weight),
+        },
+        manifest::EdgeHold::Curvature { face, weight } => doc::EdgeHold::Curvature {
             face: name_to_doc(face),
             weight: doc::Expr(weight),
         },

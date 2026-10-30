@@ -1148,6 +1148,10 @@ pub enum EdgeHold {
         face: Name,
         weight: String,
     },
+    Curvature {
+        face: Name,
+        weight: String,
+    },
 }
 
 impl EdgeHold {

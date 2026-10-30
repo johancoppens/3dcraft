@@ -29,6 +29,7 @@ mod blend_cmds;
 mod body_cmds;
 mod checks_elsewhere;
 mod commands;
+mod continuity_cmds;
 mod datum_cmds;
 mod develop_cmds;
 mod drawing_cmds;
@@ -559,6 +560,7 @@ impl Session {
                 loft_cmds::SPECS,
                 develop_cmds::SPECS,
                 surface_cmds::SPECS,
+                continuity_cmds::SPECS,
                 plate_cmds::SPECS,
                 sweep_path_cmds::SPECS,
                 body_cmds::SPECS,

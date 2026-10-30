@@ -19,6 +19,7 @@ after every change.
 | `measure.ray {"from", "direction"}` | Every place a line meets the bodies, entering or leaving |
 | `measure.symmetry {"of", "plane"}` | How far the bodies are from symmetric in a plane |
 | `document.interference` | For each pair of bodies: clear, touch or overlap (with the common volume) |
+| `measure.continuity {"edge", "face"}` | How two faces meet along an edge: G0, G1 or G2, with the largest gap in position, tangent-plane angle and curvature, proven ([continuity](#continuity-across-a-seam)) |
 | `measure.below`, `measure.section`, `measure.levelFor`, `measure.floating` | The volume below a plane, a section's area and second moments, the level for a volume, the level and tilt a body floats at ([below](#below-a-plane-sections-and-levels)) |
 
 A subject (`of`, `from`, `to`) is a body by its feature's name, a list of them, or a query as
@@ -150,7 +151,9 @@ solves the equilibrium itself, and again only when what it depends on changes.
   `sectionArea`, `sectionCentroid`, `sectionInertia`, `sectionExtent`, `levelFor`, `floatingOffset`, `floatingHeel`,
   `floatingTrim`, `floatingGM`, `floatingGML`, `floatingStable` ([above](#below-a-plane-sections-and-levels)), the
   sheet-metal measures and `bendable` (the press-brake check, [chapter 9](09-features.md#sheet-metal)),
-  and `value`, a formula of the variables and outputs (`expr`, [below](#outputs-measures-in-formulas)).
+  `value`, a formula of the variables and outputs (`expr`, [below](#outputs-measures-in-formulas)), and
+  `continuity` (`edge`, `face`: the order a seam reaches as a number, −1 none, 0 G0, 1 G1, 2 G2; `"min": 2`
+  asserts G2, [below](#continuity-across-a-seam)).
 - Bounds: `eq` (with `tol`, by default a millionth of the value; `0` is allowed), or `min` and/or
   `max`; `is` for the yes-or-no measures (`true` by default, except for `overlap`, which wants it
   said). Bounds are expressions in the document's variables, so they follow the design: the case's
@@ -228,6 +231,29 @@ One trap: in an expression a power binds to the number with its unit, so `50 cm^
 (50 cm)³; it is refused wherever a bound is read. Write `50 * (1 cm)^3`, or a plain number in the
 document's unit (mm³ in a mm document). Only `0` and `1` may be written so (`"tol": "0 mm^3"`): for them
 the two readings are the same.
+
+## Continuity across a seam
+
+`measure.continuity {"edge": "F7:startEdge(0,2)", "face": "F1:side(0)"}` says how a sheet meets a face
+along an edge (without `face`, the edge's two faces). `order` is the highest of **G0** (in position), **G1**
+(one tangent plane) and **G2** (the same normal curvature across the edge too) whose gaps are *proven*
+within their thresholds all along the edge, not only where it was looked at: `position`, `angle` (radians)
+and `curvature` (the difference across the edge, per length unit) each give `bound` (nothing along the edge
+is beyond it), `found` (the largest seen, with `param` and `at`), `threshold` and `within`.
+
+The thresholds are the document's: the tolerance, the angular tolerance, and for curvature the smaller of
+angular / L and 2 × tolerance / L², L the edge's length (what turns the normals apart by the angular
+tolerance, or opens a gap of the tolerance, over that length). Nearly G2 is not G2: a seam whose curvature
+differs by more than that is G1, and one whose bound cannot be brought within the threshold is not reached
+either. One of the faces must be a spline face the edge runs along a parameter line of (a network sheet's
+edge is); the other a plane, cylinder, cone or sphere, or a spline face in the same parametrisation along the
+seam. Two analytic faces and a torus are refused, with the reason.
+
+```json
+[
+ ["assert.add", {"name": "fin is G2", "measure": "continuity", "edge": "F7:startEdge(0,2)", "face": "F1:side(0)", "min": 2}]
+]
+```
 
 ## Outputs: measures in formulas
 

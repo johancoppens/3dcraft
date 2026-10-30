@@ -688,7 +688,7 @@ impl Outcome {
 }
 
 /// The measures, by name: what `assert.add` takes under `measure`.
-pub(crate) const MEASURES: [&str; 39] = [
+pub(crate) const MEASURES: [&str; 40] = [
     "volume",
     "area",
     "mass",
@@ -728,6 +728,7 @@ pub(crate) const MEASURES: [&str; 39] = [
     "floatingGML",
     "floatingStable",
     "bendable",
+    "continuity",
 ];
 
 /// Takes the measure `name` with the parameters `p`.
@@ -755,6 +756,7 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
         "kawasakiFails" | "maekawaFails" | "flatFoldable" => crate::fold_cmds::take(ctx, name, p),
         "bendable" => crate::bendseq_cmds::take(ctx, p),
         "value" => value(ctx, p),
+        "continuity" => crate::continuity_cmds::take(ctx, p),
         _ => Err(format!(
             "unknown measure `{}`; one of {}",
             name.chars().take(40).collect::<String>(),
