@@ -81,6 +81,11 @@ struct Studio {
     // rgb: the picture's plain background colour, linear. w: 1 when the
     // background is that colour instead of the environment.
     backdrop: vec4<f32>,
+    // See-through and cut-open pictures. x: the opacity the front is
+    // blended at. y: the share of the key a shadow lets through
+    // (`FrameLight::pass`). z: 1 for a see-through picture. w: 1 for a
+    // cut-open one.
+    see: vec4<f32>,
     sh: array<vec4<f32>, 9>,
     // The lens's taps of the frame (`polish::dof_taps`), two per vector.
     taps: array<vec4<f32>, 40>,
@@ -99,6 +104,10 @@ struct Studio {
 @group(1) @binding(9) var optics_map: texture_2d<u32>;
 @group(1) @binding(10) var behind_map: texture_2d<u32>;
 @group(1) @binding(11) var backs_map: texture_2d<u32>;
+// The count of a cut-open picture (`cut.wgsl`'s `fs_parity`, here
+// `fs_studio_parity`): 1 where the number of surfaces left out at the
+// sample is odd. A texel of 0 for a whole picture.
+@group(2) @binding(0) var parity_map: texture_2d<f32>;
 
 // tonemap::srgb_encode.
 fn srgb_encode(c: f32) -> f32 {
@@ -363,6 +372,44 @@ fn visibility(p: vec3<f32>, n: vec3<f32>, radius: f32) -> f32 {
         }
     }
     return f32(lit) / f32(FILTER_TAPS * FILTER_TAPS);
+}
+
+// FrameLight::see: the key's visibility as a see-through picture's
+// shadows let it through; `v` itself for opaque bodies (pass 0).
+fn see(v: f32) -> f32 {
+    return studio.see.y + (1.0 - studio.see.y) * v;
+}
+
+// `craft3d_render::SECTION_FACE`: the cap of a section.
+const CAP_FACE: u32 = 4294967294u;
+// `craft3d_render::SECTION_PARALLEL`.
+const CUT_PARALLEL: f32 = 0.9999847412109375;
+
+// `Cut::clips` (`cut.wgsl`'s `clips`): true where a point at the distance
+// `side` from the plane of a triangle whose own normal is `flat_normal`
+// is cut away. Without a section the plane is none (normal 0, snap −1)
+// and nothing is.
+fn cut_clips(side: f32, flat_normal: vec3<f32>) -> bool {
+    let facing = dot(flat_normal, scene.section.xyz);
+    if abs(side) <= scene.section_cap.w && abs(facing) >= CUT_PARALLEL {
+        return facing < 0.0;
+    }
+    return side > 0.0;
+}
+
+// True where a fragment is not drawn in a cut-open picture: a fragment
+// of the mesh that the section cuts away (its distance from the plane
+// taken at its own point, `Cut::side`), or a fragment of the cap where
+// the count is even or outside the box the cap is drawn in
+// (`Cut::holds_cap`).
+fn cut_drops(in: VertexOut) -> bool {
+    let p = scene.eye.xyz + in.rel;
+    if in.face == CAP_FACE {
+        let odd = textureLoad(parity_map, vec2<i32>(floor(in.clip.xy)), 0).r > 0.5;
+        let inside = all(p >= scene.section_lo.xyz) && all(p <= scene.section_hi.xyz);
+        return !(odd && inside);
+    }
+    return cut_clips(dot(p, scene.section.xyz) - scene.section.w, in.flat_normal);
 }
 
 // The luminance of a linear colour (env::luminance).
@@ -952,7 +999,7 @@ fn studio_shade(base_bytes: vec3<f32>, metallic: f32, roughness_in: f32, p: vec3
         if studio.lv_v.w > 0.5 && lit {
             vis = visibility(p, n, studio.key_light.w);
         }
-        vis = vis * contact;
+        vis = see(vis * contact);
         key_light = studio.key_light.rgb;
         key_dot = nl * vis;
         key_vis = vis;
@@ -1100,7 +1147,7 @@ fn ground_factor(origin: vec3<f32>, d: vec3<f32>) -> f32 {
     if !(rest + key > 0.0) || lz <= 0.0 {
         return 1.0;
     }
-    let vis = visibility(g, vec3<f32>(0.0, 0.0, 1.0), studio.key_light.w);
+    let vis = see(visibility(g, vec3<f32>(0.0, 0.0, 1.0), studio.key_light.w));
     return (rest + key * vis) / (rest + key);
 }
 
@@ -1202,6 +1249,10 @@ struct ShadowOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) depth: f32,
     @location(1) @interpolate(flat) optics: u32,
+    // The distance from the section's plane and the triangle's facing of
+    // it (`ShadowMap::draw_cut`).
+    @location(2) side: f32,
+    @location(3) @interpolate(flat) facing: vec3<f32>,
 }
 
 @vertex
@@ -1215,6 +1266,8 @@ fn vs_shadow(raw: VertexIn) -> ShadowOut {
                          clamp(d / (2.0 * r), 0.0, 1.0), 1.0);
     out.depth = d;
     out.optics = in.optics;
+    out.side = dot(in.position, scene.section.xyz) - scene.section.w;
+    out.facing = in.flat_normal;
     return out;
 }
 
@@ -1222,7 +1275,7 @@ fn vs_shadow(raw: VertexIn) -> ShadowOut {
 // `FrameLight::casting`).
 @fragment
 fn fs_shadow(in: ShadowOut) -> @location(0) u32 {
-    if (in.optics & TRANSMISSIVE) != 0u {
+    if (in.optics & TRANSMISSIVE) != 0u || cut_clips(in.side, in.facing) {
         discard;
     }
     return bitcast<u32>(in.depth);
@@ -1249,6 +1302,9 @@ struct GeometryOut {
 
 @fragment
 fn fs_geometry(in: VertexOut) -> GeometryOut {
+    if cut_drops(in) {
+        discard;
+    }
     var out: GeometryOut;
     let n = normal_of(in);
     out.data = vec4<u32>(bitcast<u32>(in.dist), bitcast<u32>(n.x), bitcast<u32>(n.y),
@@ -1266,7 +1322,26 @@ fn transmissive(in: VertexOut) -> bool {
 // (layer 3: what they see).
 @fragment
 fn fs_geometry_opaque(in: VertexOut) -> GeometryOut {
-    if transmissive(in) {
+    if transmissive(in) || cut_drops(in) {
+        discard;
+    }
+    var out: GeometryOut;
+    let n = normal_of(in);
+    out.data = vec4<u32>(bitcast<u32>(in.dist), bitcast<u32>(n.x), bitcast<u32>(n.y),
+                         bitcast<u32>(n.z));
+    {{SET_DEPTH}}
+    return out;
+}
+
+// The surface behind the front of a see-through picture (`Raster::peel`):
+// a fragment strictly further than the front at its sample, whose view
+// distance is read from the front's geometry (`geometry_map`, group 1 of
+// the occlusion). Both are the same vertex stage's numbers, so the front
+// is never its own surface behind, nor anything that ties with it.
+@fragment
+fn fs_geometry_peel(in: VertexOut) -> GeometryOut {
+    let front = bitcast<f32>(textureLoad(geometry_map, vec2<i32>(floor(in.clip.xy)), 0).x);
+    if cut_drops(in) || !(in.dist > front) {
         discard;
     }
     var out: GeometryOut;
@@ -1568,7 +1643,13 @@ fn studio_of(in: VertexOut) -> Shaded {
         roughness = f32(rough - 1u) / 255.0;
     }
     var slot = in.optics & OPTICS_SLOT;
-    if highlighted(in.face) {
+    if in.face == CAP_FACE {
+        // The cap: its colour, lit like a face without a finish.
+        base = round(scene.section_cap.rgb * 255.0);
+        metallic = 0.0;
+        roughness = DEFAULT_ROUGHNESS;
+        slot = 0u;
+    } else if highlighted(in.face) {
         base = scene.highlight.rgb;
         metallic = 0.0;
         roughness = DEFAULT_ROUGHNESS;
@@ -1617,21 +1698,79 @@ struct PostLightOut {
 
 // With the light from behind the faces that let light through (layer 3,
 // `refract::pass_through`).
+//
+// In a see-through picture the front is blended over the surface behind
+// it in light (`behind_map` holds that surface's light, `backs_map` none,
+// so a face that lets light through shows it as a thin sheet would):
+// `opacity · front + (1 − opacity) · behind`, the weight of the front's
+// reflections times the opacity; a highlighted face is not seen through.
 @fragment
 fn fs_studio_post(in: VertexOut) -> PostLightOut {
+    if cut_drops(in) {
+        discard;
+    }
     var out: PostLightOut;
     let shaded = studio_of(in);
-    out.light = bits3(through(in, shaded), 0.0);
+    var light = through(in, shaded);
+    var weight = shaded.weight;
+    if studio.see.z > 0.5 && !highlighted(in.face) {
+        let behind = light_behind(vec2<i32>(floor(in.clip.xy)));
+        light = studio.see.x * light + (1.0 - studio.see.x) * behind;
+        weight = weight * studio.see.x;
+    }
+    out.light = bits3(light, 0.0);
+    out.weight = bits3(weight, shaded.roughness);
+    {{SET_DEPTH}}
+    return out;
+}
+
+// The light of the surface behind the front of a see-through picture,
+// shaded completely with its own geometry and occlusion; the fragments
+// `fs_geometry_peel` keeps, with the front's geometry in `behind_map`.
+@fragment
+fn fs_studio_peel(in: VertexOut) -> PostLightOut {
+    let front = bitcast<f32>(textureLoad(behind_map, vec2<i32>(floor(in.clip.xy)), 0).x);
+    if cut_drops(in) || !(in.dist > front) {
+        discard;
+    }
+    var out: PostLightOut;
+    let shaded = studio_of(in);
+    out.light = bits3(shaded.light, 0.0);
     out.weight = bits3(shaded.weight, shaded.roughness);
     {{SET_DEPTH}}
     return out;
+}
+
+// The face ids and view distances of a studio picture, without what a
+// section cuts away.
+@fragment
+fn fs_studio_data(in: VertexOut) -> DataOut {
+    if cut_drops(in) {
+        discard;
+    }
+    var out: DataOut;
+    out.data = data_of(in);
+    {{SET_DEPTH}}
+    return out;
+}
+
+// The count of a cut-open picture: every fragment the section cuts away
+// turns its sample's parity (the target's blend, `cut::parity_target`).
+@fragment
+fn fs_studio_parity(in: VertexOut) -> @location(0) vec4<f32> {
+    let p = scene.eye.xyz + in.rel;
+    if in.face == CAP_FACE
+        || !cut_clips(dot(p, scene.section.xyz) - scene.section.w, in.flat_normal) {
+        discard;
+    }
+    return vec4<f32>(1.0);
 }
 
 // The picture without the faces that let light through (layer 3: what
 // they see), shaded completely.
 @fragment
 fn fs_studio_behind(in: VertexOut) -> PostLightOut {
-    if transmissive(in) {
+    if transmissive(in) || cut_drops(in) {
         discard;
     }
     var out: PostLightOut;
@@ -1658,7 +1797,7 @@ fn fs_backs(in: VertexOut) -> BacksOut {
     if scene.forward.w > 0.5 {
         towards = in.rel;
     }
-    if !transmissive(in) || !(dot(in.flat_normal, towards) > 0.0) {
+    if !transmissive(in) || !(dot(in.flat_normal, towards) > 0.0) || cut_drops(in) {
         discard;
     }
     var out: BacksOut;

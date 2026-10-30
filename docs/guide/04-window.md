@@ -236,8 +236,9 @@ picture had so far and which is best for modelling, and the studio look, which s
 how metal and how rough its faces are (Appearance), lit by a photographed environment. Three come with
 3DCraft: `studio` (soft boxes, the default), `outdoor` (sky and sun) and `workshop`. The light falls
 from the environment's brightest direction and casts soft shadows on the model and on a ground under
-it; corners and grooves darken where little light reaches. A see-through or cut-open view is drawn in
-the plain look.
+it; corners and grooves darken where little light reaches. A see-through or cut-open view is lit the
+same way: what lies behind a see-through face is lit as the face is and shows through it, and the
+flat cap of a section is lit like a face in its own colour.
 
 Switching the studio look on opens its options in a panel that hangs under the button row, beside the
 view cube: the environment and how far it is turned, the exposure, the background, the ground and how much

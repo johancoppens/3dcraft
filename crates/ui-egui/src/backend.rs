@@ -174,7 +174,7 @@ impl BodyRenderer {
         height: u32,
     ) -> Option<crate::viewport::EdgeBlur> {
         let studio = self.studio.as_ref()?;
-        if !self.marks.soft_edges || self.opacity() < 1.0 || self.marks.section().is_some() {
+        if !self.marks.soft_edges {
             return None;
         }
         let scene = scene?;

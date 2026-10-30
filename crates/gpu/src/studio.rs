@@ -36,10 +36,10 @@ pub struct Studio {
     pub look: Look,
 }
 
-/// Number of `f32` in `studio.wgsl`'s uniform block: fourteen `vec4`
-/// (the backdrop's among them),
+/// Number of `f32` in `studio.wgsl`'s uniform block: fifteen `vec4`
+/// (the backdrop's and the see-through's among them),
 /// nine for the spherical harmonics and forty for the lens's taps.
-pub(crate) const STUDIO_FLOATS: usize = 4 * (14 + 9 + TAP_VECTORS);
+pub(crate) const STUDIO_FLOATS: usize = 4 * (15 + 9 + TAP_VECTORS);
 /// The `vec4` of the lens's taps, two taps in each.
 const TAP_VECTORS: usize = 40;
 /// The lens's taps of a frame: 8 i on ring i (`polish::dof_taps`), as
@@ -75,6 +75,14 @@ pub(crate) struct Passes {
     /// faces and their back faces are drawn first (and `post` is on, as
     /// `render_studio_frame` takes its post path then).
     pub transmit: bool,
+    /// A see-through picture: the surface behind the front is drawn
+    /// first (its geometry, occlusion and light, in layer 3's targets
+    /// behind), and the front is blended over it (`post` is on).
+    pub peel: bool,
+    /// A cut-open picture: the count of what the section leaves out is
+    /// drawn first, and every pass of the surfaces draws the cap (`post`
+    /// is on).
+    pub cut: bool,
 }
 
 /// The sizes of bloom's levels below a picture of `size` samples, as
@@ -109,6 +117,7 @@ pub(crate) fn studio_uniforms(
     size: (u32, u32),
     frame: u32,
     background: [u8; 3],
+    (opacity, cut): (f64, bool),
 ) -> Result<([f32; STUDIO_FLOATS], Passes), GpuError> {
     let env = &studio.env;
     let look = &studio.look;
@@ -120,6 +129,8 @@ pub(crate) fn studio_uniforms(
     };
     let shadow = numbers.view.is_some();
     let ao = look.ao;
+    // Not below 1, NaN included: a whole body is not seen through.
+    let peel = opacity < 1.0;
     let (center, radius, u, v, w, texel) = match numbers.view {
         Some(view) => (
             view.center - origin,
@@ -209,6 +220,13 @@ pub(crate) fn studio_uniforms(
             let [r, g, b] = background.map(craft3d_render::studio::tonemap::byte_to_linear);
             [r, g, b, flag(look.plain_background)]
         },
+        // `FrameLight::of_picture`'s pass, from the opacity as the CPU's.
+        if peel {
+            let opacity = opacity.clamp(0.0, 1.0);
+            [opacity, 1.0 - opacity, 1.0, flag(cut)]
+        } else {
+            [1.0, 0.0, 0.0, flag(cut)]
+        },
     ];
     for coef in &env.sh {
         let [r, g, b] = coef.map(f64::from);
@@ -223,19 +241,22 @@ pub(crate) fn studio_uniforms(
         }
     }
     // The taps are f32 already, the numbers both renderers read.
-    let first_tap = 4 * (14 + 9);
+    let first_tap = 4 * (15 + 9);
     for (slot, value) in out.iter_mut().skip(first_tap).zip(taps.iter().flatten()) {
         *slot = *value;
         if !slot.is_finite() {
             return Err(GpuError::OutOfRange("the lens"));
         }
     }
-    let transmit = mesh.transmission;
-    let post = look.post() || transmit;
+    // In a see-through picture the faces that let light through show the
+    // surface behind them as thin sheets: no picture of their own behind.
+    let transmit = mesh.transmission && !peel;
+    let post = look.post() || mesh.transmission || peel || cut;
     let passes = Passes {
         shadow,
         ao,
         geometry: ao
+            || peel
             || look.contact_shadows
             || look.ssr
             || look.ground_reflection > 0.0
@@ -247,6 +268,8 @@ pub(crate) fn studio_uniforms(
         levels,
         frames: look.accumulate.clamp(1, polish::MAX_ACCUMULATE),
         transmit,
+        peel,
+        cut,
     };
     Ok((out, passes))
 }
@@ -437,6 +460,12 @@ pub(crate) struct StudioGpu {
     /// and the picture behind of a frame without transmission.
     no_light: wgpu::TextureView,
     pub env: Option<EnvTextures>,
+    /// Group 2 of the passes over the surfaces: the count of a cut-open
+    /// picture (`parity_map`), or a texel of 0 for a whole one.
+    pub layout_parity: wgpu::BindGroupLayout,
+    pub no_parity: wgpu::BindGroup,
+    /// The count of a cut-open picture (`fs_studio_parity`).
+    parity: wgpu::RenderPipeline,
 }
 
 /// The shader of the studio look: the scene's with `studio.wgsl` and
@@ -731,7 +760,45 @@ impl StudioGpu {
             1,
             wgpu::TextureUsages::TEXTURE_BINDING,
         ));
+        let layout_parity = layout("craft3d studio count", &[texture_entry(0, UNFILTERED)]);
+        let no_parity = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("craft3d studio no count"),
+            layout: &layout_parity,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&no_color),
+            }],
+        });
+        let parity_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("craft3d studio count"),
+            bind_group_layouts: &[Some(scene_layout), Some(&layout_uniform)],
+            immediate_size: 0,
+        });
+        let parity = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("craft3d studio count"),
+            layout: Some(&parity_layout),
+            vertex: wgpu::VertexState {
+                module,
+                entry_point: Some("vs_studio"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &crate::mesh::mesh_buffers(&MESH_ATTRIBUTES),
+            },
+            primitive: crate::renderer::scene_primitive(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module,
+                entry_point: Some("fs_studio_parity"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[crate::cut::parity_target()],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
         StudioGpu {
+            layout_parity,
+            no_parity,
+            parity,
             no_light,
             no_color,
             uniforms,
@@ -830,16 +897,62 @@ impl StudioGpu {
         mesh.draw_in(&mut pass);
     }
 
-    /// The occlusion pass, from `geometry` into `ao`.
-    pub(crate) fn encode_ao(
+    /// Group 2 with the count `parity` of a cut-open picture.
+    pub(crate) fn parity_bind(
         &self,
         device: &wgpu::Device,
+        parity: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("craft3d studio count"),
+            layout: &self.layout_parity,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(parity),
+            }],
+        })
+    }
+
+    /// The count of a cut-open picture into `parity` (cleared first): per
+    /// sample, whether the number of surfaces the section leaves out
+    /// there is odd. No depth test; the cap is not drawn.
+    pub(crate) fn encode_parity(
+        &self,
         encoder: &mut wgpu::CommandEncoder,
         scene_bind: &wgpu::BindGroup,
-        geometry: &wgpu::TextureView,
-        ao: &wgpu::TextureView,
+        mesh: &GpuMesh,
+        parity: &wgpu::TextureView,
     ) {
-        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("craft3d studio count"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: parity,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.parity);
+        pass.set_bind_group(0, scene_bind, &[]);
+        pass.set_bind_group(1, &self.uniform_bind, &[]);
+        mesh.draw_in(&mut pass);
+    }
+
+    /// Group 1 of the occlusion and of the pass behind the front of a
+    /// see-through picture: the uniform block and `geometry`.
+    pub(crate) fn ao_bind(
+        &self,
+        device: &wgpu::Device,
+        geometry: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("craft3d occlusion"),
             layout: &self.layout_ao,
             entries: &[
@@ -852,7 +965,19 @@ impl StudioGpu {
                     resource: wgpu::BindingResource::TextureView(geometry),
                 },
             ],
-        });
+        })
+    }
+
+    /// The occlusion pass, from `geometry` into `ao`.
+    pub(crate) fn encode_ao(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        scene_bind: &wgpu::BindGroup,
+        geometry: &wgpu::TextureView,
+        ao: &wgpu::TextureView,
+    ) {
+        let bind = self.ao_bind(device, geometry);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("craft3d occlusion"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -887,6 +1012,27 @@ impl StudioGpu {
         (ao, geometry): (&wgpu::TextureView, &wgpu::TextureView),
         through: Option<&ThroughTargets>,
     ) -> Result<wgpu::BindGroup, GpuError> {
+        self.main_bind_with(
+            device,
+            passes,
+            mesh,
+            (ao, geometry),
+            through.map(|t| (&t.light, &t.backs)),
+        )
+    }
+
+    /// [`Self::main_bind`] with the picture behind (`behind_map`) and the
+    /// back faces (`backs_map`) given: a see-through picture's surface
+    /// behind the front and no back faces, or for the pass that draws
+    /// that surface the front's geometry.
+    pub(crate) fn main_bind_with(
+        &self,
+        device: &wgpu::Device,
+        passes: &Passes,
+        mesh: &GpuMesh,
+        (ao, geometry): (&wgpu::TextureView, &wgpu::TextureView),
+        through: Option<(&wgpu::TextureView, &wgpu::TextureView)>,
+    ) -> Result<wgpu::BindGroup, GpuError> {
         let env = self.env.as_ref().ok_or(GpuError::NothingDrawn)?;
         let shadow = if passes.shadow {
             &self.shadow_bits
@@ -917,8 +1063,8 @@ impl StudioGpu {
                 tex(4, ao),
                 tex(5, geometry),
                 tex(9, mesh.optics.as_ref().unwrap_or(&self.no_light)),
-                tex(10, through.map_or(&self.no_light, |t| &t.light)),
-                tex(11, through.map_or(&self.no_bits, |t| &t.backs)),
+                tex(10, through.map_or(&self.no_light, |t| t.0)),
+                tex(11, through.map_or(&self.no_bits, |t| t.1)),
             ],
         }))
     }
@@ -1277,6 +1423,8 @@ pub(crate) struct StudioTargets {
     pub size: (u32, u32),
     pub geometry: wgpu::TextureView,
     pub ao: wgpu::TextureView,
+    /// The count of a cut-open picture.
+    pub parity: wgpu::TextureView,
 }
 
 impl StudioTargets {
@@ -1300,6 +1448,7 @@ impl StudioTargets {
                 1,
                 attach,
             )),
+            parity: crate::cut::parity_view(device, size.0, size.1, 1),
         }
     }
 }
@@ -1358,6 +1507,13 @@ pub(crate) struct StudioOnscreen {
     geometry_behind: wgpu::RenderPipeline,
     main_behind: wgpu::RenderPipeline,
     backs: wgpu::RenderPipeline,
+    /// A see-through picture: the geometry and the light of the surface
+    /// behind the front.
+    geometry_peel: wgpu::RenderPipeline,
+    main_peel: wgpu::RenderPipeline,
+    /// The cap of a cut-open picture, and whether the frame draws it.
+    cap_buffer: wgpu::Buffer,
+    cap: bool,
     sized: Option<(StudioTargets, wgpu::TextureView)>,
     through: Option<ThroughTargets>,
     /// The deferred path's buffers, the frame's picture and the sum.
@@ -1424,10 +1580,11 @@ impl StudioOnscreen {
             })
         };
         let target = crate::renderer::target;
+        let parity = Some(&gpu.layout_parity);
         let geometry = mesh_pipeline(
             "craft3d geometry",
             "fs_geometry",
-            &[Some(scene_layout), Some(&gpu.layout_uniform)],
+            &[Some(scene_layout), Some(&gpu.layout_uniform), parity],
             &[target(GEOMETRY_FORMAT)],
             1,
         );
@@ -1441,29 +1598,43 @@ impl StudioOnscreen {
         let main_post = mesh_pipeline(
             "craft3d studio bodies post",
             "fs_studio_post",
-            &[Some(scene_layout), Some(&gpu.layout_main)],
+            &[Some(scene_layout), Some(&gpu.layout_main), parity],
             &[target(LIGHT_FORMAT), target(LIGHT_FORMAT)],
             1,
         );
         let geometry_behind = mesh_pipeline(
             "craft3d geometry behind",
             "fs_geometry_opaque",
-            &[Some(scene_layout), Some(&gpu.layout_uniform)],
+            &[Some(scene_layout), Some(&gpu.layout_uniform), parity],
             &[target(GEOMETRY_FORMAT)],
             1,
         );
         let main_behind = mesh_pipeline(
             "craft3d studio bodies behind",
             "fs_studio_behind",
-            &[Some(scene_layout), Some(&gpu.layout_main)],
+            &[Some(scene_layout), Some(&gpu.layout_main), parity],
             &[target(LIGHT_FORMAT), target(LIGHT_FORMAT)],
             1,
         );
         let backs = mesh_pipeline(
             "craft3d back faces",
             "fs_backs",
-            &[Some(scene_layout), Some(&gpu.layout_uniform)],
+            &[Some(scene_layout), Some(&gpu.layout_uniform), parity],
             &[target(BITS_FORMAT)],
+            1,
+        );
+        let geometry_peel = mesh_pipeline(
+            "craft3d geometry peeled",
+            "fs_geometry_peel",
+            &[Some(scene_layout), Some(&gpu.layout_ao), parity],
+            &[target(GEOMETRY_FORMAT)],
+            1,
+        );
+        let main_peel = mesh_pipeline(
+            "craft3d studio bodies peeled",
+            "fs_studio_peel",
+            &[Some(scene_layout), Some(&gpu.layout_main), parity],
+            &[target(LIGHT_FORMAT), target(LIGHT_FORMAT)],
             1,
         );
         let background = fullscreen_pipeline(
@@ -1484,6 +1655,10 @@ impl StudioOnscreen {
             geometry_behind,
             main_behind,
             backs,
+            geometry_peel,
+            main_peel,
+            cap_buffer: crate::cut::cap_buffer(device),
+            cap: false,
             sized: None,
             through: None,
             deferred: None,
@@ -1548,6 +1723,40 @@ impl StudioOnscreen {
     /// The passes before the bodies (the shadow map, the geometry and the
     /// occlusion, as `passes` asks) and, unless `deferred`, the background
     /// into `color`; then group 1 of the bodies' pass.
+    /// The cap of the frames to come: `cut`'s triangle for `mesh`, or none.
+    pub(crate) fn set_cap(
+        &mut self,
+        queue: &wgpu::Queue,
+        mesh: &GpuMesh,
+        cut: Option<&craft3d_render::Cut>,
+    ) {
+        let cap = cut.and_then(|cut| crate::cut::cap_vertices(mesh, cut));
+        if let Some(bytes) = &cap {
+            queue.write_buffer(&self.cap_buffer, 0, bytes);
+        }
+        self.cap = cap.is_some();
+    }
+
+    /// Draws the bodies and, in a cut-open picture, the cap's triangle
+    /// (its corners relative to the mesh's origin: the identity pose).
+    fn draw_bodies(&self, pass: &mut wgpu::RenderPass<'_>, mesh: &GpuMesh) {
+        mesh.draw_in(pass);
+        if self.cap {
+            pass.set_vertex_buffer(1, mesh.identity.slice(..));
+            pass.set_vertex_buffer(0, self.cap_buffer.slice(..));
+            pass.draw(0..3, 0..1);
+        }
+    }
+
+    /// Group 2 of the passes over the surfaces: the frame's count, or
+    /// none.
+    fn parity_group(&self, device: &wgpu::Device, passes: &Passes) -> wgpu::BindGroup {
+        match &self.sized {
+            Some((sized, _)) if passes.cut => self.gpu.parity_bind(device, &sized.parity),
+            _ => self.gpu.no_parity.clone(),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn encode_before(
         &self,
@@ -1563,6 +1772,11 @@ impl StudioOnscreen {
         if passes.shadow {
             self.gpu.encode_shadow(device, encoder, scene_bind, mesh);
         }
+        if passes.cut {
+            self.gpu
+                .encode_parity(encoder, scene_bind, mesh, &sized.parity);
+        }
+        let parity = self.parity_group(device, passes);
         let through = if passes.transmit {
             let through = self.through.as_ref().ok_or(GpuError::NothingDrawn)?;
             self.encode_through(device, encoder, scene_bind, mesh, passes, through, depth)?;
@@ -1603,15 +1817,28 @@ impl StudioOnscreen {
             pass.set_pipeline(&self.geometry);
             pass.set_bind_group(0, scene_bind, &[]);
             pass.set_bind_group(1, &self.gpu.uniform_bind, &[]);
-            mesh.draw_in(&mut pass);
+            pass.set_bind_group(2, &parity, &[]);
+            self.draw_bodies(&mut pass, mesh);
         }
         if passes.ao {
             self.gpu
                 .encode_ao(device, encoder, scene_bind, &sized.geometry, &sized.ao);
         }
-        let bind =
+        let bind = if passes.peel {
+            // The surface behind the front, then the front over it.
+            let through = self.through.as_ref().ok_or(GpuError::NothingDrawn)?;
+            self.encode_peel(device, encoder, scene_bind, mesh, passes, through, depth)?;
+            self.gpu.main_bind_with(
+                device,
+                passes,
+                mesh,
+                (&sized.ao, &sized.geometry),
+                Some((&through.light, &self.gpu.no_bits)),
+            )?
+        } else {
             self.gpu
-                .main_bind(device, passes, mesh, (&sized.ao, &sized.geometry), through)?;
+                .main_bind(device, passes, mesh, (&sized.ao, &sized.geometry), through)?
+        };
         if !deferred {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("craft3d background"),
@@ -1653,6 +1880,7 @@ impl StudioOnscreen {
         through: &ThroughTargets,
         depth: &wgpu::TextureView,
     ) -> Result<(), GpuError> {
+        let parity = self.parity_group(device, passes);
         let mesh_pass = |encoder: &mut wgpu::CommandEncoder,
                          label: &str,
                          colors: &[Option<wgpu::RenderPassColorAttachment<'_>>],
@@ -1676,7 +1904,8 @@ impl StudioOnscreen {
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, scene_bind, &[]);
             pass.set_bind_group(1, bind, &[]);
-            mesh.draw_in(&mut pass);
+            pass.set_bind_group(2, &parity, &[]);
+            self.draw_bodies(&mut pass, mesh);
         };
         let attachment = |view, load| {
             Some(wgpu::RenderPassColorAttachment {
@@ -1747,6 +1976,106 @@ impl StudioOnscreen {
     /// background's and the bodies' light at one sample per pixel, the
     /// passes after the shading, the frame added to the sum (which it
     /// starts when `first`), and the mean into `shown`.
+    /// A see-through picture's surface behind the front (the readback
+    /// renderer's `passes.peel`): its geometry, strictly further than the
+    /// front's, its occlusion, and its light over the background into
+    /// layer 3's light behind.
+    #[allow(clippy::too_many_arguments)]
+    fn encode_peel(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        scene_bind: &wgpu::BindGroup,
+        mesh: &GpuMesh,
+        passes: &Passes,
+        through: &ThroughTargets,
+        depth: &wgpu::TextureView,
+    ) -> Result<(), GpuError> {
+        let (sized, _) = self.sized.as_ref().ok_or(GpuError::NothingDrawn)?;
+        let parity = self.parity_group(device, passes);
+        let mesh_pass = |encoder: &mut wgpu::CommandEncoder,
+                         label: &str,
+                         colors: &[Option<wgpu::RenderPassColorAttachment<'_>>],
+                         pipeline: &wgpu::RenderPipeline,
+                         bind: &wgpu::BindGroup| {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some(label),
+                color_attachments: colors,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0.0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, scene_bind, &[]);
+            pass.set_bind_group(1, bind, &[]);
+            pass.set_bind_group(2, &parity, &[]);
+            self.draw_bodies(&mut pass, mesh);
+        };
+        let attachment = |view, load| {
+            Some(wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })
+        };
+        let front = self.gpu.ao_bind(device, &sized.geometry);
+        mesh_pass(
+            encoder,
+            "craft3d geometry peeled",
+            &[attachment(
+                &through.behind.geometry,
+                wgpu::LoadOp::Clear(no_back()),
+            )],
+            &self.geometry_peel,
+            &front,
+        );
+        if passes.ao {
+            self.gpu.encode_ao(
+                device,
+                encoder,
+                scene_bind,
+                &through.behind.geometry,
+                &through.behind.ao,
+            );
+        }
+        let bind = self.gpu.main_bind_with(
+            device,
+            passes,
+            mesh,
+            (&through.behind.ao, &through.behind.geometry),
+            Some((&sized.geometry, &self.gpu.no_bits)),
+        )?;
+        self.gpu.encode_background_into(
+            encoder,
+            scene_bind,
+            &bind,
+            (&through.light, &through.weight),
+        );
+        mesh_pass(
+            encoder,
+            "craft3d studio bodies peeled",
+            &[
+                attachment(&through.light, wgpu::LoadOp::Load),
+                attachment(&through.weight, wgpu::LoadOp::Load),
+            ],
+            &self.main_peel,
+            &bind,
+        );
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn encode_deferred(
         &self,
@@ -1795,7 +2124,8 @@ impl StudioOnscreen {
             pass.set_pipeline(&self.main_post);
             pass.set_bind_group(0, scene_bind, &[]);
             pass.set_bind_group(1, bind, &[]);
-            mesh.draw_in(&mut pass);
+            pass.set_bind_group(2, &self.parity_group(device, passes), &[]);
+            self.draw_bodies(&mut pass, mesh);
         }
         // Without the screen-space effects (accumulation alone) this is
         // the light to bytes.

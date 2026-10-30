@@ -1824,13 +1824,17 @@ impl Onscreen {
         let scene = scene_uniforms(mesh, camera, params, cut.as_ref())?;
         self.depth_numbers = [scene[11], scene[20], scene[21]];
         let mut line_uniforms = lines_uniforms(lines, camera, params, overlay, self.samples)?;
-        // The studio look: for an opaque, whole picture of the bodies.
+        // The studio look of the bodies, seen through and cut open too.
         let lit = match &self.look {
-            Some(look) if options.bodies && !see_through && cut.is_none() => {
+            Some(look) if options.bodies => {
                 let drawn = self.studio_as_drawn(look);
-                // Layer 3's transmission takes the screen-space buffers
-                // (`Passes::transmit`).
-                let deferred = drawn.look.post() || drawn.look.accumulate > 1 || mesh.transmission;
+                // Layer 3's transmission, a see-through and a cut-open
+                // picture take the screen-space buffers (`Passes::post`).
+                let deferred = drawn.look.post()
+                    || drawn.look.accumulate > 1
+                    || mesh.transmission
+                    || see_through
+                    || cut.is_some();
                 let key = ProgressKey {
                     mesh: mesh.serial,
                     camera: *camera,
@@ -1851,6 +1855,7 @@ impl Onscreen {
                     (params.width, params.height),
                     frame,
                     params.background,
+                    (params.opacity(), cut.is_some()),
                 )?;
                 let add = first || frame < passes.frames;
                 Some((
@@ -1901,8 +1906,9 @@ impl Onscreen {
                             &device,
                             (params.width, params.height),
                             levels,
-                            frame.passes.transmit,
+                            frame.passes.transmit || frame.passes.peel,
                         );
+                        studio.set_cap(&queue, mesh, cut.as_ref());
                         studio.gpu.ensure_env(&device, &queue, &drawn.env)
                     })
                     .and_then(|r| r),
@@ -2659,8 +2665,9 @@ impl Onscreen {
             });
         let color_view = targets.msaa.as_ref().unwrap_or(&targets.shown_view);
         let opacity = params.opacity();
-        // The passes of a see-through picture, when it is one.
-        let peeled = if options.bodies && opacity < 1.0 {
+        // The passes of a see-through picture, when it is one and the
+        // studio look does not draw it.
+        let peeled = if lit.is_none() && options.bodies && opacity < 1.0 {
             let pipelines = self
                 .see_through
                 .as_ref()
@@ -2801,6 +2808,9 @@ impl Onscreen {
             // The triangles' pipeline and, for a cut-open picture, the
             // cap's.
             let (bodies, cap) = match (cut_open, cut_peeled, peeled) {
+                // The studio look drew the bodies: their depth, for the
+                // lines, without what is cut away.
+                (Some((cut, ..)), _, _) if deferred => (&cut.depth_only, Some(&cut.cap_depth_only)),
                 (Some(_), Some(cut), _) => (&cut.front, Some(&cut.cap_front)),
                 (Some((cut, ..)), None, _) if options.bodies => (&cut.color, Some(&cut.cap)),
                 (Some((cut, ..)), None, _) => (&cut.depth_only, Some(&cut.cap_depth_only)),
@@ -2814,8 +2824,10 @@ impl Onscreen {
                     pass.set_pipeline(&look.main);
                     pass.set_bind_group(1, bind, &[]);
                 }
-                Some((_, None)) => pass.set_pipeline(&self.depth_only_pipeline),
-                None => pass.set_pipeline(bodies),
+                Some((_, None)) if cut_open.is_none() => {
+                    pass.set_pipeline(&self.depth_only_pipeline);
+                }
+                Some((_, None)) | None => pass.set_pipeline(bodies),
             }
             draw_mesh(&mut pass);
             if let (Some(cap), Some((_, count, true))) = (cap, cut_open) {
