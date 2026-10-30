@@ -1044,7 +1044,14 @@ fn studio_frame(
     // take it for the surface behind or not (`fs_geometry_peel`: strictly
     // further), and the light behind is another surface's.
     if see_through && let Some(margin) = mark {
-        let near = peel_doubt(mesh, &view, (w, h), cut.as_ref(), &surfaces, margin)?;
+        let near = peel_doubt(
+            mesh,
+            &view,
+            (w, h),
+            cut.as_ref(),
+            [&surfaces, &peeled],
+            margin,
+        )?;
         if near.iter().any(|&d| d) {
             doubt = near.iter().map(|&d| [f32::from(u8::from(d))]).collect();
         }
@@ -1542,15 +1549,17 @@ fn pattern_doubt(
 
 /// Per sample, whether a fragment of another triangle than the front's
 /// (or of any triangle, over the cap) that the section leaves lies within
-/// `margin · ε_f32 · M` of the front's view distance, `M` the larger of
-/// the two: the decision "strictly behind the front" that the GPU takes
-/// in `f32` may go either way there.
+/// `margin · ε_f32 · M` of the front's view distance, or of the surface
+/// behind's when it is another triangle than that one, `M` the larger of
+/// the two: the decisions "strictly behind the front" and "the nearest of
+/// those" (two faces in one plane behind the front: a block standing on a
+/// plate) that the GPU takes in `f32` may go either way there.
 fn peel_doubt(
     mesh: &Mesh,
     view: &View,
     (w, h): (usize, usize),
     cut: Option<&Cut>,
-    front: &[Surface],
+    [front, behind]: [&[Surface]; 2],
     margin: f64,
 ) -> Result<Vec<bool>, RenderError> {
     let projected: Vec<_> = mesh.positions.iter().map(|&p| view.project(p)).collect();
@@ -1608,6 +1617,9 @@ fn peel_doubt(
                 if f.tri == this || !f.dist.is_finite() {
                     continue;
                 }
+                let back = behind
+                    .get(i)
+                    .filter(|s| s.tri != this && s.dist.is_finite());
                 if let Some((cut, [sa, sb, sc], facing)) = cut_triangle {
                     let (qa, qb, qc) = (wa * a.inv_w, wb * b.inv_w, wc * c.inv_w);
                     let q = qa + qb + qc;
@@ -1616,7 +1628,8 @@ fn peel_doubt(
                     }
                 }
                 let dist = crate::distance_at(view, [wa, wb, wc], [&a, &b, &c]);
-                if (dist - f.dist).abs() <= eps * dist.abs().max(f.dist.abs())
+                let near = |d: f64| (dist - d).abs() <= eps * dist.abs().max(d.abs());
+                if (near(f.dist) || back.is_some_and(|s| near(s.dist)))
                     && let Some(slot) = out.get_mut(i)
                 {
                     *slot = true;
