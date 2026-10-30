@@ -44,7 +44,15 @@
 //! a polynomial surface's `∂u` and `∂v` lie in the cones of the u- and
 //! v-differences of its net (axes `a`, `b`, half-angles `α`, `β`), so its
 //! normal is within `asin((2 sin(α/2) + 2 sin(β/2)) / |a × b|)` of `a × b`.
-//! No cone (`None`) where none is known: a rational freeform surface, a
+//! A rational surface's (positive weights) `∂u` is likewise a positive
+//! combination of the differences `P_k − P_l` of its net with `k` later
+//! along u than `l` (any v): with `W = Σ w_k B_k`,
+//! `S_u = Σ_{k<l} w_k w_l (P_k − P_l)(B_k' B_l − B_k B_l') / W²`, and for
+//! tensor Bernstein polynomials `B_k' B_l − B_k B_l' = B_k B_l (i_k − i_l)
+//! (1/u + 1/(1 − u))` has the sign of `i_k − i_l`; so its cone is that of
+//! every such difference (nets of at most 64 points).
+//! No cone (`None`) where none is known: a rational freeform surface with
+//! a larger net, a
 //! cone whose piece reaches the apex, a piece wider than half a turn.
 
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
@@ -56,6 +64,9 @@ use std::f64::consts::{FRAC_PI_2, PI, TAU};
 /// The share of the magnitudes entering a value that is taken off it for
 /// rounding.
 const ROUNDING: f64 = 2e-15;
+/// Most points of a rational piece's net for which a normal cone is made
+/// (from every pair of them: quadratic in the count).
+const MAX_RATIONAL_NET: usize = 64;
 /// Most Bézier spans one freeform piece may cover (each cut separately).
 const MAX_SPANS: usize = 4096;
 
@@ -441,6 +452,10 @@ pub fn surface_piece(
             let mut cut = 0_usize;
             // The differences of the cut nets along u and along v.
             let (mut along_u, mut along_v) = (Vec::new(), Vec::new());
+            // For a rational piece: every difference along u (v) of the
+            // net, not only the adjacent ones (see [`Piece::cone`]).
+            let (mut pairs_u, mut pairs_v) = (Vec::new(), Vec::new());
+            let mut rational_ok = true;
             let mut polynomial = true;
             let mut rounding = 0.0_f64;
             for span in &nets.spans {
@@ -457,21 +472,43 @@ pub fn surface_piece(
                 let lv = local(span.v, (c, d))?;
                 rounding = rounding.max(span.reach);
                 let net = cut_net(span, lu, lv);
-                polynomial &= net.iter().all(|h| (h[3] - 1.0).abs() <= 1e-12);
+                let span_polynomial = net.iter().all(|h| (h[3] - 1.0).abs() <= 1e-12);
+                polynomial &= span_polynomial;
                 let pts = points(&net)?;
                 let width = span.n + 1;
                 let at = |i: usize, j: usize| pts.get(i * width + j).copied();
+                if !span_polynomial {
+                    if pts.len() > MAX_RATIONAL_NET {
+                        rational_ok = false;
+                    }
+                    for (k, p) in pts.iter().enumerate().take(MAX_RATIONAL_NET) {
+                        for (l, q) in pts.iter().enumerate().take(MAX_RATIONAL_NET) {
+                            if k / width > l / width {
+                                pairs_u.extend((*p - *q).normalized());
+                            }
+                            if k % width > l % width {
+                                pairs_v.extend((*p - *q).normalized());
+                            }
+                        }
+                    }
+                }
                 for i in 0..=span.m {
                     for j in 0..=span.n {
                         if i < span.m
                             && let (Some(p), Some(q)) = (at(i, j), at(i + 1, j))
                         {
                             along_u.extend((q - p).normalized());
+                            if span_polynomial {
+                                pairs_u.extend((q - p).normalized());
+                            }
                         }
                         if j < span.n
                             && let (Some(p), Some(q)) = (at(i, j), at(i, j + 1))
                         {
                             along_v.extend((q - p).normalized());
+                            if span_polynomial {
+                                pairs_v.extend((q - p).normalized());
+                            }
                         }
                     }
                 }
@@ -483,6 +520,8 @@ pub fn surface_piece(
             let reach = all.iter().map(|p| p.length()).fold(rounding, f64::max);
             let cone = if polynomial {
                 normal_cone(&along_u, &along_v)
+            } else if rational_ok {
+                normal_cone(&pairs_u, &pairs_v)
             } else {
                 None
             };
@@ -943,6 +982,36 @@ mod tests {
         };
         let (g1, g2) = (gap(0.1), gap(0.05));
         assert!(g2 < 0.3 * g1, "{g1} then {g2}");
+    }
+
+    /// A rational patch (a quarter of a torus-like surface of revolution,
+    /// weights 1/√2 at the middle row and column): its small pieces have
+    /// normal cones, and every normal is in them.
+    #[test]
+    fn rational_pieces_have_normal_cones_that_hold() {
+        let w = std::f64::consts::FRAC_1_SQRT_2;
+        let profile = [(3.0, 0.0), (4.0, 0.0), (4.0, 1.0)];
+        let mut ctrl = Vec::new();
+        let mut weights = Vec::new();
+        for (cx, cy, wi) in [(1.0, 0.0, 1.0), (1.0, 1.0, w), (0.0, 1.0, 1.0)] {
+            for (j, (r, z)) in profile.into_iter().enumerate() {
+                let wj = if j == 1 { w } else { 1.0 };
+                ctrl.push(Vec3::new(cx * r, cy * r, z + 0.3 * r));
+                weights.push(wi * wj);
+            }
+        }
+        let knots = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        let s = Surface::Nurbs(
+            crate::NurbsSurface::new(2, 2, knots.clone(), knots, 3, 3, ctrl, weights).unwrap(),
+        );
+        check_surface(&s, (0.0, 1.0), (0.0, 1.0), false);
+        for (u, v) in [((0.1, 0.2), (0.3, 0.35)), ((0.6, 0.7), (0.8, 0.9))] {
+            check_surface(&s, u, v, false);
+            let nets = SurfaceNets::of(&s).unwrap();
+            let piece = surface_piece(&s, &nets, u, v).unwrap();
+            let cone = piece.cone().expect("a small rational piece has a cone");
+            assert!(cone.half_angle < 0.6, "{cone:?}");
+        }
     }
 
     #[test]

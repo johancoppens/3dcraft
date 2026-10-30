@@ -230,3 +230,175 @@ fn the_clamp_is_proven_to_its_thinnest_wall() {
     );
     assert_eq!(got, "failed");
 }
+
+/// Checks a thickness against its closed form `want`: found to 1e-6 of
+/// it, proven no higher than found nor than `want` (to rounding), and to
+/// within a thousandth of it; an assertion just below it passes and one
+/// just above fails.
+fn thickness_is(s: &mut Session, of: &str, want: f64, what: &str) {
+    let (found, proven) = timed(s, "measure.thickness", json!({"of": of}), "thickness", what);
+    assert!((found - want).abs() <= 1e-6 * want, "{what}: found {found}");
+    assert!(proven <= want * (1.0 + 1e-9), "{what}: proven {proven}");
+    assert!(
+        proven >= want * (1.0 - 1e-3),
+        "{what}: proven only {proven}"
+    );
+    let min = format!("{} mm", 0.99 * want);
+    let got = status(
+        s,
+        json!({"name": "below", "measure": "thickness", "of": of, "min": min}),
+    );
+    assert_eq!(got, "passed", "{what}");
+    let min = format!("{} mm", 1.01 * want);
+    let got = status(
+        s,
+        json!({"name": "above", "measure": "thickness", "of": of, "min": min}),
+    );
+    assert_eq!(got, "failed", "{what}");
+}
+
+/// A hollow ball: radius 10 outside, 8 inside, 2 thick everywhere (a
+/// sphere with itself and with the other, concentric).
+#[test]
+fn a_hollow_ball_is_proven_to_its_wall_at_three_scales() {
+    for k in [1e-3, 1.0, 1e3] {
+        let mut s = new();
+        run(
+            &mut s,
+            "feature.sphere",
+            json!({"name": "Out", "radius": format!("{} mm", 10.0 * k)}),
+        );
+        run(
+            &mut s,
+            "feature.sphere",
+            json!({"name": "In", "radius": format!("{} mm", 8.0 * k)}),
+        );
+        run(
+            &mut s,
+            "feature.boolean",
+            json!({"name": "Ball", "op": "subtract", "target": "Out", "tool": "In"}),
+        );
+        thickness_is(&mut s, "Ball", 2.0 * k, &format!("hollow ball at {k}"));
+    }
+}
+
+/// A plate 40 × 40 × 10 with a hole of radius 3 countersunk at 45° from
+/// radius 8 at the top: the cone's lower rim is 5 above the bottom, the
+/// thinnest place (a cone with a plane, the cone with itself).
+#[test]
+fn a_countersunk_plate_is_proven_to_its_wall_at_three_scales() {
+    for k in [1e-3, 1.0, 1e3] {
+        let mm = |x: f64| format!("{} mm", x * k);
+        let mut s = new();
+        run(
+            &mut s,
+            "feature.block",
+            json!({"name": "Plate", "size": [mm(40.0), mm(40.0), mm(10.0)], "position": [mm(-20.0), mm(-20.0), mm(0.0)]}),
+        );
+        // Radius 13 at z = 15 down to 0 at z = 2: radius 8 at the top, 3
+        // at z = 5.
+        run(
+            &mut s,
+            "feature.cone",
+            json!({"name": "Sink", "radius": mm(13.0), "height": mm(13.0), "position": [mm(0.0), mm(0.0), mm(15.0)], "axis": [0, 0, -1]}),
+        );
+        run(
+            &mut s,
+            "feature.cylinder",
+            json!({"name": "Drill", "radius": mm(3.0), "height": mm(20.0), "position": [mm(0.0), mm(0.0), mm(-5.0)]}),
+        );
+        run(
+            &mut s,
+            "feature.boolean",
+            json!({"name": "Sunk", "op": "subtract", "target": "Plate", "tool": "Sink"}),
+        );
+        run(
+            &mut s,
+            "feature.boolean",
+            json!({"name": "Holed", "op": "subtract", "target": "Sunk", "tool": "Drill"}),
+        );
+        thickness_is(
+            &mut s,
+            "Holed",
+            5.0 * k,
+            &format!("countersunk plate at {k}"),
+        );
+    }
+}
+
+/// A block whose top is a spline valley, `y = 10 + x² / 50` over x from
+/// −20 to 20, extruded 30 along z: 10 thick at the valley's floor (a
+/// spline face with a plane and with itself).
+#[test]
+fn a_spline_valley_is_proven_to_its_floor_at_three_scales() {
+    for k in [1e-3, 1.0, 1e3] {
+        let mm = |x: f64| format!("{} mm", x * k);
+        let mut s = new();
+        run(
+            &mut s,
+            "sketch.create",
+            json!({"name": "Profile", "plane": "xy"}),
+        );
+        run(
+            &mut s,
+            "sketch.curve",
+            json!({"sketch": "Profile", "x": format!("{} * (1 - 2 * t)", mm(20.0)), "y": format!("{} + {} * (1 - 2 * t)^2", mm(10.0), mm(8.0)), "t": [0, 1]}),
+        );
+        run(
+            &mut s,
+            "sketch.path",
+            json!({"sketch": "Profile", "start": "e2", "segments": [{"line": [mm(-20.0), mm(0.0)]}, {"line": [mm(20.0), mm(0.0)]}, {"line": "e1"}]}),
+        );
+        run(
+            &mut s,
+            "feature.extrude",
+            json!({"sketch": "Profile", "distance": mm(30.0), "symmetric": true, "name": "Valley"}),
+        );
+        thickness_is(&mut s, "Valley", 10.0 * k, &format!("spline valley at {k}"));
+    }
+}
+
+/// A shaft of radius 50 in a bore 0.01 wider, coaxial and then 0.004
+/// off its axis: gaps far inside the mesh's error (a chord of about a
+/// tenth), proven to their closed forms.
+#[test]
+fn gaps_inside_the_mesh_error_are_proven_at_three_scales() {
+    for k in [1e-3, 1.0, 1e3] {
+        for off in [0.0, 0.004] {
+            let mm = |x: f64| format!("{} mm", x * k);
+            let mut s = new();
+            run(
+                &mut s,
+                "feature.cylinder",
+                json!({"name": "Shaft", "radius": mm(50.0), "height": mm(20.0), "position": [mm(off), mm(0.0), mm(0.0)]}),
+            );
+            run(
+                &mut s,
+                "feature.block",
+                json!({"name": "Housing", "size": [mm(140.0), mm(140.0), mm(10.0)], "position": [mm(-70.0), mm(-70.0), mm(5.0)]}),
+            );
+            run(
+                &mut s,
+                "feature.cylinder",
+                json!({"name": "Cutter", "radius": mm(50.01), "height": mm(40.0), "position": [mm(0.0), mm(0.0), mm(-10.0)]}),
+            );
+            run(
+                &mut s,
+                "feature.boolean",
+                json!({"name": "Bored", "op": "subtract", "target": "Housing", "tool": "Cutter"}),
+            );
+            let want = (0.01 - off) * k;
+            let what = format!("shaft {off} off at {k}");
+            let (found, proven) = timed(
+                &mut s,
+                "measure.clearance",
+                json!({"from": "Shaft", "to": "Bored"}),
+                "clearance",
+                &what,
+            );
+            assert!((found - want).abs() <= 1e-6 * want, "{what}: {found}");
+            assert!(proven >= want * (1.0 - 1e-3), "{what}: proven {proven}");
+            assert!(proven <= want * (1.0 + 1e-9), "{what}: proven {proven}");
+        }
+    }
+}

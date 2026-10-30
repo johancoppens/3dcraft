@@ -998,6 +998,73 @@ where
         out_of(a, b, nb, y.frame().origin()) && out_of(b, a, na, x.frame().origin())
     }
 
+    /// Whether the pair of strata `f` (a flat face) and `x` (an edge, a
+    /// vertex or another face; `rx` its first piece) holds no
+    /// critical pair the least can be at, by one of two rules:
+    ///
+    /// - **In its plane, out of it.** `x` lies in `f`'s plane (an edge or
+    ///   a vertex within the tolerance and a quarter of `enough` of it,
+    ///   by its piece's extent along the normal) and a point of it put on
+    ///   the plane is out of `f`. Points of one plane are apart within
+    ///   it, never along its normal, so only coincident points could be
+    ///   critical; `x` meets `f` only if it crosses `f`'s boundary (a
+    ///   pair of their strata is then at 0, which bounds the pair of faces
+    ///   anyway) or lies in `f`, which the point rules out.
+    /// - **On one side, never square to it.** `x` (a face or an edge)
+    ///   lies on one side of `f`'s plane (its first piece's extent along
+    ///   the normal, to rounding) and its cone holds no normal along `f`'s
+    ///   (a face) or no tangent square to it (an edge). A critical pair
+    ///   needs the line between the points along both normals (square to
+    ///   the tangent), and a point of `x`'s open interior on the plane
+    ///   would be a touch from one side, where its normal is along `f`'s
+    ///   (its tangent square to it): neither can be.
+    fn plane_rules(&self, f: usize, x: usize, rx: usize, enough: f64) -> bool {
+        let (Some(pf), Some(px), Some(rec_x)) =
+            (self.prims.get(f), self.prims.get(x), self.recs.get(rx))
+        else {
+            return false;
+        };
+        let (Kind::Face, Some(Surface::Plane(plane))) = (pf.kind, pf.surface) else {
+            return false;
+        };
+        let (n, o) = (plane.frame().z(), plane.frame().origin());
+        let h = n.dot(o);
+        let (lo, hi) = (rec_x.piece.least(n) - h, rec_x.piece.most(n) - h);
+        if !(lo.is_finite() && hi.is_finite()) {
+            return false;
+        }
+        let near = self.tol.min(0.25 * enough);
+        if px.kind != Kind::Face && lo >= -near && hi <= near {
+            let point = match (px.curve, px.root) {
+                (Some(c), Param::Edge(t)) => c.eval(t.0),
+                (_, Param::Vertex(p)) => p,
+                _ => return false,
+            };
+            let on = point - n * (point - o).dot(n);
+            let Some(part) = self.part(pf.side, pf.part) else {
+                return false;
+            };
+            if on.is_finite() && matches!(part.probe.on_face(pf.index, on), Ok(OnFace::Out)) {
+                return true;
+            }
+        }
+        let rounding =
+            SAME_AXIS * (h.abs() + rec_x.bbox.diagonal() + center(&rec_x.bbox).length() + 1.0);
+        let one_side = lo >= -rounding || hi <= rounding;
+        let (Some(cone), Some(kind)) = (rec_x.cone, rec_x.piece.cone_kind()) else {
+            return false;
+        };
+        if !one_side {
+            return false;
+        }
+        // The angle between the lines of `n` and of the cone's axis.
+        let between = cone.axis.dot(n).abs().clamp(0.0, 1.0).acos();
+        match kind {
+            ConeKind::Normal => between > cone.half_angle + ANGLE_MARGIN,
+            ConeKind::Tangent => between + cone.half_angle < FRAC_PI_2 - ANGLE_MARGIN,
+        }
+    }
+
     /// The distance in the plane through the axis `(o, z)` of what the
     /// two pieces sweep turning about it.
     fn meridian(&self, pa: &Prim<'_>, a: &Rec, pb: &Prim<'_>, b: &Rec, o: Vec3, z: Vec3) -> f64 {
@@ -1457,7 +1524,10 @@ pub(crate) fn prove(
         };
         // Two faces of one plane: their interiors hold no critical pair
         // apart from where they overlap, which they do not (below).
-        if search.one_plane_apart(pa, pb, enough(best)) {
+        if search.one_plane_apart(pa, pb, enough(best))
+            || search.plane_rules(pa, pb, rb, enough(best))
+            || search.plane_rules(pb, pa, ra, enough(best))
+        {
             continue;
         }
         // Strata far apart (most of a face's edges from most of the
