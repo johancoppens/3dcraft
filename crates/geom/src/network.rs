@@ -1693,24 +1693,6 @@ fn hold_tangent(
     if delta.points.len() != net.rows.len() {
         return Err(internal());
     }
-    // Ahead of a curvature hold the change is spread over the reach by
-    // the fair profile (`fair`: it leaves the second derivative at the
-    // edge alone; its second coefficient is `f`, the one-row change's).
-    if rows > 2 {
-        let shape = fair::profile(&net.kv, q, next, fair::Order::Tangent, fair::End::Kept)?;
-        spread(net, &delta, &shape, tol, |change, ribbon, u| {
-            if change.is_finite() {
-                format!(
-                    "{label}: holding it tangent would move the surface's control points across it by {change:.3e} at control point {u}, more than the {ribbon:.3e} between them and the edge: the face's tangent planes are not told apart well enough there to follow"
-                )
-            } else {
-                format!(
-                    "{label}: holding it tangent would make a weight of the surface not positive"
-                )
-            }
-        })?;
-        return Ok(scalars);
-    }
     // The change between the crossings is what puts the derivative into
     // the planes there; it is of the order of how far the interpolated
     // derivative drifts off them, a fraction of the ribbon between the
