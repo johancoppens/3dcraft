@@ -1601,6 +1601,11 @@ mod tests {
             // A state not regenerated on the page (the colour, an edit
             // that follows the body, regenerated it there).
             ("variable.set", json!({"name": "k", "expr": "1"})),
+            (
+                "variable.publish",
+                json!({"name": "k", "min": "0", "max": "2"}),
+            ),
+            ("param.set", json!({"values": {"k": "2"}})),
         ] {
             host.session.execute(id, &params).unwrap();
         }

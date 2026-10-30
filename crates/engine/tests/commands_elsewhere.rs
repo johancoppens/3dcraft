@@ -50,10 +50,14 @@ fn build(session: &mut Session, s: f64) {
             "datum.plane",
             json!({"from": "xy", "distance": mm(3.0), "name": "Top"}),
         ),
-        // Last, an edit that needs no bodies: on the page the state is
-        // then not regenerated there (an edit that follows a body, the
-        // boolean, regenerates the state before it on the page).
-        ("variable.set", json!({"name": "k", "expr": "1"})),
+        // Last, a parameter set as the form sets it: on the page the state is
+        // then not regenerated there (an edit that needs the bodies runs
+        // on the page, regenerating the state before it).
+        (
+            "variable.publish",
+            json!({"name": "w", "min": mm(1.0), "max": mm(1000.0)}),
+        ),
+        ("param.set", json!({"values": {"w": mm(41.0)}})),
     ] {
         session
             .execute(id, &params)
