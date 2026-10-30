@@ -151,7 +151,7 @@ impl PublicParam {
             && craft3d_expr::Unit::from_symbol(unit).is_none()
         {
             return Err(format!(
-                "`{unit}` is not a unit; use one of um, mm, cm, m, in, ft, deg, rad"
+                "`{unit}` is not a unit; use one of um, mm, cm, m, in, ft, deg, rad, g, kg, s, N, kN, Pa, kPa, MPa, GPa, J"
             ));
         }
         for (what, expr) in [

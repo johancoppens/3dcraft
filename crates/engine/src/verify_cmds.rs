@@ -242,17 +242,16 @@ impl<'a> Ctx<'a> {
                 if quantity.dimension.is_dimensionless() {
                     Some(quantity.value)
                 } else if quantity.dimension == wanted {
-                    let factor = self.doc.units.length.as_expr_unit().factor();
-                    Some(quantity.value / factor.powi(wanted.length))
+                    Some(quantity.value / scale_of(self.doc, wanted))
                 } else {
                     return Err(format!(
                         "`{key}` is {}, but {} is needed",
                         quantity.dimension.described(),
-                        match (wanted.length, wanted.angle) {
-                            (0, 0) => "a number".to_string(),
-                            (1, 0) => "a length".to_string(),
-                            (2, 0) => "an area".to_string(),
-                            (3, 0) => "a volume".to_string(),
+                        match (wanted.length, wanted.angle, wanted.is_mechanical()) {
+                            (0, 0, false) => "a number".to_string(),
+                            (1, 0, false) => "a length".to_string(),
+                            (2, 0, false) => "an area".to_string(),
+                            (3, 0, false) => "a volume".to_string(),
                             _ => wanted.described(),
                         }
                     ));
@@ -773,10 +772,39 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
 /// The dimension a value of `dimension` is measured in: a length's power
 /// as the other measures are, anything else as it is.
 pub(crate) fn dim_of_dimension(dimension: craft3d_expr::Dimension) -> Dim {
-    if dimension.angle == 0 && dimension.length != 0 {
+    if dimension == craft3d_expr::Dimension::MASS {
+        Dim::Mass
+    } else if dimension.angle == 0 && !dimension.is_mechanical() && dimension.length != 0 {
         Dim::Length(dimension.length)
     } else {
         Dim::Of(dimension)
+    }
+}
+
+/// The dimension of a measure's numbers: a mass in kg, a count and a yes
+/// or no plain.
+pub(crate) fn dimension_of_dim(dim: Dim) -> craft3d_expr::Dimension {
+    match dim {
+        Dim::Length(k) => craft3d_expr::Dimension::new(k, 0),
+        Dim::Of(d) => d,
+        Dim::Mass => craft3d_expr::Dimension::MASS,
+        Dim::Count | Dim::Flag => craft3d_expr::Dimension::NONE,
+    }
+}
+
+/// How many base units one of the units a value of `dimension` is given
+/// in, in `doc` (a number of them is "in the document's units"): its
+/// length unit to the power for a length, an area, a volume; N, MPa, N m
+/// and kg for a force, a stress, a moment and a mass, whatever the length
+/// unit (`Dimension::default_unit`). 1 where that would not be a number.
+pub(crate) fn scale_of(doc: &Document, dimension: craft3d_expr::Dimension) -> f64 {
+    let scale = dimension
+        .default_unit(doc.units.length.as_expr_unit())
+        .factor;
+    if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
     }
 }
 
@@ -789,8 +817,7 @@ fn value(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
         return Err("`expr` is required: an expression of the variables and outputs".into());
     };
     let quantity = ctx.evaluate(source, "expr")?;
-    let factor = ctx.doc.units.length.as_expr_unit().factor();
-    let value = quantity.value / factor.powi(quantity.dimension.length);
+    let value = quantity.value / scale_of(ctx.doc, quantity.dimension);
     if !value.is_finite() {
         return Err(format!("`expr`: `{source}` is not finite"));
     }

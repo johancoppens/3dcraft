@@ -16,14 +16,18 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
 use std::sync::Arc;
 
-/// Whether `name` means something else in an expression: a unit, a function
-/// or the constant `pi`. Case-sensitive, like the expression language.
+/// Whether `name` means something else in an expression: a length or an
+/// angle unit, a function or the constant `pi`. Case-sensitive, like the
+/// expression language. The mechanical units (`N`, `MPa`, `s`) are not
+/// reserved: they are units only right after a number ([`Unit::MECHANICAL`]).
 pub fn is_reserved_name(name: &str) -> bool {
-    name == "pi" || Unit::from_symbol(name).is_some() || Function::from_name(name).is_some()
+    name == "pi"
+        || Unit::from_symbol(name).is_some_and(Unit::is_reserved)
+        || Function::from_name(name).is_some()
 }
 
-/// Every reserved name ([`is_reserved_name`]): `pi`, the units, then the
-/// functions, in the order the language lists them.
+/// Every reserved name ([`is_reserved_name`]): `pi`, the length and angle
+/// units, then the functions, in the order the language lists them.
 pub fn reserved_names() -> Vec<&'static str> {
     let mut names = vec!["pi"];
     names.extend(Unit::ALL.iter().map(|unit| unit.symbol()));
@@ -37,18 +41,8 @@ pub fn reserved_meaning(name: &str) -> Option<String> {
     if name == "pi" {
         return Some("the constant pi".to_string());
     }
-    if let Some(unit) = Unit::from_symbol(name) {
-        let spelled = match unit {
-            Unit::Micrometre => "micrometre",
-            Unit::Millimetre => "millimetre",
-            Unit::Centimetre => "centimetre",
-            Unit::Metre => "metre",
-            Unit::Inch => "inch",
-            Unit::Foot => "foot",
-            Unit::Degree => "degree",
-            Unit::Radian => "radian",
-        };
-        return Some(format!("the unit {spelled}, as in `2 {name}`"));
+    if let Some(unit) = Unit::from_symbol(name).filter(|unit| unit.is_reserved()) {
+        return Some(format!("the unit {}, as in `2 {name}`", unit.spelled()));
     }
     Function::from_name(name).map(|function| format!("the function `{}(...)`", function.name()))
 }
@@ -140,6 +134,7 @@ pub fn refers_to_variable(source: &str, name: &str) -> bool {
 pub fn names_in(source: &str) -> Vec<&str> {
     let mut names = Vec::new();
     let mut at = 0;
+    let mut previous: Option<(TokenKind, &str)> = None;
     loop {
         let token = match scan(source, at) {
             Ok(token) => token,
@@ -152,13 +147,28 @@ pub fn names_in(source: &str) -> Vec<&str> {
             break;
         }
         at = token.end;
-        if token.kind == TokenKind::Ident
-            && let Some(name) = source.get(token.pos..token.end)
-        {
-            names.push(name);
+        let text = source.get(token.pos..token.end).unwrap_or("");
+        let before = previous.replace((token.kind, text));
+        if token.kind == TokenKind::Ident && !is_unit_after(before, text) {
+            names.push(text);
         }
     }
     names
+}
+
+/// Whether the name token `text` is a mechanical unit (`N`, `MPa`) where a
+/// unit is read: right after a number, `)`, `pi`, or a force unit when it
+/// is a length unit (`20 N m`). Such a symbol is a variable anywhere else.
+/// The reserved units are never variables, so they need no telling.
+pub(crate) fn is_unit_after(before: Option<(TokenKind, &str)>, text: &str) -> bool {
+    let Some(unit) = Unit::from_symbol(text) else {
+        return false;
+    };
+    match before {
+        Some((TokenKind::Number(_) | TokenKind::RParen, _)) => !unit.is_reserved(),
+        Some((TokenKind::Ident, "pi")) => !unit.is_reserved(),
+        _ => false,
+    }
 }
 
 /// The renamed text, or `None` when `source` does not mention `old`.
@@ -186,6 +196,7 @@ pub(crate) fn rename_tokens(source: &str, old: &str, new: &str, role: NameRole) 
     let mut copied = 0;
     let mut at = 0;
     let mut previous = TokenKind::End;
+    let mut previous_text = "";
     loop {
         let token = match scan(source, at) {
             Ok(token) => token,
@@ -200,11 +211,11 @@ pub(crate) fn rename_tokens(source: &str, old: &str, new: &str, role: NameRole) 
         }
         at = token.end;
         let after_dot = previous == TokenKind::Dot;
+        let text = source.get(token.pos..token.end).unwrap_or("");
+        let unit = is_unit_after(Some((previous, previous_text)), text);
         previous = token.kind;
-        if token.kind == TokenKind::Ident
-            && !after_dot
-            && source.get(token.pos..token.end) == Some(old)
-        {
+        previous_text = text;
+        if token.kind == TokenKind::Ident && !after_dot && !unit && text == old {
             let before_bracket =
                 scan(source, token.end).is_ok_and(|next| next.kind == TokenKind::LBracket);
             if before_bracket != (role == NameRole::Table) {

@@ -34,12 +34,12 @@ use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 pub(crate) static SPECS: &[CommandSpec] = &[
-    spec!("variable.measure", "Measure into Output", r#"{"name": string, "measure": "volume|area|mass|count|extent|boxMin|boxMax|centerOfMass|distance|clearance|thickness|through|overlap|symmetric|volumeBelow|centroidBelow|sectionArea|sectionCentroid|sectionInertia|sectionTorsion|sectionShearCentre|sectionExtent|levelFor|curvature|developable|bendRadius|flangeLength|holeToBend|relief|cornerGap|kawasakiFails|maekawaFails|flatFoldable|floatingOffset|floatingHeel|floatingTrim|floatingGM|floatingGML|floatingStable|bendable|continuity|draft|textExtent", "of": subject, "edge": edge name, "face": face name, "sketch": id or name, "text": text id, "what": "width|height|capHeight|lines|inkWidth|inkHeight", "from": subject, "to": subject, "axis": "x|y|z", "plane": plane, "offset": expr, "xAxis": direction, "about": "x|y|xy|major|minor", "volume": expr, "measured": "tangent|mould", "mass": expr, "density": expr, "centerOfGravity": [expr, expr, expr], "heel": angle expr, "trim": angle expr, "punch": [[expr, expr], ...], "die": [[expr, expr], ...], "length": expr, "clearance": expr, "segmented": boolean, "maxWork": integer, "faces": subject, "direction": "x|y|z|-x|-y|-z" or [x, y, z], "minDraft": degrees, "at": [x, y, z], "tol": expr, "wait": boolean = true}"#,
-        "Defines an output, a read-only variable computed after regeneration from a measure of the bodies, or replaces how it is computed (one undo step; saved with the document): the measure and its parameters are those of assert.add (volumeBelow, centroidBelow with axis, sectionInertia with about, sectionTorsion, sectionShearCentre with axis, levelFor with volume, floatingGM, floatingTrim with centerOfGravity, bendable, thickness, distance, mass, …), and the output is the number it measures with its unit (a length, an area, a volume, the document's length unit to the fourth power; a mass in kg, a count and a yes-or-no as plain numbers, yes 1). Its expressions (offset, volume, a plane's point) may use variables and other outputs: the waterline T = levelFor of the displacement, then KB = centroidBelow at offset T. Other outputs (variable.output) and assertions (their bounds, and the measure value) use it by name; a variable, a feature, a sketch, a datum, a public parameter, a named set or a material may not (refused by name: regeneration stays one way, geometry, then measures, then outputs and assertions). An output that would depend on itself is refused with the cycle named. Unknown, with the reason, when the measure fails, is not proven (a floating equilibrium that does not settle, a bend sequence neither proven nor refuted) or what it proves is wider than the document's tolerance (a thickness found at 2 mm but proven only above 1.96 mm); what uses an unknown output is unknown, and an assertion on it notProven. Not a variable: variable.set, param.set and variable.publish refuse it; variable.delete and variable.rename take it. Returns the output (status known, unknown or pending, value in the document's units, unit, message); wait (default true) waits until it is computed.", doc: true, names: ["of", "from", "to", "plane"], variable_measure),
-    spec!("variable.output", "Output Variable", r#"{"name": string, "expr": expression, "wait": boolean = true}"#,
-        "Defines an output computed from an expression of the variables and of other outputs, or replaces its expression (one undo step; saved with the document): GM = KB + BM - KG of outputs measured with variable.measure. Read-only and computed after regeneration as variable.measure's outputs are, with their rules: used only by other outputs and by assertions (refused by name anywhere else), no cycle (refused with the cycle named), unknown with the reason when an output it uses is unknown or it does not evaluate. Returns the output; wait (default true) waits until it is computed.", doc: true, variable_output),
+    spec!("variable.measure", "Measure into Output", r#"{"name": string, "measure": "volume|area|mass|count|extent|boxMin|boxMax|centerOfMass|distance|clearance|thickness|through|overlap|symmetric|volumeBelow|centroidBelow|sectionArea|sectionCentroid|sectionInertia|sectionTorsion|sectionShearCentre|sectionExtent|levelFor|curvature|developable|bendRadius|flangeLength|holeToBend|relief|cornerGap|kawasakiFails|maekawaFails|flatFoldable|floatingOffset|floatingHeel|floatingTrim|floatingGM|floatingGML|floatingStable|bendable|continuity|draft|textExtent", "of": subject, "edge": edge name, "face": face name, "sketch": id or name, "text": text id, "what": "width|height|capHeight|lines|inkWidth|inkHeight", "from": subject, "to": subject, "axis": "x|y|z", "plane": plane, "offset": expr, "xAxis": direction, "about": "x|y|xy|major|minor", "volume": expr, "measured": "tangent|mould", "mass": expr, "density": expr, "centerOfGravity": [expr, expr, expr], "heel": angle expr, "trim": angle expr, "punch": [[expr, expr], ...], "die": [[expr, expr], ...], "length": expr, "clearance": expr, "segmented": boolean, "maxWork": integer, "faces": subject, "direction": "x|y|z|-x|-y|-z" or [x, y, z], "minDraft": degrees, "at": [x, y, z], "tol": expr, "label": string or null = kept, "unit": unit or null = kept, "wait": boolean = true}"#,
+        "Defines an output, a read-only variable computed after regeneration from a measure of the bodies, or replaces how it is computed (one undo step; saved with the document): the measure and its parameters are those of assert.add (volumeBelow, centroidBelow with axis, sectionInertia with about, sectionTorsion, sectionShearCentre with axis, levelFor with volume, floatingGM, floatingTrim with centerOfGravity, bendable, thickness, distance, mass, …), and the output is the number it measures with its unit (a length, an area, a volume, the document's length unit to the fourth power; a mass in kg (a mass, as 2 kg is), a count and a yes-or-no as plain numbers, yes 1). label and unit are as variable.output's. Its expressions (offset, volume, a plane's point) may use variables and other outputs: the waterline T = levelFor of the displacement, then KB = centroidBelow at offset T. Other outputs (variable.output) and assertions (their bounds, and the measure value) use it by name; a variable, a feature, a sketch, a datum, a public parameter, a named set or a material may not (refused by name: regeneration stays one way, geometry, then measures, then outputs and assertions). An output that would depend on itself is refused with the cycle named. Unknown, with the reason, when the measure fails, is not proven (a floating equilibrium that does not settle, a bend sequence neither proven nor refuted) or what it proves is wider than the document's tolerance (a thickness found at 2 mm but proven only above 1.96 mm); what uses an unknown output is unknown, and an assertion on it notProven. Not a variable: variable.set, param.set and variable.publish refuse it; variable.delete and variable.rename take it. Returns the output (status known, unknown or pending, value in the document's units, unit, message); wait (default true) waits until it is computed.", doc: true, names: ["of", "from", "to", "plane"], variable_measure),
+    spec!("variable.output", "Output Variable", r#"{"name": string, "expr": expression, "label": string or null = kept, "unit": unit or null = kept, "wait": boolean = true}"#,
+        "Defines an output computed from an expression of the variables and of other outputs, or replaces its expression (one undo step; saved with the document): GM = KB + BM - KG of outputs measured with variable.measure; stress = load / area with load = 1000 N and area measured gives a stress (10 MPa on 100 mm²). label is what a form shows instead of the name (\"Bending stress\"); unit the unit it is shown in, of its dimension: a unit (MPa, N, kN, N m, kg, mm^2) or a product and quotient of units (N/mm², kN*m, kg/m^3); without one it is shown in its dimension's: N for a force, MPa for a pressure or a stress, N m for a moment (or an energy), kg for a mass, the document's length unit to its power otherwise. Both are only how it is shown (its value, and what uses it, do not change), and both are kept when not given (null takes one away). A unit that is not of its dimension is refused with both named; one that stops fitting after an edit (its expression changed) makes it unknown with the reason. Read-only and computed after regeneration as variable.measure's outputs are, with their rules: used only by other outputs and by assertions (refused by name anywhere else), no cycle (refused with the cycle named), unknown with the reason when an output it uses is unknown or it does not evaluate. Returns the output; wait (default true) waits until it is computed.", doc: true, variable_output),
     spec!("output.list", "Outputs", r#"{"wait": boolean = true}"#,
-        "Lists the document's outputs in the order they were defined, each computed against the document as it is now: name, how it is computed (measure or expr), status known (value in the document's units with its unit; dimension), unknown (message: why: the measure failed or is not proven, an output it uses is unknown, it does not evaluate, it is on a cycle) or pending (still being measured: only with wait false). known, unknown and pending count them.", doc: true, output_list),
+        "Lists the document's outputs in the order they were defined, each computed against the document as it is now: name, label, how it is computed (measure or expr), text (its label, or its name, and its message: \"Bending stress 10 MPa\"), status known (value in its unit, or else in the document's units: N for a force, MPa for a stress, N m for a moment, kg for a mass, the length unit to its power; unit; dimension), unknown (message: why: the measure failed or is not proven, an output it uses is unknown, it does not evaluate, it is on a cycle) or pending (still being measured: only with wait false). known, unknown and pending count them.", doc: true, output_list),
 ];
 
 // ------------------------------------------------------------- values
@@ -294,6 +294,7 @@ pub(crate) fn resolve(
             if value != OutputValue::Pending {
                 progress = true;
             }
+            let value = unit_checked(output, value);
             resolved.values.insert(output.name.clone(), value);
         }
         if !progress {
@@ -301,6 +302,19 @@ pub(crate) fn resolve(
         }
     }
     resolved
+}
+
+/// `value`, or unknown when the output's unit (`Output::unit`) is not
+/// of its dimension: a unit that cannot show it is an error, said where
+/// the output is, not a number shown in another unit.
+fn unit_checked(output: &Output, value: OutputValue) -> OutputValue {
+    let (OutputValue::Known(q), Some(unit)) = (&value, &output.unit) else {
+        return value;
+    };
+    match craft3d_expr::ShownUnit::parse(unit).and_then(|u| u.value_of(*q)) {
+        Ok(_) => value,
+        Err(e) => OutputValue::Unknown(format!("its unit: {e}")),
+    }
 }
 
 /// The value of the expression of an output.
@@ -373,7 +387,6 @@ pub(crate) fn from_checked(doc: &Document, checked: &Checked) -> OutputValue {
     }
     let measure = checked.state.measure.as_str();
     let dim = dim_of(measure);
-    let factor = doc.units.length.as_expr_unit().factor();
     match &checked.value {
         Value::Bool(yes) => {
             OutputValue::Known(Quantity::dimensionless(if *yes { 1.0 } else { 0.0 }))
@@ -395,12 +408,12 @@ pub(crate) fn from_checked(doc: &Document, checked: &Checked) -> OutputValue {
                     checked.state.measured.clone().unwrap_or_default()
                 ));
             }
-            let dimension = match dim {
-                Dim::Length(k) => Dimension::new(k, 0),
-                Dim::Of(d) => d,
-                Dim::Mass | Dim::Count | Dim::Flag => Dimension::NONE,
-            };
-            OutputValue::Known(Quantity::new(v * factor.powi(dimension.length), dimension))
+            // A mass is one (in kg), as `2 kg` is.
+            let dimension = crate::verify_cmds::dimension_of_dim(dim);
+            OutputValue::Known(Quantity::new(
+                v * crate::verify_cmds::scale_of(doc, dimension),
+                dimension,
+            ))
         }
         Value::String(note) => OutputValue::Unknown(format!("{measure}: {note}")),
         _ => OutputValue::Unknown(format!("{measure} measured nothing")),
@@ -436,10 +449,13 @@ pub struct OutputState {
     /// Whether it is measured (else an expression).
     pub measured: bool,
     pub status: OutputStatus,
-    /// In the document's length unit to the power of its dimension (and
-    /// radians); none unless known.
+    /// What a form shows instead of the name, when it has one.
+    pub label: Option<String>,
+    /// In its unit when it has one, else in the document's units (its
+    /// length unit to the power of its dimension, radians; N, MPa, N m, kg
+    /// for a force, a stress, a moment, a mass); none unless known.
     pub value: Option<f64>,
-    /// "mm^3", "mm", "rad"; none for a plain number.
+    /// "MPa", "mm^3", "mm", "rad"; none for a plain number.
     pub unit: Option<String>,
     /// The value with its unit, or why there is none.
     pub message: String,
@@ -449,7 +465,6 @@ pub struct OutputState {
 
 pub(crate) fn states(doc: &Document, resolved: &Resolved) -> Vec<OutputState> {
     let length = length_unit(doc);
-    let factor = doc.units.length.as_expr_unit().factor();
     doc.outputs
         .iter()
         .map(|o| {
@@ -468,6 +483,7 @@ pub(crate) fn states(doc: &Document, resolved: &Resolved) -> Vec<OutputState> {
                 definition,
                 measured,
                 status: OutputStatus::Pending,
+                label: o.label.clone(),
                 value: None,
                 unit: None,
                 message: "being measured".into(),
@@ -476,8 +492,20 @@ pub(crate) fn states(doc: &Document, resolved: &Resolved) -> Vec<OutputState> {
             };
             match resolved.get(&o.name) {
                 Some(OutputValue::Known(q)) => {
-                    let value = q.value / factor.powi(q.dimension.length);
-                    let unit = unit_of(dim_of_dimension(q.dimension), length);
+                    // In its own unit (checked when it was resolved), else
+                    // in the document's units.
+                    let own = o
+                        .unit
+                        .as_deref()
+                        .and_then(|u| craft3d_expr::ShownUnit::parse(u).ok())
+                        .and_then(|u| u.value_of(*q).ok().map(|v| (v, u.text)));
+                    let (value, unit) = match own {
+                        Some((v, text)) => (v, Some(text)),
+                        None => (
+                            q.value / crate::verify_cmds::scale_of(doc, q.dimension),
+                            unit_of(dim_of_dimension(q.dimension), length),
+                        ),
+                    };
                     state.status = OutputStatus::Known;
                     state.value = Some(value);
                     state.message = match &unit {
@@ -502,9 +530,11 @@ pub(crate) fn state_json(state: &OutputState) -> Value {
     let mut out = json!({
         "name": state.name,
         "status": state.status.name(),
+        "label": state.label,
         "value": state.value,
         "unit": state.unit,
         "message": state.message,
+        "text": format!("{} {}", state.label.as_deref().unwrap_or(&state.name), state.message),
     });
     if let Some(map) = out.as_object_mut() {
         if state.measured {
@@ -621,7 +651,7 @@ fn one(session: &mut Session, name: &str, wait: Wait) -> Run {
 
 fn variable_measure(session: &mut Session, params: &Value) -> Run {
     const ID: &str = "variable.measure";
-    let mut keys: Vec<&str> = vec!["name", "measure", "wait"];
+    let mut keys: Vec<&str> = vec!["name", "measure", "label", "unit", "wait"];
     for m in MEASURES {
         for k in measure_keys(m) {
             if !keys.contains(k) {
@@ -647,33 +677,125 @@ fn variable_measure(session: &mut Session, params: &Value) -> Run {
         _ => Map::new(),
     };
     if MEASURES.contains(&measure) {
-        let mut allowed: Vec<&str> = vec!["name", "measure"];
+        let mut allowed: Vec<&str> = vec!["name", "measure", "label", "unit"];
         allowed.extend_from_slice(measure_keys(measure));
         crate::verify_cmds::only(&map, &allowed)
             .map_err(|e| CommandError::new(format!("{ID}: {measure}: {e}")))?;
     }
+    let map: Map<String, Value> = map
+        .into_iter()
+        .filter(|(k, _)| k != "label" && k != "unit")
+        .collect();
     let doc = session.document()?.history.current();
     check_name(doc, ID, &name)?;
     let text = crate::assert_cmds::stored_measure(doc, ID, &map)?;
-    let output = Output {
-        name,
-        def: OutputDef::Measure(text),
-    };
+    let output = shown_as(
+        session,
+        &p,
+        Output::new(name, OutputDef::Measure(text)),
+        wait,
+    )?;
     set(session, ID, output, wait)
 }
 
 fn variable_output(session: &mut Session, params: &Value) -> Run {
     const ID: &str = "variable.output";
-    let p = Params::new(ID, params, &["name", "expr", "wait"])?;
+    let p = Params::new(ID, params, &["name", "expr", "label", "unit", "wait"])?;
     let wait = wait_of(&p)?;
     let name = p.required_str("name")?.to_string();
     let expr = p.expr("expr")?.ok_or_else(|| p.missing("expr"))?;
     check_name(session.document()?.history.current(), ID, &name)?;
-    let output = Output {
-        name,
-        def: OutputDef::Expr(Expr::new(expr)),
-    };
+    let output = shown_as(
+        session,
+        &p,
+        Output::new(name, OutputDef::Expr(Expr::new(expr))),
+        wait,
+    )?;
     set(session, ID, output, wait)
+}
+
+/// `output` with the label and the unit `p` gives; one not given is kept
+/// from the output it replaces, null takes it away. A unit that does not
+/// read, or (as far as it is known now) is not of the output's dimension,
+/// is refused, with both dimensions named.
+fn shown_as(
+    session: &mut Session,
+    p: &Params,
+    mut output: Output,
+    wait: Wait,
+) -> Result<Output, CommandError> {
+    let id = p.command();
+    let before = session
+        .document()?
+        .history
+        .current()
+        .output(&output.name)
+        .cloned();
+    let kept = |key: &str, old: Option<String>| -> Result<Option<String>, CommandError> {
+        if !p.has(key) {
+            return Ok(old);
+        }
+        Ok(p.str(key)?.map(str::to_string))
+    };
+    output.label = kept("label", before.as_ref().and_then(|o| o.label.clone()))?
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty());
+    output.unit = kept("unit", before.and_then(|o| o.unit))?;
+    let Some(text) = &output.unit else {
+        return Ok(output);
+    };
+    let unit = craft3d_expr::ShownUnit::parse(text)
+        .map_err(|e| CommandError::new(format!("{id}: `unit`: {e}")))?;
+    // Its dimension: a measure's is known by its name; an expression's
+    // by evaluating it against the variables and the outputs as far as
+    // they are computed (one that needs an output still unknown is
+    // checked when it is computed: it is unknown then, with the reason).
+    let dimension = match &output.def {
+        OutputDef::Measure(stored) => {
+            let name = serde_json::from_str::<Map<String, Value>>(stored)
+                .ok()
+                .and_then(|m| m.get("measure").and_then(Value::as_str).map(str::to_string))
+                .unwrap_or_default();
+            Some(crate::verify_cmds::dimension_of_dim(dim_of(&name)))
+        }
+        OutputDef::Expr(e) => {
+            let (_, resolved) = session.checks_and_outputs(wait)?;
+            let doc = session.document()?.history.current();
+            let inputs = doc.variable_table().ok().map(|t| t.evaluate());
+            match evaluated(inputs.as_ref(), e, &resolved) {
+                OutputValue::Known(q) => Some(q.dimension),
+                _ => None,
+            }
+        }
+    };
+    if let Some(dimension) = dimension
+        && dimension != unit.dimension
+    {
+        return Err(CommandError::new(format!(
+            "{id}: `unit`: `{}` is {}, but `{}` is {}; give a unit of its dimension{}",
+            unit.text,
+            unit.dimension.described(),
+            output.name,
+            dimension.described(),
+            match dimension
+                .default_unit(
+                    session
+                        .document()?
+                        .history
+                        .current()
+                        .units
+                        .length
+                        .as_expr_unit()
+                )
+                .text
+                .as_str()
+            {
+                "" => String::new(),
+                default => format!(" (such as `{default}`)"),
+            }
+        )));
+    }
+    Ok(output)
 }
 
 fn output_list(session: &mut Session, params: &Value) -> Run {

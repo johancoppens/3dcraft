@@ -647,3 +647,39 @@ fn floating_and_bendable_measures_keep_their_sizes() {
     assert!(stored.contains("\"heel\":2"), "{stored}");
     assert!(stored.contains("\"maxWork\":20000"), "{stored}");
 }
+
+/// A plain bound of an inverse length (a value assertion on `1 / w`) is
+/// written with its unit to a negative power, `(0.2) * (1 mm)^-1`: before
+/// 2026-10-30 it was written `^(-1)`, which is no exponent, and keeping
+/// the sizes was refused.
+#[test]
+fn a_plain_bound_to_a_negative_power_keeps_its_size() {
+    let mut s = Session::new(craft3d_engine::Workspace::unrestricted());
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "w", "expr": "10 mm"}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": ["w", "w", "w"], "name": "Cube"}),
+    );
+    run(
+        &mut s,
+        "assert.add",
+        json!({"name": "slender", "measure": "value", "expr": "1 / w", "max": 0.2}),
+    );
+    let changed = run(
+        &mut s,
+        "document.setUnit",
+        json!({"units": "cm", "keep": "sizes"}),
+    );
+    assert!(changed["rewritten"].as_u64().unwrap() >= 1, "{changed}");
+    let listed = run(&mut s, "assert.list", json!({}));
+    let a = &listed["assertions"][0];
+    assert_eq!(a["status"], "passed", "{a}");
+    // 0.2 per mm is 2 per cm.
+    assert!(a["expected"].as_str().unwrap().contains("2 cm^-1"), "{a}");
+}

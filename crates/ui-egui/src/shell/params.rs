@@ -215,6 +215,9 @@ pub struct ParamList {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct OutputRow {
     pub name: String,
+    /// What is shown instead of the name ("Bending stress"); empty when
+    /// it has none.
+    pub label: String,
     /// known, unknown or pending.
     pub status: String,
     /// The value with its unit, or why there is none.
@@ -308,6 +311,7 @@ impl ParamList {
                     .take(MAX_PARAMS)
                     .map(|o| OutputRow {
                         name: text(o.get("name")),
+                        label: text(o.get("label")),
                         status: text(o.get("status")),
                         message: text(o.get("message")),
                     })
@@ -1549,7 +1553,12 @@ impl Shell {
                                     o.status.clone()
                                 };
                                 ui.horizontal(|ui| {
-                                    ui.label(&o.name);
+                                    // Its label, with its name on hover.
+                                    if o.label.is_empty() {
+                                        ui.label(&o.name);
+                                    } else {
+                                        ui.label(&o.label).on_hover_text(&o.name);
+                                    }
                                     ui.colored_label(tint, shown).on_hover_text(&o.message);
                                 });
                             }
@@ -1979,12 +1988,21 @@ mod tests {
             "outputs": [
                 {"name": "GM", "status": "known", "value": 65, "unit": "mm", "message": "65 mm"},
                 {"name": "T", "status": "pending", "message": "being measured"},
+                {"name": "stress", "label": "Bending stress", "status": "known", "value": 10, "unit": "MPa", "message": "10 MPa"},
                 {"status": "known"},
                 "nonsense"
             ]
         }));
-        assert_eq!(list.outputs.len(), 2);
+        assert_eq!(list.outputs.len(), 3);
         assert_eq!(list.outputs[0].message, "65 mm");
+        assert_eq!(list.outputs[0].label, "");
+        assert_eq!(
+            (
+                list.outputs[2].label.as_str(),
+                list.outputs[2].message.as_str()
+            ),
+            ("Bending stress", "10 MPa")
+        );
         assert!(list.outputs_pending());
         assert!(ParamList::parse(&json!({"outputs": 3})).outputs.is_empty());
     }

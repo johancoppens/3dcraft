@@ -345,7 +345,7 @@ fn failed_state(doc: &Document, why: &str) -> (Vec<Checked>, Resolved) {
 }
 
 /// The outputs as far as they are known: `[[name, value]]`, a value
-/// `{"known": [bits, length, angle]}` (the bits of the `f64` in base
+/// `{"known": [bits, length, angle, mass, time]}` (the bits of the `f64` in base
 /// units, in hex), `{"unknown": why}` or `"pending"`.
 fn outputs_json(outputs: &Resolved) -> Value {
     Value::Array(
@@ -358,6 +358,8 @@ fn outputs_json(outputs: &Resolved) -> Value {
                         format!("{:016x}", q.value.to_bits()),
                         q.dimension.length,
                         q.dimension.angle,
+                        q.dimension.mass,
+                        q.dimension.time,
                     ]}),
                     OutputValue::Unknown(why) => json!({ "unknown": why }),
                     OutputValue::Pending => json!("pending"),
@@ -395,7 +397,7 @@ fn outputs_from(value: &Value) -> Result<Resolved, String> {
             };
             OutputValue::Known(Quantity::new(
                 f64::from_bits(bits),
-                Dimension::new(exponent(1)?, exponent(2)?),
+                Dimension::of(exponent(1)?, exponent(2)?, exponent(3)?, exponent(4)?),
             ))
         };
         values.insert(name.to_string(), output);
@@ -497,8 +499,22 @@ mod tests {
         }
         values.insert("u".into(), OutputValue::Unknown("why".into()));
         values.insert("p".into(), OutputValue::Pending);
+        // A stress and a mass keep their mass and time, not only length
+        // and angle (the web build's worker, 2026-10-30).
+        values.insert(
+            "stress".into(),
+            OutputValue::Known(Quantity::new(1e4, Dimension::PRESSURE)),
+        );
+        values.insert(
+            "m".into(),
+            OutputValue::Known(Quantity::new(2.5, Dimension::MASS)),
+        );
         let resolved = Resolved::from_entries(values);
         let back = outputs_from(&outputs_json(&resolved)).unwrap();
+        assert!(matches!(
+            back.entries().get("stress"),
+            Some(OutputValue::Known(q)) if q.dimension == Dimension::PRESSURE
+        ));
         for (name, value) in resolved.entries() {
             let other = back.entries().get(name).unwrap();
             match (value, other) {

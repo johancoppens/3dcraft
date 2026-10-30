@@ -500,7 +500,30 @@ fn angle(ctx: &Ctx<'_>, p: &Map<String, Value>, key: &str) -> Result<f64, String
 fn floating_volume(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<f64, String> {
     let positive = |key: &str| -> Result<f64, String> {
         let value = given(p, key).ok_or_else(|| format!("`{key}` is required with mass"))?;
-        let number = ctx.quantity(value, key, 0)?;
+        // A mass in kg (a plain number, or `300 kg`); a density per cubic
+        // metre (a plain number, or `1025 kg / (1 m)^3`), whatever the
+        // document's length unit.
+        let number = if key == "mass" {
+            ctx.quantity_of(value, key, craft3d_expr::Dimension::MASS)?
+        } else {
+            let density = craft3d_expr::Dimension::DENSITY;
+            match value {
+                Value::String(source) => {
+                    let q = ctx.evaluate(source, key)?;
+                    if q.dimension.is_dimensionless() {
+                        q.value
+                    } else if q.dimension == density {
+                        q.value / craft3d_expr::Unit::Metre.factor().powi(-3)
+                    } else {
+                        return Err(format!(
+                            "`{key}` is {}, but a density is needed (kg/m^3: a number, or `1025 kg / (1 m)^3`)",
+                            q.dimension.described()
+                        ));
+                    }
+                }
+                other => ctx.quantity(other, key, 0)?,
+            }
+        };
         if number > 0.0 && number.is_finite() {
             Ok(number)
         } else {

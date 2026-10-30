@@ -159,10 +159,12 @@ double-click or Enter to type a value, Escape to give up.
 |---|---|
 | Lengths | `um`, `mm`, `cm`, `m`, `in`, `ft` (lower case, right after the number: `3 mm`) |
 | Angles | `deg`, `rad`; a plain number where an angle is expected is in degrees, inside `sin`, `cos`, `tan` in radians |
+| Mechanics | `g`, `kg` (mass), `s` (time), `N`, `kN` (force), `Pa`, `kPa`, `MPa`, `GPa` (pressure, stress), `J` (energy); a force unit then a length unit is a moment (`20 N m`); not reserved: units only right after a number, a parenthesis or `pi` |
+| Shown units | an output's `unit`: units multiplied by a space, `*` or `·`, to powers (`^2`, `²`), with one `/`: `N/mm²`, `kN m`, `kg/m^3` |
 | Functions | `sqrt`, `abs`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `min`, `max`, `floor`, `ceil`, `round`, `trunc`, `mod`, `exp`, `ln`, `log10`, `log2`, `pow`, `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh`, `hypot`, `sign`, `if`, `choose`, `clamp` |
 | Operators | `+ - * / ^`, comparisons `< <= > >= == !=`, `&&`, `\|\|`, `!` |
 | Constant | `pi` (a plain number) |
-| Reserved | `pi`, the units and the functions above cannot name a variable (`m` is the metre: call a module `module` or `mn`) |
+| Reserved | `pi`, the length and angle units and the functions above cannot name a variable (`m` is the metre: call a module `module` or `mn`) |
 | Tables | `belt[2].pitch`, `belt["GT2"].pitch` |
 | Axes | X, Y and Z, with Z up; planes `xy`, `yz`, `zx` |
 | Faces | `F1:face(1)`, `F2:side(e9)`, `F2:startCap()`, `F2:endCap()`, `F3:fillet(0)`; a feature's name for its id: `Plate:face(1)`, `Plate:endCap` ([chapter 6](06-concepts.md#persistent-names)) |

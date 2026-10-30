@@ -21,7 +21,7 @@ use craft3d_expr::{Dimension, Evaluation, Quantity, Unit};
 use serde_json::{Map, Value, json};
 
 pub(crate) static SPECS: &[CommandSpec] = &[
-    spec!("variable.publish", "Publish Variable", r#"{"name": string, "label": string, "description": string, "group": string, "order": integer, "kind": "number|integer|boolean|choice" = number, "choices": [string, ...], "choicesFrom": table name or null, "min": expr or null, "max": expr or null, "step": expr or null, "unit": "um|mm|cm|m|in|ft|deg|rad" or null, "default": expr = its value now}"#,
+    spec!("variable.publish", "Publish Variable", r#"{"name": string, "label": string, "description": string, "group": string, "order": integer, "kind": "number|integer|boolean|choice" = number, "choices": [string, ...], "choicesFrom": table name or null, "min": expr or null, "max": expr or null, "step": expr or null, "unit": "um|mm|cm|m|in|ft|deg|rad|g|kg|s|N|kN|Pa|kPa|MPa|GPa|J" or null, "default": expr = its value now}"#,
         "Makes a variable a public parameter: one a parameter form, or an agent, sets without knowing the model (a document with one is a Jig). Its expression must be a value, not a formula (40 mm, 20, 1 in / 16). kind: number (any value of its dimension), integer (a plain whole number), boolean (0 or 1), choice (a whole number from 1 to the number of choices, which are the labels shown, the first for 1; choicesFrom takes them from a table's key column instead, row 1 for 1, and follows the table: table.set). min, max and step are expressions and may use other variables (a bore less than the root diameter), not the variable itself. unit is the unit a form shows it in (the document's for a length or angle when not given). default is what a reset goes back to (its value now when not given). On a variable that is public already, only what is given changes, and null takes min, max, step or unit away. step is the spacing of the values a number or an integer takes, counted from min when that is a value and from 0 otherwise (no min, or a min that is a formula), an end of the range always allowed, an integer's step a whole number (param.list stepFrom). Refused, with the reason, when the value or the default is not of its kind or outside its range, the default is off its step, or a range does not evaluate, and when it would make another parameter invalid (a default is checked with every parameter at its default). One undo step. Returns the parameter as param.list does.", doc: true, variable_publish),
     spec!("variable.unpublish", "Unpublish Variable", r#"{"name": string}"#,
         "Makes a public parameter an ordinary variable again; its value stays. One undo step; nothing changes when it was not public.", doc: true, variable_unpublish),
@@ -82,42 +82,30 @@ fn shown_unit(doc: &Document, public: &PublicParam, dimension: Dimension) -> Opt
             AngleUnit::Radian => Unit::Radian,
         })
     } else {
-        None
+        // A force, a stress, a mass, a time: the unit of its dimension's
+        // default (`Dimension::default_unit`), as outputs are shown.
+        [Unit::Newton, Unit::Megapascal, Unit::Kilogram, Unit::Second]
+            .into_iter()
+            .find(|unit| unit.dimension() == dimension)
     }
 }
 
 /// `quantity` as a number of `unit`; without one, in the document's
-/// length unit (to its power) and radians.
+/// units (`verify_cmds::scale_of`).
 fn shown(doc: &Document, quantity: Quantity, unit: Option<Unit>) -> f64 {
     if let Some(unit) = unit
         && let Ok(value) = quantity.to_unit(unit)
     {
         return value;
     }
-    let factor = doc.units.length.as_expr_unit().factor();
-    let scale = factor.powi(quantity.dimension.length);
-    if scale.is_finite() && scale > 0.0 {
-        quantity.value / scale
-    } else {
-        quantity.value
-    }
+    quantity.value / crate::verify_cmds::scale_of(doc, quantity.dimension)
 }
 
 /// The units a value of `dimension` is shown in when it has no unit of
-/// its own: `mm^2`, `mm^-1`, `mm*rad`.
+/// its own: `mm^2`, `mm^-1`, `mm*rad`; N, MPa, N m, kg for a force, a
+/// stress, a moment, a mass.
 fn unit_text(doc: &Document, dimension: Dimension) -> String {
-    let mut parts = Vec::new();
-    for (symbol, exponent) in [
-        (doc.units.length.symbol(), dimension.length),
-        ("rad", dimension.angle),
-    ] {
-        match exponent {
-            0 => {}
-            1 => parts.push(symbol.to_string()),
-            n => parts.push(format!("{symbol}^{n}")),
-        }
-    }
-    parts.join("*")
+    dimension.default_unit(doc.units.length.as_expr_unit()).text
 }
 
 /// A value written for messages: `6 mm`, `20`.
@@ -1443,11 +1431,19 @@ pub(crate) fn value_text(range: &Range, number: f64) -> String {
     match range.unit {
         Some(unit) => format!("{number} {unit}"),
         None if range.dimension.is_dimensionless() => number.to_string(),
+        // A moment in its default, N m (`shown` gives the number in it).
+        None if range.dimension == Dimension::MOMENT => format!("{number} N m"),
+        // A density in its default, kg/m^3.
+        None if range.dimension == Dimension::DENSITY => format!("{number} kg / (1 m)^3"),
+        // Anything else in the document's length unit, rad, kg and s to
+        // their powers, which is what `shown` gives the number in.
         None => {
             let mut text = number.to_string();
             for (symbol, exponent) in [
                 (range.length_symbol, range.dimension.length),
                 ("rad", range.dimension.angle),
+                ("kg", range.dimension.mass),
+                ("s", range.dimension.time),
             ] {
                 if exponent != 0 {
                     text.push_str(&format!(" * (1 {symbol})^{exponent}"));
@@ -1605,6 +1601,44 @@ mod tests {
             dimension: Dimension::NONE,
             length_symbol: "mm",
         }
+    }
+
+    /// The text a clamp or a sample writes is the number it was given,
+    /// in the unit `shown` gives numbers in, for every dimension: a
+    /// length, an area, an angle, a force, a stress, a moment, a mass and
+    /// a density (`load = 1000 N` stays a force).
+    #[test]
+    fn a_value_text_is_of_its_dimension_and_its_shown_number() {
+        let mut doc = Document::new(craft3d_doc::Units::default());
+        doc.set_variable("x", "1 mm").unwrap();
+        let public = PublicParam::default();
+        for dimension in [
+            Dimension::LENGTH,
+            Dimension::new(2, 0),
+            Dimension::new(-1, 1),
+            Dimension::FORCE,
+            Dimension::PRESSURE,
+            Dimension::MOMENT,
+            Dimension::MASS,
+            Dimension::DENSITY,
+            Dimension::of(-2, 0, 1, 0),
+        ] {
+            let unit = shown_unit(&doc, &public, dimension);
+            let r = Range {
+                unit,
+                dimension,
+                ..range(ParamKind::Number, 0.0, 10.0, None)
+            };
+            let text = value_text(&r, 7.5);
+            let q = craft3d_expr::evaluate(&text, |_| None).unwrap();
+            assert_eq!(q.dimension, dimension, "{text}");
+            let back = shown(&doc, q, unit);
+            assert!((back - 7.5).abs() < 1e-12, "{text}: {back}");
+        }
+        assert_eq!(
+            shown_unit(&doc, &public, Dimension::FORCE),
+            Some(Unit::Newton)
+        );
     }
 
     /// The value a clamp moves a parameter to: the nearest in its range,

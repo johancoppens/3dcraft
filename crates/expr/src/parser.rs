@@ -29,7 +29,7 @@
 
 use crate::error::{ErrorKind, ExprError};
 use crate::lexer::{Token, TokenKind, tokenize};
-use crate::units::Unit;
+use crate::units::{Dimension, Unit};
 use crate::{MAX_DEPTH, MAX_SOURCE_LEN};
 
 /// Index of a node in [`Expr::nodes`].
@@ -444,6 +444,16 @@ fn spelled_unit(word: &str) -> Option<Unit> {
         "foot" | "feet" => Unit::Foot,
         "degree" => Unit::Degree,
         "radian" => Unit::Radian,
+        "gram" => Unit::Gram,
+        "kilogram" | "kilo" => Unit::Kilogram,
+        "second" | "sec" => Unit::Second,
+        "newton" => Unit::Newton,
+        "kilonewton" | "kn" => Unit::Kilonewton,
+        "pascal" | "pa" => Unit::Pascal,
+        "kilopascal" | "kpa" => Unit::Kilopascal,
+        "megapascal" | "mpa" => Unit::Megapascal,
+        "gigapascal" | "gpa" => Unit::Gigapascal,
+        "joule" => Unit::Joule,
         _ => return None,
     };
     Some(unit)
@@ -718,6 +728,38 @@ impl Parser<'_> {
                     if !(value * unit.factor()).is_finite() {
                         return Err(ExprError::new(token.pos, ErrorKind::NumberOutOfRange));
                     }
+                    // `20 N m`, `5 kN mm`: a force unit and then a length
+                    // unit is their product, a moment.
+                    let then = self.peek();
+                    if unit.dimension() == Dimension::FORCE
+                        && then.kind == TokenKind::Ident
+                        && let Some(length) = Unit::from_symbol(self.text(then))
+                        && length.dimension() == Dimension::LENGTH
+                    {
+                        self.advance();
+                        let force = self.push(
+                            NodeKind::Number {
+                                value,
+                                unit: Some(unit),
+                            },
+                            token.pos,
+                        );
+                        let arm = self.push(
+                            NodeKind::Number {
+                                value: 1.0,
+                                unit: Some(length),
+                            },
+                            then.pos,
+                        );
+                        return Ok(self.push(
+                            NodeKind::Binary {
+                                op: BinaryOp::Mul,
+                                left: force,
+                                right: arm,
+                            },
+                            token.pos,
+                        ));
+                    }
                 }
                 Ok(self.push(NodeKind::Number { value, unit }, token.pos))
             }
@@ -733,7 +775,7 @@ impl Parser<'_> {
                 let name = self.text(token);
                 let kind = if name == "pi" {
                     NodeKind::Pi
-                } else if let Some(unit) = Unit::from_symbol(name) {
+                } else if let Some(unit) = Unit::from_symbol(name).filter(|u| u.is_reserved()) {
                     return Err(ExprError::new(
                         token.pos,
                         ErrorKind::UnitWithoutNumber { unit },

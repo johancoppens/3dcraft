@@ -36,7 +36,7 @@ const STEPS: &[Step] = &[
     v26_to_v27, v27_to_v28, v28_to_v29, v29_to_v30, v30_to_v31, v31_to_v32, v32_to_v33, v33_to_v34,
     v34_to_v35, v35_to_v36, v36_to_v37, v37_to_v38, v38_to_v39, v39_to_v40, v40_to_v41, v41_to_v42,
     v42_to_v43, v43_to_v44, v44_to_v45, v45_to_v46, v46_to_v47, v47_to_v48, v48_to_v49, v49_to_v50,
-    v50_to_v51, v51_to_v52, v52_to_v53, v53_to_v54, v54_to_v55,
+    v50_to_v51, v51_to_v52, v52_to_v53, v53_to_v54, v54_to_v55, v55_to_v56,
 ];
 
 /// Version 2 adds the `cone` and `torus` feature kinds and an optional
@@ -1033,6 +1033,24 @@ fn v53_to_v54(manifest: Value) -> Result<Value, String> {
 /// (an identity step); the version was raised so that an older build says
 /// a newer 3DCraft is needed instead of refusing the fields.
 fn v54_to_v55(manifest: Value) -> Result<Value, String> {
+    Ok(manifest)
+}
+
+/// Version 56 adds an output's `label` and `unit` (the unit it is shown
+/// in), and the mechanical units to the expressions (`N`, `MPa`, `N m`;
+/// docs/design/document.md › *Units*). A file of an older version has
+/// neither field, which is what a missing one reads as, and none of its
+/// expressions uses a new unit (a mechanical unit's symbol is a unit only
+/// right after a number, where an older build refused any name), so the
+/// file itself reads unchanged: an identity step. One meaning does change
+/// with the version, in the engine, not in the file: an output that
+/// measures `mass` is now a mass (kg), where it was a plain number of kg,
+/// so a formula of an older file that adds a plain number to one
+/// (`massKg + 1`) fails with a unit mismatch until it is written with its
+/// unit (`massKg + 1 kg`). By the developer's pre-release policy that is
+/// not migrated. The version was raised so that an older build says a
+/// newer 3DCraft is needed instead of refusing the field.
+fn v55_to_v56(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 

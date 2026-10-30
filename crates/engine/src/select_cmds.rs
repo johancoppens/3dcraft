@@ -24,7 +24,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("select.set", "Select", r#"{"items": [{kind, name, feature}], "names": [string], "set": string, "mode": "replace|add|remove|toggle|clear" = "replace"}"#,
         "Sets the selection of the active document. items names each thing with its kind (optional: read from the name) and, for a face, an edge or a vertex, feature: the body that has it (optional: the first body in history order that has the name). names is the short form: a feature's name or id (a body when it has one, otherwise the sketch, datum or feature) or a persistent name of a face, edge or vertex (document.inspect faceNames or aliases, document.edges). replace makes them the selection, add adds what is not selected yet (in order), remove takes them out, toggle adds what is not selected and removes what is, clear empties it (no items needed). set is a named set (set.define): what it holds now, after the items and names. A name that means nothing is an error, and then nothing changes. At most 10000 items. Returns the selection as select.get does, with added and removed counts.", doc: true, names: ["items", "names"], select_set),
     spec!("select.query", "Select by Description", r#"{"kind": "body|face|edge|vertex|feature|sketch|datum" or [kind, ...] = every kind, "where": filter or [filter, ...], "then": "none|replace|add|remove" = "none", "limit": integer = 1000, "context": boolean = false}"#,
-        "Finds what fits a description and returns it (items as select.get gives them, with body: the name of the body of a face, edge or vertex, and origin: {feature, name}, the feature that first made it, at the end of its persistent name's way, such as the cylinder that drilled a hole: the feature to edit to change it), in document order: bodies, features, sketches and datums in history order, faces, edges and vertices body by body in the order of document.inspect and document.edges. count is how many fit, truncated says whether more fit than limit (at most 10000), summary is one line (\"6 faces in Housing\"). With context each item also has what select.get gives with context (surface or curve and its measure, drivers with the edit to make, copyOf). With then the result also becomes the selection (replace), is added to it or taken out of it; the window shows it. A filter is an object; several keys in one object must all hold, an array of filters too. Filters: all: [filters], any: [filters], not: filter; set: the name of a named set (set.define): what it holds now; kind: kind or [kinds]; name: glob (* any run, ? one character) on the name, or for a feature-like item also its id; type: glob on the type of the feature (extrude, boolean, pattern, ...; of the body's feature for a face, edge or vertex); status: ok|failed|suppressed|inactive|rolledBack or a list: how the feature regenerated (inactive: its when is false; of the body's feature for a face, edge or vertex); in: the body (feature id or name) a face, edge or vertex belongs to, or that body itself; madeBy: feature: a face, edge or vertex whose persistent name comes from that feature anywhere along its way (the cylinder that drilled a hole, the extrusion whose side it is), a body or feature made by it or from it; copyOf: pattern or mirror feature, with instance: n: entities that are copies made by it (of that instance), or its body; color: \"#rrggbb\" or [r, g, b] or null (no colour of its own), within: distance in RGB = 0: the colour of the body, or of the face; material: glob or null: the body's material; volume (bodies), area (bodies and faces), radius (cylindrical and spherical faces, circular edges), length (edges): a value (\"6 mm\", a number in the document's unit) or {eq, tol} or {min, max}; tol defaults to a millionth of eq; surface: plane|cylinder|cone|sphere|torus|freeform or a list: the kind of a face's surface; hole: true for the wall of a hole, a cylindrical face whose outward normal points at its axis and that goes all the way round it (not a concave fillet), false for the others; a face a boolean split into pieces that keep its name is one item; normal: {along: axis} (a flat face whose outward normal points along it, \"-y\" for the faces facing -y) or {perpendicular: axis} (flat faces whose normal is square to it, and cylinders and cones whose axis lies along it), with tol: degrees = 0.5; axis: {along: axis, tol}: cylinders, cones, tori and circular edges whose axis lies along it, either way round; inside: [[x, y, z], [x, y, z]]: the item lies wholly within the box; above: {z: value} (or x, y; a number is z): wholly at or above it, below: likewise at or below. An axis is x, y, z, -x, -y, -z or [x, y, z]. A filter that does not apply to an item (volume of a face) does not hold for it. Measures and boxes use the exact geometry (face areas by the integrals document.measure sums).", doc: true, names: ["where"], select_query),
+        "Finds what fits a description and returns it (items as select.get gives them, with body: the name of the body of a face, edge or vertex, and origin: {feature, name}, the feature that first made it, at the end of its persistent name's way, such as the cylinder that drilled a hole: the feature to edit to change it), in document order: bodies, features, sketches and datums in history order, faces, edges and vertices body by body in the order of document.inspect and document.edges. count is how many fit, truncated says whether more fit than limit (at most 10000), summary is one line (\"6 faces in Housing\"). With context each item also has what select.get gives with context (surface or curve and its measure, drivers with the edit to make, copyOf). With then the result also becomes the selection (replace), is added to it or taken out of it; the window shows it. A filter is an object; several keys in one object must all hold, an array of filters too. Filters: all: [filters], any: [filters], not: filter; set: the name of a named set (set.define): what it holds now; kind: kind or [kinds]; name: glob (* any run, ? one character) on the name, or for a feature-like item also its id; type: glob on the type of the feature (extrude, boolean, pattern, ...; of the body's feature for a face, edge or vertex); status: ok|failed|suppressed|inactive|rolledBack or a list: how the feature regenerated (inactive: its when is false; of the body's feature for a face, edge or vertex); in: the body (feature id or name) a face, edge or vertex belongs to, or that body itself; madeBy: feature: a face, edge or vertex whose persistent name comes from that feature anywhere along its way (the cylinder that drilled a hole, the extrusion whose side it is), a body or feature made by it or from it; copyOf: pattern or mirror feature, with instance: n: entities that are copies made by it (of that instance), or its body; color: \"#rrggbb\" or [r, g, b] or null (no colour of its own), within: distance in RGB = 0: the colour of the body, or of the face; material: glob or null: the body's material; volume (bodies), area (bodies and faces), radius (cylindrical and spherical faces, circular edges), length (edges), thickness (flat faces: the plate thickness, the distance through the body to the flat face directly opposite, parallel and facing the other way, measured along the inward normal from points all over the face, which must all give it within the tolerance; a curved face, one with no such face opposite, and one over a step, a pocket or a slanted back have none, and never fit): a value (\"6 mm\", a number in the document's unit, or an expression of the variables such as \"tA\", worked out again whenever the query is, so a named set follows the variable) or {eq, tol} or {min, max}; tol defaults to a millionth of eq plus the document's tolerance (to the power of the dimension: squared for an area); surface: plane|cylinder|cone|sphere|torus|freeform or a list: the kind of a face's surface; hole: true for the wall of a hole, a cylindrical face whose outward normal points at its axis and that goes all the way round it (not a concave fillet), false for the others; a face a boolean split into pieces that keep its name is one item; normal: {along: axis} (a flat face whose outward normal points along it, \"-y\" for the faces facing -y) or {perpendicular: axis} (flat faces whose normal is square to it, and cylinders and cones whose axis lies along it), with tol: degrees = 0.5; axis: {along: axis, tol}: cylinders, cones, tori and circular edges whose axis lies along it, either way round; inside: [[x, y, z], [x, y, z]]: the item lies wholly within the box; above: {z: value} (or x, y; a number is z): wholly at or above it, below: likewise at or below. An axis is x, y, z, -x, -y, -z or [x, y, z]. A filter that does not apply to an item (volume of a face) does not hold for it. Measures and boxes use the exact geometry (face areas by the integrals document.measure sums).", doc: true, names: ["where"], select_query),
 ];
 
 /// Most filters one query holds, nested ones included.
@@ -241,6 +241,8 @@ enum Measure {
     Area,
     Radius,
     Length,
+    /// A flat face's plate thickness (`verify::plate_thickness`).
+    Thickness,
 }
 
 /// A closed range of values.
@@ -571,6 +573,7 @@ impl<'a> Parser<'a> {
             "area" => Filter::Measure(Measure::Area, self.range(value, key, 2)?),
             "radius" => Filter::Measure(Measure::Radius, self.range(value, key, 1)?),
             "length" => Filter::Measure(Measure::Length, self.range(value, key, 1)?),
+            "thickness" => Filter::Measure(Measure::Thickness, self.range(value, key, 1)?),
             "surface" => Filter::Surface(surfaces(value)?),
             "hole" => Filter::Hole(value.as_bool().ok_or("`hole` must be true or false")?),
             "normal" => {
@@ -649,7 +652,7 @@ impl<'a> Parser<'a> {
             other => {
                 let other: String = other.chars().take(40).collect();
                 return Err(format!(
-                    "unknown filter `{other}`; the filters are all, any, not, set, kind, name, type, status, in, madeBy, copyOf, color, material, volume, area, radius, length, surface, hole, normal, axis, inside, above and below"
+                    "unknown filter `{other}`; the filters are all, any, not, set, kind, name, type, status, in, madeBy, copyOf, color, material, volume, area, radius, length, thickness, surface, hole, normal, axis, inside, above and below"
                 ));
             }
         };
@@ -927,6 +930,11 @@ struct Context<'a> {
     /// The origins of the faces of the current bodies, once
     /// ([`Context::face_origins`]).
     origins: Option<Vec<PersistentName>>,
+    /// Per feature, its body made ready for lines through it (for
+    /// `thickness`), once; `None` when it cannot be.
+    parts: BTreeMap<FeatureId, Option<crate::verify::Part<'a>>>,
+    /// Per feature and face, its plate thickness, once.
+    thicknesses: BTreeMap<(FeatureId, usize), Option<f64>>,
 }
 
 impl<'a> Context<'a> {
@@ -938,7 +946,57 @@ impl<'a> Context<'a> {
             colors: BTreeMap::new(),
             made_from: BTreeMap::new(),
             origins: None,
+            parts: BTreeMap::new(),
+            thicknesses: BTreeMap::new(),
         }
+    }
+
+    /// The plate thickness of a face: of every piece of it, which must
+    /// agree (a face a boolean cut into pieces that keep its name is one
+    /// item); `None` when it has none.
+    fn face_thickness(&mut self, c: &Candidate<'_>) -> Option<f64> {
+        let wanted = c.body?;
+        let regen = self.regen;
+        // The body as the regeneration holds it, for as long as the
+        // context lives.
+        let body: &'a Body = regen
+            .bodies()
+            .find(|(f, b)| *f == c.feature && Arc::ptr_eq(b, wanted))
+            .map(|(_, b)| &**b)?;
+        let tolerance =
+            craft3d_math::Tolerance::new(self.doc.tolerance.linear, self.doc.tolerance.angular)?;
+        let pieces: Vec<usize> = if c.pieces.is_empty() {
+            vec![c.index]
+        } else {
+            c.pieces.clone()
+        };
+        let mut found: Option<f64> = None;
+        for k in pieces {
+            let key = (c.feature, k);
+            let thickness = match self.thicknesses.get(&key) {
+                Some(t) => *t,
+                None => {
+                    let part = self
+                        .parts
+                        .entry(c.feature)
+                        .or_insert_with(|| crate::verify::Part::new(body, None, &tolerance).ok());
+                    let t = part.as_ref().and_then(|part| {
+                        crate::verify::plate_thickness(part, k, &tolerance)
+                            .ok()
+                            .flatten()
+                    });
+                    self.thicknesses.insert(key, t);
+                    t
+                }
+            };
+            let t = thickness?;
+            match found {
+                Some(f) if (f - t).abs() > tolerance.linear => return None,
+                Some(f) => found = Some(f.min(t)),
+                None => found = Some(t),
+            }
+        }
+        found
     }
 
     /// The feature instance `instance` of the body of `feature` was made
@@ -1243,6 +1301,7 @@ impl<'a> Context<'a> {
                 _ => None,
             },
             (Measure::Length, SelectionKind::Edge) => edge_length(edge_of(c)?),
+            (Measure::Thickness, SelectionKind::Face) => self.face_thickness(c),
             _ => None,
         }
     }

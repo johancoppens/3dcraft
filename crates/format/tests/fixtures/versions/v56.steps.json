@@ -1,0 +1,14 @@
+[
+ ["variable.set", {"name": "load", "expr": "1000 N"}],
+ ["variable.set", {"name": "N", "expr": "3"}],
+ ["variable.set", {"name": "tA", "expr": "4 mm"}],
+ ["variable.set", {"name": "tB", "expr": "3 mm"}],
+ ["feature.block", {"name": "Bar", "size": ["100 mm", "10 mm", "10 mm"]}],
+ ["feature.block", {"name": "A", "size": ["200 mm", "100 mm", "tA"], "position": ["0 mm", "0 mm", "50 mm"]}],
+ ["feature.block", {"name": "B", "size": ["200 mm", "100 mm", "tB"], "position": ["0 mm", "0 mm", "100 mm"]}],
+ ["variable.measure", {"name": "area", "measure": "sectionArea", "of": "Bar", "plane": "yz", "offset": "50 mm", "label": "Section", "unit": "cm^2"}],
+ ["variable.output", {"name": "stress", "expr": "N * load / area", "label": "Bending stress", "unit": "N/mm²"}],
+ ["variable.output", {"name": "moment", "expr": "load * 100 mm", "label": "Bending moment"}],
+ ["assert.add", {"name": "yield", "measure": "value", "expr": "stress", "max": "235 MPa"}],
+ ["set.define", {"name": "Cut sheet: 4 mm", "kind": "face", "where": {"normal": {"along": "z"}, "thickness": "tA"}}]
+]

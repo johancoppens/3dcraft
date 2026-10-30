@@ -423,7 +423,12 @@ fn inserted_to_doc(entry: manifest::Inserted) -> doc::Inserted {
 }
 
 fn output_to_manifest(output: &doc::Output) -> manifest::Output {
-    let doc::Output { name, def } = output;
+    let doc::Output {
+        name,
+        def,
+        label,
+        unit,
+    } = output;
     let (measure, expr) = match def {
         // Written as a JSON object, as an assertion's measure is; anything
         // else is kept as the text it is.
@@ -442,6 +447,8 @@ fn output_to_manifest(output: &doc::Output) -> manifest::Output {
         name: name.clone(),
         measure,
         expr,
+        label: label.clone(),
+        unit: unit.clone(),
     }
 }
 
@@ -450,6 +457,8 @@ fn output_to_doc(output: manifest::Output) -> doc::Output {
         name,
         measure,
         expr,
+        label,
+        unit,
     } = output;
     // One with both or neither is refused before this, by
     // `from_manifest_json_noted`.
@@ -460,7 +469,12 @@ fn output_to_doc(output: manifest::Output) -> doc::Output {
         }
         (None, expr) => doc::OutputDef::Expr(doc::Expr(expr.unwrap_or_default())),
     };
-    doc::Output { name, def }
+    doc::Output {
+        name,
+        def,
+        label,
+        unit,
+    }
 }
 
 fn table_to_manifest(table: &doc::Table) -> manifest::Table {

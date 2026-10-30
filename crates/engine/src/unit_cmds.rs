@@ -210,11 +210,14 @@ fn with_unit(
     let mut written = match (dim.length, trimmed.parse::<f64>()) {
         (1, Ok(n)) if n.is_finite() => format!("{trimmed} {symbol}"),
         (1, _) => format!("({trimmed}) * 1 {symbol}"),
-        (k, _) if k < 0 => format!("({trimmed}) * (1 {symbol})^({k})"),
+        (0, _) => format!("({trimmed})"),
         (k, _) => format!("({trimmed}) * (1 {symbol})^{k}"),
     };
-    if dim.angle != 0 {
-        written.push_str(&format!(" * (1 rad)^({})", dim.angle));
+    // An exponent is a literal, negative or not, never in parentheses.
+    for (other, power) in [("rad", dim.angle), ("kg", dim.mass), ("s", dim.time)] {
+        if power != 0 {
+            written.push_str(&format!(" * (1 {other})^{power}"));
+        }
     }
     let got = values
         .eval(&written)
@@ -740,14 +743,17 @@ fn keep_the_sizes(
         if let Some(sized) = sizer.measure(&assertion.measure, &what)? {
             assertion.measure = sized;
         }
+        // The power of the length unit its numbers are in: a force's are
+        // in N and a stress's in MPa whatever the length unit (0).
+        let shown_power = |d: Dimension| d.default_unit(from.as_expr_unit()).length_power;
         powers.push(match (kind, crate::assert_cmds::dim_of(kind)) {
-            ("value", _) | (_, Dim::Of(_) | Dim::Length(_)) => dim.map(|d| d.length),
+            ("value", _) | (_, Dim::Of(_) | Dim::Length(_)) => dim.map(shown_power),
             // A mass is in kilograms whatever the length unit, as long as a
             // material's density does not depend on it (it is kept in
             // kg/m^3); a count and a yes or no have no size.
             (_, Dim::Mass | Dim::Count | Dim::Flag) => Some(0),
         });
-        let Some(dim) = dim.filter(|d| d.length != 0) else {
+        let Some(dim) = dim.filter(|d| shown_power(*d) != 0) else {
             continue;
         };
         let bounds: Vec<&mut Expr> = match &mut assertion.expect {

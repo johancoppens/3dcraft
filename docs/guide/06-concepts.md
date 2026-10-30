@@ -72,6 +72,13 @@ Every length, angle and count may be an **expression** in the document's variabl
   "make the wall 1 mm thicker" is `{"name": "wall", "expr": "3 mm"}`, not `wall + 1 mm` (refused). Only
   that direct self-reference is refused: a cycle through other variables (`a` = `b + 1 mm`, then `b` =
   `a + 1 mm`) is kept, and every variable on it fails with *circular definition* until one is changed.
+- Forces, stresses and moments have units too: `g`, `kg` for a mass, `s` for a time, `N`, `kN` for a
+  force, `Pa`, `kPa`, `MPa`, `GPa` for a pressure or a stress, `J` for an energy, and a force unit followed
+  by a length unit for a moment (`20 N m`, `5 kN mm`). They are derived from mass, length and time
+  (a newton is kg·m/s²), so a load over an area is a stress: `1000 N / (100 * (1 mm)^2)` is 10 MPa, and
+  `1 MPa` is `1 N / (1 mm)^2`. Unlike `mm` or `deg`, these symbols are not reserved: a count may still be
+  called `N` and a spacing `s`; they are units only right after a number, a parenthesis or `pi`
+  (`N * 5 N` is N times five newtons).
 - **A unit belongs to the number just before it.** `1/16 in` is 1 / (16 in), an inverse length, and
   `pi / 4 rad` is pi / (4 rad): write `1 in / 16` and `pi / 4 * 1 rad`. A unit may also follow a
   parenthesis, a function's call or `pi`, and gives the plain number there its unit: `(a + b) mm`,

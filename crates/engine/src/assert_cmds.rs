@@ -843,17 +843,13 @@ pub(crate) fn unit_of(dim: Dim, length: &str) -> Option<String> {
         Dim::Length(k) => Some(format!("{length}^{k}")),
         Dim::Mass => Some("kg".to_string()),
         Dim::Count | Dim::Flag => None,
+        // `mm*rad`, `rad`; N, MPa, N m for a force, a stress, a moment.
         Dim::Of(d) => {
-            let power = |unit: &str, k: i32| match k {
-                0 => None,
-                1 => Some(unit.to_string()),
-                k => Some(format!("{unit}^{k}")),
-            };
-            let parts: Vec<String> = [power(length, d.length), power("rad", d.angle)]
-                .into_iter()
-                .flatten()
-                .collect();
-            (!parts.is_empty()).then(|| parts.join("*"))
+            let unit = craft3d_expr::Unit::from_symbol(length)
+                .filter(|u| u.dimension() == craft3d_expr::Dimension::LENGTH)
+                .unwrap_or(craft3d_expr::Unit::Millimetre);
+            let text = d.default_unit(unit).text;
+            (!text.is_empty()).then_some(text)
         }
     }
 }
@@ -987,11 +983,8 @@ fn check(doc: &Document, regen: &Regen, assertion: &Assertion, outputs: &Resolve
         }
         return checked;
     }
-    let wanted = match dim {
-        Dim::Length(k) => craft3d_expr::Dimension::new(k, 0),
-        Dim::Of(d) => d,
-        _ => craft3d_expr::Dimension::NONE,
-    };
+    // A mass's bounds are in kg: a plain number, or a mass (`2 kg`).
+    let wanted = crate::verify_cmds::dimension_of_dim(dim);
     let value_of = |e: &Expr, key: &str| {
         let source = Value::String(e.source().to_string());
         // A plain number bounding an angle is neither degrees nor

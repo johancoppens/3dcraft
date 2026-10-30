@@ -162,7 +162,7 @@ impl Table {
                 && craft3d_expr::Unit::from_symbol(unit).is_none()
             {
                 return Err(format!(
-                    "column `{}`: `{unit}` is not a unit; use one of um, mm, cm, m, in, ft, deg, rad",
+                    "column `{}`: `{unit}` is not a unit; use one of um, mm, cm, m, in, ft, deg, rad, g, kg, s, N, kN, Pa, kPa, MPa, GPa, J",
                     column.name
                 ));
             }
@@ -752,10 +752,10 @@ mod tests {
             doc.table_users("belt"),
             ["the choices of parameter `profile`", "variable `pitch`"]
         );
-        doc.set_output(crate::Output {
-            name: "pitchOut".into(),
-            def: crate::OutputDef::Expr(Expr::new("belt[1].pitch")),
-        })
+        doc.set_output(crate::Output::new(
+            "pitchOut",
+            crate::OutputDef::Expr(Expr::new("belt[1].pitch")),
+        ))
         .unwrap();
         assert_eq!(
             doc.table_users("belt"),

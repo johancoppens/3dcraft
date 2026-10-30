@@ -1593,6 +1593,153 @@ pub(crate) fn thickness(part: &Part<'_>, tol: f64) -> Answer<Option<Thin>> {
     }))
 }
 
+/// Most points of a face a plate thickness casts a line from, spread over
+/// its triangles.
+const PLATE_SAMPLES: usize = 256;
+/// Most vertices behind a face, projecting within its box, a plate
+/// thickness samples around; a face with more has no thickness (no
+/// answer rather than one that may have missed a step).
+const PLATE_VERTICES: usize = 4096;
+
+/// The plate thickness of face `face`: the distance through the body
+/// from the face to the face directly opposite it, measured along the
+/// inward normal (`select.query` `thickness`). `None` unless the face is
+/// flat, every line into the material from a point of it first leaves
+/// the body through a flat face parallel to it (facing the other way),
+/// and every such line is equally long within the tolerance: a face over
+/// a step, a pocket or a slanted back has no one thickness.
+///
+/// The points are the centroids of a grid over the face's triangles and,
+/// because a step behind the face need not show in its triangles, the
+/// points on either side of where each vertex of the body behind the face
+/// projects onto it (where the distance can change: across the edges of
+/// the faces behind it, which end in vertices). Each line is exact (the
+/// line against the faces' surfaces).
+pub(crate) fn plate_thickness(
+    part: &Part<'_>,
+    face: usize,
+    tolerance: &craft3d_math::Tolerance,
+) -> Answer<Option<f64>> {
+    let body = part.body();
+    let Some(f) = body.faces.get(face) else {
+        return Ok(None);
+    };
+    let Surface::Plane(_) = &f.surface else {
+        return Ok(None);
+    };
+    let tol = tolerance.linear;
+    let Some(tris) = part.every.get(&face).filter(|t| !t.is_empty()) else {
+        return Ok(None);
+    };
+    let Some(first) = tris.first() else {
+        return Ok(None);
+    };
+    let centre = (first[0] + first[1] + first[2]) * (1.0 / 3.0);
+    let Some(normal) = part.probe.normal(face, centre).map_err(|e| e.to_string())? else {
+        return Ok(None);
+    };
+    let Some((t1, t2)) = tangents(normal) else {
+        return Ok(None);
+    };
+    let mut points: Vec<Vec3> = Vec::new();
+    // A grid of `level`² small triangles in each triangle, at their
+    // centroids.
+    let mut level = 1_usize;
+    while (level + 1) * (level + 1) * tris.len() <= PLATE_SAMPLES {
+        level += 1;
+    }
+    let step = 1.0 / level as f64;
+    let stride = tris.len().div_ceil(PLATE_SAMPLES).max(1);
+    for t in tris.iter().step_by(stride) {
+        let (u, v) = (t[1] - t[0], t[2] - t[0]);
+        for i in 0..level {
+            for j in 0..level - i {
+                let (a, b) = (i as f64, j as f64);
+                points.push(t[0] + u * ((a + 1.0 / 3.0) * step) + v * ((b + 1.0 / 3.0) * step));
+                if i + j + 1 < level {
+                    points.push(t[0] + u * ((a + 2.0 / 3.0) * step) + v * ((b + 2.0 / 3.0) * step));
+                }
+            }
+        }
+    }
+    // Either side of where the vertices behind the face project onto it:
+    // only those that project within the face's box can change what a
+    // line from the face meets. More of them than the cap is no answer
+    // rather than one that may have missed a step.
+    let nudge = 100.0 * tol;
+    let Some(face_box) = part.every_boxes.get(&face) else {
+        return Ok(None);
+    };
+    let mut behind = 0_usize;
+    for vertex in &body.vertices {
+        let depth = normal.dot(centre - vertex.point);
+        if !(depth > tol && depth.is_finite()) {
+            continue;
+        }
+        let q = vertex.point + normal * depth;
+        if !face_box.contains(q, 2.0 * nudge) {
+            continue;
+        }
+        behind += 1;
+        if behind > PLATE_VERTICES {
+            return Ok(None);
+        }
+        for (a, b) in [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
+            points.push(q + (t1 * a + t2 * b) * nudge);
+        }
+    }
+    let cos_parallel = tolerance.angular.cos();
+    let mut range: Option<(f64, f64)> = None;
+    for c in points {
+        // Only points of the face itself.
+        let Some(p) = onto_face(part, face, c)? else {
+            continue;
+        };
+        let from = 4.0 * tol;
+        let hits = part
+            .probe
+            .line_hits(p, -normal, from, f64::INFINITY)
+            .map_err(|e| e.to_string())?;
+        let crossing: Vec<&LineHit> = hits.iter().filter(|h| h.t >= from && !h.along).collect();
+        let Some(nearest) = crossing.first().map(|h| h.t) else {
+            return Ok(None);
+        };
+        // Where the line leaves: one face, or the faces meeting at an
+        // edge it crosses; one of them must face the other way, flat and
+        // parallel.
+        let mut opposite = false;
+        for h in crossing.iter().take_while(|h| h.t <= nearest + tol) {
+            let Some(g) = body.faces.get(h.face) else {
+                continue;
+            };
+            if h.face == face || !matches!(g.surface, Surface::Plane(_)) {
+                continue;
+            }
+            let Some(other) = part
+                .probe
+                .normal(h.face, h.point)
+                .map_err(|e| e.to_string())?
+            else {
+                continue;
+            };
+            if -other.dot(normal) >= cos_parallel {
+                opposite = true;
+                break;
+            }
+        }
+        if !opposite {
+            return Ok(None);
+        }
+        let (lo, hi) = range.unwrap_or((nearest, nearest));
+        let (lo, hi) = (lo.min(nearest), hi.max(nearest));
+        if hi - lo > tol {
+            return Ok(None);
+        }
+        range = Some((lo, hi));
+    }
+    Ok(range.map(|(lo, _)| lo))
+}
+
 /// Most faces whose least sample is moved along the face.
 const MAX_TRIED_FACES: usize = 8;
 

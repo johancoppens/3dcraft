@@ -281,6 +281,12 @@ pub struct Output {
     pub measure: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expr: Option<String>,
+    /// What a form shows instead of the name (version 56).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The unit it is shown in, such as `MPa` or `N m` (version 56).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
 }
 
 /// A table: `{"name": "belt", "key": "profile", "columns": [{"name":

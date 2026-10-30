@@ -29,7 +29,19 @@ pub struct Output {
     /// the outputs.
     pub name: String,
     pub def: OutputDef,
+    /// What a form shows instead of the name: "Bending stress".
+    #[serde(default)]
+    pub label: Option<String>,
+    /// The unit it is shown in (`MPa`, `N m`, `N/mm²`;
+    /// [`craft3d_expr::ShownUnit`]), of its dimension; when none, its
+    /// dimension's default (`Dimension::default_unit`). Only how it is
+    /// shown: its value, and what uses it, do not change.
+    #[serde(default)]
+    pub unit: Option<String>,
 }
+
+/// Longest label of an output, in bytes.
+pub const MAX_OUTPUT_LABEL: usize = 200;
 
 /// How an output is computed.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -44,6 +56,16 @@ pub enum OutputDef {
 }
 
 impl Output {
+    /// An output with no label and the default unit.
+    pub fn new(name: impl Into<String>, def: OutputDef) -> Output {
+        Output {
+            name: name.into(),
+            def,
+            label: None,
+            unit: None,
+        }
+    }
+
     /// The expression of an output computed from one.
     pub fn expr(&self) -> Option<&Expr> {
         match &self.def {
@@ -177,6 +199,24 @@ fn check_output(output: &Output) -> Result<(), DocError> {
             crate::MAX_ASSERTION_TEXT
         )));
     }
+    if let Some(label) = &output.label {
+        if label.len() > MAX_OUTPUT_LABEL {
+            return Err(DocError::Invalid(format!(
+                "the label of output `{}` is longer than {MAX_OUTPUT_LABEL} bytes",
+                output.name
+            )));
+        }
+        if label.chars().any(char::is_control) {
+            return Err(DocError::Invalid(format!(
+                "the label of output `{}` has a control character",
+                output.name
+            )));
+        }
+    }
+    if let Some(unit) = &output.unit {
+        craft3d_expr::ShownUnit::parse(unit)
+            .map_err(|e| DocError::Invalid(format!("the unit of output `{}`: {e}", output.name)))?;
+    }
     Ok(())
 }
 
@@ -193,9 +233,27 @@ mod tests {
     }
 
     fn expr(name: &str, source: &str) -> Output {
-        Output {
-            name: name.to_string(),
-            def: OutputDef::Expr(Expr::new(source)),
+        Output::new(name, OutputDef::Expr(Expr::new(source)))
+    }
+
+    #[test]
+    fn a_label_and_a_unit_are_checked() {
+        let mut doc = doc();
+        let mut stress = expr("stress", "1000 N / (100 * (1 mm)^2)");
+        stress.label = Some("Bending stress".into());
+        stress.unit = Some("N/mm²".into());
+        doc.set_output(stress.clone()).unwrap();
+        assert_eq!(doc.output("stress"), Some(&stress));
+        for (label, unit) in [
+            (Some("a\nb".to_string()), None),
+            (Some("x".repeat(MAX_OUTPUT_LABEL + 1)), None),
+            (None, Some("Nm".to_string())),
+            (None, Some(String::new())),
+        ] {
+            let mut bad = stress.clone();
+            bad.label = label;
+            bad.unit = unit;
+            assert!(doc.set_output(bad).is_err());
         }
     }
 

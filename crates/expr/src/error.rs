@@ -276,7 +276,8 @@ impl fmt::Display for ErrorKind {
             ErrorKind::UnknownUnit { name, meant } => write!(
                 f,
                 "`{name}` is not a unit: write `{meant}`; the units are um, mm, cm, m, in, \
-                 ft, deg and rad, in lower case after a number"
+                 ft, deg and rad, in lower case after a number, and g, kg, s, N, kN, Pa, kPa, \
+                 MPa, GPa and J, as written here"
             ),
             ErrorKind::ArgumentCount {
                 function,
@@ -299,7 +300,18 @@ impl fmt::Display for ErrorKind {
                 f,
                 "comparisons cannot be chained: write `a < b && b < c` instead of `a < b < c`"
             ),
-            ErrorKind::UnknownVariable { name } => write!(f, "unknown variable `{name}`"),
+            ErrorKind::UnknownVariable { name } => {
+                write!(f, "unknown variable `{name}`")?;
+                // `N`, `s`, `kg` alone: a unit only right after a number.
+                if let Some(unit) = crate::Unit::from_symbol(name).filter(|u| !u.is_reserved()) {
+                    write!(
+                        f,
+                        "; `{name}` is the unit {} only right after a number: write `1 {name}`",
+                        unit.spelled()
+                    )?;
+                }
+                Ok(())
+            }
             ErrorKind::DimensionMismatch {
                 operation,
                 left,

@@ -338,11 +338,14 @@ mm⁴, so `BM` = 120 mm and `GM` = 65 mm: the assertion *stable* passes. Set `KG
 and *stable* fails; only the assertion is measured again, since the waterline does not depend on `KG`.
 
 - `variable.measure` takes a measure and its parameters as `assert.add` does ([the measures](#assertions));
-  the output is the number with its unit (a length, an area, a volume, mm⁴; a mass in kg and a count as
+  the output is the number with its unit (a length, an area, a volume, mm⁴; a mass in kg, as `2 kg` is, and a count as
   plain numbers, yes-or-no as 1 or 0). Its formulas (`offset`, `volume`) may use other outputs: `KB` is
   measured at the waterline `T`.
 - `variable.output` is a formula of variables and outputs. `variable.measure` or `variable.output` on an
   existing output changes it; `variable.rename` and `variable.delete` take outputs as they take variables.
+- **A label and a unit to show it in.** `label` is what the Parameters tab and `output.list` show
+  instead of the name, `unit` the unit (see below); both are only how it is shown, and both are kept when
+  an output is changed without them (`null` takes one away).
 - **Only outputs and assertions may use an output.** A variable, a feature, a sketch, a condition, a named
   set or a material that uses one is refused, and the message names it (*the variable `beam` uses `GM`, an
   output*): the model is built first, then measured, so a measure can never depend on itself. Give such a
@@ -359,6 +362,37 @@ and *stable* fails; only the assertion is measured again, since the waterline do
   its `value` in the document's units, `unit` and `message`; so do `document.inspect` (under `outputs`)
   and a Jig's Parameters tab, below the parameters. Outputs are saved with the document and are the same
   every time it is built.
+
+### Forces, stresses and moments
+
+A formula with units in it has the dimension they give: a load in newtons over an area is a stress. So
+a stress needs no unit in its name:
+
+```json
+[
+ ["variable.set", {"name": "load", "expr": "1000 N"}],
+ ["feature.block", {"name": "Bar", "size": ["100 mm", "10 mm", "10 mm"]}],
+ ["variable.measure", {"name": "area", "measure": "sectionArea", "of": "Bar", "plane": "yz", "offset": "50 mm"}],
+ ["variable.output", {"name": "stress", "expr": "load / area", "label": "Bending stress", "unit": "MPa"}],
+ ["variable.output", {"name": "moment", "expr": "load * 100 mm", "label": "Bending moment"}],
+ ["assert.add", {"name": "below yield", "measure": "value", "expr": "stress", "max": "235 MPa"}],
+ ["output.list", {}]
+]
+```
+
+`output.list` (and the Parameters tab) shows *Bending stress 10 MPa* and *Bending moment 100 N m*. An
+output without a `unit` is shown in its dimension's: a force in N, a pressure or a stress in MPa, a
+moment (or an energy) in N m, a mass in kg, anything else in the document's length unit to its power.
+A `unit` is a unit of the expressions or a product and quotient of them: `N/mm²`, `kN m`, `kN*mm`,
+`kg/m^3`, `mm/m`. It must have the output's dimension: `"unit": "mm"` on a stress is refused, with both
+dimensions named, and a unit that stops fitting after an edit (the load written without its unit)
+makes the output *unknown* with the reason. An assertion's bounds take the same units (`"max": "235
+MPa"`); a plain number bounding a stress is in MPa, a force in N, a mass in kg and a density in kg/m³
+(as a floating measure's `density`). A measured `mass` is a mass: `mass + 1` is a unit mismatch, write
+`mass + 1 kg`. Mind that a unit belongs to the number just before it: `1000 N / 100 mm^2` divides by
+(100 mm)², 10 000 mm², and is 0.1 MPa; write `1000 N / (100 * (1 mm)^2)`. A unit's symbol alone, an
+undefined `N`, is a variable: write `1 N`. The set filter `thickness` ([chapter 11](11-selection.md#named-sets))
+is a flat face's plate thickness, not this measure's thinnest place.
 
 ## Over a motion
 
