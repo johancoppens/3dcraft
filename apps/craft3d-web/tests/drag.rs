@@ -314,3 +314,71 @@ fn a_slider_dragged_over_the_turbofan() {
         }
     }
 }
+
+/// Where a difference between the scene the worker built and a session's
+/// comes from: the same state built in one go, a piece at a time with a
+/// stop that says yes at once, and in pieces that never stop.
+#[test]
+#[ignore = "diagnosis: run in release with --ignored --nocapture"]
+fn the_turbofan_built_in_pieces_is_the_one_built_in_one_go() {
+    let value = "2 mm";
+    let scene = |stepwise: Option<bool>| {
+        let mut s = Session::new(Workspace::memory());
+        for (id, params) in turbofan() {
+            s.execute(&id, &params).unwrap();
+        }
+        s.execute("variable.set", &json!({"name": "filletM", "expr": value}))
+            .unwrap();
+        if let Some(stop) = stepwise {
+            s.set_stepwise(true);
+            s.set_checks_elsewhere(true);
+            while s.prepare_some(quality(), move || stop).is_some() {}
+        }
+        craft3d_engine::scene_bytes(&s.scene_with(quality()).unwrap().unwrap())
+    };
+    let one_go = scene(None);
+    let pieces = scene(Some(true));
+    let unstopped = scene(Some(false));
+    // Through the worker's own path, from nothing.
+    let mut page = Session::new(Workspace::memory());
+    for (id, params) in turbofan() {
+        page.execute(&id, &params).unwrap();
+    }
+    page.execute("variable.set", &json!({"name": "filletM", "expr": value}))
+        .unwrap();
+    let request = {
+        page.set_stepwise(true);
+        page.set_checks_elsewhere(true);
+        page.set_regen_elsewhere(true);
+        let token = page.scene_job(quality()).unwrap();
+        page.scene_request(token).unwrap()
+    };
+    craft3d_engine::scene_forget();
+    scene_begin(&request.document, &request.work);
+    let mut parts = Vec::new();
+    while let Some(part) = craft3d_engine::scene_next() {
+        parts.push(part);
+    }
+    for part in &parts {
+        page.scene_answered(request.token, Ok(part));
+    }
+    let worker = craft3d_engine::scene_bytes(&page.scene_with(quality()).unwrap().unwrap());
+    println!(
+        "filletM {value}: pieces {} one go, unstopped {} one go, worker {} one go",
+        if pieces == one_go {
+            "equals"
+        } else {
+            "DIFFERS from"
+        },
+        if unstopped == one_go {
+            "equals"
+        } else {
+            "DIFFERS from"
+        },
+        if worker == one_go {
+            "equals"
+        } else {
+            "DIFFERS from"
+        },
+    );
+}
