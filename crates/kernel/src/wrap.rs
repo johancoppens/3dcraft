@@ -219,68 +219,97 @@ fn mapped_curve(
     let (before, after) = (runs[0] > 0.0, runs[1] > 0.0);
     let mut n = 8usize;
     loop {
-        // Samples: n over the segment, n / 2 over each run-on.
-        let mut xs: Vec<f64> = Vec::with_capacity(2 * n + 1);
+        // The parts: the run-on before, the segment, the run-on after,
+        // each fitted on its own (the run-on meets the segment along its
+        // tangent, not in its curvature) and joined at knots of full
+        // multiplicity less one, through the point they share.
         let half = n / 2;
+        let mut parts: Vec<Vec<f64>> = Vec::with_capacity(3);
         if before {
-            xs.extend((0..half).map(|k| -1.0 + k as f64 / half as f64));
+            parts.push((0..=half).map(|k| -1.0 + k as f64 / half as f64).collect());
         }
-        xs.extend((0..=n).map(|k| k as f64 / n as f64));
+        parts.push((0..=n).map(|k| k as f64 / n as f64).collect());
         if after {
-            xs.extend((1..=half).map(|k| 1.0 + k as f64 / half as f64));
+            parts.push((0..=half).map(|k| 1.0 + k as f64 / half as f64).collect());
         }
-        let mut points = Vec::with_capacity(xs.len());
-        for x in &xs {
-            points.push(map(*x)?);
-        }
-        // Chord-length parameters.
-        let mut params = vec![0.0];
+        let mut sampled: Vec<(Vec<f64>, Vec<Vec3>)> = Vec::with_capacity(parts.len());
         let mut total = 0.0;
-        for w in points.windows(2) {
-            if let [a, b] = w {
-                total += (*b - *a).length();
+        let mut lengths = Vec::with_capacity(parts.len());
+        for xs in &parts {
+            let mut points = Vec::with_capacity(xs.len());
+            for x in xs {
+                points.push(map(*x)?);
             }
-            params.push(total);
+            let mut params = vec![total];
+            for w in points.windows(2) {
+                if let [a, b] = w {
+                    total += (*b - *a).length();
+                }
+                params.push(total);
+            }
+            lengths.push(
+                params.last().copied().unwrap_or(0.0) - params.first().copied().unwrap_or(0.0),
+            );
+            sampled.push((params, points));
         }
-        if total.is_nan() || total <= tol {
+        if total.is_nan() || total <= tol || lengths.iter().any(|l| l.is_nan() || *l <= 0.0) {
             return Err(refuse(
                 "a curve of the profile is shorter than the tolerance",
             ));
         }
-        let params: Vec<f64> = params.iter().map(|p| p / total).collect();
-        let first = if before { half } else { 0 };
-        let (Some(&t0), Some(&t1)) = (params.get(first), params.get(first + n)) else {
-            return Err(refuse("a curve of the profile has no samples"));
-        };
-        let values: Vec<Vec<f64>> = points.iter().map(|p| vec![p.x, p.y, p.z]).collect();
-        let (knots, ctrl) = craft3d_geom::refine::interpolate(&params, 3, &values)
-            .map_err(KernelError::Geometry)?;
-        let ctrl: Vec<Vec3> = ctrl
-            .iter()
-            .map(|c| {
+        let mut knots: Vec<f64> = Vec::new();
+        let mut ctrl: Vec<Vec3> = Vec::new();
+        let mut range = (0.0, 1.0);
+        for (k, (params, points)) in sampled.iter_mut().enumerate() {
+            for p in params.iter_mut() {
+                *p /= total;
+            }
+            if k == usize::from(before) {
+                range = (
+                    params.first().copied().unwrap_or(0.0),
+                    params.last().copied().unwrap_or(1.0),
+                );
+            }
+            let values: Vec<Vec<f64>> = points.iter().map(|p| vec![p.x, p.y, p.z]).collect();
+            let (own_knots, own_ctrl) = craft3d_geom::refine::interpolate(params, 3, &values)
+                .map_err(KernelError::Geometry)?;
+            let own_ctrl = own_ctrl.iter().map(|c| {
                 Vec3::new(
                     *c.first().unwrap_or(&0.0),
                     *c.get(1).unwrap_or(&0.0),
                     *c.get(2).unwrap_or(&0.0),
                 )
-            })
-            .collect();
+            });
+            if knots.is_empty() {
+                knots.extend_from_slice(&own_knots);
+                ctrl.extend(own_ctrl);
+            } else {
+                // The joint once less than the degree plus one: the shared
+                // point is the last control point of the one and the first
+                // of the other.
+                knots.pop();
+                knots.extend(own_knots.iter().skip(4));
+                ctrl.extend(own_ctrl.skip(1));
+            }
+        }
         let weights = vec![1.0; ctrl.len()];
         let curve = NurbsCurve::new(3, knots, ctrl, weights).map_err(KernelError::Geometry)?;
         // Checked at the middle of every stretch between samples.
         let mut worst: f64 = 0.0;
-        for k in 0..xs.len().saturating_sub(1) {
-            let (Some(x0), Some(x1), Some(p0), Some(p1)) =
-                (xs.get(k), xs.get(k + 1), params.get(k), params.get(k + 1))
-            else {
-                continue;
-            };
-            let exact = map(0.5 * (x0 + x1))?;
-            let fitted = curve.eval(0.5 * (p0 + p1));
-            worst = worst.max((exact - fitted).length());
+        for ((params, _), xs) in sampled.iter().zip(&parts) {
+            for k in 0..xs.len().saturating_sub(1) {
+                let (Some(x0), Some(x1), Some(p0), Some(p1)) =
+                    (xs.get(k), xs.get(k + 1), params.get(k), params.get(k + 1))
+                else {
+                    continue;
+                };
+                let exact = map(0.5 * (x0 + x1))?;
+                let fitted = curve.eval(0.5 * (p0 + p1));
+                worst = worst.max((exact - fitted).length());
+            }
         }
         if worst <= tol * 0.1 {
-            return Ok((curve, (t0, t1)));
+            return Ok((curve, range));
         }
         if n * 2 > MAX_SAMPLES {
             return Err(refuse(format!(

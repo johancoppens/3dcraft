@@ -216,7 +216,8 @@ pub fn region_fault(body: &Body, face: &Face, tol: &Tolerance) -> Option<String>
                             winding(*point, &other.points)
                         }
                     })
-                    .sum();
+                    .sum::<i64>()
+                    * if face.reversed { -1 } else { 1 };
                 if wound != 1 {
                     let each: Vec<String> = rings
                         .iter()
