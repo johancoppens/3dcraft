@@ -142,7 +142,7 @@ fn a_circle_twists_by_its_polar_moment() {
         let body = cylinder(&Frame::WORLD, r, 3.0 * k).unwrap();
         let t = twist(&body, &upright(), 1.5 * k, k);
         assert!(t.converged);
-        near(t.constant, PI * r.powi(4) / 2.0, 1e-8, "circle J");
+        near(t.constant, PI * r.powi(4) / 2.0, 1e-6, "circle J");
         assert!(t.shear_offset.0.hypot(t.shear_offset.1) <= 1e-6 * r);
         assert!(t.warping.abs() <= 1e-6 * r.powi(6));
     }

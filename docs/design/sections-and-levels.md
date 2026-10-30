@@ -61,7 +61,7 @@ No tessellation is integrated anywhere. The error bound is that of the B-rep: th
 `crates/kernel/src/below/torsion_tests.rs`, the torsion (2026-10-30, first run; tolerance 1e-4):
 
 - Dunavant's rule integrates every monomial to degree 6 exactly on the reference triangle; the shape functions interpolate their nodes;
-- a circle at 1e-3, 1 and 1e3: J = π r⁴/2, found to 1e-10 and checked to 1e-8 (relative), shear centre and Cw zero to rounding; an annulus R = 2, r = 1.4: π (R⁴ − r⁴)/2, found to 3e-8 and checked to 1e-6;
+- a circle at 1e-3, 1 and 1e3: J = π r⁴/2, found to 2.1e-7 at every scale (the quadratic boundary through arcs of π/16 and less: the meshed area is that close to the circle's) and checked to 1e-6 (relative), shear centre and Cw zero to rounding; an annulus R = 2, r = 1.4: π (R⁴ − r⁴)/2, found to 3e-8 and checked to 1e-6;
 - rectangles 1 × 1, 2 × 1, 4 × 1, 10 × 1 against the series a b³/3 (1 − 192 b/(π⁵ a) Σ tanh(nπa/2b)/n⁵): within 2e-5 to 4e-5 (checked to 3e-4), shear centre at the centroid;
 - the welded box of the repro (100 × 150, walls 3 and 4): J = 5.5757e6 against Bredt's 4 A_m²/∮ds/t = 5.5011e6, 1.4% above it, the thin-wall error (checked to 3%); shear centre at the centroid within 1e-3;
 - a thin channel (web 100, flanges 50, all 2): J = 532.3 against Σ b t³/3 = 533.3; shear centre 18.71 behind the web against the thin-walled 3b²/(6b + h) = 18.75; Cw = 1.826e8 against the thin-walled t b³ h² (3b + 2h)/(12 (6b + h)) = 1.823e8 (checked to 8%, 5% and 3%);
