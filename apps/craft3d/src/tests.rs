@@ -1757,9 +1757,12 @@ mod engine_thread {
         let (result, took) = slow.join().unwrap();
         assert_eq!(result["slept"], 1200);
         assert!(took >= Duration::from_millis(1100), "{took:?}");
-        // Turns came all along (one every few milliseconds), and none of
-        // them waited for the command (only a moment, `PATIENCE`).
-        assert!(turns_during >= 20, "{turns_during} turns in 300 ms");
+        // Turns came all along, and none of them waited for the command
+        // (only a moment, `PATIENCE`). A window held up by the command
+        // turns at most once in the 300 ms; a free one every few
+        // milliseconds, fewer on a slow machine (18 on a hosted macOS
+        // runner of 3 virtual cores, 2026-10-30), so five tells them apart.
+        assert!(turns_during >= 5, "{turns_during} turns in 300 ms");
         let longest = *window.longest.lock().unwrap();
         assert!(
             longest < Duration::from_millis(250),
