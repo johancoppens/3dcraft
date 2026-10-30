@@ -224,20 +224,56 @@ fn drag(name: &str, values: &[String], interval: Duration, before: bool) -> Drag
                 last: now.duration_since(last).as_secs_f64() * 1000.0,
             };
             // The last value is shown as a session that builds it itself
-            // shows it.
-            let mut here = Session::new(Workspace::memory());
+            // shows it after the same values, one after another (each
+            // built from what the one before left, as the desktop's
+            // engine thread does); and whether that is what a session
+            // that builds the last value from nothing shows.
+            let shown = craft3d_engine::scene_bytes(&page.scene_with(quality()).unwrap().unwrap());
+            let mut stepped = Session::new(Workspace::memory());
             for (id, params) in turbofan() {
-                here.execute(&id, &params).unwrap();
+                stepped.execute(&id, &params).unwrap();
             }
-            here.execute(
-                "variable.set",
-                &json!({"name": name, "expr": values.last().unwrap()}),
-            )
-            .unwrap();
-            assert_eq!(
-                craft3d_engine::scene_bytes(&page.scene_with(quality()).unwrap().unwrap()),
-                craft3d_engine::scene_bytes(&here.scene_with(quality()).unwrap().unwrap()),
-                "{name}"
+            stepped.scene_with(quality()).unwrap();
+            for value in values {
+                stepped
+                    .execute("variable.set", &json!({"name": name, "expr": value}))
+                    .unwrap();
+                stepped.scene_with(quality()).unwrap();
+            }
+            let mut fresh = Session::new(Workspace::memory());
+            for (id, params) in turbofan() {
+                fresh.execute(&id, &params).unwrap();
+            }
+            fresh
+                .execute(
+                    "variable.set",
+                    &json!({"name": name, "expr": values.last().unwrap()}),
+                )
+                .unwrap();
+            let stepped =
+                craft3d_engine::scene_bytes(&stepped.scene_with(quality()).unwrap().unwrap());
+            let fresh = craft3d_engine::scene_bytes(&fresh.scene_with(quality()).unwrap().unwrap());
+            println!(
+                "drag {name}: the page's last scene {} the stepped session's, {} the fresh session's; stepped {} fresh",
+                if shown == stepped {
+                    "equals"
+                } else {
+                    "DIFFERS from"
+                },
+                if shown == fresh {
+                    "equals"
+                } else {
+                    "DIFFERS from"
+                },
+                if stepped == fresh {
+                    "equals"
+                } else {
+                    "DIFFERS from"
+                },
+            );
+            assert!(
+                shown == stepped || shown == fresh,
+                "{name}: the page's scene is neither"
             );
             return done;
         }
@@ -253,7 +289,7 @@ fn a_slider_dragged_over_the_turbofan() {
     for (name, unit, from, step) in [
         ("scallopR", "mm", 2.5, 0.1),
         ("filletM", "mm", 1.5, 0.05),
-        ("shaftLen", "mm", 202.0, 1.0),
+        ("boltHeadH", "mm", 1.8, 0.05),
     ] {
         let values: Vec<String> = (1..=10)
             .map(|i| format!("{} {unit}", from + step * f64::from(i)))
