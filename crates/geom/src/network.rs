@@ -3068,26 +3068,24 @@ fn edge_rows(net: &Net, o: Vec3) -> Result<EdgeRows, NetworkError> {
 }
 
 /// Adds `delta(u) · shape_j` to the control point `j` across of every
-/// control point `u` along. A change larger than the ribbon it acts on
-/// is a solve that did not follow the face (coefficients of about
-/// `1 / cutoff`), and refused: at each `u` the largest move of a point is
-/// held to the largest distance of a moved point from the edge, with a
-/// margin of the tolerance (the one-row change held its one row so; the
-/// profile acts on every row of the reach). Every moved point must keep
-/// a positive weight.
+/// control point `u` along. The size of the change is judged as the
+/// one-row change was (the profile's shape is fixed, its size is
+/// `delta`'s): a change of row `lead` larger than the ribbon between it
+/// and the edge (with a margin of the tolerance) is a solve that did not
+/// follow the face (coefficients of about `1 / cutoff`), and refused.
+/// Every moved point must keep a positive weight.
 fn spread(
     net: &mut Net,
     delta: &Raw,
     shape: &[f64],
+    lead: usize,
     tol: f64,
     why: impl Fn(f64, f64, usize) -> String,
 ) -> Result<(), NetworkError> {
     for (u, (row, d)) in net.rows.iter_mut().zip(&delta.points).enumerate() {
         let h0 = row.first().copied().ok_or_else(internal)?;
         let p0 = point(h0).ok_or_else(internal)?;
-        let (mut change, mut ribbon) = (0.0_f64, 0.0_f64);
-        let mut moved_row: Vec<(usize, H)> = Vec::new();
-        for (j, (slot, c)) in row.iter().zip(shape).enumerate().skip(1) {
+        for (j, (slot, c)) in row.iter_mut().zip(shape).enumerate().skip(1) {
             if *c == 0.0 {
                 continue;
             }
@@ -3095,18 +3093,14 @@ fn spread(
             let (Some(p), Some(q)) = (point(*slot), point(moved)) else {
                 return refuse(why(f64::INFINITY, 0.0, u));
             };
-            change = change.max(p.distance(q));
-            ribbon = ribbon.max(p.distance(p0));
-            moved_row.push((j, moved));
-        }
-        let ribbon = ribbon + tol;
-        if change.is_nan() || change > ribbon {
-            return refuse(why(change, ribbon, u));
-        }
-        for (j, moved) in moved_row {
-            if let Some(slot) = row.get_mut(j) {
-                *slot = moved;
+            if j == lead {
+                let change = p.distance(q);
+                let ribbon = p.distance(p0) + tol;
+                if change.is_nan() || change > ribbon {
+                    return refuse(why(change, ribbon, u));
+                }
             }
+            *slot = moved;
         }
     }
     Ok(())
@@ -3152,10 +3146,10 @@ fn put_on_third_row(
         fair::Order::Curvature,
         fair::End::Kept,
     )?;
-    spread(net, &delta, &shape, tol, |change, ribbon, u| {
+    spread(net, &delta, &shape, 2, tol, |change, ribbon, u| {
         if change.is_finite() {
             format!(
-                "{label}: holding it in curvature would move the surface's control points across it by {change:.3e} at control point {u}, more than the {ribbon:.3e} between them and the edge: the face's curvature is not followed well enough there"
+                "{label}: holding it in curvature would move the surface's third row of control points by {change:.3e} at control point {u}, more than the {ribbon:.3e} between it and the edge: the face's curvature is not followed well enough there"
             )
         } else {
             format!(
