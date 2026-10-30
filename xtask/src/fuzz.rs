@@ -123,7 +123,37 @@ struct Launcher {
     bin: PathBuf,
     timeout: u64,
     memory: String,
-    capped: bool,
+    capped: Cap,
+}
+
+/// How a process's memory is capped.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Cap {
+    /// A systemd scope with `MemoryMax` (no swap): the whole process.
+    Systemd,
+    /// `prlimit --as`, where there is no user systemd (a CI runner): the
+    /// address space, a little looser than the memory used, but a cap.
+    AddressSpace(u64),
+    None,
+}
+
+/// `2G`, `512M`, `100K` or a number of bytes.
+fn bytes(size: &str) -> Option<u64> {
+    let size = size.trim();
+    let (digits, unit) = match size.char_indices().last()? {
+        (i, c) if c.is_ascii_alphabetic() => (size.get(..i)?, c.to_ascii_uppercase()),
+        _ => (size, 'B'),
+    };
+    let n: u64 = digits.trim().parse().ok()?;
+    let scale: u64 = match unit {
+        'B' => 1,
+        'K' => 1 << 10,
+        'M' => 1 << 20,
+        'G' => 1 << 30,
+        'T' => 1 << 40,
+        _ => return None,
+    };
+    n.checked_mul(scale)
 }
 
 /// What became of one process.
@@ -137,15 +167,21 @@ struct Ran {
 impl Launcher {
     fn run(&self, args: &[String]) -> Ran {
         let timeout = self.timeout.to_string();
-        let mut command = if self.capped {
-            let mut c = Command::new("systemd-run");
-            c.args(["--user", "--scope", "-q"])
-                .arg("-p")
-                .arg(format!("MemoryMax={}", self.memory))
-                .args(["-p", "MemorySwapMax=0", "--", "timeout"]);
-            c
-        } else {
-            Command::new("timeout")
+        let mut command = match self.capped {
+            Cap::Systemd => {
+                let mut c = Command::new("systemd-run");
+                c.args(["--user", "--scope", "-q"])
+                    .arg("-p")
+                    .arg(format!("MemoryMax={}", self.memory))
+                    .args(["-p", "MemorySwapMax=0", "--", "timeout"]);
+                c
+            }
+            Cap::AddressSpace(limit) => {
+                let mut c = Command::new("prlimit");
+                c.arg(format!("--as={limit}")).args(["--", "timeout"]);
+                c
+            }
+            Cap::None => Command::new("timeout"),
         };
         // TERM at the timeout, KILL ten seconds later if it is still there.
         command
@@ -190,6 +226,15 @@ impl Launcher {
             Some(137) => (
                 "oom",
                 format!("killed (out of memory at {}): {tail}", self.memory),
+            ),
+            // Under `prlimit --as` an allocation past the cap aborts the
+            // process with Rust's own words.
+            Some(_) | None if stderr.contains("memory allocation of") => (
+                "oom",
+                format!(
+                    "an allocation failed (address space capped at {}): {tail}",
+                    self.memory
+                ),
             ),
             Some(code) => ("crash", format!("the process exited with {code}: {tail}")),
             None => (
@@ -545,13 +590,23 @@ pub fn run(args: &[String]) -> Result<(), String> {
         Some(b) => b.clone(),
         None => build()?,
     };
-    let capped = Command::new("systemd-run")
-        .args(["--user", "--scope", "-q", "true"])
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !capped {
+    let works = |program: &str, args: &[&str]| {
+        Command::new(program)
+            .args(args)
+            .output()
+            .is_ok_and(|o| o.status.success())
+    };
+    let capped = if works("systemd-run", &["--user", "--scope", "-q", "true"]) {
+        Cap::Systemd
+    } else if let Some(limit) = bytes(&config.memory)
+        && works("prlimit", &[&format!("--as={limit}"), "--", "true"])
+    {
+        eprintln!("fuzz: no user systemd; the seeds' address space is capped by prlimit");
+        Cap::AddressSpace(limit)
+    } else {
         eprintln!("fuzz: systemd-run is not available; the seeds run without a memory cap");
-    }
+        Cap::None
+    };
     let launcher = Launcher {
         bin,
         timeout: config.timeout,
@@ -567,10 +622,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
         config.from.saturating_add(config.seeds),
         config.jobs,
         config.timeout,
-        if capped {
-            config.memory.as_str()
-        } else {
+        if capped == Cap::None {
             "no cap"
+        } else {
+            config.memory.as_str()
         },
         out.display()
     );
@@ -680,7 +735,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         "findings": findings,
         "jobs": config.jobs,
         "timeoutSeconds": config.timeout,
-        "memoryCap": if capped { config.memory.clone() } else { "none".to_string() },
+        "memoryCap": if capped == Cap::None { "none".to_string() } else { config.memory.clone() },
         "runSeconds": run_seconds,
         "wallSeconds": wall,
         "seedsPerSecond": rate(tally.seeds, 1).max(0.0) / run_seconds.max(1e-9),
@@ -831,6 +886,16 @@ mod tests {
         assert_eq!(both.seeds, 500);
         let plain = parse(&args(&[])).expect("valid flags");
         assert_eq!(plain.seeds, 100);
+    }
+
+    #[test]
+    fn sizes_read_as_bytes() {
+        assert_eq!(bytes("2G"), Some(2 << 30));
+        assert_eq!(bytes("512m"), Some(512 << 20));
+        assert_eq!(bytes("4096"), Some(4096));
+        assert_eq!(bytes("lots"), None);
+        assert_eq!(bytes(""), None);
+        assert_eq!(bytes("99999999999T"), None);
     }
 
     #[test]
