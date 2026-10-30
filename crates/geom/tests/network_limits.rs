@@ -249,7 +249,7 @@ fn the_mismatch_bounds_how_far_the_surface_passes_from_its_curves() {
             })
             .collect();
         let mut nudged = us[1].control_points().to_vec();
-        nudged[2] = nudged[2] + v(0.0, 0.0, 0.1 * tol);
+        nudged[2] += v(0.0, 0.0, 0.1 * tol);
         us[1] = NurbsCurve::polynomial(us[1].degree(), us[1].knots().to_vec(), nudged).unwrap();
         let patch = gordon(&network(&us, &vs, tol)).unwrap();
         for curve in &us {
