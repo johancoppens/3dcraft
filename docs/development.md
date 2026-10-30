@@ -151,7 +151,7 @@ craft3d-cli mcp --automation-read-root work --automation-write-root work
 
 ### A showcase video
 
-`craft3d-cli replay` shows how a document is built: the history is rolled forward from nothing one feature at a time, and every step that changes a body becomes a frame, drawn by the CPU renderer from one camera framed on the finished model (the engine command `view.replay`, [`control-protocol.md`](control-protocol.md)). The document is not changed.
+`craft3d-cli replay` shows how a document is built: the history is rolled forward from nothing one feature at a time, and every step that changes a body becomes a frame, drawn (on the GPU when there is one, else the CPU) from one camera framed on the finished model (the engine command `view.replay`, [`control-protocol.md`](control-protocol.md)). The document is not changed.
 
 ```sh
 craft3d-cli replay part.3dcraft --out part.mp4 --size 1280x720 --frames-per-step 6 --hold 60 --orbit 60
@@ -163,6 +163,29 @@ craft3d-cli replay part.3dcraft --out frames/ --from Plate --to Holes --every   
 - The captions (each step's place in the history, feature name and type) are a subtitle track in the MP4 (players switch it on) when the ffmpeg build has the `mov_text` encoder (the result says `captionsTrack`; Fedora's `ffmpeg-free` lacks it) and `captions.srt` beside the frames; they are not drawn into the picture, because the renderer has no text. The result JSON lists every step with the frames it got.
 - `--frames-per-step` slows the build down, `--hold` lingers on the finished model, `--orbit DEG` turns the camera over the whole replay (the model is then framed so that it stays in the picture all round), `--from`/`--to` pick a range of the history, `--params` passes any other `view.replay` param (`projection`, `zoom`, `box`, `tolerance`).
 - Time: opening and regenerating the document once, then about the CPU renderer's time per distinct picture, spread over the cores (each step reuses what the document's regeneration built; nothing is rebuilt). The turbofan (156 features, 113 steps that change a body) takes about 4.5 s beyond opening it on 14 cores: 3 s to tessellate the model once (as `view.render` does) and 1.5 s for the 113 frames at 800x600 (0.13 to 0.25 s of CPU each, many at once); stepping through the history costs 0.1 s.
+
+### Video recipes
+
+Every picture and frame without a window (`craft3d-cli render`, `replay`, `run`, `serve`, `mcp`) is drawn on the graphics card when the machine has one (`renderer: "auto"`; the result says `"renderer": "gpu"` and the adapter) and on the CPU otherwise; `--renderer cpu` / `"renderer": "cpu"` keeps to the CPU reference renderer. `WGPU_ADAPTER_NAME` and `WGPU_BACKEND` choose among several adapters. `view.replay` renders animations as well as the history ([`control-protocol.md`](control-protocol.md) › *view.replay as an animation renderer*); `--params` passes them on the command line, and `.webm` works beside `.mp4` and `.gif`:
+
+```sh
+# An exploded view: a timeline t moves the parts (formulas of t), the camera orbits and dollies in.
+craft3d-cli replay box.3dcraft --out explode.mp4 --size 1920x1080 \
+    --params '{"animate": [{"variable": "t", "from": 0, "to": 1, "easing": "inOut"}], "duration": 4, "hold": 30,
+               "look": {}, "camera": {"orbit": 40, "dolly": 0.8, "easing": "inOut"}}'
+# A parameter sweep in the studio look, settled smoother (32 frames each), as WebM.
+craft3d-cli replay bracket.3dcraft --out sweep.webm --size 1920x1080 \
+    --params '{"animate": [{"variable": "width", "keys": [{"t": 0, "value": 30}, {"t": 0.5, "value": 60}, {"t": 1, "value": 30}], "unit": "mm", "easing": "inOut"}],
+               "duration": 6, "look": {"accumulate": 32}}'
+# A mechanism's stroke with a camera path through three keys; PNG frames only.
+craft3d-cli replay linkage.3dcraft --out stroke/ --size 1280x720 \
+    --params '{"animate": [{"variable": "t", "from": 0, "to": 1}], "frames": 120,
+               "camera": {"keys": [{"t": 0, "eye": [300, -300, 200]}, {"t": 0.5, "eye": [0, -400, 120]}, {"t": 1, "eye": [-300, -300, 200]}]}}'
+```
+
+Over MCP or `serve` the same is one `view.replay` call with `"video": "explode.mp4"`. Without ffmpeg the call is refused before anything is drawn; leave `video` out for the PNG sequence and encode it elsewhere. For a screenshot of the window in the studio look, `ui.set {"look": {"accumulate": 4}}` settles it sooner (the count `ui.screenshot {window: true}` waits for).
+
+Measured on the Strix (2026-10-30, 1920 × 1080, the benchmark's engine block): see the dev log entry *film*; the CPU studio look took about 40 s a frame before.
 
 ## Driving the app programmatically
 
@@ -340,7 +363,7 @@ There is no log file and no `RUST_LOG` (as of 0.1.0). The desktop app prints wha
 | `CRAFT3D_WINDOW_SIZE` | Desktop app only: the window's size at start (`1920x1080`). Same as `--window-size` |
 | `CRAFT3D_BODY_BUDGET_MB` | The memory for bodies kept between commands (1024 by default) |
 | `CRAFT3D_GIT_COMMIT` | At build time: the commit the programs report, for a build without a git checkout |
-| `CRAFT3D_FFMPEG` | Path to `ffmpeg`, used only by `craft3d-cli replay` to make an MP4 or a GIF; default: the first `ffmpeg` on `PATH` |
+| `CRAFT3D_FFMPEG` | Path to `ffmpeg`, used only by `craft3d-cli replay` and by `view.replay`'s `video` in the CLI's sessions to make an MP4, a WebM or a GIF; default: the first `ffmpeg` on `PATH` |
 | `CRAFT3D_FREECAD` | Path to a FreeCAD executable or AppImage, used only by opt-in export-validation tests |
 | `WGPU_BACKEND` | Pick the wgpu backend (`vulkan`, `metal`, `dx12`, `gl`) |
 

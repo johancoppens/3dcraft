@@ -275,6 +275,7 @@ impl Painter {
 
     /// Counts `n` pictures the caller drew on the CPU itself (on threads
     /// of its own, with [`cpu_draw`]).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub fn count_cpu(&mut self, n: u64) {
         self.used.cpu_pictures = self.used.cpu_pictures.saturating_add(n);
     }
@@ -302,6 +303,7 @@ pub(crate) fn cpu_draw(
 /// The most frames a studio still on the CPU averages at `params`'s size:
 /// the CPU renderer refuses more than `MAX_SAMPLES` samples over all of
 /// them (at least one frame).
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn cpu_frame_cap(params: &RenderParams) -> u32 {
     let samples = u64::from(params.width)
         .saturating_mul(u64::from(params.height))
