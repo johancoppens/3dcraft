@@ -12,7 +12,7 @@
  ["sketch.spline", {"sketch": "Top", "through": [[20, 0], [23, 6.5], [27, 13], [35, 25]]}],
  ["feature.surface.network", {"u": ["Seam", "Far"], "v": ["Bottom", "Top"], "edges": {"uFirst": {"kind": "curvature", "face": "F1:face(0)"}}, "name": "Fin"}],
  ["assert.add", {"name": "volume", "measure": "volume", "of": "Post", "eq": "pi * post_r^2 * height"}],
- ["body.appearance", {"body": "Post", "color": "#d9dde2", "metallic": 1, "roughness": 0.12}],
+ ["body.appearance", {"body": "Post", "color": "#b9bec5", "metallic": 0.9, "roughness": 0.3}],
  ["material.preset", {"body": "Fin", "preset": "car-paint", "color": "#b3122e"}],
  ["document.check", {}]
 ]

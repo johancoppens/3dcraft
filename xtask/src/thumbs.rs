@@ -53,7 +53,7 @@ pub const PUBLISHED: [(&str, &str); 6] = [
 pub const RENDER: &str = r#"{"width": 160, "height": 120, "view": "iso", "projection": "perspective", "zoom": 1.2, "renderer": "cpu", "look": {"mode": "studio", "background": "plain", "accumulate": 4}}"#;
 /// The params of `view.render` for the picture of a script example in
 /// the examples' README (`docs/examples/<id>.png`), part of the stamp.
-pub const PICTURE: &str = r#"{"width": 640, "height": 480, "view": "iso", "projection": "perspective", "zoom": 1.2, "renderer": "cpu", "look": {"mode": "studio", "background": "plain", "accumulate": 8}}"#;
+pub const PICTURE: &str = r#"{"width": 640, "height": 480, "view": "iso", "projection": "perspective", "zoom": 1, "renderer": "cpu", "look": {"mode": "studio", "background": "plain", "accumulate": 8}}"#;
 /// Most colours of a thumbnail.
 pub const PALETTE: usize = 128;
 /// Most colours of a README picture.
