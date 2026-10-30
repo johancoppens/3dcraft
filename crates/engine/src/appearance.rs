@@ -702,9 +702,12 @@ pub(crate) fn render_optics(
 }
 
 /// A face's look as the renderers take it: colour, finish and layers.
+/// Only the replay's pictures take it, which the browser build has not.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) type FaceLook = ([u8; 3], craft3d_render::Finish, Option<RenderOptics>);
 
 /// The looks of the faces of `body` (the body of `feature`), by face.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn face_looks(
     doc: &Document,
     regen: &Regen,
