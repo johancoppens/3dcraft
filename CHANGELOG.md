@@ -52,7 +52,7 @@ Every item below is in `main` as of 2026-10-30. Branches still merging for this 
 ### Assemblies and motion
 
 - **Assemblies** as their own documents (`.3dcraftasm`): instances of other `.3dcraft` files by reference (the assembly follows the part when you edit it) or packed into one file, configurations by a part's public parameters, one body picked from a multi-body part, and rigid or flexible subassemblies.
-- **Mates, joints and couplings**, solved by 3DCraft's own solver: fixed, revolute and the other mates between named faces of instances (a face that is gone fails its mate by name), free joints set by value or dragged, gears, racks and screws coupling two mates. Clearance, overlap and mass per instance; STEP export with the assembly's structure.
+- **Mates, joints and couplings**, solved by 3DCraft's own solver: fixed, revolute and the other mates between named faces of instances (a face that is gone fails its mate by name), free joints set by value or dragged, gears, racks and screws coupling two mates, and linear couplings of any number of motions (a planetary stage). A joint's solved value and an instance's pose as measures, usable in checks and formulas (`measure.joint`, `measure.pose`). A part drawn in another length unit keeps its size. Clearance, overlap and mass per instance; STEP export with the assembly's structure.
 - **Motion over a timeline `t`.** Play a mechanism in the window, see collisions in red, draw the trace of a point (and export it to SVG or DXF), and check any assertion over the whole motion (`motion.check`). Dead points are reported with their `t`.
 
 ### Measuring and design checks
