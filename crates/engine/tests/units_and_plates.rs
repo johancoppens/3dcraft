@@ -588,6 +588,47 @@ fn a_measured_mass_is_a_mass_in_kg() {
     assert_eq!(status, ["passed", "passed", "failed"], "{listed}");
 }
 
+/// A narrow rib under a plate, along its whole width: the grid over the
+/// top face can miss it, and its deep corners lie deeper than any line
+/// the grid met (the filter samples only vertices no deeper than that);
+/// the corners where it meets the plate, at the plate's thickness, are
+/// sampled and tell the step, at three scales.
+#[test]
+fn a_narrow_rib_behind_a_face_is_found_from_where_it_meets_the_plate() {
+    for scale in [0.01, 1.0, 1000.0] {
+        let mut s = new_session();
+        let mm = |v: f64| format!("{} mm", v * scale);
+        run(
+            &mut s,
+            "feature.block",
+            json!({"name": "Plate", "size": [mm(100.0), mm(50.0), mm(4.0)]}),
+        );
+        run(
+            &mut s,
+            "feature.block",
+            json!({"name": "Rib", "size": [mm(0.5), mm(50.0), mm(1.0)], "position": [mm(37.3), mm(0.0), mm(-1.0)]}),
+        );
+        run(
+            &mut s,
+            "feature.boolean",
+            json!({"op": "union", "target": "Plate", "tool": "Rib", "name": "Ribbed"}),
+        );
+        let top = run(
+            &mut s,
+            "select.query",
+            json!({"kind": "face", "where": {"in": "Ribbed", "normal": {"along": "z"}, "thickness": {"min": "0 mm"}}}),
+        );
+        assert_eq!(top["count"], 0, "scale {scale}: {top}");
+        // The rib's own bottom is 5 thick, its sides 0.5.
+        let bottom = run(
+            &mut s,
+            "select.query",
+            json!({"kind": "face", "where": {"in": "Ribbed", "normal": {"along": "-z"}, "thickness": mm(5.0)}}),
+        );
+        assert_eq!(bottom["count"], 1, "scale {scale}: {bottom}");
+    }
+}
+
 /// The thickness filter's cost on a body of about a thousand faces and
 /// four thousand vertices (a plate with 500 bosses under it: some 2500 faces, 4000 vertices): one query
 /// over its flat faces, timed (docs/design/selection.md). It must answer
@@ -648,6 +689,18 @@ fn the_thickness_filter_on_a_thousand_faces() {
         faces >= 1000 && vertices >= 4000,
         "{faces} faces, {vertices} vertices"
     );
+    // Asked again, the thicknesses of the same body are remembered.
+    let started = std::time::Instant::now();
+    let again = run(
+        &mut s,
+        "select.query",
+        json!({"kind": "face", "where": {"in": "Plate", "surface": "plane", "thickness": {"min": "0 mm"}}}),
+    );
+    println!(
+        "BENCH thickness filter asked again: {:?}",
+        started.elapsed()
+    );
+    assert_eq!(again, found);
     let top = run(
         &mut s,
         "select.query",

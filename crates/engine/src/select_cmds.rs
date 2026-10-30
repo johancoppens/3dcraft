@@ -27,6 +27,12 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Finds what fits a description and returns it (items as select.get gives them, with body: the name of the body of a face, edge or vertex, and origin: {feature, name}, the feature that first made it, at the end of its persistent name's way, such as the cylinder that drilled a hole: the feature to edit to change it), in document order: bodies, features, sketches and datums in history order, faces, edges and vertices body by body in the order of document.inspect and document.edges. count is how many fit, truncated says whether more fit than limit (at most 10000), summary is one line (\"6 faces in Housing\"). With context each item also has what select.get gives with context (surface or curve and its measure, drivers with the edit to make, copyOf). With then the result also becomes the selection (replace), is added to it or taken out of it; the window shows it. A filter is an object; several keys in one object must all hold, an array of filters too. Filters: all: [filters], any: [filters], not: filter; set: the name of a named set (set.define): what it holds now; kind: kind or [kinds]; name: glob (* any run, ? one character) on the name, or for a feature-like item also its id; type: glob on the type of the feature (extrude, boolean, pattern, ...; of the body's feature for a face, edge or vertex); status: ok|failed|suppressed|inactive|rolledBack or a list: how the feature regenerated (inactive: its when is false; of the body's feature for a face, edge or vertex); in: the body (feature id or name) a face, edge or vertex belongs to, or that body itself; madeBy: feature: a face, edge or vertex whose persistent name comes from that feature anywhere along its way (the cylinder that drilled a hole, the extrusion whose side it is), a body or feature made by it or from it; copyOf: pattern or mirror feature, with instance: n: entities that are copies made by it (of that instance), or its body; color: \"#rrggbb\" or [r, g, b] or null (no colour of its own), within: distance in RGB = 0: the colour of the body, or of the face; material: glob or null: the body's material; volume (bodies), area (bodies and faces), radius (cylindrical and spherical faces, circular edges), length (edges), thickness (flat faces: the plate thickness, the distance through the body to the flat face directly opposite, parallel and facing the other way, measured along the inward normal from points all over the face, which must all give it within the tolerance; a curved face, one with no such face opposite, and one over a step, a pocket or a slanted back have none, and never fit): a value (\"6 mm\", a number in the document's unit, or an expression of the variables such as \"tA\", worked out again whenever the query is, so a named set follows the variable) or {eq, tol} or {min, max}; tol defaults to a millionth of eq plus the document's tolerance (to the power of the dimension: squared for an area); surface: plane|cylinder|cone|sphere|torus|freeform or a list: the kind of a face's surface; hole: true for the wall of a hole, a cylindrical face whose outward normal points at its axis and that goes all the way round it (not a concave fillet), false for the others; a face a boolean split into pieces that keep its name is one item; normal: {along: axis} (a flat face whose outward normal points along it, \"-y\" for the faces facing -y) or {perpendicular: axis} (flat faces whose normal is square to it, and cylinders and cones whose axis lies along it), with tol: degrees = 0.5; axis: {along: axis, tol}: cylinders, cones, tori and circular edges whose axis lies along it, either way round; inside: [[x, y, z], [x, y, z]]: the item lies wholly within the box; above: {z: value} (or x, y; a number is z): wholly at or above it, below: likewise at or below. An axis is x, y, z, -x, -y, -z or [x, y, z]. A filter that does not apply to an item (volume of a face) does not hold for it. Measures and boxes use the exact geometry (face areas by the integrals document.measure sums).", doc: true, names: ["where"], select_query),
 ];
 
+/// Plate thicknesses (`thickness`) by body, remembered across queries:
+/// per face and the tolerance's bits.
+type Thicknesses = std::collections::BTreeMap<(u64, u64, usize), Option<f64>>;
+static THICKNESSES: std::sync::Mutex<crate::mass::Store<Thicknesses>> =
+    std::sync::Mutex::new(crate::mass::Store::new());
+
 /// Most filters one query holds, nested ones included.
 const MAX_FILTERS: usize = 1000;
 /// Deepest nesting of filters.
@@ -959,10 +965,11 @@ impl<'a> Context<'a> {
         let regen = self.regen;
         // The body as the regeneration holds it, for as long as the
         // context lives.
-        let body: &'a Body = regen
+        let shared: &'a Arc<Body> = regen
             .bodies()
             .find(|(f, b)| *f == c.feature && Arc::ptr_eq(b, wanted))
-            .map(|(_, b)| &**b)?;
+            .map(|(_, b)| b)?;
+        let body: &'a Body = shared;
         let tolerance =
             craft3d_math::Tolerance::new(self.doc.tolerance.linear, self.doc.tolerance.angular)?;
         let pieces: Vec<usize> = if c.pieces.is_empty() {
@@ -973,8 +980,17 @@ impl<'a> Context<'a> {
         let mut found: Option<f64> = None;
         for k in pieces {
             let key = (c.feature, k);
-            let thickness = match self.thicknesses.get(&key) {
-                Some(t) => *t,
+            // Remembered per body (a body is never changed: a new revision
+            // is a new body) and tolerance, across queries: a named set by
+            // thickness is worked out again at every query.
+            let remembered = (tolerance.linear.to_bits(), tolerance.angular.to_bits(), k);
+            let thickness = match self
+                .thicknesses
+                .get(&key)
+                .copied()
+                .or_else(|| crate::mass::recall_key(&THICKNESSES, shared, &remembered))
+            {
+                Some(t) => t,
                 None => {
                     let part = self
                         .parts
@@ -986,6 +1002,7 @@ impl<'a> Context<'a> {
                             .flatten()
                     });
                     self.thicknesses.insert(key, t);
+                    crate::mass::remember_key(&THICKNESSES, shared, remembered, t);
                     t
                 }
             };

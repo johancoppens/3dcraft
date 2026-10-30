@@ -41,13 +41,13 @@ type Turned = Result<Inertia, MassError>;
 /// Remembered answers, by the address of the body's `Arc` (which the
 /// `Weak` keeps from being taken by another body while the entry
 /// exists), with when each was remembered.
-struct Store<T> {
+pub(crate) struct Store<T> {
     by_body: BTreeMap<usize, (Weak<Body>, u64, T)>,
     next: u64,
 }
 
 impl<T> Store<T> {
-    const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Store {
             by_body: BTreeMap::new(),
             next: 0,
@@ -96,18 +96,9 @@ fn recall<T: Clone>(store: &Mutex<Store<T>>, body: &Arc<Body>) -> Option<T> {
         .map(|(_, _, value)| value.clone())
 }
 
-/// Remembers `value` for `body` in `store`, unless it is there already.
-fn remember<T>(store: &Mutex<Store<T>>, body: &Arc<Body>, value: T) {
-    let key = Arc::downgrade(body);
-    let mut remembered = store.lock().unwrap_or_else(PoisonError::into_inner);
-    let at = address(body);
-    if remembered
-        .by_body
-        .get(&at)
-        .is_some_and(|(seen, _, _)| seen.ptr_eq(&key))
-    {
-        return;
-    }
+/// Forgets the bodies that are gone (every [`SWEEP_EVERY`] bodies, and
+/// when the store is full), then the oldest quarter when it is still full.
+fn make_room<T>(remembered: &mut Store<T>) {
     if remembered.next.is_multiple_of(SWEEP_EVERY) || remembered.by_body.len() >= MAX_REMEMBERED {
         // Bodies that are gone are forgotten.
         remembered
@@ -126,6 +117,61 @@ fn remember<T>(store: &Mutex<Store<T>>, body: &Arc<Body>, value: T) {
         let cut = whens.get(MAX_REMEMBERED / 4).copied().unwrap_or(u64::MAX);
         remembered.by_body.retain(|_, (_, when, _)| *when >= cut);
     }
+}
+
+/// What `store` remembers of `body` under `key`, for answers of which a
+/// body has several (one per face).
+pub(crate) fn recall_key<K: Ord, V: Clone>(
+    store: &Mutex<Store<BTreeMap<K, V>>>,
+    body: &Arc<Body>,
+    key: &K,
+) -> Option<V> {
+    let seen_as = Arc::downgrade(body);
+    let remembered = store.lock().unwrap_or_else(PoisonError::into_inner);
+    remembered
+        .by_body
+        .get(&address(body))
+        .filter(|(seen, _, _)| seen.ptr_eq(&seen_as))
+        .and_then(|(_, _, answers)| answers.get(key).cloned())
+}
+
+/// Remembers `value` for `body` under `key` in `store`.
+pub(crate) fn remember_key<K: Ord, V>(
+    store: &Mutex<Store<BTreeMap<K, V>>>,
+    body: &Arc<Body>,
+    key: K,
+    value: V,
+) {
+    let seen_as = Arc::downgrade(body);
+    let mut remembered = store.lock().unwrap_or_else(PoisonError::into_inner);
+    let at = address(body);
+    if let Some((seen, _, answers)) = remembered.by_body.get_mut(&at)
+        && seen.ptr_eq(&seen_as)
+    {
+        answers.insert(key, value);
+        return;
+    }
+    make_room(&mut remembered);
+    let when = remembered.next;
+    remembered.next = when.saturating_add(1);
+    remembered
+        .by_body
+        .insert(at, (seen_as, when, BTreeMap::from([(key, value)])));
+}
+
+/// Remembers `value` for `body` in `store`, unless it is there already.
+fn remember<T>(store: &Mutex<Store<T>>, body: &Arc<Body>, value: T) {
+    let key = Arc::downgrade(body);
+    let mut remembered = store.lock().unwrap_or_else(PoisonError::into_inner);
+    let at = address(body);
+    if remembered
+        .by_body
+        .get(&at)
+        .is_some_and(|(seen, _, _)| seen.ptr_eq(&key))
+    {
+        return;
+    }
+    make_room(&mut remembered);
     let when = remembered.next;
     remembered.next = when.saturating_add(1);
     remembered.by_body.insert(at, (key, when, value));
