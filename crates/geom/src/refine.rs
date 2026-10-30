@@ -648,6 +648,36 @@ fn composed(curve: &NurbsCurve, phi: &[f64]) -> Result<NurbsCurve, GeomError> {
 
 /// [`composed`] as plain data (the points any 4-vectors).
 pub(crate) fn composed_raw(raw: Raw, phi: &[f64]) -> Result<Raw, GeomError> {
+    let p = raw.degree;
+    let (bounds, pieces) = bezier_pieces_raw(raw)?;
+    compose_pieces(p, &bounds, &pieces, phi)
+}
+
+/// [`composed_raw`] with the curve cut into its Bézier pieces by knots
+/// inserted all at once (in time linear in its size), refused before
+/// anything is made where the result would exceed
+/// [`MAX_CONTROL_POINTS`].
+pub(crate) fn composed_batched(raw: Raw, phi: &[f64]) -> Result<Raw, GeomError> {
+    let p = raw.degree;
+    let pieces = raw.interior().len().saturating_add(1);
+    let degree = phi.len().saturating_sub(1).saturating_mul(p);
+    if pieces.saturating_mul(degree).saturating_add(1) > MAX_CONTROL_POINTS {
+        return Err(GeomError::InvalidParameter(
+            "a curve with its parameter changed would have more control points than a curve may have",
+        ));
+    }
+    let (bounds, pieces) = bezier_pieces_batched(raw)?;
+    compose_pieces(p, &bounds, &pieces, phi)
+}
+
+/// The Bézier pieces of degree `p` between `bounds` with their parameter
+/// run through φ (see [`composed`]).
+fn compose_pieces(
+    p: usize,
+    bounds: &[f64],
+    pieces: &[Vec<H>],
+    phi: &[f64],
+) -> Result<Raw, GeomError> {
     let at = |u: f64| {
         let mut row = phi.to_vec();
         while row.len() > 1 {
@@ -661,8 +691,6 @@ pub(crate) fn composed_raw(raw: Raw, phi: &[f64]) -> Result<Raw, GeomError> {
         }
         row.first().copied().unwrap_or(0.0)
     };
-    let p = raw.degree;
-    let (bounds, pieces) = bezier_pieces_raw(raw)?;
     let (Some(&a), Some(&b)) = (bounds.first(), bounds.last()) else {
         return Err(internal());
     };

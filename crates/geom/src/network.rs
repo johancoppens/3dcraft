@@ -71,7 +71,7 @@
 
 use crate::refine::{
     MAX_INTERPOLATED_BANDED, Raw, SAME_KNOT, basis, bernstein_product, bezier_pieces_batched,
-    composed_raw, from_pieces_raw, interpolate, piece_raw,
+    composed_batched, from_pieces_raw, interpolate, piece_raw,
 };
 use crate::{GeomError, MAX_CONTROL_POINTS, MAX_DEGREE, NurbsCurve, NurbsSurface, Surface};
 use craft3d_math::{Frame, Vec3};
@@ -632,17 +632,39 @@ impl Track {
                 }
             })
             .collect();
-        let least = f64::EPSILON / angular;
+        // The rounding of a point is ε times its coordinates' size, so a
+        // derivative over a piece of chord c is known to about ε |P| / c
+        // of its mean: the least slope scales with |P| / c (scale-free:
+        // a model ten times larger, or moved, gives the same answer).
+        let size = self
+            .raw
+            .points
+            .iter()
+            .filter_map(|h| point(*h))
+            .fold(0.0_f64, |m, p| m.max(p.length()));
         for (j, d) in secants.iter().enumerate() {
-            let (Some(m0), Some(m1)) = (slopes.get(j), slopes.get(j + 1)) else {
+            let (Some(m0), Some(m1), Some(&s0), Some(&s1)) =
+                (slopes.get(j), slopes.get(j + 1), own.get(j), own.get(j + 1))
+            else {
                 return Err(internal());
             };
+            let chord = self.at(s0)?.distance(self.at(s1)?);
+            let least = f64::EPSILON * (size / chord).max(1.0) / angular;
             let slowest = (m0 / d).min(m1 / d);
             if slowest.is_nan() || slowest < least {
                 return refuse(format!(
                     "{label}: its crossings are spaced too unevenly against the rest of its family's (between two of them its parameter would slow to {slowest:.1e} of its mean rate, below the {least:.1e} at which its direction is known within the angular tolerance)"
                 ));
             }
+        }
+        // Its size once re-parametrised, before anything is made: each
+        // piece cut at its own knots, three times the degree.
+        let spans = self.raw.interior().len().saturating_add(count);
+        let made = spans.saturating_mul(3 * self.raw.degree).saturating_add(1);
+        if made > MAX_CONTROL_POINTS {
+            return refuse(format!(
+                "{label}: re-parametrised to meet its family's crossings it would have {made} control points, more than the {MAX_CONTROL_POINTS} a curve may have (fewer pieces, or crossings at matching parameters)"
+            ));
         }
         let redo = |raw: &Raw| -> Result<Raw, NetworkError> {
             let mut pieces = Vec::with_capacity(count);
@@ -658,7 +680,7 @@ impl Track {
                 };
                 let piece = piece_raw(raw.clone(), s0, s1)?;
                 let (alpha, beta) = (m0 / d, m1 / d);
-                pieces.push(composed_raw(
+                pieces.push(composed_batched(
                     piece,
                     &[0.0, alpha / 3.0, 1.0 - beta / 3.0, 1.0],
                 )?);
@@ -1143,12 +1165,11 @@ fn iso_track(
         for (_, c) in &uv {
             let mut x = split(*c).1;
             if run_closed && let Some(&last) = run.last() {
+                // The whole turns between it and the place before.
                 let w = period(run_range);
-                while x - last > 0.5 * w {
-                    x -= w;
-                }
-                while last - x > 0.5 * w {
-                    x += w;
+                let turns = ((x - last) / w).round();
+                if turns.is_finite() {
+                    x -= turns * w;
                 }
             }
             run.push(x);
@@ -1491,9 +1512,29 @@ fn hold_tangent(
     if delta.points.len() != net.rows.len() {
         return Err(internal());
     }
-    for (row, d) in net.rows.iter_mut().zip(&delta.points) {
+    // The change between the crossings is what puts the derivative into
+    // the planes there; it is of the order of how far the interpolated
+    // derivative drifts off them, a fraction of the ribbon between the
+    // edge and the second row. Coefficients of a column kept just above
+    // the cutoff could be ~1 / cutoff: a change larger than the ribbon
+    // itself (with a margin of the tolerance) is that, and refused.
+    for (u, (row, d)) in net.rows.iter_mut().zip(&delta.points).enumerate() {
+        let h0 = row.first().copied().ok_or_else(internal)?;
         let slot = row.get_mut(1).ok_or_else(internal)?;
-        *slot = h_add(*slot, *d, 1.0, f);
+        let moved = h_add(*slot, *d, 1.0, f);
+        let (Some(p0), Some(p1), Some(q1)) = (point(h0), point(*slot), point(moved)) else {
+            return refuse(format!(
+                "{label}: holding it tangent would make a weight of the surface not positive"
+            ));
+        };
+        let change = p1.distance(q1);
+        let ribbon = p1.distance(p0) + tol;
+        if change.is_nan() || change > ribbon {
+            return refuse(format!(
+                "{label}: holding it tangent would move the surface's second row of control points by {change:.3e} at control point {u}, more than the {ribbon:.3e} between it and the edge: the face's tangent planes are not told apart well enough there to follow"
+            ));
+        }
+        *slot = moved;
     }
     Ok(())
 }
@@ -2356,7 +2397,11 @@ fn bend(
         }
         track.raw = if at_start { raw } else { reverse(&raw) };
     }
-    side.map(|(s, _)| s).ok_or_else(internal)
+    side.map(|(s, _)| s).ok_or_else(|| {
+        NetworkError::Refused(format!(
+            "{label}: every {family} curve crossing it is a point, so no curve leaves it along the face"
+        ))
+    })
 }
 
 /// A proven bound on the distance between the curve `raw` (homogeneous,
@@ -2389,11 +2434,16 @@ fn off_track(
     let mut iso = iso;
     iso.normalize()?;
     let d = combined(&iso, &curve, 1.0, -1.0)?;
-    let points: Vec<Vec3> = curve
+    let Some(points) = curve
         .points
         .iter()
-        .map(|h| point(*h).ok_or_else(internal))
-        .collect::<Result<_, _>>()?;
+        .map(|h| point(*h))
+        .collect::<Option<Vec<Vec3>>>()
+    else {
+        return refuse(
+            "a curve of the network has a weight that is not positive once its weights were made to agree with the others': its rational curves cannot be made into one surface".to_string(),
+        );
+    };
     let c = points.first().copied().ok_or_else(internal)?;
     let reach = points.iter().fold(0.0_f64, |r, p| r.max(p.distance(c)));
     let (mut lead, mut weight) = (0.0_f64, 0.0_f64);

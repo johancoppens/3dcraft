@@ -99,15 +99,24 @@ fn warped_grid(count: usize, side: f64) -> (Vec<NurbsCurve>, Vec<NurbsCurve>) {
 fn a_network_too_large_for_the_budget_is_refused_before_it_is_made() {
     for scale in SCALES {
         let (us, vs) = warped_grid(32, scale);
-        let started = std::time::Instant::now();
+        // Refused from the knots, before the nets (which would take tens
+        // of gigabytes): the message names the size it would have had.
         let why = refused(gordon(&network(&us, &vs, 1e-6 * scale)));
         assert!(
             why.contains("control points") && why.contains(&MAX_NETWORK_POINTS.to_string()),
             "{why}"
         );
-        // Refused from the knots, before the nets: in seconds, not in the
-        // tens of gigabytes the surface would take.
-        assert!(started.elapsed().as_secs() < 60, "{:?}", started.elapsed());
+        let asked: usize = why
+            .split(" control points")
+            .next()
+            .and_then(|head| head.rsplit("need ").next())
+            .map(|dims| {
+                dims.split(" × ")
+                    .map(|n| n.trim().parse::<usize>().unwrap())
+                    .product()
+            })
+            .unwrap();
+        assert!(asked > 16 * MAX_NETWORK_POINTS, "{why}");
     }
 }
 

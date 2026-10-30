@@ -91,35 +91,101 @@ fn refused(result: Result<Patch, NetworkError>) -> String {
     }
 }
 
-/// Along the patch's first u curve (v = 0): the patch's normal against the
-/// face's closed-form normal `normal(p)` at 129 places, one side all along,
-/// and the edge on the face (`off(p)`, the closed-form distance).
+/// Along the patch's first u curve (v = 0): see [`edge_meets`].
 fn meets_with_one_tangent_plane(
     patch: &Patch,
     normal: impl Fn(Vec3) -> Vec3,
     off: impl Fn(Vec3) -> f64,
     scale: f64,
 ) {
+    edge_meets(patch, 0, normal, off, scale);
+}
+
+/// Along the patch's edge `edge` (0: v = 0, 1: v = 1, 2: u = 0, 3: u = 1):
+/// the patch's normal against the face's closed-form normal `normal(p)`
+/// at 129 places, one side all along, and the edge on the face (`off(p)`,
+/// the closed-form distance).
+fn edge_meets(
+    patch: &Patch,
+    edge: usize,
+    normal: impl Fn(Vec3) -> Vec3,
+    off: impl Fn(Vec3) -> f64,
+    scale: f64,
+) {
     let mut side = 0.0;
     for k in 0..=128 {
-        let u = f64::from(k) / 128.0;
-        let (p, du, dv) = patch.surface.derivatives(u, 0.0);
+        let t = f64::from(k) / 128.0;
+        let (u, w) = match edge {
+            0 => (t, 0.0),
+            1 => (t, 1.0),
+            2 => (0.0, t),
+            _ => (1.0, t),
+        };
+        let (p, du, dv) = patch.surface.derivatives(u, w);
         assert!(
             off(p) <= 1e-9 * scale,
-            "off the face by {:e} at {u}",
+            "off the face by {:e} at {t}",
             off(p)
         );
         let n = du.cross(dv).normalized().unwrap();
         let m = normal(p).normalized().unwrap();
         let sine = n.cross(m).length();
-        assert!(sine <= 1e-9, "tangent planes {sine:e} apart at u = {u}");
+        assert!(
+            sine <= 1e-9,
+            "edge {edge}: tangent planes {sine:e} apart at {t}"
+        );
         let here = n.dot(m).signum();
         if k == 0 {
             side = here;
         }
-        assert_eq!(here, side, "the normal turns over at u = {u}");
+        assert_eq!(here, side, "edge {edge}: the normal turns over at {t}");
     }
-    assert!(patch.tangency[0].unwrap() <= 1e-9);
+    assert!(patch.tangency[edge].unwrap() <= 1e-9);
+}
+
+#[test]
+fn a_patch_tangent_to_a_cylinder_along_any_of_its_four_edges_has_its_normals() {
+    for scale in SCALES {
+        let (r, h) = (2.0 * scale, 3.0 * scale);
+        let face = Surface::Cylinder(Cylinder::new(Frame::WORLD, r).unwrap());
+        let circle = arc(&Frame::WORLD, r, 0.0, FRAC_PI_2).unwrap();
+        let far = arc(&at_height(h), 1.5 * r, 0.0, FRAC_PI_2).unwrap();
+        let bulges: Vec<NurbsCurve> = FRACTIONS
+            .iter()
+            .map(|f| {
+                let (p0, p1) = (circle.eval(*f), far.eval(*f));
+                spline(&[p0, p0 * 1.2 + v(0.0, 0.0, 0.5 * h), p1])
+            })
+            .collect();
+        for edge in 0..4 {
+            // The circle as the first or last curve of its family, the
+            // bulging curves as the other family.
+            let pair = if edge % 2 == 0 {
+                vec![circle.clone(), far.clone()]
+            } else {
+                vec![far.clone(), circle.clone()]
+            };
+            let (us, vs) = if edge < 2 {
+                (pair, bulges.clone())
+            } else {
+                (bulges.clone(), pair)
+            };
+            let mut edges = [Condition::Free; 4];
+            edges[edge] = Condition::Tangent {
+                surface: &face,
+                weight: 1.0,
+            };
+            let patch = gordon(&network(&us, &vs, edges, scale))
+                .unwrap_or_else(|e| panic!("edge {edge}: {e}"));
+            edge_meets(
+                &patch,
+                edge,
+                |p| v(p.x, p.y, 0.0),
+                |p| (v(p.x, p.y, 0.0).length() - r).abs(),
+                scale,
+            );
+        }
+    }
 }
 
 #[test]
@@ -384,7 +450,11 @@ fn two_held_edges_whose_corner_asks_two_tangent_planes_are_refused() {
             },
             Condition::Free,
         ];
-        refused(gordon(&network(&us, &vs, edges, scale)));
+        let why = refused(gordon(&network(&us, &vs, edges, scale)));
+        assert!(
+            why.contains("corner") && why.contains("tangent plane"),
+            "{why}"
+        );
     }
 }
 
@@ -428,7 +498,8 @@ fn two_held_edges_whose_corner_asks_two_twists_are_refused() {
             },
             Condition::Free,
         ];
-        refused(gordon(&network(&us, &vs, edges, scale)));
+        let why = refused(gordon(&network(&us, &vs, edges, scale)));
+        assert!(why.contains("corner") && why.contains("twist"), "{why}");
     }
 }
 
