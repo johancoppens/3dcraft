@@ -161,16 +161,19 @@ Options:
   --ground, --ao, --shadows on|off  The ground, the ambient occlusion and
                   the shadows of the studio look. Default on
   --reflections, --contact-shadows, --specular-shadow on|off  Reflections
-                  of the model in its glossy faces and the ground, short
-                  shadows where parts meet, the key light's shadow on the
+                  of the model in its own glossy faces, short shadows
+                  where parts meet, the key light's shadow on the
                   reflections. Default on
-  --ground-reflection G  How much the ground reflects, 0 to 1. Default 0
+  --ground-reflection G  How much the ground reflects the model, 0 to 1
+                  (apart from --reflections). Default 0
   --bloom B       The share of the light spread around bright parts, 0 to
                   1. Default 0.04
   --fstop N, --focus D|X,Y,Z  Depth of field of a thin lens: its f-number
                   (default 2.8) and the distance along the view or the
                   point it focuses on (default the model's centre)
-  --accumulate N  Frames averaged into the picture, 1 to 256. Default 1
+  --accumulate N  Frames averaged into the picture, 1 to 256, as long as
+                  all frames' samples stay within the renderer's limit
+                  (64 Mi). Default 1
   --backdrop B    environment (default) or plain: the --background colour
                   behind the model, which the environment still lights";
 

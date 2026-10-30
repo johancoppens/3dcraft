@@ -205,3 +205,19 @@ fn bad_looks_are_refused() {
     );
     assert_eq!(a["base64"], b["base64"]);
 }
+
+/// A still whose frames together would pass the CPU renderer's limit of
+/// samples is refused at once, saying what to lower.
+#[test]
+fn too_many_frames_are_refused() {
+    let mut s = example("wedge");
+    let started = std::time::Instant::now();
+    let e = s
+        .execute(
+            "view.render",
+            &json!({"width": 2000, "height": 2000, "look": {"accumulate": 256}}),
+        )
+        .unwrap_err();
+    assert!(e.to_string().contains("accumulate fewer frames"), "{e}");
+    assert!(started.elapsed().as_secs() < 60, "refused before drawing");
+}

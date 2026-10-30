@@ -1157,6 +1157,13 @@ impl Shell {
         report
     }
 
+    /// Whether the viewport, drawn directly, is still averaging the frames
+    /// of a still picture (`Look::accumulate`): a picture of the window
+    /// taken now would be half done.
+    pub fn converging(&self) -> bool {
+        self.direct_shown && self.direct.as_ref().is_some_and(Direct::converging)
+    }
+
     /// The picture the direct path shows, read back from the device: for
     /// tests, which compare it with the CPU reference renderer's. `None`
     /// when the viewport is not drawn directly or nothing was drawn yet.

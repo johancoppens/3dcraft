@@ -223,7 +223,8 @@ The studio look also has a second layer of polish, on by default:
 - glossy faces (roughness under 0.4) reflect the model itself where it is in the picture, and the
   environment elsewhere (`reflections`); the ground can reflect it too (`groundReflection` from 0 to
   1, off by default: towards the horizon the ground then mirrors the sky and the background
-  brightens);
+  brightens, and the ground reflects only what is in the picture, so under a model whose
+  undersides you cannot see the reflection comes out in pieces);
 - short, dark contact shadows where parts touch or stand on each other (`contactShadows`);
 - a face in the key light's shadow loses that light's reflection too (`specularShadow`);
 - bright parts glow a little into their surroundings (`bloom`, the share of the light spread, 0.04 by
@@ -240,7 +241,9 @@ While the camera stands still the window keeps refining the picture: it averages
 (`accumulate`, 1 to 256), each with its samples moved a little within the pixel and the lens turned,
 so edges smooth out and the blur fills in; moving the camera starts again from a sharp first frame.
 `view.render` and `craft3d-cli render` draw one frame unless `accumulate` (`--accumulate`) asks for
-more.
+more; they refuse a still whose frames together would take too long (all frames' samples over
+2^26, about 34 frames of the default 800 × 600 picture). `ui.screenshot` with `window: true` waits
+until the window has averaged its frames, so the picture is the settled one.
 
 ```text
 ui.set {"look": {"mode": "studio", "dof": {"fstop": 2, "focus": "picked"}, "bloom": 0.1}}

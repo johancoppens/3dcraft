@@ -220,6 +220,9 @@ struct Capture {
     /// Frames drawn since it came in: the frame is asked for after a few,
     /// so that what came before it (a `ui.set`) is drawn and has settled.
     frames: u32,
+    /// Whether the last frame found the viewport still averaging the
+    /// frames of its still picture (then `frames` does not count it).
+    settling: bool,
     /// The frame count when the picture was last asked for: egui drops a
     /// request on a surface that timed out, is outdated, occluded, lost or
     /// recreated, so it is asked again after [`CAPTURE_RETRY_FRAMES`].
@@ -230,7 +233,8 @@ struct Capture {
     image: Option<Arc<egui::ColorImage>>,
 }
 
-/// Frames a picture of the window waits before it is asked for.
+/// Frames a picture of the window waits before it is asked for, counted
+/// once the viewport has averaged the frames of its still picture.
 const CAPTURE_FRAMES: u32 = 3;
 /// Frames drawn after asking without a picture before it is asked again.
 const CAPTURE_RETRY_FRAMES: u32 = 30;
@@ -243,6 +247,9 @@ const DEADLINE_GRACE: Duration = Duration::from_millis(20);
 
 /// The error of a picture of the window that got no frame in time.
 const NO_FRAME: &str = "ui.screenshot: the window drew no frame in time; is it minimised, hidden or on another workspace?";
+/// The error of a picture of the window whose viewport was still averaging
+/// the frames of its still picture at the deadline.
+const NOT_SETTLED: &str = "ui.screenshot: the viewport was still averaging the frames of its picture when the time was up; ask again, or set fewer frames (ui.set look.accumulate)";
 
 /// Who waits for the task on the engine thread.
 enum Waiting {
@@ -1029,10 +1036,24 @@ impl Desk {
     /// Before a frame: asks egui for a picture of the frame once a
     /// capture has waited its frames.
     fn ask_capture(&mut self, ctx: &egui::Context) {
+        let converging = self.host.shell.converging();
+        self.ask_capture_when(ctx, converging);
+    }
+
+    /// [`Self::ask_capture`] with whether the viewport is still averaging
+    /// its frames: then the frames are not counted, so the picture is the
+    /// settled still and not a timing-dependent part of the way there; the
+    /// capture's deadline still bounds the wait.
+    fn ask_capture_when(&mut self, ctx: &egui::Context, converging: bool) {
         let Some(capture) = self.capture.as_mut() else {
             return;
         };
         if capture.image.is_some() {
+            return;
+        }
+        capture.settling = converging && capture.asked.is_none();
+        if capture.settling {
+            ctx.request_repaint();
             return;
         }
         capture.frames = capture.frames.saturating_add(1);
@@ -1080,6 +1101,7 @@ impl Desk {
                 Ok(result) => rpc::ok_reply(&id, &result),
                 Err(error) => rpc::error_reply(&id, &error),
             },
+            _ if capture.settling => rpc::error_reply(&id, NOT_SETTLED),
             _ => rpc::error_reply(&id, NO_FRAME),
         };
         let _ = capture.request.reply.send(Some(reply));
@@ -1096,6 +1118,7 @@ impl Desk {
                     request,
                     path,
                     frames: 0,
+                    settling: false,
                     asked: None,
                     since: Instant::now(),
                     image: None,
@@ -1797,6 +1820,57 @@ mod tests {
         let reply = turn_until(&mut desk, &shot).unwrap();
         assert!(reply.contains(r#""ok":true"#), "{reply}");
         assert!(!desk.away());
+    }
+
+    /// A picture of the window waits while the viewport averages the
+    /// frames of its still picture (the studio look's accumulation): it is
+    /// asked for only after the frames that follow, so it is the settled
+    /// still; and one that never settles is answered at its deadline.
+    #[test]
+    fn a_window_picture_waits_until_the_viewport_has_settled() {
+        let (requests, incoming) = mpsc::channel();
+        let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
+        let host = Host::new(Session::new(Workspace::none()));
+        let mut desk =
+            Desk::new(host, incoming, picker).with_capture_deadline(Duration::from_millis(300));
+        let shot = ask(
+            &requests,
+            r#"{"id":1,"method":"ui.screenshot","params":{"window":true}}"#,
+        );
+        desk.turn();
+        assert!(desk.capture.is_some());
+        let ctx = egui::Context::default();
+        // Sixteen frames of accumulation and more: not asked for.
+        for _ in 0..40 {
+            desk.ask_capture_when(&ctx, true);
+        }
+        assert!(desk.capture.as_ref().is_some_and(|c| c.asked.is_none()));
+        // Settled: asked for after its frames.
+        for _ in 1..CAPTURE_FRAMES {
+            desk.ask_capture_when(&ctx, false);
+        }
+        assert!(desk.capture.as_ref().is_some_and(|c| c.asked.is_none()));
+        desk.ask_capture_when(&ctx, false);
+        assert!(desk.capture.as_ref().is_some_and(|c| c.asked.is_some()));
+        let image = egui::ColorImage::new([5, 2], vec![egui::Color32::from_rgb(1, 2, 3); 10]);
+        desk.captured(Arc::new(image));
+        let reply = turn_until(&mut desk, &shot).unwrap();
+        assert!(reply.contains(r#""ok":true"#), "{reply}");
+        // One that never settles ends at its deadline.
+        let shot = ask(
+            &requests,
+            r#"{"id":2,"method":"ui.screenshot","params":{"window":true}}"#,
+        );
+        desk.turn();
+        for _ in 0..40 {
+            desk.ask_capture_when(&ctx, true);
+        }
+        assert!(desk.capture.as_ref().is_some_and(|c| c.asked.is_none()));
+        let reply = turn_until(&mut desk, &shot).unwrap();
+        assert!(
+            reply.contains(r#""ok":false"#) && reply.contains("still averaging"),
+            "{reply}"
+        );
     }
 
     /// A picture of the window whose frame never comes (egui dropped it:

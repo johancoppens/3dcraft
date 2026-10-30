@@ -214,16 +214,22 @@ pub(crate) struct Traced {
 /// *Efficient GPU Screen-Space Ray Tracing*, JCGT 2014, with uniform
 /// steps). No hit when it leaves the picture or finds nothing.
 ///
-/// The decisions are marked in doubt (they change nothing here) when a
-/// depth on the ray lies within `TRACE_DOUBT · ε · Z` of the surface's
-/// (the hit test `z ≥ zs` at every step and every halving) or of the
-/// thickness's limit, with `Z` the sum of the magnitudes the depths come
-/// from (both ends' distances, the length, the point's coordinates); or
-/// when a position on the screen whose floor picks the sample read (at the
-/// hit and at the halvings) lies within `TRACE_DOUBT · ε · S` of a sample's
-/// border, with `S` the magnitudes of both ends' sample coordinates plus
-/// the length and the start's depth in samples at the far end (how far an
-/// error in the point or the direction moves the far end on the screen).
+/// The decisions are marked in doubt (they change nothing here) where the
+/// GPU's `f32` may take them otherwise with another outcome. A depth on
+/// the ray is in doubt within `TRACE_DOUBT · ε · Z` of the surface's or of
+/// the thickness's limit, `Z` the largest magnitude it comes from (both
+/// ends' distances, the point's coordinates); a position on the screen
+/// within `TRACE_DOUBT · ε · S` of a sample's border, `S` the largest of
+/// both ends' sample coordinates plus how far an error in the point or the
+/// direction moves the far end (the length and the start's depth, in
+/// samples at the far end). A step's test in doubt, or a step whose
+/// position is near a border and whose sample across it would decide the
+/// step's test otherwise, marks the ray. The halvings only move the hit
+/// along the ray past where it crosses the surface, so one in doubt (its
+/// depth test, or its position near a border with the sample across it
+/// deciding otherwise), or a hit position near a border, marks the ray
+/// only when the hit sample lies next to another face or to no surface,
+/// where the light it takes changes by more than the shading's slope.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn trace(
     view: &View,
@@ -254,16 +260,15 @@ pub(crate) fn trace(
         return none;
     };
     let eps = TRACE_DOUBT * f64::from(f32::EPSILON);
-    let tol_z = eps * (a.dist.abs() + b.dist.abs() + len + p.length());
+    let tol_z = eps * a.dist.abs().max(b.dist.abs()).max(p.length());
     let sample = view.sample_size(b.dist);
     let reach = if sample > 0.0 && sample.is_finite() {
         (len + z0.abs()) / sample
     } else {
         0.0
     };
-    let tol_s = eps * (a.sx.abs() + a.sy.abs() + b.sx.abs() + b.sy.abs() + reach);
-    let near_border = |v: f64| (v - v.round()).abs() <= tol_s;
-    let mut doubt = false;
+    let ends = a.sx.abs().max(a.sy.abs()).max(b.sx.abs()).max(b.sy.abs());
+    let tol_s = eps * (ends + reach);
     let depth_at = |u: f64| {
         if perspective {
             1.0 / ((1.0 - u) / a.dist + u / b.dist)
@@ -272,68 +277,122 @@ pub(crate) fn trace(
         }
     };
     let raw = |u: f64| (a.sx + (b.sx - a.sx) * u, a.sy + (b.sy - a.sy) * u);
-    let at = |u: f64| {
-        let (x, y) = raw(u);
-        (x.floor(), y.floor())
+    // The neighbour across a border a coordinate lies near, if any.
+    let across = |v: f64| {
+        let f = v.floor();
+        if v - f <= tol_s {
+            Some(f - 1.0)
+        } else if f + 1.0 - v <= tol_s {
+            Some(f + 1.0)
+        } else {
+            None
+        }
     };
-    let floor_doubt = |u: f64| {
-        let (x, y) = raw(u);
-        near_border(x) || near_border(y)
+    // The samples the GPU may read instead of the floor of `(rx, ry)`.
+    let others = |rx: f64, ry: f64| {
+        let (x, y) = (rx.floor(), ry.floor());
+        let (ox, oy) = (across(rx), across(ry));
+        [ox.map(|ox| (ox, y)), oy.map(|oy| (x, oy)), ox.zip(oy)]
     };
     let start = (from.0 as f64, from.1 as f64);
+    let surface_at = |x: f64, y: f64| {
+        if (x, y) == start {
+            None
+        } else {
+            depth(surfaces, w, h, x, y)
+        }
+    };
+    let mut doubt = false;
     let mut prev = (0.0, a.dist);
     for i in 1..=SSR_STEPS {
         let u = i as f64 / SSR_STEPS as f64;
-        let (x, y) = at(u);
+        let (rx, ry) = raw(u);
+        let (x, y) = (rx.floor(), ry.floor());
         if !(x >= 0.0 && y >= 0.0 && x < w as f64 && y < h as f64) {
             return Traced { hit: None, doubt };
         }
         let z = depth_at(u);
-        let found = if (x, y) != start {
-            depth(surfaces, w, h, x, y)
-        } else {
-            None
-        };
+        let room = thickness + (z - prev.1).abs();
+        let test = |zs: f64| z >= zs && z - zs <= room;
+        let found = surface_at(x, y);
         if let Some(zs) = found {
-            let room = thickness + (z - prev.1).abs();
             doubt |= (z - zs).abs() <= tol_z;
             if z >= zs - tol_z {
                 doubt |= ((z - zs) - room).abs() <= tol_z;
             }
-            if z >= zs && z - zs <= room {
-                doubt |= floor_doubt(u);
-                let (mut lo, mut hi) = (prev.0, u);
-                for _ in 0..SSR_REFINE {
-                    let mid = 0.5 * (lo + hi);
-                    let (mx, my) = at(mid);
-                    doubt |= floor_doubt(mid);
-                    let zm = depth_at(mid);
-                    let behind = depth(surfaces, w, h, mx, my).is_some_and(|zs| {
-                        doubt |= (zm - zs).abs() <= tol_z;
-                        zm >= zs
-                    });
-                    if behind {
-                        hi = mid;
-                    } else {
-                        lo = mid;
-                    }
+        }
+        let hit = found.is_some_and(test);
+        for (ox, oy) in others(rx, ry).into_iter().flatten() {
+            doubt |= surface_at(ox, oy).is_some_and(test) != hit;
+        }
+        if hit {
+            // Whether the refinement made a decision in doubt.
+            let mut fine = false;
+            let (mut lo, mut hi) = (prev.0, u);
+            for _ in 0..SSR_REFINE {
+                let mid = 0.5 * (lo + hi);
+                let (mrx, mry) = raw(mid);
+                let zm = depth_at(mid);
+                let behind = |sx: f64, sy: f64| {
+                    depth(surfaces, w, h, sx, sy).map(|zs| (zm >= zs, (zm - zs).abs() <= tol_z))
+                };
+                let here = behind(mrx.floor(), mry.floor());
+                fine |= here.is_some_and(|(_, near)| near);
+                let decided = here.is_some_and(|(b, _)| b);
+                for (ox, oy) in others(mrx, mry).into_iter().flatten() {
+                    fine |= behind(ox, oy).is_some_and(|(b, _)| b) != decided;
                 }
-                doubt |= floor_doubt(hi);
-                let (hx, hy) = at(hi);
-                let hit = if depth(surfaces, w, h, hx, hy).is_none() || (hx, hy) == start {
-                    (x as usize, y as usize)
+                if decided {
+                    hi = mid;
                 } else {
-                    (hx as usize, hy as usize)
-                };
-                return Traced {
-                    hit: Some(hit),
-                    doubt,
-                };
+                    lo = mid;
+                }
             }
+            let (hrx, hry) = raw(hi);
+            fine |= others(hrx, hry).iter().any(Option::is_some);
+            let (hx, hy) = (hrx.floor(), hry.floor());
+            let at = if depth(surfaces, w, h, hx, hy).is_none() || (hx, hy) == start {
+                (x, y)
+            } else {
+                (hx, hy)
+            };
+            if fine {
+                doubt |= beside_another_face(surfaces, w, h, at);
+            }
+            return Traced {
+                hit: Some((at.0 as usize, at.1 as usize)),
+                doubt,
+            };
         }
         prev = (u, z);
     }
     Traced { hit: None, doubt }
+}
+
+/// Whether a sample of the 3 × 3 around `(x, y)` shows another face than
+/// it, or no surface.
+fn beside_another_face(surfaces: &[Surface], w: usize, h: usize, (x, y): (f64, f64)) -> bool {
+    let face = |x: f64, y: f64| -> Option<u32> {
+        if !(x >= 0.0 && y >= 0.0 && x < w as f64 && y < h as f64) {
+            return None;
+        }
+        surfaces
+            .get(y as usize * w + x as usize)
+            .filter(|s| s.dist.is_finite())
+            .map(|s| s.face)
+    };
+    let centre = face(x, y);
+    (-1..=1).any(|dy| {
+        (-1..=1).any(|dx| {
+            let (nx, ny) = (x + f64::from(dx), y + f64::from(dy));
+            // Beyond the picture's edge counts as the same: the GPU reads
+            // nothing there either.
+            if !(nx >= 0.0 && ny >= 0.0 && nx < w as f64 && ny < h as f64) {
+                return false;
+            }
+            face(nx, ny) != centre
+        })
+    })
 }
 
 /// The contact shadow at the surface point `p` towards the unit `l`: 0
