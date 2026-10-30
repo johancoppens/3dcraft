@@ -227,7 +227,7 @@ fn the_side_panel_keeps_its_width_whatever_it_shows() {
             tokens.tree_max_width.min(1280.0 * tokens.tree_max_share),
         ),
     ] {
-        let from = pos2(shell.tree_panel_rect().unwrap().right(), split.y);
+        let from = pos2(shell.tree_panel_rect().unwrap().right() - 2.0, split.y);
         window.frame(&mut shell, &mut session, vec![Event::PointerMoved(from)]);
         window.button(&mut shell, &mut session, from, true);
         for step in 1..=6 {

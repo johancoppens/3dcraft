@@ -2822,11 +2822,11 @@ impl Shell {
     fn tree_split(&mut self, ui: &mut egui::Ui, panel: egui::Rect) {
         let tokens = self.tokens;
         let grip = egui::Rect::from_x_y_ranges(
-            panel.right() - tokens.tree_split_grip * 0.5
-                ..=panel.right() + tokens.tree_split_grip * 0.5,
+            panel.right() - tokens.tree_split_grip..=panel.right(),
             panel.y_range(),
         );
-        // A drag only: a click there still reaches the viewport.
+        // Inside the panel's edge, so every point of the viewport stays
+        // the viewport's.
         let split = ui.interact(
             grip,
             egui::Id::new("craft3d-tree-split"),
