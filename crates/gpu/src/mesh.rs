@@ -2,7 +2,7 @@
 //! single precision, relative to the centre of the mesh.
 
 use crate::GpuError;
-use craft3d_math::{Bbox3, Vec3};
+use craft3d_math::{Bbox3, Transform, Vec3};
 use craft3d_render::{FaceColors, Finish, RenderError};
 use craft3d_tess::Mesh;
 use std::sync::Arc;
@@ -62,6 +62,20 @@ fn push(bytes: &mut Vec<u8>, v: [f32; 3]) {
 /// not representable in `f32` relative to the mesh centre, are left out.
 pub(crate) fn pack(
     mesh: &Mesh,
+    colors: &FaceColors,
+    values: &[f32],
+    chunk_triangles: usize,
+) -> Result<Packed, GpuError> {
+    pack_part(mesh, 0, colors, values, chunk_triangles)
+}
+
+/// [`pack`] for a part of a scene whose face ids start at `first_face`
+/// (its faces are coloured and picked by those ids). Its material table
+/// is relative to its own centre; a mesh uploaded in parts makes one of
+/// its own ([`GpuMesh::upload_parts`]).
+fn pack_part(
+    mesh: &Mesh,
+    first_face: u32,
     colors: &FaceColors,
     values: &[f32],
     chunk_triangles: usize,
@@ -137,6 +151,7 @@ pub(crate) fn pack(
             let left = mesh.triangles.len().saturating_sub(t).min(chunk_triangles);
             current.reserve(left.saturating_mul(TRIANGLE_BYTES));
         }
+        let face = face.saturating_add(first_face);
         let color = color_word(colors.get(face));
         let finish = finish_word(colors.finish(face));
         let optics = optics_word(colors, face);
@@ -249,12 +264,118 @@ pub(crate) fn optics_table(colors: &FaceColors, origin: Vec3) -> Vec<[u32; 4]> {
 pub(crate) struct Chunk {
     pub buffer: wgpu::Buffer,
     pub vertices: u32,
+    /// The part of the mesh it belongs to: which pose it is drawn with.
+    pub part: u32,
+}
+
+/// One part of a mesh uploaded in parts ([`crate::Renderer::upload_parts`]):
+/// a body's mesh in its own coordinates, where its face ids start in the
+/// scene, and the rigid motion it is drawn with.
+#[derive(Clone, Copy, Debug)]
+pub struct MeshPart<'a> {
+    pub mesh: &'a Mesh,
+    pub first_face_id: u32,
+    pub pose: Transform,
+}
+
+/// Bytes of one pose on the GPU: three rows of four `f32` (the rotation's
+/// row and the translation's component), a vertex buffer stepped per
+/// instance ([`POSE_ATTRIBUTES`]).
+pub(crate) const POSE_BYTES: usize = 48;
+
+/// The pose's rows at the shader locations after the mesh's.
+pub(crate) const POSE_ATTRIBUTES: [wgpu::VertexAttribute; 3] = [
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x4,
+        offset: 0,
+        shader_location: 8,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x4,
+        offset: 16,
+        shader_location: 9,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x4,
+        offset: 32,
+        shader_location: 10,
+    },
+];
+
+/// The two vertex buffers of every pipeline that draws a mesh: the
+/// vertices ([`VERTEX_BYTES`], `attributes`) and the pose of the part
+/// ([`POSE_BYTES`]), one per draw.
+pub(crate) fn mesh_buffers(
+    attributes: &[wgpu::VertexAttribute],
+) -> [Option<wgpu::VertexBufferLayout<'_>>; 2] {
+    [
+        Some(wgpu::VertexBufferLayout {
+            array_stride: VERTEX_BYTES as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes,
+        }),
+        Some(wgpu::VertexBufferLayout {
+            array_stride: POSE_BYTES as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &POSE_ATTRIBUTES,
+        }),
+    ]
+}
+
+/// The pose bytes of the rigid motion `pose` for a part whose vertices
+/// are relative to `part_origin`, drawn relative to `mesh_origin`:
+/// `p ↦ R p + (R c + t − O)`, worked out in `f64` and narrowed once.
+/// `None` when it does not fit in `f32`.
+pub(crate) fn pose_bytes(
+    pose: &Transform,
+    part_origin: Vec3,
+    mesh_origin: Vec3,
+) -> Option<[u8; POSE_BYTES]> {
+    let shift = pose.point(part_origin) - mesh_origin;
+    let rows = [
+        pose.vector(Vec3::X),
+        pose.vector(Vec3::Y),
+        pose.vector(Vec3::Z),
+    ];
+    // `rows` are the columns of R; row r of R is (X_r, Y_r, Z_r).
+    let mut out = [0_u8; POSE_BYTES];
+    let row = |r: usize| -> Option<[f32; 4]> {
+        let pick = |v: Vec3| match r {
+            0 => v.x,
+            1 => v.y,
+            _ => v.z,
+        };
+        let values = [
+            pick(rows[0]) as f32,
+            pick(rows[1]) as f32,
+            pick(rows[2]) as f32,
+            pick(shift) as f32,
+        ];
+        values.iter().all(|c| c.is_finite()).then_some(values)
+    };
+    for (r, slot) in out.as_chunks_mut::<16>().0.iter_mut().enumerate() {
+        let values = row(r)?;
+        for (c, bytes) in values.iter().zip(slot.as_chunks_mut::<4>().0.iter_mut()) {
+            *bytes = c.to_le_bytes();
+        }
+    }
+    Some(out)
 }
 
 /// A mesh on the GPU, made by [`crate::Renderer::upload`]. It belongs to the
 /// renderer that made it: another renderer refuses to draw it.
 pub struct GpuMesh {
     pub(crate) chunks: Vec<Chunk>,
+    /// One pose per part ([`POSE_BYTES`] each): the identity for a mesh
+    /// uploaded whole.
+    pub(crate) poses: wgpu::Buffer,
+    /// What each part's vertices are relative to, in its own
+    /// coordinates; one entry for a mesh uploaded whole.
+    pub(crate) part_origins: Vec<Vec3>,
+    /// One identity pose: what a triangle given relative to
+    /// [`Self::origin`] (the section's cap) is drawn with.
+    pub(crate) identity: wgpu::Buffer,
+
     pub(crate) origin: Vec3,
     pub(crate) bounds: Bbox3,
     triangles: usize,
@@ -291,6 +412,24 @@ impl GpuMesh {
         self.bounds
     }
 
+    /// How many parts it was uploaded in (1 for a mesh uploaded whole).
+    pub fn part_count(&self) -> usize {
+        self.part_origins.len()
+    }
+
+    /// Draws every chunk with its part's pose.
+    pub(crate) fn draw_in(&self, pass: &mut wgpu::RenderPass<'_>) {
+        for chunk in &self.chunks {
+            let at = u64::from(chunk.part).saturating_mul(POSE_BYTES as u64);
+            pass.set_vertex_buffer(
+                1,
+                self.poses.slice(at..at.saturating_add(POSE_BYTES as u64)),
+            );
+            pass.set_vertex_buffer(0, chunk.buffer.slice(..));
+            pass.draw(0..chunk.vertices, 0..1);
+        }
+    }
+
     pub(crate) fn upload(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -299,79 +438,22 @@ impl GpuMesh {
         values: &[f32],
         owner: &Arc<()>,
     ) -> Result<GpuMesh, GpuError> {
-        let by_limit = device.limits().max_buffer_size / TRIANGLE_BYTES as u64;
-        let per_chunk = usize::try_from(by_limit).unwrap_or(usize::MAX);
-        if per_chunk == 0 {
-            return Err(GpuError::Device(
-                "the device's buffers are too small for one triangle".to_string(),
-            ));
-        }
+        let per_chunk = per_chunk(device)?;
         let packed = pack(mesh, colors, values, per_chunk)?;
         let mut chunks = Vec::with_capacity(packed.chunks.len());
-        for bytes in &packed.chunks {
-            let vertices =
-                u32::try_from(bytes.len() / VERTEX_BYTES).map_err(|_| GpuError::MeshTooLarge {
-                    triangles: mesh.triangles.len(),
-                })?;
-            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("craft3d mesh"),
-                size: bytes.len() as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            queue.write_buffer(&buffer, 0, bytes);
-            chunks.push(Chunk { buffer, vertices });
-        }
-        let optics = if packed.optics.is_empty() {
-            None
-        } else {
-            let rows = packed.optics.len() / OPTICS_TEXELS;
-            let height = u32::try_from(rows)
-                .ok()
-                .filter(|&h| h <= device.limits().max_texture_dimension_2d)
-                .ok_or(GpuError::Unsupported("more layers than the device holds"))?;
-            let size = wgpu::Extent3d {
-                width: OPTICS_TEXELS as u32,
-                height,
-                depth_or_array_layers: 1,
-            };
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("craft3d optics"),
-                size,
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba32Uint,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            });
-            let bytes: Vec<u8> = packed
-                .optics
-                .iter()
-                .flatten()
-                .flat_map(|w| w.to_le_bytes())
-                .collect();
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                &bytes,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some((OPTICS_TEXELS * 16) as u32),
-                    rows_per_image: Some(height),
-                },
-                size,
-            );
-            Some(texture.create_view(&wgpu::TextureViewDescriptor::default()))
-        };
+        push_chunks(device, queue, &packed, 0, mesh, &mut chunks)?;
+        let identity =
+            pose_bytes(&Transform::IDENTITY, Vec3::ZERO, Vec3::ZERO).ok_or_else(|| {
+                GpuError::Device("the identity does not fit in single precision".to_string())
+            })?;
+        let optics = optics_view(device, queue, &packed.optics)?;
         Ok(GpuMesh {
             optics,
             transmission: packed.transmission,
             chunks,
+            poses: pose_buffer(device, queue, &identity),
+            identity: pose_buffer(device, queue, &identity),
+            part_origins: vec![Vec3::ZERO],
             origin: packed.origin,
             bounds: packed.bounds,
             triangles: packed.triangles,
@@ -379,6 +461,229 @@ impl GpuMesh {
             serial: NEXT_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         })
     }
+    /// Uploads `parts` (a scene's bodies, each in its own coordinates)
+    /// once, each drawn with its pose; `bounds` is the box of the
+    /// triangles as placed ([`drawn_bounds`] of the placed scene's mesh),
+    /// which the depth range, the section and the studio light are
+    /// framed on. Its origin is the centre of `bounds`.
+    pub(crate) fn upload_parts(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        parts: &[MeshPart<'_>],
+        colors: &FaceColors,
+        bounds: Bbox3,
+        owner: &Arc<()>,
+    ) -> Result<GpuMesh, GpuError> {
+        let total = parts
+            .iter()
+            .fold(0usize, |n, p| n.saturating_add(p.mesh.triangles.len()));
+        if total > MAX_TRIANGLES {
+            return Err(GpuError::MeshTooLarge { triangles: total });
+        }
+        let per_chunk = per_chunk(device)?;
+        let origin = bounds
+            .center()
+            .filter(|c| c.is_finite())
+            .unwrap_or(Vec3::ZERO);
+        let mut chunks = Vec::new();
+        let mut part_origins = Vec::with_capacity(parts.len());
+        let mut triangles = 0usize;
+        for (k, part) in parts.iter().enumerate() {
+            let packed = pack_part(part.mesh, part.first_face_id, colors, &[], per_chunk)?;
+            let index =
+                u32::try_from(k).map_err(|_| GpuError::MeshTooLarge { triangles: total })?;
+            push_chunks(device, queue, &packed, index, part.mesh, &mut chunks)?;
+            part_origins.push(packed.origin);
+            triangles = triangles.saturating_add(packed.triangles);
+        }
+        let identity =
+            pose_bytes(&Transform::IDENTITY, Vec3::ZERO, Vec3::ZERO).ok_or_else(|| {
+                GpuError::Device("the identity does not fit in single precision".to_string())
+            })?;
+        // One material table for all the parts, relative to the mesh's
+        // origin as the moved vertices are.
+        let optics = optics_view(device, queue, &optics_table(colors, origin))?;
+        let mut mesh = GpuMesh {
+            optics,
+            transmission: colors.has_transmission(),
+            chunks,
+            poses: pose_buffer(device, queue, &identity),
+            identity: pose_buffer(device, queue, &identity),
+            part_origins,
+            origin,
+            bounds,
+            triangles,
+            owner: Arc::clone(owner),
+            serial: 0,
+        };
+        let poses: Vec<Transform> = parts.iter().map(|p| p.pose).collect();
+        mesh.set_poses(device, queue, &poses, bounds)?;
+        Ok(mesh)
+    }
+
+    /// Moves the parts to `poses` (one per part, in the order uploaded):
+    /// writes a few matrices, not the geometry. `bounds` is the box of
+    /// the triangles as now placed. The origin stays where it was.
+    pub(crate) fn set_poses(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        poses: &[Transform],
+        bounds: Bbox3,
+    ) -> Result<(), GpuError> {
+        if poses.len() != self.part_origins.len() {
+            return Err(GpuError::Device(format!(
+                "{} poses for a mesh of {} parts",
+                poses.len(),
+                self.part_origins.len()
+            )));
+        }
+        let mut bytes = Vec::with_capacity(poses.len().saturating_mul(POSE_BYTES));
+        for (pose, origin) in poses.iter().zip(&self.part_origins) {
+            let one = pose_bytes(pose, *origin, self.origin).ok_or_else(|| {
+                GpuError::Device("a pose does not fit in single precision".to_string())
+            })?;
+            bytes.extend_from_slice(&one);
+        }
+        if (self.poses.size() as usize) == bytes.len() {
+            queue.write_buffer(&self.poses, 0, &bytes);
+        } else {
+            self.poses = pose_buffer(device, queue, &bytes);
+        }
+        self.bounds = bounds;
+        self.serial = NEXT_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+/// The material table `optics` ([`optics_table`]) on the GPU, `None` when
+/// no face has layers.
+fn optics_view(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    optics: &[[u32; 4]],
+) -> Result<Option<wgpu::TextureView>, GpuError> {
+    let optics = if optics.is_empty() {
+        None
+    } else {
+        let rows = optics.len() / OPTICS_TEXELS;
+        let height = u32::try_from(rows)
+            .ok()
+            .filter(|&h| h <= device.limits().max_texture_dimension_2d)
+            .ok_or(GpuError::Unsupported("more layers than the device holds"))?;
+        let size = wgpu::Extent3d {
+            width: OPTICS_TEXELS as u32,
+            height,
+            depth_or_array_layers: 1,
+        };
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("craft3d optics"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba32Uint,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let bytes: Vec<u8> = optics
+            .iter()
+            .flatten()
+            .flat_map(|w| w.to_le_bytes())
+            .collect();
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some((OPTICS_TEXELS * 16) as u32),
+                rows_per_image: Some(height),
+            },
+            size,
+        );
+        Some(texture.create_view(&wgpu::TextureViewDescriptor::default()))
+    };
+    Ok(optics)
+}
+
+/// Triangles per vertex buffer on `device`.
+fn per_chunk(device: &wgpu::Device) -> Result<usize, GpuError> {
+    let by_limit = device.limits().max_buffer_size / TRIANGLE_BYTES as u64;
+    let per_chunk = usize::try_from(by_limit).unwrap_or(usize::MAX);
+    if per_chunk == 0 {
+        return Err(GpuError::Device(
+            "the device's buffers are too small for one triangle".to_string(),
+        ));
+    }
+    Ok(per_chunk)
+}
+
+/// Puts `packed`'s chunks on the GPU as chunks of part `part`.
+fn push_chunks(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    packed: &Packed,
+    part: u32,
+    mesh: &Mesh,
+    chunks: &mut Vec<Chunk>,
+) -> Result<(), GpuError> {
+    for bytes in &packed.chunks {
+        let vertices =
+            u32::try_from(bytes.len() / VERTEX_BYTES).map_err(|_| GpuError::MeshTooLarge {
+                triangles: mesh.triangles.len(),
+            })?;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("craft3d mesh"),
+            size: bytes.len() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&buffer, 0, bytes);
+        chunks.push(Chunk {
+            buffer,
+            vertices,
+            part,
+        });
+    }
+    Ok(())
+}
+
+/// A vertex buffer holding `bytes` of poses.
+fn pose_buffer(device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[u8]) -> wgpu::Buffer {
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("craft3d poses"),
+        size: bytes.len().max(POSE_BYTES) as u64,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    queue.write_buffer(&buffer, 0, bytes);
+    buffer
+}
+
+/// The box [`GpuMesh::bounds`] is for `mesh` uploaded whole: around
+/// every triangle with finite corners, as the CPU renderer frames its
+/// section and studio light. For [`crate::Renderer::upload_parts`] and
+/// [`crate::Renderer::set_poses`], of the scene's mesh as placed.
+pub fn drawn_bounds(mesh: &Mesh) -> Bbox3 {
+    let mut bounds = Bbox3::EMPTY;
+    for tri in &mesh.triangles {
+        let corners = tri.map(|k| mesh.positions.get(k as usize).copied());
+        if let [Some(a), Some(b), Some(c)] = corners
+            && a.is_finite()
+            && b.is_finite()
+            && c.is_finite()
+        {
+            for p in [a, b, c] {
+                bounds.add(p);
+            }
+        }
+    }
+    bounds
 }
 
 #[cfg(test)]

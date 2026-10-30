@@ -188,6 +188,8 @@ pub(crate) fn decode(bytes: &[u8], doc: &Document, revision: u64) -> Result<Scen
             first_face_id: r.u32()?,
             edges: Arc::new(r.lines()?),
             facts: Arc::new(r.facts()?),
+            // Not written: the page uploads what it reads as it is.
+            placement: None,
         });
     }
     let face_end = numbered(&bodies)?;

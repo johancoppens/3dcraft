@@ -302,6 +302,24 @@ pub struct SceneBody {
     /// [`Self::mesh`]. Face `k` of the body has id `first_face_id + k`
     /// in [`Scene::mesh`].
     pub facts: Arc<BodyFacts>,
+    /// For a body placed as a rigid copy of another (an assembly's
+    /// instance at its pose, or at a moment of its motion): the mesh of
+    /// the body it was copied from and the rigid motion that takes that
+    /// mesh to [`Self::mesh`]. A viewer that has uploaded the source's
+    /// mesh moves it instead of uploading the moved one, so a moment of a
+    /// motion sends the renderer a few matrices, not new geometry. `None`
+    /// for a body meshed itself.
+    pub placement: Option<ScenePlacement>,
+}
+
+/// Where a placed body's mesh comes from ([`SceneBody::placement`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScenePlacement {
+    /// The mesh of the body it was placed from, shared by every moment
+    /// that places that body.
+    pub source: Arc<Mesh>,
+    /// The rigid motion (no mirror) from `source` to the body's mesh.
+    pub pose: craft3d_math::Transform,
 }
 
 impl std::ops::Deref for SceneBody {
@@ -812,12 +830,17 @@ impl SceneCache {
 /// diagonal of the box around the sketches' points and circles; without
 /// those, one unit.
 fn model_size(regen: &Regen, doc: &Document) -> f64 {
-    let bodies: Vec<&std::sync::Arc<craft3d_topo::Body>> =
-        regen.bodies().map(|(_, body)| body).collect();
-    crate::mass::measure_ahead(&bodies);
-    let area: f64 = regen
+    // A body placed as a rigid copy (an assembly's instance) has its
+    // source's area: the source is measured, once, not each moment's copy.
+    let measured: Vec<std::sync::Arc<craft3d_topo::Body>> = regen
         .bodies()
-        .filter_map(|(_, body)| mass_of(body).ok())
+        .map(|(_, body)| crate::meshes::measured_as(body))
+        .collect();
+    let bodies: Vec<&std::sync::Arc<craft3d_topo::Body>> = measured.iter().collect();
+    crate::mass::measure_ahead(&bodies);
+    let area: f64 = measured
+        .iter()
+        .filter_map(|body| mass_of(body).ok())
         .map(|m| m.area)
         .sum();
     if area.is_finite() && area > 0.0 {
@@ -1508,7 +1531,7 @@ fn build(
         let mesh_with = |max_angle: Option<f64>| {
             let meshed = meshes
                 .mesh(body, &TessParams { max_angle, ..tess }, limit)
-                .map(|meshed| (meshed.mesh, meshed.edges, meshed.coarsened));
+                .map(|meshed| (meshed.mesh, meshed.edges, meshed.coarsened, meshed.placed));
             #[cfg(test)]
             let meshed = tests::tessellated(meshed, max_angle.is_some());
             meshed
@@ -1527,11 +1550,11 @@ fn build(
             }
             other => other,
         }
-        .map(|(mesh, edges, coarsened)| {
+        .map(|(mesh, edges, coarsened, placed)| {
             scene.coarsened |= coarsened;
-            (mesh, edges)
+            (mesh, edges, placed)
         });
-        let (mesh, edges) = match meshed {
+        let (mesh, edges, placed) = match meshed {
             Ok(both) => both,
             Err(TessError::OverBudget {
                 triangles, faces, ..
@@ -1568,12 +1591,12 @@ fn build(
         };
         // A fold folded flat lies in one plane: its layers are drawn apart
         // by their order (display only, fold_cmds::layered_mesh).
-        let (mesh, edges) = match outcome.and_then(|o| o.developed.as_ref()) {
+        let (mesh, edges, placed) = match outcome.and_then(|o| o.developed.as_ref()) {
             Some(craft3d_regen::Developed::FlatFold(flat)) => {
                 let (m, e) = crate::fold_cmds::layered_mesh(&mesh, &edges, body, &flat.offsets);
-                (Arc::new(m), Arc::new(e))
+                (Arc::new(m), Arc::new(e), None)
             }
-            _ => (mesh, edges),
+            _ => (mesh, edges, placed),
         };
         let Ok(vertex_base) = u32::try_from(scene.mesh.positions.len()) else {
             scene
@@ -1617,6 +1640,7 @@ fn build(
             first_face_id,
             edges,
             facts,
+            placement: placed.map(|(source, pose)| ScenePlacement { source, pose }),
         });
         faces_done = faces_done.saturating_add(body.faces.len());
         let triangles = scene.mesh.triangles.len();

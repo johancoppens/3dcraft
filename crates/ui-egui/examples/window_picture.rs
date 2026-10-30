@@ -247,7 +247,14 @@ fn main() -> Result<(), String> {
         })
     };
     for frame in 0..frames {
-        let time = frame as f64 * 0.1;
+        // The last frame half a second later: the work indicator shows
+        // only for work that has run a while (`Tokens::work_after_seconds`).
+        let time = frame as f64 * 0.1
+            + if frame + 1 == frames && !idle {
+                0.5
+            } else {
+                0.0
+            };
         if frame == 1
             && let Some(patch) = &set
         {

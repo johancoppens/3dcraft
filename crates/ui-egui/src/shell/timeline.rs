@@ -349,6 +349,14 @@ impl Shell {
         let tokens = self.tokens;
         let steps = self.timeline.steps;
         if steps == 0 {
+            // An assembly has no history of its own, but its motion
+            // plays (docs/design/motion.md › *Assemblies*).
+            if self.timeline.has_timeline {
+                self.motion_ui(ui);
+                if self.state.timeline.motion {
+                    self.player_controls(ui);
+                }
+            }
             return;
         }
         let shown = self.timeline.shown_step().clamp(1, steps);

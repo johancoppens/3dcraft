@@ -358,11 +358,14 @@ impl Shell {
         }
         let tokens = self.tokens;
         let motion = self.state.timeline.motion;
+        // Without steps (an assembly) there is no history to choose.
+        let has_history = self.timeline.steps > 0;
         ui.horizontal(|ui| {
-            if ui
-                .selectable_label(!motion, "History")
-                .on_hover_text("The player plays the history, step by step")
-                .clicked()
+            if has_history
+                && ui
+                    .selectable_label(!motion, "History")
+                    .on_hover_text("The player plays the history, step by step")
+                    .clicked()
                 && motion
             {
                 self.stop_playing();

@@ -58,7 +58,8 @@ fn side_of(in: VertexIn) -> f32 {
 }
 
 @vertex
-fn vs_cut(in: VertexIn) -> CutOut {
+fn vs_cut(raw: VertexIn) -> CutOut {
+    let in = placed(raw);
     let whole = vertex(in);
     var out: CutOut;
     out.clip = whole.clip;
@@ -83,7 +84,8 @@ struct ParityOut {
 }
 
 @vertex
-fn vs_parity(in: VertexIn) -> ParityOut {
+fn vs_parity(raw: VertexIn) -> ParityOut {
+    let in = placed(raw);
     var out: ParityOut;
     out.clip = vertex(in).clip;
     out.flat_normal = in.flat_normal;

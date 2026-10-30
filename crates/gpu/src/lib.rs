@@ -84,7 +84,7 @@ mod readback;
 mod renderer;
 mod studio;
 
-pub use mesh::{GpuMesh, MAX_TRIANGLES};
+pub use mesh::{GpuMesh, MAX_TRIANGLES, MeshPart, drawn_bounds};
 pub use offscreen::{AdapterSummary, Offscreen};
 pub use onscreen::{
     DepthBuffer, DrawOptions, EdgeLook, EdgeSegment, Fill, GpuLines, MAX_FILLS, MAX_SEGMENTS,

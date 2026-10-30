@@ -56,7 +56,7 @@
 //! captured ids and distances as a [`Frame`]. The window never calls them.
 
 use crate::cut;
-use crate::mesh::{GpuMesh, VERTEX_BYTES};
+use crate::mesh::{GpuMesh, MeshPart};
 use crate::peel;
 use crate::readback;
 use crate::renderer::{
@@ -64,7 +64,7 @@ use crate::renderer::{
     float_bytes, guarded, scene_pipeline, scene_source, scene_uniforms, target, uniform_entry,
 };
 use crate::{GpuError, Mesh};
-use craft3d_math::{Bbox3, Vec3};
+use craft3d_math::{Bbox3, Transform, Vec3};
 use craft3d_render::{Camera, Cut, FaceColors, Frame, NO_FACE, RenderParams};
 use std::cell::Cell;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -1327,11 +1327,7 @@ impl Onscreen {
                 bind_group_layouts: &[Some(&scene_layout)],
                 immediate_size: 0,
             });
-        let mesh_layout = wgpu::VertexBufferLayout {
-            array_stride: VERTEX_BYTES as u64,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &MESH_ATTRIBUTES,
-        };
+        let mesh_layout = crate::mesh::mesh_buffers(&MESH_ATTRIBUTES);
         let multisample = |count: u32| wgpu::MultisampleState {
             count,
             mask: !0,
@@ -1361,7 +1357,7 @@ impl Onscreen {
                         module: &scene_shader,
                         entry_point: Some("vs_main"),
                         compilation_options: wgpu::PipelineCompilationOptions::default(),
-                        buffers: &[Some(mesh_layout.clone())],
+                        buffers: &mesh_layout,
                     },
                     primitive,
                     depth_stencil: depth.clone(),
@@ -1632,6 +1628,53 @@ impl Onscreen {
     pub fn upload_colored(&self, mesh: &Mesh, colors: &FaceColors) -> Result<GpuMesh, GpuError> {
         guarded(&self.device, || {
             GpuMesh::upload(&self.device, &self.queue, mesh, colors, &[], &self.token)
+        })?
+    }
+
+    /// Puts a scene's bodies on the GPU each in its own coordinates, each
+    /// drawn with its pose ([`MeshPart`]): what an assembly's moments
+    /// move with [`Self::set_poses`] instead of uploading their meshes
+    /// again. `bounds` is the box of the triangles as placed
+    /// ([`crate::drawn_bounds`] of the scene's mesh): the depth range, the
+    /// section and the studio light are framed on it, as the CPU renderer
+    /// frames them on the placed mesh. Face ids and colours are the
+    /// scene's (each part's from its `first_face_id` on).
+    pub fn upload_parts(
+        &self,
+        parts: &[MeshPart<'_>],
+        colors: &FaceColors,
+        bounds: Bbox3,
+    ) -> Result<GpuMesh, GpuError> {
+        guarded(&self.device, || {
+            GpuMesh::upload_parts(
+                &self.device,
+                &self.queue,
+                parts,
+                colors,
+                bounds,
+                &self.token,
+            )
+        })?
+    }
+
+    /// Moves the parts of a mesh uploaded by [`Self::upload_parts`] to
+    /// `poses` (one per part, in order) with `bounds` the box of the
+    /// triangles as now placed: a few matrices are written, no geometry.
+    /// A mesh of another renderer, or a count of poses that is not its
+    /// count of parts, is refused.
+    pub fn set_poses(
+        &self,
+        mesh: &mut GpuMesh,
+        poses: &[Transform],
+        bounds: Bbox3,
+    ) -> Result<(), GpuError> {
+        if !Arc::ptr_eq(&mesh.owner, &self.token) {
+            return Err(GpuError::Device(
+                "the mesh was uploaded by another renderer".to_string(),
+            ));
+        }
+        guarded(&self.device, || {
+            mesh.set_poses(&self.device, &self.queue, poses, bounds)
         })?
     }
 
@@ -2630,10 +2673,7 @@ impl Onscreen {
         };
         let draw_mesh = |pass: &mut wgpu::RenderPass<'_>| {
             // In mesh order: the depth test's tie rule depends on it.
-            for chunk in &mesh.chunks {
-                pass.set_vertex_buffer(0, chunk.buffer.slice(..));
-                pass.draw(0..chunk.vertices, 0..1);
-            }
+            mesh.draw_in(pass);
         };
         let color_attachment = |view, load| {
             Some(wgpu::RenderPassColorAttachment {
@@ -2779,7 +2819,7 @@ impl Onscreen {
             }
             draw_mesh(&mut pass);
             if let (Some(cap), Some((_, count, true))) = (cap, cut_open) {
-                cut::draw_cap(&mut pass, cap, &count.cap_bind, &self.cap_buffer);
+                cut::draw_cap(&mut pass, cap, &count.cap_bind, &self.cap_buffer, mesh);
             }
         }
         if let Some((pipelines, peel)) = peeled {
@@ -2805,7 +2845,13 @@ impl Onscreen {
                         .cap_behind_bind
                         .as_ref()
                         .ok_or(GpuError::NothingDrawn)?;
-                    cut::draw_cap(&mut pass, &cut_peeled.cap_behind, bind, &self.cap_buffer);
+                    cut::draw_cap(
+                        &mut pass,
+                        &cut_peeled.cap_behind,
+                        bind,
+                        &self.cap_buffer,
+                        mesh,
+                    );
                 }
             }
             // The front over the one behind, per sample, into the shown
@@ -2992,12 +3038,9 @@ impl Onscreen {
             });
             pass.set_pipeline(cut_open.map_or(&self.data_pipeline, |(cut, ..)| &cut.data));
             pass.set_bind_group(0, &self.scene_bind, &[]);
-            for chunk in &mesh.chunks {
-                pass.set_vertex_buffer(0, chunk.buffer.slice(..));
-                pass.draw(0..chunk.vertices, 0..1);
-            }
+            mesh.draw_in(&mut pass);
             if let (Some(bind), Some((pipelines, ..))) = (capture_cap, cut_open) {
-                cut::draw_cap(&mut pass, &pipelines.cap_data, bind, &self.cap_buffer);
+                cut::draw_cap(&mut pass, &pipelines.cap_data, bind, &self.cap_buffer, mesh);
             }
         }
         self.queue.submit([encoder.finish()]);

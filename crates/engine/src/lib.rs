@@ -137,8 +137,8 @@ pub use scene::{
     DISPLAY_MAX_ANGLE, DISPLAY_MAX_ANGLE_DEGREES, DISPLAY_MAX_TRIANGLES,
     DISPLAY_RELATIVE_TOLERANCE, DocumentStatus, FeatureState, MAX_ARC_SEGMENTS,
     MIN_CIRCLE_SEGMENTS, PREVIEW_RELATIVE_TOLERANCE, Refined, Refinement, Scene, SceneBody,
-    SceneDatum, SceneDatumShape, SceneFeature, ScenePolyline, SceneQuality, SceneSketch,
-    SketchCurve, arc_segments, base64 as encode_base64,
+    SceneDatum, SceneDatumShape, SceneFeature, ScenePlacement, ScenePolyline, SceneQuality,
+    SceneSketch, SketchCurve, arc_segments, base64 as encode_base64,
 };
 pub use scrub::{ScrubPosition, step_caption};
 pub use section::{MAX_SECTION_EXTENT, SECTION_CAP_COLOR, SectionPlane, SectionSpec};

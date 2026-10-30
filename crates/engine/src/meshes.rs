@@ -23,12 +23,13 @@
 //! `apps/craft3d/src/refine.rs`). The lock is held to look up and to
 //! keep, never while meshing.
 
-use craft3d_math::Vec3;
+use craft3d_math::{Transform, Vec3};
 use craft3d_regen::Names;
 use craft3d_tess::{
     Mesh, TessError, TessParams, tessellate_body_and_edges, tessellate_within_budget,
 };
 use craft3d_topo::Body;
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 /// A body's edges as polylines, one per edge in the order of the B-rep
@@ -45,6 +46,110 @@ pub(crate) struct BodyMesh {
     /// for, to stay within what the tessellator can do or within its own
     /// budget ([`Limit::Own`]).
     pub coarsened: bool,
+    /// For a body placed as a rigid copy of another ([`note_placed`]):
+    /// the mesh of the body it was copied from, and the motion that
+    /// takes that mesh to this one. A viewer that has the source's mesh
+    /// uploaded moves it, it does not upload this one.
+    pub placed: Option<(Arc<Mesh>, Transform)>,
+}
+
+/// How deep a chain of placed bodies is followed (a body placed from a
+/// body placed from another, as subassemblies nest): far deeper than any
+/// assembly nests; beyond it a body is meshed itself.
+const PLACED_DEPTH: usize = 32;
+
+/// A body made as a rigid copy of another (an assembly's instance placed
+/// by its pose, `asm::build_shown`): the copy, held by a `Weak` (so no
+/// other body can be where it is while the entry exists), the body it was
+/// copied from, and the rigid motion.
+struct Placement {
+    placed: Weak<Body>,
+    source: Arc<Body>,
+    pose: Transform,
+}
+
+/// Every placed body still alive, by the address of its `Arc`: a fact of
+/// the body, true for as long as it lives, whichever session meshes it.
+static PLACED: Mutex<BTreeMap<usize, Placement>> = Mutex::new(BTreeMap::new());
+
+/// How many placements were kept when the dead ones were last let go.
+static PLACED_PRUNED: Mutex<usize> = Mutex::new(0);
+
+/// Notes that `placed` is `source` moved by `pose`, so that its mesh, its
+/// edges and its facts are those of `source` moved by `pose`: the source
+/// is meshed once, and every moment of a motion moves that mesh instead
+/// of meshing a new body (docs/design/motion.md › *Assemblies*). Only a
+/// rigid motion that does not mirror is noted (a mirror turns the
+/// triangles inside out); a body not noted is meshed itself. The scene
+/// of a placed body does not depend on whether a mesh was found in the
+/// store or made now: it is always the moved mesh of its source.
+pub(crate) fn note_placed(placed: &Arc<Body>, source: &Arc<Body>, pose: &Transform) {
+    if !(pose.is_isometry(1e-9) && pose.determinant() > 0.0) {
+        return;
+    }
+    let mut map = PLACED.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut pruned = PLACED_PRUNED.lock().unwrap_or_else(PoisonError::into_inner);
+    if map.len() > pruned.saturating_mul(2).saturating_add(64) {
+        map.retain(|_, p| p.placed.strong_count() > 0);
+        *pruned = map.len();
+    }
+    map.insert(
+        Arc::as_ptr(placed) as usize,
+        Placement {
+            placed: Arc::downgrade(placed),
+            source: Arc::clone(source),
+            pose: *pose,
+        },
+    );
+}
+
+/// The body `body` was placed from and the motion, when it was placed
+/// ([`note_placed`]).
+fn placed_of(body: &Arc<Body>) -> Option<(Arc<Body>, Transform)> {
+    let map = PLACED.lock().unwrap_or_else(PoisonError::into_inner);
+    let found = map.get(&(Arc::as_ptr(body) as usize))?;
+    std::ptr::eq(found.placed.as_ptr(), Arc::as_ptr(body))
+        .then(|| (Arc::clone(&found.source), found.pose))
+}
+
+/// The body a placed body comes from at the end of its chain, and the
+/// motion from there to it; `None` for a body that was not placed.
+fn root_of(body: &Arc<Body>) -> Option<(Arc<Body>, Transform)> {
+    let (mut source, mut pose) = placed_of(body)?;
+    for _ in 0..PLACED_DEPTH {
+        let Some((further, first)) = placed_of(&source) else {
+            return Some((source, pose));
+        };
+        // `first` takes `further` to `source`, `pose` takes `source` on.
+        pose = first.then(&pose);
+        source = further;
+    }
+    None
+}
+
+/// The body whose measures (its area) `body` has: the body it was placed
+/// from at the end of its chain when it was placed by a rigid motion
+/// ([`note_placed`]), else itself.
+pub(crate) fn measured_as(body: &Arc<Body>) -> Arc<Body> {
+    root_of(body).map_or_else(|| Arc::clone(body), |(source, _)| source)
+}
+
+/// `mesh` moved by the rigid motion `pose`: its positions and normals.
+fn moved_mesh(mesh: &Mesh, pose: &Transform) -> Mesh {
+    Mesh {
+        positions: mesh.positions.iter().map(|&p| pose.point(p)).collect(),
+        normals: mesh.normals.iter().map(|&n| pose.vector(n)).collect(),
+        triangles: mesh.triangles.clone(),
+        face_ids: mesh.face_ids.clone(),
+    }
+}
+
+/// `edges` moved by `pose`.
+fn moved_edges(edges: &EdgePolylines, pose: &Transform) -> EdgePolylines {
+    edges
+        .iter()
+        .map(|line| line.iter().map(|&p| pose.point(p)).collect())
+        .collect()
 }
 
 /// What a body is meshed within, beside its tolerance and angle.
@@ -306,7 +411,29 @@ impl MeshStore {
     /// coarsened for a budget of the body's own, and an error, serve only
     /// the limit they were made under; a scene's budget ([`Limit::Left`])
     /// keeps only a mesh that was within it.
+    ///
+    /// A placed body ([`note_placed`]) is the mesh of the body it was
+    /// placed from, moved.
     pub(crate) fn mesh(
+        &self,
+        body: &Arc<Body>,
+        params: &TessParams,
+        limit: Limit,
+    ) -> Result<BodyMesh, TessError> {
+        let Some((source, pose)) = root_of(body) else {
+            return self.mesh_own(body, params, limit);
+        };
+        let made = self.mesh_own(&source, params, limit)?;
+        Ok(BodyMesh {
+            mesh: Arc::new(moved_mesh(&made.mesh, &pose)),
+            edges: Arc::new(moved_edges(&made.edges, &pose)),
+            coarsened: made.coarsened,
+            placed: Some((made.mesh, pose)),
+        })
+    }
+
+    /// [`Self::mesh`] of the body itself.
+    fn mesh_own(
         &self,
         body: &Arc<Body>,
         params: &TessParams,
@@ -359,6 +486,7 @@ impl MeshStore {
                     mesh: Arc::new(within.mesh),
                     edges: Arc::new(within.edges),
                     coarsened: within.tolerance > params.chordal_tolerance,
+                    placed: None,
                 })
             }
             Limit::Left(left) => tessellate_body_and_edges(
@@ -373,6 +501,7 @@ impl MeshStore {
                     mesh: Arc::new(mesh),
                     edges: Arc::new(both.edges),
                     coarsened: false,
+                    placed: None,
                 })
             }),
         };
@@ -386,7 +515,26 @@ impl MeshStore {
 
     /// The facts of `body` with `names` ([`BodyFacts`]): found here when
     /// they were worked out before, worked out and kept otherwise.
+    /// A placed body's are those of the body it was placed from, its
+    /// vertices moved.
     pub(crate) fn facts(&self, body: &Arc<Body>, names: Option<&Arc<Names>>) -> Arc<BodyFacts> {
+        if let Some((source, pose)) = root_of(body)
+            && source.vertices.len() == body.vertices.len()
+            && source.edges.len() == body.edges.len()
+            && source.faces.len() == body.faces.len()
+        {
+            let of_source = self.facts_own(&source, names);
+            let mut facts = (*of_source).clone();
+            for v in &mut facts.vertices {
+                *v = pose.point(*v);
+            }
+            return Arc::new(facts);
+        }
+        self.facts_own(body, names)
+    }
+
+    /// [`Self::facts`] of the body itself.
+    fn facts_own(&self, body: &Arc<Body>, names: Option<&Arc<Names>>) -> Arc<BodyFacts> {
         let key = Key::Facts(names.map(Arc::downgrade));
         if let Some(Kept::Facts(found)) = self.lock().find(body, &key) {
             return found;
@@ -556,6 +704,55 @@ mod tests {
             chordal_tolerance: tolerance,
             ..TessParams::default()
         }
+    }
+
+    /// A body placed from a body placed from a source (a subassembly's
+    /// instance inside an assembly) is the source's mesh moved by the
+    /// inner pose first and the outer one after it, with the source
+    /// meshed once; a mirror is not noted, and that body is meshed itself.
+    #[test]
+    fn a_nested_placement_composes_its_poses_and_meshes_the_source_once() {
+        let store = MeshStore::new(usize::MAX);
+        let source = block(2.0);
+        let inner = Transform::rotation(Vec3::new(0.0, 0.0, 1.0), 0.7)
+            .unwrap()
+            .then(&Transform::translation(Vec3::new(5.0, -1.0, 2.0)));
+        let outer = Transform::rotation(Vec3::new(1.0, 1.0, 0.0), -0.4)
+            .unwrap()
+            .then(&Transform::translation(Vec3::new(-3.0, 4.0, 0.5)));
+        let middle = Arc::new(source.transformed(&inner).unwrap());
+        note_placed(&middle, &source, &inner);
+        let placed = Arc::new(middle.transformed(&outer).unwrap());
+        note_placed(&placed, &middle, &outer);
+        let (root, pose) = root_of(&placed).expect("placed");
+        assert!(Arc::ptr_eq(&root, &source));
+        assert!(Arc::ptr_eq(&measured_as(&placed), &source));
+        let own = store.mesh(&source, &params(0.1), Limit::None).unwrap();
+        let moved = store.mesh(&placed, &params(0.1), Limit::None).unwrap();
+        // Only the source was meshed and kept.
+        assert_eq!(store.len(), 1);
+        let (from, by) = moved.placed.clone().expect("a placed mesh");
+        assert!(Arc::ptr_eq(&from, &own.mesh));
+        assert_eq!(by, pose);
+        for (p, q) in moved.mesh.positions.iter().zip(&own.mesh.positions) {
+            // Inner first, then outer, within rounding.
+            let twice = outer.point(inner.point(*q));
+            assert!((*p - twice).length() < 1e-12, "{p:?} {twice:?}");
+            // And bit for bit the composed pose.
+            assert_eq!(*p, pose.point(*q));
+        }
+        // Its vertices are the placed body's own, within rounding.
+        let facts = store.facts(&placed, None);
+        for (v, w) in facts.vertices.iter().zip(&placed.vertices) {
+            assert!((*v - w.point).length() < 1e-12);
+        }
+        // A mirror is not noted: the body is meshed itself.
+        let mirror = Transform::mirror(Vec3::ZERO, Vec3::new(1.0, 0.0, 0.0)).unwrap();
+        let mirrored = Arc::new(source.transformed(&mirror).unwrap());
+        note_placed(&mirrored, &source, &mirror);
+        assert!(root_of(&mirrored).is_none());
+        let own_mirror = store.mesh(&mirrored, &params(0.1), Limit::None).unwrap();
+        assert!(own_mirror.placed.is_none());
     }
 
     /// The same body at the same sampling is meshed once; another

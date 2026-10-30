@@ -415,6 +415,10 @@ mod gpu {
         /// it was sampled: the quick first picture and the display scene
         /// that replaces it are two meshes of one revision.
         uploaded: Option<(MeshKey, GpuMesh)>,
+        /// What the uploaded mesh's parts are, when it was uploaded in
+        /// parts (an assembly): a scene with the same parts is drawn by
+        /// moving them.
+        parts: Option<crate::viewport::PartsKey>,
     }
 
     fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
@@ -440,6 +444,7 @@ mod gpu {
             Ok(Self {
                 offscreen,
                 uploaded: None,
+                parts: None,
             })
         }
 
@@ -486,15 +491,45 @@ mod gpu {
             // A render that panics inside wgpu (a driver bug) must not end
             // the thread; it ends the GPU's use.
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                if self.uploaded.as_ref().is_none_or(|(r, _)| *r != revision) {
+                // Values of an analysis (draft, curvature) follow the
+                // poses: such a scene is uploaded whole.
+                let parts = scene
+                    .filter(|_| values.is_empty())
+                    .and_then(crate::viewport::scene_parts);
+                let moved = match (&parts, &mut self.uploaded) {
+                    // Another moment of the same parts: moved, not
+                    // uploaded again.
+                    (Some(parts), Some((key, uploaded)))
+                        if *key != revision && self.parts.as_ref() == Some(&parts.key) =>
+                    {
+                        self.offscreen.renderer().set_poses(
+                            uploaded,
+                            &parts.poses,
+                            craft3d_gpu::drawn_bounds(mesh),
+                        )?;
+                        *key = revision;
+                        true
+                    }
+                    _ => false,
+                };
+                if !moved && self.uploaded.as_ref().is_none_or(|(r, _)| *r != revision) {
                     // The old copy goes first: twice the model would not
                     // fit a small device.
                     self.uploaded = None;
-                    let mesh = self
-                        .offscreen
-                        .renderer()
-                        .upload_analysed(mesh, colors, values)?;
-                    self.uploaded = Some((revision, mesh));
+                    self.parts = None;
+                    let uploaded = match &parts {
+                        Some(parts) => self.offscreen.renderer().upload_parts(
+                            &parts.parts,
+                            colors,
+                            craft3d_gpu::drawn_bounds(mesh),
+                        )?,
+                        None => self
+                            .offscreen
+                            .renderer()
+                            .upload_analysed(mesh, colors, values)?,
+                    };
+                    self.uploaded = Some((revision, uploaded));
+                    self.parts = parts.map(|p| p.key);
                 }
                 let (_, uploaded) = self.uploaded.as_ref().ok_or(GpuError::NothingDrawn)?;
                 match studio {

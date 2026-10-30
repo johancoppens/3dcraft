@@ -892,10 +892,14 @@ fn build_shown(doc: &Document, assembly: &Assembly, instances: &mut [InstanceSta
                 });
             }
             st.bodies.push(id);
+            let placed = Arc::new(placed);
+            // Meshed as its source's mesh moved (`meshes.rs`): a moment of
+            // a motion meshes nothing.
+            crate::meshes::note_placed(&placed, &body, &st.pose);
             results.push(FeatureResult {
                 id,
                 status: Status::Ok,
-                body: Some(Arc::new(placed)),
+                body: Some(placed),
                 sketch: None,
                 datum: None,
                 names,

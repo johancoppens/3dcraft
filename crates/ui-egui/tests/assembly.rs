@@ -660,6 +660,84 @@ fn the_four_bar_moves_over_t_in_the_viewport() {
     assert_ne!(pictures[1], pictures[2]);
 }
 
+/// The player plays an assembly's motion (docs/design/motion.md ›
+/// *Assemblies*): `ui.set {timeline: {motion, playing}}` on an assembly,
+/// which has no features of its own to step through, runs its `t` from 0
+/// to 1 and stops, then back and forth; the crank goes round, the
+/// document does not change, and the status bar says `Playing` and the
+/// moment's `t` instead of each moment's answer.
+#[test]
+fn the_player_plays_an_assembly() {
+    let (mut s, _dir) = window_session("player");
+    let mut shell = Shell::new();
+    let mut window = Window::new();
+    four_bar(&mut s);
+    run(&mut s, "variable.set", json!({ "name": "t", "expr": "0" }));
+    run(
+        &mut s,
+        "variable.set",
+        json!({ "name": "Drive_angle", "expr": "360 deg * t" }),
+    );
+    window.frame(&mut shell, &mut s);
+    let revision = s.document_revision();
+    let got = call(&mut shell, &mut s, "ui.get", json!({}));
+    assert_eq!(got["timeline"]["hasTimeline"], true, "{}", got["timeline"]);
+    call(
+        &mut shell,
+        &mut s,
+        "ui.set",
+        json!({ "timeline": { "motion": true, "playing": true, "speed": 2 } }),
+    );
+    let shown_t = |shell: &mut Shell, s: &mut Session| {
+        call(shell, s, "ui.get", json!({}))["timeline"]["t"].as_f64()
+    };
+    let mut seen = Vec::new();
+    let mut corners = Vec::new();
+    let mut playing_said = false;
+    for _ in 0..600 {
+        window.frame(&mut shell, &mut s);
+        if let Some(t) = shown_t(&mut shell, &mut s)
+            && seen.last() != Some(&t)
+        {
+            seen.push(t);
+            corners.push(crank_box(&shell));
+        }
+        playing_said |= shell.status_shown(craft3d_ui_egui::StatusSlot::Command) == Some("Playing");
+        if call(&mut shell, &mut s, "ui.get", json!({}))["timeline"]["playing"] == false {
+            break;
+        }
+    }
+    assert_eq!(seen.first(), Some(&0.0), "{seen:?}");
+    assert_eq!(seen.last(), Some(&1.0), "{seen:?}");
+    assert!(seen.windows(2).all(|w| w[1] > w[0]), "{seen:?}");
+    assert!(seen.len() >= 8, "{seen:?}");
+    assert!(playing_said, "the status bar said Playing while it played");
+    // The crank went round: its box moved.
+    assert!(corners.windows(2).any(|w| w[0] != w[1]), "{corners:?}");
+    assert_eq!(s.document_revision(), revision);
+    // Back and forth, from 1 back to 0.
+    call(
+        &mut shell,
+        &mut s,
+        "ui.set",
+        json!({ "timeline": { "motion": true, "playing": true, "bounce": true, "speed": 2 } }),
+    );
+    let mut back = Vec::new();
+    for _ in 0..600 {
+        window.frame(&mut shell, &mut s);
+        if let Some(t) = shown_t(&mut shell, &mut s)
+            && back.last() != Some(&t)
+        {
+            back.push(t);
+        }
+        if call(&mut shell, &mut s, "ui.get", json!({}))["timeline"]["playing"] == false {
+            break;
+        }
+    }
+    assert!(back.iter().any(|t| *t < 0.5), "{back:?}");
+    assert_eq!(back.last(), Some(&0.0), "{back:?}");
+}
+
 /// Two faces of two instances selected: a right click offers the mates
 /// that join them first ("Revolute between these", …), and one issues
 /// `mate.add` with the two faces named through their instances.

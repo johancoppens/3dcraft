@@ -288,19 +288,25 @@ pub struct Tokens {
     /// The widest a dialog over the window (an error, the export's
     /// options) lays its text out, in points.
     pub dialog_width: f32,
-    /// Work in progress (2026-10-26, the developer's design): a thin bar
-    /// across the top of the viewport in the info accent (progress is
-    /// information), `work_bar` points high, that covers nothing and never
-    /// changes size: the part done when that is known, otherwise a piece
-    /// `work_sweep` of the width wide sweeping across once every
-    /// `work_sweep_seconds` (slow and calm). The words go in the status
-    /// bar, in an item `status_work_width` points wide whatever they say.
-    /// While the viewport has nothing to show yet (a first file opening),
-    /// a small note in its middle, `work_note_width` points wide, says
-    /// what is opening.
-    pub work_bar: f32,
-    pub work_sweep: f32,
-    pub work_sweep_seconds: f32,
+    /// Work in progress (2026-10-30, the developer's design after the
+    /// bar across the viewport flickered under a motion played 10 times a
+    /// second): a small spinner `work_spinner` points across, in the info
+    /// accent (progress is information), at the start of an item of the
+    /// status bar `status_work_width` points wide whatever it says, with
+    /// the words after it. It shows only for work that has run longer
+    /// than `work_after_seconds` (a motion's moment, a quick edit never
+    /// shows it), and once shown it stays at least `work_hold_seconds`,
+    /// so it never blinks. While the viewport has nothing to show yet (a
+    /// first file opening), a small note in its middle,
+    /// `work_note_width` points wide, says what is opening (after the
+    /// same wait). The texts of the status bar that change while work or
+    /// a motion runs (the last command and its answer, the renderer's
+    /// numbers, the work) change at most once every
+    /// `status_hold_seconds`; an error shows at once.
+    pub work_spinner: f32,
+    pub work_after_seconds: f32,
+    pub work_hold_seconds: f32,
+    pub status_hold_seconds: f32,
     pub work_note_width: f32,
     pub status_work_width: f32,
     /// The row of document tabs above the viewport: the fill of a tab, of
@@ -532,9 +538,10 @@ impl Tokens {
             field_bar_radius: 1,
             inset: 10.0,
             dialog_width: 420.0,
-            work_bar: 3.0,
-            work_sweep: 0.25,
-            work_sweep_seconds: 2.4,
+            work_spinner: 9.0,
+            work_after_seconds: 0.35,
+            work_hold_seconds: 0.3,
+            status_hold_seconds: 0.25,
             work_note_width: 240.0,
             status_work_width: 250.0,
             tab_fill: [30, 29, 28],

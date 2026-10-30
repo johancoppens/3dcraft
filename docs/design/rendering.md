@@ -736,3 +736,18 @@ design) and gives a paler one. Held by `undisplay_gives_back_every_byte_the_curv
 `clear_glass_on_a_plain_white_background_stays_white` (CPU, and GPU against 250 on every adapter). Cost (1 002 faces, 1020×777, readback with the readback itself, every seventh part solid
 glass): RADV 22.5 → 23.5 ms layer 1, 18.5 → 27.5 ms polished; radeonsi 18.8 → 24.8 and 24.7 → 28.1 ms;
 the CPU 2.0 s.
+
+### Parts moved by poses (2026-10-30)
+
+An assembly's scene says per body which source mesh it is and the rigid motion that places it
+(`SceneBody::placement`, [`motion.md`](motion.md) › *Costs*). The GPU renderer takes such a scene as parts
+(`Renderer::upload_parts`, `Onscreen::upload_parts`): each part packed as a mesh of its own (vertices relative to
+its own centre, its face ids from where its body's start in the scene), every pipeline that draws a mesh with a
+second vertex buffer stepped per instance holding the part's pose (three rows of four `f32` at shader locations 8 to 10, after the vertex's optics and analysis value at 6 and 7: 11 attributes, within WebGL2's 16; the rotation and the
+translation relative to the scene's origin, worked out in `f64`, `mesh::pose_bytes`), bound per chunk at the
+part's offset (no first-instance, which WebGL2 lacks), and `placed` in `scene.wgsl` moving the position and both
+normals before every vertex entry point. A mesh uploaded whole is one part at the identity, which moves nothing
+(products by 1 and 0 are exact). A moment of the same parts is `set_poses`: 48 bytes a part and the box of the
+placed triangles (`drawn_bounds`, what the depth range, the section and the studio light are framed on, as on the
+CPU). Held by `crates/gpu/tests/parts.rs` against the CPU renderer drawing the moved mesh (oracle 7's tolerances),
+near the origin and 1e7 away, after uploading and after moving.

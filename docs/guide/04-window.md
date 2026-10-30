@@ -23,11 +23,14 @@ open, save, import and export files, and let you look, play, click and select.
 | 9 | **Display bar** | **Sketches**, **Datums**, **Edges**, **See-through** and **Section** |
 
 At the bottom is the **status bar**: the document's units, its file, when it was autosaved, the last
-command and its answer, and which renderer drew the picture. While 3DCraft is working, a thin bar runs
-across the top of the viewport and the status bar says what it is doing, on the right: *Opening
-welding-table… 41/82* while a file's features are built, then *Checking 14 assertions… 5/14* while its
-assertions are measured (the model is already there to look at). Until a newly opened file has
-something to show, the middle of the viewport says *Opening welding-table…*.
+command and its answer, and which renderer drew the picture. When 3DCraft works for more than a moment,
+a small spinner on the right of the status bar says what it is doing: *Opening welding-table… 41/82*
+while a file's features are built, then *Checking 14 assertions… 5/14* while its assertions are
+measured (the model is already there to look at). Quick work, such as each moment of a motion that
+plays, never shows it, and once shown it stays a little while, so it does not blink. Until a newly
+opened file has something to show, the middle of the viewport says *Opening welding-table…*. The texts
+of the status bar change at most a few times a second; while a motion plays it says *Playing* and the
+moment's `t`. An error shows at once and stays.
 
 ## The start screen
 
@@ -164,7 +167,9 @@ With a timeline, **History** and **Motion** appear above the player. In Motion t
 player plays it: from 0 to 1 in 4 s at 1×, **Loop** starts again at 0, **Back and forth** turns round at the
 end, and **Collisions** draws the parts that overlap in red. The view names the moment, such as
 `t = 0.500 · collision: Wall and Crank`. As with the history, nothing in the document changes; only the
-features that use `t` are rebuilt for each moment, so a heavy model plays slower rather than skipping.
+features that use `t` are rebuilt for each moment, so a heavy model plays slower rather than skipping. An
+assembly has no history of its own, so it shows only **Motion**: its parts are moved, not rebuilt
+([Assemblies](17-assemblies.md#motion)).
 
 An agent does the same with `view.motion {"t": 0.5, "collisions": true}`, draws a point's path with
 `view.trace` (exported with `file.export {"path": "path.svg", "trace": "Trace 1"}`), checks assertions over the

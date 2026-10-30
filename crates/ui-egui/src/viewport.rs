@@ -2818,3 +2818,68 @@ mod tests {
         assert!((y.to[0] - 200.0).abs() < 1e-9 && (y.to[1] - 200.0).abs() < 1e-9);
     }
 }
+
+/// A scene whose bodies are placed as rigid copies (an assembly, at
+/// rest or at a moment of its motion: [`craft3d_engine::SceneBody::placement`])
+/// as parts for the GPU: each body's source mesh and its pose, what a
+/// renderer uploads once and then moves ([`craft3d_gpu::Renderer::set_poses`]).
+pub struct ScenePartsOf<'a> {
+    pub parts: Vec<craft3d_gpu::MeshPart<'a>>,
+    pub poses: Vec<craft3d_math::Transform>,
+    pub key: PartsKey,
+}
+
+/// What a scene's parts were uploaded from: the source meshes (held, so
+/// that no other mesh can be where one was), where each body's face ids
+/// start, and the face colours. Two scenes with the same key differ only
+/// in their poses.
+#[derive(Clone, Debug)]
+pub struct PartsKey {
+    meshes: Vec<(std::sync::Arc<craft3d_tess::Mesh>, u32)>,
+    colors: craft3d_render::FaceColors,
+}
+
+impl PartialEq for PartsKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.meshes.len() == other.meshes.len()
+            && self
+                .meshes
+                .iter()
+                .zip(&other.meshes)
+                .all(|((a, fa), (b, fb))| std::sync::Arc::ptr_eq(a, b) && fa == fb)
+            && self.colors == other.colors
+    }
+}
+
+/// The parts of `scene` when any of its bodies is placed; `None` for a
+/// scene of bodies meshed themselves (a part), which is uploaded whole.
+/// A body that is not placed is a part of its own mesh at the identity.
+pub fn scene_parts(scene: &Scene) -> Option<ScenePartsOf<'_>> {
+    if scene.bodies.iter().all(|b| b.placement.is_none()) {
+        return None;
+    }
+    let mut parts = Vec::with_capacity(scene.bodies.len());
+    let mut poses = Vec::with_capacity(scene.bodies.len());
+    let mut meshes = Vec::with_capacity(scene.bodies.len());
+    for body in scene.bodies.iter() {
+        let (mesh, pose) = match &body.placement {
+            Some(placed) => (&placed.source, placed.pose),
+            None => (&body.mesh, craft3d_math::Transform::IDENTITY),
+        };
+        parts.push(craft3d_gpu::MeshPart {
+            mesh,
+            first_face_id: body.first_face_id,
+            pose,
+        });
+        poses.push(pose);
+        meshes.push((std::sync::Arc::clone(mesh), body.first_face_id));
+    }
+    Some(ScenePartsOf {
+        parts,
+        poses,
+        key: PartsKey {
+            meshes,
+            colors: (*scene.face_colors).clone(),
+        },
+    })
+}

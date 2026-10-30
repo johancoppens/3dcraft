@@ -82,6 +82,9 @@ struct Uploaded {
     /// (`ViewAnalysis::values_key`).
     values: usize,
     mesh: GpuMesh,
+    /// What the mesh's parts are, when it was uploaded in parts (an
+    /// assembly): a scene with the same parts is drawn by moving them.
+    parts: Option<crate::viewport::PartsKey>,
     lines: GpuLines,
     triangles: usize,
 }
@@ -621,7 +624,7 @@ impl Direct {
 
     /// Uploads what changed and draws. Returns the number of triangles.
     fn draw(&mut self, scene: Option<&Scene>, wanted: &Shown) -> Result<usize, DirectFailure> {
-        let same_mesh = self.uploaded.as_ref().is_some_and(|u| {
+        let mut same_mesh = self.uploaded.as_ref().is_some_and(|u| {
             u.revision == wanted.revision
                 && u.tolerance == wanted.tolerance
                 && u.values == wanted.values
@@ -645,22 +648,61 @@ impl Direct {
                 && u.see_through == see_through
                 && u.values == wanted.values
         });
-        if !same_lines {
-            let lines = self
-                .onscreen
-                .upload_overlay(
-                    &segments_marked(
-                        scene,
-                        wanted.selected.as_deref(),
-                        &wanted.tokens,
-                        wanted.scale,
-                        &wanted.marks,
-                        see_through,
-                    ),
-                    &fills(&wanted.marks, &wanted.tokens),
+        // Another moment of the same parts (an assembly's motion): they are
+        // moved, a few matrices, not uploaded again. (The lines over them,
+        // its edges, are uploaded below.)
+        // Values of an analysis (draft, curvature) follow the poses: such a
+        // scene is uploaded whole.
+        let parts = scene
+            .filter(|_| wanted.values == 0)
+            .and_then(crate::viewport::scene_parts);
+        // Moved now: the upload is the new moment's only once its lines
+        // are too (committed below; dropped when they fail).
+        let mut moved = None;
+        if !same_mesh
+            && let (Some(parts), Some(scene), Some(uploaded)) =
+                (&parts, scene, self.uploaded.as_mut())
+            && uploaded.parts.as_ref() == Some(&parts.key)
+        {
+            self.onscreen
+                .set_poses(
+                    &mut uploaded.mesh,
+                    &parts.poses,
+                    craft3d_gpu::drawn_bounds(&scene.mesh),
                 )
                 .map_err(classify)?;
+            moved = Some(scene.mesh.triangles.len());
+            same_mesh = true;
+        }
+        if !same_lines {
+            let lines = self.onscreen.upload_overlay(
+                &segments_marked(
+                    scene,
+                    wanted.selected.as_deref(),
+                    &wanted.tokens,
+                    wanted.scale,
+                    &wanted.marks,
+                    see_through,
+                ),
+                &fills(&wanted.marks, &wanted.tokens),
+            );
+            let lines = match lines {
+                Ok(lines) => lines,
+                Err(error) => {
+                    // The parts stand at the new moment, the lines at the
+                    // old one: neither is kept as either.
+                    if moved.is_some() {
+                        self.uploaded = None;
+                    }
+                    return Err(classify(error));
+                }
+            };
             if same_mesh && let Some(uploaded) = &mut self.uploaded {
+                if let Some(triangles) = moved {
+                    uploaded.revision = wanted.revision;
+                    uploaded.tolerance = wanted.tolerance;
+                    uploaded.triangles = triangles;
+                }
                 uploaded.lines = lines;
                 uploaded.see_through = see_through;
                 uploaded.selected.clone_from(&wanted.selected);
@@ -681,11 +723,17 @@ impl Direct {
                     .filter(|_| wanted.values != 0)
                     .map(|a| Arc::clone(&a.values))
                     .unwrap_or_default();
-                let uploaded = self
-                    .onscreen
-                    .upload_analysed(mesh, colors, &values)
-                    .map_err(classify)?;
+                let uploaded = match &parts {
+                    Some(parts) => self.onscreen.upload_parts(
+                        &parts.parts,
+                        colors,
+                        craft3d_gpu::drawn_bounds(mesh),
+                    ),
+                    None => self.onscreen.upload_analysed(mesh, colors, &values),
+                }
+                .map_err(classify)?;
                 self.uploaded = Some(Uploaded {
+                    parts: parts.map(|p| p.key),
                     revision: wanted.revision,
                     tolerance: wanted.tolerance,
                     selected: wanted.selected.clone(),

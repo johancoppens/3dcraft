@@ -3,11 +3,11 @@
 
 use crate::GpuError;
 use crate::cut;
-use crate::mesh::{GpuMesh, VERTEX_BYTES};
+use crate::mesh::{GpuMesh, MeshPart};
 use crate::peel;
 use crate::readback;
 use crate::studio::{self, Passes, Studio, StudioGpu, StudioTargets};
-use craft3d_math::Bbox3;
+use craft3d_math::{Bbox3, Transform};
 use craft3d_render::{
     Camera, Cut, FaceColors, Frame, MAX_SAMPLES, MAX_SIDE, MAX_SSAA, NO_FACE, Projection,
     RenderError, RenderParams, SHADE_AMBIENT, SHADE_DIFFUSE, SHADE_FILL, SHADE_HIGHLIGHT_AMBIENT,
@@ -825,11 +825,7 @@ pub(crate) fn scene_pipeline_from(
             module,
             entry_point: Some(vertex),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
-            buffers: &[Some(wgpu::VertexBufferLayout {
-                array_stride: VERTEX_BYTES as u64,
-                step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &MESH_ATTRIBUTES,
-            })],
+            buffers: &crate::mesh::mesh_buffers(&MESH_ATTRIBUTES),
         },
         primitive: scene_primitive(),
         depth_stencil: Some(step.depth_stencil()),
@@ -1165,6 +1161,53 @@ impl Renderer {
     pub fn upload_colored(&self, mesh: &Mesh, colors: &FaceColors) -> Result<GpuMesh, GpuError> {
         guarded(&self.device, || {
             GpuMesh::upload(&self.device, &self.queue, mesh, colors, &[], &self.token)
+        })?
+    }
+
+    /// Puts a scene's bodies on the GPU each in its own coordinates, each
+    /// drawn with its pose ([`MeshPart`]): what an assembly's moments
+    /// move with [`Self::set_poses`] instead of uploading their meshes
+    /// again. `bounds` is the box of the triangles as placed
+    /// ([`crate::drawn_bounds`] of the scene's mesh): the depth range, the
+    /// section and the studio light are framed on it, as the CPU renderer
+    /// frames them on the placed mesh. Face ids and colours are the
+    /// scene's (each part's from its `first_face_id` on).
+    pub fn upload_parts(
+        &self,
+        parts: &[MeshPart<'_>],
+        colors: &FaceColors,
+        bounds: Bbox3,
+    ) -> Result<GpuMesh, GpuError> {
+        guarded(&self.device, || {
+            GpuMesh::upload_parts(
+                &self.device,
+                &self.queue,
+                parts,
+                colors,
+                bounds,
+                &self.token,
+            )
+        })?
+    }
+
+    /// Moves the parts of a mesh uploaded by [`Self::upload_parts`] to
+    /// `poses` (one per part, in order) with `bounds` the box of the
+    /// triangles as now placed: a few matrices are written, no geometry.
+    /// A mesh of another renderer, or a count of poses that is not its
+    /// count of parts, is refused.
+    pub fn set_poses(
+        &self,
+        mesh: &mut GpuMesh,
+        poses: &[Transform],
+        bounds: Bbox3,
+    ) -> Result<(), GpuError> {
+        if !Arc::ptr_eq(&mesh.owner, &self.token) {
+            return Err(GpuError::Device(
+                "the mesh was uploaded by another renderer".to_string(),
+            ));
+        }
+        guarded(&self.device, || {
+            mesh.set_poses(&self.device, &self.queue, poses, bounds)
         })?
     }
 
@@ -1604,10 +1647,7 @@ impl Renderer {
         };
         let draw_mesh = |pass: &mut wgpu::RenderPass<'_>| {
             // In mesh order: the depth test's tie rule depends on it.
-            for chunk in &mesh.chunks {
-                pass.set_vertex_buffer(0, chunk.buffer.slice(..));
-                pass.draw(0..chunk.vertices, 0..1);
-            }
+            mesh.draw_in(pass);
         };
         // The passes of a cut-open picture, when it is one: its pipelines,
         // its count and, when the plane has a cap, the cap's triangle.
@@ -1672,7 +1712,7 @@ impl Renderer {
             pass.set_bind_group(0, &self.scene_bind, &[]);
             let cap_draw = |pass: &mut wgpu::RenderPass<'_>, pipeline: &wgpu::RenderPipeline| {
                 if let Some((_, count, true)) = cut_open {
-                    cut::draw_cap(pass, pipeline, &count.cap_bind, &self.cap_buffer);
+                    cut::draw_cap(pass, pipeline, &count.cap_bind, &self.cap_buffer, mesh);
                 }
             };
             match cut_open {
@@ -1717,7 +1757,7 @@ impl Renderer {
                         };
                     let cap_behind =
                         |pass: &mut wgpu::RenderPass<'_>, pipeline: &wgpu::RenderPipeline| {
-                            cut::draw_cap(pass, pipeline, bind, &self.cap_buffer);
+                            cut::draw_cap(pass, pipeline, bind, &self.cap_buffer, mesh);
                         };
                     draw_in_steps(
                         &mut pass,
@@ -2072,10 +2112,7 @@ impl Renderer {
             });
         let draw_mesh = |pass: &mut wgpu::RenderPass<'_>, pipeline: &wgpu::RenderPipeline| {
             pass.set_pipeline(pipeline);
-            for chunk in &mesh.chunks {
-                pass.set_vertex_buffer(0, chunk.buffer.slice(..));
-                pass.draw(0..chunk.vertices, 0..1);
-            }
+            mesh.draw_in(pass);
         };
         // The shadow map does not move with the jitter: drawn once.
         if passes.shadow && place.first {

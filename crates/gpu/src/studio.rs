@@ -19,7 +19,7 @@
 //! still picture are summed as integers (`accumulate.wgsl`).
 
 use crate::GpuError;
-use crate::mesh::{GpuMesh, VERTEX_BYTES};
+use crate::mesh::GpuMesh;
 use crate::renderer::{MESH_ATTRIBUTES, uniform_entry};
 use craft3d_math::Vec3;
 use craft3d_render::Camera;
@@ -598,11 +598,7 @@ impl StudioGpu {
                 module,
                 entry_point: Some("vs_shadow"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: VERTEX_BYTES as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &MESH_ATTRIBUTES,
-                })],
+                buffers: &crate::mesh::mesh_buffers(&MESH_ATTRIBUTES),
             },
             primitive: crate::renderer::scene_primitive(),
             depth_stencil: Some(wgpu::DepthStencilState {
@@ -831,10 +827,7 @@ impl StudioGpu {
         pass.set_pipeline(&self.shadow);
         pass.set_bind_group(0, scene_bind, &[]);
         pass.set_bind_group(1, &bind, &[]);
-        for chunk in &mesh.chunks {
-            pass.set_vertex_buffer(0, chunk.buffer.slice(..));
-            pass.draw(0..chunk.vertices, 0..1);
-        }
+        mesh.draw_in(&mut pass);
     }
 
     /// The occlusion pass, from `geometry` into `ao`.
@@ -1404,11 +1397,7 @@ impl StudioOnscreen {
                     module: &module,
                     entry_point: Some("vs_studio"),
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: VERTEX_BYTES as u64,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &MESH_ATTRIBUTES,
-                    })],
+                    buffers: &crate::mesh::mesh_buffers(&MESH_ATTRIBUTES),
                 },
                 primitive: crate::renderer::scene_primitive(),
                 // Reversed depth, as the viewport's bodies.
@@ -1614,10 +1603,7 @@ impl StudioOnscreen {
             pass.set_pipeline(&self.geometry);
             pass.set_bind_group(0, scene_bind, &[]);
             pass.set_bind_group(1, &self.gpu.uniform_bind, &[]);
-            for chunk in &mesh.chunks {
-                pass.set_vertex_buffer(0, chunk.buffer.slice(..));
-                pass.draw(0..chunk.vertices, 0..1);
-            }
+            mesh.draw_in(&mut pass);
         }
         if passes.ao {
             self.gpu
@@ -1690,10 +1676,7 @@ impl StudioOnscreen {
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, scene_bind, &[]);
             pass.set_bind_group(1, bind, &[]);
-            for chunk in &mesh.chunks {
-                pass.set_vertex_buffer(0, chunk.buffer.slice(..));
-                pass.draw(0..chunk.vertices, 0..1);
-            }
+            mesh.draw_in(&mut pass);
         };
         let attachment = |view, load| {
             Some(wgpu::RenderPassColorAttachment {
@@ -1812,10 +1795,7 @@ impl StudioOnscreen {
             pass.set_pipeline(&self.main_post);
             pass.set_bind_group(0, scene_bind, &[]);
             pass.set_bind_group(1, bind, &[]);
-            for chunk in &mesh.chunks {
-                pass.set_vertex_buffer(0, chunk.buffer.slice(..));
-                pass.draw(0..chunk.vertices, 0..1);
-            }
+            mesh.draw_in(&mut pass);
         }
         // Without the screen-space effects (accumulation alone) this is
         // the light to bytes.

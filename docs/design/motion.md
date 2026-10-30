@@ -170,9 +170,26 @@ cached by its parameters' values like any configuration).
 - **Traces through instances.** In an assembly `view.trace` names its point as a mate names geometry, through an
   instance (`Coupler/End2`, `Foot/F1:vertex(2)`): the origin of that frame, moved by the instance's pose
   (`asm::point_in`).
-- **Costs.** A moment is one solve per grid point first reached plus one, and placing the bodies (a rigid copy
-  each, which the store of meshes meshes again: a transformed body is a new body). Meshing the source's body once and
-  transforming its mesh would save that; it is not done (open).
+- **Costs: moments move meshes, they do not make them** (2026-10-30). A moment is one solve per grid point first
+  reached plus one, and placing the bodies: a rigid copy of each B-rep (picking, collisions and measures read the
+  bodies), whose mesh is its source's mesh moved. `build_shown` notes each placed body with its source and pose
+  (`meshes::note_placed`, only a rigid motion that does not mirror: a mirror turns triangles inside out), and the
+  store of meshes gives a noted body the mesh of the body at the end of its chain (subassemblies nest), made or
+  found as any mesh, moved by the composed pose (`MeshStore::mesh`); its facts are the source's with the vertices
+  moved, and the display rule's size reads the source's area (`meshes::measured_as`). So the scene of a placed body
+  is always the moved mesh of its source, whether that was found in the store or made now (the store's rule), and
+  no moment meshes or measures a placed body. A placed body's display mesh is thus its source's mesh moved in
+  `f64`, not bit for bit the mesh the tessellator would make of the placed body; exports (`file.export`, the
+  assembly's STL, 3MF, STEP) tessellate the placed bodies themselves and stay deterministic as before. The sources are meshed again only when a sampling changes: the quick
+  first picture's tolerance follows the box around the bodies (`preview_size`), which moves with the mechanism, so
+  when it steps to another rung of the ladder the sources are meshed once at it (the walker: 19 bodies over 61
+  moments). The scene says so per body (`SceneBody::placement`: the source mesh and the
+  pose), and the viewers draw an assembly as parts: the GPU renderer uploads each source mesh once
+  (`Renderer::upload_parts`, `Onscreen::upload_parts`) and a moment of the same parts writes their poses, 48 bytes
+  a part (`set_poses`; the vertex shader moves each part by its pose, `placed` in `scene.wgsl`), on the window's
+  device (`direct.rs`) and the offscreen one (`backend.rs`). The CPU renderer and picking draw the scene's mesh,
+  which is the moved meshes. Still uploaded per moment: the lines over the viewport (the bodies' edges), and the
+  scene's joined mesh is still copied together on the CPU (no meshing).
 
 ## Tests
 
@@ -191,7 +208,13 @@ collision of an `overlap` written inline; the replay's frames, captions and coll
 without a timeline and with a `t` that is a length; bad parameters. `crates/ui-egui/tests/motion.rs`: a trace drawn
 over the screenshot (and gone bit for bit when cleared), collisions red in the window's screenshot, the player over
 `t` forward, back and forth and stopped by an edit, and not offered without a timeline; the player's step function
-in `shell/player.rs`. `panic_hunt` runs the three commands with adversarial parameters.
+in `shell/player.rs`. `panic_hunt` runs the three commands with adversarial parameters. `crates/engine/tests/motion_meshes.rs`:
+12 moments of a four-bar mesh no placed body (the tessellator's count per moment: none, or the two sources
+once when the quick picture's tolerance steps to another rung), every body placed with the first moment's source
+mesh, its mesh that mesh moved bit for bit. `crates/gpu/tests/parts.rs`: parts uploaded once and moved by poses
+against the CPU renderer drawing them moved, near the origin and 1e7 away. `crates/ui-egui/tests/assembly.rs`: the
+player plays an assembly forward and back and forth. `crates/engine/tests/motion_timing.rs` (ignored) times a
+moment of an assembly.
 
 ## Findings and history
 
@@ -215,3 +238,13 @@ in `shell/player.rs`. `panic_hunt` runs the three commands with adversarial para
   collisions named by instance. Closed forms: a crank-rocker's coupler point against the intersection of two circles
   at 33 samples (1e-6, the branch never changes), seek equal to play bit for bit, the dead point of a non-Grashof
   four-bar at `cos θ = (a² + d² − (b + c)²) / 2ad` within a step (`crates/engine/tests/motion_assembly.rs`).
+- 2026-10-30: motion-ux, after the developer watched the strandbeest walker played by a script ("a little
+  stuttering"; the bar at the top flickered, the status bar too). The player plays an assembly (its Motion mode; an
+  assembly has no History, `ui.set {timeline: {motion, playing}}` was refused for "no features to play"); moments
+  move meshes instead of meshing (*Costs* above); the work indicator and the status bar are calm
+  ([`engine.md`](engine.md) › *A calm work indicator and status bar*). Walker (88 bodies, 24 192 triangles; `motion_timing.rs`,
+  release, on the Strix, 61 moments of `view.motion` plus the display scene), before → after: a moment mean 91.5 →
+  25.0 ms, median 66.1 → 23.8 ms, longest 1543 → 33 ms; bodies meshed over the 61 moments 10 736 → 19; of a moment,
+  `view.motion` itself (the solve and the rigid copies) 23 ms both times, now nearly all of it. The GPU gets 88
+  poses of 48 bytes a moment instead of the 24 192 triangles (3.5 MB of vertices). Opening and the first display
+  scene 1968 → 44 ms (the walker's 88 bodies are copies of a few sources).

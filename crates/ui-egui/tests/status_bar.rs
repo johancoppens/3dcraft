@@ -175,7 +175,8 @@ fn the_items_never_overlap_in_the_window() {
 /// Work in progress has its own item at the right of the bar, before the
 /// renderer's numbers, always as wide (`Tokens::status_work_width`)
 /// whatever it says, so nothing moves while the steps count up; a long
-/// name is elided within it. Without work, it is not there.
+/// name is elided within it. Without work (and once the indicator's
+/// hold is over), it is not there.
 #[test]
 fn work_in_progress_has_a_place_of_its_own_that_never_changes_size() {
     use craft3d_ui_egui::{Tokens, Work};
@@ -184,10 +185,15 @@ fn work_in_progress_has_a_place_of_its_own_that_never_changes_size() {
     run(&mut session, "feature.block", json!({"size": [10, 10, 10]}));
     let mut shell = Shell::with_renderer(RendererChoice::Cpu);
     let ctx = egui::Context::default();
-    let mut frame = |shell: &mut Shell, k: u32| {
+    // Frames 0.2 s apart: work shows once it has run
+    // `Tokens::work_after_seconds` (0.35 s) and stays
+    // `Tokens::work_hold_seconds` (0.3 s) after it is done.
+    let mut clock = 0_u32;
+    let mut frame = |shell: &mut Shell, _: u32| {
+        clock += 1;
         let input = egui::RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 800.0))),
-            time: Some(f64::from(k) / 60.0),
+            time: Some(f64::from(clock) * 0.2),
             ..Default::default()
         };
         let mut output = ctx.run_ui(input, |ui| shell.ui(ui, &mut session));
@@ -303,4 +309,164 @@ fn the_words_for_work_in_progress() {
     ] {
         assert_eq!(w.status_text(), said);
     }
+}
+
+/// The calm status bar (docs/design/engine.md › *Saying what is being
+/// done*): a motion played as short jobs 10 times a second (each 50 ms of
+/// work and a new answer) never shows the work indicator, and its texts
+/// change at most 4 times a second; one long job shows it only after
+/// `Tokens::work_after_seconds` and keeps it `Tokens::work_hold_seconds`
+/// after it is done; an error shows in the frame after it came.
+#[test]
+fn short_jobs_never_show_the_indicator_and_the_texts_change_calmly() {
+    use craft3d_ui_egui::{Tokens, Work};
+    let tokens = Tokens::default();
+    let mut session = Session::new(Workspace::none());
+    run(&mut session, "file.new", json!({"units": "mm"}));
+    run(&mut session, "feature.block", json!({"size": [10, 10, 10]}));
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let ctx = egui::Context::default();
+    let step = 1.0 / 60.0;
+    let mut now = 0.0_f64;
+    let mut frame = |shell: &mut Shell, now: &mut f64| {
+        *now += step;
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 800.0))),
+            time: Some(*now),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| shell.ui(ui, &mut session));
+        output.textures_delta.clear();
+    };
+    for _ in 0..3 {
+        frame(&mut shell, &mut now);
+    }
+    let motion = |k: usize| Work {
+        label: "view.motion".to_string(),
+        phase: "running".to_string(),
+        feature: Some(format!("moment {k}")),
+        seconds: 0.05,
+        ..Work::default()
+    };
+    // 4 s of a motion: 40 jobs of 3 frames each, 3 frames apart.
+    let changes_before = shell.status_changes();
+    let start = now;
+    for k in 0..40 {
+        shell.set_work(Some(motion(k)));
+        shell.last_command = Some(CommandReport {
+            label: "view.motion".to_string(),
+            ok: true,
+            text: format!("{{\"t\":{}}}", k as f64 / 40.0),
+        });
+        for _ in 0..3 {
+            frame(&mut shell, &mut now);
+            assert_eq!(shell.work_shown(), None, "job {k}");
+        }
+        shell.set_work(None);
+        for _ in 0..3 {
+            frame(&mut shell, &mut now);
+            assert_eq!(shell.work_shown(), None, "after job {k}");
+        }
+    }
+    let seconds = now - start;
+    let changes = shell.status_changes() - changes_before;
+    assert!(
+        (changes as f64) <= seconds * 4.0 + 2.0,
+        "{changes} changes in {seconds:.2} s"
+    );
+    // One long job: not shown before the wait, shown after it.
+    let after = f64::from(tokens.work_after_seconds);
+    let hold = f64::from(tokens.work_hold_seconds);
+    shell.set_work(Some(Work {
+        label: "param.set".to_string(),
+        phase: "regenerating".to_string(),
+        step: 1,
+        steps: 9,
+        ..Work::default()
+    }));
+    let begun = now + step;
+    let mut first_shown = None;
+    while now < begun + 1.0 {
+        frame(&mut shell, &mut now);
+        if shell.work_shown().is_some() && first_shown.is_none() {
+            first_shown = Some(now);
+        }
+        if first_shown.is_none() {
+            assert!(now - begun < after + 1e-9, "not shown at {}", now - begun);
+        }
+    }
+    let first_shown = first_shown.expect("the long job shows the indicator");
+    assert!(
+        first_shown - begun >= after - 1e-9,
+        "{}",
+        first_shown - begun
+    );
+    assert_eq!(shell.work_shown(), Some("Regenerating\u{2026} 1/9"));
+    assert_eq!(
+        shell.status_shown(StatusSlot::Work),
+        Some("Regenerating\u{2026} 1/9")
+    );
+    // Done: it stays for the hold, then goes.
+    shell.set_work(None);
+    let done = now;
+    while now < done + hold - step {
+        frame(&mut shell, &mut now);
+        assert!(shell.work_shown().is_some(), "gone {} s after", now - done);
+    }
+    while now < done + hold + 2.0 * step {
+        frame(&mut shell, &mut now);
+    }
+    assert_eq!(shell.work_shown(), None);
+    // An error shows at once, and stays.
+    shell.last_command = Some(CommandReport {
+        label: "feature.extrude".to_string(),
+        ok: false,
+        text: "the profile is not closed".to_string(),
+    });
+    frame(&mut shell, &mut now);
+    assert_eq!(
+        shell.status_shown(StatusSlot::Command),
+        Some("feature.extrude")
+    );
+    // Its answer in the same frame: the label and the answer are one.
+    assert_eq!(
+        shell.status_shown(StatusSlot::Answer),
+        Some("the profile is not closed")
+    );
+    // A success soon after waits its turn, label and answer together.
+    shell.last_command = Some(CommandReport {
+        label: "view.fit".to_string(),
+        ok: true,
+        text: "{}".to_string(),
+    });
+    frame(&mut shell, &mut now);
+    assert_eq!(
+        shell.status_shown(StatusSlot::Command),
+        Some("feature.extrude")
+    );
+    assert_eq!(
+        shell.status_shown(StatusSlot::Answer),
+        Some("the profile is not closed")
+    );
+    shell.last_command = Some(CommandReport {
+        label: "feature.extrude".to_string(),
+        ok: false,
+        text: "the profile is not closed".to_string(),
+    });
+    for _ in 0..30 {
+        frame(&mut shell, &mut now);
+    }
+    assert_eq!(
+        shell.status_shown(StatusSlot::Answer),
+        Some("the profile is not closed")
+    );
+    // `ui.get` says what is being done and whether the indicator shows.
+    shell.set_work(Some(motion(0)));
+    frame(&mut shell, &mut now);
+    let got = shell
+        .handle_method(&mut session, "ui.get", None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(got["work"]["label"], "view.motion");
+    assert_eq!(got["workShown"], Value::Null);
 }

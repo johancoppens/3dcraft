@@ -23,6 +23,7 @@ use craft3d_render::{Highlight, Section};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+mod calm;
 mod controls;
 mod dialogs;
 mod edit;
@@ -272,6 +273,29 @@ pub struct CommandReport {
     pub ok: bool,
     /// A short form of the result, or the error.
     pub text: String,
+}
+
+/// What the status bar shows of things that change fast, held so that
+/// it does not flicker (`shell/calm.rs`).
+#[derive(Clone, Debug, Default)]
+struct Calm {
+    /// The work indicator.
+    work: calm::WorkIndicator,
+    /// What it said in the frame last drawn (`None`: not shown).
+    work_shown: Option<String>,
+    /// The last command and its answer, and the renderer's numbers.
+    /// Held as one unit (`ok`, label and answer joined), so a new label
+    /// never shows with the old answer and the tint is the shown text's.
+    command: calm::Held,
+    render: calm::Held,
+    /// Their widths while only their numbers change.
+    command_width: calm::Steady,
+    answer_width: calm::Steady,
+    render_width: calm::Steady,
+    /// How many times the texts of the status bar changed, for tests.
+    changes: u64,
+    /// The texts of the last frame, to count the changes by.
+    last: Vec<(StatusSlot, String)>,
 }
 
 /// How the image in the viewport was last rendered.
@@ -542,6 +566,9 @@ pub struct Shell {
     pub state: UiState,
     pub tokens: Tokens,
     pub last_command: Option<CommandReport>,
+    /// The work indicator and the texts of the status bar, held so they
+    /// do not flicker (`shell/calm.rs`).
+    calm: Calm,
     /// What "Copy details" reports and whether its window is open
     /// (`shell/report.rs`).
     report: report::ReportState,
@@ -986,6 +1013,7 @@ impl Shell {
             state: UiState::default(),
             tokens: Tokens::default(),
             last_command: None,
+            calm: Calm::default(),
             report: report::ReportState::default(),
             copy_hit: None,
             recovery: RecoveryOverview::default(),
@@ -2049,6 +2077,7 @@ impl Shell {
         self.help_keys(ui);
         // The next step of the history player, when it is time.
         self.advance_player(ui.ctx());
+        self.settle_work(ui.ctx());
         let tokens = self.tokens;
         egui::Panel::top("craft3d-menu")
             .resizable(false)
@@ -2353,6 +2382,26 @@ impl Shell {
         let tokens = self.tokens;
         let dim = color(tokens.chrome_text_dim);
         let mut items: Vec<StatusItem> = Vec::new();
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let painter = ui.painter().clone();
+        let measure = |text: &str| {
+            painter
+                .layout_no_wrap(text.to_string(), font.clone(), dim)
+                .size()
+                .x
+        };
+        // The texts that change while work or a motion runs change at
+        // most once every `status_hold_seconds` (an error at once), and
+        // keep their width while only their numbers change
+        // (`shell/calm.rs`).
+        let now = ui.input(|i| i.time);
+        let every = f64::from(tokens.status_hold_seconds);
+        let mut again: Option<f64> = None;
+        let mut soon = |a: Option<f64>| {
+            if let Some(a) = a {
+                again = Some(again.map_or(a, |b: f64| b.min(a)));
+            }
+        };
         match status {
             Some(status) => {
                 let units = format!("{} · {}", status.length_unit, status.angle_unit);
@@ -2396,24 +2445,56 @@ impl Shell {
                     .request_repaint_after(std::time::Duration::from_secs(30));
             }
         }
-        if let Some(report) = &self.last_command {
-            let tint = if report.ok {
+        // While the motion plays: one steady line, `Playing  t = 0.420`,
+        // not each moment's answer; a moment asked for by `view.motion`
+        // says its `t` the same way.
+        let shown_t = self.timeline.motion_t().filter(|t| t.is_finite());
+        let line = if self.state.timeline.playing && self.playing_motion() {
+            Some((
+                "Playing".to_string(),
+                format!("t = {:.3}", shown_t.unwrap_or(0.0)),
+                true,
+            ))
+        } else {
+            self.last_command.as_ref().map(|report| {
+                let answer = match shown_t {
+                    Some(t) if report.ok && report.label == "view.motion" => format!("t = {t:.3}"),
+                    _ => report.text.clone(),
+                };
+                (report.label.clone(), answer, report.ok)
+            })
+        };
+        if let Some((label, answer, ok)) = line {
+            let joined = format!("{}\u{1f}{label}\u{1f}{answer}", u8::from(ok));
+            let (shown, wait) = self.calm.command.frame(now, &joined, !ok, every);
+            soon(wait);
+            let mut parts = shown.splitn(3, '\u{1f}');
+            let ok = parts.next() == Some("1");
+            let label = parts.next().unwrap_or_default().to_string();
+            let answer = parts.next().unwrap_or_default().to_string();
+            let tint = if ok {
                 tokens.chrome_ok
             } else {
                 tokens.chrome_failed
             };
-            items.push(StatusItem::fixed(
-                StatusSlot::Command,
-                report.label.clone(),
-                color(tint),
-            ));
-            items.push(StatusItem::elided(
-                StatusSlot::Answer,
-                report.text.clone(),
-                dim,
-            ));
+            let label_width = self
+                .calm
+                .command_width
+                .width(&label, measure(&label).ceil());
+            let answer_width = self
+                .calm
+                .answer_width
+                .width(&answer, measure(&answer).ceil());
+            items.push(StatusItem {
+                width: Some(label_width),
+                ..StatusItem::fixed(StatusSlot::Command, label, color(tint))
+            });
+            items.push(StatusItem {
+                width: Some(answer_width),
+                ..StatusItem::elided(StatusSlot::Answer, answer, dim)
+            });
         }
-        if let Some((text, _)) = self.busy() {
+        if let Some(text) = self.calm.work_shown.clone() {
             items.push(StatusItem {
                 width: Some(tokens.status_work_width),
                 ..StatusItem::elided(StatusSlot::Work, text, color(tokens.chrome_text))
@@ -2437,16 +2518,36 @@ impl Shell {
                 stats.height,
                 stats.triangles
             );
-            items.push(StatusItem::fixed(StatusSlot::Render, text, dim));
+            let (text, wait) = self.calm.render.frame(now, &text, false, every);
+            let text = text.to_string();
+            soon(wait);
+            let width = self.calm.render_width.width(&text, measure(&text).ceil());
+            items.push(StatusItem {
+                width: Some(width),
+                ..StatusItem::fixed(StatusSlot::Render, text, dim)
+            });
         }
-        let font = egui::TextStyle::Body.resolve(ui.style());
-        let painter = ui.painter().clone();
-        let measure = |text: &str| {
-            painter
-                .layout_no_wrap(text.to_string(), font.clone(), dim)
-                .size()
-                .x
-        };
+        if let Some(again) = again {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs_f64(again.clamp(0.0, 1.0)));
+        }
+        let texts: Vec<(StatusSlot, String)> = items
+            .iter()
+            .filter(|i| {
+                matches!(
+                    i.slot,
+                    StatusSlot::Command
+                        | StatusSlot::Answer
+                        | StatusSlot::Work
+                        | StatusSlot::Render
+                )
+            })
+            .map(|i| (i.slot, i.text.clone()))
+            .collect();
+        if texts != self.calm.last {
+            self.calm.changes = self.calm.changes.saturating_add(1);
+            self.calm.last = texts;
+        }
         let fits: Vec<StatusFit> = items
             .iter()
             .map(|item| {
@@ -2548,6 +2649,16 @@ impl Shell {
                         egui::Layout::left_to_right(egui::Align::Center),
                         |ui| {
                             ui.set_width(width);
+                            if item.slot == StatusSlot::Work {
+                                // The work indicator: a small spinner
+                                // before the words.
+                                ui.add(
+                                    egui::Spinner::new()
+                                        .size(tokens.work_spinner)
+                                        .color(color(tokens.info_accent)),
+                                );
+                                ui.add_space(tokens.work_spinner * 0.5);
+                            }
                             ui.add(label)
                         },
                     )
@@ -2915,9 +3026,9 @@ impl Shell {
         }
     }
 
-    /// What is being done, for the status bar and the bar over the
-    /// viewport: the words, and how far along it is (0 to 1) when that is
-    /// known. The host's work (opening, regenerating, meshing), else the
+    /// What is being done, for the work indicator in the status bar
+    /// ([`Self::work_shown`]): the words, and how far along it is (0 to 1)
+    /// when that is known. The host's work (opening, regenerating, meshing), else the
     /// assertions still being measured. `None` when nothing is.
     pub fn busy(&self) -> Option<(String, Option<f32>)> {
         if let Some(work) = &self.work {
@@ -2943,45 +3054,53 @@ impl Shell {
         Some((text, fraction))
     }
 
-    /// The work in progress over the viewport `rect`: a thin bar across
-    /// its top, the part done when that is known, otherwise a piece that
-    /// sweeps slowly across. It covers nothing and never changes size.
-    fn work_bar(&self, ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect) {
-        let Some((_, fraction)) = self.busy() else {
-            return;
-        };
+    /// Decides for this frame whether the work indicator shows and what
+    /// it says: only work that has run `Tokens::work_after_seconds`, and
+    /// then at least `Tokens::work_hold_seconds` (`shell/calm.rs`). Short
+    /// work, like each moment of a motion played, never shows it.
+    fn settle_work(&mut self, ctx: &egui::Context) {
+        let now = ctx.input(|i| i.time);
         let tokens = self.tokens;
-        let bar = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), tokens.work_bar));
-        let accent = color(tokens.info_accent);
-        match fraction {
-            Some(fraction) => {
-                let done = egui::Rect::from_min_size(
-                    bar.min,
-                    egui::vec2(bar.width() * fraction, bar.height()),
-                );
-                painter.rect_filled(done, egui::CornerRadius::ZERO, accent);
-                // Its steps wake the window; the assertions are asked
-                // after again soon.
-                ui.ctx()
-                    .request_repaint_after(std::time::Duration::from_millis(100));
-            }
-            None => {
-                let period = f64::from(tokens.work_sweep_seconds.max(0.1));
-                let time = ui.input(|i| i.time);
-                // Out of the bar on the left to out of it on the right.
-                let phase = (time / period).rem_euclid(1.0) as f32;
-                let piece = bar.width() * tokens.work_sweep.clamp(0.05, 1.0);
-                let left = bar.left() - piece + phase * (bar.width() + piece);
-                let shown = egui::Rect::from_min_max(
-                    egui::pos2(left.max(bar.left()), bar.top()),
-                    egui::pos2((left + piece).min(bar.right()), bar.bottom()),
-                );
-                if shown.width() > 0.0 {
-                    painter.rect_filled(shown, egui::CornerRadius::ZERO, accent);
-                }
-                ui.ctx().request_repaint();
-            }
+        let busy = self.busy().map(|(text, _)| text);
+        let shown = self.calm.work.frame(
+            now,
+            busy.as_deref(),
+            f64::from(tokens.work_after_seconds),
+            f64::from(tokens.work_hold_seconds),
+            f64::from(tokens.status_hold_seconds),
+        );
+        if let Some(again) = shown.again_in {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(again.clamp(0.0, 1.0)));
         }
+        if shown.text.is_some() {
+            // The spinner turns.
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
+        self.calm.work_shown = shown.text;
+    }
+
+    /// What the work indicator says in the status bar, when it shows
+    /// (`ui.get` › `workShown`). [`Self::busy`] says what is being done
+    /// whether it shows or not.
+    pub fn work_shown(&self) -> Option<&str> {
+        self.calm.work_shown.as_deref()
+    }
+
+    /// How many times the texts of the status bar have changed from one
+    /// frame to the next since the window opened: what a test counts to
+    /// see that they do not flicker.
+    pub fn status_changes(&self) -> u64 {
+        self.calm.changes
+    }
+
+    /// What the status bar showed in the last frame for the last command
+    /// (or `Playing`), its answer, the work and the renderer's numbers.
+    pub fn status_shown(&self, slot: StatusSlot) -> Option<&str> {
+        self.calm
+            .last
+            .iter()
+            .find(|(s, _)| *s == slot)
+            .map(|(_, text)| text.as_str())
     }
 
     /// While the viewport has nothing to show yet (a first file opening,
@@ -3220,7 +3339,9 @@ impl Shell {
         // middle, gone with the first body.
         let nothing_yet = scene.is_none_or(|scene| scene.bodies.is_empty());
         match (&self.work, scene, self.problem()) {
-            (Some(work), _, None) if nothing_yet => self.work_note(&painter, rect, work),
+            (Some(work), _, None) if nothing_yet && self.calm.work_shown.is_some() => {
+                self.work_note(&painter, rect, work);
+            }
             (None, Some(scene), _) if scene.bbox.is_empty() => hint("Empty document."),
             _ => {}
         }
@@ -3252,8 +3373,6 @@ impl Shell {
             );
             top = plate.bottom() + inset * 0.5;
         }
-
-        self.work_bar(ui, &painter, rect);
 
         // The box being dragged, and the "select other" list.
         self.paint_selecting(ui);

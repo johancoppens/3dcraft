@@ -89,6 +89,36 @@ struct VertexIn {
     // light through: `craft3d_gpu::mesh::optics_word`.
     @location(6) optics: u32,
     @location(7) value: vec2<f32>,
+    // The pose of the part the vertex belongs to (an assembly's instance
+    // at a moment of its motion), per draw: three rows of the rigid
+    // motion's rotation with the translation's component in w,
+    // `craft3d_gpu::mesh::pose_bytes`. The identity for a mesh drawn as it
+    // is uploaded.
+    @location(8) pose_x: vec4<f32>,
+    @location(9) pose_y: vec4<f32>,
+    @location(10) pose_z: vec4<f32>,
+}
+
+// The vertex moved by its part's pose: its position, and its normals
+// turned with it (a rigid motion: no scaling, no mirror).
+fn placed(in: VertexIn) -> VertexIn {
+    var out = in;
+    out.position = vec3<f32>(
+        dot(in.pose_x.xyz, in.position) + in.pose_x.w,
+        dot(in.pose_y.xyz, in.position) + in.pose_y.w,
+        dot(in.pose_z.xyz, in.position) + in.pose_z.w,
+    );
+    out.normal = vec3<f32>(
+        dot(in.pose_x.xyz, in.normal),
+        dot(in.pose_y.xyz, in.normal),
+        dot(in.pose_z.xyz, in.normal),
+    );
+    out.flat_normal = vec3<f32>(
+        dot(in.pose_x.xyz, in.flat_normal),
+        dot(in.pose_y.xyz, in.flat_normal),
+        dot(in.pose_z.xyz, in.flat_normal),
+    );
+    return out;
 }
 
 struct VertexOut {
@@ -150,8 +180,8 @@ fn vertex(in: VertexIn) -> VertexOut {
 }
 
 @vertex
-fn vs_main(in: VertexIn) -> VertexOut {
-    return vertex(in);
+fn vs_main(raw: VertexIn) -> VertexOut {
+    return vertex(placed(raw));
 }
 
 struct FragmentOut {

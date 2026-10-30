@@ -788,8 +788,8 @@ fn vs_studio_fullscreen(@builtin(vertex_index) i: u32) -> FullscreenOut {
 // it from the sample position). The jitter of frame 0 is zero, which
 // leaves the position as it was.
 @vertex
-fn vs_studio(in: VertexIn) -> VertexOut {
-    var out = vertex(in);
+fn vs_studio(raw: VertexIn) -> VertexOut {
+    var out = vertex(placed(raw));
     out.clip.x = out.clip.x - 2.0 * studio.jitter.x / studio.size.x * out.clip.w;
     out.clip.y = out.clip.y + 2.0 * studio.jitter.y / studio.size.y * out.clip.w;
     return out;
@@ -871,7 +871,8 @@ struct ShadowOut {
 }
 
 @vertex
-fn vs_shadow(in: VertexIn) -> ShadowOut {
+fn vs_shadow(raw: VertexIn) -> ShadowOut {
+    let in = placed(raw);
     var out: ShadowOut;
     let rel = in.position - studio.lv_center.xyz;
     let r = studio.lv_center.w;

@@ -333,11 +333,7 @@ pub(crate) fn pipeline_in(
             module,
             entry_point: Some(vertex),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
-            buffers: &[Some(wgpu::VertexBufferLayout {
-                array_stride: VERTEX_BYTES as u64,
-                step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &MESH_ATTRIBUTES,
-            })],
+            buffers: &crate::mesh::mesh_buffers(&MESH_ATTRIBUTES),
         },
         primitive: scene_primitive(),
         depth_stencil: step.map(Step::depth_stencil),
@@ -410,21 +406,21 @@ pub(crate) fn count_pass(
     });
     pass.set_pipeline(pipeline);
     pass.set_bind_group(0, scene_bind, &[]);
-    for chunk in &mesh.chunks {
-        pass.set_vertex_buffer(0, chunk.buffer.slice(..));
-        pass.draw(0..chunk.vertices, 0..1);
-    }
+    mesh.draw_in(&mut pass);
 }
 
-/// Draws the cap's triangle in a pass that has drawn the mesh.
+/// Draws the cap's triangle in a pass that has drawn `mesh` (its corners
+/// are relative to the mesh's origin: drawn with the identity pose).
 pub(crate) fn draw_cap(
     pass: &mut wgpu::RenderPass<'_>,
     pipeline: &wgpu::RenderPipeline,
     bind: &wgpu::BindGroup,
     buffer: &wgpu::Buffer,
+    mesh: &GpuMesh,
 ) {
     pass.set_pipeline(pipeline);
     pass.set_bind_group(1, bind, &[]);
+    pass.set_vertex_buffer(1, mesh.identity.slice(..));
     pass.set_vertex_buffer(0, buffer.slice(..));
     pass.draw(0..3, 0..1);
 }
