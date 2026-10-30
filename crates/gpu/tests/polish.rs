@@ -47,10 +47,16 @@ use std::sync::Arc;
 /// scenes, eight looks, at most 8 of 175 721 pixels over one level for one
 /// effect over all scenes, the largest difference 50 levels (reflections,
 /// 1 pixel: a hit decided in `f32` against `f64`) and 9 without
-/// reflections; the viewport 48 levels. With them left out: see the
-/// constants.
+/// reflections; the viewport 48 levels. With them left out (run
+/// 41000166136, 2026-10-30, the same adapters, scenes and looks): at most
+/// 1/6 000 of the pixels compared over one level, at most 6 levels
+/// anywhere, every look; the pixels that differed by 8 to 50 levels were
+/// all in doubt. The bounds: the share as before (1/512, a margin of 8),
+/// 8 levels (a margin of 2 over the 6 measured; looks without a traced
+/// ray measured 3). Before the review the bound was 16 levels and 96 for
+/// looks that trace a ray and for the viewport.
 const SHARE_OVER_ONE: f64 = 1.0 / 512.0;
-const MOST_LEVELS: u8 = 6;
+const MOST_LEVELS: u8 = 8;
 /// A share of a pixel's light in doubt above which it is left out: a
 /// pixel's bytes are the mean of its samples' over its frames, so a share
 /// under 1/64 of samples that may show another surface moves it by at
@@ -58,9 +64,17 @@ const MOST_LEVELS: u8 = 6;
 /// about that times the tone curve's slope).
 const DOUBT_SHARE: f32 = 1.0 / 64.0;
 /// The most pixels in doubt, as a share of those outside the band.
+/// Measured at most 1.8 % (the polished look with the lens and 8 frames
+/// on the scene of four parts, whose mirror ball and plate reflect the
+/// others: a pixel is left out when any of its samples in any frame, or
+/// enough of its lens's taps, were in doubt), 0.36 % for reflections
+/// alone in one frame; 1/32 holds that with a margin of 1.7.
 const MOST_DOUBT: f64 = 1.0 / 32.0;
-/// The largest mean share of a pixel's light in doubt.
-const MOST_MEAN_DOUBT: f64 = 1.0 / 256.0;
+/// The largest mean share of a pixel's light in doubt: how much of the
+/// picture's light the decisions in doubt carry, whatever the frames and
+/// the lens spread it over. Measured at most 0.14 %; 1/512 holds that
+/// with a margin of 1.4.
+const MOST_MEAN_DOUBT: f64 = 1.0 / 512.0;
 
 struct Scene {
     name: &'static str,

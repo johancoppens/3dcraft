@@ -456,9 +456,35 @@ specular shadow, ground reflection, lens, bloom, 8 frames) at most 4 of 175 721 
 apart and 2 to 3 levels at most; reflections 8 of 175 721 (4 of 44 183 in one scene), one pixel 50 levels
 apart (a reflected ray that finds a surface on one renderer and passes just beside it on the other: a hit
 decision in `f32` against `f64`); all together 3 of 175 721, at most 6 levels (9 on GL). The viewport, 1, 2
-and 8 frames: 20 of 44 197 at worst, 48 levels. Bounds: at most 1/512 of the pixels more than one level
-apart, at most 16 levels, and 96 levels for looks that trace a reflection and for the viewport. The
-same input gives the same frame bit for bit, accumulated too, on every adapter.
+and 8 frames: 20 of 44 197 at worst, 48 levels.
+
+**Pixels in doubt (2026-10-30 review).** The large differences were all decisions of a traced ray that the
+GPU's `f32` took otherwise, so instead of a bound wide enough for them (it was 96 levels for looks that
+trace a ray and for the viewport, 16 for the rest) the CPU marks them and the comparison leaves them out,
+as it leaves out the band. `polish::trace` marks a ray (`Traced::doubt`) where a decision lies within
+`TRACE_DOUBT · ε_f32 · M` of its boundary, `M` the largest magnitude the compared numbers come from, and
+taking it the other way changes the outcome: a step's hit test (`z ≥ zs`, the thickness's limit); a step's
+position near a sample's border where the sample across it decides that test otherwise; the first
+halving in doubt (its depth test, or its position near a border with the sample across deciding
+otherwise) only when a sample the ray passes over in the interval it halved shows another face than the
+hit (within one face the light changes by the shading's slope, not by a jump); the hit position near a
+border only when the sample across shows another face; and the facing test within `TRACE_DOUBT · ε` of 0.
+`TRACE_DOUBT` is 128: counting the roundings (the depth read, the point rebuilt and projected, the
+`1/z` interpolation with WGSL's 2.5-ULP divisions, FMA contraction) gives about 32, and a sweep of the
+margin (32, 64, 128, 256, 512; Check run 40998600287) found the three pixels the GPU decided otherwise
+between 32 and 128: the rasteriser's interpolation of the depth, which the APIs leave unspecified, errs
+more than the count. `render_studio_doubt` gives each pixel the share of its light from samples in doubt
+(over its samples and frames, through the lens's gather by its weights; bloom's spread, at most its
+strength, is not counted). *Measured* (Check run 41000166136, the three adapters): with pixels whose share
+passes 1/64 left out, at most 6 levels anywhere (3 for looks without a traced ray) and at most 1/6 000 of
+the pixels more than one level apart; left out, at most 1.8 % of the pixels (the polished look with the
+lens and 8 frames on the scene whose mirror ball and plate reflect three other parts; 0.36 % for
+reflections alone in one frame) and a mean share of 0.14 % of the light. That is more than the 1/4 000
+the review hoped for: a mirror reflecting curved parts has many rays whose hit lies at another face's
+edge, and accumulation and the lens take a pixel out when any of its frames or enough of its taps were in
+doubt. *Bounds:* outside the band and the pixels in doubt, at most 1/512 of the pixels more than one
+level apart and at most 8 levels; pixels in doubt at most 1/32, mean share at most 1/512. The same input
+gives the same frame bit for bit, accumulated too, on every adapter.
 
 **Cost** (`polish_frames_on_a_thousand_faces`, 1 002 faces, 190 096 triangles, 1020 × 777, the Strix's
 Radeon 8060S): the viewport over Vulkan (4 samples for layer 1) 0.93 ms for layer 1, 1.69 ms polished
