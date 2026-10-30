@@ -141,29 +141,33 @@ pub fn step_assembly(
     let context = a.first("GLOBAL_UNIT_ASSIGNED_CONTEXT")?;
     let product_context = a.first("PRODUCT_CONTEXT")?;
     let definition_context = a.first("PRODUCT_DEFINITION_CONTEXT")?;
-    // Each part as a child: a shape representation with an origin frame,
-    // related to its B-rep's.
+    // Each part as a child: its B-rep's representation (the one its
+    // SHAPE_DEFINITION_REPRESENTATION names) lists an origin frame among
+    // its items, the frame an occurrence's transformation starts from. A
+    // separate shape representation related to the B-rep's, which the
+    // part's definition does not name, is not read by other readers
+    // (FreeCAD's kernel read such a file as no shape at all).
     let mut children = Vec::with_capacity(parts.len());
     for (definition, brep) in definitions.iter().zip(&reps) {
         let origin = a.placement(&Frame::WORLD);
-        let rep = a.add(
-            "SHAPE_REPRESENTATION",
-            vec![
-                Param::string(""),
-                Param::refs([origin]),
-                Param::Ref(context),
-            ],
-        );
-        a.add(
-            "SHAPE_REPRESENTATION_RELATIONSHIP",
-            vec![
-                Param::string(""),
-                Param::string(""),
-                Param::Ref(rep),
-                Param::Ref(*brep),
-            ],
-        );
-        children.push((*definition, rep, origin));
+        let items = a
+            .file
+            .data
+            .iter_mut()
+            .find(|i| i.id == *brep)
+            .and_then(|i| match &mut i.entity {
+                Entity::Simple(record) => record.params.get_mut(1),
+                Entity::Complex(_) => None,
+            });
+        match items {
+            Some(Param::List(items)) => items.push(Param::Ref(origin)),
+            _ => {
+                return Err(unsupported(
+                    "a part's representation has no list of items".to_string(),
+                ));
+            }
+        }
+        children.push((*definition, *brep, origin));
     }
     // The assembly's product.
     let product = a.add(
