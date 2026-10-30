@@ -47,26 +47,30 @@
 //!   point; for a cone it is the normal of the quadric's level surface
 //!   through the point, the cone's own on it), `n` for a plane, `W_b` for
 //!   a spline face.
-//! - *Second order* (G2 here): the second fundamental forms agree on
-//!   the edge's tangent vectors. With `u` along the edge and `v` the
-//!   direction the face `a` leaves it, three gaps, each held to the
-//!   curvature threshold: across `(n_a·S_vv − II_b(S_v, S_v)) / |S_v|²`,
-//!   twist `(n_a·S_uv − II_b(S_u, S_v)) / (|S_u| |S_v|)` and along
-//!   `(n_a·S_uu − II_b(S_u, S_u)) / |S_u|²`, `n_a` the face `a`'s own unit
-//!   normal (oriented as `b`'s). Since G1 lets the normals part by up to
-//!   the angular tolerance, each is bounded as `n_b·S_xy − II_b(X, Y)`
-//!   plus `|n_a − n_b| |S_xy| / (|X| |Y|)`, `|n_a − n_b|` from the angle's
-//!   bound on the same piece. So a seam whose normals part, or whose cross
-//!   tangent turns about the edge, by up to the angular tolerance is not
-//!   G2 when that bends or twists it beyond the curvature threshold.
-//!   `II_b` is `b`'s form where `a` is: for an implicit face `g = 0`, that
-//!   of its level surface through the point, `−Hess g(X, Y) / |∇g|`, so
-//!   `n_b·S_xy − II_b(X, Y) = ∂x∂y g(S) / |∇g|`: in homogeneous terms
-//!   `P_xy = H_xy w² − 2w(H_x w_y + H_y w_x) + (6 w_x w_y − 2 w w_xy) H`,
-//!   `H = XᵀQX` and its derivatives, for a quadric, `L·X / w` likewise for
-//!   a plane; for a spline face, its form at the corresponding point on
-//!   `X` and `Y` put into its tangent plane (Cramer's rule in `U_b, V_b`),
-//!   through `det[Y, Y_a, Y_t, Y_ab] = −ω⁴ (B_a × B_t)·B_ab` (Farin ch. 22).
+//! - *Second order* (G2 here): with `u` along the edge and `v` the
+//!   direction the face `a` leaves it, `a`'s second derivatives seen
+//!   along `b`'s normal against `b`'s second fundamental form on the
+//!   edge's tangent vectors, three gaps each held to the curvature
+//!   threshold: across `(n_b·S_vv − II_b(S_v, S_v)) / |S_v|²`, twist
+//!   `(n_b·S_uv − II_b(S_u, S_v)) / (|S_u| |S_v|)` and along
+//!   `(n_b·S_uu − II_b(S_u, S_u)) / |S_u|²`. So a cross tangent that turns
+//!   about the edge within the angular tolerance but twists the seam
+//!   beyond the curvature threshold is not G2, nor an edge that wanders
+//!   about `b` within the tolerance but bends off it. The normals
+//!   themselves are G1's: `a`'s own forms differ from these by at most
+//!   `|n_a − n_b| |S_xy|`, the angle gap times `a`'s second derivatives
+//!   (with their tangential, parametric part), which is not added: the
+//!   angle's bound is a rounding bound far above the true angle of a held
+//!   seam, and times the parametric acceleration it would hide every G2
+//!   seam behind the angular tolerance. `II_b` is `b`'s form where `a`
+//!   is: for an implicit face `g = 0`, that of its level surface through
+//!   the point, `−Hess g(X, Y) / |∇g|`, so `n_b·S_xy − II_b(X, Y) =
+//!   ∂x∂y g(S) / |∇g|`: in homogeneous terms
+//!   `P_xy = H_xy w² − 2w(H_x w_y + H_y w_x) + (6 w_x w_y − 2 w w_xy) H`, `H = XᵀQX` and its
+//!   derivatives, for a quadric, `L·X / w` likewise for a plane; for a
+//!   spline face, its form at the corresponding point on `X` and `Y` put
+//!   into its tangent plane (Cramer's rule in `U_b, V_b`), through
+//!   `det[Y, Y_a, Y_t, Y_ab] = −ω⁴ (B_a × B_t)·B_ab` (Farin ch. 22).
 //!
 //! **Rounding.** Every coefficient carries a bound on its rounding error,
 //! carried through each sum and product (running error analysis, Higham
@@ -110,7 +114,8 @@ pub enum Order {
     G0,
     /// In position and with one tangent plane.
     G1,
-    /// In position, with one tangent plane and the same second
+    /// In position, with one tangent plane, and the face's second
+    /// derivatives along the other's normal matching that face's second
     /// fundamental form on the edge's tangent vectors (normal curvature
     /// across and along, and twist).
     G2,
@@ -165,13 +170,13 @@ pub struct Continuity {
     pub order: Order,
     pub position: Gap,
     pub angle: Gap,
-    /// The normal curvature across the edge: `n·S_vv − II_b(S_v)` over
+    /// The normal curvature across the edge: `n_b·S_vv − II_b(S_v)` over
     /// `|S_v|²`, `v` the direction the face `a` leaves it.
     pub curvature: Gap,
-    /// The twist: `n·S_uv − II_b(S_u, S_v)` over `|S_u| |S_v|`, `u` along
+    /// The twist: `n_b·S_uv − II_b(S_u, S_v)` over `|S_u| |S_v|`, `u` along
     /// the edge, held to the curvature threshold.
     pub twist: Gap,
-    /// The normal curvature along the edge: `n·S_uu − II_b(S_u, S_u)` over
+    /// The normal curvature along the edge: `n_b·S_uu − II_b(S_u, S_u)` over
     /// `|S_u|²`, held to the curvature threshold.
     pub along: Gap,
     /// The length the curvature threshold is derived from.
@@ -853,19 +858,6 @@ fn add3(a: &V3, b: &V3) -> V3 {
     [a[0].add(&b[0]), a[1].add(&b[1]), a[2].add(&b[2])]
 }
 
-/// A bound on `|n_a − n_b|` for unit normals (oriented alike) whose lines
-/// meet at an angle of sine at most `s`: `2 sin(θ / 2) = s √(2 / (1 +
-/// cos θ))`, written so that nothing cancels for small `s`, with room for
-/// its own rounding.
-fn normal_gap(s: f64) -> f64 {
-    if s.is_nan() {
-        return f64::INFINITY;
-    }
-    let s = s.clamp(0.0, 1.0);
-    let c = (1.0 - s * s).max(0.0).sqrt();
-    s * (2.0 / (1.0 + c)).sqrt() * (1.0 + 8.0 * EPS)
-}
-
 /// `∂x∂y (G / w)` times `w³`, `G = L·X` (from its derivatives).
 #[allow(clippy::too_many_arguments)]
 fn plane_second(
@@ -907,22 +899,9 @@ fn gaps(rows: &[P4], other: &Other) -> Result<Gaps, NetworkError> {
     let (w0, w0d, w0dd, w1, w1d, w2) = (&x0[3], &x0d[3], &x0dd[3], &x1[3], &x1d[3], &x2[3]);
     let (p0, p0d, p0dd) = (xyz4(&x0), xyz4(&x0d), xyz4(&x0dd));
     let (p1, p1d, p2) = (xyz4(&x1), xyz4(&x1d), xyz4(&x2));
-    // S_u, S_v times w²; S_vv, S_uv, S_uu times w³.
+    // S_u, S_v times w².
     let v0d = minus(&times(&p0d, w0), &times(&p0, w0d));
     let v1 = minus(&times(&p1, w0), &times(&p0, w1));
-    let a_vv = minus(
-        &times(&minus(&times(&p2, w0), &times(&p0, w2)), w0),
-        &times(&v1, &w1.scale(2.0)),
-    );
-    let v1u = minus(
-        &add3(&times(&p1d, w0), &times(&p1, w0d)),
-        &add3(&times(&p0d, w1), &times(&p0, w1d)),
-    );
-    let a_uv = minus(&times(&v1u, w0), &times(&v1, &w0d.scale(2.0)));
-    let a_uu = minus(
-        &times(&minus(&times(&p0dd, w0), &times(&p0, w0dd)), w0),
-        &times(&v0d, &w0d.scale(2.0)),
-    );
     let w = cross(&v0d, &v1);
     let (nu_lo, nu_hi) = (norm_lo(&v0d), norm_value_hi(&v0d));
     let (nv_lo, nv_hi) = (norm_lo(&v1), norm_value_hi(&v1));
@@ -1041,6 +1020,20 @@ fn gaps(rows: &[P4], other: &Other) -> Result<Gaps, NetworkError> {
             lo[1] = norm_value_lo(&z) / (w_hi * wb_hi);
             // The second order: `n_b·S_xy − II_b(X, Y)`, `X`, `Y` put into
             // b's tangent plane by Cramer's rule in `(U_b, V_b)`.
+            // S_vv, S_uv, S_uu times w³.
+            let a_vv = minus(
+                &times(&minus(&times(&p2, w0), &times(&p0, w2)), w0),
+                &times(&v1, &w1.scale(2.0)),
+            );
+            let v1u = minus(
+                &add3(&times(&p1d, w0), &times(&p1, w0d)),
+                &add3(&times(&p0d, w1), &times(&p0, w1d)),
+            );
+            let a_uv = minus(&times(&v1u, w0), &times(&v1, &w0d.scale(2.0)));
+            let a_uu = minus(
+                &times(&minus(&times(&p0dd, w0), &times(&p0, w0dd)), w0),
+                &times(&v0d, &w0d.scale(2.0)),
+            );
             let m = dot(&wb, &wb);
             let coeffs = |x: &V3| (dot(&cross(x, &vb), &wb), dot(&cross(&ub, x), &wb));
             let (au, bu) = coeffs(&v0d);
@@ -1067,25 +1060,14 @@ fn gaps(rows: &[P4], other: &Other) -> Result<Gaps, NetworkError> {
             (nums, m_lo * m_lo * wb_lo, m_hi * m_hi * wb_hi)
         }
     };
-    // Each face's own normal: `n_a·S_xy` differs from `n_b·S_xy` by at most
-    // `|n_a − n_b| |S_xy|`, and `|S_xy| / (|X| |Y|) = |A_xy| w / (|X| |Y|)`
-    // (with `w⁴` over each side).
-    let d = normal_gap(hi[1]);
-    for (k, (num, a)) in nums.iter().zip([&a_vv, &a_uv, &a_uu]).enumerate() {
+    for (k, num) in nums.iter().enumerate() {
         let (geo_lo, geo_hi) = (
             den_lo.get(k).copied().unwrap_or(0.0),
             den_hi.get(k).copied().unwrap_or(f64::INFINITY),
         );
-        let normals = if d > 0.0 {
-            d * ratio(norm_hi(a) * w0_hi, geo_lo)
-        } else {
-            0.0
-        };
-        let nb_hi = ratio(abs_hi(num), extra_lo * geo_lo);
-        let nb_lo = abs_value_lo(num) / (extra_hi * geo_hi);
         if let (Some(h), Some(l)) = (hi.get_mut(2 + k), lo.get_mut(2 + k)) {
-            *h = nb_hi + normals;
-            *l = (nb_lo - normals).max(0.0);
+            *h = ratio(abs_hi(num), extra_lo * geo_lo);
+            *l = abs_value_lo(num) / (extra_hi * geo_hi);
         }
     }
     for x in &mut lo {

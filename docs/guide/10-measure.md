@@ -240,14 +240,14 @@ along an edge (without `face`, the edge's two faces). `order` is the highest of 
 twist) whose gaps are *proven* within their thresholds all along the edge, not only where it was looked at:
 `position`, `angle` (radians), and per length unit `curvature` (the difference of the normal curvatures
 across the edge), `twist` (of how fast the normal turns about the edge along it) and `along` (of the normal
-curvatures along the edge), each face with its own normal, each give `bound` (nothing along the edge is
+curvatures along the edge), all measured along the second face's normal, each give `bound` (nothing along the edge is
 beyond it), `found` (the largest seen, with `param` and `at`), `threshold` and `within`.
 
 The thresholds are the document's: the tolerance, the angular tolerance, and for curvature, twist and along
 the smaller of angular / L and 2 × tolerance / L², L the edge's length (what turns the normals apart by the
 angular tolerance, or opens a gap of the tolerance, over that length). Nearly G2 is not G2: a seam whose
-curvature differs by more than that is G1, and so is one whose normals part, or whose cross tangent turns
-about the edge, within the angular tolerance but enough to bend or twist it beyond the curvature threshold.
+curvature differs by more than that is G1, and so is one whose cross tangent turns about the edge within the
+angular tolerance but enough to twist it beyond the curvature threshold.
 One whose bounds cannot be brought within the thresholds is not reached either (`exhausted` says when the
 work allowed ran out first). One of the faces must be a spline face the edge runs along a parameter line of (a network sheet's
 edge is); the other a plane, cylinder, cone or sphere, or a spline face in the same parametrisation along the
