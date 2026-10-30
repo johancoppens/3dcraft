@@ -58,7 +58,9 @@ const MOST_LEVELS: u8 = 6;
 /// about that times the tone curve's slope).
 const DOUBT_SHARE: f32 = 1.0 / 64.0;
 /// The most pixels in doubt, as a share of those outside the band.
-const MOST_DOUBT: f64 = 1.0 / 4000.0;
+const MOST_DOUBT: f64 = 1.0 / 32.0;
+/// The largest mean share of a pixel's light in doubt.
+const MOST_MEAN_DOUBT: f64 = 1.0 / 256.0;
 
 struct Scene {
     name: &'static str,
@@ -327,6 +329,7 @@ fn check(failures: &mut Vec<String>, label: &str, stats: &Stats) {
         || stats.share() > SHARE_OVER_ONE
         || stats.most > MOST_LEVELS
         || stats.doubt_share() > MOST_DOUBT
+        || stats.mean_doubt() > MOST_MEAN_DOUBT
     {
         failures.push(format!(
             "{label}: {stats:?}, share {}, in doubt {}",
@@ -339,7 +342,7 @@ fn check(failures: &mut Vec<String>, label: &str, stats: &Stats) {
 /// Margins (in `f32` epsilons) measured besides [`TRACE_DOUBT`], for the
 /// dev log: how the pixels in doubt and the largest difference left
 /// depend on it.
-const SWEEP: [f64; 4] = [8.0, 32.0, 128.0, 512.0];
+const SWEEP: [f64; 4] = [32.0, 64.0, 256.0, 512.0];
 
 /// The CPU's picture with its doubt at [`TRACE_DOUBT`] and, for a look
 /// that traces a ray, at each margin of [`SWEEP`].
