@@ -334,10 +334,6 @@ pub struct StartLayout {
     pub spacing: f32,
 }
 
-/// Below this card width (in points) the Recent files and the agent
-/// block stand one under the other.
-pub const STACKED_WIDTH: f32 = 600.0;
-
 /// The least height (of the room for the card, in points) for the roomy
 /// layout.
 pub const ROOMY_HEIGHT: f32 = 760.0;
@@ -518,7 +514,7 @@ impl Shell {
             ui.add_space(space * 0.6);
             // Side by side; on a narrow card (a phone) one under the other,
             // so nothing runs past the card's edge.
-            let stacked = width < STACKED_WIDTH;
+            let stacked = width < tokens.start_stacked_width;
             let left = if stacked {
                 ui.available_width()
             } else {

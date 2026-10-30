@@ -453,9 +453,6 @@ impl Nav<'_> {
     }
 }
 
-/// True when every control is there (the section's options too when the
-/// section is on), and every plate, the cube and the triad are inside
-/// `area` and clear of each other.
 /// Where the narrow layout's compact player goes in the viewport `rect`
 /// whose controls are `layout`: a plate `width` wide (at most the
 /// viewport's less its margins) for a row of buttons `side` high, a gap
@@ -511,6 +508,9 @@ fn fits_bar(layout: &ControlsLayout, area: Rect) -> bool {
         .all(|r| area.expand(0.5).contains_rect(r))
 }
 
+/// True when every control is there (the section's options too when the
+/// section is on), and every plate, the cube and the triad are inside
+/// `area` and clear of each other.
 fn complete(layout: &ControlsLayout, area: Rect, section_on: bool) -> bool {
     let controls = [
         layout.sketches,
@@ -870,8 +870,8 @@ impl Shell {
         // where it leaves the popover a place.
         let popover_shown = self.state.analysis.is_on() || self.state.look.is_studio();
         if self.narrow() && timeline && !self.state.panels.drawer {
-            let side = (tokens.touch_target + 6.0).max(tokens.nav_height);
-            let width = self.compact_player_width(side, super::player::COMPACT_LABEL)
+            let side = super::player::button_side_for(tokens.touch_target, &tokens);
+            let width = self.compact_player_width(side, tokens.compact_player_label)
                 + 2.0 * tokens.nav_padding;
             let before = layout;
             compact_player_place(&mut layout, rect, &tokens, width, side);

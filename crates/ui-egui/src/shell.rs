@@ -713,10 +713,15 @@ pub struct Shell {
     /// Where the feature panel was drawn: the player's keys work over it.
     tree_panel: Option<egui::Rect>,
     /// The window is narrower than `Tokens::narrow_width`: the narrow
-    /// layout (a drawer for the side panel, controls a finger hits). The
-    /// tokens and egui's spacing of the wide layout, kept while it lasts.
+    /// layout (a drawer for the side panel). The tokens and egui's
+    /// spacing without touch sizes, kept while those are in use.
     narrow: bool,
     wide: Option<(Tokens, egui::style::Spacing)>,
+    /// Touch sizes are in use; a finger has been seen on the screen, and
+    /// when last (a tap's release frame has no touch any more).
+    touch_sized: bool,
+    touch_seen: bool,
+    last_touch: f64,
     /// Where the drawer's button was drawn, in the narrow layout.
     drawer_button: Option<egui::Rect>,
     /// Two fingers were on the viewport: the finger left on it does not
@@ -1135,6 +1140,9 @@ impl Shell {
             tree_panel: None,
             narrow: false,
             wide: None,
+            touch_sized: false,
+            touch_seen: false,
+            last_touch: f64::NEG_INFINITY,
             drawer_button: None,
             touch_gesture: false,
             player_shown: false,
@@ -2178,10 +2186,16 @@ impl Shell {
             self.themed = true;
         }
         self.player_shown_last = std::mem::take(&mut self.player_shown);
+        // A finger was seen: touch sizes from now on, at any width.
+        if ui.input(egui::InputState::any_touches) {
+            self.touch_seen = true;
+            self.last_touch = ui.input(|i| i.time);
+        }
         let width = ui.ctx().content_rect().width();
-        let narrow = width.is_finite() && width < self.tokens.narrow_width;
-        if narrow != self.narrow {
-            self.set_narrow(ui, narrow);
+        self.narrow = width.is_finite() && width < self.tokens.narrow_width;
+        let touch_sizes = self.narrow || self.touch_seen;
+        if touch_sizes != self.touch_sized {
+            self.set_touch_sizes(ui, touch_sizes);
         }
         // The dialogs first: they take Enter and Escape before anything
         // else in the frame reads them (`dialogs.rs`).
@@ -2369,13 +2383,16 @@ impl Shell {
                 let open = self.state.panels.drawer;
                 let side = self.tokens.touch_target;
                 let (rect, response) =
-                    ui.allocate_exact_size(egui::vec2(side, side * 0.6), egui::Sense::click());
+                    ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::click());
                 let ink = if open || response.hovered() {
                     color(self.tokens.accent)
                 } else {
                     ui.visuals().text_color()
                 };
-                let (w, gap) = (rect.height() * 0.6, rect.height() * 0.2);
+                let (w, gap) = (
+                    side * self.tokens.drawer_icon_width,
+                    side * self.tokens.drawer_icon_gap,
+                );
                 for k in [-1.0, 0.0, 1.0] {
                     let y = rect.center().y + k * gap;
                     ui.painter().line_segment(
@@ -2890,11 +2907,12 @@ impl Shell {
         &self.status_hits
     }
 
-    /// Into the narrow layout or out of it: the controls and egui's own
-    /// widgets as large as a finger needs, or as they were.
-    fn set_narrow(&mut self, ui: &mut egui::Ui, narrow: bool) {
-        self.narrow = narrow;
-        if narrow {
+    /// Into touch sizes or out of them (the narrow layout, or a finger seen
+    /// on the screen): the controls and egui's own widgets as large as a
+    /// finger needs, or as they were.
+    fn set_touch_sizes(&mut self, ui: &mut egui::Ui, touch: bool) {
+        self.touch_sized = touch;
+        if touch {
             let spacing = ui.ctx().global_style().spacing.clone();
             self.wide = Some((self.tokens, spacing));
             self.tokens = self.tokens.touch();
@@ -2948,7 +2966,7 @@ impl Shell {
         let shown = ui.ctx().animate_bool_with_time(
             egui::Id::new("craft3d-drawer-open"),
             self.state.panels.drawer,
-            0.1,
+            tokens.drawer_seconds,
         );
         if shown <= 0.0 || !shown.is_finite() {
             self.tree_panel = None;
@@ -3566,12 +3584,14 @@ impl Shell {
         // selects it (`selection.rs`).
         // In the narrow layout a tap beside the open drawer closes it and
         // selects nothing.
-        let closes_drawer = self.narrow && self.state.panels.drawer && response.clicked();
+        // A release that ends a pinch or a two-finger pan is no tap.
+        let tapped = response.clicked() && !self.touch_gesture;
+        let closes_drawer = self.narrow && self.state.panels.drawer && tapped;
         if closes_drawer {
             self.state.panels.drawer = false;
             ui.ctx().request_repaint();
         }
-        if response.clicked()
+        if tapped
             && !closes_drawer
             && let Some(at) = response.interact_pointer_pos()
         {
@@ -3580,7 +3600,8 @@ impl Shell {
             let double = response.double_clicked();
             // A double tap does what F does: flies to what the first tap
             // selected, or frames everything when it selected nothing.
-            if double && ui.input(egui::InputState::any_touches) {
+            let touch = ui.input(|i| i.time) - self.last_touch < 1.0;
+            if double && touch {
                 self.fit_key(scene, ui.input(|i| i.time));
             // A picture that cannot be made has nothing to point at; the
             // viewport says why already.
@@ -3908,12 +3929,15 @@ impl Shell {
             }
             return true;
         }
+        // The gesture lasts until the next press: the release that ends it
+        // is not a tap, and the finger left after it turns nothing.
         if self.touch_gesture {
-            if ui.input(|i| i.any_touches() || i.pointer.any_down()) {
+            if ui.input(|i| i.pointer.any_pressed()) {
+                self.touch_gesture = false;
+            } else if ui.input(|i| i.any_touches() || i.pointer.any_down()) {
                 self.drag_from = None;
                 return false;
             }
-            self.touch_gesture = false;
         }
         // Alt and a drag on a part of an assembly move it along its free
         // motion, not the camera.

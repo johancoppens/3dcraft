@@ -660,7 +660,9 @@ impl Shell {
                     }
                     let shown = self.timeline.motion_t().unwrap_or(0.0);
                     let label = t_text(self.shown_t().unwrap_or(shown));
-                    let room = (ui.available_width() - COMPACT_LABEL - PLAYER_GROUP_GAP).max(40.0);
+                    let room =
+                        (ui.available_width() - tokens.compact_player_label - PLAYER_GROUP_GAP)
+                            .max(40.0);
                     ui.spacing_mut().slider_width = room;
                     let mut t = shown;
                     ui.add(
@@ -774,9 +776,7 @@ impl Shell {
 
 /// The space between two of the player's buttons, in points.
 const PLAYER_GAP: f32 = 2.0;
-/// The width kept for the compact player's label (`t = 0.000`,
-/// `Step 12/40`).
-pub(crate) const COMPACT_LABEL: f32 = 84.0;
+
 /// The extra space between the five that move and the settings.
 const PLAYER_GROUP_GAP: f32 = 4.0;
 /// The speed button's width, the same for 0.5×, 1× and 2× (wide enough
@@ -825,7 +825,12 @@ pub(crate) fn speed_text(speed: f64) -> String {
 
 /// The height of the player's buttons, in points.
 fn button_side(ui: &egui::Ui) -> f32 {
-    (ui.spacing().interact_size.y + 6.0).max(22.0)
+    button_side_for(ui.spacing().interact_size.y, &Tokens::default())
+}
+
+/// A player button's side for rows `row` points high.
+pub(crate) fn button_side_for(row: f32, tokens: &Tokens) -> f32 {
+    (row + tokens.player_button_extra).max(22.0)
 }
 
 /// A small button with a painted icon, called `name` for screen readers

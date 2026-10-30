@@ -236,7 +236,8 @@ fn a_phone_gets_a_drawer_and_controls_a_finger_hits() {
     window.click(&mut shell, &mut session, chip.center());
     // The drawer: its button opens it over the viewport, again closes it.
     let button = shell.drawer_button_rect().expect("the drawer's button");
-    assert!(button.height() >= tokens.touch_target * 0.6 - 0.01);
+    assert!(button.height() >= tokens.touch_target - 0.01, "{button:?}");
+    assert!(button.width() >= tokens.touch_target - 0.01, "{button:?}");
     window.click(&mut shell, &mut session, button.center());
     assert!(shell.state.panels.drawer);
     let drawer = shell.tree_panel_rect().expect("the drawer");
@@ -376,4 +377,64 @@ fn fingers_turn_pan_zoom_select_and_open_the_list() {
     window.touch(&mut shell, &mut session, &[(0, End, middle)]);
     window.frames(&mut shell, &mut session, 2);
     assert!(shell.other_menu().is_some(), "no list after a long press");
+}
+
+/// A pinch whose first finger stays still ends with that finger lifted
+/// where it went down, as a tap would: it selects nothing and closes no
+/// drawer. A double tap on the background frames the whole model again.
+#[test]
+fn a_pinch_is_no_tap_and_a_double_tap_frames_everything() {
+    use TouchPhase::{End, Move, Start};
+    let (mut session, mut shell, mut window) = opened(390.0, 844.0);
+    let framed = shell.state.camera;
+    let middle = shell.viewport_rect().unwrap().center();
+    for drawer in [false, true] {
+        set(
+            &mut shell,
+            &mut session,
+            json!({"panels": {"drawer": drawer}}),
+        );
+        window.frames(&mut shell, &mut session, 10);
+        // Finger 0 on the model, still; finger 1 moves away from it.
+        let (a, b) = (middle, middle + vec2(60.0, 40.0));
+        window.touch(&mut shell, &mut session, &[(0, Start, a)]);
+        window.touch(&mut shell, &mut session, &[(0, Move, a), (1, Start, b)]);
+        for k in 1..=8 {
+            let d = vec2(6.0 * k as f32, 4.0 * k as f32);
+            window.touch(&mut shell, &mut session, &[(0, Move, a), (1, Move, b + d)]);
+        }
+        window.touch(&mut shell, &mut session, &[(1, End, b + vec2(48.0, 32.0))]);
+        window.touch(&mut shell, &mut session, &[(0, End, a)]);
+        window.frames(&mut shell, &mut session, 3);
+        assert!(
+            shell.selection().items.is_empty(),
+            "drawer {drawer}: {:?}",
+            shell.selection()
+        );
+        assert_eq!(shell.state.panels.drawer, drawer, "the drawer stays");
+    }
+    set(
+        &mut shell,
+        &mut session,
+        json!({"panels": {"drawer": false}}),
+    );
+    let zoomed = shell.state.camera;
+    assert!(
+        zoomed.distance < framed.distance * 0.95,
+        "{framed:?} {zoomed:?}"
+    );
+    // A tap after the pinch is a tap again.
+    window.frames(&mut shell, &mut session, 10);
+    // A double tap on the background: what F does, the whole model.
+    let corner = shell.viewport_rect().unwrap().left_top() + vec2(30.0, 30.0);
+    for _ in 0..2 {
+        window.touch(&mut shell, &mut session, &[(0, Start, corner)]);
+        window.touch(&mut shell, &mut session, &[(0, End, corner)]);
+    }
+    window.frames(&mut shell, &mut session, 60);
+    let fitted = shell.state.camera;
+    assert!(
+        (fitted.distance - framed.distance).abs() < framed.distance * 0.05,
+        "{framed:?} {fitted:?}"
+    );
 }

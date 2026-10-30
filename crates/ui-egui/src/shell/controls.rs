@@ -400,7 +400,8 @@ impl Shell {
     /// A section switched on (by `ui.set`) without saying where: across Z
     /// when it names no plane, and through the middle of the model's box
     /// along the normal of a base plane (X, Y or Z) when it gives no
-    /// offset, as the Section chip and the axis choice do.
+    /// offset, as the Section chip and the axis choice do. The middle is
+    /// that of the scene shown: before the first one is drawn it is 0.
     pub(crate) fn section_through_the_middle(&mut self, offset_given: bool) {
         let scene = self.shown_scene.clone();
         let section = &mut self.state.section;

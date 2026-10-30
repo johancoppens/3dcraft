@@ -70,9 +70,6 @@ pub enum TabPart {
     All,
 }
 
-/// The width of that button, in points.
-const OVERFLOW_WIDTH: f32 = 56.0;
-
 /// The mark before the name of a document with unsaved changes, and the
 /// close button. Both are in egui's default fonts (a test checks).
 pub const UNSAVED_MARK: char = '•';
@@ -434,7 +431,7 @@ impl Shell {
         // In the narrow layout a tab keeps a readable width (more of them
         // scroll, and the list at the end names them all).
         let least = if self.narrow() {
-            tokens.tab_max_width * 0.6
+            tokens.tab_narrow_min_width
         } else {
             tokens.tab_min_width
         };
@@ -456,7 +453,11 @@ impl Shell {
         // When even the narrowest tabs do not fit (a phone, many
         // documents), a button at the row's end lists them all.
         let overflow = fair < least && count > 1;
-        let menu_width = if overflow { OVERFLOW_WIDTH } else { 0.0 };
+        let menu_width = if overflow {
+            tokens.tab_overflow_width
+        } else {
+            0.0
+        };
         let row = ui.available_width();
         let mut chosen = None;
         let mut tab_strip = |ui: &mut egui::Ui| {

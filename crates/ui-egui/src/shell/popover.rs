@@ -220,14 +220,37 @@ mod tests {
     /// opens at it is beside the cube.
     #[test]
     fn the_popover_keeps_clear_of_every_control() {
-        let tokens = Tokens::default();
+        // The desktop's sizes, and touch sizes with the compact player's
+        // plate (as the narrow layout lays them out).
+        for (tokens, player) in [
+            (Tokens::default(), false),
+            (Tokens::default().touch(), false),
+            (Tokens::default().touch(), true),
+        ] {
+            the_popover_keeps_clear_with(&tokens, player);
+        }
+    }
+
+    fn the_popover_keeps_clear_with(tokens: &Tokens, player: bool) {
+        let tokens = *tokens;
         let widths = ControlWidths::fallback(&tokens);
         let mut shown = 0;
         for w in (40..=1800).step_by(37) {
             for h in (40..=1100).step_by(29) {
                 for section in [false, true] {
                     let rect = Rect::from_min_size(pos2(10.0, 30.0), vec2(w as f32, h as f32));
-                    let layout = controls_layout(rect, &tokens, &widths, section);
+                    let mut layout = controls_layout(rect, &tokens, &widths, section);
+                    if player {
+                        let side =
+                            crate::shell::player::button_side_for(tokens.touch_target, &tokens);
+                        crate::shell::layout::compact_player_place(
+                            &mut layout,
+                            rect,
+                            &tokens,
+                            5.0 * side + tokens.compact_player_label + 2.0 * tokens.nav_padding,
+                            side,
+                        );
+                    }
                     let Some(place) = popover_place(rect, &layout, &tokens) else {
                         continue;
                     };

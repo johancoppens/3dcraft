@@ -361,6 +361,24 @@ pub struct Tokens {
     pub narrow_width: f32,
     pub drawer_share: f32,
     pub touch_target: f32,
+    /// The drawer's button: its ☰ three lines `drawer_icon_width` of the
+    /// button's side long and `drawer_icon_gap` of it apart; the drawer
+    /// slides in and out in `drawer_seconds`.
+    pub drawer_icon_width: f32,
+    pub drawer_icon_gap: f32,
+    pub drawer_seconds: f32,
+    /// A history player's button is the row's height and
+    /// `player_button_extra` points more; the compact player keeps
+    /// `compact_player_label` points for its `t` or step.
+    pub player_button_extra: f32,
+    pub compact_player_label: f32,
+    /// The button that lists every open document when the tabs do not
+    /// fit, and the least width of a tab in the narrow layout.
+    pub tab_overflow_width: f32,
+    pub tab_narrow_min_width: f32,
+    /// Below this card width the start screen's Recent files and agent
+    /// block stand one under the other.
+    pub start_stacked_width: f32,
     /// The controls over the viewport (`shell/layout.rs`) share one size
     /// system: every control is `nav_height` high on a plate
     /// `nav_padding` larger on each side, `nav_margin` from the viewport's
@@ -603,6 +621,14 @@ impl Tokens {
             narrow_width: 800.0,
             drawer_share: 0.85,
             touch_target: 40.0,
+            drawer_icon_width: 0.36,
+            drawer_icon_gap: 0.12,
+            drawer_seconds: 0.1,
+            player_button_extra: 6.0,
+            compact_player_label: 84.0,
+            tab_overflow_width: 56.0,
+            tab_narrow_min_width: 120.0,
+            start_stacked_width: 600.0,
             nav_height: 28.0,
             nav_padding: 4.0,
             nav_margin: 12.0,

@@ -208,7 +208,7 @@ The **display bar** at the bottom of the view:
 - **Section** cuts the view open with a plane across X, Y or Z, through the middle of the model at first; **Offset** moves it and **Flip side**
   keeps the other half.
 
-On a phone or a tablet (in the browser), and in any window narrower than about 800 points:
+On a phone or a tablet (in the browser), and in any window narrower than about 800 points (the buttons get finger-sized as soon as you touch the screen, at any width; the drawer below is for narrow windows only, so a tablet held upright at 820 points keeps the feature list beside the view):
 
 | Do | To |
 |---|---|
