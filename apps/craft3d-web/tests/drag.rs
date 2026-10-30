@@ -478,3 +478,57 @@ fn a_build_replaced_part_way_leaves_the_next_as_it_is_built_in_one_go() {
         );
     }
 }
+
+/// Pieces that stop after the `k`-th time they are asked (a clock's
+/// stop lands anywhere): the same scene as one go?
+#[test]
+#[ignore = "diagnosis: run in release with --ignored --nocapture"]
+fn pieces_that_stop_anywhere_build_the_scene_of_one_go() {
+    let mut page = Session::new(Workspace::memory());
+    for (id, params) in turbofan() {
+        page.execute(&id, &params).unwrap();
+    }
+    let mut fresh = page.clone();
+    let want = craft3d_engine::scene_bytes(&fresh.scene_with(quality()).unwrap().unwrap());
+    let want_preview =
+        craft3d_engine::scene_bytes(&fresh.scene_with(SceneQuality::Preview).unwrap().unwrap());
+    page.set_stepwise(true);
+    page.set_checks_elsewhere(true);
+    page.set_regen_elsewhere(true);
+    let token = page.scene_job(quality()).unwrap();
+    let request = page.scene_request(token).unwrap();
+    for k in [1_usize, 2, 3, 5, 8, 13, 21, 34] {
+        craft3d_engine::scene_forget();
+        scene_begin(&request.document, &request.work);
+        let mut parts = Vec::new();
+        loop {
+            let asked = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+            let count = std::rc::Rc::clone(&asked);
+            let step = scene_step(move || {
+                count.set(count.get() + 1);
+                count.get() >= k
+            });
+            match step {
+                SceneStep::Part(part) => parts.push(part),
+                SceneStep::Working => {}
+                SceneStep::Done => break,
+            }
+        }
+        let mut shown = page.clone();
+        for part in &parts {
+            shown.scene_answered(token, Ok(part));
+        }
+        let got = craft3d_engine::scene_bytes(&shown.scene_with(quality()).unwrap().unwrap());
+        let got_preview =
+            craft3d_engine::scene_bytes(&shown.scene_with(SceneQuality::Preview).unwrap().unwrap());
+        println!(
+            "stopped at the {k}th ask: display {}, preview {}",
+            if got == want { "equal" } else { "DIFFERS" },
+            if got_preview == want_preview {
+                "equal"
+            } else {
+                "DIFFERS"
+            },
+        );
+    }
+}
