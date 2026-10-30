@@ -1,7 +1,7 @@
 //! An opaque, whole studio picture keeps its bytes: the checksums of
 //! pictures in layer 1's look and the polished one, a transmissive face
 //! among them, as main drew them before see-through and cut-open studio
-//! pictures were added (fef3410c, Strix run in the dev log, 2026-10-30).
+//! pictures were added (fef3410c, Check run 41132978097, 2026-10-30).
 //! Those pictures go through the same code; this pins that they still
 //! give the same bytes (docs/design/rendering.md, *See-through and
 //! cut-open pictures in the studio look*).
@@ -111,8 +111,11 @@ fn checksum(frame: &craft3d_render::Frame) -> u64 {
     h
 }
 
-/// The checksums main's renderer gave (fef3410c); 0 measures only.
-const EXPECTED: [(&str, u64); 2] = [("layer 1", 0), ("polished", 0)];
+/// The checksums main's renderer gave (fef3410c, Check run 41132978097).
+const EXPECTED: [(&str, u64); 2] = [
+    ("layer 1", 0x4e80_4a82_d40b_87d7),
+    ("polished", 0xc86e_844c_fd78_8411),
+];
 
 #[test]
 fn opaque_whole_studio_pictures_keep_their_bytes() {
