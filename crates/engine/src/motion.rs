@@ -98,6 +98,14 @@ const MAX_MEMO: usize = MAX_COLLISION_PAIRS;
 /// The value of the timeline in `doc` (its variable `t` as the document
 /// has it), or why the document has none: a sentence for whoever asked.
 pub(crate) fn timeline(doc: &Document) -> Result<f64, String> {
+    // An assembly shows its placed parts; playing it over `t`, with a
+    // solve per moment, is motion phase 2 (docs/design/motion.md).
+    if doc.is_assembly() {
+        return Err(
+            "an assembly has no motion over `t` yet (motion of assemblies, phase 2, is not built): play the motion in a part"
+                .into(),
+        );
+    }
     let Some(variable) = doc.variable(TIMELINE) else {
         return Err(format!(
             "the document has no timeline: a variable `{TIMELINE}`, a plain number from 0 to 1 that the formulas of the motion use (variable.set {{\"name\": \"{TIMELINE}\", \"expr\": \"0\"}}, then for example a crank angle `360 deg * {TIMELINE}`)"

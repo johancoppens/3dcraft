@@ -84,12 +84,6 @@ const FROZEN: &[(u32, usize, u64)] = &[
     (49, 11032, 0x3cce_9596_c521_0489),
     (50, 2432, 0x8778_28c2_a363_e5ed),
     (51, 11363, 0x6390_df3b_e9ed_e706),
-    // PLACEHOLDER (branch r1-asm-doc) for the version another branch
-    // takes as 52: the v50 fixture with its version raised. The
-    // coordinator replaces it at merge.
-    (52, 2432, 0x0208_9e92_285a_bcb5),
-    // An assembly, v53.3dcraftasm (53 a TEMPORARY number).
-    (53, 14349, 0x46db_46ef_f5a7_1d41),
 ];
 
 fn dir() -> PathBuf {
@@ -97,7 +91,7 @@ fn dir() -> PathBuf {
 }
 
 /// The fixture's file: `vN.3dcraft`, or `vN.3dcraftasm` for a version
-/// whose fixture is an assembly (version 53, a TEMPORARY number).
+/// whose fixture is an assembly (version 52).
 fn fixture_path(version: u32) -> PathBuf {
     let assembly = dir().join(format!("v{version}.3dcraftasm"));
     if assembly.is_file() {

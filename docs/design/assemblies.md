@@ -281,13 +281,12 @@ wrong extension both ways).
 to itself, couplings naming mates, hashes in lowercase hex, relative paths, the packed list in order and complete).
 Every assembly command edits through `asm_cmds::asm_edit`, which validates in the same step.
 
-### Format (version 53, a TEMPORARY number)
+### Format (version 52)
 
 `manifest.rs` and `convert.rs` carry the assembly exhaustively (a new field does not compile until it is written).
 The version was raised so that an older build refuses an assembly by naming the version it needs instead of an
-unknown field; a file of an older version is a part and holds none, so the migration changes nothing. 51 and 52 are
-placeholders in this branch for the numbers other branches take; the coordinator renumbers at merge. The fixture of
-the version is `v53.3dcraftasm`, a packed assembly (two configurations of one source, a picked body, a pinned and a
+unknown field; a file of an older version is a part and holds none, so the migration changes nothing. The fixture of
+the version is `v52.3dcraftasm`, a packed assembly (two configurations of one source, a picked body, a pinned and a
 hidden instance, a fixed, a revolute and a slider mate, a joint variable, a rack coupling), written by the engine of
 its own build on the Strix.
 
@@ -449,7 +448,7 @@ back with its sources, `crates/io/tests/step_freecad.rs` FreeCAD reading an asse
 
 ### Findings and history (track A)
 
-- 2026-10-29: first version (track A): the document kind, format 53 (TEMPORARY), instances with configurations, picked
+- 2026-10-29: first version (track A): the document kind, format 52, instances with configurations, picked
   bodies, pins and subassemblies, cross-file names and frames, a stand-in solver, placement into the scene, pack and
   unpack, the structured STEP export, measures by instance.
 - 2026-10-30 (review fixes): subassembly configurations keyed by their folder and dropped when the files read change;

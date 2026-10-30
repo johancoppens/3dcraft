@@ -60,7 +60,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 /// The format version this build writes, and the newest it reads.
-pub const FORMAT_VERSION: u32 = 53;
+pub const FORMAT_VERSION: u32 = 52;
 
 /// The version that made `floor`, `ceil`, `round`, `trunc` and `mod`
 /// function names: a variable of an older file with such a name is
@@ -141,7 +141,7 @@ pub const MAX_THUMBNAIL_BYTES: usize = 4 * 1024 * 1024;
 pub const BLOB_DIR: &str = "blobs/";
 const BLOB_EXTENSION: &str = ".step";
 /// Where the source documents packed into an assembly are:
-/// `blobs/<sha256>.3dcraft` (format version 53, a TEMPORARY number).
+/// `blobs/<sha256>.3dcraft` (format version 52).
 const PACKED_EXTENSION: &str = ".3dcraft";
 
 /// Largest `.3dcraft` file that is read: 256 MiB. Checked before the file

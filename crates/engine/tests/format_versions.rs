@@ -210,8 +210,7 @@ fn the_file_of_every_format_version_regenerates_to_what_its_build_made() {
     for version in 1..=FORMAT_VERSION {
         let want = expected(version);
         assert_eq!(want["format_version"], version, "v{version}.expected.json");
-        // An assembly's fixture is a .3dcraftasm file (version 53, a
-        // TEMPORARY number).
+        // An assembly's fixture is a .3dcraftasm file (version 52).
         let name = if fixtures().join(format!("v{version}.3dcraftasm")).is_file() {
             format!("v{version}.3dcraftasm")
         } else {

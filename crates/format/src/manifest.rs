@@ -91,8 +91,7 @@ pub struct Document {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inserted: Vec<Inserted>,
     /// For an assembly (a `.3dcraftasm` file): its instances, mates and
-    /// couplings. Absent for a part (and in files before version 53,
-    /// a TEMPORARY number).
+    /// couplings. Absent for a part (and in files before version 52).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assembly: Option<Assembly>,
 }

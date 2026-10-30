@@ -1458,3 +1458,31 @@ fn the_shown_scenes_follow_the_joints_after_the_workspace_narrows() {
         }
     }
 }
+
+/// An assembly shows its placed parts; a motion over `t` is a part's
+/// (motion of assemblies is phase 2): `view.motion` is refused by name
+/// even when the assembly has a variable `t`, and what is shown stays
+/// the placed instance.
+#[test]
+fn an_assembly_shows_its_placed_parts_and_refuses_a_motion() {
+    let dir = workdir("assembly", "no-motion");
+    let mut s = session_in(&dir);
+    block_part(&mut s, "base.3dcraft", [10.0, 4.0, 2.0], 1e-6);
+    run(&mut s, "assembly.new", json!({}));
+    run(&mut s, "variable.set", json!({ "name": "t", "expr": "0" }));
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "base.3dcraft", "name": "B1" }),
+    );
+    let refused = error(&mut s, "view.motion", json!({ "t": 0.5 }));
+    assert!(refused.contains("assembly"), "{refused}");
+    assert!(s.timeline().is_err());
+    let shown = run(&mut s, "document.inspect", json!({}));
+    let bodies = shown["bodies"].as_array().unwrap();
+    assert_eq!(bodies.len(), 1, "{shown}");
+    assert!(
+        close(bodies[0]["volume"].as_f64().unwrap(), 80.0, 1.0),
+        "{shown}"
+    );
+}
