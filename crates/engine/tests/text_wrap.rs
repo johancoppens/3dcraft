@@ -431,7 +431,7 @@ fn diagnose_every_glyph() {
                     common::plain::run(
                         &mut s,
                         "sketch.text",
-                        json!({"sketch": sk, "text": c.to_string(), "size": size, "font": font, "at": [-3, 12]}),
+                        json!({"sketch": sk, "text": match c { '{' => "{{".to_string(), '}' => "}}".to_string(), _ => c.to_string() }, "size": size, "font": font, "at": [-3, 12]}),
                     );
                     let name = format!("W{}", c as u32);
                     let out = s

@@ -134,25 +134,104 @@ fn on_segment(segment: &Segment, t: f64) -> [f64; 2] {
     segment.point_at(if segment.reversed { 1.0 - t } else { t })
 }
 
-/// A segment mapped onto the surface and fitted.
+/// The unit direction a segment leaves its point at `t` (0 or 1) by, along
+/// the loop: from a finite difference, coarser where the curve stalls
+/// there (a cusp of a glyph), `None` where it does not move.
+fn leaving(segment: &Segment, t: f64) -> Option<[f64; 2]> {
+    let p = on_segment(segment, t);
+    for h in [1e-7, 1e-5, 1e-3, 1e-1] {
+        let q = on_segment(segment, if t < 0.5 { h } else { 1.0 - h });
+        let d = if t < 0.5 {
+            [q[0] - p[0], q[1] - p[1]]
+        } else {
+            [p[0] - q[0], p[1] - q[1]]
+        };
+        let l = d[0].hypot(d[1]);
+        if l > 0.0 && l.is_finite() {
+            return Some([d[0] / l, d[1] / l]);
+        }
+    }
+    None
+}
+
+/// How far a wrapped curve runs on past each end of its segment, in
+/// multiples of the depth: further than [`crate::plate`] traces its rims
+/// past an edge's ends (twice the plate's thickness of twice the depth,
+/// and the corner's own reach), so that the plate traces the curve's own
+/// points there, not a polynomial continued far past a short piece (a
+/// glyph's piece of a fifth of a millimetre continued by four:
+/// 2026-10-30, the r and t of 3DCraft).
+const RUN_ON: f64 = 8.0;
+
+/// A segment mapped onto the surface and fitted, run on past its ends
+/// along its tangents in the development (a geodesic of the surface) by
+/// up to `run_on`, shortened where that would leave the development; and
+/// the curve's parameters at the segment's ends.
 fn mapped_curve(
     segment: &Segment,
     surface: &Surface,
     dev: &Development,
     tol: f64,
-) -> Result<NurbsCurve, KernelError> {
-    let map = |t: f64| -> Result<Vec3, KernelError> {
-        let (u, v) = dev.uv(on_segment(segment, t))?;
+    run_on: f64,
+) -> Result<(NurbsCurve, (f64, f64)), KernelError> {
+    let ends = [on_segment(segment, 0.0), on_segment(segment, 1.0)];
+    // The run-on of each end: shortened (halved) until every point of it
+    // lies in the development.
+    let mut runs = [0.0_f64; 2];
+    let mut ways = [[0.0_f64; 2]; 2];
+    for (k, (run, way)) in runs.iter_mut().zip(ways.iter_mut()).enumerate() {
+        let Some(d) = leaving(segment, if k == 0 { 0.0 } else { 1.0 }) else {
+            continue;
+        };
+        // Back along the curve at the start, on along it at the end.
+        *way = if k == 0 { [-d[0], -d[1]] } else { d };
+        let end = ends.get(k).copied().unwrap_or([0.0, 0.0]);
+        let mut length = run_on;
+        for _ in 0..12 {
+            let fits = (1..=8).all(|j| {
+                let s = length * f64::from(j) / 8.0;
+                dev.uv([end[0] + way[0] * s, end[1] + way[1] * s]).is_ok()
+            });
+            if fits {
+                *run = length;
+                break;
+            }
+            length *= 0.5;
+        }
+    }
+    // A point of the run: `x` in [−1, 0) on before the start, [0, 1] the
+    // segment, (1, 2] on past the end.
+    let sketch_at = |x: f64| -> [f64; 2] {
+        if x < 0.0 {
+            let s = -x * runs[0];
+            [ends[0][0] + ways[0][0] * s, ends[0][1] + ways[0][1] * s]
+        } else if x > 1.0 {
+            let s = (x - 1.0) * runs[1];
+            [ends[1][0] + ways[1][0] * s, ends[1][1] + ways[1][1] * s]
+        } else {
+            on_segment(segment, x)
+        }
+    };
+    let map = |x: f64| -> Result<Vec3, KernelError> {
+        let (u, v) = dev.uv(sketch_at(x))?;
         Ok(surface.eval(u, v))
     };
+    let (before, after) = (runs[0] > 0.0, runs[1] > 0.0);
     let mut n = 8usize;
     loop {
-        let mut points = Vec::with_capacity(n + 1);
-        let mut ts = Vec::with_capacity(n + 1);
-        for k in 0..=n {
-            let t = k as f64 / n as f64;
-            ts.push(t);
-            points.push(map(t)?);
+        // Samples: n over the segment, n / 2 over each run-on.
+        let mut xs: Vec<f64> = Vec::with_capacity(2 * n + 1);
+        let half = n / 2;
+        if before {
+            xs.extend((0..half).map(|k| -1.0 + k as f64 / half as f64));
+        }
+        xs.extend((0..=n).map(|k| k as f64 / n as f64));
+        if after {
+            xs.extend((1..=half).map(|k| 1.0 + k as f64 / half as f64));
+        }
+        let mut points = Vec::with_capacity(xs.len());
+        for x in &xs {
+            points.push(map(*x)?);
         }
         // Chord-length parameters.
         let mut params = vec![0.0];
@@ -169,6 +248,10 @@ fn mapped_curve(
             ));
         }
         let params: Vec<f64> = params.iter().map(|p| p / total).collect();
+        let first = if before { half } else { 0 };
+        let (Some(&t0), Some(&t1)) = (params.get(first), params.get(first + n)) else {
+            return Err(refuse("a curve of the profile has no samples"));
+        };
         let values: Vec<Vec<f64>> = points.iter().map(|p| vec![p.x, p.y, p.z]).collect();
         let (knots, ctrl) = craft3d_geom::refine::interpolate(&params, 3, &values)
             .map_err(KernelError::Geometry)?;
@@ -186,18 +269,18 @@ fn mapped_curve(
         let curve = NurbsCurve::new(3, knots, ctrl, weights).map_err(KernelError::Geometry)?;
         // Checked at the middle of every stretch between samples.
         let mut worst: f64 = 0.0;
-        for k in 0..n {
-            let (Some(t0), Some(t1), Some(p0), Some(p1)) =
-                (ts.get(k), ts.get(k + 1), params.get(k), params.get(k + 1))
+        for k in 0..xs.len().saturating_sub(1) {
+            let (Some(x0), Some(x1), Some(p0), Some(p1)) =
+                (xs.get(k), xs.get(k + 1), params.get(k), params.get(k + 1))
             else {
                 continue;
             };
-            let exact = map(0.5 * (t0 + t1))?;
+            let exact = map(0.5 * (x0 + x1))?;
             let fitted = curve.eval(0.5 * (p0 + p1));
             worst = worst.max((exact - fitted).length());
         }
         if worst <= tol * 0.1 {
-            return Ok(curve);
+            return Ok((curve, (t0, t1)));
         }
         if n * 2 > MAX_SAMPLES {
             return Err(refuse(format!(
@@ -224,6 +307,7 @@ fn sheet(
     reversed: bool,
     dev: &Development,
     tol: f64,
+    run_on: f64,
 ) -> Result<(Body, FaceId, SheetParts), KernelError> {
     let mut body = Body::new(BodyKind::Sheet);
     let mut parts = SheetParts {
@@ -249,11 +333,11 @@ fn sheet(
         }
         let mut coedges = Vec::with_capacity(n);
         for (i, s) in l.segments.iter().enumerate() {
-            let curve = mapped_curve(s, surface, dev, tol)?;
+            let (curve, range) = mapped_curve(s, surface, dev, tol, run_on)?;
             let (Some(&a), Some(&b)) = (starts.get(i), starts.get((i + 1) % n)) else {
                 return Err(refuse("a loop of the profile has no segments"));
             };
-            let edge = body.add_edge(Curve3::Nurbs(curve), (0.0, 1.0), a, b);
+            let edge = body.add_edge(Curve3::Nurbs(curve), range, a, b);
             let before = l
                 .segments
                 .get((i + n - 1) % n)
@@ -322,7 +406,8 @@ fn plate_of(
     dev: &Development,
     tolerance: &Tolerance,
 ) -> Result<OpResult, KernelError> {
-    let (sheet, _, parts) = sheet(profile, surface, reversed, dev, tolerance.linear)?;
+    let run_on = RUN_ON * depth.abs();
+    let (sheet, _, parts) = sheet(profile, surface, reversed, dev, tolerance.linear, run_on)?;
     // The plate reaches the depth to both sides of the surface, so that a
     // union or a difference with the body the surface is a face of meets
     // it across the surface, never along it (a skin on the face itself

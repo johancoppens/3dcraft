@@ -1931,12 +1931,15 @@ fn trace_boundary(
     // Outward: away from the material, against the inward direction.
     let mid_rim = (middle.point + middle.normal * levels[0])
         .lerp(middle.point + middle.normal * levels[1], 0.5);
-    let probe = {
-        let k = hi_row.len() / 2;
-        match (hi_row.get(k), lo_row.get(k)) {
-            (Some(h), Some(l)) => h.lerp(*l, 0.5),
-            _ => mid_rim,
-        }
+    // Probed between the corners at the middle station itself, where
+    // `middle.inward` is: the rows' middle entry is another station when
+    // they run on past the ends by unequal reaches or were refined
+    // unevenly, and on a short curved edge traced far past its ends that
+    // station's rim faces another way (the r of 3DCraft wrapped onto a
+    // cylinder, 2026-10-30: rims the wrong way out).
+    let probe = match at_param(0.5 * (a + b)).as_deref() {
+        Ok([lo, hi]) => lo.lerp(*hi, 0.5),
+        _ => mid_rim,
     };
     let normal = surface_normal(&surface, probe)
         .ok_or_else(|| refuse(Some(edge_id), "the rim has no normal"))?;

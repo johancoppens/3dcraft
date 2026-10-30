@@ -79,6 +79,16 @@ pub enum Defect {
         face: FaceId,
         loop_: LoopId,
     },
+    /// The loops of a face do not bound a region of its surface, read in
+    /// its parameters (`crate::region_fault`): not one loop running
+    /// counter-clockwise about the outward normal and enclosing the most,
+    /// the others clockwise inside it, none crossing (the tessellator
+    /// cannot mesh such a face). Faces that cannot be charted without
+    /// doubt are not held to it.
+    LoopsBoundNoRegion {
+        face: FaceId,
+        reason: String,
+    },
     /// V − E + F − R, less 2 for every face that is a torus or a torus
     /// with holes in it, is not 2 (shells − genus) for any whole genus ≥ 0.
     Euler {
@@ -232,6 +242,11 @@ impl fmt::Display for Defect {
                 f,
                 "edge {} is in two different loops of face {}, which leaves the face no width there",
                 edge.0, face.0
+            ),
+            Defect::LoopsBoundNoRegion { face, reason } => write!(
+                f,
+                "the loops of face {} do not bound a region: {reason}",
+                face.0
             ),
             Defect::StrandedLoop { face, loop_ } => write!(
                 f,
@@ -541,10 +556,11 @@ pub fn check_remembered_capped(body: &Body, tolerance: &Tolerance, cap: f64) -> 
 /// vertex, and each shell satisfies Euler–Poincaré with its boundary,
 /// `V − E + F − R − 2H = 2 (1 − G) − B` with `B` its loops of boundary
 /// edges ([`crate::boundary_loops`]). Also that a face's loops lie inside each
-/// other as a face's do, for faces on a plane (`stranded_loops`). Not
-/// checked yet: self-intersection, the same for loops on curved faces,
-/// and that each face is bounded by its
-/// loops (`mass_properties` reports an unbounded face as an error).
+/// other as a face's do, for faces on a plane (`stranded_loops`). Also that
+/// a face's loops bound a region in its parameters, on every surface
+/// (`region_fault`: one outer loop counter-clockwise, holes clockwise
+/// inside it, no crossings). Not checked yet: self-intersection, and that
+/// each face is bounded by its loops (`mass_properties` reports an unbounded face as an error).
 ///
 /// **Allowed: a skin that touches itself in a point.** A solid whose
 /// boundary is pinched (two conical dents that meet tip to tip, which is
@@ -757,6 +773,9 @@ pub fn check_capped(body: &Body, tol: &Tolerance, cap: f64) -> Vec<Defect> {
         };
         for (face, loop_) in crate::stranded(body, &working) {
             defects.push(Defect::StrandedLoop { face, loop_ });
+        }
+        for (face, reason) in crate::regionless(body, &working) {
+            defects.push(Defect::LoopsBoundNoRegion { face, reason });
         }
     }
 
