@@ -478,6 +478,11 @@ fn a_twist_within_the_angular_tolerance_is_not_g2() {
         // G1 by the measure, and not G2.
         assert!(c.position.within() && c.angle.within(), "{c:?}");
         assert_eq!(c.order, Order::G1, "scale {scale}: {c:?}");
+        // By its twist: beyond the threshold, its bound covering what the
+        // test found; flat across, so the curvature across is G2's.
+        assert!(c.twist.beyond(), "{c:?}");
+        assert!(c.twist.bound >= twist * (1.0 - 1e-9), "{c:?} vs {twist:e}");
+        assert!(c.curvature.within(), "{c:?}");
     }
 }
 
