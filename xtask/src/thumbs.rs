@@ -54,6 +54,23 @@ pub const RENDER: &str = r#"{"width": 160, "height": 120, "view": "iso", "projec
 /// The params of `view.render` for the picture of a script example in
 /// the examples' README (`docs/examples/<id>.png`), part of the stamp.
 pub const PICTURE: &str = r#"{"width": 640, "height": 480, "view": "iso", "projection": "perspective", "zoom": 1, "renderer": "cpu", "look": {"mode": "studio", "background": "plain", "accumulate": 8}}"#;
+/// Thumbnails drawn at another zoom than [`RENDER`]'s, as (id, zoom): a
+/// long, flat part that the closer framing would cut at its ends. Part of
+/// every stamp.
+pub const THUMB_ZOOM: [(&str, f64); 1] = [("nameplate", 1.0)];
+
+/// The thumbnail's `view.render` params of example `id` (without the
+/// path): [`RENDER`], at its [`THUMB_ZOOM`] when it has one.
+fn thumb_render(id: &str) -> Result<String, String> {
+    let mut params: serde_json::Value = serde_json::from_str(RENDER).map_err(|e| e.to_string())?;
+    if let Some((_, zoom)) = THUMB_ZOOM.iter().find(|(i, _)| *i == id)
+        && let Some(map) = params.as_object_mut()
+    {
+        map.insert("zoom".into(), serde_json::json!(zoom));
+    }
+    Ok(params.to_string())
+}
+
 /// Most colours of a thumbnail.
 pub const PALETTE: usize = 128;
 /// Most colours of a README picture.
@@ -98,6 +115,7 @@ pub fn stamp(script: &[u8]) -> String {
     for part in [
         METHOD.as_bytes(),
         RENDER.as_bytes(),
+        format!("{THUMB_ZOOM:?}").as_bytes(),
         PICTURE.as_bytes(),
         &PALETTE.to_le_bytes(),
         &PICTURE_PALETTE.to_le_bytes(),
@@ -325,7 +343,7 @@ pub fn run(_args: &[String]) -> Result<(), String> {
         }
         let status = command
             .args(["--cmd", "view.render", "--params"])
-            .arg(with_path(RENDER, &thumb_png)?)
+            .arg(with_path(&thumb_render(id)?, &thumb_png)?)
             .stdout(std::process::Stdio::null())
             .status()
             .map_err(|e| format!("cannot run {}: {e}", cli.display()))?;

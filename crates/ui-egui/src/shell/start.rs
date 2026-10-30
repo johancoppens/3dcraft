@@ -146,7 +146,7 @@ pub const EXAMPLES: [Example; 16] = [
     example!("clamp", "Clamp block", "fillet, bore, chamfer"),
     example!("channel", "Sheet-metal bracket", "sheet metal, bends"),
     example!("fin", "G2 fin", "surface network, curvature seam"),
-    example!("shade", "Lamp shade", "developable, plate"),
+    example!("shade", "Lamp shade", "developable, plate, wall lamp"),
     example!("flange", "Bolt flange", "pattern, boolean, chamfer"),
     example!("case", "Shelled case", "fillet, shell"),
     example!("spring", "Coil spring", "sweep along a helix"),
