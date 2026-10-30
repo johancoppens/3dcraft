@@ -281,7 +281,7 @@ fn a_late_answer_is_not_taken_and_a_stopped_worker_leaves_errors() {
     settle(&mut page);
     page.execute("measure.thickness", &json!({"of": "B"}))
         .unwrap();
-    page.execute("measure.thickness", &json!({"of": "A"}))
+    page.execute("measure.thickness", &json!({"of": "Holed"}))
         .unwrap();
     let failed = page.commands_failed("the worker stopped");
     assert_eq!(failed.len(), 2);
