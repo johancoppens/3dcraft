@@ -2772,7 +2772,7 @@ fn bend(
                 p_deg,
                 reach,
                 fair::Order::Tangent,
-                fair::End::Point,
+                fair::End::Kept,
             )?;
             add_profile(&mut raw, &shape, (target - tangent) * w0);
             bend_curvature(
@@ -2971,7 +2971,7 @@ fn bend_curvature(
         raw.degree,
         reach,
         fair::Order::Curvature,
-        fair::End::Point,
+        fair::End::Kept,
     )?;
     let normal = Vec3::new(n[0], n[1], n[2]);
     let len = normal.length();
