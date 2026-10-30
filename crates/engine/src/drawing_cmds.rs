@@ -310,15 +310,14 @@ fn sketch(session: &mut Session, p: &Params) -> Result<Source, CommandError> {
             continue;
         }
         for curve in &text.curves {
-            let s = &curve.spline;
-            let Some(&start) = s.control.first() else {
+            let (degree, knots, control) = cubic(&curve.spline);
+            let Some(&start) = control.first() else {
                 continue;
             };
             let spline =
-                craft3d_drawing::Spline::new(s.degree, s.knots.clone(), s.control.clone(), None)
-                    .map_err(|e| {
-                        CommandError::new(format!("{ID}: the sketch `{name}`: {}: {e}", curve.name))
-                    })?;
+                craft3d_drawing::Spline::new(degree, knots, control, None).map_err(|e| {
+                    CommandError::new(format!("{ID}: the sketch `{name}`: {}: {e}", curve.name))
+                })?;
             let path = craft3d_drawing::Path::Chain {
                 start,
                 segments: vec![craft3d_drawing::Segment::Spline(spline)],
@@ -353,6 +352,51 @@ fn sketch(session: &mut Session, p: &Params) -> Result<Source, CommandError> {
         paths: outline.paths,
         construction: outline.construction,
     })
+}
+
+/// A text's contour as a cubic spline, exactly: a contour is Bézier
+/// pieces joined at knots as often as the degree, and each piece of a
+/// lower degree is raised to three (degree elevation), so readers that
+/// take cubic splines best (FreeCAD's DXF reader measured a quadratic
+/// glyph 2.7 % short, 2026-10-30) get the same curve. Any other spline is
+/// given as it is.
+fn cubic(s: &craft3d_regen::curve_fit::Spline2) -> (usize, Vec<f64>, Vec<[f64; 2]>) {
+    let p = s.degree;
+    let as_is = || (s.degree, s.knots.clone(), s.control.clone());
+    if !(p == 1 || p == 2) || s.control.len() < p + 1 || !(s.control.len() - 1).is_multiple_of(p) {
+        return as_is();
+    }
+    let pieces = (s.control.len() - 1) / p;
+    let first = s.knots.first().copied().unwrap_or(0.0);
+    // Knots of the Bézier form: p + 1 at each end, p at each joint.
+    let mut expected = vec![first; p + 1];
+    let mut breaks = vec![first];
+    for k in 1..=pieces {
+        let at = s.knots.get(1 + k * p).copied().unwrap_or(f64::NAN);
+        breaks.push(at);
+        let times = if k == pieces { p + 1 } else { p };
+        expected.extend(std::iter::repeat_n(at, times));
+    }
+    if expected != s.knots {
+        return as_is();
+    }
+    let third =
+        |a: [f64; 2], b: [f64; 2], w: f64| [a[0] + (b[0] - a[0]) * w, a[1] + (b[1] - a[1]) * w];
+    let mut control = Vec::with_capacity(3 * pieces + 1);
+    for k in 0..pieces {
+        let bez: Vec<[f64; 2]> = match s.control.get(k * p..=k * p + p) {
+            Some(&[a, b]) => vec![a, third(a, b, 1.0 / 3.0), third(a, b, 2.0 / 3.0), b],
+            Some(&[a, b, c]) => vec![a, third(a, b, 2.0 / 3.0), third(c, b, 2.0 / 3.0), c],
+            _ => return as_is(),
+        };
+        control.extend(bez.into_iter().skip(usize::from(k > 0)));
+    }
+    let mut knots = Vec::with_capacity(3 * pieces + 5);
+    for (k, at) in breaks.iter().enumerate() {
+        let times = if k == 0 || k == pieces { 4 } else { 3 };
+        knots.extend(std::iter::repeat_n(*at, times));
+    }
+    (3, knots, control)
 }
 
 /// Where the points [`with_instances`] adds lie.
