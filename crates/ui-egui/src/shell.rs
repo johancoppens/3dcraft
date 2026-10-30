@@ -568,6 +568,10 @@ fn epoch_now() -> Option<u64> {
 
 pub struct Shell {
     pub state: UiState,
+    /// A frame-exact recording keeps the clock (`record.rs`): nothing
+    /// measured on the wall clock is drawn (a picture's milliseconds in
+    /// the status bar), so the same requests give the same window.
+    frame_exact: bool,
     pub tokens: Tokens,
     pub last_command: Option<CommandReport>,
     /// The work indicator and the texts of the status bar, held so they
@@ -1019,6 +1023,7 @@ impl Shell {
     pub fn with_renderer(choice: RendererChoice) -> Self {
         Self {
             state: UiState::default(),
+            frame_exact: false,
             tokens: Tokens::default(),
             last_command: None,
             calm: Calm::default(),
@@ -1250,6 +1255,12 @@ impl Shell {
         report
     }
 
+    /// A frame-exact recording keeps the clock (`record.rs`): while it
+    /// does, nothing measured on the wall clock is drawn.
+    pub fn set_frame_exact(&mut self, exact: bool) {
+        self.frame_exact = exact;
+    }
+
     /// Whether the viewport, drawn directly, is still averaging the frames
     /// of a still picture (`Look::accumulate`): a picture of the window
     /// taken now would be half done.
@@ -1308,6 +1319,13 @@ impl Shell {
     /// True when sharp images are made on a thread of their own.
     pub fn renders_in_background(&self) -> bool {
         self.scheduler.mode() == Mode::Background
+    }
+
+    /// True while a sharp image is being made on its thread, or has been
+    /// made and is not on screen yet: a frame drawn now is not the
+    /// finished picture (a frame-exact recording waits for it).
+    pub fn sharp_pending(&self) -> bool {
+        self.renders_in_background() && self.scheduler.pending().is_some()
     }
 
     /// Waits until the sharp image that is being made has been made, for
@@ -2537,8 +2555,11 @@ impl Shell {
             });
         }
         if let Some(stats) = self.stats {
+            // How long the picture took is the wall clock's: not drawn
+            // while a frame-exact recording keeps the clock.
             let time = stats
                 .milliseconds
+                .filter(|_| !self.frame_exact)
                 .map_or_else(String::new, |ms| format!(" · {ms:.0} ms"));
             // The quick first picture is shown while the display mesh is
             // built: said here, unobtrusively.

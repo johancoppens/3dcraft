@@ -6,6 +6,10 @@ use crate::args::Options;
 use crate::control::{ControlConfig, ControlServer, Wake};
 use crate::files::{self, Choice, Picker, SystemDialogs};
 use crate::host::{Host, Request, Route, answer_on_engine, report, route};
+use crate::recording::{
+    ADVANCE_SETTLE, ADVANCE_SLICE, ADVANCE_TICK, Advance, PICTURE_PASSES, Rec, SETTLE_PASSES,
+    SETTLE_TIME,
+};
 use crate::refine::{Poll, Refiner};
 use crate::tabs;
 use crate::token;
@@ -208,6 +212,9 @@ pub struct Desk {
     /// The timer that rings `wake` at a capture's deadline: one thread
     /// for the window's life, handed each deadline as it comes.
     deadlines: Option<mpsc::Sender<Instant>>,
+    /// The window's frames painted offscreen: recordings, and pictures of
+    /// a window that is not on screen (`recording.rs`).
+    rec: Rec,
 }
 
 /// A request for a picture of the window: it is answered once egui hands
@@ -300,7 +307,21 @@ impl Desk {
             capture_deadline: CAPTURE_DEADLINE,
             wake: None,
             deadlines: None,
+            rec: Rec::default(),
         }
+    }
+
+    /// Paints the window's frames offscreen from now on, on the device and
+    /// with the renderer of `state` (the window's own): `ui.record`,
+    /// `ui.advance`, and `ui.screenshot {window: true}` without a frame
+    /// of the compositor. Without one those wait for the window's frames.
+    pub fn attach_recorder(&mut self, state: Option<&eframe::egui_wgpu::RenderState>) {
+        self.rec.recorder = state.cloned().map(craft3d_ui_egui::record::Recorder::new);
+    }
+
+    /// The window's size in points before it has drawn a frame.
+    pub fn set_window_points(&mut self, size: [f32; 2]) {
+        self.rec.input = crate::recording::window_input(size);
     }
 
     /// Wakes the desk with `wake` when a picture of the window reaches
@@ -373,7 +394,8 @@ impl Desk {
             }
             let mut served = 0;
             while served < MAX_PER_TURN {
-                if self.capture.is_some() {
+                if self.capture.is_some() || self.rec.advance.is_some() {
+                    self.answer_record_stop_now();
                     self.answer_anytime_now();
                     break;
                 }
@@ -382,7 +404,10 @@ impl Desk {
                 };
                 served += 1;
                 answered = true;
-                if let Some(request) = self.intercept_capture(request) {
+                if let Some(request) = self
+                    .intercept_record(request)
+                    .and_then(|request| self.intercept_capture(request))
+                {
                     self.host.answer(request);
                 }
             }
@@ -447,8 +472,10 @@ impl Desk {
                 break;
             }
             // A picture of the window waits for its frame, and what came
-            // after it waits with it.
-            if self.capture.is_some() {
+            // after it waits with it; so do the frames of a `ui.advance`.
+            if self.capture.is_some() || self.rec.advance.is_some() {
+                // `ui.record {stop: true}` does not wait for an advance.
+                self.answer_record_stop_now();
                 // `ui.get` and `ui.quit` do not wait for it, nor does what
                 // a dialog of the File menu answered.
                 self.answer_anytime_now();
@@ -460,7 +487,10 @@ impl Desk {
             if let Some(request) = self.queue.pop_front() {
                 served += 1;
                 changed = true;
-                let Some(request) = self.intercept_capture(request) else {
+                let Some(request) = self
+                    .intercept_record(request)
+                    .and_then(|request| self.intercept_capture(request))
+                else {
                     continue;
                 };
                 // `ui.param` is settled here and regenerates on the
@@ -1188,6 +1218,546 @@ impl Desk {
     }
 }
 
+impl Desk {
+    /// Takes `request` when it is `ui.record` or `ui.advance`: answered
+    /// here, or (an advance) kept until its frames are drawn. Gives any
+    /// other request back. Only with the session here.
+    fn intercept_record(&mut self, request: Request) -> Option<Request> {
+        let Ok(parsed) = serde_json::from_str::<Value>(&request.line) else {
+            return Some(request);
+        };
+        let id = parsed.get("id").cloned().unwrap_or(Value::Null);
+        // Through MCP's `control_call` too, answered in its envelope.
+        let (method, params, mcp) = match crate::host::control_call_of(&parsed) {
+            Some((method, params, line)) => (method, params, Some(line)),
+            None => (
+                parsed
+                    .get("method")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                parsed.get("params").cloned(),
+                None,
+            ),
+        };
+        let result = match method.as_str() {
+            "ui.record" => self.ui_record(params.as_ref()),
+            "ui.advance" => match self.ui_advance(params.as_ref()) {
+                Ok((left, dt, timeout)) => {
+                    self.rec.advance = Some(Advance {
+                        request,
+                        mcp,
+                        left,
+                        dt,
+                        drawn: 0,
+                        unsettled: 0,
+                        waiting: None,
+                        began: Instant::now(),
+                        timeout: Duration::from_secs_f64(timeout),
+                        timing: crate::recording::Timing::default(),
+                    });
+                    // Woken now and then while it waits for the window to
+                    // settle, so its deadline is kept without other events.
+                    self.rec.start_ticker(ADVANCE_TICK, self.wake.clone());
+                    if let Some(wake) = &self.wake {
+                        wake();
+                    }
+                    return None;
+                }
+                Err(error) => Err(error),
+            },
+            _ => return Some(request),
+        };
+        let reply = self.record_reply(&id, mcp.as_deref(), result);
+        let _ = request.reply.send(Some(reply));
+        None
+    }
+
+    /// The reply line to a `ui.record` or `ui.advance` with `id`, wrapped
+    /// as `control_call`'s when it came in the MCP message `mcp`.
+    fn record_reply(
+        &mut self,
+        id: &Value,
+        mcp: Option<&str>,
+        result: Result<Value, String>,
+    ) -> String {
+        match mcp {
+            Some(line) => {
+                let wrapped = crate::host::control_call_reply(&mut self.host.session, line, result);
+                rpc::ok_reply(id, &wrapped)
+            }
+            None => match result {
+                Ok(result) => rpc::ok_reply(id, &result),
+                Err(error) => rpc::error_reply(id, &error),
+            },
+        }
+    }
+
+    fn ui_record(&mut self, params: Option<&Value>) -> Result<Value, String> {
+        use craft3d_ui_egui::record::{RecordAsk, record_params};
+        let ask = record_params(params)?;
+        // A real-time recording that failed between requests says so.
+        if let Some(error) = self.rec.failure.take() {
+            return Err(error);
+        }
+        if self.rec.recorder.is_none() {
+            return Err(
+                "ui.record: this window has no wgpu device to paint its frames on".to_string(),
+            );
+        }
+        let now = self.rec.now();
+        let rec = &mut self.rec;
+        let Some(recorder) = rec.recorder.as_mut() else {
+            return Err("ui.record: the recorder is gone".to_string());
+        };
+        match ask {
+            RecordAsk::Status => Ok(recorder.status()),
+            RecordAsk::Stop => {
+                self.host.shell.set_frame_exact(false);
+                let stopped = recorder.stop();
+                rec.stop_ticker();
+                rec.next_frame = None;
+                rec.events.clear();
+                rec.mirror = None;
+                stopped
+            }
+            RecordAsk::Start(options) => {
+                let shown = self.host.shell.pixels_per_point();
+                let pixels_per_point = if shown.is_finite() && shown > 0.0 {
+                    shown
+                } else {
+                    1.0
+                };
+                let mut input = rec.input.clone();
+                input.time = Some(now);
+                let viewport = self.host.shell.viewport_rect();
+                let real_time = !options.step;
+                let fps = options.fps;
+                let status = recorder.start(
+                    &self.host.session,
+                    options,
+                    &input,
+                    pixels_per_point,
+                    viewport,
+                )?;
+                self.host.shell.set_frame_exact(!real_time);
+                if real_time {
+                    rec.next_frame = Some(Instant::now());
+                    rec.start_ticker(Duration::from_secs_f64(1.0 / fps), self.wake.clone());
+                }
+                Ok(status)
+            }
+        }
+    }
+
+    fn ui_advance(&mut self, params: Option<&Value>) -> Result<(u64, f64, f64), String> {
+        let recording = self
+            .rec
+            .recorder
+            .as_ref()
+            .and_then(|r| r.recording.as_ref())
+            .filter(|r| r.options.step)
+            .ok_or_else(|| {
+                "ui.advance: no frame-exact recording runs; start one with ui.record {path, step: true}"
+                    .to_string()
+            })?;
+        craft3d_ui_egui::record::advance_params(params, recording.options.fps)
+    }
+
+    /// One pass of the shell at `time` with `events`, painted offscreen,
+    /// read back when `read`. The shell is drawn as the window draws it:
+    /// with the session when it is here, as it is away otherwise.
+    fn offscreen_pass(
+        &mut self,
+        ctx: &egui::Context,
+        time: f64,
+        events: Vec<egui::Event>,
+        read: bool,
+    ) -> Result<Option<craft3d_ui_egui::record::Frame>, String> {
+        let started = Instant::now();
+        let away = self.away();
+        let mut input = self.rec.input.clone();
+        input.time = Some(time);
+        input.events = events;
+        // egui's animations (a panel fading in) step by the clock's step
+        // when no repaint was asked for in the last pass, by the time
+        // between passes otherwise: on the recording's clock either way.
+        input.predicted_dt = self.rec.pass_dt;
+        let recorder = self
+            .rec
+            .recorder
+            .as_mut()
+            .ok_or("this window has no wgpu device to paint its frames on")?;
+        let Host { session, shell, .. } = &mut self.host;
+        let painted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            recorder.pass(ctx, input, read, |ui| {
+                if away {
+                    shell.ui_away(ui);
+                } else {
+                    shell.ui(ui, session);
+                }
+            })
+        }));
+        let painted = painted.unwrap_or_else(|_| Err(PANICKED.to_string()));
+        if let Some(advance) = self.rec.advance.as_mut() {
+            let timing = &mut advance.timing;
+            timing.passes = timing.passes.saturating_add(1);
+            let took = started.elapsed().as_secs_f64();
+            if read {
+                timing.read_passes += took;
+            } else {
+                timing.other_passes += took;
+            }
+        }
+        painted
+    }
+
+    /// A frame at `time`, read back after `passes` passes, once the
+    /// viewport's picture is done: further passes at the same moment while
+    /// the CPU renderer makes its sharp image, or while the viewport
+    /// averages its still for up to `average` frames in all, within one
+    /// deadline ([`SETTLE_TIME`]). Only the last pass is read back. True
+    /// with the frame when it settled.
+    fn settled_frame(
+        &mut self,
+        ctx: &egui::Context,
+        time: f64,
+        events: Vec<egui::Event>,
+        passes: u32,
+        average: u32,
+    ) -> Result<(craft3d_ui_egui::record::Frame, bool), String> {
+        let began = Instant::now();
+        let passes = passes.max(1);
+        let mut events = Some(events);
+        let mut frame = None;
+        for pass in 1..=passes {
+            frame =
+                self.offscreen_pass(ctx, time, events.take().unwrap_or_default(), pass == passes)?;
+        }
+        let mut averaged = 1u32;
+        let needs = |desk: &Desk, averaged: u32| {
+            let sharp = desk.host.shell.sharp_pending();
+            (
+                sharp,
+                sharp || (desk.host.shell.converging() && averaged < average),
+            )
+        };
+        let (_, mut more) = needs(self, averaged);
+        if more {
+            // Passes not read back until the last.
+            loop {
+                let left = SETTLE_TIME.saturating_sub(began.elapsed());
+                if left.is_zero() || averaged >= SETTLE_PASSES {
+                    break;
+                }
+                if self.host.shell.sharp_pending() {
+                    self.host.shell.wait_for_sharp(left);
+                }
+                self.offscreen_pass(ctx, time, Vec::new(), false)?;
+                averaged = averaged.saturating_add(1);
+                more = needs(self, averaged).1;
+                if !more {
+                    break;
+                }
+            }
+            frame = self.offscreen_pass(ctx, time, Vec::new(), true)?;
+        }
+        let settled = !self.host.shell.sharp_pending() && !more;
+        let frame = frame.ok_or_else(|| "no frame was painted".to_string())?;
+        Ok((frame, settled))
+    }
+
+    /// Whether the window has settled for the next frame of a frame-exact
+    /// recording: no command running, the scene built and refined.
+    fn settled(&mut self) -> bool {
+        !self.away() && self.capture.is_none() && self.scene_ready() && !self.refining()
+    }
+
+    /// What the window paints offscreen, where the event loop is woken
+    /// (frame or no frame): a picture of the window asked for, the next
+    /// frame of a real-time recording when it is due, the frames of a
+    /// `ui.advance` while the window is settled. True when something was
+    /// drawn or answered.
+    pub fn drive(&mut self, ctx: &egui::Context) -> bool {
+        if self.rec.recorder.is_none() {
+            return false;
+        }
+        let mut changed = false;
+        // A picture of the window, painted offscreen: it needs no frame
+        // of the compositor. It shows the display scene, as one taken
+        // from a frame does.
+        if self.capture.as_ref().is_some_and(|c| c.image.is_none())
+            && !self.away()
+            && !self.refining()
+        {
+            let time = self.rec.now();
+            self.rec.pass_dt = 1.0 / 60.0;
+            let picture = self.settled_frame(ctx, time, Vec::new(), PICTURE_PASSES, SETTLE_PASSES);
+            match picture {
+                Ok((frame, _)) => {
+                    if let Some(capture) = self.capture.as_mut() {
+                        capture.image = Some(Arc::new(frame.color_image()));
+                    }
+                }
+                Err(error) => {
+                    if let Some(capture) = self.capture.take() {
+                        let id = request_id(&capture.request.line);
+                        let reply = rpc::error_reply(&id, &format!("ui.screenshot: {error}"));
+                        let _ = capture.request.reply.send(Some(reply));
+                    }
+                }
+            }
+            self.settle_capture();
+            changed = true;
+        }
+        if self.real_time_frame(ctx) {
+            changed = true;
+        }
+        if self.rec.advance.is_some() && self.advance_frames(ctx) {
+            changed = true;
+        }
+        changed
+    }
+
+    /// The next frame of a real-time recording, when it is due.
+    fn real_time_frame(&mut self, ctx: &egui::Context) -> bool {
+        let Some(due) = self.rec.next_frame else {
+            return false;
+        };
+        let now = Instant::now();
+        if now < due {
+            return false;
+        }
+        let Some(fps) = self
+            .rec
+            .recorder
+            .as_ref()
+            .and_then(|r| r.recording.as_ref())
+            .filter(|r| !r.options.step)
+            .map(|r| r.options.fps)
+        else {
+            self.rec.next_frame = None;
+            return false;
+        };
+        let period = Duration::from_secs_f64(1.0 / fps);
+        let events = std::mem::take(&mut self.rec.events);
+        let time = self.rec.now();
+        self.rec.pass_dt = (1.0 / fps) as f32;
+        let drawn = self
+            .offscreen_pass(ctx, time, events, true)
+            .and_then(|frame| frame.ok_or_else(|| "no frame was painted".to_string()))
+            .and_then(|frame| {
+                let recorder = self.rec.recorder.as_mut().ok_or("the recorder is gone")?;
+                recorder.push(&frame)?;
+                if let Some(recording) = recorder.recording.as_mut() {
+                    recording.time = time;
+                }
+                Ok(frame)
+            });
+        match drawn {
+            Ok(frame) => self.rec.mirror = Some(frame.color_image()),
+            Err(error) => {
+                // Ended, and said at the next `ui.record`.
+                self.rec.stop_ticker();
+                self.rec.next_frame = None;
+                self.rec.mirror = None;
+                if let Some(recorder) = self.rec.recorder.as_mut() {
+                    let _ = recorder.stop();
+                }
+                self.rec.failure = Some(format!("ui.record: the recording stopped: {error}"));
+                return true;
+            }
+        }
+        // Frames that could not be drawn in time are skipped, not drawn
+        // late in a burst.
+        let mut next = due.checked_add(period).unwrap_or(now);
+        if next <= now {
+            let behind = now.saturating_duration_since(next).as_secs_f64() / period.as_secs_f64();
+            if let Some(recording) = self
+                .rec
+                .recorder
+                .as_mut()
+                .and_then(|r| r.recording.as_mut())
+            {
+                recording.skipped = recording.skipped.saturating_add(behind as u64 + 1);
+            }
+            next = now.checked_add(period).unwrap_or(now);
+        }
+        self.rec.next_frame = Some(next);
+        true
+    }
+
+    /// Draws the frames of the `ui.advance` that waits, each once the
+    /// window has settled, for at most [`ADVANCE_SLICE`]; answers it when
+    /// the last is drawn. True when a frame was drawn or it was answered.
+    fn advance_frames(&mut self, ctx: &egui::Context) -> bool {
+        let began = Instant::now();
+        let mut changed = false;
+        loop {
+            let Some(advance) = self.rec.advance.as_ref() else {
+                return changed;
+            };
+            // Done, or out of time: the frames drawn so far, and how many
+            // are left for the client to ask for again.
+            let timed_out = advance.began.elapsed() >= advance.timeout;
+            if advance.left == 0 || timed_out {
+                let status = self.rec.recorder.as_ref().map(|r| r.status());
+                let result = json!({
+                    "frames": advance.drawn,
+                    "left": advance.left,
+                    "complete": advance.left == 0,
+                    "unsettled": advance.unsettled,
+                    "recorded": status.as_ref().and_then(|s| s.get("frames")).cloned(),
+                    "time": status.as_ref().and_then(|s| s.get("time")).cloned(),
+                    "seconds": advance.began.elapsed().as_secs_f64(),
+                    "timing": advance.timing.per_frame(advance.drawn),
+                });
+                if let Some(advance) = self.rec.advance.take() {
+                    self.rec.stop_ticker();
+                    let id = request_id(&advance.request.line);
+                    let reply = self.record_reply(&id, advance.mcp.as_deref(), Ok(result));
+                    let _ = advance.request.reply.send(Some(reply));
+                }
+                return true;
+            }
+            let dt = advance.dt;
+            if began.elapsed() >= ADVANCE_SLICE {
+                // The rest in the next turn: the window and the channel
+                // get theirs meanwhile.
+                if let Some(wake) = &self.wake {
+                    wake();
+                }
+                return changed;
+            }
+            // What the last frame asked for (a step of the player, a
+            // command of the shell) is started, and its scene built,
+            // before the next frame is drawn; the engine thread wakes the
+            // desk when it is done.
+            self.turn();
+            if !self.settled() {
+                let waited = self
+                    .rec
+                    .advance
+                    .as_mut()
+                    .map(|a| a.waiting.get_or_insert_with(Instant::now).elapsed());
+                if waited.is_some_and(|w| w >= ADVANCE_SETTLE) {
+                    let drawn = self.rec.advance.as_ref().map_or(0, |a| a.drawn);
+                    self.fail_advance(format!(
+                        "ui.advance: the window did not settle within {} s (a command or a scene still running); {drawn} frames were drawn",
+                        ADVANCE_SETTLE.as_secs()
+                    ));
+                    return true;
+                }
+                return changed;
+            }
+            if let Some(advance) = self.rec.advance.as_mut()
+                && let Some(since) = advance.waiting.take()
+            {
+                advance.timing.waiting += since.elapsed().as_secs_f64();
+            }
+            let Some(recording) = self
+                .rec
+                .recorder
+                .as_ref()
+                .and_then(|r| r.recording.as_ref())
+            else {
+                self.fail_advance("ui.advance: the recording has ended".to_string());
+                return true;
+            };
+            let time = recording.time + dt;
+            let average = recording.options.accumulate;
+            self.rec.pass_dt = dt as f32;
+            let drawn = self
+                .settled_frame(ctx, time, Vec::new(), 1, average)
+                .and_then(|(frame, settled)| {
+                    if !settled && let Some(advance) = self.rec.advance.as_mut() {
+                        advance.unsettled = advance.unsettled.saturating_add(1);
+                    }
+                    let pushed = Instant::now();
+                    let recorder = self.rec.recorder.as_mut().ok_or("the recorder is gone")?;
+                    recorder.push(&frame)?;
+                    if let Some(advance) = self.rec.advance.as_mut() {
+                        advance.timing.push += pushed.elapsed().as_secs_f64();
+                    }
+                    let recorder = self.rec.recorder.as_mut().ok_or("the recorder is gone")?;
+                    if let Some(recording) = recorder.recording.as_mut() {
+                        recording.time = time;
+                    }
+                    Ok(frame)
+                });
+            changed = true;
+            match drawn {
+                Ok(frame) => {
+                    self.rec.mirror = Some(frame.color_image());
+                    if let Some(advance) = self.rec.advance.as_mut() {
+                        advance.left = advance.left.saturating_sub(1);
+                        advance.drawn = advance.drawn.saturating_add(1);
+                    }
+                }
+                Err(error) => {
+                    self.fail_advance(format!("ui.advance: {error}"));
+                    return true;
+                }
+            }
+        }
+    }
+
+    /// Answers a queued `ui.record {stop: true}` now, while an advance
+    /// draws its frames: the advance ends with an error that says how far
+    /// it got, then the recording stops. The rest keeps its place.
+    fn answer_record_stop_now(&mut self) {
+        if self.rec.advance.is_none() {
+            return;
+        }
+        let at = self.queue.iter().position(|r| is_record_stop(&r.line));
+        let Some(request) = at.and_then(|at| self.queue.remove(at)) else {
+            return;
+        };
+        let drawn = self.rec.advance.as_ref().map_or(0, |a| a.drawn);
+        self.fail_advance(format!(
+            "ui.advance: stopped by ui.record {{stop: true}} after {drawn} frames"
+        ));
+        if let Some(request) = self.intercept_record(request) {
+            self.queue.push_front(request);
+        }
+    }
+
+    fn fail_advance(&mut self, error: String) {
+        if let Some(advance) = self.rec.advance.take() {
+            self.rec.stop_ticker();
+            let id = request_id(&advance.request.line);
+            let reply = self.record_reply(&id, advance.mcp.as_deref(), Err(error));
+            let _ = advance.request.reply.send(Some(reply));
+        }
+    }
+
+    /// Whether the window shows the recording's frames instead of drawing
+    /// the shell itself: while a recording runs.
+    pub fn mirrored(&self) -> bool {
+        self.rec.mirrored()
+    }
+}
+
+/// Whether `line` is `ui.record {stop: true}`, plain or through MCP's
+/// `control_call`.
+fn is_record_stop(line: &str) -> bool {
+    let Ok(request) = serde_json::from_str::<Value>(line) else {
+        return false;
+    };
+    let (method, params) = match crate::host::control_call_of(&request) {
+        Some((method, params, _)) => (method, params),
+        None => (
+            request
+                .get("method")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            request.get("params").cloned(),
+        ),
+    };
+    method == "ui.record" && params.as_ref().and_then(|p| p.get("stop")) == Some(&Value::Bool(true))
+}
+
 /// True for a `ui.screenshot` request.
 /// Whether `line` is a request of `method`.
 fn is_method(line: &str, method: &str) -> bool {
@@ -1256,6 +1826,8 @@ const MAX_PER_TURN: usize = 64;
 
 struct Viewer {
     desk: Rc<RefCell<Desk>>,
+    /// The last frame recorded, shown while a recording draws the shell.
+    mirror: Option<egui::TextureHandle>,
     /// The title the window has now.
     title: String,
     /// Kept so the listener lives as long as the window.
@@ -1307,6 +1879,40 @@ impl eframe::App for Viewer {
         if let Some(image) = shot {
             desk.captured(image);
         }
+        // What the passes painted offscreen run with: this frame's size,
+        // pixels per point, modifiers and (while recording in real time)
+        // events.
+        ui.input(|i| desk.rec.window_frame(&i.raw));
+        if desk.mirrored() {
+            // The recording draws the shell; the window shows its frames.
+            if let Some(image) = desk.rec.mirror.take() {
+                match &mut self.mirror {
+                    Some(texture) => texture.set(image, egui::TextureOptions::LINEAR),
+                    None => {
+                        self.mirror = Some(ui.ctx().load_texture(
+                            "craft3d-recording",
+                            image,
+                            egui::TextureOptions::LINEAR,
+                        ));
+                    }
+                }
+            }
+            let rect = ui.max_rect();
+            ui.painter().rect_filled(rect, 0.0, egui::Color32::BLACK);
+            if let Some(texture) = &self.mirror {
+                let size = texture.size_vec2() / ui.ctx().pixels_per_point();
+                let scale = (rect.width() / size.x).min(rect.height() / size.y).min(1.0);
+                let shown = egui::Rect::from_min_size(rect.min, size * scale);
+                ui.painter().image(
+                    texture.id(),
+                    shown,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            }
+            return;
+        }
+        self.mirror = None;
         if desk.away() {
             desk.host.shell.ui_away(ui);
         } else {
@@ -1335,7 +1941,18 @@ impl Driver<'_> {
         let Ok(mut desk) = self.desk.try_borrow_mut() else {
             return;
         };
-        let turn = desk.turn();
+        let mut turn = desk.turn();
+        // What is painted offscreen needs no frame: a recording, a picture
+        // of a window that is not on screen. What it drew may have asked
+        // for more (a step of the player): served again, a few times.
+        for _ in 0..8 {
+            if !desk.drive(ctx) {
+                break;
+            }
+            let again = desk.turn();
+            turn.changed = true;
+            turn.quit |= again.quit;
+        }
         drop(desk);
         if turn.changed {
             ctx.request_repaint();
@@ -1479,9 +2096,11 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
     );
     let title = window_title(host.session.document_status().as_ref());
     let picker = Picker::new(Arc::new(SystemDialogs), Arc::clone(&wake));
-    let desk = Rc::new(RefCell::new(
-        Desk::new(host, requests, picker).with_engine_thread(Arc::clone(&wake)),
-    ));
+    let mut desk = Desk::new(host, requests, picker).with_engine_thread(Arc::clone(&wake));
+    if let Some([w, h]) = options.window_size {
+        desk.set_window_points([w as f32, h as f32]);
+    }
+    let desk = Rc::new(RefCell::new(desk));
     let native = eframe::NativeOptions {
         viewport: viewport(options, &title),
         ..Default::default()
@@ -1510,7 +2129,11 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
             if let Ok(mut desk) = for_viewer.try_borrow_mut() {
                 desk.host.shell = shell;
             }
+            if let Ok(mut desk) = for_viewer.try_borrow_mut() {
+                desk.attach_recorder(creation.wgpu_render_state.as_ref());
+            }
             let viewer = Viewer {
+                mirror: None,
                 desk: for_viewer,
                 title,
                 _server: server,
@@ -1658,6 +2281,249 @@ mod tests {
         let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
         let host = Host::new(Session::new(Workspace::none()));
         (Desk::new(host, incoming, picker), requests)
+    }
+
+    /// `ui.record` and `ui.advance` are the desk's: painted offscreen on
+    /// the window's device, with no frame of the compositor and no
+    /// window at all (a covered or minimised window is the same), plain
+    /// and through MCP's `control_call`; `ui.screenshot {window: true}`
+    /// too. Without a device both are refused, and so is an advance
+    /// without a frame-exact recording.
+    #[test]
+    fn a_desk_records_and_takes_pictures_without_a_window() {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/tmp/craft3d-desk-record");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = std::fs::canonicalize(&dir).unwrap();
+        let (requests, incoming) = mpsc::channel();
+        let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
+        let host = Host::new(Session::new(Workspace {
+            read: Access::Root(dir.clone()),
+            write: Access::Root(dir.clone()),
+        }));
+        let mut desk = Desk::new(host, incoming, picker);
+        desk.set_window_points([320.0, 240.0]);
+        let ctx = egui::Context::default();
+        let serve = |desk: &mut Desk, answer: &Receiver<Option<String>>| -> Value {
+            for _ in 0..2000 {
+                desk.turn();
+                desk.drive(&ctx);
+                if let Ok(reply) = answer.try_recv() {
+                    return serde_json::from_str(&reply.unwrap()).unwrap();
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            panic!("no reply");
+        };
+        let mcp = |id: u64, method: &str, params: Value| {
+            let line = json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
+                "params": {"name": "control_call", "arguments": {"method": method, "params": params}}});
+            json!({"id": id, "method": "mcp.message", "params": {"line": line.to_string()}})
+                .to_string()
+        };
+        let start =
+            r#"{"id":1,"method":"ui.record","params":{"path":"frames","step":true,"fps":10}}"#;
+        // No device yet.
+        let reply = serve(&mut desk, &ask(&requests, start));
+        assert_eq!(reply["ok"], false, "{reply}");
+        assert!(
+            reply["error"].as_str().unwrap().contains("wgpu device"),
+            "{reply}"
+        );
+        let reply = serve(
+            &mut desk,
+            &ask(&requests, &mcp(2, "ui.record", json!({"path": "x"}))),
+        );
+        let inner: Value =
+            serde_json::from_str(reply["result"]["reply"].as_str().unwrap()).unwrap();
+        assert_eq!(inner["result"]["isError"], true, "{inner}");
+        let state = match craft3d_ui_egui::direct::headless_render_state() {
+            Ok(state) => state,
+            Err(e) => {
+                println!("SKIPPED the rest: no graphics adapter: {e}");
+                return;
+            }
+        };
+        desk.attach_recorder(Some(&state));
+        for line in [
+            r#"{"id":3,"method":"engine.execute","params":{"command":"file.new","params":{}}}"#,
+            r#"{"id":4,"method":"engine.execute","params":{"command":"feature.block","params":{"size":["10 mm","10 mm","10 mm"]}}}"#,
+        ] {
+            assert_eq!(serve(&mut desk, &ask(&requests, line))["ok"], true);
+        }
+        // Laid out once, as a window is (its textures applied to the
+        // renderer, as the window's frames apply theirs).
+        desk.offscreen_pass(&ctx, 0.0, Vec::new(), false).unwrap();
+        let advance = r#"{"id":5,"method":"ui.advance","params":{"frames":1}}"#;
+        let reply = serve(&mut desk, &ask(&requests, advance));
+        assert_eq!(reply["ok"], false, "{reply}");
+        let reply = serve(&mut desk, &ask(&requests, start));
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["result"]["width"], 320);
+        assert!(desk.mirrored());
+        let reply = serve(
+            &mut desk,
+            &ask(
+                &requests,
+                r#"{"id":6,"method":"ui.advance","params":{"frames":4,"dt":0.05}}"#,
+            ),
+        );
+        assert_eq!(reply["result"]["frames"], 4, "{reply}");
+        let reply = serve(
+            &mut desk,
+            &ask(&requests, &mcp(7, "ui.advance", json!({"frames": 2}))),
+        );
+        let inner: Value =
+            serde_json::from_str(reply["result"]["reply"].as_str().expect("an MCP reply")).unwrap();
+        assert_eq!(inner["result"]["isError"], false, "{inner}");
+        let reply = serve(
+            &mut desk,
+            &ask(&requests, r#"{"id":8,"method":"ui.record","params":{}}"#),
+        );
+        assert_eq!(reply["result"]["frames"], 6, "{reply}");
+        let reply = serve(
+            &mut desk,
+            &ask(
+                &requests,
+                r#"{"id":9,"method":"ui.record","params":{"stop":true}}"#,
+            ),
+        );
+        assert_eq!(reply["result"]["frames"], 6, "{reply}");
+        assert!(!desk.mirrored());
+        let files = std::fs::read_dir(dir.join("frames")).unwrap().count();
+        assert_eq!(files, 6);
+        // A long advance is stopped by a stop: neither waits for the other.
+        let again = r#"{"id":11,"method":"ui.record","params":{"path":"again","step":true}}"#;
+        assert_eq!(serve(&mut desk, &ask(&requests, again))["ok"], true);
+        let long = ask(
+            &requests,
+            r#"{"id":12,"method":"ui.advance","params":{"frames":100000}}"#,
+        );
+        let stop = ask(
+            &requests,
+            r#"{"id":13,"method":"ui.record","params":{"stop":true}}"#,
+        );
+        let stopped = serve(&mut desk, &stop);
+        assert_eq!(stopped["ok"], true, "{stopped}");
+        let advanced = serve(&mut desk, &long);
+        assert_eq!(advanced["ok"], false, "{advanced}");
+        assert!(
+            advanced["error"].as_str().unwrap().contains("stopped"),
+            "{advanced}"
+        );
+        assert!(!desk.mirrored());
+        // A picture of the window, no frame drawn.
+        let reply = serve(
+            &mut desk,
+            &ask(
+                &requests,
+                r#"{"id":10,"method":"ui.screenshot","params":{"window":true,"path":"shot.png"}}"#,
+            ),
+        );
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["result"]["width"], 320);
+        assert!(dir.join("shot.png").is_file());
+    }
+
+    /// Frame-exact frames in the studio look, whose viewport averages 16
+    /// frames of its still: by default a frame is one pass, read back
+    /// once; `accumulate: 16` waits for the average (more passes, only the
+    /// last read back). Prints where the time goes.
+    #[test]
+    fn a_frame_exact_frame_is_one_pass_unless_it_waits_for_the_average() {
+        let Ok(state) = craft3d_ui_egui::direct::headless_render_state() else {
+            println!("SKIPPED: no graphics adapter");
+            return;
+        };
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/tmp/craft3d-desk-record-speed");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = std::fs::canonicalize(&dir).unwrap();
+        let (requests, incoming) = mpsc::channel();
+        let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
+        let mut host = Host::new(Session::new(Workspace {
+            read: Access::Root(dir.clone()),
+            write: Access::Root(dir.clone()),
+        }));
+        host.shell.attach_gpu(&state).unwrap();
+        let mut desk = Desk::new(host, incoming, picker);
+        desk.set_window_points([1600.0, 1000.0]);
+        desk.attach_recorder(Some(&state));
+        let ctx = egui::Context::default();
+        let serve = |desk: &mut Desk, line: &str| -> Value {
+            let answer = ask(&requests, line);
+            for _ in 0..20000 {
+                desk.turn();
+                desk.drive(&ctx);
+                if let Ok(reply) = answer.try_recv() {
+                    return serde_json::from_str(&reply.unwrap()).unwrap();
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            panic!("no reply to {line}");
+        };
+        for line in [
+            r#"{"id":1,"method":"engine.execute","params":{"command":"file.new","params":{}}}"#,
+            r#"{"id":2,"method":"engine.execute","params":{"command":"feature.block","params":{"size":["40 mm","30 mm","20 mm"]}}}"#,
+            r#"{"id":3,"method":"engine.execute","params":{"command":"feature.sphere","params":{"radius":"12 mm","position":["50 mm","0 mm","0 mm"]}}}"#,
+            r#"{"id":4,"method":"ui.set","params":{"look":{"mode":"studio"}}}"#,
+        ] {
+            assert_eq!(serve(&mut desk, line)["ok"], true, "{line}");
+        }
+        desk.offscreen_pass(&ctx, 0.0, Vec::new(), false).unwrap();
+        for (accumulate, path, view) in [(1, "one", "top"), (16, "sixteen", "front")] {
+            // Another view: the viewport starts its average again.
+            let view = format!(r#"{{"id":4,"method":"ui.set","params":{{"view":"{view}"}}}}"#);
+            assert_eq!(serve(&mut desk, &view)["ok"], true);
+            desk.offscreen_pass(&ctx, 0.0, Vec::new(), false).unwrap();
+            let averages = desk.host.shell.converging();
+            let start = format!(
+                r#"{{"id":5,"method":"ui.record","params":{{"path":"{path}","step":true,"accumulate":{accumulate}}}}}"#
+            );
+            assert_eq!(serve(&mut desk, &start)["ok"], true);
+            let began = Instant::now();
+            let reply = serve(
+                &mut desk,
+                r#"{"id":6,"method":"ui.advance","params":{"frames":6}}"#,
+            );
+            let took = began.elapsed().as_secs_f64() / 6.0;
+            let result = &reply["result"];
+            println!(
+                "accumulate {accumulate}: {:.0} ms a frame at 1600 x 1000, {}",
+                took * 1e3,
+                result["timing"]
+            );
+            assert_eq!(result["frames"], 6, "{reply}");
+            assert_eq!(result["complete"], true);
+            let passes = result["timing"]["passesPerFrame"].as_f64().unwrap();
+            if accumulate == 1 {
+                assert_eq!(passes, 1.0, "{reply}");
+            } else if averages {
+                assert!(passes > 1.0, "{reply}");
+            } else {
+                println!("the viewport does not average its still here (no direct GPU path)");
+            }
+            let stop = r#"{"id":7,"method":"ui.record","params":{"stop":true}}"#;
+            assert_eq!(serve(&mut desk, stop)["ok"], true);
+        }
+        // Out of time: the frames drawn so far, the rest left to ask for.
+        let start = r#"{"id":8,"method":"ui.record","params":{"path":"late","step":true}}"#;
+        assert_eq!(serve(&mut desk, start)["ok"], true);
+        let reply = serve(
+            &mut desk,
+            r#"{"id":9,"method":"ui.advance","params":{"frames":100000,"timeout":0.5}}"#,
+        );
+        assert_eq!(reply["result"]["complete"], false, "{reply}");
+        assert!(reply["result"]["left"].as_u64().unwrap() > 0);
+        assert_eq!(
+            serve(
+                &mut desk,
+                r#"{"id":10,"method":"ui.record","params":{"stop":true}}"#
+            )["ok"],
+            true
+        );
     }
 
     /// The status bar names the file a request opens, without its folder

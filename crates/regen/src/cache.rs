@@ -334,6 +334,32 @@ impl RegenCache {
         self.body_budget.unwrap_or(DEFAULT_BODY_BUDGET)
     }
 
+    /// Takes from `other` the bodies this cache let go of to stay within
+    /// its budget and `other` still holds, where `other`'s entry is the
+    /// same: the same definition, the same context, the same stamp (so a
+    /// cache made from this one, or from the same one, that derived them
+    /// again). A body taken is the one a regeneration here would derive
+    /// again, the same bits: only the time changes. Returns how many.
+    pub fn take_bodies_from(&mut self, other: &RegenCache) -> usize {
+        let mut taken = 0usize;
+        for (id, entry) in self.entries.iter_mut().filter(|(_, e)| e.evicted) {
+            let Some(theirs) = other.entries.get(id) else {
+                continue;
+            };
+            if theirs.evicted
+                || theirs.result.body.is_none()
+                || theirs.stamp != entry.stamp
+                || theirs.feature != entry.feature
+                || theirs.context != entry.context
+            {
+                continue;
+            }
+            *entry = theirs.clone();
+            taken = taken.saturating_add(1);
+        }
+        taken
+    }
+
     /// About how many bytes the bodies kept take that went into later
     /// features, and how many such bodies were let go of.
     pub fn bodies_held(&self) -> (usize, usize) {

@@ -53,7 +53,17 @@ pub const UI_METHODS: &[UiMethod] = &[
     UiMethod {
         name: "ui.screenshot",
         params: r#"{"path": string, "width": integer = the viewport's, "height": integer = the viewport's, "scale": number = the window's pixels per point, "window": boolean = false}"#,
-        summary: "A PNG of the viewport as it is framed now: bodies by the CPU reference renderer (the oracle, whichever renderer the window uses), meshed at the display quality the viewport shows, sketches and axes over them. Written under the write root when path is given, otherwise returned as base64. With window: true (the desktop window only; then only path may be given) it is instead the window's own next frame as it is drawn, panels and the controls over the viewport included, at the window's size in pixels.",
+        summary: "A PNG of the viewport as it is framed now: bodies by the CPU reference renderer (the oracle, whichever renderer the window uses), meshed at the display quality the viewport shows, sketches and axes over them. Written under the write root when path is given, otherwise returned as base64. With window: true (the desktop window only; then only path may be given) it is instead a frame of the window, panels and the controls over the viewport included, at the window's size in pixels: painted by the window's renderer into a texture and read back, once the viewport's picture is done, so it is taken also when the window is covered, minimised or on another workspace (where the window has no such texture, it is the next frame the compositor lets it draw).",
+    },
+    UiMethod {
+        name: "ui.record",
+        params: r#"{"path": string, "fps": number = 30, "step": boolean = false, "includeUi": boolean = true, "accumulate": integer = 1, "quality": "screen|web" = "screen", "start": true} | {"stop": true} | {}"#,
+        summary: "Records the desktop window's own frames, panels and controls included (includeUi false: the viewport only), painted by its renderer into a texture of the window's size and read back, so it records also when the window is covered, minimised or on another workspace. path, under the write root, is a directory that gets frame-000001.png, frame-000002.png, ... or a video file (.mp4, .mkv, .mov, .webm, .gif, .avi, .m4v) written by an external ffmpeg (CRAFT3D_FFMPEG, else the one on PATH; an error when there is none); quality screen (the default: crisp text, 4:4:4, which some players do not play) or web (4:2:0, plays everywhere); PNG frames are lossless. accumulate (1 to 256, 1 by default) is how many frames of the studio look's still a frame-exact frame waits for the viewport to average. Every frame has the size the window had when the recording started. Real time (step false): a frame every 1/fps seconds, the window showing what is recorded, what the person does in it included. Frame-exact (step: true): nothing is drawn until ui.advance, which draws its frames at a fixed dt each, every one once the window has settled (no command running, the scene built, the viewport's picture done); the person's input to the window is ignored meanwhile. {stop: true} ends it, once the frames are written (and ffmpeg has finished), and says how many; {} says how it stands (recording, path, format, fps, step, width, height, frames, skipped, time). One recording at a time. The desktop window only.",
+    },
+    UiMethod {
+        name: "ui.advance",
+        params: r#"{"frames": integer = 1, "dt": number = 1/fps, "timeout": seconds = 30}"#,
+        summary: "With a frame-exact recording (ui.record with step: true): draws and records frames frames (1 to 100000), each dt seconds (above 0, at most 60) of the window's clock after the last, so the history player, a flight, the orbit and a motion advance by exactly that; each frame waits until the window has settled (no command running, the scene built, the viewport's picture done) and is drawn then. Answered once the last frame is drawn, or after timeout seconds (above 0, at most 110) with the frames drawn so far (complete false, left the frames still to ask for): frames (those drawn), unsettled (frames whose picture had not settled within 4 s, drawn as they were), recorded (the recording's total) and time (the window's clock). The requests after it wait for it, but ui.get, closing the window and ui.record {stop: true}, which ends it at once with an error saying how many frames were drawn. A window that does not settle for the next frame within 60 s ends it with an error. An error without a frame-exact recording.",
     },
     UiMethod {
         name: "ui.param",
@@ -201,6 +211,9 @@ impl Shell {
             "ui.notice" => self.ui_notice(params),
             "ui.quit" => self.ui_quit(params),
             "ui.param" => self.ui_param(session, params),
+            "ui.record" | "ui.advance" => Err(format!(
+                "{method}: recording is done by the desktop window (craft3d --control), which paints its own frames"
+            )),
             _ => return None,
         };
         Some(result)

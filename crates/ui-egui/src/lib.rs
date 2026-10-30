@@ -25,6 +25,9 @@
 //! - [`view_cube`]: the view cube's geometry.
 //! - [`shell`]: the panels, the tabs of the open documents and the mouse.
 //! - [`control`]: the `ui.*` methods of the control protocol.
+//! - [`record`]: the window's own frames painted offscreen and read back:
+//!   `ui.record`, `ui.advance`, and `ui.screenshot {window: true}` of a
+//!   window that is not on screen.
 //!
 //! `ui.screenshot` always renders on the CPU: it is the oracle the GPU
 //! viewport is checked against (docs/design/rendering.md).
@@ -36,6 +39,8 @@ pub mod control;
 pub mod direct;
 pub mod files;
 pub mod frames;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod record;
 pub mod shell;
 pub mod state;
 pub mod theme;

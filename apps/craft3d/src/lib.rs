@@ -33,6 +33,7 @@ pub mod control;
 pub mod files;
 pub mod host;
 pub mod places;
+pub mod recording;
 pub mod refine;
 pub mod tabs;
 pub mod token;

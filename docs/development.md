@@ -229,7 +229,20 @@ Rules:
 - Screenshots capture only our own window.
 - Demo models are original or public-domain designs. No personal data in files, file names or requests; when fetching anything, use a generic `Craft3d-dev` User-Agent.
 
-**A picture of the whole window**, panels and the controls over the viewport included: `ui.screenshot {"window": true, "path": "shot.png"}` on the control channel (the window must be drawn: on screen, not minimised). `--window-size 1920x1080` (or `CRAFT3D_WINDOW_SIZE`) opens the window at a given size. A headless `mutter` draws no frames for it, so this needs a real display.
+**A picture of the whole window**, panels and the controls over the viewport included: `ui.screenshot {"window": true, "path": "shot.png"}` on the control channel. The window paints it itself into a texture of its size and reads it back, so it works when the window is covered, minimised or on another workspace, and under a headless `mutter` (2026-10-30). `--window-size 1920x1080` (or `CRAFT3D_WINDOW_SIZE`) opens the window at a given size.
+
+**A video of the window** (2026-10-30), for a demo of 3DCraft with an agent: `ui.record` captures the window's own frames, UI included, from its renderer (not from the compositor, so the window may be covered), into PNG frames or through `ffmpeg` (on `PATH`, or `CRAFT3D_FFMPEG`) into a video ([`control-protocol.md`](control-protocol.md) › *Recording the window*). Frame-exact is what an agent wants: the window then draws only when told, at a fixed step of its clock, each frame once what it shows has settled, so the history player, flights and parameter changes come out the same every time and no frame shows a half-built scene. Over the control channel, or through MCP as `control_call` with the same methods:
+
+```text
+ui.record  {"path": "video/demo.mp4", "fps": 30, "step": true}   # "quality": "web" for 4:2:0, "accumulate": 16 for averaged stills
+ui.set     {"timeline": {"playing": true, "orbit": true}}
+ui.advance {"frames": 300}                 # ten seconds of the player; after 30 s it answers with "left": ask again
+engine.execute {"command": "param.set", "params": {"name": "width", "value": "80 mm"}}
+ui.advance {"frames": 60}
+ui.record  {"stop": true}                  # once ffmpeg has written the file
+```
+
+`"path": "video/frames"` (no video extension) writes `frame-000001.png`, … instead, for any editor; `"includeUi": false` records the viewport alone; without `step` it records in real time at `fps`, what the person does in the window included. While it records, the window shows the frames recorded. `craft3d-cli replay` (*A showcase video*, above) is the other way to film a build: headless, one fixed camera, no panels.
 
 ## Offscreen UI snapshots (no window)
 

@@ -286,16 +286,27 @@ impl Shell {
     pub(crate) fn toggle_playing(&mut self) {
         if self.state.timeline.playing {
             self.stop_playing();
-        } else if self.playing_motion() || (!self.state.timeline.motion && self.timeline.steps > 0)
-        {
+        } else if self.playing_motion() || self.timeline.steps > 0 {
             self.state.timeline.playing = true;
+        } else {
+            // Never a silent play that does nothing.
+            self.timeline.problem = Some(
+                "Nothing to play: the document has no features and no motion timeline (a variable t)"
+                    .to_string(),
+            );
         }
     }
 
     /// Whether the player plays the motion: asked for, and the document
     /// has a timeline.
+    ///
+    /// The mode the player plays in follows the document while the
+    /// person's choice is kept: a document without a motion timeline plays
+    /// its history whatever was chosen (a `t` broken for a moment, or
+    /// another document after an assembly, does not lose the choice), and
+    /// one with a timeline and no history plays its motion.
     pub(crate) fn playing_motion(&self) -> bool {
-        self.state.timeline.motion && self.timeline.has_timeline
+        self.timeline.has_timeline && (self.state.timeline.motion || self.timeline.steps == 0)
     }
 
     /// Shows the moment `t` of the motion (clamped to 0 to 1).
@@ -467,7 +478,7 @@ impl Shell {
     pub(crate) fn advance_player(&mut self, ctx: &egui::Context) {
         let now = ctx.input(|i| i.time);
         let play = self.state.timeline;
-        let tick = if play.motion && play.playing {
+        let tick = if self.playing_motion() && play.playing {
             self.advance_motion(ctx, now);
             Tick::Idle
         } else {
@@ -1052,6 +1063,42 @@ mod tests {
             looping: true,
             ..playing()
         }
+    }
+
+    #[test]
+    fn the_mode_follows_the_document_and_a_play_that_cannot_run_says_why() {
+        // A document with a motion timeline, its player in Motion.
+        let mut p = Played::new(Playback::default());
+        p.session
+            .execute("variable.set", &json!({"name": "t", "expr": "0"}))
+            .unwrap();
+        p.frame();
+        p.shell.state.timeline.motion = true;
+        p.frame();
+        assert!(p.shell.playing_motion());
+        // Then a part without one (another file opened in its place, as a
+        // turbofan after an assembly): the player plays its history.
+        for (id, params) in [
+            ("file.new", json!({})),
+            ("feature.block", json!({"size": [10, 10, 10], "name": "A"})),
+            ("feature.sphere", json!({"radius": 3, "name": "B"})),
+        ] {
+            p.session.execute(id, &params).unwrap();
+        }
+        p.frame();
+        assert!(!p.shell.playing_motion(), "still in Motion");
+        // The person's choice is kept for a document that has a timeline.
+        assert!(p.shell.state.timeline.motion);
+        p.shell.toggle_playing();
+        assert!(p.shell.state.timeline.playing);
+        assert!(p.until(3.0, |p| p.shown() == 1), "the history did not play");
+        // Nothing at all to play: said, not silently ignored.
+        p.shell.stop_playing();
+        p.session.execute("file.new", &json!({})).unwrap();
+        p.frame();
+        p.shell.toggle_playing();
+        assert!(!p.shell.state.timeline.playing);
+        assert!(p.shell.timeline_json()["problem"].is_string());
     }
 
     #[test]

@@ -1986,6 +1986,10 @@ pub struct Refinement {
     max_triangles: usize,
     max_angle: Option<f64>,
     preview: Arc<Scene>,
+    /// The size the display tolerance is a fraction of, when it is not
+    /// the first picture's own: a state the view is scrubbed to is meshed
+    /// as the document as it is ([`Session::scrubbed_sizes`]).
+    size: Option<f64>,
     /// The session's store of meshes, shared: what the refinement meshes
     /// serves the scenes built on the engine thread, and the other way.
     meshes: MeshStore,
@@ -2020,10 +2024,10 @@ impl Refinement {
     pub fn run(&self, cancel: &AtomicBool) -> Refined {
         let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let area = mesh_area(&self.preview.mesh);
-            let size = if area.is_finite() && area > 0.0 {
-                area.sqrt()
-            } else {
-                model_size(&self.regen, &self.doc)
+            let size = match self.size {
+                Some(size) => size,
+                None if area.is_finite() && area > 0.0 => area.sqrt(),
+                None => model_size(&self.regen, &self.doc),
             };
             build_for_display(
                 &self.doc,
@@ -2232,9 +2236,11 @@ impl Session {
                 max_angle,
             } => (relative, max_triangles, max_angle),
             SceneQuality::Preview => {
+                let sizes = self.scrubbed_sizes();
                 return self.build_and_keep(key, |doc, regen| {
+                    let size = sizes.map_or_else(|| preview_size(regen, doc), |s| s.preview);
                     let sampling = Sampling {
-                        tolerance: on_rung(preview_size(regen, doc) * PREVIEW_RELATIVE_TOLERANCE),
+                        tolerance: on_rung(size * PREVIEW_RELATIVE_TOLERANCE),
                         angle: None,
                         budget: None,
                         per_body: Some(DISPLAY_MAX_TRIANGLES),
@@ -2324,8 +2330,10 @@ impl Session {
         preview: Arc<Scene>,
     ) -> Option<Refinement> {
         let meshes = self.scene.meshes.clone();
+        let size = self.scrubbed_sizes().map(|s| s.display);
         let open = self.documents.get_mut(self.active)?;
         Some(Refinement {
+            size,
             doc: open.shown(),
             regen: open.shown_regen(),
             key,
@@ -2335,6 +2343,67 @@ impl Session {
             preview,
             meshes,
         })
+    }
+
+    /// While the view of the active document is scrubbed to an earlier
+    /// state of its history (`view.scrub`): the sizes of the document as
+    /// it is, which the tolerances of the viewer's scenes of that state
+    /// are fractions of instead of its own. Every state of a history is
+    /// then meshed as finely as the end of it, so a body a step shares
+    /// with other steps or with the end keeps its mesh (the store of
+    /// meshes finds it), and the picture does not grow coarser or finer
+    /// as the model grows while the player plays. Only once the document
+    /// as it is has its own first picture (the window showed it), and not
+    /// while states are built elsewhere (a browser's worker meshes them at
+    /// their own sizes).
+    /// `None` when the view shows the document as it is (or its motion,
+    /// or an assembly).
+    pub(crate) fn scrubbed_sizes(&mut self) -> Option<crate::scrub::ShownSizes> {
+        // A state built elsewhere is meshed there, at its own sizes: the
+        // same rule on both sides, so the two scenes are the same bits.
+        if self.regen_elsewhere() {
+            return None;
+        }
+        let open = self.documents.get_mut(self.active)?;
+        let current = Arc::clone(open.history.current());
+        let shown = open.shown();
+        let scrubbed = open.scrubbed();
+        if !Arc::ptr_eq(&shown, &scrubbed) || Arc::ptr_eq(&scrubbed, &current) {
+            return None;
+        }
+        if let Some((of, sizes)) = &open.scrub.sizes
+            && Arc::ptr_eq(of, &current)
+        {
+            return Some(*sizes);
+        }
+        let regen = open.regen();
+        let preview = preview_size(&regen, &current);
+        let found = self
+            .scene
+            .kept
+            .iter()
+            .find(|kept| Arc::ptr_eq(&kept.doc, &current))
+            .and_then(|kept| {
+                kept.scenes
+                    .iter()
+                    .find(|(key, ..)| *key == SceneKey::Preview)
+                    .and_then(|(_, built, _)| built.as_ref().ok().cloned())
+            });
+        // Never built here for this (a whole first picture, on the
+        // thread that asked): without the document's own first picture
+        // the state is meshed at its own sizes, as before, until there is
+        // one.
+        let picture = found?;
+        let area = mesh_area(&picture.mesh);
+        let display = if area.is_finite() && area > 0.0 {
+            area.sqrt()
+        } else {
+            model_size(&regen, &current)
+        };
+        let sizes = crate::scrub::ShownSizes { preview, display };
+        let open = self.documents.get_mut(self.active)?;
+        open.scrub.sizes = Some((current, sizes));
+        Some(sizes)
     }
 
     /// The display scene of the active document for `quality`, to be

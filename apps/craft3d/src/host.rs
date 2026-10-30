@@ -122,6 +122,47 @@ fn mcp_message(
     Ok(serde_json::json!({ "reply": reply }))
 }
 
+/// The `ui.*` method and its params when the `mcp.message` request
+/// `request` is a call of the tool `control_call`, with the MCP message
+/// itself.
+pub(crate) fn control_call_of(request: &Value) -> Option<(String, Option<Value>, String)> {
+    if request.get("method").and_then(Value::as_str) != Some("mcp.message") {
+        return None;
+    }
+    let line = request.get("params")?.get("line")?.as_str()?;
+    let message: Value = serde_json::from_str(line).ok()?;
+    if message.get("method")?.as_str()? != "tools/call" {
+        return None;
+    }
+    let params = message.get("params")?;
+    if params.get("name")?.as_str()? != craft3d_automation::mcp::WINDOW_TOOL {
+        return None;
+    }
+    let arguments = params.get("arguments")?;
+    let method = arguments.get("method")?.as_str()?.to_string();
+    let inner = arguments.get("params").cloned();
+    Some((method, inner, line.to_string()))
+}
+
+/// The reply of the `mcp.message` whose message is `line`, a call of
+/// `control_call`, when the window's method answered it with `result`
+/// (answered by the window itself, not by the shell: `ui.record`,
+/// `ui.advance`): the same MCP envelope as any other tool call.
+pub(crate) fn control_call_reply(
+    session: &mut Session,
+    line: &str,
+    result: Result<Value, String>,
+) -> Value {
+    let mut result = Some(result);
+    let mut handle = |_: &mut Session, _: &str, _: Option<&Value>| result.take();
+    let mut extension = Extension {
+        methods: mcp_methods(),
+        handle: &mut handle,
+    };
+    let reply = craft3d_automation::mcp::handle_line_with(session, line, &mut extension);
+    serde_json::json!({ "reply": reply })
+}
+
 /// What an MCP message did, for the status bar: the command a tool call
 /// ran, or the tool's name.
 fn mcp_label(request: &Value) -> Option<String> {

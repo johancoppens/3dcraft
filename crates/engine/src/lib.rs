@@ -142,7 +142,7 @@ pub use scene::{
     SceneDatum, SceneDatumShape, SceneFeature, ScenePlacement, ScenePolyline, SceneQuality,
     SceneSketch, SketchCurve, arc_segments, base64 as encode_base64,
 };
-pub use scrub::{ScrubPosition, step_caption};
+pub use scrub::{ScrubPosition, ScrubRegeneration, step_caption};
 pub use section::{MAX_SECTION_EXTENT, SECTION_CAP_COLOR, SectionPlane, SectionSpec};
 pub use selection::{
     MAX_SELECTION, SelectMode, SelectionItem, SelectionKind, SelectionView,

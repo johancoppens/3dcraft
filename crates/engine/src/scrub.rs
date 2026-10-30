@@ -11,9 +11,15 @@
 //! the meshing of the bodies no earlier scene had (the session's store of
 //! meshes keeps every body it meshed). Each state is kept, with its
 //! regeneration, for as long as the document stays as it is (up to
-//! [`max_states`], the least recently shown going first), and its scenes
+//! [`max_states`], and [`STATE_BODY_BUDGET`] of bodies beyond the
+//! document's own, the least recently shown going first), and its scenes
 //! are kept by the session's scene cache like those of any other state,
-//! so going back to a step seen before costs nothing.
+//! so going back to a step seen before costs nothing. When the document's
+//! cache has let go of bodies, a state takes those the state shown last
+//! derived again, so a step forward derives one body at most. Every state
+//! is meshed at the tolerances of the document as it is
+//! (`Session::scrubbed_sizes`), so the bodies the steps share keep their
+//! meshes.
 //!
 //! The scrub is view state of an open document, like its selection: not
 //! saved, not undone. It is let go of when the features of the history
@@ -57,6 +63,22 @@ pub(crate) fn max_states(features: usize) -> usize {
     (MAX_FEATURE_COPIES / features.max(1)).clamp(16, 512)
 }
 
+/// Most bytes of bodies the regenerations of the scrubbed states keep
+/// together beyond those the document's own regeneration holds (each
+/// step of a chain of booleans has a body of its own, as big as all
+/// before it). Beyond it the regenerations of the least recently shown
+/// states go first; their scenes stay in the scene cache (within its own
+/// budget), so showing them again costs nothing, and a regeneration let
+/// go of is made again, the same bits, when something asks for it.
+/// The cache of the state shown last (where the next state takes the
+/// bodies the document's cache let go of) keeps bodies within the same
+/// budget, so while scrubbed a document holds at most its own cache's
+/// bodies and about twice this.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) const STATE_BODY_BUDGET: usize = 1 << 30;
+#[cfg(target_arch = "wasm32")]
+pub(crate) const STATE_BODY_BUDGET: usize = 1 << 28;
+
 /// One state the view was scrubbed to.
 #[derive(Clone)]
 struct State {
@@ -67,6 +89,9 @@ struct State {
     doc: Arc<Document>,
     /// Its regeneration, once a scene asked for it.
     regen: Option<Arc<Regen>>,
+    /// About how many bytes the bodies of `regen` take that the
+    /// document's own regeneration does not hold.
+    bytes: usize,
 }
 
 /// Where an open document's view is in its history.
@@ -77,6 +102,75 @@ pub(crate) struct Scrub {
     at: Option<(FeatureId, u64)>,
     /// The states shown so far, the most recently shown last.
     states: Vec<State>,
+    /// What building the regeneration of the state shown last took
+    /// ([`Session::scrubbed_regeneration`]).
+    last: ScrubRegeneration,
+    /// The sizes of the document as it is that the viewer's tolerances
+    /// of every scrubbed state are fractions of, with the document they
+    /// are of (`scene.rs`, `Session::scrubbed_sizes`).
+    pub(crate) sizes: Option<(Arc<Document>, ShownSizes)>,
+    /// Most bytes of bodies the states keep ([`STATE_BODY_BUDGET`] unless
+    /// set: `Session::set_scrub_budget`), and the bodies the cache of the
+    /// last state keeps; kept when the scrub is let go.
+    pub(crate) budget: Option<usize>,
+    /// The regeneration cache of the state shown last, with the document
+    /// it is a state of: where the next state takes the bodies from that
+    /// the document's own cache has let go of.
+    playback: Option<(Arc<Document>, craft3d_regen::RegenCache)>,
+}
+
+impl Scrub {
+    /// Lets go of the scrub and its states, keeping the budget.
+    fn reset(&mut self) {
+        *self = Scrub {
+            budget: self.budget,
+            ..Scrub::default()
+        };
+    }
+
+    /// Lets go of the regenerations of the least recently shown states
+    /// until those kept are within the budget; the state shown last keeps
+    /// its own.
+    fn trim(&mut self) {
+        let budget = self.budget.unwrap_or(STATE_BODY_BUDGET);
+        let mut held = self
+            .states
+            .iter()
+            .fold(0usize, |n, state| n.saturating_add(state.bytes));
+        let last = self.states.len().saturating_sub(1);
+        for (at, state) in self.states.iter_mut().enumerate() {
+            if held <= budget || at >= last {
+                break;
+            }
+            if state.regen.take().is_some() {
+                held = held.saturating_sub(state.bytes);
+                state.bytes = 0;
+            }
+        }
+    }
+}
+
+/// The sizes of a model that the relative tolerances of a viewer's
+/// scenes are fractions of: the quick first picture's (the diagonal of
+/// the box around the bodies) and the display scene's (the side of a
+/// square with the area of the first picture's mesh).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ShownSizes {
+    pub preview: f64,
+    pub display: f64,
+}
+
+/// What the regeneration of the state the view is scrubbed to took, as
+/// [`Session::scrubbed_regeneration`] gives it: for benchmarks and tests.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ScrubRegeneration {
+    /// It was a state kept before: nothing was built.
+    pub kept: bool,
+    /// Features rebuilt and reused.
+    pub rebuilt: usize,
+    pub reused: usize,
+    /// Bodies derived again that a cache had let go of.
+    pub rederived: usize,
 }
 
 /// Where the view of the active document is in its history, as
@@ -120,7 +214,7 @@ impl OpenDocument {
         let (at, key) = self.scrub.at?;
         let doc = self.history.current();
         if features_key(doc) != key || doc.feature(at).is_none() {
-            self.scrub = Scrub::default();
+            self.scrub.reset();
             return None;
         }
         Some(at)
@@ -142,6 +236,22 @@ impl OpenDocument {
         self.scrub
             .states
             .retain(|state| Arc::ptr_eq(&state.base, &current));
+        if self
+            .scrub
+            .sizes
+            .as_ref()
+            .is_some_and(|(of, _)| !Arc::ptr_eq(of, &current))
+        {
+            self.scrub.sizes = None;
+        }
+        if self
+            .scrub
+            .playback
+            .as_ref()
+            .is_some_and(|(of, _)| !Arc::ptr_eq(of, &current))
+        {
+            self.scrub.playback = None;
+        }
         let Some(at) = self.scrubbed_to() else {
             return current;
         };
@@ -166,6 +276,7 @@ impl OpenDocument {
             at,
             doc: Arc::clone(&doc),
             regen: None,
+            bytes: 0,
         });
         doc
     }
@@ -183,27 +294,72 @@ impl OpenDocument {
             .find(|s| Arc::ptr_eq(&s.doc, &doc))
             .and_then(|s| s.regen.clone())
         {
+            self.scrub.last = ScrubRegeneration {
+                kept: true,
+                ..ScrubRegeneration::default()
+            };
             return regen;
         }
         // From what the document built: everything up to the feature is
         // reused, what comes after it is rolled back. On a copy of the
         // cache, so the document's own keeps the later features.
-        self.regen();
+        let own = self.regen();
+        let current = Arc::clone(self.history.current());
+        // From a copy of the document's own cache, which has every body
+        // unless it let go of some to stay within its budget (a model
+        // whose bodies take more than that): then the bodies the cache of
+        // the state shown last built or derived again are taken from it,
+        // so a step forward derives one body, not the chain before it.
         let mut cache = self.cache.clone();
-        let regen = Arc::new(craft3d_regen::regenerate_cached(&doc, &mut cache));
-        // Bodies the cache had let go of to stay within its budget, and
-        // derived again here, are not kept with the state: they would live
-        // outside any budget (its scenes are kept by the scene cache).
-        if cache.last_run_rederived() > 0 {
-            return regen;
+        cache.set_body_budget(self.scrub.budget.unwrap_or(STATE_BODY_BUDGET));
+        if let Some((_, last)) = self
+            .scrub
+            .playback
+            .as_ref()
+            .filter(|(of, _)| Arc::ptr_eq(of, &current))
+            && self.cache.bodies_held().1 > 0
+        {
+            cache.take_bodies_from(last);
         }
-        if let Some(state) = self
+        let regen = Arc::new(craft3d_regen::regenerate_cached(&doc, &mut cache));
+        let (rebuilt, reused) = cache.last_run();
+        self.scrub.last = ScrubRegeneration {
+            kept: false,
+            rebuilt,
+            reused,
+            rederived: cache.last_run_rederived(),
+        };
+        // The next state, a step further, finds the bodies this one built
+        // or derived again in it.
+        self.scrub.playback = Some((Arc::clone(&current), cache));
+        // What its bodies take beyond the document's own: those are the
+        // ones a state keeps alive.
+        let shared: std::collections::BTreeSet<*const craft3d_topo::Body> = own
+            .features
+            .iter()
+            .filter_map(|f| f.body.as_ref().map(Arc::as_ptr))
+            .collect();
+        let bytes = regen
+            .features
+            .iter()
+            .filter_map(|f| f.body.as_ref())
+            .filter(|body| !shared.contains(&Arc::as_ptr(body)))
+            .fold(0usize, |n, body| {
+                n.saturating_add(craft3d_regen::body_bytes(body))
+            });
+        if let Some(at) = self
             .scrub
             .states
-            .iter_mut()
-            .find(|s| Arc::ptr_eq(&s.doc, &doc))
+            .iter()
+            .position(|s| Arc::ptr_eq(&s.doc, &doc))
+            && let Some(state) = self.scrub.states.get_mut(at)
         {
             state.regen = Some(Arc::clone(&regen));
+            state.bytes = bytes;
+            // The most recently shown last: trimming keeps it.
+            let state = self.scrub.states.remove(at);
+            self.scrub.states.push(state);
+            self.scrub.trim();
         }
         regen
     }
@@ -223,6 +379,73 @@ impl Session {
             step: index.saturating_add(1),
             steps: doc.features.len(),
         })
+    }
+}
+
+impl Session {
+    /// Sets the most bytes of bodies the regenerations of the scrubbed
+    /// states of the active document keep beyond the document's own
+    /// ([`STATE_BODY_BUDGET`] by default). For tests.
+    pub fn set_scrub_budget(&mut self, bytes: usize) {
+        if let Some(open) = self.documents.get_mut(self.active) {
+            open.scrub.budget = Some(bytes);
+        }
+    }
+
+    /// About how many bytes of bodies the scrubbed states of the active
+    /// document keep beyond the document's own, and how many states keep
+    /// their regeneration.
+    pub fn scrub_bytes(&self) -> Option<(usize, usize)> {
+        let open = self.documents.get(self.active)?;
+        Some(
+            open.scrub
+                .states
+                .iter()
+                .fold((0, 0), |(bytes, kept), state| {
+                    (
+                        bytes.saturating_add(state.bytes),
+                        kept + usize::from(state.regen.is_some()),
+                    )
+                }),
+        )
+    }
+
+    /// Builds the regeneration of the state the active document's view is
+    /// scrubbed to, as a scene would, and says what that took; `None`
+    /// when the view shows the document as it is (or none is open). For
+    /// benchmarks and tests.
+    pub fn scrubbed_regeneration(&mut self) -> Option<ScrubRegeneration> {
+        let open = self.documents.get_mut(self.active)?;
+        open.scrubbed_to()?;
+        open.scrubbed_regen();
+        Some(open.scrub.last)
+    }
+
+    /// Regenerates the state the active document's view is scrubbed to
+    /// from nothing and compares it with the one the view shows, built
+    /// from what earlier states and the document had built. `None` when
+    /// the view is not scrubbed. A body that went into a later feature
+    /// and that a cache let go of (it is derived again when asked for) is
+    /// left out of the comparison, with the names of its edges and
+    /// vertices (the names of its faces are compared); everything else must be the same bits.
+    /// For tests: the two must never differ.
+    pub fn scrubbed_matches_a_full_one(&mut self) -> Option<bool> {
+        let open = self.documents.get_mut(self.active)?;
+        open.scrubbed_to()?;
+        let doc = open.scrubbed();
+        let held = open.scrubbed_regen();
+        let mut fresh = craft3d_regen::regenerate(&doc);
+        for (mine, theirs) in held.features.iter().zip(fresh.features.iter_mut()) {
+            if mine.body.is_none() && mine.consumed_by.is_some() {
+                // Without its edges' and vertices' names (`RegenCache`).
+                theirs.body = None;
+                theirs.names = theirs
+                    .names
+                    .as_deref()
+                    .map(|names| Arc::new(names.without_entities()));
+            }
+        }
+        Some(*held == fresh)
     }
 }
 
@@ -415,6 +638,119 @@ mod tests {
         .unwrap();
         s.scene(None).unwrap();
         assert!(s.documents[s.active].scrub.states.is_empty());
+    }
+
+    #[test]
+    fn every_scrubbed_state_is_the_one_a_fresh_regeneration_gives() {
+        for budget in [None, Some(0)] {
+            let mut s = session();
+            if let Some(bytes) = budget {
+                s.set_scrub_budget(bytes);
+            }
+            s.scene(None).unwrap();
+            for step in [1, 2, 3, 2, 1, 2] {
+                s.execute("view.scrub", &json!({"step": step})).unwrap();
+                s.scene(None).unwrap();
+                if step < 3 {
+                    assert_eq!(
+                        s.scrubbed_matches_a_full_one(),
+                        Some(true),
+                        "step {step}, budget {budget:?}"
+                    );
+                }
+            }
+            // Their bodies are the document's own: they cost nothing
+            // beyond it, so both keep their regeneration.
+            assert_eq!(s.scrub_bytes().unwrap(), (0, 2));
+        }
+    }
+
+    #[test]
+    fn with_bodies_let_go_of_a_step_forward_goes_on_from_the_last_state() {
+        for scrub_budget in [None, Some(0)] {
+            let mut s = session();
+            // The document's cache keeps no body that went into a later
+            // feature: the block and the pin are derived again when a
+            // state needs them.
+            s.set_body_budget(0);
+            if let Some(bytes) = scrub_budget {
+                s.set_scrub_budget(bytes);
+            }
+            s.execute("feature.sphere", &json!({"radius": "1 mm"}))
+                .unwrap();
+            s.scene(None).unwrap();
+            assert!(s.bodies_held().unwrap().1 > 0);
+            s.execute("view.scrub", &json!({"step": 1})).unwrap();
+            let first = s.scrubbed_regeneration().unwrap();
+            assert!(first.rederived > 0, "{first:?}");
+            assert_eq!(s.scrubbed_matches_a_full_one(), Some(true));
+            for step in [2, 3] {
+                s.execute("view.scrub", &json!({"step": step})).unwrap();
+                let took = s.scrubbed_regeneration().unwrap();
+                // At most its own body derived again (the document's cache
+                // let go of it), from the last state's: never the chain.
+                assert!(took.rederived <= 1, "step {step}: {took:?}");
+                assert_eq!(s.scrubbed_matches_a_full_one(), Some(true));
+            }
+            // Back: a state kept is a lookup, within the budget.
+            s.execute("view.scrub", &json!({"step": 1})).unwrap();
+            let back = s.scrubbed_regeneration().unwrap();
+            assert_eq!(back.kept, scrub_budget.is_none(), "{back:?}");
+            assert_eq!(s.scrubbed_matches_a_full_one(), Some(true));
+            let (bytes, kept) = s.scrub_bytes().unwrap();
+            if scrub_budget.is_some() {
+                assert!(kept <= 1 || bytes == 0, "{bytes} bytes in {kept} states");
+            } else {
+                assert!(bytes > 0);
+            }
+        }
+    }
+
+    #[test]
+    fn stepping_forward_builds_only_the_new_feature_and_back_builds_nothing() {
+        let mut s = session();
+        s.scene(None).unwrap();
+        s.execute("view.scrub", &json!({"step": 1})).unwrap();
+        let first = s.scrubbed_regeneration().unwrap();
+        assert!(!first.kept);
+        assert_eq!(first.rederived, 0);
+        s.execute("view.scrub", &json!({"step": 2})).unwrap();
+        assert!(!s.scrubbed_regeneration().unwrap().kept);
+        s.execute("view.scrub", &json!({"step": 1})).unwrap();
+        assert!(s.scrubbed_regeneration().unwrap().kept);
+        s.execute("view.scrub", &json!({"feature": null})).unwrap();
+        assert!(s.scrubbed_regeneration().is_none());
+    }
+
+    #[test]
+    fn a_scrubbed_state_is_meshed_as_the_document_as_it_is() {
+        let mut s = Session::new(Workspace::none());
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute(
+            "feature.sphere",
+            &json!({"radius": "2 mm", "name": "Ball", "position": ["-40 mm", "0 mm", "0 mm"]}),
+        )
+        .unwrap();
+        s.execute(
+            "feature.block",
+            &json!({"size": ["60 mm", "60 mm", "60 mm"], "name": "Box"}),
+        )
+        .unwrap();
+        let quality = crate::SceneQuality::display();
+        let end = s.scene_with(quality).unwrap().unwrap();
+        s.execute("view.scrub", &json!({"step": 1})).unwrap();
+        let step = s.scene_with(quality).unwrap().unwrap();
+        assert_eq!(step.bodies.len(), 1);
+        // The same sampling as the end, so the ball keeps its mesh.
+        assert_eq!(step.sampling(), end.sampling());
+        assert!(std::sync::Arc::ptr_eq(
+            &step.bodies[0].mesh,
+            &end.bodies[0].mesh
+        ));
+        let preview = s.scene_with(crate::SceneQuality::Preview).unwrap().unwrap();
+        s.execute("view.scrub", &json!({"feature": null})).unwrap();
+        let end_preview = s.scene_with(crate::SceneQuality::Preview).unwrap().unwrap();
+        assert_eq!(preview.sampling(), end_preview.sampling());
     }
 
     #[test]

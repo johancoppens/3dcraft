@@ -42,7 +42,7 @@ pub(crate) struct Timeline {
     /// The place of the real rollback marker (1 for the first feature).
     pub(super) rollback: Option<usize>,
     /// Why the last command of the timeline failed.
-    problem: Option<String>,
+    pub(super) problem: Option<String>,
     /// A flight waits for what was asked to show its target: the scene's
     /// revision when it was asked ([`Shell::prepare_fly`]).
     revealing: Option<u64>,
@@ -323,6 +323,7 @@ impl Shell {
             "loop": self.state.timeline.looping,
             "orbit": self.state.timeline.orbit,
             "motion": self.state.timeline.motion,
+            "playsMotion": self.playing_motion(),
             "bounce": self.state.timeline.bounce,
             "hasTimeline": self.timeline.has_timeline,
             "t": self.timeline.motion.as_ref().map(|m| m.t),
@@ -385,7 +386,7 @@ impl Shell {
             // plays (docs/design/motion.md › *Assemblies*).
             if self.timeline.has_timeline {
                 self.motion_ui(ui);
-                if self.state.timeline.motion {
+                if self.playing_motion() {
                     self.player_controls(ui);
                 }
             }

@@ -153,6 +153,14 @@ The keys work while the pointer is over the view or the feature list and you are
 Each step is shown once its model is built, and for at least 0.8 s at 1×, so a heavy model never skips a
 step. Playing stops at the end, when the document changes or when you switch tabs.
 
+Every step is shown as finely meshed as the whole design, so a part that does not change between steps
+keeps its look, and stepping through a history you have seen before is immediate.
+
+To film the player, or anything else in the window, an agent can record the window itself, panels
+included, even while it is covered by other windows: `ui.record` with frame-exact steps (`ui.advance`)
+gives a video in which every step is complete ([*A video of the window*](../development.md#watching-along)
+in the developer guide).
+
 **Roll back here** puts the *rollback marker* on the step shown: the design is then built only up to that
 step, and new features go in right after it, a way to insert something early in the history. **To end**
 takes the marker away again. While you look back, clicks in the view do not select; go **To end** first.

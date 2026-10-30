@@ -299,7 +299,9 @@ fn without_a_timeline_the_motion_is_not_offered() {
     window.frame(&mut shell, &mut session, 0.0);
     let got = call(&mut shell, &mut session, "ui.get", json!({}));
     assert_eq!(got["timeline"]["hasTimeline"], false);
-    // Asked to play the motion, the player plays nothing and stops.
+    // Asked to play the motion, the player plays the history instead
+    // (since 2026-10-30: the mode follows the document, never a play that
+    // does nothing), and no moment of a motion is shown.
     call(
         &mut shell,
         &mut session,
@@ -309,6 +311,6 @@ fn without_a_timeline_the_motion_is_not_offered() {
     window.frame(&mut shell, &mut session, 0.1);
     window.frame(&mut shell, &mut session, 0.1);
     let got = call(&mut shell, &mut session, "ui.get", json!({}));
-    assert_eq!(got["timeline"]["playing"], false);
+    assert_eq!(got["timeline"]["playsMotion"], false);
     assert_eq!(got["timeline"]["t"], Value::Null);
 }

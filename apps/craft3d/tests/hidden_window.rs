@@ -94,8 +94,14 @@ fn call(stream: &mut TcpStream, reader: &mut BufReader<TcpStream>, request: &str
 fn quits_unseen(renderer: &str, display: &str, dir: &Path) {
     let token_file = dir.join(format!("token-{renderer}"));
     let _ = std::fs::remove_file(&token_file);
+    let out = dir.join(format!("out-{renderer}"));
+    let _ = std::fs::remove_dir_all(&out);
+    std::fs::create_dir_all(&out).unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_craft3d"))
         .args(["--renderer", renderer, "--control", "0"])
+        .args(["--window-size", "800x600"])
+        .arg("--automation-write-root")
+        .arg(&out)
         .arg("--control-token-file")
         .arg(&token_file)
         // Not the developer's own recovery directory.
@@ -143,9 +149,10 @@ fn quits_unseen(renderer: &str, display: &str, dir: &Path) {
         let reply = call(&mut stream, &mut reader, request);
         assert!(reply.contains(r#""ok":true"#), "{request}: {reply}");
     }
-    // A picture of the window itself needs a frame, which never comes: it
-    // is answered with its error at its deadline (8 s), not left waiting
-    // for the control channel's 120 s (R1 B8).
+    // A picture of the window itself: the compositor never lets it draw a
+    // frame, so it is painted offscreen, panels and all, at the window's
+    // size (until 2026-10-30 it was answered with "drew no frame" at its
+    // deadline).
     let asked = Instant::now();
     let reply = call(
         &mut stream,
@@ -153,14 +160,47 @@ fn quits_unseen(renderer: &str, display: &str, dir: &Path) {
         r#"{"id":6,"method":"ui.screenshot","params":{"window":true}}"#,
     );
     assert!(
-        reply.contains(r#""ok":false"#) && reply.contains("drew no frame"),
+        reply.contains(r#""ok":true"#) && reply.contains(r#""window":true"#),
         "{reply}"
     );
+    // The window's size in pixels: 800 × 600 points at the scale the
+    // compositor gives it.
+    let size = |key: &str| {
+        let at = reply.find(&format!("\"{key}\":")).unwrap() + key.len() + 3;
+        reply[at..]
+            .split(|c: char| !c.is_ascii_digit())
+            .next()
+            .unwrap()
+            .parse::<u32>()
+            .unwrap()
+    };
+    let (width, height) = (size("width"), size("height"));
+    assert_eq!(width * 600, height * 800, "{width} × {height}");
     assert!(
-        asked.elapsed() < Duration::from_secs(12),
+        asked.elapsed() < Duration::from_secs(8),
         "answered after {:?}",
         asked.elapsed()
     );
+    // Recorded frame-exact, unseen: one PNG of the window per frame.
+    for request in [
+        r#"{"id":7,"method":"ui.record","params":{"path":"frames","step":true,"fps":10}}"#,
+        r#"{"id":8,"method":"ui.advance","params":{"frames":5}}"#,
+        r#"{"id":9,"method":"ui.record","params":{"stop":true}}"#,
+    ] {
+        let reply = call(&mut stream, &mut reader, request);
+        assert!(reply.contains(r#""ok":true"#), "{request}: {reply}");
+    }
+    let frames = std::fs::read_dir(dir.join(format!("out-{renderer}")).join("frames"))
+        .unwrap()
+        .count();
+    assert_eq!(frames, 5);
+    // Without a recording there is nothing to advance.
+    let reply = call(
+        &mut stream,
+        &mut reader,
+        r#"{"id":10,"method":"ui.advance","params":{"frames":1}}"#,
+    );
+    assert!(reply.contains(r#""ok":false"#), "{reply}");
     let reply = call(&mut stream, &mut reader, r#"{"id":5,"method":"ui.quit"}"#);
     assert!(reply.contains(r#""quitting":true"#), "{reply}");
     let asked = Instant::now();
