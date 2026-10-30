@@ -133,7 +133,9 @@ pub use recovery::{
     Recoverable, RecoveryNotify, RecoveryOptions, RecoveryOverview, default_recovery_directory,
     parse_autosave_interval,
 };
-pub use regen_elsewhere::{SceneRequest, scene_begin, scene_bytes, scene_next};
+pub use regen_elsewhere::{
+    SceneRequest, SceneStep, scene_begin, scene_bytes, scene_forget, scene_next, scene_step,
+};
 pub use report::{
     FailedCommand, MAX_REPORT_FIELD_CHARS, VERSION, bug_report, build_commit, platform,
     set_build_commit,

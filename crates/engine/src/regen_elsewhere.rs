@@ -498,11 +498,7 @@ pub fn scene_begin(document: &[u8], work: &str) {
         builder.refused = None;
         let quality = match read {
             Ok((doc, quality, budget)) => {
-                let session = builder.session.get_or_insert_with(|| {
-                    let mut s = Session::new(Workspace::none());
-                    s.set_refine_elsewhere(false);
-                    s
-                });
+                let session = builder.session.get_or_insert_with(builder_session);
                 if let Some(budget) = budget {
                     session.set_scene_budget(budget);
                 }
@@ -521,22 +517,91 @@ pub fn scene_begin(document: &[u8], work: &str) {
     });
 }
 
+/// What [`scene_step`] did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SceneStep {
+    /// A part of the answer, for the host's [`Session::scene_answered`].
+    Part(Vec<u8>),
+    /// A piece of the work was done (a feature regenerated, a body
+    /// meshed); the next part is not there yet.
+    Working,
+    /// The answer is complete.
+    Done,
+}
+
+/// Does a piece of the answer [`scene_begin`] started: regenerates and
+/// meshes until `stop` says so (asked after each feature built and each
+/// body meshed; at least one is done per call) or a part is there. A
+/// worker that asks for a piece at a time can look at its messages
+/// between pieces, and leave a job a newer one replaced without ending
+/// itself: what it built stays in its caches, and the next state rebuilds
+/// only what its edit changed. The parts are those [`scene_next`] builds
+/// in one go, bit for bit.
+pub fn scene_step(stop: impl Fn() -> bool + Clone + 'static) -> SceneStep {
+    BUILDER.with(|builder| {
+        let Ok(mut builder) = builder.try_borrow_mut() else {
+            return SceneStep::Done;
+        };
+        let Some(&(of, quality)) = builder.left.front() else {
+            return SceneStep::Done;
+        };
+        if let Some(why) = &builder.refused {
+            let part = error_part(of, why);
+            builder.left.pop_front();
+            return SceneStep::Part(part);
+        }
+        let asked = builder.left.back().map_or(quality, |&(_, q)| q);
+        let Some(session) = builder.session.as_mut() else {
+            builder.left.pop_front();
+            return SceneStep::Part(error_part(of, "no document to show"));
+        };
+        let there = session
+            .documents
+            .get_mut(session.active)
+            .map(OpenDocument::shown)
+            .is_some_and(|doc| session.has_scene_of(&doc, quality));
+        if !there && session.prepare_some(asked, stop).is_some() {
+            return SceneStep::Working;
+        }
+        // There, or nothing left to do a piece at a time (a quality that
+        // is not built in pieces is built now, in one go).
+        let part = part(of, session.scene_with(quality));
+        builder.left.pop_front();
+        SceneStep::Part(part)
+    })
+}
+
 /// The next part of the answer [`scene_begin`] started: the quick first
 /// picture, then the scene at the quality asked for, each built now;
 /// `None` when the answer is complete. The bytes go back to the host's
 /// [`Session::scene_answered`].
 pub fn scene_next() -> Option<Vec<u8>> {
-    BUILDER.with(|builder| {
-        let mut builder = builder.try_borrow_mut().ok()?;
-        let (of, quality) = builder.left.pop_front()?;
-        if let Some(why) = &builder.refused {
-            return Some(error_part(of, why));
+    loop {
+        match scene_step(|| false) {
+            SceneStep::Part(part) => return Some(part),
+            SceneStep::Working => {}
+            SceneStep::Done => return None,
         }
-        let Some(session) = builder.session.as_mut() else {
-            return Some(error_part(of, "no document to show"));
-        };
-        Some(part(of, session.scene_with(quality)))
-    })
+    }
+}
+
+/// Lets go of everything this side built: what a worker that was ended
+/// and started again has (the next state regenerates from nothing).
+pub fn scene_forget() {
+    BUILDER.with(|builder| {
+        if let Ok(mut builder) = builder.try_borrow_mut() {
+            *builder = Builder::default();
+        }
+    });
+}
+
+/// This side's session: the long work a piece at a time
+/// ([`scene_step`]), the checks left to the checking worker.
+fn builder_session() -> Session {
+    let mut s = Session::new(Workspace::none());
+    s.set_stepwise(true);
+    s.set_checks_elsewhere(true);
+    s
 }
 
 #[cfg(test)]

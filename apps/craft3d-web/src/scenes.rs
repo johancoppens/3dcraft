@@ -15,10 +15,14 @@
 //! shows the first picture while the display scene is built; then that
 //! the answer is complete (`Session::scene_done`). A worker that is done
 //! is kept, with what it regenerated: the next state rebuilds only what
-//! the edit changed. A job replaced while the worker works on it (an
-//! edit, an undo, another tab) is cancelled by ending the worker, which
-//! the next job starts again from nothing: a late answer never lands on
-//! a newer state (the session takes parts only for the job that waits).
+//! the edit changed. The worker builds a piece at a time (a feature, a
+//! body) and looks at its messages between pieces, so a job replaced
+//! while it works on it (an edit, an undo, another tab) is left for the
+//! one posted next, or for none (`Transport::cancel`), without ending
+//! the worker: what it built stays, and a slider dragged over a heavy
+//! model rebuilds only what each value changes. A late answer never
+//! lands on a newer state (the session takes parts only for the job
+//! that waits).
 //!
 //! A worker that cannot be had at all (no worker file, a browser or a
 //! policy that refuses it) before it ever answered sends the work home:
@@ -129,9 +133,9 @@ impl<T: Transport> Scenes<T> {
                 // The module aborted while building: a new worker for the
                 // next state.
                 Reply::Answer { token, answer } => {
-                    if self.busy == Some(token) {
-                        self.busy = None;
-                    }
+                    // Whichever job it was on, the worker is gone: the job
+                    // it was given since goes to the next one.
+                    self.busy = None;
                     self.transport.stop();
                     let why = answer.err().unwrap_or_else(|| {
                         "the worker answered as the checking worker does".to_string()
@@ -169,9 +173,16 @@ impl<T: Transport> Scenes<T> {
             && wanted != Some(busy)
         {
             // Superseded: what it builds is for a state no longer shown.
-            self.transport.stop();
+            // The worker is not ended: it looks at its messages between
+            // features and bodies, leaves the old job for the one posted
+            // next (or for none), and keeps what it built, so the next
+            // state rebuilds only what the edit changed. Parts of the old
+            // job that were on their way are dropped by their number.
             self.busy = None;
             done.cancelled = Some(busy);
+            if wanted.is_none() {
+                self.transport.cancel();
+            }
         }
         if self.busy.is_none()
             && let Some(token) = wanted
@@ -233,6 +244,7 @@ mod tests {
     struct Fake {
         posted: Posted,
         stops: Rc<RefCell<usize>>,
+        cancels: Rc<RefCell<usize>>,
         refuse: Option<String>,
     }
 
@@ -248,6 +260,9 @@ mod tests {
         }
         fn stop(&mut self) {
             *self.stops.borrow_mut() += 1;
+        }
+        fn cancel(&mut self) {
+            *self.cancels.borrow_mut() += 1;
         }
     }
 
@@ -364,7 +379,9 @@ mod tests {
         // The old job is no longer wanted: cancelled, the new one posted.
         let frame = scenes.frame_at(&mut s, quality(), Vec::new(), 1.0);
         assert_eq!(frame.cancelled, Some(old));
-        assert_eq!(*fake.stops.borrow(), 1);
+        // The worker is kept, with what it built: the new job replaces
+        // the old in it.
+        assert_eq!(*fake.stops.borrow(), 0);
         let new = frame.posted.unwrap();
         assert_ne!(new, old);
         // The old answer arrives late: dropped, nothing shown of it.
@@ -497,7 +514,7 @@ mod tests {
         };
         let frame = scenes.frame_at(&mut s, finer, Vec::new(), 1.0);
         assert_eq!(frame.cancelled, Some(old));
-        assert_eq!(*fake.stops.borrow(), 1);
+        assert_eq!(*fake.stops.borrow(), 0);
         let new = frame.posted.unwrap();
         assert!(scenes.frame_at(&mut s, finer, late, 2.0).parts.is_empty());
         scenes.frame_at(&mut s, finer, fake.answers(), 3.0);
@@ -529,7 +546,7 @@ mod tests {
         s.execute("file.activate", &json!({"document": 0})).unwrap();
         let frame = scenes.frame_at(&mut s, quality(), Vec::new(), 1.0);
         assert_eq!(frame.cancelled, Some(second));
-        assert_eq!(*fake.stops.borrow(), 1);
+        assert_eq!(*fake.stops.borrow(), 0);
         let first = frame.posted.unwrap();
         assert_ne!(first, second);
         assert!(
@@ -547,5 +564,164 @@ mod tests {
         scenes.frame_at(&mut s, quality(), fake.answers(), 5.0);
         assert_eq!(shown(&mut s), wanted(17.0));
         assert!(!s.regenerated_here());
+    }
+
+    /// An undo back to a state whose scenes are there while the worker
+    /// builds another: nothing is posted, and the worker is told to leave
+    /// the job (not ended).
+    #[test]
+    fn a_job_no_longer_wanted_is_left_by_the_worker_it_keeps() {
+        let mut s = session();
+        let fake = Fake::default();
+        let mut scenes = Scenes::new(fake.clone(), &mut s);
+        scenes.frame_at(&mut s, quality(), Vec::new(), 0.0);
+        scenes.frame_at(&mut s, quality(), fake.answers(), 1.0);
+        set(&mut s, 12.0);
+        let busy = scenes
+            .frame_at(&mut s, quality(), Vec::new(), 2.0)
+            .posted
+            .unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        let frame = scenes.frame_at(&mut s, quality(), Vec::new(), 3.0);
+        assert_eq!(frame.cancelled, Some(busy));
+        assert_eq!(frame.posted, None);
+        assert_eq!((*fake.cancels.borrow(), *fake.stops.borrow()), (1, 0));
+        assert_eq!(shown(&mut s), wanted(11.0));
+    }
+
+    /// A worker as `worker.js` is: it builds the job posted last a piece
+    /// at a time (`stop` says yes at once: a feature or a body per
+    /// piece), and takes the messages that came between pieces.
+    #[derive(Clone, Default)]
+    struct Stepping {
+        inbox: Posted,
+        current: Rc<RefCell<Option<u64>>>,
+    }
+
+    impl Transport for Stepping {
+        fn post(&mut self, token: u64, document: &[u8], work: &str) -> Result<(), String> {
+            self.inbox
+                .borrow_mut()
+                .push((token, document.to_vec(), work.into()));
+            Ok(())
+        }
+        fn stop(&mut self) {
+            craft3d_engine::scene_forget();
+            self.inbox.borrow_mut().clear();
+            *self.current.borrow_mut() = None;
+        }
+        fn cancel(&mut self) {
+            *self.current.borrow_mut() = None;
+        }
+    }
+
+    impl Stepping {
+        /// One piece, after the messages: what it answered, and whether
+        /// it worked at all.
+        fn piece(&self) -> (Vec<Reply>, bool) {
+            for (token, document, work) in self.inbox.borrow_mut().drain(..) {
+                scene_begin(&document, &work);
+                *self.current.borrow_mut() = Some(token);
+            }
+            let Some(token) = *self.current.borrow() else {
+                return (Vec::new(), false);
+            };
+            let reply = match craft3d_engine::scene_step(|| true) {
+                craft3d_engine::SceneStep::Part(bytes) => vec![Reply::Part { token, bytes }],
+                craft3d_engine::SceneStep::Working => Vec::new(),
+                craft3d_engine::SceneStep::Done => {
+                    *self.current.borrow_mut() = None;
+                    vec![Reply::Done { token }]
+                }
+            };
+            (reply, true)
+        }
+    }
+
+    /// `n` sketches, then a block `w` wide: `w` changes only the last
+    /// feature, and there is one body to mesh.
+    fn row(s: &mut Session, n: usize) {
+        s.execute("file.new", &json!({"units": "mm"})).unwrap();
+        s.execute("variable.set", &json!({"name": "w", "expr": "4 mm"}))
+            .unwrap();
+        for i in 0..n {
+            s.execute("sketch.create", &json!({"name": format!("S{i}")}))
+                .unwrap();
+        }
+        s.execute("feature.block", &json!({"size": ["w", 2, 2], "name": "B"}))
+            .unwrap();
+    }
+
+    /// Pieces until the state shown has its first picture, with the page
+    /// taking what came back after each.
+    fn pieces_to_first_picture(
+        s: &mut Session,
+        scenes: &mut Scenes<Stepping>,
+        worker: &Stepping,
+    ) -> usize {
+        let mut pieces = 0;
+        for at in 0..10_000 {
+            if s.scene_ready(SceneQuality::Preview) {
+                return pieces;
+            }
+            let (replies, worked) = worker.piece();
+            pieces += usize::from(worked);
+            scenes.frame_at(s, quality(), replies, f64::from(at));
+        }
+        panic!("no first picture");
+    }
+
+    /// The worker keeps its caches when a job is replaced: a value set
+    /// while it builds the one before rebuilds only what the value
+    /// changes, where a worker started again (as one that was ended)
+    /// regenerates every feature.
+    #[test]
+    fn a_superseded_job_leaves_its_caches_to_the_next() {
+        let n = 24;
+        let mut s = Session::new(Workspace::memory());
+        s.set_stepwise(true);
+        s.set_checks_elsewhere(true);
+        row(&mut s, n);
+        let worker = Stepping::default();
+        let mut scenes = Scenes::new(worker.clone(), &mut s);
+        let from_nothing = pieces_to_first_picture(&mut s, &mut scenes, &worker);
+        assert!(from_nothing >= n, "{from_nothing} pieces for {n} features");
+        // Values one after another, each set after a single piece of the
+        // one before: every job is replaced while it is built.
+        for (i, w) in [5.0, 6.0, 7.0, 8.0].into_iter().enumerate() {
+            s.execute(
+                "variable.set",
+                &json!({"name": "w", "expr": format!("{w} mm")}),
+            )
+            .unwrap();
+            scenes.frame_at(&mut s, quality(), Vec::new(), 100.0 + i as f64);
+            let (replies, _) = worker.piece();
+            scenes.frame_at(&mut s, quality(), replies, 100.5 + i as f64);
+        }
+        let kept = pieces_to_first_picture(&mut s, &mut scenes, &worker);
+        assert!(
+            kept * 4 < from_nothing,
+            "{kept} pieces after a replaced job, {from_nothing} from nothing"
+        );
+        // The scenes are those of a session that builds them itself.
+        while scenes.busy().is_some() {
+            let (replies, _) = worker.piece();
+            scenes.frame_at(&mut s, quality(), replies, 1e6);
+        }
+        let mut here = Session::new(Workspace::memory());
+        row(&mut here, n);
+        here.execute("variable.set", &json!({"name": "w", "expr": "8 mm"}))
+            .unwrap();
+        assert_eq!(
+            shown(&mut s),
+            scene_bytes(&here.scene_with(quality()).unwrap().unwrap())
+        );
+        // A worker started again rebuilds everything.
+        let mut ended = worker.clone();
+        ended.stop();
+        s.execute("variable.set", &json!({"name": "w", "expr": "9 mm"}))
+            .unwrap();
+        let again = pieces_to_first_picture(&mut s, &mut scenes, &worker);
+        assert!(again >= n, "{again} pieces from nothing");
     }
 }

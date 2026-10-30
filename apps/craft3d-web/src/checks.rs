@@ -28,6 +28,12 @@ pub trait Transport {
     fn post(&mut self, token: u64, document: &[u8], work: &str) -> Result<(), String>;
     /// Ends the worker and whatever it was doing.
     fn stop(&mut self);
+    /// Tells the worker to leave the job it is on, keeping what it built
+    /// (a worker that looks at its messages between pieces of work: the
+    /// regenerating one). One that cannot is ended.
+    fn cancel(&mut self) {
+        self.stop();
+    }
 }
 
 /// What came back from the worker.

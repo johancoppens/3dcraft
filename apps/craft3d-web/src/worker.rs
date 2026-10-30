@@ -2,7 +2,10 @@
 //! `worker.js` (`packaging/web`, named in the page's
 //! `<meta name="craft3d-worker">`), which loads this same module and
 //! answers each job: a job of checks with [`craft3d_check`], a job of
-//! scenes with [`craft3d_scene_begin`] and [`craft3d_scene_next`].
+//! scenes with [`craft3d_scene_begin`] and [`craft3d_scene_step`], a
+//! piece at a time, looking at its messages between pieces: a newer job
+//! of scenes replaces the one it builds, `{kind: "cancel"}` leaves it,
+//! and what it regenerated stays for the next.
 //! [`WebWorker`] is the page's [`Transport`] for
 //! [`crate::checks::Checks`] and [`crate::scenes::Scenes`], one worker
 //! each.
@@ -41,11 +44,19 @@ pub fn craft3d_scene_begin(document: &[u8], work: &str) {
     craft3d_engine::scene_begin(document, work);
 }
 
-/// The next part of that answer (`craft3d_engine::scene_next`), built
-/// now; `undefined` once it is complete.
+/// A piece of that answer (`craft3d_engine::scene_step`): the work goes
+/// on for about `budget_ms` milliseconds (at least a feature or a body),
+/// so that the worker looks at its messages between pieces. A part when
+/// one is there (never empty), an empty array when only work was done,
+/// `undefined` once the answer is complete.
 #[wasm_bindgen]
-pub fn craft3d_scene_next() -> Option<Vec<u8>> {
-    craft3d_engine::scene_next()
+pub fn craft3d_scene_step(budget_ms: f64) -> Option<Vec<u8>> {
+    let until = js_sys::Date::now() + budget_ms;
+    match craft3d_engine::scene_step(move || js_sys::Date::now() >= until) {
+        craft3d_engine::SceneStep::Part(part) => Some(part),
+        craft3d_engine::SceneStep::Working => Some(Vec::new()),
+        craft3d_engine::SceneStep::Done => None,
+    }
 }
 
 /// The worker's script, as the page names it; `None` on a page that
@@ -159,6 +170,22 @@ impl Transport for WebWorker {
         self.start()?
             .post_message(&message)
             .map_err(|e| format!("the job cannot be posted to {name}: {}", text(&e)))
+    }
+
+    fn cancel(&mut self) {
+        let Some(running) = &self.running else {
+            return;
+        };
+        let message = js_sys::Object::new();
+        let posted = js_sys::Reflect::set(
+            &message,
+            &JsValue::from_str("kind"),
+            &JsValue::from_str("cancel"),
+        )
+        .and_then(|_| running.worker.post_message(&message));
+        if posted.is_err() {
+            self.stop();
+        }
     }
 
     fn stop(&mut self) {
