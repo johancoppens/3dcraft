@@ -26,8 +26,8 @@
 //! all run clockwise are the sphere less some caps, which is a region.
 //!
 //! **How.** Each edge is followed in a few steps (a line in one on a
-//! plane, else in four; a circle or an ellipse in steps of at most π/16; a
-//! spline in sixteen per edge), each point projected onto the surface
+//! plane, else in two; a circle or an ellipse in steps of at most π/8; a
+//! spline in eight per edge), each point projected onto the surface
 //! (from the one before on a freeform surface, checked against the point,
 //! else from nothing) and moved by whole periods to the one before it.
 //! The middle of every step is projected too: how far it is from the
@@ -47,11 +47,11 @@ use std::f64::consts::PI;
 /// Most points one face is followed at; a larger face is passed.
 pub const MOST_PER_FACE: usize = 1 << 18;
 /// Steps of a spline edge.
-const SPLINE_STEPS: usize = 16;
+const SPLINE_STEPS: usize = 8;
 /// Steps of a line on a curved surface.
-const LINE_STEPS: usize = 4;
+const LINE_STEPS: usize = 2;
 /// Largest angle of a circle's or an ellipse's step.
-const CONIC_STEP: f64 = PI / 16.0;
+const CONIC_STEP: f64 = PI / 8.0;
 /// Most pairs of steps looked at for a crossing; a face that needs more
 /// is not held to it.
 const MOST_PAIRS: usize = 1 << 24;
@@ -409,17 +409,25 @@ struct Chart<'a> {
 
 impl Chart<'_> {
     fn at(&mut self, p: Vec3) -> Option<[f64; 2]> {
-        let found = match (self.freeform, self.last) {
+        // On a freeform surface from the point before (a few steps) with
+        // its derivatives, else from nothing; the derivatives give the
+        // point the parameters land on and the chart's scale.
+        let walked = match (self.freeform, self.last) {
             (true, Some([u, v])) => self
                 .surface
-                .project_from(p, (u, v))
+                .project_from_with_derivatives(p, (u, v))
                 .ok()
-                .filter(|(u, v)| self.surface.eval(*u, *v).distance(p) <= self.near)
-                .or_else(|| self.surface.project(p).ok()),
-            _ => self.surface.project(p).ok(),
+                .filter(|(_, (at, _, _))| at.distance(p) <= self.near),
+            _ => None,
         };
-        let (u, v) = found?;
-        let off = self.surface.eval(u, v).distance(p);
+        let ((u, v), (at, du, dv)) = match walked {
+            Some(found) => found,
+            None => {
+                let (u, v) = self.surface.project(p).ok()?;
+                ((u, v), self.surface.derivatives(u, v))
+            }
+        };
+        let off = at.distance(p);
         if off.is_nan() || off > self.near {
             return None;
         }
@@ -431,7 +439,6 @@ impl Chart<'_> {
             }
             _ => {}
         }
-        let (_, du, dv) = self.surface.derivatives(u, v);
         let shortest = du.length().min(dv.length());
         if shortest.is_finite() {
             self.scale = self.scale.min(shortest);
