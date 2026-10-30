@@ -168,7 +168,7 @@ impl Session {
                     now.id != was.id || now.history.revision() != was.history.revision()
                 });
         self.restore(snapshot);
-        if edited {
+        if edited || !answered_elsewhere(id) {
             self.commands.busy = true;
             return Trial::RunHere;
         }
@@ -337,6 +337,27 @@ impl Session {
         }
         Ok((reply.get("ok").cloned().unwrap_or(Value::Null), files))
     }
+}
+
+/// The commands that are handed over when they need the bodies: those
+/// that only read the document, whose effects are a result, the
+/// selection and files written, which is all an answer carries. A
+/// command that edits the document may need the bodies too (it follows
+/// a face), and with an empty regeneration its trial can fail before it
+/// edits, so the trial alone cannot tell it from one that reads: it runs
+/// here, as it always did (an edit is the document's, applied in the
+/// order it was asked for, never from an answer that comes later).
+fn answered_elsewhere(id: &str) -> bool {
+    id.starts_with("measure.")
+        || id.starts_with("select.")
+        || matches!(
+            id,
+            "file.export"
+                | "document.inspect"
+                | "document.edges"
+                | "document.measure"
+                | "document.interference"
+        )
 }
 
 /// The result of a command run on the other side, as
