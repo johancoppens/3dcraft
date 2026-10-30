@@ -1406,11 +1406,21 @@ fn coefficients(a: &[H], y: H, centre: Vec3, length: f64, cutoff: f64) -> (Vec<f
     let norm = |h: &[f64]| h.iter().map(|x| x * x).sum::<f64>().sqrt();
     let k = a.len();
     let mut cols: Vec<[f64; 4]> = a.iter().map(to).collect();
+    // A column no larger than the rounding of the coordinates it was
+    // computed from (of the size of the centre's, `|c| w`) is noise, not
+    // a direction: scaled to unit length it would take a coefficient that
+    // fits the rounding of `y` (found: a sphere's field at the corner of a
+    // dome a million units out, 4.7e-10 against 1.6e-3, took −7.6).
+    let weight = a
+        .iter()
+        .chain(std::iter::once(&y))
+        .fold(0.0_f64, |m, h| m.max(h[3].abs()));
+    let noise = 64.0 * f64::EPSILON * (centre.length() * weight + length);
     let scales: Vec<f64> = cols
         .iter()
         .map(|c| {
             let n = norm(c);
-            if n.is_finite() && n > 0.0 {
+            if n.is_finite() && n > noise {
                 1.0 / n
             } else {
                 0.0
