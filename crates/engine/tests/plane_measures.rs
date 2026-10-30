@@ -441,9 +441,17 @@ fn a_welded_box_twists_near_bredt() {
     let j = section["torsion"].as_f64().unwrap();
     assert!((j - bredt).abs() <= 0.03 * bredt, "J {j}, Bredt {bredt}");
     assert_eq!(section["torsionSolve"]["converged"], true, "{section}");
+    // At the centroid by symmetry, within the solve's tolerance of the
+    // section's size (1e-4 of √A ≈ 4 µm).
     let centre = &section["shearCentre"];
-    close(&centre[1], 50.0, "shear centre y");
-    close(&centre[2], 75.0, "shear centre z");
+    assert!(
+        (centre[1].as_f64().unwrap() - 50.0).abs() < 4e-3,
+        "{centre}"
+    );
+    assert!(
+        (centre[2].as_f64().unwrap() - 75.0).abs() < 4e-3,
+        "{centre}"
+    );
     assert!(section["warping"].as_f64().unwrap() > 0.0);
     let plain = run(
         &mut s,
@@ -497,9 +505,19 @@ fn what_cannot_be_twisted_is_refused() {
     let capped = run(
         &mut s,
         "measure.section",
-        json!({"offset": 50, "maxElements": 400, "torsionTolerance": 1e-9}),
+        json!({"offset": 50, "maxElements": 3000, "torsionTolerance": 1e-9}),
     );
     assert_eq!(capped["torsionSolve"]["converged"], false, "{capped}");
+    // A cap below the first mesh: refused, with why.
+    let message = refused(
+        &mut s,
+        "measure.section",
+        json!({"offset": 50, "maxElements": 10}),
+    );
+    assert!(
+        message.contains("no solution within 10 elements"),
+        "{message}"
+    );
     let twisted = run(
         &mut s,
         "assert.add",

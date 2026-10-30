@@ -210,6 +210,12 @@ fn a_thin_closed_box_lands_near_bredt() {
         .unwrap()
         .body;
     let across = CutPlane::new(Vec3::X, Vec3::Y).unwrap();
+    let started = std::time::Instant::now();
+    crate::below::below(&[&boxed], &across, 250.0, &tol(k)).unwrap();
+    eprintln!(
+        "the cut alone: {:.0} ms",
+        started.elapsed().as_secs_f64() * 1e3
+    );
     let t = twist(&boxed, &across, 250.0, k);
     assert!(t.converged);
     let (w, h): (f64, f64) = (97.0, 146.0);

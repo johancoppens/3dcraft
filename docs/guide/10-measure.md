@@ -66,7 +66,7 @@ away from.
 | Command | Answers |
 |---|---|
 | `measure.below {"of", "plane", "offset"}` | The `volume` below, its `centroid`, the `surface` below, and the `section` |
-| `measure.section {"of", "plane", "offset"}` | The section: `area`, `centroid`, `ix` and `iy` (second moments about its centroid along `xAxis` and `yAxis`), `ixy`, the principal `major` and `minor` with `majorAxis` |
+| `measure.section {"of", "plane", "offset"}` | The section: `area`, `centroid`, `ix` and `iy` (second moments about its centroid along `xAxis` and `yAxis`), `ixy`, the principal `major` and `minor` with `majorAxis`; its torsion: `torsion` (J), `shearCentre`, `shearOffset`, `warping` ([below](#below-a-plane-sections-and-levels)) |
 | `measure.levelFor {"of", "plane", "volume"}` | The `offset` at which the volume below is `volume`, and what `measure.below` gives there |
 | `measure.floating {"of", "plane", "volume", "centerOfGravity"}` | The level and tilt a body floats at: the equilibria, each stable, unstable or neutral ([floating free](#below-a-plane-sections-and-levels)) |
 
@@ -93,6 +93,32 @@ the third, the cross-section square to x: `area` 1.3e6, with `xAxis` y and `yAxi
   plane; a Jig computes what it needs from the centroid and the section's moments (the worked example
   is in [`design/sections-and-levels.md`](../design/sections-and-levels.md)).
 
+**A section's torsion and shear centre.** `measure.section` also twists the section: `torsion` is its St
+Venant torsion constant J (the length unit to the fourth power), `shearCentre` the point a sideways load
+must pass through for the beam not to twist (a point in space; `shearOffset` is it from the centroid
+along `xAxis` and `yAxis`), and `warping` the warping constant Cw (the unit to the sixth power). They
+hold for any section: closed tubes, open channels, sections with cutouts or holes, several pieces.
+3DCraft solves the warping of the section by finite elements and refines until J and the shear centre
+change by less than `torsionTolerance` (default 1e-4, relative); `torsionSolve` says whether it got there
+(`converged`), how much J changed in the last round, and how many elements it took (at most
+`maxElements`, default 60000). A solve that stops at the cap says `converged: false`; it never claims
+more. `torsion: false` leaves the torsion out (it costs from a few tens of milliseconds to a few tenths
+of a second).
+
+```json
+[
+ ["feature.block", {"name": "Outer", "size": ["500 mm", "100 mm", "150 mm"]}],
+ ["feature.block", {"name": "Inner", "size": ["502 mm", "94 mm", "142 mm"], "position": ["-1 mm", "3 mm", "4 mm"]}],
+ ["feature.boolean", {"name": "Box", "op": "subtract", "target": "Outer", "tool": "Inner"}],
+ ["measure.section", {"of": "Box", "plane": "yz", "offset": "250 mm"}]
+]
+```
+
+The welded box beam, walls of 3 and 4 mm: `torsion` about 5.58e6 mm⁴, 1.4% above Bredt's thin-walled
+formula (which is an approximation; the solve is not), and `shearCentre` at the centroid, as the
+symmetry says. Cut a slot in one wall and the section through it is open: J drops by three orders of
+magnitude and the shear centre moves away from the slot.
+
 **Floating free.** `measure.floating` finds the plane a floating body settles at when its centre of
 gravity is known too: the level *and* the tilt at which the volume below is `volume` (or `mass` /
 `density`, kg and kg/m³) and the centroid below lies straight under the centre of gravity. `plane` is the
@@ -117,7 +143,9 @@ unstable, the ones the body falls to from it; other equilibria are not searched.
 first one turns freely in some direction (a sphere with its centre of gravity at its centre).
 
 As assertions: `volumeBelow`, `centroidBelow` (with `axis`), `sectionArea`, `sectionCentroid` (with
-`axis`), `sectionInertia` (with `about`: `x`, `y`, `xy`, `major` or `minor`), `sectionExtent` (with
+`axis`), `sectionInertia` (with `about`: `x`, `y`, `xy`, `major` or `minor`), `sectionTorsion` (J),
+`sectionShearCentre` (with `axis`: a coordinate of the shear centre; a solve that stops at its cap is
+`notProven`), `sectionExtent` (with
 `axis`: `x`, `y`, `z` or `[x, y, z]`; how far the section reaches along it, the length of a hull's
 waterline at its level) and `levelFor` (with `volume`), each with the same `of`, `plane`, `offset`
 (not for `levelFor`) and `xAxis` (not for `sectionExtent`):
@@ -172,7 +200,7 @@ solves the equilibrium itself, and again only when what it depends on changes.
   (where the box begins and ends along `axis`, so each side is bounded on its own), `centerOfMass`
   (its coordinate along `axis`; every body needs a material), `distance`, `clearance`, `thickness`,
   `through`, `overlap` (whether bodies overlap), `symmetric`, and `volumeBelow`, `centroidBelow`,
-  `sectionArea`, `sectionCentroid`, `sectionInertia`, `sectionExtent`, `levelFor`, `floatingOffset`, `floatingHeel`,
+  `sectionArea`, `sectionCentroid`, `sectionInertia`, `sectionTorsion`, `sectionShearCentre`, `sectionExtent`, `levelFor`, `floatingOffset`, `floatingHeel`,
   `floatingTrim`, `floatingGM`, `floatingGML`, `floatingStable` ([above](#below-a-plane-sections-and-levels)), the
   sheet-metal measures and `bendable` (the press-brake check, [chapter 9](09-features.md#sheet-metal)),
   `value`, a formula of the variables and outputs (`expr`, [below](#outputs-measures-in-formulas)), and
