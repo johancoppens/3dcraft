@@ -1317,6 +1317,10 @@ impl WebHost {
                     Some(Download::export(name.clone(), bytes))
                 })
                 .collect();
+            // The file asked for first, then what goes with it (an OBJ's
+            // library), as an export on the page hands them on.
+            let asked = answer.params.get("path").and_then(Value::as_str);
+            files.sort_by_key(|file| Some(file.name.as_str()) != asked);
             let Some((_, request)) = export else {
                 if answer.command == "select.set" {
                     if let Err(why) = &answer.result {
