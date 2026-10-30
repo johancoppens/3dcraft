@@ -587,6 +587,10 @@ impl Finish {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FaceColors {
     colors: Vec<Option<([u8; 3], Finish)>>,
+    /// Layer 3: the distinct [`studio::layers::Optics`] of the faces, and
+    /// per face id its row there plus one (0 for none).
+    optics: Vec<studio::layers::Optics>,
+    slots: Vec<u16>,
 }
 
 impl FaceColors {
@@ -649,6 +653,84 @@ impl FaceColors {
             .iter()
             .enumerate()
             .filter_map(|(face, look)| Some((u32::try_from(face).ok()?, (*look)?)))
+    }
+
+    /// Gives `face` the layers of a material beyond its colour and finish
+    /// (layer 3, the studio look; sanitized), or takes them away (`None`,
+    /// or layers that change nothing). False, and nothing changes, for a
+    /// face id at or beyond [`MAX_FACE_COLORS`] or when the picture would
+    /// hold more than [`studio::layers::MAX_OPTICS`] distinct ones.
+    pub fn set_optics(&mut self, face: u32, optics: Option<studio::layers::Optics>) -> bool {
+        let index = face as usize;
+        if index >= MAX_FACE_COLORS {
+            return false;
+        }
+        let optics = optics
+            .map(studio::layers::Optics::sanitized)
+            .filter(|o| !o.is_plain());
+        let slot = match optics {
+            None => 0,
+            Some(optics) => match self.optics.iter().position(|o| *o == optics) {
+                Some(at) => at + 1,
+                None => {
+                    if self.optics.len() >= studio::layers::MAX_OPTICS {
+                        return false;
+                    }
+                    self.optics.push(optics);
+                    self.optics.len()
+                }
+            },
+        };
+        let Ok(slot) = u16::try_from(slot) else {
+            return false;
+        };
+        if index >= self.slots.len() {
+            if slot == 0 {
+                return true;
+            }
+            self.slots.resize(index + 1, 0);
+        }
+        if let Some(s) = self.slots.get_mut(index) {
+            *s = slot;
+        }
+        true
+    }
+
+    /// The face's layers beyond its colour and finish, if it has any.
+    pub fn optics(&self, face: u32) -> Option<&studio::layers::Optics> {
+        let slot = self.optics_slot(face);
+        self.optics.get(usize::from(slot).checked_sub(1)?)
+    }
+
+    /// The face's row in [`Self::optics_table`] plus one, 0 for none.
+    pub fn optics_slot(&self, face: u32) -> u16 {
+        self.slots.get(face as usize).copied().unwrap_or(0)
+    }
+
+    /// The distinct layers of the faces, by row.
+    pub fn optics_table(&self) -> &[studio::layers::Optics] {
+        &self.optics
+    }
+
+    /// True when a face that has layers lets light through.
+    pub fn has_transmission(&self) -> bool {
+        self.optics
+            .iter()
+            .any(studio::layers::Optics::is_transmissive)
+    }
+
+    /// True when `face` lets light through.
+    pub fn is_transmissive(&self, face: u32) -> bool {
+        self.optics(face)
+            .is_some_and(studio::layers::Optics::is_transmissive)
+    }
+
+    /// The faces with layers of their own, by ascending id.
+    pub fn optics_faces(&self) -> impl Iterator<Item = (u32, &studio::layers::Optics)> + '_ {
+        self.slots.iter().enumerate().filter_map(|(face, &slot)| {
+            let row = usize::from(slot).checked_sub(1)?;
+            Some((u32::try_from(face).ok()?, self.optics.get(row)?))
+        })
     }
 
     /// The faces with a colour of their own, by ascending id.

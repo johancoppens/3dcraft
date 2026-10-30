@@ -39,7 +39,9 @@ pub mod brdf;
 pub mod bundled;
 pub mod env;
 pub mod hdr;
+pub mod layers;
 pub mod polish;
+mod refract;
 pub mod shadow;
 pub mod tonemap;
 
@@ -257,6 +259,12 @@ impl LightNumbers {
 impl<'a> FrameLight<'a> {
     /// The light of a frame of `mesh`.
     pub fn new(mesh: &Mesh, env: &'a Prepared, look: &Look) -> FrameLight<'a> {
+        Self::casting(mesh, mesh, env, look)
+    }
+
+    /// [`Self::new`] with the key's shadow cast by `casting` (the mesh
+    /// without the faces that let light through) instead.
+    pub fn casting(mesh: &Mesh, casting: &Mesh, env: &'a Prepared, look: &Look) -> FrameLight<'a> {
         let numbers = LightNumbers::new(&section_bounds(mesh), env, look);
         FrameLight {
             env,
@@ -264,7 +272,7 @@ impl<'a> FrameLight<'a> {
             rotation: look.rotation_radians(),
             exposure: look.exposure_scale(),
             key: numbers.key,
-            shadow: numbers.view.map(|view| ShadowMap::draw(mesh, view)),
+            shadow: numbers.view.map(|view| ShadowMap::draw(casting, view)),
             ground: numbers.ground,
             rest_up: numbers.rest_up,
             key_luminance: numbers.key_luminance,
@@ -313,37 +321,106 @@ impl<'a> FrameLight<'a> {
         ao: f64,
         contact: f64,
     ) -> Shaded {
+        self.shade_layered(base, finish, None, p, n, v, ao, contact)
+    }
+
+    /// The irradiance without the key on a surface of normal `n` through
+    /// the wrapped kernel of `w` ([`layers::wrap_bands`]).
+    pub fn irradiance_wrapped(&self, n: Vec3, w: f64) -> [f64; 3] {
+        let y = env::sh_basis(rotate_z(n, -self.rotation));
+        let bands = layers::wrap_bands(w);
+        let mut out = [0.0; 3];
+        for (k, (coef, y)) in self.env.sh.iter().zip(y).enumerate() {
+            let band = match k {
+                0 => bands[0],
+                1..=3 => bands[1],
+                _ => bands[2],
+            };
+            for (o, c) in out.iter_mut().zip(coef) {
+                *o += f64::from(*c) * y * band;
+            }
+        }
+        out.map(|v| v.max(0.0))
+    }
+
+    /// [`Self::shade_parts`] with the layers of layer 3 ([`layers`]); the
+    /// light that passes through is not in it but its factor is
+    /// ([`Shaded::transmit`]), as the caller finds what is behind. With
+    /// `None` (or layers that change nothing) it is layer 2's shading bit
+    /// for bit: every layer enters as a factor of 1 or a term of 0.
+    #[allow(clippy::too_many_arguments)]
+    pub fn shade_layered(
+        &self,
+        base: [u8; 3],
+        finish: Finish,
+        optics: Option<&layers::Optics>,
+        p: Vec3,
+        n: Vec3,
+        v: Vec3,
+        ao: f64,
+        contact: f64,
+    ) -> Shaded {
+        let plain = layers::Optics::default();
+        let o = optics.unwrap_or(&plain);
+        let sss = o.subsurface_color.map(|c| c.map(tonemap::byte_to_linear));
         let base = base.map(tonemap::byte_to_linear);
         let m = f64::from(finish.metallic) / 255.0;
         let r = finish
             .roughness
             .map_or(DEFAULT_ROUGHNESS, |r| f64::from(r) / 255.0);
         let nv = n.dot(v).clamp(1e-4, 1.0);
-        let reflected = n * (2.0 * n.dot(v)) - v;
+        // Anisotropy: its frame, where the field gives a tangent.
+        let frame = if o.anisotropy != 0.0 {
+            o.tangent.at(p, n).map(|t| (t, n.cross(t)))
+        } else {
+            None
+        };
+        let aniso = f64::from(o.anisotropy);
+        let reflected = match frame {
+            Some((t, b)) => layers::bent_reflection(n, v, t, b, aniso, r),
+            None => n * (2.0 * n.dot(v)) - v,
+        };
         let (a, b) = self.env.split_sum(nv, r);
         let prefiltered = self.radiance(reflected, r * self.top_level());
         let irradiance = self.irradiance(n);
+        let wrap = f64::from(o.subsurface);
+        let wrapped = if wrap > 0.0 {
+            self.irradiance_wrapped(n, wrap)
+        } else {
+            irradiance
+        };
         // The key light's share and its shadow.
-        let (key_light, key_dot, key_vis, key_nl) = match self.key {
+        let (key_light, key_dot, key_vis, key_nl, key_wrap) = match self.key {
             Some((l, e, radius)) => {
-                let nl = n.dot(l).max(0.0);
+                let cos = n.dot(l);
+                let nl = cos.max(0.0);
+                let lit = nl > 0.0 || (wrap > 0.0 && cos + wrap > 0.0);
                 let vis = match &self.shadow {
-                    Some(map) if nl > 0.0 => map.visibility(p, n, radius),
+                    Some(map) if lit => map.visibility(p, n, radius),
                     _ => 1.0,
                 } * contact;
-                (e, nl * vis, vis, nl)
+                (
+                    e,
+                    nl * vis,
+                    vis,
+                    nl,
+                    layers::wrapped_cosine(cos, wrap) * vis,
+                )
             }
-            None => ([0.0; 3], 0.0, 1.0, 0.0),
+            None => ([0.0; 3], 0.0, 1.0, 0.0, 0.0),
         };
         // Lagarde and de Rousiers' specular occlusion, with their
         // roughness α = r² (as Filament).
         let occlusion = (nv + ao).powf((-16.0 * r * r - 1.0).exp2()) - 1.0 + ao;
         let specular_occlusion = occlusion.clamp(0.0, 1.0);
         let sum_ab = a + b;
+        let transmission = f64::from(o.transmission);
         let mut out = [0.0; 3];
         let mut weight = [0.0; 3];
         let mut key_specular = [0.0; 3];
+        let mut key_aniso = [0.0; 3];
         let mut env_specular = [0.0; 3];
+        let mut transmit = [0.0; 3];
         for k in 0..3 {
             let c = base.get(k).copied().unwrap_or(0.0);
             let f0 = DIELECTRIC_F0 * (1.0 - m) + c * m;
@@ -358,7 +435,20 @@ impl<'a> FrameLight<'a> {
                 prefiltered.get(k).copied().unwrap_or(0.0) * fs * multiple * specular_occlusion;
             let light = irradiance.get(k).copied().unwrap_or(0.0) * ao
                 + key_light.get(k).copied().unwrap_or(0.0) * key_dot;
-            let diffuse = c * (1.0 - m) * (1.0 - fs) / PI * light;
+            let mut diffuse = c * (1.0 - m) * (1.0 - fs) / PI * light;
+            if wrap > 0.0 {
+                let tint = sss.and_then(|s| s.get(k).copied()).unwrap_or(c);
+                let light_w = wrapped.get(k).copied().unwrap_or(0.0) * ao
+                    + key_light.get(k).copied().unwrap_or(0.0) * key_wrap;
+                diffuse =
+                    diffuse * (1.0 - wrap) + tint * (1.0 - m) * (1.0 - fs) / PI * light_w * wrap;
+            }
+            if transmission > 0.0 {
+                diffuse *= 1.0 - transmission;
+                if let Some(t) = transmit.get_mut(k) {
+                    *t = transmission * (1.0 - m) * (1.0 - fs) * c;
+                }
+            }
             if let Some(o) = out.get_mut(k) {
                 *o = diffuse;
             }
@@ -370,32 +460,75 @@ impl<'a> FrameLight<'a> {
             }
             if let (Some(o), Some(&e), Some((l, _, radius))) =
                 (key_specular.get_mut(k), key_light.get(k), self.key)
-                && self.look.specular_shadow
-                && key_vis < 1.0
+                && ((self.look.specular_shadow && key_vis < 1.0) || frame.is_some())
                 && key_nl > 0.0
             {
                 *o = e * key_nl * polish_key_specular(n, v, l, r, radius, f0) * multiple;
             }
+            if let (Some(o), Some(&e), Some((l, _, radius)), Some((t, bt))) =
+                (key_aniso.get_mut(k), key_light.get(k), self.key, frame)
+                && key_nl > 0.0
+            {
+                *o = e
+                    * key_nl
+                    * key_vis
+                    * aniso_key_specular(n, v, l, (t, bt), (r, aniso), radius, f0)
+                    * multiple;
+            }
         }
-        // The specular shadow: the key is part of the prefiltered light;
-        // where it is hidden its share of that light is taken out.
+        // The key is part of the prefiltered light: where it is hidden its
+        // share of that light is taken out (the specular shadow); on an
+        // anisotropic face it is taken out everywhere and its anisotropic
+        // lobe added instead.
         let total = env::luminance(env_specular);
         let share = if total > 0.0 {
             (env::luminance(key_specular) / total).clamp(0.0, 1.0)
         } else {
             0.0
         };
-        let keep = 1.0 - (1.0 - key_vis) * share;
+        let keep = if frame.is_some() {
+            1.0 - share
+        } else {
+            1.0 - (1.0 - key_vis) * share
+        };
         for k in 0..3 {
             if let (Some(o), Some(w)) = (out.get_mut(k), weight.get_mut(k)) {
                 *w *= keep;
                 *o += env_specular.get(k).copied().unwrap_or(0.0) * keep;
+                if frame.is_some() {
+                    // The bent lobe is no mirror: no reflection replaces it.
+                    *w = 0.0;
+                    *o += key_aniso.get(k).copied().unwrap_or(0.0);
+                }
             }
+        }
+        let mut roughness = r;
+        let coat = f64::from(o.clearcoat);
+        if coat > 0.0 {
+            let rc = f64::from(o.clearcoat_roughness);
+            let fc = layers::coat_albedo(coat, self.env.split_sum(nv, rc));
+            let occlusion = (nv + ao).powf((-16.0 * rc * rc - 1.0).exp2()) - 1.0 + ao;
+            let so = occlusion.clamp(0.0, 1.0);
+            let mirror = n * (2.0 * n.dot(v)) - v;
+            let coat_light = self.radiance(mirror, rc * self.top_level());
+            for k in 0..3 {
+                if let (Some(o), Some(w), Some(t)) =
+                    (out.get_mut(k), weight.get_mut(k), transmit.get_mut(k))
+                {
+                    *o = *o * (1.0 - fc) + coat_light.get(k).copied().unwrap_or(0.0) * fc * so;
+                    *t *= 1.0 - fc;
+                    // The reflections replace the coat's light, the
+                    // sharpest layer.
+                    *w = fc * so;
+                }
+            }
+            roughness = rc;
         }
         Shaded {
             light: out,
             weight,
-            roughness: r,
+            roughness,
+            transmit,
         }
     }
 
@@ -479,6 +612,9 @@ pub struct Shaded {
     pub light: [f64; 3],
     pub weight: [f64; 3],
     pub roughness: f64,
+    /// What the light behind a transmissive face is multiplied by (before
+    /// its absorption), per channel; 0 for an opaque one.
+    pub transmit: [f64; 3],
 }
 
 /// The key's specular light per unit irradiance and `n·l` at `F0`: GGX
@@ -498,6 +634,28 @@ fn polish_key_specular(n: Vec3, v: Vec3, l: Vec3, r: f64, radius: f64, f0: f64) 
     );
     let f = f0 + (1.0 - f0) * (1.0 - vh).powi(5);
     polish::ggx_dv(alpha, nh, nv, nl) * f
+}
+
+/// [`polish_key_specular`] with the anisotropic lobe ([`layers`]): the
+/// lobe widened the same way, then stretched by the anisotropy `a` along
+/// the tangent `t` (`(r, a)` the roughness and the anisotropy).
+fn aniso_key_specular(
+    n: Vec3,
+    v: Vec3,
+    l: Vec3,
+    (t, b): (Vec3, Vec3),
+    (r, a): (f64, f64),
+    radius: f64,
+    f0: f64,
+) -> f64 {
+    let Some(hv) = (v + l).normalized() else {
+        return 0.0;
+    };
+    let alpha = (r * r + 0.5 * radius).clamp(0.002, 1.0);
+    let (at, ab) = layers::aniso_alphas(alpha, a);
+    let vh = v.dot(hv).clamp(0.0, 1.0);
+    let f = f0 + (1.0 - f0) * (1.0 - vh).powi(5);
+    layers::aniso_ggx_dv(at, ab, t, b, n, hv, v, l) * f
 }
 
 /// A sample's surface: its view distance (infinity for none), normal and
@@ -655,101 +813,114 @@ fn studio_frame(
     let mut view = View::new(camera, w, h)?;
     view.jitter = polish::jitter(index);
     let surfaces = rasterise(mesh, &view, w, h)?;
-    let light = FrameLight::new(mesh, env, look);
+    // Layer 3: the picture without the faces that let light through (what
+    // they see) and those faces' nearest back faces, when there are any.
+    let opaque = colors
+        .has_transmission()
+        .then(|| without_transmissive(mesh, colors));
+    let light = FrameLight::casting(mesh, opaque.as_ref().unwrap_or(mesh), env, look);
     let bounds = section_bounds(mesh);
     let diagonal = bounds.diagonal();
     let radius = diagonal * 0.5 * ao::AO_RADIUS;
-    let post = look.post();
+    let post = look.post() || opaque.is_some();
 
-    let point = |x: i64, y: i64| -> Option<Vec3> {
-        if x < 0 || y < 0 || x >= w as i64 || y >= h as i64 {
-            return None;
-        }
-        let surface = surfaces.get(y as usize * w + x as usize)?;
-        surface
-            .dist
-            .is_finite()
-            .then(|| view.point_at(x as f64 + 0.5, y as f64 + 0.5, surface.dist))
-    };
-    let shaded: Vec<Shaded> = env::par_rows(h, |y| {
-        (0..w)
-            .map(|x| {
-                let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
-                let background = |c: [f64; 3]| Shaded {
-                    light: c,
-                    weight: [0.0; 3],
-                    roughness: -1.0,
-                };
-                let Some(surface) = surfaces.get(y * w + x) else {
-                    return background([0.0; 3]);
-                };
-                let (origin, ray) = view.ray(px, py);
-                if surface.face == NO_FACE || !surface.dist.is_finite() {
-                    if look.plain_background {
-                        // The picture's own colour, displayed without the
-                        // tone curve: its light is the colour over the
-                        // exposure, marked by the roughness −2. Without
-                        // layer 2's post effects it is kept as it is and
-                        // shown so, as layer 1 shows it (dividing and
-                        // multiplying by the exposure could move a byte).
-                        let factor = light.ground_factor(origin, ray);
-                        let over = if post { light.exposure } else { 1.0 };
-                        let c = params
-                            .background
-                            .map(|b| tonemap::byte_to_linear(b) * factor / over);
-                        return Shaded {
-                            light: c,
-                            weight: [0.0; 3],
-                            roughness: PLAIN_BACKDROP,
-                        };
+    let shade_all = |surfaces: &[Surface]| -> Vec<Shaded> {
+        let point = |x: i64, y: i64| -> Option<Vec3> {
+            if x < 0 || y < 0 || x >= w as i64 || y >= h as i64 {
+                return None;
+            }
+            let surface = surfaces.get(y as usize * w + x as usize)?;
+            surface
+                .dist
+                .is_finite()
+                .then(|| view.point_at(x as f64 + 0.5, y as f64 + 0.5, surface.dist))
+        };
+        env::par_rows(h, |y| {
+            (0..w)
+                .map(|x| {
+                    let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
+                    let background = |c: [f64; 3]| Shaded {
+                        light: c,
+                        weight: [0.0; 3],
+                        roughness: -1.0,
+                        transmit: [0.0; 3],
+                    };
+                    let Some(surface) = surfaces.get(y * w + x) else {
+                        return background([0.0; 3]);
+                    };
+                    let (origin, ray) = view.ray(px, py);
+                    if surface.face == NO_FACE || !surface.dist.is_finite() {
+                        if look.plain_background {
+                            // The picture's own colour, displayed without the
+                            // tone curve: its light is the colour over the
+                            // exposure, marked by the roughness −2. Without
+                            // layer 2's post effects it is kept as it is and
+                            // shown so, as layer 1 shows it (dividing and
+                            // multiplying by the exposure could move a byte).
+                            let factor = light.ground_factor(origin, ray);
+                            let over = if post { light.exposure } else { 1.0 };
+                            let c = params
+                                .background
+                                .map(|b| tonemap::byte_to_linear(b) * factor / over);
+                            return Shaded {
+                                light: c,
+                                weight: [0.0; 3],
+                                roughness: PLAIN_BACKDROP,
+                                transmit: [0.0; 3],
+                            };
+                        }
+                        return background(light.background(origin, ray));
                     }
-                    return background(light.background(origin, ray));
-                }
-                let rel = view.point_at(px, py, surface.dist);
-                let p = view.eye + rel;
-                let to_viewer = view.toward_viewer(p);
-                let [nx, ny, nz] = surface.normal.map(f64::from);
-                let n = Vec3::new(nx, ny, nz).normalized().unwrap_or(to_viewer);
-                let n = if n.dot(to_viewer) < 0.0 { -n } else { n };
-                let ao = if look.ao {
-                    let reach = radius / view.sample_size(surface.dist);
-                    ao::occlusion(
-                        point,
-                        (x as i64, y as i64),
-                        rel,
-                        n,
-                        to_viewer,
-                        (view.right, view.up),
-                        radius,
-                        reach.min(h as f64 / 4.0),
-                    )
-                } else {
-                    1.0
-                };
-                let contact = match light.key {
-                    Some((l, _, _)) if look.contact_shadows && n.dot(l) > 0.0 => polish::contact(
-                        &view,
-                        &surfaces,
-                        (w, h),
-                        p,
-                        l,
-                        polish::CONTACT_LENGTH * diagonal,
-                        polish::CONTACT_THICKNESS * diagonal,
-                        (x, y),
-                    ),
-                    _ => 1.0,
-                };
-                let (base, finish) = if params.highlight.contains(surface.face) {
-                    (params.highlight.color, Finish::default())
-                } else {
-                    colors
-                        .look(surface.face)
-                        .unwrap_or((params.color, Finish::default()))
-                };
-                light.shade_parts(base, finish, p, n, to_viewer, ao, contact)
-            })
-            .collect()
-    });
+                    let rel = view.point_at(px, py, surface.dist);
+                    let p = view.eye + rel;
+                    let to_viewer = view.toward_viewer(p);
+                    let [nx, ny, nz] = surface.normal.map(f64::from);
+                    let n = Vec3::new(nx, ny, nz).normalized().unwrap_or(to_viewer);
+                    let n = if n.dot(to_viewer) < 0.0 { -n } else { n };
+                    let ao = if look.ao {
+                        let reach = radius / view.sample_size(surface.dist);
+                        ao::occlusion(
+                            point,
+                            (x as i64, y as i64),
+                            rel,
+                            n,
+                            to_viewer,
+                            (view.right, view.up),
+                            radius,
+                            reach.min(h as f64 / 4.0),
+                        )
+                    } else {
+                        1.0
+                    };
+                    let contact = match light.key {
+                        Some((l, _, _)) if look.contact_shadows && n.dot(l) > 0.0 => {
+                            polish::contact(
+                                &view,
+                                surfaces,
+                                (w, h),
+                                p,
+                                l,
+                                polish::CONTACT_LENGTH * diagonal,
+                                polish::CONTACT_THICKNESS * diagonal,
+                                (x, y),
+                            )
+                        }
+                        _ => 1.0,
+                    };
+                    let (base, finish, optics) = if params.highlight.contains(surface.face) {
+                        (params.highlight.color, Finish::default(), None)
+                    } else {
+                        let (base, finish) = colors
+                            .look(surface.face)
+                            .unwrap_or((params.color, Finish::default()));
+                        (base, finish, colors.optics(surface.face))
+                    };
+                    light.shade_layered(base, finish, optics, p, n, to_viewer, ao, contact)
+                })
+                .collect()
+        })
+    };
+    let mut shaded = shade_all(&surfaces);
     if shaded.len() != w * h {
         return Err(RenderError::Environment(
             "shading the picture failed".to_string(),
@@ -757,6 +928,30 @@ fn studio_frame(
     }
     // Per sample, the share of its light in doubt; empty for none.
     let mut doubt: Vec<[f32; 1]> = Vec::new();
+    if let Some(opaque) = &opaque {
+        let behind_surfaces = rasterise(opaque, &view, w, h)?;
+        let behind = shade_all(&behind_surfaces);
+        let backs = rasterise_where(mesh, &view, w, h, &|face, facing| {
+            !facing && colors.is_transmissive(face)
+        })?;
+        let unsure = refract::pass_through(
+            &refract::Scene {
+                view: &view,
+                colors,
+                frame: &light,
+                size: (w, h),
+                margin: mark.unwrap_or(polish::TRACE_DOUBT),
+            },
+            &mut shaded,
+            &surfaces,
+            &behind,
+            &behind_surfaces,
+            &backs,
+        );
+        if mark.is_some() && unsure.iter().any(|&d| d) {
+            doubt = unsure.iter().map(|&d| [f32::from(u8::from(d))]).collect();
+        }
+    }
     let rgb: Vec<[u8; 3]> = if post {
         // Deliberate narrowing: the buffers hold f32, as on the GPU.
         let mut buffers = polish::Buffers {
@@ -782,7 +977,15 @@ fn studio_frame(
             .apply(&buffers);
             buffers.light = lit;
             if mark.is_some() && unsure.iter().any(|&d| d) {
-                doubt = unsure.iter().map(|&d| [f32::from(u8::from(d))]).collect();
+                if doubt.len() == unsure.len() {
+                    for (d, &u) in doubt.iter_mut().zip(&unsure) {
+                        if u {
+                            *d = [1.0];
+                        }
+                    }
+                } else {
+                    doubt = unsure.iter().map(|&d| [f32::from(u8::from(d))]).collect();
+                }
             }
         }
         if let Some(lens) = look
@@ -876,6 +1079,20 @@ fn studio_frame(
 /// same coverage, depth key and tie rule as [`crate::render_colored`] for
 /// an opaque, whole picture).
 fn rasterise(mesh: &Mesh, view: &View, w: usize, h: usize) -> Result<Vec<Surface>, RenderError> {
+    rasterise_where(mesh, view, w, h, &|_, _| true)
+}
+
+/// [`rasterise`] of the triangles `keep` takes, given their face and
+/// whether they face the viewer (their own normal, from the order of
+/// their corners, against the direction from the eye; the GPU tests the
+/// same per fragment).
+pub(crate) fn rasterise_where(
+    mesh: &Mesh,
+    view: &View,
+    w: usize,
+    h: usize,
+    keep: &dyn Fn(u32, bool) -> bool,
+) -> Result<Vec<Surface>, RenderError> {
     let projected: Vec<_> = mesh.positions.iter().map(|&p| view.project(p)).collect();
     let mut out = vec![
         Surface {
@@ -912,6 +1129,14 @@ fn rasterise(mesh: &Mesh, view: &View, w: usize, h: usize) -> Result<Vec<Surface
             continue;
         };
         let flat_normal = (pb - pa).cross(pc - pa).normalized();
+        let towards = match view.projection {
+            Projection::Perspective { .. } => pa - view.eye,
+            Projection::Orthographic { .. } => view.forward,
+        };
+        let facing = flat_normal.is_none_or(|f| f.dot(towards) <= 0.0);
+        if !keep(face, facing) {
+            continue;
+        }
         for y in y0..=y1 {
             let py = y as f64 + 0.5;
             for x in x0..=x1 {
@@ -949,6 +1174,23 @@ fn rasterise(mesh: &Mesh, view: &View, w: usize, h: usize) -> Result<Vec<Surface
         }
     }
     Ok(out)
+}
+
+/// `mesh` without the triangles of the faces that let light through.
+fn without_transmissive(mesh: &Mesh, colors: &FaceColors) -> Mesh {
+    let (triangles, face_ids) = mesh
+        .triangles
+        .iter()
+        .zip(&mesh.face_ids)
+        .filter(|(_, face)| !colors.is_transmissive(**face))
+        .map(|(t, f)| (*t, *f))
+        .unzip();
+    Mesh {
+        positions: mesh.positions.clone(),
+        normals: mesh.normals.clone(),
+        triangles,
+        face_ids,
+    }
 }
 
 impl View {
