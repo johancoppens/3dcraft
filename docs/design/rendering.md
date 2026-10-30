@@ -312,7 +312,9 @@ parsed (`LookSpec`, `LookState`) starts from `Look::polished()`: everything on b
 reflection and the lens, one frame
 for `view.render` and 16 for the window; `Look::default()`, which the tests of layer 1 use, has all of
 layer 2 off, and with it off every picture is layer 1's bit for bit (the specular light is added in the
-same order of operations as before).
+same order of operations as before, and the plain background is shown from its colour as layer 1
+shows it, not divided by the exposure and multiplied again, which could move a byte at a fractional
+EV; `the_plain_background_keeps_its_colour_at_any_exposure`).
 
 **Sources** (clean-room: nothing of Blender's Eevee or Cycles, which are GPL, was read or transliterated):
 
@@ -363,7 +365,9 @@ same order of operations as before).
    aperture `A = f / N`, in model units through the document's length unit. The blur's radius in samples
    is `A h |z − zf| / (4 tan(fov/2) z zf)` (`coc_radius`; the background at `z = ∞`), at most 1/40 of
    the picture's height. The gather's reach is the most blur in the frame (the box's corners and the
-   background); the taps are 4 rings of 8 i at `reach (i − 1 + f) / 4`, turned by the golden angle per
+   background); the taps are 4 rings of 8 i at `reach √((i − 1)² + f (2i − 1)) / 4` (ring `i` in its band
+from `(i − 1) / 4` to `i / 4` of the reach, spread by area within it, so the frames cover the disc
+evenly; 2026-10-30 review, it was `reach (i − 1 + f) / 4`), turned by the golden angle per
    frame, `f` 1 on frame 0 and the Halton (5) point after, so frames together cover the disc. A tap at
    distance `d` with blur `c` (the smaller of its and the centre's when it lies behind the centre)
    weighs `clamp(c − d + ½, 0, 1) / max(c, ½)²`; the centre `1 / max(c₀, ½)²`. A sample in focus with
@@ -401,10 +405,19 @@ picture, the change from 16 to 32 frames is smaller than from 4 to 8 and under 1
 bad numbers (an f-number of 0 or NaN, a focus behind the eye, infinite units, 0 frames) leave the lens
 out rather than fail.
 
-**Bloom's energy band.** The 13-tap filter does not give each of the four texels it halves exactly a
-quarter of its weight, so a lone bright texel keeps its energy only within a band that depends on where
-it lies: measured 0.998, 0.983 and 0.942 of the light for strengths 0.04, 0.3 and 1 (three spots on a
-dim picture); the test holds `|ratio − 1| ≤ 0.1 s`. An even picture stays exactly even.
+**Bloom's energy.** Away from the border the pyramid keeps the light's energy exactly: summed over
+the texels below, the 13-tap filter gives every source texel a quarter of its light whatever its
+place among the pairs it halves (the middle box 1/8, the four outer boxes 1/8, for either parity of
+its row and column), and the tent gives every coarse texel four fine texels' worth
+(`one_level_of_bloom_keeps_an_inner_spot_s_energy`: one level down and up, a spot at each of the four
+phases, to 1e-6). What changes the sum is the border: reads are clamped to it, which counts a border
+texel more than once, and a level of odd size rounds up; on the small levels most texels are at the
+border. So a lone bright texel in a 96 × 80 picture keeps measured 0.998, 0.983 and 0.942 of its
+light for strengths 0.04, 0.3 and 1 (its light reaches the border on the 6 × 5, 3 × 3 and 2 × 2
+levels); the test holds that band, `|ratio − 1| ≤ 0.1 s`, as a regression bound. An even picture
+stays exactly even. (Until the 2026-10-30 review this paragraph blamed the 13-tap weights for the
+loss; they are exact in the interior.) An empty picture gives an empty one (`bloom`, `bloom_down`,
+`bloom_tent`; they panicked on a zero size before).
 
 **On the GPU** (`studio.wgsl`, `polish.wgsl`, `accumulate.wgsl`; `craft3d_gpu::studio`). Every studio mesh
 pipeline draws through `vs_studio`, which moves clip x and y by the frame's jitter (and `across()` adds it),
@@ -424,7 +437,12 @@ instead of MSAA; the bodies are drawn depth-only into the multisampled depth for
 draw with the same mesh, camera, params and look adds frame `k`, up to `accumulate` (16 by default);
 anything changing starts again at frame 0. `Onscreen::converging` tells the shell to draw again
 (`Direct::frame` redraws and asks egui for another frame while it is true). The window's other paths and
-`ui.screenshot` draw one frame unless the look gives `accumulate`.
+`ui.screenshot` draw one frame unless the look gives `accumulate`. `ui.screenshot {window: true}` does
+not count the window's frames while `Shell::converging` (`Desk::ask_capture`), so the picture of the
+window is the settled still and not one of a timing-dependent number of frames; its 8 s deadline still
+bounds the wait, with an error of its own (2026-10-30 review). On the CPU a still may not pass
+`MAX_SAMPLES` (2²⁶) samples over all its frames (`RenderError::TooManyFrames`, refused before anything
+is drawn): one still never costs more than the largest single picture.
 
 **WebGL2.** `studio_as_drawn` also turns off reflections, the ground's reflection, contact shadows and the
 lens (they loop over the geometry); bloom, the specular shadow (with no shadows there, it changes nothing)

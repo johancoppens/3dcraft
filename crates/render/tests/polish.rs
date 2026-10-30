@@ -257,14 +257,30 @@ fn a_mirror_plane_reflects_a_box_where_the_mirrored_rays_meet_it() {
     assert!(false_red <= 4, "{false_red}/{blue}");
     // The pixels whose rays decided within the GPU's rounding of a
     // boundary are few, and none without reflections.
-    let (_, doubt) =
-        render_studio_doubt(&mesh, &colors, &camera, &params(w, h), &look, &env).unwrap();
+    let (_, doubt) = render_studio_doubt(
+        &mesh,
+        &colors,
+        &camera,
+        &params(w, h),
+        &look,
+        &env,
+        polish::TRACE_DOUBT,
+    )
+    .unwrap();
     let unsure = doubt.iter().filter(|&&d| d > 0.0).count();
     eprintln!("mirror: {unsure} pixels in doubt");
     assert!(doubt.iter().all(|&d| (0.0..=1.0).contains(&d)));
     assert!(unsure * 400 <= doubt.len(), "{unsure}");
-    let (_, none) =
-        render_studio_doubt(&mesh, &colors, &camera, &params(w, h), &bare(), &env).unwrap();
+    let (_, none) = render_studio_doubt(
+        &mesh,
+        &colors,
+        &camera,
+        &params(w, h),
+        &bare(),
+        &env,
+        polish::TRACE_DOUBT,
+    )
+    .unwrap();
     assert!(none.iter().all(|&d| d == 0.0));
 }
 

@@ -524,7 +524,7 @@ pub fn render_studio(
     look: &Look,
     env: &Prepared,
 ) -> Result<Frame, RenderError> {
-    studio_frames(mesh, colors, camera, params, look, env, false).map(|(frame, _)| frame)
+    studio_frames(mesh, colors, camera, params, look, env, None).map(|(frame, _)| frame)
 }
 
 /// [`render_studio`] with, per pixel, the share of its light that a
@@ -536,7 +536,9 @@ pub fn render_studio(
 /// by at most its strength over its pyramid, which is not counted). The
 /// GPU makes those decisions in `f32`, so a comparison of the two
 /// renderers leaves out the pixels with a large share, as it leaves out
-/// the band along silhouettes.
+/// the band along silhouettes. `margin` is how near a decision may come
+/// to its boundary, in `f32` epsilons ([`polish::TRACE_DOUBT`] is the one
+/// derived; others are for measuring); the picture does not depend on it.
 pub fn render_studio_doubt(
     mesh: &Mesh,
     colors: &FaceColors,
@@ -544,8 +546,9 @@ pub fn render_studio_doubt(
     params: &RenderParams,
     look: &Look,
     env: &Prepared,
+    margin: f64,
 ) -> Result<(Frame, Vec<f32>), RenderError> {
-    studio_frames(mesh, colors, camera, params, look, env, true)
+    studio_frames(mesh, colors, camera, params, look, env, Some(margin))
 }
 
 fn studio_frames(
@@ -555,7 +558,7 @@ fn studio_frames(
     params: &RenderParams,
     look: &Look,
     env: &Prepared,
-    mark: bool,
+    mark: Option<f64>,
 ) -> Result<(Frame, Vec<f32>), RenderError> {
     let plain = || {
         render_colored(mesh, colors, camera, params).map(|frame| {
@@ -611,11 +614,11 @@ pub fn render_studio_frame(
     env: &Prepared,
     index: u32,
 ) -> Result<Frame, RenderError> {
-    studio_frame(mesh, colors, camera, params, look, env, index, false).map(|(frame, _)| frame)
+    studio_frame(mesh, colors, camera, params, look, env, index, None).map(|(frame, _)| frame)
 }
 
 /// [`render_studio_frame`], with each pixel's share in doubt when `mark`
-/// (else zeros).
+/// gives the margin (else zeros).
 #[allow(clippy::too_many_arguments)]
 fn studio_frame(
     mesh: &Mesh,
@@ -625,7 +628,7 @@ fn studio_frame(
     look: &Look,
     env: &Prepared,
     index: u32,
-    mark: bool,
+    mark: Option<f64>,
 ) -> Result<(Frame, Vec<f32>), RenderError> {
     if params.opacity() < 1.0 || params.section.is_some() {
         return render_colored(mesh, colors, camera, params).map(|frame| {
@@ -774,10 +777,11 @@ fn studio_frame(
                 surfaces: &surfaces,
                 frame: &light,
                 diagonal,
+                margin: mark.unwrap_or(polish::TRACE_DOUBT),
             }
             .apply(&buffers);
             buffers.light = lit;
-            if mark && unsure.iter().any(|&d| d) {
+            if mark.is_some() && unsure.iter().any(|&d| d) {
                 doubt = unsure.iter().map(|&d| [f32::from(u8::from(d))]).collect();
             }
         }
@@ -831,10 +835,10 @@ fn studio_frame(
         sample: 0.5 / f64::from(ssaa),
     };
     let per_pixel = (s * s) as u32;
-    let mut shares = Vec::with_capacity(if mark { ow * oh } else { 0 });
+    let mut shares = Vec::with_capacity(if mark.is_some() { ow * oh } else { 0 });
     for oy in 0..oh {
         for ox in 0..ow {
-            if mark {
+            if mark.is_some() {
                 let mut share = 0.0_f32;
                 for dy in 0..s {
                     let start = (oy * s + dy) * w + ox * s;
@@ -862,7 +866,7 @@ fn studio_frame(
             frame.depth.push(first.map_or(f64::INFINITY, |f| f.dist));
         }
     }
-    if !mark {
+    if mark.is_none() {
         shares = vec![0.0; ow * oh];
     }
     Ok((frame, shares))

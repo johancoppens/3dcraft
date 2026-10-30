@@ -45,7 +45,7 @@ pub const CONTACT_THICKNESS: f64 = 0.02;
 /// interpolated between the tessellation's corners; a flat face is
 /// exact).
 pub const CONTACT_BIAS: f64 = 0.5;
-/// How close a decision of a traced ray may come to its boundary before
+/// How close a decision of a traced ray may come (by default; `render_studio_doubt` takes another) to its boundary before
 /// the sample is marked as in doubt ([`Traced::doubt`]), in units of
 /// `f32::EPSILON` (one unit in the last place at 1) times the size of the
 /// numbers compared. The GPU makes the same decisions in `f32` from its own
@@ -240,6 +240,7 @@ pub(crate) fn trace(
     length: f64,
     thickness: f64,
     from: (usize, usize),
+    margin: f64,
 ) -> Traced {
     let none = Traced::default();
     let perspective = matches!(view.projection, Projection::Perspective { .. });
@@ -259,7 +260,7 @@ pub(crate) fn trace(
     let Some(b) = view.project(p + d * len) else {
         return none;
     };
-    let eps = TRACE_DOUBT * f64::from(f32::EPSILON);
+    let eps = margin * f64::from(f32::EPSILON);
     let tol_z = eps * a.dist.abs().max(b.dist.abs()).max(p.length());
     let sample = view.sample_size(b.dist);
     let reach = if sample > 0.0 && sample.is_finite() {
@@ -714,6 +715,9 @@ pub(crate) struct Reflect<'a> {
     pub frame: &'a super::FrameLight<'a>,
     /// The diagonal of the mesh's box.
     pub diagonal: f64,
+    /// How near a decision may come to its boundary before it is in
+    /// doubt, in `f32` epsilons ([`TRACE_DOUBT`]).
+    pub margin: f64,
 }
 
 impl Reflect<'_> {
@@ -735,7 +739,7 @@ impl Reflect<'_> {
                 .get(hy * w + hx)
                 .map_or([0.0; 3], |c| c.map(f64::from))
         };
-        let eps = TRACE_DOUBT * f64::from(f32::EPSILON);
+        let eps = self.margin * f64::from(f32::EPSILON);
         // Whether the surface found faces the ray, and whether that was in
         // doubt.
         let facing = |(hx, hy): (usize, usize), d: Vec3| -> (bool, bool) {
@@ -786,6 +790,7 @@ impl Reflect<'_> {
                             length,
                             thickness,
                             (x, y),
+                            self.margin,
                         );
                         let Some(hit) = traced.hit else {
                             return (l, traced.doubt);
@@ -839,6 +844,7 @@ impl Reflect<'_> {
                             length,
                             thickness,
                             (x, y),
+                            self.margin,
                         );
                         doubt = traced.doubt;
                         let found = traced

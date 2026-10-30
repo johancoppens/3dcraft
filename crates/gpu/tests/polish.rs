@@ -20,7 +20,7 @@ use craft3d_gpu::{
 };
 use craft3d_math::Vec3;
 use craft3d_render::Finish;
-use craft3d_render::studio::polish::{Dof, Focus};
+use craft3d_render::studio::polish::{Dof, Focus, TRACE_DOUBT};
 use craft3d_render::studio::{
     Look, Prepared, bundled::environment, render_studio, render_studio_doubt,
 };
@@ -256,6 +256,8 @@ struct Stats {
     doubt: usize,
     /// The largest difference among them (for the dev log only).
     most_in_doubt: u8,
+    /// The sum of the shares in doubt over the pixels outside the band.
+    share_sum: f64,
 }
 
 impl Stats {
@@ -267,6 +269,11 @@ impl Stats {
         self.doubt as f64 / (self.compared + self.doubt).max(1) as f64
     }
 
+    /// The mean share of a pixel's light in doubt.
+    fn mean_doubt(&self) -> f64 {
+        self.share_sum / (self.compared + self.doubt).max(1) as f64
+    }
+
     fn merge(&mut self, other: Stats) {
         self.compared += other.compared;
         self.over_one += other.over_one;
@@ -274,6 +281,7 @@ impl Stats {
         self.id_outside += other.id_outside;
         self.doubt += other.doubt;
         self.most_in_doubt = self.most_in_doubt.max(other.most_in_doubt);
+        self.share_sum += other.share_sum;
     }
 }
 
@@ -293,6 +301,7 @@ fn compare(scene: &Scene, cpu: &Frame, doubt: &[f32], gpu: &Frame) -> Stats {
         if in_band {
             continue;
         }
+        stats.share_sum += f64::from(doubt[i]);
         if doubt[i] > DOUBT_SHARE {
             stats.doubt += 1;
             stats.most_in_doubt = stats.most_in_doubt.max(diff(i));
@@ -327,29 +336,109 @@ fn check(failures: &mut Vec<String>, label: &str, stats: &Stats) {
     }
 }
 
+/// Margins (in `f32` epsilons) measured besides [`TRACE_DOUBT`], for the
+/// dev log: how the pixels in doubt and the largest difference left
+/// depend on it.
+const SWEEP: [f64; 4] = [8.0, 32.0, 128.0, 512.0];
+
+/// The CPU's picture with its doubt at [`TRACE_DOUBT`] and, for a look
+/// that traces a ray, at each margin of [`SWEEP`].
+struct Cpu {
+    frame: Frame,
+    doubt: Vec<f32>,
+    sweep: Vec<(f64, Vec<f32>)>,
+}
+
+fn cpu_render(scene: &Scene, params: &RenderParams, look: &Look) -> Cpu {
+    let run = |margin: f64| {
+        render_studio_doubt(
+            &scene.mesh,
+            &scene.colors,
+            &scene.camera,
+            params,
+            look,
+            &scene.env,
+            margin,
+        )
+        .unwrap()
+    };
+    let (frame, doubt) = run(TRACE_DOUBT);
+    let traced = look.ssr || look.ground_reflection > 0.0;
+    let sweep = if traced {
+        SWEEP.iter().map(|&m| (m, run(m).1)).collect()
+    } else {
+        Vec::new()
+    };
+    Cpu {
+        frame,
+        doubt,
+        sweep,
+    }
+}
+
+/// Prints the sweep of the margins and every pixel compared that differs
+/// by more than [`MOST_LEVELS`], with its shares in doubt at each margin.
+fn report(label: &str, scene: &Scene, cpu: &Cpu, gpu: &Frame) {
+    for (m, doubt) in &cpu.sweep {
+        let s = compare(scene, &cpu.frame, doubt, gpu);
+        eprintln!(
+            "SWEEP {label} | margin {m}: in doubt {} ({:.6}), mean {:.6}, most left {}, most in doubt {}",
+            s.doubt,
+            s.doubt_share(),
+            s.mean_doubt(),
+            s.most,
+            s.most_in_doubt
+        );
+    }
+    let band = band(&scene.mesh, &scene.camera, &cpu.frame);
+    let (w, f) = (cpu.frame.width as usize, &cpu.frame);
+    for (i, &in_band) in band.iter().enumerate().take(f.ids.len()) {
+        let d = (0..3)
+            .map(|k| f.rgb[3 * i + k].abs_diff(gpu.rgb[3 * i + k]))
+            .max()
+            .unwrap();
+        if in_band || cpu.doubt[i] > DOUBT_SHARE || d <= MOST_LEVELS {
+            continue;
+        }
+        let shares: Vec<f32> = cpu.sweep.iter().map(|(_, s)| s[i]).collect();
+        eprintln!(
+            "OFFENDER {label} | ({}, {}) id {} cpu {:?} gpu {:?} doubt {} sweep {shares:?}",
+            i % w,
+            i / w,
+            f.ids[i],
+            &f.rgb[3 * i..3 * i + 3],
+            &gpu.rgb[3 * i..3 * i + 3],
+            cpu.doubt[i]
+        );
+    }
+}
+
 #[test]
 fn layer_two_matches_the_cpu_renderer() {
     let scenes = scenes();
     let mut failures = Vec::new();
+    // The CPU's pictures, once for every adapter.
+    let cpus: Vec<Vec<Cpu>> = scenes
+        .iter()
+        .map(|scene| {
+            looks(scene.focus, scene.plain)
+                .iter()
+                .map(|(_, look)| cpu_render(scene, &scene.params, look))
+                .collect()
+        })
+        .collect();
     for (index, mut offscreen) in offscreens().into_iter().enumerate() {
         let first_adapter = index == 0;
         let adapter = offscreen.adapter().to_string();
         let mut per_effect: Vec<(&str, Stats)> = Vec::new();
         for (k, scene) in scenes.iter().enumerate() {
-            for (effect, look) in looks(scene.focus, scene.plain) {
+            for (j, (effect, look)) in looks(scene.focus, scene.plain).into_iter().enumerate() {
                 let studio = Studio {
                     env: scene.env.clone(),
                     look,
                 };
-                let (cpu, doubt) = render_studio_doubt(
-                    &scene.mesh,
-                    &scene.colors,
-                    &scene.camera,
-                    &scene.params,
-                    &look,
-                    &scene.env,
-                )
-                .unwrap();
+                let measured = &cpus[k][j];
+                let (cpu, doubt) = (&measured.frame, &measured.doubt);
                 let gpu = offscreen
                     .render_studio(
                         &scene.mesh,
@@ -359,12 +448,19 @@ fn layer_two_matches_the_cpu_renderer() {
                         &studio,
                     )
                     .unwrap();
-                let stats = compare(scene, &cpu, &doubt, &gpu);
+                let stats = compare(scene, cpu, doubt, &gpu);
                 eprintln!(
-                    "MEASURE readback {adapter} | {} | {effect}: {stats:?} share {:.6} in doubt {:.6}",
+                    "MEASURE readback {adapter} | {} | {effect}: {stats:?} share {:.6} in doubt {:.6} mean {:.6}",
                     scene.name,
                     stats.share(),
-                    stats.doubt_share()
+                    stats.doubt_share(),
+                    stats.mean_doubt()
+                );
+                report(
+                    &format!("readback {adapter} | {} | {effect}", scene.name),
+                    scene,
+                    measured,
+                    &gpu,
                 );
                 if effect == "all" {
                     if first_adapter {
@@ -516,24 +612,28 @@ fn the_viewport_accumulates_layer_two_as_the_cpu_renderer() {
                     s.name
                 );
                 if [1, 2, frames].contains(&m) {
-                    let (cpu, doubt) = render_studio_doubt(
-                        &s.mesh,
-                        &s.colors,
-                        &s.camera,
+                    let measured = cpu_render(
+                        &s,
                         &params,
                         &Look {
                             accumulate: m,
                             ..studio.look
                         },
-                        &s.env,
-                    )
-                    .unwrap();
-                    let stats = compare(&s, &cpu, &doubt, &gpu);
+                    );
+                    let cpu = &measured.frame;
+                    let stats = compare(&s, cpu, &measured.doubt, &gpu);
                     eprintln!(
-                        "MEASURE viewport {name} | {} | {m} frames: {stats:?} share {:.6} in doubt {:.6}",
+                        "MEASURE viewport {name} | {} | {m} frames: {stats:?} share {:.6} in doubt {:.6} mean {:.6}",
                         s.name,
                         stats.share(),
-                        stats.doubt_share()
+                        stats.doubt_share(),
+                        stats.mean_doubt()
+                    );
+                    report(
+                        &format!("viewport {name} | {} | {m} frames", s.name),
+                        &s,
+                        &measured,
+                        &gpu,
                     );
                     if m == frames && k < 2 {
                         craft3d_testkit::evidence::print(
@@ -563,19 +663,15 @@ fn the_viewport_accumulates_layer_two_as_the_cpu_renderer() {
             let _ = draw(&mut onscreen, &moved);
             assert!(onscreen.converging(), "{name} {}", s.name);
             let first = draw(&mut onscreen, &s.camera);
-            let (cpu, doubt) = render_studio_doubt(
-                &s.mesh,
-                &s.colors,
-                &s.camera,
+            let measured = cpu_render(
+                &s,
                 &params,
                 &Look {
                     accumulate: 1,
                     ..studio.look
                 },
-                &s.env,
-            )
-            .unwrap();
-            let stats = compare(&s, &cpu, &doubt, &first);
+            );
+            let stats = compare(&s, &measured.frame, &measured.doubt, &first);
             eprintln!(
                 "MEASURE viewport {name} | {} | restarted: {stats:?} share {:.6} in doubt {:.6}",
                 s.name,
