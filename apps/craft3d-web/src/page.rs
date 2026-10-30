@@ -1118,6 +1118,7 @@ impl eframe::App for Page {
         self.forget_closed();
         // The scenes to and from their worker, before the page decides
         // what to draw: a part that came is shown in this frame.
+        let mut answered = Vec::new();
         if let Some(scenes) = &mut self.scenes {
             let replies: Vec<Reply> = self.scene_replies.borrow_mut().drain(..).collect();
             let quality = self.host.shell.scene_quality();
@@ -1126,17 +1127,29 @@ impl eframe::App for Page {
                 log::warn!("regeneration: on the page, the worker cannot be had: {why}");
             }
             if let Some(token) = done.cancelled {
-                log::info!("regeneration: job {token} superseded, its worker ended");
+                log::info!(
+                    "regeneration: job {token} superseded; the worker goes on with what it built"
+                );
             }
             if let Some(token) = done.timed_out {
                 log::warn!("regeneration: job {token} took too long in the worker and was stopped");
             }
-            if !done.parts.is_empty() {
+            if !done.parts.is_empty() || !done.commands.is_empty() {
                 ctx.request_repaint();
             }
-            if scenes.busy().is_some() {
+            if scenes.busy().is_some() || self.host.session.commands_waiting() {
                 ctx.request_repaint_after(std::time::Duration::from_secs(30));
             }
+            answered = done.commands;
+        }
+        // Commands run where the bodies are, answered: reported, an
+        // export's files offered.
+        if !answered.is_empty() {
+            let outcome = self.host.answered(answered);
+            if let Some(pick) = outcome.pick {
+                self.pick(pick);
+            }
+            self.deliver(outcome.downloads);
         }
         // A piece of the long work, for as long as a frame allows: the
         // rest in the next frames, drawn in between.

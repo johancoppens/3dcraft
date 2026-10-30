@@ -34,7 +34,7 @@
 //! job is ended, and that state's scenes say so.
 
 use crate::checks::{Reply, Transport};
-use craft3d_engine::{SceneQuality, Session};
+use craft3d_engine::{Answered, SceneQuality, Session};
 
 /// What [`Scenes::frame_at`] did, for the page's log and its tests.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -51,6 +51,9 @@ pub struct Frame {
     /// The job given up this frame: the worker took longer than
     /// [`DEADLINE_MS`] on it.
     pub timed_out: Option<u64>,
+    /// The commands run where the bodies are that were answered this
+    /// frame (`Session::command_answered`), for the host to report.
+    pub commands: Vec<Answered>,
 }
 
 /// How long the worker may take over one state before it is ended and
@@ -80,6 +83,9 @@ impl<T: Transport> Scenes<T> {
     /// too: `Session::regen_elsewhere`).
     pub fn new(transport: T, session: &mut Session) -> Self {
         session.set_regen_elsewhere(true);
+        // The commands that need the bodies go to the same worker, which
+        // has them (`commands_elsewhere.rs` in the engine).
+        session.set_commands_elsewhere(true);
         Self {
             transport,
             busy: None,
@@ -130,6 +136,11 @@ impl<T: Transport> Scenes<T> {
                     }
                     session.scene_done(token);
                 }
+                Reply::Command { token, answer } => {
+                    self.answered_once = true;
+                    done.commands
+                        .extend(session.command_answered(token, answer));
+                }
                 // The module aborted while building: a new worker for the
                 // next state.
                 Reply::Answer { token, answer } => {
@@ -140,6 +151,9 @@ impl<T: Transport> Scenes<T> {
                     let why = answer.err().unwrap_or_else(|| {
                         "the worker answered as the checking worker does".to_string()
                     });
+                    done.commands.extend(session.commands_failed(&format!(
+                        "internal error (a bug in 3DCraft, please report it): the worker running it beside the page stopped: {why}"
+                    )));
                     if session.scene_answered(token, Err(&why)) {
                         done.parts.push(token);
                     }
@@ -157,6 +171,9 @@ impl<T: Transport> Scenes<T> {
                     {
                         done.parts.push(token);
                     }
+                    done.commands.extend(session.commands_failed(&format!(
+                        "the worker running it beside the page stopped: {why}"
+                    )));
                 }
             }
         }
@@ -167,6 +184,7 @@ impl<T: Transport> Scenes<T> {
             self.busy = None;
             done.timed_out = Some(busy);
             session.scene_failed(busy, TOO_LONG);
+            done.commands.extend(session.commands_failed(TOO_LONG));
         }
         let wanted = session.scene_job(quality);
         if let Some(busy) = self.busy
@@ -214,6 +232,17 @@ impl<T: Transport> Scenes<T> {
                 }
             }
         }
+        // The commands that need the bodies, to the worker that has them.
+        for token in session.command_jobs() {
+            let posted = session.command_request(token).and_then(|request| {
+                self.transport
+                    .post_command(token, &request.document, &request.work)
+            });
+            if let Err(why) = posted {
+                done.commands
+                    .extend(session.command_answered(token, Err(why)));
+            }
+        }
         done
     }
 
@@ -221,7 +250,11 @@ impl<T: Transport> Scenes<T> {
         self.home = true;
         self.busy = None;
         session.set_regen_elsewhere(false);
+        session.set_commands_elsewhere(false);
         done.home = Some(why.to_string());
+        done.commands.extend(session.commands_failed(&format!(
+            "it was to run beside the page, where the worker cannot be had ({why}); run it again"
+        )));
     }
 }
 

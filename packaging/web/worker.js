@@ -7,8 +7,10 @@
 // A scene is built a piece at a time, and the messages are looked at
 // between pieces: a newer scene replaces the one being built and
 // {kind: 'cancel'} leaves it, while what was regenerated stays in the
-// module for the next state.
-import init, { craft3d_check, craft3d_scene_begin, craft3d_scene_step } from './@JS@';
+// module for the next state. A command (kind 'command', one that needs
+// the bodies) is run between pieces, on what is regenerated, and
+// answered with {token, command, files}.
+import init, { craft3d_check, craft3d_command, craft3d_scene_begin, craft3d_scene_step } from './@JS@';
 
 // How long a piece of a scene works before the messages are looked at, ms.
 const PIECE_MS = 30;
@@ -71,6 +73,9 @@ self.onmessage = async (event) => {
       craft3d_scene_begin(document, work);
       current = token;
       if (!building) build();
+    } else if (kind === 'command') {
+      const { answer, files } = craft3d_command(document, work);
+      self.postMessage({ token, command: answer, files });
     } else {
       self.postMessage({ token, reply: craft3d_check(document, work) });
     }

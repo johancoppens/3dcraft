@@ -140,7 +140,19 @@ impl Session {
             return None;
         }
         self.scene_revision();
-        let doc = self.documents.get_mut(self.active)?.shown();
+        let open = self.documents.get_mut(self.active)?;
+        let shown = open.shown();
+        let current = Arc::clone(open.history.current());
+        // Scrubbed, with no scene of the document as it is: its first
+        // picture first, which carries the datum planes a section lies on
+        // while the view is scrubbed (`section.rs`), so that the page
+        // never regenerates to find them.
+        let (doc, quality) =
+            if !Arc::ptr_eq(&shown, &current) && self.kept_scene_of(&current).is_none() {
+                (current, SceneQuality::Preview)
+            } else {
+                (shown, quality)
+            };
         let wanted =
             !self.has_scene_of(&doc, SceneQuality::Preview) || !self.has_scene_of(&doc, quality);
         if !wanted {
@@ -444,6 +456,11 @@ struct Builder {
     /// Why the request cannot be built: answered as the error of each
     /// part.
     refused: Option<String>,
+    /// The bytes of the document state the session holds, and of the one
+    /// whose scenes it builds: a command run on another state
+    /// ([`run_command`]) puts the latter back.
+    loaded: Option<Vec<u8>>,
+    scenes_of: Option<Vec<u8>>,
 }
 
 thread_local! {
@@ -496,13 +513,21 @@ pub fn scene_begin(document: &[u8], work: &str) {
         })();
         builder.left.clear();
         builder.refused = None;
+        builder.scenes_of = None;
         let quality = match read {
             Ok((doc, quality, budget)) => {
+                let same = builder.loaded.as_deref() == Some(document);
                 let session = builder.session.get_or_insert_with(builder_session);
                 if let Some(budget) = budget {
                     session.set_scene_budget(budget);
                 }
-                load_state(session, doc);
+                // The state it holds already (another quality of it): its
+                // scenes are there.
+                if !same {
+                    load_state(session, doc);
+                    builder.loaded = Some(document.to_vec());
+                }
+                builder.scenes_of = Some(document.to_vec());
                 quality
             }
             Err(why) => {
@@ -595,10 +620,96 @@ pub fn scene_forget() {
     });
 }
 
+/// Runs a command written out by [`Session::command_request`] on the
+/// document state it was written with, in the session that builds the
+/// scenes (whose regeneration of that state is there, or is reused from
+/// the states before it), with the selection it read. The answer is for
+/// [`Session::command_answered`]: its result, whether it changed the
+/// document (it is then not taken, and the host runs it itself), the
+/// selection it left when that changed, and the files it wrote. A job of
+/// scenes in hand goes on afterwards. Never panics on any input.
+pub fn run_command(document: &[u8], work: &str) -> crate::CommandAnswer {
+    let answered = BUILDER.with(|builder| {
+        let mut builder = builder
+            .try_borrow_mut()
+            .map_err(|_| "the worker is busy".to_string())?;
+        let work: Value =
+            serde_json::from_str(work).map_err(|e| format!("the work cannot be read: {e}"))?;
+        let command = work
+            .get("command")
+            .and_then(Value::as_str)
+            .ok_or("the work names no command")?
+            .to_string();
+        let params = work.get("params").cloned().unwrap_or(Value::Null);
+        let selection = work
+            .get("selection")
+            .and_then(|s| crate::selection::Selection::from_wire(s, None))
+            .unwrap_or_default();
+        let builder = &mut *builder;
+        let session = builder.session.get_or_insert_with(builder_session);
+        if builder.loaded.as_deref() != Some(document) {
+            let doc = craft3d_format::from_bytes(document)
+                .map_err(|e| format!("the document cannot be read: {e}"))?;
+            load_state(session, doc);
+            builder.loaded = Some(document.to_vec());
+        }
+        let open = session.documents.get_mut(0).ok_or("no document")?;
+        open.selection = selection;
+        let revision = open.history.revision();
+        for name in session.file_names() {
+            session.take_file(&name);
+        }
+        session.check_selection();
+        let before = session.documents.first().map(|o| o.selection.to_wire());
+        let result = session.execute(&command, &params);
+        let edited = session.documents.len() != 1
+            || session
+                .documents
+                .first()
+                .is_none_or(|open| open.history.revision() != revision);
+        let after = session.documents.first().map(|o| o.selection.to_wire());
+        let selection = (!edited && after != before).then_some(after).flatten();
+        let mut files = Vec::new();
+        for name in session.file_names() {
+            if let Some(bytes) = session.take_file(&name) {
+                files.push((name, bytes));
+            }
+        }
+        if edited {
+            // Its edit is not this side's to keep: the state is loaded
+            // again, from the bytes, the next time.
+            builder.loaded = None;
+        }
+        // The scenes in hand are of the state they were asked for.
+        if let Some(scenes_of) = builder.scenes_of.clone()
+            && builder.loaded.as_deref() != Some(&scenes_of[..])
+            && let Ok(doc) = craft3d_format::from_bytes(&scenes_of)
+        {
+            load_state(session, doc);
+            builder.loaded = Some(scenes_of);
+        }
+        Ok::<_, String>(crate::CommandAnswer {
+            answer: crate::commands_elsewhere::answer_json(result, edited, selection),
+            files,
+        })
+    });
+    answered.unwrap_or_else(|why: String| crate::CommandAnswer {
+        answer: crate::commands_elsewhere::answer_json(
+            Err(CommandError::new(format!(
+                "internal error (a bug in 3DCraft, please report it): it could not be run beside the page: {why}"
+            ))),
+            false,
+            None,
+        ),
+        files: Vec::new(),
+    })
+}
+
 /// This side's session: the long work a piece at a time
 /// ([`scene_step`]), the checks left to the checking worker.
 fn builder_session() -> Session {
-    let mut s = Session::new(Workspace::none());
+    // Files in memory: what a command run here writes ([`run_command`]).
+    let mut s = Session::new(Workspace::memory());
     s.set_stepwise(true);
     s.set_checks_elsewhere(true);
     s

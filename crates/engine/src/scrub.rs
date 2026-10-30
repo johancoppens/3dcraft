@@ -304,6 +304,11 @@ impl OpenDocument {
         // reused, what comes after it is rolled back. On a copy of the
         // cache, so the document's own keeps the later features.
         let own = self.regen();
+        // Tried without the bodies (`commands_elsewhere.rs`): not built.
+        if self.forbid_regen.is_some() {
+            self.forbid_regen = Some(true);
+            return Arc::new(Regen::default());
+        }
         let current = Arc::clone(self.history.current());
         // From a copy of the document's own cache, which has every body
         // unless it let go of some to stay within its budget (a model

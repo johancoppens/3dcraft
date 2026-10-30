@@ -144,10 +144,15 @@ impl Transport for Transported {
     }
 }
 
+/// The turbofan's steps, after a new document.
 fn turbofan() -> Vec<(String, Value)> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../crates/engine/tests/bench_models/turbofan.steps.json");
-    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    let steps: Vec<(String, Value)> =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    std::iter::once(("file.new".to_string(), json!({"units": "mm"})))
+        .chain(steps)
+        .collect()
 }
 
 fn quality() -> SceneQuality {

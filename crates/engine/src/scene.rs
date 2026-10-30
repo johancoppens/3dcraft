@@ -2449,6 +2449,29 @@ impl Session {
 
     /// True when the scenes kept for the document state `doc` have one
     /// (or its error) for `quality` (`regen_elsewhere.rs`).
+    /// A scene kept for the document state `doc`, at any quality: what a
+    /// datum plane of that state is taken from without regenerating it
+    /// (each scene carries the datum planes as regeneration placed them).
+    /// `None` when none is kept; the error of one that failed.
+    pub(crate) fn kept_scene_of(&self, doc: &Arc<Document>) -> Option<Result<Arc<Scene>, String>> {
+        let kept = self
+            .scene
+            .kept
+            .iter()
+            .find(|kept| Arc::ptr_eq(&kept.doc, doc))?;
+        let mut built = kept.scenes.iter().map(|(_, built, _)| built);
+        let first = built.next()?;
+        Some(
+            std::iter::once(first)
+                .chain(built)
+                .find_map(|b| b.as_ref().ok().cloned())
+                .ok_or_else(|| match first {
+                    Err(e) => e.message().to_string(),
+                    Ok(_) => String::new(),
+                }),
+        )
+    }
+
     pub(crate) fn has_scene_of(&self, doc: &Arc<Document>, quality: SceneQuality) -> bool {
         let key = quality.key();
         self.scene

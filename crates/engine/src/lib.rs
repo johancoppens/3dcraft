@@ -33,6 +33,7 @@ mod blend_cmds;
 mod body_cmds;
 mod checks_elsewhere;
 mod commands;
+mod commands_elsewhere;
 mod continuity_cmds;
 mod datum_cmds;
 mod develop_cmds;
@@ -116,6 +117,7 @@ pub use asm_outline::{AssemblyOutline, JointHandle, OutlineInstance, OutlineMate
 pub use assert_cmds::{AssertionState, AssertionStatus};
 pub use checks_elsewhere::{CheckRequest, measure_checks};
 pub use commands::{DARK_BACKGROUND, EXPORT_QUALITIES, VIEWPORT_BACKGROUND};
+pub use commands_elsewhere::{Answered, CommandAnswer, CommandRequest};
 pub use craft3d_regen::progress::Progress;
 pub use memory_files::{MAX_MEMORY_BYTES, MAX_MEMORY_FILE_BYTES, MAX_MEMORY_FILES};
 pub use meshes::{BodyFacts, EdgePolylines};
@@ -134,7 +136,8 @@ pub use recovery::{
     parse_autosave_interval,
 };
 pub use regen_elsewhere::{
-    SceneRequest, SceneStep, scene_begin, scene_bytes, scene_forget, scene_next, scene_step,
+    SceneRequest, SceneStep, run_command, scene_begin, scene_bytes, scene_forget, scene_next,
+    scene_step,
 };
 pub use report::{
     FailedCommand, MAX_REPORT_FIELD_CHARS, VERSION, bug_report, build_commit, platform,
@@ -264,6 +267,10 @@ pub(crate) struct OpenDocument {
     pub(crate) motion: motion::Motion,
     /// For an assembly: what was read and derived for it (`asm.rs`).
     pub(crate) asm: asm::AsmState,
+    /// While a command is tried without the bodies
+    /// (`commands_elsewhere.rs`): `Some`, and true once it asked for a
+    /// regeneration that is not there (it was handed an empty one).
+    pub(crate) forbid_regen: Option<bool>,
 }
 
 /// A regeneration cache with the budget of bodies the environment asks
@@ -312,6 +319,7 @@ impl OpenDocument {
             state_checks: regen_elsewhere::StateChecks::default(),
             motion: motion::Motion::default(),
             asm: asm::AsmState::default(),
+            forbid_regen: None,
         }
     }
 
@@ -397,6 +405,13 @@ impl OpenDocument {
         };
         match &self.regen {
             Some((cached, regen)) if *cached == revision && !missing(regen) => Arc::clone(regen),
+            // A command tried without the bodies asked for them: it is run
+            // where they are instead (`commands_elsewhere.rs`), and what it
+            // did with this empty regeneration is thrown away.
+            _ if self.forbid_regen.is_some() => {
+                self.forbid_regen = Some(true);
+                Arc::new(Regen::default())
+            }
             _ => {
                 let regen = Arc::new(craft3d_regen::regenerate_cached_needing(
                     self.history.current(),
@@ -471,6 +486,10 @@ pub struct Session {
     pub(crate) pictures: pictures::Hosted<dyn pictures::PictureRenderer>,
     /// The host's video encoder for `view.replay` (`pictures.rs`).
     pub(crate) video: pictures::Hosted<dyn pictures::VideoEncoder>,
+    /// The commands that need the bodies are run where they are, by the
+    /// host's worker, while the document is not regenerated here
+    /// (`commands_elsewhere.rs`): the jobs handed out and waiting.
+    pub(crate) commands: commands_elsewhere::Commands,
 }
 
 /// Most documents open at once.
@@ -502,6 +521,7 @@ impl Session {
             scene_token: 0,
             pictures: pictures::Hosted::default(),
             video: pictures::Hosted::default(),
+            commands: commands_elsewhere::Commands::default(),
         }
     }
 
@@ -760,7 +780,27 @@ impl Session {
         // A command that adds features takes their condition with them.
         self.new_when = when_cmds::take_when(spec, &mut params)?;
         let run = spec.run;
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(self, &params)));
+        // Not regenerated here while the host has it regenerated
+        // elsewhere: a command that turns out to need the bodies is run
+        // where they are (`commands_elsewhere.rs`).
+        let trial = self.try_without_bodies();
+        let mut outcome =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(self, &params)));
+        if let Some(snapshot) = trial {
+            match self.after_trial(snapshot, id, &params) {
+                commands_elsewhere::Trial::Kept => {}
+                commands_elsewhere::Trial::Deferred(result) => {
+                    self.new_when = None;
+                    return Ok(result);
+                }
+                commands_elsewhere::Trial::RunHere => {
+                    outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        run(self, &params)
+                    }));
+                    self.ran_here();
+                }
+            }
+        }
         self.new_when = None;
         match outcome {
             Ok(result) => {

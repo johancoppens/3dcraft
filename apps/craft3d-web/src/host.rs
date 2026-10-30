@@ -200,6 +200,14 @@ pub fn export_types(first: Option<&str>) -> Vec<PickerType> {
     types
 }
 
+/// The number of the job a command was handed over under, when it runs
+/// where the bodies are (`{deferred: true, job}`).
+fn deferred(result: &Value) -> Option<u64> {
+    (result.get("deferred") == Some(&Value::Bool(true)))
+        .then(|| result.get("job").and_then(Value::as_u64))
+        .flatten()
+}
+
 /// The keys the page keeps from the browser (`keydown`'s default is
 /// prevented; egui still gets them), `key` in lower case: Ctrl (⌘) with
 /// E (Export; Chrome and Firefox would focus the address bar's search) or
@@ -331,6 +339,10 @@ pub struct WebHost {
     /// dialog chose is kept once that names the file
     /// ([`WebHost::export_picked`]).
     pending_export: Option<ExportRequest>,
+    /// Exports run where the bodies are (the regenerating worker), by the
+    /// number of their command, with what the export dialog asked when
+    /// it asked: their files come with the answer ([`WebHost::answered`]).
+    deferred_exports: Vec<(u64, Option<ExportRequest>)>,
     /// The long work is done a piece per frame ([`WebHost::prepare`]), as
     /// the page does: its one thread draws between the pieces.
     stepwise: bool,
@@ -382,6 +394,7 @@ impl WebHost {
             writable: BTreeSet::new(),
             companion: None,
             pending_export: None,
+            deferred_exports: Vec::new(),
             stepwise: false,
             about: None,
             fetching: None,
@@ -1144,6 +1157,15 @@ impl WebHost {
             self.run("file.export", &params)
         });
         let mut downloads = Vec::new();
+        if let Ok(result) = &exported
+            && let Some(token) = deferred(result)
+        {
+            // Run where the bodies are: the files come with its answer.
+            self.deferred_exports.push((token, None));
+            self.note("file.export", true, format!("Exporting `{name}`…"));
+            self.forget_files();
+            return downloads;
+        }
         if let Ok(result) = &exported {
             if let Some(bytes) = self.session.take_file(&name) {
                 downloads.push(Download::export(name.clone(), bytes));
@@ -1244,6 +1266,12 @@ impl WebHost {
             return outcome;
         }
         let files = self.export_with(&request.name, request.plan.clone());
+        if files.is_empty()
+            && let Some((_, waiting @ None)) = self.deferred_exports.last_mut()
+        {
+            *waiting = Some(request);
+            return outcome;
+        }
         // What the dialog chose is kept once the file is the person's: a
         // download now, a file named in the system's save dialog when the
         // page writes it ([`Self::export_picked`]); a cancel or a failure
@@ -1262,6 +1290,62 @@ impl WebHost {
         } else {
             outcome.downloads = files;
             self.shell.export_written(&request);
+        }
+        outcome
+    }
+
+    /// The commands run where the bodies are, answered
+    /// (`crate::scenes::Frame::commands`): an export's files are offered
+    /// as its export dialog would have offered them (through the system's
+    /// save dialog where the page has one; a browser that refuses it now,
+    /// so long after the click, gets a download instead); every other
+    /// answer is reported as the command's own, and an error of a click
+    /// that selects in the status bar only.
+    pub fn answered(&mut self, answered: Vec<craft3d_engine::Answered>) -> Outcome {
+        let mut outcome = Outcome::default();
+        for answer in answered {
+            let export = self
+                .deferred_exports
+                .iter()
+                .position(|(token, _)| *token == answer.token)
+                .map(|at| self.deferred_exports.remove(at));
+            let mut files: Vec<Download> = answer
+                .files
+                .iter()
+                .filter_map(|name| {
+                    let bytes = self.session.take_file(name)?;
+                    Some(Download::export(name.clone(), bytes))
+                })
+                .collect();
+            let Some((_, request)) = export else {
+                if answer.command == "select.set" {
+                    if let Err(why) = &answer.result {
+                        self.note("select.set", false, why.clone());
+                    }
+                } else {
+                    self.report(&answer.command, &answer.result);
+                }
+                continue;
+            };
+            self.report("file.export", &answer.result);
+            if answer.result.is_err() || files.is_empty() {
+                continue;
+            }
+            match request {
+                Some(request) if self.pickers => {
+                    let mut files = files.drain(..);
+                    if let Some(file) = files.next() {
+                        outcome.pick = Some(Pick::Export { file });
+                    }
+                    self.companion = files.next();
+                    self.pending_export = Some(request);
+                }
+                Some(request) => {
+                    outcome.downloads.append(&mut files);
+                    self.shell.export_written(&request);
+                }
+                None => outcome.downloads.append(&mut files),
+            }
         }
         outcome
     }
@@ -1490,6 +1574,59 @@ mod tests {
 
     fn host() -> WebHost {
         WebHost::new(Shell::new())
+    }
+
+    /// An export while the document is regenerated in the worker and not
+    /// on the page: run in the worker (`craft3d_engine::run_command`),
+    /// whose answer brings the files, the same bytes the page would have
+    /// written; the page never regenerates for it.
+    #[test]
+    fn an_export_beside_the_page_downloads_what_the_page_would_have() {
+        let want = modelled().export_as("plate.obj");
+        let mut host = host();
+        host.set_stepwise(true);
+        host.session.set_checks_elsewhere(true);
+        host.session.set_regen_elsewhere(true);
+        host.session.set_commands_elsewhere(true);
+        for (id, params) in [
+            ("file.new", json!({"units": "mm"})),
+            (
+                "feature.block",
+                json!({"size": [40, 20, 10], "name": "Plate"}),
+            ),
+            (
+                "body.appearance",
+                json!({"body": "Plate", "color": "#2060c0"}),
+            ),
+        ] {
+            host.session.execute(id, &params).unwrap();
+        }
+        let quality = host.shell.scene_quality();
+        while let Some(token) = host.session.scene_job(quality) {
+            let request = host.session.scene_request(token).unwrap();
+            craft3d_engine::scene_begin(&request.document, &request.work);
+            while let Some(part) = craft3d_engine::scene_next() {
+                host.session.scene_answered(token, Ok(&part));
+            }
+            host.session.scene_done(token);
+        }
+        assert!(!host.session.regenerated_here());
+        assert!(host.export_as("plate.obj").is_empty());
+        let mut answered = Vec::new();
+        for token in host.session.command_jobs() {
+            let request = host.session.command_request(token).unwrap();
+            let answer = craft3d_engine::run_command(&request.document, &request.work);
+            answered.extend(host.session.command_answered(token, Ok(answer)));
+        }
+        let outcome = host.answered(answered);
+        let files = |d: &[Download]| -> Vec<(String, Vec<u8>)> {
+            d.iter()
+                .map(|d| (d.name.clone(), d.bytes.clone()))
+                .collect()
+        };
+        assert_eq!(files(&outcome.downloads), files(&want));
+        assert!(host.shell.last_command.as_ref().is_some_and(|r| r.ok));
+        assert!(!host.session.regenerated_here());
     }
 
     fn modelled() -> WebHost {

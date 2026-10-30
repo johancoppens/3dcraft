@@ -21,10 +21,12 @@ pub const MAX_MEMORY_BYTES: usize = 1 << 30;
 /// The most files in memory at once.
 pub const MAX_MEMORY_FILES: usize = 256;
 
-/// The files, by their names with `/` between the parts.
+/// The files, by their names with `/` between the parts. Shared, so that
+/// a clone of the session (a command tried first, `commands_elsewhere.rs`)
+/// copies no file.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct MemoryFiles {
-    files: BTreeMap<String, Vec<u8>>,
+    files: BTreeMap<String, std::sync::Arc<Vec<u8>>>,
     total: usize,
 }
 
@@ -44,7 +46,7 @@ fn key(resolved: &Path) -> Option<String> {
 
 impl MemoryFiles {
     fn get(&self, resolved: &Path) -> Option<&Vec<u8>> {
-        self.files.get(&key(resolved)?)
+        self.files.get(&key(resolved)?).map(|bytes| &**bytes)
     }
 
     fn put(&mut self, resolved: &Path, bytes: Vec<u8>) -> Result<(), CommandError> {
@@ -57,7 +59,7 @@ impl MemoryFiles {
                 bytes.len()
             )));
         }
-        let replaced = self.files.get(&name).map_or(0, Vec::len);
+        let replaced = self.files.get(&name).map_or(0, |b| b.len());
         let total = self
             .total
             .saturating_sub(replaced)
@@ -73,14 +75,14 @@ impl MemoryFiles {
             )));
         }
         self.total = total;
-        self.files.insert(name, bytes);
+        self.files.insert(name, std::sync::Arc::new(bytes));
         Ok(())
     }
 
     fn take(&mut self, resolved: &Path) -> Option<Vec<u8>> {
         let bytes = self.files.remove(&key(resolved)?)?;
         self.total = self.total.saturating_sub(bytes.len());
-        Some(bytes)
+        Some(std::sync::Arc::try_unwrap(bytes).unwrap_or_else(|shared| (*shared).clone()))
     }
 }
 

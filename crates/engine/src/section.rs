@@ -19,6 +19,7 @@ use craft3d_math::{Bbox3, Vec3};
 use craft3d_regen::Datum;
 use craft3d_render::Section;
 use serde_json::Value;
+use std::sync::Arc;
 
 /// The colour of a section's cap in the pictures the engine makes
 /// (`view.render`); a shell has its own in its theme.
@@ -203,8 +204,19 @@ impl Session {
         // while the view is scrubbed: the scene is then of another state,
         // and the section lies on the plane of the document as it is.
         let from_scene = self.regen_elsewhere() && !self.regenerated_here();
+        // While the view is scrubbed, the scene drawn is of another
+        // state, and the section lies on the plane of the document as it
+        // is: taken from a scene of that state, which is kept while the
+        // view is scrubbed (or built beside the page first when it is
+        // not, `Session::scene_job`).
         let open = self.document_mut().map_err(|e| e.message().to_string())?;
-        let from_scene = from_scene && open.scrubbed_to().is_none();
+        let current = Arc::clone(open.history.current());
+        let of_current = if from_scene && open.scrubbed_to().is_some() {
+            Some(self.kept_scene_of(&current))
+        } else {
+            None
+        };
+        let open = self.document_mut().map_err(|e| e.message().to_string())?;
         let reference = plane_value(
             open.history.current(),
             "section",
@@ -240,6 +252,20 @@ impl Session {
                 };
                 if from_scene {
                     let id = id.to_string();
+                    let current_scene;
+                    let scene = match of_current {
+                        None => scene,
+                        Some(None) => {
+                            return Err(format!(
+                                "the datum plane `{name}` is being placed beside the page; the section follows"
+                            ));
+                        }
+                        Some(Some(Err(why))) => return Err(why),
+                        Some(Some(Ok(kept))) => {
+                            current_scene = kept;
+                            &*current_scene
+                        }
+                    };
                     return scene
                         .datums
                         .iter()

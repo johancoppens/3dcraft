@@ -34,6 +34,11 @@ pub trait Transport {
     fn cancel(&mut self) {
         self.stop();
     }
+    /// Posts a command to be run where the bodies are (the regenerating
+    /// worker: `scenes.rs`); a worker that runs none refuses it.
+    fn post_command(&mut self, _token: u64, _document: &[u8], _work: &str) -> Result<(), String> {
+        Err("this worker runs no commands".to_string())
+    }
 }
 
 /// What came back from the worker.
@@ -50,6 +55,13 @@ pub enum Reply {
     Part { token: u64, bytes: Vec<u8> },
     /// The answer to job `token` of scenes is complete.
     Done { token: u64 },
+    /// The answer to command `token` run where the bodies are
+    /// (`craft3d_engine::run_command`), or why the worker stopped while
+    /// running it.
+    Command {
+        token: u64,
+        answer: Result<craft3d_engine::CommandAnswer, String>,
+    },
     /// The worker itself failed (it could not be loaded, or an error
     /// escaped it): why.
     Failed(String),
@@ -147,7 +159,7 @@ impl<T: Transport> Checks<T> {
                     }
                 }
                 // Not the checking worker's.
-                Reply::Part { .. } | Reply::Done { .. } => {}
+                Reply::Part { .. } | Reply::Done { .. } | Reply::Command { .. } => {}
                 Reply::Failed(why) => {
                     self.transport.stop();
                     let busy = self.busy.take();

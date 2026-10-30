@@ -3,7 +3,8 @@
 //! `<meta name="craft3d-worker">`), which loads this same module and
 //! answers each job: a job of checks with [`craft3d_check`], a job of
 //! scenes with [`craft3d_scene_begin`] and [`craft3d_scene_step`], a
-//! piece at a time, looking at its messages between pieces: a newer job
+//! piece at a time, looking at its messages between pieces (and running
+//! a command where the bodies are with [`craft3d_command`]): a newer job
 //! of scenes replaces the one it builds, `{kind: "cancel"}` leaves it,
 //! and what it regenerated stays for the next.
 //! [`WebWorker`] is the page's [`Transport`] for
@@ -57,6 +58,29 @@ pub fn craft3d_scene_step(budget_ms: f64) -> Option<Vec<u8>> {
         craft3d_engine::SceneStep::Working => Some(Vec::new()),
         craft3d_engine::SceneStep::Done => None,
     }
+}
+
+/// What the regenerating worker answers a command with, run where the
+/// bodies are (`craft3d_engine::run_command`): `{answer, files}`, the
+/// files as `[name, Uint8Array]` pairs.
+#[wasm_bindgen]
+pub fn craft3d_command(document: &[u8], work: &str) -> JsValue {
+    let answered = craft3d_engine::run_command(document, work);
+    let files = js_sys::Array::new();
+    for (name, bytes) in &answered.files {
+        let pair = js_sys::Array::new();
+        pair.push(&JsValue::from_str(name));
+        pair.push(&js_sys::Uint8Array::from(&bytes[..]));
+        files.push(&pair);
+    }
+    let reply = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        &reply,
+        &JsValue::from_str("answer"),
+        &JsValue::from_str(&answered.answer),
+    );
+    let _ = js_sys::Reflect::set(&reply, &JsValue::from_str("files"), &files);
+    reply.into()
 }
 
 /// The worker's script, as the page names it; `None` on a page that
@@ -153,12 +177,18 @@ impl WebWorker {
     }
 }
 
-impl Transport for WebWorker {
-    fn post(&mut self, token: u64, document: &[u8], work: &str) -> Result<(), String> {
+impl WebWorker {
+    fn post_kind(
+        &mut self,
+        kind: &str,
+        token: u64,
+        document: &[u8],
+        work: &str,
+    ) -> Result<(), String> {
         let message = js_sys::Object::new();
         for (key, value) in [
             ("token", JsValue::from_str(&token.to_string())),
-            ("kind", JsValue::from_str(self.kind)),
+            ("kind", JsValue::from_str(kind)),
             ("document", js_sys::Uint8Array::from(document).into()),
             ("work", JsValue::from_str(work)),
             ("module", wasm_bindgen::module()),
@@ -170,6 +200,16 @@ impl Transport for WebWorker {
         self.start()?
             .post_message(&message)
             .map_err(|e| format!("the job cannot be posted to {name}: {}", text(&e)))
+    }
+}
+
+impl Transport for WebWorker {
+    fn post(&mut self, token: u64, document: &[u8], work: &str) -> Result<(), String> {
+        self.post_kind(self.kind, token, document, work)
+    }
+
+    fn post_command(&mut self, token: u64, document: &[u8], work: &str) -> Result<(), String> {
+        self.post_kind("command", token, document, work)
     }
 
     fn cancel(&mut self) {
@@ -213,6 +253,26 @@ fn reply_of(data: &JsValue, name: &str) -> Reply {
     }
     if get("done").is_some_and(|v| v.is_truthy()) {
         return Reply::Done { token };
+    }
+    if let Some(answer) = field("command") {
+        let mut files = Vec::new();
+        if let Some(list) = get("files").and_then(|v| v.dyn_into::<js_sys::Array>().ok()) {
+            for pair in list.iter() {
+                let name = js_sys::Reflect::get(&pair, &JsValue::from_f64(0.0))
+                    .ok()
+                    .and_then(|v| v.as_string());
+                let bytes = js_sys::Reflect::get(&pair, &JsValue::from_f64(1.0))
+                    .ok()
+                    .and_then(|v| v.dyn_into::<js_sys::Uint8Array>().ok());
+                if let (Some(name), Some(bytes)) = (name, bytes) {
+                    files.push((name, bytes.to_vec()));
+                }
+            }
+        }
+        return Reply::Command {
+            token,
+            answer: Ok(craft3d_engine::CommandAnswer { answer, files }),
+        };
     }
     if let Some(why) = field("unavailable") {
         return Reply::Failed(format!("the module cannot be started in the worker: {why}"));

@@ -531,6 +531,77 @@ impl Selection {
     pub(crate) fn serial(&self) -> u64 {
         self.serial
     }
+
+    /// The selection written out, to be the selection of the same
+    /// document elsewhere (`commands_elsewhere.rs`): its entries and what
+    /// dropped out, not when it was checked (it is checked again there).
+    pub(crate) fn to_wire(&self) -> Value {
+        let item = |i: &SelectionItem| json!([i.kind.name(), i.name, i.feature]);
+        let entries: Vec<Value> = self
+            .entries
+            .iter()
+            .map(|e| {
+                json!({
+                    "seed": item(&e.seed),
+                    "now": e.now.iter().map(|(i, n)| json!([item(i), n])).collect::<Vec<_>>(),
+                    "hidden": e.hidden,
+                    "anchor": e.anchor,
+                })
+            })
+            .collect();
+        json!({"entries": entries, "dropped": self.dropped})
+    }
+
+    /// A selection read back from [`Selection::to_wire`], with a new
+    /// serial, checked at `checked` (the revision and generation it was
+    /// checked against elsewhere) or to be checked; `None` when it does
+    /// not fit.
+    pub(crate) fn from_wire(value: &Value, checked: Option<(u64, u64)>) -> Option<Self> {
+        let item = |v: &Value| -> Option<SelectionItem> {
+            let [kind, name, feature] = v.as_array()?.as_slice() else {
+                return None;
+            };
+            Some(SelectionItem {
+                kind: SelectionKind::parse(kind.as_str()?)?,
+                name: name.as_str()?.to_string(),
+                feature: feature.as_str()?.to_string(),
+            })
+        };
+        let text = |v: Option<&Value>| -> Option<Option<String>> {
+            match v {
+                None | Some(Value::Null) => Some(None),
+                Some(v) => Some(Some(v.as_str()?.to_string())),
+            }
+        };
+        let mut entries = Vec::new();
+        for e in value.get("entries")?.as_array()? {
+            let mut now = Vec::new();
+            for pair in e.get("now")?.as_array()? {
+                let [i, n] = pair.as_array()?.as_slice() else {
+                    return None;
+                };
+                now.push((item(i)?, n.as_u64()?));
+            }
+            entries.push(Entry {
+                seed: item(e.get("seed")?)?,
+                now,
+                hidden: text(e.get("hidden"))?,
+                anchor: text(e.get("anchor"))?,
+            });
+        }
+        let dropped = value
+            .get("dropped")?
+            .as_array()?
+            .iter()
+            .map(|d| d.as_str().map(str::to_string))
+            .collect::<Option<Vec<_>>>()?;
+        Some(Self {
+            entries,
+            serial: next_serial(),
+            dropped,
+            checked,
+        })
+    }
 }
 
 /// Entities followed into later features: per image, its body's feature,
@@ -1165,7 +1236,7 @@ impl Session {
     }
 
     /// [`Session::selection_serial`], checked whatever it takes.
-    fn check_selection(&mut self) -> u64 {
+    pub(crate) fn check_selection(&mut self) -> u64 {
         let Ok(open) = self.document_mut() else {
             return 0;
         };
