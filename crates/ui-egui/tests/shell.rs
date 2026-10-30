@@ -562,9 +562,10 @@ fn resizing_the_window_draws_coarse_frames_and_then_a_sharp_one() {
     let framed = shell.state.camera;
 
     // The window gets narrower and a little taller every frame, as when its
-    // corner is dragged.
+    // corner is dragged (staying wider than `Tokens::narrow_width`, whose
+    // narrow layout has taller bars).
     for step in 1..=5 {
-        window.size = vec2(1000.0 - 80.0 * step as f32, 700.0 + 10.0 * step as f32);
+        window.size = vec2(1000.0 - 30.0 * step as f32, 700.0 + 10.0 * step as f32);
         let _ = window.frame(&mut shell, &mut session, Vec::new());
         let [w, h] = shell.viewport_size();
         let stats = shell.render_stats().unwrap();

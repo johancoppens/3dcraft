@@ -1484,10 +1484,11 @@ mod tests {
                                 );
                             }
                         }
-                        let plates: Vec<Rect> = [layout.bar, layout.camera_plate]
-                            .into_iter()
-                            .flatten()
-                            .collect();
+                        let plates: Vec<Rect> =
+                            [layout.bar, layout.section_plate, layout.camera_plate]
+                                .into_iter()
+                                .flatten()
+                                .collect();
                         let controls = layout.controls();
                         for (k, (name, rect)) in controls.iter().enumerate() {
                             assert!(
