@@ -261,7 +261,50 @@ fn shapes(patch: &Patch) -> Vec<Shape> {
         .collect()
 }
 
+/// Along the lines that leave a curvature edge at the crossing curves
+/// (u = 0, ½, 1), the normal curvature runs from the face's to the
+/// sheet's own with one turn at most (a single extremum), changes sign at
+/// most once, stays within the band between the face's curvature and the
+/// tangent-held sheet's, widened by at most 0.75 of the change the hold
+/// makes at the seam (the least-variation change must swing past the
+/// sheet's own by about that, see `network::fair`), and is at most three
+/// times as steep as the tangent-held sheet. On every line (between the
+/// crossings too) it is at most three times as steep as the steeper of
+/// the free and the tangent-held sheets anywhere. Before the change was
+/// spread (one control point per condition, squeezed into the first knot
+/// spans) the guide's fin had four changes of sign, three turns, a swing
+/// of 3.1 times the change at the seam and 13 times the tangent sheet's
+/// slope.
 #[test]
+fn curvature_held_sheets_are_fair_across_their_seam() {
+    for case in [fin(), ramp(), dome(), dome_on_spline()] {
+        let free = shapes(&patch(&case, "free"));
+        let tangent = shapes(&patch(&case, "tangent"));
+        let held = shapes(&patch(&case, "curvature"));
+        let steepest_own = free
+            .iter()
+            .chain(&tangent)
+            .fold(0.0_f64, |m, s| m.max(s.steepest));
+        for (k, u) in LINES.iter().enumerate() {
+            let (g1, g2) = (tangent[k], held[k]);
+            let what = format!("{} at u = {u}: held {g2:?}, tangent {g1:?}", case.name);
+            assert!(g2.steepest <= 3.0 * steepest_own, "{what}");
+            if ![0.0, 0.5, 1.0].contains(u) {
+                continue;
+            }
+            assert!(g2.turns <= 1, "{what}");
+            assert!(g2.signs <= 1, "{what}");
+            let change = (g2.seam - g1.seam).abs();
+            let (low, high) = (g1.low.min(g2.seam), g1.high.max(g2.seam));
+            let swing = (low - g2.low).max(g2.high - high).max(0.0);
+            assert!(swing <= 0.75 * change + 1e-9, "{what}: swing {swing}");
+            assert!(g2.steepest <= 3.0 * g1.steepest, "{what}");
+        }
+    }
+}
+
+#[test]
+#[ignore = "prints the profiles: run with --ignored --nocapture"]
 fn profiles_across_held_edges() {
     for case in [fin(), ramp(), dome(), dome_on_spline()] {
         for kind in ["free", "tangent", "curvature"] {
