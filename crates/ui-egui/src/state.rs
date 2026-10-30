@@ -1403,7 +1403,7 @@ mod tests {
                 "camera": {"target": [1.5, -2.0, 3.25], "distance": 42.0, "yaw": 135.0,
                            "pitch": -20.0, "projection": "orthographic", "fovY": 45.0,
                            "autoFit": false},
-                "panels": {"tree": false, "status": true, "recovery": false},
+                "panels": {"tree": false, "status": true, "recovery": false, "treeWidth": 320.0},
                 "selectedFeature": "F3",
                 "notice": "Step 2: the post",
                 "quality": {"chordal": 1e-4, "maxTriangles": 500_000, "angle": 20.0},
