@@ -5,7 +5,7 @@ of a point, collisions drawn red, checks over the motion and the video of it. Th
 `crates/engine/src/motion.rs` (the state and the commands), `crates/engine/src/replay_cmds.rs` (the video),
 `crates/ui-egui/src/shell/player.rs` and `shell/timeline.rs` (the player) and the overlay in
 `crates/ui-egui/src/viewport.rs` and `direct.rs` (the traces). Assemblies, which this is for in the end, are
-`assemblies.md` (track A, on its own branch until it merges); this document is track C's first part, which works on any part.
+`assemblies.md` (track A); this document is track C's first part, which works on any part.
 
 ## Method
 
@@ -166,3 +166,7 @@ in `shell/player.rs`. `panic_hunt` runs the three commands with adversarial para
   `firstError`, `firstNotProven`. Moments are functions of `t` alone (the fixed-step grid above). The motion replay
   in chunks with a triangle budget and a map for the meshes. Trace: closed needs more than 2 points, flatness
   relative to the size too, the export refuses `tolerance`; the memo's key has the tolerance.
+- 2026-10-30: assemblies merged (track A). An assembly shows its placed parts: `shown()` answers with the placed
+  state before any motion or scrub, and every motion command refuses an assembly by name (the timeline check says
+  that playing an assembly is phase 2), even when the assembly has a variable `t`; the test
+  `an_assembly_shows_its_placed_parts_and_refuses_a_motion` holds both.
