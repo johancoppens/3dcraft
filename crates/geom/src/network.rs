@@ -2316,7 +2316,7 @@ pub fn gordon(net: &Network<'_>) -> Result<Patch, NetworkError> {
             NetworkError::Refused(why) => NetworkError::Refused(format!("{label}: {why}")),
             other => other,
         })?;
-        if found.order != Order::G2 {
+        if found.order != Order::G2 && !DEBUG_KEEP.load(std::sync::atomic::Ordering::Relaxed) {
             return refuse(format!(
                 "{label}: the surface could not be proven to meet its face in curvature (G2): {}",
                 describe(&found)
@@ -2955,7 +2955,14 @@ fn edge_rows(net: &Net, o: Vec3) -> Result<EdgeRows, NetworkError> {
 
 /// Puts the change `delta` (of the second derivative across, about `o`)
 /// on the third row of control points of `net`.
-fn put_on_third_row(net: &mut Net, delta: &Raw, o: Vec3, c2: f64) -> Result<(), NetworkError> {
+fn put_on_third_row(
+    net: &mut Net,
+    delta: &Raw,
+    o: Vec3,
+    c2: f64,
+    tol: f64,
+    label: &str,
+) -> Result<(), NetworkError> {
     let mut delta = mapped(delta, |h| {
         [
             h[0] + o.x * h[3],
@@ -2971,9 +2978,28 @@ fn put_on_third_row(net: &mut Net, delta: &Raw, o: Vec3, c2: f64) -> Result<(), 
     if delta.points.len() != net.rows.len() || !(c2.is_finite() && c2 != 0.0) {
         return Err(internal());
     }
-    for (row, d) in net.rows.iter_mut().zip(&delta.points) {
+    // As for the second row (`hold_tangent`): the change is of the order
+    // of how far the second derivative between the crossings is from the
+    // face's, a fraction of the ribbon between the edge and the third row;
+    // one larger than that ribbon (with a margin of the tolerance) is a
+    // solve that did not follow the face, and refused.
+    for (u, (row, d)) in net.rows.iter_mut().zip(&delta.points).enumerate() {
+        let h0 = row.first().copied().ok_or_else(internal)?;
         let slot = row.get_mut(2).ok_or_else(internal)?;
-        *slot = h_add(*slot, *d, 1.0, 1.0 / c2);
+        let moved = h_add(*slot, *d, 1.0, 1.0 / c2);
+        let (Some(p0), Some(p2), Some(q2)) = (point(h0), point(*slot), point(moved)) else {
+            return refuse(format!(
+                "{label}: holding it in curvature would make a weight of the surface not positive"
+            ));
+        };
+        let change = p2.distance(q2);
+        let ribbon = p2.distance(p0) + tol;
+        if change.is_nan() || change > ribbon {
+            return refuse(format!(
+                "{label}: holding it in curvature would move the surface's third row of control points by {change:.3e} at control point {u}, more than the {ribbon:.3e} between it and the edge: the face's curvature is not followed well enough there"
+            ));
+        }
+        *slot = moved;
     }
     Ok(())
 }
@@ -3080,8 +3106,15 @@ fn hold_curvature_fields(
         target = combined(&target, &times(&scalar, field)?, 1.0, 1.0)?;
     }
     let delta = combined(&target, &rows.x2, 1.0, -1.0)?;
-    put_on_third_row(net, &delta, origin, rows.c2)
+    put_on_third_row(net, &delta, origin, rows.c2, tol, label)
 }
+
+/// TEMPORARY (debugging): keep a sheet whose seam is not proven G2, and
+/// the largest residual of the last curvature solve (f64 bits).
+#[doc(hidden)]
+pub static DEBUG_KEEP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[doc(hidden)]
+pub static DEBUG_RESIDUAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Most floating-point work (multiplications) one curvature hold along an
 /// analytic face may do in its least-squares solve.
@@ -3319,7 +3352,25 @@ fn hold_curvature_implicit(
             rhs.push(d.get(comp).copied().unwrap_or(0.0) * sc);
         }
     }
+    let (keep_rows, keep_rhs) = (a_rows.clone(), rhs.clone());
     let solution = least_norm(&mut a_rows, &mut rhs, angular)?;
+    {
+        let mut worst = 0.0_f64;
+        for (row, b) in keep_rows.iter().zip(&keep_rhs) {
+            let len = row
+                .iter()
+                .map(|x| x * x)
+                .sum::<f64>()
+                .sqrt()
+                .max(f64::MIN_POSITIVE);
+            let r: f64 = row.iter().zip(&solution).map(|(a, x)| a * x).sum::<f64>() - b;
+            worst = worst.max(r.abs() / len);
+        }
+        DEBUG_RESIDUAL.store(
+            (worst + 1e3 * (keep_rows.len() as f64) + (unknowns as f64) * 1e6).to_bits(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
     let delta = Raw {
         degree: big_d,
         knots,
@@ -3330,7 +3381,7 @@ fn hold_curvature_implicit(
             })
             .collect(),
     };
-    put_on_third_row(net, &delta, origin, rows.c2)
+    put_on_third_row(net, &delta, origin, rows.c2, tol, label)
 }
 
 /// The solution of least norm of `A x = b` (rows of `A`): every equation

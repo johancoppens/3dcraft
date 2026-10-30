@@ -631,11 +631,18 @@ fn about(raw: &Raw, o: Vec3) -> Raw {
 
 /// A row cut into pieces at `breaks`, with the rounding allowance of what
 /// enters (`magnitude`: of what it was made from).
-fn row_pieces(raw: &Raw, breaks: &[f64], magnitude: f64) -> Result<Vec<P4>, NetworkError> {
+fn row_pieces(raw: &Raw, breaks: &[f64], magnitude: [f64; 2]) -> Result<Vec<P4>, NetworkError> {
+    let own = self::magnitude(raw);
+    // The coordinates and the weight each by their own magnitudes.
+    let allowance = |factor: f64| {
+        let xyz = factor * EPS * own[0].max(magnitude[0]);
+        let w = factor * EPS * own[1].max(magnitude[1]);
+        [xyz, xyz, xyz, w]
+    };
     if raw.degree == 0 {
         // Constant on each piece (a derivative of a polyline): its value
         // in the middle of each.
-        let e = 32.0 * EPS * magnitude.max(self::magnitude(raw));
+        let es = allowance(32.0);
         let mut bounds = vec![0.0];
         bounds.extend(breaks.iter().copied());
         bounds.push(1.0);
@@ -646,7 +653,7 @@ fn row_pieces(raw: &Raw, breaks: &[f64], magnitude: f64) -> Result<Vec<P4>, Netw
                 let h = super::eval(raw, 0.5 * (a + b))?;
                 let comp = |k: usize| Poly {
                     c: vec![h.get(k).copied().unwrap_or(0.0)],
-                    e,
+                    e: es.get(k).copied().unwrap_or(0.0),
                 };
                 Ok([comp(0), comp(1), comp(2), comp(3)])
             })
@@ -667,11 +674,7 @@ fn row_pieces(raw: &Raw, breaks: &[f64], magnitude: f64) -> Result<Vec<P4>, Netw
     }
     raw.insert_all(&missing)?;
     let p = raw.degree;
-    let own = raw
-        .points
-        .iter()
-        .fold(0.0_f64, |m, h| h.iter().fold(m, |m, x| m.max(x.abs())));
-    let e = 16.0 * (p + 2) as f64 * EPS * own.max(magnitude);
+    let es = allowance(16.0 * (p + 2) as f64);
     let (_, pieces) = bezier_pieces_batched(raw)?;
     if pieces.len() != breaks.len() + 1 {
         return Err(internal());
@@ -684,22 +687,26 @@ fn row_pieces(raw: &Raw, breaks: &[f64], magnitude: f64) -> Result<Vec<P4>, Netw
                     .iter()
                     .map(|h| h.get(k).copied().unwrap_or(0.0))
                     .collect(),
-                e,
+                e: es.get(k).copied().unwrap_or(0.0),
             };
             [comp(0), comp(1), comp(2), comp(3)]
         })
         .collect())
 }
 
-fn magnitude(raw: &Raw) -> f64 {
-    raw.points
-        .iter()
-        .fold(0.0_f64, |m, h| h.iter().fold(m, |m, x| m.max(x.abs())))
+/// The largest coordinate and the largest weight of a row.
+fn magnitude(raw: &Raw) -> [f64; 2] {
+    raw.points.iter().fold([0.0_f64; 2], |[m, w], h| {
+        [
+            m.max(h[0].abs()).max(h[1].abs()).max(h[2].abs()),
+            w.max(h[3].abs()),
+        ]
+    })
 }
 
 /// A derivative's magnitude bound: its own, and `p / span` times its
 /// source's.
-fn derived(source: &Raw, d: &Raw, source_mag: f64) -> f64 {
+fn derived(source: &Raw, d: &Raw, source_mag: [f64; 2]) -> [f64; 2] {
     let p = source.degree as f64;
     let mut span = f64::INFINITY;
     for w in source.knots.windows(2) {
@@ -710,7 +717,8 @@ fn derived(source: &Raw, d: &Raw, source_mag: f64) -> f64 {
         }
     }
     let f = if span.is_finite() { p / span } else { 0.0 };
-    magnitude(d).max(f * source_mag)
+    let own = magnitude(d);
+    [own[0].max(f * source_mag[0]), own[1].max(f * source_mag[1])]
 }
 
 /// One piece of the edge with every row on it.
@@ -1048,7 +1056,7 @@ fn measure(
         thr[2],
     ];
     // Rows about the origin, with the magnitudes they were made from.
-    let mut rows: Vec<(Raw, f64)> = Vec::new();
+    let mut rows: Vec<(Raw, [f64; 2])> = Vec::new();
     let push = |raw: &Raw| (about(raw, origin), magnitude(raw));
     let (a0, m0) = push(x0);
     let a0d = derivative(&a0)?;
@@ -1060,7 +1068,8 @@ fn measure(
     let spline_degree = if let Other::Spline(ys) = &other {
         for y in ys {
             let moved = about(y, origin);
-            let mag = magnitude(y).max(magnitude(&moved));
+            let (g, l) = (magnitude(y), magnitude(&moved));
+            let mag = [g[0].max(l[0]), g[1].max(l[1])];
             rows.push((moved, mag));
         }
         Some(ys.iter().map(|y| y.degree).max().unwrap_or(0))
