@@ -159,9 +159,10 @@ holes at every change:
 **Task 4: a case, and a rule that guards it.** *"Make a moulded case: outside 70 × 50 × 25 mm (corner at
 the origin), the top edges and the four upright corners rounded with a 2 mm radius, the bottom edges
 sharp, hollowed to a 2 mm wall and open at the bottom. Drive it by variables. Then add an assertion that
-the thinnest wall is at least 1.5 mm."* The volume is **17385.50 mm³**. Now ask for a 1 mm wall: the
-window shows the assertion failing, and the agent should tell you so ([chapter
-10](10-measure.md#assertions)).
+the thinnest wall is at least 1.5 mm."* The volume is **17385.50 mm³**. At 2 mm the window may show the
+assertion as *not proven* rather than passed: 3DCraft could not prove the bound at the case's sharp
+inside corners, and says so instead of guessing. Now ask for a 1 mm wall: the window shows the assertion
+failing, and the agent should tell you so ([chapter 10](10-measure.md#assertions)).
 
 **Task 5: make a Jig of it.** *"Publish length and pitch of the strip from task 3 as parameters (length
 from 40 to 300 mm, pitch from 8 to 20 mm) and export it as a Jig."* Open the `.3dcraftjig` in 3DCraft
