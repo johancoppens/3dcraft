@@ -55,8 +55,8 @@ pub const CONTACT_BIAS: f64 = 0.5;
 /// largest magnitude involved: the depth read (the rasteriser's
 /// perspective-correct interpolation and the `f32` store, about 3); the
 /// point rebuilt from it and projected (about 4, its far end 2 more for the
-/// direction from the `f32` normal); the depth on the ray `1 / ((1 − u) / a
-/// + u / b)`, three divisions at WGSL's 2.5 each and two other operations
+/// direction from the `f32` normal); the depth on the ray
+/// `1 / ((1 − u) / a + u / b)`, three divisions at WGSL's 2.5 each and two other operations
 /// (about 9); together about 18, and FMA contraction, which the shading
 /// language allows, can move each rounding once more: about 32. Screen
 /// positions carry the same factor on the sample coordinates and on the
