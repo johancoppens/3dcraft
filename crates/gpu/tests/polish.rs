@@ -21,28 +21,44 @@ use craft3d_gpu::{
 use craft3d_math::Vec3;
 use craft3d_render::Finish;
 use craft3d_render::studio::polish::{Dof, Focus};
-use craft3d_render::studio::{Look, Prepared, bundled::environment, render_studio};
+use craft3d_render::studio::{
+    Look, Prepared, bundled::environment, render_studio, render_studio_doubt,
+};
 use craft3d_tess::{TessParams, tessellate_body};
 use craft3d_testkit::{solids, trimmed};
 use std::sync::Arc;
 
-/// The tolerance of layer 2, GPU against CPU: outside the band, at most
-/// this share of the pixels compared may differ by more than one level,
-/// and none by more than [`MOST_LEVELS`], or [`MOST_LEVELS_TRACED`] where
-/// a reflected ray is traced across the screen (the `f32` ray finds a
-/// surface on a sample where the `f64` one passes it by, or the other
-/// way, and that sample takes another surface's light). Measured on the
-/// Strix (run 40973956505, 2026-10-30; the provisional bounds were 1/16
-/// and 64): the readback renderer on its three adapters, three scenes,
-/// eight looks, at most 8 of 175 721 pixels over one level for one effect
-/// over all scenes (reflections, Radeon Vulkan; 4 of 44 183 = 1/11 000 in
-/// one scene), the largest difference 50 levels (reflections, 1 pixel)
-/// and 9 without them; the viewport, at most 20 of 44 197 (1/2 200, one
-/// frame) and 48 levels. The bounds: the share with a margin of about
-/// four, the levels of about two.
+/// The tolerance of layer 2, GPU against CPU: outside the band and the
+/// pixels in doubt, at most this share of the pixels compared may differ
+/// by more than one level, and none by more than [`MOST_LEVELS`].
+///
+/// The pixels in doubt: a reflected ray that the CPU decides within
+/// `polish::TRACE_DOUBT` of a boundary (a depth on the ray against the
+/// surface's, the thickness's limit, a sample's border, a face edge-on to
+/// the ray) may be decided the other way by the GPU's `f32`, and its sample
+/// then shows another surface's light: any number of levels apart, as the
+/// band's pixels may be. `render_studio_doubt` gives each pixel the share
+/// of its light from such samples (over its samples, its frames and the
+/// lens's gather); a pixel whose share passes [`DOUBT_SHARE`] is left out,
+/// as the band is, and counted: at most [`MOST_DOUBT`] of the pixels.
+///
+/// Measured before the pixels in doubt were left out (run 40973956505,
+/// 2026-10-30): the readback renderer on its three adapters, three
+/// scenes, eight looks, at most 8 of 175 721 pixels over one level for one
+/// effect over all scenes, the largest difference 50 levels (reflections,
+/// 1 pixel: a hit decided in `f32` against `f64`) and 9 without
+/// reflections; the viewport 48 levels. With them left out: see the
+/// constants.
 const SHARE_OVER_ONE: f64 = 1.0 / 512.0;
-const MOST_LEVELS: u8 = 16;
-const MOST_LEVELS_TRACED: u8 = 96;
+const MOST_LEVELS: u8 = 6;
+/// A share of a pixel's light in doubt above which it is left out: a
+/// pixel's bytes are the mean of its samples' over its frames, so a share
+/// under 1/64 of samples that may show another surface moves it by at
+/// most 255 / 64, about 4 levels (in linear light, under the lens, by
+/// about that times the tone curve's slope).
+const DOUBT_SHARE: f32 = 1.0 / 64.0;
+/// The most pixels in doubt, as a share of those outside the band.
+const MOST_DOUBT: f64 = 1.0 / 4000.0;
 
 struct Scene {
     name: &'static str,
@@ -236,6 +252,10 @@ struct Stats {
     over_one: usize,
     most: u8,
     id_outside: usize,
+    /// Pixels outside the band left out as in doubt.
+    doubt: usize,
+    /// The largest difference among them (for the dev log only).
+    most_in_doubt: u8,
 }
 
 impl Stats {
@@ -243,31 +263,46 @@ impl Stats {
         self.over_one as f64 / self.compared.max(1) as f64
     }
 
+    fn doubt_share(&self) -> f64 {
+        self.doubt as f64 / (self.compared + self.doubt).max(1) as f64
+    }
+
     fn merge(&mut self, other: Stats) {
         self.compared += other.compared;
         self.over_one += other.over_one;
         self.most = self.most.max(other.most);
         self.id_outside += other.id_outside;
+        self.doubt += other.doubt;
+        self.most_in_doubt = self.most_in_doubt.max(other.most_in_doubt);
     }
 }
 
-/// Outside the band (`common::band`): every pixel compared, the ids
+/// Outside the band (`common::band`) and the pixels in doubt (`doubt`,
+/// per pixel, from `render_studio_doubt`): every pixel compared, the ids
 /// equal, the colours by how much they differ.
-fn compare(scene: &Scene, cpu: &Frame, gpu: &Frame) -> Stats {
+fn compare(scene: &Scene, cpu: &Frame, doubt: &[f32], gpu: &Frame) -> Stats {
     let band = band(&scene.mesh, &scene.camera, cpu);
     let mut stats = Stats::default();
+    let diff = |i: usize| {
+        (0..3)
+            .map(|k| cpu.rgb[3 * i + k].abs_diff(gpu.rgb[3 * i + k]))
+            .max()
+            .unwrap()
+    };
     for (i, &in_band) in band.iter().enumerate().take(cpu.ids.len()) {
         if in_band {
+            continue;
+        }
+        if doubt[i] > DOUBT_SHARE {
+            stats.doubt += 1;
+            stats.most_in_doubt = stats.most_in_doubt.max(diff(i));
             continue;
         }
         stats.compared += 1;
         if cpu.ids[i] != gpu.ids[i] {
             stats.id_outside += 1;
         }
-        let d = (0..3)
-            .map(|k| cpu.rgb[3 * i + k].abs_diff(gpu.rgb[3 * i + k]))
-            .max()
-            .unwrap();
+        let d = diff(i);
         if d > 1 {
             stats.over_one += 1;
         }
@@ -276,24 +311,26 @@ fn compare(scene: &Scene, cpu: &Frame, gpu: &Frame) -> Stats {
     stats
 }
 
-fn check(label: &str, stats: &Stats, traced: bool) {
-    let most = if traced {
-        MOST_LEVELS_TRACED
-    } else {
-        MOST_LEVELS
-    };
-    assert_eq!(stats.id_outside, 0, "{label}: ids differ: {stats:?}");
-    assert!(
-        stats.share() <= SHARE_OVER_ONE,
-        "{label}: {stats:?}, share {}",
-        stats.share()
-    );
-    assert!(stats.most <= most, "{label}: {stats:?}");
+/// What of the tolerance `stats` breaks, if anything; the tests gather
+/// these and fail at the end, so every measurement is printed.
+fn check(failures: &mut Vec<String>, label: &str, stats: &Stats) {
+    if stats.id_outside != 0
+        || stats.share() > SHARE_OVER_ONE
+        || stats.most > MOST_LEVELS
+        || stats.doubt_share() > MOST_DOUBT
+    {
+        failures.push(format!(
+            "{label}: {stats:?}, share {}, in doubt {}",
+            stats.share(),
+            stats.doubt_share()
+        ));
+    }
 }
 
 #[test]
 fn layer_two_matches_the_cpu_renderer() {
     let scenes = scenes();
+    let mut failures = Vec::new();
     for (index, mut offscreen) in offscreens().into_iter().enumerate() {
         let first_adapter = index == 0;
         let adapter = offscreen.adapter().to_string();
@@ -304,7 +341,7 @@ fn layer_two_matches_the_cpu_renderer() {
                     env: scene.env.clone(),
                     look,
                 };
-                let cpu = render_studio(
+                let (cpu, doubt) = render_studio_doubt(
                     &scene.mesh,
                     &scene.colors,
                     &scene.camera,
@@ -322,11 +359,12 @@ fn layer_two_matches_the_cpu_renderer() {
                         &studio,
                     )
                     .unwrap();
-                let stats = compare(scene, &cpu, &gpu);
+                let stats = compare(scene, &cpu, &doubt, &gpu);
                 eprintln!(
-                    "MEASURE readback {adapter} | {} | {effect}: {stats:?} share {:.6}",
+                    "MEASURE readback {adapter} | {} | {effect}: {stats:?} share {:.6} in doubt {:.6}",
                     scene.name,
-                    stats.share()
+                    stats.share(),
+                    stats.doubt_share()
                 );
                 if effect == "all" {
                     if first_adapter {
@@ -345,19 +383,21 @@ fn layer_two_matches_the_cpu_renderer() {
                     None => per_effect.push((effect, stats)),
                 }
                 check(
+                    &mut failures,
                     &format!("{adapter} {} {effect}", scene.name),
                     &stats,
-                    look.ssr || look.ground_reflection > 0.0,
                 );
             }
         }
         for (effect, stats) in &per_effect {
             eprintln!(
-                "MEASURE readback {adapter} | all scenes | {effect}: {stats:?} share {:.6}",
-                stats.share()
+                "MEASURE readback {adapter} | all scenes | {effect}: {stats:?} share {:.6} in doubt {:.6}",
+                stats.share(),
+                stats.doubt_share()
             );
         }
     }
+    assert!(failures.is_empty(), "{failures:#?}");
 }
 
 /// A short name of an adapter for a file.
@@ -427,6 +467,7 @@ fn overlay() -> OverlayParams {
 /// that, and starts again when the camera moves.
 #[test]
 fn the_viewport_accumulates_layer_two_as_the_cpu_renderer() {
+    let mut failures = Vec::new();
     for (adapter, device, queue) in devices::devices() {
         let name = adapter.get_info().name;
         let mut onscreen = Onscreen::new(&device, &queue, &adapter).unwrap();
@@ -475,7 +516,7 @@ fn the_viewport_accumulates_layer_two_as_the_cpu_renderer() {
                     s.name
                 );
                 if [1, 2, frames].contains(&m) {
-                    let cpu = render_studio(
+                    let (cpu, doubt) = render_studio_doubt(
                         &s.mesh,
                         &s.colors,
                         &s.camera,
@@ -487,11 +528,12 @@ fn the_viewport_accumulates_layer_two_as_the_cpu_renderer() {
                         &s.env,
                     )
                     .unwrap();
-                    let stats = compare(&s, &cpu, &gpu);
+                    let stats = compare(&s, &cpu, &doubt, &gpu);
                     eprintln!(
-                        "MEASURE viewport {name} | {} | {m} frames: {stats:?} share {:.6}",
+                        "MEASURE viewport {name} | {} | {m} frames: {stats:?} share {:.6} in doubt {:.6}",
                         s.name,
-                        stats.share()
+                        stats.share(),
+                        stats.doubt_share()
                     );
                     if m == frames && k < 2 {
                         craft3d_testkit::evidence::print(
@@ -503,7 +545,11 @@ fn the_viewport_accumulates_layer_two_as_the_cpu_renderer() {
                             &gpu.to_png().unwrap(),
                         );
                     }
-                    check(&format!("viewport {name} {} {m}", s.name), &stats, true);
+                    check(
+                        &mut failures,
+                        &format!("viewport {name} {} {m}", s.name),
+                        &stats,
+                    );
                 }
                 last = Some(gpu);
             }
@@ -517,7 +563,7 @@ fn the_viewport_accumulates_layer_two_as_the_cpu_renderer() {
             let _ = draw(&mut onscreen, &moved);
             assert!(onscreen.converging(), "{name} {}", s.name);
             let first = draw(&mut onscreen, &s.camera);
-            let cpu = render_studio(
+            let (cpu, doubt) = render_studio_doubt(
                 &s.mesh,
                 &s.colors,
                 &s.camera,
@@ -529,13 +575,21 @@ fn the_viewport_accumulates_layer_two_as_the_cpu_renderer() {
                 &s.env,
             )
             .unwrap();
+            let stats = compare(&s, &cpu, &doubt, &first);
+            eprintln!(
+                "MEASURE viewport {name} | {} | restarted: {stats:?} share {:.6} in doubt {:.6}",
+                s.name,
+                stats.share(),
+                stats.doubt_share()
+            );
             check(
+                &mut failures,
                 &format!("viewport {name} {} restarted", s.name),
-                &compare(&s, &cpu, &first),
-                true,
+                &stats,
             );
         }
     }
+    assert!(failures.is_empty(), "{failures:#?}");
 }
 
 /// The cost of layer 2 on a model of a thousand faces, as

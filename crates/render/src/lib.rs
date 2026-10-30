@@ -41,6 +41,12 @@ pub enum RenderError {
     TooManySamples {
         samples: u64,
     },
+    /// A studio still of `frames` frames of `samples` samples each would
+    /// pass [`MAX_SAMPLES`] in all.
+    TooManyFrames {
+        samples: u64,
+        frames: u32,
+    },
     /// Eye and target coincide, the up vector is parallel to the view
     /// direction, or a camera number is not finite or not positive.
     DegenerateCamera,
@@ -65,6 +71,11 @@ impl fmt::Display for RenderError {
             RenderError::TooManySamples { samples } => write!(
                 f,
                 "{samples} samples exceed the limit of {MAX_SAMPLES}; lower the size or ssaa"
+            ),
+            RenderError::TooManyFrames { samples, frames } => write!(
+                f,
+                "{frames} frames of {samples} samples exceed the limit of {MAX_SAMPLES} samples \
+                 in all; accumulate fewer frames or lower the size or ssaa"
             ),
             RenderError::DegenerateCamera => write!(
                 f,

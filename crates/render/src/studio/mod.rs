@@ -514,7 +514,8 @@ pub(crate) struct Surface {
 /// average of [`Look::accumulate`] frames ([`render_studio_frame`]),
 /// summed per pixel and rounded once. A see-through or cut-open picture
 /// is drawn in the plain look (the studio look of those is still to
-/// come).
+/// come). The samples of all frames together may not pass
+/// [`crate::MAX_SAMPLES`] ([`RenderError::TooManyFrames`]).
 pub fn render_studio(
     mesh: &Mesh,
     colors: &FaceColors,
@@ -523,26 +524,78 @@ pub fn render_studio(
     look: &Look,
     env: &Prepared,
 ) -> Result<Frame, RenderError> {
+    studio_frames(mesh, colors, camera, params, look, env, false).map(|(frame, _)| frame)
+}
+
+/// [`render_studio`] with, per pixel, the share of its light that a
+/// decision in doubt may have changed: the mean over its samples and
+/// frames of each sample's share, a sample's being 1 where its reflected
+/// ray made a decision within [`polish::TRACE_DOUBT`] of its boundary
+/// (`polish::Traced`), the share of such samples in the lens's gather
+/// where there is a lens, and 0 elsewhere (bloom spreads a sample's light
+/// by at most its strength over its pyramid, which is not counted). The
+/// GPU makes those decisions in `f32`, so a comparison of the two
+/// renderers leaves out the pixels with a large share, as it leaves out
+/// the band along silhouettes.
+pub fn render_studio_doubt(
+    mesh: &Mesh,
+    colors: &FaceColors,
+    camera: &Camera,
+    params: &RenderParams,
+    look: &Look,
+    env: &Prepared,
+) -> Result<(Frame, Vec<f32>), RenderError> {
+    studio_frames(mesh, colors, camera, params, look, env, true)
+}
+
+fn studio_frames(
+    mesh: &Mesh,
+    colors: &FaceColors,
+    camera: &Camera,
+    params: &RenderParams,
+    look: &Look,
+    env: &Prepared,
+    mark: bool,
+) -> Result<(Frame, Vec<f32>), RenderError> {
+    let plain = || {
+        render_colored(mesh, colors, camera, params).map(|frame| {
+            let n = frame.ids.len();
+            (frame, vec![0.0; n])
+        })
+    };
     if params.opacity() < 1.0 || params.section.is_some() {
-        return render_colored(mesh, colors, camera, params);
+        return plain();
     }
     let frames = look.accumulate.clamp(1, polish::MAX_ACCUMULATE);
-    let mut first = render_studio_frame(mesh, colors, camera, params, look, env, 0)?;
+    let samples = u64::from(params.width)
+        .saturating_mul(u64::from(params.height))
+        .saturating_mul(u64::from(params.ssaa))
+        .saturating_mul(u64::from(params.ssaa));
+    if frames > 1 && samples.saturating_mul(u64::from(frames)) > MAX_SAMPLES {
+        return Err(RenderError::TooManyFrames { samples, frames });
+    }
+    let (mut first, mut doubt) = studio_frame(mesh, colors, camera, params, look, env, 0, mark)?;
     if frames == 1 {
-        return Ok(first);
+        return Ok((first, doubt));
     }
     let mut sum: Vec<u32> = first.rgb.iter().map(|&b| u32::from(b)).collect();
     for index in 1..frames {
-        let frame = render_studio_frame(mesh, colors, camera, params, look, env, index)?;
+        let (frame, more) = studio_frame(mesh, colors, camera, params, look, env, index, mark)?;
         for (s, &b) in sum.iter_mut().zip(&frame.rgb) {
             *s += u32::from(b);
+        }
+        for (d, m) in doubt.iter_mut().zip(more) {
+            *d += m;
         }
     }
     first.rgb = sum
         .iter()
         .map(|&s| ((s + frames / 2) / frames).min(255) as u8)
         .collect();
-    Ok(first)
+    for d in &mut doubt {
+        *d /= frames as f32;
+    }
+    Ok((first, doubt))
 }
 
 /// Frame `index` of a studio picture: its samples moved by
@@ -558,8 +611,27 @@ pub fn render_studio_frame(
     env: &Prepared,
     index: u32,
 ) -> Result<Frame, RenderError> {
+    studio_frame(mesh, colors, camera, params, look, env, index, false).map(|(frame, _)| frame)
+}
+
+/// [`render_studio_frame`], with each pixel's share in doubt when `mark`
+/// (else zeros).
+#[allow(clippy::too_many_arguments)]
+fn studio_frame(
+    mesh: &Mesh,
+    colors: &FaceColors,
+    camera: &Camera,
+    params: &RenderParams,
+    look: &Look,
+    env: &Prepared,
+    index: u32,
+    mark: bool,
+) -> Result<(Frame, Vec<f32>), RenderError> {
     if params.opacity() < 1.0 || params.section.is_some() {
-        return render_colored(mesh, colors, camera, params);
+        return render_colored(mesh, colors, camera, params).map(|frame| {
+            let n = frame.ids.len();
+            (frame, vec![0.0; n])
+        });
     }
     let (width, height, ssaa) = (params.width, params.height, params.ssaa);
     if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
@@ -613,11 +685,15 @@ pub fn render_studio_frame(
                     if look.plain_background {
                         // The picture's own colour, displayed without the
                         // tone curve: its light is the colour over the
-                        // exposure, marked by the roughness −2.
+                        // exposure, marked by the roughness −2. Without
+                        // layer 2's post effects it is kept as it is and
+                        // shown so, as layer 1 shows it (dividing and
+                        // multiplying by the exposure could move a byte).
                         let factor = light.ground_factor(origin, ray);
+                        let over = if post { light.exposure } else { 1.0 };
                         let c = params
                             .background
-                            .map(|b| tonemap::byte_to_linear(b) * factor / light.exposure);
+                            .map(|b| tonemap::byte_to_linear(b) * factor / over);
                         return Shaded {
                             light: c,
                             weight: [0.0; 3],
@@ -676,6 +752,8 @@ pub fn render_studio_frame(
             "shading the picture failed".to_string(),
         ));
     }
+    // Per sample, the share of its light in doubt; empty for none.
+    let mut doubt: Vec<[f32; 1]> = Vec::new();
     let rgb: Vec<[u8; 3]> = if post {
         // Deliberate narrowing: the buffers hold f32, as on the GPU.
         let mut buffers = polish::Buffers {
@@ -691,13 +769,17 @@ pub fn render_studio_frame(
                 .collect(),
         };
         if look.ssr || look.ground_reflection > 0.0 {
-            buffers.light = polish::Reflect {
+            let (lit, unsure) = polish::Reflect {
                 view: &view,
                 surfaces: &surfaces,
                 frame: &light,
                 diagonal,
             }
             .apply(&buffers);
+            buffers.light = lit;
+            if mark && unsure.iter().any(|&d| d) {
+                doubt = unsure.iter().map(|&d| [f32::from(u8::from(d))]).collect();
+            }
         }
         if let Some(lens) = look
             .dof
@@ -705,8 +787,11 @@ pub fn render_studio_frame(
         {
             let depth: Vec<f64> = surfaces.iter().map(|s| s.dist).collect();
             let taps = polish::dof_taps(lens.reach, index);
-            buffers.light =
-                polish::dof_gather(&buffers.light, &depth, (w, h), |z| lens.coc(z), &taps);
+            let coc = |z: f64| lens.coc(z);
+            buffers.light = polish::gather(&buffers.light, &depth, (w, h), &coc, &taps);
+            if !doubt.is_empty() {
+                doubt = polish::gather(&doubt, &depth, (w, h), &coc, &taps);
+            }
         }
         if look.bloom > 0.0 {
             buffers.light = polish::bloom(&buffers.light, w, h, look.bloom);
@@ -720,7 +805,14 @@ pub fn render_studio_frame(
     } else {
         shaded
             .iter()
-            .map(|c| light.display(c.light, c.roughness))
+            .map(|c| {
+                if c.roughness == PLAIN_BACKDROP {
+                    // Layer 1's plain background, exactly.
+                    c.light.map(|v| tonemap::to_byte(tonemap::srgb_encode(v)))
+                } else {
+                    light.display(c.light, c.roughness)
+                }
+            })
             .collect()
     };
     if rgb.len() != w * h {
@@ -739,8 +831,20 @@ pub fn render_studio_frame(
         sample: 0.5 / f64::from(ssaa),
     };
     let per_pixel = (s * s) as u32;
+    let mut shares = Vec::with_capacity(if mark { ow * oh } else { 0 });
     for oy in 0..oh {
         for ox in 0..ow {
+            if mark {
+                let mut share = 0.0_f32;
+                for dy in 0..s {
+                    let start = (oy * s + dy) * w + ox * s;
+                    for d in doubt.get(start..start + s).into_iter().flatten() {
+                        let [v] = *d;
+                        share += v;
+                    }
+                }
+                shares.push(share / per_pixel as f32);
+            }
             let mut sum = [0_u32; 3];
             for dy in 0..s {
                 let start = (oy * s + dy) * w + ox * s;
@@ -758,7 +862,10 @@ pub fn render_studio_frame(
             frame.depth.push(first.map_or(f64::INFINITY, |f| f.dist));
         }
     }
-    Ok(frame)
+    if !mark {
+        shares = vec![0.0; ow * oh];
+    }
+    Ok((frame, shares))
 }
 
 /// The nearest surface per sample, by the plain renderer's rules (the

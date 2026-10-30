@@ -45,9 +45,23 @@ pub const CONTACT_THICKNESS: f64 = 0.02;
 /// interpolated between the tessellation's corners; a flat face is
 /// exact).
 pub const CONTACT_BIAS: f64 = 0.5;
-/// The ground's reflection at full strength (`Look::ground_reflection`
-/// 1): the Fresnel reflectance of a dielectric (`F0` = 0.04).
-pub const GROUND_REFLECTION: f64 = 1.0;
+/// How close a decision of a traced ray may come to its boundary before
+/// the sample is marked as in doubt ([`Traced::doubt`]), in units of
+/// `f32::EPSILON` (one unit in the last place at 1) times the size of the
+/// numbers compared. The GPU makes the same decisions in `f32` from its own
+/// depth buffer, so where one lies within the error of that arithmetic the
+/// two renderers may decide differently, and the sample then shows another
+/// surface's light. The derivation, in units in the last place of the
+/// largest magnitude involved: the depth read (the rasteriser's
+/// perspective-correct interpolation and the `f32` store, about 3); the
+/// point rebuilt from it and projected (about 4, its far end 2 more for the
+/// direction from the `f32` normal); the depth on the ray `1 / ((1 − u) / a
+/// + u / b)`, three divisions at WGSL's 2.5 each and two other operations
+/// (about 9); together about 18, and FMA contraction, which the shading
+/// language allows, can move each rounding once more. 32 covers that sum
+/// with a margin of about 1.5; screen positions carry the same factor on
+/// the sample coordinates and on the lengths they are projected from.
+pub const TRACE_DOUBT: f64 = 32.0;
 /// Bloom's share of the light in [`super::Look::polished`].
 pub const BLOOM_STRENGTH: f64 = 0.04;
 /// Levels of bloom's pyramid below the picture.
@@ -150,18 +164,22 @@ pub fn jitter(index: u32) -> (f64, f64) {
 }
 
 /// The lens's taps of frame `index` for a reach of `reach` samples: the
-/// offsets of ring `i` (1 to [`DOF_RINGS`]) lie at `reach (i − 1 + f) /
-/// rings`, 8 i of them evenly around and turned by the golden angle per
-/// frame, with `f` 1 on frame 0 and the Halton (5) points after, so the
-/// frames together cover the disc. As `f32`, the numbers both renderers
-/// read.
+/// offsets of ring `i` (1 to [`DOF_RINGS`]) lie at `reach √((i − 1)² + f
+/// (2i − 1)) / rings`, 8 i of them evenly around and turned by the golden
+/// angle per frame, with `f` 1 on frame 0 and the Halton (5) points after.
+/// Ring `i` keeps to its band from `(i − 1) / rings` to `i / rings` of the
+/// reach, and within it `f` spreads the radius by area (the band's area
+/// up to the radius grows evenly with `f`), so the frames together cover
+/// the disc evenly; frame 0's rings lie at `reach i / rings`. As `f32`,
+/// the numbers both renderers read.
 pub fn dof_taps(reach: f64, index: u32) -> Vec<[f32; 2]> {
     let f = if index == 0 { 1.0 } else { halton(index, 5) };
     let turn = f64::from(index) * GOLDEN_ANGLE;
     let mut out = Vec::with_capacity(4 * DOF_RINGS * (DOF_RINGS + 1));
     for i in 1..=DOF_RINGS {
         let n = 8 * i;
-        let r = reach * (i as f64 - 1.0 + f) / DOF_RINGS as f64;
+        let k = i as f64;
+        let r = reach * ((k - 1.0) * (k - 1.0) + f * (2.0 * k - 1.0)).sqrt() / DOF_RINGS as f64;
         for j in 0..n {
             let a = 2.0 * PI * j as f64 / n as f64 + turn + 0.5 * i as f64;
             // Deliberate narrowing: both renderers read these numbers.
@@ -180,12 +198,32 @@ fn depth(surfaces: &[Surface], w: usize, h: usize, x: f64, y: f64) -> Option<f64
     s.dist.is_finite().then_some(s.dist)
 }
 
+/// What [`trace`] found: the sample a ray hit, if any, and whether any
+/// decision on the way came within [`TRACE_DOUBT`] of its boundary, where
+/// the GPU's `f32` may decide the other way.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Traced {
+    pub hit: Option<(usize, usize)>,
+    pub doubt: bool,
+}
+
 /// A ray from the surface point `p` (model axes) along the unit `d`, up to
 /// `length`, across the screen: the first sample whose surface it passes
 /// behind by at most `thickness` plus the depth of one step, refined by
 /// halving, and not the sample `from` it starts at (McGuire and Mara,
 /// *Efficient GPU Screen-Space Ray Tracing*, JCGT 2014, with uniform
-/// steps). `None` when it leaves the picture or finds nothing.
+/// steps). No hit when it leaves the picture or finds nothing.
+///
+/// The decisions are marked in doubt (they change nothing here) when a
+/// depth on the ray lies within `TRACE_DOUBT · ε · Z` of the surface's
+/// (the hit test `z ≥ zs` at every step and every halving) or of the
+/// thickness's limit, with `Z` the sum of the magnitudes the depths come
+/// from (both ends' distances, the length, the point's coordinates); or
+/// when a position on the screen whose floor picks the sample read (at the
+/// hit and at the halvings) lies within `TRACE_DOUBT · ε · S` of a sample's
+/// border, with `S` the magnitudes of both ends' sample coordinates plus
+/// the length and the start's depth in samples at the far end (how far an
+/// error in the point or the direction moves the far end on the screen).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn trace(
     view: &View,
@@ -196,7 +234,8 @@ pub(crate) fn trace(
     length: f64,
     thickness: f64,
     from: (usize, usize),
-) -> Option<(usize, usize)> {
+) -> Traced {
+    let none = Traced::default();
     let perspective = matches!(view.projection, Projection::Perspective { .. });
     let z0 = (p - view.eye).dot(view.forward);
     let dz = d.dot(view.forward);
@@ -206,10 +245,25 @@ pub(crate) fn trace(
         len = len.min(0.9 * z0 / -dz);
     }
     if !(len > 0.0 && len.is_finite()) {
-        return None;
+        return none;
     }
-    let a = view.project(p)?;
-    let b = view.project(p + d * len)?;
+    let Some(a) = view.project(p) else {
+        return none;
+    };
+    let Some(b) = view.project(p + d * len) else {
+        return none;
+    };
+    let eps = TRACE_DOUBT * f64::from(f32::EPSILON);
+    let tol_z = eps * (a.dist.abs() + b.dist.abs() + len + p.length());
+    let sample = view.sample_size(b.dist);
+    let reach = if sample > 0.0 && sample.is_finite() {
+        (len + z0.abs()) / sample
+    } else {
+        0.0
+    };
+    let tol_s = eps * (a.sx.abs() + a.sy.abs() + b.sx.abs() + b.sy.abs() + reach);
+    let near_border = |v: f64| (v - v.round()).abs() <= tol_s;
+    let mut doubt = false;
     let depth_at = |u: f64| {
         if perspective {
             1.0 / ((1.0 - u) / a.dist + u / b.dist)
@@ -217,11 +271,14 @@ pub(crate) fn trace(
             (1.0 - u) * a.dist + u * b.dist
         }
     };
+    let raw = |u: f64| (a.sx + (b.sx - a.sx) * u, a.sy + (b.sy - a.sy) * u);
     let at = |u: f64| {
-        (
-            (a.sx + (b.sx - a.sx) * u).floor(),
-            (a.sy + (b.sy - a.sy) * u).floor(),
-        )
+        let (x, y) = raw(u);
+        (x.floor(), y.floor())
+    };
+    let floor_doubt = |u: f64| {
+        let (x, y) = raw(u);
+        near_border(x) || near_border(y)
     };
     let start = (from.0 as f64, from.1 as f64);
     let mut prev = (0.0, a.dist);
@@ -229,33 +286,54 @@ pub(crate) fn trace(
         let u = i as f64 / SSR_STEPS as f64;
         let (x, y) = at(u);
         if !(x >= 0.0 && y >= 0.0 && x < w as f64 && y < h as f64) {
-            return None;
+            return Traced { hit: None, doubt };
         }
         let z = depth_at(u);
-        if (x, y) != start
-            && let Some(zs) = depth(surfaces, w, h, x, y)
-            && z >= zs
-            && z - zs <= thickness + (z - prev.1).abs()
-        {
-            let (mut lo, mut hi) = (prev.0, u);
-            for _ in 0..SSR_REFINE {
-                let mid = 0.5 * (lo + hi);
-                let (mx, my) = at(mid);
-                if depth(surfaces, w, h, mx, my).is_some_and(|zs| depth_at(mid) >= zs) {
-                    hi = mid;
-                } else {
-                    lo = mid;
+        let found = if (x, y) != start {
+            depth(surfaces, w, h, x, y)
+        } else {
+            None
+        };
+        if let Some(zs) = found {
+            let room = thickness + (z - prev.1).abs();
+            doubt |= (z - zs).abs() <= tol_z;
+            if z >= zs - tol_z {
+                doubt |= ((z - zs) - room).abs() <= tol_z;
+            }
+            if z >= zs && z - zs <= room {
+                doubt |= floor_doubt(u);
+                let (mut lo, mut hi) = (prev.0, u);
+                for _ in 0..SSR_REFINE {
+                    let mid = 0.5 * (lo + hi);
+                    let (mx, my) = at(mid);
+                    doubt |= floor_doubt(mid);
+                    let zm = depth_at(mid);
+                    let behind = depth(surfaces, w, h, mx, my).is_some_and(|zs| {
+                        doubt |= (zm - zs).abs() <= tol_z;
+                        zm >= zs
+                    });
+                    if behind {
+                        hi = mid;
+                    } else {
+                        lo = mid;
+                    }
                 }
+                doubt |= floor_doubt(hi);
+                let (hx, hy) = at(hi);
+                let hit = if depth(surfaces, w, h, hx, hy).is_none() || (hx, hy) == start {
+                    (x as usize, y as usize)
+                } else {
+                    (hx as usize, hy as usize)
+                };
+                return Traced {
+                    hit: Some(hit),
+                    doubt,
+                };
             }
-            let (hx, hy) = at(hi);
-            if depth(surfaces, w, h, hx, hy).is_none() || (hx, hy) == start {
-                return Some((x as usize, y as usize));
-            }
-            return Some((hx as usize, hy as usize));
         }
         prev = (u, z);
     }
-    None
+    Traced { hit: None, doubt }
 }
 
 /// The contact shadow at the surface point `p` towards the unit `l`: 0
@@ -335,8 +413,12 @@ pub(crate) struct Buffers {
     pub weight: Vec<[f32; 4]>,
 }
 
-/// The texel `(x, y)` of a `w` × `h` level, clamped to its border.
+/// The texel `(x, y)` of a `w` × `h` level, clamped to its border; black
+/// for an empty level.
 fn load(level: &[[f32; 3]], w: usize, h: usize, x: i64, y: i64) -> [f64; 3] {
+    if w == 0 || h == 0 {
+        return [0.0; 3];
+    }
     let x = x.clamp(0, w as i64 - 1) as usize;
     let y = y.clamp(0, h as i64 - 1) as usize;
     level.get(y * w + x).map_or([0.0; 3], |c| c.map(f64::from))
@@ -352,8 +434,17 @@ fn add(a: &mut [f64; 3], b: [f64; 3], k: f64) {
 /// Processing in Call of Duty: Advanced Warfare*, SIGGRAPH 2014): 13
 /// bilinear taps, each the mean of the 2 × 2 texels around a corner of
 /// the source, in five overlapping boxes weighted 1/2 (the middle one)
-/// and 1/8. The size halves, rounded up.
+/// and 1/8. The size halves, rounded up; an empty level stays empty.
+///
+/// Away from the border it keeps the light's energy exactly (but for
+/// rounding): every source texel gives a quarter of its light to the
+/// level below, whatever its place among the pairs halved: summed over
+/// the texels below, the middle box gives it 1/8 and the four outer boxes
+/// 1/8, for either parity of its row and column.
 pub fn bloom_down(src: &[[f32; 3]], w: usize, h: usize) -> (Vec<[f32; 3]>, usize, usize) {
+    if w == 0 || h == 0 {
+        return (Vec::new(), 0, 0);
+    }
     let (dw, dh) = (w.div_ceil(2).max(1), h.div_ceil(2).max(1));
     let corner = |cx: i64, cy: i64| {
         let mut c = [0.0; 3];
@@ -384,8 +475,14 @@ pub fn bloom_down(src: &[[f32; 3]], w: usize, h: usize) -> (Vec<[f32; 3]>, usize
 }
 
 /// The coarse level `src` (`w` × `h`) read at the fine level's texel
-/// `(x, y)` with a 3 × 3 tent of bilinear taps one coarse texel apart.
+/// `(x, y)` with a 3 × 3 tent of bilinear taps one coarse texel apart;
+/// black from an empty level. Away from the border every coarse texel
+/// gives its light to four fine texels' worth in all, so a level read up
+/// keeps its energy.
 pub fn bloom_tent(src: &[[f32; 3]], w: usize, h: usize, x: usize, y: usize) -> [f64; 3] {
+    if w == 0 || h == 0 {
+        return [0.0; 3];
+    }
     let (u, v) = ((x as f64 + 0.5) * 0.5, (y as f64 + 0.5) * 0.5);
     let bilinear = |u: f64, v: f64| {
         let (fx, fy) = (u - 0.5, v - 0.5);
@@ -410,9 +507,16 @@ pub fn bloom_tent(src: &[[f32; 3]], w: usize, h: usize, x: usize, y: usize) -> [
 
 /// Bloom: the light blurred at [`BLOOM_LEVELS`] scales and averaged with
 /// itself, `B = (L + up(D1 + up(D2 + …))) / (levels + 1)`, mixed in by
-/// `strength`: `(1 − s) L + s B`. Every filter's weights add up to 1, so
-/// the light's sum is kept but for what the border's clamping adds.
+/// `strength`: `(1 − s) L + s B`. Every filter's weights add up to 1 and
+/// keep the light's energy away from the border ([`bloom_down`],
+/// [`bloom_tent`]); what changes the sum is the border: reads clamped to
+/// it count a border texel more than once, and a level of odd size rounds
+/// up, so on the small levels, where most texels are at the border, light
+/// near it is counted again or lost. An empty picture gives an empty one.
 pub fn bloom(light: &[[f32; 3]], w: usize, h: usize, strength: f64) -> Vec<[f32; 3]> {
+    if w == 0 || h == 0 {
+        return Vec::new();
+    }
     let s = strength.clamp(0.0, 1.0);
     let mut levels = vec![(light.to_vec(), w, h)];
     for _ in 0..BLOOM_LEVELS {
@@ -490,16 +594,33 @@ pub fn dof_gather(
     coc: impl Fn(f64) -> f64 + Sync,
     taps: &[[f32; 2]],
 ) -> Vec<[f32; 3]> {
+    gather(light, depth, (w, h), &coc, taps)
+}
+
+/// [`dof_gather`] of any number of channels: the same taps and weights,
+/// the same order of operations per channel.
+pub(crate) fn gather<const N: usize>(
+    values: &[[f32; N]],
+    depth: &[f64],
+    (w, h): (usize, usize),
+    coc: &(impl Fn(f64) -> f64 + Sync),
+    taps: &[[f32; 2]],
+) -> Vec<[f32; N]> {
+    let add = |sum: &mut [f64; N], v: Option<&[f32; N]>, k: f64| {
+        let v = v.map_or([0.0; N], |c| c.map(f64::from));
+        for (x, y) in sum.iter_mut().zip(v) {
+            *x += y * k;
+        }
+    };
     super::env::par_rows(h, |y| {
         (0..w)
             .map(|x| {
                 let i = y * w + x;
                 let z0 = depth.get(i).copied().unwrap_or(f64::INFINITY);
                 let c0 = coc(z0);
-                let l0 = light.get(i).map_or([0.0; 3], |c| c.map(f64::from));
                 let w0 = 1.0 / c0.max(0.5).powi(2);
-                let mut sum = [0.0; 3];
-                add(&mut sum, l0, w0);
+                let mut sum = [0.0; N];
+                add(&mut sum, values.get(i), w0);
                 let mut total = w0;
                 for &[ox, oy] in taps {
                     let (ox, oy) = (f64::from(ox), f64::from(oy));
@@ -517,11 +638,7 @@ pub fn dof_gather(
                         continue;
                     }
                     let wt = cover / c.max(0.5).powi(2);
-                    add(
-                        &mut sum,
-                        light.get(j).map_or([0.0; 3], |c| c.map(f64::from)),
-                        wt,
-                    );
+                    add(&mut sum, values.get(j), wt);
                     total += wt;
                 }
                 sum.map(|v| (v / total) as f32)
@@ -544,8 +661,10 @@ impl Reflect<'_> {
     /// The reflections of every sample: a glossy surface's specular
     /// environment replaced by the light the ray finds on the screen
     /// (`L + conf · W · (hit − env)`), and the ground's reflection of the
-    /// model, the environment where its ray finds nothing.
-    pub(crate) fn apply(&self, buffers: &Buffers) -> Vec<[f32; 3]> {
+    /// model, the environment where its ray finds nothing. With each
+    /// sample, whether a decision of its ray was in doubt ([`Traced`]; the
+    /// facing test too, within [`TRACE_DOUBT`] · ε of the cosine 0).
+    pub(crate) fn apply(&self, buffers: &Buffers) -> (Vec<[f32; 3]>, Vec<bool>) {
         let (w, h) = (buffers.w, buffers.h);
         let look = &self.frame.look;
         let top = self.frame.top_level();
@@ -557,32 +676,37 @@ impl Reflect<'_> {
                 .get(hy * w + hx)
                 .map_or([0.0; 3], |c| c.map(f64::from))
         };
-        let facing = |(hx, hy): (usize, usize), d: Vec3| -> bool {
+        let eps = TRACE_DOUBT * f64::from(f32::EPSILON);
+        // Whether the surface found faces the ray, and whether that was in
+        // doubt.
+        let facing = |(hx, hy): (usize, usize), d: Vec3| -> (bool, bool) {
             let Some(s) = self.surfaces.get(hy * w + hx) else {
-                return false;
+                return (false, false);
             };
             let p = self.view.eye + self.view.point_at(hx as f64 + 0.5, hy as f64 + 0.5, s.dist);
             let v = self.view.toward_viewer(p);
             let [nx, ny, nz] = s.normal.map(f64::from);
             let n = Vec3::new(nx, ny, nz).normalized().unwrap_or(v);
             let n = if n.dot(v) < 0.0 { -n } else { n };
-            n.dot(d) <= 0.0
+            let c = n.dot(d);
+            (c <= 0.0, c.abs() <= eps)
         };
-        super::env::par_rows(h, |y| {
+        let out: Vec<([f32; 3], bool)> = super::env::par_rows(h, |y| {
             (0..w)
                 .map(|x| {
                     let i = y * w + x;
                     let l = buffers.light.get(i).copied().unwrap_or([0.0; 3]);
                     let Some(s) = self.surfaces.get(i) else {
-                        return l;
+                        return (l, false);
                     };
                     let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
                     let mut out = l.map(f64::from);
+                    let mut doubt: bool;
                     if s.dist.is_finite() {
                         let [wr, wg, wb, r] =
                             buffers.weight.get(i).map_or([0.0; 4], |c| c.map(f64::from));
                         if !(look.ssr && (0.0..SSR_MAX_ROUGHNESS).contains(&r)) {
-                            return l;
+                            return (l, false);
                         }
                         let rel = self.view.point_at(px, py, s.dist);
                         let p = self.view.eye + rel;
@@ -592,9 +716,9 @@ impl Reflect<'_> {
                         let n = if n.dot(v) < 0.0 { -n } else { n };
                         let d = n * (2.0 * n.dot(v)) - v;
                         let Some(d) = d.normalized() else {
-                            return l;
+                            return (l, false);
                         };
-                        let Some(hit) = trace(
+                        let traced = trace(
                             self.view,
                             self.surfaces,
                             (w, h),
@@ -603,11 +727,13 @@ impl Reflect<'_> {
                             length,
                             thickness,
                             (x, y),
-                        ) else {
-                            return l;
+                        );
+                        let Some(hit) = traced.hit else {
+                            return (l, traced.doubt);
                         };
-                        if !facing(hit, d) {
-                            return l;
+                        let (faces, unsure) = facing(hit, d);
+                        if !faces {
+                            return (l, traced.doubt || unsure);
                         }
                         let conf = (1.0 - r / SSR_MAX_ROUGHNESS) * edge_fade(hit.0, hit.1, w, h);
                         let env = self.frame.radiance(d, r * top);
@@ -619,6 +745,7 @@ impl Reflect<'_> {
                                 *o += conf * wk * (f - e);
                             }
                         }
+                        doubt = traced.doubt || unsure;
                     } else {
                         // The plain background reflects nothing.
                         let plain = buffers
@@ -631,20 +758,20 @@ impl Reflect<'_> {
                             look.ground_reflection.clamp(0.0, 1.0)
                         };
                         let Some(z) = self.frame.ground.filter(|_| strength > 0.0) else {
-                            return l;
+                            return (l, false);
                         };
                         let (origin, d) = self.view.ray(px, py);
                         if !(d.z < 0.0 && origin.z > z) {
-                            return l;
+                            return (l, false);
                         }
                         let t = (z - origin.z) / d.z;
                         if !(t.is_finite() && t > 0.0) {
-                            return l;
+                            return (l, false);
                         }
                         let g = origin + d * t;
                         let m = Vec3::new(d.x, d.y, -d.z);
                         let f = strength * dielectric_fresnel(-d.z);
-                        let found = trace(
+                        let traced = trace(
                             self.view,
                             self.surfaces,
                             (w, h),
@@ -653,9 +780,16 @@ impl Reflect<'_> {
                             length,
                             thickness,
                             (x, y),
-                        )
-                        .filter(|&hit| facing(hit, m))
-                        .map(|hit| (hit_light(hit), edge_fade(hit.0, hit.1, w, h)));
+                        );
+                        doubt = traced.doubt;
+                        let found = traced
+                            .hit
+                            .filter(|&hit| {
+                                let (faces, unsure) = facing(hit, m);
+                                doubt |= unsure;
+                                faces
+                            })
+                            .map(|hit| (hit_light(hit), edge_fade(hit.0, hit.1, w, h)));
                         let env = self
                             .frame
                             .radiance(m, super::env::BACKGROUND_ROUGHNESS * top);
@@ -669,10 +803,11 @@ impl Reflect<'_> {
                             }
                         }
                     }
-                    out.map(|v| v as f32)
+                    (out.map(|v| v as f32), doubt)
                 })
                 .collect()
-        })
+        });
+        out.into_iter().unzip()
     }
 }
 
