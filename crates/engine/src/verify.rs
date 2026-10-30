@@ -1775,12 +1775,31 @@ pub(crate) fn plate_thickness(
             return Ok(None);
         }
     }
+    // The vertices' lines before the edges are looked at.
+    for c in points.drain(..) {
+        if !line.fits(c, &mut range)? {
+            return Ok(None);
+        }
+    }
     // An edge that crosses the face's box with an end that is not sampled
     // (outside the box, or deeper): the points along it that project
     // within the box stand for its ends, so a step bounded by a long edge
     // is told without a grid point falling on it.
     let reach = grown(face_box, 2.0 * nudge);
+    // The box around the face's box swept to `deepest`: an edge whose box
+    // misses it is not behind the face (a quick test before the exact
+    // one; with no deepest yet, every edge is tried).
+    let swept = reach
+        .corners()
+        .filter(|_| deepest.is_finite())
+        .map(|(lo, hi)| {
+            let d = normal * -deepest;
+            Bbox3::from_points([lo, hi, lo + d, hi + d])
+        });
     for (edge, edge_box) in body.edges.iter().zip(part.edge_boxes()) {
+        if swept.as_ref().is_some_and(|w| !overlaps(w, edge_box)) {
+            continue;
+        }
         if [edge.start, edge.end]
             .iter()
             .all(|v| sampled.contains(&(v.0 as usize)))

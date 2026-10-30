@@ -665,7 +665,7 @@ fn a_groove_whose_ends_lie_outside_the_face_is_found_from_its_edges() {
         run(
             &mut s,
             "feature.block",
-            json!({"name": "Cutter", "size": [mm(0.5), mm(50.0), mm(1.0)], "position": [mm(44.3), mm(0.0), mm(0.0)]}),
+            json!({"name": "Cutter", "size": [mm(0.5), mm(50.0), mm(1.0)], "position": [mm(46.4), mm(0.0), mm(0.0)]}),
         );
         run(
             &mut s,
