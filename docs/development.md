@@ -420,6 +420,8 @@ The steps the coordinator runs to tag and publish a release (0.1.0 first). Nothi
 6. **Publish.** The developer's step: `gh release edit v<version> --draft=false` (or *Publish release* on GitHub). Only a published release is `releases/latest`, which a web host's updater reads (a private repository also needs its token and its owner, [Web build](#web-build)).
 7. **Afterwards.** Leave `## [Unreleased]` at the top of `CHANGELOG.md` for the next changes; record the release with its run ids under the milestone's **Done** in `docs/roadmap.md` and in the dev log.
 
+Older builds and newer files: a build reads files up to its own format version and says a newer 3DCraft is needed for a file of a later one. A variant added to an existing kind within one version is not caught by that: an older build refuses it with serde's own message (a linear coupling, `"kind": "linear"`, read by a build before it: *unknown variant `linear`, expected one of `gear`, `rack`, `screw`*). Say so in the release notes when a release adds such a variant.
+
 A tag build that fails: fix it on `main` (through the gate), delete the draft release if one was made (`gh release delete v<version>`), delete the tag (`git push origin :refs/tags/v<version>` and `git tag -d v<version>`), and tag the fixed commit. A tag that was published is never moved; the fix is the next patch version.
 
 ## Web build

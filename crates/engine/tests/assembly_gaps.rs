@@ -229,6 +229,25 @@ fn a_linear_coupling_ties_any_number_of_motions() {
         "{c}"
     );
     run(&mut s, "coupling.delete", json!({ "name": "Mixed" }));
+    // A coefficient of a mass or a time leaves the lengths alike and is
+    // still another dimension: refused.
+    for unit in ["2 kg", "3 s"] {
+        let c = run(
+            &mut s,
+            "coupling.add",
+            json!({ "kind": "linear", "name": "Heavy",
+                    "terms": [{ "mate": "SA" }, { "mate": "SB", "coefficient": unit }] }),
+        );
+        assert_eq!(c["status"], "failed", "{unit}: {c}");
+        assert!(
+            c["error"]
+                .as_str()
+                .unwrap()
+                .contains("not of the dimension"),
+            "{unit}: {c}"
+        );
+        run(&mut s, "coupling.delete", json!({ "name": "Heavy" }));
+    }
 
     // A mate a term names is not deleted; a rename takes the term along;
     // the terms are saved and read back.
@@ -760,10 +779,25 @@ fn a_part_in_another_length_unit_keeps_its_size() {
         close(volume("B"), 2.0 * inch.powi(3), 1e-6 * inch.powi(3)),
         "{i}"
     );
-    // A frame of the converted part: its axis datum at the origin, so A's
-    // far corner is an inch out along x.
+    // A frame of the converted part: its axis datum at the origin.
     let p = run(&mut s, "measure.pose", json!({ "instance": "A" }));
     assert!(close(number(&p["position"][0]), 0.0, 1e-9), "{p}");
+    // A face's name survives the conversion: B's bottom (2 by 1 inches)
+    // put on the world's xy plane, its centre at the origin.
+    let m = run(
+        &mut s,
+        "mate.add",
+        json!({ "kind": "fixed", "a": "world/xy", "b": "B/F1:face(0)" }),
+    );
+    assert_eq!(m["status"], "ok", "{m}");
+    let p = run(&mut s, "measure.pose", json!({ "point": "B/F1:face(0)" }));
+    for k in 0..3 {
+        assert!(close(number(&p["position"][k]), 0.0, 1e-6), "{p}");
+    }
+    // And B's own origin lies a half of 2 by 1 inches away from it.
+    let p = run(&mut s, "measure.pose", json!({ "instance": "B" }));
+    let (x, y) = (number(&p["position"][0]), number(&p["position"][1]));
+    assert!(close(x.hypot(y), (inch).hypot(inch / 2.0), 1e-6), "{p}");
     // A subassembly in inches is refused by name.
     run(&mut s, "file.save", json!({ "path": "mm.3dcraftasm" }));
     run(&mut s, "assembly.new", json!({ "units": "in" }));

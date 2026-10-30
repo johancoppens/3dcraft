@@ -1490,8 +1490,9 @@ type LinearTerms = Vec<(usize, usize, f64)>;
 /// A linear coupling's terms for the solver, `(spec, variable,
 /// coefficient)`, and its right-hand side: `Σ cᵢ · qᵢ = value` in base
 /// units (millimetres, radians), each length motion's coefficient taken
-/// to the assembly's length unit. Every term's product has the length
-/// power of the value (an angle is a pure number here, as radians are),
+/// to the assembly's length unit. Every term's product has the dimension
+/// of the value (length, mass and time; an angle is a pure number here, as
+/// radians are),
 /// except that a value of zero fits any; the first term's sets it then.
 fn linear_terms(
     doc: &Document,
@@ -1510,7 +1511,10 @@ fn linear_terms(
         let f = doc.units.length.as_expr_unit().factor();
         if f.is_finite() && f > 0.0 { f } else { 1.0 }
     };
-    let mut power = (value.value != 0.0).then_some(value.dimension.length);
+    // An angle counts as a pure number (radians); every other part of a
+    // dimension (length, mass, time) must agree.
+    let pure = |d: Dimension| Dimension { angle: 0, ..d };
+    let mut power = (value.value != 0.0).then_some(pure(value.dimension));
     let mut terms = Vec::with_capacity(c.terms.len());
     for term in &c.terms {
         let mate = assembly
@@ -1541,10 +1545,8 @@ fn linear_terms(
             )
         })?;
         let length = term.motion != "angle";
-        let product = coefficient
-            .dimension
-            .length
-            .saturating_add(i32::from(length));
+        let mut product = pure(coefficient.dimension);
+        product.length = product.length.saturating_add(i32::from(length));
         match power {
             None => power = Some(product),
             Some(p) if p != product => {

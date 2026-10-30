@@ -412,8 +412,9 @@ document keeps the terms (`Coupling::terms`, `CouplingTerm`; a linear coupling h
 them as `terms` without a new version (a field with a default; a build before it refuses the file by the unknown
 field). A term's `motion` is the mate's main free motion unless given, its coefficient 1. Units: each motion is in
 base units (radians, millimetres) and each length motion's coefficient is taken to the assembly's length unit for
-the solver; every term's product must have the value's length power, an angle counting as a pure number as radians
-do (so a rack is `d − 5 mm · θ = 0`), and a value of 0 fits any power (the first term's then sets it). A term
+the solver; every term's product must have the value's whole dimension (length, mass and time; `2 kg` or `3 s` as a
+coefficient of a distance is refused), an angle counting as a pure number as radians do (so a rack is
+`d − 5 mm · θ = 0`), and a value of 0 fits any dimension (the first term's then sets it). A term
 whose mate lacks the motion, terms that disagree in dimension, or a value that does not evaluate fail the coupling by
 name, as for the other kinds. A mate rename takes its terms along; a mate a term names is not deleted.
 

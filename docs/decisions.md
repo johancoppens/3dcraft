@@ -6,6 +6,18 @@ Decisions that shape the project, newest first, each with its reason. An agent t
 
 ## Taken
 
+### 2026-10-30: A flexible subassembly's own drives are its parent's to set (decided by the coordinator, under the developer's pre-release rule)
+
+In a parent, a free motion that a flexible subassembly drives itself (its `<mate>_angle` variable, a formula of its
+own `t`) is **free unless the parent drives it**: the instance sets, in `params`, a public parameter of the
+subassembly that the drive depends on through its formulas. Before, the subassembly brought its drives with the
+values of its own file, so a leg that played its own motion could not be turned by a machine (over-constrained).
+The rule is read off the formulas, never off names, and applies at every depth. It changes how existing documents
+solve (a flexible subassembly with a driven joint gains that degree of freedom in its parent); by the developer's
+pre-release rule this is not migrated, but the format version is raised with an identity migration that says so,
+with a fixture written by the engine (a flexible subassembly with a constant drive and a linear coupling).
+[`design/assemblies.md`](design/assemblies.md) › *Subassemblies*.
+
 ### 2026-10-30: The web module's hard limit is 12 MiB gzip (decided by the developer)
 
 The web module's hard limit is 12 MiB gzip (was 8 MiB): R1 still grows (text, units, class-A); one first load on a slow

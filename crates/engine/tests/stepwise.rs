@@ -425,10 +425,11 @@ fn an_edit_that_waits_reports_what_fails_on_a_host_that_works_a_piece_at_a_time(
 }
 
 /// Four blocks and three cylinders at scale `s`, a clearance between
-/// them (12 pairs) and an overlap of all (21 pairs, none of whose boxes
-/// meet), in a session that
-/// does it all at once and one that works a piece at a time; the
-/// cylinders moved once more, so that both assertions are to be measured.
+/// them (12 pairs) and an overlap of all (21 pairs; three of them, each
+/// cylinder by a block's corner, have boxes that meet while the bodies
+/// stay 1.09 apart), in a session that does it all at once and one that
+/// works a piece at a time; the cylinders moved once more, so that both
+/// assertions are to be measured.
 fn pairs_sessions(s: f64) -> (Session, Session) {
     let mm = |v: f64| format!("{} mm", v * s);
     let mut steps = vec![
@@ -448,7 +449,7 @@ fn pairs_sessions(s: f64) -> (Session, Session) {
         let name = format!("B{j}");
         steps.push((
             "feature.cylinder",
-            json!({"radius": mm(4.0), "height": mm(10.0), "position": [mm(20.0 * f64::from(j) + 5.0), "y", "0 mm"], "name": name}),
+            json!({"radius": mm(4.0), "height": mm(10.0), "position": [mm(20.0 * f64::from(j) + 13.6), "y", "0 mm"], "name": name}),
         ));
         to.push(name);
     }
@@ -470,7 +471,10 @@ fn pairs_sessions(s: f64) -> (Session, Session) {
         }
         // assert.add measures its own: an edit that moves the
         // cylinders leaves both to be measured again.
-        one.execute("variable.set", &json!({"name": "y", "expr": mm(32.0)}))
+        // Its centre 3.6 beyond a block's corner in x and in y: its box
+        // (4 either way) meets the block's, the cylinder stays
+        // 3.6·√2 − 4 = 1.09 from the corner.
+        one.execute("variable.set", &json!({"name": "y", "expr": mm(13.6)}))
             .unwrap();
     }
     (whole, session)
@@ -497,17 +501,18 @@ fn a_measure_over_many_pairs_of_bodies_is_taken_a_pair_at_a_time() {
         }
         let (got, want) = (listed(&mut session), listed(&mut whole));
         // The clearance's 12 pairs, then the overlap's pairs whose boxes
-        // meet: a piece each (the last piece of all says nothing is
-        // left). Since 2026-10-30 an overlap checks only the pairs whose
-        // boxes meet, and here none do (the blocks lie in y from 0 to 10,
-        // the cylinders' boxes beyond y = 28): of its 21 pairs it checks none.
+        // meet, each checked exactly: a piece each (the last piece of all
+        // says nothing is left). Of the overlap's 21 pairs the boxes of
+        // three meet: each cylinder's with the block whose corner it is by.
         let overlap = &want["assertions"][1]["detail"];
         assert_eq!(
             (&overlap["pairs"], &overlap["checked"]),
-            (&json!(21), &json!(0)),
+            (&json!(21), &json!(3)),
             "{want}"
         );
-        assert!(checking >= 12 - 1, "scale {s}: {checking} pieces");
+        let checked = overlap["checked"].as_u64().unwrap() as usize;
+        assert!(checked > 0, "{want}");
+        assert!(checking >= 12 + checked - 1, "scale {s}: {checking} pieces");
         assert_eq!(got, want, "scale {s}");
         assert_eq!(want["ok"], true, "scale {s}: {want}");
         let pairs = &want["assertions"][0]["detail"]["pairs"];

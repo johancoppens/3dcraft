@@ -22,7 +22,8 @@ Start an assembly and place a part twice:
 
 The `source` is read from the folder 3DCraft may read from, and kept as a path relative to the assembly's file, with
 the SHA-256 of its bytes. A part drawn in another length unit (inches in a millimetre assembly) is rebuilt in the
-assembly's unit at its own size. `position` and `rotation` (a rotation vector in degrees) say where an instance starts; mates
+assembly's unit at its own size. Its parameters are set in its own unit first, so a bare number for a length
+parameter of an inch part means inches (`"params": {"w": "2"}` is 2 in); write the unit to be sure (`"50.8 mm"`). `position` and `rotation` (a rotation vector in degrees) say where an instance starts; mates
 move it from there.
 
 **Sizes per instance.** A part with public parameters (a Jig's, `variable.publish`) can be placed with other values:
