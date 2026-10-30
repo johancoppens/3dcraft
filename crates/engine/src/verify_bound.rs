@@ -529,6 +529,8 @@ struct Search<'p, 'a> {
     /// distances: side 0's pieces are where a line leaves, side 1's where
     /// it comes out ([`Search::ray_bound`]).
     rays: bool,
+    /// [`Search::floor`] per face and axis.
+    floors: std::cell::RefCell<BTreeMap<(usize, [u64; 6]), f64>>,
 }
 
 impl<'p, 'a> Search<'p, 'a>
@@ -879,6 +881,13 @@ where
                     lb = lb.max(self.section(pa, a, pb, b, o, z));
                 }
             }
+            // About a sphere's centre `c`: `|p − q| ≥ ||p − c| − |q − c||`,
+            // and a sphere about `c` is at its radius exactly.
+            if let Sym::Sphere { c, .. } = prim.sym {
+                let (sa, ma) = radii(pa, a, c);
+                let (sb, mb) = radii(pb, b, c);
+                lb = lb.max((sb.0 - sa.1).max(sa.0 - sb.1) - ma - mb);
+            }
         }
         lb
     }
@@ -1068,9 +1077,53 @@ where
     /// The distance in the plane through the axis `(o, z)` of what the
     /// two pieces sweep turning about it.
     fn meridian(&self, pa: &Prim<'_>, a: &Rec, pb: &Prim<'_>, b: &Rec, o: Vec3, z: Vec3) -> f64 {
-        let (ia, ma) = meridian_image(pa, a, o, z);
-        let (ib, mb) = meridian_image(pb, b, o, z);
+        let (ia, ma) = meridian_image(pa, a, o, z, self.floor(a.prim, o, z));
+        let (ib, mb) = meridian_image(pb, b, o, z, self.floor(b.prim, o, z));
         img_distance(&ia, &ib) - ma - mb
+    }
+
+    /// How near the axis `(o, z)` the points of a flat face square to it
+    /// can be (0 where not known): when the axis's foot on its plane is
+    /// out of the face, the distance from the foot, which is convex and
+    /// least at the foot alone, is least over the face on its boundary:
+    /// so no less than the least over its edges (a line's segment and a
+    /// circle in closed form, the boxes of the others' pieces), less the
+    /// body's tolerance. Made once per face and axis.
+    fn floor(&self, prim_id: usize, o: Vec3, z: Vec3) -> f64 {
+        let Some(prim) = self.prims.get(prim_id) else {
+            return 0.0;
+        };
+        let (Kind::Face, Sym::Plane { o: o2, n }) = (prim.kind, prim.sym) else {
+            return 0.0;
+        };
+        if n.cross(z).length() > SAME_AXIS {
+            return 0.0;
+        }
+        let bits = |v: Vec3| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
+        let (bo, bz) = (bits(o), bits(z));
+        let key = (prim_id, [bo[0], bo[1], bo[2], bz[0], bz[1], bz[2]]);
+        if let Some(known) = self.floors.borrow().get(&key) {
+            return *known;
+        }
+        let foot = o + z * (o2 - o).dot(z);
+        let out = self
+            .part(prim.side, prim.part)
+            .is_some_and(|part| matches!(part.probe.on_face(prim.index, foot), Ok(OnFace::Out)));
+        let mut least = if out { f64::INFINITY } else { 0.0 };
+        for edge in &prim.boundary {
+            if least <= 0.0 {
+                break;
+            }
+            least = least.min(edge_from(edge, foot));
+        }
+        let rounding = 1e-13 * (foot.length() + least.min(1e300) + 1.0);
+        let floor = if least.is_finite() {
+            (least - prim.tolerant - rounding).max(0.0)
+        } else {
+            0.0
+        };
+        self.floors.borrow_mut().insert(key, floor);
+        floor
     }
 
     /// The distance of the two pieces' projections across the axis.
@@ -1152,6 +1205,71 @@ fn focal(
     (r - far.min(r) - margin).max(0.0)
 }
 
+/// No more than the least distance from `p` of the edge's points: a
+/// line's segment and a circle (its whole circle) in closed form, the
+/// others by the boxes of their kept pieces (0 where those are not made).
+fn edge_from(edge: &Bound<'_>, p: Vec3) -> f64 {
+    match edge.curve {
+        Curve3::Line(_) => {
+            let (a, b) = (edge.curve.eval(edge.range.0), edge.curve.eval(edge.range.1));
+            let d = b - a;
+            let len2 = d.dot(d);
+            let t = if len2 > 0.0 {
+                ((p - a).dot(d) / len2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            (p - (a + d * t)).length()
+        }
+        Curve3::Circle(c) => {
+            let (m, r) = (c.frame().z(), c.radius());
+            let w = p - c.frame().origin();
+            let along = w.dot(m);
+            let across = (w - m * along).length();
+            along.hypot(across - r)
+        }
+        _ => {
+            let leaves = edge.leaves.get_or_init(|| leaves_of(edge));
+            leaves.as_ref().map_or(0.0, |list| {
+                list.iter()
+                    .map(|(_, b)| crate::verify::box_distance(b, p))
+                    .fold(f64::INFINITY, f64::min)
+            })
+        }
+    }
+}
+
+/// The boxes of an edge's range cut in [`LEAVES`] equal pieces.
+fn leaves_of(edge: &Bound<'_>) -> Leaves {
+    let (t0, t1) = edge.range;
+    let n = f64::from(LEAVES);
+    (0..LEAVES)
+        .map(|k| {
+            let a = t0 + (t1 - t0) * f64::from(k) / n;
+            let z = if k + 1 == LEAVES {
+                t1
+            } else {
+                t0 + (t1 - t0) * f64::from(k + 1) / n
+            };
+            curve_piece(edge.curve, &edge.nets, (a, z)).map(|p| ((a, z), p.bbox()))
+        })
+        .collect()
+}
+
+/// The least and most distance from `c` of a piece's points, and a
+/// margin: a sphere's about the same centre (to rounding) its radius, else
+/// those of its box.
+fn radii(prim: &Prim<'_>, rec: &Rec, c: Vec3) -> ((f64, f64), f64) {
+    if let Sym::Sphere { c: c2, r } = prim.sym {
+        let off = c2.distance(c);
+        if off <= SAME_AXIS * (r + c.length()).max(1.0) {
+            return ((r, r), off + 2e-15 * (r + c.length() + c2.length()));
+        }
+    }
+    let near = crate::verify::box_distance(&rec.bbox, c);
+    ((near, reach_from(rec, c)), 0.0)
+}
+
 /// The most distance from `q` of a piece's box (its farthest corner).
 fn reach_from(rec: &Rec, q: Vec3) -> f64 {
     rec.bbox.corners().map_or(f64::INFINITY, |(l, h)| {
@@ -1190,7 +1308,7 @@ fn same_axis(tilt: f64, offset: f64, scale: f64) -> bool {
 
 /// A piece's image in the half-plane `(ρ, ζ)` about the axis `(o, z)`,
 /// and a margin for an axis that is one only to rounding.
-fn meridian_image(prim: &Prim<'_>, rec: &Rec, o: Vec3, z: Vec3) -> (Img, f64) {
+fn meridian_image(prim: &Prim<'_>, rec: &Rec, o: Vec3, z: Vec3, floor: f64) -> (Img, f64) {
     let lo = rec.piece.least(z) - o.dot(z);
     let hi = rec.piece.most(z) - o.dot(z);
     let corners = rec
@@ -1266,7 +1384,9 @@ fn meridian_image(prim: &Prim<'_>, rec: &Rec, o: Vec3, z: Vec3) -> (Img, f64) {
                     pt_rect((foot.dot(*x), foot.dot(*y)), (u.0, u.1, v.0, v.1))
                 }
                 _ => 0.0,
-            };
+            }
+            .max(floor);
+            let far = far.max(near);
             (
                 Img::Seg((near, h), (far, h)),
                 tilt_margin(rec, tilt, o, o2, 0.0),
@@ -1373,21 +1493,7 @@ fn edge_near(edge: &Bound<'_>, b: &Bbox3) -> bool {
     if boxes_distance(&edge.bbox, b) > 0.0 {
         return false;
     }
-    let leaves = edge.leaves.get_or_init(|| {
-        let (t0, t1) = edge.range;
-        let n = f64::from(LEAVES);
-        (0..LEAVES)
-            .map(|k| {
-                let a = t0 + (t1 - t0) * f64::from(k) / n;
-                let z = if k + 1 == LEAVES {
-                    t1
-                } else {
-                    t0 + (t1 - t0) * f64::from(k + 1) / n
-                };
-                curve_piece(edge.curve, &edge.nets, (a, z)).map(|p| ((a, z), p.bbox()))
-            })
-            .collect()
-    });
+    let leaves = edge.leaves.get_or_init(|| leaves_of(edge));
     let Some(leaves) = leaves else {
         return edge_meets(edge, edge.range, b, EDGE_DEPTH);
     };
@@ -1463,6 +1569,7 @@ pub(crate) fn prove(
         tol,
         failed: std::collections::BTreeSet::new(),
         rays: false,
+        floors: Default::default(),
     };
     let mut best = found;
     let mut nearer: Option<Nearer> = None;
@@ -1682,6 +1789,7 @@ pub(crate) fn prove_rays(
         tol: part.linear,
         failed: std::collections::BTreeSet::new(),
         rays: true,
+        floors: Default::default(),
     };
     let enough = |_: f64| found - close;
     let mut best = found;
@@ -1961,6 +2069,7 @@ mod tests {
             tol: tolerance.linear,
             failed: std::collections::BTreeSet::new(),
             rays: false,
+            floors: Default::default(),
         };
         let top = body
             .faces

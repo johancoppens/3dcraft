@@ -22,8 +22,18 @@ fn run(session: &mut Session, id: &str, params: Value) -> Value {
 }
 
 fn new() -> Session {
+    new_at(1.0)
+}
+
+/// A new document for a model of size about `k` × 10 mm: its tolerance
+/// scaled with it.
+fn new_at(k: f64) -> Session {
     let mut s = Session::new(Workspace::unrestricted());
-    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "file.new",
+        json!({"units": "mm", "tolerance": 1e-6 * k}),
+    );
     s
 }
 
@@ -262,7 +272,7 @@ fn thickness_is(s: &mut Session, of: &str, want: f64, what: &str) {
 #[test]
 fn a_hollow_ball_is_proven_to_its_wall_at_three_scales() {
     for k in [1e-3, 1.0, 1e3] {
-        let mut s = new();
+        let mut s = new_at(k);
         run(
             &mut s,
             "feature.sphere",
@@ -289,7 +299,7 @@ fn a_hollow_ball_is_proven_to_its_wall_at_three_scales() {
 fn a_countersunk_plate_is_proven_to_its_wall_at_three_scales() {
     for k in [1e-3, 1.0, 1e3] {
         let mm = |x: f64| format!("{} mm", x * k);
-        let mut s = new();
+        let mut s = new_at(k);
         run(
             &mut s,
             "feature.block",
@@ -333,7 +343,7 @@ fn a_countersunk_plate_is_proven_to_its_wall_at_three_scales() {
 fn a_spline_valley_is_proven_to_its_floor_at_three_scales() {
     for k in [1e-3, 1.0, 1e3] {
         let mm = |x: f64| format!("{} mm", x * k);
-        let mut s = new();
+        let mut s = new_at(k);
         run(
             &mut s,
             "sketch.create",
@@ -366,7 +376,7 @@ fn gaps_inside_the_mesh_error_are_proven_at_three_scales() {
     for k in [1e-3, 1.0, 1e3] {
         for off in [0.0, 0.004] {
             let mm = |x: f64| format!("{} mm", x * k);
-            let mut s = new();
+            let mut s = new_at(k);
             run(
                 &mut s,
                 "feature.cylinder",
