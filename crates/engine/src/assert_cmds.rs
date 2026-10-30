@@ -559,7 +559,7 @@ fn without_old_name(params: &Value) -> Value {
     params
 }
 
-const ADD_KEYS: [&str; 41] = [
+const ADD_KEYS: [&str; 45] = [
     "name",
     "measure",
     "of",
@@ -599,13 +599,17 @@ const ADD_KEYS: [&str; 41] = [
     "sketch",
     "text",
     "what",
+    "mate",
+    "motion",
+    "instance",
+    "point",
     "rename",
     "details",
 ];
 
 /// How many of [`ADD_KEYS`] assert.add takes; assert.edit takes `rename`
 /// too.
-const ADD: usize = 39;
+const ADD: usize = 43;
 
 fn params_map(params: &Value) -> Map<String, Value> {
     match params {
