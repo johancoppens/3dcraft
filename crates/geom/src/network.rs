@@ -78,6 +78,7 @@ use craft3d_math::{Frame, Vec3};
 use std::fmt;
 
 mod continuity;
+mod fair;
 pub use continuity::{
     Continuity, Gap, MAX_SEAM_DEGREE, MAX_SEAM_PIECES, MAX_SEAM_WORK, Order, continuity, describe,
     thresholds,
@@ -1526,6 +1527,11 @@ fn localize(raw: &mut Raw, next: f64) -> Result<(), NetworkError> {
 /// of `raw` end at or before `next` (2: the point beside the end, as
 /// [`localize`]; 3: the one after it as well, for curvature).
 fn localize_rows(raw: &mut Raw, next: f64, rows: usize) -> Result<(), NetworkError> {
+    // Curvature: the reach cut into equal spans, so that the change can
+    // be spread over it fairly (`fair`).
+    if rows > 2 {
+        return fair::localize(raw, next);
+    }
     // With no curve between this edge and the opposite one, the rows of
     // both must still not overlap: three rows at each end need six, so a
     // curvature edge keeps its rows to the first half (the opposite edge,
@@ -1686,6 +1692,24 @@ fn hold_tangent(
     net.refine_u(du, &tu)?;
     if delta.points.len() != net.rows.len() {
         return Err(internal());
+    }
+    // Ahead of a curvature hold the change is spread over the reach by
+    // the fair profile (`fair`: it leaves the second derivative at the
+    // edge alone; its second coefficient is `f`, the one-row change's).
+    if rows > 2 {
+        let shape = fair::profile(&net.kv, q, fair::reach(next), fair::Order::Tangent)?;
+        spread(net, &delta, &shape, tol, |change, ribbon, u| {
+            if change.is_finite() {
+                format!(
+                    "{label}: holding it tangent would move the surface's control points across it by {change:.3e} at control point {u}, more than the {ribbon:.3e} between them and the edge: the face's tangent planes are not told apart well enough there to follow"
+                )
+            } else {
+                format!(
+                    "{label}: holding it tangent would make a weight of the surface not positive"
+                )
+            }
+        })?;
+        return Ok(scalars);
     }
     // The change between the crossings is what puts the derivative into
     // the planes there; it is of the order of how far the interpolated
@@ -2285,12 +2309,13 @@ pub fn gordon(net: &Network<'_>) -> Result<Patch, NetworkError> {
                     kappa,
                     &scalars,
                     &at,
+                    next,
                     net.angular,
                     tol,
                     e,
                 )?,
                 (false, _, _) => {
-                    hold_curvature_implicit(&mut work, surface, &at, net.angular, tol, e)?;
+                    hold_curvature_implicit(&mut work, surface, &at, next, net.angular, tol, e)?;
                 }
                 _ => return Err(internal()),
             }
@@ -2743,6 +2768,26 @@ fn bend(
             if g2 { 3 } else { 2 },
         )?;
         let p_deg = raw.degree;
+        let reach = fair::reach(if at_start { next } else { 1.0 - next });
+        if g2 {
+            // The tangent turned by a change of least curvature variation
+            // that leaves the second derivative at the edge as it was
+            // (`fair`): `d = (target − C′(0)) w₀ G(t)` in homogeneous
+            // coordinates, `G(0) = 0`, `G′(0) = 1`, `G″(0) = 0`.
+            let w0 = raw.points.first().map(|h| h[3]).ok_or_else(internal)?;
+            let shape = fair::profile(&raw.knots, p_deg, reach, fair::Order::Tangent)?;
+            add_profile(&mut raw, &shape, (target - tangent) * w0);
+            bend_curvature(
+                &mut raw,
+                face,
+                lines.get(k).copied().flatten(),
+                net,
+                reach,
+                &format!("{label}: {}", name(family, k)),
+            )?;
+            track.raw = if at_start { raw } else { reverse(&raw) };
+            continue;
+        }
         let (Some(&h0), Some(&h1), Some(&k1), Some(&kp1)) = (
             raw.points.first(),
             raw.points.get(1),
@@ -2755,15 +2800,6 @@ fn bend(
         let p1 = p0 + target * ((kp1 - k1) * w0 / (p_deg as f64 * w1));
         if let Some(slot) = raw.points.get_mut(1) {
             *slot = h_of(p1, w1);
-        }
-        if g2 {
-            bend_curvature(
-                &mut raw,
-                face,
-                lines.get(k).copied().flatten(),
-                net,
-                &format!("{label}: {}", name(family, k)),
-            )?;
         }
         track.raw = if at_start { raw } else { reverse(&raw) };
     }
@@ -2882,14 +2918,16 @@ fn second_at_start(q: usize, knots: &[f64]) -> Option<[f64; 3]> {
     Some([c * a, -c * (a + b), c * b])
 }
 
-/// Moves the third control point of a curve leaving an edge (at its start)
-/// along the face's normal so that it takes the face's normal curvature in
-/// its direction: the condition is linear in that point, one number.
+/// Bends a curve leaving an edge (at its start) along the face's normal so
+/// that it takes the face's normal curvature in its direction: the
+/// condition is linear in the change, one number, and the change is the
+/// fair one of `fair` (`G(0) = G′(0) = 0`, `G″(0) = 1`) within `reach`.
 fn bend_curvature(
     raw: &mut Raw,
     face: &Surface,
     line: Option<SplineAt>,
     net: &Network<'_>,
+    reach: f64,
     label: &str,
 ) -> Result<(), NetworkError> {
     let tol = net.tolerance;
@@ -2930,24 +2968,30 @@ fn bend_curvature(
             form.second_order(x0, x1)
         }
     };
-    let q = raw.degree;
-    let [_, _, c2] = second_at_start(q, &raw.knots).ok_or_else(internal)?;
-    let h2 = raw.points.get(2).copied().ok_or_else(internal)?;
-    let p2 = point(h2).ok_or_else(internal)?;
+    let shape = fair::profile(&raw.knots, raw.degree, reach, fair::Order::Curvature)?;
     let normal = Vec3::new(n[0], n[1], n[2]);
     let len = normal.length();
-    let w2 = h2[3];
     let gap = r - h_dot(n, x2);
-    let s = gap / (c2 * w2 * len);
-    if !(s.is_finite() && len > 0.0) {
+    // The homogeneous second derivative at the edge changes by
+    // `σ normal G″(0) = σ normal`, its product with `n` by `σ |normal|²`.
+    let sigma = gap / (len * len);
+    if !(sigma.is_finite() && len > 0.0) {
         return refuse(format!(
             "{label}: the face has no normal where it crosses the edge, so its curvature there is not known"
         ));
     }
-    if let Some(slot) = raw.points.get_mut(2) {
-        *slot = h_of(p2 + normal * (s / len), w2);
-    }
+    add_profile(raw, &shape, normal * sigma);
     Ok(())
+}
+
+/// Adds `d · c_j` to the homogeneous coordinates (not the weight) of
+/// control point `j` of `raw`.
+fn add_profile(raw: &mut Raw, c: &[f64], d: Vec3) {
+    for (h, cj) in raw.points.iter_mut().zip(c) {
+        h[0] += d.x * cj;
+        h[1] += d.y * cj;
+        h[2] += d.z * cj;
+    }
 }
 
 /// The dot product of two homogeneous splines, a scalar spline (its first
@@ -3005,13 +3049,48 @@ fn edge_rows(net: &Net, o: Vec3) -> Result<EdgeRows, NetworkError> {
     })
 }
 
+/// Adds `delta(u) · shape_j` to the control point `j` across of every
+/// control point `u` along, refusing a change larger than the ribbon
+/// between that point and the edge (with a margin of the tolerance).
+fn spread(
+    net: &mut Net,
+    delta: &Raw,
+    shape: &[f64],
+    tol: f64,
+    why: impl Fn(f64, f64, usize) -> String,
+) -> Result<(), NetworkError> {
+    for (u, (row, d)) in net.rows.iter_mut().zip(&delta.points).enumerate() {
+        let h0 = row.first().copied().ok_or_else(internal)?;
+        let p0 = point(h0).ok_or_else(internal)?;
+        for (slot, c) in row.iter_mut().zip(shape).skip(1) {
+            if *c == 0.0 {
+                continue;
+            }
+            let moved = h_add(*slot, *d, 1.0, *c);
+            let (Some(p), Some(q)) = (point(*slot), point(moved)) else {
+                return refuse(why(f64::INFINITY, 0.0, u));
+            };
+            let change = p.distance(q);
+            let ribbon = p.distance(p0) + tol;
+            if change.is_nan() || change > ribbon {
+                return refuse(why(change, ribbon, u));
+            }
+            *slot = moved;
+        }
+    }
+    Ok(())
+}
+
 /// Puts the change `delta` (of the second derivative across, about `o`)
-/// on the third row of control points of `net`.
+/// on the control points across within the reach of `next`, spread by the
+/// fair profile (`fair`: `G(0) = G′(0) = 0`, `G″(0) = 1`; its third
+/// coefficient is `1 / c2`, the one-row change's).
 fn put_on_third_row(
     net: &mut Net,
     delta: &Raw,
     o: Vec3,
     c2: f64,
+    next: f64,
     tol: f64,
     label: &str,
 ) -> Result<(), NetworkError> {
@@ -3032,28 +3111,21 @@ fn put_on_third_row(
     }
     // As for the second row (`hold_tangent`): the change is of the order
     // of how far the second derivative between the crossings is from the
-    // face's, a fraction of the ribbon between the edge and the third row;
-    // one larger than that ribbon (with a margin of the tolerance) is a
-    // solve that did not follow the face, and refused.
-    for (u, (row, d)) in net.rows.iter_mut().zip(&delta.points).enumerate() {
-        let h0 = row.first().copied().ok_or_else(internal)?;
-        let slot = row.get_mut(2).ok_or_else(internal)?;
-        let moved = h_add(*slot, *d, 1.0, 1.0 / c2);
-        let (Some(p0), Some(p2), Some(q2)) = (point(h0), point(*slot), point(moved)) else {
-            return refuse(format!(
+    // face's, a fraction of the ribbon between the edge and the rows it
+    // moves; one larger than that ribbon (with a margin of the tolerance)
+    // is a solve that did not follow the face, and refused.
+    let shape = fair::profile(&net.kv, net.pv, fair::reach(next), fair::Order::Curvature)?;
+    spread(net, &delta, &shape, tol, |change, ribbon, u| {
+        if change.is_finite() {
+            format!(
+                "{label}: holding it in curvature would move the surface's control points across it by {change:.3e} at control point {u}, more than the {ribbon:.3e} between them and the edge: the face's curvature is not followed well enough there"
+            )
+        } else {
+            format!(
                 "{label}: holding it in curvature would make a weight of the surface not positive"
-            ));
-        };
-        let change = p2.distance(q2);
-        let ribbon = p2.distance(p0) + tol;
-        if change.is_nan() || change > ribbon {
-            return refuse(format!(
-                "{label}: holding it in curvature would move the surface's third row of control points by {change:.3e} at control point {u}, more than the {ribbon:.3e} between it and the edge: the face's curvature is not followed well enough there"
-            ));
+            )
         }
-        *slot = moved;
-    }
-    Ok(())
+    })
 }
 
 /// Curvature along a spline face's line (after `hold_tangent`, whose
@@ -3071,6 +3143,7 @@ fn hold_curvature_fields(
     kappa: f64,
     scalars: &[Raw],
     at: &[f64],
+    next: f64,
     angular: f64,
     tol: f64,
     edge: usize,
@@ -3158,7 +3231,7 @@ fn hold_curvature_fields(
         target = combined(&target, &times(&scalar, field)?, 1.0, 1.0)?;
     }
     let delta = combined(&target, &rows.x2, 1.0, -1.0)?;
-    put_on_third_row(net, &delta, origin, rows.c2, tol, label)
+    put_on_third_row(net, &delta, origin, rows.c2, next, tol, label)
 }
 
 /// Most floating-point work (multiplications) one curvature hold along an
@@ -3180,10 +3253,12 @@ pub const MAX_CURVATURE_WORK: u64 = 1 << 33;
 /// constrained least squares on the third row with the first two fixed,
 /// solved by Householder QR with pivoting of the equations (an equation
 /// within the angular tolerance of the others' span is dependent).
+#[allow(clippy::too_many_arguments)]
 fn hold_curvature_implicit(
     net: &mut Net,
     face: &Surface,
     at: &[f64],
+    next: f64,
     angular: f64,
     tol: f64,
     edge: usize,
@@ -3421,7 +3496,7 @@ fn hold_curvature_implicit(
             })
             .collect(),
     };
-    put_on_third_row(net, &delta, origin, rows.c2, tol, label)
+    put_on_third_row(net, &delta, origin, rows.c2, next, tol, label)
 }
 
 /// The solution of least norm of `A x = b` (rows of `A`): every equation
