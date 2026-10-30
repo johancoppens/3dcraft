@@ -236,6 +236,11 @@ pub struct TreeRow {
     /// What it passes on and leaves out, in a sentence
     /// (`SceneFeature::passes`).
     pub passes: Option<String>,
+    /// In an assembly's tree: the instance the row is, when it is the
+    /// assembly's own (its eye and its Open act on it).
+    pub instance: Option<String>,
+    /// In an assembly's tree: how deep in subassemblies the row is.
+    pub depth: usize,
 }
 
 /// The marks of the feature tree, by state: built, failed, suppressed,
@@ -627,6 +632,10 @@ pub struct Shell {
     /// changes ([`Self::request_window_close`]).
     quitting: Option<tabs::Quitting>,
     rows: Vec<TreeRow>,
+    /// The active assembly's outline, when the document is one.
+    outline: Option<craft3d_engine::AssemblyOutline>,
+    /// Where the last frame drew each instance row's eye and Open button.
+    instance_hits: Vec<(String, &'static str, egui::Rect)>,
     /// The document's assertions as checked at the last [`Self::sync`],
     /// listed under the features.
     assertion_rows: Vec<craft3d_engine::AssertionState>,
@@ -961,6 +970,8 @@ impl Shell {
             quit_discards: false,
             quitting: None,
             rows: Vec::new(),
+            outline: None,
+            instance_hits: Vec::new(),
             assertion_rows: Vec::new(),
             file_action: None,
             problem: None,
@@ -1285,6 +1296,18 @@ impl Shell {
     /// window shows while the session is away.
     pub fn shown_status(&self) -> Option<&DocumentStatus> {
         self.shown_status.as_ref()
+    }
+
+    /// The active assembly's outline as the tree lists it, when the
+    /// document is an assembly.
+    pub fn assembly_outline(&self) -> Option<&craft3d_engine::AssemblyOutline> {
+        self.outline.as_ref()
+    }
+
+    /// Where the last frame drew each instance row's controls: the
+    /// instance, `eye` or `open`, and the rectangle.
+    pub fn instance_hits(&self) -> &[(String, &'static str, egui::Rect)] {
+        &self.instance_hits
     }
 
     /// The scene as of the last [`Self::sync`].
@@ -1757,8 +1780,47 @@ impl Shell {
                 zoomable: false,
                 when: f.when.clone(),
                 passes: f.passes.clone(),
+                instance: None,
+                depth: 0,
             })
             .collect();
+        // An assembly lists its instances, nested by subassembly, and its
+        // mates (docs/design/assemblies.md › *The tree*).
+        self.outline = session.assembly_outline();
+        if let Some(outline) = &self.outline {
+            self.rows = outline
+                .instances
+                .iter()
+                .map(|i| {
+                    let id = i.features.first().cloned().unwrap_or_default();
+                    TreeRow {
+                        selected: !id.is_empty() && selected == Some(id.as_str()),
+                        id,
+                        name: i.label.clone(),
+                        kind: if i.subassembly {
+                            "subassembly"
+                        } else {
+                            "instance"
+                        },
+                        state: if i.error.is_some() {
+                            FeatureState::Failed
+                        } else {
+                            FeatureState::Ok
+                        },
+                        status: i.source.clone(),
+                        error: i.error.clone(),
+                        caused_by: None,
+                        hidden: !i.visible,
+                        made_selection: false,
+                        zoomable: false,
+                        when: None,
+                        passes: None,
+                        instance: i.own.then(|| i.name.clone()),
+                        depth: i.depth,
+                    }
+                })
+                .collect();
+        }
         if self.state.camera.auto_fit && scene.bbox != self.framed {
             self.framed = scene.bbox;
             let aspect = self.aspect();
@@ -2368,7 +2430,9 @@ impl Shell {
                 self.timeline_ui(ui);
             });
         if self.rows.is_empty() {
-            let hint = if has_document {
+            let hint = if self.outline.is_some() {
+                "No instances yet."
+            } else if has_document {
                 "No features yet."
             } else {
                 "No document."
@@ -2383,7 +2447,11 @@ impl Shell {
         let mut double = None;
         let mut followed = None;
         let mut eye_clicked = None;
+        let mut instance_eye = None;
+        let mut open_instance = None;
+        let mut instance_drawn = Vec::new();
         let in_use = self.jig_in_use();
+        let outline = self.outline.clone();
         let mut hits = Vec::new();
         let scroll_to = self.tree_scroll.take();
         let mut rows_drawn = Vec::new();
@@ -2462,15 +2530,25 @@ impl Shell {
                                 (None, _) => format!("{} · {}", row.kind, row.status),
                             };
                             ui.horizontal(|ui| {
+                                // Nested in its subassembly.
+                                if row.depth > 0 {
+                                    ui.add_space(row.depth.min(8) as f32 * tokens.inset);
+                                }
                                 ui.colored_label(color(tint), mark).on_hover_text(&hover);
                                 let label = ui
                                     .selectable_label(row.selected || row.made_selection, name)
                                     .on_hover_text(&hover);
-                                rows_drawn.push((row.id.clone(), label.rect));
+                                // A row of an instance inside a rigid
+                                // subassembly has no body of its own.
+                                let selectable = !row.id.is_empty();
+                                if selectable {
+                                    rows_drawn.push((row.id.clone(), label.rect));
+                                }
                                 // The second click of a double click is a click
                                 // too: the double click wins, and does nothing
                                 // on a row that cannot be flown to.
-                                if label.double_clicked() {
+                                if !selectable {
+                                } else if label.double_clicked() {
                                     if row.zoomable {
                                         double = Some(row.id.clone());
                                     }
@@ -2503,7 +2581,26 @@ impl Shell {
                                     }
                                 }
                                 // A Jig in use is looked at, not changed.
-                                if !in_use && timeline::eye(ui, row.hidden, &tokens).clicked() {
+                                if outline.is_some() {
+                                    // An assembly's own instance: shown or
+                                    // hidden, and opened in a tab of its own.
+                                    if let Some(instance) = &row.instance {
+                                        let eye = timeline::eye(ui, row.hidden, &tokens);
+                                        instance_drawn.push((instance.clone(), "eye", eye.rect));
+                                        if eye.clicked() {
+                                            instance_eye = Some((instance.clone(), row.hidden));
+                                        }
+                                        let open = ui
+                                            .small_button("Open")
+                                            .on_hover_text("Open its source in a tab of its own");
+                                        instance_drawn.push((instance.clone(), "open", open.rect));
+                                        if open.clicked() {
+                                            open_instance = Some(instance.clone());
+                                        }
+                                    }
+                                } else if !in_use
+                                    && timeline::eye(ui, row.hidden, &tokens).clicked()
+                                {
                                     eye_clicked = Some((row.id.clone(), row.hidden));
                                 }
                             });
@@ -2536,6 +2633,9 @@ impl Shell {
                                     );
                                 });
                             }
+                        }
+                        if let Some(outline) = &outline {
+                            mates_ui(ui, &tokens, outline);
                         }
                         assertions_heading(ui, &tokens, self.assertion_rows.is_empty());
                         let mut pending = false;
@@ -2588,6 +2688,19 @@ impl Shell {
                     });
             });
         self.cause_hits = hits;
+        self.instance_hits = instance_drawn;
+        if let Some((name, hidden)) = instance_eye {
+            self.timeline.queue(
+                "instance.edit",
+                serde_json::json!({"name": name, "visible": hidden}),
+            );
+            ui.ctx().request_repaint();
+        }
+        if let Some(name) = open_instance {
+            self.timeline
+                .queue("instance.open", serde_json::json!({"name": name}));
+            ui.ctx().request_repaint();
+        }
         if let Some((id, hidden)) = eye_clicked {
             self.toggle_visible(id, hidden);
             ui.ctx().request_repaint();
@@ -3565,6 +3678,67 @@ pub const NO_ASSERTIONS_HINT: &str = "No checks yet. Ask an AI agent, e.g. \u{20
 
 /// The "Assertions" heading of the feature panel, always there; with the
 /// hint while there are none.
+/// An assembly's mates under its instances: each with its mark, kind and
+/// value (or why it fails), then the degrees of freedom left.
+fn mates_ui(ui: &mut egui::Ui, tokens: &Tokens, outline: &craft3d_engine::AssemblyOutline) {
+    let dim = color(tokens.text_dim);
+    ui.add_space(tokens.inset * 0.5);
+    ui.label(egui::RichText::new("Mates").strong());
+    ui.separator();
+    if outline.mates.is_empty() {
+        ui.colored_label(dim, egui::RichText::new("No mates yet.").small());
+    }
+    for mate in &outline.mates {
+        let (state, tint) = match mate.status {
+            "ok" => (FeatureState::Ok, tokens.ok),
+            "unsolved" => (FeatureState::Failed, tokens.attention),
+            _ => (FeatureState::Failed, tokens.failed),
+        };
+        let value = match mate.value {
+            Some((v, true)) => format!(" · {:.1}°", v.to_degrees()),
+            Some((v, false)) => format!(" · {v:.3}"),
+            None => String::new(),
+        };
+        let driven = if mate.driven { " · driven" } else { "" };
+        let hover = mate
+            .error
+            .clone()
+            .unwrap_or_else(|| format!("{} · {}", mate.kind, mate.status));
+        ui.horizontal(|ui| {
+            ui.colored_label(color(tint), tree_mark(state))
+                .on_hover_text(&hover);
+            ui.label(&mate.name).on_hover_text(&hover);
+            ui.colored_label(dim, format!("{}{value}{driven}", mate.kind));
+        });
+        if let Some(error) = &mate.error {
+            ui.indent(("craft3d-mate-error", &mate.name), |ui| {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(error).color(color(tint)).small()).wrap(),
+                );
+            });
+        }
+    }
+    let left = match (&outline.solve_error, outline.dof) {
+        (Some(why), _) => {
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(format!("Not solved: {why}"))
+                        .color(color(tokens.failed))
+                        .small(),
+                )
+                .wrap(),
+            );
+            return;
+        }
+        (None, Some(0)) => "Fully constrained (0 degrees of freedom left)".to_string(),
+        (None, Some(1)) => "1 degree of freedom left".to_string(),
+        (None, Some(n)) => format!("{n} degrees of freedom left"),
+        (None, None) => return,
+    };
+    ui.colored_label(dim, left)
+        .on_hover_text(outline.free.join("\n"));
+}
+
 fn assertions_heading(ui: &mut egui::Ui, tokens: &Tokens, empty: bool) {
     ui.add_space(tokens.inset * 0.5);
     ui.label(egui::RichText::new("Assertions").strong());

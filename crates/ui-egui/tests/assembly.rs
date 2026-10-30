@@ -51,6 +51,37 @@ impl Window {
         let mut output = self.ctx.run_ui(input, |ui| shell.ui(ui, session));
         output.textures_delta.clear();
     }
+
+    fn events(&mut self, shell: &mut Shell, session: &mut Session, events: Vec<egui::Event>) {
+        self.time += 1.0 / 60.0;
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 700.0))),
+            time: Some(self.time),
+            events,
+            ..Default::default()
+        };
+        let mut output = self.ctx.run_ui(input, |ui| shell.ui(ui, session));
+        output.textures_delta.clear();
+    }
+
+    fn click(&mut self, shell: &mut Shell, session: &mut Session, at: Pos2) {
+        self.events(shell, session, vec![egui::Event::PointerMoved(at)]);
+        for pressed in [true, false] {
+            self.events(
+                shell,
+                session,
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+        }
+        for _ in 0..3 {
+            self.frame(shell, session);
+        }
+    }
 }
 
 /// A session as the window has one: reading and writing under `dir`
@@ -176,4 +207,84 @@ fn the_window_follows_joint_set_on_an_assembly_and_fits_it() {
         let fitted = call(&mut shell, &mut s, "ui.fit", json!({}));
         assert!(fitted.is_object(), "{fitted}");
     }
+}
+
+/// The left panel of an assembly lists its instances (marks, a click
+/// selects, an eye hides, Open opens the source in a tab), then its mates
+/// with status and value and the degrees of freedom left.
+#[test]
+fn the_tree_of_an_assembly_lists_instances_then_mates() {
+    let (mut s, _dir) = window_session("tree");
+    let mut shell = Shell::new();
+    let mut window = Window::new();
+    four_bar(&mut s);
+    run(
+        &mut s,
+        "joint.set",
+        json!({ "mate": "Drive", "value": "60 deg" }),
+    );
+    for _ in 0..3 {
+        window.frame(&mut shell, &mut s);
+    }
+    let rows = shell.tree_rows().to_vec();
+    let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(names, ["Ground", "Crank", "Coupler", "Rocker"]);
+    assert!(
+        rows.iter()
+            .all(|r| r.kind == "instance" && r.depth == 0 && !r.id.is_empty())
+    );
+    let outline = shell.assembly_outline().expect("an outline").clone();
+    let mates: Vec<&str> = outline.mates.iter().map(|m| m.name.as_str()).collect();
+    assert_eq!(mates, ["Base", "Drive", "Elbow", "Knee", "Hip"]);
+    assert!(
+        outline.mates.iter().all(|m| m.status == "ok"),
+        "{outline:?}"
+    );
+    assert_eq!(outline.dof, Some(0), "{outline:?}");
+    let drive = &outline.mates[1];
+    assert!(drive.driven);
+    let (value, angle) = drive.value.unwrap();
+    assert!(
+        angle && (value.to_degrees() - 60.0).abs() < 1e-6,
+        "{drive:?}"
+    );
+
+    // A click on Crank's row selects it.
+    let crank = rows[1].id.clone();
+    let rect = shell
+        .tree_row_hits()
+        .iter()
+        .find(|(id, _)| *id == crank)
+        .map(|(_, r)| *r)
+        .expect("Crank's row drawn");
+    window.click(&mut shell, &mut s, rect.center());
+    assert!(shell.tree_rows()[1].selected, "{:?}", shell.tree_rows()[1]);
+
+    // Its eye hides the instance.
+    let hit = |shell: &Shell, what: &str| {
+        shell
+            .instance_hits()
+            .iter()
+            .find(|(n, k, _)| n == "Crank" && *k == what)
+            .map(|(_, _, r)| r.center())
+            .unwrap_or_else(|| panic!("no {what} drawn"))
+    };
+    let eye = hit(&shell, "eye");
+    window.click(&mut shell, &mut s, eye);
+    let inspected = run(&mut s, "assembly.inspect", json!({}));
+    let instance = inspected["instances"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["name"] == "Crank")
+        .unwrap()
+        .clone();
+    assert_eq!(instance["visible"], false, "{instance}");
+    assert!(shell.tree_rows()[1].hidden);
+
+    // Open opens the bar part in a tab of its own.
+    let before = s.document_statuses().len();
+    let open = hit(&shell, "open");
+    window.click(&mut shell, &mut s, open);
+    assert_eq!(s.document_statuses().len(), before + 1);
 }

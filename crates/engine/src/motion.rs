@@ -691,6 +691,8 @@ struct State {
     /// An assembly's dead point on the way to `t`: there the motion
     /// stopped, and the state shown is where it stopped.
     stuck: Option<Stuck>,
+    /// An assembly's moment as placed: its instances, mates and solve.
+    placed: Option<Arc<Placed>>,
 }
 
 /// A trace of a point over the motion: view state of one document state.
@@ -783,12 +785,17 @@ impl OpenDocument {
             .sweep
             .as_mut()
             .ok_or("the motion lost its states")?;
-        let (plain, regen, stuck) = if sweep.is_assembly() {
+        let (plain, regen, stuck, placed) = if sweep.is_assembly() {
             let (placed, stuck) = sweep.placed_at(t)?;
-            (Arc::clone(&placed.doc), Arc::clone(&placed.regen), stuck)
+            (
+                Arc::clone(&placed.doc),
+                Arc::clone(&placed.regen),
+                stuck,
+                Some(placed),
+            )
         } else {
             let (plain, regen) = sweep.at(t)?;
-            (plain, regen, None)
+            (plain, regen, None, None)
         };
         // An assembly's moment places its parts by transforms: nothing is
         // regenerated.
@@ -814,6 +821,7 @@ impl OpenDocument {
             regen,
             collisions,
             stuck,
+            placed,
         })
     }
 
@@ -829,6 +837,15 @@ impl OpenDocument {
             return Arc::clone(&placed.doc);
         }
         self.scrubbed()
+    }
+
+    /// For an assembly: its placement as the view shows it, at the moment
+    /// of its motion when one is shown, else at rest.
+    pub(crate) fn shown_placed(&mut self) -> Option<Arc<Placed>> {
+        if let Some(placed) = self.motion_state().and_then(|state| state.placed) {
+            return Some(placed);
+        }
+        self.placed()
     }
 
     /// The regeneration of [`Self::shown`].

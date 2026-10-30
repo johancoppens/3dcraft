@@ -25,8 +25,8 @@
 
 use craft3d_engine::{Session, Workspace};
 use craft3d_ui_egui::files::{
-    EXPORT_FORMATS, EXTENSION, ExportPlan, JIG_EXTENSION, export_params, extension_of, file_stem,
-    guarded, suggested_jig_name, suggested_name,
+    ASSEMBLY_EXTENSION, EXPORT_FORMATS, EXTENSION, ExportPlan, JIG_EXTENSION, export_params,
+    extension_of, file_stem, guarded, suggested_jig_name, suggested_name,
 };
 use craft3d_ui_egui::shell::ExportRequest;
 use craft3d_ui_egui::{CommandReport, DocAction, FileAction, Shell, Work};
@@ -151,9 +151,9 @@ pub fn open_types(ask: Ask) -> Vec<PickerType> {
     match ask {
         Ask::Open => vec![
             PickerType {
-                description: "3DCraft document or Jig",
+                description: "3DCraft document, Jig or assembly",
                 mime: "application/x-craft3d",
-                extensions: vec![EXTENSION, JIG_EXTENSION],
+                extensions: vec![EXTENSION, JIG_EXTENSION, ASSEMBLY_EXTENSION],
             },
             jig_type(),
         ],
@@ -305,7 +305,7 @@ pub enum Received {
 
 pub fn received_kind(name: &str) -> Option<Received> {
     match extension_of(name)?.as_str() {
-        EXTENSION | JIG_EXTENSION => Some(Received::Document),
+        EXTENSION | JIG_EXTENSION | ASSEMBLY_EXTENSION => Some(Received::Document),
         "step" | "stp" => Some(Received::Step),
         _ => None,
     }
@@ -1599,6 +1599,12 @@ mod tests {
         }
         assert!(memory_name(&"a".repeat(1000)).is_some_and(|n| n.len() <= MAX_NAME));
         assert_eq!(received_kind("A.3DCRAFT"), Some(Received::Document));
+        assert_eq!(received_kind("legs.3DCraftAsm"), Some(Received::Document));
+        assert!(
+            open_types(Ask::Open)[0]
+                .extensions
+                .contains(&ASSEMBLY_EXTENSION)
+        );
         assert_eq!(received_kind("a.STP"), Some(Received::Step));
         assert_eq!(received_kind("a.stl"), None);
         // An export's name follows its format (the shared rule,

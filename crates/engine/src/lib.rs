@@ -18,6 +18,7 @@ mod appearance_cmds;
 mod asm;
 mod asm_cmds;
 mod asm_export;
+mod asm_outline;
 mod asm_solve;
 mod assert_check;
 mod assert_cmds;
@@ -99,6 +100,7 @@ mod visibility_cmds;
 mod when_cmds;
 mod workspace;
 
+pub use asm_outline::{AssemblyOutline, OutlineInstance, OutlineMate};
 pub use assert_cmds::{AssertionState, AssertionStatus};
 pub use checks_elsewhere::{CheckRequest, measure_checks};
 pub use commands::{DARK_BACKGROUND, EXPORT_QUALITIES, VIEWPORT_BACKGROUND};
