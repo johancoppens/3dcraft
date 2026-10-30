@@ -74,6 +74,36 @@ coupling whose mate fails, or whose value does not evaluate, fails by name and `
 Closed loops (a four-bar linkage) are solved as a whole, and `assembly.solve` says which mates contradict each other
 and by how much when they cannot all be met.
 
+## In the window
+
+The left panel of an assembly is its tree: the instances (a subassembly's own nested under it), then the mates with
+their kind and value, and how many degrees of freedom are left. Click a row to select the instance, double-click to
+fly to it, the eye hides it and **Open** opens its part in a tab of its own.
+
+Every joint you can set by hand is a slider on the **Parameters** tab. In the viewport, **Alt and a drag** on a part
+moves it along its free motion: drag the crank and the linkage follows. Both are `joint.set`.
+
+To join two parts, select a face of each (Ctrl-click the second), right-click and choose *Revolute between these*
+(or *Fixed*, *Slider*, *Cylindrical*, *Planar*, *Ball*): that is `mate.add`.
+
+## Motion
+
+An assembly plays over the timeline `t` as a part does ([chapter 4](04-window.md)): give it a variable `t` and drive
+a joint by a formula of it.
+
+```json
+[
+  ["variable.set", {"name": "t", "expr": "0"}],
+  ["variable.set", {"name": "Drive_angle", "expr": "360 deg * t"}],
+  ["view.motion", {"t": 0.25}]
+]
+```
+
+Each moment is solved from the one before it, so the linkage stays the way it was assembled (elbow up stays up),
+and the same `t` always shows the same state. Where the mechanism cannot go further (a dead point), `view.motion`
+says so with the `t` it stopped at, and `motion.check` lists every dead point it meets. A trace names its point
+through an instance, as a mate does: `view.trace {"point": "Coupler/End2"}`.
+
 ## Subassemblies
 
 An instance of a `.3dcraftasm` is a **subassembly**. By default it moves as one block (`"mode": "rigid"`);

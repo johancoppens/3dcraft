@@ -446,6 +446,30 @@ back with its sources, `crates/io/tests/step_freecad.rs` FreeCAD reading an asse
 `crates/engine/src/asm.rs` have the unit tests of the rules and the paths. The format: `crates/format/tests/versions.rs`
 (the fixture) and `crates/engine/tests/format_versions.rs` (its regeneration).
 
+### In the window (track C, phase 2)
+
+- **The tree** (`Session::assembly_outline`, `crates/engine/src/asm_outline.rs`; drawn in `ui-egui/src/shell.rs`
+  `tree`): the left panel of a `.3dcraftasm` is headed *Assembly* and lists its instances, each followed by its
+  subassembly's (nested, read from the subassembly's placement; a flexible one's own instances are placed here and
+  selectable, a rigid one's are not: their bodies are the subassembly's), then the mates with their mark, kind,
+  value and `driven`, and the degrees of freedom left (or why the solve failed). Marks, a click to select, a double
+  click to fly and an eye per row work as for features; the eye issues `instance.edit {visible}` and *Open* issues
+  `instance.open` (the source in a tab of its own). It is read from the placement the view shows: a moment of the
+  motion when one is shown.
+- **Joints** (`ui-egui/src/shell/joints.rs`): a mate whose main free motion can be set by hand (it has one and no
+  formula of other variables drives it: a driver of `t` is played, not dragged) is a slider on the Parameters tab,
+  between its limits or a turn either way (a distance: the model's size either way), and **Alt and a drag** on a
+  part moves it along the first such mate of its instance (in the assembly's order): an angle by the sweep of the
+  pointer about the joint's axis on the plane across it, a distance by the point of the axis nearest the pointer's
+  ray. Both issue `joint.set` through the shell's queue, where a later value of the same joint takes the place of
+  an earlier one, so the window never waits for solves it would throw away.
+- **Mates from two faces**: with two faces of two of the assembly's own instances selected, a right click offers
+  *Revolute between these*, *Fixed*, *Slider*, *Cylindrical*, *Planar* and *Ball* above *Select other*; one issues
+  `mate.add` with the faces named through their instances.
+- **The web build** is the same shell: the tree, the sliders and the motion work on the page; an assembly is solved
+  and placed there (regeneration elsewhere is refused for it, *Regeneration elsewhere* above), a piece per frame.
+- `.3dcraftasm` is among the extensions Open offers, on the desktop and the page.
+
 ### Findings and history (track A)
 
 - 2026-10-29: first version (track A): the document kind, format 52, instances with configurations, picked
@@ -462,3 +486,11 @@ back with its sources, `crates/io/tests/step_freecad.rs` FreeCAD reading an asse
   reproduced in the engine (test `the_shown_scenes_follow_the_joints_after_the_workspace_narrows`: absolute open,
   workspace narrowed to a root, display refined elsewhere, Preview and Display scenes, stepwise and not).
 - 2026-10-29: the stand-in replaced by track B's `craft3d-assembly` (on main since 3c885c35): closed loops, couplings, limits and the diagnosis now come from the solver; the engine maps its frames, drives and the world onto the crate's `Problem`.
+- 2026-10-30 (asm-motion-p2): the window bug reported with track A (`joint.set` at 60°, 150° and 240° drew one
+  picture, `ui.fit` found nothing to frame) does not reproduce on main 765efa6e: not in real shell frames (CPU, with
+  and without the refiner), not at the window's desk with its engine thread and refiner and its own session (the
+  user's authority narrowed to the automation roots, one source by absolute path)
+  (`ui-egui/tests/assembly.rs`, `apps/craft3d/src/app.rs` `the_window_follows_joint_set_on_an_assembly`). The likely
+  cause, fixed in track A's review before the merge, is the base of an unsaved assembly after the workspace narrows
+  (`the_shown_scenes_follow_the_joints_after_the_workspace_narrows`); that is not proven, since the bug was never
+  caught in a test. The two tests stay as its guard; what neither covers is the real eframe/wgpu frame loop.
