@@ -1697,7 +1697,7 @@ fn hold_tangent(
     // the fair profile (`fair`: it leaves the second derivative at the
     // edge alone; its second coefficient is `f`, the one-row change's).
     if rows > 2 {
-        let shape = fair::profile(&net.kv, q, next, fair::Order::Tangent)?;
+        let shape = fair::profile(&net.kv, q, next, fair::Order::Tangent, fair::End::Kept)?;
         spread(net, &delta, &shape, 1, tol, |change, ribbon, u| {
             if change.is_finite() {
                 format!(
@@ -2785,7 +2785,13 @@ fn bend(
             // (`fair`): `d = (target − C′(0)) w₀ G(t)` in homogeneous
             // coordinates, `G(0) = 0`, `G′(0) = 1`, `G″(0) = 0`.
             let w0 = raw.points.first().map(|h| h[3]).ok_or_else(internal)?;
-            let shape = fair::profile(&raw.knots, p_deg, reach, fair::Order::Tangent)?;
+            let shape = fair::profile(
+                &raw.knots,
+                p_deg,
+                reach,
+                fair::Order::Tangent,
+                fair::End::Point,
+            )?;
             add_profile(&mut raw, &shape, (target - tangent) * w0);
             bend_curvature(
                 &mut raw,
@@ -2978,7 +2984,13 @@ fn bend_curvature(
             form.second_order(x0, x1)
         }
     };
-    let shape = fair::profile(&raw.knots, raw.degree, reach, fair::Order::Curvature)?;
+    let shape = fair::profile(
+        &raw.knots,
+        raw.degree,
+        reach,
+        fair::Order::Curvature,
+        fair::End::Point,
+    )?;
     let normal = Vec3::new(n[0], n[1], n[2]);
     let len = normal.length();
     let gap = r - h_dot(n, x2);
@@ -3130,7 +3142,13 @@ fn put_on_third_row(
     // face's, a fraction of the ribbon between the edge and the rows it
     // moves; one larger than that ribbon (with a margin of the tolerance)
     // is a solve that did not follow the face, and refused.
-    let shape = fair::profile(&net.kv, net.pv, next, fair::Order::Curvature)?;
+    let shape = fair::profile(
+        &net.kv,
+        net.pv,
+        next,
+        fair::Order::Curvature,
+        fair::End::Kept,
+    )?;
     spread(net, &delta, &shape, 2, tol, |change, ribbon, u| {
         if change.is_finite() {
             format!(

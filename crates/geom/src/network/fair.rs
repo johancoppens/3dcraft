@@ -27,7 +27,13 @@
 //! Where the next curve is the sheet's far edge and that edge is free,
 //! the change runs over the whole curve and keeps only its last point
 //! (as a tangent hold's change of the second control point always did):
-//! nothing then asks the curvature to swing back.
+//! nothing then asks the curvature to swing back. The surface's own
+//! corrections between the crossings (the tangent and curvature holds
+//! along the edge) keep the far edge's position, tangent plane and
+//! curvature even then ([`End::Kept`]): they are not asked for by any
+//! curve, and spread to a free far edge they bent it between the curves
+//! (measured: a dome's far edge from −1.4 to −9.6 between two of its
+//! crossings).
 //!
 //! What no such change can do: one that ends with the curve's own position
 //! and tangent has `∫ Δκ ds ≈ 0` and `∫ (L − s) Δκ ds ≈ 0` over its reach
@@ -60,7 +66,21 @@ pub(super) fn limit(next: f64, far_held: bool) -> f64 {
     }
 }
 
-/// Whether a reach runs to the curve's far end (only its last point kept).
+/// What a change over a reach to the curve's far end keeps there (an
+/// inner reach always ends with every derivative the spline has).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum End {
+    /// Only the last point: a curve crossing the edge, bent (its far end
+    /// stays on the far edge, which is free).
+    Point,
+    /// The far edge's position, tangent plane and curvature (the last
+    /// `degree` control points): the surface's corrections between the
+    /// crossings, which must not disturb the far edge where no curve
+    /// asks it.
+    Kept,
+}
+
+/// Whether a reach runs to the curve's far end.
 fn open(end: f64) -> bool {
     end >= 1.0 - SAME_KNOT
 }
@@ -100,13 +120,14 @@ pub(super) fn localize(raw: &mut Raw, end: f64) -> Result<(), NetworkError> {
 /// The coefficients `c_j` (one per control point) of the scalar spline of
 /// `degree` on `knots` that meets `order` at 0, vanishes from `end` on
 /// (only basis functions that end by then take part; for an open reach,
-/// `end` = 1, every one but the last) and has the least `∫ G‴²` among
+/// `end` = 1, all but those `far` keeps) and has the least `∫ G‴²` among
 /// those.
 pub(super) fn profile(
     knots: &[f64],
     degree: usize,
     end: f64,
     order: Order,
+    far: End,
 ) -> Result<Vec<f64>, NetworkError> {
     let q = degree;
     let count = knots
@@ -115,7 +136,10 @@ pub(super) fn profile(
         .filter(|c| *c > 0)
         .ok_or_else(internal)?;
     let inside = if open(end) {
-        count - 1
+        count.saturating_sub(match far {
+            End::Point => 1,
+            End::Kept => q,
+        })
     } else {
         (0..count)
             .take_while(|j| knots.get(j + q + 1).is_some_and(|k| *k <= end + SAME_KNOT))
@@ -293,7 +317,7 @@ mod tests {
             let inner: Vec<f64> = (1..=8).map(|j| 0.5 * j as f64 / 8.0).collect();
             let k = knots(q, &inner);
             for order in [Order::Tangent, Order::Curvature] {
-                let c = profile(&k, q, 0.5, order).unwrap();
+                let c = profile(&k, q, 0.5, order, End::Point).unwrap();
                 let g = scalar(q, &k, &c);
                 let g1 = derivative(&g).unwrap();
                 let g2 = derivative(&g1).unwrap();
@@ -318,7 +342,7 @@ mod tests {
         let inner: Vec<f64> = (1..8).map(|j| j as f64 / 8.0).collect();
         let k = knots(q, &inner);
         for order in [Order::Tangent, Order::Curvature] {
-            let c = profile(&k, q, 1.0, order).unwrap();
+            let c = profile(&k, q, 1.0, order, End::Point).unwrap();
             assert_eq!(*c.last().unwrap(), 0.0);
             assert!(
                 c.iter().rev().skip(1).take(3).any(|x| x.abs() > 1e-6),
@@ -341,7 +365,7 @@ mod tests {
         let q = 3;
         let inner: Vec<f64> = (1..=8).map(|j| 0.5 * j as f64 / 8.0).collect();
         let k = knots(q, &inner);
-        let c = profile(&k, q, 0.5, Order::Curvature).unwrap();
+        let c = profile(&k, q, 0.5, Order::Curvature, End::Kept).unwrap();
         let g2 = derivative(&derivative(&scalar(q, &k, &c)).unwrap()).unwrap();
         let values: Vec<f64> = (0..500)
             .map(|i| eval(&g2, 0.5 * i as f64 / 500.0).unwrap()[0])
