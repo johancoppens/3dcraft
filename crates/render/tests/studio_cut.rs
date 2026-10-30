@@ -578,11 +578,10 @@ fn glass_in_a_see_through_picture_passes_the_surface_behind_then_blends() {
             let want = if highlighted {
                 light.display(lit_highlight.light, lit_highlight.roughness)
             } else {
-                let mut c = [0.0; 3];
-                for k in 0..3 {
+                let c: [f64; 3] = std::array::from_fn(|k| {
                     let lit = front.light[k] + front.transmit[k] * behind.light[k];
-                    c[k] = opacity * lit + (1.0 - opacity) * behind.light[k];
-                }
+                    opacity * lit + (1.0 - opacity) * behind.light[k]
+                });
                 light.display(c, front.roughness)
             };
             evidence(&format!("glass-{opacity}-{highlighted}.png"), &seen);
