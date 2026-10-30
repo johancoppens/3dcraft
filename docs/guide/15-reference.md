@@ -8,7 +8,7 @@ The full description of any command, with every value it takes and what it refus
 
 ## Commands
 
-3DCraft 0.1.0 has 158 commands. A command's id is its family and its name: `feature.fillet`.
+3DCraft 0.1.0 has 163 commands. A command's id is its family and its name: `feature.fillet`.
 
 ### Documents and files
 
@@ -44,6 +44,8 @@ The full description of any command, with every value it takes and what it refus
 | `sketch.point`, `sketch.line`, `sketch.polyline`, `sketch.rect`, `sketch.circle`, `sketch.arc`, `sketch.path`, `sketch.spline` | Draw |
 | `sketch.curve` | A curve from formulas ([chapter 8](08-formulas.md#curves-from-formulas)) |
 | `sketch.pattern` | Repeat entities in a row, a grid or a circle |
+| `sketch.text`, `sketch.textOnCurve`, `sketch.textEdit` | Text as profiles, straight or along a curve ([chapter 9](09-features.md#text)) |
+| `font.add`, `font.list` | The fonts a document keeps, and the built-in ones |
 | `sketch.constrain`, `sketch.edit`, `sketch.delete` | Add, change and remove constraints and entities |
 | `sketch.inspect` | Every entity, constraint and the freedom left |
 
