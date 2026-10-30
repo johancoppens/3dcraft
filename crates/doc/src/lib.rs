@@ -30,7 +30,7 @@ pub mod visibility;
 
 pub use appearance::{
     AnisotropyDirection, Appearance, BodyAppearance, BodyColor, BodyProperties, FaceProperties,
-    MAX_FACE_APPEARANCES, Material, Optics,
+    MAX_FACE_APPEARANCES, MAX_PATTERN_COLORS, Material, Optics, SolidTexture, SolidTextureKind,
 };
 pub use assembly::{
     Assembly, Coupling, CouplingKind, Instance, InstanceMode, Mate, MateKind, MateRef,

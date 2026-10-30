@@ -33,13 +33,14 @@ use crate::scene::{
 use craft3d_doc::Document;
 use craft3d_math::{Bbox3, Vec3};
 use craft3d_render::studio::layers::{Optics, TangentField};
+use craft3d_render::studio::pattern::{Pattern, PatternKind};
 use craft3d_render::{FaceColors, Finish};
 use craft3d_tess::Mesh;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// What the bytes of a scene start with, with the form's version.
-const MAGIC: &[u8; 8] = b"C3DSCN\x00\x03";
+const MAGIC: &[u8; 8] = b"C3DSCN\x00\x04";
 
 /// The scene's bytes. The revision is the page's own and is left out.
 pub(crate) fn encode(scene: &Scene) -> Vec<u8> {
@@ -371,8 +372,8 @@ const BODY: usize = 4 + 4 + 16 + 4 + 4 + 28;
 /// A face colour: the face, the colour, the metal, whether it is rough.
 const FACE_COLOR: usize = 4 + 3 + 1 + 1;
 /// A face's layers: the face, nine `f32`, the tangent field's kind and
-/// axis, two flags and the scattering colour's flag.
-const OPTICS: usize = 4 + 9 * 4 + 1 + 12 + 1 + 1;
+/// axis, two flags, the scattering colour's flag and the solid texture's.
+const OPTICS: usize = 4 + 9 * 4 + 1 + 12 + 1 + 1 + 1;
 /// A sketch: two texts, four vectors and two counts.
 const SKETCH: usize = 4 + 4 + 4 * 24 + 4 + 4;
 /// A sketch's polyline: a text, its kind, construction and its points.
@@ -503,6 +504,34 @@ impl Writer {
             Some(c) => {
                 self.u8(1);
                 self.bytes(&c);
+            }
+            None => self.u8(0),
+        }
+        match &o.pattern {
+            Some(t) => {
+                // The kind's code is 1 to 7.
+                self.u8(t.kind.code() as u8);
+                self.u8(t.stops);
+                for c in &t.ramp {
+                    self.bytes(c);
+                }
+                match t.roughness {
+                    Some([a, b]) => {
+                        self.u8(1);
+                        self.f32(a);
+                        self.f32(b);
+                    }
+                    None => self.u8(0),
+                }
+                self.f32(t.scale);
+                t.origin.into_iter().for_each(|v| self.f64(v));
+                t.axis.into_iter().for_each(|v| self.f32(v));
+                self.u32(t.seed);
+                self.u32(t.detail);
+                for v in [t.distortion, t.grain, t.rays, t.spot] {
+                    self.f32(v);
+                }
+                self.bool(t.wrap);
             }
             None => self.u8(0),
         }
@@ -661,6 +690,52 @@ impl Reader<'_> {
         } else {
             None
         };
+        let pattern = match self.u8()? {
+            0 => None,
+            code => {
+                let kind = PatternKind::ALL
+                    .into_iter()
+                    .find(|k| k.code() == u32::from(code))
+                    .ok_or("a face's solid texture is of no known kind")?;
+                let stops = self.u8()?;
+                let mut ramp = [[0_u8; 3]; 4];
+                for c in &mut ramp {
+                    *c = [self.u8()?, self.u8()?, self.u8()?];
+                }
+                let roughness = if self.bool()? {
+                    Some([self.f32()?, self.f32()?])
+                } else {
+                    None
+                };
+                let scale = self.f32()?;
+                let origin = [self.f64()?, self.f64()?, self.f64()?];
+                let axis = [self.f32()?, self.f32()?, self.f32()?];
+                let seed = self.u32()?;
+                let detail = self.u32()?;
+                let [distortion, grain, rays, spot] =
+                    [self.f32()?, self.f32()?, self.f32()?, self.f32()?];
+                let wrap = self.bool()?;
+                Some(
+                    Pattern {
+                        kind,
+                        ramp,
+                        stops,
+                        roughness,
+                        scale,
+                        origin,
+                        axis,
+                        seed,
+                        distortion,
+                        detail,
+                        grain,
+                        rays,
+                        spot,
+                        wrap,
+                    }
+                    .sanitized(),
+                )
+            }
+        };
         Ok(Optics {
             anisotropy,
             tangent,
@@ -672,6 +747,7 @@ impl Reader<'_> {
             absorption,
             subsurface,
             subsurface_color,
+            pattern,
         })
     }
     fn take(&mut self, n: usize) -> Result<&[u8], String> {

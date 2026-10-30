@@ -57,7 +57,14 @@ fn the_presets_are_listed_and_given_to_a_body() {
             "abs",
             "glass",
             "car-paint",
-            "wood"
+            "wood",
+            "oak",
+            "walnut",
+            "beech",
+            "marble",
+            "granite",
+            "carbon",
+            "cast-iron"
         ]
     );
     let glass = &list["presets"][3];

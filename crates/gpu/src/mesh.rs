@@ -20,7 +20,7 @@ pub const MAX_TRIANGLES: usize = 1 << 24;
 pub(crate) const VERTEX_BYTES: usize = 60;
 /// The texels (`Rgba32Uint`, `f32` bits) of a row of the material table
 /// ([`optics_table`]).
-pub(crate) const OPTICS_TEXELS: usize = 6;
+pub(crate) const OPTICS_TEXELS: usize = 16;
 /// The bit of [`optics_word`] that marks a face that lets light through.
 pub(crate) const TRANSMISSIVE_BIT: u32 = 1 << 16;
 const TRIANGLE_BYTES: usize = 3 * VERTEX_BYTES;
@@ -223,7 +223,15 @@ pub(crate) fn optics_word(colors: &FaceColors, face: u32) -> u32 {
 /// 4. the field's axis;
 /// 5. the origin of a field around an axis, relative to `origin` (in
 ///    `f32`; one that overflows is infinite, and the shader then finds no
-///    tangent there).
+///    tangent there);
+/// 6. layer 3.5's solid texture (`studio::pattern::Pattern`), as `u32`
+///    themselves: its kind (0 for none), the ramp's stops, the seed, the
+///    octaves;
+/// 7. its scale, distortion, grain, rays;
+/// 8. its spot, the roughness at the ramp's ends, 1 when it has them;
+/// 9. its origin relative to `origin`, 1 when a weave wraps the axis;
+/// 10. to 12. its axes (`Pattern::frame`);
+/// 13. to 15. the ramp's four colours in linear light, three numbers each.
 pub(crate) fn optics_table(colors: &FaceColors, origin: Vec3) -> Vec<[u32; 4]> {
     use craft3d_render::studio::layers::TangentField;
     let mut out = Vec::with_capacity(colors.optics_table().len() * OPTICS_TEXELS);
@@ -238,7 +246,7 @@ pub(crate) fn optics_table(colors: &FaceColors, origin: Vec3) -> Vec<[u32; 4]> {
             }
         };
         let tint = o.subsurface_color.map_or([0.0; 3], |c| c.map(f32::from));
-        let rows: [[f32; 4]; OPTICS_TEXELS] = [
+        let rows: [[f32; 4]; 6] = [
             [
                 o.anisotropy,
                 o.clearcoat,
@@ -257,6 +265,45 @@ pub(crate) fn optics_table(colors: &FaceColors, origin: Vec3) -> Vec<[u32; 4]> {
             [from[0], from[1], from[2], 0.0],
         ];
         out.extend(rows.iter().map(|r| r.map(f32::to_bits)));
+        out.extend(pattern_texels(o.pattern.as_ref(), origin));
+    }
+    out
+}
+
+/// Texels 6 to 15 of a row of the material table ([`optics_table`]): the
+/// solid texture, or zeros for none.
+fn pattern_texels(
+    pattern: Option<&craft3d_render::studio::pattern::Pattern>,
+    origin: Vec3,
+) -> [[u32; 4]; OPTICS_TEXELS - 6] {
+    use craft3d_render::studio::pattern::stops_linear;
+    let mut out = [[0_u32; 4]; OPTICS_TEXELS - 6];
+    let Some(p) = pattern else {
+        return out;
+    };
+    let flag = |b: bool| if b { 1.0_f32 } else { 0.0 };
+    let rel = Vec3::new(p.origin[0], p.origin[1], p.origin[2]) - origin;
+    let [fx, fy, fz] = p.frame();
+    let [r0, r1] = p.roughness.unwrap_or([0.0; 2]);
+    let ramp: Vec<f32> = p.ramp.iter().flat_map(|c| c.map(stops_linear)).collect();
+    let at = |k: usize| ramp.get(k).copied().unwrap_or(0.0);
+    let floats: [[f32; 4]; OPTICS_TEXELS - 7] = [
+        [p.scale, p.distortion, p.grain, p.rays],
+        [p.spot, r0, r1, flag(p.roughness.is_some())],
+        // Deliberate narrowing at the GPU boundary.
+        [rel.x as f32, rel.y as f32, rel.z as f32, flag(p.wrap)],
+        [fx[0], fx[1], fx[2], 0.0],
+        [fy[0], fy[1], fy[2], 0.0],
+        [fz[0], fz[1], fz[2], 0.0],
+        [at(0), at(1), at(2), at(3)],
+        [at(4), at(5), at(6), at(7)],
+        [at(8), at(9), at(10), at(11)],
+    ];
+    if let Some(first) = out.first_mut() {
+        *first = [p.kind.code(), u32::from(p.stops), p.seed, p.detail];
+    }
+    for (o, f) in out.iter_mut().skip(1).zip(floats) {
+        *o = f.map(f32::to_bits);
     }
     out
 }

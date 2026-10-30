@@ -431,6 +431,9 @@ struct Optics {
     axis: vec3<f32>,
     // Relative to the mesh origin.
     origin: vec3<f32>,
+    // Layer 3.5: the pattern's kind (0: none) and the row it is in.
+    pattern: u32,
+    row: i32,
 }
 
 fn optics_texel(row: i32, k: i32) -> vec4<f32> {
@@ -461,7 +464,328 @@ fn optics_of(slot: u32) -> Optics {
     o.tint = optics_texel(row, 3).xyz;
     o.axis = optics_texel(row, 4).xyz;
     o.origin = optics_texel(row, 5).xyz;
+    o.pattern = textureLoad(optics_map, vec2<i32>(6, row), 0).x;
+    o.row = row;
     return o;
+}
+
+// Layer 3.5 (`craft3d_render::studio::pattern`): a face's solid texture,
+// from texels 6 to 15 of its row of the material table.
+struct Pattern {
+    kind: u32,
+    stops: u32,
+    seed: u32,
+    detail: u32,
+    scale: f32,
+    distortion: f32,
+    grain: f32,
+    rays: f32,
+    spot: f32,
+    has_roughness: bool,
+    roughness: vec2<f32>,
+    // Relative to the mesh origin.
+    origin: vec3<f32>,
+    wrap: bool,
+    fx: vec3<f32>,
+    fy: vec3<f32>,
+    fz: vec3<f32>,
+    // The ramp in linear light.
+    c0: vec3<f32>,
+    c1: vec3<f32>,
+    c2: vec3<f32>,
+    c3: vec3<f32>,
+}
+
+const Q_LIMIT: f32 = 1048576.0;
+const PATTERN_DETAIL: u32 = 6u;
+
+fn pattern_of(row: i32) -> Pattern {
+    var o: Pattern;
+    let a = textureLoad(optics_map, vec2<i32>(6, row), 0);
+    o.kind = a.x;
+    o.stops = a.y;
+    o.seed = a.z;
+    o.detail = a.w;
+    let b = optics_texel(row, 7);
+    o.scale = b.x;
+    o.distortion = b.y;
+    o.grain = b.z;
+    o.rays = b.w;
+    let c = optics_texel(row, 8);
+    o.spot = c.x;
+    o.roughness = c.yz;
+    o.has_roughness = c.w > 0.5;
+    let d = optics_texel(row, 9);
+    o.origin = d.xyz;
+    o.wrap = d.w > 0.5;
+    o.fx = optics_texel(row, 10).xyz;
+    o.fy = optics_texel(row, 11).xyz;
+    o.fz = optics_texel(row, 12).xyz;
+    let r0 = optics_texel(row, 13);
+    let r1 = optics_texel(row, 14);
+    let r2 = optics_texel(row, 15);
+    o.c0 = r0.xyz;
+    o.c1 = vec3<f32>(r0.w, r1.x, r1.y);
+    o.c2 = vec3<f32>(r1.z, r1.w, r2.x);
+    o.c3 = r2.yzw;
+    return o;
+}
+
+// pattern::pcg3d (Jarzynski and Olano 2020).
+fn pcg3d(v: vec3<u32>) -> vec3<u32> {
+    var x = v.x * 1664525u + 1013904223u;
+    var y = v.y * 1664525u + 1013904223u;
+    var z = v.z * 1664525u + 1013904223u;
+    x = x + y * z;
+    y = y + z * x;
+    z = z + x * y;
+    x = x ^ (x >> 16u);
+    y = y ^ (y >> 16u);
+    z = z ^ (z >> 16u);
+    x = x + y * z;
+    y = y + z * x;
+    z = z + x * y;
+    return vec3<u32>(x, y, z);
+}
+
+fn pattern_offset(seed: u32, octave: u32) -> vec3<u32> {
+    return pcg3d(vec3<u32>(seed, octave, 0x2545f491u));
+}
+
+fn hash_unit(h: u32) -> f32 {
+    return f32(h >> 8u) * (1.0 / 16777216.0);
+}
+
+fn fade(t: f32) -> f32 {
+    return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+}
+
+fn grad(hash: u32, x: f32, y: f32, z: f32) -> f32 {
+    let h = hash & 15u;
+    var u = y;
+    if h < 8u {
+        u = x;
+    }
+    var v = z;
+    if h < 4u {
+        v = y;
+    } else if h == 12u || h == 14u {
+        v = x;
+    }
+    var a = u;
+    if (h & 1u) != 0u {
+        a = -u;
+    }
+    var b = v;
+    if (h & 2u) != 0u {
+        b = -v;
+    }
+    return a + b;
+}
+
+fn hash_cell(i: vec3<i32>, off: vec3<u32>) -> vec3<u32> {
+    return pcg3d(bitcast<vec3<u32>>(i) + off);
+}
+
+// pattern::noise.
+fn noise3(q_in: vec3<f32>, off: vec3<u32>) -> f32 {
+    let q = clamp(q_in, vec3<f32>(-Q_LIMIT), vec3<f32>(Q_LIMIT));
+    let fl = floor(q);
+    let i = vec3<i32>(fl);
+    let f = q - fl;
+    let c000 = grad(hash_cell(i, off).x, f.x, f.y, f.z);
+    let c100 = grad(hash_cell(i + vec3<i32>(1, 0, 0), off).x, f.x - 1.0, f.y, f.z);
+    let c010 = grad(hash_cell(i + vec3<i32>(0, 1, 0), off).x, f.x, f.y - 1.0, f.z);
+    let c110 = grad(hash_cell(i + vec3<i32>(1, 1, 0), off).x, f.x - 1.0, f.y - 1.0, f.z);
+    let c001 = grad(hash_cell(i + vec3<i32>(0, 0, 1), off).x, f.x, f.y, f.z - 1.0);
+    let c101 = grad(hash_cell(i + vec3<i32>(1, 0, 1), off).x, f.x - 1.0, f.y, f.z - 1.0);
+    let c011 = grad(hash_cell(i + vec3<i32>(0, 1, 1), off).x, f.x, f.y - 1.0, f.z - 1.0);
+    let c111 = grad(hash_cell(i + vec3<i32>(1, 1, 1), off).x, f.x - 1.0, f.y - 1.0, f.z - 1.0);
+    let u = fade(f.x);
+    let v = fade(f.y);
+    let w = fade(f.z);
+    let x00 = c000 + u * (c100 - c000);
+    let x10 = c010 + u * (c110 - c010);
+    let x01 = c001 + u * (c101 - c001);
+    let x11 = c011 + u * (c111 - c011);
+    let y0 = x00 + v * (x10 - x00);
+    let y1 = x01 + v * (x11 - x01);
+    return y0 + w * (y1 - y0);
+}
+
+// pattern::fbm (`turb` true: pattern::turbulence).
+fn fbm3(q: vec3<f32>, seed: u32, octaves: u32, base: u32, turb: bool) -> f32 {
+    var sum = 0.0;
+    var f = 1.0;
+    var a = 1.0;
+    for (var k = 0u; k < min(octaves, PATTERN_DETAIL); k = k + 1u) {
+        var n = noise3(q * f, pattern_offset(seed, base + k));
+        if turb {
+            n = abs(n);
+        }
+        sum = sum + a * n;
+        f = f * 2.0;
+        a = a * 0.5;
+    }
+    return sum;
+}
+
+// pattern::cellular_pair: the distances to the nearest two feature points
+// and their cells' numbers (f1, v1, f2, v2).
+fn cellular3(q_in: vec3<f32>, off: vec3<u32>) -> vec4<f32> {
+    let q = clamp(q_in, vec3<f32>(-Q_LIMIT), vec3<f32>(Q_LIMIT));
+    let fl = floor(q);
+    let i = vec3<i32>(fl);
+    let f = q - fl;
+    var best = 3.4e38;
+    var second = 3.4e38;
+    var value = 0.0;
+    var value2 = 0.0;
+    for (var dz = -1; dz <= 1; dz = dz + 1) {
+        for (var dy = -1; dy <= 1; dy = dy + 1) {
+            for (var dx = -1; dx <= 1; dx = dx + 1) {
+                let h = hash_cell(i + vec3<i32>(dx, dy, dz), off);
+                let px = f32(dx) + hash_unit(h.x) - f.x;
+                let py = f32(dy) + hash_unit(h.y) - f.y;
+                let pz = f32(dz) + hash_unit(h.z) - f.z;
+                let d2 = px * px + py * py + pz * pz;
+                if d2 < best {
+                    second = best;
+                    value2 = value;
+                    best = d2;
+                    value = hash_unit(pcg3d(h).x);
+                } else if d2 < second {
+                    second = d2;
+                    value2 = hash_unit(pcg3d(h).x);
+                }
+            }
+        }
+    }
+    return vec4<f32>(sqrt(best), value, sqrt(second), value2);
+}
+
+fn ring_profile(f: f32) -> f32 {
+    return smoothstep(0.35, 0.85, f) * (1.0 - smoothstep(0.9, 1.0, f));
+}
+
+// Pattern::local: the point (relative to the mesh origin) in the pattern's
+// axes, in units of its scale.
+fn pattern_local(o: Pattern, p: vec3<f32>) -> vec3<f32> {
+    let rel = p - o.origin;
+    return vec3<f32>(dot(o.fx, rel), dot(o.fy, rel), dot(o.fz, rel)) / o.scale;
+}
+
+// Pattern::value.
+fn pattern_value(o: Pattern, q: vec3<f32>) -> f32 {
+    var t = 0.0;
+    let x = q.x;
+    let y = q.y;
+    let z = q.z;
+    switch o.kind {
+        case 1u: {
+            var wobble = 0.0;
+            if o.distortion > 0.0 {
+                wobble = o.distortion * fbm3(vec3<f32>(x * 0.35, y * 0.35, z * 0.03), o.seed,
+                    min(o.detail, 2u), 0u, false);
+            }
+            let radius = sqrt(x * x + y * y);
+            let r = radius + wobble;
+            t = ring_profile(r - floor(r));
+            if o.grain > 0.0 {
+                t = t + o.grain * 0.18
+                    * noise3(vec3<f32>(x * 12.0, y * 12.0, z * 0.15), pattern_offset(o.seed, 24u));
+            }
+            if o.rays > 0.0 && radius > 1e-9 {
+                let n = noise3(vec3<f32>(x / radius * 48.0, y / radius * 48.0,
+                    z * 0.6 + radius * 0.3), pattern_offset(o.seed, 32u));
+                t = t - o.rays * 0.7 * smoothstep(0.25, 0.45, n);
+            }
+        }
+        case 2u: {
+            let turb = fbm3(q * 0.5, o.seed, o.detail, 0u, true);
+            let u = z + o.distortion * turb;
+            let s = -sin(PI * (2.0 * (u - floor(u)) - 1.0));
+            let v = 1.0 - abs(s);
+            let v2 = v * v;
+            t = v2 * v2 + 0.1 * (1.0 + fbm3(q * 2.0, o.seed, 3u, 8u, false));
+        }
+        case 3u: {
+            let c = cellular3(q, pattern_offset(o.seed, 0u));
+            let stops = f32(max(o.stops, 2u));
+            let t1 = min(floor(c.y * stops) / (stops - 1.0), 1.0);
+            let t2 = min(floor(c.w * stops) / (stops - 1.0), 1.0);
+            let w = smoothstep(0.0, 0.08, c.z - c.x);
+            t = t2 + (t1 - t2) * (0.5 + 0.5 * w);
+        }
+        case 4u: {
+            let c = cellular3(q, pattern_offset(o.seed, 0u));
+            let radius = o.spot * (0.5 + 0.5 * c.y);
+            t = 0.0;
+            if radius > 0.0 {
+                t = 1.0 - smoothstep(radius * 0.8, radius, c.x);
+            }
+        }
+        case 5u: {
+            t = 0.5 + 0.6 * (1.0 + o.distortion) * fbm3(q, o.seed, o.detail, 0u, false);
+        }
+        case 6u: {
+            t = 0.5 + 0.9 * fbm3(vec3<f32>(x, y, z * 0.02), o.seed, min(o.detail, 3u), 0u, false);
+            if o.grain > 0.0 {
+                t = t + o.grain * 0.5
+                    * noise3(vec3<f32>(x * 3.0, y * 3.0, z * 0.05), pattern_offset(o.seed, 24u));
+            }
+        }
+        case 7u: {
+            var a = x;
+            var b = y;
+            if o.wrap {
+                let r = sqrt(x * x + y * y);
+                let around = max(floor(r * TAU / 4.0 + 0.5), 1.0) * 4.0;
+                let turn = atan2(y, x) / TAU + 0.5;
+                a = z;
+                b = turn * around;
+            }
+            let ca = clamp(a, -Q_LIMIT, Q_LIMIT);
+            let cb = clamp(b, -Q_LIMIT, Q_LIMIT);
+            let fa = floor(ca);
+            let fb = floor(cb);
+            let k = (i32(fa) + i32(fb)) & 3;
+            var across = ca - fa;
+            var along = f32(k - 2) + (cb - fb);
+            var amp = 0.55;
+            if k < 2 {
+                across = cb - fb;
+                along = f32(k) + (ca - fa);
+                amp = 1.0;
+            }
+            t = amp * sin(PI * across) * sin(PI * 0.5 * along);
+        }
+        default: {
+            t = 0.0;
+        }
+    }
+    return clamp(t, 0.0, 1.0);
+}
+
+// Pattern::color: the ramp at `t`, in linear light.
+fn pattern_color(o: Pattern, t: f32) -> vec3<f32> {
+    let stops = clamp(o.stops, 1u, 4u);
+    if stops == 1u {
+        return o.c0;
+    }
+    let x = clamp(t, 0.0, 1.0) * f32(stops - 1u);
+    let k = min(u32(floor(x)), stops - 2u);
+    let f = x - f32(k);
+    var a = o.c0;
+    var b = o.c1;
+    if k == 1u {
+        a = o.c1;
+        b = o.c2;
+    } else if k == 2u {
+        a = o.c2;
+        b = o.c3;
+    }
+    return a + f * (b - a);
 }
 
 // TangentField::at: the unit tangent in xyz and w = 1, or w = 0 where the
@@ -573,13 +897,23 @@ fn bent_reflection(n: vec3<f32>, v: vec3<f32>, t: vec3<f32>, b: vec3<f32>, a: f3
 // contact shadow `contact` (1: none) and the layers `o`. With none
 // (`optics_of(0u)`) every layer enters as a factor of 1 or a term of 0:
 // layer 2's shading.
-fn studio_shade(base_bytes: vec3<f32>, metallic: f32, roughness: f32, p: vec3<f32>,
+fn studio_shade(base_bytes: vec3<f32>, metallic: f32, roughness_in: f32, p: vec3<f32>,
                 n: vec3<f32>, v: vec3<f32>, ao: f32, contact: f32, o: Optics) -> Shaded {
-    let base = vec3<f32>(
+    var base = vec3<f32>(
         srgb_decode(base_bytes.x / 255.0),
         srgb_decode(base_bytes.y / 255.0),
         srgb_decode(base_bytes.z / 255.0),
     );
+    var roughness = roughness_in;
+    // Layer 3.5: a solid texture gives the colour and roughness here.
+    if o.pattern != 0u {
+        let pat = pattern_of(o.row);
+        let t = pattern_value(pat, pattern_local(pat, p));
+        base = pattern_color(pat, t);
+        if pat.has_roughness {
+            roughness = pat.roughness.x + clamp(t, 0.0, 1.0) * (pat.roughness.y - pat.roughness.x);
+        }
+    }
     let nv = clamp(dot(n, v), 1e-4, 1.0);
     // Anisotropy: its frame, where the field gives a tangent.
     var aniso = false;

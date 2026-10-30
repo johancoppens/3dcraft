@@ -467,10 +467,107 @@ pub struct Optics {
     pub subsurface: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subsurface_color: Option<[u8; 3]>,
+    /// A solid texture (version 57; docs/design/rendering.md, *Layer 3.5*).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<SolidTexture>,
 }
 
 fn is_zero_f64(v: &f64) -> bool {
     *v == 0.0
+}
+
+/// `"wood"`, `"marble"`, `"granite"`, `"speckle"`, `"noise"`, `"brushed"`
+/// or `"carbon"`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SolidTextureKind {
+    Wood,
+    Marble,
+    Granite,
+    Speckle,
+    Noise,
+    Brushed,
+    Carbon,
+}
+
+/// A ramp of 2 to 4 sRGB colours, written as a list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ramp {
+    pub colors: [[u8; 3]; 4],
+    pub stops: u8,
+}
+
+impl Serialize for Ramp {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let used = self
+            .colors
+            .get(..usize::from(self.stops))
+            .unwrap_or(&self.colors);
+        serializer.collect_seq(used)
+    }
+}
+
+impl<'de> Deserialize<'de> for Ramp {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let list = Vec::<[u8; 3]>::deserialize(deserializer)?;
+        if !(2..=4).contains(&list.len()) {
+            return Err(serde::de::Error::custom(format!(
+                "a pattern's ramp has 2 to 4 colours, not {}",
+                list.len()
+            )));
+        }
+        let mut colors = [[0_u8; 3]; 4];
+        for (slot, c) in colors.iter_mut().zip(&list) {
+            *slot = *c;
+        }
+        let last = list.last().copied().unwrap_or([0; 3]);
+        for slot in colors.iter_mut().skip(list.len()) {
+            *slot = last;
+        }
+        Ok(Ramp {
+            colors,
+            // 2 to 4, checked above.
+            stops: list.len() as u8,
+        })
+    }
+}
+
+/// A solid texture (version 57). A field left out has its default: the
+/// roughness of the appearance, the axis and origin from the body's box,
+/// seed 0, no distortion, 4 octaves, no grain or rays, a spot of 0.5, a
+/// weave around its axis, the anisotropy along the face's own direction.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SolidTexture {
+    pub kind: SolidTextureKind,
+    pub colors: Ramp,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roughness: Option<[f64; 2]>,
+    pub scale: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub axis: Option<[f64; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<[f64; 3]>,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub seed: u32,
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub distortion: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<u32>,
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub grain: f64,
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub rays: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spot: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wrap: Option<bool>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub along_axis: bool,
+}
+
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
 }
 
 /// `"parametric"` (the face's own `u` direction) or `{"axis": [x, y, z]}`.

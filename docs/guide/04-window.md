@@ -308,8 +308,9 @@ which the studio look draws (the plain look keeps showing the colour):
   by `subsurfaceColor`.
 
 A small library gives ready sets: `material.presets` lists them (steel, aluminium-brushed, abs,
-glass, car-paint, wood) and `material.preset` gives one to a body, its look and its density
-together; any number beside it changes the preset:
+glass, car-paint, wood, and with a solid texture oak, walnut, beech, marble, granite, carbon and
+cast-iron) and `material.preset` gives one to a body, its look and its density together; any number
+beside it changes the preset:
 
 ```text
 material.preset {"body": "Housing", "preset": "car-paint", "color": "#1f4fa0"}
@@ -317,14 +318,46 @@ material.preset {"body": "Window", "preset": "glass"}
 body.appearance {"body": "Blades", "color": "#c8ccd2", "metallic": 1, "roughness": 0.3, "anisotropy": 0.8}
 ```
 
+#### Solid textures
+
+A material can also have a **pattern**: wood, marble, granite, speckle, noise, brushed or carbon,
+worked out at every point of the body in the model's space rather than painted on its faces. So a
+cut, a hole or a chamfer shows the wood's rings or the marble's veins running on through the body,
+as in the real material. The oak, walnut, beech, marble, granite, carbon and cast-iron presets have
+one, fitted to the body: wood's grain runs along the longest side of the body's box, with rings a
+twentieth of its width apart, and the pith just outside the body below its thinnest side, so a board
+shows the arches of a flat-sawn plank. Change any of it with a `pattern` object beside the preset,
+or give your own with `body.appearance` or `face.appearance`:
+
+```text
+material.preset {"body": "BoardBottom", "preset": "walnut"}
+material.preset {"body": "Top", "preset": "oak", "pattern": {"scale": 3, "seed": 7}}
+body.appearance {"body": "Plinth", "roughness": 0.15, "pattern": {"kind": "marble", "colors": ["#f2f0ec", "#60646a"], "distortion": 2}}
+```
+
+A pattern takes its `kind`, two to four `colors` (a ramp; each kind has its own when left out),
+its `scale` (the size of a ring, a vein, a cell or a tow, in the model's units), `axis` and `origin`
+(the grain's direction and the pith; left out, fitted to the body's box), a `seed` for another
+piece of the same material, `distortion` (the rings' wobble, the marble's turbulence), `detail`
+(octaves of noise, 1 to 6), `grain` and `rays` (wood's fine streaks and medullary rays, 0 to 1),
+`spot` (a speckle's dot size), `wrap` (carbon: woven around the axis for a tube, or flat across it
+for a plate whose normal is the axis), `alongAxis` (a brushed or anisotropic highlight along the
+grain) and `roughness` (at the ramp's two ends). The scale, axis and origin fitted to the body are
+worked out once, when you give the material, and kept: later edits that change the body's size do
+not change the grain, and a body that an earlier feature moves (a transform, a pattern's copy) slides
+through its texture instead of carrying it along; give the material again to fit it anew. The studio look draws it; the plain look and the
+exports show the pattern's mean colour, which becomes the body's colour when you give none. A carbon
+weave is a solid pattern too: it is right on a tube around its axis and on a plate across it, and
+looks stretched on faces that are neither (a plate's edges, a tube's end).
+
 What you see through glass is worked out on the picture itself: the view of what lies behind it,
 moved by the refraction as a slab of the glass's thickness would move it. Glass behind glass is not
 seen through, and a transparent body casts no shadow. Exports keep what their formats can: an OBJ
 export's material library has the clear coat (`Pc`, `Pcr`), the anisotropy (`aniso`), the index of
 refraction (`Ni`) and the transmission (`d`, `Tf`); a 3MF export gives a transmissive material a
 display colour with transparency; a STEP export writes the transmission as the surface's
-transparency. Subsurface, the anisotropy's direction and the absorption's length are kept only in
-the `.3dcraft` file.
+transparency. Subsurface, the anisotropy's direction, the absorption's length and solid textures
+are kept only in the `.3dcraft` file (a texture exports its mean colour).
 
 ### Surface analysis
 

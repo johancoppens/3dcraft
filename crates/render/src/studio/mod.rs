@@ -40,6 +40,7 @@ pub mod bundled;
 pub mod env;
 pub mod hdr;
 pub mod layers;
+pub mod pattern;
 pub mod polish;
 mod refract;
 pub mod shadow;
@@ -368,6 +369,11 @@ impl<'a> FrameLight<'a> {
         let r = finish
             .roughness
             .map_or(DEFAULT_ROUGHNESS, |r| f64::from(r) / 255.0);
+        // Layer 3.5: a solid texture gives the colour and roughness here.
+        let (base, r) = match &o.pattern {
+            Some(pattern) => pattern.at(p, r),
+            None => (base, r),
+        };
         let nv = n.dot(v).clamp(1e-4, 1.0);
         // Anisotropy: its frame, where the field gives a tangent.
         let frame = if o.anisotropy != 0.0 {
@@ -975,6 +981,22 @@ fn studio_frame(
             doubt = unsure.iter().map(|&d| [f32::from(u8::from(d))]).collect();
         }
     }
+    // Layer 3.5: a sample whose solid texture is steep where the GPU's
+    // `f32` point may lie is in doubt (`pattern::Pattern::in_doubt`).
+    if mark.is_some() {
+        let unsure = pattern_doubt(&view, &surfaces, colors, params, (w, h), &bounds);
+        if unsure.iter().any(|&d| d) {
+            if doubt.len() == unsure.len() {
+                for (d, &u) in doubt.iter_mut().zip(&unsure) {
+                    if u {
+                        *d = [1.0];
+                    }
+                }
+            } else {
+                doubt = unsure.iter().map(|&d| [f32::from(u8::from(d))]).collect();
+            }
+        }
+    }
     let rgb: Vec<[u8; 3]> = if post {
         // Deliberate narrowing: the buffers hold f32, as on the GPU.
         let mut buffers = polish::Buffers {
@@ -1197,6 +1219,54 @@ pub(crate) fn rasterise_where(
         }
     }
     Ok(out)
+}
+
+/// Per sample, true where the face seen has a solid texture that is in
+/// doubt there ([`pattern::Pattern::in_doubt`]): the point moved by
+/// [`pattern::PATTERN_DOUBT`] `f32` epsilons of the magnitudes the GPU
+/// computes it from (the eye and the point relative to the mesh's centre,
+/// the point relative to the pattern's origin), or by
+/// [`pattern::SUBPIXEL_DOUBT`] of a sample (the GPU's rasteriser snaps the
+/// vertices to its sub-pixel grid, so its fragment's interpolated point
+/// is not quite the CPU's), whichever is more, changes its colour.
+fn pattern_doubt(
+    view: &View,
+    surfaces: &[Surface],
+    colors: &FaceColors,
+    params: &RenderParams,
+    (w, h): (usize, usize),
+    bounds: &Bbox3,
+) -> Vec<bool> {
+    if !colors.optics_table().iter().any(|o| o.pattern.is_some()) {
+        return Vec::new();
+    }
+    let centre = bounds.center().unwrap_or(Vec3::ZERO);
+    let eps = f64::from(f32::EPSILON);
+    env::par_rows(h, |y| {
+        (0..w)
+            .map(|x| {
+                let Some(surface) = surfaces.get(y * w + x) else {
+                    return false;
+                };
+                if surface.face == NO_FACE
+                    || !surface.dist.is_finite()
+                    || params.highlight.contains(surface.face)
+                {
+                    return false;
+                }
+                let Some(pattern) = colors.optics(surface.face).and_then(|o| o.pattern) else {
+                    return false;
+                };
+                let rel = view.point_at(x as f64 + 0.5, y as f64 + 0.5, surface.dist);
+                let p = view.eye + rel;
+                let origin = Vec3::new(pattern.origin[0], pattern.origin[1], pattern.origin[2]);
+                let magnitude = (view.eye - centre).length() + rel.length() + (p - origin).length();
+                let rounding = pattern::PATTERN_DOUBT * eps * magnitude;
+                let snapping = view.sample_size(surface.dist) * pattern::SUBPIXEL_DOUBT;
+                pattern.in_doubt(p, rounding.max(snapping))
+            })
+            .collect()
+    })
 }
 
 /// `mesh` without the triangles of the faces that let light through.

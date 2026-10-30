@@ -772,6 +772,7 @@ fn optics_to_manifest(optics: doc::Optics) -> Option<manifest::Optics> {
         absorption_distance,
         subsurface,
         subsurface_color,
+        pattern,
     } = optics;
     Some(manifest::Optics {
         anisotropy,
@@ -789,7 +790,96 @@ fn optics_to_manifest(optics: doc::Optics) -> Option<manifest::Optics> {
             .then_some(absorption_distance),
         subsurface,
         subsurface_color,
+        pattern: pattern.map(texture_to_manifest),
     })
+}
+
+fn texture_to_manifest(pattern: doc::SolidTexture) -> manifest::SolidTexture {
+    let doc::SolidTexture {
+        kind,
+        colors,
+        stops,
+        roughness,
+        scale,
+        axis,
+        origin,
+        seed,
+        distortion,
+        detail,
+        grain,
+        rays,
+        spot,
+        wrap,
+        along_axis,
+    } = pattern;
+    manifest::SolidTexture {
+        kind: match kind {
+            doc::SolidTextureKind::Wood => manifest::SolidTextureKind::Wood,
+            doc::SolidTextureKind::Marble => manifest::SolidTextureKind::Marble,
+            doc::SolidTextureKind::Granite => manifest::SolidTextureKind::Granite,
+            doc::SolidTextureKind::Speckle => manifest::SolidTextureKind::Speckle,
+            doc::SolidTextureKind::Noise => manifest::SolidTextureKind::Noise,
+            doc::SolidTextureKind::Brushed => manifest::SolidTextureKind::Brushed,
+            doc::SolidTextureKind::Carbon => manifest::SolidTextureKind::Carbon,
+        },
+        colors: manifest::Ramp { colors, stops },
+        roughness,
+        scale,
+        axis,
+        origin,
+        seed,
+        distortion,
+        detail: (detail != doc::SolidTexture::default_detail()).then_some(detail),
+        grain,
+        rays,
+        spot: (spot != doc::SolidTexture::default_spot()).then_some(spot),
+        wrap: (wrap != doc::SolidTexture::default_wrap()).then_some(wrap),
+        along_axis,
+    }
+}
+
+fn texture_to_doc(pattern: manifest::SolidTexture) -> doc::SolidTexture {
+    let manifest::SolidTexture {
+        kind,
+        colors,
+        roughness,
+        scale,
+        axis,
+        origin,
+        seed,
+        distortion,
+        detail,
+        grain,
+        rays,
+        spot,
+        wrap,
+        along_axis,
+    } = pattern;
+    doc::SolidTexture {
+        kind: match kind {
+            manifest::SolidTextureKind::Wood => doc::SolidTextureKind::Wood,
+            manifest::SolidTextureKind::Marble => doc::SolidTextureKind::Marble,
+            manifest::SolidTextureKind::Granite => doc::SolidTextureKind::Granite,
+            manifest::SolidTextureKind::Speckle => doc::SolidTextureKind::Speckle,
+            manifest::SolidTextureKind::Noise => doc::SolidTextureKind::Noise,
+            manifest::SolidTextureKind::Brushed => doc::SolidTextureKind::Brushed,
+            manifest::SolidTextureKind::Carbon => doc::SolidTextureKind::Carbon,
+        },
+        colors: colors.colors,
+        stops: colors.stops,
+        roughness,
+        scale,
+        axis,
+        origin,
+        seed,
+        distortion,
+        detail: detail.unwrap_or_else(doc::SolidTexture::default_detail),
+        grain,
+        rays,
+        spot: spot.unwrap_or_else(doc::SolidTexture::default_spot),
+        wrap: wrap.unwrap_or_else(doc::SolidTexture::default_wrap),
+        along_axis,
+    }
 }
 
 fn optics_to_doc(optics: Option<manifest::Optics>) -> doc::Optics {
@@ -808,6 +898,7 @@ fn optics_to_doc(optics: Option<manifest::Optics>) -> doc::Optics {
         absorption_distance,
         subsurface,
         subsurface_color,
+        pattern,
     } = optics;
     doc::Optics {
         anisotropy,
@@ -825,6 +916,7 @@ fn optics_to_doc(optics: Option<manifest::Optics>) -> doc::Optics {
             .unwrap_or_else(doc::Optics::default_absorption_distance),
         subsurface,
         subsurface_color,
+        pattern: pattern.map(texture_to_doc),
     }
 }
 

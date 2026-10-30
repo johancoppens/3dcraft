@@ -671,11 +671,18 @@ pub(crate) fn render_optics(
     if o.is_none() {
         return None;
     }
-    let tangent = match o.direction {
-        craft3d_doc::AnisotropyDirection::Axis(a) => {
+    let pattern = o
+        .pattern
+        .as_ref()
+        .map(|t| crate::solid_texture::render_pattern(t, body));
+    let tangent = match (o.direction, pattern) {
+        // Layer 3.5: the anisotropy along the texture's axis (wood's grain,
+        // a brushing direction).
+        (_, Some(pt)) if o.pattern.is_some_and(|t| t.along_axis) => TangentField::Axis(pt.axis),
+        (craft3d_doc::AnisotropyDirection::Axis(a), _) => {
             TangentField::Axis([a[0] as f32, a[1] as f32, a[2] as f32])
         }
-        craft3d_doc::AnisotropyDirection::Parametric => body
+        (craft3d_doc::AnisotropyDirection::Parametric, _) => body
             .and_then(|b| b.faces.get(face))
             .map_or(TangentField::Axis([1.0, 0.0, 0.0]), |f| {
                 tangent_field(&f.surface)
@@ -696,6 +703,7 @@ pub(crate) fn render_optics(
             absorption,
             subsurface: o.subsurface as f32,
             subsurface_color: o.subsurface_color,
+            pattern,
         }
         .sanitized(),
     )

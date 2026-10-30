@@ -86,6 +86,239 @@ pub struct Optics {
     /// the base colour.
     #[serde(default)]
     pub subsurface_color: Option<[u8; 3]>,
+    /// Layer 3.5: a solid texture giving the colour and roughness at each
+    /// point of the body (format version 57).
+    #[serde(default)]
+    pub pattern: Option<SolidTexture>,
+}
+
+/// The kinds of solid texture (docs/design/rendering.md, *Layer 3.5:
+/// solid textures*).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SolidTextureKind {
+    /// Rings about the axis, early and late wood, grain, medullary rays.
+    #[default]
+    Wood,
+    /// Veins from turbulence across the axis.
+    Marble,
+    /// Cells, each one of the colours.
+    Granite,
+    /// A dot of the last colour in each cell.
+    Speckle,
+    /// fBm noise: cast iron, stone, a roughness variation.
+    Noise,
+    /// Streaks along the axis.
+    Brushed,
+    /// A 2×2 twill weave around the axis (a tube) or across it (a plate).
+    Carbon,
+}
+
+impl SolidTextureKind {
+    /// Every kind.
+    pub const ALL: [SolidTextureKind; 7] = [
+        SolidTextureKind::Wood,
+        SolidTextureKind::Marble,
+        SolidTextureKind::Granite,
+        SolidTextureKind::Speckle,
+        SolidTextureKind::Noise,
+        SolidTextureKind::Brushed,
+        SolidTextureKind::Carbon,
+    ];
+
+    /// Its name in commands and files.
+    pub fn name(self) -> &'static str {
+        match self {
+            SolidTextureKind::Wood => "wood",
+            SolidTextureKind::Marble => "marble",
+            SolidTextureKind::Granite => "granite",
+            SolidTextureKind::Speckle => "speckle",
+            SolidTextureKind::Noise => "noise",
+            SolidTextureKind::Brushed => "brushed",
+            SolidTextureKind::Carbon => "carbon",
+        }
+    }
+
+    /// The kind of a name.
+    pub fn from_name(name: &str) -> Option<SolidTextureKind> {
+        SolidTextureKind::ALL.into_iter().find(|k| k.name() == name)
+    }
+}
+
+/// The most colours a pattern's ramp has.
+pub const MAX_PATTERN_COLORS: usize = 4;
+/// The largest and the smallest scale of a pattern, in model units (the
+/// renderers' `f32` range, `craft3d_render::studio::pattern::MIN_SCALE`).
+pub const MAX_PATTERN_SCALE: f64 = 1e9;
+pub const MIN_PATTERN_SCALE: f64 = 1e-6;
+/// The shortest axis a pattern takes: shorter is no direction in `f32`.
+pub const MIN_PATTERN_AXIS: f64 = 1e-9;
+
+/// A solid texture: a 3D pattern evaluated in the model's space, with no
+/// mapping of the surface, which gives the colour (a ramp) and optionally
+/// the roughness at each point (docs/design/rendering.md, *Layer 3.5*).
+/// Formats that cannot hold it export the body's colour, which the
+/// commands set to the pattern's mean.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SolidTexture {
+    pub kind: SolidTextureKind,
+    /// The ramp (sRGB), the first `stops` of them (2 to
+    /// [`MAX_PATTERN_COLORS`]), spaced evenly.
+    pub colors: [[u8; 3]; MAX_PATTERN_COLORS],
+    pub stops: u8,
+    /// The roughness at the ramp's two ends; `None` keeps the
+    /// appearance's own.
+    #[serde(default)]
+    pub roughness: Option<[f64; 2]>,
+    /// The size of one feature (a ring, a vein, a cell, a tow), in model
+    /// units.
+    pub scale: f64,
+    /// The pattern's axis (wood's pith, the brushing, the weave), in the
+    /// model's axes; `None`: the longest axis of the body's box.
+    #[serde(default)]
+    pub axis: Option<[f64; 3]>,
+    /// The pattern's origin in the model's space; `None`: from the body's
+    /// box (for wood, the pith beside the body's thinnest side, so a board
+    /// shows arched rings).
+    #[serde(default)]
+    pub origin: Option<[f64; 3]>,
+    #[serde(default)]
+    pub seed: u32,
+    /// Wood's ring wobble and marble's turbulence, in features (0 to 8);
+    /// noise's extra contrast.
+    #[serde(default)]
+    pub distortion: f64,
+    /// Octaves of noise, 1 to 6.
+    #[serde(default = "SolidTexture::default_detail")]
+    pub detail: u32,
+    /// Fine streaks: wood's grain, brushing's scratches (0 to 1).
+    #[serde(default)]
+    pub grain: f64,
+    /// Wood's medullary rays (0 to 1).
+    #[serde(default)]
+    pub rays: f64,
+    /// Speckle's dot radius in cells (0 to 1).
+    #[serde(default = "SolidTexture::default_spot")]
+    pub spot: f64,
+    /// Carbon: the weave wraps around the axis (a tube); else it lies in
+    /// the plane across the axis (a plate whose normal is the axis).
+    #[serde(default = "SolidTexture::default_wrap")]
+    pub wrap: bool,
+    /// The anisotropy (if any) runs along the pattern's axis: wood's grain,
+    /// a brushing direction.
+    #[serde(default)]
+    pub along_axis: bool,
+}
+
+impl SolidTexture {
+    /// The octaves of a pattern without them: 4.
+    pub fn default_detail() -> u32 {
+        4
+    }
+
+    /// The dot radius of a speckle without one: half a cell.
+    pub fn default_spot() -> f64 {
+        0.5
+    }
+
+    /// A weave without the choice wraps around its axis.
+    pub fn default_wrap() -> bool {
+        true
+    }
+
+    /// A pattern of `kind` of two colours at `scale`, every other value
+    /// its default.
+    pub fn new(kind: SolidTextureKind, colors: [[u8; 3]; 2], scale: f64) -> Self {
+        let [a, b] = colors;
+        SolidTexture {
+            kind,
+            colors: [a, b, b, b],
+            stops: 2,
+            roughness: None,
+            scale,
+            axis: None,
+            origin: None,
+            seed: 0,
+            distortion: 0.0,
+            detail: SolidTexture::default_detail(),
+            grain: 0.0,
+            rays: 0.0,
+            spot: SolidTexture::default_spot(),
+            wrap: SolidTexture::default_wrap(),
+            along_axis: false,
+        }
+    }
+
+    /// The ramp's colours in use.
+    pub fn ramp(&self) -> &[[u8; 3]] {
+        self.colors
+            .get(..usize::from(self.stops))
+            .unwrap_or(&self.colors)
+    }
+
+    /// Why this is not a pattern: a number out of range.
+    pub fn check(&self) -> Result<(), String> {
+        if !(2..=MAX_PATTERN_COLORS as u8).contains(&self.stops) {
+            return Err(format!(
+                "a pattern needs 2 to {MAX_PATTERN_COLORS} colours, but it has {}",
+                self.stops
+            ));
+        }
+        if !(self.scale.is_finite()
+            && self.scale >= MIN_PATTERN_SCALE
+            && self.scale <= MAX_PATTERN_SCALE)
+        {
+            return Err(format!(
+                "the pattern's scale must be a length from {MIN_PATTERN_SCALE} to {MAX_PATTERN_SCALE}, but it is {}",
+                self.scale
+            ));
+        }
+        let ranges = [
+            ("distortion", self.distortion, 0.0, 8.0),
+            ("grain", self.grain, 0.0, 1.0),
+            ("rays", self.rays, 0.0, 1.0),
+            ("spot", self.spot, 0.0, 1.0),
+        ];
+        for (name, value, lo, hi) in ranges {
+            if !(lo..=hi).contains(&value) {
+                return Err(format!(
+                    "the pattern's {name} must be between {lo} and {hi}, but it is {value}"
+                ));
+            }
+        }
+        if !(1..=6).contains(&self.detail) {
+            return Err(format!(
+                "the pattern's detail must be 1 to 6 octaves, but it is {}",
+                self.detail
+            ));
+        }
+        if let Some(r) = self.roughness
+            && !r.iter().all(|v| (0.0..=1.0).contains(v))
+        {
+            return Err(format!(
+                "the pattern's roughness must be between 0 and 1, but it is {r:?}"
+            ));
+        }
+        // The renderers take these as f32: each within its range, the axis
+        // long enough to be made unit there.
+        let f32_safe = |c: &f64| c.is_finite() && c.abs() <= f64::from(f32::MAX);
+        if let Some(axis) = self.axis {
+            let length = axis.iter().map(|c| c * c).sum::<f64>().sqrt();
+            if !(axis.iter().all(f32_safe) && length.is_finite() && length >= MIN_PATTERN_AXIS) {
+                return Err(format!(
+                    "the pattern's axis must be a direction (of length at least {MIN_PATTERN_AXIS}), but it is {axis:?}"
+                ));
+            }
+        }
+        if let Some(origin) = self.origin
+            && !origin.iter().all(f32_safe)
+        {
+            return Err(format!(
+                "the pattern's origin must be a point, but it is {origin:?}"
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl Default for Optics {
@@ -102,6 +335,7 @@ impl Default for Optics {
             absorption_distance: Optics::default_absorption_distance(),
             subsurface: 0.0,
             subsurface_color: None,
+            pattern: None,
         }
     }
 }
@@ -150,6 +384,9 @@ impl Optics {
                 "absorptionDistance must be a positive length up to {MAX_ABSORPTION_DISTANCE} mm, but it is {}",
                 self.absorption_distance
             ));
+        }
+        if let Some(pattern) = &self.pattern {
+            pattern.check()?;
         }
         if let AnisotropyDirection::Axis(axis) = self.direction {
             let length = axis.iter().map(|c| c * c).sum::<f64>().sqrt();
@@ -762,6 +999,49 @@ mod tests {
             },
             Optics {
                 direction: AnisotropyDirection::Axis([0.0; 3]),
+                ..Optics::default()
+            },
+            Optics {
+                pattern: Some(SolidTexture::new(SolidTextureKind::Wood, [[0; 3]; 2], 0.0)),
+                ..Optics::default()
+            },
+            Optics {
+                pattern: Some(SolidTexture {
+                    stops: 1,
+                    ..SolidTexture::new(SolidTextureKind::Marble, [[0; 3]; 2], 1.0)
+                }),
+                ..Optics::default()
+            },
+            Optics {
+                pattern: Some(SolidTexture {
+                    axis: Some([0.0; 3]),
+                    ..SolidTexture::new(SolidTextureKind::Carbon, [[0; 3]; 2], 1.0)
+                }),
+                ..Optics::default()
+            },
+            Optics {
+                pattern: Some(SolidTexture::new(SolidTextureKind::Wood, [[0; 3]; 2], 1e-9)),
+                ..Optics::default()
+            },
+            Optics {
+                pattern: Some(SolidTexture {
+                    axis: Some([1e-12, 0.0, 0.0]),
+                    ..SolidTexture::new(SolidTextureKind::Wood, [[0; 3]; 2], 1.0)
+                }),
+                ..Optics::default()
+            },
+            Optics {
+                pattern: Some(SolidTexture {
+                    origin: Some([1e39, 0.0, 0.0]),
+                    ..SolidTexture::new(SolidTextureKind::Wood, [[0; 3]; 2], 1.0)
+                }),
+                ..Optics::default()
+            },
+            Optics {
+                pattern: Some(SolidTexture {
+                    grain: f64::NAN,
+                    ..SolidTexture::new(SolidTextureKind::Wood, [[0; 3]; 2], 1.0)
+                }),
                 ..Optics::default()
             },
         ] {

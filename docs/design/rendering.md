@@ -21,7 +21,8 @@ shadow, a tone curve; see *The studio look* under the findings for the method, t
 tolerance. The plain look is untouched, bit for bit. Its second layer (2026-10-30,
 `craft3d_render::studio::polish`): screen-space reflections and a reflecting ground, contact shadows,
 the key's specular shadow, a thin lens's depth of field, bloom and the accumulation of jittered frames;
-see *Layer 2* under the findings.
+see *Layer 2* under the findings. Layer 3 (materials) and layer 3.5 (solid textures, a pattern
+evaluated in the model's space) are under the findings too.
 
 **Headless GPU and animations** (2026-10-30). `view.render` and `view.replay` draw through
 `craft3d_engine::pictures`: the CPU renderer, or a renderer the host gives the session
@@ -661,9 +662,9 @@ layer 2 marks a traced ray, and `render_studio_doubt` merges both marks.
 
 | | keeps | drops |
 |---|---|---|
-| OBJ (material library) | colour `Kd`, `Pr`, `Pm`, clear coat `Pc`, `Pcr`, anisotropy's size `aniso` (with `anisor 0.25` for a negative one), transmission as dissolve `d = 1 − T` and filter `Tf` (the absorption colour, else white), `Ni` | the anisotropy's direction, the absorption's length, thin-walled, subsurface |
-| 3MF (core base materials) | the display colour, with alpha `1 − T` (`#RRGGBBAA`) for a transmissive one | metallic, roughness, every other layer |
-| STEP (AP214 presentation) | the colour; a transmissive one's `SURFACE_STYLE_TRANSPARENT` (`T`) in a `SURFACE_STYLE_RENDERING_WITH_PROPERTIES` beside the fill | metallic, roughness, every other layer |
+| OBJ (material library) | colour `Kd`, `Pr`, `Pm`, clear coat `Pc`, `Pcr`, anisotropy's size `aniso` (with `anisor 0.25` for a negative one), transmission as dissolve `d = 1 − T` and filter `Tf` (the absorption colour, else white), `Ni` | the anisotropy's direction, the absorption's length, thin-walled, subsurface, a solid texture (its mean colour is `Kd`, layer 3.5) |
+| 3MF (core base materials) | the display colour, with alpha `1 − T` (`#RRGGBBAA`) for a transmissive one | metallic, roughness, every other layer, a solid texture (its mean colour is the display colour) |
+| STEP (AP214 presentation) | the colour; a transmissive one's `SURFACE_STYLE_TRANSPARENT` (`T`) in a `SURFACE_STYLE_RENDERING_WITH_PROPERTIES` beside the fill | metallic, roughness, every other layer, a solid texture (its mean colour is the colour) |
 
 **Presets** (`crates/engine/src/material_presets.json`, data read as a command's parameters):
 `steel`, `aluminium-brushed`, `abs`, `glass`, `car-paint`, `wood`, each an appearance and a material
@@ -745,6 +746,174 @@ design) and gives a paler one. Held by `undisplay_gives_back_every_byte_the_curv
 `clear_glass_on_a_plain_white_background_stays_white` (CPU, and GPU against 250 on every adapter). Cost (1 002 faces, 1020×777, readback with the readback itself, every seventh part solid
 glass): RADV 22.5 → 23.5 ms layer 1, 18.5 → 27.5 ms polished; radeonsi 18.8 → 24.8 and 24.7 → 28.1 ms;
 the CPU 2.0 s.
+
+### Layer 3.5: solid textures (2026-10-30)
+
+The developer's decision of 2026-10-30: a material can carry a 3D pattern evaluated in the model's
+space, with no mapping of the surface. B-rep faces have no tidy parametrisation to hang a picture on,
+and a cut or a section shows the pattern running through the body, as in a real material.
+`craft3d_render::studio::pattern` is the definition (`f64`); the GPU repeats it in `studio.wgsl`
+(`pattern_of`, `noise3`, `cellular3`, `pattern_value`, `pattern_color`) in `f32` from the
+interpolated position. The document keeps it as `craft3d_doc::SolidTexture` in a material's
+`Optics` (`pattern`, format 57), so it travels wherever the layers of layer 3 travel (body and face
+appearances, the rule by which faces of later features inherit them, the scene's wire form, the
+replay).
+
+**Sources** (clean-room, from the literature; no code of any renderer was read):
+
+- K. Perlin, *An Image Synthesizer*, SIGGRAPH 1985 (solid textures, turbulence, marble as
+  `sin(x + turbulence)`), and *Improving Noise*, SIGGRAPH 2002 (the quintic fade `6t⁵ − 15t⁴ + 10t³`
+  and the twelve edge gradients chosen by a hash's low four bits).
+- S. Worley, *A Cellular Texture Basis Function*, SIGGRAPH 1996 (the nearest of one jittered feature
+  point per cell, over the 27 cells about the point).
+- D. Ebert, F. K. Musgrave, D. Peachey, K. Perlin, S. Worley, *Texturing & Modeling: A Procedural
+  Approach*, 3rd ed., 2003: fBm (octaves of lacunarity 2 and gain ½), wood as rings about an axis
+  wobbled by noise, early and late wood.
+- K. Perlin's reference implementation published with *Improving Noise* (`ImprovedNoise`, 2002):
+  the choice of the gradient by the hash's low four bits (`grad`).
+- M. Jarzynski and M. Olano, *Hash Functions for GPU Rendering*, JCGT 2020: `pcg3d`, three `u32`
+  mixed by wrapping products, sums, xors and shifts only, so every CPU and GPU computes the same
+  bits. No driver's noise, `fract`-of-`sin` hash or texture is used.
+
+**The noise.** A lattice point's hash is `pcg3d(cell + offset(seed, octave))` (the offset is itself
+`pcg3d(seed, octave, constant)`: another seed or octave is the same field translated by 2³² cells
+at most, far beyond any part). Gradient noise: Perlin's improved noise with that hash, 0 at every
+lattice point, about −1 to 1 (variance 0.073). fBm and turbulence over 1 to 6 octaves. Cellular
+noise: the distance to the nearest feature point and a number in [0, 1) of its cell (a second
+`pcg3d` of the cell's hash; the hash's top 24 bits are exact in `f32`). The pattern's local
+coordinates (`Pattern::local`: the point minus the origin, in the pattern's frame, over the scale)
+are clamped to ±2²⁰ features so that the cells fit an `i32` on both renderers; a pattern is
+deterministic everywhere and sharp on the GPU to about 10⁴ features from its origin (there `f32`
+resolves a thousandth of a feature; at 2²⁰ only an eighth).
+
+*Platform-free on the CPU.* The CPU's picture and the mean colour the document stores must be the
+same bits everywhere (rule 5): the standard library's `sin` and `atan2` are the platform's and may
+differ in the last bit, so the pattern uses its own (`sin_pi`, the Taylor series after folding into
+±π/2; `atan2_exact`, two angle halvings with the exact `√` and a series), made of `+`, `×`, `/` and
+`√` only, within 10⁻¹⁴ of the standard ones. The GPU uses its own `sin` and `atan2` (in doubt as any
+`f32` arithmetic). The one platform function left is the sRGB decode's `powf` of the ramp's bytes,
+shared with every colour the renderer draws: a 1-ulp difference there can move a mean colour's byte
+only where it lies exactly on a rounding boundary.
+
+**Kinds** (`Pattern::value`, a place `t` on the ramp, 0 to 1):
+
+- `wood`: `r = √(x² + y²) + distortion · fBm(0.35x, 0.35y, 0.03z)` (at most two octaves: where a face
+  cuts the rings at a grazing angle, a board's face, a radial wobble is stretched along the face by
+  about one over the angle, and finer octaves become teeth) about the axis (`z`), in rings of the
+  scale; `t = smoothstep(0.35, 0.85, f) (1 − smoothstep(0.9, 1, f))` of `f = fract(r)`: early wood
+  widening into late wood, back to early wood at the ring's border, continuous (no jump to alias);
+  plus `grain · 0.18 · noise(12x, 12y, 0.15z)` (fine streaks along the axis) and minus
+  `rays · 0.7 · smoothstep(0.25, 0.45, noise(48 x/r, 48 y/r, 0.6 z + 0.3 r))` (medullary rays:
+  constant along a radius, thin across it);
+- `marble`: `t = (1 − |sin 2π u|)⁴ + 0.1 (1 + fBm(2q))`, `u = z + distortion · turbulence(q / 2)`
+  (veins across the axis, faint clouds between them);
+  the sine takes `u`'s place in its period (`−sin(π(2 fract(u) − 1))`), so the GPU's `sin` gets an
+  argument within ±π, where it is accurate;
+- `granite`: the cell's number, quantised to the ramp's stops (each crystal one mineral's colour),
+  blended with the second nearest cell's within a thin band along their border:
+  `t = t₂ + (t₁ − t₂)(½ + ½ smoothstep(0, 0.08, F₂ − F₁))`, so the pattern has no jump for the two
+  renderers to decide apart (a hard border was decided otherwise by RADV at single pixels, by up to
+  71 levels, run 41070463971);
+- `speckle`: a dot of radius `spot · (½ + ½ v)` cells about each feature point; `spot` 0 is no
+  dots (both renderers test the radius: `smoothstep` of an empty range is undefined in WGSL);
+- `noise`: `½ + 0.6 (1 + distortion) fBm(q)`: cast iron, stone, a variation of roughness;
+- `brushed`: `½ + 0.9 fBm(x, y, z/50)` over at most three octaves, plus `grain` scratches: streaks
+  along the axis;
+- `carbon`: a 2×2 twill. Tows of the scale's width; cell `(i, j)` of the weave's coordinates
+  `(a, b)` shows the warp (along `a`) where `k = (i + j) mod 4` is 0 or 1, the weft where it is 2
+  or 3, each floating over two cells; the brightness is `amp · sin(π · across) · sin(π · along / 2)`
+  (`along` the place in the float, 0 to 2; `amp` 1 for the warp, 0.55 for the weft): round across
+  the tow and along its float, 0 at every border, so the weave has no jump either. With `wrap` (the default) the weave is wrapped around
+  the axis: `a` along it, `b` around it in tows, their number around rounded to a multiple of 4 for
+  each radius (so the weave closes on a tube without a seam). Without it, the weave lies in the
+  plane across the axis (a plate whose normal is the axis). *Where an object-space weave looks
+  wrong, honestly:* on a face that is neither a surface of revolution about the axis nor a plane
+  across it (a plate's edges, a tube's end, a doubly curved shell) the weave is the solid pattern's
+  section there, stretched or polar, not a cloth laid on the face; and where the radius crosses a
+  rounding of the tow count (an end face) the weave changes count with a visible step. Draping a
+  weave on a freeform face needs a parametrisation of the face, which is what this layer avoids;
+  it is owed as a texture mapped by the tessellator's parameters.
+
+The ramp's colours (2 to 4, sRGB) are spaced evenly and blended in linear light (the GPU's table
+holds them decoded, as `f32`, and the CPU reads the same numbers). A roughness ramp
+`roughness: [at 0, at 1]` replaces the appearance's roughness; without one the appearance's is kept.
+With `alongAxis` (wood and brushed by default), a face's anisotropy runs along the pattern's axis.
+In the studio look the texture replaces the base colour and roughness in `shade_layered` (and
+`studio_shade`) before every other layer, so the clear coat, the reflections and the glass see the
+textured surface. The plain look shows the appearance's colour. The point is the one the picture
+draws: a part placed by a pose (*Parts moved by poses*) is textured where it is placed, so in a
+motion its texture stays in the world while the part moves (owed: the part's own space, its pose's
+inverse applied to the point). A section's cap and a see-through picture are in the plain look, as
+for layers 1 to 3.
+
+**Defaults** (`craft3d_engine::solid_texture::fitted`, applied by the command and stored, so a later
+edit of the body does not move the grain, and a body moved by an earlier feature slides through its
+texture; a mode that follows the body, fitting at drawing time as `render_pattern` already does for
+a missing axis or origin and moving with the body's placement, is owed): the axis along the longest side of the body's box (ties
+in x, y, z order); wood's tilted towards the thinnest side by 0.06 (a board is never sawn exactly
+along the pith, and the tilt is what makes the rings show as arches on its face) with the pith 0.6
+of the middle side from the centre towards the thinnest side, outside the body; every other kind
+about the box's centre. The scale: wood a twentieth of the middle side (rings that read at a
+part's size), marble the longest side over 4, granite over 80, speckle over 50, noise over 6,
+brushed over 100, carbon a twelfth of the middle side. A file written by hand without an axis or an
+origin gets them from the body's box at drawing time. Without a colour the appearance takes the
+texture's mean colour (`Pattern::mean_color`: 24³ points of a cube of 12 features, averaged in
+linear light), which the plain look and every export show.
+
+**Doubt** (the GPU-vs-CPU rule of the other layers, for a function of the point): a sample is in
+doubt where moving its point by `PATTERN_DOUBT` (provisional 8) `f32` epsilons of the magnitudes the
+GPU computes it from (the eye and the point relative to the mesh's centre, the point relative to the
+pattern's origin) along any axis moves a channel of the texture's colour, or its roughness, by more
+than one level (`Pattern::in_doubt`, marked by `render_studio_doubt`), or by `SUBPIXEL_DOUBT`, a
+256th of a sample, if that is more: the GPU's rasteriser snaps the vertices to its sub-pixel grid
+(8 bits on the adapters measured; Vulkan requires 4), so the point its fragment interpolates is not
+quite the CPU's. Steep places are where this happens: a ring's late wood, a speckle's rim, the fine
+streaks of brushing. A pattern finer than a sample aliases (there is no filtering of a procedural
+texture by the pixel's footprint; owed: band-limiting each octave by it, Ebert et al. ch. 2) and is
+then mostly in doubt: brushing at a scale of 1.6 pixels left 5.7 % of the pixels in doubt (run
+41072278069), past the bound of 1/64, so the defaults keep features at several pixels (brushing's
+scale is the longest side over 100, its scratches three times finer). Every kind is continuous (no jump anywhere but where the carbon weave's tow
+count changes with the radius, on an end face), so the doubt stays a thin set.
+
+*Measured* (Check runs 41093289950 and 41094540615, 2026-10-30; the two layer-3 scenes, each kind
+on two parts, readback and viewport, RADV, radeonsi, llvmpipe). Ids equal. radeonsi and llvmpipe
+within 1 level everywhere compared. RADV's orthographic scene differs at one plate pixel, (168,
+150), in every term, layers or not: 5 to 6 levels without a layer (what layer 3 recorded), 7
+(brushed, carbon) and 8 (noise, the bound itself) with a texture on the plate there; the same
+decision of the scene's, worth more levels on the texture's colour, not the texture's arithmetic
+(the other two adapters agree there within 1). The comparison now has a baseline term without any
+layer, and leaves out (and counts, at most 4 a picture; 2 measured) the pixels that baseline already
+misses by more than half the bound (`excuse_shared` in `crates/gpu/tests/layers.rs`). With them out:
+RADV's readback at most 2 levels with a texture, its viewport at most 6 (granite on the ring); at
+most 5 · 10⁻⁵ of the pixels over one level; in doubt at most 1.3 %. Layer 3's bounds hold with their
+margins. The run prints its numbers (`MEASURE`, `WORST`) when green with `-- --nocapture`.
+
+**Cost** (`crates/ui-egui/tests/solid_texture_cost.rs`, the turbofan, 262 458 triangles, five bodies
+textured with carbon, cast iron, oak, marble and walnut, 1280×800, readback with the read back, on
+the Strix): RADV 8.66 → 9.29 ms (layer 1), 6.94 → 7.48 ms (the simpler WebGL2 look); radeonsi (GL,
+the path closest to WebGL2) 4.43 → 4.63 ms and 2.95 → 3.15 ms; llvmpipe unchanged within noise (194,
+84 ms). About 0.2 to 0.6 ms a frame.
+
+**Exports.** OBJ's material library, 3MF's base materials and STEP's presentation cannot hold a
+procedural texture: each exports the appearance's colour, which the commands set to the texture's
+mean (the tables of layer 3 above: the `pattern` is in the *drops* column of every format). Baking a
+texture into a picture (`texture.bake`, a PNG per face in the tessellator's parameters) is owed.
+
+**Tests.** `crates/render/tests/pattern.rs`: the hash, the noise, fBm and the cellular noise bit for
+bit against an independent evaluation of the same published formulas; the statistics (mean within
+0.01 of 0, variance 0.055 to 0.09, fBm's variance 1.33 times the noise's for four octaves as
+independent octaves add, cellular values uniform, the nearest point about half a cell away); zero on
+the lattice; no period from 1 to 256 cells along any axis and no correlation between seeds (|ρ| <
+0.1); wood without noise against the closed form along a radius at scales 0.004, 1.5 and 3000, its
+rings one scale apart; every kind on its ramp with its roughness ramp, its mean colour between the
+ends, a ramp of one colour its own mean; sanitising; patterned pictures deterministic, different
+from plain, marking doubt changing nothing. `crates/gpu/tests/layers.rs`: each kind on two parts of
+the two layer-3 scenes, readback and viewport, on every adapter, with layer 3's tolerance. Engine
+(`tests/solid_textures.rs`): the presets fitted to a board (walnut's rings 4 apart on a board 80
+wide, the pith 48 below its centre, the axis `[1, 0, 0.06]`), a pattern said back given again, saved
+and opened, a face's own pattern, a cut through an oak block whose cut faces carry the block's one
+texture, the exports' mean colour, bad parameters refused; the format round trip and the v57
+fixture.
 
 ### Parts moved by poses (2026-10-30)
 

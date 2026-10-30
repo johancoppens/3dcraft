@@ -114,6 +114,9 @@ pub struct Optics {
     /// scatters (the base colour when `None`).
     pub subsurface: f32,
     pub subsurface_color: Option<[u8; 3]>,
+    /// Layer 3.5: a solid texture giving the base colour and roughness
+    /// at each point ([`super::pattern`]).
+    pub pattern: Option<super::pattern::Pattern>,
 }
 
 impl Default for Optics {
@@ -129,6 +132,7 @@ impl Default for Optics {
             absorption: [0.0; 3],
             subsurface: 0.0,
             subsurface_color: None,
+            pattern: None,
         }
     }
 }
@@ -144,6 +148,7 @@ impl PartialEq for Optics {
                 o.absorption.map(f32::to_bits),
                 o.subsurface.to_bits(),
                 o.subsurface_color,
+                o.pattern,
             )
         };
         bits(self) == bits(other)
@@ -186,6 +191,7 @@ impl Optics {
             absorption: self.absorption.map(|c| within(c, 0.0, f32::MAX, 0.0)),
             subsurface: within(self.subsurface, 0.0, 1.0, 0.0),
             subsurface_color: self.subsurface_color,
+            pattern: self.pattern.map(super::pattern::Pattern::sanitized),
         }
     }
 
@@ -195,6 +201,7 @@ impl Optics {
             && self.clearcoat == 0.0
             && self.transmission == 0.0
             && self.subsurface == 0.0
+            && self.pattern.is_none()
     }
 
     /// True for a face that lets light through: it casts no shadow and is
@@ -392,6 +399,7 @@ mod tests {
             absorption: [f32::NAN, -3.0, 2.0],
             subsurface: 2.0,
             subsurface_color: None,
+            pattern: None,
         }
         .sanitized();
         assert_eq!(wild.anisotropy, 0.0);

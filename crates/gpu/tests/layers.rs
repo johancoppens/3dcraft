@@ -25,6 +25,7 @@ use craft3d_gpu::{
 use craft3d_math::Vec3;
 use craft3d_render::Finish;
 use craft3d_render::studio::layers::{Optics, TangentField, absorption_coefficients};
+use craft3d_render::studio::pattern::{Pattern, PatternKind};
 use craft3d_render::studio::polish::TRACE_DOUBT;
 use craft3d_render::studio::{
     Look, Prepared, bundled::environment, render_studio, render_studio_doubt,
@@ -58,6 +59,21 @@ use std::sync::Arc;
 /// layer 2's), the transmissive pixels 5 (a margin of 2), the doubt 1/64
 /// (a margin of 2), the unsteady pixels 4 (none measured; `parity.rs`
 /// saw one in a frame).
+///
+/// Layer 3.5 (Check run 41094540615, 2026-10-30, the same adapters, each
+/// kind of solid texture on two parts, and a baseline term without any
+/// layer). Before [`excuse_shared`] (run 41093289950) RADV's orthographic
+/// scene differed at one plate pixel, (168, 150), in every term: 5 to 6
+/// levels without a layer, as measured before, and 7 (brushed, carbon)
+/// and 8 (noise, the bound itself) with a texture on the plate there, the
+/// same decision worth more levels on the texture's colour; llvmpipe and
+/// radeonsi agree within 1 there. With the pixels the baseline already
+/// misses by more than half the bound left out (at most 2 a picture):
+/// llvmpipe and radeonsi at most 1 level everywhere; RADV's readback at
+/// most 2 with a texture and 5 without, its viewport at most 6 with a
+/// texture (granite on the ring) and the 13 of `WIDE_DOUBT` without; at
+/// most 5 · 10⁻⁵ of the pixels over one level; at most 1.3 % in doubt.
+/// The bounds above hold with their margins.
 const SHARE_OVER_ONE: f64 = 1.0 / 4096.0;
 const MOST_LEVELS: u8 = 8;
 const MOST_THROUGH: u8 = 5;
@@ -84,6 +100,11 @@ const MOST_UNSTEADY: usize = 4;
 /// times the margin marks, is left out; any other is held to the bounds.
 const WIDE_DOUBT: f64 = 8.0 * TRACE_DOUBT;
 const MOST_WIDE: usize = 1;
+/// The most pixels per picture left out as the scene's own decision
+/// ([`excuse_shared`]): they are among the baseline's own pixels over
+/// half the bound, 2 on RADV's orthographic viewport (run 41094540615),
+/// with a margin of two.
+const MOST_SHARED: usize = 4;
 
 /// The parts of a scene by name.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -228,6 +249,30 @@ fn glass(thin: bool) -> Optics {
     }
 }
 
+/// Layer 3.5: a solid texture of `kind` (a ramp of three colours, a
+/// roughness ramp, the kind's own parameters at moderate values).
+fn textured(kind: PatternKind, scale: f32, origin: [f64; 3], axis: [f32; 3]) -> Optics {
+    Optics {
+        pattern: Some(Pattern {
+            kind,
+            ramp: [[226, 196, 150], [150, 100, 58], [70, 45, 25], [0; 3]],
+            stops: 3,
+            roughness: Some([0.35, 0.7]),
+            scale,
+            origin,
+            axis,
+            seed: 7,
+            distortion: 0.8,
+            detail: 4,
+            grain: 0.5,
+            rays: 0.4,
+            spot: 0.5,
+            wrap: true,
+        }),
+        ..Optics::default()
+    }
+}
+
 /// Each layer alone, then all together: the layers per part.
 fn terms() -> Vec<(&'static str, Vec<(Part, Optics)>)> {
     let axis = |a: f32, axis: [f32; 3]| Optics {
@@ -254,6 +299,8 @@ fn terms() -> Vec<(&'static str, Vec<(Part, Optics)>)> {
         ..Optics::default()
     };
     vec![
+        // The scene without any layer: the baseline of `excuse_shared`.
+        ("none", vec![]),
         (
             "anisotropy, axis",
             vec![
@@ -281,6 +328,97 @@ fn terms() -> Vec<(&'static str, Vec<(Part, Optics)>)> {
         ),
         ("glass, solid", vec![(Part::Pane, glass(false))]),
         ("glass, thin", vec![(Part::Pane, glass(true))]),
+        // Layer 3.5: each kind of solid texture, on two parts.
+        (
+            "pattern, wood",
+            vec![
+                (
+                    Part::Plate,
+                    textured(PatternKind::Wood, 0.35, [0.0, -3.0, -0.4], [1.0, 0.0, 0.0]),
+                ),
+                (
+                    Part::Post,
+                    textured(PatternKind::Wood, 0.08, [0.9, 3.0, 0.0], [0.0, 0.0, 1.0]),
+                ),
+            ],
+        ),
+        (
+            "pattern, marble",
+            vec![
+                (
+                    Part::Ball,
+                    textured(PatternKind::Marble, 0.5, [2.6, 2.6, 0.9], [0.3, 0.2, 1.0]),
+                ),
+                (
+                    Part::Plate,
+                    textured(PatternKind::Marble, 1.2, [0.0; 3], [1.0, 1.0, 0.2]),
+                ),
+            ],
+        ),
+        (
+            "pattern, granite",
+            vec![
+                (
+                    Part::Plate,
+                    textured(PatternKind::Granite, 0.08, [0.0; 3], [0.0, 0.0, 1.0]),
+                ),
+                (
+                    Part::Ring,
+                    textured(PatternKind::Granite, 0.05, [0.0; 3], [0.0, 0.0, 1.0]),
+                ),
+            ],
+        ),
+        (
+            "pattern, speckle",
+            vec![
+                (
+                    Part::Ball,
+                    textured(PatternKind::Speckle, 0.12, [0.0; 3], [0.0, 0.0, 1.0]),
+                ),
+                // A dot of no size: no dots (smoothstep of an empty range is
+                // not defined in WGSL; the shader leaves it out).
+                (Part::Plate, {
+                    let mut o = textured(PatternKind::Speckle, 0.12, [0.0; 3], [0.0, 0.0, 1.0]);
+                    if let Some(p) = o.pattern.as_mut() {
+                        p.spot = 0.0;
+                    }
+                    o
+                }),
+            ],
+        ),
+        (
+            "pattern, noise",
+            vec![
+                (
+                    Part::Ball,
+                    textured(PatternKind::Noise, 0.3, [0.0; 3], [0.0, 0.0, 1.0]),
+                ),
+                (
+                    Part::Plate,
+                    textured(PatternKind::Noise, 0.6, [0.0; 3], [0.0, 0.0, 1.0]),
+                ),
+            ],
+        ),
+        (
+            "pattern, brushed",
+            vec![(
+                Part::Plate,
+                textured(PatternKind::Brushed, 0.08, [0.0; 3], [1.0, 0.0, 0.0]),
+            )],
+        ),
+        (
+            "pattern, carbon",
+            vec![
+                (
+                    Part::Post,
+                    textured(PatternKind::Carbon, 0.06, [0.9, 3.0, 0.0], [0.0, 0.0, 1.0]),
+                ),
+                (
+                    Part::Plate,
+                    textured(PatternKind::Carbon, 0.15, [0.0; 3], [0.0, 0.0, 1.0]),
+                ),
+            ],
+        ),
         (
             "all",
             vec![
@@ -331,6 +469,7 @@ fn opaque(mesh: &Mesh, colors: &FaceColors) -> Mesh {
 /// The CPU's picture, its doubt at [`TRACE_DOUBT`], and the pixels the
 /// comparison leaves out besides: the band of the picture and, with
 /// transmission, the band of what it shows ([`refraction_band`]).
+#[derive(Clone)]
 struct Cpu {
     frame: Frame,
     doubt: Vec<f32>,
@@ -441,6 +580,10 @@ struct Stats {
     /// Pixels over [`MOST_LEVELS`] left out because the CPU marks them in
     /// doubt at [`WIDE_DOUBT`] (the viewport only).
     wide: usize,
+    /// Pixels over half of [`MOST_LEVELS`] left out because the same
+    /// picture without any layer (the term `none`) already differs there
+    /// by more than half of it ([`excuse_shared`]).
+    shared: usize,
 }
 
 impl Stats {
@@ -512,6 +655,7 @@ fn check(failures: &mut Vec<String>, label: &str, stats: &Stats) {
         || stats.unsteady > MOST_UNSTEADY
         || stats.most_through > MOST_THROUGH
         || stats.wide > MOST_WIDE
+        || stats.shared > MOST_SHARED
     {
         failures.push(format!(
             "{label}: {stats:?}, share {}, in doubt {}",
@@ -519,6 +663,41 @@ fn check(failures: &mut Vec<String>, label: &str, stats: &Stats) {
             stats.doubt_share()
         ));
     }
+}
+
+/// Per pixel, the largest channel difference of `gpu` from the CPU's.
+fn differences(cpu: &Cpu, gpu: &Frame) -> Vec<u8> {
+    let f = &cpu.frame;
+    (0..f.ids.len())
+        .map(|i| {
+            (0..3)
+                .map(|k| f.rgb[3 * i + k].abs_diff(gpu.rgb[3 * i + k]))
+                .max()
+                .unwrap()
+        })
+        .collect()
+}
+
+/// Marks in doubt the compared pixels over half of [`MOST_LEVELS`] where
+/// the same scene without any layer (`baseline`, its differences) already
+/// differs by more than half of it: a decision of the scene's (on
+/// RADV's orthographic scene, one pixel of the plate that every term
+/// shows, 5 to 6 levels without a layer), not the layer's; and counts
+/// them. A layer that changes the colour there (a texture on the plate)
+/// changes how many levels the same decision is worth (7 and 8 measured,
+/// run 41093289950).
+fn excuse_shared(cpu: &mut Cpu, gpu: &Frame, baseline: &[u8]) -> usize {
+    let mut count = 0;
+    for (i, d) in differences(cpu, gpu).into_iter().enumerate() {
+        if cpu.band[i] || cpu.doubt[i] > DOUBT_SHARE {
+            continue;
+        }
+        if d > MOST_LEVELS / 2 && baseline.get(i).is_some_and(|&b| b > MOST_LEVELS / 2) {
+            cpu.doubt[i] = 1.0;
+            count += 1;
+        }
+    }
+    count
 }
 
 /// Marks in doubt the compared pixels over [`MOST_LEVELS`] that `wide`
@@ -546,6 +725,31 @@ fn excuse_wide(cpu: &mut Cpu, gpu: &Frame, wide: &[f32]) -> usize {
 fn report(label: &str, cpu: &Cpu, gpu: &Frame) {
     let f = &cpu.frame;
     let w = f.width as usize;
+    // The largest difference compared, wherever it is: a line per
+    // picture, for the measured block above.
+    let mut worst: Option<(usize, u8)> = None;
+    for i in 0..f.ids.len() {
+        if cpu.band[i] || cpu.doubt[i] > DOUBT_SHARE {
+            continue;
+        }
+        let d = (0..3)
+            .map(|k| f.rgb[3 * i + k].abs_diff(gpu.rgb[3 * i + k]))
+            .max()
+            .unwrap();
+        if worst.is_none_or(|(_, m)| d > m) {
+            worst = Some((i, d));
+        }
+    }
+    if let Some((i, d)) = worst {
+        eprintln!(
+            "WORST {label} | {d} levels at ({}, {}) id {} cpu {:?} gpu {:?}",
+            i % w,
+            i / w,
+            f.ids[i],
+            &f.rgb[3 * i..3 * i + 3],
+            &gpu.rgb[3 * i..3 * i + 3],
+        );
+    }
     let mut printed = 0;
     for i in 0..f.ids.len() {
         if cpu.band[i] || cpu.doubt[i] > DOUBT_SHARE {
@@ -599,6 +803,7 @@ fn layer_three_matches_the_cpu_renderer() {
     for (index, mut offscreen) in offscreens().into_iter().enumerate() {
         let adapter = offscreen.adapter().to_string();
         for (k, scene) in scenes.iter().enumerate() {
+            let mut baseline: Vec<u8> = Vec::new();
             for (j, (term, _)) in terms.iter().enumerate() {
                 let (colors, cpu) = &cpus[k][j];
                 let studio = Studio {
@@ -608,7 +813,18 @@ fn layer_three_matches_the_cpu_renderer() {
                 let gpu = offscreen
                     .render_studio(&scene.mesh, colors, &scene.camera, &scene.params, &studio)
                     .unwrap();
-                let stats = compare(scene, colors, cpu, &gpu);
+                if *term == "none" {
+                    baseline = differences(cpu, &gpu);
+                }
+                let mut excused = cpu.clone();
+                let shared = if *term == "none" {
+                    0
+                } else {
+                    excuse_shared(&mut excused, &gpu, &baseline)
+                };
+                let cpu = &excused;
+                let mut stats = compare(scene, colors, cpu, &gpu);
+                stats.shared = shared;
                 let label = format!("readback {adapter} | {} | {term}", scene.name);
                 eprintln!(
                     "MEASURE {label}: {stats:?} share {:.6} in doubt {:.6}",
@@ -812,6 +1028,7 @@ fn the_viewport_draws_layer_three_as_the_cpu_renderer() {
                 ssaa: 1,
                 ..scene.params
             };
+            let mut baseline: Vec<u8> = Vec::new();
             for (term, layers) in &terms {
                 let colors = scene.colors_with(layers);
                 let frames = if *term == "all" { 4 } else { 1 };
@@ -862,7 +1079,14 @@ fn the_viewport_draws_layer_three_as_the_cpu_renderer() {
                     .unwrap();
                 let again = picture(&mut onscreen);
                 let mut cpu = cpu_render(&scene, &colors, &params, &studio.look);
-                let stats = compare_steady(&scene, &colors, &cpu, &gpu, Some(&again));
+                let shared = if *term == "none" {
+                    baseline = differences(&cpu, &gpu);
+                    0
+                } else {
+                    excuse_shared(&mut cpu, &gpu, &baseline)
+                };
+                let mut stats = compare_steady(&scene, &colors, &cpu, &gpu, Some(&again));
+                stats.shared = shared;
                 let label = format!("viewport {name} | {} | {term}", scene.name);
                 eprintln!(
                     "MEASURE {label}: {stats:?} share {:.6} in doubt {:.6}",
@@ -870,7 +1094,6 @@ fn the_viewport_draws_layer_three_as_the_cpu_renderer() {
                     stats.doubt_share()
                 );
                 report(&label, &cpu, &gpu);
-                let mut stats = stats;
                 if stats.most > MOST_LEVELS {
                     // The pixels over the bound that the CPU marks in doubt
                     // at the wider margin, at most MOST_WIDE of them.
@@ -888,6 +1111,7 @@ fn the_viewport_draws_layer_three_as_the_cpu_renderer() {
                     let wide_count = stats.wide;
                     stats = compare_steady(&scene, &colors, &cpu, &gpu, Some(&again));
                     stats.wide = wide_count;
+                    stats.shared = shared;
                     eprintln!("MEASURE {label} | wide doubt: {stats:?}");
                 }
                 check(&mut failures, &label, &stats);
@@ -905,6 +1129,7 @@ fn layer_three_frames_on_a_thousand_faces() {
     let env = environment("studio").unwrap();
     let mut mesh = Mesh::default();
     let mut colors = FaceColors::new();
+    let mut patterned = FaceColors::new();
     let mut faces = 0_u32;
     let mut part_index = 0_usize;
     'grid: for gy in 0..20 {
@@ -929,6 +1154,20 @@ fn layer_three_frames_on_a_thousand_faces() {
                     colors.set_optics(face, Some(glass(false)));
                 }
             }
+            // Layer 3.5: every part a solid texture, the kinds in turn
+            // (the most a picture can cost).
+            let kind = PatternKind::ALL[part_index % PatternKind::ALL.len()];
+            for face in first..first + count {
+                patterned.set_optics(
+                    face,
+                    Some(textured(
+                        kind,
+                        0.15,
+                        [origin.x, origin.y, 0.0],
+                        [0.0, 0.0, 1.0],
+                    )),
+                );
+            }
             part_index += 1;
             faces += count;
             if faces >= 1000 {
@@ -943,6 +1182,7 @@ fn layer_three_frames_on_a_thousand_faces() {
         for (label, colors) in [
             ("without glass", FaceColors::new()),
             ("with glass", colors.clone()),
+            ("every part a solid texture", patterned.clone()),
         ] {
             for (look_label, look) in [("layer 1", Look::default()), ("polished", Look::polished())]
             {

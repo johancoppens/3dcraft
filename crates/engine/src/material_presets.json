@@ -56,5 +56,70 @@
     "subsurface": 0.2,
     "subsurfaceColor": [200, 120, 60],
     "material": {"name": "Wood", "density": 700}
+  },
+  {
+    "preset": "oak",
+    "label": "Oak",
+    "metallic": 0.0,
+    "roughness": 0.62,
+    "subsurface": 0.15,
+    "subsurfaceColor": [200, 130, 70],
+    "pattern": {"kind": "wood", "colors": [[206, 166, 114], [176, 132, 82], [124, 86, 50]], "roughness": [0.6, 0.68], "distortion": 0.5, "grain": 0.6, "rays": 0.5},
+    "material": {"name": "Oak", "density": 750}
+  },
+  {
+    "preset": "walnut",
+    "label": "Walnut",
+    "metallic": 0.0,
+    "roughness": 0.55,
+    "subsurface": 0.1,
+    "subsurfaceColor": [120, 66, 36],
+    "pattern": {"kind": "wood", "colors": [[124, 84, 54], [92, 60, 38], [50, 31, 19]], "roughness": [0.55, 0.48], "distortion": 0.7, "grain": 0.6, "rays": 0.1, "seed": 2},
+    "material": {"name": "Walnut", "density": 640}
+  },
+  {
+    "preset": "beech",
+    "label": "Beech",
+    "metallic": 0.0,
+    "roughness": 0.6,
+    "subsurface": 0.15,
+    "subsurfaceColor": [220, 150, 100],
+    "pattern": {"kind": "wood", "colors": [[224, 190, 154], [206, 164, 126], [178, 130, 94]], "distortion": 0.4, "grain": 0.4, "rays": 0.3, "seed": 5},
+    "material": {"name": "Beech", "density": 720}
+  },
+  {
+    "preset": "marble",
+    "label": "Marble",
+    "metallic": 0.0,
+    "roughness": 0.12,
+    "subsurface": 0.3,
+    "pattern": {"kind": "marble", "colors": [[242, 240, 236], [222, 220, 216], [110, 112, 118]], "distortion": 0.8},
+    "material": {"name": "Marble", "density": 2700}
+  },
+  {
+    "preset": "granite",
+    "label": "Granite",
+    "metallic": 0.0,
+    "roughness": 0.3,
+    "pattern": {"kind": "granite", "colors": [[210, 206, 200], [150, 146, 144], [52, 50, 52], [180, 130, 118]]},
+    "material": {"name": "Granite", "density": 2750}
+  },
+  {
+    "preset": "carbon",
+    "label": "Carbon fibre",
+    "metallic": 0.0,
+    "roughness": 0.35,
+    "clearcoat": 1.0,
+    "clearcoatRoughness": 0.03,
+    "pattern": {"kind": "carbon", "colors": [[6, 6, 7], [18, 18, 20], [44, 44, 48]], "roughness": [0.45, 0.25]},
+    "material": {"name": "Carbon fibre (CFRP)", "density": 1600}
+  },
+  {
+    "preset": "cast-iron",
+    "label": "Cast iron",
+    "metallic": 1.0,
+    "roughness": 0.65,
+    "pattern": {"kind": "noise", "colors": [[66, 66, 68], [112, 112, 115]], "roughness": [0.8, 0.5], "distortion": 0.3},
+    "material": {"name": "Cast iron", "density": 7200}
   }
 ]

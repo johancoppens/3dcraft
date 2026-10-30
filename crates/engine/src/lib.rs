@@ -89,6 +89,7 @@ mod sketch_path_cmds;
 mod sketch_pattern_cmds;
 mod sketch_spline_cmds;
 mod sketch_warnings;
+mod solid_texture;
 mod split_cmds;
 mod step_cmds;
 mod stepwise;

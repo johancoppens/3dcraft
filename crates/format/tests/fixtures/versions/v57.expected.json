@@ -1,0 +1,296 @@
+{
+  "format_version": 57,
+  "written_by": "c43533b674be4220da5c832f0d31739c2a855614",
+  "how": "the CLI of that commit, built on the Strix (cargo build --release -p craft3d-cli in ~/3dcraft-evidence/solid-tex): craft3d-cli run --new '{\"units\": \"mm\"}' --script v57.steps.json --out v57.3dcraft, then craft3d-cli run v57.3dcraft --cmd document.inspect; a walnut board, a marble ball, a carbon tube (the presets, fitted to each body's box) and a cube with a noise texture of its own and two faces with granite and speckle: the solid textures of format 57 (TEMPORARY number: 55 and 56 belong to other branches); document.inspect by the CLI of a415330657dc277d7e2b59768748dfac98130063, which no longer says a pattern's mean colour back (the file is unchanged)",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Board",
+      "params": {
+        "orientation": {
+          "angle": "0 deg",
+          "axis": [
+            "0",
+            "0",
+            "1"
+          ]
+        },
+        "position": [
+          "0",
+          "0",
+          "0"
+        ],
+        "size": [
+          "300",
+          "80",
+          "20"
+        ],
+        "type": "block"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "id": "F2",
+      "name": "Ball",
+      "params": {
+        "position": [
+          "0",
+          "150",
+          "40"
+        ],
+        "radius": "40",
+        "type": "sphere"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "id": "F3",
+      "name": "Tube",
+      "params": {
+        "height": "120",
+        "orientation": {
+          "angle": "0 deg",
+          "axis": [
+            "0",
+            "0",
+            "1"
+          ]
+        },
+        "position": [
+          "200",
+          "150",
+          "0"
+        ],
+        "radius": "15",
+        "type": "cylinder"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "id": "F4",
+      "name": "Cube",
+      "params": {
+        "orientation": {
+          "angle": "0 deg",
+          "axis": [
+            "0",
+            "0",
+            "1"
+          ]
+        },
+        "position": [
+          "-150",
+          "0",
+          "0"
+        ],
+        "size": [
+          "60",
+          "60",
+          "60"
+        ],
+        "type": "block"
+      },
+      "status": "ok",
+      "suppressed": false
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F1",
+      "kind": "solid",
+      "faces": 6,
+      "edges": 12,
+      "vertices": 8,
+      "volume": 480000.0000000001,
+      "area": 63200.00000000003,
+      "appearance": {
+        "clearcoat": 0.3,
+        "clearcoatRoughness": 0.3,
+        "color": "#6c4a30",
+        "metallic": 0.0,
+        "pattern": {
+          "alongAxis": true,
+          "axis": [
+            1.0,
+            0.0,
+            0.06
+          ],
+          "colors": [
+            "#7c5638",
+            "#5e3e28",
+            "#382316"
+          ],
+          "detail": 4,
+          "distortion": 0.7,
+          "grain": 0.5,
+          "kind": "wood",
+          "origin": [
+            150.0,
+            40.0,
+            -38.000000000005116
+          ],
+          "rays": 0.1,
+          "scale": 4.000000000000426,
+          "seed": 2,
+          "spot": 0.5,
+          "wrap": true
+        },
+        "roughness": 0.5,
+        "subsurface": 0.1,
+        "subsurfaceColor": "#965028"
+      },
+      "material": {
+        "density": 640.0,
+        "name": "Walnut"
+      },
+      "mass": 0.3072000000000001
+    },
+    {
+      "feature": "F2",
+      "kind": "solid",
+      "faces": 1,
+      "edges": 0,
+      "vertices": 0,
+      "volume": 268082.57310632925,
+      "area": 20106.192982974702,
+      "appearance": {
+        "color": "#e8e7e3",
+        "metallic": 0.0,
+        "pattern": {
+          "alongAxis": false,
+          "axis": [
+            1.0,
+            0.0,
+            0.0
+          ],
+          "colors": [
+            "#f2f0ec",
+            "#d6d4d0",
+            "#606268"
+          ],
+          "detail": 4,
+          "distortion": 2.0,
+          "grain": 0.0,
+          "kind": "marble",
+          "origin": [
+            0.0,
+            150.0,
+            40.0
+          ],
+          "rays": 0.0,
+          "scale": 32.00000000000216,
+          "seed": 0,
+          "spot": 0.5,
+          "wrap": true
+        },
+        "roughness": 0.12,
+        "subsurface": 0.3
+      },
+      "material": {
+        "density": 2700.0,
+        "name": "Marble"
+      },
+      "mass": 0.7238229473870891
+    },
+    {
+      "feature": "F3",
+      "kind": "solid",
+      "faces": 3,
+      "edges": 2,
+      "vertices": 2,
+      "volume": 84823.00164692444,
+      "area": 12723.450247038665,
+      "appearance": {
+        "clearcoat": 1.0,
+        "clearcoatRoughness": 0.03,
+        "color": "#3a3a3f",
+        "metallic": 0.0,
+        "pattern": {
+          "alongAxis": false,
+          "axis": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "colors": [
+            "#0e0e10",
+            "#28282c",
+            "#56565c"
+          ],
+          "detail": 4,
+          "distortion": 0.0,
+          "grain": 0.0,
+          "kind": "carbon",
+          "origin": [
+            200.0,
+            150.0,
+            60.0
+          ],
+          "rays": 0.0,
+          "roughness": [
+            0.45,
+            0.25
+          ],
+          "scale": 2.5000000000005116,
+          "seed": 4,
+          "spot": 0.5,
+          "wrap": true
+        },
+        "roughness": 0.35
+      },
+      "material": {
+        "density": 1600.0,
+        "name": "Carbon fibre (CFRP)"
+      },
+      "mass": 0.13571680263507913
+    },
+    {
+      "feature": "F4",
+      "kind": "solid",
+      "faces": 6,
+      "edges": 12,
+      "vertices": 8,
+      "volume": 216000.00000000003,
+      "area": 21600.000000000007,
+      "appearance": {
+        "color": "#757575",
+        "pattern": {
+          "alongAxis": false,
+          "axis": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "colors": [
+            "#404040",
+            "#707070",
+            "#a0a0a0"
+          ],
+          "detail": 3,
+          "distortion": 0.5,
+          "grain": 0.0,
+          "kind": "noise",
+          "origin": [
+            -150.0,
+            0.0,
+            0.0
+          ],
+          "rays": 0.0,
+          "roughness": [
+            0.9,
+            0.4
+          ],
+          "scale": 8.0,
+          "seed": 77,
+          "spot": 0.5,
+          "wrap": true
+        },
+        "roughness": 0.5
+      }
+    }
+  ]
+}

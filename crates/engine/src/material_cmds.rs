@@ -19,15 +19,15 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "material.presets",
         "Material Presets",
         "{}",
-        "Lists the material presets: steel, aluminium-brushed, abs, glass, car-paint and wood, each with its colour, metallic, roughness, its layers (anisotropy, clear coat, transmission, subsurface) and its material (name and density in kg/m³), as material.preset gives them. Reads nothing of the document.",
+        "Lists the material presets: steel, aluminium-brushed, abs, glass, car-paint, wood, and those with a solid texture: oak, walnut, beech, marble, granite, carbon and cast-iron; each with its colour, metallic, roughness, its layers (anisotropy, clear coat, transmission, subsurface, pattern) and its material (name and density in kg/m³), as material.preset gives them (a pattern's scale, axis and origin are fitted to the body then). Reads nothing of the document.",
         doc: false,
         material_presets_cmd
     ),
     spec!(
         "material.preset",
         "Material Preset",
-        r##"{"body": id or name, "preset": "steel" | "aluminium-brushed" | "abs" | "glass" | "car-paint" | "wood", "color": "#rrggbb" or [r, g, b], "metallic": number, "roughness": number, "anisotropy": number, "anisotropyAxis": [x, y, z] or "parametric", "clearcoat": number, "clearcoatRoughness": number, "transmission": number, "ior": number, "thinWalled": boolean, "absorption": "#rrggbb" or [r, g, b], "absorptionDistance": number (mm), "subsurface": number, "subsurfaceColor": "#rrggbb" or [r, g, b]}"##,
-        "Gives the body of a feature a preset of the material library (material.presets lists them): its appearance (colour, metallic, roughness and the layers the studio look shades: anisotropy for brushed metal, a clear coat for car paint, transmission for glass, a subsurface wrap for wax-like plastics and wood) and its material (name and density, so document.measure weighs it). Any number given beside the preset changes it (the presets are data; their numbers are a starting point): {\"preset\": \"car-paint\", \"color\": \"#1f4fa0\"} is a blue car paint. One undo step; body.appearance and body.material change either half afterwards.",
+        r##"{"body": id or name, "preset": "steel" | "aluminium-brushed" | "abs" | "glass" | "car-paint" | "wood" | "oak" | "walnut" | "beech" | "marble" | "granite" | "carbon" | "cast-iron", "pattern": {fields of body.appearance's pattern, each replacing the preset's} or null, "color": "#rrggbb" or [r, g, b], "metallic": number, "roughness": number, "anisotropy": number, "anisotropyAxis": [x, y, z] or "parametric", "clearcoat": number, "clearcoatRoughness": number, "transmission": number, "ior": number, "thinWalled": boolean, "absorption": "#rrggbb" or [r, g, b], "absorptionDistance": number (mm), "subsurface": number, "subsurfaceColor": "#rrggbb" or [r, g, b]}"##,
+        "Gives the body of a feature a preset of the material library (material.presets lists them): its appearance (colour, metallic, roughness and the layers the studio look shades: anisotropy for brushed metal, a clear coat for car paint, transmission for glass, a subsurface wrap for wax-like plastics and wood) and its material (name and density, so document.measure weighs it). Any number given beside the preset changes it (the presets are data; their numbers are a starting point): {\"preset\": \"car-paint\", \"color\": \"#1f4fa0\"} is a blue car paint. The presets with a solid texture (oak, walnut, beech, marble, granite, carbon, cast-iron) fit it to the body: its scale, axis (the box's longest side; wood's tilted 0.06 towards the thinnest side) and origin (wood's pith beside the thinnest side) from the body's box, and the colour is the texture's mean; a `pattern` object beside the preset changes its fields one by one ({\"preset\": \"oak\", \"pattern\": {\"scale\": 3}}), null takes it away. One undo step; body.appearance and body.material change either half afterwards.",
         doc: true,
         material_preset_cmd
     ),
@@ -35,7 +35,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
 
 /// The parameters of the layers, as `body.appearance`, `face.appearance`
 /// and `material.preset` take them.
-pub(crate) const OPTICS_KEYS: [&str; 11] = [
+pub(crate) const OPTICS_KEYS: [&str; 12] = [
     "anisotropy",
     "anisotropyAxis",
     "clearcoat",
@@ -47,6 +47,7 @@ pub(crate) const OPTICS_KEYS: [&str; 11] = [
     "absorptionDistance",
     "subsurface",
     "subsurfaceColor",
+    "pattern",
 ];
 
 /// The layers `p` gives, starting from `base`: each key present replaces
@@ -152,13 +153,16 @@ pub(crate) fn optics_into(map: &mut Map<String, Value>, o: &Optics) {
     if let Some(c) = o.subsurface_color {
         map.insert("subsurfaceColor".into(), hex(c).into());
     }
+    if let Some(t) = &o.pattern {
+        map.insert("pattern".into(), crate::solid_texture::pattern_json(t));
+    }
 }
 
 /// The library, as data.
 const PRESETS: &str = include_str!("material_presets.json");
 
 /// The keys of a preset entry.
-const PRESET_KEYS: [&str; 16] = [
+const PRESET_KEYS: [&str; 17] = [
     "preset",
     "label",
     "color",
@@ -175,6 +179,7 @@ const PRESET_KEYS: [&str; 16] = [
     "absorption",
     "absorptionDistance",
     "subsurface",
+    "pattern",
 ];
 
 /// The presets' entries, in their order.
@@ -202,12 +207,24 @@ fn preset_parts(
     keys.extend(["subsurfaceColor", "body"]);
     let value = Value::Object(entry.clone());
     let p = Params::new(command, &value, &keys)?;
-    let color = color_param(command, p.get("color").ok_or_else(|| p.missing("color"))?)?;
+    let mut optics = optics_param(&p, Optics::default())?;
+    // A preset's pattern is fitted to the body later (its scale, axis and
+    // origin from the body's box, `fit`); here its numbers are checked.
+    let pattern = match p.get("pattern") {
+        Some(v) => crate::solid_texture::pattern_param(command, v, None)?,
+        None => None,
+    };
+    optics.pattern = pattern.map(|(t, _)| t);
+    let color = match (p.get("color"), &optics.pattern) {
+        (Some(v), _) => color_param(command, v)?,
+        (None, Some(t)) => crate::solid_texture::mean_color(t),
+        (None, None) => return Err(p.missing("color")),
+    };
     let appearance = Appearance {
         color,
         metallic: factor(&p, "metallic")?,
         roughness: factor(&p, "roughness")?,
-        optics: optics_param(&p, Optics::default())?,
+        optics,
     };
     let material = entry
         .get("material")
@@ -276,18 +293,42 @@ fn material_preset_cmd(session: &mut Session, params: &Value) -> Run {
             names.join(", ")
         ));
     };
-    // The changes given replace the preset's numbers.
+    // The changes given replace the preset's numbers; a pattern's fields
+    // replace the preset's pattern's one by one (`null` takes it away).
     let mut merged = entry.clone();
     if let Some(given) = params.as_object() {
         for (key, value) in given {
-            if key != "body" && key != "preset" {
+            if key == "pattern"
+                && let (Some(Value::Object(base)), Value::Object(changes)) =
+                    (merged.get_mut("pattern"), value)
+            {
+                for (k, v) in changes {
+                    base.insert(k.clone(), v.clone());
+                }
+            } else if key != "body" && key != "preset" {
                 merged.insert(key.clone(), value.clone());
             }
         }
     }
-    let (appearance, material) = preset_parts(ID, &merged)?;
-    let doc = session.document()?.history.current();
-    let id = body_ref(doc, &p, ID)?;
+    if merged.get("pattern").is_some_and(Value::is_null) {
+        merged.remove("pattern");
+    }
+    let (mut appearance, material) = preset_parts(ID, &merged)?;
+    let id = {
+        let doc = session.document()?.history.current();
+        body_ref(doc, &p, ID)?
+    };
+    if let Some(Value::Object(_)) = merged.get("pattern") {
+        // Fitted to the body: what the preset (and the changes) leave out.
+        let scale_given = merged.get("pattern").and_then(|v| v.get("scale")).is_some();
+        if let Some(t) = appearance.optics.pattern {
+            let open = session.document_mut()?;
+            let regen = open.regen();
+            let body = regen.feature(id).and_then(|r| r.body.as_deref());
+            appearance.optics.pattern =
+                Some(crate::solid_texture::resolve(ID, t, scale_given, body)?);
+        }
+    }
     let body = BodyAppearance::from(appearance);
     let label = format!("Preset {name} on {id}");
     edit(session, ID, &label, |doc| {
@@ -325,7 +366,14 @@ mod tests {
                 "abs",
                 "glass",
                 "car-paint",
-                "wood"
+                "wood",
+                "oak",
+                "walnut",
+                "beech",
+                "marble",
+                "granite",
+                "carbon",
+                "cast-iron"
             ]
         );
         for entry in &entries {
