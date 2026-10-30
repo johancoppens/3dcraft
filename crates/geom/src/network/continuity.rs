@@ -71,7 +71,7 @@
 //! seam's own length it is held to `min(angular / L, 2 tol / L²)`.
 
 use super::{H, NetworkError, Raw, Track, derivative, internal, iso_track, point, refuse};
-use crate::refine::{SAME_KNOT, bezier_pieces_batched};
+use crate::refine::SAME_KNOT;
 use crate::{NurbsCurve, NurbsSurface, Surface};
 use craft3d_math::Vec3;
 
@@ -639,26 +639,6 @@ fn row_pieces(raw: &Raw, breaks: &[f64], magnitude: [f64; 2]) -> Result<Vec<P4>,
         let w = factor * EPS * own[1].max(magnitude[1]);
         [xyz, xyz, xyz, w]
     };
-    if raw.degree == 0 {
-        // Constant on each piece (a derivative of a polyline): its value
-        // in the middle of each.
-        let es = allowance(32.0);
-        let mut bounds = vec![0.0];
-        bounds.extend(breaks.iter().copied());
-        bounds.push(1.0);
-        return bounds
-            .windows(2)
-            .map(|w| {
-                let [a, b] = w else { return Err(internal()) };
-                let h = super::eval(raw, 0.5 * (a + b))?;
-                let comp = |k: usize| Poly {
-                    c: vec![h.get(k).copied().unwrap_or(0.0)],
-                    e: es.get(k).copied().unwrap_or(0.0),
-                };
-                Ok([comp(0), comp(1), comp(2), comp(3)])
-            })
-            .collect();
-    }
     let mut raw = raw.clone();
     let mut have = raw.knots.clone();
     have.dedup();
@@ -675,7 +655,7 @@ fn row_pieces(raw: &Raw, breaks: &[f64], magnitude: [f64; 2]) -> Result<Vec<P4>,
     raw.insert_all(&missing)?;
     let p = raw.degree;
     let es = allowance(16.0 * (p + 2) as f64);
-    let (_, pieces) = bezier_pieces_batched(raw)?;
+    let (_, pieces) = super::pieces_any(&raw)?;
     if pieces.len() != breaks.len() + 1 {
         return Err(internal());
     }

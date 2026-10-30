@@ -468,6 +468,47 @@ fn combined(a: &Raw, b: &Raw, fa: f64, fb: f64) -> Result<Raw, NetworkError> {
     })
 }
 
+/// The Bézier pieces of a spline between its distinct knots, also where a
+/// knot is there once more than its degree (the derivative of a spline
+/// joined only in position, whose pieces then do not meet): every knot
+/// raised to its degree, then each piece's points taken from where the
+/// last ended, as far on as that knot's multiplicity. The same pieces as
+/// `bezier_pieces_batched` wherever that applies.
+fn pieces_any(raw: &Raw) -> Result<(Vec<f64>, Vec<Vec<H>>), NetworkError> {
+    let mut raw = raw.clone();
+    if !raw.clamped() {
+        return Err(GeomError::Unsupported(
+            "cutting a curve whose end knots are not repeated (not clamped)",
+        )
+        .into());
+    }
+    let p = raw.degree;
+    let missing = raw.to_multiplicity(p);
+    raw.insert_all(&missing)?;
+    let (a, b) = raw.domain()?;
+    let runs = raw.knot_runs();
+    let mut bounds = vec![a];
+    bounds.extend(runs.iter().map(|r| r.0));
+    bounds.push(b);
+    let mut pieces = Vec::with_capacity(runs.len() + 1);
+    let mut start = 0usize;
+    for k in 0..=runs.len() {
+        let piece = raw
+            .points
+            .get(start..=start + p)
+            .ok_or_else(internal)?
+            .to_vec();
+        pieces.push(piece);
+        if let Some(run) = runs.get(k) {
+            start += run.1;
+        }
+    }
+    if start + p + 1 != raw.points.len() {
+        return Err(internal());
+    }
+    Ok((bounds, pieces))
+}
+
 /// The product of the scalar spline `a` (its first coordinate) and the
 /// spline `b`: a spline of the sum of their degrees, exactly (piece by
 /// piece on the knots of both, Bernstein coefficients multiplied).
@@ -497,8 +538,8 @@ fn times(a: &Raw, b: &Raw) -> Result<Raw, NetworkError> {
         raw.insert_all(&missing)?;
     }
     let (pa, pb) = (a.degree, b.degree);
-    let (bounds, pieces_a) = bezier_pieces_batched(a)?;
-    let (_, pieces_b) = bezier_pieces_batched(b)?;
+    let (bounds, pieces_a) = pieces_any(&a)?;
+    let (_, pieces_b) = pieces_any(&b)?;
     if pieces_a.len() != pieces_b.len() {
         return Err(internal());
     }
@@ -3245,16 +3286,30 @@ fn hold_curvature_implicit(
         fixed.push((u, d));
     }
     // The space of the change: degree D, C² at every break.
+    // At least the degree of ρ: whatever the true degree of N (an edge
+    // may be a curve of lower degree raised), N·Δ must reach every term
+    // of ρ; and enough to leave more unknowns than equations at a break.
     let p = r0.degree;
-    let big_d = p.max((p + 11).div_ceil(3));
+    let big_d = p.max((p + 11).div_ceil(3)).max(rho.degree);
+    if big_d > crate::MAX_DEGREE {
+        return refuse(format!(
+            "{label}: holding it in curvature needs a surface of degree {big_d} along it, more than the {} a spline may have",
+            crate::MAX_DEGREE
+        ));
+    }
+    // The net's own knots, and the crossings that are not one of them
+    // (taken as the net has them, so that no two knots lie within
+    // rounding of each other).
     let mut breaks: Vec<f64> = r0.interior();
-    breaks.extend(
-        at.iter()
-            .copied()
-            .filter(|u| *u > SAME_KNOT && *u < 1.0 - SAME_KNOT),
-    );
+    breaks.dedup();
+    let own = breaks.clone();
+    for u in at {
+        if *u > SAME_KNOT && *u < 1.0 - SAME_KNOT && !own.iter().any(|k| (k - u).abs() <= SAME_KNOT)
+        {
+            breaks.push(*u);
+        }
+    }
     breaks.sort_by(f64::total_cmp);
-    breaks.dedup_by(|x, y| (*x - *y).abs() <= SAME_KNOT);
     let mut knots = vec![0.0; big_d + 1];
     for b in &breaks {
         knots.extend(std::iter::repeat_n(*b, big_d - 2));
@@ -3273,7 +3328,7 @@ fn hold_curvature_implicit(
             .filter(|b| !have.iter().any(|k| (k - b).abs() <= SAME_KNOT))
             .collect();
         raw.insert_all(&missing)?;
-        let (_, pieces) = bezier_pieces_batched(raw)?;
+        let (_, pieces) = pieces_any(&raw)?;
         if pieces.len() != breaks.len() + 1 {
             return Err(internal());
         }
