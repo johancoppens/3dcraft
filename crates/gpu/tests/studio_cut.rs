@@ -29,9 +29,10 @@ use craft3d_gpu::{
     Studio,
 };
 use craft3d_math::Vec3;
+use craft3d_render::studio::layers::{Optics, absorption_coefficients};
 use craft3d_render::studio::polish::TRACE_DOUBT;
 use craft3d_render::studio::{Look, Prepared, bundled::environment, render_studio_doubt};
-use craft3d_render::{Finish, SECTION_FACE, Section};
+use craft3d_render::{Finish, Highlight, SECTION_FACE, Section};
 use craft3d_tess::{TessParams, tessellate_body};
 use craft3d_testkit::solids;
 use std::sync::Arc;
@@ -76,13 +77,17 @@ fn part(solid: &solids::Reference, color: [u8; 3], finish: Finish) -> (Mesh, [u8
     (mesh, color, finish)
 }
 
-fn combine(parts: Vec<(Mesh, [u8; 3], Finish)>) -> (Mesh, FaceColors) {
+/// The parts in one mesh, each face with its part's colour and finish;
+/// and the first face of each part.
+fn combine(parts: Vec<(Mesh, [u8; 3], Finish)>) -> (Mesh, FaceColors, Vec<u32>) {
     let mut mesh = Mesh::default();
     let mut colors = FaceColors::new();
     let mut faces = 0_u32;
+    let mut firsts = Vec::new();
     for (part, color, finish) in parts {
         let base = mesh.positions.len() as u32;
         let first = faces;
+        firsts.push(first);
         let count = part.face_ids.iter().copied().max().map_or(0, |m| m + 1);
         mesh.positions.extend(part.positions);
         mesh.normals.extend(part.normals);
@@ -95,7 +100,7 @@ fn combine(parts: Vec<(Mesh, [u8; 3], Finish)>) -> (Mesh, FaceColors) {
         }
         faces += count;
     }
-    (mesh, colors)
+    (mesh, colors, firsts)
 }
 
 /// The three kinds of picture of a scene: seen through, cut open, both.
@@ -120,21 +125,44 @@ fn scenes() -> Vec<(Scene, Section)> {
     let ball = solids::sphere(&at(1.1, 1.5, 1.0), 0.6).unwrap();
     let ring = solids::torus(&at(2.8, 1.5, 1.0), 0.6, 0.2).unwrap();
     let post = solids::cylinder(&at(2.8, 1.5, 0.2), 0.15, 1.6).unwrap();
-    let (mesh_a, colors_a) = combine(vec![
+    let (mesh_a, mut colors_a, firsts) = combine(vec![
         part(&housing, [70, 110, 160], gloss),
         part(&ball, [200, 70, 50], rough),
         part(&ring, [210, 170, 80], metal),
         part(&post, [90, 160, 90], gloss),
     ]);
+    // The ball is glass (layer 3's transmission, solid): in a see-through
+    // picture it passes the surface behind it as a thin sheet; the post's
+    // faces are highlighted: not seen through.
+    let ball_faces = firsts[1]..firsts[2];
+    for face in ball_faces {
+        colors_a.set_optics(
+            face,
+            Some(Optics {
+                transmission: 0.85,
+                ior: 1.45,
+                absorption: absorption_coefficients([150, 210, 190], 0.6),
+                ..Optics::default()
+            }),
+        );
+    }
+    let post_faces = firsts[3]..firsts[3] + 3;
     let plate = solids::block(&at(0.0, 0.0, 0.0), 4.0, 4.0, 0.3).unwrap();
     let globe = solids::sphere(&at(2.0, 2.0, 1.0), 0.8).unwrap();
     let cone = solids::cone(&at(1.0, 1.0, 0.3), 0.5, 1.2).unwrap();
-    let (mesh_b, colors_b) = combine(vec![
+    // A block standing on the plate: its bottom face and the plate's top
+    // lie in one plane (the surface behind the front is a tie there).
+    let block = solids::block(&at(2.9, 0.3, 0.3), 0.8, 0.8, 0.6).unwrap();
+    let (mesh_b, colors_b, _) = combine(vec![
         part(&plate, [150, 150, 155], rough),
         part(&globe, [230, 190, 90], gloss),
         part(&cone, [60, 120, 200], metal),
+        part(&block, [200, 90, 140], rough),
     ]);
-    let pa = params(300, 220, 1);
+    let pa = RenderParams {
+        highlight: Highlight::new([250, 200, 30], post_faces).0,
+        ..params(300, 220, 1)
+    };
     let pb = params(257, 193, 2);
     vec![
         (
@@ -451,4 +479,100 @@ fn the_viewport_draws_see_through_and_cut_open_studio_pictures_as_the_cpu() {
         }
     }
     assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// The cost on the viewport (rule 12), as `layer_two_frames_on_a_thousand_faces`:
+/// the grid of reference solids, about a thousand faces, at 1020 × 777;
+/// opaque and whole, seen through, cut open and both, in layer 1's look and
+/// the polished one: printed for the dev log.
+#[test]
+fn see_through_and_cut_open_frames_on_a_thousand_faces() {
+    use craft3d_testkit::trimmed;
+    let env = environment("studio").unwrap();
+    let mut mesh = Mesh::default();
+    let mut faces = 0_u32;
+    'grid: for gy in 0..20 {
+        for gx in 0..20_usize {
+            let origin = Vec3::new(gx as f64 * 5.0, gy as f64 * 5.0, 0.0);
+            let frame = craft3d_math::Frame::new(origin, Vec3::Z, Vec3::X).unwrap();
+            let mut all = solids::all(&frame, 1.0).unwrap();
+            all.extend(trimmed::all(&frame, 1.0).unwrap());
+            let solid = &all[(gx + gy * 20) % all.len()];
+            let part = tessellate_body(&solid.body, &TessParams::default()).unwrap();
+            let base = mesh.positions.len() as u32;
+            let first = faces;
+            mesh.positions.extend(part.positions);
+            mesh.normals.extend(part.normals);
+            mesh.triangles
+                .extend(part.triangles.iter().map(|t| t.map(|i| i + base)));
+            mesh.face_ids
+                .extend(part.face_ids.iter().map(|f| f + first));
+            faces += part.face_ids.iter().copied().max().map_or(0, |m| m + 1);
+            if faces >= 1000 {
+                break 'grid;
+            }
+        }
+    }
+    let p = params(1020, 777, 1);
+    let camera = perspective(&mesh, Vec3::new(1.0, -1.4, 0.9), 35.0, &p);
+    let other = perspective(&mesh, Vec3::new(1.0, -1.35, 0.9), 35.0, &p);
+    let center = mesh.bbox().center().unwrap();
+    let section = Section {
+        origin: center,
+        normal: Vec3::new(0.3, -1.0, 0.0),
+        cap: true,
+        color: [200, 90, 60],
+    };
+    let colors = FaceColors::new();
+    for (adapter, device, queue) in devices::devices() {
+        let name = adapter.get_info().name;
+        let mut onscreen = Onscreen::new(&device, &queue, &adapter).unwrap();
+        let lines = onscreen.upload_lines(&[]).unwrap();
+        let uploaded = onscreen.upload_colored(&mesh, &colors).unwrap();
+        for (look_name, look) in [("layer 1", Look::default()), ("polished", Look::polished())] {
+            for (kind, opacity, cut) in [
+                ("opaque", 1.0, None),
+                ("see-through", 0.5, None),
+                ("cut open", 1.0, Some(section)),
+                ("both", 0.5, Some(section)),
+            ] {
+                let params = RenderParams {
+                    opacity,
+                    section: cut,
+                    ..p
+                };
+                onscreen.set_studio(Some(Studio {
+                    env: env.clone(),
+                    look,
+                }));
+                let draws = if name.contains("llvmpipe") { 5 } else { 16 };
+                let mut times = Vec::new();
+                for i in 0..draws {
+                    // A new camera every draw: each draw draws a frame.
+                    let cam = if i % 2 == 0 { &camera } else { &other };
+                    let started = std::time::Instant::now();
+                    onscreen
+                        .draw(
+                            &uploaded,
+                            &lines,
+                            cam,
+                            &params,
+                            &overlay(),
+                            DrawOptions::default(),
+                        )
+                        .unwrap();
+                    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                    if i > 0 {
+                        times.push(started.elapsed().as_secs_f64() * 1000.0);
+                    }
+                }
+                let ms = times.iter().sum::<f64>() / times.len() as f64;
+                eprintln!(
+                    "COST viewport {name} ({} samples): {} triangles, 1020x777, {look_name}, {kind}: {ms:.2} ms a frame",
+                    onscreen.samples(),
+                    mesh.triangles.len(),
+                );
+            }
+        }
+    }
 }

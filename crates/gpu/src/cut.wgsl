@@ -105,6 +105,7 @@ fn whole_of(in: CutOut) -> VertexOut {
     out.color = in.color;
     out.finish = in.finish;
     out.value = in.value;
+    out.side = in.side;
     return out;
 }
 

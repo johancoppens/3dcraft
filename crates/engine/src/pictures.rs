@@ -383,7 +383,8 @@ pub(crate) fn cpu_draw(
 }
 
 /// The most frames a studio still on the CPU averages at `params`'s size:
-/// the CPU renderer refuses more than `MAX_SAMPLES` samples over all of
+/// the CPU renderer refuses more than `studio::max_samples` (`MAX_SAMPLES`, half of
+/// it seen through) samples over all of
 /// them (at least one frame).
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn cpu_frame_cap(params: &RenderParams) -> u32 {
@@ -391,7 +392,7 @@ pub(crate) fn cpu_frame_cap(params: &RenderParams) -> u32 {
         .saturating_mul(u64::from(params.height))
         .saturating_mul(u64::from(params.ssaa).saturating_pow(2))
         .max(1);
-    let cap = craft3d_render::MAX_SAMPLES / samples;
+    let cap = craft3d_render::studio::max_samples(params) / samples;
     u32::try_from(cap).unwrap_or(u32::MAX).max(1)
 }
 

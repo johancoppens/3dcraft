@@ -505,3 +505,166 @@ fn the_same_input_gives_the_same_cut_open_see_through_picture() {
     assert_eq!(a.rgb, b.rgb);
     evidence("polished-cut-see-through.png", &a);
 }
+
+/// Glass in a see-through picture shows the surface behind it as a thin
+/// sheet would, and is then seen through like any face: the picture is
+/// `α · (front + t · behind) + (1 − α) · behind` in light, `t` the glass's
+/// transmitted share (`Shaded::transmit`), each term the light
+/// `FrameLight::shade_layered` gives the sheet; a highlighted face is
+/// not seen through.
+#[test]
+fn glass_in_a_see_through_picture_passes_the_surface_behind_then_blends() {
+    use craft3d_render::Highlight;
+    use craft3d_render::studio::layers::Optics;
+    let env = sky();
+    let mut both = sheet((-1.0, 0.5), 0.0, (-0.8, 0.8), 1);
+    append(&mut both, sheet((-0.5, 1.0), 1.0, (-0.5, 1.0), 2));
+    let glass = Optics {
+        transmission: 0.8,
+        ior: 1.5,
+        thin_walled: true,
+        ..Optics::default()
+    };
+    let mut colors = FaceColors::default();
+    colors.set(1, Some([200, 220, 240]));
+    colors.set(2, Some([40, 90, 230]));
+    colors.set_optics(1, Some(glass));
+    let camera = front_camera();
+    let look = lit_look();
+    let light = FrameLight::new(&both, &env, &look);
+    let n = Vec3::new(0.0, -1.0, 0.0);
+    let v = n;
+    let finish = craft3d_render::Finish::default();
+    let front = light.shade_layered(
+        [200, 220, 240],
+        finish,
+        Some(&glass),
+        Vec3::ZERO,
+        n,
+        v,
+        1.0,
+        1.0,
+    );
+    assert!(
+        front.transmit.iter().all(|&t| t > 0.1),
+        "{:?}",
+        front.transmit
+    );
+    let behind = light.shade_layered(
+        [40, 90, 230],
+        finish,
+        None,
+        Vec3::new(0.0, 1.0, 0.0),
+        n,
+        v,
+        1.0,
+        1.0,
+    );
+    let highlight_color = [250, 200, 30];
+    let lit_highlight =
+        light.shade_layered(highlight_color, finish, None, Vec3::ZERO, n, v, 1.0, 1.0);
+    for opacity in [0.3, 0.7] {
+        for highlighted in [false, true] {
+            let p = RenderParams {
+                opacity,
+                highlight: if highlighted {
+                    Highlight::new(highlight_color, [1]).0
+                } else {
+                    Highlight::NONE
+                },
+                ..params(100, 100)
+            };
+            let seen = render_studio(&both, &colors, &camera, &p, &look, &env).unwrap();
+            let want = if highlighted {
+                light.display(lit_highlight.light, lit_highlight.roughness)
+            } else {
+                let mut c = [0.0; 3];
+                for k in 0..3 {
+                    let lit = front.light[k] + front.transmit[k] * behind.light[k];
+                    c[k] = opacity * lit + (1.0 - opacity) * behind.light[k];
+                }
+                light.display(c, front.roughness)
+            };
+            evidence(&format!("glass-{opacity}-{highlighted}.png"), &seen);
+            let mut checked = 0;
+            for y in 2..98 {
+                for x in 2..98 {
+                    let i = (y * 100 + x) as usize;
+                    let steady = (-2_i64..=2).all(|dy| {
+                        (-2_i64..=2).all(|dx| {
+                            let j = ((y as i64 + dy) * 100 + x as i64 + dx) as usize;
+                            seen.ids[j] == 1 && seen.ids[i] == 1
+                        })
+                    });
+                    // Where the back sheet is behind the glass.
+                    if !steady || !(34..=66).contains(&x) || !(22..=66).contains(&y) {
+                        continue;
+                    }
+                    let got = pixel(&seen, x, y);
+                    for k in 0..3 {
+                        assert!(
+                            got[k].abs_diff(want[k]) <= 1,
+                            "at ({x}, {y}) opacity {opacity} highlighted {highlighted}: {got:?} against {want:?}"
+                        );
+                    }
+                    checked += 1;
+                }
+            }
+            assert!(checked > 200, "{checked}");
+        }
+    }
+}
+
+/// A see-through picture keeps a second surface per sample: it is
+/// refused at half the samples an opaque one may have, before anything
+/// is drawn.
+#[test]
+fn a_see_through_studio_picture_may_have_half_the_samples() {
+    use craft3d_render::{MAX_SAMPLES, RenderError};
+    let env = sky();
+    let mesh = sphere(Vec3::ZERO, 1.0, 4, 8, 0);
+    let look = lit_look();
+    let over = RenderParams {
+        opacity: 0.5,
+        ..params(8192, 4097)
+    };
+    assert!(u64::from(over.width) * u64::from(over.height) <= MAX_SAMPLES);
+    assert!(matches!(
+        render_studio(
+            &mesh,
+            &FaceColors::default(),
+            &front_camera(),
+            &over,
+            &look,
+            &env
+        ),
+        Err(RenderError::TooManySamples { .. })
+    ));
+    let frames = RenderParams {
+        opacity: 0.5,
+        ..params(4096, 4097)
+    };
+    let accumulated = Look {
+        accumulate: 2,
+        ..look
+    };
+    assert!(matches!(
+        render_studio(
+            &mesh,
+            &FaceColors::default(),
+            &front_camera(),
+            &frames,
+            &accumulated,
+            &env
+        ),
+        Err(RenderError::TooManyFrames { .. })
+    ));
+    assert_eq!(
+        craft3d_render::studio::max_samples(&frames),
+        MAX_SAMPLES / 2
+    );
+    assert_eq!(
+        craft3d_render::studio::max_samples(&params(10, 10)),
+        MAX_SAMPLES
+    );
+}

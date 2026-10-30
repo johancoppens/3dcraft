@@ -138,6 +138,10 @@ struct VertexOut {
     @location(6) @interpolate(flat) finish: u32,
     @location(7) @interpolate(flat) optics: u32,
     @location(8) value: vec2<f32>,
+    // The distance from the section's plane (`Cut::side`) of the corner,
+    // origin-relative, interpolated like the position; 0 without a section
+    // (the studio look's `cut_drops`).
+    @location(9) side: f32,
 }
 
 fn vertex(in: VertexIn) -> VertexOut {
@@ -176,6 +180,7 @@ fn vertex(in: VertexIn) -> VertexOut {
     out.finish = in.finish;
     out.optics = in.optics;
     out.value = in.value;
+    out.side = dot(in.position, scene.section.xyz) - scene.section.w;
     return out;
 }
 

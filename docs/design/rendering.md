@@ -951,31 +951,46 @@ surfaces are those of the plain picture exactly (the same rasterisation rules,
    light only); a highlighted face is not seen through, as in the plain picture. The surface behind
    where there is none is the background along the ray (the plain background as the light the tone
    curve shows as its colour, `FrameLight::seen`, as layer 3's glass shows it). One layer behind, as
-   the plain picture keeps one. `a_see_through_front_is_blended_over_what_is_behind_in_light`: two
+   the plain picture keeps one. The studio look blends radiance, the plain look blends display bytes,
+   so the same opacity looks different in the two looks (through a tone curve the behind's share is
+   not `1 − α` of the bytes). `a_see_through_front_is_blended_over_what_is_behind_in_light`: two
    sheets, the linear curve, no shadows: every pixel of the front is
    `srgb(α · lin(front alone) + (1 − α) · lin(behind alone))` within a level.
 5. *Shadows through a see-through body.* Every body is seen through at the same opacity, so a shadow
    lets `pass = 1 − α` of the key through: the key's visibility `v` becomes `pass + (1 − pass) · v`
    (`FrameLight::see`), on the surfaces (with the contact shadow) and on the ground. One layer is
-   counted, as the shadow map holds one; with opaque bodies `pass` is 0 and the light is bit for bit
-   as before. `a_see_through_ball_lets_its_share_of_the_key_through` holds the ground's visibility to
+   counted, as the shadow map holds one (a ray through two walls of a see-through body would keep
+   `(1 − α)²`: owed, roadmap › Open); with opaque bodies `pass` is 0 and the light is bit for bit
+   as before, pinned by `studio_bytes.rs` (the checksums of an opaque, whole picture in layer 1's look
+   and the polished one, a transmissive face among them, as main fef3410c drew them). `a_see_through_ball_lets_its_share_of_the_key_through` holds the ground's visibility to
    that formula (to 10⁻⁹).
 6. *Glass in a see-through picture.* A face that lets light through (layer 3) shows the surface behind
    it as a thin sheet would (`light + transmit · behind` before the blend): layer 3's picture behind
    the transmissive faces is not drawn, since the surface behind every front is drawn already. It still
-   casts no shadow.
+   casts no shadow. `glass_in_a_see_through_picture_passes_the_surface_behind_then_blends`: a thin glass
+   sheet over another sheet is `α · (front + t · behind) + (1 − α) · behind`, each term
+   `FrameLight::shade_layered`'s, within a level; highlighted, the glass is not seen through.
 7. Both kinds take the path through the screen-space buffers (as layer 3's transmission does), so the
-   viewport draws them on its deferred path (one sample per pixel, frames accumulated).
+   viewport draws them on its deferred path (one sample per pixel, frames accumulated). A see-through
+   picture keeps a second surface per sample, so the CPU takes at most half `MAX_SAMPLES` for it
+   (`studio::max_samples`; `view.render`'s frame cap follows it).
+8. *Doubt.* Where a surface other than the front's triangle lies within `TRACE_DOUBT · ε_f32 · M` of
+   the front's view distance (a coplanar face, a face touching another), the GPU may take it for the
+   surface behind or not; `render_studio_doubt` marks those samples (`peel_doubt`), as layer 2 marks a
+   traced ray.
 
 **On the GPU** (`studio.wgsl`, `studio.rs`, `renderer.rs` › `encode_studio`, `StudioOnscreen::encode_peel`).
 The section's uniforms are the scene's (`scene.wgsl` › `section`); every pass over the surfaces on the
 buffers' path (`fs_geometry`, `fs_geometry_opaque`, `fs_studio_post`, `fs_studio_behind`, `fs_backs`,
 `fs_studio_data` and the new ones) drops what `cut_drops` says: a fragment of the mesh whose distance
-from the plane at its own point says `Cut::clips` (without a section the plane is none and nothing is
+from the plane, interpolated from its corners' origin-relative distances (`VertexOut::side`, as the
+CPU interpolates `Cut::side`; not `eye + rel` in `f32`, which loses it far from the origin), says
+`Cut::clips` (without a section the plane is none and nothing is
 dropped), or a fragment of the cap where the count is even or outside the cap's box. The count is a
 pass of its own before the others (`fs_studio_parity` through the jittered vertex stage, into an
 `R8Unorm` target with the plain cut's "one minus what was there" blend), read in group 2 of those
-passes (`layout_parity`; a texel of 0 for a whole picture). The cap is the plain cut's triangle
+passes (`layout_parity`, its bind group made once with the targets; a texel of 0 for a whole
+picture). The cap is the plain cut's triangle
 (`cut::cap_vertices`), drawn after the mesh in every pass that draws the surfaces; the shadow pass
 discards what is cut away by the distance interpolated from its corners. A see-through picture draws,
 after the front's geometry, the surface behind it into layer 3's targets behind: its geometry
@@ -1008,7 +1023,8 @@ that is the method's, not a fault: where a body lies inside another (gears model
 housing block) the count is even and the cap is left open there, as in the plain look.
 
 The viewport draws the bodies' depth for the lines without what the section cuts away (the plain cut's
-`depth_only` pipelines), and the plain see-through passes are not drawn under a studio picture. The
+`depth_only` pipelines), and the plain see-through passes are not drawn under a studio picture; a
+device without them draws studio see-through pictures all the same (refused only in the plain look). The
 edges follow the lens in these pictures too (`Backend::edge_blur` no longer leaves them out).
 
 ### Parts moved by poses (2026-10-30)

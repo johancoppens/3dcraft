@@ -2082,7 +2082,8 @@ impl Renderer {
                 look.gpu.ensure_env(&device, &queue, &studio.env)?;
                 if look.targets.as_ref().is_none_or(|t| t.size != size) {
                     look.targets = None;
-                    look.targets = Some(StudioTargets::new(&device, size));
+                    look.targets =
+                        Some(StudioTargets::new(&device, size).counted(&look.gpu, &device));
                 }
                 if !passes.transmit && !passes.peel {
                     look.through = None;
@@ -2175,15 +2176,11 @@ impl Renderer {
         }
         // The count of a cut-open picture, before every pass that draws
         // the cap.
-        let counted;
-        let parity_bind = if passes.cut {
+        if passes.cut {
             look.gpu
                 .encode_parity(&mut encoder, &self.scene_bind, mesh, &sized.parity);
-            counted = look.gpu.parity_bind(&self.device, &sized.parity);
-            &counted
-        } else {
-            &look.gpu.no_parity
-        };
+        }
+        let parity_bind = sized.parity_group(&look.gpu, passes.cut);
         // Layer 3: the picture without the faces that let light through,
         // shaded completely with its own geometry and occlusion, and their
         // nearest back faces (`render_studio_frame`'s `behind` and

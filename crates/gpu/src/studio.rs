@@ -1423,8 +1423,10 @@ pub(crate) struct StudioTargets {
     pub size: (u32, u32),
     pub geometry: wgpu::TextureView,
     pub ao: wgpu::TextureView,
-    /// The count of a cut-open picture.
+    /// The count of a cut-open picture, and group 2 with it
+    /// ([`Self::counted`]; made once with the targets).
     pub parity: wgpu::TextureView,
+    pub parity_bind: Option<wgpu::BindGroup>,
 }
 
 impl StudioTargets {
@@ -1449,6 +1451,21 @@ impl StudioTargets {
                 attach,
             )),
             parity: crate::cut::parity_view(device, size.0, size.1, 1),
+            parity_bind: None,
+        }
+    }
+
+    /// The targets with group 2 of their count made.
+    pub(crate) fn counted(mut self, gpu: &StudioGpu, device: &wgpu::Device) -> StudioTargets {
+        self.parity_bind = Some(gpu.parity_bind(device, &self.parity));
+        self
+    }
+
+    /// Group 2 of a frame: the count when `cut`, else none.
+    pub(crate) fn parity_group<'a>(&'a self, gpu: &'a StudioGpu, cut: bool) -> &'a wgpu::BindGroup {
+        match &self.parity_bind {
+            Some(bind) if cut => bind,
+            _ => &gpu.no_parity,
         }
     }
 }
@@ -1691,7 +1708,10 @@ impl StudioOnscreen {
                 1,
                 wgpu::TextureUsages::RENDER_ATTACHMENT,
             ));
-            self.sized = Some((StudioTargets::new(device, size), depth));
+            self.sized = Some((
+                StudioTargets::new(device, size).counted(&self.gpu, device),
+                depth,
+            ));
         }
         let Some(levels) = deferred else {
             return;
@@ -1750,10 +1770,10 @@ impl StudioOnscreen {
 
     /// Group 2 of the passes over the surfaces: the frame's count, or
     /// none.
-    fn parity_group(&self, device: &wgpu::Device, passes: &Passes) -> wgpu::BindGroup {
+    fn parity_group(&self, passes: &Passes) -> wgpu::BindGroup {
         match &self.sized {
-            Some((sized, _)) if passes.cut => self.gpu.parity_bind(device, &sized.parity),
-            _ => self.gpu.no_parity.clone(),
+            Some((sized, _)) => sized.parity_group(&self.gpu, passes.cut).clone(),
+            None => self.gpu.no_parity.clone(),
         }
     }
 
@@ -1776,7 +1796,7 @@ impl StudioOnscreen {
             self.gpu
                 .encode_parity(encoder, scene_bind, mesh, &sized.parity);
         }
-        let parity = self.parity_group(device, passes);
+        let parity = self.parity_group(passes);
         let through = if passes.transmit {
             let through = self.through.as_ref().ok_or(GpuError::NothingDrawn)?;
             self.encode_through(device, encoder, scene_bind, mesh, passes, through, depth)?;
@@ -1880,7 +1900,7 @@ impl StudioOnscreen {
         through: &ThroughTargets,
         depth: &wgpu::TextureView,
     ) -> Result<(), GpuError> {
-        let parity = self.parity_group(device, passes);
+        let parity = self.parity_group(passes);
         let mesh_pass = |encoder: &mut wgpu::CommandEncoder,
                          label: &str,
                          colors: &[Option<wgpu::RenderPassColorAttachment<'_>>],
@@ -1992,7 +2012,7 @@ impl StudioOnscreen {
         depth: &wgpu::TextureView,
     ) -> Result<(), GpuError> {
         let (sized, _) = self.sized.as_ref().ok_or(GpuError::NothingDrawn)?;
-        let parity = self.parity_group(device, passes);
+        let parity = self.parity_group(passes);
         let mesh_pass = |encoder: &mut wgpu::CommandEncoder,
                          label: &str,
                          colors: &[Option<wgpu::RenderPassColorAttachment<'_>>],
@@ -2124,7 +2144,7 @@ impl StudioOnscreen {
             pass.set_pipeline(&self.main_post);
             pass.set_bind_group(0, scene_bind, &[]);
             pass.set_bind_group(1, bind, &[]);
-            pass.set_bind_group(2, &self.parity_group(device, passes), &[]);
+            pass.set_bind_group(2, &self.parity_group(passes), &[]);
             self.draw_bodies(&mut pass, mesh);
         }
         // Without the screen-space effects (accumulation alone) this is

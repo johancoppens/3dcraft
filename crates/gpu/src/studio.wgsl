@@ -399,17 +399,19 @@ fn cut_clips(side: f32, flat_normal: vec3<f32>) -> bool {
 
 // True where a fragment is not drawn in a cut-open picture: a fragment
 // of the mesh that the section cuts away (its distance from the plane
-// taken at its own point, `Cut::side`), or a fragment of the cap where
+// interpolated from its corners', origin-relative, as the CPU's
+// `rasterise_layers` interpolates `Cut::side`: no `eye + rel` in f32, which
+// loses the distance far from the origin), or a fragment of the cap where
 // the count is even or outside the box the cap is drawn in
 // (`Cut::holds_cap`).
 fn cut_drops(in: VertexOut) -> bool {
-    let p = scene.eye.xyz + in.rel;
     if in.face == CAP_FACE {
+        let p = scene.eye.xyz + in.rel;
         let odd = textureLoad(parity_map, vec2<i32>(floor(in.clip.xy)), 0).r > 0.5;
         let inside = all(p >= scene.section_lo.xyz) && all(p <= scene.section_hi.xyz);
         return !(odd && inside);
     }
-    return cut_clips(dot(p, scene.section.xyz) - scene.section.w, in.flat_normal);
+    return cut_clips(in.side, in.flat_normal);
 }
 
 // The luminance of a linear colour (env::luminance).
@@ -1762,9 +1764,7 @@ fn fs_studio_data(in: VertexOut) -> DataOut {
 // turns its sample's parity (the target's blend, `cut::parity_target`).
 @fragment
 fn fs_studio_parity(in: VertexOut) -> @location(0) vec4<f32> {
-    let p = scene.eye.xyz + in.rel;
-    if in.face == CAP_FACE
-        || !cut_clips(dot(p, scene.section.xyz) - scene.section.w, in.flat_normal) {
+    if in.face == CAP_FACE || !cut_clips(in.side, in.flat_normal) {
         discard;
     }
     return vec4<f32>(1.0);

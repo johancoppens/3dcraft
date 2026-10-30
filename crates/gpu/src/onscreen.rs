@@ -1814,9 +1814,6 @@ impl Onscreen {
         check_params(params, self.device.limits().max_texture_dimension_2d)?;
         // Bodies that are not shaded have nothing to see through.
         let see_through = options.bodies && params.opacity() < 1.0;
-        if see_through && let Err(why) = &self.see_through {
-            return Err(GpuError::SeeThrough(why.clone()));
-        }
         let cut = cut::frame_cut(mesh, params);
         if cut.is_some() {
             self.ensure_cut()?;
@@ -1930,6 +1927,14 @@ impl Onscreen {
             }
             None => None,
         };
+        // The plain look's see-through passes, only when the studio look
+        // does not draw this frame.
+        if see_through
+            && lit.is_none()
+            && let Err(why) = &self.see_through
+        {
+            return Err(GpuError::SeeThrough(why.clone()));
+        }
         // Whatever goes wrong below, the sum starts again.
         self.progress = None;
         let next = match &lit {
@@ -1947,7 +1952,7 @@ impl Onscreen {
         let studio_frame = lit.map(|(_, frame, ..)| frame);
         guarded(&device, || {
             self.ensure_targets(params, options.capture, overlay.edges.tile());
-            if see_through {
+            if see_through && studio_frame.is_none() {
                 self.ensure_peel_targets();
             }
             if cut.is_some() {

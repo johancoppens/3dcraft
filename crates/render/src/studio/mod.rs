@@ -740,7 +740,13 @@ pub(crate) struct Surface {
     dist: f64,
     normal: [f32; 3],
     face: u32,
+    /// The triangle of the mesh the surface is on; [`NO_TRIANGLE`] for
+    /// none and for the cap.
+    tri: u32,
 }
+
+/// [`Surface::tri`] of no triangle.
+const NO_TRIANGLE: u32 = u32::MAX;
 
 /// [`crate::render_colored`] in the studio look, lit by `env`: the
 /// average of [`Look::accumulate`] frames ([`render_studio_frame`]),
@@ -750,7 +756,7 @@ pub(crate) struct Surface {
 /// view too) and lights its cap like a face; both take the path through
 /// the screen-space buffers (docs/design/rendering.md, *See-through and
 /// cut-open pictures in the studio look*). The samples of all frames together may not pass
-/// [`crate::MAX_SAMPLES`] ([`RenderError::TooManyFrames`]).
+/// [`max_samples`] ([`RenderError::TooManyFrames`]).
 pub fn render_studio(
     mesh: &Mesh,
     colors: &FaceColors,
@@ -800,7 +806,7 @@ fn studio_frames(
         .saturating_mul(u64::from(params.height))
         .saturating_mul(u64::from(params.ssaa))
         .saturating_mul(u64::from(params.ssaa));
-    if frames > 1 && samples.saturating_mul(u64::from(frames)) > MAX_SAMPLES {
+    if frames > 1 && samples.saturating_mul(u64::from(frames)) > max_samples(params) {
         return Err(RenderError::TooManyFrames { samples, frames });
     }
     let (mut first, mut doubt) = studio_frame(mesh, colors, camera, params, look, env, 0, mark)?;
@@ -825,6 +831,17 @@ fn studio_frames(
         *d /= frames as f32;
     }
     Ok((first, doubt))
+}
+
+/// The most samples a studio picture with `params` may have (over all
+/// its frames): [`MAX_SAMPLES`], and half of it for a see-through picture,
+/// which shades and keeps a second surface per sample.
+pub fn max_samples(params: &RenderParams) -> u64 {
+    if params.opacity() < 1.0 {
+        MAX_SAMPLES / 2
+    } else {
+        MAX_SAMPLES
+    }
 }
 
 /// Frame `index` of a studio picture: its samples moved by
@@ -864,7 +881,7 @@ fn studio_frame(
         return Err(RenderError::InvalidSsaa(ssaa));
     }
     let samples = u64::from(width) * u64::from(height) * u64::from(ssaa) * u64::from(ssaa);
-    if samples > MAX_SAMPLES {
+    if samples > max_samples(params) {
         return Err(RenderError::TooManySamples { samples });
     }
     if mesh.normals.len() != mesh.positions.len() || mesh.face_ids.len() != mesh.triangles.len() {
@@ -1022,6 +1039,16 @@ fn studio_frame(
     }
     // Per sample, the share of its light in doubt; empty for none.
     let mut doubt: Vec<[f32; 1]> = Vec::new();
+    // A see-through picture: where a surface other than the front lies
+    // within the margin of the front's view distance, the GPU's `f32` may
+    // take it for the surface behind or not (`fs_geometry_peel`: strictly
+    // further), and the light behind is another surface's.
+    if see_through && let Some(margin) = mark {
+        let near = peel_doubt(mesh, &view, (w, h), cut.as_ref(), &surfaces, margin)?;
+        if near.iter().any(|&d| d) {
+            doubt = near.iter().map(|&d| [f32::from(u8::from(d))]).collect();
+        }
+    }
     if see_through {
         // The front over the surface behind it, in light: `opacity · front
         // + (1 − opacity) · behind`, a highlighted face not seen through
@@ -1270,6 +1297,7 @@ pub(crate) fn rasterise_layers(
         dist: f64::INFINITY,
         normal: [0.0; 3],
         face: NO_FACE,
+        tri: NO_TRIANGLE,
     };
     let mut out = vec![none; w * h];
     let peel = raster.peel;
@@ -1390,6 +1418,7 @@ pub(crate) fn rasterise_layers(
                     dist: crate::distance_at(view, [wa, wb, wc], [&a, &b, &c]),
                     normal: [normal.x as f32, normal.y as f32, normal.z as f32],
                     face,
+                    tri: u32::try_from(t).unwrap_or(NO_TRIANGLE),
                 };
                 if !front {
                     if let Some(slot) = behind.get_mut(i) {
@@ -1436,6 +1465,7 @@ pub(crate) fn rasterise_layers(
                 dist,
                 normal,
                 face: SECTION_FACE,
+                tri: NO_TRIANGLE,
             };
             let Some(slot) = out.get_mut(i) else {
                 continue;
@@ -1508,6 +1538,93 @@ fn pattern_doubt(
             })
             .collect()
     })
+}
+
+/// Per sample, whether a fragment of another triangle than the front's
+/// (or of any triangle, over the cap) that the section leaves lies within
+/// `margin · ε_f32 · M` of the front's view distance, `M` the larger of
+/// the two: the decision "strictly behind the front" that the GPU takes
+/// in `f32` may go either way there.
+fn peel_doubt(
+    mesh: &Mesh,
+    view: &View,
+    (w, h): (usize, usize),
+    cut: Option<&Cut>,
+    front: &[Surface],
+    margin: f64,
+) -> Result<Vec<bool>, RenderError> {
+    let projected: Vec<_> = mesh.positions.iter().map(|&p| view.project(p)).collect();
+    let mut out = vec![false; w * h];
+    let eps = margin * f64::from(f32::EPSILON);
+    for (t, tri) in mesh.triangles.iter().enumerate() {
+        let corner = |k: u32| {
+            let k = k as usize;
+            match (mesh.positions.get(k), projected.get(k)) {
+                (Some(&p), Some(&proj)) => Ok((p, proj)),
+                _ => Err(RenderError::InvalidMesh { triangle: t }),
+            }
+        };
+        let [ia, ib, ic] = *tri;
+        let [(pa, a), (pb, b), (pc, c)] = [corner(ia)?, corner(ib)?, corner(ic)?];
+        let (Some(a), Some(b), Some(c)) = (a, b, c) else {
+            continue;
+        };
+        let area = edge(a.sx, a.sy, b.sx, b.sy, c.sx, c.sy);
+        if !area.is_finite() || area == 0.0 {
+            continue;
+        }
+        let Some((x0, x1)) = sample_range(a.sx.min(b.sx).min(c.sx), a.sx.max(b.sx).max(c.sx), w)
+        else {
+            continue;
+        };
+        let Some((y0, y1)) = sample_range(a.sy.min(b.sy).min(c.sy), a.sy.max(b.sy).max(c.sy), h)
+        else {
+            continue;
+        };
+        let cut_triangle = cut.map(|cut| {
+            let facing = (pb - pa)
+                .cross(pc - pa)
+                .normalized()
+                .map_or(0.0, |n| n.dot(cut.normal));
+            (cut, [cut.side(pa), cut.side(pb), cut.side(pc)], facing)
+        });
+        let this = u32::try_from(t).unwrap_or(NO_TRIANGLE);
+        for y in y0..=y1 {
+            let py = y as f64 + 0.5;
+            for x in x0..=x1 {
+                let px = x as f64 + 0.5;
+                let wa = shared_edge(&b, &c, px, py) / area;
+                let wb = shared_edge(&c, &a, px, py) / area;
+                let wc = shared_edge(&a, &b, px, py) / area;
+                if wa < 0.0 || wb < 0.0 || wc < 0.0 {
+                    continue;
+                }
+                let sum = wa + wb + wc;
+                let (wa, wb, wc) = (wa / sum, wb / sum, wc / sum);
+                let i = y * w + x;
+                let Some(f) = front.get(i) else {
+                    continue;
+                };
+                if f.tri == this || !f.dist.is_finite() {
+                    continue;
+                }
+                if let Some((cut, [sa, sb, sc], facing)) = cut_triangle {
+                    let (qa, qb, qc) = (wa * a.inv_w, wb * b.inv_w, wc * c.inv_w);
+                    let q = qa + qb + qc;
+                    if cut.clips((qa * sa + qb * sb + qc * sc) / q, facing) {
+                        continue;
+                    }
+                }
+                let dist = crate::distance_at(view, [wa, wb, wc], [&a, &b, &c]);
+                if (dist - f.dist).abs() <= eps * dist.abs().max(f.dist.abs())
+                    && let Some(slot) = out.get_mut(i)
+                {
+                    *slot = true;
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// `mesh` without the triangles of the faces that let light through.
