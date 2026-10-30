@@ -81,8 +81,8 @@ their kind and value, and how many degrees of freedom are left. Click a row to s
 fly to it, the eye hides it and **Open** opens its part in a tab of its own.
 
 Every joint you can set by hand is a slider on the **Parameters** tab: the joints the assembly stays solved with. In
-a linkage that moves one way (a four-bar), every joint of the loop has a slider until you set one; then that one
-drives the loop and is its only slider. In the viewport, **Alt and a drag** on a part moves it along its free
+a linkage that moves one way (a four-bar), the joints that move it have a slider until you set one; then that
+one drives the loop and is its only slider. In the viewport, **Alt and a drag** on a part moves it along its free
 motion: drag the crank and the linkage follows (a part fixed to the world does not move). Both are `joint.set`, and
 one drag is one undo step.
 

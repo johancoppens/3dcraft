@@ -464,7 +464,8 @@ back with its sources, `crates/io/tests/step_freecad.rs` FreeCAD reading an asse
   null space of the solve's Jacobian (`asm_solve::main_moves`, at 10⁻³ of the fastest variable of a free motion,
   distances at the solver's scale), so a driver of it adds one independent equation and contradicts nothing.
   Whether the null space moves a variable does not depend on the basis the solver found. So a closed loop of one
-  degree of freedom offers every joint of the loop while none is driven, and only its driven one once one is; a
+  degree of freedom offers the joints of the loop that move to first order where it rests while none is driven
+  (a joint at a stationary point of the loop is not offered there), and only its driven one once one is; a
   second driver in the loop, which made the assembly *Not solved*, is never offered. **Alt and a drag** on a part
   moves it along the first such mate of its instance (in the assembly's order): an angle by the sweep of the
   pointer about the joint's axis on the plane across it (unwrapped frame to frame, so a drag goes on past half a

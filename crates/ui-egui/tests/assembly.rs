@@ -428,11 +428,14 @@ fn a_free_joint_is_a_slider_on_the_parameters_tab() {
     );
 }
 
-/// In a loop of one degree of freedom with no joint driven, every joint of
-/// the loop is offered; dragging any of them drives the loop, which stays
-/// solved, and that joint is then the loop's one slider.
+/// In a loop of one degree of freedom with no joint driven, the joints the
+/// solve leaves free are offered (the crank among them; which others, the
+/// configuration the four-bar rests in decides: a joint that does not move
+/// to first order there is not); dragging any of them drives the loop,
+/// which stays solved, and that joint is then the loop's one slider.
 #[test]
 fn dragging_any_offered_slider_keeps_the_assembly_solved() {
+    let mut offered = 0;
     for k in 0..4 {
         let (mut s, _dir) = window_session(&format!("free-sliders-{k}"));
         let mut shell = Shell::new();
@@ -447,8 +450,12 @@ fn dragging_any_offered_slider_keeps_the_assembly_solved() {
         );
         let hits = sliders(&mut window, &mut shell, &mut s);
         let names: Vec<&str> = hits.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(names, ["Drive", "Elbow", "Knee", "Hip"]);
-        let (name, rect) = hits[k].clone();
+        assert!(names.contains(&"Drive") && names.len() >= 2, "{names:?}");
+        assert!(!names.contains(&"Base"), "{names:?}");
+        let Some((name, rect)) = hits.get(k).cloned() else {
+            break;
+        };
+        offered += 1;
         drag_slider(&mut window, &mut shell, &mut s, rect);
         let inspected = run(&mut s, "assembly.inspect", json!({}));
         assert_eq!(inspected["solve"]["ok"], true, "{name}: {inspected}");
@@ -460,6 +467,7 @@ fn dragging_any_offered_slider_keeps_the_assembly_solved() {
         let inspected = run(&mut s, "assembly.inspect", json!({}));
         assert_eq!(inspected["solve"]["ok"], true, "{name}: {inspected}");
     }
+    assert!(offered >= 2);
 }
 
 /// Alt and a drag on a part of an assembly turn it about its joint toward
