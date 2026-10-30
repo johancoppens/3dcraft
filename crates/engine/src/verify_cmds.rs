@@ -27,10 +27,13 @@ use std::sync::Arc;
 const MAX_ITEMS: usize = 10_000;
 /// Most bodies a geometric measure takes part in.
 const MAX_PARTS: usize = 200;
-/// Most pairs of bodies a clearance or an interference compares.
+/// Most pairs of bodies a clearance compares.
 const MAX_BODY_PAIRS: usize = 500;
 /// Most hits a ray lists.
 const MAX_HITS: usize = 1_000;
+/// Most pairs of bodies whose boxes meet an overlap checks exactly (each
+/// a boolean of the two).
+const MAX_OVERLAP_CHECKED: usize = 2_000;
 
 const SUBJECT: &str = "a body (feature name or id; {body, follow: true} for the newest body that grew from it), a list of them, a query {kind, where} as select.query takes, or a filter (with the measure's own kind)";
 
@@ -74,6 +77,9 @@ pub(crate) struct Ctx<'a> {
     /// order met: what leaves an assertion undecided rather than in error,
     /// when the error it reports is that one ([`Ctx::unknown_in`]).
     pub unknown_used: std::sync::Mutex<Vec<(String, String)>>,
+    /// The assembly `doc` is the placed part of, when it is one: what
+    /// its joints and poses are measured on (`asm_measure.rs`).
+    pub placed: Option<&'a Arc<crate::asm::Placed>>,
 }
 
 impl<'a> Ctx<'a> {
@@ -88,6 +94,7 @@ impl<'a> Ctx<'a> {
             box_budget: BOX_TRIANGLE_BUDGET,
             outputs: None,
             unknown_used: std::sync::Mutex::new(Vec::new()),
+            placed: None,
         })
     }
 
@@ -687,7 +694,7 @@ impl Outcome {
 }
 
 /// The measures, by name: what `assert.add` takes under `measure`.
-pub(crate) const MEASURES: [&str; 44] = [
+pub(crate) const MEASURES: [&str; 48] = [
     "volume",
     "area",
     "mass",
@@ -732,6 +739,10 @@ pub(crate) const MEASURES: [&str; 44] = [
     "continuity",
     "draft",
     "textExtent",
+    "jointAngle",
+    "jointDistance",
+    "position",
+    "rotation",
 ];
 
 /// Takes the measure `name` with the parameters `p`.
@@ -761,6 +772,9 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
         "value" => value(ctx, p),
         "continuity" => crate::continuity_cmds::take(ctx, p),
         "textExtent" => crate::text_cmds::take(ctx, p),
+        "jointAngle" | "jointDistance" | "position" | "rotation" => {
+            crate::asm_measure::take(ctx, name, p)
+        }
         _ => Err(format!(
             "unknown measure `{}`; one of {}",
             name.chars().take(40).collect::<String>(),
@@ -1477,28 +1491,29 @@ fn overlap(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
             "overlap",
         )?),
     };
-    let mut pairs: Vec<(usize, usize, bool)> = Vec::new();
-    match &bb {
-        None => {
-            for i in 0..ba.len() {
-                for j in i.saturating_add(1)..ba.len() {
-                    pairs.push((i, j, false));
-                }
-            }
-        }
-        Some(bb) => {
-            for i in 0..ba.len() {
-                for j in 0..bb.len() {
-                    pairs.push((i, j, true));
-                }
-            }
-        }
-    }
-    if pairs.len() > MAX_BODY_PAIRS {
-        return Err(format!(
-            "more than {MAX_BODY_PAIRS} pairs of bodies; name fewer"
-        ));
-    }
+    // Only pairs whose boxes (grown by twice the tolerance) meet can have
+    // a volume in common: those are found by sweeping the boxes along x,
+    // the others cost nothing, and every pair that meets is checked
+    // exactly. More than the bound is an error, never a part of them.
+    let boxes = |set: &[(FeatureId, Arc<Body>)]| -> Vec<Option<Bbox3>> {
+        set.iter().map(|(_, body)| body.bbox().ok()).collect()
+    };
+    let (boxes_a, boxes_b) = (boxes(&ba), bb.as_deref().map(boxes));
+    let all_pairs = match &bb {
+        None => ba.len().saturating_mul(ba.len().saturating_sub(1)) / 2,
+        Some(bb) => ba.len().saturating_mul(bb.len()),
+    };
+    let pairs = meeting_pairs(
+        &boxes_a,
+        boxes_b.as_deref(),
+        2.0 * ctx.tolerance.linear,
+        MAX_OVERLAP_CHECKED,
+    )
+    .ok_or_else(|| {
+        format!(
+            "more than {MAX_OVERLAP_CHECKED} of the {all_pairs} pairs of bodies have boxes that meet, more than one overlap checks exactly; name fewer bodies with `of` and `to`"
+        )
+    })?;
     let pair = |n: usize| {
         let (i, j, other) = *pairs.get(n)?;
         let (ida, a) = ba.get(i)?;
@@ -1599,6 +1614,8 @@ fn overlap(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
     }
     let mut out = Outcome::flag(!overlaps.is_empty());
     out.number = Some(overlaps.len() as f64);
+    out.detail.insert("pairs".into(), all_pairs.into());
+    out.detail.insert("checked".into(), pairs.len().into());
     out.note = Some(if words.is_empty() {
         "no overlap".to_string()
     } else {
@@ -1606,6 +1623,86 @@ fn overlap(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
     });
     out.detail.insert("overlaps".into(), overlaps.into());
     Ok(out)
+}
+
+/// The pairs of `a` (with `b`: one of `a` and one of `b`, marked `true`;
+/// without: two of `a`, `i < j`) whose boxes, grown by `margin`, meet, in
+/// order; a body without a box meets every other (the exact check
+/// decides). Swept along x: sorted by the boxes' low x, each box is
+/// tested only against the boxes still open there. `None` when more than
+/// `cap` pairs meet.
+pub(crate) fn meeting_pairs(
+    a: &[Option<Bbox3>],
+    b: Option<&[Option<Bbox3>]>,
+    margin: f64,
+    cap: usize,
+) -> Option<Vec<(usize, usize, bool)>> {
+    // (side, index, its box's corners): side 0 is `a`, 1 is `b`.
+    type Item = (u8, usize, Option<(Vec3, Vec3)>);
+    let corners = |bx: &Option<Bbox3>| bx.as_ref().and_then(Bbox3::corners);
+    let mut items: Vec<Item> = a
+        .iter()
+        .enumerate()
+        .map(|(i, bx)| (0, i, corners(bx)))
+        .collect();
+    if let Some(b) = b {
+        items.extend(b.iter().enumerate().map(|(j, bx)| (1, j, corners(bx))));
+    }
+    let two_sets = b.is_some();
+    let mut out: Vec<(usize, usize, bool)> = Vec::new();
+    let mut add = |x: &Item, y: &Item| -> bool {
+        let pair = if two_sets {
+            match (x.0, y.0) {
+                (0, 1) => (x.1, y.1, true),
+                (1, 0) => (y.1, x.1, true),
+                _ => return true,
+            }
+        } else {
+            (x.1.min(y.1), x.1.max(y.1), false)
+        };
+        out.push(pair);
+        out.len() <= cap
+    };
+    let (mut boxed, unboxed): (Vec<Item>, Vec<Item>) =
+        items.into_iter().partition(|item| item.2.is_some());
+    // Those without a box meet everything.
+    for (k, x) in unboxed.iter().enumerate() {
+        for y in unboxed.iter().skip(k.saturating_add(1)).chain(&boxed) {
+            if !add(x, y) {
+                return None;
+            }
+        }
+    }
+    let lo_x = |item: &Item| item.2.map_or(f64::NEG_INFINITY, |(lo, _)| lo.x);
+    boxed.sort_by(|x, y| {
+        lo_x(x)
+            .total_cmp(&lo_x(y))
+            .then(x.0.cmp(&y.0))
+            .then(x.1.cmp(&y.1))
+    });
+    let mut open: Vec<&Item> = Vec::new();
+    for item in &boxed {
+        let Some((lo, hi)) = item.2 else {
+            continue;
+        };
+        open.retain(|o| o.2.is_some_and(|(_, ohi)| ohi.x + margin >= lo.x));
+        for o in &open {
+            let Some((olo, ohi)) = o.2 else {
+                continue;
+            };
+            let meet = olo.y <= hi.y + margin
+                && lo.y <= ohi.y + margin
+                && olo.z <= hi.z + margin
+                && lo.z <= ohi.z + margin;
+            if meet && !add(o, item) {
+                return None;
+            }
+        }
+        open.push(item);
+    }
+    out.sort_unstable();
+    out.dedup();
+    Some(out)
 }
 
 /// A plane: a point on it and its normal. A base plane, a datum plane, a

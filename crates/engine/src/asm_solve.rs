@@ -38,11 +38,14 @@ impl Frame {
 
 pub(crate) use asm::MateKind;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum CouplingKind {
     Gear,
     Rack,
     Screw,
+    /// `Σ cᵢ qᵢ = value` over `(mate, variable, cᵢ)`, each `qᵢ` in
+    /// radians or model units.
+    Linear(Vec<(usize, usize, f64)>),
 }
 
 /// Most variables a mate has.
@@ -177,10 +180,11 @@ fn solve_from(p: &Problem, from: Option<&[f64]>) -> Result<Solution, Diagnosis> 
         .couplings
         .iter()
         .map(|c| asm::CouplingSpec {
-            kind: match c.kind {
+            kind: match &c.kind {
                 CouplingKind::Gear => asm::CouplingKind::Gear,
                 CouplingKind::Rack => asm::CouplingKind::Rack,
                 CouplingKind::Screw => asm::CouplingKind::Screw,
+                CouplingKind::Linear(terms) => asm::CouplingKind::Linear(terms.clone()),
             },
             mates: c.mates,
             value: c.value,

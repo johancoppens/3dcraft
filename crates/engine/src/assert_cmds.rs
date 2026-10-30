@@ -16,9 +16,10 @@ use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::{Assertion, Document, Expect, Expr};
 use craft3d_regen::Regen;
 use serde_json::{Map, Value, json};
+use std::sync::Arc;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
-    spec!("assert.add", "Add Assertion", r#"{"name": string, "measure": "volume|area|mass|count|extent|boxMin|boxMax|centerOfMass|distance|clearance|thickness|through|overlap|symmetric|volumeBelow|centroidBelow|sectionArea|sectionCentroid|sectionInertia|sectionTorsion|sectionShearCentre|sectionExtent|levelFor|curvature|developable|bendRadius|flangeLength|holeToBend|relief|cornerGap|kawasakiFails|maekawaFails|flatFoldable|floatingOffset|floatingHeel|floatingTrim|floatingGM|floatingGML|floatingStable|bendable|value|continuity|draft|textExtent", "expr": expr, "of": subject, "edge": edge name, "face": face name, "sketch": id or name, "text": text id, "what": "width|height|capHeight|lines|inkWidth|inkHeight", "from": subject, "to": subject, "axis": "x|y|z", "plane": plane, "offset": expr, "xAxis": direction, "about": "x|y|xy|major|minor", "volume": expr, "measured": "tangent|mould", "mass": expr, "density": expr, "centerOfGravity": [expr, expr, expr], "heel": angle expr, "trim": angle expr, "punch": [[expr, expr], ...], "die": [[expr, expr], ...], "length": expr, "clearance": expr, "segmented": boolean, "maxWork": integer, "faces": subject, "direction": "x|y|z|-x|-y|-z" or [x, y, z], "minDraft": degrees, "at": [x, y, z], "tol": expr, "eq": expr, "min": expr, "max": expr, "is": boolean, "when": expr (a condition) = always on}"#,
+    spec!("assert.add", "Add Assertion", r#"{"name": string, "measure": "volume|area|mass|count|extent|boxMin|boxMax|centerOfMass|distance|clearance|thickness|through|overlap|symmetric|volumeBelow|centroidBelow|sectionArea|sectionCentroid|sectionInertia|sectionTorsion|sectionShearCentre|sectionExtent|levelFor|curvature|developable|bendRadius|flangeLength|holeToBend|relief|cornerGap|kawasakiFails|maekawaFails|flatFoldable|floatingOffset|floatingHeel|floatingTrim|floatingGM|floatingGML|floatingStable|bendable|value|continuity|draft|textExtent|jointAngle|jointDistance|position|rotation", "expr": expr, "of": subject, "edge": edge name, "face": face name, "sketch": id or name, "text": text id, "what": "width|height|capHeight|lines|inkWidth|inkHeight", "from": subject, "to": subject, "axis": "x|y|z", "plane": plane, "offset": expr, "xAxis": direction, "about": "x|y|xy|major|minor", "volume": expr, "measured": "tangent|mould", "mass": expr, "density": expr, "centerOfGravity": [expr, expr, expr], "heel": angle expr, "trim": angle expr, "punch": [[expr, expr], ...], "die": [[expr, expr], ...], "length": expr, "clearance": expr, "segmented": boolean, "maxWork": integer, "faces": subject, "direction": "x|y|z|-x|-y|-z" or [x, y, z], "minDraft": degrees, "at": [x, y, z], "tol": expr, "mate": mate name, "motion": "distance|x|y", "instance": instance name, "point": "Instance/Feature:name", "eq": expr, "min": expr, "max": expr, "is": boolean, "when": expr (a condition) = always on}"#,
         "Adds an assertion to the document: a measure of part of the design and what it must be, checked after every regeneration (one undo step; saved with the document). Measures and their parameters: volume, area, mass (of: bodies, default all; area also of faces; mass needs a material), count (of: a query, the number of things it finds), extent (of: bodies, axis: the size of their box along it), boxMin and boxMax (of: bodies, axis: where their box begins and ends along it, in the model's frame, so each side is bounded on its own), centerOfMass (of: bodies, default all, axis: the coordinate of their centre of mass along it, each body's centroid weighted by its mass; every body needs a material), distance (from, to: faces or bodies, the least distance), clearance (from, to: bodies; a pair that overlaps fails), thickness (of: a body, the thinnest wall), through (of: cylindrical or conical faces, every one cut through along its axis), overlap (of: bodies, to: bodies = each other; whether any pair has a volume in common, so is false asserts that none overlap; the message names the pairs and their common volume, \"Bolt overlaps Plate by 12 mm^3\", or says no overlap), symmetric (of, plane, tol: as measure.symmetry), and what lies on one side of a plane (of: bodies, default all; plane, default xy, as symmetric takes it, or a flat face by name; offset, a length along its normal, default 0; xAxis: the section's x axis; as measure.below, measure.section and measure.levelFor): volumeBelow (the volume below the plane), centroidBelow (axis: the coordinate of its centroid), sectionArea, sectionCentroid (axis), sectionInertia (about: x, y or xy about the section's centroid in its own axes, or major or minor, the principal moments; in the document's unit to the fourth power), sectionTorsion (the section's St Venant torsion constant J, in the document's unit to the fourth power) and sectionShearCentre (axis: the coordinate of its shear centre), as measure.section solves them by finite elements with its default tolerance and element cap (a solve that reaches the cap is notProven, with the J it reached), sectionExtent (axis: x, y, z or [x, y, z]; how far the section reaches along it, from where it begins to where it ends, as from and to in the details: the waterline's length of a hull cut at its level; a plane that cuts nothing is an error), levelFor (volume: the offset at which the volume below is that); of sheet-metal parts (of: feature.sheetMetal features by name or id, read as they were built whatever takes their body later; default all those switched on, a part switched off by when or suppressed left out, one named refused): bendRadius (the smallest inner radius of their bends, measured on the part), flangeLength (the shortest flange: its flat from the bend's tangent line, or with measured mould from the virtual sharp of the outside surfaces), holeToBend (the least distance from a hole of the base or of a flange's flat to the tangent line of a bend beside that flat) relief (whether every corner where two flanged edges meet, and every end of a bend inside its edge, has a relief: bendRelief; is) and cornerGap (the least gap at their closed corners, measured on the solid between the faces of each corner's two flats); of a fold (of: a feature.fold by name or id): kawasakiFails and maekawaFails (how many interior vertices of its crease pattern fail Kawasaki's or Maekawa's condition, at the document's tolerances, as fold.check counts them: eq 0 asserts both hold everywhere, which is necessary for folding flat and proves nothing more) and flatFoldable (is: whether the pattern with its mountain-valley assignment folds flat, every crease by 180 degrees, with an order of the layers, as feature.fold at 180 degrees decides it; an error, never a guess, when the search for an order runs out of work, since the question is NP-hard); of a floating body, with the parameters of measure.floating (of, plane, volume or mass and density, centerOfGravity, heel, trim, xAxis; each value an expression of the variables and outputs, centerOfGravity a point of them), of the equilibrium it reaches from the start (its first): floatingOffset (the plane's offset along its normal), floatingHeel and floatingTrim (angles from the upright plane, in radians; bounds with a unit, \"3 deg\"), floatingGM and floatingGML (the metacentric heights for a turn about the equilibrium plane's x axis, a heel, and about its y axis, a trim: I / V - BG with I the waterplane's second moment about that axis) and floatingStable (is: stable in both principal directions; neutral is not); a search for the equilibrium that does not settle is notProven with the kernel's reason; of a press brake, bendable (is; of: sheet-metal parts as above; punch and die: polygons [[x, y], ...] as sheetMetal.bendSequence takes them, each coordinate a number or a length expression such as a tool table's row; length and clearance, length expressions (the tools one piece reaching past the part unless length is given); segmented: true for segmented tooling, a segment per bend as long as length or the bend; maxWork, the distances the search may measure, shared by the parts, default and at most 20000): true when sheetMetal.bendSequence finds an order for every part, false when for one none exists with these tools and every step it tried failed for certain (a tool found nearer than the clearance at a real place), otherwise notProven with the step it could not tell (a collision only not proven clear, a stroke interval no halving proved) or the work used up, never passed; the order and the reasons are in the details; and value (expr: an expression of the variables and of the document's outputs, variable.measure and variable.output, exactly; in the document's units of its dimension); and continuity (edge, face = the edge's other face: how two faces meet along an edge as measure.continuity proves it, the order as a number, -1 none, 0 G0, 1 G1, 2 G2: min 2 asserts G2; an order not proven either way is notProven). An output that is unknown (its measure failed or was not proven) makes an assertion that uses it, in expr, in a bound or in a measure's expression, notProven with the reason, never a number. The limits for a material and a thickness are the caller's: min and max are expressions in the document's variables, tables included (table.set), never a built-in catalogue. A subject is a body (feature name or id: that feature's own body, or {body, follow: true}: the newest body that grew from it through later features), a list of them, a query {kind, where} as select.query takes, or a bare filter. What it must be: eq (with tol, default a millionth of eq or ten times the document's tolerance for a length) or min and/or max, expressions in the document's variables (\"wall\", \"2 mm\"), in the measure's unit (length, area or volume in the document's unit, mass in kg); through and symmetric take is (default true); overlap takes is, which must be given. The old form interference (is true for no overlap) is still accepted and written as overlap with the opposite is; saved documents are migrated on load (format 36). A tol may be 0 (exactly; the document's tolerance still applies), and 0 and 1 may carry a power of a unit (0 mm^3). Feature names in the subject are kept as ids, so a renamed feature stays measured. Returns the assertion and its check: status passed, failed (measured, expected), notProven (a least searched for, such as a thickness, lies within the bound but what is proven does not: a warning, never passed) or error (the measure could not be taken, such as a subject that names nothing yet: an assertion may be written before the model meets it). A bound written N unit^k (50 cm^3, which is (50 cm)^3) is refused for any N but 0 and 1: write 50 * (1 cm)^3. Assertions are measured off the caller's thread and only when what they depend on changed; this command waits for its own. when is a condition, as a feature's (feature.when): an expression of the variables and outputs that switches the assertion on and off; while it is 0 the assertion is inactive (status inactive: not measured, and counted as neither passed nor failed nor notProven), so an assertion on what only one choice of a Jig makes (a closed corner's cornerGap, a hole's holeToBend) is written with that choice's condition; a condition with a unit, or one that does not evaluate, is an error, and one that needs an unknown output notProven. Expressions are lazy: an output in a branch of if that is not taken is not needed, so its being unknown does not make the assertion notProven (if(corner == 1, gap, cg)).", doc: true, names: ["of", "from", "to", "plane"], assert_add),
     spec!("assert.edit", "Edit Assertion", r#"{"name": string, "rename": string, ...the parameters of assert.add}"#,
         "Changes an assertion (one undo step): what is given replaces what it had; measure parameters are replaced as a whole when measure or any of them is given, the expectation when any of eq, tol, min, max or is is given, the condition when when is given (null: always on). Returns it with its check.", doc: true, names: ["of", "from", "to", "plane"], assert_edit),
@@ -45,6 +46,10 @@ pub(crate) fn measure_keys(measure: &str) -> &'static [&'static str] {
         "bendable" => &crate::bendseq_cmds::MEASURE_KEYS,
         "continuity" => &["edge", "face"],
         "textExtent" => &["sketch", "text", "what"],
+        "jointAngle" => &["mate"],
+        "jointDistance" => &["mate", "motion"],
+        "position" => &["instance", "point", "axis"],
+        "rotation" => &["instance", "axis"],
         _ => crate::below_cmds::keys_of(measure),
     }
 }
@@ -164,7 +169,9 @@ fn measure_mapped(measure: &str, id_of: &dyn Fn(&str) -> String) -> String {
     let Ok(Value::Object(mut map)) = serde_json::from_str::<Value>(measure) else {
         return measure.to_string();
     };
-    for key in ["of", "from", "to"] {
+    // An assembly's measures name instances (`instance`) and geometry
+    // through them (`point`) as subjects do.
+    for key in ["of", "from", "to", "instance", "point"] {
         if let Some(v) = map.get_mut(key) {
             *v = names_mapped(v, id_of, 0);
         }
@@ -240,6 +247,58 @@ pub(crate) fn rename_instance_in_measures(doc: &mut Document, old: &str, new: &s
             }
         }
     }
+}
+
+/// The measure `measure` (as stored) with its `mate` (a mate of an
+/// assembly, by name) renamed from `old` to `new`; `None` when it does
+/// not name `old`.
+fn mate_renamed(measure: &str, old: &str, new: &str) -> Option<String> {
+    let Ok(Value::Object(mut map)) = serde_json::from_str::<Value>(measure) else {
+        return None;
+    };
+    match map.get_mut("mate") {
+        Some(Value::String(m)) if m == old => *m = new.to_string(),
+        _ => return None,
+    }
+    serde_json::to_string(&Value::Object(map))
+        .ok()
+        .filter(|t| t.len() <= craft3d_doc::MAX_ASSERTION_TEXT)
+}
+
+/// Renames the mate `old` to `new` in what the assertions and the
+/// outputs of an assembly measure (`jointAngle`, `jointDistance`).
+pub(crate) fn rename_mate_in_measures(doc: &mut Document, old: &str, new: &str) {
+    for assertion in &mut doc.assertions {
+        if let Some(text) = mate_renamed(&assertion.measure, old, new) {
+            assertion.measure = text;
+        }
+    }
+    for output in &mut doc.outputs {
+        if let craft3d_doc::OutputDef::Measure(measure) = &mut output.def
+            && let Some(text) = mate_renamed(measure, old, new)
+        {
+            *measure = text;
+        }
+    }
+}
+
+/// The assertions and outputs that measure the mate `name`, each once.
+pub(crate) fn measures_naming_mate(doc: &Document, name: &str) -> Vec<String> {
+    let names = |measure: &str| mate_renamed(measure, name, name).is_some();
+    let mut users: Vec<String> = doc
+        .assertions
+        .iter()
+        .filter(|a| names(&a.measure))
+        .map(|a| format!("assertion `{}`", a.name))
+        .collect();
+    for output in &doc.outputs {
+        if let craft3d_doc::OutputDef::Measure(measure) = &output.def
+            && names(measure)
+        {
+            users.push(format!("output `{}`", output.name));
+        }
+    }
+    users
 }
 
 /// Renames variable `old` to `new` in the expressions inside what the
@@ -865,14 +924,20 @@ pub(crate) fn dim_of(measure: &str) -> Dim {
         | "bendable" => Dim::Flag,
         "kawasakiFails" | "maekawaFails" | "continuity" => Dim::Count,
         "curvature" => Dim::Length(-2),
-        "draft" => Dim::Of(craft3d_expr::Dimension::ANGLE),
+        "draft" | "jointAngle" | "rotation" => Dim::Of(craft3d_expr::Dimension::ANGLE),
         _ => Dim::Length(1),
     }
 }
 
 /// Checks one assertion against the document, with its outputs as far as
 /// they are computed (every one it uses is: it is not measured before).
-fn check(doc: &Document, regen: &Regen, assertion: &Assertion, outputs: &Resolved) -> Checked {
+fn check(
+    doc: &Document,
+    regen: &Regen,
+    assertion: &Assertion,
+    outputs: &Resolved,
+    placed: Option<&Arc<crate::asm::Placed>>,
+) -> Checked {
     let length = length_unit(doc);
     let parsed: Option<Map<String, Value>> = serde_json::from_str(&assertion.measure).ok();
     let measure = parsed
@@ -883,6 +948,7 @@ fn check(doc: &Document, regen: &Regen, assertion: &Assertion, outputs: &Resolve
         .to_string();
     let ctx = Ctx::new(doc, regen).map(|mut ctx| {
         ctx.outputs = Some(outputs);
+        ctx.placed = placed;
         ctx
     });
     // The dimension of `value` is its expression's; one that does not
@@ -1236,9 +1302,10 @@ pub(crate) fn check_one(
     regen: &Regen,
     assertion: &Assertion,
     outputs: &Resolved,
+    placed: Option<&Arc<crate::asm::Placed>>,
 ) -> Checked {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        check(doc, regen, assertion, outputs)
+        check(doc, regen, assertion, outputs, placed)
     }))
     .unwrap_or_else(|_| Checked {
         state: AssertionState {

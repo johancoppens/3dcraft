@@ -7,8 +7,8 @@ use crate::commands::{Run, edit_merging, fail, spec};
 use crate::params::Params;
 use crate::{CommandError, CommandSpec, OpenDocument, Session};
 use craft3d_doc::{
-    Assembly, Blob, Coupling, CouplingKind, DocError, Document, Expr, Instance, InstanceMode, Mate,
-    MateKind, MateRef, ParamOverride, Placement, Source,
+    Assembly, Blob, Coupling, CouplingKind, CouplingTerm, DocError, Document, Expr, Instance,
+    InstanceMode, Mate, MateKind, MateRef, ParamOverride, Placement, Source,
 };
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
@@ -27,11 +27,11 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("mate.add", "Add Mate", r#"{"kind": "fixed|revolute|slider|cylindrical|planar|ball", "a": "Instance/Feature:name" or "world/xy|yz|zx|x|y|z|origin", "b": same, "name": string = Mate<n>, "offset": length expr = 0, "angle": angle expr = 0, "limits": [expr, expr], "flip": boolean = false}"#,
         "Joins two instances (one undo step). a and b name geometry through an instance, by the persistent names of the source (Bar[1]/F1:face(3)), or a datum of the source by its name or id (Bar[1]/Pivot); world/... is the world. Each gives a frame: a plane at a planar face's centroid with its outward normal, the axis of a cylindrical or conical face at the point nearest its centroid, the centre and axis of a circular edge, a point at a vertex, a datum's own. b's frame is put against a's, turned over (flip keeps it as it is), shifted by offset along and turned by angle about a's z; the kind says what stays free. A name that is gone fails the mate by that name; it never retargets. A free motion is driven by the variable <mate>_angle (or _distance) when it exists (joint.set). Returns the mate with its status.", doc: true, mate_add),
     spec!("mate.edit", "Edit Mate", r#"{"name": string, "rename": string, ...the parameters of mate.add, "offset"/"angle"/"limits": null to remove}"#,
-        "Changes a mate (one undo step): what is given replaces what it had. Returns the mate with its status.", doc: true, mate_edit),
+        "Changes a mate (one undo step): what is given replaces what it had. A rename takes its variables, the couplings and the assertions and outputs that name it along. Returns the mate with its status.", doc: true, mate_edit),
     spec!("mate.delete", "Delete Mate", r#"{"name": string}"#,
-        "Removes a mate and the variables that drive it (one undo step). A mate a coupling still names is refused.", doc: true, mate_delete),
-    spec!("coupling.add", "Add Coupling", r#"{"kind": "gear|rack|screw", "mates": [mate, mate], "value": expr (the ratio, the radius or the lead), "name": string = Coupling<n>}"#,
-        "Ties two mates' motions (one undo step): gear θa = −ratio·θb, rack d = radius·θ, screw d = lead·θ/360°. Returns the coupling with its status: a coupling whose mate takes no part, or whose value does not evaluate, fails by name and the solve is not ok.", doc: true, coupling_add),
+        "Removes a mate and the variables that drive it (one undo step). A mate a coupling, an assertion or an output still names is refused.", doc: true, mate_delete),
+    spec!("coupling.add", "Add Coupling", r#"{"kind": "gear|rack|screw|linear", "mates": [mate, mate] (not for linear), "value": expr (the ratio, the radius or the lead; for linear the right-hand side = 0), "terms": [{"mate": string, "motion": "angle|distance|x|y" = the mate's main free motion, "coefficient": expr = 1}, ...] (linear only), "name": string = Coupling<n>}"#,
+        "Ties mates' motions (one undo step): gear θa = −ratio·θb, rack d = radius·θ, screw d = lead·θ/360°, linear Σ coefficient·motion = value over any number of mates and motions (a planetary stage, two sliders, a slider and a revolute); in a linear coupling an angle counts in radians and every term has the length power of the value (a value of 0 fits any). Returns the coupling with its status: a coupling whose mate takes no part, whose mate has no such motion, whose terms do not agree in dimension or whose value does not evaluate fails by name and the solve is not ok.", doc: true, coupling_add),
     spec!("coupling.delete", "Delete Coupling", r#"{"name": string}"#,
         "Removes a coupling (one undo step).", doc: true, coupling_delete),
     spec!("joint.set", "Set Joint", r#"{"mate": string, "value": expr or null, "which": "angle|distance|x|y" = the mate's main free motion, "merge": boolean = false}"#,
@@ -187,6 +187,7 @@ impl Session {
             return Ok(Vec::new());
         }
         let mut files = open.asm.files.clone();
+        let base_read = base.clone();
         let mut changed = Vec::new();
         let mut seen = std::collections::BTreeSet::new();
         // (document, the folder its sources are relative to, depth)
@@ -242,6 +243,12 @@ impl Session {
             }
         }
         let open = self.document_mut()?;
+        // Without a file, its sources are placed from where they were
+        // read until it is saved.
+        if open.path.is_none() && open.asm.unsaved_base != base_read {
+            open.asm.unsaved_base = base_read;
+            open.asm.invalidate();
+        }
         if open.asm.files != files {
             open.asm.files = files;
             open.asm.invalidate();
@@ -415,7 +422,10 @@ fn coupling_json(placed: &Placed, c: &Coupling) -> Value {
     json!({
         "name": c.name,
         "kind": c.kind.name(),
-        "mates": [c.mates.0, c.mates.1],
+        "mates": c.mate_names(),
+        "terms": c.terms.iter().map(|t| json!({
+            "mate": t.mate, "motion": t.motion, "coefficient": t.coefficient.source(),
+        })).collect::<Vec<_>>(),
         "value": c.value.source(),
         "status": status,
         "error": failed,
@@ -1098,12 +1108,9 @@ fn mate_edit(session: &mut Session, params: &Value) -> Run {
         *slot = mate;
         if let Some(new) = &rename {
             for c in &mut assembly.couplings {
-                for m in [&mut c.mates.0, &mut c.mates.1] {
-                    if *m == name {
-                        *m = new.clone();
-                    }
-                }
+                c.rename_mate(&name, new);
             }
+            crate::assert_cmds::rename_mate_in_measures(doc, &name, new);
         }
         Ok(())
     })?;
@@ -1121,13 +1128,23 @@ fn mate_delete(session: &mut Session, params: &Value) -> Run {
     let using: Vec<String> = assembly
         .couplings
         .iter()
-        .filter(|c| c.mates.0 == name || c.mates.1 == name)
+        .filter(|c| c.mate_names().contains(&name.as_str()))
         .map(|c| format!("`{}`", c.name))
         .collect();
     if !using.is_empty() {
         return fail(format!(
             "{ID}: the couplings {} name `{name}`; delete them first (coupling.delete)",
             using.join(", ")
+        ));
+    }
+    // A check that measures it would land on another mate that takes the
+    // name later.
+    let checks =
+        crate::assert_cmds::measures_naming_mate(session.document()?.history.current(), &name);
+    if !checks.is_empty() {
+        return fail(format!(
+            "{ID}: {} measure `{name}`; delete them first",
+            checks.join(", ")
         ));
     }
     asm_edit(session, ID, &format!("Delete mate {name}"), |doc| {
@@ -1145,26 +1162,44 @@ fn mate_delete(session: &mut Session, params: &Value) -> Run {
 
 fn coupling_add(session: &mut Session, params: &Value) -> Run {
     const ID: &str = "coupling.add";
-    let p = Params::new(ID, params, &["kind", "mates", "value", "name"])?;
+    let p = Params::new(ID, params, &["kind", "mates", "value", "terms", "name"])?;
     let assembly = assembly_of(session, ID)?;
     let kind = match p.str("kind")? {
         None => return Err(p.missing("kind")),
         Some(text) => CouplingKind::from_name(text).ok_or_else(|| {
             CommandError::new(format!(
-                "{ID}: `kind` must be gear, rack or screw, got `{}`",
+                "{ID}: `kind` must be gear, rack, screw or linear, got `{}`",
                 text.chars().take(40).collect::<String>()
             ))
         })?,
     };
-    let mates = match p.get("mates") {
-        Some(Value::Array(items)) => match items.as_slice() {
-            [Value::String(a), Value::String(b)] => (a.clone(), b.clone()),
-            _ => return fail(format!("{ID}: `mates` must be two mate names")),
-        },
-        Some(_) => return fail(format!("{ID}: `mates` must be two mate names")),
-        None => return Err(p.missing("mates")),
+    let (mates, terms, value) = if kind == CouplingKind::Linear {
+        if p.has("mates") {
+            return fail(format!(
+                "{ID}: a linear coupling names its mates in `terms`, not in `mates`"
+            ));
+        }
+        let terms = terms_param(&p, assembly)?;
+        let value = p.expr("value")?.unwrap_or_else(|| "0".to_string());
+        ((String::new(), String::new()), terms, value)
+    } else {
+        if p.has("terms") {
+            return fail(format!(
+                "{ID}: only a linear coupling has `terms`; a {} coupling names two `mates`",
+                kind.name()
+            ));
+        }
+        let mates = match p.get("mates") {
+            Some(Value::Array(items)) => match items.as_slice() {
+                [Value::String(a), Value::String(b)] => (a.clone(), b.clone()),
+                _ => return fail(format!("{ID}: `mates` must be two mate names")),
+            },
+            Some(_) => return fail(format!("{ID}: `mates` must be two mate names")),
+            None => return Err(p.missing("mates")),
+        };
+        let value = p.expr("value")?.ok_or_else(|| p.missing("value"))?;
+        (mates, Vec::new(), value)
     };
-    let value = p.expr("value")?.ok_or_else(|| p.missing("value"))?;
     let name = match p.str("name")? {
         Some(name) => name.to_string(),
         None => next_name("Coupling", |n| {
@@ -1176,6 +1211,7 @@ fn coupling_add(session: &mut Session, params: &Value) -> Run {
         kind,
         mates,
         value: Expr::new(value),
+        terms,
     };
     asm_edit(session, ID, &format!("Add coupling {name}"), |doc| {
         doc.assembly_mut()?.couplings.push(coupling);
@@ -1187,6 +1223,77 @@ fn coupling_add(session: &mut Session, params: &Value) -> Run {
         .coupling(&name)
         .ok_or_else(|| CommandError::new(format!("{ID}: the coupling `{name}` was not added")))?;
     Ok(coupling_json(&placed, added))
+}
+
+/// A linear coupling's `terms`: `[{"mate", "motion" = the mate's main
+/// free motion, "coefficient": expr = 1}, ...]`.
+fn terms_param(p: &Params, assembly: &Assembly) -> Result<Vec<CouplingTerm>, CommandError> {
+    const ID: &str = "coupling.add";
+    let wrong = |why: &str| {
+        CommandError::new(format!(
+            "{ID}: `terms` is a list of {{\"mate\", \"motion\", \"coefficient\"}}: {why}"
+        ))
+    };
+    let items = match p.get("terms") {
+        Some(Value::Array(items)) => items,
+        Some(_) => return Err(wrong("not a list")),
+        None => return Err(p.missing("terms")),
+    };
+    if items.is_empty() || items.len() > craft3d_doc::MAX_COUPLING_TERMS {
+        return Err(wrong(&format!(
+            "1 to {} terms",
+            craft3d_doc::MAX_COUPLING_TERMS
+        )));
+    }
+    let mut terms = Vec::with_capacity(items.len());
+    for item in items {
+        let Value::Object(map) = item else {
+            return Err(wrong("a term is an object"));
+        };
+        if let Some(key) = map
+            .keys()
+            .find(|k| !matches!(k.as_str(), "mate" | "motion" | "coefficient"))
+        {
+            return Err(wrong(&format!(
+                "a term has no `{}`",
+                key.chars().take(40).collect::<String>()
+            )));
+        }
+        let Some(Value::String(mate)) = map.get("mate") else {
+            return Err(wrong("each term names its `mate`"));
+        };
+        let motion = match map.get("motion") {
+            None | Some(Value::Null) => {
+                let kind = assembly.mate(mate).map(|m| m.kind).ok_or_else(|| {
+                    CommandError::new(format!(
+                        "{ID}: there is no mate `{}`",
+                        mate.chars().take(80).collect::<String>()
+                    ))
+                })?;
+                kind.free()
+                    .first()
+                    .map(|m| (*m).to_string())
+                    .ok_or_else(|| {
+                        CommandError::new(format!(
+                            "{ID}: mate `{mate}` ({}) has no free motion to couple",
+                            kind.name()
+                        ))
+                    })?
+            }
+            Some(Value::String(m)) => m.clone(),
+            Some(_) => return Err(wrong("`motion` is angle, distance, x or y")),
+        };
+        let coefficient = match map.get("coefficient") {
+            None | Some(Value::Null) => "1".to_string(),
+            Some(v) => p.expr_of("terms", v)?,
+        };
+        terms.push(CouplingTerm {
+            mate: mate.clone(),
+            motion,
+            coefficient: Expr::new(coefficient),
+        });
+    }
+    Ok(terms)
 }
 
 fn coupling_delete(session: &mut Session, params: &Value) -> Run {

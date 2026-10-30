@@ -265,7 +265,7 @@ pub fn measure_checks(document: &[u8], work: &str) -> String {
         });
         Ok(assertions
             .iter()
-            .map(|a| checked_json(&check_one(&doc, &regen, a, &outputs)))
+            .map(|a| checked_json(&check_one(&doc, &regen, a, &outputs, None)))
             .collect())
     })();
     match measured {

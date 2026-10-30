@@ -238,15 +238,34 @@ pub enum CouplingKind {
     Gear,
     Rack,
     Screw,
+    Linear,
 }
 
+/// A coupling: `{"name", "kind", "mates": [a, b], "value"}`; a linear one
+/// has no `mates` and its `terms` instead.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Coupling {
     pub name: String,
     pub kind: CouplingKind,
+    #[serde(default, skip_serializing_if = "no_mates")]
     pub mates: [String; 2],
     pub value: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub terms: Vec<CouplingTerm>,
+}
+
+fn no_mates(mates: &[String; 2]) -> bool {
+    mates.iter().all(String::is_empty)
+}
+
+/// A term of a linear coupling: `{"mate", "motion", "coefficient"}`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CouplingTerm {
+    pub mate: String,
+    pub motion: String,
+    pub coefficient: String,
 }
 
 /// A feature inserted at the rollback marker: `{"feature": 7,

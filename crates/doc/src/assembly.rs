@@ -35,6 +35,14 @@ pub const MAX_OVERRIDES: usize = 1_000;
 /// The name of the reserved instance that stands for the world: a mate to
 /// it grounds an instance.
 pub const WORLD: &str = "world";
+/// What a mate names of the world (`world/xy`, …): the planes `xy`, `yz`
+/// and `zx` (normal z, x and y; x axis x, y and z), the axes `x`, `y` and
+/// `z` (as the plane across them) and the `origin` (as `xy`).
+pub const WORLD_FRAMES: [&str; 7] = ["xy", "yz", "zx", "x", "y", "z", "origin"];
+/// Most terms a linear coupling holds.
+pub const MAX_COUPLING_TERMS: usize = 64;
+/// The free motions a mate's variables are named after (`<mate>_angle`, …).
+pub const MOTIONS: [&str; 4] = ["angle", "distance", "x", "y"];
 
 /// What an assembly holds beside the document's variables and checks.
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
@@ -243,6 +251,19 @@ impl MateRef {
                 self.instance
             )));
         }
+        // The world's frames are known without reading anything: one it
+        // does not have is refused here, not left to fail the solve.
+        if self.instance == WORLD && !WORLD_FRAMES.contains(&self.name.as_str()) {
+            return Err(DocError::Invalid(format!(
+                "the world has no `{}`: write {}",
+                self.name.chars().take(60).collect::<String>(),
+                WORLD_FRAMES
+                    .iter()
+                    .map(|f| format!("{WORLD}/{f}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
         Ok(())
     }
 }
@@ -281,17 +302,26 @@ pub enum CouplingKind {
     Rack,
     /// `d = lead · θ / 360°`.
     Screw,
+    /// `Σ cᵢ · qᵢ = value` over the coupling's [`Coupling::terms`]: any
+    /// linear tie of free motions, of any number of mates (a planetary
+    /// stage, two sliders, a slider and a revolute).
+    Linear,
 }
 
 impl CouplingKind {
-    pub const ALL: [CouplingKind; 3] =
-        [CouplingKind::Gear, CouplingKind::Rack, CouplingKind::Screw];
+    pub const ALL: [CouplingKind; 4] = [
+        CouplingKind::Gear,
+        CouplingKind::Rack,
+        CouplingKind::Screw,
+        CouplingKind::Linear,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
             CouplingKind::Gear => "gear",
             CouplingKind::Rack => "rack",
             CouplingKind::Screw => "screw",
+            CouplingKind::Linear => "linear",
         }
     }
 
@@ -300,16 +330,62 @@ impl CouplingKind {
     }
 }
 
-/// Two mates whose motions are tied.
+/// Mates whose motions are tied.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Coupling {
     /// Unique among the couplings.
     pub name: String,
     pub kind: CouplingKind,
-    /// The two mates, by name.
+    /// The two mates, by name; both empty for a linear coupling, which
+    /// names its mates in its terms.
     pub mates: (String, String),
-    /// The ratio, the radius or the lead.
+    /// The ratio, the radius or the lead; a linear coupling's right-hand
+    /// side.
     pub value: Expr,
+    /// A linear coupling's terms (none for the other kinds).
+    #[serde(default)]
+    pub terms: Vec<CouplingTerm>,
+}
+
+/// One term `coefficient · <mate>_<motion>` of a linear coupling.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CouplingTerm {
+    pub mate: String,
+    /// The free motion: `angle`, `distance`, `x` or `y` ([`MOTIONS`]).
+    pub motion: String,
+    /// Its coefficient, an expression whose product with the motion has
+    /// the dimension of the coupling's value.
+    pub coefficient: Expr,
+}
+
+impl Coupling {
+    /// The mates it names, in order, each once.
+    pub fn mate_names(&self) -> Vec<&str> {
+        let mut out: Vec<&str> = Vec::new();
+        let all = [self.mates.0.as_str(), self.mates.1.as_str()]
+            .into_iter()
+            .chain(self.terms.iter().map(|t| t.mate.as_str()));
+        for m in all {
+            if !m.is_empty() && !out.contains(&m) {
+                out.push(m);
+            }
+        }
+        out
+    }
+
+    /// Renames the mate `old` to `new` wherever it names it.
+    pub fn rename_mate(&mut self, old: &str, new: &str) {
+        for m in [&mut self.mates.0, &mut self.mates.1] {
+            if m == old {
+                *m = new.to_string();
+            }
+        }
+        for t in &mut self.terms {
+            if t.mate == old {
+                t.mate = new.to_string();
+            }
+        }
+    }
 }
 
 /// Checks an instance's name: not empty, not the world, no `/`, no
@@ -530,7 +606,50 @@ impl Assembly {
                     coupling.name
                 )));
             }
-            for m in [&coupling.mates.0, &coupling.mates.1] {
+            if coupling.kind == CouplingKind::Linear {
+                if !coupling.mates.0.is_empty() || !coupling.mates.1.is_empty() {
+                    return Err(DocError::Invalid(format!(
+                        "linear coupling `{}` names its mates in its terms, not in mates",
+                        coupling.name
+                    )));
+                }
+                if coupling.terms.is_empty() || coupling.terms.len() > MAX_COUPLING_TERMS {
+                    return Err(DocError::Invalid(format!(
+                        "linear coupling `{}` needs 1 to {MAX_COUPLING_TERMS} terms",
+                        coupling.name
+                    )));
+                }
+                let mut seen = std::collections::BTreeSet::new();
+                for term in &coupling.terms {
+                    if !MOTIONS.contains(&term.motion.as_str()) {
+                        return Err(DocError::Invalid(format!(
+                            "linear coupling `{}`: `{}` is not a free motion; write angle, distance, x or y",
+                            coupling.name,
+                            term.motion.chars().take(40).collect::<String>()
+                        )));
+                    }
+                    if !seen.insert((term.mate.as_str(), term.motion.as_str())) {
+                        return Err(DocError::Invalid(format!(
+                            "linear coupling `{}` names `{}_{}` twice",
+                            coupling.name, term.mate, term.motion
+                        )));
+                    }
+                }
+            } else {
+                if !coupling.terms.is_empty() {
+                    return Err(DocError::Invalid(format!(
+                        "coupling `{}`: only a linear coupling has terms",
+                        coupling.name
+                    )));
+                }
+                if coupling.mates.0 == coupling.mates.1 {
+                    return Err(DocError::Invalid(format!(
+                        "coupling `{}` couples a mate to itself",
+                        coupling.name
+                    )));
+                }
+            }
+            for m in coupling.mate_names() {
                 if self.mate(m).is_none() {
                     return Err(DocError::Invalid(format!(
                         "coupling `{}` names the mate `{m}`, which the assembly does not have",
@@ -538,9 +657,11 @@ impl Assembly {
                     )));
                 }
             }
-            if coupling.mates.0 == coupling.mates.1 {
+            if coupling.kind != CouplingKind::Linear
+                && (coupling.mates.0.is_empty() || coupling.mates.1.is_empty())
+            {
                 return Err(DocError::Invalid(format!(
-                    "coupling `{}` couples a mate to itself",
+                    "coupling `{}` needs two mates",
                     coupling.name
                 )));
             }

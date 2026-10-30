@@ -41,6 +41,8 @@ pub(crate) const MAX_DEPTH: usize = 8;
 pub(crate) const MAX_SOURCE_FILES: usize = 1_000;
 /// Configurations kept beyond those the last placement used.
 const MAX_KEPT_CONFIGS: usize = 64;
+/// Most variable names a drive's dependencies are followed through.
+const MAX_DEPENDS: usize = 10_000;
 
 /// What an open assembly has derived, kept between commands. Not saved.
 #[derive(Clone, Default)]
@@ -60,6 +62,11 @@ pub(crate) struct AsmState {
     /// `assembly.inspect` and the tests: two instances of one
     /// configuration cost one).
     pub builds: u64,
+    /// The folder the sources of an assembly without a file were read
+    /// from (`Session::read_sources`: the current folder with access to
+    /// every file, the read root's top otherwise): its sources are
+    /// placed from there until it is saved, as they were read.
+    pub unsaved_base: String,
 }
 
 /// A configuration built: a part regenerated with its parameters set, or
@@ -105,11 +112,16 @@ pub(crate) struct InstanceState {
 #[derive(Clone)]
 pub(crate) struct MateState {
     pub name: String,
+    pub kind: MateKind,
     /// Why the mate takes no part, when it does not.
     pub error: Option<String>,
     /// The value of its main free motion after the solve (radians or
     /// model units), for a mate that has one.
     pub free: Option<f64>,
+    /// Every free motion's value after the solve, in the order of its
+    /// kind's free motions (radians or model units); empty when it was
+    /// not solved.
+    pub values: Vec<f64>,
     pub driven: bool,
     /// Its main free motion is free in the solve: driving it (`joint.set`)
     /// takes a degree of freedom and contradicts nothing. False when the
@@ -146,6 +158,10 @@ pub(crate) struct Placed {
     /// its instance (`None`: the world): what a parent that holds it as a
     /// flexible subassembly solves with its own.
     pub specs: Vec<NamedSpec>,
+    /// Its couplings as the solver took them, their mates indices into
+    /// [`Placed::specs`]: a parent that holds it as a flexible
+    /// subassembly solves them with its own.
+    pub coupling_specs: Vec<solver::CouplingSpec>,
     /// The state the solve reached, for the next moment of a motion to
     /// be carried from (`motion.rs`); `None` when it failed.
     pub carried: Option<Carried>,
@@ -175,6 +191,11 @@ pub(crate) struct NamedSpec {
     pub a: Option<String>,
     pub b: Option<String>,
     pub spec: solver::MateSpec,
+    /// Per driven free motion: the variables of the assembly that solved
+    /// it which its driven value depends on (its own variable among them).
+    /// A parent that holds it as a flexible subassembly keeps the drive
+    /// only when it sets one of them ([`flex`]).
+    pub drive_deps: [BTreeSet<String>; solver::VARIABLES],
 }
 
 impl Placed {
@@ -255,12 +276,6 @@ pub(crate) fn relative_to(from: &str, to: &str) -> String {
     let mut parts: Vec<String> = vec!["..".to_string(); a.len().saturating_sub(common)];
     parts.extend(b.into_iter().skip(common));
     parts.join("/")
-}
-
-/// The folder an assembly's source paths are relative to: that of its
-/// file, or the read root for one not saved yet.
-pub(crate) fn base_of(path: Option<&str>) -> String {
-    path.map(dir_of).unwrap_or_default()
 }
 
 /// A rigid pose from a placement: the rotation vector (degrees), then
@@ -648,7 +663,7 @@ fn place_from(
         }
     }
     // A flexible subassembly gives its instances and mates to the solve.
-    let extra = flex(assembly, &mut instances);
+    let extra = flex(doc, assembly, &mut instances);
     // 3. and 4. Frames and the solve.
     let (mates, couplings, solve_error, floating, dof, specs, carried, solve_note) =
         solve_mates(doc, assembly, values.as_ref(), &mut instances, &extra, from);
@@ -660,7 +675,7 @@ fn place_from(
         placed.instances = instances;
         placed
     };
-    placed.specs = specs;
+    (placed.specs, placed.coupling_specs) = specs;
     placed.mates = mates;
     placed.couplings = couplings;
     placed.solve_error = solve_error;
@@ -680,12 +695,30 @@ fn place_from(
     placed
 }
 
+/// What the flexible subassemblies give their parent's solve: their
+/// mates, by the names of their instances there, and their couplings
+/// (mate indices into `specs`).
+#[derive(Default)]
+pub(crate) struct Flexed {
+    pub specs: Vec<NamedSpec>,
+    pub couplings: Vec<solver::CouplingSpec>,
+}
+
 /// Each flexible subassembly's instances added to `instances` as
 /// `Sub/Inner`, starting where the subassembly puts them, and its mates
-/// (by those names), its world being the subassembly's placement. The
-/// subassembly itself is then not solved.
-fn flex(assembly: &Assembly, instances: &mut Vec<InstanceState>) -> Vec<NamedSpec> {
-    let mut extra = Vec::new();
+/// (by those names) and couplings, its world being the subassembly's
+/// placement. The subassembly itself is then not solved.
+///
+/// **Its drives.** A free motion the subassembly drives itself (its
+/// `<mate>_angle` variable, a formula of its `t`) is free in the parent
+/// unless the parent drives it: the instance sets one of the
+/// subassembly's parameters that the drive depends on (`params`, the
+/// drive's variable published, or the `t` it follows). So a leg that
+/// plays its own motion is a part of a machine that drives it otherwise;
+/// a drive kept depends, in the parent, on what the parent's values for
+/// those parameters depend on, for the parent's own parent.
+fn flex(doc: &Document, assembly: &Assembly, instances: &mut Vec<InstanceState>) -> Flexed {
+    let mut flexed = Flexed::default();
     let mut added = Vec::new();
     for (st, instance) in instances.iter_mut().zip(&assembly.instances) {
         if st.error.is_some() || instance.mode != craft3d_doc::InstanceMode::Flexible {
@@ -709,6 +742,7 @@ fn flex(assembly: &Assembly, instances: &mut Vec<InstanceState>) -> Vec<NamedSpe
             child.flex_of = Some(st.name.clone());
             added.push(child);
         }
+        let offset = flexed.specs.len();
         for named in &sub.specs {
             let mut spec = named.spec.clone();
             // The subassembly's world is where it is placed.
@@ -718,15 +752,106 @@ fn flex(assembly: &Assembly, instances: &mut Vec<InstanceState>) -> Vec<NamedSpe
             if named.b.is_none() {
                 spec.b.1 = spec.b.1.moved(&anchor);
             }
-            extra.push(NamedSpec {
+            let mut drive_deps = named.drive_deps.clone();
+            for (slot, deps) in spec.driven.iter_mut().zip(drive_deps.iter_mut()) {
+                if slot.is_none() {
+                    continue;
+                }
+                let by: Vec<&craft3d_doc::ParamOverride> = instance
+                    .params
+                    .iter()
+                    .filter(|p| deps.contains(&p.name))
+                    .collect();
+                if by.is_empty() {
+                    *slot = None;
+                    deps.clear();
+                } else {
+                    *deps = depends_on(
+                        doc,
+                        by.iter().flat_map(|p| {
+                            craft3d_expr::names_in(p.expr.source())
+                                .into_iter()
+                                .map(str::to_string)
+                        }),
+                    );
+                }
+            }
+            flexed.specs.push(NamedSpec {
                 a: named.a.as_deref().map(prefixed),
                 b: named.b.as_deref().map(prefixed),
                 spec,
+                drive_deps,
+            });
+        }
+        for c in &sub.coupling_specs {
+            let kind = match &c.kind {
+                solver::CouplingKind::Linear(terms) => solver::CouplingKind::Linear(
+                    terms
+                        .iter()
+                        .map(|&(m, v, k)| (m.saturating_add(offset), v, k))
+                        .collect(),
+                ),
+                other => other.clone(),
+            };
+            flexed.couplings.push(solver::CouplingSpec {
+                kind,
+                mates: (
+                    c.mates.0.saturating_add(offset),
+                    c.mates.1.saturating_add(offset),
+                ),
+                value: c.value,
             });
         }
     }
     instances.extend(added);
-    extra
+    flexed
+}
+
+/// Per driven free motion of `mate` (as `spec` drives it): the variables
+/// of `doc` its value depends on, its own variable among them.
+fn drive_deps(
+    doc: &Document,
+    mate: &craft3d_doc::Mate,
+    spec: &solver::MateSpec,
+) -> [BTreeSet<String>; solver::VARIABLES] {
+    let mut out: [BTreeSet<String>; solver::VARIABLES] = Default::default();
+    for ((slot, which), deps) in spec
+        .driven
+        .iter()
+        .zip(mate.kind.free().iter().copied())
+        .zip(out.iter_mut())
+    {
+        if slot.is_some() {
+            *deps = depends_on(doc, [joint_variable(&mate.name, which)]);
+        }
+    }
+    out
+}
+
+/// The variables of `doc` named by `start` and every one they depend on,
+/// through the variables' formulas (a cycle or a long chain is cut at
+/// [`MAX_DEPENDS`] names).
+fn depends_on(doc: &Document, start: impl IntoIterator<Item = String>) -> BTreeSet<String> {
+    let mut seen = BTreeSet::new();
+    let mut stack: Vec<String> = start.into_iter().take(MAX_DEPENDS).collect();
+    while let Some(name) = stack.pop() {
+        if seen.len() >= MAX_DEPENDS {
+            break;
+        }
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        if let Some(v) = doc.variables.iter().find(|v| v.name == name)
+            && stack.len() < MAX_DEPENDS
+        {
+            stack.extend(
+                craft3d_expr::names_in(v.expr.source())
+                    .into_iter()
+                    .map(str::to_string),
+            );
+        }
+    }
+    seen
 }
 
 /// The placement of a document that has nothing to place.
@@ -744,6 +869,7 @@ fn empty(doc: &Document, error: Option<String>) -> Placed {
         floating: false,
         dof: None,
         specs: Vec::new(),
+        coupling_specs: Vec::new(),
         carried: None,
         solve_note: None,
     }
@@ -939,6 +1065,7 @@ fn build_shown(doc: &Document, assembly: &Assembly, instances: &mut [InstanceSta
         floating: false,
         dof: None,
         specs: Vec::new(),
+        coupling_specs: Vec::new(),
         carried: None,
         solve_note: None,
     }
@@ -1337,13 +1464,102 @@ fn mate_spec(
     })
 }
 
+/// A linear coupling's terms for the solver, `(spec, variable,
+/// coefficient)`, and its right-hand side: `Σ cᵢ · qᵢ = value` in base
+/// units (millimetres, radians), each length motion's coefficient taken
+/// to the assembly's length unit. Every term's product has the length
+/// power of the value (an angle is a pure number here, as radians are),
+/// except that a value of zero fits any; the first term's sets it then.
+fn linear_terms(
+    doc: &Document,
+    assembly: &Assembly,
+    c: &craft3d_doc::Coupling,
+    values: Option<&craft3d_expr::Evaluation>,
+    at: &dyn Fn(&str) -> Result<usize, String>,
+) -> Result<(Vec<(usize, usize, f64)>, f64), String> {
+    let value = eval(values, c.value.source())
+        .map_err(|e| format!("its value {}: {e}", c.value.source()))?;
+    if !value.value.is_finite() {
+        return Err(format!("its value {} is not finite", c.value.source()));
+    }
+    // Millimetres per model unit: a length motion is solved in model units.
+    let per_unit = {
+        let f = doc.units.length.as_expr_unit().factor();
+        if f.is_finite() && f > 0.0 { f } else { 1.0 }
+    };
+    let mut power = (value.value != 0.0).then_some(value.dimension.length);
+    let mut terms = Vec::with_capacity(c.terms.len());
+    for term in &c.terms {
+        let mate = assembly
+            .mates
+            .iter()
+            .find(|m| m.name == term.mate)
+            .ok_or_else(|| format!("its mate `{}` is not in the assembly", term.mate))?;
+        let variable = mate
+            .kind
+            .free()
+            .iter()
+            .position(|m| *m == term.motion)
+            .ok_or_else(|| {
+                format!(
+                    "its mate `{}` ({}) has no free motion `{}`",
+                    term.mate,
+                    mate.kind.name(),
+                    term.motion
+                )
+            })?;
+        let spec = at(&term.mate)?;
+        let coefficient = eval(values, term.coefficient.source()).map_err(|e| {
+            format!(
+                "the coefficient {} of `{}_{}`: {e}",
+                term.coefficient.source(),
+                term.mate,
+                term.motion
+            )
+        })?;
+        let length = term.motion != "angle";
+        let product = coefficient
+            .dimension
+            .length
+            .saturating_add(i32::from(length));
+        match power {
+            None => power = Some(product),
+            Some(p) if p != product => {
+                return Err(format!(
+                    "the term {} · {}_{} is not of the dimension of the others or the value {}",
+                    term.coefficient.source(),
+                    term.mate,
+                    term.motion,
+                    c.value.source()
+                ));
+            }
+            Some(_) => {}
+        }
+        let k = if length {
+            coefficient.value * per_unit
+        } else {
+            coefficient.value
+        };
+        if !k.is_finite() {
+            return Err(format!(
+                "the coefficient {} of `{}_{}` is not finite",
+                term.coefficient.source(),
+                term.mate,
+                term.motion
+            ));
+        }
+        terms.push((spec, variable, k));
+    }
+    Ok((terms, value.value))
+}
+
 type Solved = (
     Vec<MateState>,
     Vec<CouplingState>,
     Option<String>,
     bool,
     Option<(usize, Vec<String>)>,
-    Vec<NamedSpec>,
+    (Vec<NamedSpec>, Vec<solver::CouplingSpec>),
     Option<Carried>,
     // Why a moment was not carried from the one before it.
     Option<String>,
@@ -1355,7 +1571,7 @@ fn solve_mates(
     assembly: &Assembly,
     values: Option<&craft3d_expr::Evaluation>,
     instances: &mut [InstanceState],
-    extra: &[NamedSpec],
+    extra: &Flexed,
     from: Option<&Carried>,
 ) -> Solved {
     let solvable = |i: &InstanceState| i.error.is_none() && !i.flexed;
@@ -1375,12 +1591,16 @@ fn solve_mates(
     let mut specs = Vec::new();
     // Per spec: the mate it stands for.
     let mut spec_mate = Vec::new();
+    // Per spec: what each of its drives depends on.
+    let mut spec_deps: Vec<[BTreeSet<String>; solver::VARIABLES]> = Vec::new();
     let length = |q: Quantity| in_units(doc, q.value);
     for (m, mate) in assembly.mates.iter().enumerate() {
         let mut st = MateState {
             name: mate.name.clone(),
+            kind: mate.kind,
             error: None,
             free: None,
+            values: Vec::new(),
             driven: false,
             main_free: false,
         };
@@ -1388,6 +1608,7 @@ fn solve_mates(
         match spec {
             Ok(spec) => {
                 st.driven = spec.driven.iter().any(Option::is_some);
+                spec_deps.push(drive_deps(doc, mate, &spec));
                 specs.push(spec);
                 spec_mate.push(m);
             }
@@ -1426,25 +1647,70 @@ fn solve_mates(
                     Err(format!("its value {} is not finite", c.value.source()))
                 }
             });
-        let taken = at(&c.mates.0).and_then(|a| Ok((a, at(&c.mates.1)?, value?)));
+        let taken = match c.kind {
+            craft3d_doc::CouplingKind::Linear => {
+                linear_terms(doc, assembly, c, values, &at).map(|(terms, rhs)| {
+                    let first = terms.first().map_or(0, |t| t.0);
+                    (solver::CouplingKind::Linear(terms), (first, first), rhs)
+                })
+            }
+            kind => at(&c.mates.0).and_then(|a| {
+                let kind = match kind {
+                    craft3d_doc::CouplingKind::Gear => solver::CouplingKind::Gear,
+                    craft3d_doc::CouplingKind::Rack => solver::CouplingKind::Rack,
+                    _ => solver::CouplingKind::Screw,
+                };
+                Ok((kind, (a, at(&c.mates.1)?), value?))
+            }),
+        };
         coupling_states.push(CouplingState {
             name: c.name.clone(),
             error: taken.as_ref().err().cloned(),
         });
-        if let Ok((a, b, value)) = taken {
+        if let Ok((kind, mates, value)) = taken {
+            couplings.push(solver::CouplingSpec { kind, mates, value });
+        }
+    }
+    // The mates of its flexible subassemblies, by the names of their
+    // instances here, and their couplings.
+    let mut extra_at: Vec<Option<usize>> = Vec::with_capacity(extra.specs.len());
+    for e in &extra.specs {
+        let at = |name: &Option<String>| match name {
+            None => Some(solver::WORLD),
+            Some(n) => index.get(n).copied(),
+        };
+        if let (Some(a), Some(b)) = (at(&e.a), at(&e.b)) {
+            let mut spec = e.spec.clone();
+            spec.a.0 = a;
+            spec.b.0 = b;
+            extra_at.push(Some(specs.len()));
+            specs.push(spec);
+            spec_deps.push(e.drive_deps.clone());
+        } else {
+            extra_at.push(None);
+        }
+    }
+    for c in &extra.couplings {
+        let map = |i: usize| extra_at.get(i).copied().flatten();
+        let kind = match &c.kind {
+            solver::CouplingKind::Linear(terms) => terms
+                .iter()
+                .map(|&(m, v, k)| Some((map(m)?, v, k)))
+                .collect::<Option<Vec<_>>>()
+                .map(solver::CouplingKind::Linear),
+            other => Some(other.clone()),
+        };
+        if let (Some(kind), Some(a), Some(b)) = (kind, map(c.mates.0), map(c.mates.1)) {
             couplings.push(solver::CouplingSpec {
-                kind: match c.kind {
-                    craft3d_doc::CouplingKind::Gear => solver::CouplingKind::Gear,
-                    craft3d_doc::CouplingKind::Rack => solver::CouplingKind::Rack,
-                    craft3d_doc::CouplingKind::Screw => solver::CouplingKind::Screw,
-                },
+                kind,
                 mates: (a, b),
-                value,
+                value: c.value,
             });
         }
     }
-    // Its own mates by instance name, for a parent that holds it as a
-    // flexible subassembly.
+    // Its mates (its flexible subassemblies' among them) by instance name
+    // and its couplings, for a parent that holds it as a flexible
+    // subassembly.
     let name_of = |k: usize| -> Option<String> {
         if k == solver::WORLD {
             None
@@ -1457,26 +1723,15 @@ fn solve_mates(
     };
     let named: Vec<NamedSpec> = specs
         .iter()
-        .map(|spec| NamedSpec {
+        .zip(&spec_deps)
+        .map(|(spec, deps)| NamedSpec {
             a: name_of(spec.a.0),
             b: name_of(spec.b.0),
             spec: spec.clone(),
+            drive_deps: deps.clone(),
         })
         .collect();
-    // The mates of its flexible subassemblies, by the names of their
-    // instances here.
-    for e in extra {
-        let at = |name: &Option<String>| match name {
-            None => Some(solver::WORLD),
-            Some(n) => index.get(n).copied(),
-        };
-        if let (Some(a), Some(b)) = (at(&e.a), at(&e.b)) {
-            let mut spec = e.spec.clone();
-            spec.a.0 = a;
-            spec.b.0 = b;
-            specs.push(spec);
-        }
-    }
+    let coupling_specs = couplings.clone();
     let touches_world = specs
         .iter()
         .any(|s| s.a.0 == solver::WORLD || s.b.0 == solver::WORLD);
@@ -1539,6 +1794,7 @@ fn solve_mates(
             for (s, &m) in spec_mate.iter().enumerate() {
                 if let Some(st) = states.get_mut(m) {
                     st.free = solution.values.get(s).and_then(|v| v.first()).copied();
+                    st.values = solution.values.get(s).cloned().unwrap_or_default();
                     st.main_free = solution.main_free.get(s).copied().unwrap_or(false);
                 }
             }
@@ -1548,7 +1804,7 @@ fn solve_mates(
                 None,
                 floating,
                 Some((solution.dof, solution.free)),
-                named,
+                (named, coupling_specs),
                 Some(carried),
                 note,
             )
@@ -1559,7 +1815,7 @@ fn solve_mates(
             Some(text),
             floating,
             None,
-            named,
+            (named, coupling_specs),
             None,
             note,
         ),
@@ -1597,6 +1853,15 @@ fn model_scale(instances: &[InstanceState]) -> f64 {
 }
 
 impl AsmState {
+    /// The folder an assembly at `path` reads its sources from: its own,
+    /// or for one without a file the folder they were read from.
+    fn base(&self, path: Option<&str>) -> String {
+        match path {
+            Some(path) => dir_of(path),
+            None => self.unsaved_base.clone(),
+        }
+    }
+
     /// The placement of `doc` at `revision`, from the cache when nothing
     /// changed since.
     pub(crate) fn placed(
@@ -1612,7 +1877,8 @@ impl AsmState {
             return Arc::clone(placed);
         }
         let mut chain = Vec::new();
-        let placed = Arc::new(place(doc, &base_of(path), self, &mut chain));
+        let base = self.base(path);
+        let placed = Arc::new(place(doc, &base, self, &mut chain));
         self.placed = Some((revision, self.generation, Arc::clone(&placed)));
         placed
     }
@@ -1628,7 +1894,8 @@ impl AsmState {
         from: Option<&Carried>,
     ) -> Placed {
         let mut chain = Vec::new();
-        place_from(doc, &base_of(path), self, &mut chain, from, true)
+        let base = self.base(path);
+        place_from(doc, &base, self, &mut chain, from, true)
     }
 
     /// [`Self::place_moment`] solved only, its bodies not placed: a grid
@@ -1640,7 +1907,8 @@ impl AsmState {
         from: Option<&Carried>,
     ) -> Placed {
         let mut chain = Vec::new();
-        place_from(doc, &base_of(path), self, &mut chain, from, false)
+        let base = self.base(path);
+        place_from(doc, &base, self, &mut chain, from, false)
     }
 
     /// Takes `placed` as the placement of the document at `revision`

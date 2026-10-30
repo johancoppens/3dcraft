@@ -232,6 +232,7 @@ fn assembly_to_manifest(assembly: &doc::Assembly) -> manifest::Assembly {
                     kind,
                     mates: (first, second),
                     value,
+                    terms,
                 } = coupling;
                 manifest::Coupling {
                     name: name.clone(),
@@ -239,9 +240,25 @@ fn assembly_to_manifest(assembly: &doc::Assembly) -> manifest::Assembly {
                         doc::CouplingKind::Gear => manifest::CouplingKind::Gear,
                         doc::CouplingKind::Rack => manifest::CouplingKind::Rack,
                         doc::CouplingKind::Screw => manifest::CouplingKind::Screw,
+                        doc::CouplingKind::Linear => manifest::CouplingKind::Linear,
                     },
                     mates: [first.clone(), second.clone()],
                     value: expr_to_manifest(value),
+                    terms: terms
+                        .iter()
+                        .map(|term| {
+                            let doc::CouplingTerm {
+                                mate,
+                                motion,
+                                coefficient,
+                            } = term;
+                            manifest::CouplingTerm {
+                                mate: mate.clone(),
+                                motion: motion.clone(),
+                                coefficient: expr_to_manifest(coefficient),
+                            }
+                        })
+                        .collect(),
                 }
             })
             .collect(),
@@ -354,6 +371,7 @@ fn assembly_to_doc(assembly: manifest::Assembly, blobs: &Blobs) -> doc::Assembly
                     kind,
                     mates: [first, second],
                     value,
+                    terms,
                 } = coupling;
                 doc::Coupling {
                     name,
@@ -361,9 +379,25 @@ fn assembly_to_doc(assembly: manifest::Assembly, blobs: &Blobs) -> doc::Assembly
                         manifest::CouplingKind::Gear => doc::CouplingKind::Gear,
                         manifest::CouplingKind::Rack => doc::CouplingKind::Rack,
                         manifest::CouplingKind::Screw => doc::CouplingKind::Screw,
+                        manifest::CouplingKind::Linear => doc::CouplingKind::Linear,
                     },
                     mates: (first, second),
                     value: doc::Expr(value),
+                    terms: terms
+                        .into_iter()
+                        .map(|term| {
+                            let manifest::CouplingTerm {
+                                mate,
+                                motion,
+                                coefficient,
+                            } = term;
+                            doc::CouplingTerm {
+                                mate,
+                                motion,
+                                coefficient: doc::Expr(coefficient),
+                            }
+                        })
+                        .collect(),
                 }
             })
             .collect(),

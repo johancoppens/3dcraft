@@ -29,6 +29,13 @@ impl Mat3 {
         Mat3::from_cols(col(Vec3::X), col(Vec3::Y), col(Vec3::Z))
     }
 
+    /// The rotation vector of a rotation matrix (the inverse of
+    /// [`Mat3::exp`]): its angle in [0, π] along its axis. Near a half
+    /// turn the axis comes from the symmetric part.
+    pub fn log(&self) -> Vec3 {
+        crate::system::log_so3(self)
+    }
+
     /// The rotation `exp([w]×)`: about `w` by `|w|` radians.
     pub fn exp(w: Vec3) -> Mat3 {
         Mat3::rotation(w, w.length())

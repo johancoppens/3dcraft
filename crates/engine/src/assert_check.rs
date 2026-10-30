@@ -19,6 +19,7 @@
 //! it, then the metacentric height from both) takes one job per link,
 //! each measured once per what it depends on (`output_cmds.rs`).
 
+use crate::asm::Placed;
 use crate::assert_cmds::{AssertionState, AssertionStatus, Checked, check_one};
 use crate::measure_pieces::PairAnswer;
 use crate::output_cmds::{OutputValue, Plan, Resolved};
@@ -32,7 +33,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::Duration;
 
 /// How many answers are kept beyond those of the current assertions.
@@ -53,12 +54,22 @@ pub(crate) enum Wait {
     All,
 }
 
-/// What an assertion depends on, and the bodies that key holds alive (so
-/// that their addresses in it cannot be taken by other bodies).
+/// What an assertion depends on, and the bodies whose addresses it holds,
+/// held weakly: a `Weak` keeps the address from being taken by another
+/// body while the key exists, and frees the body itself once nothing else
+/// holds it (a key whose body is gone can never be met again). Holding
+/// them strongly kept every body of up to [`MEMO`] answers alive: a
+/// motion's moments, each a fresh placement, piled up (`motion.check`).
 #[derive(Clone)]
 pub(crate) struct Key {
     pub(crate) text: String,
-    _held: Vec<Arc<Body>>,
+    _held: Vec<Weak<Body>>,
+}
+
+/// Every body `held` names is still alive: an answer kept for it can
+/// still be asked for.
+fn alive(held: &[Weak<Body>]) -> bool {
+    held.iter().all(|w| w.strong_count() > 0)
 }
 
 /// How many threads measure the assertions of one job at most (the extra
@@ -89,6 +100,8 @@ pub(crate) struct Job {
     pieces: Mutex<Option<(usize, Vec<PairAnswer>)>>,
     pub(crate) doc: Arc<Document>,
     regen: Arc<Regen>,
+    /// The assembly `doc` is the placed part of, when it is one.
+    placed: Option<Arc<Placed>>,
     /// The outputs as far as they were computed when the job was made:
     /// every one its work uses.
     pub(crate) outputs: Arc<Resolved>,
@@ -118,14 +131,14 @@ pub(crate) struct Checks {
     /// The keys of one revision.
     keys: Option<(u64, Stage)>,
     /// Answers by key.
-    memo: BTreeMap<String, (Checked, Vec<Arc<Body>>)>,
+    memo: BTreeMap<String, (Checked, Vec<Weak<Body>>)>,
     pub(crate) job: Option<Arc<Job>>,
     /// How many assertions were measured, in all.
     measured: usize,
 }
 
 /// The bodies a subject names, written into the key with their addresses.
-fn subjects_into(ctx: &Ctx<'_>, value: &Value, out: &mut String, held: &mut Vec<Arc<Body>>) {
+fn subjects_into(ctx: &Ctx<'_>, value: &Value, out: &mut String, held: &mut Vec<Weak<Body>>) {
     match subject(ctx, value, &["body", "face", "feature"]) {
         Err(e) => out.push_str(&format!("!{e}")),
         Ok(found) => {
@@ -133,7 +146,7 @@ fn subjects_into(ctx: &Ctx<'_>, value: &Value, out: &mut String, held: &mut Vec<
                 out.push_str(&format!("{}:{:?}:{}", f.feature, f.indices, f.name));
                 if let Some(body) = ctx.regen.feature(f.feature).and_then(|o| o.own_body()) {
                     out.push_str(&format!("@{:p};", Arc::as_ptr(body)));
-                    held.push(Arc::clone(body));
+                    held.push(Arc::downgrade(body));
                 }
             }
         }
@@ -142,7 +155,13 @@ fn subjects_into(ctx: &Ctx<'_>, value: &Value, out: &mut String, held: &mut Vec<
 
 /// What `assertion` (or an output's measure) depends on, with the
 /// outputs it uses as they are computed.
-fn key_of(doc: &Document, regen: &Regen, assertion: &Assertion, outputs: &Resolved) -> Key {
+fn key_of(
+    doc: &Document,
+    regen: &Regen,
+    assertion: &Assertion,
+    outputs: &Resolved,
+    placed: Option<&Arc<Placed>>,
+) -> Key {
     let mut text = format!(
         "{}|{:?}|{:?}|{:?}|{:?}|",
         assertion.measure, assertion.expect, assertion.when, doc.units, doc.tolerance
@@ -195,7 +214,7 @@ fn key_of(doc: &Document, regen: &Regen, assertion: &Assertion, outputs: &Resolv
             _ if key == "of" => {
                 for (id, body) in regen.bodies() {
                     text.push_str(&format!("{id}@{:p};", Arc::as_ptr(body)));
-                    held.push(Arc::clone(body));
+                    held.push(Arc::downgrade(body));
                 }
             }
             _ => {}
@@ -256,6 +275,12 @@ fn key_of(doc: &Document, regen: &Regen, assertion: &Assertion, outputs: &Resolv
             regen.feature(f).and_then(|o| o.datum.as_ref())
         ));
     }
+    // An assembly's joints and poses change without a body that a subject
+    // names changing.
+    if let Some(facts) = crate::asm_measure::key_text(placed, &params) {
+        text.push('|');
+        text.push_str(&facts);
+    }
     Key { text, _held: held }
 }
 
@@ -293,7 +318,13 @@ fn measure(job: &Job, mut stop: impl FnMut() -> bool) {
         let Some((_, assertion)) = job.work.get(n) else {
             return;
         };
-        let checked = check_one(&job.doc, &job.regen, assertion, &job.outputs);
+        let checked = check_one(
+            &job.doc,
+            &job.regen,
+            assertion,
+            &job.outputs,
+            job.placed.as_ref(),
+        );
         let mut results = job.results.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(slot) = results.get_mut(n) {
             *slot = Some(checked);
@@ -336,7 +367,15 @@ fn measure_some(job: &Job, stop: impl FnMut() -> bool + 'static) {
         let taken = crate::measure_pieces::in_pieces(
             earlier,
             Box::new(move || (asked.borrow_mut())()),
-            || check_one(&job.doc, &job.regen, assertion, &job.outputs),
+            || {
+                check_one(
+                    &job.doc,
+                    &job.regen,
+                    assertion,
+                    &job.outputs,
+                    job.placed.as_ref(),
+                )
+            },
         );
         if taken.stopped {
             *job.pieces.lock().unwrap_or_else(PoisonError::into_inner) = Some((n, taken.answers));
@@ -440,7 +479,8 @@ impl Session {
         let open = self.document_mut()?;
         // An assembly is measured on its placed bodies, named after their
         // instances (`asm.rs`).
-        let doc = match open.placed() {
+        let placed = open.placed();
+        let doc = match &placed {
             Some(placed) => Arc::clone(&placed.doc),
             None => Arc::clone(open.history.current()),
         };
@@ -505,6 +545,9 @@ impl Session {
                                 .insert(key.text.clone(), (checked.clone(), key._held.clone()));
                         }
                     }
+                    // An answer for a body that is gone is never asked for
+                    // again (a new body has another address).
+                    checks.memo.retain(|_, (_, held)| alive(held));
                 } else {
                     checks.job = Some(job);
                 }
@@ -547,7 +590,9 @@ impl Session {
                         let Some(slot) = keys.get_mut(i) else {
                             return OutputValue::Unknown("internal error: no key".into());
                         };
-                        let key = slot.get_or_insert_with(|| key_of(&doc, &regen, &pseudo, known));
+                        let key = slot.get_or_insert_with(|| {
+                            key_of(&doc, &regen, &pseudo, known, placed.as_ref())
+                        });
                         match answer(key) {
                             Some((checked, kept)) => {
                                 if !kept {
@@ -584,7 +629,7 @@ impl Session {
                                 .iter()
                                 .all(|n| !matches!(resolved.get(n), Some(OutputValue::Pending)));
                         ready.then(|| {
-                            slot.insert(key_of(&doc, &regen, assertion, &resolved))
+                            slot.insert(key_of(&doc, &regen, assertion, &resolved, placed.as_ref()))
                                 .clone()
                         })
                     }
@@ -638,6 +683,7 @@ impl Session {
                     pieces: Mutex::new(None),
                     doc: Arc::clone(&doc),
                     regen: Arc::clone(&regen),
+                    placed: placed.clone(),
                     outputs: Arc::clone(&resolved),
                 });
                 checks.job = Some(Arc::clone(&job));

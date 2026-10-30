@@ -33,8 +33,8 @@ pub use appearance::{
     MAX_FACE_APPEARANCES, MAX_PATTERN_COLORS, Material, Optics, SolidTexture, SolidTextureKind,
 };
 pub use assembly::{
-    Assembly, Coupling, CouplingKind, Instance, InstanceMode, Mate, MateKind, MateRef,
-    ParamOverride, Placement, Source, WORLD,
+    Assembly, Coupling, CouplingKind, CouplingTerm, Instance, InstanceMode, MAX_COUPLING_TERMS,
+    MOTIONS, Mate, MateKind, MateRef, ParamOverride, Placement, Source, WORLD, WORLD_FRAMES,
 };
 pub use assertion::{Assertion, Expect, MAX_ASSERTION_TEXT, MAX_ASSERTIONS};
 pub use blob::{Blob, sha256};
