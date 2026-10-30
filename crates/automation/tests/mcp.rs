@@ -375,6 +375,7 @@ fn command_list_returns_the_registry_and_filters() {
             "file.new",
             "file.open",
             "file.list",
+            "assembly.new",
             "recovery.list",
             "recovery.open",
             "recovery.discard",
