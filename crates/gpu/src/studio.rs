@@ -2242,14 +2242,14 @@ mod tests {
         const { assert!(layers::MAX_OPTICS <= u16::MAX as usize) };
         assert_eq!(polish::dof_taps(3.0, 7).len(), DOF_TAPS);
         const { assert!(DOF_TAPS <= 2 * TAP_VECTORS) };
-        // The uniform block: fourteen vectors, the harmonics, the taps.
+        // The uniform block: fifteen vectors, the harmonics, the taps.
         let block = studio
             .split("struct Studio {")
             .nth(1)
             .and_then(|s| s.split("\n}").next())
             .unwrap();
         let vectors = block.matches(": vec4<f32>,").count();
-        assert_eq!(vectors, 14);
+        assert_eq!(vectors, 15);
         assert!(block.contains("sh: array<vec4<f32>, 9>,"));
         assert!(block.contains(&format!("taps: array<vec4<f32>, {TAP_VECTORS}>,")));
     }

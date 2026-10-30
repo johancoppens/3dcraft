@@ -2866,8 +2866,11 @@ pub(crate) mod template_tests {
                 // one too, and its shadow map tests the light's own depth,
                 // which is not the view's key; so do its passes after the
                 // shading (layer 2), over the screen-space buffers.
+                // The studio look's count (`fs_studio_parity`) as the
+                // plain one's.
                 let own = [
                     "fs_parity",
+                    "fs_studio_parity",
                     "fs_background",
                     "fs_ao",
                     "fs_shadow",
