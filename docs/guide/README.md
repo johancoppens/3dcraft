@@ -43,19 +43,19 @@ numbers yourself.
 
 | Chapter | What you learn |
 |---|---|
-| [4. The window](04-window.md) | The start screen, tabs, the feature list, flying to a feature, the history player, pointing at faces, menus and keys |
+| [4. The window](04-window.md) | The start screen, tabs, the feature list, flying to a feature, the history player, the studio look, materials, surface analysis, pointing at faces, menus and keys |
 | [5. Jigs](05-jigs.md) | Using a ready-made Jig (the Parameters tab), the Jigs collection, and making a Jig of your own |
 | [6. How 3DCraft thinks](06-concepts.md) | The history, variables and units, sketches and constraints, features, names that stay put, failed features |
 | [7. A first part, command by command](07-first-part.md) | An L-bracket with a rounded corner and two holes, built step by step |
 | [8. Formulas, tables and conditions](08-formulas.md) | Choices made by formulas, tables of sizes, parts switched on and off, curves drawn from formulas (an involute gear) |
-| [9. Modelling features](09-features.md) | Extrude, revolve, sweep and loft; booleans; fillets and chamfers; shell; patterns; threads; datums; sheets |
-| [10. Measuring and checking](10-measure.md) | Volume, distances and wall thickness, and design rules (assertions) checked at every change |
+| [9. Modelling features](09-features.md) | Extrude, revolve, sweep and loft; text; booleans; fillets and chamfers; shell; patterns; threads; datums; sheets; developables and unfolding; surfaces from curve networks; plates; sheet metal |
+| [10. Measuring and checking](10-measure.md) | Volume, distances and wall thickness, sections and floating levels, continuity across a seam, design rules (assertions) checked at every change, outputs |
 | [11. Selection and named sets](11-selection.md) | Finding faces by what they are, the selection you share with the agent, sets kept in the document |
 | [12. Files, export and drawings](12-files.md) | Saving, STEP, meshes for 3D printing, outlines for laser cutting, drawings of the model, the web version |
 | [13. The command line and scripts](13-command-line.md) | `craft3d-cli`: run commands and scripts, render pictures, convert files, check a Jig |
 | [14. Troubleshooting](14-troubleshooting.md) | What a refusal means, failed features, undo, crash recovery, reporting a problem |
-| [17. Assemblies](17-assemblies.md) | Instances of your parts and Jigs, sizes per instance, one body of a Jig, mates, subassemblies, packing, STEP with structure |
 | [16. Origami](16-origami.md) | Crease patterns (mountain, valley, cut), folding by angles and variables with the other creases solved, Kawasaki and Maekawa (and what they do not prove), crease patterns to SVG and DXF |
+| [17. Assemblies](17-assemblies.md) | Instances of your parts and Jigs, sizes per instance, one body of a Jig, mates, subassemblies, packing, STEP with structure |
 
 **Reference**
 
@@ -64,6 +64,8 @@ numbers yourself.
 - [Example models](../examples/README.md): ten small parts (a bracket, a flange, a gear, …), each a script
   with a picture that checks its own volume. The window's start screen builds all ten with one click.
 - [The Jigs collection](https://github.com/johancoppens/3dcraft-jigs): Jigs to download and use.
+- [The field test](field-test.md): for testers of 0.1.0, how to install, connect an agent, five tasks to
+  start with, and how to report what you find.
 
 ## Words used in this guide
 

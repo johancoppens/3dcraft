@@ -8,7 +8,7 @@ All notable changes to 3DCraft are listed here. The format follows [Keep a Chang
 
 The first release for people outside the project. 3DCraft is a parametric 3D CAD modeller built for AI: you describe a part, an AI agent builds it through 3DCraft's commands, and you watch it appear in the window, point at faces and check the result. Ready-made designs called Jigs need no AI at all: set their sizes in a form and export. Everything can also be done from the command line or a script, and 3DCraft runs in the browser too.
 
-Items marked *(pending)* are being finished for this release and are listed here so the notes are complete once they land; remove the marker when they are in, or the line when they are not.
+Every item below is in `main` as of 2026-10-30. Branches still merging for this release add their lines here when they land (the release checklist in `docs/development.md`).
 
 ### Modelling
 
@@ -26,6 +26,11 @@ Items marked *(pending)* are being finished for this release and are listed here
 - **Curves from formulas** (`sketch.curve`): `x(t)` and `y(t)` in the variables, fitted again whenever they change, as in the involute gear example; points on them and tangents to them can be constrained.
 - Sketches on a face, with the x axis turned to a direction you choose.
 
+### Text
+
+- **Text in sketches** (`sketch.text`), straight or along a curve (`sketch.textOnCurve`): a template that can hold formulas, cap height or em size, anchor, alignment, rotation, line spacing and wrapping to a width, as closed profiles of exact curves with kerning, ready to extrude, emboss or engrave. Letters are named by glyph, so a feature on one fails by name instead of jumping to another.
+- **Fonts.** Noto Sans, JetBrains Mono and a single-stroke font drawn for 3DCraft are built in and carried by the installers (fetched when first needed on the web); `font.add` keeps another font in the document when its licence allows it. The measure `textExtent` gives a text's size.
+
 ### Booleans
 
 - **Union, subtract and intersect** between bodies of any shape, including curved and freeform faces, and cuts by sheets and between sheets.
@@ -34,13 +39,25 @@ Items marked *(pending)* are being finished for this release and are listed here
 ### Sheets, plates, sheet metal and origami
 
 - **Plates.** Give faces (flat, developable or freeform) a thickness, inside, outside or in the middle, with square, bevel, mitre, touch and over/under joints between neighbouring plates.
-- **Developable surfaces and unfolding.** A developable surface between two curves, unfolded flat at true size with a map between the pattern and the part, and a measure of how developable a face is. Sheer panels with saddles in their rulings, such as a sea kayak's *(pending)*.
-- **Sheet metal.** A base with flanges, bent by inner radius and K-factor, with rectangular, round and tear corner reliefs; corners closed by overlap, butt or mitre; holes and cut-outs on any flat; a bend table; checks for bend radius, flange length, hole-to-bend distance and relief; the flat pattern exported with its bend lines. Holes across a bend and later cuts carried onto the flat pattern *(pending)*.
-- **Origami.** A crease pattern of mountains, valleys and cuts folded by angles that follow variables, or folded flat with the order of the layers worked out; Kawasaki and Maekawa checks; the crease pattern exported to SVG and DXF. Thick panels, slits and slots, and a flat-folded stack folded on *(pending)*.
+- **Developable surfaces and unfolding.** A developable surface between two curves, unfolded flat at true size with a map between the pattern and the part, and a measure of how developable a face is. Rails with corners (a fan from the corner, a crease where both rails turn) and closed rails (a tube), such as a sea kayak's sheer panels.
+- **Sheet metal.** A base with flanges, bent by inner radius and K-factor, with rectangular, round and tear corner reliefs; corners closed by overlap, butt or mitre; holes and cut-outs on any flat; a bend table; checks for bend radius, flange length, hole-to-bend distance and relief; the flat pattern exported with its bend lines. Holes across a bend, and a later through cut carried back onto the flat pattern. Flanges inset on an edge (several tabs), on a flange's side, on a hole's edge or with an outline of their own, with bend reliefs at their ends. A press-brake check (`sheetMetal.bendSequence`) that searches an order of bends and proves the punch and die clear the part.
+- **Origami.** A crease pattern of mountains, valleys and cuts folded by angles that follow variables, or folded flat with the order of the layers worked out; Kawasaki and Maekawa checks; the crease pattern exported to SVG and DXF. Thick panels on a membrane, slits and slots, a flat-folded stack folded on, and patterns of thousands of creases.
+
+### Freeform surfacing
+
+- **Analysis.** Zebra stripes, highlight lines, a curvature map and a draft check drawn on the exact surfaces, curvature combs on edges and iso-curves, and the measures `draft` and `curvature` at a point (the Analysis toggle in the window).
+- **Surfaces from curve networks.** Gordon surfaces through crossing u and v curves (`feature.surface.network`), Coons patches (`feature.surface.coons`) and lofts with guide curves, as exact B-splines.
+- **Continuity across seams.** An edge held in position, tangent (G1) or in curvature (G2) to a plane, cylinder, cone, sphere or a spline face, and `measure.continuity`, which proves G0, G1 or G2 with bounded gaps (also as an assertion).
+
+### Assemblies and motion
+
+- **Assemblies** as their own documents (`.3dcraftasm`): instances of other `.3dcraft` files by reference (the assembly follows the part when you edit it) or packed into one file, configurations by a part's public parameters, one body picked from a multi-body part, and rigid or flexible subassemblies.
+- **Mates, joints and couplings**, solved by 3DCraft's own solver: fixed, revolute and the other mates between named faces of instances (a face that is gone fails its mate by name), free joints set by value or dragged, gears, racks and screws coupling two mates. Clearance, overlap and mass per instance; STEP export with the assembly's structure.
+- **Motion over a timeline `t`.** Play a mechanism in the window, see collisions in red, draw the trace of a point (and export it to SVG or DXF), and check any assertion over the whole motion (`motion.check`). Dead points are reported with their `t`.
 
 ### Measuring and design checks
 
-- **Measures.** Volume, area, mass and inertia, distances, clearance, wall thickness, holes that go through, rays and symmetry; what lies below a plane, the section by a plane and its moments, and the level that holds a given volume. The floating position (level and tilt) of a hull for a given weight and centre of gravity *(pending)*.
+- **Measures.** Volume, area, mass and inertia, distances, clearance, wall thickness, holes that go through, rays and symmetry; what lies below a plane, the section by a plane and its moments, and the level that holds a given volume. The floating position (level and tilt) of a hull for a given weight and centre of gravity, with its stability. A section's torsion constant, shear centre and warping constant, for any section with holes.
 - **Assertions** kept in the document ("this wall is at least 2 mm"), checked at every rebuild and shown in the window, optionally only when a condition holds; read-only **outputs** computed from measures and formulas.
 - **Selections.** Queries ("every 8 mm hole"), a selection shared between you and the agent, and named sets.
 
@@ -54,7 +71,7 @@ Items marked *(pending)* are being finished for this release and are listed here
 
 - **The native `.3dcraft` format**, with a promise: every file a released version saves opens in every later version and rebuilds to the same bodies.
 - **Import** STEP: solids, sheets and assemblies, with colours.
-- **Export** STEP (the exact geometry), STL, 3MF and OBJ (meshes at Coarse, Normal or Fine quality, with colours), and DXF and SVG: the flat outline of a sketch or of faces at true size, a whole cut sheet of a named set laid out to your laser's width, flat and crease patterns, or a drawing of the model as seen (orthographic to scale or perspective, hidden lines left out or dashed). In drawings of the model as seen, edges written as the lines, arcs, circles, ellipses and splines they are *(pending)*.
+- **Export** STEP (the exact geometry), STL, 3MF and OBJ (meshes at Coarse, Normal or Fine quality, with colours), and DXF and SVG: the flat outline of a sketch or of faces at true size, a whole cut sheet of a named set laid out to your laser's width, flat and crease patterns, or a drawing of the model as seen (orthographic to scale or perspective, hidden lines left out or dashed), its edges written as the lines, arcs, circles, ellipses and splines they are.
 - An export dialog that first asks what goes into the file and offers only the formats that hold it.
 
 ### The window and installing
@@ -63,7 +80,13 @@ Items marked *(pending)* are being finished for this release and are listed here
 - **Autosave and crash recovery.** Unsaved work is saved in the background; after a crash the window offers to recover it. Closing the window or a tab asks before unsaved changes are lost.
 - **Clear errors and bug reports.** A failed file action shows a dialog with what went wrong; after any failed command the status bar offers *Copy details*, a short report to paste into a bug report.
 - **Installers** for Linux (AppImage, and a tarball with an install script), macOS (a `.dmg` for Apple Silicon) and Windows (a `.msi` installer, and a zip), with the `.3dcraft` and `.3dcraftjig` file types.
-- **A user guide** for first-time users: three ways to use 3DCraft, your first five minutes, working with an AI agent, the window, Jigs, formulas, features, measuring, files and troubleshooting, with pictures, a reference, and ten example models (from an L-bracket to an involute gear) that check their own volume.
+- **A user guide** for first-time users: three ways to use 3DCraft, your first five minutes, working with an AI agent, the window, Jigs, formulas, features, measuring, files and troubleshooting, with pictures, origami and assemblies, a reference, and ten example models (from an L-bracket to an involute gear) that check their own volume.
+
+### Rendering
+
+- **A studio look**: image-based lighting from three bundled environments, soft shadows, ambient occlusion, a ground that catches shadows and reflections, contact shadows, depth of field and bloom, refined while the camera stands still; a view setting that never changes the document.
+- **Materials** kept in the document: anisotropic metal, clear coat paint, glass with refraction and subsurface wrap, with six presets (`material.presets`); exports carry what their formats hold.
+- Both looks are drawn by the graphics card and by the processor alike, the processor's picture being the reference the graphics card is tested against.
 
 ### Web
 
@@ -78,9 +101,8 @@ Items marked *(pending)* are being finished for this release and are listed here
 ### Known limitations
 
 - The installers are not signed, so Windows and macOS warn the first time (the guide shows how to open them). macOS is Apple Silicon only, and double-clicking a `.3dcraft` file there starts 3DCraft without opening the file (use File › Open).
-- An AI agent cannot drive the web version yet; the web version rebuilds on the page's one thread, so a long rebuild holds up the page.
-- Curved edges in drawings of the model as seen are written as fine straight pieces *(until the pending item under Files and export lands; then remove this line)*.
-- Some modelling cases are refused rather than built (the message says which): among them some booleans, curved and sharp sheet-metal bends, curved origami creases, and developables between closed or cornered curves. Every refusal reported helps.
+- An AI agent cannot drive the web version yet. The web version rebuilds the model beside the page, but a click that selects, measures and exports still compute on the page, so they can take a moment on a big model.
+- Some modelling cases are refused rather than built (the message says which): among them some booleans and freeform fillets, curved and sharp sheet-metal bends, curved origami creases, a sweep along two rails, and text wrapped onto a curved surface. Text is laid out glyph by glyph with kerning; shaping for complex scripts (such as Arabic or the Indic scripts) is for a later version. Every refusal reported helps.
 
 [Unreleased]: https://github.com/johancoppens/3dcraft/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/johancoppens/3dcraft/releases/tag/v0.1.0

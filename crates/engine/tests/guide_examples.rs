@@ -502,3 +502,47 @@ fn the_floating_assertions_of_the_measuring_chapter_are_as_it_says() {
     let listed = run(&mut s, "assert.list", json!({}));
     assert_eq!(listed["assertions"][0]["status"], "failed", "{listed}");
 }
+
+/// The field test's page (`field-test.md` › task 3) says what its script
+/// makes: 11 holes and 6552.05 mm³ at 120 mm, and 14 holes and 8175.33 mm³
+/// once the strip is 150 mm long, its two assertions passing both times.
+#[test]
+fn the_field_test_strip_is_as_the_page_says() {
+    let text = read_text(&docs().join("guide/field-test.md"));
+    let block = json_blocks(&text)
+        .into_iter()
+        .find(|b| b.contains("feature.pattern"))
+        .expect("the page has the strip's script");
+    let steps = steps(&serde_json::from_str(&block).unwrap()).unwrap();
+    let mut s = common::session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    for (id, params) in steps {
+        run(&mut s, &id, params);
+    }
+    let measured = |s: &mut Session, name: &str| {
+        let listed = run(s, "assert.list", json!({}));
+        assert_eq!(listed["passed"], 2, "{listed}");
+        listed["assertions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["name"] == name)
+            .unwrap()["measured"]
+            .as_f64()
+            .unwrap()
+    };
+    for (length, holes, volume) in [("120 mm", 11.0, 6552.05), ("150 mm", 14.0, 8175.33)] {
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "length", "expr": length}),
+        );
+        assert_eq!(measured(&mut s, "holes"), holes, "{length}");
+        let got = measured(&mut s, "volume");
+        assert!((got - volume).abs() < 0.005, "{length}: {got}");
+    }
+    let document = run(&mut s, "document.inspect", json!({}));
+    for feature in document["features"].as_array().unwrap() {
+        assert_eq!(feature["status"], "ok", "{feature}");
+    }
+}
