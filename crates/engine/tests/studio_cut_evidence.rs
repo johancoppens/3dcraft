@@ -40,7 +40,7 @@ fn camera(lo: Vec3, hi: Vec3, toward: Vec3) -> Camera {
     let radius = (hi - lo).length() * 0.5;
     let toward = toward.normalized().unwrap();
     Camera {
-        eye: centre + toward * (radius * 3.4),
+        eye: centre + toward * (radius * 2.6),
         target: centre,
         up: Vec3::Z,
         projection: Projection::Perspective { fov_y_deg: 35.0 },
@@ -124,10 +124,10 @@ fn the_turbofan_cut_open_in_the_studio_look() {
     let scene = session.scene(None).unwrap().unwrap();
     let (lo, hi) = scene.bodies_box.corners().unwrap();
     let centre = (lo + hi) * 0.5;
-    // Through the engine's axis, the half towards the viewer cut away.
+    // Through the engine's axis (along y), the upper half cut away.
     let axis_cut = Section {
         origin: centre,
-        normal: Vec3::new(0.0, -1.0, 0.0),
+        normal: Vec3::new(0.0, 0.0, 1.0),
         cap: true,
         color: [214, 88, 64],
     };
