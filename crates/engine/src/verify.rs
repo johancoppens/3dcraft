@@ -56,9 +56,28 @@ pub(crate) struct Part<'a> {
     pub err: Vec<f64>,
     /// The document's linear tolerance.
     pub linear: f64,
+    /// Per edge of the body: the box of [`EDGE_SAMPLES`] points along it
+    /// grown by the chord, when first needed.
+    edge_boxes: std::cell::OnceCell<Vec<Bbox3>>,
 }
 
 impl<'a> Part<'a> {
+    /// Per edge of the body, the box around points along it.
+    fn edge_boxes(&self) -> &[Bbox3] {
+        self.edge_boxes.get_or_init(|| {
+            self.body()
+                .edges
+                .iter()
+                .map(|e| {
+                    grown(
+                        &Bbox3::from_points(edge_points(e, EDGE_SAMPLES)),
+                        self.chord,
+                    )
+                })
+                .collect()
+        })
+    }
+
     /// `faces`: the faces taking part, or every face when `None`.
     pub fn new(
         body: &'a Body,
@@ -136,6 +155,7 @@ impl<'a> Part<'a> {
             every_boxes,
             err,
             linear: tolerance.linear,
+            edge_boxes: std::cell::OnceCell::new(),
         })
     }
 
@@ -174,6 +194,21 @@ fn mesh_of(body: &Body, tol: f64) -> Answer<(Mesh, f64)> {
     Err(format!(
         "the body needs more than {MAX_TRIANGLES} triangles even at a chordal tolerance of {chord:e}"
     ))
+}
+
+/// Whether two boxes share a point.
+fn overlaps(a: &Bbox3, b: &Bbox3) -> bool {
+    match (a.corners(), b.corners()) {
+        (Some((alo, ahi)), Some((blo, bhi))) => {
+            alo.x <= bhi.x
+                && blo.x <= ahi.x
+                && alo.y <= bhi.y
+                && blo.y <= ahi.y
+                && alo.z <= bhi.z
+                && blo.z <= ahi.z
+        }
+        _ => false,
+    }
 }
 
 fn grown(b: &Bbox3, by: f64) -> Bbox3 {
@@ -1595,7 +1630,7 @@ pub(crate) fn thickness(part: &Part<'_>, tol: f64) -> Answer<Option<Thin>> {
 
 /// Most points of a face a plate thickness casts a line from, spread over
 /// its triangles.
-const PLATE_SAMPLES: usize = 256;
+const PLATE_SAMPLES: usize = 32;
 /// Most vertices behind a face, projecting within its box, a plate
 /// thickness samples around; a face with more has no thickness (no
 /// answer rather than one that may have missed a step).
@@ -1693,15 +1728,19 @@ pub(crate) fn plate_thickness(
     let deepest = range.map_or(f64::INFINITY, |(_, hi)| hi + 2.0 * tol);
     let mut taken: BTreeSet<[i64; 3]> = BTreeSet::new();
     let mut points: Vec<Vec3> = Vec::new();
-    for vertex in &body.vertices {
-        let depth = normal.dot(centre - vertex.point);
+    let mut sampled: BTreeSet<usize> = BTreeSet::new();
+    // Where a point behind the face projects onto it, when it is behind
+    // (no deeper than `deepest`) and within the face's box.
+    let onto = |point: Vec3| -> Option<Vec3> {
+        let depth = normal.dot(centre - point);
         if !(depth > tol && depth <= deepest && depth.is_finite()) {
-            continue;
+            return None;
         }
-        let q = vertex.point + normal * depth;
-        if !face_box.contains(q, 2.0 * nudge) {
-            continue;
-        }
+        let q = point + normal * depth;
+        face_box.contains(q, 2.0 * nudge).then_some(q)
+    };
+    // Takes `q` once (within the tolerance); `false` past the cap.
+    let mut take = |q: Vec3, points: &mut Vec<Vec3>| -> bool {
         // `as` saturates (and makes a NaN 0): a key, never a panic.
         let key = [
             (q.x / tol).round() as i64,
@@ -1709,13 +1748,72 @@ pub(crate) fn plate_thickness(
             (q.z / tol).round() as i64,
         ];
         if !taken.insert(key) {
-            continue;
+            return true;
         }
         if taken.len() > PLATE_VERTICES {
-            return Ok(None);
+            return false;
         }
         for (a, b) in [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
             points.push(q + (t1 * a + t2 * b) * nudge);
+        }
+        true
+    };
+    for (index, vertex) in body.vertices.iter().enumerate() {
+        let Some(q) = onto(vertex.point) else {
+            // A vertex in the face's plane, within its box, ends an edge
+            // as well as a sampled one does: the edge's projection starts
+            // at the face's own outline.
+            if normal.dot(centre - vertex.point).abs() <= tol
+                && face_box.contains(vertex.point, 2.0 * nudge)
+            {
+                sampled.insert(index);
+            }
+            continue;
+        };
+        sampled.insert(index);
+        if !take(q, &mut points) {
+            return Ok(None);
+        }
+    }
+    // An edge that crosses the face's box with an end that is not sampled
+    // (outside the box, or deeper): the points along it that project
+    // within the box stand for its ends, so a step bounded by a long edge
+    // is told without a grid point falling on it.
+    let reach = grown(face_box, 2.0 * nudge);
+    for (edge, edge_box) in body.edges.iter().zip(part.edge_boxes()) {
+        if [edge.start, edge.end]
+            .iter()
+            .all(|v| sampled.contains(&(v.0 as usize)))
+        {
+            continue;
+        }
+        let Some((lo, hi)) = edge_box.corners() else {
+            continue;
+        };
+        let corners = (0..8).map(|k| {
+            Vec3::new(
+                if k & 1 == 0 { lo.x } else { hi.x },
+                if k & 2 == 0 { lo.y } else { hi.y },
+                if k & 4 == 0 { lo.z } else { hi.z },
+            )
+        });
+        let (mut shallow, mut deep) = (f64::INFINITY, f64::NEG_INFINITY);
+        let mut shadow = Bbox3::EMPTY;
+        for c in corners {
+            let depth = normal.dot(centre - c);
+            shallow = shallow.min(depth);
+            deep = deep.max(depth);
+            shadow.add(c + normal * depth);
+        }
+        if !(deep > tol && shallow <= deepest) || !overlaps(&shadow, &reach) {
+            continue;
+        }
+        for point in edge_points(edge, EDGE_SAMPLES) {
+            if let Some(q) = onto(point)
+                && !take(q, &mut points)
+            {
+                return Ok(None);
+            }
         }
     }
     for c in points {
