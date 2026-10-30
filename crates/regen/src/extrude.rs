@@ -650,10 +650,17 @@ pub(crate) fn build(
             let depth = length(doc, variables, "distance", &feature.distance)?;
             let depth = if feature.reversed { -depth } else { depth };
             let (body, faces) = target(doc, earlier, face)?;
-            let on = faces
-                .first()
-                .and_then(|f| body.face(*f))
-                .ok_or_else(|| format!("wrap: the face {face} is not there"))?;
+            let on = match faces.as_slice() {
+                [one] => body.face(*one),
+                [] => None,
+                more => {
+                    return Err(format!(
+                        "wrap: the name {face} names {} faces (a face split by a later feature): a text is wrapped onto one face",
+                        more.len()
+                    ));
+                }
+            }
+            .ok_or_else(|| format!("wrap: the face {face} is not there"))?;
             let made =
                 craft3d_kernel::wrap::wrap(&profiles, &on.surface, on.reversed, depth, &tolerance)
                     .map_err(|e| format!("wrap: onto the face {face}: {e}"))?;

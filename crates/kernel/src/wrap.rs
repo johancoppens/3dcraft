@@ -20,10 +20,14 @@
 //! doubled until the curve is within a tenth of the tolerance of the
 //! mapped points at every midpoint between samples. The fitted loops bound
 //! a face on the surface itself (a sheet, one face per profile), and
-//! [`crate::plate`] gives it the depth to both sides of the surface along
-//! its normal, with square rims: the body to join to the surface's body
-//! (raised, a positive depth) or to cut from it (engraved, a negative
-//! one), which then meet it across the surface, never along it. The
+//! [`crate::plate`] gives it the depth along the outward normal, out of
+//! the body for a positive depth and into it for a negative one, with
+//! square rims and a lap of five hundredths of the depth (at least ten
+//! tolerances) over the surface to the other side: the body to join to
+//! the surface's body (raised) or to cut from it (engraved), which then
+//! meet it across the surface, never along it, the lap taking nothing
+//! either way. On a reversed face (a bore's wall) the sketch's x is
+//! turned over, so the text reads from outside the body as in the sketch. The
 //! plates of the profiles are disjoint (the profiles neither touch nor
 //! cross, and the normals of a cylinder or cone spread them apart outward
 //! and inward up to the axis), so they are one body of several lumps.
@@ -54,7 +58,23 @@ fn refuse(reason: impl Into<String>) -> KernelError {
 }
 
 /// The development of a cylinder or a cone: sketch `(x, y)` to the
-/// surface's `(u, v)`.
+/// surface's `(u, v)`, the sketch's x turned over on a reversed face (one
+/// seen from the side the surface's normal points away from, a bore's
+/// wall), so that the text reads, seen from outside the body, as it does
+/// in the sketch.
+#[derive(Clone, Copy, Debug)]
+struct Map {
+    development: Development,
+    /// −1 on a reversed face, else 1.
+    flip: f64,
+}
+
+impl Map {
+    fn uv(&self, p: [f64; 2]) -> Result<(f64, f64), KernelError> {
+        self.development.uv([self.flip * p[0], p[1]])
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 enum Development {
     Cylinder {
@@ -155,13 +175,19 @@ fn leaving(segment: &Segment, t: f64) -> Option<[f64; 2]> {
 }
 
 /// How far a wrapped curve runs on past each end of its segment, in
-/// multiples of the depth: further than [`crate::plate`] traces its rims
-/// past an edge's ends (twice the plate's thickness of twice the depth,
-/// and the corner's own reach), so that the plate traces the curve's own
-/// points there, not a polynomial continued far past a short piece (a
-/// glyph's piece of a fifth of a millimetre continued by four:
-/// 2026-10-30, the r and t of 3DCraft).
-const RUN_ON: f64 = 8.0;
+/// multiples of the plate's thickness: twice as far as [`crate::plate`]
+/// traces its rims past an edge's ends at a square joint (its margin of
+/// twice the thickness), so that the corner's own reach on a curved sheet
+/// fits too and the plate traces the curve's own points there, not a
+/// polynomial continued far past a short piece (a glyph's piece of a fifth
+/// of a millimetre continued by four: 2026-10-30, the r and t of 3DCraft).
+/// Past that the plate continues the curve's end span, which is then the
+/// run-on itself, a geodesic.
+const RUN_ON: f64 = 4.0;
+
+/// How far the plate laps over the surface into the body's side, as a
+/// share of the depth (at least ten tolerances).
+const OVERLAP: f64 = 0.05;
 
 /// A segment mapped onto the surface and fitted, run on past its ends
 /// along its tangents in the development (a geodesic of the surface) by
@@ -170,7 +196,7 @@ const RUN_ON: f64 = 8.0;
 fn mapped_curve(
     segment: &Segment,
     surface: &Surface,
-    dev: &Development,
+    dev: &Map,
     tol: f64,
     run_on: f64,
 ) -> Result<(NurbsCurve, (f64, f64)), KernelError> {
@@ -334,10 +360,11 @@ fn sheet(
     profile: &Profile,
     surface: &Surface,
     reversed: bool,
-    dev: &Development,
-    tol: f64,
+    dev: &Map,
+    tolerance: &Tolerance,
     run_on: f64,
 ) -> Result<(Body, FaceId, SheetParts), KernelError> {
+    let tol = tolerance.linear;
     let mut body = Body::new(BodyKind::Sheet);
     let mut parts = SheetParts {
         edges: BTreeMap::new(),
@@ -379,21 +406,15 @@ fn sheet(
                 reversed: false,
             });
         }
-        if reversed {
-            // Loops run counter-clockwise about the outward normal, which
-            // is against the surface's own normal here.
-            coedges.reverse();
-            for c in &mut coedges {
-                c.reversed = true;
-            }
-        }
+        // On a reversed face the sketch's x is turned over (`Map`), so a
+        // loop counter-clockwise in the sketch runs clockwise about the
+        // surface's normal: counter-clockwise about the outward normal,
+        // as a face's loops do, either way.
         loops.push(body.add_loop(coedges));
     }
     let face = body.add_face(surface.clone(), reversed, loops);
     body.add_shell(vec![face]);
-    let tolerance =
-        Tolerance::new(tol, 1e-9).ok_or_else(|| refuse("the tolerance is not positive"))?;
-    let defects = craft3d_topo::check(&body, &tolerance);
+    let defects = craft3d_topo::check(&body, tolerance);
     if let Some(defect) = defects.first() {
         return Err(refuse(format!(
             "the profile does not lie on the surface as one face: {defect:?}"
@@ -432,21 +453,31 @@ fn plate_of(
     surface: &Surface,
     reversed: bool,
     depth: f64,
-    dev: &Development,
+    dev: &Map,
     tolerance: &Tolerance,
 ) -> Result<OpResult, KernelError> {
-    let run_on = RUN_ON * depth.abs();
-    let (sheet, _, parts) = sheet(profile, surface, reversed, dev, tolerance.linear, run_on)?;
-    // The plate reaches the depth to both sides of the surface, so that a
-    // union or a difference with the body the surface is a face of meets
-    // it across the surface, never along it (a skin on the face itself
-    // makes slivers where the rims meet the face): out, the part inside
-    // the body goes in the union; in, the part outside takes nothing away.
+    // The plate goes the depth to one side of the surface (out of the
+    // body for a positive depth, into it for a negative one) and laps
+    // over the surface into the body's side by a little, so that a union
+    // or a difference with the body the face is of meets it across the
+    // surface, never along it (a skin on the face itself makes slivers
+    // where the rims meet the face): the lap of a raised text lies in the
+    // body's material, that of an engraved one outside it, and neither
+    // changes what the boolean makes.
+    let lap = (OVERLAP * depth.abs()).max(10.0 * tolerance.linear);
+    let levels = if depth > 0.0 {
+        (-lap, depth)
+    } else {
+        (depth, lap)
+    };
+    let thickness = levels.1 - levels.0;
+    let run_on = RUN_ON * thickness;
+    let (sheet, _, parts) = sheet(profile, surface, reversed, dev, tolerance, run_on)?;
     let made = plate(
         &sheet,
         &[FaceId(0)],
-        2.0 * depth.abs(),
-        Side::Mid,
+        thickness,
+        Side::Levels(levels.0, levels.1),
         &BTreeMap::new(),
         tolerance,
     )?;
@@ -458,15 +489,17 @@ fn plate_of(
         .faces
         .iter()
         .map(|m| match m {
-            Made::Front(_) if out => Kind::End,
-            Made::Back(_) if !out => Kind::End,
-            Made::Front(_) | Made::Back(_) => Kind::Start,
+            Made::Front(_) if out => Ok(Kind::End),
+            Made::Back(_) if !out => Ok(Kind::End),
+            Made::Front(_) | Made::Back(_) => Ok(Kind::Start),
             Made::Rim(e) => match parts.edges.get(e) {
-                Some(&(c, p, b, bp)) => Kind::Rim(c, p, b, bp),
-                None => Kind::End,
+                Some(&(c, p, b, bp)) => Ok(Kind::Rim(c, p, b, bp)),
+                None => Err(refuse(
+                    "a rim of the plate runs along no curve of the profile (a kernel bug)",
+                )),
             },
         })
-        .collect();
+        .collect::<Result<_, _>>()?;
     let kind = |f: FaceId| {
         kinds
             .get(usize::try_from(f.0).unwrap_or(usize::MAX))
@@ -645,7 +678,10 @@ pub fn wrap(
             value: depth,
         });
     }
-    let dev = Development::of(surface)?;
+    let dev = Map {
+        development: Development::of(surface)?,
+        flip: if reversed { -1.0 } else { 1.0 },
+    };
     if profiles.is_empty() {
         return Err(refuse("there is no profile to wrap"));
     }

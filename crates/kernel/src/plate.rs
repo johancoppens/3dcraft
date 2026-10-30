@@ -130,7 +130,7 @@ const HELD_REACH: f64 = 2.0;
 
 /// Where the material of a plate lies against its faces, along their
 /// outward normal.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Side {
     /// On the side the outward normal points to: levels `0..t`.
     Out,
@@ -138,6 +138,9 @@ pub enum Side {
     In,
     /// Half on each side: levels `−t/2..t/2`.
     Mid,
+    /// From the first level to the second, along the outward normal (the
+    /// thickness is their difference; levels not in order are swapped).
+    Levels(f64, f64),
 }
 
 impl Side {
@@ -147,6 +150,7 @@ impl Side {
             Side::Out => (0.0, thickness),
             Side::In => (-thickness, 0.0),
             Side::Mid => (-0.5 * thickness, 0.5 * thickness),
+            Side::Levels(a, b) => (a.min(b), a.max(b)),
         }
     }
 }

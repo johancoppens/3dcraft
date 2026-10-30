@@ -86,10 +86,10 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Adds a cone along axis (expressions, as for feature.block): its base circle is centred at position, its apex is height further along the axis. Its faces are F1:face(0) the side and F1:face(1) the base (F1 its id).", doc: true, feature_cone),
     spec!("feature.torus", "Torus", r#"{"major": expr, "minor": expr, "position": [expr, expr, expr] = [0, 0, 0], "axis": [expr, expr, expr] = [0, 0, 1], "angle": expr = "0 deg", "name": string = automatic, "when": expr = always on}"#,
         "Adds a ring torus about axis (expressions, as for feature.block), centred at position: major is the radius of the ring, minor of the tube.", doc: true, feature_torus),
-    spec!("feature.extrude", "Extrude", r#"{"sketch": id or name, "distance": expr, "throughAll": boolean = false, "upTo": face name, "symmetric": boolean = false, "reversed": boolean = false, "cut": id or name, "join": id or name, "intersect": id or name, "name": string = automatic, "when": expr = always on}"#,
-        "Adds a solid by sweeping the closed profiles of a sketch along its normal: loops of lines and arcs, and circles; a loop inside another is a hole. Give one end: distance (a negative one goes the other way; symmetric puts half on each side of the sketch plane), throughAll (past every body the features before this one have built that lies in the way; symmetric goes through on both sides) or upTo (a face name from document.inspect: the solid ends on that face's surface, flat or curved, and follows it when the face moves). reversed goes against the sketch's normal. With cut, join or intersect (a feature with a body) the solid is combined with that body at once: two features are added in one undo step, the extrusion and a boolean, and the result is the boolean's (the one to build on; name applies to it) with the extrusion under sweep. A hole through a plate: sketch a circle on its top, extrude with throughAll, reversed and cut.", doc: true, names: ["upTo"], feature_extrude),
-    spec!("feature.edit", "Edit Feature", r#"{"feature": id or name, "sketch": id or name, "path": id or name, "sections": [sketch, or {sketch, start}; ...], "ruled": boolean, "closed": boolean, "source": id or name, "target": id or name, "tool": id or name, "op": "union|subtract|intersect", "size": [expr; 3] or a thread's "M10" or expr or null, "position": [expr; 3], "axis": [expr; 3] or datum axis or "x|y" or line id, "angle": expr, "radius": expr, "height": expr, "major": expr, "minor": expr, "distance": expr, "throughAll": boolean, "upTo": face name, "symmetric": boolean, "reversed": boolean, "translate": [expr; 3], "pivot": [expr; 3], "point": [expr; 3], "normal": [expr; 3], "plane": datum plane id or name, "step": [expr; 3] (a circular pattern: expr along its axis, or null for a plain turn), "count": expr, "keep": boolean, "keepTool": boolean, "edges": [[face name, face name], ...], "second": expr, "chain": boolean, "faces": [face name, ...], "thickness": expr, "side": "outside|inside|both" (a plate's: "in|out|mid"), "neutral": plane, "open": [face name, ...], "pitch": expr (or null for a thread: the coarse pitch of its size), "turns": expr, "leftHanded": boolean, "length": expr, "cosmetic": boolean, "modeled": boolean, "a": sketch or {edges}, "b": sketch or {edges}, "at": [expr; 3], "joints": [joint, ...] (a plate's, as feature.plate takes them), "u": [curve, ...], "v": [curve, ...] (a network surface's; its "edges" are its conditions, as feature.surface.network takes them)}"#,
-        "Changes parameters of a feature; give only the ones to change. Which ones a feature has depends on its kind (document.inspect shows them under params). The end of an extrusion is changed by giving the new one: distance, throughAll or upTo. A mirror is pointed at a datum plane with plane, and back at a plane of its own with normal or point; a circular pattern at a datum axis with axis (its name or id), and back at a line of its own with axis as a direction or point; a circular pattern becomes a screw with step (one length along the axis) and a plain turn again with step null. What a feature is made from is changed the same way, which is how a feature that lost it is repaired: sketch for an extrusion, a revolution or a sweep (its profile), path for a sweep, axis for a revolution (x, y, a line of the sketch or a datum axis), source for a moved, mirrored or patterned body, target, tool and op for a boolean, edges for a chamfer or a fillet (which is also how its body is chosen: the body of the feature the faces are of); the feature keeps its id and its place in the history, and the names of its faces are those of a feature built that way from the start. A chamfer's size: distance alone changes the first distance and keeps the form; with second it becomes two distances, with angle a distance and an angle (give second the same as distance for equal ones). A fillet's radius is changed with radius. An offset's faces and distance are changed with faces and distance (the faces also choose its body, as the edges of a chamfer do), a moved face's with faces, translate, pivot, axis and angle, a thickened one's with faces, thickness and side, a plate's with faces, thickness, side and joints (the whole list), a draft's with faces, neutral, angle and reversed, a deletion's faces with faces; a shell's with source, thickness and open. A datum plane's distance or angle and the position of a datum point at coordinates are changed here; what a datum is placed by, with datum.plane, datum.axis or datum.point and replace.", doc: true, names: ["upTo", "edges", "faces", "neutral", "open", "plane", "joints"], feature_edit),
+    spec!("feature.extrude", "Extrude", r#"{"sketch": id or name, "distance": expr, "throughAll": boolean = false, "upTo": face name, "wrap": face name, "symmetric": boolean = false, "reversed": boolean = false, "cut": id or name, "join": id or name, "intersect": id or name, "name": string = automatic, "when": expr = always on}"#,
+        "Adds a solid by sweeping the closed profiles of a sketch along its normal: loops of lines and arcs, and circles; a loop inside another is a hole. Give one end: distance (a negative one goes the other way; symmetric puts half on each side of the sketch plane), throughAll (past every body the features before this one have built that lies in the way; symmetric goes through on both sides) or upTo (a face name from document.inspect: the solid ends on that face's surface, flat or curved, and follows it when the face moves). reversed goes against the sketch's normal. With cut, join or intersect (a feature with a body) the solid is combined with that body at once: two features are added in one undo step, the extrusion and a boolean, and the result is the boolean's (the one to build on; name applies to it) with the extrusion under sweep. A hole through a plate: sketch a circle on its top, extrude with throughAll, reversed and cut. wrap (a cylinder's or a cone's face name) lays the profiles on that face by its development instead (the sketch's x round the axis from the face's frame, y along it) and gives them distance as depth: raised (out of the face) when positive, engraved (into it) when negative; join raises a text on the body, cut engraves it.", doc: true, names: ["upTo", "wrap"], feature_extrude),
+    spec!("feature.edit", "Edit Feature", r#"{"feature": id or name, "sketch": id or name, "path": id or name, "sections": [sketch, or {sketch, start}; ...], "ruled": boolean, "closed": boolean, "source": id or name, "target": id or name, "tool": id or name, "op": "union|subtract|intersect", "size": [expr; 3] or a thread's "M10" or expr or null, "position": [expr; 3], "axis": [expr; 3] or datum axis or "x|y" or line id, "angle": expr, "radius": expr, "height": expr, "major": expr, "minor": expr, "distance": expr, "throughAll": boolean, "upTo": face name, "wrap": face name, "symmetric": boolean, "reversed": boolean, "translate": [expr; 3], "pivot": [expr; 3], "point": [expr; 3], "normal": [expr; 3], "plane": datum plane id or name, "step": [expr; 3] (a circular pattern: expr along its axis, or null for a plain turn), "count": expr, "keep": boolean, "keepTool": boolean, "edges": [[face name, face name], ...], "second": expr, "chain": boolean, "faces": [face name, ...], "thickness": expr, "side": "outside|inside|both" (a plate's: "in|out|mid"), "neutral": plane, "open": [face name, ...], "pitch": expr (or null for a thread: the coarse pitch of its size), "turns": expr, "leftHanded": boolean, "length": expr, "cosmetic": boolean, "modeled": boolean, "a": sketch or {edges}, "b": sketch or {edges}, "at": [expr; 3], "joints": [joint, ...] (a plate's, as feature.plate takes them), "u": [curve, ...], "v": [curve, ...] (a network surface's; its "edges" are its conditions, as feature.surface.network takes them)}"#,
+        "Changes parameters of a feature; give only the ones to change. Which ones a feature has depends on its kind (document.inspect shows them under params). The end of an extrusion is changed by giving the new one: distance, throughAll, upTo or wrap (a wrapped extrusion keeps its face when only distance, its depth, is given). A mirror is pointed at a datum plane with plane, and back at a plane of its own with normal or point; a circular pattern at a datum axis with axis (its name or id), and back at a line of its own with axis as a direction or point; a circular pattern becomes a screw with step (one length along the axis) and a plain turn again with step null. What a feature is made from is changed the same way, which is how a feature that lost it is repaired: sketch for an extrusion, a revolution or a sweep (its profile), path for a sweep, axis for a revolution (x, y, a line of the sketch or a datum axis), source for a moved, mirrored or patterned body, target, tool and op for a boolean, edges for a chamfer or a fillet (which is also how its body is chosen: the body of the feature the faces are of); the feature keeps its id and its place in the history, and the names of its faces are those of a feature built that way from the start. A chamfer's size: distance alone changes the first distance and keeps the form; with second it becomes two distances, with angle a distance and an angle (give second the same as distance for equal ones). A fillet's radius is changed with radius. An offset's faces and distance are changed with faces and distance (the faces also choose its body, as the edges of a chamfer do), a moved face's with faces, translate, pivot, axis and angle, a thickened one's with faces, thickness and side, a plate's with faces, thickness, side and joints (the whole list), a draft's with faces, neutral, angle and reversed, a deletion's faces with faces; a shell's with source, thickness and open. A datum plane's distance or angle and the position of a datum point at coordinates are changed here; what a datum is placed by, with datum.plane, datum.axis or datum.point and replace.", doc: true, names: ["upTo", "wrap", "edges", "faces", "neutral", "open", "plane", "joints"], feature_edit),
     spec!("feature.rename", "Rename Feature", r#"{"feature": id or name, "name": string}"#,
         "Renames a feature.", doc: true, feature_rename),
     spec!("feature.suppress", "Suppress Feature", r#"{"feature": id or name, "suppressed": boolean = true}"#,
@@ -2336,6 +2336,16 @@ fn feature_extrude(session: &mut Session, params: &Value) -> Run {
 /// The end of an extrusion as the parameters give it: one of `distance`,
 /// `throughAll` (true) and `upTo`. `None` when none of them is given.
 fn extrude_end(p: &Params, command: &str) -> Result<Option<ExtrudeEnd>, CommandError> {
+    extrude_end_of(p, command, true)
+}
+
+/// [`extrude_end`]; `fresh` is false for `feature.edit`, whose wrap keeps
+/// the distance the feature has when none is given.
+fn extrude_end_of(
+    p: &Params,
+    command: &str,
+    fresh: bool,
+) -> Result<Option<ExtrudeEnd>, CommandError> {
     let distance = p.expr("distance")?.is_some();
     let through = p.bool("throughAll")?;
     let up_to = match p.str("upTo")? {
@@ -2358,7 +2368,7 @@ fn extrude_end(p: &Params, command: &str) -> Result<Option<ExtrudeEnd>, CommandE
                 "{command}: `wrap` must name a face, a cylinder's or a cone's (see faceNames in document.inspect)"
             ));
         }
-        if !distance || through.is_some() || up_to.is_some() {
+        if (fresh && !distance) || through.is_some() || up_to.is_some() {
             return fail(format!(
                 "{command}: `wrap` takes a `distance` (the depth: out when positive, in when negative) and neither `throughAll` nor `upTo`"
             ));
@@ -2405,7 +2415,7 @@ fn symmetric_fits(end: &ExtrudeEnd, symmetric: bool, command: &str) -> Result<()
 /// The parameters of a thread that `feature.edit` takes as null.
 const THREAD_NULLS: [&str; 2] = ["size", "pitch"];
 
-const EDITABLE: [&str; 52] = [
+const EDITABLE: [&str; 53] = [
     "sketch",
     "sections",
     "ruled",
@@ -2425,6 +2435,7 @@ const EDITABLE: [&str; 52] = [
     "distance",
     "throughAll",
     "upTo",
+    "wrap",
     "symmetric",
     "reversed",
     "translate",
@@ -2639,7 +2650,10 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
     ] {
         p.bool(key)?;
     }
-    let new_end = extrude_end(&p, "feature.edit")?;
+    let new_end = extrude_end_of(&p, "feature.edit", false)?;
+    // A distance alone keeps a wrapped extrusion wrapped: it is the depth.
+    let only_distance =
+        p.get("throughAll").is_none() && p.get("upTo").is_none() && p.get("wrap").is_none();
     let new_plane = match p.get("plane") {
         None => None,
         Some(_) => Some(crate::datum_cmds::datum_ref(
@@ -2745,6 +2759,7 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
                 // Applied below: the three name one thing, the end.
                 ("throughAll", Slot::Elsewhere),
                 ("upTo", Slot::Elsewhere),
+                ("wrap", Slot::Elsewhere),
             ],
         ),
         FeatureKind::Revolve(r) => (
@@ -3198,7 +3213,12 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
     }
     crate::blend_cmds::of_one_body("feature.edit", session, &kind)?;
     if let (FeatureKind::Extrude(extrusion), Some(end)) = (&mut kind, new_end) {
-        extrusion.end = end;
+        let keep = only_distance
+            && matches!(end, ExtrudeEnd::Distance)
+            && matches!(extrusion.end, ExtrudeEnd::Wrap { .. });
+        if !keep {
+            extrusion.end = end;
+        }
     }
     if let FeatureKind::Extrude(extrusion) = &kind {
         symmetric_fits(&extrusion.end, extrusion.symmetric, "feature.edit")?;

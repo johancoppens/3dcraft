@@ -1,9 +1,9 @@
 //! Text wrapped onto a cylinder and a cone (`feature.extrude {wrap}`),
 //! embossed and engraved, against closed forms: the development is an
 //! isometry, so the wrapped region has the glyphs' own area: the wrapped
-//! body (reaching `d` to both sides of the surface) has the volume `2 A d`,
-//! and the part of it outside a cylinder of radius `r`, `A (d + d² / 2r)`
-//! (inside: `A (d − d² / 2r)`).
+//! text a join adds to a cylinder of radius `r` is `A (d + d² / 2r)`, the
+//! one a cut takes `A (d − d² / 2r)`; on a cone their sum is `2 A d` and
+//! their difference the curvature's integral over the text, `K d²`.
 
 #![allow(
     clippy::unwrap_used,
@@ -75,6 +75,10 @@ fn can(s: &mut Session, k: f64) {
     );
 }
 
+/// The lap of the wrapped plate over the surface (`kernel::wrap`): five
+/// hundredths of the depth.
+const LAP: f64 = 0.05;
+
 #[test]
 fn text_wrapped_onto_a_cylinder_has_the_closed_form_volume() {
     for k in [1e-2, 1.0, 1e2] {
@@ -87,11 +91,13 @@ fn text_wrapped_onto_a_cylinder_has_the_closed_form_volume() {
                 "feature.extrude",
                 json!({"sketch": "Label", "wrap": "F1:face(0)", "distance": d, "name": "Wrapped"}),
             );
-            // The wrapped body reaches |d| to both sides of the surface
-            // (the tool a join or a cut takes): A · 2|d| exactly, the
-            // curvature's terms cancelling.
-            let _ = r;
-            let expected = 2.0 * a * d.abs();
+            // The body alone runs along the outward normal over the levels
+            // (lo, hi): out to d with a lap of LAP·d into the can for a
+            // raised text, in to d with the lap outside for an engraved
+            // one. A shell at radius r + t has the area A (1 + t / r).
+            let lap = LAP * d.abs();
+            let (lo, hi) = if d > 0.0 { (-lap, d) } else { (d, lap) };
+            let expected = a * ((hi - lo) + (hi * hi - lo * lo) / (2.0 * r));
             let v = volume_of(&mut s, "Wrapped");
             assert!(
                 (v - expected).abs() <= 1e-5 * expected,
@@ -102,63 +108,156 @@ fn text_wrapped_onto_a_cylinder_has_the_closed_form_volume() {
     }
 }
 
+/// The volume a wrapped text adds (join) or takes (cut), against the
+/// closed form of a cylinder: `A (d + d² / 2r)` out, `A (d − d² / 2r)` in
+/// (the curvature term is 2.5 % of it here), at three scales.
 #[test]
 fn embossed_and_engraved_on_a_cylinder() {
-    let (r, h) = (20.0, 40.0);
-    let can_volume = std::f64::consts::PI * r * r * h;
-    let a = text_area("HOB", 8.0);
-    // Raised.
-    let mut s = session();
-    can(&mut s, 1.0);
-    built(
-        &mut s,
-        "feature.extrude",
-        json!({"sketch": "Label", "wrap": "F1:face(0)", "distance": 1, "join": "Can", "name": "Raised"}),
-    );
-    let v = volume_of(&mut s, "Raised");
-    let expected = can_volume + a * (1.0 + 1.0 / (2.0 * r));
-    assert!((v - expected).abs() <= 1e-5 * expected, "{v} vs {expected}");
-    deep(&mut s);
-    // Engraved.
-    let mut s = session();
-    can(&mut s, 1.0);
-    built(
-        &mut s,
-        "feature.extrude",
-        json!({"sketch": "Label", "wrap": "F1:face(0)", "distance": -0.5, "cut": "Can", "name": "Cut"}),
-    );
-    let v = volume_of(&mut s, "Cut");
-    let expected = can_volume - a * (0.5 - 0.25 / (2.0 * r));
-    assert!((v - expected).abs() <= 1e-5 * expected, "{v} vs {expected}");
-    deep(&mut s);
+    for k in [1e-2, 1.0, 1e2] {
+        let (r, h, d) = (20.0 * k, 40.0 * k, 1.0 * k);
+        let can_volume = std::f64::consts::PI * r * r * h;
+        let a = text_area("HOB", 8.0 * k);
+        for (op, sign) in [("join", 1.0), ("cut", -1.0)] {
+            let mut s = session();
+            can(&mut s, k);
+            let mut params = json!({"sketch": "Label", "wrap": "F1:face(0)", "distance": sign * d, "name": "Text"});
+            params[op] = json!("Can");
+            built(&mut s, "feature.extrude", params);
+            let v = volume_of(&mut s, "Text");
+            let term = sign * (v - can_volume);
+            let expected = a * (d + sign * d * d / (2.0 * r));
+            assert!(
+                (term - expected).abs() <= 1e-5 * expected,
+                "k {k}, {op}: the text's term {term} vs {expected}"
+            );
+            deep(&mut s);
+        }
+    }
 }
 
+/// A cone's face and the half-angle of its surface, for the wraps below:
+/// `feature.cone` and a revolved frustum widening the other way.
+fn cone_part(s: &mut Session, dir: &std::path::Path, widening: bool) -> (String, f64, f64) {
+    if widening {
+        run(
+            s,
+            "sketch.create",
+            json!({"plane": "xy", "name": "Frustum"}),
+        );
+        run(
+            s,
+            "sketch.polyline",
+            json!({"sketch": "Frustum", "closed": true, "points": [[0, 0], [20, 0], [30, 40], [0, 40]]}),
+        );
+        built(
+            s,
+            "feature.revolve",
+            json!({"sketch": "Frustum", "axis": "y", "name": "Body"}),
+        );
+    } else {
+        built(
+            s,
+            "feature.cone",
+            json!({"radius": 30, "height": 60, "name": "Body"}),
+        );
+    }
+    let body = body_of(s, dir, "Body").unwrap();
+    let (i, half) = body
+        .faces
+        .iter()
+        .enumerate()
+        .find_map(|(i, f)| match &f.surface {
+            craft3d_geom::Surface::Cone(c) => Some((i, c.half_angle())),
+            _ => None,
+        })
+        .unwrap();
+    let names = common::checked::body(s, "Body")["faceNames"].clone();
+    let name = names[i].as_str().unwrap().to_string();
+    (name, half, half.abs().cos())
+}
+
+/// On a cone (both signs of the half-angle): the join adds `A d + K d²/2`
+/// and the cut takes `A d − K d²/2`, with `K` the integral of the
+/// curvature `cos α / R` of the parallel circles over the text, so their
+/// sum is `2 A d` exactly and their difference `K d²` lies between
+/// `A d² cos α / R` at the text's largest and smallest radius `R`.
 #[test]
-fn text_wrapped_onto_a_cone_keeps_its_area() {
-    let mut s = session();
-    run(&mut s, "file.new", json!({"units": "mm"}));
-    built(
-        &mut s,
-        "feature.cone",
-        json!({"radius": 30, "height": 60, "name": "Cone"}),
-    );
-    run(&mut s, "sketch.create", json!({"name": "Label"}));
-    run(
-        &mut s,
-        "sketch.text",
-        json!({"sketch": "Label", "text": "CONE", "size": 6, "at": [-10, 8]}),
-    );
-    built(
-        &mut s,
-        "feature.extrude",
-        json!({"sketch": "Label", "wrap": "F1:face(0)", "distance": 0.5, "name": "OnCone"}),
-    );
-    deep(&mut s);
-    // The body reaches the depth to both sides of the cone: A · 2d
-    // exactly (one principal curvature is zero, the other's term cancels).
-    let a = text_area("CONE", 6.0);
-    let v = volume_of(&mut s, "OnCone");
-    assert!((v - 2.0 * a * 0.5).abs() <= 1e-5 * a, "{v} vs {}", a);
+fn embossed_and_engraved_on_a_cone() {
+    let d = 0.6;
+    for widening in [false, true] {
+        let mut terms = Vec::new();
+        let mut radii = (f64::INFINITY, 0.0_f64);
+        let mut halves = Vec::new();
+        for (op, sign) in [("join", 1.0), ("cut", -1.0)] {
+            let dir = common::workdir("wrap", &format!("cone-{widening}-{op}"));
+            let mut s = common::session_in(&dir);
+            run(&mut s, "file.new", json!({"units": "mm"}));
+            let (face, half, _) = cone_part(&mut s, &dir, widening);
+            halves.push(half);
+            let base = volume_of(&mut s, "Body");
+            run(&mut s, "sketch.create", json!({"name": "Label"}));
+            run(
+                &mut s,
+                "sketch.text",
+                json!({"sketch": "Label", "text": "CONE", "size": 5, "at": [-8, 4]}),
+            );
+            let mut params =
+                json!({"sketch": "Label", "wrap": face, "distance": sign * d, "name": "Text"});
+            params[op] = json!("Body");
+            built(&mut s, "feature.extrude", params);
+            deep(&mut s);
+            terms.push(sign * (volume_of(&mut s, "Text") - base));
+            // The text's radii about the axis, from the wrapped body.
+            run(&mut s, "edit.undo", json!({}));
+            let mut alone =
+                json!({"sketch": "Label", "wrap": face, "distance": sign * d, "name": "Alone"});
+            alone.as_object_mut().unwrap().remove(op);
+            built(&mut s, "feature.extrude", alone);
+            let wrapped = body_of(&mut s, &dir, "Alone").unwrap();
+            let cone = body_of(&mut s, &dir, "Body").unwrap();
+            let craft3d_geom::Surface::Cone(c) = &cone
+                .faces
+                .iter()
+                .find(|f| matches!(f.surface, craft3d_geom::Surface::Cone(_)))
+                .unwrap()
+                .surface
+            else {
+                panic!("no cone")
+            };
+            for v in &wrapped.vertices {
+                let (x, y, _) = c.frame().local(v.point);
+                radii.0 = radii.0.min(x.hypot(y));
+                radii.1 = radii.1.max(x.hypot(y));
+            }
+        }
+        let a = text_area("CONE", 5.0);
+        let cos = halves[0].abs().cos();
+        let (join, cut) = (terms[0], terms[1]);
+        assert!(
+            (join + cut - 2.0 * a * d).abs() <= 1e-5 * a * d,
+            "widening {widening}: {join} + {cut} vs {}",
+            2.0 * a * d
+        );
+        let k = (join - cut) / (d * d);
+        let (low, high) = (a * cos / radii.1, a * cos / radii.0);
+        assert!(
+            k >= low * (1.0 - 1e-6) && k <= high * (1.0 + 1e-6),
+            "widening {widening}: K {k} not in [{low}, {high}]"
+        );
+    }
+}
+
+/// The two cones above have half-angles of both signs.
+#[test]
+fn the_cones_have_half_angles_of_both_signs() {
+    let mut signs = Vec::new();
+    for widening in [false, true] {
+        let dir = common::workdir("wrap", &format!("cone-sign-{widening}"));
+        let mut s = common::session_in(&dir);
+        run(&mut s, "file.new", json!({"units": "mm"}));
+        signs.push(cone_part(&mut s, &dir, widening).1.signum());
+    }
+    assert_ne!(signs[0], signs[1], "{signs:?}");
 }
 
 #[test]
@@ -211,6 +310,205 @@ fn other_surfaces_and_bad_wraps_are_refused_by_name() {
     ] {
         common::checked::error(&mut s, "feature.extrude", params);
     }
+}
+
+/// The apex: a profile that reaches a cone's apex is refused by name.
+#[test]
+fn a_profile_past_the_apex_is_refused() {
+    let mut reasons = Vec::new();
+    for y in [80.0, -80.0] {
+        let mut s = session();
+        run(&mut s, "file.new", json!({"units": "mm"}));
+        built(&mut s, "feature.cone", json!({"radius": 30, "height": 60}));
+        run(&mut s, "sketch.create", json!({"name": "L"}));
+        run(
+            &mut s,
+            "sketch.text",
+            json!({"sketch": "L", "text": "I", "size": 5, "at": [0, y]}),
+        );
+        reasons.push(failed(
+            &mut s,
+            "feature.extrude",
+            json!({"sketch": "L", "wrap": "F1:face(0)", "distance": 0.3}),
+        ));
+    }
+    assert!(reasons.iter().any(|r| r.contains("apex")), "{reasons:?}");
+}
+
+/// `feature.edit` with a distance alone changes the depth and keeps the
+/// wrap; with `wrap` it moves it to another face.
+#[test]
+fn editing_the_depth_keeps_the_wrap() {
+    let mut s = session();
+    can(&mut s, 1.0);
+    built(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "Label", "wrap": "F1:face(0)", "distance": 1, "name": "Wrapped"}),
+    );
+    let (r, a) = (20.0, text_area("HOB", 8.0));
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Wrapped", "distance": 0.5}),
+    );
+    let feature = common::checked::feature(&mut s, "Wrapped");
+    assert!(feature.to_string().contains("wrap"), "{feature}");
+    let lap = LAP * 0.5;
+    let expected = a * ((0.5 + lap) + (0.25 - lap * lap) / (2.0 * r));
+    let v = volume_of(&mut s, "Wrapped");
+    assert!((v - expected).abs() <= 1e-5 * expected, "{v} vs {expected}");
+    // Moved onto the same face by name again, and given a throughAll: a
+    // plain extrusion then.
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Wrapped", "wrap": "F1:face(0)"}),
+    );
+    assert!((volume_of(&mut s, "Wrapped") - expected).abs() <= 1e-5 * expected);
+    deep(&mut s);
+}
+
+/// Seen from outside the body, a text reads as in the sketch: on a tube's
+/// outer wall the first glyph comes first round the axis the way the
+/// surface's u runs, on its bore (a reversed face) the other way.
+#[test]
+fn wrapped_text_reads_from_outside_on_a_wall_and_in_a_bore() {
+    let dir = common::workdir("wrap", "handedness");
+    let mut s = common::session_in(&dir);
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"plane": "xy", "name": "Tube"}),
+    );
+    run(
+        &mut s,
+        "sketch.polyline",
+        json!({"sketch": "Tube", "closed": true, "points": [[10, 0], [20, 0], [20, 40], [10, 40]]}),
+    );
+    built(
+        &mut s,
+        "feature.revolve",
+        json!({"sketch": "Tube", "axis": "y", "name": "Body"}),
+    );
+    let tube = body_of(&mut s, &dir, "Body").unwrap();
+    let names = common::checked::body(&mut s, "Body")["faceNames"].clone();
+    run(&mut s, "sketch.create", json!({"name": "Label"}));
+    run(
+        &mut s,
+        "sketch.text",
+        json!({"sketch": "Label", "text": "HI", "size": 5, "at": [-4, 15]}),
+    );
+    for reversed in [false, true] {
+        let (i, face) = tube
+            .faces
+            .iter()
+            .enumerate()
+            .find(|(_, f)| {
+                matches!(f.surface, craft3d_geom::Surface::Cylinder(_)) && f.reversed == reversed
+            })
+            .unwrap();
+        let name = names[i].as_str().unwrap();
+        let wrapped = format!("Wrapped{reversed}");
+        built(
+            &mut s,
+            "feature.extrude",
+            json!({"sketch": "Label", "wrap": name, "distance": 0.5, "name": wrapped}),
+        );
+        let body = body_of(&mut s, &dir, &wrapped).unwrap();
+        // Each glyph is a lump, in the text's order.
+        let u: Vec<f64> = body
+            .shells
+            .iter()
+            .map(|shell| {
+                let mut sum = craft3d_math::Vec3::ZERO;
+                let mut n = 0.0;
+                for f in &shell.faces {
+                    for l in &body.face(*f).unwrap().loops {
+                        for c in &body.loop_(*l).unwrap().coedges {
+                            sum += body.vertex(body.edge(c.edge).unwrap().start).unwrap().point;
+                            n += 1.0;
+                        }
+                    }
+                }
+                face.surface.project(sum * (1.0 / n)).unwrap().0
+            })
+            .collect();
+        assert_eq!(u.len(), 2, "{u:?}");
+        // From outside the wall u runs to the right; from inside the bore
+        // to the left.
+        assert_eq!(u[0] < u[1], !reversed, "reversed {reversed}: {u:?}");
+        deep(&mut s);
+    }
+}
+
+/// The faces of a wrapped body have names of their own, and a feature
+/// that refers to a rim keeps it when the cylinder grows.
+#[test]
+fn rim_names_are_unique_and_survive_a_change_of_radius() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    built(
+        &mut s,
+        "feature.cylinder",
+        json!({"radius": 20, "height": 40, "name": "Can"}),
+    );
+    run(&mut s, "sketch.create", json!({"name": "Label"}));
+    run(
+        &mut s,
+        "sketch.text",
+        json!({"sketch": "Label", "text": "3DCraft", "size": 6, "at": [-10, 12]}),
+    );
+    built(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "Label", "wrap": "F1:face(0)", "distance": 1, "name": "Text"}),
+    );
+    let names: Vec<String> = common::checked::body(&mut s, "Text")["faceNames"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n.as_str().unwrap().to_string())
+        .collect();
+    let mut unique = names.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), names.len(), "{names:?}");
+    // A plate on the cylinder with flat rims, and a face offset that
+    // names one of them.
+    run(&mut s, "sketch.create", json!({"name": "Block"}));
+    run(
+        &mut s,
+        "sketch.polyline",
+        json!({"sketch": "Block", "closed": true, "points": [[-3, 25], [3, 25], [3, 31], [-3, 31]]}),
+    );
+    built(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "Block", "wrap": "F1:face(0)", "distance": 1, "name": "Plate"}),
+    );
+    let plate: Vec<String> = common::checked::body(&mut s, "Plate")["faceNames"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n.as_str().unwrap().to_string())
+        .collect();
+    let rim = plate.iter().find(|n| n.contains("side(")).unwrap().clone();
+    built(
+        &mut s,
+        "feature.offsetFace",
+        json!({"faces": [rim.clone()], "distance": 0.2, "name": "Pushed"}),
+    );
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Can", "radius": 24}),
+    );
+    let pushed = common::checked::feature(&mut s, "Pushed");
+    assert_eq!(pushed["status"], "ok", "{pushed}");
+    assert!(pushed.to_string().contains(&rim), "{pushed}");
+    deep(&mut s);
 }
 
 /// "3DCraft" on a cylinder of radius 20 (the evidence case of 2026-10-30):
