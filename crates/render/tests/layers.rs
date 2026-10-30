@@ -219,18 +219,16 @@ fn half_width(alpha: f64) -> f64 {
 
 #[test]
 fn an_anisotropic_highlight_stretches_along_its_tangent_by_the_closed_form() {
-    // A point key straight behind the viewer: the half vector is the view
-    // direction, and tilting the normal sweeps the lobe. Its half-maximum
-    // contour in slope space has the semi-axes of the closed form for αt
-    // along the tangent and αb across it.
-    let env = Prepared::new(&environment(64, |d| {
-        [if d.z > 0.99 { 50.0 } else { 0.0 }; 3]
-    }))
-    .unwrap();
+    // A point key straight behind the viewer, far brighter than the even
+    // rest of the light: the half vector is the view direction, and
+    // tilting the normal sweeps the lobe. Its half-maximum contour in
+    // slope space has the semi-axes of the closed form for αt along the
+    // tangent and αb across it.
+    let env = furnace();
     let mesh = Mesh::default();
     let mut light = FrameLight::new(&mesh, &env, &plain_look());
     let l = Vec3::Z;
-    light.key = Some((l, [1.0; 3], 0.0));
+    light.key = Some((l, [1000.0; 3], 0.0));
     let v = l;
     let r = 0.3_f64;
     for (a, angle) in [(0.6_f32, 0.0_f64), (0.6, 0.5), (-0.4, 1.1), (0.85, 2.0)] {

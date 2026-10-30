@@ -380,6 +380,13 @@ impl<'a> FrameLight<'a> {
             Some((t, b)) => layers::bent_reflection(n, v, t, b, aniso, r),
             None => n * (2.0 * n.dot(v)) - v,
         };
+        // The normal the prefiltered light along `reflected` is centred
+        // on (the bent one on an anisotropic face), where the key's share
+        // of it is estimated.
+        let share_normal = match frame {
+            Some(_) => (reflected + v).normalized().unwrap_or(n),
+            None => n,
+        };
         let (a, b) = self.env.split_sum(nv, r);
         let prefiltered = self.radiance(reflected, r * self.top_level());
         let irradiance = self.irradiance(n);
@@ -463,7 +470,8 @@ impl<'a> FrameLight<'a> {
                 && ((self.look.specular_shadow && key_vis < 1.0) || frame.is_some())
                 && key_nl > 0.0
             {
-                *o = e * key_nl * polish_key_specular(n, v, l, r, radius, f0) * multiple;
+                let nl = share_normal.dot(l).max(0.0);
+                *o = e * nl * polish_key_specular(share_normal, v, l, r, radius, f0) * multiple;
             }
             if let (Some(o), Some(&e), Some((l, _, radius)), Some((t, bt))) =
                 (key_aniso.get_mut(k), key_light.get(k), self.key, frame)
