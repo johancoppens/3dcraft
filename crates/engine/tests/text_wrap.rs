@@ -399,12 +399,6 @@ fn wrapped_text_reads_from_outside_on_a_wall_and_in_a_bore() {
     );
     let tube = body_of(&mut s, &dir, "Body").unwrap();
     let names = common::checked::body(&mut s, "Body")["faceNames"].clone();
-    run(&mut s, "sketch.create", json!({"name": "Label"}));
-    run(
-        &mut s,
-        "sketch.text",
-        json!({"sketch": "Label", "text": "HI", "size": 5, "at": [-4, 15]}),
-    );
     for reversed in [false, true] {
         let (i, face) = tube
             .faces
@@ -415,11 +409,29 @@ fn wrapped_text_reads_from_outside_on_a_wall_and_in_a_bore() {
             })
             .unwrap();
         let name = names[i].as_str().unwrap();
+        // The text in the middle of the face's height, in its own
+        // parameters (each face's frame has an origin of its own).
+        let vs: Vec<f64> = tube
+            .vertices
+            .iter()
+            .filter_map(|v| face.surface.project(v.point).ok())
+            .map(|(_, v)| v)
+            .collect();
+        let middle = 0.5
+            * (vs.iter().copied().fold(f64::INFINITY, f64::min)
+                + vs.iter().copied().fold(f64::NEG_INFINITY, f64::max));
+        let label = format!("Label{reversed}");
+        run(&mut s, "sketch.create", json!({"name": label}));
+        run(
+            &mut s,
+            "sketch.text",
+            json!({"sketch": label, "text": "HI", "size": 5, "at": [-4, middle - 2.5]}),
+        );
         let wrapped = format!("Wrapped{reversed}");
         built(
             &mut s,
             "feature.extrude",
-            json!({"sketch": "Label", "wrap": name, "distance": 0.5, "name": wrapped}),
+            json!({"sketch": label, "wrap": name, "distance": 0.5, "name": wrapped}),
         );
         let body = body_of(&mut s, &dir, &wrapped).unwrap();
         // Each glyph is a lump, in the text's order.

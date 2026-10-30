@@ -319,6 +319,18 @@ pub fn face_holds(body: &Body, face: &Face, tol: &Tolerance, points: &[Vec3]) ->
     }
     // The ray runs along `r`; the other parameter `o` may close.
     let (r, o) = if periods[1].is_some() { (0, 1) } else { (1, 0) };
+    // An odd number of loops around the axis: the face reaches a pole on
+    // one side. A cone's apex closes it there (a loop at the apex's v,
+    // crossed by a ray that passes it); any other pole is not followed.
+    let around = rings
+        .iter()
+        .filter(|ring| ring.winds.iter().any(|w| *w != 0.0))
+        .count();
+    let apex = match surface {
+        _ if around % 2 == 0 => None,
+        Surface::Cone(c) if r == 1 => Some(c.apex_v()),
+        _ => return None,
+    };
     let period = periods.get(o).copied().flatten();
     let mut out = Vec::with_capacity(points.len());
     for p in points {
@@ -355,6 +367,9 @@ pub fn face_holds(body: &Body, face: &Face, tol: &Tolerance, points: &[Vec3]) ->
                     }
                 }
             }
+        }
+        if apex.is_some_and(|v| v > qr) {
+            crossings += 1;
         }
         out.push(crossings % 2 == 1);
     }
