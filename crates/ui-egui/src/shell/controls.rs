@@ -23,6 +23,10 @@ pub struct ControlsLayout {
     pub bar: Option<Rect>,
     /// The camera plate under the view cube.
     pub camera_plate: Option<Rect>,
+    /// The section's options on a plate of their own above the display
+    /// bar, where the viewport is too narrow for them on the bar (a
+    /// phone); `None` while they are inline or off.
+    pub section_plate: Option<Rect>,
     pub sketches: Option<Rect>,
     pub datums: Option<Rect>,
     /// The Edges toggle: the bodies' edges shown or not.
@@ -57,6 +61,7 @@ impl ControlsLayout {
     pub fn parts(&self) -> Vec<(&'static str, Rect)> {
         [
             ("bar", self.bar),
+            ("section", self.section_plate),
             ("camera", self.camera_plate),
             ("cube", self.cube),
             ("triad", self.triad),

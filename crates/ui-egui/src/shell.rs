@@ -712,6 +712,16 @@ pub struct Shell {
     orbiting: bool,
     /// Where the feature panel was drawn: the player's keys work over it.
     tree_panel: Option<egui::Rect>,
+    /// The window is narrower than `Tokens::narrow_width`: the narrow
+    /// layout (a drawer for the side panel, controls a finger hits). The
+    /// tokens and egui's spacing of the wide layout, kept while it lasts.
+    narrow: bool,
+    wide: Option<(Tokens, egui::style::Spacing)>,
+    /// Where the drawer's button was drawn, in the narrow layout.
+    drawer_button: Option<egui::Rect>,
+    /// Two fingers were on the viewport: the finger left on it does not
+    /// turn the camera until it is lifted.
+    touch_gesture: bool,
     /// The point a zoom at the pointer keeps in place, while the pointer
     /// and the camera stay as that zoom left them: one look at the model
     /// per turn of the wheel, not one per frame of it.
@@ -1119,6 +1129,10 @@ impl Shell {
             player: player::Player::default(),
             orbiting: false,
             tree_panel: None,
+            narrow: false,
+            wide: None,
+            drawer_button: None,
+            touch_gesture: false,
             cause_hits: Vec::new(),
             section_cache: None,
             section_lost: None,
@@ -2157,6 +2171,11 @@ impl Shell {
             self.tokens.apply(ui.ctx());
             self.themed = true;
         }
+        let width = ui.ctx().content_rect().width();
+        let narrow = width.is_finite() && width < self.tokens.narrow_width;
+        if narrow != self.narrow {
+            self.set_narrow(ui, narrow);
+        }
         // The dialogs first: they take Enter and Escape before anything
         // else in the frame reads them (`dialogs.rs`).
         self.dialogs_ui(ui.ctx());
@@ -2232,7 +2251,8 @@ impl Shell {
         }
         self.cause_hits.clear();
         // Put away while the welcome shows (`start.rs`).
-        if self.state.panels.tree && !self.welcome() {
+        let drawer = self.narrow && self.state.panels.tree && !self.welcome();
+        if self.state.panels.tree && !self.welcome() && !self.narrow {
             // No margin on the right: the list's scroll bar lies against
             // the panel's edge, the split it is resized by.
             let frame = egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin {
@@ -2261,8 +2281,15 @@ impl Shell {
         egui::CentralPanel::no_frame().show(ui, |ui| self.viewport(ui, scene.as_ref()));
         // The side panel's split, over the viewport's edge: interacted
         // after it, so a drag there resizes the panel and does not orbit.
-        if let Some(panel) = self.tree_panel {
+        if let Some(panel) = self.tree_panel.filter(|_| !self.narrow) {
             self.tree_split(ui, panel);
+        }
+        // In the narrow layout the side panel is a drawer over the
+        // viewport, opened by the button in the menu bar.
+        if drawer && self.state.panels.drawer {
+            self.drawer(ui, status.is_some());
+        } else if self.narrow {
+            self.tree_panel = None;
         }
         // A parameter's value that broke the model, and the way back.
         self.trouble_banner(ui);
@@ -2327,7 +2354,42 @@ impl Shell {
 
     fn menu_bar(&mut self, ui: &mut egui::Ui, status: Option<&DocumentStatus>) {
         let has_document = status.is_some();
+        let drawer = self.narrow && self.state.panels.tree && !self.welcome();
         egui::MenuBar::new().ui(ui, |ui| {
+            // The narrow layout's drawer: the side panel, behind a button.
+            self.drawer_button = None;
+            if drawer {
+                let open = self.state.panels.drawer;
+                let side = self.tokens.touch_target;
+                let (rect, response) =
+                    ui.allocate_exact_size(egui::vec2(side, side * 0.6), egui::Sense::click());
+                let ink = if open || response.hovered() {
+                    color(self.tokens.accent)
+                } else {
+                    ui.visuals().text_color()
+                };
+                let (w, gap) = (rect.height() * 0.6, rect.height() * 0.2);
+                for k in [-1.0, 0.0, 1.0] {
+                    let y = rect.center().y + k * gap;
+                    ui.painter().line_segment(
+                        [
+                            egui::pos2(rect.center().x - w * 0.5, y),
+                            egui::pos2(rect.center().x + w * 0.5, y),
+                        ],
+                        egui::Stroke::new(self.tokens.nav_icon_width, ink),
+                    );
+                }
+                let response = response.on_hover_text(if open {
+                    "Close the features panel"
+                } else {
+                    "The features, parameters and player"
+                });
+                if response.clicked() {
+                    self.state.panels.drawer = !open;
+                    ui.ctx().request_repaint();
+                }
+                self.drawer_button = Some(rect);
+            }
             ui.menu_button("File", |ui| {
                 for action in FileAction::ALL {
                     if action.starts_group() {
@@ -2811,6 +2873,90 @@ impl Shell {
     /// Where the items of the status bar were drawn in the last frame.
     pub fn status_hits(&self) -> &[(StatusSlot, egui::Rect)] {
         &self.status_hits
+    }
+
+    /// Into the narrow layout or out of it: the controls and egui's own
+    /// widgets as large as a finger needs, or as they were.
+    fn set_narrow(&mut self, ui: &mut egui::Ui, narrow: bool) {
+        self.narrow = narrow;
+        if narrow {
+            let spacing = ui.ctx().global_style().spacing.clone();
+            self.wide = Some((self.tokens, spacing));
+            self.tokens = self.tokens.touch();
+            let target = self.tokens.touch_target;
+            ui.ctx().all_styles_mut(move |style| {
+                style.spacing.interact_size.y = style.spacing.interact_size.y.max(target);
+                style.spacing.button_padding.y = style.spacing.button_padding.y.max(target * 0.2);
+            });
+            *ui.spacing_mut() = ui.ctx().global_style().spacing.clone();
+        } else if let Some((tokens, spacing)) = self.wide.take() {
+            self.tokens = tokens;
+            let restored = spacing.clone();
+            ui.ctx()
+                .all_styles_mut(move |style| style.spacing = restored.clone());
+            *ui.spacing_mut() = spacing;
+        }
+    }
+
+    /// Whether the shell has the narrow layout now (a window narrower
+    /// than `Tokens::narrow_width`).
+    pub fn narrow(&self) -> bool {
+        self.narrow
+    }
+
+    /// Where the drawer's button is in the menu bar, in the narrow layout.
+    pub fn drawer_button_rect(&self) -> Option<egui::Rect> {
+        self.drawer_button
+    }
+
+    /// The side panel as a drawer over the viewport, from its left edge,
+    /// as wide as the panel (at most `drawer_share` of the window).
+    fn drawer(&mut self, ui: &mut egui::Ui, has_document: bool) {
+        let tokens = self.tokens;
+        let Some(viewport) = self.rect else {
+            self.tree_panel = None;
+            return;
+        };
+        let window = ui.ctx().content_rect().width();
+        let width = (self
+            .state
+            .panels
+            .tree_width
+            .clamp(tokens.tree_min_width, tokens.tree_max_width))
+        .min(window * tokens.drawer_share)
+        .min(viewport.width());
+        if !(width.is_finite() && width > 0.0) {
+            self.tree_panel = None;
+            return;
+        }
+        let rect = egui::Rect::from_min_size(viewport.min, egui::vec2(width, viewport.height()));
+        let frame = egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin {
+            left: side_inset(&tokens),
+            right: 0,
+            top: 2,
+            bottom: 2,
+        });
+        egui::Area::new(egui::Id::new("craft3d-drawer"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(rect.min)
+            .constrain(false)
+            .show(ui.ctx(), |ui| {
+                ui.set_clip_rect(rect);
+                let inner = rect - frame.total_margin();
+                frame.show(ui, |ui| {
+                    ui.set_min_size(inner.size());
+                    ui.set_max_size(inner.size());
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
+                        self.side_panel(ui, has_document);
+                    });
+                });
+                // A line along its open edge.
+                ui.painter().line_segment(
+                    [rect.right_top(), rect.right_bottom()],
+                    egui::Stroke::new(tokens.divider_width, color(tokens.plate_rim)),
+                );
+            });
+        self.tree_panel = Some(rect);
     }
 
     /// The split on the right of the side panel `panel`: dragged, it sets
@@ -3389,15 +3535,27 @@ impl Shell {
         };
         // A click that was not a drag points at what is under it, and
         // selects it (`selection.rs`).
+        // In the narrow layout a tap beside the open drawer closes it and
+        // selects nothing.
+        let closes_drawer = self.narrow && self.state.panels.drawer && response.clicked();
+        if closes_drawer {
+            self.state.panels.drawer = false;
+            ui.ctx().request_repaint();
+        }
         if response.clicked()
+            && !closes_drawer
             && let Some(at) = response.interact_pointer_pos()
         {
             let (x, y) = pixel(at);
             let keys = ui.input(|i| (i.modifiers.shift, i.modifiers.alt));
             let double = response.double_clicked();
+            // A double tap does what F does: flies to what the first tap
+            // selected, or frames everything when it selected nothing.
+            if double && ui.input(egui::InputState::any_touches) {
+                self.fit_key(scene, ui.input(|i| i.time));
             // A picture that cannot be made has nothing to point at; the
             // viewport says why already.
-            if let Ok(found) = self.pick(scene, x, y, None, None, true) {
+            } else if let Ok(found) = self.pick(scene, x, y, None, None, true) {
                 self.click_select(scene, x, y, &found, (keys.0, keys.1, double));
             }
             ui.ctx().request_repaint();
@@ -3691,6 +3849,41 @@ impl Shell {
         scene: Option<&Scene>,
     ) -> bool {
         let mut moving = false;
+        // Two fingers: they pan the view as they move together and zoom
+        // about their middle as they pinch; the finger left after them
+        // turns nothing until it is lifted.
+        if let Some(touch) = ui
+            .input(egui::InputState::multi_touch)
+            .filter(|t| t.num_touches >= 2)
+        {
+            self.touch_gesture = true;
+            self.drag_from = None;
+            if response.contains_pointer() || rect.contains(touch.center_pos) {
+                let (dx, dy) = (
+                    f64::from(touch.translation_delta.x),
+                    f64::from(touch.translation_delta.y),
+                );
+                if dx.is_finite() && dy.is_finite() && (dx != 0.0 || dy != 0.0) {
+                    self.state.camera.pan(dx, dy, f64::from(rect.height()));
+                }
+                let zoom = f64::from(touch.zoom_delta);
+                if zoom > 0.0 && zoom.is_finite() && zoom != 1.0 {
+                    let steps = zoom.ln() / crate::camera::ZOOM_PER_POINT;
+                    match self.zoom_point(touch.center_pos, rect, scene) {
+                        Some(point) => self.state.camera.zoom_about(steps, point),
+                        None => self.state.camera.zoom(steps),
+                    }
+                }
+            }
+            return true;
+        }
+        if self.touch_gesture {
+            if ui.input(|i| i.any_touches() || i.pointer.any_down()) {
+                self.drag_from = None;
+                return false;
+            }
+            self.touch_gesture = false;
+        }
         // Alt and a drag on a part of an assembly move it along its free
         // motion, not the camera.
         if self.part_drag(ui, response, rect, scene) {

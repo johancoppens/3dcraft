@@ -205,13 +205,14 @@ pub fn controls_layout(
     if !(area.width() > 0.0 && area.height() > 0.0) {
         return empty;
     }
-    let build = |compact: bool, tight: bool| {
+    let build = |compact: bool, tight: bool, wrap: bool| {
         let n = Nav {
             tokens,
             w: widths,
             area,
             compact,
             tight,
+            wrap,
             on: section_on,
         };
         let mut layout = n.layout();
@@ -222,15 +223,23 @@ pub fn controls_layout(
     // The bar is placed for its options open either way, so the choice is
     // the same with the section on and off and nothing moves when it
     // opens.
-    let full = build(false, false);
+    // Last, the section's options on a plate of their own above the bar
+    // (a phone).
+    let full = build(false, false, false);
     let mut layout = if complete(&full, area, section_on) {
         full
     } else {
-        let tight = build(false, true);
+        let tight = build(false, true, false);
         if complete(&tight, area, section_on) {
             tight
         } else {
-            build(true, true)
+            let compact = build(true, true, false);
+            let wrapped = build(true, true, true);
+            if complete(&compact, area, section_on) || !fits_bar(&wrapped, area) {
+                compact
+            } else {
+                wrapped
+            }
         }
     };
     prune(&mut layout, area);
@@ -248,6 +257,8 @@ struct Nav<'a> {
     /// The display bar's toggles (Sketches, Datums, Edges) by their
     /// icons only.
     tight: bool,
+    /// The section's options on a plate of their own above the bar.
+    wrap: bool,
     /// The section is on: its options are laid out.
     on: bool,
 }
@@ -383,7 +394,11 @@ impl Nav<'_> {
         let off_w = pad + sketches + sp + datums + sp + edges + sp + see + gap + section + pad;
         let flip = self.chip(self.w.flip);
         let axes = 3.0 * self.w.axis;
-        let extra = gap + axes + sp + self.w.offset + sp + flip;
+        let extra = if self.wrap {
+            0.0
+        } else {
+            gap + axes + sp + self.w.offset + sp + flip
+        };
         let bar_w = if self.on { off_w + extra } else { off_w };
         // Placed for the bar with the options open, so that the Section
         // chip stays where it is when they open: centred when that fits.
@@ -409,7 +424,23 @@ impl Nav<'_> {
         x += gap;
         out.section_toggle = Some(self.at(x, y, section));
         x += section;
-        if self.on {
+        if self.on && self.wrap {
+            // Above the bar, right-aligned with it.
+            let w = pad + axes + sp + self.w.offset + sp + flip + pad;
+            let right = bar.right().max(area.left() + w).min(area.right());
+            let plate = Rect::from_min_size(
+                pos2(right - w, bar.top() - gap - self.plate_h()),
+                vec2(w, self.plate_h()),
+            );
+            out.section_plate = Some(plate);
+            let y = plate.top() + pad;
+            let mut x = plate.left() + pad;
+            out.axes = Some(self.at(x, y, axes));
+            x += axes + sp;
+            out.offset = Some(self.at(x, y, self.w.offset));
+            x += self.w.offset + sp;
+            out.side = Some(self.at(x, y, flip));
+        } else if self.on {
             out.dividers[2] = Some(self.vertical(x, y));
             x += gap;
             out.axes = Some(self.at(x, y, axes));
@@ -425,6 +456,15 @@ impl Nav<'_> {
 /// True when every control is there (the section's options too when the
 /// section is on), and every plate, the cube and the triad are inside
 /// `area` and clear of each other.
+/// The display bar (and the section's plate, when it has one) fit inside
+/// `area`: what a wrapped layout must do to be worth taking.
+fn fits_bar(layout: &ControlsLayout, area: Rect) -> bool {
+    [layout.bar, layout.section_plate]
+        .into_iter()
+        .flatten()
+        .all(|r| area.expand(0.5).contains_rect(r))
+}
+
 fn complete(layout: &ControlsLayout, area: Rect, section_on: bool) -> bool {
     let controls = [
         layout.sketches,
@@ -461,7 +501,11 @@ fn complete(layout: &ControlsLayout, area: Rect, section_on: bool) -> bool {
 fn prune(layout: &mut ControlsLayout, area: Rect) {
     let inside = |r: Rect| area.expand(0.5).contains_rect(r);
     let mut kept: Vec<Rect> = Vec::new();
-    for slot in [&mut layout.bar, &mut layout.camera_plate] {
+    for slot in [
+        &mut layout.bar,
+        &mut layout.section_plate,
+        &mut layout.camera_plate,
+    ] {
         if let Some(plate) = *slot {
             if inside(plate) && kept.iter().all(|k| !k.shrink(0.01).intersects(plate)) {
                 kept.push(plate);
@@ -479,6 +523,9 @@ fn prune(layout: &mut ControlsLayout, area: Rect) {
         layout.studio = None;
         layout.analysis = None;
         layout.dividers[0] = None;
+    }
+    if layout.bar.is_none() {
+        layout.section_plate = None;
     }
     if layout.bar.is_none() {
         for slot in [
@@ -764,7 +811,10 @@ impl Shell {
         let widths = ControlWidths::measure(&painter, &tokens);
         let layout = controls_layout(rect, &tokens, &widths, self.state.section.on);
         self.controls_layout = Some(layout);
-        for place in [layout.bar, layout.camera_plate].into_iter().flatten() {
+        for place in [layout.bar, layout.section_plate, layout.camera_plate]
+            .into_iter()
+            .flatten()
+        {
             plate(&painter, place, &tokens);
             // A click between two controls is not a pick in the viewport.
             ui.interact(

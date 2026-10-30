@@ -172,6 +172,10 @@ pub struct Panels {
     /// the tokens' range (`tree_min_width` to `tree_max_width`, at most
     /// `tree_max_share` of the window) when the panel is drawn.
     pub tree_width: f32,
+    /// In the narrow layout (a phone, a small tablet, a narrow window) the
+    /// side panel is a drawer over the viewport: open or not. Its button
+    /// is at the left of the menu bar.
+    pub drawer: bool,
 }
 
 /// Work the window is doing on its engine thread while it keeps drawing:
@@ -425,6 +429,7 @@ impl Default for Panels {
             status: true,
             recovery: true,
             tree_width: crate::theme::Tokens::default().tree_width,
+            drawer: false,
         }
     }
 }
@@ -1259,6 +1264,7 @@ mod tests {
                 status: true,
                 recovery: false,
                 tree_width: 320.0,
+                drawer: true,
             },
             selected_feature: Some("F3".to_string()),
             notice: "Step 2: the post".to_string(),
@@ -1403,7 +1409,8 @@ mod tests {
                 "camera": {"target": [1.5, -2.0, 3.25], "distance": 42.0, "yaw": 135.0,
                            "pitch": -20.0, "projection": "orthographic", "fovY": 45.0,
                            "autoFit": false},
-                "panels": {"tree": false, "status": true, "recovery": false, "treeWidth": 320.0},
+                "panels": {"tree": false, "status": true, "recovery": false, "treeWidth": 320.0,
+                           "drawer": true},
                 "selectedFeature": "F3",
                 "notice": "Step 2: the post",
                 "quality": {"chordal": 1e-4, "maxTriangles": 500_000, "angle": 20.0},

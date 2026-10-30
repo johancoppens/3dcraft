@@ -347,6 +347,14 @@ pub struct Tokens {
     /// points (the height follows what they hold, scrolling only where
     /// the viewport is too short).
     pub popover_width: f32,
+    /// Below `narrow_width` points of window width the shell lays out for
+    /// a phone or a small tablet (and a narrow desktop window alike): the
+    /// side panel becomes a drawer behind a button, at most
+    /// `drawer_share` of the window wide, and the controls over the
+    /// viewport are `touch_target` high, a size a finger hits.
+    pub narrow_width: f32,
+    pub drawer_share: f32,
+    pub touch_target: f32,
     /// The controls over the viewport (`shell/layout.rs`) share one size
     /// system: every control is `nav_height` high on a plate
     /// `nav_padding` larger on each side, `nav_margin` from the viewport's
@@ -584,6 +592,9 @@ impl Tokens {
             tree_max_share: 0.5,
             tree_split_grip: 6.0,
             popover_width: 340.0,
+            narrow_width: 800.0,
+            drawer_share: 0.85,
+            touch_target: 40.0,
             nav_height: 28.0,
             nav_padding: 4.0,
             nav_margin: 12.0,
@@ -607,6 +618,16 @@ impl Tokens {
             status_least: 48.0,
             problem_font: 13.0,
         }
+    }
+
+    /// The tokens of the narrow layout: the controls over the viewport and
+    /// the side panel's split as large as a finger needs.
+    #[must_use]
+    pub fn touch(&self) -> Self {
+        let mut t = *self;
+        t.nav_height = t.nav_height.max(t.touch_target);
+        t.tree_split_grip = t.tree_split_grip.max(t.touch_target * 0.5);
+        t
     }
 
     /// Makes egui's own widgets (panels, labels, buttons) use the tokens.

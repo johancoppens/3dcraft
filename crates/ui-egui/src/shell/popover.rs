@@ -35,7 +35,7 @@ pub fn popover_place(rect: Rect, layout: &ControlsLayout, tokens: &Tokens) -> Op
     }
     // The plates and the triad below it: the popover ends a gap above
     // those its columns cross.
-    let below = [layout.bar, layout.triad];
+    let below = [layout.bar, layout.section_plate, layout.triad];
     let bottom = |left: f32, right: f32| {
         below
             .into_iter()
@@ -158,10 +158,15 @@ impl Shell {
         }
     }
 
-    /// Escape folds an open popover (the studio look's, else the
-    /// analysis'); `false` when none was open.
+    /// Escape closes the narrow layout's open drawer, else folds an open
+    /// popover (the analysis', else the studio look's); `false` when
+    /// none was open.
     pub(super) fn fold_popover(&mut self) -> bool {
-        if self.state.analysis.is_on() && self.analysis_panel_open {
+        if self.narrow() && self.state.panels.drawer {
+            // The narrow layout's drawer first.
+            self.state.panels.drawer = false;
+            true
+        } else if self.state.analysis.is_on() && self.analysis_panel_open {
             self.analysis_panel_open = false;
             true
         } else if self.state.look.is_studio()

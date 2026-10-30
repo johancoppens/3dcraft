@@ -2,8 +2,9 @@
 //! *The view cube and the controls over the viewport*): the start
 //! screen, a part, an assembly playing, the studio look with its panel
 //! (and again after the panel was folded and unfolded), an analysis, a
-//! section, the Parameters tab and an error in the status bar, each at
-//! 1600 × 1000 and 1024 × 700 points. Painted by egui's own wgpu renderer
+//! section, the drawer of the narrow layout, the Parameters tab and an
+//! error in the status bar, each at 1600 × 1000 and 1024 × 700 points and
+//! on a phone (390 × 844) and a tablet (820 × 1180). Painted by egui's own wgpu renderer
 //! into a texture and printed as `EVIDENCE <name> <k> <base64>` pieces of
 //! a PNG, as `calm_evidence` does. Without a graphics adapter it says so
 //! and passes: it only shows.
@@ -356,7 +357,7 @@ fn the_window_in_pictures_for_a_ux_audit() {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("ui-audit-evidence");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    for size in [[1600, 1000], [1024, 700]] {
+    for size in [[1600, 1000], [1024, 700], [390, 844], [820, 1180]] {
         let window = |state| Window {
             state,
             ctx: egui::Context::default(),
@@ -375,7 +376,7 @@ fn the_window_in_pictures_for_a_ux_audit() {
         }
         // A part, then the same part in each state.
         type Setup = fn(&mut Shell, &mut Session);
-        let states: [(&str, Setup); 6] = [
+        let states: [(&str, Setup); 7] = [
             ("part", |_, _| {}),
             ("studio", |shell, session| {
                 set(shell, session, json!({"look": {"mode": "studio"}}));
@@ -385,6 +386,9 @@ fn the_window_in_pictures_for_a_ux_audit() {
             }),
             ("section", |shell, session| {
                 set(shell, session, json!({"section": {"on": true}}));
+            }),
+            ("drawer", |shell, session| {
+                set(shell, session, json!({"panels": {"drawer": true}}));
             }),
             ("parameters", |shell, session| {
                 set(shell, session, json!({"parameters": {"open": true}}));

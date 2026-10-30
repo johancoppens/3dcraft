@@ -208,6 +208,21 @@ The **display bar** at the bottom of the view:
 - **Section** cuts the view open with a plane across X, Y or Z; **Offset** moves it and **Flip side**
   keeps the other half.
 
+On a phone or a tablet (in the browser), and in any window narrower than about 800 points:
+
+| Do | To |
+|---|---|
+| Drag one finger | Orbit |
+| Drag two fingers | Pan |
+| Pinch | Zoom about the middle of your fingers |
+| Tap | Select, as a click does |
+| Double-tap | What **F** does: fly to what you tapped, or frame the whole model |
+| Press and hold | The list of everything under your finger (as a right click) |
+| **☰** at the left of the menu bar | Open or close the feature list, Parameters and the player as a drawer (a tap beside it, or Escape, closes it too) |
+
+The buttons over the view are then large enough for a finger, and where the display bar has no room for
+the section's options they get a row of their own just above it.
+
 None of this changes the document. Each tab remembers its own camera, section and see-through. A heavy
 model first shows a quick picture, then the sharp one (the status bar says `refining`).
 
