@@ -1092,10 +1092,19 @@ fn a_subassembly_follows_its_own_parts_and_its_folder() {
         instance(&i, "SubA")["configuration"],
         instance(&i, "SubB")["configuration"]
     );
+    // The copy records the hash of a's part, and b's differs: SubB has
+    // changed below it from the start; SubA not yet.
+    assert_eq!(instance(&i, "SubA")["changed"], false, "{i}");
+    assert_eq!(instance(&i, "SubB")["changed"], true, "{i}");
     // The part of the first subassembly edited.
     std::fs::copy(dir.join("big.3dcraft"), dir.join("a/part.3dcraft")).unwrap();
     let reloaded = run(&mut s, "assembly.reload", json!({}));
-    assert_eq!(reloaded["changed"], json!(["SubA"]), "{reloaded}");
+    assert_eq!(
+        reloaded["filesChanged"],
+        json!(["a/part.3dcraft"]),
+        "{reloaded}"
+    );
+    assert_eq!(reloaded["changed"], json!(["SubA", "SubB"]), "{reloaded}");
     let i = inspect(&mut s);
     assert!(close(width(&i, "SubA"), 8.0, 1.0), "{i}");
     assert!(close(width(&i, "SubB"), 4.0, 1.0), "{i}");
