@@ -780,6 +780,22 @@ continues on the CPU. A cut-open picture is drawn in the plain look by both rend
 `render_studio` does on the CPU). The CPU's limit of 2^26 samples over a still's frames bounds the CPU's
 time, not memory, so it is the CPU's alone: on the GPU a still averages up to 256 frames at any size.
 
+Review fixes (2026-10-30): under `auto` the painter asks the renderer at once whether it can draw
+(`describe`, which makes the device), so a replay sizes its studio frames for the CPU (at most the CPU's
+cap) when there is no adapter. A failure in the middle of a command (an error, a lost device, a panic,
+which `Painter::draw` catches) hands the rest to the CPU, and a studio still is then averaged over as many
+frames as the CPU can at that size (`cpuAccumulate` in the result) instead of the command failing; the
+result's `renderer` is `mixed` with the count of each. A renderer that panicked is let go of, never put
+back. The painter puts the host's renderer back into the session when it is dropped, so a command that
+fails, or one the host's last-resort guard catches, does not lose it. The CLI's renderer makes its
+device again once after it was lost (`GpuError::Device`), so a long-lived `serve` recovers. A picture of
+face ids (`mode: "ids"`) is always the CPU's, since agents read its pixels. ffmpeg runs with a time
+limit (a minute plus a second a frame), its paths prefixed `file:` (a name like `-x.mp4` or `tcp://…`
+is a file) and a `%` of the frames' directory written `%%` in the input pattern. The camera spline is
+Catmull-Rom in time (tangents over the keys' times), so a short stretch between uneven keys is not
+overshot by the long one beside it. Held by `crates/engine/tests/pictures.rs` (fake renderers that
+cannot draw, fail half-way, or panic) and `animation.rs`'s unit tests.
+
 A replay on the GPU draws its frames one at a time on the command's thread and encodes the PNGs a batch
 at a time on every core; on the CPU each frame is drawn and written on its own core as before.
 
@@ -798,7 +814,7 @@ commands give the GPU the same inputs as the CPU.
 animation (`animate`). An animation has `frames` states (or `duration` × `fps`; 2 s by default); state
 `k` is at `s = k / (frames − 1)`. Each variable track gives its variable a value at `s`: from `from` to
 `to`, or through keys `[{t, value}]` with `t` rising from 0 to 1, between two keys moved by its easing
-(`linear`, `in` u², `out` 1 − (1 − u)², `inOut` 3u² − 2u³), the ends held outside the keys. The value is
+(`linear`, `in` u², `out` 1 − (1 − u)², `inOut` 3u² − 2u³; per stretch, so the eased ones come to rest at every key), the ends held outside the keys. The value is
 written with the track's `unit` and must keep the variable's dimension (checked on the first state, so
 `20` for a length is refused with the advice to give `"unit": "mm"`). Each state is the document with
 the values set, regenerated from a copy of the document's regeneration cache, so only what the variables
@@ -810,8 +826,9 @@ assembly's parts are placed by its solve; an assembly takes that track only (its
 its drivers' business), and with no track it is shown at its own `t`.
 
 **The camera path.** `camera.keys` give `eye`, `target`, `up` and `fov` at places `t`; a field a key
-leaves out is the framed camera's. Eye and target follow a uniform Catmull-Rom spline through the keys
-(it passes through each key; the end segments repeat their end key), the up and the field of view are
+leaves out is the framed camera's. Eye and target follow a Catmull-Rom spline in time through the keys
+(it passes through each key; a key's tangent is the chord between its neighbours over the time between
+them, one-sided at the ends), the up and the field of view are
 interpolated linearly (the up normalised). `orbit` turns the camera about the vertical through its
 target by that many degrees over the replay and `dolly` scales its distance to the target (and an
 orthographic camera's height) from 1 to the factor; `easing` paces the keys' segments and both helpers.

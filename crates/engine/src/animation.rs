@@ -471,20 +471,10 @@ impl CameraPath {
                 self.keys.get(k).and_then(f).unwrap_or(fallback)
             };
             let spline = |f: &dyn Fn(&CameraKey) -> Option<Vec3>, fallback: Vec3| {
-                let last = self.keys.len().saturating_sub(1);
-                let p1 = field(i, f, fallback);
-                let p2 = field((i + 1).min(last), f, fallback);
-                let p0 = if i == 0 {
-                    p1
-                } else {
-                    field(i - 1, f, fallback)
-                };
-                let p3 = if i + 2 > last {
-                    p2
-                } else {
-                    field(i + 2, f, fallback)
-                };
-                catmull_rom(p0, p1, p2, p3, u)
+                let points: Vec<Vec3> = (0..self.keys.len())
+                    .map(|k| field(k, f, fallback))
+                    .collect();
+                hermite_through(&times, &points, i, u)
             };
             camera.eye = spline(&|k| k.eye, base.eye);
             camera.target = spline(&|k| k.target, base.target);
@@ -528,14 +518,35 @@ impl CameraPath {
     }
 }
 
-/// The uniform Catmull-Rom spline through `p1` (at 0) and `p2` (at 1).
-fn catmull_rom(p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3, u: f64) -> Vec3 {
+/// The Catmull-Rom spline through `points` at the times `times` (strictly
+/// rising), in the segment from key `i` to key `i + 1` at `u` from 0 to 1:
+/// a cubic Hermite segment whose tangent at a key is the chord between
+/// its neighbours over the time between them (one-sided at the ends), in
+/// units of the segment's own time. With keys evenly spaced it is the
+/// uniform spline; with uneven times a short segment is not overshot by
+/// the long one beside it, as the uniform spline in the key's index is.
+fn hermite_through(times: &[f64], points: &[Vec3], i: usize, u: f64) -> Vec3 {
+    let last = points.len().saturating_sub(1);
+    let at = |k: usize| points.get(k.min(last)).copied().unwrap_or(Vec3::ZERO);
+    let time = |k: usize| times.get(k.min(last)).copied().unwrap_or(0.0);
+    if last == 0 {
+        return at(0);
+    }
+    let tangent = |k: usize| {
+        let (a, b) = (k.saturating_sub(1), (k + 1).min(last));
+        let span = time(b) - time(a);
+        if span > 0.0 {
+            (at(b) - at(a)) * (1.0 / span)
+        } else {
+            Vec3::ZERO
+        }
+    };
+    let h = time(i + 1) - time(i);
     let (u2, u3) = (u * u, u * u * u);
-    (p1 * 2.0
-        + (p2 - p0) * u
-        + (p0 * 2.0 - p1 * 5.0 + p2 * 4.0 - p3) * u2
-        + (p1 * 3.0 - p0 - p2 * 3.0 + p3) * u3)
-        * 0.5
+    at(i) * (2.0 * u3 - 3.0 * u2 + 1.0)
+        + tangent(i) * (h * (u3 - 2.0 * u2 + u))
+        + at(i + 1) * (3.0 * u2 - 2.0 * u3)
+        + tangent(i + 1) * (h * (u3 - u2))
 }
 
 #[cfg(test)]
@@ -659,6 +670,30 @@ mod tests {
         )
         .unwrap();
         assert!(bad.at(&base(), 0.0).is_none());
+    }
+
+    #[test]
+    fn uneven_keys_are_not_overshot() {
+        // A short first segment and a long second one, all along x: the
+        // camera moves on without turning back.
+        let path = CameraPath::parse(
+            "x",
+            Some(&json!({"keys": [
+                {"t": 0, "eye": [10, 0, 0]},
+                {"t": 0.1, "eye": [11, 0, 0]},
+                {"t": 1, "eye": [20, 0, 0]}
+            ]})),
+            None,
+        )
+        .unwrap();
+        let mut last = f64::NEG_INFINITY;
+        for k in 0..=200 {
+            let x = path.at(&base(), f64::from(k) / 200.0).unwrap().eye.x;
+            assert!(x >= last - 1e-12, "turned back at {k}: {x} after {last}");
+            last = x;
+        }
+        assert!((path.at(&base(), 0.1).unwrap().eye.x - 11.0).abs() < 1e-12);
+        assert!((last - 20.0).abs() < 1e-12);
     }
 
     #[test]

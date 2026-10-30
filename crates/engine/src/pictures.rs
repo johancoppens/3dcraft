@@ -18,33 +18,37 @@ use craft3d_render::studio::{Look, Prepared};
 use craft3d_render::{Camera, FaceColors, Frame, RenderParams};
 use craft3d_tess::Mesh;
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::{Arc, Mutex, PoisonError};
 
 /// A host's renderer or encoder in the session. A clone of the session
 /// has none (as it has no recovery): the device stays with the session
-/// the host gave it to.
-pub(crate) struct Hosted<T: ?Sized>(std::sync::Mutex<Option<Box<T>>>);
+/// the host gave it to. Shared with the [`Painter`] that has it out for a
+/// command, which puts it back when it is dropped, also when the command
+/// panicked and the host's last-resort guard caught it.
+pub(crate) struct Hosted<T: ?Sized>(Arc<Mutex<Option<Box<T>>>>);
+
+type Slot<T> = Arc<Mutex<Option<Box<T>>>>;
 
 impl<T: ?Sized> Hosted<T> {
     /// Takes it out (for one command; [`Hosted::put`] gives it back).
     pub(crate) fn take(&mut self) -> Option<Box<T>> {
-        self.0
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).take()
     }
 
     pub(crate) fn put(&mut self, value: Box<T>) {
-        *self
-            .0
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(value);
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(value);
+    }
+
+    /// Where it goes back to.
+    fn slot(&self) -> Slot<T> {
+        Arc::clone(&self.0)
     }
 }
 
 impl<T: ?Sized> Default for Hosted<T> {
     fn default() -> Self {
-        Self(std::sync::Mutex::new(None))
+        Self(Arc::new(Mutex::new(None)))
     }
 }
 
@@ -134,17 +138,27 @@ pub struct Used {
     /// Pictures the CPU drew and the host's renderer drew.
     pub cpu_pictures: u64,
     pub gpu_pictures: u64,
+    /// The frames per studio still the CPU averaged after a fallback in
+    /// the middle of the command, when that is fewer than the look's.
+    pub cpu_accumulate: Option<u32>,
 }
 
 impl Used {
-    /// The fields the result gets: `renderer` (`gpu` or `cpu`), `adapter`
-    /// when the GPU drew, `rendererFallback` when `auto` fell back.
+    /// The fields the result gets: `renderer` (`gpu`, `cpu`, or `mixed`
+    /// when the GPU drew some pictures and the CPU the rest), `adapter`
+    /// when the GPU drew, `rendererFallback` when `auto` fell back, and
+    /// with `mixed` the count of each (`pictures`) and the CPU's frames per
+    /// studio still when it averaged fewer (`cpuAccumulate`).
     pub fn insert_into(&self, result: &mut Value) {
         let Some(map) = result.as_object_mut() else {
             return;
         };
-        let gpu = self.gpu_pictures > 0 && self.cpu_pictures == 0;
-        map.insert("renderer".into(), json!(if gpu { "gpu" } else { "cpu" }));
+        let renderer = match (self.gpu_pictures > 0, self.cpu_pictures > 0) {
+            (true, true) => "mixed",
+            (true, false) => "gpu",
+            _ => "cpu",
+        };
+        map.insert("renderer".into(), json!(renderer));
         if let Some(adapter) = &self.adapter
             && self.gpu_pictures > 0
         {
@@ -153,30 +167,43 @@ impl Used {
         if let Some(why) = &self.fallback {
             map.insert("rendererFallback".into(), json!(why));
         }
-        if self.gpu_pictures > 0 && self.cpu_pictures > 0 {
+        if renderer == "mixed" {
             map.insert(
                 "pictures".into(),
                 json!({"gpu": self.gpu_pictures, "cpu": self.cpu_pictures}),
             );
         }
+        if let Some(cap) = self.cpu_accumulate {
+            map.insert("cpuAccumulate".into(), json!(cap));
+        }
     }
 }
 
 /// Draws pictures for one command: with the host's renderer (taken out of
-/// the session for the command, and given back by [`Painter::finish`]) or
-/// with the CPU's, as the choice says.
+/// the session for the command, and put back when the painter is done or
+/// dropped) or with the CPU's, as the choice says.
 pub(crate) struct Painter {
     command: &'static str,
     choice: Choice,
     host: Option<Box<dyn PictureRenderer>>,
-    /// The host's renderer failed under `auto`: the CPU draws the rest.
+    /// Where the host's renderer goes back to.
+    home: Option<Slot<dyn PictureRenderer>>,
+    /// The host's renderer cannot draw (or failed) under `auto`: the CPU
+    /// draws the rest.
     given_up: bool,
+    /// It failed while the command was drawing: a studio still the CPU
+    /// cannot average as many frames of is averaged over as many as it
+    /// can, rather than the command failing half-way.
+    cap_on_cpu: bool,
     pub used: Used,
 }
 
 impl Painter {
-    /// A painter for `command` with the session's renderer; fails at once
-    /// when `gpu` is asked for and there is none, or it cannot draw.
+    /// A painter for `command` with the session's renderer. Under `auto`
+    /// the renderer is asked at once whether it can draw (its device is
+    /// made), so a command that sizes its pictures for the renderer
+    /// (`view.replay`'s frames per still) knows before it starts; `gpu`
+    /// fails at once when there is none or it cannot draw.
     pub fn new(
         session: &mut Session,
         command: &'static str,
@@ -190,21 +217,30 @@ impl Painter {
             command,
             choice,
             host,
+            home: Some(session.pictures.slot()),
             given_up: false,
+            cap_on_cpu: false,
             used: Used::default(),
         };
-        if choice == Choice::Gpu {
-            let ready = match painter.host.as_mut() {
-                None => Err(
-                    "this session has no GPU renderer (craft3d-cli and craft3d-cli serve have one; the window and the browser draw these pictures on the CPU)"
-                        .to_string(),
-                ),
-                Some(host) => host.describe(),
-            };
-            if let Err(why) = ready {
-                painter.finish(session);
-                return fail(format!("{command}: renderer gpu: {why}"));
+        if choice == Choice::Cpu {
+            return Ok(painter);
+        }
+        let ready = match painter.host.as_mut() {
+            None => Err(
+                "this session has no GPU renderer (craft3d-cli and craft3d-cli serve have one; the window and the browser draw these pictures on the CPU)"
+                    .to_string(),
+            ),
+            Some(host) => painter_call(|| host.describe()),
+        };
+        match ready {
+            Ok(adapter) => painter.used.adapter = Some(adapter),
+            // No renderer at all is not a fallback: the CPU is the only one.
+            Err(_) if choice == Choice::Auto && painter.host.is_none() => painter.given_up = true,
+            Err(why) if choice == Choice::Auto => {
+                painter.given_up = true;
+                painter.used.fallback = Some(why);
             }
+            Err(why) => return fail(format!("{command}: renderer gpu: {why}")),
         }
         Ok(painter)
     }
@@ -216,15 +252,18 @@ impl Painter {
             command,
             choice: Choice::Cpu,
             host: None,
+            home: None,
             given_up: false,
+            cap_on_cpu: false,
             used: Used::default(),
         }
     }
 
-    /// Gives the host's renderer back to the session.
-    pub fn finish(&mut self, session: &mut Session) {
-        if let Some(host) = self.host.take() {
-            session.pictures.put(host);
+    /// Puts the host's renderer back into the session (dropping the
+    /// painter does the same).
+    pub fn finish(&mut self) {
+        if let (Some(host), Some(home)) = (self.host.take(), self.home.as_ref()) {
+            *home.lock().unwrap_or_else(PoisonError::into_inner) = Some(host);
         }
     }
 
@@ -247,30 +286,61 @@ impl Painter {
         if self.on_host()
             && let Some(host) = self.host.as_mut()
         {
-            let drawn = host.describe().and_then(|adapter| {
+            let drawn = catch_unwind(AssertUnwindSafe(|| {
                 host.render(mesh, colors, camera, params, shading, key)
-                    .map(|frame| (frame, adapter))
-            });
-            match drawn {
-                Ok((frame, adapter)) => {
+            }));
+            let why = match drawn {
+                Ok(Ok(frame)) => {
                     self.used.gpu = true;
-                    self.used.adapter = Some(adapter);
                     self.used.gpu_pictures = self.used.gpu_pictures.saturating_add(1);
                     return Ok(frame);
                 }
-                Err(why) if self.choice == Choice::Auto => {
-                    self.given_up = true;
-                    self.used.fallback = Some(why);
+                Ok(Err(why)) => why,
+                Err(_) => {
+                    // A renderer that panicked is not trusted again: it
+                    // is let go of, not put back into the session.
+                    self.host = None;
+                    "the GPU renderer panicked; this session draws on the CPU from now on"
+                        .to_string()
                 }
-                Err(why) => {
-                    return fail(format!("{}: renderer gpu: {why}", self.command));
-                }
+            };
+            if self.choice != Choice::Auto {
+                return fail(format!("{}: renderer gpu: {why}", self.command));
             }
+            self.given_up = true;
+            self.cap_on_cpu = true;
+            self.used.fallback = Some(why);
         }
+        // A fallback in the middle of a command: as many frames per still
+        // as the CPU averages at this size.
+        let capped;
+        let shading = match shading {
+            Shading::Studio(look, env) => {
+                capped = self.cpu_look(look, params);
+                Shading::Studio(&capped, env)
+            }
+            other => other,
+        };
         let frame = cpu_draw(mesh, colors, camera, params, shading)
             .map_err(|e| CommandError::new(format!("{}: {e}", self.command)))?;
         self.used.cpu_pictures = self.used.cpu_pictures.saturating_add(1);
         Ok(frame)
+    }
+
+    /// The look a studio still is averaged with on the CPU: the look as
+    /// it is, or after a fallback in the middle of the command as many
+    /// frames as the CPU averages at `params`'s size.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub fn cpu_look(&mut self, look: &Look, params: &RenderParams) -> Look {
+        let cap = cpu_frame_cap(params);
+        if self.cap_on_cpu && look.accumulate > cap {
+            self.used.cpu_accumulate = Some(cap);
+            return Look {
+                accumulate: cap,
+                ..*look
+            };
+        }
+        *look
     }
 
     /// Counts `n` pictures the caller drew on the CPU itself (on threads
@@ -279,6 +349,18 @@ impl Painter {
     pub fn count_cpu(&mut self, n: u64) {
         self.used.cpu_pictures = self.used.cpu_pictures.saturating_add(n);
     }
+}
+
+impl Drop for Painter {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
+/// A call into the host's renderer, a panic in it an error.
+fn painter_call<T>(call: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    catch_unwind(AssertUnwindSafe(call))
+        .unwrap_or_else(|_| Err("the GPU renderer panicked".to_string()))
 }
 
 /// A picture with the CPU renderer.

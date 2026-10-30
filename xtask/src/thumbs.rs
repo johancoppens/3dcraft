@@ -23,9 +23,9 @@ pub const EXAMPLES: [&str; 10] = [
 ];
 
 /// The params of `view.render` the thumbnails are made with (without the
-/// path), part of the stamp.
-pub const RENDER: &str =
-    r#"{"width": 160, "height": 120, "view": "iso", "projection": "perspective", "zoom": 1.2}"#;
+/// path), part of the stamp. On the CPU renderer (`craft3d-cli`'s sessions
+/// draw on the GPU when there is one): the same pictures on every machine.
+pub const RENDER: &str = r#"{"width": 160, "height": 120, "view": "iso", "projection": "perspective", "zoom": 1.2, "renderer": "cpu"}"#;
 /// Most colours of a thumbnail.
 pub const PALETTE: usize = 128;
 /// What else the stamp covers: bump it when the way the pictures are

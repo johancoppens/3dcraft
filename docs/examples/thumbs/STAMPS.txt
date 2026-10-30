@@ -1,11 +1,11 @@
 # What docs/examples/thumbs/<id>.png were made from: cargo xtask example-thumbs
-bracket 1e88594b60bffd85
-flange 1de70b359944e46f
-case 673de92cc1c95f4c
-bushing f525961de16b3b9a
-pipe ae0ab4575931ef9f
-spring 062372a64c5df556
-hopper d62eff1e428bc8d0
-panel 5f4ba262b8b97f79
-wedge 26ad0406908de0f9
-gear 6e77d163ba76d01c
+bracket 576954e2c1d6e5d2
+flange 96948045e6262156
+case f32c996024411cfa
+bushing cd12c175bfa29ba4
+pipe 9b76f8e2ae88ad3e
+spring 83142726610a04bb
+hopper 6de123389a11e1e0
+panel 73b20089bdfc7ca6
+wedge debf410cc0c161f5
+gear 87f052f180c1f477
