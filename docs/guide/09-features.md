@@ -64,8 +64,9 @@ on a plate:
   font's own line height.
 - **Along a curve.** `sketch.textOnCurve` sets the letters upright along a line, arc, circle or spline of
   the sketch: each letter keeps its shape, its baseline along the curve; `start` is the length along the
-  curve where it starts, `offset` lifts it off the curve, `side: "right"` puts it on the other side
-  (still reading left to right), `reversed` runs the curve the other way.
+  curve where it starts, `offset` lifts it off the curve; the letters stand on the left of the curve as it runs (inside a
+  circle, which runs counter-clockwise), or with `side: "right"` on its right (outside a circle, still
+  reading left to right); `reversed` runs the curve the other way.
 - **Names.** Each outline of a letter is named after the text, the letter's place in the text and the
   letter: the side of the B of `"AB"` extruded is `F3:side(e2.glyph(1,U+0042).contour(0))`. Change the text
   and a face of a letter that is no longer at its place fails by its name; it is never handed to another

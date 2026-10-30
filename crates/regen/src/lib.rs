@@ -1065,9 +1065,6 @@ pub(crate) fn collapse_runs(
     let Some(FeatureKind::Sketch(drawn)) = doc.feature(sketch).map(|f| &f.kind) else {
         return;
     };
-    if drawn.patterns.is_empty() {
-        return;
-    }
     let Some(solved) = earlier
         .iter()
         .find(|r| r.id == sketch)
@@ -1075,6 +1072,11 @@ pub(crate) fn collapse_runs(
     else {
         return;
     };
+    // The curves of nested patterns and of texts have numbers of their
+    // own; a sketch with neither keeps its curves' numbers as they are.
+    if drawn.patterns.is_empty() && solved.curve_ids.is_empty() {
+        return;
+    }
     if !solved.curve_ids.is_empty() {
         for name in names.iter_mut() {
             // The link the kernel's numbers are in: under a piece, if any.
@@ -1088,7 +1090,7 @@ pub(crate) fn collapse_runs(
             link.sources = solved.curve_ids.expand(&link.sources);
         }
     }
-    if roles.is_empty() {
+    if roles.is_empty() || drawn.patterns.is_empty() {
         return;
     }
     let runs = sketch_pattern::full_runs(drawn, solved);

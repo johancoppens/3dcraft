@@ -10,6 +10,7 @@ cargo xtask ci                                  # fmt --check + clippy -D warnin
 cargo xtask layers                              # dependency layering, and that every crate opts in to the never-crash lints
 cargo xtask stats                               # lines and tests per crate
 CRAFT3D_FREECAD=/path/to/FreeCAD.AppImage cargo xtask freecad   # FreeCAD reads our exports back
+cargo xtask fonts             # fetches the built-in fonts (pinned, never committed) into assets/fonts or $CRAFT3D_FONTS; the text tests need them
 CRAFT3D_FREECAD=/path/to/FreeCAD.AppImage cargo xtask boolean-corpus --check   # regenerate the boolean corpus with FreeCAD and compare with the pinned one
 cargo build --release -p craft3d-cli            # the CLI: target/release/craft3d-cli
 ```

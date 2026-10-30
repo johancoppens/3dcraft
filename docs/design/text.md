@@ -45,7 +45,7 @@ Noto Sans Regular (CFF, cubic) as `sans` and JetBrains Mono Regular (TrueType, q
 
 ### Text along a curve
 
-The curve by arc length: exact for lines, arcs and circles (a circle starts at angle 0, counter-clockwise), a polyline of the spline within a hundredth of the tolerance otherwise. Each glyph is placed rigidly, its baseline's middle on the curve at `start + x` (the glyph's middle along the laid-out line), its baseline along the tangent there and lifted by `offset` along the normal: so every glyph keeps its exact shape and its area, and its baseline is tangent to the curve (an offset curve's tangent is the curve's). `side: right` stands it on the other side of the curve and runs it the other way, so it still reads; `reversed` runs the curve the other way. On an open curve a glyph past either end is refused with the length it needs.
+The curve by arc length: exact for lines, arcs and circles (a circle starts at angle 0, counter-clockwise), a polyline of the spline within a hundredth of the tolerance otherwise. Each glyph is placed rigidly, its baseline's middle on the curve at `start + x` (the glyph's middle along the laid-out line), its baseline along the tangent there and lifted by `offset` along the normal: so every glyph keeps its exact shape and its area, and its baseline is tangent to the curve (an offset curve's tangent is the curve's). The glyphs stand on the left of the curve as it runs (inside a counter-clockwise circle); `side: right` stands them on its right (outside a circle) and runs them the other way, so they still read; `reversed` runs the curve the other way. On an open curve a glyph past either end is refused with the length it needs.
 
 ### Straight pieces of a spline are lines
 

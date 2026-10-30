@@ -70,6 +70,9 @@ struct Context {
     units: Units,
     tolerance: (u64, u64),
     inputs: Vec<Input>,
+    /// For a sketch with texts: the fonts of the document
+    /// ([`text_fonts`]), which its texts are laid out in.
+    fonts: Vec<(String, String, bool)>,
     /// For a split: the other splits of the same body as they stand,
     /// each with whether it is built (`crate::split::group_state`), which
     /// its result depends on (a lump is one split's, and the last split
@@ -407,18 +410,7 @@ impl RegenCache {
         let tolerance = bits(doc.tolerance);
         // The fonts its texts are set in: a font added, changed or
         // removed lays them out again.
-        let fonts: Vec<(String, String, bool)> = if sketch
-            .entities
-            .iter()
-            .any(|e| matches!(e.geometry, craft3d_doc::Geometry::Text(_)))
-        {
-            doc.fonts
-                .iter()
-                .map(|f| (f.name.clone(), f.sha256.clone(), f.bytes().is_some()))
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let fonts = text_fonts(doc, sketch);
         if let Some(solve) = self.solves.get(&id)
             && solve.units == doc.units
             && solve.tolerance == tolerance
@@ -805,10 +797,12 @@ pub(crate) fn features(
         // Its condition with the rest: a change of what it evaluates to
         // switches the feature on or off.
         let mut values = evaluated(variables, &feature.exprs());
+        let mut fonts = Vec::new();
         if let FeatureKind::Sketch(sketch) = &feature.kind {
             values.extend(fit_values(
                 &cache.formula_fits(feature.id, doc, variables, sketch),
             ));
+            fonts = text_fonts(doc, sketch);
         }
         let group = crate::split::group_state(doc, variables, stated);
         let unchanged = !changed.is_marked(stated.id)
@@ -831,6 +825,7 @@ pub(crate) fn features(
                     && entry.context.units == doc.units
                     && entry.context.tolerance == bits(doc.tolerance)
                     && entry.context.values == values
+                    && entry.context.fonts == fonts
                     && entry.context.followed == followed
                     && entry.context.group == group
             })
@@ -855,6 +850,7 @@ pub(crate) fn features(
                         units: doc.units,
                         tolerance: bits(doc.tolerance),
                         inputs: Vec::new(),
+                        fonts,
                         group,
                     },
                 );
@@ -1200,6 +1196,25 @@ fn evict(cache: &mut RegenCache, results: &mut [FeatureResult], need: Need) {
                 entry.result.names = Some(kept);
             }
         }
+    }
+}
+
+/// For a sketch with texts, every font of the document by name, hash and
+/// whether its bytes are there: what its texts are laid out in (a font
+/// added, changed, or given its bytes for the session lays them out
+/// again). Empty for a sketch without texts.
+fn text_fonts(doc: &Document, sketch: &Sketch) -> Vec<(String, String, bool)> {
+    if sketch
+        .entities
+        .iter()
+        .any(|e| matches!(e.geometry, craft3d_doc::Geometry::Text(_)))
+    {
+        doc.fonts
+            .iter()
+            .map(|f| (f.name.clone(), f.sha256.clone(), f.bytes().is_some()))
+            .collect()
+    } else {
+        Vec::new()
     }
 }
 

@@ -189,7 +189,7 @@ pub enum TextAlign {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TextSide {
-    /// On the left of the curve, looking along it (outside a circle drawn
+    /// On the left of the curve, looking along it (inside a circle drawn
     /// counter-clockwise).
     #[default]
     Left,

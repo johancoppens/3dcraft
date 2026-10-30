@@ -38,6 +38,7 @@ crates/
   step meshio zipstore       L0 standalone format crates (publishable): STEP Part 21, STL/3MF/OBJ, stored ZIP
   drawing                    L0 standalone format crate: DXF and SVG of flat outlines, with its own 2D model
   buildinfo                  L0 for the programs' build scripts: the commit they are built from (bug report)
+  font                       L0 standalone: font files read into exact outlines (ttf-parser), layout, the fill rule, the single-stroke font
   topo expr                  L1 B-rep topology (pure data + validity checks); units, variables, formulas
   doc                        L2 document model (variables, sketches, constraints, feature history: pure data)
   ops solve kernel tess      L3 history/undo, sketch constraint solver, modelling operations, tessellator
@@ -53,11 +54,11 @@ apps/
   craft3d-cli                headless CLI (run/info/render/convert/replay/score/check-range/commands/serve/mcp)
   craft3d-fuzz               random multi-step designs, one seed per process (cargo xtask fuzz)
   craft3d-web                the same app in the browser (WebAssembly, one thread; `cargo xtask package --formats web`)
-xtask/                       cargo xtask layers | wasm | ci | stats | health | freecad | boolean-corpus | fuzz | actions | package | web-size | example-thumbs
+xtask/                       cargo xtask layers | wasm | ci | stats | health | freecad | fonts | boolean-corpus | fuzz | actions | package | web-size | example-thumbs
 packaging/                   what the installers carry: icons, desktop entry and MIME type, Info.plist, WiX source, the web page and its hosting notes
 ```
 
-**Layering is enforced** by `cargo xtask layers`. A crate may depend only on lower layers (the few same-layer exceptions, such as `geom` → `math`, are listed in `xtask/src/layers.rs`). `testkit` may only be a dev-dependency. `step`, `meshio`, `drawing`, `zipstore` and `buildinfo` depend on nothing in the workspace (except `meshio` on `zipstore`, for 3MF). Nothing below `ui-egui` may use egui, eframe, winit or rfd. A new crate must be registered in `xtask/src/layers.rs`.
+**Layering is enforced** by `cargo xtask layers`. A crate may depend only on lower layers (the few same-layer exceptions, such as `geom` → `math`, are listed in `xtask/src/layers.rs`). `testkit` may only be a dev-dependency. `step`, `meshio`, `drawing`, `zipstore`, `buildinfo` and `font` depend on nothing in the workspace (except `meshio` on `zipstore`, for 3MF). Nothing below `ui-egui` may use egui, eframe, winit or rfd. A new crate must be registered in `xtask/src/layers.rs`.
 
 ## 3. Golden rules
 
