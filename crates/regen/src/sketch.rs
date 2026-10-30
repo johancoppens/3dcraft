@@ -369,8 +369,11 @@ fn problem(
             .map_err(|_| "the sketch has too many entities".to_string())
     };
     for entity in &sketch.entities {
-        // Nor are the curves regeneration fits.
-        if matches!(entity.geometry, Geometry::Spline { .. }) || entity.geometry.is_fitted() {
+        // Nor are the curves regeneration fits, nor texts (their point
+        // is the solver's; their glyphs are laid out after the solve).
+        if matches!(entity.geometry, Geometry::Spline { .. } | Geometry::Text(_))
+            || entity.geometry.is_fitted()
+        {
             continue;
         }
         index.insert(entity.id, position(entities.len())?);

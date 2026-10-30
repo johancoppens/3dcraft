@@ -570,3 +570,30 @@ fn texts_and_fonts_survive_a_save_and_reopen() {
     assert_eq!(list["document"][0]["name"], "sans");
     assert_eq!(list["document"][0]["kept"], true);
 }
+
+/// Points drawn after a text are solved where they are: the text adds no
+/// entity of the solver's (a regression: the solver's numbering skipped
+/// the text and the points after it were misnumbered).
+#[test]
+fn points_after_a_text_are_solved() {
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    run(&mut s, "sketch.create", json!({"name": "S"}));
+    run(
+        &mut s,
+        "sketch.text",
+        json!({"sketch": "S", "text": "I", "font": "stroke", "size": 5}),
+    );
+    let made = run(
+        &mut s,
+        "sketch.text",
+        json!({"sketch": "S", "text": "L", "font": "stroke", "size": 5, "at": [20, 0]}),
+    );
+    assert_eq!(made["status"], "ok", "{made}");
+    let line = run(
+        &mut s,
+        "sketch.line",
+        json!({"sketch": "S", "from": [0, 10], "to": [10, 10]}),
+    );
+    assert_eq!(line["status"], "ok", "{line}");
+}
