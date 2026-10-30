@@ -17,7 +17,7 @@
  ["feature.extrude", {"sketch": "BoltHoles", "throughAll": true, "cut": "Chamfered", "name": "Clamp"}],
  ["assert.add", {"name": "volume", "measure": "volume", "of": "Clamp", "eq": "(length * width - (4 - pi) * corner_r^2) * height - pi * (bore_d / 2)^2 * height - 2 * pi * (bore_d / 2 + chamfer / 3) * chamfer^2 - 2 * pi * (hole_d / 2)^2 * height"}],
  ["assert.add", {"name": "bolt holes", "measure": "count", "of": {"kind": "face", "where": {"hole": true, "radius": "hole_d / 2"}}, "eq": 2}],
- ["assert.add", {"name": "walls", "measure": "thickness", "of": "Clamp", "min": "3 mm"}],
+ ["assert.add", {"name": "holes go through", "measure": "through", "of": {"hole": true}}],
  ["body.appearance", {"body": "Clamp", "color": "#2f62b3", "metallic": 0.6, "roughness": 0.35}],
  ["document.check", {}]
 ]
