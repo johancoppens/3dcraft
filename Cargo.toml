@@ -89,6 +89,57 @@ indexing_slicing = "deny"
 lto = "thin"
 codegen-units = 1
 
+# The browser build only (`cargo xtask package --formats web` and
+# `cargo xtask web-size` build with `--profile web`; docs/testing.md, Web
+# module size): the release build optimised for size, except the crates
+# whose speed the user waits for. Measured 2026-10-30 (gzip -9 after
+# wasm-opt -O2): 8.04 MB as release, 6.42 MB with everything at "z", 6.99 MB
+# as below. Everything at "z" regenerated the helmet showcase 2.4 times
+# slower in V8; as below it is within the noise of release (about 3 %). So
+# the modelling and meshing crates keep opt-level 3 and the shell, the
+# document plumbing, egui, wgpu, naga, serde and the fonts' code shrink.
+# Native builds are untouched.
+[profile.web]
+inherits = "release"
+opt-level = "z"
+
+[profile.web.package.craft3d-math]
+opt-level = 3
+[profile.web.package.craft3d-geom]
+opt-level = 3
+[profile.web.package.craft3d-topo]
+opt-level = 3
+[profile.web.package.craft3d-expr]
+opt-level = 3
+[profile.web.package.craft3d-ops]
+opt-level = 3
+[profile.web.package.craft3d-solve]
+opt-level = 3
+[profile.web.package.craft3d-kernel]
+opt-level = 3
+[profile.web.package.craft3d-assembly]
+opt-level = 3
+[profile.web.package.craft3d-tess]
+opt-level = 3
+[profile.web.package.craft3d-regen]
+opt-level = 3
+[profile.web.package.craft3d-render]
+opt-level = 3
+[profile.web.package.craft3d-stepread]
+opt-level = 3
+[profile.web.package.craft3d-step]
+opt-level = 3
+[profile.web.package.craft3d-meshio]
+opt-level = 3
+# Written for the inliner: at "z" its small vector functions stay calls and
+# its code grows thirtyfold (vello_cpu, egui's rasteriser of text).
+[profile.web.package.fearless_simd]
+opt-level = 3
+[profile.web.package.vello_cpu]
+opt-level = 3
+[profile.web.package.vello_common]
+opt-level = 3
+
 [profile.dev]
 debug = "line-tables-only"
 # Geometry and rasterising are unusable at opt-level 0.

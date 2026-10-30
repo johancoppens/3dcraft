@@ -4,7 +4,7 @@
 //! 2026-10-23).
 //!
 //! It builds the module exactly as `cargo xtask package --formats web`
-//! does (release, wasm-bindgen, wasm-opt: `crate::web::module`), then
+//! does (the `web` profile, wasm-bindgen, wasm-opt: `crate::web::module`), then
 //! measures the final `_bg.wasm` raw and compressed with gzip at level 9
 //! (flate2's pure-Rust backend, so the number is the same on every
 //! machine), and compares the gzip size, what a server with gzip sends,

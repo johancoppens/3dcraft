@@ -22,7 +22,9 @@
 //! `SHA256SUMS.txt` beside the zip holds its checksum, which is what an
 //! updater checks before it unpacks it.
 //!
-//! The steps, without Trunk: `cargo build` for `wasm32-unknown-unknown`,
+//! The steps, without Trunk: `cargo build --profile web` (release
+//! optimised for size, except the crates whose speed the user waits for)
+//! for `wasm32-unknown-unknown`,
 //! `wasm-bindgen --target web` (the CLI of exactly the version in
 //! `Cargo.lock`), `wasm-opt` when it is there (it only makes the module
 //! smaller), the files of `packaging/web` with the names filled in, and
@@ -33,6 +35,9 @@ use std::process::Command;
 
 /// The package's name in file names.
 const NAME: &str = "craft3d-web";
+/// The cargo profile of the browser build (the root `Cargo.toml`): release
+/// optimised for size, except the modelling and meshing crates.
+const PROFILE: &str = "web";
 /// The theme colour of the installed app and its address bar: the
 /// accent of `craft3d_ui_egui::Tokens` (`accent`), and the page behind the
 /// canvas while it loads: its viewport background.
@@ -137,7 +142,8 @@ pub fn module(
     if let Some(extra) = build {
         let mut cargo = vec![
             "build",
-            "--release",
+            "--profile",
+            PROFILE,
             "--locked",
             "--target",
             "wasm32-unknown-unknown",
@@ -149,7 +155,7 @@ pub fn module(
     }
     let built = target
         .join("wasm32-unknown-unknown")
-        .join("release")
+        .join(PROFILE)
         .join("craft3d_web.wasm");
     if !built.is_file() {
         return Err(format!(
