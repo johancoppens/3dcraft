@@ -123,7 +123,7 @@ fn text_evidence() {
         &mut s,
         "sketch.text",
         json!({"sketch": "Strokes", "font": "stroke", "size": 6, "width": 200,
-               "text": "ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz 0123456789 .,;:!?-+=/\\()[]{}'\"#%&*_<>@$^~|°€ àáâãäåèéêëìíîïòóôõöøùúûüýÿñçšžčřňÀÅÉÖØÜÑÇŠŽ"}),
+               "text": "ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz 0123456789 .,;:!?-+=/\\()[]{{}}'\"#%&*_<>@$^~|°€ àáâãäåèéêëìíîïòóôõöøùúûüýÿñçšžčřňÀÅÉÖØÜÑÇŠŽ"}),
     );
     picture(&mut s, &dir, "stroke-top.png", "top");
     run(

@@ -1,0 +1,34 @@
+{
+  "format_version": 55,
+  "written_by": "41f175dbeaec6ee9859b53cfc6574f70a4b8949e",
+  "how": "the engine of that commit (on the Strix, Check run 41050652089, by a temporary test, crates/engine/tests/zz_write_fixture_v55.rs, that ran v55.steps.json in a session as craft3d-cli run --new '{\"units\": \"mm\"}' --script does, with restricted.ttf a copy of JetBrains Mono whose OS/2 fsType says restricted, saved v55.3dcraft and printed it), then document.inspect of the file opened again; texts in the single-stroke font (no font file is in the fixture): a template with a formula extruded (its rings are closed strokes), a text along a circle on its right side, a text with every layout option, and a document font that may not be kept, recorded by name and hash without its bytes: the texts and fonts of format 55",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Rings",
+      "status": "ok"
+    },
+    {
+      "id": "F2",
+      "name": "Rings3D",
+      "status": "ok"
+    },
+    {
+      "id": "F3",
+      "name": "Engraving",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F2",
+      "kind": "solid",
+      "faces": 18,
+      "edges": 36,
+      "vertices": 24,
+      "volume": 306.7651562831353,
+      "area": 464.37347299884823
+    }
+  ]
+}
