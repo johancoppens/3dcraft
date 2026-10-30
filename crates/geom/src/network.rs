@@ -2862,11 +2862,12 @@ fn bend(
         if g2 {
             // The tangent turned by a change of least curvature variation
             // (`fair`): `d = (target − C′(0)) w₀ G(t)` in homogeneous
-            // coordinates, its first three coefficients those of moving
-            // the second point alone (so the edge gets exactly what that
-            // gave it), the rest spread over the reach. The second point
-            // is set by the exact formula (the profile's coefficient there
-            // is that move, rounded apart).
+            // coordinates, `G(0) = 0`, `G′(0) = 1`, `G″(0) = 0` (the
+            // curvature step that follows sets the second derivative). The
+            // second point is set by the exact formula (the profile's
+            // coefficient there is that move, rounded apart). Starting as
+            // the one-point move does (its `G″(0)`) was tried: the two
+            // profiles then fight, and the fin swung to −0.25.
             let mut shape = fair::profile(
                 &raw.knots,
                 p_deg,

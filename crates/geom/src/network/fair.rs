@@ -88,12 +88,8 @@ fn open(end: f64) -> bool {
 /// What a profile changes at the edge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Order {
-    /// `G(0) = 0`, `G′(0) = 1` and `G″(0)` what moving the second control
-    /// point alone gives (the first three coefficients are that move's):
-    /// the derivative across, the second derivative as the one-point
-    /// change left it, so the curvature step that follows starts from the
-    /// same second derivative at the edge as before, and only the rest is
-    /// spread.
+    /// `G(0) = 0`, `G′(0) = 1`, `G″(0) = 0`: the derivative across, and
+    /// not the second derivative.
     Tangent,
     /// `G(0) = G′(0) = 0`, `G″(0) = 1`: the second derivative only.
     Curvature,
@@ -156,13 +152,16 @@ pub(super) fn profile(
         return Err(internal());
     };
     let a1 = q as f64 / (kq1 - k1);
-    let [_, _, gamma] = second_at_start(q, knots).ok_or_else(internal)?;
+    let [_, beta, gamma] = second_at_start(q, knots).ok_or_else(internal)?;
     let mut c = vec![0.0; count];
     match order {
         Order::Tangent => {
             let c1 = 1.0 / a1;
             if let Some(s) = c.get_mut(1) {
                 *s = c1;
+            }
+            if let Some(s) = c.get_mut(2) {
+                *s = -beta * c1 / gamma;
             }
         }
         Order::Curvature => {
@@ -323,9 +322,8 @@ mod tests {
                 let g1 = derivative(&g).unwrap();
                 let g2 = derivative(&g1).unwrap();
                 let at = |r: &Raw, t: f64| eval(r, t).unwrap()[0];
-                let [_, beta, _] = second_at_start(q, &k).unwrap();
                 let want = match order {
-                    Order::Tangent => (0.0, 1.0, beta * k[q + 1] / q as f64),
+                    Order::Tangent => (0.0, 1.0, 0.0),
                     Order::Curvature => (0.0, 0.0, 1.0),
                 };
                 assert!((at(&g, 0.0) - want.0).abs() < 1e-12, "{q} {order:?}");
@@ -352,12 +350,10 @@ mod tests {
             );
             let g = scalar(q, &k, &c);
             let g2 = derivative(&derivative(&g).unwrap()).unwrap();
-            let [_, beta, _] = second_at_start(q, &k).unwrap();
-            let want = match order {
-                Order::Tangent => beta * k[q + 1] / q as f64,
-                Order::Curvature => 1.0,
-            };
-            assert!((eval(&g2, 0.0).unwrap()[0] - want).abs() < 1e-9);
+            assert!(
+                (eval(&g2, 0.0).unwrap()[0] - f64::from(u8::from(order == Order::Curvature))).abs()
+                    < 1e-9
+            );
         }
     }
 
