@@ -1543,6 +1543,101 @@ fn replay_writes_frames_or_a_video_and_says_when_ffmpeg_is_missing() {
     assert!(!dir.join("part.gif.frames").exists());
 }
 
+#[test]
+fn render_and_replay_say_which_renderer_drew_and_the_cpu_can_be_asked_for() {
+    let dir = workdir("renderer");
+    let part = build_part(&dir);
+    let shot = path(&dir, "shot.png");
+    // auto: the GPU where this machine has an adapter, else the CPU.
+    let auto = cli(&["render", &part, "--out", &shot, "--size", "64x48"]).ok();
+    let said = &auto.json_lines()[0];
+    assert!(
+        said["renderer"] == "gpu" || said["renderer"] == "cpu",
+        "{said}"
+    );
+    let cpu = cli(&[
+        "render",
+        &part,
+        "--out",
+        &shot,
+        "--size",
+        "64x48",
+        "--renderer",
+        "cpu",
+    ])
+    .ok();
+    assert_eq!(cpu.json_lines()[0]["renderer"], "cpu");
+    let ran = cli(&["render", &part, "--out", &shot, "--renderer", "vulkan"]).failed(1);
+    assert!(ran.stderr.contains("vulkan"), "{}", ran.stderr);
+    let frames = path(&dir, "frames");
+    let ran = cli(&[
+        "replay",
+        &part,
+        "--out",
+        &frames,
+        "--size",
+        "64x48",
+        "--renderer",
+        "cpu",
+    ])
+    .ok();
+    assert_eq!(ran.json_lines()[0]["renderer"], "cpu");
+}
+
+#[test]
+fn view_replay_makes_a_video_of_an_animation_or_names_the_png_sequence() {
+    let dir = workdir("animation-video");
+    let part = build_part(&dir);
+    let empty = dir.join("no-path");
+    std::fs::create_dir_all(&empty).unwrap();
+    let frames = path(&dir, "sweep");
+    let video = path(&dir, "sweep.webm");
+    let replay = |video: &str| {
+        format!(
+            r#"{{"dir": "{frames}", "video": "{video}", "width": 64, "height": 48, "frames": 4, "renderer": "cpu",
+                "animate": [{{"variable": "width", "from": 30, "to": 50, "unit": "mm"}}]}}"#
+        )
+    };
+    // Without ffmpeg: refused before a frame is drawn, naming the
+    // PNG sequence.
+    let params = replay(&video);
+    let ran = cli_with_ffmpeg(
+        &["run", &part, "--cmd", "view.replay", "--params", &params],
+        empty.to_str().unwrap(),
+        None,
+    )
+    .failed(1);
+    assert!(ran.stderr.contains("PNG sequence"), "{}", ran.stderr);
+    assert!(ran.stderr.contains("ffmpeg"), "{}", ran.stderr);
+    assert!(!dir.join("sweep").exists());
+    // With ffmpeg, when this machine has it: a WebM, the frames kept.
+    let ffmpeg = std::env::var_os("PATH").and_then(|p| {
+        std::env::split_paths(&p)
+            .map(|d| d.join("ffmpeg"))
+            .find(|f| f.is_file())
+    });
+    let Some(ffmpeg) = ffmpeg else {
+        return;
+    };
+    let ran = cli_with_ffmpeg(
+        &["run", &part, "--cmd", "view.replay", "--params", &params],
+        empty.to_str().unwrap(),
+        ffmpeg.to_str(),
+    )
+    .ok();
+    let result = &ran.json_lines()[0];
+    assert_eq!(result["video"], video.as_str(), "{result}");
+    assert_eq!(result["frames"], 4);
+    let bytes = std::fs::read(&video).unwrap();
+    // The EBML header of a Matroska (WebM) file.
+    assert!(
+        bytes.starts_with(&[0x1a, 0x45, 0xdf, 0xa3]),
+        "{:?}",
+        &bytes[..8]
+    );
+    assert!(dir.join("sweep/frame-00003.png").is_file());
+}
+
 /// The task set's directory, `docs/tasks`.
 fn tasks_dir() -> String {
     Path::new(env!("CARGO_MANIFEST_DIR"))

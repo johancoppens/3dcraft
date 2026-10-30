@@ -39,7 +39,7 @@ pub const DEFAULT_FSTOP: f64 = 2.8;
 pub const VIEWPORT_ACCUMULATE: u32 = 16;
 
 /// The params text of a look, for the commands' documentation.
-pub const LOOK_PARAMS: &str = r#"{"mode": "plain|studio" = "studio", "environment": "studio|outdoor|workshop" = "studio", "exposure": stops from -10 to 10 = 0, "rotation": degrees = 0, "ground": boolean = true, "ao": boolean = true, "shadows": boolean = true, "tonemap": "agx|aces|linear" = "agx", "light": [azimuth, elevation] in degrees = the environment's brightest direction, "background": "environment|plain" = "environment", "reflections": boolean = true, "contactShadows": boolean = true, "specularShadow": boolean = true, "groundReflection": 0 to 1 = 0, "bloom": 0 to 1 = 0.04, "dof": {"fstop": number = 2.8, "focus": distance | [x, y, z] | "picked" = the centre of the model} | null = null, "accumulate": frames from 1 to 256 = 1 (the window: 16)}"#;
+pub const LOOK_PARAMS: &str = r#"{"mode": "plain|studio" = "studio", "environment": "studio|outdoor|workshop" = "studio", "exposure": stops from -10 to 10 = 0, "rotation": degrees = 0, "ground": boolean = true, "ao": boolean = true, "shadows": boolean = true, "tonemap": "agx|aces|linear" = "agx", "light": [azimuth, elevation] in degrees = the environment's brightest direction, "background": "environment|plain" = "environment", "reflections": boolean = true, "contactShadows": boolean = true, "specularShadow": boolean = true, "groundReflection": 0 to 1 = 0, "bloom": 0 to 1 = 0.04, "dof": {"fstop": number = 2.8, "focus": distance | [x, y, z] | "picked" = the centre of the model} | null = null, "accumulate": frames from 1 to 256 = 1 (the window and view.replay: 16)}"#;
 
 /// A look: plain (the default) or studio with its options.
 #[derive(Clone, Debug, PartialEq)]
