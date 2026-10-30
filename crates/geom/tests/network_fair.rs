@@ -278,13 +278,15 @@ fn profiles_across_held_edges() {
                     s.seam, s.low, s.high, s.signs, s.turns, s.steepest
                 );
             }
-            let mid = profile(&p.surface, 0.5, 2000);
-            let line: Vec<String> = mid
-                .iter()
-                .step_by(50)
-                .map(|x| format!("{:.3}:{:.4}", x.0, x.2))
-                .collect();
-            println!("  profile {}", line.join(" "));
+            for u in [0.5, 0.75] {
+                let mid = profile(&p.surface, u, 2000);
+                let line: Vec<String> = mid
+                    .iter()
+                    .step_by(if u == 0.5 { 50 } else { 10 })
+                    .map(|x| format!("{:.3}:{:.4}", x.0, x.2))
+                    .collect();
+                println!("  profile at u {u}: {}", line.join(" "));
+            }
         }
     }
 }
