@@ -2,6 +2,13 @@
 //! oracles. The fonts are fetched by `cargo xtask fonts` (never committed):
 //! `$CRAFT3D_FONTS`, or `assets/fonts/` of the repository.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+
 use craft3d_font::{
     Embedding, FontFile, LayoutOptions, Metrics, OutlineKind, Seg, StrokeFont, advance_width,
     filled_outline, layout,

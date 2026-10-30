@@ -184,7 +184,7 @@ fn collinear_overlap(a: &Seg, b: &Seg, eps: f64) -> bool {
     }
     let d = sub(a.end(), a.start());
     let len = d[0].hypot(d[1]);
-    if !(len > eps) {
+    if len.is_nan() || len <= eps {
         return false;
     }
     let off = |p: P2| cross(d, sub(p, a.start())) / len;
@@ -208,7 +208,7 @@ fn refine(a: &Seg, b: &Seg, ta: f64, tb: f64) -> (f64, f64) {
         // [da, −db] (ds, dt) = −f.
         let det = -cross(da, db);
         let scale = (da[0].hypot(da[1]) * db[0].hypot(db[1])).max(f64::MIN_POSITIVE);
-        if !(det.abs() > 1e-12 * scale) {
+        if det.is_nan() || det.abs() <= 1e-12 * scale {
             return (ta, tb);
         }
         let ds = (f[0] * db[1] - f[1] * db[0]) / det;

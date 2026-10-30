@@ -139,7 +139,8 @@ pub fn evaluate_text(
     Ok(out)
 }
 
-/// A font a text is set in.
+/// A font a text is set in (one per text, so its size does not matter).
+#[allow(clippy::large_enum_variant)]
 enum Face<'a> {
     File(FontFile<'a>),
     Stroke,
@@ -231,7 +232,7 @@ impl Track {
         match self {
             Track::Line { a, b } => {
                 let l = self.length();
-                if !(l > 0.0) {
+                if l.is_nan() || l <= 0.0 {
                     return None;
                 }
                 let t = [(b[0] - a[0]) / l, (b[1] - a[1]) / l];
@@ -253,7 +254,7 @@ impl Track {
                 let (a, b) = (*pts.get(k)?, *pts.get(k + 1)?);
                 let (s0, s1) = (*cum.get(k)?, *cum.get(k + 1)?);
                 let len = s1 - s0;
-                if !(len > 0.0) {
+                if len.is_nan() || len <= 0.0 {
                     return None;
                 }
                 let u = (s - s0) / len;
@@ -477,15 +478,14 @@ pub(crate) fn lay_out(
     let mut first_origin: Option<([f64; 2], [f64; 2])> = None;
     let mut places = Vec::with_capacity(laid.glyphs.len());
     for g in &laid.glyphs {
-        if !outlines.contains_key(&g.glyph) {
-            let o = face
-                .outline(g.glyph)
-                .map_err(|e| format!("{id}: glyph {:?}: {e}", g.ch))?;
-            outlines.insert(g.glyph, o);
-        }
-        let Some(outline) = outlines.get(&g.glyph) else {
-            continue;
+        let outline = match outlines.entry(g.glyph) {
+            std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::btree_map::Entry::Vacant(e) => e.insert(
+                face.outline(g.glyph)
+                    .map_err(|e| format!("{id}: glyph {:?}: {e}", g.ch))?,
+            ),
         };
+        let outline = &*outline;
         let advance = m.advance(g.glyph);
         // The map of this glyph from font units (relative to its origin)
         // to the sketch: a scale, a turn and a shift.

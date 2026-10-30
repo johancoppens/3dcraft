@@ -547,7 +547,7 @@ fn straight_piece(control: &[P2], tol: f64) -> Option<Curve2> {
     let (&start, &end) = (control.first()?, control.last()?);
     let d = sub(end, start);
     let len = length(d);
-    if !(len > tol) || control.len() < 3 {
+    if len.is_nan() || len <= tol || control.len() < 3 {
         return None;
     }
     let mut along = 0.0;

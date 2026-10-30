@@ -311,7 +311,7 @@ mod tests {
         assert_eq!(l.lines[0].0, 70.0); // "abc def"
         assert_eq!(l.lines[1].1, -100.0);
         // Right aligned: the last glyph of each line ends at x = 0.
-        let last = l.glyphs.iter().filter(|g| g.line == 1).last().unwrap();
+        let last = l.glyphs.iter().rfind(|g| g.line == 1).unwrap();
         assert_eq!(last.x + 10.0, 0.0);
         // Indices are positions in the text.
         assert_eq!(last.index, 10);
