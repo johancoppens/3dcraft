@@ -4399,11 +4399,18 @@ pub(crate) fn thumbnail_png(
     let (width, height) = THUMBNAIL_SIZE;
     let params = json!({ "width": width, "height": height });
     let p = Params::new("view.render", &params, VIEW_RENDER_PARAMS)?;
-    // The document as it is, not where the view is in its history: a
-    // scrubbed view is set aside while the thumbnail is drawn.
-    let scrub = std::mem::take(&mut session.document_mut()?.scrub);
+    // The document as it is, not where the view is in its history or
+    // its motion: a scrubbed view and a moment of the motion (with its
+    // collisions drawn red) are set aside while the thumbnail is drawn,
+    // so the picture saved into the file and kept for this revision is
+    // the document's.
+    let open = session.document_mut()?;
+    let scrub = std::mem::take(&mut open.scrub);
+    let motion = std::mem::take(&mut open.motion);
     let drawn = render_picture(session, &p);
-    session.document_mut()?.scrub = scrub;
+    let open = session.document_mut()?;
+    open.scrub = scrub;
+    open.motion = motion;
     let png = std::sync::Arc::new(drawn?.1);
     session.document_mut()?.thumbnail = Some((revision, std::sync::Arc::clone(&png)));
     Ok(png)

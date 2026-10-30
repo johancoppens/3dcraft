@@ -281,10 +281,13 @@ and *stable* fails; only the assertion is measured again, since the waterline do
 ## Over a motion
 
 A design that moves (its timeline `t`, see [The window](04-window.md#playing-a-motion)) is checked over the
-whole motion with `motion.check`: every assertion is measured at evenly spaced moments of `t`, on a copy, and
-the result says per assertion whether it held everywhere, the first `t` it failed at, and its least and
-greatest value with their `t`. Any measure works: `overlap` with `is` false gives the first collision,
-`clearance` the least gap and where it is. `measure` checks an assertion written in place without keeping it.
+whole motion with `motion.check`: every assertion is measured at evenly spaced moments of `t` (samples), on a
+copy, and the result says per assertion whether it held at the samples, the first sample it failed at
+(`firstFailure.t`, with `after`, the last sample before it that passed: the failure begins between the two),
+and its least and greatest value at the samples with their `t`. It proves what held at the samples, no more:
+a collision shorter than the spacing of the samples can be missed, so the result says `sampled: true`; take
+more samples, or a narrower `t` around a suspect moment, to look closer. Any measure works: `overlap` with
+`is` false gives the first sample that collides, `clearance` the least gap at the samples and where it is. `measure` checks an assertion written in place without keeping it.
 
 ```json
 [

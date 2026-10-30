@@ -26,18 +26,33 @@ change. `OpenDocument::shown` is, from the top: the motion's state at its `t`, e
 document. So the viewport, `view.render`, `view.pick`, screenshots and the scene cache (keyed by the shown state's
 `Arc`) follow it without knowing about it, while `document.inspect`, measures and exports see the document.
 
-A state is made by a `Sweep`: the document (or the scrubbed state) copied once, with a copy of the document's
-regeneration cache; each moment sets `t` on that copy, settles its sketches from where the previous moment left
-them (`settle_sketches_cached`, as an edit does), and regenerates it with the sweep's cache. Hence:
+A state is made by a `Sweep`: the document (or the scrubbed state) is its reference, with a copy of the
+document's regeneration cache; each moment is the reference with `t` set and its sketches carried there from the
+reference's own solution (below), regenerated with the sweep's cache. Hence:
 
 - **Only what depends on `t` is rebuilt.** A feature none of whose inputs changed is reused from the cache, its body
   the same `Arc`, so the session's store of meshes does not mesh it again. `view.motion` reports `rebuilt`: the
   features whose bodies differ from the document's. For a part this is honest work per frame: a feature driven by
   `t` is regenerated at every moment. Assemblies place their instances by transforms only; when they play `t` (phase
   2, after tracks A and B), a moment there costs a solve and transforms, no regeneration.
-- **Branch continuity.** Each moment starts from the one shown before it, sketches included, so a linkage solved in
-  a sketch stays on its branch as `t` moves in small steps. A jump (the slider dragged far) starts from wherever the
-  previous moment was; the assembly solver of track B adds the step cutting that keeps a branch over any jump.
+- **Branch continuity, and a moment that is a function of `t` alone.** Only the sketches carry state from one
+  solve to the next (the solver starts from their stored points; every other feature is rebuilt from the document
+  alone). Their state at `t` is defined without the path the view took: the reference's `t0` (the document's own
+  `t`) and its sketches as last solved are grid point 0; grid point `k` (`t0 + k·MOTION_STEP`, `MOTION_STEP` =
+  1/128, a crank driven by `360 deg * t` turns 2.8° a step) is grid point `k ∓ 1`, one step nearer to `t0`, settled
+  at its `t`; and the moment `t` is the grid point between `t0` and `t` nearest to `t` (`k` is `(t − t0) /
+  MOTION_STEP` rounded toward zero) settled at `t`. A grid point is made once per sweep and kept (the sketches only,
+  at most 4096 steps from `t0`). So a linkage solved in a sketch is carried to any `t` in steps of at most 1/128
+  and stays on its branch however far the view jumped, and a seek, a play, a trace, `motion.check` and the video
+  give the same state at the same `t`, bit for bit (the solver and the regeneration are deterministic, and the
+  cache keys a solve by everything it reads). A linkage whose branch turns faster than a step of 1/128 can still
+  jump branches; the assembly solver of track B adds step cutting for assemblies. Before 2026-10-30 each moment
+  settled from the one shown before it, so a state depended on the path and, in the window, on frame timing.
+- **The window and frame timing.** The picture at a `t` does not depend on timing: frame timing only decides which
+  values of `t` the player asks for (below); each is the state at its `t`.
+- **On the calling thread.** `view.motion` makes its state in the command, on the calling thread, also in the web
+  build, where the document's own regeneration and checks run elsewhere (`regen_elsewhere.rs`): a moment costs its
+  driven features' regeneration there, synchronously. Playing heavy motions in the web build is phase 2's worker.
 - An edit keeps the motion: the next `shown` sees another base and makes the state again from the edited document
   (a fresh sweep). An edit that takes the timeline away (renamed, given a unit) lets go of the motion.
 
@@ -45,9 +60,14 @@ them (`settle_sketches_cached`, as an edit does), and regenerates it with the sw
 
 With `collisions`, each state is checked for overlapping bodies: pairs of the visible bodies whose boxes (grown by
 twice the tolerance) meet go to the kernel's interference query (`kernel::boolean::interference`, as
-`document.interference`), on the shared thread pool, merged in pair order. An answer is kept by the two bodies'
-addresses (the bodies held, so an address is not reused), so a pair `t` does not move is asked once over the whole
-motion. A pair the kernel refuses is reported `unknown` with the reason, never clear and never red.
+`document.interference`), on the shared thread pool, merged in pair order. Each state's answers are built in a map
+of its own: from the memo where it has the pair, else asked. The memo keeps, for the next state, only that state's
+pairs (both bodies in it), by the two bodies' addresses and the tolerance's bits (the bodies held, so an address is
+not reused), so a pair `t` does not move is asked once over the motion, the memo is bounded by what one state
+checks (2000 pairs) and holds no body that no state shows. It is dropped on `{t: null}` and when the base changes
+(an edit, a scrub). How many answers are kept never changes what is found (before 2026-10-30 an overflowing memo
+was cleared after the answers were looked up in it, and a pair whose answer was dropped read as clear). A pair the
+kernel refuses is reported `unknown` with the reason, never clear and never red.
 
 The red is put into the state itself: the copy shown gets `COLLISION_COLOR` as the appearance of each colliding
 body's feature, and that feature's face colours are dropped (the nearest entry on a face's way back wins, so the
@@ -69,7 +89,12 @@ screenshot, `direct.rs` for the GPU drawing of the web build). `file.export {tra
 plane: the plane through it within the document's tolerance (spanned by the point farthest from the centroid and
 the point farthest from that line; every point checked against it), its normal turned to point along the world axis
 it is most along, x the world axis least along the normal laid into the plane, y the normal crossed with x. A trace
-that is not flat, or is a point or a straight line, is refused: it has no flat drawing.
+that is not flat, or is a point or a straight line, is refused: it has no flat drawing. Flat is measured against
+the document's tolerance and against a millionth of the trace's size (the greatest distance of a point from the
+centroid), whichever is less, never below the rounding of its coordinates: a path far smaller than the tolerance is
+not flat just because all of it lies within it. A trace is closed when it has more than 2 points and ends within the
+tolerance of where it began (two samples at 0 and 1 are a segment there and back), in `view.trace` and in the
+export alike. The export refuses `view`, `projection`, `hidden` and `tolerance`, which are about other drawings.
 
 ### Checks over the motion (`motion.check`)
 
@@ -77,18 +102,25 @@ Any assertion is checked over the motion, so interference and clearance over the
 own: `overlap` with `is: false` gives the first `t` of a collision, `clearance` with a `min` the least clearance and
 its `t`, and the same holds for any measure the document can assert (assemblies' measures by instance included,
 once they move). A copy of the document in a session of its own is set to each `t` (one undo step merged over the
-run, so the copy's history does not grow), and its assertions are measured as `document.check` measures them; the
-answers are kept by what they depend on, so a measure whose subjects `t` does not move is measured once. Per
-assertion: the worst status over the samples, the first failure, and the least and greatest value with their `t`.
-`measure` is an assertion written inline and checked only there. Sampling is what it is: a collision shorter than
-the spacing of the samples can be missed, and the report says the samples it took.
+run, so the copy's history does not grow) as the `Sweep` makes it, and its assertions are measured as
+`document.check` measures them; the answers are kept by what they depend on, so a measure whose subjects `t` does
+not move is measured once. Per assertion: the worst status over the samples; `firstFailure`, `firstError` and
+`firstNotProven`, each the first sample of that status with `after`, the last sample before it that passed (null
+when none did), so the change begins in `(after, t]`; and the least and greatest value at the samples with their
+`t`. `measure` is an assertion written inline and checked only there. It proves what held **at the samples**, no
+more: a collision shorter than the spacing of the samples can be missed, so the result says `sampled: true` and
+the samples it took; the summary and the guide say "at the samples", never "everywhere".
 
 ### Video (`view.replay {motion}`)
 
-`view.replay` with `motion` renders a frame per sample of `t` instead of a step per feature, each state made by one
-`Sweep` in order (with `collisions`, red as above), meshed once per distinct body, framed on the box around every
-state so the camera does not jump, captioned `t = …`, written as PNG frames that `craft3d-cli replay` turns into an
-MP4 or a GIF, as for the history.
+`view.replay` with `motion` renders a frame per sample of `t` instead of a step per feature (with `collisions`, red
+as above), framed on the box around every state so the camera does not jump, captioned `t = …`, written as PNG
+frames that `craft3d-cli replay` turns into an MP4 or a GIF, as for the history. Memory does not grow with the
+number of frames: the states are made twice rather than kept (each is a function of its `t`): once for the box
+the camera is framed on, then a chunk of twice the render threads at a time, whose distinct bodies are meshed
+(those of the chunk before that are still shown are kept, the others let go of; the meshes are found by the body's
+address in a map), drawn in parallel and dropped. Frames whose meshes need more than 20 000 000 triangles at once
+are refused with a coarser tolerance as the way out. The cost is a second regeneration of the driven features.
 
 ### The player
 
@@ -97,7 +129,8 @@ once the scene of the one asked for is there (no `view.motion` is waiting), by t
 (`MOTION_SECONDS` = 4 s from 0 to 1 at speed 1, a frame's time capped at a quarter of a second), so a heavy model
 plays slower rather than skipping its states. Loop starts again at 0; back and forth turns at 1 (and at 0 again with
 loop); without either it stops at 1. A slider over `t`, back and forth and collisions sit above the player's
-buttons; the caption over the viewport says `t = 0.250 · collision: Wall and Crank`. All of it is view state in
+buttons; the caption over the viewport says `t = 0.250 · collision: Wall and Crank`. Because a moment is a function of its `t` alone, a slow machine shows fewer
+moments of the same motion, never other ones. All of it is view state in
 `UiState::timeline` (`motion`, `bounce`, `collisions`), so `ui.set` plays the motion for whoever watches. It is
 offered only for a document with a timeline.
 
@@ -105,7 +138,12 @@ offered only for a document with a timeline.
 
 `crates/engine/tests/motion.rs`: a crank's corner traced against its closed-form circle (every sample within 1e-9,
 the polyline's length that of the inscribed polygon, closed, in the xy plane) and a sketch point driven by formulas
-of `t`; the trace written to SVG and DXF and the refusals; a moment that rebuilds only the driven feature, leaves the
+of `t`; a four-bar linkage in a sketch driven by `t` on its branch (closed form) over 97 samples and at moments
+reached by a jump; a seek and a play of `view.motion` giving bit-identical sketches and meshes, and the same
+sequence twice giving bit-identical bodies; a thumbnail saved during a red motion equal to one saved without; the
+`after` of a first failure; red over faces painted upstream; a two-sample trace not closed and a tiny bent one not
+flat; the export's refusals; a 65-frame replay in chunks against the closed form of its collisions; in
+`motion.rs`, collisions found in full however few answers the memo keeps; the trace written to SVG and DXF and the refusals; a moment that rebuilds only the driven feature, leaves the
 document as it was and is let go of when the timeline is renamed away; colliding bodies red in the scene's face
 colours and in the CPU renderer's picture, the common volume in closed form; clearance over the motion against
 `15 + 10 cos 2πt` (its first failure, the samples that fail, its minimum and maximum, every sample); the first
@@ -122,3 +160,9 @@ in `shell/player.rs`. `panic_hunt` runs the three commands with adversarial para
   Motion mode. Waiting for tracks A and B: `t` playing an assembly (its drivers, a solve per moment with branch
   continuity, transforms only), the assembly tree, sliders for free motions, dragging along a joint, the context
   entry for mates, the web build's worker for assemblies, and the three Jigs converted.
+- 2026-10-30: review fixes. Thumbnails set the motion aside as they set a scrub aside (a save during a red motion
+  wrote red bodies at its `t` into the file, and the revision's cached thumbnail kept them). Collisions from a map
+  per state (an overflowing memo dropped collisions). `motion.check` says "at the samples", `sampled: true`, `after`,
+  `firstError`, `firstNotProven`. Moments are functions of `t` alone (the fixed-step grid above). The motion replay
+  in chunks with a triangle budget and a map for the meshes. Trace: closed needs more than 2 points, flatness
+  relative to the size too, the export refuses `tolerance`; the memo's key has the tolerance.

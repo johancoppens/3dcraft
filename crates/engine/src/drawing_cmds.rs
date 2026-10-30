@@ -120,6 +120,10 @@ pub(crate) fn export(
                 &["feature", "construction", "xAxis", "origin", "gap", "width"],
                 "is about the outline of a sketch or of faces; a trace is drawn in its own plane",
             )?;
+            refuse(
+                &["tolerance"],
+                "is how closely an SVG follows a spline; a trace is a polyline of its samples, written exactly",
+            )?;
             crate::motion::trace_drawing(session, p, ID)?
         }
         ["sketch"] => {

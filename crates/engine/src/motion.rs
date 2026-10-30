@@ -11,18 +11,20 @@
 //!   is regenerated from a copy of the document's regeneration cache, so
 //!   only the features that depend on `t` are rebuilt and only their
 //!   bodies are meshed again (the session's store of meshes keeps the
-//!   others). Each state starts from the one shown before it, sketches
-//!   included, so a linkage solved in a sketch stays on its branch from
-//!   frame to frame. With `collisions` the bodies that overlap at that `t`
+//!   others). Each state is a function of its `t` alone: its sketches are
+//!   carried from the document's own solution in fixed steps of `t`
+//!   ([`Sweep`]), so a linkage solved in a sketch stays on its branch and
+//!   a seek shows what a play shows. With `collisions` the bodies that overlap at that `t`
 //!   are drawn red, in the scene itself, so every renderer and every
 //!   picture shows them.
 //! - `view.trace` samples the path of a named point (a vertex by its
 //!   persistent name, or a sketch point) over a range of `t`; the trace
 //!   is drawn in the viewport and `file.export {trace}` writes it as SVG
 //!   or DXF in its plane.
-//! - `motion.check` checks any assertion over a range of `t`: the first
-//!   `t` it fails at, and where its measure is least and greatest (a
-//!   clearance's minimum, the first collision of an `overlap`).
+//! - `motion.check` checks any assertion at samples of a range of `t`:
+//!   the first sample it fails at (and the last before it that passed),
+//!   and where its measure is least and greatest at the samples (a
+//!   clearance's minimum, the first sample of a collision).
 //!
 //! What is rebuilt, honestly: a part's features that depend on `t` are
 //! regenerated at every frame (only those). An assembly's instances are
@@ -33,7 +35,7 @@ use crate::commands::{Run, fail, length_unit, spec, vec3};
 use crate::params::Params;
 use crate::selection::{Resolver, SelectionKind, feature_named};
 use crate::{CommandError, CommandSpec, OpenDocument, Session, Workspace};
-use craft3d_doc::{Appearance, Document, EntityId, FeatureId};
+use craft3d_doc::{Appearance, Document, EntityId, FeatureId, FeatureKind};
 use craft3d_kernel::boolean::{Interference, interference};
 use craft3d_math::{Tolerance, Vec3};
 use craft3d_regen::{Regen, RegenCache};
@@ -47,7 +49,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "view.motion",
         "Show Motion",
         r#"{"t": number from 0 to 1 or null, "collisions": boolean = as before (false)}"#,
-        "Shows the model in the view at a moment t of its motion, without changing the document: not its variables, its undo history or its dirty state (view state, as view.scrub). The timeline is the document's variable t when it is a plain number (no unit): formulas of t drive the motion (a crank angle 360 deg * t). Only the features that depend on t are regenerated, and only their bodies are meshed again; each state starts from the one shown before it, sketches included, so a linkage stays on its branch. collisions: true draws the bodies that overlap at t red (in the scene, so view.render, the window and view.replay show it) and lists the pairs. t null shows the document as it is again. The viewport, view.render, view.pick and screenshots show the state; document.inspect, measures and exports still see the document itself. An edit keeps the motion (the state is made again from the edited document); a document whose t is gone or has a unit lets go of it. Without parameters it changes nothing. Returns t (null when not shown), the timeline (its variable and its value in the document), rebuilt (the features whose bodies differ from the document's at this t) and collisions ([{a, aName, b, bName, volume}], or unknown pairs with a reason) when asked for.",
+        "Shows the model in the view at a moment t of its motion, without changing the document: not its variables, its undo history or its dirty state (view state, as view.scrub). The timeline is the document's variable t when it is a plain number (no unit): formulas of t drive the motion (a crank angle 360 deg * t). Only the features that depend on t are regenerated, and only their bodies are meshed again; each state is a function of t alone: its sketches are carried from the document's own solution to t in fixed steps of t (1/128), so a linkage solved in a sketch stays on its branch, and a moment reached by a jump is the one a play reaches. collisions: true draws the bodies that overlap at t red (in the scene, so view.render, the window and view.replay show it) and lists the pairs. t null shows the document as it is again. The viewport, view.render, view.pick and screenshots show the state; document.inspect, measures and exports still see the document itself. An edit keeps the motion (the state is made again from the edited document); a document whose t is gone or has a unit lets go of it. Without parameters it changes nothing. Returns t (null when not shown), the timeline (its variable and its value in the document), rebuilt (the features whose bodies differ from the document's at this t) and collisions ([{a, aName, b, bName, volume}], or unknown pairs with a reason) when asked for.",
         doc: true,
         view_motion
     ),
@@ -55,7 +57,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "view.trace",
         "Trace Point",
         r#"{"point": vertex name or {sketch, entity}, "feature": id or name = the body that has the vertex, "t": [number, number] = [0, 1], "samples": integer = 65, "name": string = "Trace <n>", "clear": boolean or trace name}"#,
-        "Traces the path of a point over the motion: the point is a vertex by its persistent name (document.edges lists them; feature says which body when several have it) or a point of a sketch ({sketch, entity}); its place is taken at samples values of t evenly from t[0] to t[1] (both included), each state regenerated as view.motion makes it, from the one before. The trace is view state of the document (not saved, not undone, let go of at the next edit): the viewport draws it as a line, and file.export {path: *.svg or *.dxf, trace: name} writes it in its plane. A trace with the name of one kept replaces it; at most 32 are kept. clear: true removes every trace, clear: name one of them (nothing is traced then). The document needs a timeline (view.motion). A point that is gone at some t fails the trace, naming that t. Returns name, point, t, samples, points ([x, y, z] in the document's unit), length (along the polyline), closed (it ends where it began, within the tolerance), box and plane ({point, normal} when the path lies in one plane within the tolerance, else null).",
+        "Traces the path of a point over the motion: the point is a vertex by its persistent name (document.edges lists them; feature says which body when several have it) or a point of a sketch ({sketch, entity}); its place is taken at samples values of t evenly from t[0] to t[1] (both included), each state made as view.motion makes it. The trace is view state of the document (not saved, not undone, let go of at the next edit): the viewport draws it as a line, and file.export {path: *.svg or *.dxf, trace: name} writes it in its plane. A trace with the name of one kept replaces it; at most 32 are kept. clear: true removes every trace, clear: name one of them (nothing is traced then). The document needs a timeline (view.motion). A point that is gone at some t fails the trace, naming that t. Returns name, point, t, samples, points ([x, y, z] in the document's unit), length (along the polyline), closed (more than 2 points and it ends where it began, within the tolerance), box and plane ({point, normal} when the path lies in one plane within the tolerance and within a millionth of its size, else null).",
         doc: true,
         names: ["point"],
         view_trace
@@ -64,7 +66,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "motion.check",
         "Check Over Motion",
         r#"{"assertions": [name, ...] = every assertion (or only measure's), "measure": {the parameters of assert.add without name}, "t": [number, number] = [0, 1], "samples": integer = 33, "details": boolean = false}"#,
-        "Checks assertions over the motion: at samples values of t evenly from t[0] to t[1] (both included) the document is set to that t (as view.motion does, each state from the one before) and the assertions are measured as document.check measures them, on a copy: the document does not change. measure is an assertion written as for assert.add (without its name) and checked only here; assertions names the document's own (default: all of them, or none when measure is given). Any measure works: overlap with is false gives the first t of a collision, clearance with a min the least clearance and its t. Per assertion: status (failed when any sample fails; else error, notProven, passed, or inactive when it is never on), failed (how many samples), firstFailure ({t, measured, message}, null when none), min and max ({t, value} of a numeric measure), unit and expected; with details every sample ({t, status, measured}). ok is true when every assertion passed. The document needs a timeline (view.motion). At most 1000 samples.",
+        "Checks assertions at samples of the motion: at samples values of t evenly from t[0] to t[1] (both included) the document is set to that t (as view.motion makes it) and the assertions are measured as document.check measures them, on a copy: the document does not change. What it proves is what held at the samples: a failure between two samples (a collision shorter than their spacing) can be missed, so the result says sampled: true. measure is an assertion written as for assert.add (without its name) and checked only here; assertions names the document's own (default: all of them, or none when measure is given). Any measure works: overlap with is false gives the first sample that collides, clearance with a min the least clearance at the samples and its t. Per assertion: status (failed when any sample fails; else error, notProven, passed, or inactive when it is never on), failed (how many samples), firstFailure ({t, after, measured, message}: the first sample that fails, and after the last sample before it that passed, null when none did, so the failure begins in (after, t]; null when no sample fails), firstError and firstNotProven the same for samples that could not be measured or not proven, min and max ({t, value} of a numeric measure at the samples), unit and expected; with details every sample ({t, status, measured}). ok is true when every assertion passed at every sample. The document needs a timeline (view.motion). At most 1000 samples.",
         doc: true,
         motion_check
     ),
@@ -89,8 +91,9 @@ const MAX_COLLISION_BODIES: usize = 500;
 /// kernel for its collisions.
 const MAX_COLLISION_PAIRS: usize = 2_000;
 
-/// Most answers about pairs of bodies kept between states.
-const MAX_MEMO: usize = 4_096;
+/// Most answers about pairs of bodies kept from one state for the next
+/// (one state checks at most [`MAX_COLLISION_PAIRS`]).
+const MAX_MEMO: usize = MAX_COLLISION_PAIRS;
 
 /// The value of the timeline in `doc` (its variable `t` as the document
 /// has it), or why the document has none: a sentence for whoever asked.
@@ -166,32 +169,138 @@ pub(crate) fn samples_of((a, b): (f64, f64), samples: u64) -> Vec<f64> {
         .collect()
 }
 
-/// A run through states of one document over `t`: each state is the one
-/// before with `t` set (its sketches settled from where they were, so a
-/// linkage stays on its branch), regenerated with a cache of its own that
-/// starts as a copy of the document's.
+/// The spacing of the fixed steps of `t` a moment's sketches are carried
+/// along in, from the document's own solution (`Sweep`): 1/128, a crank
+/// turned by `360 deg * t` moves 2.8 degrees a step.
+pub(crate) const MOTION_STEP: f64 = 1.0 / 128.0;
+
+/// Most fixed steps between the document's own `t` and a moment shown.
+const MAX_STEPS: i64 = 4_096;
+
+/// States of one document over `t`, each a function of its `t` alone, so
+/// a seek and a play show the same state and the order the moments are
+/// asked in does not matter (docs/design/motion.md › *Branch continuity*).
+///
+/// The reference is the document as given (its own `t`, `t0`, and its
+/// sketches as last solved). The sketches at the **grid** point
+/// `t0 + k·MOTION_STEP` are those at the grid point one step nearer to
+/// `t0` settled at it (`k = 0` is the reference's own), each made once and
+/// kept; a moment `t` is the grid point between `t0` and `t` nearest to it
+/// (`k` = `(t - t0) / MOTION_STEP` rounded toward zero) settled at `t`,
+/// then regenerated. So a linkage solved in a sketch is carried from its
+/// own solution to any `t` in steps of at most `MOTION_STEP` and stays on
+/// its branch, whatever jump the view made.
 #[derive(Clone)]
 pub(crate) struct Sweep {
-    doc: Document,
+    reference: Document,
+    t0: f64,
+    /// The indices of the reference's sketch features.
+    sketches: Vec<usize>,
+    /// The sketches at the grid points made so far, by `k`.
+    grid: BTreeMap<i64, Arc<Vec<FeatureKind>>>,
     cache: RegenCache,
 }
 
 impl Sweep {
     pub(crate) fn new(base: &Document, cache: RegenCache) -> Self {
+        let sketches: Vec<usize> = base
+            .features
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| matches!(f.kind, FeatureKind::Sketch(_)))
+            .map(|(index, _)| index)
+            .collect();
+        let own: Vec<FeatureKind> = sketches
+            .iter()
+            .filter_map(|&k| base.features.get(k).map(|f| f.kind.clone()))
+            .collect();
+        let mut grid = BTreeMap::new();
+        grid.insert(0, Arc::new(own));
         Self {
-            doc: base.clone(),
+            reference: base.clone(),
+            // Without a timeline the first `at` says so.
+            t0: timeline(base).unwrap_or(0.0),
+            sketches,
+            grid,
             cache,
         }
     }
 
+    /// The reference with `sketches` put in and `t` set.
+    fn with(&self, sketches: &[FeatureKind], t: f64) -> Result<Document, String> {
+        let mut doc = self.reference.clone();
+        for (&index, kind) in self.sketches.iter().zip(sketches) {
+            if let Some(feature) = doc.features.get_mut(index) {
+                feature.kind = kind.clone();
+            }
+        }
+        doc.set_variable(TIMELINE, &literal(t))
+            .map_err(|e| e.to_string())?;
+        Ok(doc)
+    }
+
+    /// The sketches of `doc` (the reference's sketch features, in order).
+    fn sketches_of(&self, doc: &Document) -> Vec<FeatureKind> {
+        self.sketches
+            .iter()
+            .filter_map(|&k| doc.features.get(k).map(|f| f.kind.clone()))
+            .collect()
+    }
+
+    /// The sketches at grid point `k`, made from the nearest one made
+    /// toward it from 0.
+    fn grid_point(&mut self, k: i64) -> Result<Arc<Vec<FeatureKind>>, String> {
+        let step = k.signum();
+        let mut at = k;
+        // The nearest one made, on the way from k back to 0.
+        let mut from = loop {
+            if let Some(found) = self.grid.get(&at) {
+                break Arc::clone(found);
+            }
+            if at == 0 {
+                return Err("the motion lost its reference".to_string());
+            }
+            at -= step;
+        };
+        while at != k {
+            at += step;
+            let t = self.t0 + at as f64 * MOTION_STEP;
+            let mut doc = self.with(&from, t)?;
+            craft3d_regen::settle_sketches_cached(&mut doc, &mut self.cache);
+            let made = Arc::new(self.sketches_of(&doc));
+            self.grid.insert(at, Arc::clone(&made));
+            from = made;
+        }
+        Ok(from)
+    }
+
     /// The state at `t`, and its regeneration.
     pub(crate) fn at(&mut self, t: f64) -> Result<(Arc<Document>, Arc<Regen>), String> {
-        self.doc
-            .set_variable(TIMELINE, &literal(t))
-            .map_err(|e| e.to_string())?;
-        craft3d_regen::settle_sketches_cached(&mut self.doc, &mut self.cache);
-        let regen = craft3d_regen::regenerate_cached(&self.doc, &mut self.cache);
-        Ok((Arc::new(self.doc.clone()), Arc::new(regen)))
+        let doc = self.settled(t)?;
+        let regen = craft3d_regen::regenerate_cached(&doc, &mut self.cache);
+        Ok((Arc::new(doc), Arc::new(regen)))
+    }
+
+    /// The state at `t`, its sketches settled, not regenerated.
+    pub(crate) fn settled(&mut self, t: f64) -> Result<Document, String> {
+        timeline(&self.reference)?;
+        let k = if self.sketches.is_empty() {
+            0
+        } else {
+            let steps = ((t - self.t0) / MOTION_STEP).trunc();
+            if !steps.is_finite() || steps.abs() > MAX_STEPS as f64 {
+                return Err(format!(
+                    "the document's own t is {}, too far from {t} to carry its sketches there in steps of {MOTION_STEP} (at most {MAX_STEPS}); set t in the document nearer to it",
+                    self.t0
+                ));
+            }
+            // Within ±MAX_STEPS.
+            steps as i64
+        };
+        let from = self.grid_point(k)?;
+        let mut doc = self.with(&from, t)?;
+        craft3d_regen::settle_sketches_cached(&mut doc, &mut self.cache);
+        Ok(doc)
     }
 }
 
@@ -213,11 +322,26 @@ type Answer = Result<f64, String>;
 /// An answer with the two bodies it is about, held.
 type Held = (Arc<Body>, Arc<Body>, Answer);
 
+/// The key of an answer: the two bodies' addresses and the tolerance
+/// (its bits, linear then angular) the kernel was asked with.
+type PairKey = (usize, usize, u64, u64);
+
 /// Answers about pairs of bodies by the bodies' addresses, holding the
-/// bodies so that the addresses are not taken by others.
+/// bodies so that the addresses are not taken by others. It holds only
+/// pairs of the state asked about last (both bodies in it), so it is
+/// bounded by what one state checks and never holds bodies no state
+/// shows any more.
 #[derive(Clone, Default)]
 pub(crate) struct PairMemo {
-    answers: BTreeMap<(usize, usize), Held>,
+    answers: BTreeMap<PairKey, Held>,
+}
+
+impl PairMemo {
+    /// How many answers are kept.
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.answers.len()
+    }
 }
 
 fn address(body: &Arc<Body>) -> usize {
@@ -227,15 +351,29 @@ fn address(body: &Arc<Body>) -> usize {
 /// The pairs of the visible bodies of `regen` that overlap (or that the
 /// kernel could not decide), in the order of the bodies. Bodies whose
 /// boxes do not meet are clear at the cost of the boxes; a pair of bodies
-/// asked about before (the same bodies: a pair `t` does not move) is not
-/// asked again.
+/// asked about in the state before (the same bodies: a pair `t` does not
+/// move) is not asked again.
 pub(crate) fn collisions(
     doc: &Document,
     regen: &Regen,
     memo: &mut PairMemo,
 ) -> Result<Vec<Collision>, String> {
+    collisions_kept(doc, regen, memo, MAX_MEMO)
+}
+
+/// [`collisions`], keeping at most `keep` answers for the next state.
+/// Every answer of this state comes from this state's own map (the memo
+/// only saves asking the kernel again), so how many are kept never
+/// changes what is found.
+fn collisions_kept(
+    doc: &Document,
+    regen: &Regen,
+    memo: &mut PairMemo,
+    keep: usize,
+) -> Result<Vec<Collision>, String> {
     let tolerance = Tolerance::new(doc.tolerance.linear, doc.tolerance.angular)
         .ok_or("the document's tolerance is not positive and finite")?;
+    let bits = (tolerance.linear.to_bits(), tolerance.angular.to_bits());
     let bodies: Vec<(FeatureId, &Arc<Body>, Option<craft3d_math::Bbox3>)> = regen
         .bodies()
         .filter(|(id, _)| !doc.is_hidden(*id))
@@ -248,26 +386,38 @@ pub(crate) fn collisions(
         ));
     }
     let margin = 2.0 * tolerance.linear;
-    let mut pairs = Vec::new();
-    for (i, (_, a, abox)) in bodies.iter().enumerate() {
-        for (j, (_, b, bbox)) in bodies.iter().enumerate().skip(i.saturating_add(1)) {
+    let key = |a: &Arc<Body>, b: &Arc<Body>| (address(a), address(b), bits.0, bits.1);
+    // The pairs whose boxes meet, in order.
+    let mut meeting = Vec::new();
+    for (i, (_, _, abox)) in bodies.iter().enumerate() {
+        for (j, (_, _, bbox)) in bodies.iter().enumerate().skip(i.saturating_add(1)) {
             if crate::interference_cmds::boxes_meet(abox.as_ref(), bbox.as_ref(), margin) {
-                let key = (address(a), address(b));
-                if !memo.answers.contains_key(&key) {
-                    pairs.push((i, j));
-                }
+                meeting.push((i, j));
             }
         }
     }
-    if pairs.len() > MAX_COLLISION_PAIRS {
+    if meeting.len() > MAX_COLLISION_PAIRS {
         return Err(format!(
             "{} pairs of bodies have boxes that meet, more than the {MAX_COLLISION_PAIRS} one state checks",
-            pairs.len()
+            meeting.len()
         ));
     }
-    let indices: Vec<usize> = (0..pairs.len()).collect();
+    let mut answers: BTreeMap<(usize, usize), Answer> = BTreeMap::new();
+    let mut ask = Vec::new();
+    for &(i, j) in &meeting {
+        let (Some(a), Some(b)) = (bodies.get(i), bodies.get(j)) else {
+            continue;
+        };
+        match memo.answers.get(&key(a.1, b.1)) {
+            Some(held) => {
+                answers.insert((i, j), held.2.clone());
+            }
+            None => ask.push((i, j)),
+        }
+    }
+    let indices: Vec<usize> = (0..ask.len()).collect();
     let found = crate::interference_cmds::in_order(&indices, |n| {
-        let (i, j) = pairs.get(n).copied()?;
+        let (i, j) = ask.get(n).copied()?;
         let (a, b) = (bodies.get(i)?.1, bodies.get(j)?.1);
         Some(match interference(a, b, &tolerance) {
             Ok(Interference::Overlap(common)) => craft3d_topo::mass_properties(&common.body)
@@ -277,40 +427,39 @@ pub(crate) fn collisions(
             Err(e) => Err(e.to_string()),
         })
     });
-    if memo.answers.len().saturating_add(pairs.len()) > MAX_MEMO {
-        memo.answers.clear();
+    for (pair, answer) in ask.iter().zip(found) {
+        let answer = answer.unwrap_or_else(|| Err("the query stopped unexpectedly".to_string()));
+        answers.insert(*pair, answer);
     }
-    for ((i, j), answer) in pairs.iter().zip(found) {
-        let (Some(a), Some(b)) = (bodies.get(*i), bodies.get(*j)) else {
+    // Kept for the next state: this state's pairs only, the first `keep`.
+    memo.answers = meeting
+        .iter()
+        .take(keep)
+        .filter_map(|&(i, j)| {
+            let (a, b) = (bodies.get(i)?.1, bodies.get(j)?.1);
+            let answer = answers.get(&(i, j))?.clone();
+            Some((key(a, b), (Arc::clone(a), Arc::clone(b), answer)))
+        })
+        .collect();
+    let mut out = Vec::new();
+    for (&(i, j), answer) in &answers {
+        let (Some((ida, ..)), Some((idb, ..))) = (bodies.get(i), bodies.get(j)) else {
             continue;
         };
-        let answer = answer.unwrap_or_else(|| Err("the query stopped unexpectedly".to_string()));
-        memo.answers.insert(
-            (address(a.1), address(b.1)),
-            (Arc::clone(a.1), Arc::clone(b.1), answer),
-        );
-    }
-    let mut out = Vec::new();
-    for (i, (ida, a, abox)) in bodies.iter().enumerate() {
-        for (idb, b, bbox) in bodies.iter().skip(i.saturating_add(1)) {
-            if !crate::interference_cmds::boxes_meet(abox.as_ref(), bbox.as_ref(), margin) {
-                continue;
-            }
-            match memo.answers.get(&(address(a), address(b))).map(|e| &e.2) {
-                Some(Ok(volume)) if *volume > 0.0 => out.push(Collision {
-                    a: *ida,
-                    b: *idb,
-                    volume: Some(*volume),
-                    unknown: None,
-                }),
-                Some(Err(reason)) => out.push(Collision {
-                    a: *ida,
-                    b: *idb,
-                    volume: None,
-                    unknown: Some(reason.clone()),
-                }),
-                _ => {}
-            }
+        match answer {
+            Ok(volume) if *volume > 0.0 => out.push(Collision {
+                a: *ida,
+                b: *idb,
+                volume: Some(*volume),
+                unknown: None,
+            }),
+            Err(reason) => out.push(Collision {
+                a: *ida,
+                b: *idb,
+                volume: None,
+                unknown: Some(reason.clone()),
+            }),
+            Ok(_) => {}
         }
     }
     Ok(out)
@@ -433,6 +582,8 @@ impl OpenDocument {
             self.regen();
             let cache = self.cache.clone();
             self.motion.sweep = Some((Arc::clone(base), Sweep::new(base, cache)));
+            // The answers were about the bodies of another base.
+            self.motion.memo = PairMemo::default();
         }
         let (_, sweep) = self
             .motion
@@ -581,6 +732,7 @@ fn view_motion(session: &mut Session, params: &Value) -> Run {
         if t.is_none() {
             open.motion.state = None;
             open.motion.sweep = None;
+            open.motion.memo = PairMemo::default();
         }
     }
     if let Some(collisions) = collisions {
@@ -752,9 +904,16 @@ impl PointRef {
     }
 }
 
-/// The plane a polyline lies in within `tolerance`: a point of it and its
-/// normal, `None` when it does not lie in one or spans none (a point, a
-/// straight line).
+/// How far from its plane a trace may be, as a part of its size (the
+/// greatest distance of a point from its centre), besides the document's
+/// tolerance: a path much smaller than the tolerance is not flat just
+/// because all of it is within the tolerance.
+const FLAT_RELATIVE: f64 = 1e-6;
+
+/// The plane a polyline lies in, within `tolerance` and within
+/// [`FLAT_RELATIVE`] of its size (whichever is less, never below the
+/// rounding of its coordinates): a point of it and its normal, `None`
+/// when it does not lie in one or spans none (a point, a straight line).
 fn plane_of(points: &[Vec3], tolerance: f64) -> Option<(Vec3, Vec3)> {
     let count = points.len() as f64;
     let sum = points.iter().fold(Vec3::new(0.0, 0.0, 0.0), |s, p| s + *p);
@@ -765,6 +924,13 @@ fn plane_of(points: &[Vec3], tolerance: f64) -> Option<(Vec3, Vec3)> {
         .iter()
         .copied()
         .max_by(|a, b| (*a - center).length().total_cmp(&(*b - center).length()))?;
+    let size = (far - center).length();
+    let magnitude = points.iter().fold(0.0_f64, |m, p| {
+        m.max(p.x.abs()).max(p.y.abs()).max(p.z.abs())
+    });
+    let tolerance = tolerance
+        .min(FLAT_RELATIVE * size)
+        .max(64.0 * f64::EPSILON * magnitude);
     let along = (far - center).normalized()?;
     let off = points.iter().copied().max_by(|a, b| {
         let d = |p: Vec3| (p - center).cross(along).length();
@@ -785,6 +951,16 @@ fn plane_of(points: &[Vec3], tolerance: f64) -> Option<(Vec3, Vec3)> {
         .iter()
         .all(|p| (*p - center).dot(normal).abs() <= tolerance)
         .then_some((center, normal))
+}
+
+/// Whether a polyline is closed: more than 2 points (two are a segment
+/// there and back, not a loop) and its last within `tolerance` of its
+/// first. `view.trace` and its export say the same.
+fn ends_where_it_began(points: &[Vec3], tolerance: f64) -> bool {
+    match (points.first(), points.last()) {
+        (Some(a), Some(b)) => points.len() > 2 && (*a - *b).length() <= tolerance,
+        _ => false,
+    }
 }
 
 fn polyline_length(points: &[Vec3]) -> f64 {
@@ -878,10 +1054,7 @@ fn view_trace(session: &mut Session, params: &Value) -> Run {
         point: point.describe(),
         points: points.clone(),
     });
-    let closed = match (points.first(), points.last()) {
-        (Some(a), Some(b)) => (*a - *b).length() <= tolerance,
-        _ => false,
-    };
+    let closed = ends_where_it_began(&points, tolerance);
     let bbox = craft3d_math::Bbox3::from_points(points.iter().copied());
     let plane = plane_of(&points, tolerance).map_or(
         Value::Null,
@@ -952,10 +1125,7 @@ pub(crate) fn trace_drawing(
         .iter()
         .map(|p| [(*p - center).dot(x), (*p - center).dot(y)])
         .collect();
-    let closed = match (trace.points.first(), trace.points.last()) {
-        (Some(a), Some(b)) => trace.points.len() > 2 && (*a - *b).length() <= tolerance,
-        _ => false,
-    };
+    let closed = ends_where_it_began(&trace.points, tolerance);
     let mut ends = flat.clone();
     if closed {
         ends.pop();
@@ -1091,15 +1261,24 @@ fn motion_check(session: &mut Session, params: &Value) -> Run {
             samples: Vec::new(),
         })
         .collect();
+    // Each sample is the state view.motion shows at its t (a function of
+    // t alone), put into the copy as one undo step merged over the run.
+    let mut sweep = {
+        let open = scratch.document_mut()?;
+        Sweep::new(open.history.current(), open.cache.clone())
+    };
     for t in samples_of(range, samples) {
-        let text = literal(t);
-        crate::commands::edit_merging(
-            &mut scratch,
-            ID,
+        let state = sweep
+            .settled(t)
+            .map_err(|e| CommandError::new(format!("{ID}: at t = {t}: {e}")))?;
+        scratch.document_mut()?.history.apply_merging(
             "Motion",
             Some("motion.check.t"),
             true,
-            |doc| doc.set_variable(TIMELINE, &text),
+            |doc| {
+                *doc = state;
+                Ok::<(), CommandError>(())
+            },
         )?;
         let checks = scratch.assertion_checks(crate::assert_check::Wait::All)?;
         for entry in &mut over {
@@ -1137,10 +1316,23 @@ fn motion_check(session: &mut Session, params: &Value) -> Run {
                 S::Passed
             };
             all_passed &= status == S::Passed;
-            let first = entry.samples.iter().find(|x| x.1 == S::Failed).map_or(
-                Value::Null,
-                |(t, _, value, message)| json!({"t": t, "measured": value, "message": message}),
-            );
+            // The first sample of a status, with the last one before it
+            // that passed: the change lies between the two.
+            let first = |status: S| {
+                let Some(at) = entry.samples.iter().position(|x| x.1 == status) else {
+                    return Value::Null;
+                };
+                let after = entry
+                    .samples
+                    .iter()
+                    .take(at)
+                    .rev()
+                    .find(|x| x.1 == S::Passed)
+                    .map_or(Value::Null, |x| x.0.into());
+                entry.samples.get(at).map_or(Value::Null, |(t, _, value, message)| {
+                    json!({"t": t, "after": after, "measured": value, "message": message})
+                })
+            };
             let numbers = entry
                 .samples
                 .iter()
@@ -1165,7 +1357,9 @@ fn motion_check(session: &mut Session, params: &Value) -> Run {
                     .count()
                     .into(),
             );
-            out.insert("firstFailure".into(), first);
+            out.insert("firstFailure".into(), first(S::Failed));
+            out.insert("firstError".into(), first(S::Error));
+            out.insert("firstNotProven".into(), first(S::NotProven));
             out.insert("min".into(), min);
             out.insert("max".into(), max);
             out.insert("unit".into(), entry.unit.clone().into());
@@ -1186,6 +1380,7 @@ fn motion_check(session: &mut Session, params: &Value) -> Run {
     Ok(json!({
         "t": [range.0, range.1],
         "samples": samples,
+        "sampled": true,
         "ok": all_passed,
         "assertions": results,
     }))
@@ -1194,6 +1389,46 @@ fn motion_check(session: &mut Session, params: &Value) -> Run {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every pair of three bodies in one place collides, however few
+    /// answers are kept between states: an answer kept or not is asked
+    /// again or taken from the memo, never taken for clear.
+    #[test]
+    fn collisions_do_not_vanish_when_few_answers_are_kept() {
+        let mut s = Session::new(Workspace::none());
+        s.execute("file.new", &json!({})).unwrap();
+        for name in ["A", "B", "C"] {
+            s.execute(
+                "feature.block",
+                &json!({"name": name, "size": ["10 mm", "10 mm", "10 mm"]}),
+            )
+            .unwrap();
+        }
+        let open = s.document_mut().unwrap();
+        let doc = Arc::clone(open.history.current());
+        let regen = open.regen();
+        let mut memo = PairMemo::default();
+        for keep in [1, 1, 0, 1, 3, 3, 1] {
+            let found = collisions_kept(&doc, &regen, &mut memo, keep).unwrap();
+            assert_eq!(found.len(), 3, "keeping {keep}: {found:?}");
+            assert!(found.iter().all(|c| c.volume.is_some()));
+            assert!(memo.len() <= keep, "{} kept, at most {keep}", memo.len());
+        }
+        // A state without those bodies lets go of their answers.
+        s.execute("feature.delete", &json!({"feature": "C"}))
+            .unwrap();
+        s.execute("feature.delete", &json!({"feature": "B"}))
+            .unwrap();
+        let open = s.document_mut().unwrap();
+        let doc = Arc::clone(open.history.current());
+        let regen = open.regen();
+        assert!(
+            collisions_kept(&doc, &regen, &mut memo, 3)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(memo.len(), 0);
+    }
 
     #[test]
     fn samples_run_from_end_to_end() {

@@ -656,3 +656,311 @@ fn bad_parameters_are_errors() {
         &["samples"],
     );
 }
+
+/// The thumbnail inside a saved `.3dcraft` file.
+fn saved_thumbnail(s: &mut Session, dir: &std::path::Path, name: &str) -> Vec<u8> {
+    let saved = run(s, "file.save", json!({"path": name, "thumbnail": true}));
+    assert_eq!(saved["thumbnail"], true, "{saved}");
+    let bytes = std::fs::read(dir.join(name)).unwrap();
+    craft3d_format::thumbnail(&bytes).unwrap().unwrap()
+}
+
+#[test]
+fn a_thumbnail_saved_during_a_red_motion_is_the_documents() {
+    let dir = workdir("motion", "thumbnail");
+    let mut plain = session_in(&dir);
+    swinging(&mut plain, "20 mm");
+    let without = saved_thumbnail(&mut plain, &dir, "plain.3dcraft");
+    let mut moving = session_in(&dir);
+    swinging(&mut moving, "20 mm");
+    let hit = run(
+        &mut moving,
+        "view.motion",
+        json!({"t": 0.5, "collisions": true}),
+    );
+    assert_eq!(hit["collisions"].as_array().unwrap().len(), 1, "{hit}");
+    let during = saved_thumbnail(&mut moving, &dir, "moving.3dcraft");
+    assert_eq!(
+        during, without,
+        "the motion's red t = 0.5 went into the file"
+    );
+    // The motion is still shown, and the thumbnail kept for this
+    // revision is the document's after it is let go of.
+    assert_eq!(moving.motion().unwrap().t, 0.5);
+    run(&mut moving, "view.motion", json!({"t": null}));
+    let after = saved_thumbnail(&mut moving, &dir, "after.3dcraft");
+    assert_eq!(after, without);
+}
+
+#[test]
+fn motion_check_says_what_its_samples_prove() {
+    let mut s = session();
+    swinging(&mut s, "10 mm");
+    run(
+        &mut s,
+        "assert.add",
+        json!({"name": "gap", "measure": "clearance", "from": "Wall", "to": "Slider", "min": "6 mm"}),
+    );
+    let out = run(&mut s, "motion.check", json!({"samples": 33}));
+    assert_eq!(out["sampled"], true);
+    let gap = &out["assertions"][0];
+    // The first failing sample is 14/32; the one before it passed, so
+    // the clearance first drops below 6 mm in (13/32, 14/32].
+    assert_eq!(gap["firstFailure"]["t"], 14.0 / 32.0);
+    assert_eq!(gap["firstFailure"]["after"], 13.0 / 32.0);
+    assert_eq!(gap["firstError"], Value::Null);
+    assert_eq!(gap["firstNotProven"], Value::Null);
+    // From the first sample on: nothing passed before it.
+    let late = run(&mut s, "motion.check", json!({"t": [0.5, 1], "samples": 3}));
+    assert_eq!(late["assertions"][0]["firstFailure"]["t"], 0.5);
+    assert_eq!(late["assertions"][0]["firstFailure"]["after"], Value::Null);
+}
+
+/// A four-bar linkage in a sketch, driven by `t`: the crank pin B turns
+/// round the origin at radius 10 mm, the rocker pivot D is fixed at
+/// (40, 0), and the coupler pin C is 40 mm from B and 30 mm from D,
+/// started on the branch above the line BD. A crank-rocker (10 + 40 <
+/// 30 + 40), and |BD| stays within (10, 70), so the branch never meets
+/// its other one. Returns C's entity. A block driven by `t` gives a body.
+fn four_bar(s: &mut Session) -> String {
+    run(s, "file.new", json!({}));
+    run(s, "variable.set", json!({"name": "t", "expr": "0"}));
+    run(
+        s,
+        "sketch.create",
+        json!({"plane": "xy", "name": "Linkage"}),
+    );
+    let point = |s: &mut Session, at: [f64; 2]| {
+        let p = run(s, "sketch.point", json!({"sketch": "Linkage", "at": at}));
+        p["entity"].as_str().unwrap().to_string()
+    };
+    let b = point(s, [10.0, 0.0]);
+    let d = point(s, [40.0, 0.0]);
+    let c = point(s, [36.667, 29.814]);
+    let constrain = |s: &mut Session, kind: &str, entities: Vec<&str>, value: &str| {
+        run(
+            s,
+            "sketch.constrain",
+            json!({"sketch": "Linkage", "type": kind, "entities": entities, "value": value}),
+        );
+    };
+    constrain(s, "x", vec![&b], "10 mm * cos(360 deg * t)");
+    constrain(s, "y", vec![&b], "10 mm * sin(360 deg * t)");
+    constrain(s, "x", vec![&d], "40 mm");
+    constrain(s, "y", vec![&d], "0 mm");
+    constrain(s, "distance", vec![&b, &c], "40 mm");
+    constrain(s, "distance", vec![&d, &c], "30 mm");
+    run(
+        s,
+        "feature.block",
+        json!({"name": "Crank", "size": ["2 mm", "2 mm", "2 mm"],
+               "position": ["10 mm * cos(360 deg * t)", "10 mm * sin(360 deg * t)", "5 mm"]}),
+    );
+    c
+}
+
+/// C of the four-bar at `t` on the branch it starts on, in closed form.
+fn coupler_at(t: f64) -> [f64; 2] {
+    let (bx, by) = (10.0 * (TAU * t).cos(), 10.0 * (TAU * t).sin());
+    let (dx, dy) = (40.0 - bx, -by);
+    let d = dx.hypot(dy);
+    let a = (40.0_f64.powi(2) - 30.0_f64.powi(2) + d * d) / (2.0 * d);
+    let h = (40.0_f64.powi(2) - a * a).sqrt();
+    let (ux, uy) = (dx / d, dy / d);
+    [bx + a * ux - h * uy, by + a * uy + h * ux]
+}
+
+#[test]
+fn a_sketch_linkage_driven_by_t_stays_on_its_branch() {
+    let mut s = session();
+    let c = four_bar(&mut s);
+    let near = |got: [f64; 3], t: f64| {
+        let want = coupler_at(t);
+        assert!(
+            (got[0] - want[0]).abs() < 1e-6 && (got[1] - want[1]).abs() < 1e-6,
+            "t = {t}: {got:?} is not on the branch at {want:?}"
+        );
+    };
+    let out = run(
+        &mut s,
+        "view.trace",
+        json!({"point": {"sketch": "Linkage", "entity": c}, "samples": 97}),
+    );
+    for (i, p) in out["points"].as_array().unwrap().iter().enumerate() {
+        near(point(p), i as f64 / 96.0);
+    }
+    // A moment reached by a jump is on the branch too: no state before
+    // it is needed.
+    for t in [0.6, 0.35, 0.95] {
+        let jump = run(
+            &mut s,
+            "view.trace",
+            json!({"point": {"sketch": "Linkage", "entity": c}, "t": [t, t], "samples": 2, "name": "Jump"}),
+        );
+        near(point(&jump["points"][0]), t);
+    }
+}
+
+#[test]
+fn a_seek_and_a_play_show_the_same_state() {
+    let mut played = session();
+    let c = four_bar(&mut played);
+    let mut sought = session();
+    four_bar(&mut sought);
+    for k in 1..=70 {
+        run(
+            &mut played,
+            "view.motion",
+            json!({"t": f64::from(k) / 100.0}),
+        );
+    }
+    run(&mut sought, "view.motion", json!({"t": 0.7}));
+    let a = played.scene(None).unwrap().unwrap();
+    let b = sought.scene(None).unwrap().unwrap();
+    assert_eq!(a.sketches, b.sketches, "bit for bit");
+    assert_eq!(a.mesh.positions, b.mesh.positions);
+    // And view.trace: its last sample, played to from 0, is the moment
+    // sought on its own.
+    let along = run(
+        &mut played,
+        "view.trace",
+        json!({"point": {"sketch": "Linkage", "entity": c}, "t": [0, 0.7], "samples": 71}),
+    );
+    let alone = run(
+        &mut played,
+        "view.trace",
+        json!({"point": {"sketch": "Linkage", "entity": c}, "t": [0.7, 0.7], "samples": 2}),
+    );
+    assert_eq!(along["points"][70], alone["points"][0]);
+    // Back and forth to the same t: the same state again.
+    run(&mut played, "view.motion", json!({"t": 0.2}));
+    run(&mut played, "view.motion", json!({"t": 0.7}));
+    let again = played.scene(None).unwrap().unwrap();
+    assert_eq!(again.sketches, b.sketches);
+}
+
+#[test]
+fn the_same_sequence_gives_bit_identical_bodies() {
+    let moments = [0.1, 0.45, 0.3, 0.9, 0.0, 0.62];
+    let mut scenes = Vec::new();
+    for _ in 0..2 {
+        let mut s = session();
+        four_bar(&mut s);
+        let mut seen = Vec::new();
+        for t in moments {
+            run(&mut s, "view.motion", json!({"t": t}));
+            let scene = s.scene(None).unwrap().unwrap();
+            seen.push((scene.mesh.positions.clone(), scene.sketches.clone()));
+        }
+        scenes.push(seen);
+    }
+    assert_eq!(scenes[0], scenes[1]);
+}
+
+#[test]
+fn collisions_are_red_over_faces_painted_upstream() {
+    let mut s = session();
+    swinging(&mut s, "20 mm");
+    run(
+        &mut s,
+        "face.appearance",
+        json!({"faces": ["F2:face(1)"], "color": "#2f6fd6"}),
+    );
+    run(
+        &mut s,
+        "feature.transform",
+        json!({"source": "Slider", "translate": [0, 1, 0], "name": "Moved"}),
+    );
+    let hit = run(&mut s, "view.motion", json!({"t": 0.5, "collisions": true}));
+    let pairs = hit["collisions"].as_array().unwrap();
+    assert_eq!(pairs.len(), 1, "{hit}");
+    assert_eq!(pairs[0]["bName"], "Moved");
+    let scene = s.scene(None).unwrap().unwrap();
+    let red = scene
+        .face_colors
+        .iter()
+        .filter(|(_, c)| *c == COLLISION_COLOR)
+        .count();
+    // Every face of the wall and of the moved slider, the one painted
+    // blue upstream included.
+    assert_eq!(red, 12);
+    assert!(
+        scene.face_colors.iter().all(|(_, c)| c == COLLISION_COLOR),
+        "a colour other than red is left"
+    );
+}
+
+#[test]
+fn a_trace_of_two_samples_is_not_closed_and_a_tiny_bent_one_is_not_flat() {
+    let mut s = session();
+    crank(&mut s);
+    let edges = run(&mut s, "document.edges", json!({"feature": "Crank"}));
+    let name = edges["vertices"][0]["name"].as_str().unwrap().to_string();
+    // There and back at t = 0 and 1: a segment of no length, not a loop.
+    let two = run(&mut s, "view.trace", json!({"point": name, "samples": 2}));
+    assert_eq!(two["closed"], false);
+    // A path 0.01 mm across bent 5e-7 mm out of its plane: within the
+    // document's tolerance (1e-6 mm), but 5e-5 of its size.
+    run(&mut s, "file.new", json!({}));
+    run(&mut s, "variable.set", json!({"name": "t", "expr": "0"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Tiny", "size": ["2 mm", "2 mm", "2 mm"],
+               "position": ["0.01 mm * cos(360 deg * t)", "0.01 mm * sin(360 deg * t)", "0.0000005 mm * sin(720 deg * t)"]}),
+    );
+    let edges = run(&mut s, "document.edges", json!({"feature": "Tiny"}));
+    let name = edges["vertices"][0]["name"].as_str().unwrap().to_string();
+    let bent = run(&mut s, "view.trace", json!({"point": name, "samples": 33}));
+    assert_eq!(bent["plane"], Value::Null, "{}", bent["plane"]);
+}
+
+#[test]
+fn a_trace_export_refuses_what_does_not_apply_to_it() {
+    let dir = workdir("motion", "trace-refusals");
+    let mut s = session_in(&dir);
+    crank(&mut s);
+    let edges = run(&mut s, "document.edges", json!({"feature": "Crank"}));
+    let name = edges["vertices"][0]["name"].as_str().unwrap().to_string();
+    run(
+        &mut s,
+        "view.trace",
+        json!({"point": name, "samples": 17, "name": "Foot"}),
+    );
+    for (key, value) in [
+        ("view", json!("top")),
+        ("hidden", json!("dashed")),
+        ("tolerance", json!(0.01)),
+    ] {
+        let mut params = json!({"path": "foot.svg", "trace": "Foot"});
+        params[key] = value;
+        refused(&mut s, "file.export", params, &[key]);
+    }
+}
+
+#[test]
+fn a_long_motion_replays_in_chunks_with_every_frame() {
+    let dir = workdir("motion", "replay-long");
+    let mut s = session_in(&dir);
+    swinging(&mut s, "20 mm");
+    let out = run(
+        &mut s,
+        "view.replay",
+        json!({"dir": "frames", "width": 32, "height": 24, "motion": {"frames": 65, "collisions": true}}),
+    );
+    assert_eq!(out["frames"], 65);
+    let frames = out["motion"]["frames"].as_array().unwrap();
+    // The slider's left side 15 + 20 cos(2π t) mm is inside the wall
+    // (below 0) for cos(2π t) < -0.75.
+    for (k, f) in frames.iter().enumerate() {
+        let t = k as f64 / 64.0;
+        assert_eq!(number(&f["t"]), t);
+        let inside = 15.0 + 20.0 * (TAU * t).cos() < 0.0;
+        assert_eq!(
+            f["collisions"].as_u64().unwrap(),
+            u64::from(inside),
+            "t = {t}"
+        );
+        assert!(dir.join(format!("frames/frame-{k:05}.png")).exists());
+    }
+}
