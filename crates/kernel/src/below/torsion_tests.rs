@@ -46,6 +46,7 @@ fn twist(body: &Body, plane: &CutPlane, offset: f64, k: f64) -> Torsion {
         &tess,
     )
     .unwrap();
+    let t = t.unwrap();
     eprintln!(
         "J {:.9e} change {:.2e} shear ({:.6e}, {:.6e}) Cw {:.6e} converged {} elements {} rounds {} in {:.0} ms",
         t.constant,
@@ -250,6 +251,7 @@ fn a_thin_channel_matches_the_open_thin_walled_forms() {
         &tess,
     )
     .unwrap();
+    let t = t.unwrap();
     assert!(t.converged);
     let thin = (100.0 + 2.0 * 50.0) * 8.0 / 3.0;
     near(t.constant, thin, 0.08, "Σ b t³ / 3");
@@ -338,7 +340,7 @@ fn what_cannot_be_twisted_is_said() {
     let run = |offset: f64, options: TorsionOptions| {
         section_torsion(&[&body], &upright(), offset, &tol(k), &options, &tess)
     };
-    assert!(run(5.0, TorsionOptions::default()).is_err());
+    assert!(run(5.0, TorsionOptions::default()).unwrap().1.is_none());
     assert!(run(f64::NAN, TorsionOptions::default()).is_err());
     for (tolerance, max_elements) in [(0.0, 100), (f64::NAN, 100), (1e-4, 0), (1e-4, usize::MAX)] {
         let options = TorsionOptions {
@@ -355,7 +357,10 @@ fn what_cannot_be_twisted_is_said() {
             max_elements: cap,
         };
         match run(0.5, options) {
-            Ok((_, t)) => assert!(!t.converged && t.elements <= cap),
+            Ok((_, t)) => {
+                let t = t.unwrap();
+                assert!(!t.converged && t.elements <= cap);
+            }
             Err(e) => assert!(matches!(e, CutError::Torsion(_))),
         }
     }
@@ -396,7 +401,7 @@ fn what_cannot_be_twisted_is_said() {
         max_elements: 20_000,
     };
     let result = section_torsion(&[&sliver], &upright(), 0.5, &tol(k), &options, &tess);
-    if let Ok((_, t)) = result
+    if let Ok((_, Some(t))) = result
         && t.converged
     {
         near(t.constant, 1000.0 * 1e-6 / 3.0, 0.01, "sliver");

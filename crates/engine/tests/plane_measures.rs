@@ -399,3 +399,111 @@ fn what_cannot_float_is_refused() {
             .is_err()
     );
 }
+
+/// The welded beam of the repro (plan/repro/repro-welded-beam-2): a box
+/// 100 × 150 with walls of 3 and 4 mm cut across. measure.section gives
+/// its torsion constant near Bredt's thin-walled 4 A_m² / ∮ ds / t (within
+/// the thin-wall error) and its shear centre at the centroid; the
+/// assertion and output measures give the same numbers; torsion: false
+/// leaves them out.
+#[test]
+fn a_welded_box_twists_near_bredt() {
+    let mut s = Session::new(Workspace::none());
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Outer", "size": ["500 mm", "100 mm", "150 mm"]}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Inner", "size": ["502 mm", "94 mm", "142 mm"], "position": ["-1 mm", "3 mm", "4 mm"]}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"name": "Box", "op": "subtract", "target": "Outer", "tool": "Inner"}),
+    );
+    let started = std::time::Instant::now();
+    let section = run(
+        &mut s,
+        "measure.section",
+        json!({"of": "Box", "plane": "yz", "offset": "250 mm"}),
+    );
+    eprintln!(
+        "measure.section of the welded box: {:.1} ms, {}",
+        started.elapsed().as_secs_f64() * 1e3,
+        section
+    );
+    let (w, h): (f64, f64) = (97.0, 146.0);
+    let bredt = 4.0 * (w * h).powi(2) / (2.0 * w / 4.0 + 2.0 * h / 3.0);
+    let j = section["torsion"].as_f64().unwrap();
+    assert!((j - bredt).abs() <= 0.03 * bredt, "J {j}, Bredt {bredt}");
+    assert_eq!(section["torsionSolve"]["converged"], true, "{section}");
+    let centre = &section["shearCentre"];
+    close(&centre[1], 50.0, "shear centre y");
+    close(&centre[2], 75.0, "shear centre z");
+    assert!(section["warping"].as_f64().unwrap() > 0.0);
+    let plain = run(
+        &mut s,
+        "measure.section",
+        json!({"of": "Box", "plane": "yz", "offset": "250 mm", "torsion": false}),
+    );
+    assert!(plain.get("torsion").is_none(), "{plain}");
+    let asserted = run(
+        &mut s,
+        "assert.add",
+        json!({"name": "stiff", "measure": "sectionTorsion", "of": "Box", "plane": "yz", "offset": "250 mm", "min": bredt * 0.97}),
+    );
+    assert_eq!(asserted["status"], "passed", "{asserted}");
+    let output = run(
+        &mut s,
+        "variable.measure",
+        json!({"name": "sc", "measure": "sectionShearCentre", "of": "Box", "plane": "yz", "offset": "250 mm", "axis": "z"}),
+    );
+    let value = output["output"]["value"]
+        .as_f64()
+        .or_else(|| output["value"].as_f64())
+        .unwrap_or_else(|| panic!("{output}"));
+    assert!((value - 75.0).abs() < 1e-3, "{output}");
+}
+
+/// The torsion's parameters are checked, and a plane that cuts nothing
+/// is an error, never a panic.
+#[test]
+fn what_cannot_be_twisted_is_refused() {
+    let mut s = block(400.0, 100.0, 100.0);
+    for bad in [
+        json!({"offset": 50, "torsionTolerance": 0}),
+        json!({"offset": 50, "torsionTolerance": "x"}),
+        json!({"offset": 50, "maxElements": 0}),
+        json!({"offset": 50, "maxElements": 1e9}),
+        json!({"offset": 50, "maxElements": -3}),
+        json!({"offset": 50, "torsion": "yes"}),
+    ] {
+        refused(&mut s, "measure.section", bad);
+    }
+    // A plane that cuts nothing: no torsion, and the measure an error.
+    let nothing = run(&mut s, "measure.section", json!({"offset": 500}));
+    assert!(nothing["torsion"].is_null(), "{nothing}");
+    let missing = run(
+        &mut s,
+        "assert.add",
+        json!({"name": "none", "measure": "sectionTorsion", "offset": 500, "min": 1}),
+    );
+    assert_eq!(missing["status"], "error", "{missing}");
+    // A cap the solve reaches: what it reached, said to be unconverged.
+    let capped = run(
+        &mut s,
+        "measure.section",
+        json!({"offset": 50, "maxElements": 400, "torsionTolerance": 1e-9}),
+    );
+    assert_eq!(capped["torsionSolve"]["converged"], false, "{capped}");
+    let twisted = run(
+        &mut s,
+        "assert.add",
+        json!({"name": "J", "measure": "sectionTorsion", "offset": 50, "min": 1}),
+    );
+    assert_eq!(twisted["status"], "passed", "{twisted}");
+}

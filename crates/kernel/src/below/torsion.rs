@@ -110,6 +110,8 @@ const LEAST_JACOBIAN: f64 = 0.05;
 const MAX_DEPTH: u32 = 24;
 /// The most boundary points.
 const MAX_BOUNDARY: usize = 200_000;
+/// The most interior points of the first mesh's grid.
+const MAX_SEEDS: f64 = 4096.0;
 
 /// How finely the torsion is solved for.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -154,8 +156,8 @@ pub struct Torsion {
 }
 
 /// The section of `bodies` by the plane `{p : p · side.normal = offset}`
-/// as [`below`](super::below) measures it, and its torsion. A plane that
-/// cuts nothing is an error, and so are sections whose faces overlap.
+/// as [`below`](super::below) measures it, and its torsion: `None` where
+/// the plane cuts nothing. Sections whose faces overlap are an error.
 pub fn section_torsion(
     bodies: &[&Body],
     side: &CutPlane,
@@ -163,7 +165,7 @@ pub fn section_torsion(
     tolerance: &Tolerance,
     options: &TorsionOptions,
     mesher: &Mesher<'_>,
-) -> Result<(BelowPlane, Torsion), CutError> {
+) -> Result<(BelowPlane, Option<Torsion>), CutError> {
     if !offset.is_finite() {
         return Err(CutError::NotFinite("the offset"));
     }
@@ -181,9 +183,7 @@ pub fn section_torsion(
     let (found, parts) = below_parts(&prepared, side, offset, tolerance)?;
     let section = found.section;
     let Some(centroid) = section.centroid.filter(|_| section.area > 0.0) else {
-        return Err(CutError::Torsion(
-            "the plane cuts nothing: there is no section".into(),
-        ));
+        return Ok((found, None));
     };
     let axes = Axes {
         origin: centroid,
@@ -192,7 +192,7 @@ pub fn section_torsion(
     };
     let boundary = Boundary::of(&parts, &axes, section.area)?;
     let torsion = solve(boundary, &axes, section.area, options, mesher)?;
-    Ok((found, torsion))
+    Ok((found, Some(torsion)))
 }
 
 /// The section's axes: its centroid and its x and y directions.
@@ -225,6 +225,8 @@ struct Boundary<'a> {
     curves: Vec<&'a Curve3>,
     points: Vec<P2>,
     segs: Vec<Seg>,
+    /// The first mesh's spacing.
+    spacing: f64,
 }
 
 fn dist(a: P2, b: P2) -> f64 {
@@ -326,6 +328,7 @@ impl<'a> Boundary<'a> {
             curves: Vec::new(),
             points: Vec::new(),
             segs: Vec::new(),
+            spacing,
         };
         let mut vertices: BTreeMap<(usize, u32), usize> = BTreeMap::new();
         for (index, edge, (sid, start), (eid, end)) in edges {
@@ -417,6 +420,40 @@ impl<'a> Boundary<'a> {
             open.push(((ia, ta), (im, tm), depth + 1));
         }
         Ok(())
+    }
+
+    /// Interior points for the first mesh: a square grid at the first
+    /// spacing over the boundary's box (coarser where the box would take
+    /// more than [`MAX_SEEDS`]), each kept half the spacing from the
+    /// boundary; those outside the section the mesher skips. Without them
+    /// a convex boundary meshes into ears (triangles with all three
+    /// corners on it), which curved edges fold.
+    fn seeds(&self) -> Vec<(P2, f64)> {
+        let (mut lo, mut hi) = (
+            (f64::INFINITY, f64::INFINITY),
+            (f64::NEG_INFINITY, f64::NEG_INFINITY),
+        );
+        for p in &self.points {
+            lo = (lo.0.min(p.0), lo.1.min(p.1));
+            hi = (hi.0.max(p.0), hi.1.max(p.1));
+        }
+        let (w, h) = (hi.0 - lo.0, hi.1 - lo.1);
+        let step = self.spacing.max((w * h / MAX_SEEDS).sqrt());
+        if !(step.is_finite() && step > 0.0 && w.is_finite() && h.is_finite()) {
+            return Vec::new();
+        }
+        let (nx, ny) = ((w / step).floor() as usize, (h / step).floor() as usize);
+        let (ox, oy) = (
+            lo.0 + 0.5 * (w - nx as f64 * step),
+            lo.1 + 0.5 * (h - ny as f64 * step),
+        );
+        let mut out = Vec::new();
+        for j in 0..=ny {
+            for i in 0..=nx {
+                out.push(((ox + i as f64 * step, oy + j as f64 * step), 0.5 * step));
+            }
+        }
+        out
     }
 
     /// The point at the middle of `seg`'s parameter span.
@@ -760,8 +797,9 @@ fn solve(
 ) -> Result<Torsion, CutError> {
     let tol = options.tolerance;
     // Interior points and the clearance each keeps.
-    let mut interior: Vec<(P2, f64)> = Vec::new();
+    let mut interior: Vec<(P2, f64)> = boundary.seeds();
     let mut last: Option<(Round, usize)> = None;
+    let mut why = "the element cap is below what the first mesh takes";
     let mut change = f64::INFINITY;
     let mut rounds = 0;
     for _ in 0..MAX_ROUNDS {
@@ -782,6 +820,7 @@ fn solve(
         interior = kept;
         let elements = region.triangles.len();
         if elements > options.max_elements {
+            why = "the next mesh takes more elements than the cap";
             break;
         }
         let mesh = build(&region, &boundary, axes)?;
@@ -795,8 +834,12 @@ fn solve(
             .map(|(k, _)| k)
             .collect();
         if !folded.is_empty() {
+            // An element with no interior corner gets its centroid, so
+            // the next mesh splits it.
+            why = "every mesh had elements that fold on the curved boundary";
             let mut halve = BTreeSet::new();
             let mut drop = BTreeSet::new();
+            let mut centres = Vec::new();
             for &k in &folded {
                 let Some(e) = mesh.elements.get(k) else {
                     continue;
@@ -806,27 +849,30 @@ fn solve(
                         halve.insert(seg);
                     }
                 }
+                let mut inner = false;
                 for v in e.nodes.iter().take(3) {
                     if let Some(&i) = of_vertex.get(v) {
                         drop.insert(i);
+                        inner = true;
                     }
                 }
-            }
-            if halve.is_empty() && drop.is_empty() {
-                return Err(CutError::Torsion(
-                    "an element folds and cannot be mended".into(),
-                ));
+                if !inner {
+                    let [a, b, c, ..] = e.at;
+                    centres.push((((a.0 + b.0 + c.0) / 3.0, (a.1 + b.1 + c.1) / 3.0), 0.0));
+                }
             }
             interior = interior
                 .into_iter()
                 .enumerate()
                 .filter(|(i, _)| !drop.contains(i))
                 .map(|(_, p)| p)
+                .chain(centres)
                 .collect();
             split_segs(&mut boundary, axes, &halve)?;
             continue;
         }
         let Some(solved) = solve_once(&mesh) else {
+            why = "the linear solver did not converge";
             break;
         };
         rounds += 1;
@@ -893,7 +939,7 @@ fn solve(
     match last {
         Some((round, elements)) => Ok(answer(round, change, false, elements, rounds, axes)),
         None => Err(CutError::Torsion(format!(
-            "no mesh of the section within {} elements",
+            "no solution within {} elements: {why}",
             options.max_elements
         ))),
     }

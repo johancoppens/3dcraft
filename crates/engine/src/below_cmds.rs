@@ -1,11 +1,14 @@
 //! What lies on one side of a plane (`measure.below`, `measure.section`,
 //! `measure.levelFor`, and the assertion measures `volumeBelow`,
 //! `centroidBelow`, `sectionArea`, `sectionCentroid`, `sectionInertia`,
-//! `sectionExtent`, `levelFor`): the volume and centroid of the part of
-//! closed bodies below a plane, the area, centroid, second moments and
-//! extent along an axis of their section by it, and the offset at which the volume below is a given volume. The
-//! geometry is `craft3d_kernel::below` (exact on the B-rep); the design
-//! note is docs/design/sections-and-levels.md.
+//! `sectionTorsion`, `sectionShearCentre`, `sectionExtent`, `levelFor`):
+//! the volume and centroid of the part of closed bodies below a plane, the
+//! area, centroid, second moments, torsion constant, shear centre and
+//! extent along an axis of their section by it, and the offset at which
+//! the volume below is a given volume. The geometry is
+//! `craft3d_kernel::below` (exact on the B-rep; the torsion by finite
+//! elements, `craft3d_kernel::below::torsion`); the design note is
+//! docs/design/sections-and-levels.md.
 
 use crate::commands::{Run, length_unit, spec, vec3};
 use crate::params::Params;
@@ -13,6 +16,9 @@ use crate::verify_cmds::{
     Ctx, Dim, Outcome, all_bodies, direction, nonempty, plane, subject, whole_bodies,
 };
 use crate::{CommandError, CommandSpec, Session};
+use craft3d_kernel::below::torsion::{
+    MAX_ELEMENTS, RegionMesh, Torsion, TorsionOptions, section_torsion,
+};
 use craft3d_kernel::below::{
     BelowPlane, CutError, CutPlane, Equilibrium, Level, Stability, below, floating, level_for,
     section_extent,
@@ -27,8 +33,8 @@ const MAX_BODIES: usize = 200;
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("measure.below", "Volume Below a Plane", r#"{"of": subject = all bodies, "plane": "xy|yz|zx" or datum plane (name or id) or a flat face by name or {point: [expr, expr, expr], normal: [number, number, number]} = "xy", "offset": length expr = 0, "xAxis": direction = the world axis most square to the normal}"#,
         "The part of closed bodies on one side of a plane, exactly: the plane is given as measure.symmetry takes it (a base plane, a datum plane, a flat face by its persistent name with its outward normal, or a point and a normal) and moved by offset along its normal, and below is the side the normal points away from. Returns volume (the document's unit cubed), centroid (null when nothing is below), surface (the area of the bodies' surface below the plane), and section, the section of the bodies by the plane, as measure.section gives it. The part below is the boolean intersection with a half-space and is integrated on the exact B-rep; the section's moments are Green's theorem along the curves in which the plane cuts the bodies. A body wholly below gives all of itself and no section; wholly above, nothing. Bodies that overlap are counted once each. offset in the result is how far the plane was moved. Refused: a sheet (no inside), a normal of no length, nothing found below where a vertex of a body lies below the plane. Read-only.", doc: true, names: ["of"], measure_below),
-    spec!("measure.section", "Section by a Plane", r#"{"of": subject = all bodies, "plane": "xy|yz|zx" or datum plane (name or id) or a flat face by name or {point: [expr, expr, expr], normal: [number, number, number]} = "xy", "offset": length expr = 0, "xAxis": direction = the world axis most square to the normal}"#,
-        "The section of closed bodies by a plane (plane, moved by offset along its normal, as measure.below takes them), exactly: area, centroid, and the second moments about axes through the centroid, ix = ∫y² dA about the axis along xAxis (square to the normal; by default the world axis most square to it, made square), iy = ∫x² dA about the axis along y = normal × xAxis, ixy = ∫xy dA, and the principal moments (major, minor, and majorAxis, the direction of the axis about which the moment is largest), in the document's unit to the fourth power; xAxis and yAxis say the axes used. From Green's theorem along the curves in which the plane cuts the bodies (each edge summed by two Gauss–Legendre rules until they agree); a cross-section of a beam, the cut of a body at a level. Read-only.", doc: true, names: ["of"], measure_section),
+    spec!("measure.section", "Section by a Plane", r#"{"of": subject = all bodies, "plane": "xy|yz|zx" or datum plane (name or id) or a flat face by name or {point: [expr, expr, expr], normal: [number, number, number]} = "xy", "offset": length expr = 0, "xAxis": direction = the world axis most square to the normal, "torsion": boolean = true, "torsionTolerance": number = 1e-4, "maxElements": integer = 60000}"#,
+        "The section of closed bodies by a plane (plane, moved by offset along its normal, as measure.below takes them), exactly: area, centroid, and the second moments about axes through the centroid, ix = ∫y² dA about the axis along xAxis (square to the normal; by default the world axis most square to it, made square), iy = ∫x² dA about the axis along y = normal × xAxis, ixy = ∫xy dA, and the principal moments (major, minor, and majorAxis, the direction of the axis about which the moment is largest), in the document's unit to the fourth power; xAxis and yAxis say the axes used. From Green's theorem along the curves in which the plane cuts the bodies (each edge summed by two Gauss–Legendre rules until they agree); a cross-section of a beam, the cut of a body at a level. With torsion (default true), also the St Venant torsion of the section, for any section with any number of holes: torsion, the torsion constant J (the document's unit to the fourth power), shearCentre, the shear centre (Trefftz's, independent of Poisson's ratio) as a point, and shearOffset, it from the centroid along xAxis and yAxis, and warping, the warping constant Cw about it (the unit to the sixth power); torsionSolve says how they were found: converged, change (of J between the last two rounds), elements, rounds and tolerance. Solved by finite elements (quadratic triangles whose boundary nodes lie on the exact curves) for the warping function, refined adaptively until J and the shear centre change by less than torsionTolerance (relative, 1e-9 to 0.1) from one round to the next, at most maxElements elements (up to 400000); a solve that reaches the cap gives what it reached with converged false, never a number that claims more. Read-only.", doc: true, names: ["of"], measure_section),
     spec!("measure.levelFor", "Level for a Volume", r#"{"of": subject = all bodies, "plane": "xy|yz|zx" or datum plane (name or id) or a flat face by name or {point: [expr, expr, expr], normal: [number, number, number]} = "xy", "volume": volume expr, "xAxis": direction = the world axis most square to the normal}"#,
         "The offset along its normal of plane (as measure.below takes it; only its direction and the point it is measured from count) at which the volume of the bodies below it is volume (the fill level of a tank for a volume of liquid; the plane at which a body floating with a known volume under it lies): found by the kernel by Newton's method on the section's area within a bracket, an offset the boolean refuses stepped around by other points of the bracket, at most 64 steps (not converging is an error, and so is a volume not strictly between 0 and the bodies' whole volume). Returns offset, steps, residual (how far the volume below is from the one asked for) and everything measure.below gives at that offset. Read-only.", doc: true, names: ["of"], measure_level_for),
     spec!("measure.floating", "Floating Equilibrium", r#"{"of": subject = all bodies, "plane": "xy|yz|zx" or datum plane (name or id) or a flat face by name or {point: [expr, expr, expr], normal: [number, number, number]} = "xy", "volume": volume expr, "mass": number, "density": number, "centerOfGravity": [expr, expr, expr], "heel": angle expr = 0, "trim": angle expr = 0, "xAxis": direction = the world axis most square to the normal}"#,
@@ -37,12 +43,14 @@ pub(crate) static SPECS: &[CommandSpec] = &[
 
 /// The assertion measures and their dimensions: the one list
 /// `assert_cmds` reads them from.
-pub(crate) const MEASURES: [(&str, Dim); 13] = [
+pub(crate) const MEASURES: [(&str, Dim); 15] = [
     ("volumeBelow", Dim::Length(3)),
     ("centroidBelow", Dim::Length(1)),
     ("sectionArea", Dim::Length(2)),
     ("sectionCentroid", Dim::Length(1)),
     ("sectionInertia", Dim::Length(4)),
+    ("sectionTorsion", Dim::Length(4)),
+    ("sectionShearCentre", Dim::Length(1)),
     ("sectionExtent", Dim::Length(1)),
     ("levelFor", Dim::Length(1)),
     ("floatingOffset", Dim::Length(1)),
@@ -63,6 +71,8 @@ pub(crate) fn keys_of(measure: &str) -> &'static [&'static str] {
     match measure {
         "volumeBelow" | "sectionArea" => &["of", "plane", "offset", "xAxis"],
         "centroidBelow" | "sectionCentroid" => &["of", "plane", "offset", "xAxis", "axis"],
+        "sectionTorsion" => &["of", "plane", "offset", "xAxis"],
+        "sectionShearCentre" => &["of", "plane", "offset", "xAxis", "axis"],
         "sectionInertia" => &["of", "plane", "offset", "xAxis", "about"],
         "sectionExtent" => &["of", "plane", "offset", "axis"],
         "levelFor" => &["of", "plane", "volume", "xAxis"],
@@ -195,11 +205,31 @@ fn below_json(found: &BelowPlane, plane: &CutPlane) -> Map<String, Value> {
 }
 
 /// What the three commands and the assertion measures measure: below the
-/// plane at `offset`, or at the offset for `volume`.
+/// plane at `offset`, or at the offset for `volume`; or below the plane at
+/// `offset` with the torsion of the section.
 #[derive(Clone, Copy)]
 enum Asked {
     At,
     For,
+    Twist(TorsionOptions),
+}
+
+/// The tessellator's triangulation of a region, as the kernel's torsion
+/// takes it.
+fn mesher(
+    points: &[(f64, f64)],
+    segments: &[(usize, usize)],
+    interior: &[(f64, f64)],
+    clearance: &[f64],
+) -> Result<RegionMesh, String> {
+    craft3d_tess::triangulate_region(points, segments, interior, clearance)
+        .map(|m| RegionMesh {
+            points: m.points,
+            triangles: m.triangles,
+            boundary: m.boundary,
+            interior: m.interior,
+        })
+        .map_err(|e| e.to_string())
 }
 
 fn measured(
@@ -208,6 +238,17 @@ fn measured(
     asked: Asked,
     allowed: &[&str],
 ) -> Result<(BelowPlane, CutPlane, Option<Level>), String> {
+    measured_twisted(ctx, p, asked, allowed).map(|(found, plane, level, _)| (found, plane, level))
+}
+
+type Measured = (BelowPlane, CutPlane, Option<Level>, Option<Torsion>);
+
+fn measured_twisted(
+    ctx: &Ctx<'_>,
+    p: &Map<String, Value>,
+    asked: Asked,
+    allowed: &[&str],
+) -> Result<Measured, String> {
     crate::verify_cmds::only(p, allowed)?;
     let bodies = bodies_named(ctx, p)?;
     let (plane, base) = cut_plane(ctx, p)?;
@@ -218,15 +259,29 @@ fn measured(
         found.offset -= base;
         found
     };
+    let offset = || -> Result<f64, String> {
+        Ok(given(p, "offset")
+            .map(|v| ctx.quantity(v, "offset", 1))
+            .transpose()?
+            .unwrap_or(0.0))
+    };
     match asked {
         Asked::At => {
-            let offset = given(p, "offset")
-                .map(|v| ctx.quantity(v, "offset", 1))
-                .transpose()?
-                .unwrap_or(0.0);
-            let found =
-                below(&plain, &plane, base + offset, &ctx.tolerance).map_err(|e| e.to_string())?;
-            Ok((from_given(found), plane, None))
+            let found = below(&plain, &plane, base + offset()?, &ctx.tolerance)
+                .map_err(|e| e.to_string())?;
+            Ok((from_given(found), plane, None, None))
+        }
+        Asked::Twist(options) => {
+            let (found, torsion) = section_torsion(
+                &plain,
+                &plane,
+                base + offset()?,
+                &ctx.tolerance,
+                &options,
+                &mesher,
+            )
+            .map_err(|e| e.to_string())?;
+            Ok((from_given(found), plane, None, torsion))
         }
         Asked::For => {
             let volume = ctx.quantity(
@@ -236,7 +291,7 @@ fn measured(
             )?;
             let level =
                 level_for(&plain, &plane, volume, &ctx.tolerance).map_err(|e| e.to_string())?;
-            Ok((from_given(level.below), plane, Some(level)))
+            Ok((from_given(level.below), plane, Some(level), None))
         }
     }
 }
@@ -279,20 +334,92 @@ fn measure_below(session: &mut Session, params: &Value) -> Run {
     )
 }
 
+const SECTION_KEYS: [&str; 7] = [
+    "of",
+    "plane",
+    "offset",
+    "xAxis",
+    "torsion",
+    "torsionTolerance",
+    "maxElements",
+];
+
+/// The torsion of a section as the commands give it.
+fn torsion_json(out: &mut Map<String, Value>, t: &Torsion, options: &TorsionOptions) {
+    out.insert("torsion".into(), num(t.constant));
+    out.insert("shearCentre".into(), vec3(t.shear_centre));
+    out.insert(
+        "shearOffset".into(),
+        Value::Array(vec![num(t.shear_offset.0), num(t.shear_offset.1)]),
+    );
+    out.insert("warping".into(), num(t.warping));
+    let mut solve = Map::new();
+    solve.insert("converged".into(), t.converged.into());
+    solve.insert("change".into(), num(t.change));
+    solve.insert("elements".into(), t.elements.into());
+    solve.insert("rounds".into(), t.rounds.into());
+    solve.insert("tolerance".into(), num(options.tolerance));
+    out.insert("torsionSolve".into(), Value::Object(solve));
+}
+
 fn measure_section(session: &mut Session, params: &Value) -> Run {
-    run_command(
-        session,
-        params,
-        "measure.section",
-        &PLANE_KEYS,
-        |found, plane, _| {
-            let mut out = section_json(found, plane);
-            out.insert("offset".into(), num(found.offset));
-            out.insert("normal".into(), vec3(plane.normal));
-            out
-        },
-        Asked::At,
-    )
+    const ID: &str = "measure.section";
+    let p = Params::new(ID, params, &SECTION_KEYS)?;
+    let twist = p.bool("torsion")?.unwrap_or(true);
+    let mut options = TorsionOptions::default();
+    if let Some(tolerance) = p.number("torsionTolerance")? {
+        if !(tolerance.is_finite() && (1e-9..=0.1).contains(&tolerance)) {
+            return Err(CommandError::new(format!(
+                "{ID}: `torsionTolerance` must be a number from 1e-9 to 0.1"
+            )));
+        }
+        options.tolerance = tolerance;
+    }
+    if let Some(cap) = p.get("maxElements") {
+        let cap = cap
+            .as_u64()
+            .and_then(|n| usize::try_from(n).ok())
+            .filter(|n| (1..=MAX_ELEMENTS).contains(n))
+            .ok_or_else(|| {
+                CommandError::new(format!(
+                    "{ID}: `maxElements` must be a whole number from 1 to {MAX_ELEMENTS}"
+                ))
+            })?;
+        options.max_elements = cap;
+    }
+    let mut map = match params {
+        Value::Object(map) => map.clone(),
+        _ => Map::new(),
+    };
+    for key in ["torsion", "torsionTolerance", "maxElements"] {
+        map.remove(key);
+    }
+    let open = session.document_mut()?;
+    let regen = open.regen();
+    let doc = open.history.current();
+    let err = |e: String| CommandError::new(format!("{ID}: {e}"));
+    let ctx = Ctx::new(doc, &regen).map_err(err)?;
+    let asked = if twist {
+        Asked::Twist(options)
+    } else {
+        Asked::At
+    };
+    let (found, plane, _, torsion) =
+        measured_twisted(&ctx, &map, asked, &PLANE_KEYS).map_err(err)?;
+    let mut out = section_json(&found, &plane);
+    out.insert("offset".into(), num(found.offset));
+    out.insert("normal".into(), vec3(plane.normal));
+    match &torsion {
+        Some(t) => torsion_json(&mut out, t, &options),
+        None if twist => {
+            for key in ["torsion", "shearCentre", "shearOffset", "warping"] {
+                out.insert(key.into(), Value::Null);
+            }
+        }
+        None => {}
+    }
+    out.insert("lengthUnit".into(), length_unit(doc).into());
+    Ok(Value::Object(out))
 }
 
 fn measure_level_for(session: &mut Session, params: &Value) -> Run {
@@ -711,6 +838,9 @@ pub(crate) fn measure(
     if name.starts_with("floating") {
         return floating_measure(ctx, name, p);
     }
+    if name == "sectionTorsion" || name == "sectionShearCentre" {
+        return torsion_measure(ctx, name, p);
+    }
     let (found, plane, _) = measured(ctx, p, asked, keys_of(name))?;
     let s = found.section;
     let value = match name {
@@ -740,6 +870,41 @@ pub(crate) fn measure(
     }
     let mut out = Outcome::number(*dim, value);
     out.detail = below_json(&found, &plane);
+    Ok(out)
+}
+
+/// The assertion measures `sectionTorsion` (J) and `sectionShearCentre`
+/// (a coordinate of the shear centre along `axis`), with the default
+/// torsion options. A solve that stopped at its element cap is not proven:
+/// the number it reached is given, with why.
+fn torsion_measure(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<Outcome, String> {
+    let options = TorsionOptions::default();
+    let (found, plane, _, torsion) =
+        measured_twisted(ctx, p, Asked::Twist(options), keys_of(name))?;
+    let t = torsion.ok_or("the plane does not cut the bodies: there is no section")?;
+    let (value, dim) = if name == "sectionTorsion" {
+        (t.constant, Dim::Length(4))
+    } else {
+        (
+            coordinate(p, Some(t.shear_centre), "shear centre")?,
+            Dim::Length(1),
+        )
+    };
+    if !value.is_finite() {
+        return Err(format!("{name} is not a finite number"));
+    }
+    let mut out = Outcome::number(dim, value);
+    out.detail = below_json(&found, &plane);
+    let mut solved = Map::new();
+    torsion_json(&mut solved, &t, &options);
+    out.detail.extend(solved);
+    if !t.converged {
+        out.unproven = Some(format!(
+            "the torsion did not converge within {} elements: J changed by {} in the last round",
+            options.max_elements,
+            crate::assert_cmds::shown(t.change)
+        ));
+    }
     Ok(out)
 }
 
