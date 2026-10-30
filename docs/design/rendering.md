@@ -832,6 +832,10 @@ session's `VideoEncoder` (the host's, as the renderer), which `craft3d-cli` impl
 track), the way FreeCAD is used as an optional tool: nothing is linked. It is asked before a frame is
 drawn, and a missing ffmpeg is an error that names the PNG sequence (`dir` alone) as the alternative.
 
-**Measured** (the Strix, 1920 × 1080, the benchmark's engine block): see the dev log entry of 2026-10-30
-and [`../development.md`](../development.md) › *Video recipes*.
+**Measured** (Check run 41059222246, the Strix's Radeon 8060S over Vulkan/RADV, 1920 × 1080, the
+benchmark's engine block, 69 048 triangles, `view.render` to a PNG, the first picture not counted):
+plain 0.045 s a frame on the GPU against 1.05 s on the CPU (22 fps against 0.96); studio, one frame,
+0.050 s against 7.25 s (20 fps against 0.14); studio with 16 frames averaged 0.20 s (5 fps; the CPU
+refuses 16 at this size). A replay of the history orbiting, PNG files written: 199 frames in 7.7 s plain
+(26 fps) and 36.8 s in the studio look with 16 frames each (5.4 fps).
 

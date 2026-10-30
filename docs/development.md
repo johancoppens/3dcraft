@@ -185,7 +185,7 @@ craft3d-cli replay linkage.3dcraft --out stroke/ --size 1280x720 \
 
 Over MCP or `serve` the same is one `view.replay` call with `"video": "explode.mp4"`. Without ffmpeg the call is refused before anything is drawn; leave `video` out for the PNG sequence and encode it elsewhere. For a screenshot of the window in the studio look, `ui.set {"look": {"accumulate": 4}}` settles it sooner (the count `ui.screenshot {window: true}` waits for).
 
-Measured on the Strix (2026-10-30, 1920 × 1080, the benchmark's engine block): see the dev log entry *film*; the CPU studio look took about 40 s a frame before.
+Measured on the Strix (2026-10-30, 1920 × 1080, the benchmark's engine block, 69k triangles): plain 22 fps on the GPU against 0.96 on the CPU, studio 20 fps against 0.14, studio settled (16 frames) 5 fps; a 199-frame replay to PNGs 26 fps plain and 5.4 fps studio-settled ([`design/rendering.md`](design/rendering.md) › *Animations*).
 
 ## Driving the app programmatically
 
