@@ -164,7 +164,17 @@ pub fn run_example(session: &mut Session, example: &Example) -> Result<Value, St
 /// listens (`--control`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentSetup {
+    /// The program the MCP client starts, absolute where it is known.
     pub cli: String,
+    /// Words before `mcp` on its command line: `["cli"]` when `cli` is
+    /// the AppImage, which runs the command line that way.
+    pub cli_prefix: Vec<String>,
+    /// The window's own program, absolute where it is known (on Linux
+    /// the AppImage itself, never its temporary mount).
+    pub window: String,
+    /// The folder the agent may read and write files in, absolute (the
+    /// user's `Documents/3DCraft`; the window makes it when it starts).
+    pub work_folder: Option<String>,
     pub port: Option<u16>,
     /// The token file of the window, absolute, while it listens.
     pub token_file: Option<String>,
@@ -181,6 +191,9 @@ impl Default for AgentSetup {
     fn default() -> Self {
         Self {
             cli: "craft3d-cli".to_string(),
+            cli_prefix: Vec::new(),
+            window: "craft3d".to_string(),
+            work_folder: None,
             port: None,
             token_file: None,
             suggested_token: None,
@@ -194,6 +207,7 @@ impl Default for AgentSetup {
 /// in, absolute in form.
 const GUIDE_PORT: u16 = 7878;
 const PLACEHOLDER_TOKEN: &str = "/path/to/craft3d-control.token";
+const PLACEHOLDER_WORK: &str = "/path/to/3DCraft";
 
 /// `text` as one word of a command line: as it is when it needs no
 /// quotes; else in single quotes for a POSIX shell (a `'` in it written
@@ -233,8 +247,13 @@ impl AgentSetup {
         // Written by hand, so the command comes before its arguments and
         // the arguments stay on one line; the strings by serde, escaped.
         let text = |s: &str| Value::String(s.to_string()).to_string();
+        let prefix: String = self
+            .cli_prefix
+            .iter()
+            .map(|word| format!("{}, ", text(word)))
+            .collect();
         format!(
-            "{{\n  \"mcpServers\": {{\n    \"craft3d\": {{\n      \"command\": {},\n      \"args\": [\"mcp\", \"--bridge\", {}, \"--control-token-file\",\n               {}]\n    }}\n  }}\n}}",
+            "{{\n  \"mcpServers\": {{\n    \"craft3d\": {{\n      \"command\": {},\n      \"args\": [{prefix}\"mcp\", \"--bridge\", {}, \"--control-token-file\",\n               {}]\n    }}\n  }}\n}}",
             text(&self.cli),
             text(&port),
             text(self.token())
@@ -250,18 +269,30 @@ impl AgentSetup {
     /// The MCP server's command line, quoted for the platform: what the
     /// configuration starts.
     pub fn server_command(&self) -> String {
+        let prefix: String = self
+            .cli_prefix
+            .iter()
+            .map(|word| format!(" {}", shell_word(word, self.windows)))
+            .collect();
         format!(
-            "{} mcp --bridge {} --control-token-file {}",
+            "{}{prefix} mcp --bridge {} --control-token-file {}",
             shell_word(&self.cli, self.windows),
             self.port.unwrap_or(GUIDE_PORT),
             shell_word(self.token(), self.windows)
         )
     }
 
-    /// How to start the window so that it listens.
+    /// How to start the window so that it listens, with the folder the
+    /// agent may read and write files in.
     pub fn window_command(&self) -> String {
+        let work = shell_word(
+            self.work_folder.as_deref().unwrap_or(PLACEHOLDER_WORK),
+            self.windows,
+        );
         format!(
-            "craft3d --control {GUIDE_PORT} --control-token-file {}",
+            "{} --control {} --control-token-file {} --automation-read-root {work} --automation-write-root {work}",
+            shell_word(&self.window, self.windows),
+            self.port.unwrap_or(GUIDE_PORT),
             shell_word(self.token(), self.windows)
         )
     }
@@ -661,7 +692,7 @@ impl Shell {
         };
         if !setup.listening() {
             ui.colored_label(dim, "Start the window so that it listens:");
-            plate(ui, "craft3d", &setup.window_command());
+            plate(ui, &setup.window, &setup.window_command());
             ui.add_space(tokens.inset * 0.3);
         }
         ui.colored_label(
@@ -817,6 +848,7 @@ mod tests {
             token_file: Some("/home/me/t.token".to_string()),
             suggested_token: None,
             windows: false,
+            ..AgentSetup::default()
         };
         assert!(listening.listening());
         let config: Value = serde_json::from_str(&listening.mcp_config()).unwrap();
@@ -842,6 +874,7 @@ mod tests {
             token_file: Some(r#"C:\a "b".token"#.to_string()),
             suggested_token: None,
             windows: true,
+            ..AgentSetup::default()
         };
         let config: Value = serde_json::from_str(&odd.mcp_config()).unwrap();
         assert_eq!(
@@ -886,6 +919,7 @@ mod tests {
             token_file: Some(r"C:\Users\An Na\t.token".to_string()),
             suggested_token: None,
             windows: true,
+            ..AgentSetup::default()
         };
         assert_eq!(
             windows.claude_command(),
@@ -905,7 +939,63 @@ mod tests {
         assert!(
             posix
                 .window_command()
-                .ends_with("'/home/an na/.config/craft3d-control.token'")
+                .contains("--control-token-file '/home/an na/.config/craft3d-control.token' ")
+        );
+    }
+
+    #[test]
+    fn the_window_command_names_the_programs_and_the_agents_folder() {
+        // The AppImage: its own path for the window, and `cli` before
+        // `mcp` for the server, in the configuration and on the line.
+        let appimage = AgentSetup {
+            cli: "/home/me/Apps/3DCraft-0.1.0-x86_64.AppImage".to_string(),
+            cli_prefix: vec!["cli".to_string()],
+            window: "/home/me/Apps/3DCraft-0.1.0-x86_64.AppImage".to_string(),
+            work_folder: Some("/home/me/Documents/3DCraft".to_string()),
+            suggested_token: Some("/home/me/.config/craft3d-control.token".to_string()),
+            windows: false,
+            ..AgentSetup::default()
+        };
+        assert_eq!(
+            appimage.window_command(),
+            "/home/me/Apps/3DCraft-0.1.0-x86_64.AppImage --control 7878 --control-token-file /home/me/.config/craft3d-control.token --automation-read-root /home/me/Documents/3DCraft --automation-write-root /home/me/Documents/3DCraft"
+        );
+        let config: Value = serde_json::from_str(&appimage.mcp_config()).unwrap();
+        assert_eq!(config["mcpServers"]["craft3d"]["args"][0], "cli");
+        assert_eq!(config["mcpServers"]["craft3d"]["args"][1], "mcp");
+        assert!(
+            appimage
+                .claude_command()
+                .contains("x86_64.AppImage cli mcp --bridge 7878")
+        );
+        // Without a known folder, a placeholder to fill in; both roots
+        // always named, so the agent can read and write there.
+        let plain = AgentSetup::default();
+        let line = plain.window_command();
+        assert!(line.starts_with("craft3d --control 7878"), "{line}");
+        assert!(
+            line.contains("--automation-read-root /path/to/3DCraft"),
+            "{line}"
+        );
+        assert!(
+            line.contains("--automation-write-root /path/to/3DCraft"),
+            "{line}"
+        );
+        // Windows quoting of a folder with a space.
+        let windows = AgentSetup {
+            window: r"C:\Program Files\3DCraft\craft3d.exe".to_string(),
+            work_folder: Some(r"C:\Users\An Na\Documents\3DCraft".to_string()),
+            windows: true,
+            ..AgentSetup::default()
+        };
+        let line = windows.window_command();
+        assert!(
+            line.starts_with(r#""C:\Program Files\3DCraft\craft3d.exe" --control"#),
+            "{line}"
+        );
+        assert!(
+            line.ends_with(r#"--automation-write-root "C:\Users\An Na\Documents\3DCraft""#),
+            "{line}"
         );
     }
 }

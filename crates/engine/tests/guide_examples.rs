@@ -546,3 +546,58 @@ fn the_field_test_strip_is_as_the_page_says() {
         assert_eq!(feature["status"], "ok", "{feature}");
     }
 }
+
+/// The volume of the body a task's reference solution names, after it ran.
+fn task_volume(s: &mut Session, task: &str, body: &str) -> f64 {
+    let path = docs().join("tasks").join(format!("{task}.json"));
+    let task: Value = serde_json::from_str(&read_text(&path)).unwrap();
+    run(s, "file.new", json!({"units": "mm"}));
+    for (id, params) in steps(&task["solution"]).unwrap() {
+        run(s, &id, params);
+    }
+    let measured = run(s, "document.measure", json!({"feature": body}));
+    measured["volume"].as_f64().unwrap()
+}
+
+/// Tasks 2 and 4 of the field test (`field-test.md`) give the answers the
+/// task set's reference solutions build: the L-bracket's 6600 mm³ and the
+/// case's 17385.50 mm³; and the case's 1 mm wall breaks an assertion of
+/// "at least 1.5 mm", as task 4 tells the tester to see.
+#[test]
+fn the_field_test_tasks_two_and_four_are_as_the_page_says() {
+    let text = read_text(&docs().join("guide/field-test.md"));
+    for said in [
+        "**6600 mm³**",
+        "**17385.50 mm³**",
+        "1 mm wall",
+        "at least 1.5 mm",
+    ] {
+        assert!(text.contains(said), "the page says {said}");
+    }
+    let mut s = common::session();
+    let bracket = task_volume(&mut s, "l-bracket", "Bracket");
+    assert!((bracket - 6600.0).abs() < 1e-6, "{bracket}");
+    let case = task_volume(&mut s, "shelled-case", "Case");
+    assert!((case - 17385.50).abs() < 0.005, "{case}");
+    run(
+        &mut s,
+        "assert.add",
+        json!({"name": "thin", "measure": "thickness", "of": "Case", "min": "1.5 mm"}),
+    );
+    let thin = |s: &mut Session| {
+        run(s, "assert.list", json!({}))["assertions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["name"] == "thin")
+            .unwrap()["status"]
+            .clone()
+    };
+    assert_eq!(thin(&mut s), "passed");
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "wall", "expr": "1 mm"}),
+    );
+    assert_eq!(thin(&mut s), "failed");
+}

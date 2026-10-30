@@ -21,6 +21,11 @@ pub fn generate() -> Result<String, String> {
 }
 
 fn create(path: &Path, token: &str) -> std::io::Result<()> {
+    // The folder it goes in, made when it is missing: a configuration
+    // folder (`%APPDATA%\3DCraft`, `~/.config`) that nothing made yet.
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+    }
     let mut options = std::fs::OpenOptions::new();
     // Never over an existing file, and never through a link someone put
     // there in the meantime.
@@ -37,7 +42,7 @@ fn create(path: &Path, token: &str) -> std::io::Result<()> {
 }
 
 /// Reads the token from `path`, or creates the file with a fresh token when
-/// it does not exist (mode 0600 on Unix). A file that holds anything but a
+/// it does not exist (mode 0600 on Unix), and the folders it goes in. A file that holds anything but a
 /// token is an error and is left as it is.
 pub fn load_or_create(path: &Path) -> Result<String, String> {
     let shown = path.display();
@@ -151,13 +156,19 @@ mod tests {
             assert!(!error.contains("secret"), "the content is not echoed");
             assert_eq!(std::fs::read_to_string(&path).unwrap(), **content);
         }
-        // Not UTF-8, a directory, a missing parent: errors, not panics.
+        // Not UTF-8, a directory, a parent that cannot be a folder: errors,
+        // not panics.
         let binary = dir.join("binary");
         std::fs::write(&binary, [0xff, 0xfe, 0x00]).unwrap();
         assert!(load_or_create(&binary).is_err());
         assert!(load_or_create(&dir).is_err());
-        let error = load_or_create(&dir.join("no/such/dir/t")).unwrap_err();
+        let error = load_or_create(&binary.join("under/a/file/t")).unwrap_err();
         assert!(error.contains("cannot create"), "{error}");
+        // Missing folders are made (2026-10-30: the suggested token file's
+        // configuration folder may not exist yet).
+        let deep = dir.join("no/such/dir/t");
+        let token = load_or_create(&deep).unwrap();
+        assert_eq!(load_or_create(&deep).unwrap(), token);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

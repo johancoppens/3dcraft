@@ -1927,3 +1927,30 @@ mod engine_thread {
         assert_eq!(route("not json"), Route::Window);
     }
 }
+
+/// A root named on the command line that does not exist yet is made when
+/// its parent exists (the start screen's suggested `Documents/3DCraft`),
+/// and is the made folder's one true spelling; one whose parent is missing
+/// is still an error, as is one that is a file.
+#[test]
+fn a_missing_root_is_made_when_its_parent_exists() {
+    let base = std::env::temp_dir().join(format!("craft3d-root-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let wanted = base.join("3DCraft");
+    let access = app::root("--automation-write-root", wanted.to_str()).unwrap();
+    assert!(wanted.is_dir());
+    assert_eq!(
+        access,
+        Access::Root(std::fs::canonicalize(&wanted).unwrap())
+    );
+    // Again: it is there now and is taken as it is.
+    assert!(app::root("--automation-read-root", wanted.to_str()).is_ok());
+    let deep = base.join("no/such/3DCraft");
+    assert!(app::root("--automation-read-root", deep.to_str()).is_err());
+    assert!(!deep.exists());
+    let file = base.join("file");
+    std::fs::write(&file, b"x").unwrap();
+    assert!(app::root("--automation-read-root", file.to_str()).is_err());
+    let _ = std::fs::remove_dir_all(&base);
+}

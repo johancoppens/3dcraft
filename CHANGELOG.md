@@ -4,7 +4,7 @@ All notable changes to 3DCraft are listed here. The format follows [Keep a Chang
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-10-28
+## [0.1.0] - unreleased
 
 The first release for people outside the project. 3DCraft is a parametric 3D CAD modeller built for AI: you describe a part, an AI agent builds it through 3DCraft's commands, and you watch it appear in the window, point at faces and check the result. Ready-made designs called Jigs need no AI at all: set their sizes in a form and export. Everything can also be done from the command line or a script, and 3DCraft runs in the browser too.
 
@@ -16,7 +16,7 @@ Every item below is in `main` as of 2026-10-30. Branches still merging for this 
 - **Features.** Blocks, cylinders, cones, spheres and tori; extrude, revolve, sweep (along a path or a helix) and loft from sketches; patterns, mirror and move; shell, draft, offset, move and delete faces, thicken; ISO metric threads (cosmetic or modelled); datum planes, axes, points and helices; sheet bodies; several bodies in one document.
 - **Fillets and chamfers** on edges, chosen by name, by description or by pointing at them.
 - **Names that stay put.** Faces and edges are named by how they were made, so a fillet does not jump to another edge when an earlier feature changes, and a face that is gone is reported instead of silently replaced.
-- **Units.** Millimetres, inches and the other length units per document, angles in degrees or radians; the length unit can be changed later while keeping the sizes. Mass, time, force, pressure and stress, moment and energy in expressions (`1000 N / (100 * (1 mm)^2)` is 10 MPa), so a design rule can say `"max": "235 MPa"`.
+- **Units.** Millimetres, inches and the other length units per document, angles in degrees or radians; the length unit can be changed later while keeping the sizes. Mass, time, force, pressure and stress, moment and energy in expressions (`1000 N / (100 * (1 mm)^2)` is 10 MPa), so a design rule can say `"max": "235 MPa"`; an output can carry a label and the unit it is shown in. Named sets can pick flat faces by their plate thickness (`thickness`).
 - **Colours and materials** per body and per face, with metallic and roughness, following the face through later edits and kept in 3MF, OBJ and STEP exports.
 
 ### Sketches
@@ -47,7 +47,7 @@ Every item below is in `main` as of 2026-10-30. Branches still merging for this 
 
 - **Analysis.** Zebra stripes, highlight lines, a curvature map and a draft check drawn on the exact surfaces, curvature combs on edges and iso-curves, and the measures `draft` and `curvature` at a point (the Analysis toggle in the window).
 - **Surfaces from curve networks.** Gordon surfaces through crossing u and v curves (`feature.surface.network`), Coons patches (`feature.surface.coons`) and lofts with guide curves, as exact B-splines.
-- **Continuity across seams.** An edge held in position, tangent (G1) or in curvature (G2) to a plane, cylinder, cone, sphere or a spline face, and `measure.continuity`, which proves G0, G1 or G2 with bounded gaps (also as an assertion).
+- **Continuity across seams.** An edge held in position, tangent (G1) or in curvature (G2) to a plane, cylinder, cone, sphere or a spline face, and `measure.continuity`, which proves G0, G1 or G2 with bounded gaps (also as an assertion). A curvature seam spreads its change over the sheet with the least variation of curvature, so the surface stays fair beside the seam.
 
 ### Assemblies and motion
 
@@ -86,7 +86,8 @@ Every item below is in `main` as of 2026-10-30. Branches still merging for this 
 
 - **A studio look**: image-based lighting from three bundled environments, soft shadows, ambient occlusion, a ground that catches shadows and reflections, contact shadows, depth of field and bloom, refined while the camera stands still; a view setting that never changes the document.
 - **Materials** kept in the document: anisotropic metal, clear coat paint, glass with refraction and subsurface wrap, with six presets (`material.presets`); exports carry what their formats hold.
-- Both looks are drawn by the graphics card and by the processor alike, the processor's picture being the reference the graphics card is tested against.
+- Both looks are drawn by the graphics card and by the processor alike, the processor's picture being the reference the graphics card is tested against. Pictures without a window (`view.render`, `view.replay`, `craft3d-cli render`) use the graphics card when there is one (`renderer: auto|cpu|gpu`).
+- **Animations** (`view.replay`): variables moved along tracks with easing, the motion timeline, a camera path with orbit and dolly, the look, frames per second and duration, written as PNG frames or, through an installed ffmpeg, as MP4, WebM or GIF.
 
 ### Web
 

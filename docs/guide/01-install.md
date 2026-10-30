@@ -152,12 +152,13 @@ The window listens for the agent on a port on your own computer, protected by a 
    computer. The first starts the window:
 
    ```sh
-   craft3d --control 7878 --control-token-file ~/.config/craft3d-control.token \
-       --automation-read-root ~/3dcraft-work --automation-write-root ~/3dcraft-work
+   /opt/3dcraft/bin/craft3d --control 7878 --control-token-file /home/me/.config/craft3d-control.token \
+       --automation-read-root /home/me/Documents/3DCraft --automation-write-root /home/me/Documents/3DCraft
    ```
 
-   The token file is created the first time. The read and write roots are the folders the agent may
-   read and write files in (step 3).
+   It names the program by its full path (on Linux with the AppImage, the AppImage itself). The token
+   file, and the folder `3DCraft` in your Documents, are made the first time. The read and write roots
+   are the folder the agent may read and write files in (see below).
 2. **Give your AI tool the server.** On the start screen of the window you just started, click **Copy
    configuration** and paste it into your MCP client's configuration (its file and where it lives depend
    on the client; Claude Desktop calls it `claude_desktop_config.json`). It looks like this, with full

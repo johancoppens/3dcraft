@@ -146,32 +146,87 @@ pub fn suggested_token_file(env: &dyn Fn(&str) -> Option<String>) -> Option<Stri
 
 /// How an agent reaches this window: `craft3d-cli` beside this program
 /// when it is there (as the installers put it), else by its name on the
-/// `PATH`; the port the window listens on and its token file, absolute.
+/// `PATH`; this program itself for the window line; the port the window
+/// listens on and its token file, absolute; and the folder the agent may
+/// work in ([`suggested_work_folder`]). Started from an AppImage
+/// (`$APPIMAGE`), both programs are the AppImage itself, the command line
+/// as `<AppImage> cli`: the running program's own path is the AppImage's
+/// temporary mount, gone when it stops.
 pub fn agent_setup(
     port: Option<u16>,
     token_file: Option<&Path>,
     env: &dyn Fn(&str) -> Option<String>,
+) -> AgentSetup {
+    let exe = std::env::current_exe()
+        .ok()
+        .and_then(|exe| std::path::absolute(exe).ok());
+    setup_for(port, token_file, env, exe.as_deref())
+}
+
+/// [`agent_setup`] for the program at `exe`.
+fn setup_for(
+    port: Option<u16>,
+    token_file: Option<&Path>,
+    env: &dyn Fn(&str) -> Option<String>,
+    exe: Option<&Path>,
 ) -> AgentSetup {
     let name = if cfg!(windows) {
         "craft3d-cli.exe"
     } else {
         "craft3d-cli"
     };
-    let beside = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
-        .filter(|cli| cli.is_file())
-        .and_then(|cli| cli.to_str().map(str::to_string));
     let token_file = token_file
         .and_then(|file| std::path::absolute(file).ok())
         .and_then(|file| file.to_str().map(str::to_string));
+    let appimage =
+        env("APPIMAGE").filter(|path| Path::new(path).is_absolute() && Path::new(path).is_file());
+    let (cli, cli_prefix, window) = match appimage {
+        Some(appimage) => (appimage.clone(), vec!["cli".to_string()], appimage),
+        None => {
+            let beside = exe
+                .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
+                .filter(|cli| cli.is_file())
+                .and_then(|cli| cli.to_str().map(str::to_string));
+            let window = exe
+                .and_then(Path::to_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| "craft3d".to_string());
+            (
+                beside.unwrap_or_else(|| "craft3d-cli".to_string()),
+                Vec::new(),
+                window,
+            )
+        }
+    };
     AgentSetup {
-        cli: beside.unwrap_or_else(|| "craft3d-cli".to_string()),
+        cli,
+        cli_prefix,
+        window,
+        work_folder: suggested_work_folder(env),
         port,
         token_file,
         suggested_token: suggested_token_file(env),
         windows: cfg!(windows),
     }
+}
+
+/// The folder the start screen suggests for the agent's files, absolute:
+/// `3DCraft` in the user's documents (`%USERPROFILE%\Documents`,
+/// `~/Documents` spelled out). The window makes it when it is started with
+/// it as a root and it is missing.
+pub fn suggested_work_folder(env: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+    let home = if cfg!(windows) {
+        env("USERPROFILE")
+    } else {
+        env("HOME")
+    }
+    .filter(|v| !v.is_empty())
+    .map(PathBuf::from)
+    .filter(|p| p.is_absolute())?;
+    home.join("Documents")
+        .join("3DCraft")
+        .to_str()
+        .map(str::to_string)
 }
 
 /// The program that opens `target` on this platform, and its arguments.
@@ -436,9 +491,56 @@ mod tests {
         assert!(!suggested.contains('~'), "{suggested}");
         assert!(!idle.mcp_config().contains('~'));
         assert_eq!(suggested_token_file(&|_| None), None);
+        // The agent's folder, absolute, in the documents.
+        let work = idle.work_folder.clone().unwrap();
+        assert!(Path::new(&work).is_absolute(), "{work}");
+        assert!(work.ends_with("3DCraft"), "{work}");
+        assert!(idle.window_command().contains("--automation-write-root"));
+        assert_eq!(suggested_work_folder(&|_| None), None);
         assert_eq!(
             suggested_token_file(&|n| (n == "HOME").then(|| "relative".to_string())),
             None
         );
+    }
+
+    #[test]
+    fn from_an_appimage_both_programs_are_the_appimage_never_its_mount() {
+        let dir = std::env::temp_dir().join(format!("craft3d-appimage-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let appimage = dir.join("3DCraft-0.1.0-x86_64.AppImage");
+        std::fs::write(&appimage, b"").unwrap();
+        let path = appimage.to_str().unwrap().to_string();
+        let env = |name: &str| match name {
+            "APPIMAGE" => Some(path.clone()),
+            "HOME" => Some("/home/me".to_string()),
+            "USERPROFILE" => Some(r"C:\Users\me".to_string()),
+            _ => None,
+        };
+        let mount = Path::new("/tmp/.mount_3DCraftAbc/usr/bin/craft3d");
+        let setup = setup_for(None, None, &env, Some(mount));
+        assert_eq!(setup.cli, path);
+        assert_eq!(setup.window, path);
+        assert_eq!(setup.cli_prefix, ["cli"]);
+        assert!(!setup.window_command().contains(".mount_"));
+        // Not an AppImage: this program's own absolute path.
+        let plain = |name: &str| (name == "HOME").then(|| "/home/me".to_string());
+        let setup = setup_for(
+            None,
+            None,
+            &plain,
+            Some(Path::new("/opt/3dcraft/bin/craft3d")),
+        );
+        assert_eq!(setup.window, "/opt/3dcraft/bin/craft3d");
+        assert!(setup.cli_prefix.is_empty());
+        // An APPIMAGE that is no file is not believed.
+        let bogus = |name: &str| (name == "APPIMAGE").then(|| "/no/such.AppImage".to_string());
+        let setup = setup_for(
+            None,
+            None,
+            &bogus,
+            Some(Path::new("/opt/3dcraft/bin/craft3d")),
+        );
+        assert!(setup.cli_prefix.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

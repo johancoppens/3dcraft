@@ -88,13 +88,24 @@ pub fn viewport(options: &Options, title: &str) -> egui::ViewportBuilder {
     }
 }
 
-/// Turns a root flag's value into an access rule. The directory must exist,
-/// and is made absolute with its symbolic links resolved: the engine
-/// compares paths as text, so the root has to be the one true spelling.
-fn root(flag: &str, dir: Option<&str>) -> Result<Access, String> {
+/// Turns a root flag's value into an access rule. A missing directory whose
+/// parent exists is made (the start screen's suggested work folder,
+/// `Documents/3DCraft`); it is made absolute with its symbolic links
+/// resolved: the engine compares paths as text, so the root has to be the
+/// one true spelling.
+pub(crate) fn root(flag: &str, dir: Option<&str>) -> Result<Access, String> {
     let Some(dir) = dir else {
         return Ok(Access::None);
     };
+    let wanted = std::path::Path::new(dir);
+    if !wanted.exists()
+        && wanted
+            .parent()
+            .is_some_and(|parent| parent.as_os_str().is_empty() || parent.is_dir())
+    {
+        std::fs::create_dir(wanted)
+            .map_err(|e| format!("`{flag} {dir}`: cannot make this directory: {e}"))?;
+    }
     let path = std::fs::canonicalize(dir)
         .map_err(|e| format!("`{flag} {dir}`: cannot use this directory: {e}"))?;
     if !path.is_dir() {

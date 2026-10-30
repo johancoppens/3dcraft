@@ -32,16 +32,19 @@ The agent talks to 3DCraft over MCP (the Model Context Protocol). The program `c
 server; your AI tool starts it, and it passes the agent's commands on to the window you are watching.
 
 **Step 1: start the window so that it listens.** The start screen's panel **Connect an AI agent** shows
-the command line for your computer, with the right paths; copy it from there. On Linux and macOS it looks
-like this:
+the command line for your computer, with the full path of the program and of the token file filled in;
+copy it from there and run it in a terminal. On a Mac it looks like this (one line):
 
 ```sh
-craft3d --control 7878 --control-token-file ~/.config/craft3d-control.token \
-    --automation-read-root ~/3dcraft-work --automation-write-root ~/3dcraft-work
+/Applications/3DCraft.app/Contents/MacOS/craft3d --control 7878 \
+    --control-token-file "/Users/me/Library/Application Support/3DCraft/control.token" \
+    --automation-read-root /Users/me/Documents/3DCraft --automation-write-root /Users/me/Documents/3DCraft
 ```
 
-Make the folder `3dcraft-work` first: it is the only folder the agent may read and write files in. A
-window started from the menu does not listen; this one does.
+On Linux with the AppImage, the program is the AppImage itself; on Windows, `craft3d.exe` in
+`C:\Program Files\3DCraft`. The folder `3DCraft` in your Documents is the only folder the agent may read and
+write files in; the window makes it the first time. The token file is made the first time too. A window
+started from the menu does not listen; this one does.
 
 **Step 2: tell your AI tool about the server.** The same panel has **Copy configuration** (the JSON most
 tools take) and **Copy for Claude Code**. Paste it as below. In the examples, replace
@@ -51,7 +54,7 @@ tools take) and **Copy for Claude Code**. Paste it as below. In the examples, re
 |---|---|
 | Windows | `C:\Program Files\3DCraft\craft3d-cli.exe` (in JSON, write every `\` twice) |
 | macOS | `/Applications/3DCraft.app/Contents/MacOS/craft3d-cli` |
-| Linux, AppImage | the AppImage itself, with `"cli"` as the first of the `args` |
+| Linux, AppImage | the AppImage itself, with `"cli"` as the first of the `args` (the panel does this) |
 | Linux, tarball | `~/.local/bin/craft3d-cli`, written out in full |
 
 **Claude Code** (in a terminal):
@@ -99,6 +102,9 @@ command = "/full/path/to/craft3d-cli"
 args = ["mcp", "--bridge", "7878", "--control-token-file", "/home/me/.config/craft3d-control.token"]
 ```
 
+On Windows, TOML strings in double quotes need every `\` written twice, as JSON does:
+`command = "C:\\Program Files\\3DCraft\\craft3d-cli.exe"`.
+
 Where a tool keeps its configuration changes between its versions; the shape above is what matters.
 Restart the AI tool after changing it.
 
@@ -108,7 +114,8 @@ file differ between step 1 and step 2.
 
 ## 3. Five tasks to start with
 
-Each takes 5 to 20 minutes. Give the agent the text in quotes, in your own words if you like, and in
+Links in this guide and in 3DCraft (**How it works**, Help › User guide) open in your web browser. Each
+task takes 5 to 20 minutes. Give the agent the text in quotes, in your own words if you like, and in
 your own language if you prefer. Then check its work as [chapter 3](03-agent.md#checking-the-agents-work)
 shows: look at the window, click faces, and ask for the volume.
 
