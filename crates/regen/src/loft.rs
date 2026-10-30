@@ -13,6 +13,61 @@ use craft3d_kernel::loft::{Options, Section, loft};
 use craft3d_kernel::profile::open_chain;
 use craft3d_topo::Body;
 
+/// A loft with guides: the network surface of its sections (open chains)
+/// as u curves and its guides as v curves.
+fn guided(
+    doc: &Document,
+    variables: &craft3d_expr::Evaluation,
+    id: FeatureId,
+    feature: &Loft,
+    earlier: &[FeatureResult],
+) -> Result<(Body, Names), String> {
+    if feature.ruled || feature.closed {
+        return Err(
+            "guides: a loft with guides is smooth and open (no ruled, no closed)".to_string(),
+        );
+    }
+    let most = craft3d_doc::MAX_NETWORK_CURVES;
+    let (m, n) = (feature.sections.len(), feature.guides.len());
+    if !(2..=most).contains(&m) || !(2..=most).contains(&n) {
+        return Err(format!(
+            "sections, guides: a loft with guides has 2 to {most} sections and 2 to {most} guides; this one has {m} sections and {n} guides"
+        ));
+    }
+    // An open section is run the way the guides cross it, so a curve to
+    // start from means nothing here: refused rather than ignored.
+    if let Some(k) = feature.sections.iter().position(|s| s.start.is_some()) {
+        return Err(format!(
+            "sections: section {} gives `start`, which a loft with guides does not use (its open sections are run the way the guides cross them); leave it out",
+            k + 1
+        ));
+    }
+    let network = craft3d_doc::SurfaceNetwork {
+        u: feature
+            .sections
+            .iter()
+            .map(|s| craft3d_doc::Rail::Sketch(s.sketch))
+            .collect(),
+        v: feature.guides.clone(),
+        edges: craft3d_doc::NetworkEdges::default(),
+    };
+    let (body, names, _) = crate::network::build(doc, variables, id, &network, earlier)
+        .map_err(|e| guided_words(&e))?;
+    Ok((body, names))
+}
+
+/// A network's message in a loft's words: its u curves are the sections,
+/// its v curves the guides.
+fn guided_words(text: &str) -> String {
+    text.replace("u, v: ", "sections, guides: ")
+        .replace("u: curve", "sections: section")
+        .replace("v: curve", "guides: guide")
+        .replace("u curves", "sections")
+        .replace("v curves", "guides")
+        .replace("u curve", "section")
+        .replace("v curve", "guide")
+}
+
 /// The persistent name of a face a loft made: `F9:side(e3,e7)` after the
 /// matched curves of the sections it passes through, `F9:startCap(…)` and
 /// `F9:endCap(…)` after the curves of the first and the last section.
@@ -28,10 +83,14 @@ fn name_of(feature: FeatureId, origin: &Origin) -> PersistentName {
 
 pub(crate) fn build(
     doc: &Document,
+    variables: &craft3d_expr::Evaluation,
     id: FeatureId,
     feature: &Loft,
     earlier: &[FeatureResult],
 ) -> Result<(Body, Names), String> {
+    if !feature.guides.is_empty() {
+        return guided(doc, variables, id, feature, earlier);
+    }
     let count = feature.sections.len();
     let least = if feature.closed { 3 } else { 2 };
     if count < least || count > MAX_LOFT_SECTIONS {

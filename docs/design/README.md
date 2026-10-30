@@ -12,6 +12,7 @@ The detail documents behind the map in [`../architecture.md`](../architecture.md
 | [`sweeps.md`](sweeps.md) | profiles with splines, extrude and its ends, revolve, loft, sweep, helix, thread |
 | [`face-operations.md`](face-operations.md) | offset face, shell, move face, draft, thicken, delete face |
 | [`developable.md`](developable.md) | developable surfaces between two curves, the Gaussian curvature of any surface, unfolding faces flat with the map between pattern and part |
+| [`surfacing.md`](surfacing.md) | freeform surfaces through curve networks: Coons patches, Gordon surfaces, lofts along guides, edges held in position or tangent (G1) to a face |
 | [`names.md`](names.md) | persistent names: how they are made, followed and resolved |
 | [`document.md`](document.md) | the document model, expressions, sketches and the solver, datums, appearance and material |
 | [`regeneration.md`](regeneration.md) | the cache, long rows, failed features, the self-intersection check per operation |

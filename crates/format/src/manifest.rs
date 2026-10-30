@@ -654,6 +654,10 @@ pub enum FeatureKind {
         /// The last section joins the first. Written only when set.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         closed: bool,
+        /// Guide curves, as a developable's rails (format version 53).
+        /// Written only when there are any.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        guides: Vec<Rail>,
     },
     /// A solid the one closed profile of sketch `sketch` sweeps along the
     /// curves of sketch `path` (format version 10), or along the datum
@@ -846,6 +850,16 @@ pub enum FeatureKind {
     /// rail is `{"sketch": id}` (the one open chain of its curves) or
     /// `{"edges": [names]}` (edges of earlier bodies, end to end).
     Developable { a: Rail, b: Rail },
+    /// A sheet through a network of curves that cross (format version
+    /// 53): `u` and `v` are rails as a developable's,
+    /// `edges` the conditions of its four edges (written only when one is
+    /// held).
+    SurfaceNetwork {
+        u: Vec<Rail>,
+        v: Vec<Rail>,
+        #[serde(default, skip_serializing_if = "NetworkEdges::is_free")]
+        edges: NetworkEdges,
+    },
     /// Faces of an earlier body laid flat as one piece (format version
     /// 39), placed at `at` and turned by `angle` about +z.
     Unfold {
@@ -1119,6 +1133,50 @@ pub enum CreaseKind {
     Mountain,
     Valley,
     Cut,
+}
+
+/// What an edge of a network surface is held to (format version 53).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum EdgeHold {
+    #[default]
+    Free,
+    Position {
+        face: Name,
+    },
+    Tangent {
+        face: Name,
+        weight: String,
+    },
+}
+
+impl EdgeHold {
+    fn is_free(&self) -> bool {
+        matches!(self, EdgeHold::Free)
+    }
+}
+
+/// The four edges of a network surface; each written only when held.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkEdges {
+    #[serde(default, skip_serializing_if = "EdgeHold::is_free")]
+    pub u_first: EdgeHold,
+    #[serde(default, skip_serializing_if = "EdgeHold::is_free")]
+    pub u_last: EdgeHold,
+    #[serde(default, skip_serializing_if = "EdgeHold::is_free")]
+    pub v_first: EdgeHold,
+    #[serde(default, skip_serializing_if = "EdgeHold::is_free")]
+    pub v_last: EdgeHold,
+}
+
+impl NetworkEdges {
+    fn is_free(&self) -> bool {
+        self.u_first.is_free()
+            && self.u_last.is_free()
+            && self.v_first.is_free()
+            && self.v_last.is_free()
+    }
 }
 
 /// A rail of a developable (format version 39).

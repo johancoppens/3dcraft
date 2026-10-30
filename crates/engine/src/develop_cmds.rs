@@ -27,7 +27,12 @@ pub(crate) static SPECS: &[CommandSpec] = &[
 ];
 
 /// A rail from a parameter: a sketch, or `{"edges": [...]}`.
-fn rail_value(doc: &Document, p: &Params, command: &str, key: &str) -> Result<Rail, CommandError> {
+pub(crate) fn rail_value(
+    doc: &Document,
+    p: &Params,
+    command: &str,
+    key: &str,
+) -> Result<Rail, CommandError> {
     let value = p.get(key).ok_or_else(|| p.missing(key))?;
     if let Value::Object(map) = value {
         let Some(edges) = map.get("edges").and_then(Value::as_array) else {
@@ -156,6 +161,7 @@ pub(crate) fn report_json(map: &mut Map<String, Value>, made: &craft3d_regen::De
             );
         }
         craft3d_regen::Developed::SheetMetal(_) | craft3d_regen::Developed::FlatFold(_) => {}
+        craft3d_regen::Developed::Network(made) => crate::surface_cmds::report_json(map, made),
         craft3d_regen::Developed::Pattern(dev) => {
             let e = dev.error();
             map.insert(

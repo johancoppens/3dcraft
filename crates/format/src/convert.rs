@@ -960,7 +960,9 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 sections,
                 ruled,
                 closed,
+                guides,
             }) => manifest::FeatureKind::Loft {
+                guides: guides.iter().map(rail_to_manifest).collect(),
                 sections: sections
                     .iter()
                     .map(
@@ -1107,6 +1109,24 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 manifest::FeatureKind::Developable {
                     a: rail_to_manifest(a),
                     b: rail_to_manifest(b),
+                }
+            }
+            doc::FeatureKind::SurfaceNetwork(doc::SurfaceNetwork { u, v, edges }) => {
+                let doc::NetworkEdges {
+                    u_first,
+                    u_last,
+                    v_first,
+                    v_last,
+                } = edges;
+                manifest::FeatureKind::SurfaceNetwork {
+                    u: u.iter().map(rail_to_manifest).collect(),
+                    v: v.iter().map(rail_to_manifest).collect(),
+                    edges: manifest::NetworkEdges {
+                        u_first: hold_to_manifest(u_first),
+                        u_last: hold_to_manifest(u_last),
+                        v_first: hold_to_manifest(v_first),
+                        v_last: hold_to_manifest(v_last),
+                    },
                 }
             }
             doc::FeatureKind::Unfold(doc::Unfold { faces, at, angle }) => {
@@ -1847,6 +1867,32 @@ fn rail_to_manifest(rail: &doc::Rail) -> manifest::Rail {
         doc::Rail::Edges(edges) => {
             manifest::Rail::Edges(edges.iter().map(name_to_manifest).collect())
         }
+    }
+}
+
+fn hold_to_manifest(hold: &doc::EdgeHold) -> manifest::EdgeHold {
+    match hold {
+        doc::EdgeHold::Free => manifest::EdgeHold::Free,
+        doc::EdgeHold::Position { face } => manifest::EdgeHold::Position {
+            face: name_to_manifest(face),
+        },
+        doc::EdgeHold::Tangent { face, weight } => manifest::EdgeHold::Tangent {
+            face: name_to_manifest(face),
+            weight: expr_to_manifest(weight),
+        },
+    }
+}
+
+fn hold_to_doc(hold: manifest::EdgeHold) -> doc::EdgeHold {
+    match hold {
+        manifest::EdgeHold::Free => doc::EdgeHold::Free,
+        manifest::EdgeHold::Position { face } => doc::EdgeHold::Position {
+            face: name_to_doc(face),
+        },
+        manifest::EdgeHold::Tangent { face, weight } => doc::EdgeHold::Tangent {
+            face: name_to_doc(face),
+            weight: doc::Expr(weight),
+        },
     }
 }
 
@@ -2630,7 +2676,9 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
                 sections,
                 ruled,
                 closed,
+                guides,
             } => doc::FeatureKind::Loft(doc::Loft {
+                guides: guides.into_iter().map(rail_to_doc).collect(),
                 sections: sections
                     .into_iter()
                     .map(|manifest::LoftSection { sketch, start }| doc::LoftSection {
@@ -2773,6 +2821,24 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
                 doc::FeatureKind::Developable(doc::Developable {
                     a: rail_to_doc(a),
                     b: rail_to_doc(b),
+                })
+            }
+            manifest::FeatureKind::SurfaceNetwork { u, v, edges } => {
+                let manifest::NetworkEdges {
+                    u_first,
+                    u_last,
+                    v_first,
+                    v_last,
+                } = edges;
+                doc::FeatureKind::SurfaceNetwork(doc::SurfaceNetwork {
+                    u: u.into_iter().map(rail_to_doc).collect(),
+                    v: v.into_iter().map(rail_to_doc).collect(),
+                    edges: doc::NetworkEdges {
+                        u_first: hold_to_doc(u_first),
+                        u_last: hold_to_doc(u_last),
+                        v_first: hold_to_doc(v_first),
+                        v_last: hold_to_doc(v_last),
+                    },
                 })
             }
             manifest::FeatureKind::Unfold { faces, at, angle } => {

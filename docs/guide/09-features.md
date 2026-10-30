@@ -163,6 +163,52 @@ on the panel, and the other way round.
   back; the strip of rulings beside such a fan does not yet, laid flat with the rest or on its own (where
   the rulings turned it has a corner the layout does not handle yet), so unfolding the faces one by one
   leaves that strip out. Cut the curves short of the fold to unfold the rest in one piece.
+## Surfaces from curve networks
+
+For flowing shapes (a mouse, a kettle, a handle) draw the curves the surface must pass through and let
+3DCraft lay a smooth sheet through them. `feature.surface.network` takes **u curves**, which follow each
+other across **v curves** (2 to 64 of each): every u curve must cross every v curve, and the first and
+last curve of each family are the sheet's edges, so the others end on them. A curve is a sketch whose
+curves make one open chain, or `{"edges": [...]}`. With two curves each way it is a Coons patch, which
+`feature.surface.coons` makes from four curves round the patch:
+
+```json
+[
+ ["sketch.create", {"name": "Low"}],
+ ["sketch.arc", {"sketch": "Low", "center": [0, 0], "start": [20, 0], "end": [0, 20]}],
+ ["sketch.create", {"name": "High", "offset": "30 mm"}],
+ ["sketch.arc", {"sketch": "High", "center": [0, 0], "start": [20, 0], "end": [0, 20]}],
+ ["sketch.create", {"name": "Left", "plane": "zx"}],
+ ["sketch.line", {"sketch": "Left", "from": [0, 20], "to": [30, 20]}],
+ ["sketch.create", {"name": "Right", "plane": "yz"}],
+ ["sketch.line", {"sketch": "Right", "from": [20, 0], "to": [20, 30]}],
+ ["feature.surface.coons", {"curves": ["Low", "Right", "High", "Left"], "name": "Wall"}],
+ ["feature.plate", {"faces": ["F5:side(e1,e2,e3,e4)"], "thickness": "2 mm", "side": "out", "name": "Tube"}]
+]
+```
+
+Two arcs and two lines give exactly a quarter of a cylinder, and the plate makes it a quarter tube. The
+sheet passes through every curve; the result says under `network` how far at most the sheet passes from
+any of them (`mismatch`, a proven bound, never more than the tolerance). The curves may be drawn either way
+round.
+
+An edge can be held: `"edges": {"uFirst": {"kind": "tangent", "face": "F7:face(0)", "weight": 1}}`
+makes the sheet meet that face with one tangent plane all along the edge (G1, no crease; `tangency` in the
+result is the largest angle found between the two), the curves crossing the edge bent to leave it along
+the face, their speed there times `weight` (larger is fuller). `"kind": "position"` only checks that the
+edge lies on the face. The face may be a plane, cylinder, cone or sphere, or a spline face along one of
+its parameter lines, such as the edge of another network sheet: two sheets then join smoothly.
+`feature.loft` with `guides` lays a sheet through open sections along guide curves the same way (its
+sections take no `start`).
+
+Refused, with the curves named: curves that do not cross (and how close they come), curves crossing out of
+order, a curve running past an edge, a curve leaving a tangent edge square to its face or along it, curves
+leaving it to opposite sides (the sheet would fold over the edge), two held edges whose corner asks two
+tangent planes or two twists, and a network too large for one sheet (more than 2^20 control points: many
+curves, each crossed at its own parameters, each bring their own knots). The face is named
+after its four edge curves (`F5:side(e1,e2,e3,e4)`: the ids of their sketches), so editing a curve or
+adding one inside the network keeps its name.
+
 ## Plates and joints
 
 `feature.plate` gives faces a thickness: a sheet (a fill, a loft of open sections, a developable) becomes a

@@ -433,6 +433,12 @@ pub struct Loft {
     /// The last section joins the first: a ring without ends.
     #[serde(default)]
     pub closed: bool,
+    /// Guide curves the sheet follows across the sections (open sections
+    /// only): the loft is then the network surface of the sections as u
+    /// curves and the guides as v curves, the first and last guide its
+    /// edges (docs/design/surfacing.md).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub guides: Vec<Rail>,
 }
 
 /// How an offset outline goes round a corner where the offset curves of
@@ -634,6 +640,108 @@ pub const MAX_RAIL_EDGES: usize = 1024;
 pub struct Developable {
     pub a: Rail,
     pub b: Rail,
+}
+
+/// What one boundary of a network surface is held to.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum EdgeHold {
+    /// Nothing: the edge is where its curve is.
+    #[default]
+    Free,
+    /// The edge's curve lies on this face (checked).
+    Position { face: PersistentName },
+    /// The surface meets this face along the edge with one tangent plane
+    /// (G1); the curves crossing the edge leave it along the face with
+    /// their own speed times `weight`.
+    Tangent {
+        face: PersistentName,
+        #[serde(default = "one")]
+        weight: Expr,
+    },
+}
+
+fn one() -> Expr {
+    Expr::new("1")
+}
+
+impl EdgeHold {
+    /// The face it is held to, if any.
+    pub fn face(&self) -> Option<&PersistentName> {
+        match self {
+            EdgeHold::Free => None,
+            EdgeHold::Position { face } | EdgeHold::Tangent { face, .. } => Some(face),
+        }
+    }
+}
+
+/// The conditions of a network surface's four edges: its first and last
+/// u curve, its first and last v curve.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkEdges {
+    #[serde(default)]
+    pub u_first: EdgeHold,
+    #[serde(default)]
+    pub u_last: EdgeHold,
+    #[serde(default)]
+    pub v_first: EdgeHold,
+    #[serde(default)]
+    pub v_last: EdgeHold,
+}
+
+impl NetworkEdges {
+    /// The four conditions in their order, with their keys.
+    pub fn all(&self) -> [(&'static str, &EdgeHold); 4] {
+        [
+            ("uFirst", &self.u_first),
+            ("uLast", &self.u_last),
+            ("vFirst", &self.v_first),
+            ("vLast", &self.v_last),
+        ]
+    }
+
+    pub fn all_mut(&mut self) -> [(&'static str, &mut EdgeHold); 4] {
+        [
+            ("uFirst", &mut self.u_first),
+            ("uLast", &mut self.u_last),
+            ("vFirst", &mut self.v_first),
+            ("vLast", &mut self.v_last),
+        ]
+    }
+}
+
+/// Most curves in one family of a network surface.
+pub const MAX_NETWORK_CURVES: usize = 64;
+
+/// A sheet through a network of curves that cross (a Gordon surface; a
+/// Coons patch for two curves each way): `u` curves follow each other
+/// across `v` curves (docs/design/surfacing.md).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfaceNetwork {
+    pub u: Vec<Rail>,
+    pub v: Vec<Rail>,
+    #[serde(default)]
+    pub edges: NetworkEdges,
+}
+
+impl SurfaceNetwork {
+    /// The features it is made from, in order, each once.
+    pub fn inputs(&self) -> Vec<FeatureId> {
+        let mut out: Vec<FeatureId> = Vec::new();
+        let rails = self.u.iter().chain(&self.v).flat_map(Rail::inputs);
+        let faces = self
+            .edges
+            .all()
+            .into_iter()
+            .filter_map(|(_, h)| h.face().map(|f| f.feature));
+        for id in rails.chain(faces) {
+            if !out.contains(&id) {
+                out.push(id);
+            }
+        }
+        out
+    }
 }
 
 /// Faces of an earlier body laid flat as one piece, a flat sheet of its
@@ -1176,6 +1284,7 @@ pub enum FeatureKind {
     SheetMetal(SheetMetal),
     Developable(Developable),
     Unfold(Unfold),
+    SurfaceNetwork(SurfaceNetwork),
 }
 
 impl FeatureKind {
@@ -1214,6 +1323,7 @@ impl FeatureKind {
             FeatureKind::Fill(_) => "fill",
             FeatureKind::Split(_) => "split",
             FeatureKind::Developable(_) => "developable",
+            FeatureKind::SurfaceNetwork(_) => "surfaceNetwork",
             FeatureKind::Unfold(_) => "unfold",
             FeatureKind::Import(_) => "import",
             FeatureKind::Fold(_) => "fold",
@@ -1360,6 +1470,7 @@ impl FeatureKind {
             | FeatureKind::Fold(_)
             | FeatureKind::SheetMetal(_)
             | FeatureKind::Developable(_)
+            | FeatureKind::SurfaceNetwork(_)
             | FeatureKind::Import(_) => None,
         }
     }
@@ -1377,7 +1488,15 @@ impl FeatureKind {
                 RevolveAxis::Datum { axis } => vec![r.sketch, axis],
                 RevolveAxis::X | RevolveAxis::Y | RevolveAxis::Line { .. } => vec![r.sketch],
             },
-            FeatureKind::Loft(l) => l.sections.iter().map(|s| s.sketch).collect(),
+            FeatureKind::Loft(l) => {
+                let mut out: Vec<FeatureId> = l.sections.iter().map(|s| s.sketch).collect();
+                for id in l.guides.iter().flat_map(Rail::inputs) {
+                    if !out.contains(&id) {
+                        out.push(id);
+                    }
+                }
+                out
+            }
             FeatureKind::Sweep(s) => vec![s.sketch, s.path],
             FeatureKind::OffsetProfile(o) => vec![o.sketch],
             FeatureKind::Fill(f) => vec![f.sketch],
@@ -1396,6 +1515,7 @@ impl FeatureKind {
                 }
                 out
             }
+            FeatureKind::SurfaceNetwork(n) => n.inputs(),
             FeatureKind::Developable(d) => {
                 let mut out = d.a.inputs();
                 for id in d.b.inputs() {
@@ -1517,6 +1637,19 @@ impl FeatureKind {
             FeatureKind::Unfold(u) => {
                 out = triple("at", &u.at);
                 out.push(named("angle", &u.angle));
+            }
+            FeatureKind::SurfaceNetwork(n) => {
+                out = n
+                    .edges
+                    .all()
+                    .into_iter()
+                    .filter_map(|(key, hold)| match hold {
+                        EdgeHold::Tangent { weight, .. } => {
+                            Some((format!("edges.{key}.weight"), weight))
+                        }
+                        _ => None,
+                    })
+                    .collect();
             }
             FeatureKind::DatumPlane(d) => out = d.exprs(),
             FeatureKind::DatumAxis(d) => out = d.exprs(),
@@ -1660,6 +1793,15 @@ impl FeatureKind {
             | FeatureKind::Developable(_)
             | FeatureKind::Import(_) => Vec::new(),
             FeatureKind::Unfold(u) => u.at.iter_mut().chain([&mut u.angle]).collect(),
+            FeatureKind::SurfaceNetwork(n) => n
+                .edges
+                .all_mut()
+                .into_iter()
+                .filter_map(|(_, hold)| match hold {
+                    EdgeHold::Tangent { weight, .. } => Some(weight),
+                    _ => None,
+                })
+                .collect(),
             FeatureKind::DatumPlane(d) => d.exprs_mut(),
             FeatureKind::DatumAxis(d) => d.exprs_mut(),
             FeatureKind::DatumPoint(d) => d.exprs_mut(),
@@ -2098,6 +2240,49 @@ impl Document {
                 }
                 FeatureKind::Thread(thread) => vec![&thread.face, &thread.start],
                 FeatureKind::Split(split) => vec![&split.face],
+                FeatureKind::SurfaceNetwork(n) => {
+                    let mut names = Vec::new();
+                    if n.u.len() > MAX_NETWORK_CURVES || n.v.len() > MAX_NETWORK_CURVES {
+                        return Err(DocError::Invalid(format!(
+                            "`{}` has more than {MAX_NETWORK_CURVES} curves in a family",
+                            feature.name
+                        )));
+                    }
+                    for rail in n.u.iter().chain(&n.v) {
+                        if let Rail::Edges(edges) = rail {
+                            if edges.len() > MAX_RAIL_EDGES {
+                                return Err(DocError::Invalid(format!(
+                                    "`{}` has a curve of more than {MAX_RAIL_EDGES} edges",
+                                    feature.name
+                                )));
+                            }
+                            names.extend(edges.iter());
+                        }
+                    }
+                    names.extend(n.edges.all().into_iter().filter_map(|(_, h)| h.face()));
+                    names
+                }
+                FeatureKind::Loft(loft) => {
+                    if loft.guides.len() > MAX_NETWORK_CURVES {
+                        return Err(DocError::Invalid(format!(
+                            "the loft `{}` has more than {MAX_NETWORK_CURVES} guides",
+                            feature.name
+                        )));
+                    }
+                    let mut names = Vec::new();
+                    for rail in &loft.guides {
+                        if let Rail::Edges(edges) = rail {
+                            if edges.len() > MAX_RAIL_EDGES {
+                                return Err(DocError::Invalid(format!(
+                                    "`{}` has a guide of more than {MAX_RAIL_EDGES} edges",
+                                    feature.name
+                                )));
+                            }
+                            names.extend(edges.iter());
+                        }
+                    }
+                    names
+                }
                 FeatureKind::Developable(d) => {
                     let mut names = Vec::new();
                     for rail in [&d.a, &d.b] {
@@ -3365,6 +3550,55 @@ mod tests {
         let mut bad_name = sample();
         bad_name.features[0].name = String::new();
         assert!(bad_name.validate().is_err());
+    }
+
+    #[test]
+    fn a_lofts_guides_are_checked_as_a_networks_curves_are() {
+        let guided = |guides: Vec<Rail>| {
+            let mut doc = sample();
+            doc.add_feature(
+                Some("Guided"),
+                FeatureKind::Loft(Loft {
+                    sections: vec![
+                        LoftSection {
+                            sketch: FeatureId(1),
+                            start: None,
+                        },
+                        LoftSection {
+                            sketch: FeatureId(2),
+                            start: None,
+                        },
+                    ],
+                    ruled: false,
+                    closed: false,
+                    guides,
+                }),
+            )
+            .unwrap();
+            doc
+        };
+        let edge = "F1:startCap()".parse::<PersistentName>().unwrap();
+        let fine = guided(vec![
+            Rail::Edges(vec![edge.clone()]),
+            Rail::Sketch(FeatureId(1)),
+        ]);
+        assert_eq!(fine.validate(), Ok(()));
+        // Too many edges in one guide.
+        let long = guided(vec![
+            Rail::Edges(vec![edge.clone(); MAX_RAIL_EDGES + 1]),
+            Rail::Sketch(FeatureId(1)),
+        ]);
+        let why = long.validate().unwrap_err().to_string();
+        assert!(why.contains("guide"), "{why}");
+        // A name that cannot be written and read back.
+        let mut bad = edge.clone();
+        bad.sources = vec![1; MAX_NAME_SOURCES + 1];
+        let broken = guided(vec![Rail::Edges(vec![bad]), Rail::Sketch(FeatureId(1))]);
+        let why = broken.validate().unwrap_err().to_string();
+        assert!(why.contains("not a name"), "{why}");
+        // Too many guides.
+        let many = guided(vec![Rail::Sketch(FeatureId(1)); MAX_NETWORK_CURVES + 1]);
+        assert!(many.validate().is_err());
     }
 
     #[test]
