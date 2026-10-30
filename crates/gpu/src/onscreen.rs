@@ -783,10 +783,51 @@ pub struct Onscreen {
     /// studio picture.
     look: Option<crate::Studio>,
     studio: Option<Result<crate::studio::StudioOnscreen, String>>,
+    /// The frames of the studio look summed so far, and of what.
+    progress: Option<Progress>,
     /// Why the last frame asked for in the studio look was drawn plain.
     studio_failure: Option<String>,
     /// Identifies this renderer in what it uploads.
     token: Arc<()>,
+}
+
+/// What the studio look's frames are summed for: the same picture.
+#[derive(Clone)]
+struct ProgressKey {
+    mesh: u64,
+    camera: Camera,
+    params: RenderParams,
+    look: craft3d_render::studio::Look,
+    env: Arc<craft3d_render::studio::Prepared>,
+}
+
+impl ProgressKey {
+    fn same(&self, other: &ProgressKey) -> bool {
+        self.mesh == other.mesh
+            && self.camera == other.camera
+            && self.params == other.params
+            && self.look == other.look
+            && Arc::ptr_eq(&self.env, &other.env)
+    }
+}
+
+/// The frames of a studio picture summed so far (`done`) of `frames`.
+struct Progress {
+    key: ProgressKey,
+    done: u32,
+    frames: u32,
+}
+
+/// A frame of the studio look in the viewport: its uniform block and
+/// passes; whether it takes the deferred path (one sample per pixel, the
+/// frames summed), starts the sum, and adds to it at all (not once every
+/// frame is in).
+struct StudioFrame {
+    numbers: [f32; crate::studio::STUDIO_FLOATS],
+    passes: crate::studio::Passes,
+    deferred: bool,
+    first: bool,
+    add: bool,
 }
 
 /// The passes of the edge density: the ink of the edges (the lines'
@@ -1503,6 +1544,7 @@ impl Onscreen {
             depth_read_pipeline: None,
             look: None,
             studio: None,
+            progress: None,
             studio_failure: None,
             token: Arc::new(()),
         }
@@ -1525,14 +1567,29 @@ impl Onscreen {
     }
 
     /// The studio look this device draws for `look`: on WebGL2 without
-    /// shadows and occlusion.
+    /// shadows and occlusion, and of layer 2 without the effects that
+    /// trace the screen (reflections, the ground's reflection, contact
+    /// shadows) and without depth of field; bloom, the specular shadow and
+    /// the accumulation stay.
     pub fn studio_as_drawn(&self, look: &crate::Studio) -> crate::Studio {
         let mut drawn = look.clone();
         if crate::studio::simpler(&self.device) {
             drawn.look.shadows = false;
             drawn.look.ao = false;
+            drawn.look.ssr = false;
+            drawn.look.contact_shadows = false;
+            drawn.look.ground_reflection = 0.0;
+            drawn.look.dof = None;
         }
         drawn
+    }
+
+    /// Whether the next draw of the same picture (the same mesh, camera,
+    /// parameters and look) improves it: the studio look sums its
+    /// jittered frames (`Look::accumulate`) one per draw, and restarts
+    /// when anything changes. A shell keeps drawing while this is true.
+    pub fn converging(&self) -> bool {
+        self.drawn && self.progress.as_ref().is_some_and(|p| p.done < p.frames)
     }
 
     /// Samples per pixel of the picture.
@@ -1709,13 +1766,41 @@ impl Onscreen {
         let lit = match &self.look {
             Some(look) if options.bodies && !see_through && cut.is_none() => {
                 let drawn = self.studio_as_drawn(look);
-                let numbers = crate::studio::studio_uniforms(
+                let deferred = drawn.look.post() || drawn.look.accumulate > 1;
+                let key = ProgressKey {
+                    mesh: mesh.serial,
+                    camera: *camera,
+                    params: *params,
+                    look: drawn.look,
+                    env: Arc::clone(&drawn.env),
+                };
+                // The next frame of the same picture, or frame 0 of a new
+                // one; nothing to add once all are summed.
+                let (frame, first) = match &self.progress {
+                    Some(p) if deferred && p.key.same(&key) => (p.done, false),
+                    _ => (0, true),
+                };
+                let (numbers, passes) = crate::studio::studio_uniforms(
                     mesh,
                     &drawn,
+                    camera,
                     (params.width, params.height),
+                    frame,
                     params.background,
                 )?;
-                Some((drawn, numbers))
+                let add = first || frame < passes.frames;
+                Some((
+                    drawn,
+                    StudioFrame {
+                        numbers,
+                        passes,
+                        deferred,
+                        first,
+                        add,
+                    },
+                    key,
+                    frame,
+                ))
             }
             _ => None,
         };
@@ -1733,11 +1818,12 @@ impl Onscreen {
         // the viewport keeps its renderer, and the reason is kept
         // (`studio_failure`).
         let lit = match lit {
-            Some((drawn, numbers)) => {
+            Some((drawn, frame, key, index)) => {
                 let queue = self.queue.clone();
+                let levels = frame.deferred.then_some(frame.passes.levels.as_slice());
                 let ready = match &mut self.studio {
                     Some(Ok(studio)) => guarded(&device, || {
-                        studio.ensure_size(&device, (params.width, params.height));
+                        studio.ensure_size(&device, (params.width, params.height), levels);
                         studio.gpu.ensure_env(&device, &queue, &drawn.env)
                     })
                     .and_then(|r| r),
@@ -1749,7 +1835,7 @@ impl Onscreen {
                 match ready {
                     Ok(()) => {
                         self.studio_failure = None;
-                        Some((drawn, numbers))
+                        Some((drawn, frame, key, index))
                     }
                     Err(why) => {
                         self.studio_failure = Some(why.to_string());
@@ -1759,7 +1845,21 @@ impl Onscreen {
             }
             None => None,
         };
-        let studio_numbers = lit.map(|(_, numbers)| numbers);
+        // Whatever goes wrong below, the sum starts again.
+        self.progress = None;
+        let next = match &lit {
+            Some((_, frame, key, index)) if frame.deferred => Some(Progress {
+                key: key.clone(),
+                done: if frame.add {
+                    index.saturating_add(1)
+                } else {
+                    *index
+                },
+                frames: frame.passes.frames,
+            }),
+            _ => None,
+        };
+        let studio_frame = lit.map(|(_, frame, ..)| frame);
         guarded(&device, || {
             self.ensure_targets(params, options.capture, overlay.edges.tile());
             if see_through {
@@ -1777,11 +1877,12 @@ impl Onscreen {
                 overlay,
                 options,
                 cut.as_ref(),
-                studio_numbers.as_ref(),
+                studio_frame.as_ref(),
             )
         })??;
         self.drawn = true;
         self.captured = options.capture;
+        self.progress = next;
         Ok(())
     }
 
@@ -2442,16 +2543,16 @@ impl Onscreen {
         overlay: &OverlayParams,
         options: DrawOptions,
         cut: Option<&Cut>,
-        studio: Option<&([f32; crate::studio::STUDIO_FLOATS], crate::studio::Passes)>,
+        studio: Option<&StudioFrame>,
     ) -> Result<(), GpuError> {
         let targets = self.targets.as_ref().ok_or(GpuError::NothingDrawn)?;
         self.queue
             .write_buffer(&self.scene_uniforms, 0, &float_bytes(scene));
         let lit = match (studio, &self.studio) {
-            (Some((numbers, passes)), Some(Ok(look))) => {
+            (Some(frame), Some(Ok(look))) => {
                 self.queue
-                    .write_buffer(&look.gpu.uniforms, 0, &float_bytes(numbers));
-                Some((look, passes))
+                    .write_buffer(&look.gpu.uniforms, 0, &float_bytes(&frame.numbers));
+                Some((look, frame))
             }
             (Some(_), _) => return Err(GpuError::NothingDrawn),
             (None, _) => None,
@@ -2553,21 +2654,45 @@ impl Onscreen {
             );
         }
         // The studio look's passes before the bodies, with the background
-        // drawn into the colour target; and the bodies' group 1.
+        // drawn into the colour target; and the bodies' group 1. On the
+        // deferred path the frame is drawn, summed and its mean put in the
+        // shown texture here, and the bodies' pass below draws only their
+        // depth, for the lines.
         let lit = match lit {
-            Some((look, passes)) => Some((
-                look,
-                look.encode_before(
+            Some((look, frame)) if !frame.add => {
+                look.encode_average(&self.device, &self.queue, &mut encoder, &targets.shown_view)?;
+                Some((look, None))
+            }
+            Some((look, frame)) => {
+                let bind = look.encode_before(
                     &self.device,
                     &mut encoder,
                     &self.scene_bind,
                     mesh,
-                    passes,
+                    &frame.passes,
                     color_view,
-                )?,
-            )),
+                    frame.deferred,
+                )?;
+                if frame.deferred {
+                    look.encode_deferred(
+                        &self.device,
+                        &self.queue,
+                        &mut encoder,
+                        &self.scene_bind,
+                        mesh,
+                        &frame.passes,
+                        &bind,
+                        frame.first,
+                        &targets.shown_view,
+                    )?;
+                    Some((look, None))
+                } else {
+                    Some((look, Some(bind)))
+                }
+            }
             None => None,
         };
+        let deferred = matches!(lit, Some((_, None)));
         {
             // The bodies. Seen through, this is the front layer: its alpha
             // says where it is seen through (0 where nothing is drawn).
@@ -2609,10 +2734,11 @@ impl Onscreen {
             };
             pass.set_bind_group(0, &self.scene_bind, &[]);
             match &lit {
-                Some((look, bind)) => {
+                Some((look, Some(bind))) => {
                     pass.set_pipeline(&look.main);
                     pass.set_bind_group(1, bind, &[]);
                 }
+                Some((_, None)) => pass.set_pipeline(&self.depth_only_pipeline),
                 None => pass.set_pipeline(bodies),
             }
             draw_mesh(&mut pass);
@@ -2721,10 +2847,11 @@ impl Onscreen {
         }
         {
             // The lines over the bodies, and the resolve of the samples
-            // into the shown texture; over a see-through picture, which is
-            // in the shown texture already, straight onto that.
-            let (view, resolve, pipeline, fills_pipeline) = match peeled {
-                Some(_) => (
+            // into the shown texture; over a see-through picture or the
+            // studio look's deferred one, which are in the shown texture
+            // already, straight onto that.
+            let (view, resolve, pipeline, fills_pipeline) = match peeled.is_some() || deferred {
+                true => (
                     &targets.shown_view,
                     None,
                     self.lines_flat_pipeline
@@ -2734,7 +2861,7 @@ impl Onscreen {
                         .as_ref()
                         .unwrap_or(&self.fills_pipeline),
                 ),
-                None => (
+                false => (
                     color_view,
                     targets.msaa.as_ref().map(|_| &targets.shown_view),
                     &self.lines_pipeline,

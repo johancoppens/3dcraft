@@ -639,6 +639,9 @@ pub struct Shell {
     /// The scene and the document's status as of the last [`Self::sync`]:
     /// what is drawn while the session is away doing work.
     shown_scene: Option<Arc<Scene>>,
+    /// Millimetres per length unit of the shown document (the lens of
+    /// the studio look's depth of field).
+    length_mm: f64,
     shown_status: Option<DocumentStatus>,
     /// The work being done on the host's engine thread, if any.
     work: Option<Work>,
@@ -864,15 +867,44 @@ impl Shell {
     /// its own on the desktop, fetched by the page in the browser): a frame
     /// never waits for it.
     pub fn studio(&self) -> Option<craft3d_gpu::Studio> {
+        self.studio_with(craft3d_engine::look::VIEWPORT_ACCUMULATE)
+    }
+
+    /// [`Self::studio`] for a picture drawn once rather than refined
+    /// while the camera stands still (the paths besides the window's own
+    /// device, `ui.screenshot`): one frame unless the look gives
+    /// `accumulate`.
+    pub fn studio_once(&self) -> Option<craft3d_gpu::Studio> {
+        self.studio_with(1)
+    }
+
+    fn studio_with(&self, frames: u32) -> Option<craft3d_gpu::Studio> {
         if !self.state.look.is_studio() {
             return None;
         }
         let spec = self.state.look.spec().ok()?;
         let env = spec.prepared_if_ready()?;
-        Some(craft3d_gpu::Studio {
+        Some(self.studio_of(&spec, env, frames))
+    }
+
+    /// The studio look of `spec` lit by `env`, for the shown scene: the
+    /// lens focused and scaled for it, `frames` frames unless the look
+    /// says.
+    fn studio_of(
+        &self,
+        spec: &craft3d_engine::look::LookSpec,
+        env: std::sync::Arc<craft3d_render::studio::Prepared>,
+        frames: u32,
+    ) -> craft3d_gpu::Studio {
+        let model = self
+            .shown_scene
+            .as_ref()
+            .map_or(craft3d_math::Bbox3::EMPTY, |scene| scene.bbox);
+        let picked = self.state.picked.as_ref().and_then(|p| p.point);
+        craft3d_gpu::Studio {
             env,
-            look: spec.look,
-        })
+            look: spec.resolved(&model, self.length_mm, picked, frames),
+        }
     }
 
     /// Whether the look can be drawn as asked now: the plain look, or the
@@ -882,18 +914,16 @@ impl Shell {
             || craft3d_engine::look::environment_ready(&self.state.look.environment)
     }
 
-    /// [`Self::studio`], waiting for the environment to be prepared: for a
-    /// picture asked for (`ui.screenshot`), which must show the look.
+    /// [`Self::studio_once`], waiting for the environment to be prepared:
+    /// for a picture asked for (`ui.screenshot`), which must show the
+    /// look.
     pub fn studio_now(&self) -> Option<craft3d_gpu::Studio> {
         if !self.state.look.is_studio() {
             return None;
         }
         let spec = self.state.look.spec().ok()?;
         let env = spec.prepared().ok()??;
-        Some(craft3d_gpu::Studio {
-            env,
-            look: spec.look,
-        })
+        Some(self.studio_of(&spec, env, 1))
     }
 
     /// A shell that renders on the CPU, where it draws: what tests and a
@@ -966,6 +996,7 @@ impl Shell {
             problem: None,
             render_problem: None,
             shown_scene: None,
+            length_mm: 1.0,
             shown_status: None,
             work: None,
             tabs: Vec::new(),
@@ -1639,6 +1670,7 @@ impl Shell {
         self.note_recent(session);
         self.shown_status = session.document_status();
         self.shown_scene.clone_from(&scene);
+        self.length_mm = session.length_mm();
         self.sync_report(session);
         scene
     }
@@ -2859,6 +2891,9 @@ impl Shell {
         self.direct_shown = self.direct_frame(scene, &key);
         if !self.direct_shown {
             self.refresh(ui.ctx(), shared, &key, moving);
+        } else if self.direct.as_ref().is_some_and(Direct::converging) {
+            // The studio look accumulates frames while nothing moves.
+            ui.ctx().request_repaint();
         }
         if moving {
             // One more frame after the last movement, for the sharp image.
@@ -3295,7 +3330,7 @@ impl Shell {
         }
         let cut = self.section_cut().filter(|_| key.section.is_some());
         let chosen = self.selection_marks().clone();
-        let studio = self.studio();
+        let studio = self.studio_once();
         let job = |quality: Quality| RenderJob {
             scene: scene.cloned(),
             camera: key.camera,

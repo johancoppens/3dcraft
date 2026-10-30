@@ -5,7 +5,12 @@
 // Passes: the shadow map (`vs_shadow`, `fs_shadow`), the geometry of the
 // samples (`fs_geometry`: view distance and normal), their ambient
 // occlusion (`fs_ao`), the background (`fs_background`) and the surfaces
-// (`fs_studio`, `fs_studio_color`).
+// (`fs_studio`, `fs_studio_color`). Layer 2 (`craft3d_render::studio::polish`):
+// every mesh pass of the look moves its samples by the frame's jitter
+// (`vs_studio`), the surfaces take the contact shadows and the specular
+// shadow, and with the screen-space buffers (`polish.wgsl`) the
+// background and the surfaces write their linear light and specular
+// weight instead of the picture (`fs_background_post`, `fs_studio_post`).
 
 const PI: f32 = 3.14159265358979;
 const HALF_PI: f32 = 1.57079632679490;
@@ -22,6 +27,10 @@ const AO_BIAS: f32 = 0.05;
 const DEFAULT_ROUGHNESS: f32 = 0.5;
 const DIELECTRIC_F0: f32 = 0.04;
 const BACKGROUND_ROUGHNESS: f32 = 0.45;
+// The roughness that marks the plain background (studio::PLAIN_BACKDROP).
+const PLAIN_BACKDROP: f32 = -2.0;
+const CONTACT_STEPS: i32 = 12;
+const CONTACT_BIAS: f32 = 0.5;
 
 struct Studio {
     // xyz: towards the key light. w: 1 when there is one.
@@ -47,10 +56,27 @@ struct Studio {
     // x, y: the target in samples. z, w: the luminance of the irradiance
     // without the key on an upward face, and of the key's.
     size: vec4<f32>,
+    // Layer 2. x, y: where the frame's samples lie off their cells'
+    // middles, in samples (`polish::jitter`). z: 1 with contact shadows.
+    // w: 1 with the specular shadow.
+    jitter: vec4<f32>,
+    // x: 1 with screen-space reflections. y: the ground's reflection
+    // (0 to 1). z: bloom's share (0 to 1). w: the levels of bloom's
+    // pyramid, the picture's included.
+    polish: vec4<f32>,
+    // In model units: how far a reflected ray goes and how thick a
+    // surface is taken to be; the same of a contact-shadow ray.
+    reach: vec4<f32>,
+    // The lens (`polish::Lens`): x: a h / (4 half zf), the blur radius of
+    // the background in samples before the cap. y: the focus distance.
+    // z: the cap in samples. w: 1 with depth of field.
+    lens: vec4<f32>,
     // rgb: the picture's plain background colour, linear. w: 1 when the
     // background is that colour instead of the environment.
     backdrop: vec4<f32>,
     sh: array<vec4<f32>, 9>,
+    // The lens's taps of the frame (`polish::dof_taps`), two per vector.
+    taps: array<vec4<f32>, 40>,
 }
 
 @group(1) @binding(0) var<uniform> studio: Studio;
@@ -256,9 +282,50 @@ fn luminance(c: vec3<f32>) -> f32 {
     return 0.2126 * c.x + 0.7152 * c.y + 0.0722 * c.z;
 }
 
-// FrameLight::shade: the linear light leaving the point.
+// polish::ggx_dv: GGX D and the height-correlated Smith visibility.
+fn ggx_dv(alpha: f32, nh: f32, nv: f32, nl: f32) -> f32 {
+    let a2 = alpha * alpha;
+    let k = nh * nh * (a2 - 1.0) + 1.0;
+    let d = a2 / (PI * k * k);
+    let gv = nl * sqrt(nv * nv * (1.0 - a2) + a2);
+    let gl = nv * sqrt(nl * nl * (1.0 - a2) + a2);
+    let out = d * (0.5 / (gv + gl));
+    // Not finite (NaN included): none.
+    if !(abs(out) <= 3.4e38) {
+        return 0.0;
+    }
+    return max(out, 0.0);
+}
+
+// polish_key_specular, per channel of F0.
+fn key_specular(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, r: f32, radius: f32,
+                f0: vec3<f32>) -> vec3<f32> {
+    let len = length(v + l);
+    if !(len > 0.0) {
+        return vec3<f32>(0.0);
+    }
+    let hv = (v + l) / len;
+    let alpha = clamp(r * r + 0.5 * radius, 0.002, 1.0);
+    let nh = clamp(dot(n, hv), 0.0, 1.0);
+    let nv = clamp(dot(n, v), 1e-4, 1.0);
+    let nl = clamp(dot(n, l), 0.0, 1.0);
+    let vh = clamp(dot(v, hv), 0.0, 1.0);
+    let f = f0 + (vec3<f32>(1.0) - f0) * powi(1.0 - vh, 5u);
+    return f * ggx_dv(alpha, nh, nv, nl);
+}
+
+// studio::Shaded: the linear light, and the weight of the environment's
+// specular light in it per channel with the roughness.
+struct Shaded {
+    light: vec3<f32>,
+    weight: vec3<f32>,
+    roughness: f32,
+}
+
+// FrameLight::shade_parts: the light leaving the point, with the key's
+// contact shadow `contact` (1: none).
 fn studio_shade(base_bytes: vec3<f32>, metallic: f32, roughness: f32, p: vec3<f32>,
-                n: vec3<f32>, v: vec3<f32>, ao: f32) -> vec3<f32> {
+                n: vec3<f32>, v: vec3<f32>, ao: f32, contact: f32) -> Shaded {
     let base = vec3<f32>(
         srgb_decode(base_bytes.x / 255.0),
         srgb_decode(base_bytes.y / 255.0),
@@ -271,14 +338,19 @@ fn studio_shade(base_bytes: vec3<f32>, metallic: f32, roughness: f32, p: vec3<f3
     let irr = irradiance(n);
     var key_light = vec3<f32>(0.0);
     var key_dot = 0.0;
+    var key_vis = 1.0;
+    var key_nl = 0.0;
     if studio.key.w > 0.5 {
         let nl = max(dot(n, studio.key.xyz), 0.0);
         var vis = 1.0;
         if studio.lv_v.w > 0.5 && nl > 0.0 {
             vis = visibility(p, n, studio.key_light.w);
         }
+        vis = vis * contact;
         key_light = studio.key_light.rgb;
         key_dot = nl * vis;
+        key_vis = vis;
+        key_nl = nl;
     }
     // Specular occlusion (Lagarde and de Rousiers) with alpha = r * r.
     let occlusion = pow(nv + ao, exp2(-16.0 * roughness * roughness - 1.0)) - 1.0 + ao;
@@ -290,15 +362,35 @@ fn studio_shade(base_bytes: vec3<f32>, metallic: f32, roughness: f32, p: vec3<f3
     if sum_ab > 0.0 {
         multiple = vec3<f32>(1.0) + f0 * (1.0 / sum_ab - 1.0);
     }
+    let weight = fs * multiple * specular_occlusion;
     let specular = prefiltered * fs * multiple * specular_occlusion;
     let light = irr * ao + key_light * key_dot;
     let diffuse = base * (1.0 - metallic) * (vec3<f32>(1.0) - fs) / PI * light;
-    return diffuse + specular;
+    // The specular shadow: where the key is hidden its share of the
+    // prefiltered light is taken out.
+    var keep = 1.0;
+    if studio.jitter.w > 0.5 && studio.key.w > 0.5 && key_vis < 1.0 && key_nl > 0.0 {
+        let ks = key_light * key_nl
+            * key_specular(n, v, studio.key.xyz, roughness, studio.key_light.w, f0) * multiple;
+        let total = luminance(specular);
+        var share = 0.0;
+        if total > 0.0 {
+            share = clamp(luminance(ks) / total, 0.0, 1.0);
+        }
+        keep = 1.0 - (1.0 - key_vis) * share;
+    }
+    var out: Shaded;
+    out.light = diffuse + specular * keep;
+    out.weight = weight * keep;
+    out.roughness = roughness;
+    return out;
 }
 
 // View::ray and View::point_at: the offsets across the view of the
 // position (px, py) of the target, in samples.
-fn across(px: f32, py: f32) -> vec3<f32> {
+fn across(px_in: f32, py_in: f32) -> vec3<f32> {
+    let px = px_in + studio.jitter.x;
+    let py = py_in + studio.jitter.y;
     let cx = (px / studio.size.x * 2.0 - 1.0) / scene.right.w;
     let cy = (1.0 - py / studio.size.y * 2.0) / scene.up.w;
     return scene.right.xyz * cx + scene.up.xyz * cy;
@@ -357,10 +449,22 @@ fn vs_studio_fullscreen(@builtin(vertex_index) i: u32) -> FullscreenOut {
     return out;
 }
 
-// FrameLight::background, through the position of a fragment.
-@fragment
-fn fs_background(in: FullscreenOut) -> @location(0) vec4<f32> {
-    let a = across(in.clip.x, in.clip.y);
+// The vertex stage of every mesh pass of the studio look: the scene's,
+// with the samples moved by the frame's jitter (`View::project` subtracts
+// it from the sample position). The jitter of frame 0 is zero, which
+// leaves the position as it was.
+@vertex
+fn vs_studio(in: VertexIn) -> VertexOut {
+    var out = vertex(in);
+    out.clip.x = out.clip.x - 2.0 * studio.jitter.x / studio.size.x * out.clip.w;
+    out.clip.y = out.clip.y + 2.0 * studio.jitter.y / studio.size.y * out.clip.w;
+    return out;
+}
+
+// View::ray through the position (px, py): its origin relative to the
+// mesh origin and its unit direction.
+fn view_ray(px: f32, py: f32) -> array<vec3<f32>, 2> {
+    let a = across(px, py);
     var origin = scene.eye.xyz;
     var d = scene.forward.xyz;
     if scene.forward.w > 0.5 {
@@ -371,14 +475,55 @@ fn fs_background(in: FullscreenOut) -> @location(0) vec4<f32> {
     } else {
         origin = scene.eye.xyz + a;
     }
+    return array<vec3<f32>, 2>(origin, d);
+}
+
+// FrameLight::background, through the position (px, py).
+fn background_light(px: f32, py: f32) -> vec3<f32> {
+    let ray = view_ray(px, py);
+    return radiance(ray[1], BACKGROUND_ROUGHNESS * studio.look.w) * ground_factor(ray[0], ray[1]);
+}
+
+@fragment
+fn fs_background(in: FullscreenOut) -> @location(0) vec4<f32> {
     if studio.backdrop.w > 0.5 {
         // The plain colour, darkened by the ground's shadow in linear
         // light; no exposure, no tone curve (`FrameLight::background_bytes`).
-        let b = studio.backdrop.rgb * ground_factor(origin, d);
+        let ray = view_ray(in.clip.x, in.clip.y);
+        let b = studio.backdrop.rgb * ground_factor(ray[0], ray[1]);
         return vec4<f32>(srgb_encode(b.x), srgb_encode(b.y), srgb_encode(b.z), 1.0);
     }
-    let c = radiance(d, BACKGROUND_ROUGHNESS * studio.look.w) * ground_factor(origin, d);
-    return vec4<f32>(display(c), 1.0);
+    return vec4<f32>(display(background_light(in.clip.x, in.clip.y)), 1.0);
+}
+
+// The light and the weight of a sample, as bits: the screen-space buffers
+// (`polish::Buffers`).
+struct LightOut {
+    @location(0) light: vec4<u32>,
+    @location(1) weight: vec4<u32>,
+}
+
+fn bits3(c: vec3<f32>, w: f32) -> vec4<u32> {
+    return vec4<u32>(bitcast<u32>(c.x), bitcast<u32>(c.y), bitcast<u32>(c.z), bitcast<u32>(w));
+}
+
+// The background's light, with no weight and the roughness -1; the plain
+// background's (`PLAIN_BACKDROP`) the colour over the exposure, darkened
+// by the ground's shadow, with the roughness -2, which the display shows
+// without the tone curve.
+@fragment
+fn fs_background_post(in: FullscreenOut) -> LightOut {
+    var out: LightOut;
+    if studio.backdrop.w > 0.5 {
+        let ray = view_ray(in.clip.x, in.clip.y);
+        let b = studio.backdrop.rgb * ground_factor(ray[0], ray[1]) / studio.look.y;
+        out.light = bits3(b, 0.0);
+        out.weight = bits3(vec3<f32>(0.0), PLAIN_BACKDROP);
+        return out;
+    }
+    out.light = bits3(background_light(in.clip.x, in.clip.y), 0.0);
+    out.weight = bits3(vec3<f32>(0.0), -1.0);
+    return out;
 }
 
 // The shadow map: the light's view of the mesh, the depth from the light
@@ -445,6 +590,73 @@ fn geometry_point(x: i32, y: i32) -> vec4<f32> {
         return vec4<f32>(0.0);
     }
     return vec4<f32>(point_at(f32(x) + 0.5, f32(y) + 0.5, dist), 1.0);
+}
+
+// polish::depth: the view distance of the sample (x, y) in x, and y = 1
+// when it has a surface.
+fn sample_depth(x: f32, y: f32) -> vec2<f32> {
+    if !(x >= 0.0 && y >= 0.0 && x < studio.size.x && y < studio.size.y) {
+        return vec2<f32>(0.0);
+    }
+    let dist = bitcast<f32>(textureLoad(geometry_map, vec2<i32>(i32(x), i32(y)), 0).x);
+    if !(dist < 3.0e38) {
+        return vec2<f32>(0.0);
+    }
+    return vec2<f32>(dist, 1.0);
+}
+
+// View::project of a point relative to the eye: the sample position, the
+// view distance, and w = 1 when it projects (in front of the eye plane of
+// a perspective view).
+fn project_rel(rel: vec3<f32>) -> vec4<f32> {
+    let cx = dot(rel, scene.right.xyz);
+    let cy = dot(rel, scene.up.xyz);
+    let dist = dot(rel, scene.forward.xyz);
+    var scale = 1.0;
+    if scene.forward.w > 0.5 {
+        if !(dist > 1e-12) {
+            return vec4<f32>(0.0);
+        }
+        scale = 1.0 / dist;
+    }
+    let sx = (cx * scene.right.w * scale * 0.5 + 0.5) * studio.size.x - studio.jitter.x;
+    let sy = (0.5 - cy * scene.up.w * scale * 0.5) * studio.size.y - studio.jitter.y;
+    if !(abs(sx) <= 3.4e38 && abs(sy) <= 3.4e38) {
+        return vec4<f32>(0.0);
+    }
+    return vec4<f32>(sx, sy, dist, 1.0);
+}
+
+// polish::contact at the point `rel` (relative to the eye) of the sample
+// `start` towards the unit `l`: 0 when a short ray finds a surface on the
+// screen in front of it, else 1.
+fn contact(rel: vec3<f32>, l: vec3<f32>, start: vec2<f32>) -> f32 {
+    let length_c = studio.reach.z;
+    let thickness = studio.reach.w;
+    for (var j = 1; j <= CONTACT_STEPS; j++) {
+        let t = length_c * f32(j) / f32(CONTACT_STEPS);
+        let q = project_rel(rel + l * t);
+        if q.w < 0.5 {
+            return 1.0;
+        }
+        let x = floor(q.x);
+        let y = floor(q.y);
+        if !(x >= 0.0 && y >= 0.0 && x < studio.size.x && y < studio.size.y) {
+            return 1.0;
+        }
+        if x == start.x && y == start.y {
+            continue;
+        }
+        let s = sample_depth(x, y);
+        if s.y < 0.5 {
+            continue;
+        }
+        let behind = q.z - s.x;
+        if behind > CONTACT_BIAS * sample_size(s.x) && behind < thickness {
+            return 0.0;
+        }
+    }
+    return 1.0;
 }
 
 // The unit vector towards the viewer from a point relative to the eye
@@ -547,8 +759,8 @@ fn fs_ao(in: FullscreenOut) -> @location(0) u32 {
     return bitcast<u32>(occlusion(vec2<i32>(x, y), rel, n, v, studio.ground.z, reach));
 }
 
-// The studio colour of a fragment, as the bytes of the picture over 255.
-fn studio_of(in: VertexOut) -> vec4<f32> {
+// The studio light of a fragment (`render_studio_frame`'s shading).
+fn studio_of(in: VertexOut) -> Shaded {
     var base = scene.base.rgb;
     if (in.color >> 24u) != 0u {
         base = vec3<f32>(
@@ -581,14 +793,18 @@ fn studio_of(in: VertexOut) -> vec4<f32> {
     if studio.lv_w.w > 0.5 {
         ao = bitcast<f32>(textureLoad(ao_map, vec2<u32>(u32(in.clip.x), u32(in.clip.y)), 0).r);
     }
-    return vec4<f32>(display(studio_shade(base, metallic, roughness, p, n, v, ao)), 1.0);
+    var shadowed = 1.0;
+    if studio.jitter.z > 0.5 && studio.key.w > 0.5 && dot(n, studio.key.xyz) > 0.0 {
+        shadowed = contact(in.rel, studio.key.xyz, floor(in.clip.xy));
+    }
+    return studio_shade(base, metallic, roughness, p, n, v, ao, shadowed);
 }
 
 @fragment
 fn fs_studio(in: VertexOut) -> FragmentOut {
     var out: FragmentOut;
     out.data = data_of(in);
-    out.color = studio_of(in);
+    out.color = vec4<f32>(display(studio_of(in).light), 1.0);
     {{SET_DEPTH}}
     return out;
 }
@@ -596,7 +812,27 @@ fn fs_studio(in: VertexOut) -> FragmentOut {
 @fragment
 fn fs_studio_color(in: VertexOut) -> ColorOut {
     var out: ColorOut;
-    out.color = studio_of(in);
+    out.color = vec4<f32>(display(studio_of(in).light), 1.0);
+    {{SET_DEPTH}}
+    return out;
+}
+
+// The screen-space buffers of a surface: 32 bytes a sample, the most a
+// pass may write (`max_color_attachment_bytes_per_sample`), so the face
+// ids and distances of the readback renderer come from a pass of their
+// own (`fs_data` with `vs_studio`).
+struct PostLightOut {
+    @location(0) light: vec4<u32>,
+    @location(1) weight: vec4<u32>,
+    {{FRAG_DEPTH}}
+}
+
+@fragment
+fn fs_studio_post(in: VertexOut) -> PostLightOut {
+    var out: PostLightOut;
+    let shaded = studio_of(in);
+    out.light = bits3(shaded.light, 0.0);
+    out.weight = bits3(shaded.weight, shaded.roughness);
     {{SET_DEPTH}}
     return out;
 }

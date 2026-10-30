@@ -683,6 +683,17 @@ pub struct LookState {
     /// `environment` (the default) or `plain`: the theme's background
     /// colour behind a model the environment lights.
     pub background: String,
+    /// Layer 2 (`craft3d_render::studio::polish`).
+    pub reflections: bool,
+    pub contact_shadows: bool,
+    pub specular_shadow: bool,
+    pub ground_reflection: f64,
+    pub bloom: f64,
+    /// `{fstop, focus}` as `look.dof` takes it, or `None` for no lens.
+    pub dof: Option<serde_json::Value>,
+    /// The frames averaged while the camera stands still (`None`:
+    /// `craft3d_engine::look::VIEWPORT_ACCUMULATE`).
+    pub accumulate: Option<u32>,
 }
 
 impl Default for LookState {
@@ -711,6 +722,13 @@ impl LookState {
                 "environment"
             }
             .to_string(),
+            reflections: look.ssr,
+            contact_shadows: look.contact_shadows,
+            specular_shadow: look.specular_shadow,
+            ground_reflection: look.ground_reflection,
+            bloom: look.bloom,
+            dof: spec.json().get("dof").filter(|v| !v.is_null()).cloned(),
+            accumulate: spec.accumulate,
         }
     }
 
@@ -1211,6 +1229,14 @@ mod tests {
                 tonemap: "aces".to_string(),
                 light: Some([30.0, 45.0]),
                 background: "plain".to_string(),
+                // Layer 2 (2026-10-30).
+                reflections: false,
+                contact_shadows: true,
+                specular_shadow: true,
+                ground_reflection: 0.5,
+                bloom: 0.1,
+                dof: Some(serde_json::json!({"fstop": 4.0, "focus": "picked"})),
+                accumulate: Some(8),
             },
         };
         let json = serde_json::to_value(&state).unwrap();
@@ -1248,7 +1274,10 @@ mod tests {
                 "timeline": {"playing": true, "speed": 2.0, "loop": true, "orbit": false, "motion": true, "bounce": true, "collisions": true},
                 "look": {"mode": "studio", "environment": "workshop", "exposure": -0.5,
                          "rotation": 90.0, "ground": false, "ao": true, "shadows": false,
-                         "tonemap": "aces", "light": [30.0, 45.0], "background": "plain"},
+                         "tonemap": "aces", "light": [30.0, 45.0], "background": "plain",
+                         "reflections": false, "contactShadows": true, "specularShadow": true,
+                         "groundReflection": 0.5, "bloom": 0.1,
+                         "dof": {"fstop": 4.0, "focus": "picked"}, "accumulate": 8},
             })
         );
         let back: UiState = serde_json::from_value(json).unwrap();

@@ -730,6 +730,31 @@ pub(crate) fn scene_pipeline(
     samples: u32,
     step: Step,
 ) -> wgpu::RenderPipeline {
+    scene_pipeline_from(
+        device,
+        label,
+        module,
+        ("vs_main", entry),
+        groups,
+        targets,
+        samples,
+        step,
+    )
+}
+
+/// [`scene_pipeline`] with the vertex entry `vertex` (`vs_studio` for
+/// the studio look's jitter).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn scene_pipeline_from(
+    device: &wgpu::Device,
+    label: &str,
+    module: &wgpu::ShaderModule,
+    (vertex, entry): (&str, &str),
+    groups: &[Option<&wgpu::BindGroupLayout>],
+    targets: &[Option<wgpu::ColorTargetState>],
+    samples: u32,
+    step: Step,
+) -> wgpu::RenderPipeline {
     let targets = step.targets(targets);
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some(label),
@@ -741,7 +766,7 @@ pub(crate) fn scene_pipeline(
         layout: Some(&layout),
         vertex: wgpu::VertexState {
             module,
-            entry_point: Some("vs_main"),
+            entry_point: Some(vertex),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             buffers: &[Some(wgpu::VertexBufferLayout {
                 array_stride: VERTEX_BYTES as u64,
@@ -1691,38 +1716,64 @@ struct StudioReadback {
     geometry: Drawing,
     background: wgpu::RenderPipeline,
     main: Drawing,
+    /// The surfaces' light and weight (the screen-space buffers), and
+    /// their face ids and distances in a pass of their own.
+    main_post: Drawing,
+    data: Drawing,
     targets: Option<StudioTargets>,
+    polish: Option<studio::PolishTargets>,
+    /// The sum of a picture's frames, at its pixels.
+    accumulator: Option<studio::Accumulator>,
 }
 
 impl StudioReadback {
     fn build(device: &wgpu::Device, scene_layout: &wgpu::BindGroupLayout, two: bool) -> Self {
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("craft3d studio"),
-            source: wgpu::ShaderSource::Wgsl(
-                scene_source(device, &[include_str!("studio.wgsl")]).into(),
-            ),
-        });
+        let module = studio::studio_module(device);
         let gpu = StudioGpu::new(device, &module, scene_layout);
         let geometry = Drawing::build(two, |step| {
-            scene_pipeline(
+            scene_pipeline_from(
                 device,
                 "craft3d geometry",
                 &module,
-                "fs_geometry",
-                &[Some(scene_layout)],
+                ("vs_studio", "fs_geometry"),
+                &[Some(scene_layout), Some(&gpu.layout_uniform)],
                 &[target(studio::GEOMETRY_FORMAT)],
                 1,
                 step,
             )
         });
         let main = Drawing::build(two, |step| {
-            scene_pipeline(
+            scene_pipeline_from(
                 device,
                 "craft3d studio scene",
                 &module,
-                "fs_studio",
+                ("vs_studio", "fs_studio"),
                 &[Some(scene_layout), Some(&gpu.layout_main)],
                 &[target(COLOR_FORMAT), target(DATA_FORMAT)],
+                1,
+                step,
+            )
+        });
+        let main_post = Drawing::build(two, |step| {
+            scene_pipeline_from(
+                device,
+                "craft3d studio scene post",
+                &module,
+                ("vs_studio", "fs_studio_post"),
+                &[Some(scene_layout), Some(&gpu.layout_main)],
+                &[target(studio::LIGHT_FORMAT), target(studio::LIGHT_FORMAT)],
+                1,
+                step,
+            )
+        });
+        let data = Drawing::build(two, |step| {
+            scene_pipeline_from(
+                device,
+                "craft3d studio data",
+                &module,
+                ("vs_studio", "fs_data"),
+                &[Some(scene_layout), Some(&gpu.layout_uniform)],
+                &[target(DATA_FORMAT)],
                 1,
                 step,
             )
@@ -1741,16 +1792,34 @@ impl StudioReadback {
             geometry,
             background,
             main,
+            main_post,
+            data,
             targets: None,
+            polish: None,
+            accumulator: None,
         }
     }
+}
+
+/// Where a frame stands in the accumulation of a still picture.
+#[derive(Clone, Copy)]
+struct InSum {
+    /// The first frame drawn: it starts the sum and draws the shadow map.
+    first: bool,
+    /// The last: the mean goes into the picture.
+    last: bool,
+    /// Whether there is a sum at all (more than one frame).
+    summed: bool,
 }
 
 impl Renderer {
     /// [`Renderer::draw`] in the studio look (`craft3d_render::studio`,
     /// `render_studio`): lit by `studio`'s environment, with its shadows,
-    /// occlusion and ground. A see-through or cut-open picture is drawn in
-    /// the plain look, as the CPU renderer does.
+    /// occlusion and ground, and layer 2's effects; the mean of
+    /// `Look::accumulate` jittered frames, summed per pixel and rounded
+    /// once, with the face ids and depths of frame 0. A see-through or
+    /// cut-open picture is drawn in the plain look, as the CPU renderer
+    /// does.
     pub fn draw_studio(
         &mut self,
         mesh: &GpuMesh,
@@ -1778,41 +1847,70 @@ impl Renderer {
             params.width.saturating_mul(params.ssaa),
             params.height.saturating_mul(params.ssaa),
         );
-        let (light, passes) = studio::studio_uniforms(mesh, studio, size, params.background)?;
-        let device = self.device.clone();
-        guarded(&device, || {
-            self.ensure_frame_targets(params);
-            let queue = self.queue.clone();
-            let look = match &mut self.studio {
-                Some(Ok(look)) => look,
-                Some(Err(why)) => {
-                    return Err(GpuError::Device(format!(
-                        "the studio look cannot be drawn on this device: {why}"
-                    )));
-                }
-                None => return Err(GpuError::NothingDrawn),
+        let (_, first_passes) =
+            studio::studio_uniforms(mesh, studio, camera, size, 0, params.background)?;
+        let frames = first_passes.frames;
+        // Frame 0 last, so that the ids and depths are its own; the sum
+        // does not depend on the order.
+        let order = (1..frames).chain(std::iter::once(0));
+        for (i, frame) in order.enumerate() {
+            let (light, passes) =
+                studio::studio_uniforms(mesh, studio, camera, size, frame, params.background)?;
+            let place = InSum {
+                first: i == 0,
+                last: frame == 0,
+                summed: frames > 1,
             };
-            look.gpu.ensure_env(&device, &queue, &studio.env)?;
-            if look.targets.as_ref().is_none_or(|t| t.size != size) {
-                look.targets = None;
-                look.targets = Some(StudioTargets::new(&device, size));
-            }
-            self.encode_studio(mesh, &scene, &light, &passes, params)
-        })??;
+            let device = self.device.clone();
+            guarded(&device, || {
+                self.ensure_frame_targets(params);
+                let queue = self.queue.clone();
+                let look = match &mut self.studio {
+                    Some(Ok(look)) => look,
+                    Some(Err(why)) => {
+                        return Err(GpuError::Device(format!(
+                            "the studio look cannot be drawn on this device: {why}"
+                        )));
+                    }
+                    None => return Err(GpuError::NothingDrawn),
+                };
+                look.gpu.ensure_env(&device, &queue, &studio.env)?;
+                if look.targets.as_ref().is_none_or(|t| t.size != size) {
+                    look.targets = None;
+                    look.targets = Some(StudioTargets::new(&device, size));
+                }
+                if passes.post
+                    && look
+                        .polish
+                        .as_ref()
+                        .is_none_or(|t| !t.fits(size, &passes.levels))
+                {
+                    look.polish = None;
+                    look.polish = Some(studio::PolishTargets::new(&device, size, &passes.levels));
+                }
+                let pixels = (params.width, params.height);
+                if place.summed && look.accumulator.as_ref().is_none_or(|a| a.size != pixels) {
+                    look.accumulator = None;
+                    look.accumulator = Some(studio::Accumulator::new(&device, pixels));
+                }
+                self.encode_studio(mesh, &scene, &light, &passes, params, place)
+            })??;
+        }
         self.drawn = true;
         Ok(())
     }
 
     fn encode_studio(
-        &self,
+        &mut self,
         mesh: &GpuMesh,
         scene: &[f32; SCENE_FLOATS],
         light: &[f32; studio::STUDIO_FLOATS],
         passes: &Passes,
         params: &RenderParams,
+        place: InSum,
     ) -> Result<(), GpuError> {
         let targets = self.targets.as_ref().ok_or(GpuError::NothingDrawn)?;
-        let Some(Ok(look)) = &self.studio else {
+        let Some(Ok(look)) = &mut self.studio else {
             return Err(GpuError::NothingDrawn);
         };
         let sized = look.targets.as_ref().ok_or(GpuError::NothingDrawn)?;
@@ -1854,21 +1952,58 @@ impl Renderer {
                 pass.draw(0..chunk.vertices, 0..1);
             }
         };
-        if passes.shadow {
+        // The shadow map does not move with the jitter: drawn once.
+        if passes.shadow && place.first {
             look.gpu
                 .encode_shadow(&self.device, &mut encoder, &self.scene_bind, mesh);
         }
-        if passes.ao {
+        if passes.geometry {
             let empty = wgpu::Color {
                 r: f64::from(f32::INFINITY.to_bits()),
                 g: 0.0,
                 b: 0.0,
                 a: 0.0,
             };
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("craft3d geometry"),
+                color_attachments: &[attachment(&sized.geometry, wgpu::LoadOp::Clear(empty))],
+                depth_stencil_attachment: Some(depth_attachment(
+                    &targets.samples_depth,
+                    self.two,
+                    false,
+                )),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_bind_group(0, &self.scene_bind, &[]);
+            pass.set_bind_group(1, &look.gpu.uniform_bind, &[]);
+            draw_in_steps(&mut pass, &[(&look.geometry, &draw_mesh)]);
+        }
+        if passes.ao {
+            look.gpu.encode_ao(
+                &self.device,
+                &mut encoder,
+                &self.scene_bind,
+                &sized.geometry,
+                &sized.ao,
+            );
+        }
+        let bind = look
+            .gpu
+            .main_bind(&self.device, passes, &sized.ao, &sized.geometry)?;
+        if passes.post {
+            let polish = look.polish.as_ref().ok_or(GpuError::NothingDrawn)?;
+            look.gpu
+                .encode_background_post(&mut encoder, &self.scene_bind, &bind, polish);
             {
+                let [light_view, _] = &polish.light;
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("craft3d geometry"),
-                    color_attachments: &[attachment(&sized.geometry, wgpu::LoadOp::Clear(empty))],
+                    label: Some("craft3d studio scene post"),
+                    color_attachments: &[
+                        attachment(light_view, wgpu::LoadOp::Load),
+                        attachment(&polish.weight, wgpu::LoadOp::Load),
+                    ],
                     depth_stencil_attachment: Some(depth_attachment(
                         &targets.samples_depth,
                         self.two,
@@ -1879,35 +2014,56 @@ impl Renderer {
                     multiview_mask: None,
                 });
                 pass.set_bind_group(0, &self.scene_bind, &[]);
-                draw_in_steps(&mut pass, &[(&look.geometry, &draw_mesh)]);
+                pass.set_bind_group(1, &bind, &[]);
+                draw_in_steps(&mut pass, &[(&look.main_post, &draw_mesh)]);
             }
-            look.gpu.encode_ao(
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("craft3d studio data"),
+                    color_attachments: &[attachment(
+                        &targets.samples_data,
+                        wgpu::LoadOp::Clear(nothing),
+                    )],
+                    depth_stencil_attachment: Some(depth_attachment(
+                        &targets.samples_depth,
+                        self.two,
+                        false,
+                    )),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_bind_group(0, &self.scene_bind, &[]);
+                pass.set_bind_group(1, &look.gpu.uniform_bind, &[]);
+                draw_in_steps(&mut pass, &[(&look.data, &draw_mesh)]);
+            }
+            look.gpu.encode_post(
                 &self.device,
                 &mut encoder,
                 &self.scene_bind,
+                passes,
                 &sized.geometry,
-                &sized.ao,
-            );
-        }
-        let bind = look.gpu.main_bind(&self.device, passes, &sized.ao)?;
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("craft3d background"),
-                color_attachments: &[attachment(
-                    &targets.samples_color,
-                    wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                )],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(&look.background);
-            pass.set_bind_group(0, &self.scene_bind, &[]);
-            pass.set_bind_group(1, &bind, &[]);
-            pass.draw(0..3, 0..1);
-        }
-        {
+                polish,
+                &targets.samples_color,
+            )?;
+        } else {
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("craft3d background"),
+                    color_attachments: &[attachment(
+                        &targets.samples_color,
+                        wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    )],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_pipeline(&look.background);
+                pass.set_bind_group(0, &self.scene_bind, &[]);
+                pass.set_bind_group(1, &bind, &[]);
+                pass.draw(0..3, 0..1);
+            }
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("craft3d studio scene"),
                 color_attachments: &[
@@ -1942,6 +2098,25 @@ impl Renderer {
             pass.set_pipeline(&self.resolve_pipeline);
             pass.set_bind_group(0, &targets.resolve_bind, &[]);
             pass.draw(0..3, 0..1);
+        }
+        if place.summed {
+            let accumulator = look.accumulator.as_ref().ok_or(GpuError::NothingDrawn)?;
+            accumulator.encode_add(
+                &look.gpu,
+                &self.device,
+                &mut encoder,
+                &targets.color_view,
+                place.first,
+            );
+            if place.last {
+                accumulator.encode_average(
+                    &look.gpu,
+                    &self.device,
+                    &self.queue,
+                    &mut encoder,
+                    &targets.color_view,
+                );
+            }
         }
         self.queue.submit([encoder.finish()]);
         Ok(())
@@ -2066,7 +2241,11 @@ pub(crate) mod template_tests {
         let cut = include_str!("cut.wgsl");
         vec![
             ("scene", false, vec![]),
-            ("scene + studio", false, vec![include_str!("studio.wgsl")]),
+            (
+                "scene + studio + polish",
+                false,
+                vec![include_str!("studio.wgsl"), include_str!("polish.wgsl")],
+            ),
             ("scene + peel", false, vec![peel]),
             ("scene + peel_samples", true, vec![peel_samples]),
             (
@@ -2173,6 +2352,7 @@ pub(crate) mod template_tests {
             }
         }
         translate_for_webgl2("blend", &crate::peel::blend_source(false));
+        translate_for_webgl2("accumulate", include_str!("accumulate.wgsl"));
         // The sampler is declared where the layouts put it.
         assert!(
             super::FRONT_SAMPLER
@@ -2303,8 +2483,20 @@ pub(crate) mod template_tests {
                 // depth attachment and never writes a depth.
                 // The studio look's background and occlusion draw without
                 // one too, and its shadow map tests the light's own depth,
-                // which is not the view's key.
-                let own = ["fs_parity", "fs_background", "fs_ao", "fs_shadow"];
+                // which is not the view's key; so do its passes after the
+                // shading (layer 2), over the screen-space buffers.
+                let own = [
+                    "fs_parity",
+                    "fs_background",
+                    "fs_ao",
+                    "fs_shadow",
+                    "fs_background_post",
+                    "fs_reflect",
+                    "fs_lens",
+                    "fs_bloom_down",
+                    "fs_bloom_up",
+                    "fs_display",
+                ];
                 let with_depth = fragments - own.iter().filter(|e| entries.contains(e)).count();
                 let expected = if fragment_depth { with_depth } else { 0 };
                 assert_eq!(writes_depth, expected, "{label}: entries {entries:?}");

@@ -511,6 +511,13 @@ impl Direct {
         self.onscreen.without_section();
     }
 
+    /// Whether the picture on screen will still improve when it is drawn
+    /// again with the same inputs (the studio look's accumulation while
+    /// the camera stands still): the shell then asks for another frame.
+    pub fn converging(&self) -> bool {
+        self.onscreen.converging()
+    }
+
     /// The egui texture that shows the picture, once one was drawn.
     pub fn texture_id(&self) -> Option<egui::TextureId> {
         self.texture.map(|(id, _)| id)
@@ -544,7 +551,12 @@ impl Direct {
                 .as_ref()
                 .map(|s| (Arc::as_ptr(&s.env) as usize, s.look)),
         };
-        if self.shown.as_ref() == Some(&wanted) && self.texture.is_some() {
+        // The same picture again: nothing to draw, unless the studio look
+        // is still accumulating frames (`Onscreen::converging`).
+        if self.shown.as_ref() == Some(&wanted)
+            && self.texture.is_some()
+            && !self.onscreen.converging()
+        {
             return Ok(None);
         }
         let start = Instant::now();

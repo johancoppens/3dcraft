@@ -433,10 +433,78 @@ pub(crate) fn render(args: Args) -> Result<Parsed<()>, CliError> {
             "--ground",
             "--ao",
             "--shadows",
+            "--reflections",
+            "--contact-shadows",
+            "--specular-shadow",
+            "--ground-reflection",
+            "--bloom",
+            "--fstop",
+            "--focus",
+            "--accumulate",
             "--backdrop",
         ],
         |name, value| {
+            // The look's key of a layer-2 option (camelCase).
+            let key = |name: &str| -> String {
+                let mut out = String::new();
+                let mut upper = false;
+                for c in name.trim_start_matches('-').chars() {
+                    if c == '-' {
+                        upper = true;
+                    } else if upper {
+                        out.extend(c.to_uppercase());
+                        upper = false;
+                    } else {
+                        out.push(c);
+                    }
+                }
+                out
+            };
+            let number = |value: &str| -> Result<f64, CliError> {
+                value
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|n| n.is_finite())
+                    .ok_or_else(|| {
+                        CliError::Usage(format!("`{name}` must be a number, got `{value}`"))
+                    })
+            };
             match name {
+                "--reflections" | "--contact-shadows" | "--specular-shadow" => {
+                    let on = match value.as_str() {
+                        "on" => true,
+                        "off" => false,
+                        _ => {
+                            return Err(CliError::Usage(format!(
+                                "`{name}` must be on or off, got `{value}`"
+                            )));
+                        }
+                    };
+                    look.insert(key(name), on.into());
+                }
+                "--ground-reflection" | "--bloom" | "--accumulate" => {
+                    look.insert(key(name), number(&value)?.into());
+                }
+                "--fstop" | "--focus" => {
+                    let lens = look
+                        .entry("dof")
+                        .or_insert_with(|| Value::Object(Map::new()));
+                    let focus = if name == "--focus" {
+                        let parts: Vec<&str> = value.split(',').collect();
+                        if parts.len() == 3 {
+                            let xyz: Result<Vec<f64>, CliError> =
+                                parts.iter().map(|p| number(p.trim())).collect();
+                            Value::from(xyz?)
+                        } else {
+                            number(&value)?.into()
+                        }
+                    } else {
+                        number(&value)?.into()
+                    };
+                    if let Value::Object(lens) = lens {
+                        lens.insert(name.trim_start_matches('-').into(), focus);
+                    }
+                }
                 "--look" => {
                     look.insert("mode".into(), value.into());
                 }

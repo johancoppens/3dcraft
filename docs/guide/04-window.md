@@ -218,6 +218,38 @@ default, or `aces`), and `background` `plain` keeps the window's own background 
 model while the environment still lights it (`environment`, the default, shows the environment). The look is a view: the document does not change. In the browser on older
 graphics (WebGL2) the studio look has no shadows and no darkening in corners.
 
+The studio look also has a second layer of polish, on by default:
+
+- glossy faces (roughness under 0.4) reflect the model itself where it is in the picture, and the
+  environment elsewhere (`reflections`); the ground can reflect it too (`groundReflection` from 0 to
+  1, off by default: towards the horizon the ground then mirrors the sky and the background
+  brightens);
+- short, dark contact shadows where parts touch or stand on each other (`contactShadows`);
+- a face in the key light's shadow loses that light's reflection too (`specularShadow`);
+- bright parts glow a little into their surroundings (`bloom`, the share of the light spread, 0.04 by
+  default).
+
+Depth of field is off until you ask for it: `dof` is a thin camera lens with an f-number (`fstop`,
+2.8 by default; smaller is more blur) focused on a point. `"focus": "picked"` focuses on the point you
+click last, so clicking a part brings it into focus; a number is a distance along the view, `[x, y,
+z]` a point, and without one the lens focuses on the model's centre. The blur follows the
+document's length unit, as a real camera would: a small part seen close up has a shallow depth of
+field. An orthographic view has no lens and stays sharp.
+
+While the camera stands still the window keeps refining the picture: it averages 16 frames
+(`accumulate`, 1 to 256), each with its samples moved a little within the pixel and the lens turned,
+so edges smooth out and the blur fills in; moving the camera starts again from a sharp first frame.
+`view.render` and `craft3d-cli render` draw one frame unless `accumulate` (`--accumulate`) asks for
+more.
+
+```text
+ui.set {"look": {"mode": "studio", "dof": {"fstop": 2, "focus": "picked"}, "bloom": 0.1}}
+craft3d-cli render part.3dcraft --out part.png --look studio --fstop 4 --accumulate 32
+```
+
+In the browser on WebGL2 the second layer's reflections, contact shadows and depth of field are left
+out.
+
 ## Pointing at things
 
 A click selects what is under the pointer: a corner (vertex) when one is within a few points, else an

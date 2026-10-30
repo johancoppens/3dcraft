@@ -16,7 +16,10 @@ Pictures: the CPU reference renderer (`craft3d-render`, the display oracle), the
 `studio.rs` and `studio.wgsl`). A second look beside the plain one, view state only: image-based lighting
 from an environment, soft shadows from its key light, ambient occlusion, a ground that catches the
 shadow, a tone curve; see *The studio look* under the findings for the method, the sources and the
-tolerance. The plain look is untouched, bit for bit.
+tolerance. The plain look is untouched, bit for bit. Its second layer (2026-10-30,
+`craft3d_render::studio::polish`): screen-space reflections and a reflecting ground, contact shadows,
+the key's specular shadow, a thin lens's depth of field, bloom and the accumulation of jittered frames;
+see *Layer 2* under the findings.
 
 ## Findings and history
 
@@ -297,3 +300,164 @@ desaturates dark saturated colours, as it is made to: a navy housing (sRGB 86, 1
 the studio look than in the plain one (AgX alone maps it to about 100, 119, 149 before the light's
 specular part is added); ACES keeps more of its colour (about 65, 92, 137). A punchier default (ACES, or
 AgX with a saturation look) is a choice of taste, not a fix.
+
+### Layer 2: polish (2026-10-30)
+
+Layer 2 of `plan/rendering.md`. `craft3d_render::studio::polish` is the definition; the GPU repeats it on
+the same buffers (`studio.wgsl`). View state only, every effect optional: `ui.set {"look": …}`,
+`view.render`'s `look` and `craft3d-cli render` take `reflections`, `contactShadows`, `specularShadow`,
+`groundReflection` (0 to 1), `bloom` (0 to 1), `dof` (`{fstop, focus}`, focus a distance along the view,
+a point, `"picked"`: the window's last pick, or `"centre"`) and `accumulate` (frames). The look as
+parsed (`LookSpec`, `LookState`) starts from `Look::polished()`: everything on but the ground's
+reflection and the lens, one frame
+for `view.render` and 16 for the window; `Look::default()`, which the tests of layer 1 use, has all of
+layer 2 off, and with it off every picture is layer 1's bit for bit (the specular light is added in the
+same order of operations as before).
+
+**Sources** (clean-room: nothing of Blender's Eevee or Cycles, which are GPL, was read or transliterated):
+
+- M. McGuire and M. Mara, *Efficient GPU Screen-Space Ray Tracing*, JCGT 3(4), 2014: a ray's ends
+  projected, the depth interpolated as `1/z` across the screen, a hit where the ray passes behind the
+  depth buffer by at most an assumed thickness. We step uniformly (32 steps) instead of their DDA, then
+  halve the step 5 times.
+- J. Jimenez, *Next Generation Post Processing in Call of Duty: Advanced Warfare*, SIGGRAPH 2014 course
+  *Advances in Real-Time Rendering*: bloom's 13-tap downsampling (five overlapping boxes weighted 1/2
+  and 1/8) and the 3 × 3 tent upsampling, summed level by level; the same talk's gather for depth of
+  field (a scatter written as a gather, a tap weighed by whether its blur reaches the pixel).
+- The thin-lens model (any optics textbook; Pharr, Jakob and Humphreys, *Physically Based Rendering*,
+  4th ed., § 5.2.3): the circle of confusion `A · m · |z − zf| / z` with `m = f / (zf − f)`.
+- B. Karis, *High-Quality Temporal Supersampling*, SIGGRAPH 2014 (Advances in Real-Time Rendering):
+  sub-pixel jitter on a Halton (2, 3) sequence, frames averaged; with a still camera no reprojection or
+  history clamping is needed, so the average is a plain mean that converges to the supersampled picture.
+- B. Karis, *Real Shading in Unreal Engine 4*, 2013: widening the GGX lobe for a light of some size
+  (here by half the key's angular radius), for the key's specular light.
+- Filament's GGX `D` and height-correlated Smith `V`, Schlick's Fresnel, as in layer 1.
+
+**Method**, per frame `k`, at the samples of the picture (`render_studio_frame`):
+
+1. *Jitter.* Frame 0 is the picture without accumulation; frame `k ≥ 1` moves every sample by the Halton
+   (2, 3) point `k` minus ½, in samples (`polish::jitter`; `View::jitter`, applied where a point is
+   projected and where a sample's ray is made).
+2. *Shading* (`FrameLight::shade_parts`): layer 1's, with two additions. **Contact shadows**: from the
+   surface point a ray towards the key, 12 steps over 0.05 of the mesh box's diagonal, projected; it is
+   hidden (the key's visibility 0) where it lies behind the picture's surface by more than half a sample at
+   that depth (the tessellation must not shadow itself; scale-free) and less than 0.02 of the diagonal
+   (an occluder's assumed thickness). **Specular shadow**: the key is part of the prefiltered
+   environment, so where the key is hidden (shadow map times contact, `vis`) its share of the specular
+   light is taken out: `share = lum(E · n·l · D V F (α')) / lum(specular)` clamped to 0..1 with
+   `α' = r² + radius / 2` (at least 0.002), and the specular light times `1 − (1 − vis) · share`. The
+   sample keeps its linear light and its specular weight `W = Fs · ms · so · keep` per channel, with
+   its roughness (−1 where there is no surface), as `f32`, as the GPU stores them.
+3. *Reflections* (`polish::Reflect`), when asked for. On a surface with roughness under 0.4: the mirror
+   ray from the point, up to one diagonal (stopped at a tenth of its depth before the eye plane), traced
+   across the screen (above); a hit counts only on a surface facing the ray. The light becomes
+   `L + c · W · (L_hit − env)`, `env` the prefiltered environment the shading used, `c = (1 − r / 0.4) ·
+   fade` with `fade` going to 0 over the last 0.05 of the picture's height at its border. Where the
+   ray finds nothing the environment stays: that is the fallback. On the **ground** (where a background
+   sample's ray meets it): the ray mirrored about the ground, traced the same way, its light mixed in by
+   `groundReflection · F(cos)`, `F` a dielectric's Schlick Fresnel at `F0 = 0.04`; nothing found, the
+   environment along the mirrored ray (at the background's blur).
+4. *Depth of field* (`polish::Lens`, `dof_gather`), perspective pictures only (an orthographic camera
+   has no lens). The camera is a full-frame one (24 mm high) whose lens, focused at `zf`, has the
+   picture's field: image distance `v = 12 mm / tan(fov/2)`, focal length `f = v zf / (zf + v)`,
+   aperture `A = f / N`, in model units through the document's length unit. The blur's radius in samples
+   is `A h |z − zf| / (4 tan(fov/2) z zf)` (`coc_radius`; the background at `z = ∞`), at most 1/40 of
+   the picture's height. The gather's reach is the most blur in the frame (the box's corners and the
+   background); the taps are 4 rings of 8 i at `reach (i − 1 + f) / 4`, turned by the golden angle per
+   frame, `f` 1 on frame 0 and the Halton (5) point after, so frames together cover the disc. A tap at
+   distance `d` with blur `c` (the smaller of its and the centre's when it lies behind the centre)
+   weighs `clamp(c − d + ½, 0, 1) / max(c, ½)²`; the centre `1 / max(c₀, ½)²`. A sample in focus with
+   nothing in front of it keeps its light exactly.
+5. *Bloom* (`polish::bloom`): 6 levels down (sizes halved, rounded up; reads clamped to the border),
+   summed up again (`up_i = D_i + tent(up_{i+1})`), `B = (L + tent(up_1)) / levels`, mixed in as
+   `(1 − s) L + s B`. Every filter's weights add up to 1.
+6. Exposure, the tone curve, sRGB, bytes per sample, averaged per pixel as before. The plain background
+   (`look.background` plain, layer 1) enters the buffers as its colour's linear light over the exposure,
+   marked by the roughness −2 (`PLAIN_BACKDROP`): it reflects nothing, the lens and bloom treat it as any
+   light, and it is shown as `srgb(L · 2^EV)` without the tone curve, so where nothing changed it, it is its
+   colour.
+
+A still of `n` frames (`render_studio`) sums each frame's pixel bytes exactly (integers) and rounds
+once, `(Σ + n/2) / n`; ids and depths are frame 0's, so picking and the id parity are those of a single
+frame. At most 256 frames.
+
+**Rules and why they are general.** Every length is a fraction of the mesh box's diagonal or a number
+of samples at the depth concerned, so the effects look the same at any scale and size; the lens alone
+is tied to the length unit, on purpose (a real lens blurs a small part seen close more). The ray
+tests are the published method's, with its known limits: what is not on the picture cannot be
+reflected (the environment stands in), and a ray passing just behind a surface within the assumed
+thickness is taken as a hit (`a_mirror_plane_reflects…` counts how often: 0 of 15 776 there).
+
+**Tests** (`crates/render/tests/polish.rs`): a mirror floor under a red box against the mirrored rays
+worked out apart from the renderer (every pixel whose mirrored ray enters the box's front face shows the
+box: 716 of 716; of the pixels whose ray misses the box grown by 0.06, none does); contact shadows on
+an open floor change nothing, and beside a box darken only the floor within the ray's reach of it; the
+specular shadow only takes light away; the lens's radius against the textbook circle of confusion of a
+50 mm f/2 lens at 1 m for a point at 2 m (to 1e-9, and the same in metres), and a lone bright sample
+spread over 64 frames reaches the radius (9.49 for 9, within 1.5); the plane of focus keeps its picture
+bit for bit while a far box blurs; bloom keeps an even picture even (to 1e-5) and a picture's energy
+within a band (below); accumulation: frame 0 is the picture without it, the same frames give the same
+picture, the change from 16 to 32 frames is smaller than from 4 to 8 and under 1 level on average;
+bad numbers (an f-number of 0 or NaN, a focus behind the eye, infinite units, 0 frames) leave the lens
+out rather than fail.
+
+**Bloom's energy band.** The 13-tap filter does not give each of the four texels it halves exactly a
+quarter of its weight, so a lone bright texel keeps its energy only within a band that depends on where
+it lies: measured 0.998, 0.983 and 0.942 of the light for strengths 0.04, 0.3 and 1 (three spots on a
+dim picture); the test holds `|ratio − 1| ≤ 0.1 s`. An even picture stays exactly even.
+
+**On the GPU** (`studio.wgsl`, `polish.wgsl`, `accumulate.wgsl`; `craft3d_gpu::studio`). Every studio mesh
+pipeline draws through `vs_studio`, which moves clip x and y by the frame's jitter (and `across()` adds it),
+so geometry and bodies agree. The geometry pass runs whenever occlusion, contact shadows, reflections or
+the lens need it; contact shadows and the specular shadow are in the bodies' shading, which reads the
+geometry. With a layer-2 effect that needs the light afterwards (`Look::post`), the background and the
+bodies write the linear light and the weight with the roughness to two `Rgba32Uint` targets (`f32` bits),
+then full-screen passes: `fs_reflect`, `fs_lens` (its taps come from `polish::dof_taps` in the uniform
+block, never recomputed in the shader), `fs_bloom_down` / `fs_bloom_up` (levels as `f32` bits, the CPU's
+sizes, clamped reads), `fs_display`, then the resolve. The readback renderer writes the face ids and
+distances in a pass of their own (`fs_data`): light, weight and data together would pass wgpu's 32 bytes
+per sample. A still of `n` frames is drawn as frames 1 to n − 1, then 0 (ids and depths from frame 0); each
+frame's resolved bytes are summed exactly in a ping-pong `Rgba32Uint` pair, then `(Σ + n/2) / n`; the
+shadow map is drawn once per picture. **The viewport** (`Onscreen`): with post effects or more than one
+frame, it draws at one sample per pixel through the deferred path (the jittered frames smooth the edges
+instead of MSAA; the bodies are drawn depth-only into the multisampled depth for the lines), and every
+draw with the same mesh, camera, params and look adds frame `k`, up to `accumulate` (16 by default);
+anything changing starts again at frame 0. `Onscreen::converging` tells the shell to draw again
+(`Direct::frame` redraws and asks egui for another frame while it is true). The window's other paths and
+`ui.screenshot` draw one frame unless the look gives `accumulate`.
+
+**WebGL2.** `studio_as_drawn` also turns off reflections, the ground's reflection, contact shadows and the
+lens (they loop over the geometry); bloom, the specular shadow (with no shadows there, it changes nothing)
+and the accumulation stay. Every new shader translates to GLSL ES 3.00 (`template_tests`, *scene + studio
++ polish*, and `accumulate.wgsl`). Not yet run in a browser.
+
+**Tolerance, GPU against CPU** (`crates/gpu/tests/polish.rs`, the band rule of layer 1; measured on the
+Strix's Radeon 8060S over Vulkan and GL and on llvmpipe, three scenes, Check runs 40973956505 and
+40976484395): ids equal everywhere outside the band. Readback: each effect alone (contact shadows,
+specular shadow, ground reflection, lens, bloom, 8 frames) at most 4 of 175 721 pixels more than one level
+apart and 2 to 3 levels at most; reflections 8 of 175 721 (4 of 44 183 in one scene), one pixel 50 levels
+apart (a reflected ray that finds a surface on one renderer and passes just beside it on the other: a hit
+decision in `f32` against `f64`); all together 3 of 175 721, at most 6 levels (9 on GL). The viewport, 1, 2
+and 8 frames: 20 of 44 197 at worst, 48 levels. Bounds: at most 1/512 of the pixels more than one level
+apart, at most 16 levels, and 96 levels for looks that trace a reflection and for the viewport. The
+same input gives the same frame bit for bit, accumulated too, on every adapter.
+
+**Cost** (`polish_frames_on_a_thousand_faces`, 1 002 faces, 190 096 triangles, 1020 × 777, the Strix's
+Radeon 8060S): the viewport over Vulkan (4 samples for layer 1) 0.93 ms for layer 1, 1.69 ms polished
+(`Look::polished`), 2.80 ms with the lens, 1.70 ms a frame accumulating 16; over GL 0.88, 2.58, 3.80 and
+2.60 ms. The readback renderer with its read back: 17.5 ms, 20.9 ms, 26.0 ms, and 90.2 ms for a still of
+16 frames (Vulkan). The CPU renderer: 704 ms for the polished frame (183 ms for layer 1's).
+
+**Looked at** (2026-10-30, `target/evidence/render-rl2/`: `panel-*-{plain,layer1,layer2,layer2-dof}.png` of the
+flange, the gear, a metal flange (roughness 0.2), the gear-reducer Jig and the turbofan, and the side by
+side `cmp-*.png`; the GPU's against the CPU's in `gpu/`). The metal flange reflects the ground and its
+own rim; the lens blurs the front rim with the centre sharp; no banding, no acne from the contact
+shadows. Two findings. (1) The ground's reflection, at full Fresnel strength, lifted the whole
+background (the top of the picture from 161 to 190): the ground has no edge, and towards the horizon it
+is seen at a grazing angle where a dielectric reflects nearly all of the sky. It also showed the
+method's limit plainly under the gear reducer: only what is on the picture can be reflected, so the
+reflection is in pieces (the undersides of parts are never on the picture). So `Look::polished()` leaves
+it off (`groundReflection` 0); a ground of finite extent (a studio floor fading out around the model)
+and a rougher, blurred reflection would be the general fix. (2) The CPU takes 0.58 s for the polished
+flange at 480 × 360 against 0.16 s for layer 1, and 11 s for 16 frames with the lens: fine for
+`view.render` and the tests, not for a CPU viewport, which is why the window's other paths draw one frame.

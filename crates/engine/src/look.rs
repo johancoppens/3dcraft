@@ -4,13 +4,15 @@
 //! window's `ui.set {"look": …}`.
 
 use crate::CommandError;
+use craft3d_math::Bbox3;
 use craft3d_render::studio::bundled::{ENVIRONMENTS, environment};
+use craft3d_render::studio::polish::{Dof, Focus, MAX_ACCUMULATE};
 use craft3d_render::studio::{Look, Prepared, Tonemap};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
 /// The keys a look takes.
-pub const LOOK_KEYS: [&str; 10] = [
+pub const LOOK_KEYS: [&str; 17] = [
     "mode",
     "environment",
     "exposure",
@@ -20,18 +22,58 @@ pub const LOOK_KEYS: [&str; 10] = [
     "shadows",
     "tonemap",
     "light",
+    "reflections",
+    "contactShadows",
+    "specularShadow",
+    "groundReflection",
+    "bloom",
+    "dof",
+    "accumulate",
     "background",
 ];
 
+/// The f-number of a lens given without one.
+pub const DEFAULT_FSTOP: f64 = 2.8;
+/// The frames the window averages while its camera stands still, when the
+/// look does not say.
+pub const VIEWPORT_ACCUMULATE: u32 = 16;
+
 /// The params text of a look, for the commands' documentation.
-pub const LOOK_PARAMS: &str = r#"{"mode": "plain|studio" = "studio", "environment": "studio|outdoor|workshop" = "studio", "exposure": stops from -10 to 10 = 0, "rotation": degrees = 0, "ground": boolean = true, "ao": boolean = true, "shadows": boolean = true, "tonemap": "agx|aces|linear" = "agx", "light": [azimuth, elevation] in degrees = the environment's brightest direction, "background": "environment|plain" = "environment"}"#;
+pub const LOOK_PARAMS: &str = r#"{"mode": "plain|studio" = "studio", "environment": "studio|outdoor|workshop" = "studio", "exposure": stops from -10 to 10 = 0, "rotation": degrees = 0, "ground": boolean = true, "ao": boolean = true, "shadows": boolean = true, "tonemap": "agx|aces|linear" = "agx", "light": [azimuth, elevation] in degrees = the environment's brightest direction, "background": "environment|plain" = "environment", "reflections": boolean = true, "contactShadows": boolean = true, "specularShadow": boolean = true, "groundReflection": 0 to 1 = 0, "bloom": 0 to 1 = 0.04, "dof": {"fstop": number = 2.8, "focus": distance | [x, y, z] | "picked" = the centre of the model} | null = null, "accumulate": frames from 1 to 256 = 1 (the window: 16)}"#;
 
 /// A look: plain (the default) or studio with its options.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LookSpec {
     pub studio: bool,
     pub environment: String,
+    /// The look's fields but the lens (`look.dof` stays `None` until
+    /// [`LookSpec::resolved`]) and the frames.
     pub look: Look,
+    /// Depth of field, if asked for.
+    pub dof: Option<DofSpec>,
+    /// The frames of a still picture, if given (each consumer has its
+    /// default: `view.render` 1, the window [`VIEWPORT_ACCUMULATE`]).
+    pub accumulate: Option<u32>,
+}
+
+/// A thin lens as a look gives it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DofSpec {
+    pub fstop: f64,
+    pub focus: FocusSpec,
+}
+
+/// Where a lens focuses.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FocusSpec {
+    /// The centre of the model's box.
+    Centre,
+    /// This distance along the view direction, in model units.
+    Distance(f64),
+    /// The plane through this point, square to the view.
+    Point([f64; 3]),
+    /// The point of the window's last pick (the centre without one).
+    Picked,
 }
 
 impl Default for LookSpec {
@@ -39,7 +81,9 @@ impl Default for LookSpec {
         LookSpec {
             studio: false,
             environment: "studio".to_string(),
-            look: Look::default(),
+            look: Look::polished(),
+            dof: None,
+            accumulate: None,
         }
     }
 }
@@ -150,6 +194,91 @@ impl LookSpec {
                 );
             }
         }
+        if let Some(b) = flag("reflections")? {
+            out.look.ssr = b;
+        }
+        if let Some(b) = flag("contactShadows")? {
+            out.look.contact_shadows = b;
+        }
+        if let Some(b) = flag("specularShadow")? {
+            out.look.specular_shadow = b;
+        }
+        if let Some(g) = number("groundReflection")? {
+            out.look.ground_reflection = g.clamp(0.0, 1.0);
+        }
+        if let Some(b) = number("bloom")? {
+            out.look.bloom = b.clamp(0.0, 1.0);
+        }
+        match map.get("accumulate") {
+            None => {}
+            Some(Value::Null) => out.accumulate = None,
+            Some(v) => {
+                let n = v
+                    .as_f64()
+                    .filter(|n| n.is_finite())
+                    .ok_or("`look.accumulate` must be a number of frames")?;
+                out.accumulate = Some(n.round().clamp(1.0, f64::from(MAX_ACCUMULATE)) as u32);
+            }
+        }
+        match map.get("dof") {
+            None => {}
+            Some(Value::Null) => out.dof = None,
+            Some(Value::Object(lens)) => {
+                if let Some(key) = lens
+                    .keys()
+                    .find(|k| !["fstop", "focus"].contains(&k.as_str()))
+                {
+                    let key: String = key.chars().take(40).collect();
+                    return Err(format!(
+                        "`look.dof` has no field `{key}`; it takes fstop, focus"
+                    ));
+                }
+                let mut dof = out.dof.unwrap_or(DofSpec {
+                    fstop: DEFAULT_FSTOP,
+                    focus: FocusSpec::Centre,
+                });
+                if let Some(f) = lens.get("fstop") {
+                    let f = f
+                        .as_f64()
+                        .filter(|f| f.is_finite())
+                        .ok_or("`look.dof.fstop` must be a finite number")?;
+                    dof.fstop = f.clamp(0.5, 64.0);
+                }
+                match lens.get("focus") {
+                    None => {}
+                    Some(Value::Null) => dof.focus = FocusSpec::Centre,
+                    Some(Value::String(s)) if s == "picked" => dof.focus = FocusSpec::Picked,
+                    Some(Value::String(s)) if s == "centre" || s == "center" => {
+                        dof.focus = FocusSpec::Centre;
+                    }
+                    Some(Value::Number(n)) => {
+                        let d = n
+                            .as_f64()
+                            .filter(|d| d.is_finite() && *d > 0.0)
+                            .ok_or("`look.dof.focus` must be a positive distance")?;
+                        dof.focus = FocusSpec::Distance(d);
+                    }
+                    Some(Value::Array(p)) => {
+                        let xyz: Vec<f64> = p
+                            .iter()
+                            .filter_map(|v| v.as_f64().filter(|x| x.is_finite()))
+                            .collect();
+                        let [x, y, z] = xyz.as_slice() else {
+                            return Err("`look.dof.focus` must be [x, y, z]".to_string());
+                        };
+                        if p.len() != 3 {
+                            return Err("`look.dof.focus` must be [x, y, z]".to_string());
+                        }
+                        dof.focus = FocusSpec::Point([*x, *y, *z]);
+                    }
+                    Some(_) => {
+                        return Err("`look.dof.focus` must be a distance, [x, y, z], \"picked\" or \"centre\"".to_string());
+                    }
+                }
+                out.dof = Some(dof);
+            }
+            Some(_) => return Err("`look.dof` must be an object or null".to_string()),
+        }
         Ok(out)
     }
 
@@ -166,7 +295,59 @@ impl LookSpec {
             "tonemap": self.look.tonemap.name(),
             "light": self.look.light,
             "background": if self.look.plain_background { "plain" } else { "environment" },
+            "reflections": self.look.ssr,
+            "contactShadows": self.look.contact_shadows,
+            "specularShadow": self.look.specular_shadow,
+            "groundReflection": self.look.ground_reflection,
+            "bloom": self.look.bloom,
+            "dof": self.dof.map(|d| json!({
+                "fstop": d.fstop,
+                "focus": match d.focus {
+                    FocusSpec::Centre => json!("centre"),
+                    FocusSpec::Distance(z) => json!(z),
+                    FocusSpec::Point(p) => json!(p),
+                    FocusSpec::Picked => json!("picked"),
+                },
+            })),
+            "accumulate": self.accumulate,
         })
+    }
+
+    /// The look to draw a model within `model` with: the lens focused
+    /// (on the model's centre, or the last pick `picked`, as asked) for a
+    /// document whose length unit is `mm_per_unit` millimetres, and the
+    /// frames (`default_frames` when the look does not say).
+    pub fn resolved(
+        &self,
+        model: &Bbox3,
+        mm_per_unit: f64,
+        picked: Option<[f64; 3]>,
+        default_frames: u32,
+    ) -> Look {
+        let centre = model
+            .corners()
+            .map(|(lo, hi)| {
+                let c = (lo + hi) * 0.5;
+                [c.x, c.y, c.z]
+            })
+            .unwrap_or([0.0; 3]);
+        Look {
+            dof: self.dof.map(|d| Dof {
+                fstop: d.fstop,
+                focus: match d.focus {
+                    FocusSpec::Centre => Focus::Point(centre),
+                    FocusSpec::Distance(z) => Focus::Distance(z),
+                    FocusSpec::Point(p) => Focus::Point(p),
+                    FocusSpec::Picked => Focus::Point(picked.unwrap_or(centre)),
+                },
+                mm_per_unit,
+            }),
+            accumulate: self
+                .accumulate
+                .unwrap_or(default_frames)
+                .clamp(1, MAX_ACCUMULATE),
+            ..self.look
+        }
     }
 
     /// The prepared environment of a studio look, without waiting: when it
@@ -283,6 +464,15 @@ mod tests {
             json!({"light": [1, 2, 3]}),
             json!({"ground": 1}),
             json!({"colour": 1}),
+            json!({"dof": 1}),
+            json!({"dof": {"fstop": "wide"}}),
+            json!({"dof": {"focus": -1}}),
+            json!({"dof": {"focus": [1, 2]}}),
+            json!({"dof": {"focus": "there"}}),
+            json!({"dof": {"lens": 50}}),
+            json!({"accumulate": "many"}),
+            json!({"bloom": true}),
+            json!({"reflections": 1}),
             json!({"background": "black"}),
             json!({"background": true}),
         ] {
@@ -290,6 +480,31 @@ mod tests {
         }
         let round = LookSpec::patched(&plain, &studio.json()).unwrap();
         assert_eq!(round, studio);
+        let lens = LookSpec::patched(
+            &studio,
+            &json!({"dof": {"fstop": 4, "focus": [1, 2, 3]}, "accumulate": 1000, "bloom": 7, "reflections": false}),
+        )
+        .unwrap();
+        assert_eq!(lens.accumulate, Some(MAX_ACCUMULATE));
+        assert_eq!(lens.look.bloom, 1.0);
+        assert!(!lens.look.ssr);
+        assert_eq!(LookSpec::patched(&plain, &lens.json()).unwrap(), lens);
+        let model = Bbox3::from_points([
+            craft3d_math::Vec3::ZERO,
+            craft3d_math::Vec3::new(2.0, 2.0, 2.0),
+        ]);
+        let look = lens.resolved(&model, 25.4, None, 16);
+        assert_eq!(look.accumulate, MAX_ACCUMULATE);
+        let dof = look.dof.unwrap();
+        assert_eq!(
+            (dof.fstop, dof.focus, dof.mm_per_unit),
+            (4.0, Focus::Point([1.0, 2.0, 3.0]), 25.4)
+        );
+        let picked = LookSpec::patched(&plain, &json!({"dof": {"focus": "picked"}})).unwrap();
+        let at = |p| picked.resolved(&model, 1.0, p, 16).dof.unwrap().focus;
+        assert_eq!(at(None), Focus::Point([1.0; 3]));
+        assert_eq!(at(Some([5.0, 0.0, 0.0])), Focus::Point([5.0, 0.0, 0.0]));
+        assert_eq!(picked.resolved(&model, 1.0, None, 16).accumulate, 16);
         let flat = LookSpec::patched(&studio, &json!({"background": "plain"})).unwrap();
         assert!(flat.look.plain_background && !studio.look.plain_background);
         assert_eq!(LookSpec::patched(&plain, &flat.json()).unwrap(), flat);

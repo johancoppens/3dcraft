@@ -833,6 +833,10 @@ struct View {
     aspect: f64,
     w: f64,
     h: f64,
+    /// Where a sample's centre lies off the middle of its cell, in
+    /// samples (x right, y down): 0 except in the studio look's
+    /// accumulated frames (`studio::polish::jitter`).
+    jitter: (f64, f64),
 }
 
 impl View {
@@ -850,6 +854,7 @@ impl View {
             aspect: w as f64 / h as f64,
             w: w as f64,
             h: h as f64,
+            jitter: (0.0, 0.0),
         })
     }
 
@@ -867,8 +872,8 @@ impl View {
             }
             Projection::Orthographic { .. } => (1.0 / self.half, dist, 1.0),
         };
-        let sx = (cx * scale / self.aspect * 0.5 + 0.5) * self.w;
-        let sy = (0.5 - cy * scale * 0.5) * self.h;
+        let sx = (cx * scale / self.aspect * 0.5 + 0.5) * self.w - self.jitter.0;
+        let sy = (0.5 - cy * scale * 0.5) * self.h - self.jitter.1;
         (sx.is_finite() && sy.is_finite() && key.is_finite()).then_some(Projected {
             sx,
             sy,

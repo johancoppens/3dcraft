@@ -84,22 +84,87 @@ fn the_examples_in_the_studio_look() {
         );
         print_png(&format!("gear-look-{k}.png"), &r);
     }
-    // A Jig, when one was put beside the tests for the evidence.
-    let jig = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/evidence_input");
-    if jig.join("gear-reducer.3dcraftjig").exists() {
-        let mut s = common::session_in(&jig);
-        run(
-            &mut s,
-            "file.open",
-            json!({"path": "gear-reducer.3dcraftjig"}),
-        );
-        for (label, look) in [("plain", Value::Null), ("studio", json!({}))] {
+    // Models put beside the tests for the evidence (a Jig, the turbofan),
+    // when they are there.
+    let input = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/evidence_input");
+    for file in ["gear-reducer.3dcraftjig", "turbofan.3dcraft"] {
+        if !input.join(file).exists() {
+            continue;
+        }
+        let mut s = common::session_in(&input);
+        run(&mut s, "file.open", json!({"path": file}));
+        let stem = file.split('.').next().unwrap_or(file);
+        for (label, look) in layer_looks() {
+            let started = std::time::Instant::now();
             let r = run(
                 &mut s,
                 "view.render",
                 json!({"width": 640, "height": 480, "look": look}),
             );
-            print_png(&format!("gear-reducer-{label}.png"), &r);
+            eprintln!("{stem} {label}: {:?}", started.elapsed());
+            print_png(&format!("{stem}-{label}.png"), &r);
+        }
+    }
+}
+
+/// The looks of layer 2's before and after: plain, layer 1 alone (every
+/// effect of layer 2 off), layer 2 (the default studio look), and layer 2
+/// with a lens on the model's centre and 16 frames.
+fn layer_looks() -> [(&'static str, Value); 4] {
+    [
+        ("plain", Value::Null),
+        (
+            "layer1",
+            json!({"reflections": false, "contactShadows": false, "specularShadow": false,
+                   "groundReflection": 0, "bloom": 0}),
+        ),
+        ("layer2", json!({})),
+        (
+            "layer2-dof",
+            json!({"dof": {"fstop": 2.8}, "accumulate": 16}),
+        ),
+    ]
+}
+
+#[test]
+fn layer_2_before_and_after() {
+    for name in ["flange", "gear"] {
+        let mut s = example(name);
+        let mut pictures = Vec::new();
+        for (label, look) in layer_looks() {
+            let started = std::time::Instant::now();
+            let r = run(
+                &mut s,
+                "view.render",
+                json!({"width": 480, "height": 360, "look": look}),
+            );
+            eprintln!("{name} {label}: {:?}", started.elapsed());
+            print_png(&format!("{name}-{label}.png"), &r);
+            pictures.push(r);
+        }
+        // Layer 2 changes the picture; its look says so.
+        assert_ne!(pictures[1]["base64"], pictures[2]["base64"]);
+        assert_eq!(pictures[2]["look"]["reflections"], true);
+        assert_eq!(pictures[3]["look"]["accumulate"], 16);
+        assert_eq!(pictures[3]["look"]["dof"]["focus"], "centre");
+    }
+    // The metal flange: reflections show.
+    let mut s = example("flange");
+    let shown = run(&mut s, "view.render", json!({"width": 64, "height": 48}));
+    if let Some(name) = shown["bodies"][0]["body"].as_str() {
+        let name = name.to_string();
+        run(
+            &mut s,
+            "body.appearance",
+            json!({"body": name, "color": "#c8ccd2", "metallic": 1, "roughness": 0.2}),
+        );
+        for (label, look) in layer_looks() {
+            let r = run(
+                &mut s,
+                "view.render",
+                json!({"width": 480, "height": 360, "look": look}),
+            );
+            print_png(&format!("flange-metal-{label}.png"), &r);
         }
     }
 }
@@ -115,6 +180,9 @@ fn bad_looks_are_refused() {
         json!({"exposure": "bright"}),
         json!({"light": [1, 2, 3]}),
         json!({"glow": true}),
+        json!({"dof": {"fstop": "wide"}}),
+        json!({"dof": {"focus": [1, 2]}}),
+        json!({"accumulate": "many"}),
     ] {
         let e = s
             .execute(

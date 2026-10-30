@@ -2408,6 +2408,14 @@ impl Session {
                 && self.scene.has(SceneKey::Preview))
     }
 
+    /// Millimetres per length unit of the active document (1 without
+    /// one): the scale a camera lens needs (`look.dof`).
+    pub fn length_mm(&self) -> f64 {
+        self.document().map_or(1.0, |open| {
+            open.history.current().units.length.as_expr_unit().factor()
+        })
+    }
+
     /// The active document as a status bar shows it.
     pub fn document_status(&self) -> Option<DocumentStatus> {
         self.status_of(self.active)

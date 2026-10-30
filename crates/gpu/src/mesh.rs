@@ -177,7 +177,13 @@ pub struct GpuMesh {
     triangles: usize,
     /// The token of the renderer that made this mesh.
     pub(crate) owner: Arc<()>,
+    /// Which upload this is: the viewport's accumulation restarts for
+    /// another mesh.
+    pub(crate) serial: u64,
 }
+
+/// The serial of the next upload.
+static NEXT_SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl GpuMesh {
     /// Number of triangles that are drawn (those of the mesh, less the ones
@@ -233,6 +239,7 @@ impl GpuMesh {
             bounds: packed.bounds,
             triangles: packed.triangles,
             owner: Arc::clone(owner),
+            serial: NEXT_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         })
     }
 }

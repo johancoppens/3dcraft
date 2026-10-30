@@ -130,6 +130,10 @@ Usage: craft3d-cli render FILE --out PNG [--size WxH] [--view V] [--mode M]
                           [--background B] [--look L] [--environment E]
                           [--exposure X] [--rotation R] [--tonemap T]
                           [--ground on|off] [--ao on|off] [--shadows on|off]
+                          [--reflections on|off] [--contact-shadows on|off]
+                          [--specular-shadow on|off] [--ground-reflection G]
+                          [--bloom B] [--fstop N] [--focus D|X,Y,Z]
+                          [--accumulate N]
                           [--backdrop environment|plain]
 
 Renders the bodies of a .3dcraft file to a PNG with the CPU renderer (no
@@ -156,6 +160,17 @@ Options:
   --tonemap T     agx (default), aces or linear
   --ground, --ao, --shadows on|off  The ground, the ambient occlusion and
                   the shadows of the studio look. Default on
+  --reflections, --contact-shadows, --specular-shadow on|off  Reflections
+                  of the model in its glossy faces and the ground, short
+                  shadows where parts meet, the key light's shadow on the
+                  reflections. Default on
+  --ground-reflection G  How much the ground reflects, 0 to 1. Default 0
+  --bloom B       The share of the light spread around bright parts, 0 to
+                  1. Default 0.04
+  --fstop N, --focus D|X,Y,Z  Depth of field of a thin lens: its f-number
+                  (default 2.8) and the distance along the view or the
+                  point it focuses on (default the model's centre)
+  --accumulate N  Frames averaged into the picture, 1 to 256. Default 1
   --backdrop B    environment (default) or plain: the --background colour
                   behind the model, which the environment still lights";
 
