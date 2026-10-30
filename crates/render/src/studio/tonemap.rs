@@ -127,6 +127,84 @@ pub fn display(c: [f64; 3], curve: Tonemap) -> [f64; 3] {
     }
 }
 
+/// The inverse of [`display`]: linear scene light (times the exposure)
+/// that `display` takes to the display values `d`, each in 0..1. Where
+/// the curve does not reach a value, the light of the end it stops at;
+/// AgX, which turns bright saturated colours towards white by design,
+/// does not reach those, and gives a paler one.
+/// It is how a colour the picture shows as it is (the plain background)
+/// enters light that goes through the tone curve (seen through glass)
+/// without being toned twice. AgX's outset matrix is the inverse of its
+/// inset one, so each undoes the other; its sigmoid is monotonic on 0..1
+/// and inverted by halving; ACES's rational curve by its quadratic.
+pub fn undisplay(d: [f64; 3], curve: Tonemap) -> [f64; 3] {
+    let d = d.map(|v| {
+        if v.is_finite() {
+            v.clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    });
+    match curve {
+        Tonemap::Agx => agx_inverse(d),
+        Tonemap::Aces => d.map(|v| aces_inverse(srgb_decode(v))),
+        Tonemap::Linear => d.map(srgb_decode),
+    }
+}
+
+/// The light `x` for which the AgX sigmoid gives `y`: halvings of 0..1.
+fn agx_curve_inverse(y: f64) -> f64 {
+    let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
+    if !(y > agx_curve(lo)) {
+        return lo;
+    }
+    if y >= agx_curve(hi) {
+        return hi;
+    }
+    for _ in 0..60 {
+        let mid = 0.5 * (lo + hi);
+        if agx_curve(mid) < y {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    0.5 * (lo + hi)
+}
+
+fn agx_inverse(d: [f64; 3]) -> [f64; 3] {
+    let [r, g, b] = d;
+    // The inset matrix undoes the outset one.
+    let k = [
+        0.842_479_062_253_094 * r + 0.078_433_599_999_999_2 * g + 0.079_223_745_147_764_3 * b,
+        0.042_328_242_261_012_3 * r + 0.878_468_636_469_772 * g + 0.079_166_127_460_543_4 * b,
+        0.042_375_654_905_705_1 * r + 0.078_433_6 * g + 0.879_142_973_793_104 * b,
+    ];
+    let [r, g, b] = k.map(|v| {
+        let t = agx_curve_inverse(v);
+        (AGX_MIN_EV + t * (AGX_MAX_EV - AGX_MIN_EV)).exp2()
+    });
+    // And the outset matrix the inset one.
+    [
+        1.196_879_005_120_17 * r - 0.098_020_881_140_136_8 * g - 0.099_029_744_079_720_5 * b,
+        -0.052_896_851_757_456_2 * r + 1.151_903_129_904_17 * g - 0.098_961_176_844_843_3 * b,
+        -0.052_971_635_514_443_8 * r - 0.098_043_450_117_124_1 * g + 1.151_073_672_641_16 * b,
+    ]
+    .map(|v| v.max(0.0))
+}
+
+/// The light `x` for which [`aces`] gives `a` (in 0..1, which it reaches):
+/// the positive root of `(2.51 − 2.43 a) y² + (0.03 − 0.59 a) y − 0.14 a`
+/// with `y = 0.6 x`.
+fn aces_inverse(a: f64) -> f64 {
+    let a = a.clamp(0.0, 1.0);
+    let qa = 2.51 - 2.43 * a;
+    let qb = 0.03 - 0.59 * a;
+    let qc = -0.14 * a;
+    let y = (-qb + (qb * qb - 4.0 * qa * qc).max(0.0).sqrt()) / (2.0 * qa);
+    if y.is_finite() { y.max(0.0) / 0.6 } else { 0.0 }
+}
+
 /// A display value as a byte, rounded as the plain shading rounds.
 pub fn to_byte(v: f64) -> u8 {
     // Clamped to 0..=255 before the cast.
@@ -141,6 +219,33 @@ mod tests {
     fn srgb_round_trips_every_byte() {
         for b in 0..=255_u8 {
             assert_eq!(to_byte(srgb_encode(byte_to_linear(b))), b);
+        }
+    }
+
+    #[test]
+    fn undisplay_gives_back_every_byte_the_curve_reaches() {
+        for curve in [Tonemap::Agx, Tonemap::Aces, Tonemap::Linear] {
+            let top = display([1.0e6; 3], curve);
+            for b in 0..=255_u8 {
+                let d = f64::from(b) / 255.0;
+                let grey = [d; 3];
+                // A warm tint too. (AgX does not reach a bright saturated
+                // colour: it desaturates them towards white by design.)
+                let colour = [d, 0.9 * d, 0.8 * d];
+                for want in [grey, colour] {
+                    let reached = want.iter().zip(&top).all(|(w, t)| w <= t);
+                    let got = display(undisplay(want, curve), curve);
+                    for (g, w) in got.iter().zip(want) {
+                        if reached {
+                            assert!((g - w).abs() <= 1e-6, "{curve:?} {want:?} {got:?}");
+                        }
+                    }
+                }
+            }
+            // White is shown as white.
+            let white = display(undisplay([1.0; 3], curve), curve).map(to_byte);
+            assert_eq!(white, [255; 3], "{curve:?}");
+            assert_eq!(undisplay([f64::NAN; 3], curve), undisplay([0.0; 3], curve));
         }
     }
 

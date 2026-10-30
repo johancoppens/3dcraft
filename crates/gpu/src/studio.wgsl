@@ -133,6 +133,80 @@ fn agx_ev(v: f32) -> f32 {
     return agx_curve((clamp(ev, min_ev, max_ev) - min_ev) / (max_ev - min_ev));
 }
 
+// tonemap::undisplay: the light (times the exposure) that `display` shows
+// as the display values `d`, before the rounding to bytes.
+fn agx_curve_inverse(y: f32) -> f32 {
+    var lo = 0.0;
+    var hi = 1.0;
+    if !(y > agx_curve(lo)) {
+        return lo;
+    }
+    if y >= agx_curve(hi) {
+        return hi;
+    }
+    for (var i = 0; i < 32; i++) {
+        let mid = 0.5 * (lo + hi);
+        if agx_curve(mid) < y {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    return 0.5 * (lo + hi);
+}
+
+fn aces_inverse(a_in: f32) -> f32 {
+    let a = clamp(a_in, 0.0, 1.0);
+    let qa = 2.51 - 2.43 * a;
+    let qb = 0.03 - 0.59 * a;
+    let qc = -0.14 * a;
+    let y = (-qb + sqrt(max(qb * qb - 4.0 * qa * qc, 0.0))) / (2.0 * qa);
+    if !(y <= 3.4e38) {
+        return 0.0;
+    }
+    return max(y, 0.0) / 0.6;
+}
+
+fn undisplay(d_in: vec3<f32>) -> vec3<f32> {
+    let d = clamp(d_in, vec3<f32>(0.0), vec3<f32>(1.0));
+    if studio.look.z < 0.5 {
+        let min_ev = -12.473931188;
+        let max_ev = 4.026068812;
+        // The inset matrix undoes the outset one, and the outset one the
+        // inset one.
+        let k = vec3<f32>(
+            0.842479062253094 * d.x + 0.0784335999999992 * d.y + 0.0792237451477643 * d.z,
+            0.0423282422610123 * d.x + 0.878468636469772 * d.y + 0.0791661274605434 * d.z,
+            0.0423756549057051 * d.x + 0.0784336 * d.y + 0.879142973793104 * d.z,
+        );
+        let t = vec3<f32>(agx_curve_inverse(k.x), agx_curve_inverse(k.y), agx_curve_inverse(k.z));
+        let v = exp2(vec3<f32>(min_ev) + t * (max_ev - min_ev));
+        return max(vec3<f32>(
+            1.19687900512017 * v.x - 0.0980208811401368 * v.y - 0.0990297440797205 * v.z,
+            -0.0528968517574562 * v.x + 1.15190312990417 * v.y - 0.0989611768448433 * v.z,
+            -0.0529716355144438 * v.x - 0.0980434501171241 * v.y + 1.15107367264116 * v.z,
+        ), vec3<f32>(0.0));
+    } else if studio.look.z < 1.5 {
+        return vec3<f32>(
+            aces_inverse(srgb_decode(d.x)),
+            aces_inverse(srgb_decode(d.y)),
+            aces_inverse(srgb_decode(d.z)),
+        );
+    }
+    return vec3<f32>(srgb_decode(d.x), srgb_decode(d.y), srgb_decode(d.z));
+}
+
+// FrameLight::untoned: the light, over the exposure, that the tone curve
+// shows as the linear display colour `c` (the plain background seen
+// through glass, which must not be toned a second time).
+fn untoned(c: vec3<f32>) -> vec3<f32> {
+    let e = studio.look.y;
+    if !(e > 0.0 && e <= 3.4e38) {
+        return c;
+    }
+    return undisplay(vec3<f32>(srgb_encode(c.x), srgb_encode(c.y), srgb_encode(c.z))) / e;
+}
+
 // tonemap::display, then to_byte over 255.
 fn display(c_in: vec3<f32>) -> vec3<f32> {
     let c = max(c_in * studio.look.y, vec3<f32>(0.0));
@@ -777,7 +851,9 @@ fn fs_background_post(in: FullscreenOut) -> LightOut {
     if studio.backdrop.w > 0.5 {
         let ray = view_ray(in.clip.x, in.clip.y);
         let b = studio.backdrop.rgb * ground_factor(ray[0], ray[1]) / studio.look.y;
-        out.light = bits3(b, 0.0);
+        // The mark in the light's w too: the picture behind glass has only
+        // its light (`light_behind`).
+        out.light = bits3(b, PLAIN_BACKDROP);
         out.weight = bits3(vec3<f32>(0.0), PLAIN_BACKDROP);
         return out;
     }
@@ -1058,9 +1134,17 @@ fn fragment_normal(in: VertexOut, v: vec3<f32>) -> vec3<f32> {
     return n;
 }
 
-// The light of the picture behind at the sample `at`.
+// The light of the picture behind at the sample `at` as glass shows it:
+// the plain background (marked by PLAIN_BACKDROP in the light's w) as the
+// light the tone curve shows as its colour (refract::pass_through's
+// `seen_of`).
 fn light_behind(at: vec2<i32>) -> vec3<f32> {
-    return bitcast<vec3<f32>>(textureLoad(behind_map, at, 0).xyz);
+    let t = textureLoad(behind_map, at, 0);
+    let c = bitcast<vec3<f32>>(t.xyz);
+    if bitcast<f32>(t.w) == PLAIN_BACKDROP {
+        return untoned(c * studio.look.y);
+    }
+    return c;
 }
 
 // layers::refract: the direction of the unit ray `d` refracted into a
@@ -1117,10 +1201,15 @@ fn through(in: VertexOut, shaded: Shaded) -> vec3<f32> {
                 && q.y < studio.size.y {
                 seen = light_behind(vec2<i32>(i32(floor(q.x)), i32(floor(q.y))));
             } else {
-                // Off the picture: the background along the view ray.
+                // Off the picture: the background along the view ray; the
+                // plain one as glass shows it.
                 let ray = view_ray(px, py);
-                seen = radiance(ray[1], BACKGROUND_ROUGHNESS * studio.look.w)
-                    * ground_factor(scene.eye.xyz + out_at, ray[1]);
+                let factor = ground_factor(scene.eye.xyz + out_at, ray[1]);
+                if studio.backdrop.w > 0.5 {
+                    seen = untoned(studio.backdrop.rgb * factor);
+                } else {
+                    seen = radiance(ray[1], BACKGROUND_ROUGHNESS * studio.look.w) * factor;
+                }
             }
         }
     }

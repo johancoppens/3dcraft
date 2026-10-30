@@ -565,6 +565,18 @@ impl<'a> FrameLight<'a> {
         }
     }
 
+    /// The light, over the exposure, that the tone curve shows as the
+    /// linear display colour `c` ([`tonemap::undisplay`]): the plain
+    /// background seen through glass, which the picture shows as it is
+    /// and must not be toned a second time.
+    pub fn untoned(&self, c: [f64; 3]) -> [f64; 3] {
+        if !(self.exposure > 0.0 && self.exposure.is_finite()) {
+            return c;
+        }
+        tonemap::undisplay(c.map(tonemap::srgb_encode), self.look.tonemap)
+            .map(|v| v / self.exposure)
+    }
+
     /// The share of the ground's light the model leaves it where the ray
     /// meets it: `(E + K · l_z · vis) / (E + K · l_z)` with `E` the
     /// luminance of the irradiance without the key on an upward face and
@@ -949,6 +961,9 @@ fn studio_frame(
                 frame: &light,
                 size: (w, h),
                 margin: mark.unwrap_or(polish::TRACE_DOUBT),
+                plain: look
+                    .plain_background
+                    .then(|| params.background.map(tonemap::byte_to_linear)),
             },
             &mut shaded,
             &surfaces,

@@ -15,6 +15,11 @@
 //!   it lies in, absorbed by `exp(−σ L)`. Off the picture, the background
 //!   along the view ray from that end.
 //!
+//! The plain background (`Look::plain_background`), which the picture
+//! shows as it is, enters as the light the tone curve shows as its colour
+//! (`FrameLight::untoned`), off the picture too: clear glass on white
+//! stays white instead of being toned a second time.
+//!
 //! For a slab of parallel faces seen in an orthographic picture this is
 //! exact (the ray leaves parallel to the view, so it sees what lies
 //! behind its exit point); elsewhere it is the usual screen-space
@@ -22,7 +27,7 @@
 //! seen), the back face assumed parallel to the front, only what is on
 //! the picture refracted.
 
-use super::{FrameLight, Shaded, Surface, layers};
+use super::{FrameLight, PLAIN_BACKDROP, Shaded, Surface, layers};
 use crate::{FaceColors, NO_FACE, View};
 use craft3d_math::Vec3;
 
@@ -34,6 +39,8 @@ pub(crate) struct Scene<'a> {
     pub size: (usize, usize),
     /// The margin of doubt in `f32` epsilons ([`super::polish::TRACE_DOUBT`]).
     pub margin: f64,
+    /// The plain background's colour (linear), when the picture has one.
+    pub plain: Option<[f64; 3]>,
 }
 
 /// Adds the light through the transmissive samples of `shaded` (their
@@ -53,6 +60,19 @@ pub(crate) fn pass_through(
     let (w, h) = scene.size;
     let view = scene.view;
     let mut doubt = vec![false; shaded.len()];
+    // The light a sample of the picture behind shows through the glass:
+    // the plain background (the colour over the exposure, shown as it is)
+    // as the light the tone curve shows as that colour, so that it is not
+    // toned twice.
+    let seen_of = |s: &Shaded| {
+        if s.roughness == PLAIN_BACKDROP {
+            scene
+                .frame
+                .untoned(s.light.map(|v| v * scene.frame.exposure))
+        } else {
+            s.light
+        }
+    };
     let near = scene.margin * f64::from(f32::EPSILON) * (w.max(h) as f64);
     let face_at = |x: i64, y: i64| -> Option<u32> {
         if x < 0 || y < 0 || x >= w as i64 || y >= h as i64 {
@@ -81,7 +101,7 @@ pub(crate) fn pass_through(
         let n = Vec3::new(nx, ny, nz).normalized().unwrap_or(to_viewer);
         let n = if n.dot(to_viewer) < 0.0 { -n } else { n };
         let (_, ray) = view.ray(px, py);
-        let straight = || behind.get(i).map_or([0.0; 3], |s| s.light);
+        let straight = || behind.get(i).map_or([0.0; 3], seen_of);
         let solid = !optics.thin_walled
             && back.face != NO_FACE
             && back.dist.is_finite()
@@ -116,7 +136,14 @@ pub(crate) fn pass_through(
                                 || (sx - w as f64).abs() < near
                                 || (sy - h as f64).abs() < near;
                         }
-                        (scene.frame.background(exit, ray), absorbed)
+                        let seen = match scene.plain {
+                            Some(plain) => {
+                                let factor = scene.frame.ground_factor(exit, ray);
+                                scene.frame.untoned(plain.map(|v| v * factor))
+                            }
+                            None => scene.frame.background(exit, ray),
+                        };
+                        (seen, absorbed)
                     }
                     Some((sx, sy)) => {
                         let (fx, fy) = (sx.floor(), sy.floor());
@@ -132,7 +159,7 @@ pub(crate) fn pass_through(
                         }
                         let seen = behind
                             .get(iy as usize * w + ix as usize)
-                            .map_or([0.0; 3], |s| s.light);
+                            .map_or([0.0; 3], seen_of);
                         (seen, absorbed)
                     }
                 }
