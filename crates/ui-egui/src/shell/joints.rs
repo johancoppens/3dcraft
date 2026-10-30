@@ -29,7 +29,20 @@ pub(crate) struct Joints {
     /// The joint each shown body's drag moves, by its feature (`F3`), for
     /// the scene revision they were found for.
     pub(crate) handles: Option<(u64, Vec<(String, JointHandle)>)>,
+    /// Where the last frame drew each entry of the mate menu.
+    pub(crate) mate_hits: Vec<(&'static str, egui::Rect)>,
 }
+
+/// The kinds of mate the menu on two faces offers, as `mate.add` names
+/// them, with their words.
+pub(crate) const MATE_ENTRIES: [(&str, &str); 6] = [
+    ("revolute", "Revolute between these"),
+    ("fixed", "Fixed between these"),
+    ("slider", "Slider between these"),
+    ("cylindrical", "Cylindrical between these"),
+    ("planar", "Planar between these"),
+    ("ball", "Ball between these"),
+];
 
 /// A part dragged along its free motion.
 #[derive(Clone, Debug)]
@@ -208,6 +221,37 @@ impl Shell {
             ui.ctx().request_repaint();
         }
         true
+    }
+
+    /// The two faces selected, as a mate names them (`Instance/face`):
+    /// when the document shown is an assembly and exactly two faces of two
+    /// of its own instances are selected.
+    pub(crate) fn mate_pair(&self) -> Option<(String, String)> {
+        let outline = self.outline.as_ref()?;
+        let items = &self.select.view.items;
+        let [a, b] = items.as_slice() else {
+            return None;
+        };
+        let reference = |item: &craft3d_engine::SelectionItem| -> Option<(String, String)> {
+            if item.kind != craft3d_engine::SelectionKind::Face {
+                return None;
+            }
+            let instance = outline
+                .instances
+                .iter()
+                .find(|i| i.own && i.features.iter().any(|f| *f == item.feature))?;
+            Some((
+                instance.name.clone(),
+                format!("{}/{}", instance.name, item.name),
+            ))
+        };
+        let ((first, a), (second, b)) = (reference(a)?, reference(b)?);
+        (first != second).then_some((a, b))
+    }
+
+    /// Where the last frame drew each entry of the mate menu, by its kind.
+    pub fn mate_entry_hits(&self) -> &[(&'static str, egui::Rect)] {
+        &self.joints.mate_hits
     }
 
     /// True when the document shown is an assembly.

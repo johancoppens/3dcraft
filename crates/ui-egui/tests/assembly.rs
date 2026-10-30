@@ -498,3 +498,105 @@ fn the_four_bar_moves_over_t_in_the_viewport() {
     assert_ne!(pictures[0], pictures[1]);
     assert_ne!(pictures[1], pictures[2]);
 }
+
+/// Two faces of two instances selected: a right click offers the mates
+/// that join them first ("Revolute between these", …), and one issues
+/// `mate.add` with the two faces named through their instances.
+#[test]
+fn two_selected_faces_offer_the_mates_that_join_them() {
+    use craft3d_math::Vec3;
+    use craft3d_ui_egui::camera::Projector;
+    let (mut s, _dir) = window_session("mate-menu");
+    let mut shell = Shell::new();
+    let mut window = Window::new();
+    four_bar(&mut s);
+    run(
+        &mut s,
+        "joint.set",
+        json!({ "mate": "Drive", "value": "60 deg" }),
+    );
+    call(
+        &mut shell,
+        &mut s,
+        "ui.set",
+        json!({ "camera": { "yaw": -90.0, "pitch": 89.0 } }),
+    );
+    for _ in 0..4 {
+        window.frame(&mut shell, &mut s);
+    }
+    let rect = shell.viewport_rect().expect("a viewport");
+    let [w, h] = shell.viewport_size();
+    let projector =
+        Projector::new(&shell.state.camera.to_render(), f64::from(w), f64::from(h)).unwrap();
+    let a = 60.0_f64.to_radians();
+    let crank = projector
+        .project(Vec3::new(10.0 * a.cos(), 10.0 * a.sin(), 2.0))
+        .unwrap();
+    let ground = projector.project(Vec3::new(30.0, 0.0, 2.0)).unwrap();
+    call(
+        &mut shell,
+        &mut s,
+        "ui.pick",
+        json!({ "x": crank.x, "y": crank.y, "select": true }),
+    );
+    call(
+        &mut shell,
+        &mut s,
+        "ui.pick",
+        json!({ "x": ground.x, "y": ground.y, "select": true, "shift": true }),
+    );
+    for _ in 0..2 {
+        window.frame(&mut shell, &mut s);
+    }
+    assert_eq!(
+        shell.selection().items.len(),
+        2,
+        "{:?}",
+        shell.selection().items
+    );
+    let at = egui::pos2(
+        rect.left() + (crank.x as f32) * rect.width() / w as f32,
+        rect.top() + (crank.y as f32) * rect.height() / h as f32,
+    );
+    window.events(&mut shell, &mut s, vec![egui::Event::PointerMoved(at)]);
+    for pressed in [true, false] {
+        window.events(
+            &mut shell,
+            &mut s,
+            vec![egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Secondary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+    }
+    window.frame(&mut shell, &mut s);
+    let kinds: Vec<&str> = shell.mate_entry_hits().iter().map(|(k, _)| *k).collect();
+    assert_eq!(
+        kinds,
+        [
+            "revolute",
+            "fixed",
+            "slider",
+            "cylindrical",
+            "planar",
+            "ball"
+        ]
+    );
+    let revolute = shell.mate_entry_hits()[0].1.center();
+    window.click(&mut shell, &mut s, revolute);
+    let inspected = run(&mut s, "assembly.inspect", json!({}));
+    let mates = inspected["mates"].as_array().unwrap();
+    assert_eq!(mates.len(), 6, "{inspected}");
+    let added = &mates[5];
+    assert_eq!(added["kind"], "revolute", "{added}");
+    assert!(
+        added["a"].as_str().unwrap().starts_with("Crank/"),
+        "{added}"
+    );
+    assert!(
+        added["b"].as_str().unwrap().starts_with("Ground/"),
+        "{added}"
+    );
+}
