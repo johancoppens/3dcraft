@@ -877,10 +877,13 @@ fn a_loop_of_splines_is_a_hole_in_the_profile_around_it() {
 }
 
 /// A closed spline of degree 2 whose pieces are straight (a glyph's lines
-/// raised to the degree of its curves): each piece is a line, exactly.
+/// raised to the degree of its curves): as a glyph outline each piece is a
+/// line, exactly; as a spline someone drew it stays a spline.
 #[test]
-fn straight_pieces_of_a_spline_are_lines() {
-    use craft3d_kernel::profile::{Curve2, Shape, SketchCurve, Spline2, detect_profiles};
+fn straight_pieces_of_a_glyph_outline_are_lines() {
+    use craft3d_kernel::profile::{
+        Curve2, Shape, SketchCurve, Spline2, detect_profiles, detect_profiles_of_outlines,
+    };
     let tol = craft3d_math::Tolerance::new(1e-6, 1e-9).unwrap();
     // A square 0..2, each side a degree-2 Bézier with its middle point,
     // joined at double knots; one side bulging, a true curve.
@@ -904,7 +907,17 @@ fn straight_pieces_of_a_spline_are_lines() {
             control,
         }),
     }];
-    let profiles = detect_profiles(&curves, &tol).unwrap();
+    let drawn = detect_profiles(&curves, &tol).unwrap();
+    assert!(
+        drawn[0]
+            .outer
+            .segments
+            .iter()
+            .all(|s| !matches!(s.shape, Shape::Line)),
+        "a drawn spline keeps its straight pieces as spline"
+    );
+    let outlines = std::collections::BTreeSet::from([1]);
+    let profiles = detect_profiles_of_outlines(&curves, &tol, &outlines).unwrap();
     assert_eq!(profiles.len(), 1);
     let segments = &profiles[0].outer.segments;
     assert_eq!(segments.len(), 4);

@@ -165,7 +165,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic)]
 
     use super::*;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     /// SplitMix64: seeded, the same on every platform.
     struct Rng(u64);
@@ -324,8 +324,8 @@ mod tests {
     /// The indexed search gives what the sweeps over every pair give: the
     /// same profiles in the same order, or the same error.
     fn agree(curves: &[SketchCurve], tol: &Tolerance) -> Result<Vec<Profile>, KernelError> {
-        let indexed = detect(curves, tol, Search::Indexed);
-        let reference = detect(curves, tol, Search::AllPairs);
+        let indexed = detect(curves, tol, Search::Indexed, &BTreeSet::new());
+        let reference = detect(curves, tol, Search::AllPairs, &BTreeSet::new());
         assert_eq!(indexed, reference, "{curves:?}");
         indexed
     }

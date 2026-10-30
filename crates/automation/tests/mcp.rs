@@ -376,6 +376,8 @@ fn command_list_returns_the_registry_and_filters() {
             "file.open",
             "file.list",
             "assembly.new",
+            // Lists the fonts (`doc: false`).
+            "font.list",
             // Lists data and reads nothing of the document (`doc: false`).
             "material.presets",
             "recovery.list",

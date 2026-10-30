@@ -53,7 +53,7 @@ The curve by arc length: exact for lines, arcs and circles (a circle starts at a
 
 ### Straight pieces of a spline are lines
 
-`profile::straight_piece` (kernel, 2026-10-30): a piece of a spline of degree above one whose control points all lie within a thousandth of the tolerance of the chord between its ends, with their projections in order along it, is the line between its ends. A Bézier lies in the hull of its control points, and with their projections in order it runs once from end to end, so it is that segment within the same distance: general for any spline, not a rule for text, though text is what makes such pieces (a glyph's lines raised to the degree of its curves).
+`profile::straight_piece` (kernel, 2026-10-30): a piece of a spline of degree above one whose control points all lie within a thousandth of the tolerance of the chord between its ends, with their projections in order along it, is the line between its ends. A Bézier lies in the hull of its control points, and with their projections in order it runs once from end to end, so it is that segment within the same distance. It is applied to the glyph outlines of a text only (`profile::detect_profiles_of_outlines`, the ids regeneration collects from the text entities, 2026-10-30): a spline someone drew stays the curve they drew, straight pieces and all, so a straight spline drawn on purpose still sweeps a freeform face (rule 3; the sheet tests build their cone that way).
 
 ### Caps and hostile input
 

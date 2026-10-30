@@ -58,6 +58,7 @@ pub use crate::spline2::{MAX_SPLINE_DEGREE, MAX_SPLINE_POINTS, Spline2};
 use crate::{KernelError, MAX_REPORTED};
 use craft3d_geom::GeomError;
 use craft3d_math::Tolerance;
+use std::collections::BTreeSet;
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 #[cfg(test)]
@@ -1345,7 +1346,21 @@ pub fn detect_profiles(
     curves: &[SketchCurve],
     tolerance: &Tolerance,
 ) -> Result<Vec<Profile>, KernelError> {
-    detect(curves, tolerance, Search::Indexed)
+    detect(curves, tolerance, Search::Indexed, &BTreeSet::new())
+}
+
+/// [`detect_profiles`], with the straight pieces of the splines whose ids
+/// are in `outlines` taken as lines: the outlines of a text's glyphs,
+/// whose lines a font raises to the degree of the curves around them
+/// (docs/design/text.md). Every other spline stays the curve it was
+/// drawn as, straight pieces and all: a straight spline drawn on purpose
+/// sweeps a freeform face (rule 3).
+pub fn detect_profiles_of_outlines(
+    curves: &[SketchCurve],
+    tolerance: &Tolerance,
+    outlines: &BTreeSet<u64>,
+) -> Result<Vec<Profile>, KernelError> {
+    detect(curves, tolerance, Search::Indexed, outlines)
 }
 
 /// How the pairs that may meet are found.
@@ -1363,6 +1378,7 @@ fn detect(
     curves: &[SketchCurve],
     tolerance: &Tolerance,
     search: Search,
+    outlines: &BTreeSet<u64>,
 ) -> Result<Vec<Profile>, KernelError> {
     let tol = tolerance.linear;
     if !(tol.is_finite() && tol > 0.0) {
@@ -1416,7 +1432,8 @@ fn detect(
             }
             let straight = match (part.degree, part.control.as_slice()) {
                 (1, &[start, end]) => Some(Curve2::Line { start, end }),
-                _ => straight_piece(&part.control, tol),
+                _ if outlines.contains(&curve.id) => straight_piece(&part.control, tol),
+                _ => None,
             };
             if let Some(Curve2::Line { start, end }) = straight
                 && distance(start, end) <= tol

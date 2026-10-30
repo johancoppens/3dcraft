@@ -13,9 +13,10 @@ use craft3d_expr::Evaluation;
 use craft3d_kernel::KernelError;
 use craft3d_kernel::extrude::{Origin, Origins, Role, extrude};
 use craft3d_kernel::extrude_to::{Target, extrude_up_to, profile_box};
-use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2, detect_profiles};
+use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2, detect_profiles_of_outlines};
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{Body, FaceId};
+use std::collections::BTreeSet;
 
 /// The persistent name of an entity an extrusion made: the feature, the
 /// part the entity plays and the sketch entities it came from, such as
@@ -114,6 +115,9 @@ pub(crate) struct Drawn<'a> {
     pub sketch: &'a craft3d_doc::Sketch,
     pub solved: &'a crate::SketchResult,
     pub curves: Vec<SketchCurve>,
+    /// The ids of the curves that are glyph outlines of a text, whose
+    /// straight pieces are lines (`detect_profiles_of_outlines`).
+    pub outlines: BTreeSet<u64>,
     pub plane: Frame,
     pub tolerance: Tolerance,
 }
@@ -132,6 +136,7 @@ pub(crate) fn swept<'a>(
         sketch,
         solved,
         curves,
+        outlines,
         plane,
         tolerance,
     } = drawn(doc, earlier, id)?;
@@ -140,7 +145,7 @@ pub(crate) fn swept<'a>(
             "sketch `{name}` has nothing to {verb}: draw a closed profile of lines, arcs, splines or circles"
         ));
     }
-    let profiles = detect_profiles(&curves, &tolerance)
+    let profiles = detect_profiles_of_outlines(&curves, &tolerance, &outlines)
         .map_err(|e| format!("sketch `{name}`: {}", profile_error(&e, &solved.curve_ids)))?;
     Ok(Swept {
         name,
@@ -201,6 +206,7 @@ pub(crate) fn drawn<'a>(
             .ok_or_else(|| format!("sketch `{name}`: {entity} has no solved position"))
     };
     let mut curves = Vec::new();
+    let mut outlines = BTreeSet::new();
     for entity in sketch.entities.iter().filter(|e| !e.construction) {
         let curve = match &entity.geometry {
             Geometry::Point { .. } | Geometry::Image { .. } => continue,
@@ -209,6 +215,7 @@ pub(crate) fn drawn<'a>(
                 let laid = solved
                     .text(entity.id)
                     .ok_or_else(|| format!("sketch `{name}`: {} was not laid out", entity.id))?;
+                outlines.extend(laid.curves.iter().map(|c| c.id));
                 curves.extend(laid.curves.iter().map(|c| SketchCurve {
                     id: c.id,
                     curve: Curve2::Spline(c.spline.clone()),
@@ -271,6 +278,7 @@ pub(crate) fn drawn<'a>(
         sketch,
         solved,
         curves,
+        outlines,
         plane,
         tolerance,
     })
@@ -345,6 +353,7 @@ fn offset_drawn<'a>(
         sketch,
         solved,
         curves: made.outline.curves.clone(),
+        outlines: BTreeSet::new(),
         plane,
         tolerance,
     })
