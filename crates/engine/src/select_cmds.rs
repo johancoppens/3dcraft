@@ -49,7 +49,7 @@ fn select_get(session: &mut Session, params: &Value) -> Run {
     if context {
         let open = session.document_mut()?;
         let regen = open.regen();
-        let items = described(open.history.current(), &regen, &view.items);
+        let items = described(&open.bodies_doc(), &regen, &view.items);
         if let Some(map) = result.as_object_mut() {
             map.insert("items".into(), items.into());
         }
@@ -157,7 +157,9 @@ fn select_set(session: &mut Session, params: &Value) -> Run {
     session.checked_selection();
     let open = session.document_mut()?;
     let regen = open.regen();
-    let mut resolver = Resolver::new(open.history.current(), &regen);
+    // The document the bodies are named in: an assembly's placed part.
+    let doc = open.bodies_doc();
+    let mut resolver = Resolver::new(&doc, &regen);
     let mut items = Vec::with_capacity(wanted.len());
     for (kind, name, feature) in &wanted {
         let found = resolver
@@ -167,15 +169,15 @@ fn select_set(session: &mut Session, params: &Value) -> Run {
     }
     drop(resolver);
     if let Some(name) = set {
-        let held = set_items(open.history.current(), &regen, name)
-            .map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
+        let held =
+            set_items(&doc, &regen, name).map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
         if held.len().saturating_add(items.len()) > MAX_SELECTION {
             return Err(too_many());
         }
         items.extend(held);
     }
     let (added, removed) = open.selection.apply(items, mode);
-    let mut result = described_view(open.history.current(), &regen, &open.selection.view());
+    let mut result = described_view(&doc, &regen, &open.selection.view());
     if let Some(map) = result.as_object_mut() {
         map.insert("added".into(), added.into());
         map.insert("removed".into(), removed.into());
@@ -1730,7 +1732,8 @@ fn select_query(session: &mut Session, params: &Value) -> Run {
     }
     let open = session.document_mut()?;
     let regen = open.regen();
-    let doc = open.history.current();
+    let doc = open.bodies_doc();
+    let doc = &doc;
     let filter = match p.get("where") {
         None | Some(Value::Null) => None,
         Some(value) => Some(

@@ -1109,8 +1109,8 @@ impl Session {
         let revision = open.history.revision();
         if open.selection.checked != Some(revision) {
             let regen = open.regen();
-            open.selection
-                .check(open.history.current(), &regen, revision);
+            let doc = open.bodies_doc();
+            open.selection.check(&doc, &regen, revision);
         }
         open.selection.serial()
     }
