@@ -898,7 +898,7 @@ mod tests {
         );
         // From just too narrow for one row down to the panel's least
         // width: two rows, both inside the width and centred.
-        let least = super::super::TREE_PANEL_MIN - 2.0 * 10.0;
+        let least = crate::theme::Tokens::default().tree_min_width - 2.0 * 10.0;
         assert!(least >= transport, "{least} < {transport}");
         let mut width = transport + settings + 5.9;
         while width >= least {

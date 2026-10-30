@@ -2,7 +2,9 @@
 //!
 //! - **The navigation cluster** in the top right corner: the camera plate
 //!   (*Fit* and *Iso*, actions; a divider; *Persp* | *Ortho*, a choice) and
-//!   under it, centred on it, the view cube (2026-10-21; it was above).
+//!   under it, against the same right margin, the view cube (2026-10-21;
+//!   it was above; flush right since 2026-10-30). The Studio and Analysis
+//!   chips open their options as popovers (`popover.rs`).
 //! - **The display bar** at the bottom centre: *Sketches*, *Datums* and
 //!   *Edges* (toggles) and the *See-through* field, a divider, the *Section*
 //!   toggle. While the section is on its options open inline to the right
@@ -347,13 +349,14 @@ impl Nav<'_> {
         let analysis = self.chip(self.w.analysis);
         let camera_w = pad + fit + sp + iso + gap + projection + gap + studio + sp + analysis + pad;
         let side = t.nav_cube_size;
-        let middle = area.right() - camera_w.max(side) * 0.5;
+        // Both flush against the right margin, the cube under the plate
+        // (2026-10-30, the developer: the cube all the way to the right).
         let camera = Rect::from_min_size(
-            pos2(middle - camera_w * 0.5, area.top()),
+            pos2(area.right() - camera_w, area.top()),
             vec2(camera_w, self.plate_h()),
         );
         let cube = Rect::from_min_size(
-            pos2(middle - side * 0.5, camera.bottom() + gap),
+            pos2(area.right() - side, camera.bottom() + gap),
             vec2(side, side),
         );
         out.cube = Some(cube);
@@ -781,9 +784,10 @@ impl Shell {
             );
         }
         let named = !layout.compact;
+        let popover = super::popover_place(rect, &layout, &tokens);
         self.nav_camera(ui, &layout, named, scene);
-        self.nav_look(ui, &layout, named);
-        self.nav_analysis(ui, &layout, named);
+        self.nav_look(ui, &layout, named, popover);
+        self.nav_analysis(ui, &layout, named, popover);
         self.nav_show(ui, &layout, named);
         self.nav_section(ui, &layout, named, scene);
         match layout.cube {
@@ -851,7 +855,13 @@ impl Shell {
     }
 
     /// The Studio look's toggle, on the camera plate.
-    fn nav_look(&mut self, ui: &mut egui::Ui, layout: &ControlsLayout, named: bool) {
+    fn nav_look(
+        &mut self,
+        ui: &mut egui::Ui,
+        layout: &ControlsLayout,
+        named: bool,
+        popover: Option<Rect>,
+    ) {
         let Some(studio) = layout.studio else {
             return;
         };
@@ -874,19 +884,26 @@ impl Shell {
         .clicked()
         {
             self.state.look.mode = if lit { "plain" } else { "studio" }.to_string();
+            // Switched on, its options open.
+            if !lit {
+                self.look_panel_open = true;
+            }
             ui.ctx().request_repaint();
         }
-        let anchor = layout
-            .cube
-            .or(layout.camera_plate)
-            .map_or(studio.left_bottom(), |r| r.right_bottom());
-        self.look_panel(ui, anchor);
+        self.look_panel(ui, popover);
     }
 
     /// The Analysis toggle beside Studio, and while an analysis is on its
-    /// options as number fields under the cube, with the legend.
-    fn nav_analysis(&mut self, ui: &mut egui::Ui, layout: &ControlsLayout, named: bool) {
+    /// options and the legend in the chip's popover.
+    fn nav_analysis(
+        &mut self,
+        ui: &mut egui::Ui,
+        layout: &ControlsLayout,
+        named: bool,
+        popover: Option<Rect>,
+    ) {
         let Some(place) = layout.analysis else {
+            self.analysis_hits.clear();
             return;
         };
         let on = self.state.analysis.is_on();
@@ -915,38 +932,46 @@ impl Shell {
                 self.state.analysis.combs = None;
             } else {
                 self.state.analysis.mode.clone_from(&self.analysis_last);
+                // Switched on, its options open.
+                self.analysis_panel_open = true;
             }
             ui.ctx().request_repaint();
         }
-        if !self.state.analysis.is_on() {
+        let (true, Some(popover)) = (self.state.analysis.is_on(), popover) else {
+            self.analysis_hits.clear();
             return;
-        }
-        let anchor = layout
-            .cube
-            .or(layout.camera_plate)
-            .map_or(place.left_bottom(), |r| r.right_bottom());
+        };
         let before = self.state.analysis.clone();
         let tokens = self.tokens;
         let legend = self.analysis_view.clone();
         let problem = self.analysis_problem.clone();
-        egui::Area::new(egui::Id::new("analysis-options"))
-            .pivot(egui::Align2::RIGHT_TOP)
-            .fixed_pos(anchor + vec2(0.0, tokens.nav_gap))
-            .show(ui.ctx(), |ui| {
-                egui::Frame::new()
-                    .fill(color(tokens.panel_fill))
-                    .stroke(egui::Stroke::new(1.0, color(tokens.plate_rim)))
-                    .inner_margin(tokens.nav_inset)
-                    .show(ui, |ui| {
-                        analysis_options(ui, &mut self.state.analysis);
-                        if let Some(view) = legend.as_deref() {
-                            analysis_legend(ui, view, &tokens);
-                        }
-                        if let Some(problem) = &problem {
-                            ui.colored_label(color(tokens.draft_shallow), problem);
-                        }
-                    });
-            });
+        let mut open = self.analysis_panel_open;
+        let drawn = self.popover(
+            ui,
+            "analysis-options",
+            "Analysis",
+            popover,
+            &mut open,
+            |shell, ui| {
+                analysis_options(ui, &mut shell.state.analysis);
+                if let Some(view) = legend.as_deref() {
+                    analysis_legend(ui, view, &tokens);
+                }
+                if let Some(problem) = &problem {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(problem).color(color(tokens.draft_shallow)),
+                        )
+                        .wrap(),
+                    );
+                }
+            },
+        );
+        self.analysis_panel_open = open;
+        self.analysis_hits = vec![
+            ("collapse".to_string(), drawn.header),
+            ("panel".to_string(), drawn.panel),
+        ];
         if self.state.analysis != before {
             ui.ctx().request_repaint();
         }
@@ -1289,7 +1314,7 @@ mod tests {
     /// is there with its name (in the smaller window the display bar's
     /// three toggles may show their icons only), the cube and the triad too, inside the
     /// viewport less its margin and clear of each other; the cluster is
-    /// in the top right corner with the cube centred under the camera
+    /// in the top right corner with the cube flush right under the camera
     /// plate, the bar at the bottom, the triad bottom left, at the theme's
     /// sizes; the Section chip stays where it is when the options open.
     #[test]
@@ -1351,11 +1376,12 @@ mod tests {
                 }
                 let (cube, camera) = (layout.cube.unwrap(), layout.camera_plate.unwrap());
                 assert_eq!(cube.width(), tokens.nav_cube_size);
-                // The camera plate above the cube (2026-10-21).
+                // The camera plate above the cube (2026-10-21), both flush
+                // right (2026-10-30).
                 assert_eq!(camera.top(), area.top());
                 assert!((camera.right() - area.right()).abs() < 0.01);
                 assert_eq!(cube.top(), camera.bottom() + tokens.nav_gap);
-                assert!((camera.center().x - cube.center().x).abs() < 0.01);
+                assert!((cube.right() - area.right()).abs() < 0.01);
                 assert_eq!(layout.bar.unwrap().bottom(), area.bottom());
                 let triad = layout.triad.unwrap();
                 assert_eq!(triad.left_bottom(), area.left_bottom());

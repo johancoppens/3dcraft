@@ -160,7 +160,11 @@ pub fn shortcuts() -> Vec<Shortcut> {
             bare(FIT_KEY),
             "Fly to the selection, or frame everything",
         ),
-        keys(View, bare(CLEAR_KEY), "Clear the selection"),
+        keys(
+            View,
+            bare(CLEAR_KEY),
+            "Fold the Studio or Analysis options, else clear the selection",
+        ),
         keys(View, help_shortcut(), "Show these shortcuts"),
         keys(History, bare(player::PLAY_KEY), "Play or pause the history"),
         keys(History, bare(player::BACK_KEY), "A step back"),

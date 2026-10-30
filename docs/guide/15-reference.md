@@ -128,7 +128,7 @@ The window lists these under **Help › Keyboard shortcuts** (F1). On a Mac, ⌘
 | Ctrl+Z | Undo the last change to the document (not while typing in a field) |
 | Ctrl+Shift+Z, Ctrl+Y | Redo the change last undone |
 | F | Fly to the selection, or frame everything |
-| Escape | Clear the selection |
+| Escape | Fold the Studio or Analysis options, else clear the selection |
 | F1 | Show the shortcuts |
 | Space | Play or pause the history |
 | ← / → | A step back / forward in the history |

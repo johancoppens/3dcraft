@@ -137,8 +137,9 @@ fn the_cube_is_in_the_corner_of_the_viewport() {
     assert_eq!(rect.width(), tokens.nav_cube_size);
     assert_eq!(rect.height(), tokens.nav_cube_size);
     // Top right: the camera's controls on a plate at the margin from the
-    // top and the right, the cube under it and centred on it (the
-    // developer moved the plate above the cube, 2026-10-21).
+    // top and the right, the cube under it against the same right margin
+    // (the developer moved the plate above the cube, 2026-10-21, and the
+    // cube all the way to the right, 2026-10-30).
     let layout = shell.controls_layout().unwrap();
     let plate = layout.camera_plate.unwrap();
     assert!((plate.top() - viewport.top() - tokens.nav_margin).abs() < 0.5);
@@ -147,7 +148,7 @@ fn the_cube_is_in_the_corner_of_the_viewport() {
         "{plate:?} {rect:?}"
     );
     assert!((viewport.right() - plate.right() - tokens.nav_margin).abs() < 0.5);
-    assert!((plate.center().x - rect.center().x).abs() < 0.5);
+    assert!((viewport.right() - rect.right() - tokens.nav_margin).abs() < 0.5);
     // The triad in the bottom left corner, at the margin.
     let triad = layout.triad.unwrap();
     assert!((triad.left() - viewport.left() - tokens.nav_margin).abs() < 0.5);

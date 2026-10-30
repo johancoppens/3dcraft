@@ -35,6 +35,7 @@ pub mod look_panel;
 pub mod number_field;
 mod params;
 mod player;
+mod popover;
 pub mod recent;
 mod report;
 mod selection;
@@ -52,6 +53,7 @@ pub use params::{
     DEBOUNCE, Faults, NOTE_SECONDS, Pacer, Param, ParamAsk, ParamKind, ParamList, Settled,
     ShellCommand, Verdict, reported_faults, settle, verdict,
 };
+pub use popover::popover_place;
 pub use recent::{MAX_RECENT, RecentEntry, RecentFiles};
 pub use start::{AgentSetup, EXAMPLES, Example, run_example};
 pub use tabs::{
@@ -185,7 +187,48 @@ impl FileAction {
 
 /// The least width of the feature panel, in points: the history player's
 /// five buttons that move through the history still fit on a row.
-pub(crate) const TREE_PANEL_MIN: f32 = 190.0;
+/// Where a caption plate `half` wide on either side is centred in the
+/// viewport `rect`: in its middle, unless it would reach the camera
+/// `plate` beside it, then in the middle of the room left of the plate
+/// (and never past the viewport's left margin).
+pub(crate) fn caption_x(
+    rect: egui::Rect,
+    plate: Option<egui::Rect>,
+    half: f32,
+    margin: f32,
+    gap: f32,
+) -> f32 {
+    let middle = rect.center().x;
+    match plate {
+        Some(plate) if middle + half + gap > plate.left() => {
+            let left = rect.left() + margin;
+            let right = plate.left() - gap;
+            ((left + right) * 0.5).max(left + half)
+        }
+        _ => middle,
+    }
+}
+
+/// The side panel's width for the person's `wanted` width in a window
+/// `window` points wide: within the tokens' range and share of the
+/// window, the default when `wanted` is no number.
+pub(crate) fn tree_width(tokens: &Tokens, wanted: f32, window: f32) -> f32 {
+    let wanted = if wanted.is_finite() {
+        wanted
+    } else {
+        tokens.tree_width
+    };
+    let most = tokens
+        .tree_max_width
+        .min(window * tokens.tree_max_share)
+        .max(tokens.tree_min_width);
+    let most = if most.is_finite() {
+        most
+    } else {
+        tokens.tree_min_width
+    };
+    wanted.clamp(tokens.tree_min_width, most)
+}
 
 /// The window's title for a document: its file's name (`untitled` when it
 /// has none), a `*` when it has changes that are not on disk, and the
@@ -650,6 +693,10 @@ pub struct Shell {
     look_hits: look_panel::LookHits,
     /// The studio look's panel is unfolded (view state of the window).
     look_panel_open: bool,
+    /// The Analysis popover's options are unfolded, and where its header
+    /// and panel were drawn (`collapse`, `panel`).
+    analysis_panel_open: bool,
+    analysis_hits: Vec<(String, egui::Rect)>,
     /// Where Fit, iso and the projection's two halves were drawn.
     camera_hits: Vec<(&'static str, egui::Rect)>,
     /// Where the controls over the viewport were laid out in the last
@@ -1063,6 +1110,8 @@ impl Shell {
             show_hits: Vec::new(),
             look_hits: Vec::new(),
             look_panel_open: true,
+            analysis_panel_open: true,
+            analysis_hits: Vec::new(),
             camera_hits: Vec::new(),
             controls_layout: None,
             status_hits: Vec::new(),
@@ -2194,10 +2243,17 @@ impl Shell {
                 top: 2,
                 bottom: 2,
             });
+            // The width is the person's: exact, so a long row is cut or
+            // wrapped inside it and never widens it; only the split,
+            // dragged, changes it (`tree_split`).
+            let width = tree_width(
+                &tokens,
+                self.state.panels.tree_width,
+                ui.ctx().content_rect().width(),
+            );
             let panel = egui::Panel::left("craft3d-tree")
-                .resizable(true)
-                .default_size(260.0)
-                .min_size(TREE_PANEL_MIN)
+                .resizable(false)
+                .exact_size(width)
                 .frame(frame)
                 .show(ui, |ui| self.side_panel(ui, status.is_some()));
             self.tree_panel = Some(panel.response.rect);
@@ -2205,6 +2261,11 @@ impl Shell {
             self.tree_panel = None;
         }
         egui::CentralPanel::no_frame().show(ui, |ui| self.viewport(ui, scene.as_ref()));
+        // The side panel's split, over the viewport's edge: interacted
+        // after it, so a drag there resizes the panel and does not orbit.
+        if let Some(panel) = self.tree_panel {
+            self.tree_split(ui, panel);
+        }
         // A parameter's value that broke the model, and the way back.
         self.trouble_banner(ui);
         // Space, the arrows, Home and End over the viewport or the list.
@@ -2754,6 +2815,44 @@ impl Shell {
         &self.status_hits
     }
 
+    /// The split on the right of the side panel `panel`: dragged, it sets
+    /// the panel's width (`state.panels.treeWidth`) within the tokens'
+    /// range; a double click gives the default width back. Interacted
+    /// after the panel's contents, so it lies over its scroll bar.
+    fn tree_split(&mut self, ui: &mut egui::Ui, panel: egui::Rect) {
+        let tokens = self.tokens;
+        let grip = egui::Rect::from_x_y_ranges(
+            panel.right() - tokens.tree_split_grip * 0.5
+                ..=panel.right() + tokens.tree_split_grip * 0.5,
+            panel.y_range(),
+        );
+        let split = ui.interact(
+            grip,
+            egui::Id::new("craft3d-tree-split"),
+            egui::Sense::click_and_drag(),
+        );
+        if split.hovered() || split.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            ui.painter().line_segment(
+                [
+                    egui::pos2(panel.right(), panel.top()),
+                    egui::pos2(panel.right(), panel.bottom()),
+                ],
+                egui::Stroke::new(tokens.divider_width * 2.0, color(tokens.accent)),
+            );
+        }
+        let window = ui.ctx().content_rect().width();
+        if split.double_clicked() {
+            self.state.panels.tree_width = tokens.tree_width;
+            ui.ctx().request_repaint();
+        } else if split.dragged()
+            && let Some(at) = split.interact_pointer_pos()
+        {
+            self.state.panels.tree_width = tree_width(&tokens, at.x - panel.left(), window);
+            ui.ctx().request_repaint();
+        }
+    }
+
     fn tree(&mut self, ui: &mut egui::Ui, has_document: bool) {
         let tokens = self.tokens;
         let dim = color(tokens.text_dim);
@@ -2871,74 +2970,114 @@ impl Shell {
                                     ui.add_space(row.depth.min(8) as f32 * tokens.inset);
                                 }
                                 ui.colored_label(color(tint), mark).on_hover_text(&hover);
-                                let label = ui
-                                    .selectable_label(row.selected || row.made_selection, name)
-                                    .on_hover_text(&hover);
-                                // A row of an instance inside a rigid
-                                // subassembly has no body of its own.
-                                let selectable = !row.id.is_empty();
-                                if selectable {
-                                    rows_drawn.push((row.id.clone(), label.rect));
-                                }
-                                // The second click of a double click is a click
-                                // too: the double click wins, and does nothing
-                                // on a row that cannot be flown to.
-                                if !selectable {
-                                } else if label.double_clicked() {
-                                    if row.zoomable {
-                                        double = Some(row.id.clone());
-                                    }
-                                } else if label.clicked() {
-                                    clicked = Some(row.id.clone());
-                                }
-                                if scroll_to.as_deref() == Some(row.id.as_str()) {
-                                    // Only as far as it takes (a row in view
-                                    // stays), and at once: the list follows a
-                                    // click in the viewport, it does not glide.
-                                    label.scroll_to_me_animation(
-                                        None,
-                                        egui::style::ScrollAnimation::none(),
-                                    );
-                                }
-                                ui.colored_label(dim, format!("{} · {}", row.kind, row.status));
-                                // A condition: a small mark, the expression on
-                                // hover.
-                                if let Some(when) = &row.when {
-                                    ui.colored_label(dim, egui::RichText::new("when").small())
-                                        .on_hover_text(format!("Built when {when} is not 0"));
-                                }
+                                // The eye, Open and the zoom icon against the
+                                // right edge, laid out first so a long name
+                                // never pushes them out of the panel.
                                 let row_hovered = ui.rect_contains_pointer(ui.max_rect());
-                                if let Some(icon) =
-                                    views::zoom_icon(ui, row.zoomable, row_hovered, &tokens)
-                                {
-                                    zooms_drawn.push((row.id.clone(), icon.rect));
-                                    if icon.clicked() {
-                                        double = Some(row.id.clone());
-                                    }
-                                }
-                                // A Jig in use is looked at, not changed.
-                                if outline.is_some() {
-                                    // An assembly's own instance: shown or
-                                    // hidden, and opened in a tab of its own.
-                                    if let Some(instance) = &row.instance {
-                                        let eye = timeline::eye(ui, row.hidden, &tokens);
-                                        instance_drawn.push((instance.clone(), "eye", eye.rect));
-                                        if eye.clicked() {
-                                            instance_eye = Some((instance.clone(), row.hidden));
+                                let trailing = egui::Layout::right_to_left(egui::Align::Center);
+                                ui.with_layout(trailing, |ui| {
+                                    // A Jig in use is looked at, not changed.
+                                    if outline.is_some() {
+                                        // An assembly's own instance: shown or
+                                        // hidden, and opened in a tab of its own.
+                                        if let Some(instance) = &row.instance {
+                                            let open = ui.small_button("Open").on_hover_text(
+                                                "Open its source in a tab of its own",
+                                            );
+                                            instance_drawn.push((
+                                                instance.clone(),
+                                                "open",
+                                                open.rect,
+                                            ));
+                                            if open.clicked() {
+                                                open_instance = Some(instance.clone());
+                                            }
+                                            let eye = timeline::eye(ui, row.hidden, &tokens);
+                                            instance_drawn.push((
+                                                instance.clone(),
+                                                "eye",
+                                                eye.rect,
+                                            ));
+                                            if eye.clicked() {
+                                                instance_eye = Some((instance.clone(), row.hidden));
+                                            }
                                         }
-                                        let open = ui
-                                            .small_button("Open")
-                                            .on_hover_text("Open its source in a tab of its own");
-                                        instance_drawn.push((instance.clone(), "open", open.rect));
-                                        if open.clicked() {
-                                            open_instance = Some(instance.clone());
+                                    } else if !in_use
+                                        && timeline::eye(ui, row.hidden, &tokens).clicked()
+                                    {
+                                        eye_clicked = Some((row.id.clone(), row.hidden));
+                                    }
+                                    if let Some(icon) =
+                                        views::zoom_icon(ui, row.zoomable, row_hovered, &tokens)
+                                    {
+                                        zooms_drawn.push((row.id.clone(), icon.rect));
+                                        if icon.clicked() {
+                                            double = Some(row.id.clone());
                                         }
                                     }
-                                } else if !in_use
-                                    && timeline::eye(ui, row.hidden, &tokens).clicked()
-                                {
-                                    eye_clicked = Some((row.id.clone(), row.hidden));
-                                }
+                                    let leading = egui::Layout::left_to_right(egui::Align::Center);
+                                    ui.with_layout(leading, |ui| {
+                                        // A long name is cut to the room left
+                                        // (the whole name on hover), never
+                                        // widening the panel.
+                                        let label = ui
+                                            .add(
+                                                egui::Button::selectable(
+                                                    row.selected || row.made_selection,
+                                                    name,
+                                                )
+                                                .truncate(),
+                                            )
+                                            .on_hover_text(&hover);
+                                        // A row of an instance inside a rigid
+                                        // subassembly has no body of its own.
+                                        let selectable = !row.id.is_empty();
+                                        if selectable {
+                                            rows_drawn.push((row.id.clone(), label.rect));
+                                        }
+                                        // The second click of a double click is a
+                                        // click too: the double click wins, and
+                                        // does nothing on a row that cannot be
+                                        // flown to.
+                                        if !selectable {
+                                        } else if label.double_clicked() {
+                                            if row.zoomable {
+                                                double = Some(row.id.clone());
+                                            }
+                                        } else if label.clicked() {
+                                            clicked = Some(row.id.clone());
+                                        }
+                                        if scroll_to.as_deref() == Some(row.id.as_str()) {
+                                            // Only as far as it takes (a row in
+                                            // view stays), and at once: the list
+                                            // follows a click in the viewport, it
+                                            // does not glide.
+                                            label.scroll_to_me_animation(
+                                                None,
+                                                egui::style::ScrollAnimation::none(),
+                                            );
+                                        }
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(format!(
+                                                    "{} · {}",
+                                                    row.kind, row.status
+                                                ))
+                                                .color(dim),
+                                            )
+                                            .truncate(),
+                                        );
+                                        // A condition: a small mark, the
+                                        // expression on hover.
+                                        if let Some(when) = &row.when {
+                                            ui.colored_label(
+                                                dim,
+                                                egui::RichText::new("when").small(),
+                                            )
+                                            .on_hover_text(format!("Built when {when} is not 0"));
+                                        }
+                                    });
+                                });
                             });
                             if let Some((cause, cause_name)) = &row.caused_by {
                                 ui.indent(("craft3d-cause", &row.id), |ui| {
@@ -3000,8 +3139,12 @@ impl Shell {
                             ui.horizontal(|ui| {
                                 ui.colored_label(color(tint), tree_mark(state))
                                     .on_hover_text(&row.message);
-                                ui.label(name).on_hover_text(&row.message);
-                                ui.colored_label(dim, status);
+                                ui.add(egui::Label::new(name).truncate())
+                                    .on_hover_text(&row.message);
+                                ui.add(
+                                    egui::Label::new(egui::RichText::new(status).color(dim))
+                                        .truncate(),
+                                );
                             });
                             if matches!(row.status, A::Failed | A::Error | A::NotProven) {
                                 ui.indent(("craft3d-assertion", &row.name), |ui| {
@@ -3272,12 +3415,16 @@ impl Shell {
             self.open_other_menu(scene, x, y, at, shift);
             ui.ctx().request_repaint();
         }
-        if response.contains_pointer()
-            && !ui.ctx().egui_wants_keyboard_input()
-            && ui.input(|i| i.key_pressed(help::CLEAR_KEY))
-        {
-            self.escape_selection();
-            ui.ctx().request_repaint();
+        // Esc folds an open popover of the Studio or Analysis chip first,
+        // wherever the pointer is; then it clears the selection over the
+        // viewport.
+        if !ui.ctx().egui_wants_keyboard_input() && ui.input(|i| i.key_pressed(help::CLEAR_KEY)) {
+            if self.fold_popover() {
+                ui.ctx().request_repaint();
+            } else if response.contains_pointer() {
+                self.escape_selection();
+                ui.ctx().request_repaint();
+            }
         }
 
         // A quick preview whenever what is shown changes, and the sharp
@@ -3404,12 +3551,16 @@ impl Shell {
             _ => {}
         }
         // The caption of a narrated demo, then the history player's step
-        // under it: plates at the top, in the middle.
+        // under it: plates at the top, in the middle, or in the middle of
+        // the room left of the camera plate when they would reach it.
         let mut top = inner.top();
         let captions = [
-            (!self.state.notice.is_empty()).then(|| (self.state.notice.clone(), 17.0)),
-            self.player_caption().map(|text| (text, 15.0)),
+            (!self.state.notice.is_empty())
+                .then(|| (self.state.notice.clone(), tokens.notice_font)),
+            self.player_caption()
+                .map(|text| (text, tokens.caption_font)),
         ];
+        let plate = self.controls_layout.and_then(|l| l.camera_plate);
         for (text, size) in captions.into_iter().flatten() {
             let galley = painter.layout_no_wrap(
                 text,
@@ -3417,7 +3568,15 @@ impl Shell {
                 color(tokens.notice_text),
             );
             let text_size = galley.size();
-            let center = egui::pos2(rect.center().x, top + text_size.y);
+            let half = text_size.x * 0.5 + inset * 0.8;
+            let x = caption_x(
+                rect,
+                plate.filter(|p| p.top() < top + 2.0 * text_size.y + inset),
+                half,
+                tokens.nav_margin,
+                tokens.nav_gap,
+            );
+            let center = egui::pos2(x, top + text_size.y);
             let plate = egui::Rect::from_center_size(center, text_size).expand(inset * 0.8);
             painter.rect_filled(
                 plate,
@@ -3507,6 +3666,12 @@ impl Shell {
     /// viewport was drawn with room for it.
     pub fn view_cube_rect(&self) -> Option<egui::Rect> {
         self.view_cube_rect
+    }
+
+    /// Where the side panel on the left (feature tree, Parameters, player)
+    /// was drawn, in points, while it is shown.
+    pub fn tree_panel_rect(&self) -> Option<egui::Rect> {
+        self.tree_panel
     }
 
     fn fit_to(&mut self, scene: Option<&Scene>) {
@@ -4055,8 +4220,16 @@ fn mates_ui(ui: &mut egui::Ui, tokens: &Tokens, outline: &craft3d_engine::Assemb
         ui.horizontal(|ui| {
             ui.colored_label(color(tint), tree_mark(state))
                 .on_hover_text(&hover);
-            ui.label(&mate.name).on_hover_text(&hover);
-            ui.colored_label(dim, format!("{}{value}{driven}", mate.kind));
+            // Cut to the panel's width, never widening it; the whole
+            // text on hover.
+            ui.add(egui::Label::new(&mate.name).truncate())
+                .on_hover_text(&hover);
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(format!("{}{value}{driven}", mate.kind)).color(dim),
+                )
+                .truncate(),
+            );
         });
         if let Some(error) = &mate.error {
             ui.indent(("craft3d-mate-error", &mate.name), |ui| {

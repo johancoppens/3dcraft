@@ -157,7 +157,7 @@ impl Default for CameraState {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
 pub struct Panels {
     /// The feature tree, on the left.
@@ -167,6 +167,11 @@ pub struct Panels {
     /// The bar that offers the documents a crashed 3DCraft left behind.
     /// Shown only while there are any; its Later button turns this off.
     pub recovery: bool,
+    /// The feature tree's width in points. Only a drag on its split (or
+    /// `ui.set`) changes it, never a long row in the panel; it is held to
+    /// the tokens' range (`tree_min_width` to `tree_max_width`, at most
+    /// `tree_max_share` of the window) when the panel is drawn.
+    pub tree_width: f32,
 }
 
 /// Work the window is doing on its engine thread while it keeps drawing:
@@ -419,6 +424,7 @@ impl Default for Panels {
             tree: true,
             status: true,
             recovery: true,
+            tree_width: crate::theme::Tokens::default().tree_width,
         }
     }
 }
@@ -1252,6 +1258,7 @@ mod tests {
                 tree: false,
                 status: true,
                 recovery: false,
+                tree_width: 320.0,
             },
             selected_feature: Some("F3".to_string()),
             notice: "Step 2: the post".to_string(),

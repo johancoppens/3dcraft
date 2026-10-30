@@ -140,6 +140,10 @@ pub struct Tokens {
     pub radius: u8,
     /// Corner radius of the caption.
     pub notice_radius: u8,
+    /// Font sizes of a narrated demo's caption and of the history
+    /// player's step caption under it, in points.
+    pub notice_font: f32,
+    pub caption_font: f32,
     /// Width of sketch lines, in points.
     pub sketch_width: f32,
     pub construction_width: f32,
@@ -327,6 +331,21 @@ pub struct Tokens {
     pub tab_min_width: f32,
     pub tab_gap: f32,
     pub tab_accent_width: f32,
+    /// The side panel on the left (feature tree, Parameters, player): its
+    /// width when nothing set it, its narrowest and widest width, and the
+    /// share of the window it may take at most, in points. The width is
+    /// the person's (`state.panels.treeWidth`): only a drag on the split
+    /// changes it, never what the panel shows. `tree_split_grip` is how
+    /// wide the split is to grab.
+    pub tree_width: f32,
+    pub tree_min_width: f32,
+    pub tree_max_width: f32,
+    pub tree_max_share: f32,
+    pub tree_split_grip: f32,
+    /// The popovers of the Studio and Analysis chips: their width, in
+    /// points (the height follows what they hold, scrolling only where
+    /// the viewport is too short).
+    pub popover_width: f32,
     /// The controls over the viewport (`shell/layout.rs`) share one size
     /// system: every control is `nav_height` high on a plate
     /// `nav_padding` larger on each side, `nav_margin` from the viewport's
@@ -467,6 +486,8 @@ impl Tokens {
             notice_opacity: 215,
             radius: 4,
             notice_radius: 6,
+            notice_font: 17.0,
+            caption_font: 15.0,
             sketch_width: 1.75,
             construction_width: 1.0,
             axis_width: 1.25,
@@ -556,6 +577,12 @@ impl Tokens {
             tab_min_width: 72.0,
             tab_gap: 2.0,
             tab_accent_width: 2.0,
+            tree_width: 260.0,
+            tree_min_width: 190.0,
+            tree_max_width: 640.0,
+            tree_max_share: 0.5,
+            tree_split_grip: 6.0,
+            popover_width: 340.0,
             nav_height: 28.0,
             nav_padding: 4.0,
             nav_margin: 12.0,

@@ -99,7 +99,9 @@ The **Help** menu:
 ## The feature list
 
 The left panel shows the history of the design, one row per step: the name, the kind of feature and its
-state. Each row has a mark:
+state. Drag its right edge to make it wider or narrower (a double click on the edge gives the usual width
+back); it keeps that width whatever it shows, and a name too long for it ends in "…", the whole name on
+hover. Each row has a mark:
 
 | Mark | Means |
 |---|---|
@@ -220,10 +222,12 @@ from the environment's brightest direction and casts soft shadows on the model a
 it; corners and grooves darken where little light reaches. A see-through or cut-open view is drawn in
 the plain look.
 
-While the studio look is on, a small panel under the view cube holds its options: the environment and how far it
-is turned, the exposure, the background, the ground and how much it reflects, the tone curve (AgX, ACES or
-Linear), shadows, ambient occlusion and reflections, bloom, and a lens that blurs what is out of focus. A change
-shows at once.
+Switching the studio look on opens its options in a panel that hangs under the button row, beside the
+view cube: the environment and how far it is turned, the exposure, the background, the ground and how much
+it reflects, the tone curve (AgX, ACES or Linear), shadows, ambient occlusion and reflections, bloom, and a
+lens that blurs what is out of focus. A change shows at once. Click the panel's title, or press Escape, to
+fold it to one line while you keep the look; click the title again to unfold it. Clicking **Studio** again
+switches the look off and closes the panel. In a short window the options scroll inside the panel.
 
 An agent sets the same look with `ui.set`, and pictures from the command line take it too:
 
@@ -361,9 +365,9 @@ are kept only in the `.3dcraft` file (a texture exports its mean colour).
 
 ### Surface analysis
 
-**Analysis**, beside Studio, shows the quality of the surfaces instead of their shading. A small
-panel under the view cube chooses what, with its options as number fields, and a legend says what
-the colours mean:
+**Analysis**, beside Studio, shows the quality of the surfaces instead of their shading. It opens a
+panel in the same place as the studio look's, which chooses what, with its options as number fields,
+and a legend says what the colours mean; its title (or Escape) folds it away, as for the studio look:
 
 - **zebra**: black and white stripes reflected in the surfaces, as a car body reflects the lights of
   a tunnel. Where two faces meet with the same tangent plane (G1) but a jump in curvature the
@@ -411,7 +415,7 @@ edge, else the face.
 | Right click | List every face under the pointer, to choose one |
 | Double-click in the view | Select the whole body |
 | Ctrl+drag | Select what lies inside a box |
-| Click empty space, or Escape | Clear the selection |
+| Click empty space, or Escape | Clear the selection (Escape first folds an open Studio or Analysis panel) |
 
 **The agent sees your selection.** The selection belongs to the document, not to the window, so the agent
 reads it: each item with its name, the body, the feature that made it, its shape (a hole's radius and
