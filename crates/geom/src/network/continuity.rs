@@ -632,6 +632,26 @@ fn about(raw: &Raw, o: Vec3) -> Raw {
 /// A row cut into pieces at `breaks`, with the rounding allowance of what
 /// enters (`magnitude`: of what it was made from).
 fn row_pieces(raw: &Raw, breaks: &[f64], magnitude: f64) -> Result<Vec<P4>, NetworkError> {
+    if raw.degree == 0 {
+        // Constant on each piece (a derivative of a polyline): its value
+        // in the middle of each.
+        let e = 32.0 * EPS * magnitude.max(self::magnitude(raw));
+        let mut bounds = vec![0.0];
+        bounds.extend(breaks.iter().copied());
+        bounds.push(1.0);
+        return bounds
+            .windows(2)
+            .map(|w| {
+                let [a, b] = w else { return Err(internal()) };
+                let h = super::eval(raw, 0.5 * (a + b))?;
+                let comp = |k: usize| Poly {
+                    c: vec![h.get(k).copied().unwrap_or(0.0)],
+                    e,
+                };
+                Ok([comp(0), comp(1), comp(2), comp(3)])
+            })
+            .collect();
+    }
     let mut raw = raw.clone();
     let mut have = raw.knots.clone();
     have.dedup();

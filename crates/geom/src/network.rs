@@ -1474,6 +1474,15 @@ fn localize(raw: &mut Raw, next: f64) -> Result<(), NetworkError> {
 /// of `raw` end at or before `next` (2: the point beside the end, as
 /// [`localize`]; 3: the one after it as well, for curvature).
 fn localize_rows(raw: &mut Raw, next: f64, rows: usize) -> Result<(), NetworkError> {
+    // With no curve between this edge and the opposite one, the rows of
+    // both must still not overlap: three rows at each end need six, so a
+    // curvature edge keeps its rows to the first half (the opposite edge,
+    // turned round, to the other).
+    let next = if rows > 2 && next >= 1.0 - SAME_KNOT {
+        0.5
+    } else {
+        next
+    };
     localize(raw, next)?;
     for _ in 2..rows {
         let p = raw.degree;
