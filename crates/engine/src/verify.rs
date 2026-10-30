@@ -679,6 +679,38 @@ pub(crate) fn distance(a: &[Part<'_>], b: &[Part<'_>]) -> Answer<Nearest> {
             answer.face_b = n.face_b;
         }
     }
+    eprintln!(
+        "DBG dist found {} short {} proven {}",
+        answer.distance,
+        short.len(),
+        proven.len()
+    );
+    {
+        let mut v: Vec<_> = meshed
+            .iter()
+            .map(|(k, l)| (proven.get(k).map_or(*l, |p| p.max(*l)), *k, *l))
+            .collect();
+        v.sort_by(|x, y| x.0.total_cmp(&y.0));
+        for (bb, k, l) in v.iter().take(12) {
+            let kind = |parts: &[Part<'_>], (i, f): (usize, usize)| {
+                parts
+                    .get(i)
+                    .and_then(|p| p.body().faces.get(f))
+                    .map(|x| match &x.surface {
+                        Surface::Plane(_) => "plane",
+                        Surface::Cylinder(_) => "cyl",
+                        Surface::Nurbs(_) => "nurbs",
+                        _ => "other",
+                    })
+                    .unwrap_or("?")
+            };
+            eprintln!(
+                "DBG pair {k:?} {} {} mesh {l} best {bb}",
+                kind(a, k.0),
+                kind(b, k.1)
+            );
+        }
+    }
     let lower = meshed
         .iter()
         .map(|(k, l)| proven.get(k).map_or(*l, |p| p.max(*l)))
@@ -1525,8 +1557,24 @@ fn thickness_bound(part: &Part<'_>, tol: f64, below: f64) -> (f64, Vec<(usize, V
         } else {
             cheap
         };
+        if bound < 0.9 * below {
+            let kind = |f: usize| match part.body().faces.get(f).map(|x| &x.surface) {
+                Some(Surface::Plane(_)) => "plane",
+                Some(Surface::Cylinder(_)) => "cyl",
+                Some(Surface::Cone(_)) => "cone",
+                Some(Surface::Sphere(_)) => "sphere",
+                Some(Surface::Torus(_)) => "torus",
+                _ => "free",
+            };
+            eprintln!(
+                "DBG thick pair {a}:{} {b}:{} cheap {cheap} bound {bound} boxes {boxes}",
+                kind(a),
+                kind(b)
+            );
+        }
         lower = lower.min(bound);
     }
+    eprintln!("DBG thick lower {lower} below {below} budget left {budget}");
     (lower.max(0.0), seeds)
 }
 

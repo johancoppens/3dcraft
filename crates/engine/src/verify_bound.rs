@@ -1403,6 +1403,12 @@ pub(crate) fn prove(
             );
         }
     }
+    eprintln!(
+        "DBG prove work {work} strata {} recs {} best {best} enough {}",
+        stratum_pairs.len(),
+        search.recs.len(),
+        enough(best)
+    );
     #[cfg(test)]
     SPENT.with(|spent| spent.set((work, stratum_pairs.len())));
     // A pair of strata with a piece that could not be enclosed proves
