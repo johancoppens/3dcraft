@@ -605,19 +605,29 @@ fn source_relative(
     if !absolute(full) && !absolute(base) {
         return Ok(asm::relative_to(base, full));
     }
-    let spelled = |p: &str| -> Option<String> {
+    // Only folders are spelled canonically (the root, the assembly's
+    // folder, the folder an absolute source is in), never the source file
+    // itself: a link inside the root that points outside it stays the
+    // path inside the root it was given as.
+    let spelled = |p: &str, folder: bool| -> Option<String> {
         let path = if absolute(p) {
-            std::path::PathBuf::from(p)
+            let path = std::path::PathBuf::from(p);
+            match (folder, path.parent(), path.file_name()) {
+                (true, _, _) => std::fs::canonicalize(&path).unwrap_or(path),
+                (false, Some(parent), Some(name)) => std::fs::canonicalize(parent)
+                    .map(|parent| parent.join(name))
+                    .unwrap_or(path),
+                _ => path,
+            }
         } else {
             match read {
                 crate::Access::Root(root) => crate::workspace::spelled_root(root).join(p),
                 _ => return None,
             }
         };
-        let path = std::fs::canonicalize(&path).unwrap_or(path);
         path.to_str().map(str::to_string)
     };
-    match (spelled(base), spelled(full)) {
+    match (spelled(base, true), spelled(full, false)) {
         (Some(base), Some(full)) => Ok(asm::relative_to(&base, &full)),
         _ => fail(format!(
             "{id}: the source `{full}` cannot be kept relative to the assembly's folder `{base}`; give its path relative to the read root"

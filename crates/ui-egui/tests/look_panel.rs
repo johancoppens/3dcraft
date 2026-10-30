@@ -31,13 +31,14 @@ fn call(shell: &mut Shell, session: &mut Session, method: &str, params: Value) -
 struct Window {
     ctx: egui::Context,
     time: f64,
+    size: egui::Vec2,
 }
 
 impl Window {
     fn frame(&mut self, shell: &mut Shell, session: &mut Session, events: Vec<Event>) {
         self.time += 1.0 / 60.0;
         let input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 800.0))),
+            screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, self.size)),
             time: Some(self.time),
             events,
             ..Default::default()
@@ -95,6 +96,7 @@ fn every_control_of_the_studio_panel_drives_the_look_state() {
     let mut window = Window {
         ctx: egui::Context::default(),
         time: 0.0,
+        size: vec2(1280.0, 800.0),
     };
     for _ in 0..3 {
         window.frame(&mut shell, &mut session, Vec::new());
@@ -190,4 +192,51 @@ fn every_control_of_the_studio_panel_drives_the_look_state() {
     );
     window.frame(&mut shell, &mut session, Vec::new());
     assert!(shell.look_hits().is_empty());
+}
+
+/// In a narrow, short window the panel stays inside it (its options
+/// scroll), and its header folds it to one line and unfolds it again.
+#[test]
+fn the_studio_panel_fits_a_small_window_and_folds_away() {
+    let mut session = Session::new(Workspace::none());
+    run(&mut session, "file.new", json!({"units": "mm"}));
+    run(&mut session, "feature.block", json!({"size": [20, 20, 10]}));
+    let mut shell = Shell::new();
+    let mut window = Window {
+        ctx: egui::Context::default(),
+        time: 0.0,
+        size: vec2(640.0, 420.0),
+    };
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"look": {"mode": "studio"}}),
+    );
+    for _ in 0..4 {
+        window.frame(&mut shell, &mut session, Vec::new());
+    }
+    let screen = egui::Rect::from_min_size(Pos2::ZERO, window.size);
+    let panel = hit(&shell, "panel");
+    assert!(screen.contains_rect(panel), "{panel:?} in {screen:?}");
+    let unfolded = panel.height();
+    assert!(shell.look_panel_open());
+    let at = hit(&shell, "collapse").center();
+    window.click(&mut shell, &mut session, at);
+    assert!(!shell.look_panel_open());
+    let folded = hit(&shell, "panel");
+    assert!(
+        folded.height() < unfolded / 2.0,
+        "{folded:?} against {unfolded}"
+    );
+    assert!(
+        shell
+            .look_hits()
+            .iter()
+            .all(|(n, _)| n == "collapse" || n == "panel")
+    );
+    let at = hit(&shell, "collapse").center();
+    window.click(&mut shell, &mut session, at);
+    assert!(shell.look_panel_open());
+    assert!(screen.contains_rect(hit(&shell, "panel")));
 }

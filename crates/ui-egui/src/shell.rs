@@ -401,9 +401,9 @@ struct FrameKey {
     sketches: bool,
     /// How the bodies' edges are drawn ([`Shell::edges_drawn`]).
     edges: EdgesDrawn,
-    /// The traces drawn ([`Shell::drawn_traces`]): a trace made, cleared
-    /// or grown is another picture.
-    traces: Vec<Vec<craft3d_math::Vec3>>,
+    /// What the traces drawn depend on ([`Shell::traces_key`]): a trace
+    /// made, cleared or grown is another picture.
+    traces: (u64, Option<u64>),
     /// How the bodies are lit.
     look: crate::state::LookState,
     /// The surface analysis drawn, by when it was made.
@@ -644,6 +644,8 @@ pub struct Shell {
     show_hits: Vec<(&'static str, egui::Rect)>,
     /// Where the studio look's options were drawn ([`look_panel::LookHits`]).
     look_hits: look_panel::LookHits,
+    /// The studio look's panel is unfolded (view state of the window).
+    look_panel_open: bool,
     /// Where Fit, iso and the projection's two halves were drawn.
     camera_hits: Vec<(&'static str, egui::Rect)>,
     /// Where the controls over the viewport were laid out in the last
@@ -1055,6 +1057,7 @@ impl Shell {
             section_hits: Vec::new(),
             show_hits: Vec::new(),
             look_hits: Vec::new(),
+            look_panel_open: true,
             camera_hits: Vec::new(),
             controls_layout: None,
             status_hits: Vec::new(),
@@ -1522,7 +1525,7 @@ impl Shell {
         )
         .with_selection(self.selection_marks())
         .with(viewport::Marks {
-            traces: key.traces.clone(),
+            traces: self.drawn_traces(),
             ..viewport::Marks::default()
         })
         .with(self.comb_marks())
@@ -2491,7 +2494,7 @@ impl Shell {
                     // An answer is said in words where it is made
                     // (`answer::summary`); raw JSON that still gets here
                     // is not shown.
-                    _ if crate::answer::looks_like_json(&report.text) => String::new(),
+                    _ if report.ok && crate::answer::looks_like_json(&report.text) => String::new(),
                     _ => report.text.clone(),
                 };
                 (report.label.clone(), answer, report.ok)
@@ -3275,7 +3278,7 @@ impl Shell {
             datums: self.state.show.datums,
             sketches: self.state.show.sketches,
             edges: self.edges_drawn(),
-            traces: self.drawn_traces(),
+            traces: self.traces_key(),
             look: self.state.look.clone(),
             analysis: self.analysis_serial,
             look_ready: self.look_ready(),

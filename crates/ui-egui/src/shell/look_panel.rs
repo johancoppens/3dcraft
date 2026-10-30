@@ -29,8 +29,9 @@ const FSTOP: f64 = 2.8;
 /// Where each control of the panel was drawn, by name: `environment.<v>`,
 /// `background.<v>` and `tonemap.<v>` for the choices, `rotation`,
 /// `exposure`, `groundReflection` and `bloom` for the sliders (their
-/// track only), and `ground`, `shadows`, `ao`, `reflections` and `lens`
-/// for the toggles.
+/// track only), `ground`, `shadows`, `ao`, `reflections` and `lens`
+/// for the toggles, `collapse` for the header that folds the panel, and
+/// `panel` for the whole panel.
 pub type LookHits = Vec<(String, Rect)>;
 
 impl Shell {
@@ -44,7 +45,11 @@ impl Shell {
         let tokens = self.tokens;
         let before = self.state.look.clone();
         let mut hits = LookHits::new();
-        egui::Area::new(egui::Id::new("studio-options"))
+        // What is left of the window under the anchor: the options scroll
+        // inside it rather than run off a short window.
+        let room = (ui.ctx().content_rect().bottom() - anchor.y - 4.0 * tokens.nav_gap)
+            .max(tokens.nav_height * 3.0);
+        let area = egui::Area::new(egui::Id::new("studio-options"))
             .pivot(egui::Align2::RIGHT_TOP)
             .fixed_pos(anchor + vec2(0.0, tokens.nav_gap))
             .show(ui.ctx(), |ui| {
@@ -54,18 +59,45 @@ impl Shell {
                     .corner_radius(tokens.nav_control_radius)
                     .inner_margin(tokens.nav_inset)
                     .show(ui, |ui| {
-                        ui.label(
-                            egui::RichText::new("Studio look")
+                        // The header folds the panel away, so it covers
+                        // only a line of the viewport.
+                        let open = self.look_panel_open;
+                        let header = ui.add(
+                            egui::Button::new(
+                                egui::RichText::new(if open {
+                                    "\u{25be} Studio look"
+                                } else {
+                                    "\u{25b8} Studio look"
+                                })
                                 .color(color(tokens.text_dim))
                                 .size(tokens.control_font),
+                            )
+                            .frame(false),
                         );
-                        look_options(ui, &mut self.state.look, &tokens, &mut hits);
+                        hits.push(("collapse".to_string(), header.rect));
+                        if header.clicked() {
+                            self.look_panel_open = !open;
+                            ui.ctx().request_repaint();
+                        }
+                        if open {
+                            egui::ScrollArea::vertical()
+                                .max_height(room)
+                                .show(ui, |ui| {
+                                    look_options(ui, &mut self.state.look, &tokens, &mut hits);
+                                });
+                        }
                     });
             });
+        hits.push(("panel".to_string(), area.response.rect));
         self.look_hits = hits;
         if self.state.look != before {
             ui.ctx().request_repaint();
         }
+    }
+
+    /// Whether the studio look's panel is unfolded (its header folds it).
+    pub fn look_panel_open(&self) -> bool {
+        self.look_panel_open
     }
 
     /// Where the controls of the studio look's panel are, in points, once
@@ -83,6 +115,7 @@ fn look_options(ui: &mut egui::Ui, look: &mut LookState, tokens: &Tokens, hits: 
         .show(ui, |ui| {
             choice_row(
                 ui,
+                tokens.nav_spacing,
                 "Environment",
                 "environment",
                 &ENVIRONMENTS,
@@ -109,6 +142,7 @@ fn look_options(ui: &mut egui::Ui, look: &mut LookState, tokens: &Tokens, hits: 
             );
             choice_row(
                 ui,
+                tokens.nav_spacing,
                 "Background",
                 "background",
                 &BACKGROUNDS,
@@ -130,6 +164,7 @@ fn look_options(ui: &mut egui::Ui, look: &mut LookState, tokens: &Tokens, hits: 
             ui.end_row();
             choice_row(
                 ui,
+                tokens.nav_spacing,
                 "Tone curve",
                 "tonemap",
                 &TONEMAPS,
@@ -165,6 +200,7 @@ fn look_options(ui: &mut egui::Ui, look: &mut LookState, tokens: &Tokens, hits: 
 /// A row of a label and a segmented choice of `options` (value, label).
 fn choice_row(
     ui: &mut egui::Ui,
+    gap: f32,
     label: &str,
     id: &str,
     options: &[(&str, &str)],
@@ -173,7 +209,7 @@ fn choice_row(
 ) {
     ui.label(label);
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 2.0;
+        ui.spacing_mut().item_spacing.x = gap;
         for (name, shown) in options {
             let response = ui.selectable_label(value == name, *shown);
             if response.clicked() {

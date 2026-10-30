@@ -90,10 +90,13 @@ pub(crate) fn spelled_root(root: &Path) -> PathBuf {
 }
 
 /// Maps a path from a request to a path on disk, or refuses it. Beneath a
-/// root, a path is relative, or absolute and textually under the root; it
-/// has no `..`, and nothing is resolved on the file system, so the check
-/// cannot be raced. (A symbolic link inside the root that points outside it
-/// is followed: roots are meant to be directories the user chose to share.)
+/// root, a path is relative, or absolute and textually under the root (as
+/// the root is given, or in its canonical spelling, [`spelled_root`]); it
+/// has no `..`. Only the root's own spelling is resolved on the file
+/// system, never the requested path, and the path returned is always the
+/// root as given joined with the relative part checked here. (A symbolic
+/// link inside the root that points outside it is followed: roots are
+/// meant to be directories the user chose to share.)
 fn resolve(access: &Access, path: &str, direction: &str) -> Result<PathBuf, CommandError> {
     if path.is_empty() || path.contains('\0') {
         return Err(CommandError::new("a file path must not be empty"));
@@ -189,6 +192,78 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), CommandError
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fresh directory `name` with a file `a.3dcraft` in it, its
+    /// canonical spelling, and the same directory written relative to the
+    /// working directory.
+    fn real_root(name: &str) -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("craft3d-ws-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.3dcraft"), b"x").unwrap();
+        let canonical = std::fs::canonicalize(&dir).unwrap();
+        let cwd = std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap();
+        let a: Vec<_> = cwd.components().collect();
+        let b: Vec<_> = canonical.components().collect();
+        let common = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+        let mut relative = PathBuf::new();
+        for _ in common..a.len() {
+            relative.push("..");
+        }
+        for part in b.iter().skip(common) {
+            relative.push(part);
+        }
+        (canonical, relative)
+    }
+
+    /// The four pins of a root given in another spelling than its
+    /// canonical one: an absolute path inside the canonical spelling is
+    /// the root as given joined with the rest; `..` past it, a sibling
+    /// that only shares its prefix and the root itself are refused.
+    fn pins(given: &Path, canonical: &Path) {
+        let access = Access::Root(given.to_path_buf());
+        let inside = canonical.join("a.3dcraft");
+        assert_eq!(
+            resolve(&access, inside.to_str().unwrap(), "read").unwrap(),
+            given.join("a.3dcraft")
+        );
+        let up = format!("{}/../x", canonical.display());
+        assert!(resolve(&access, &up, "read").is_err(), "{up}");
+        let sibling = format!("{}evil/x", canonical.display());
+        assert!(resolve(&access, &sibling, "read").is_err(), "{sibling}");
+        assert!(resolve(&access, canonical.to_str().unwrap(), "read").is_err());
+        assert!(resolve(&access, &format!("{}/", canonical.display()), "read").is_err());
+    }
+
+    #[test]
+    fn a_relative_root_takes_absolute_paths_in_its_canonical_spelling() {
+        let (canonical, relative) = real_root("relative");
+        assert!(relative.is_relative());
+        pins(&relative, &canonical);
+        let _ = std::fs::remove_dir_all(&canonical);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_root_through_a_link_takes_absolute_paths_in_its_canonical_spelling() {
+        let (canonical, _) = real_root("linked");
+        let link = canonical.with_file_name(format!(
+            "{}-link",
+            canonical.file_name().unwrap().to_str().unwrap()
+        ));
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&canonical, &link).unwrap();
+        pins(&link, &canonical);
+        // The link's own spelling is still inside.
+        let access = Access::Root(link.clone());
+        let through = link.join("a.3dcraft");
+        assert_eq!(
+            resolve(&access, through.to_str().unwrap(), "read").unwrap(),
+            through
+        );
+        let _ = std::fs::remove_file(&link);
+        let _ = std::fs::remove_dir_all(&canonical);
+    }
 
     /// Two absolute roots that are valid on every platform (`/work/in` is
     /// not an absolute path on Windows, where it lacks a drive).

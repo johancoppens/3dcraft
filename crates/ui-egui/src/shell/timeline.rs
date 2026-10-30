@@ -54,6 +54,9 @@ pub(crate) struct Timeline {
     pub(super) has_timeline: bool,
     /// The paths of points over the motion (`view.trace`).
     pub(super) traces: Vec<craft3d_engine::TraceView>,
+    /// Counts the changes of `traces`: the picture's key holds this, not
+    /// the points.
+    pub(super) traces_serial: u64,
 }
 
 impl Timeline {
@@ -172,7 +175,21 @@ impl Shell {
         self.timeline.rollback = rollback;
         self.timeline.motion = session.motion();
         self.timeline.has_timeline = session.timeline().is_ok();
-        self.timeline.traces = session.traces();
+        let traces = session.traces();
+        if !same_traces(&traces, &self.timeline.traces) {
+            self.timeline.traces = traces;
+            self.timeline.traces_serial = self.timeline.traces_serial.wrapping_add(1);
+        }
+    }
+
+    /// What of the traces the picture depends on: which traces there are
+    /// (by [`Timeline::traces_serial`]) and, while one grows, the moment
+    /// shown (its bits, so a `t` that is not a number still equals
+    /// itself).
+    pub(crate) fn traces_key(&self) -> (u64, Option<u64>) {
+        let grows = self.timeline.traces.iter().any(|t| t.grow);
+        let shown = self.timeline.motion.as_ref().map(|m| m.t.to_bits());
+        (self.timeline.traces_serial, shown.filter(|_| grows))
     }
 
     /// The traces as the viewport draws them: a growing one
@@ -617,5 +634,45 @@ mod tests {
                 .selection_status()
                 .is_some_and(|(text, _)| text.contains("To end"))
         );
+    }
+}
+
+/// Whether two lists of traces are the same, bit for bit (a point that is
+/// not a number equals itself here, so it does not count as a change at
+/// every sync).
+fn same_traces(a: &[craft3d_engine::TraceView], b: &[craft3d_engine::TraceView]) -> bool {
+    let bits = |p: &craft3d_math::Vec3| [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()];
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(x, y)| {
+            x.name == y.name
+                && x.grow == y.grow
+                && x.t.map(f64::to_bits) == y.t.map(f64::to_bits)
+                && x.points.len() == y.points.len()
+                && x.points
+                    .iter()
+                    .zip(&y.points)
+                    .all(|(p, q)| bits(p) == bits(q))
+        })
+}
+
+#[cfg(test)]
+mod trace_tests {
+    use super::*;
+    use craft3d_engine::TraceView;
+    use craft3d_math::Vec3;
+
+    #[test]
+    fn traces_with_a_point_that_is_not_a_number_equal_themselves() {
+        let trace = TraceView {
+            name: "Trace 1".to_string(),
+            points: vec![Vec3::new(f64::NAN, 0.0, 0.0), Vec3::new(1.0, 2.0, 3.0)],
+            t: [0.0, 1.0],
+            grow: false,
+        };
+        assert!(same_traces(&[trace.clone()], &[trace.clone()]));
+        let mut moved = trace.clone();
+        moved.points[1].x = 1.5;
+        assert!(!same_traces(&[trace.clone()], &[moved]));
+        assert!(!same_traces(&[trace], &[]));
     }
 }

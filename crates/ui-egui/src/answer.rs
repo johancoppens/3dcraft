@@ -85,15 +85,17 @@ fn verb(label: &str) -> Option<&'static str> {
 }
 
 /// What went wrong in an answer that is not an error (a feature stored
-/// that fails): its `status` when that is not `ok`, its `error`, and how
-/// many of its `failed` there are; nothing when all is well.
+/// that fails, a check that found problems): its `status` when that is
+/// not `ok`, its `error`, `ok: false`, and how many `failed`, `errors`,
+/// `problems` and `warnings` it has (a list or a count); nothing when all
+/// is well.
 fn trouble(result: &Value) -> String {
     let mut out = String::new();
-    if let Some(status) = result
+    let status = result
         .get("status")
         .and_then(Value::as_str)
-        .filter(|s| *s != "ok")
-    {
+        .filter(|s| *s != "ok");
+    if let Some(status) = status {
         out.push_str(" · ");
         out.push_str(status);
     }
@@ -101,13 +103,32 @@ fn trouble(result: &Value) -> String {
         out.push_str(": ");
         out.push_str(error);
     }
-    if let Some(n) = result
-        .get("failed")
-        .and_then(Value::as_array)
-        .map(Vec::len)
-        .filter(|n| *n > 0)
-    {
-        out.push_str(&format!(" · {n} failed"));
+    let mut counted = false;
+    for (key, said) in [
+        ("failed", "failed"),
+        ("errors", "errors"),
+        ("problems", "problems"),
+        ("warnings", "warnings"),
+    ] {
+        let n = match result.get(key) {
+            Some(Value::Array(items)) => items.len() as u64,
+            Some(Value::Number(n)) => n.as_u64().unwrap_or(0),
+            _ => 0,
+        };
+        if n > 0 {
+            counted |= key != "warnings";
+            let said = match (n, said) {
+                (1, "errors") => "error",
+                (1, "problems") => "problem",
+                (1, "warnings") => "warning",
+                _ => said,
+            };
+            out.push_str(&format!(" · {n} {said}"));
+        }
+    }
+    // Not ok, and nothing above said why.
+    if result.get("ok") == Some(&Value::Bool(false)) && status.is_none() && !counted {
+        out.push_str(" · not ok");
     }
     out
 }
@@ -214,6 +235,63 @@ mod tests {
             "Set R · 1 failed"
         );
         assert_eq!(summary("x.y", &json!([1, 2])), "2 items");
+    }
+
+    /// Answers that report trouble without being errors say so, never
+    /// "Done" alone.
+    #[test]
+    fn trouble_in_an_answer_is_said() {
+        // document.check
+        assert_eq!(
+            summary(
+                "document.check",
+                &json!({"ok": false, "problems": [{"what": "a"}], "warnings": []})
+            ),
+            "Done · 1 problem"
+        );
+        assert_eq!(
+            summary(
+                "document.check",
+                &json!({"ok": true, "problems": [], "warnings": []})
+            ),
+            "Done"
+        );
+        // The assertions' summary: counts.
+        assert_eq!(
+            summary(
+                "assert.check",
+                &json!({"ok": false, "passed": 3, "failed": 2, "errors": 1})
+            ),
+            "Done · 2 failed · 1 error"
+        );
+        assert_eq!(
+            summary(
+                "assert.check",
+                &json!({"ok": true, "passed": 3, "failed": 0, "errors": 0})
+            ),
+            "Done"
+        );
+        // file.open and recovery: warnings.
+        assert_eq!(
+            summary(
+                "file.open",
+                &json!({"path": "/w/leg.3dcraft", "warnings": ["a", "b"]})
+            ),
+            "Opened leg · 2 warnings"
+        );
+        // Not ok with nothing counted.
+        assert_eq!(
+            summary("motion.check", &json!({"ok": false})),
+            "Done · not ok"
+        );
+        // A status that is not ok already says it.
+        assert_eq!(
+            summary(
+                "x.y",
+                &json!({"name": "F1", "status": "failed", "ok": false})
+            ),
+            "F1 · failed"
+        );
         assert_eq!(summary("x.y", &json!(4.5)), "4.5");
         assert_eq!(summary("x.y", &Value::Null), "");
         for result in [
