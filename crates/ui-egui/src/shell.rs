@@ -55,7 +55,7 @@ pub use params::{
 };
 pub use popover::popover_place;
 pub use recent::{MAX_RECENT, RecentEntry, RecentFiles};
-pub use start::{AgentSetup, EXAMPLES, Example, run_example};
+pub use start::{AgentSetup, EXAMPLES, Example, ExampleSection, run_example};
 pub use tabs::{
     CLOSE_MARK, CloseAnswer, DocAction, TabPart, UNSAVED_MARK, close_shortcut, doc_tabs,
     next_shortcut, previous_shortcut, tab_name,

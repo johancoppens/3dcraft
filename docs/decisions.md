@@ -17,6 +17,11 @@ solve (a flexible subassembly with a driven joint gains that degree of freedom i
 pre-release rule this is not migrated, but the format version is raised with an identity migration that says so,
 with a fixture written by the engine (a flexible subassembly with a constant drive and a linear coupling).
 [`design/assemblies.md`](design/assemblies.md) › *Subassemblies*.
+### 2026-10-30: A few published Jigs and assemblies as start-screen examples (decided by the developer; amends 2026-10-23)
+
+The decision of 2026-10-23 (*Jigs, parametric generators that run without AI*) says: "Jigs are never part of 3DCraft: 3DCraft gets the general mechanism (public parameters, the form, a Jig package to export and open, a check over the parameter range), the Jigs themselves live with their makers or in a community collection", and "**3DCraft stays light** (…): no catalogues of parts, standards or materials, no bundled content beyond the guide's examples".
+
+Amended: a handful of published Jigs and assemblies may ship as **examples on the start screen**, beside the guide's example parts: the planetary gearbox, the gear reducer and the Strandbeest leg or walker. They are copied in as data (the published `.3dcraftjig` and packed `.3dcraftasm` files, unchanged), with their licence and a row in `ATTRIBUTION.md`; the start screen opens a Jig on its parameter form and an assembly ready to play. Still not allowed: a catalogue (more than a handful, or picked to cover a product range), editing or developing Jigs in this repository (they stay in their own repository, which is their source; a copy here is refreshed from its published files), and anything a Jig needs that is not general platform behaviour.
 
 ### 2026-10-30: The web module's hard limit is 12 MiB gzip (decided by the developer)
 

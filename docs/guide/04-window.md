@@ -37,8 +37,13 @@ moment's `t`. An error shows at once and stays.
 Without a document, the window shows the **start screen** (picture in [chapter 2](02-first-steps.md)):
 
 - **New document** and **Open…**;
-- **Examples**: the [example models](../examples/README.md) as cards with a picture. A click builds one in
-  a new tab, from the same command script an agent would send;
+- **Examples**, in three sections you pick above the cards: **Parts**, ten of the [example
+  models](../examples/README.md), each built in a new tab by a click from the same command script an agent
+  would send; **Jigs**, three published Jigs (a planetary gearbox, a gear reducer, a Strandbeest leg) that
+  open on their **Parameters** tab ([chapter 5](05-jigs.md)); and **Assemblies**, three assemblies (the
+  same gearbox and reducer, and a Strandbeest walker of four legs) that open ready to play their motion
+  ([chapter 17](17-assemblies.md#motion)). These six come from the [3DCraft Jigs
+  collection](https://github.com/johancoppens/3dcraft-jigs), under CC BY 4.0;
 - **Recent**: the files you opened or saved last;
 - **Connect an AI agent**: the two command lines that connect an agent to this window, with this window's
   own port and token file when it listens (it was started with `--control`). **Copy configuration** puts

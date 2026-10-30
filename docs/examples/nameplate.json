@@ -1,0 +1,23 @@
+[
+ ["variable.set", {"name": "length", "expr": "120 mm"}],
+ ["variable.set", {"name": "width", "expr": "40 mm"}],
+ ["variable.set", {"name": "thickness", "expr": "4 mm"}],
+ ["variable.set", {"name": "corner_r", "expr": "6 mm"}],
+ ["variable.set", {"name": "hole_d", "expr": "5 mm"}],
+ ["variable.set", {"name": "relief", "expr": "1.2 mm"}],
+ ["feature.block", {"size": ["length", "width", "thickness"], "name": "Blank"}],
+ ["feature.fillet", {"edges": [["F1:face(2)", "F1:face(4)"], ["F1:face(2)", "F1:face(5)"], ["F1:face(3)", "F1:face(4)"], ["F1:face(3)", "F1:face(5)"]], "radius": "corner_r", "name": "Rounded"}],
+ ["sketch.create", {"name": "Holes", "plane": "xy"}],
+ ["sketch.circle", {"sketch": "Holes", "center": ["10 mm", "width / 2"], "radius": "hole_d / 2"}],
+ ["sketch.circle", {"sketch": "Holes", "center": ["length - 10 mm", "width / 2"], "radius": "hole_d / 2"}],
+ ["feature.extrude", {"sketch": "Holes", "throughAll": true, "cut": "Rounded", "name": "Plate"}],
+ ["sketch.create", {"name": "Label", "plane": "xy", "offset": "thickness"}],
+ ["sketch.text", {"sketch": "Label", "text": "3DCraft", "size": "14 mm", "at": [60, 20], "align": "center", "anchor": "middle"}],
+ ["feature.extrude", {"sketch": "Label", "distance": "relief", "name": "Letters"}],
+ ["assert.add", {"name": "volume", "measure": "volume", "of": "Plate", "eq": "(length * width - (4 - pi) * corner_r^2) * thickness - 2 * pi * (hole_d / 2)^2 * thickness"}],
+ ["assert.add", {"name": "letters", "measure": "volume", "of": "Letters", "min": "100 mm^3", "max": "(length - 20 mm) * 14 mm * relief"}],
+ ["assert.add", {"name": "holes go through", "measure": "through", "of": {"hole": true}}],
+ ["material.preset", {"body": "Plate", "preset": "aluminium-brushed"}],
+ ["body.appearance", {"body": "Letters", "color": "#1d2a44", "metallic": 0, "roughness": 0.3, "clearcoat": 1, "clearcoatRoughness": 0.05}],
+ ["document.check", {}]
+]

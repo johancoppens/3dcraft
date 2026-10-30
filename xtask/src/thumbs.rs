@@ -16,23 +16,56 @@
 
 use std::path::{Path, PathBuf};
 
-/// The examples, as `docs/examples` names them (the start screen's
-/// order).
-pub const EXAMPLES: [&str; 10] = [
-    "bracket", "flange", "case", "bushing", "pipe", "spring", "hopper", "panel", "wedge", "gear",
+/// The examples, as `docs/examples` names them (the guide's order).
+pub const EXAMPLES: [&str; 15] = [
+    "bracket",
+    "flange",
+    "case",
+    "bushing",
+    "pipe",
+    "spring",
+    "hopper",
+    "panel",
+    "wedge",
+    "gear",
+    "nameplate",
+    "clamp",
+    "channel",
+    "fin",
+    "shade",
+];
+
+/// The published Jigs and assemblies of the start screen
+/// (docs/decisions.md, 2026-10-30): an id for the thumbnail and the file
+/// in `docs/examples/published`, opened as it is.
+pub const PUBLISHED: [(&str, &str); 6] = [
+    ("jig-planetary", "planetary-gearbox.3dcraftjig"),
+    ("jig-reducer", "gear-reducer.3dcraftjig"),
+    ("jig-strandbeest", "strandbeest-leg.3dcraftjig"),
+    ("asm-planetary", "planetary-gearbox.3dcraftasm"),
+    ("asm-reducer", "gear-reducer.3dcraftasm"),
+    ("asm-walker", "strandbeest-walker.3dcraftasm"),
 ];
 
 /// The params of `view.render` the thumbnails are made with (without the
 /// path), part of the stamp. On the CPU renderer (`craft3d-cli`'s sessions
 /// draw on the GPU when there is one): the same pictures on every machine.
-pub const RENDER: &str = r#"{"width": 160, "height": 120, "view": "iso", "projection": "perspective", "zoom": 1.2, "renderer": "cpu"}"#;
+pub const RENDER: &str = r#"{"width": 160, "height": 120, "view": "iso", "projection": "perspective", "zoom": 1.2, "renderer": "cpu", "look": {"mode": "studio", "background": "plain", "accumulate": 4}}"#;
+/// The params of `view.render` for the picture of a script example in
+/// the examples' README (`docs/examples/<id>.png`), part of the stamp.
+pub const PICTURE: &str = r#"{"width": 640, "height": 480, "view": "iso", "projection": "perspective", "zoom": 1.2, "renderer": "cpu", "look": {"mode": "studio", "background": "plain", "accumulate": 8}}"#;
 /// Most colours of a thumbnail.
 pub const PALETTE: usize = 128;
+/// Most colours of a README picture.
+pub const PICTURE_PALETTE: usize = 256;
+/// Largest README picture accepted, in bytes (`guide_examples` holds
+/// them under 200 kB).
+pub const MAX_PICTURE_BYTES: u64 = 190 * 1024;
 /// What else the stamp covers: bump it when the way the pictures are
 /// made changes in a way the settings above do not show.
-const METHOD: &str = "thumbs v2: units mm, light viewport background, popularity palette on 5-bit buckets, nearest colour";
+const METHOD: &str = "thumbs v3: units mm, studio look on a plain background, popularity palette on 5-bit buckets, nearest colour; README pictures of the scripts; published files opened as they are";
 /// Largest thumbnail file accepted, in bytes.
-pub const MAX_BYTES: u64 = 12 * 1024;
+pub const MAX_BYTES: u64 = 24 * 1024;
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
@@ -65,7 +98,9 @@ pub fn stamp(script: &[u8]) -> String {
     for part in [
         METHOD.as_bytes(),
         RENDER.as_bytes(),
+        PICTURE.as_bytes(),
         &PALETTE.to_le_bytes(),
+        &PICTURE_PALETTE.to_le_bytes(),
         script,
     ] {
         all.extend_from_slice(&(part.len() as u64).to_le_bytes());
@@ -84,6 +119,12 @@ pub fn stamps() -> Result<String, String> {
         let script =
             std::fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
         out.push_str(&format!("{id} {}\n", stamp(&script)));
+    }
+    for (id, file) in PUBLISHED {
+        let path = root().join("docs/examples/published").join(file);
+        let bytes =
+            std::fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        out.push_str(&format!("{id} {}\n", stamp(&bytes)));
     }
     Ok(out)
 }
@@ -247,28 +288,49 @@ pub fn run(_args: &[String]) -> Result<(), String> {
     std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
     let mut total = 0_u64;
     let mut made = Vec::new();
-    for id in EXAMPLES {
-        let script = root().join("docs/examples").join(format!("{id}.json"));
-        let picture = work.join(format!("{id}.png"));
-        let mut params: serde_json::Value =
-            serde_json::from_str(RENDER).map_err(|e| e.to_string())?;
-        if let Some(map) = params.as_object_mut() {
-            map.insert(
-                "path".into(),
-                serde_json::Value::String(picture.to_string_lossy().into_owned()),
-            );
+    let scripts = EXAMPLES.iter().map(|id| (*id, None));
+    let published = PUBLISHED.iter().map(|(id, file)| (*id, Some(*file)));
+    let mut pictures = Vec::new();
+    for (id, file) in scripts.chain(published) {
+        let thumb_png = work.join(format!("{id}.png"));
+        let picture_png = work.join(format!("{id}-picture.png"));
+        let with_path = |settings: &str, path: &Path| -> Result<String, String> {
+            let mut params: serde_json::Value =
+                serde_json::from_str(settings).map_err(|e| e.to_string())?;
+            if let Some(map) = params.as_object_mut() {
+                map.insert(
+                    "path".into(),
+                    serde_json::Value::String(path.to_string_lossy().into_owned()),
+                );
+            }
+            Ok(params.to_string())
+        };
+        let mut command = std::process::Command::new(&cli);
+        match file {
+            None => {
+                let script = root().join("docs/examples").join(format!("{id}.json"));
+                command
+                    .args(["run", "--new", r#"{"units":"mm"}"#, "--script"])
+                    .arg(&script)
+                    .args(["--cmd", "view.render", "--params"])
+                    .arg(with_path(PICTURE, &picture_png)?);
+            }
+            Some(file) => {
+                command
+                    .arg("run")
+                    .arg(root().join("docs/examples/published").join(file));
+            }
         }
-        let status = std::process::Command::new(&cli)
-            .args(["run", "--new", r#"{"units":"mm"}"#, "--script"])
-            .arg(&script)
-            .args(["--cmd", "view.render", "--params", &params.to_string()])
+        let status = command
+            .args(["--cmd", "view.render", "--params"])
+            .arg(with_path(RENDER, &thumb_png)?)
             .stdout(std::process::Stdio::null())
             .status()
             .map_err(|e| format!("cannot run {}: {e}", cli.display()))?;
         if !status.success() {
             return Err(format!("{id}: craft3d-cli failed ({status})"));
         }
-        let bytes = std::fs::read(&picture).map_err(|e| e.to_string())?;
+        let bytes = std::fs::read(&thumb_png).map_err(|e| e.to_string())?;
         let (width, height, rgb) = read_rgb(&bytes)?;
         let (palette, indices) = quantize(&rgb, PALETTE);
         let png = write_indexed(width, height, &palette, &indices)?;
@@ -281,9 +343,27 @@ pub fn run(_args: &[String]) -> Result<(), String> {
             ));
         }
         made.push((id, png));
+        if file.is_none() {
+            let bytes = std::fs::read(&picture_png).map_err(|e| e.to_string())?;
+            let (width, height, rgb) = read_rgb(&bytes)?;
+            let (palette, indices) = quantize(&rgb, PICTURE_PALETTE);
+            let png = write_indexed(width, height, &palette, &indices)?;
+            let size = png.len() as u64;
+            println!("{id} picture: {size} bytes");
+            if size > MAX_PICTURE_BYTES {
+                return Err(format!(
+                    "{id}: the picture is {size} bytes, more than {MAX_PICTURE_BYTES}; nothing was written"
+                ));
+            }
+            pictures.push((id, png));
+        }
     }
     for (id, png) in made {
         std::fs::write(out_dir.join(format!("{id}.png")), &png).map_err(|e| e.to_string())?;
+    }
+    for (id, png) in pictures {
+        std::fs::write(root().join("docs/examples").join(format!("{id}.png")), &png)
+            .map_err(|e| e.to_string())?;
     }
     std::fs::write(out_dir.join("STAMPS.txt"), stamps()?).map_err(|e| e.to_string())?;
     println!("all: {total} bytes");
@@ -306,7 +386,7 @@ mod tests {
             kept, now,
             "an example script or the thumbnail settings changed: run `cargo xtask example-thumbs` and commit docs/examples/thumbs"
         );
-        for id in EXAMPLES {
+        for id in EXAMPLES.into_iter().chain(PUBLISHED.map(|(id, _)| id)) {
             let size = std::fs::metadata(dir.join(format!("{id}.png")))
                 .unwrap()
                 .len();

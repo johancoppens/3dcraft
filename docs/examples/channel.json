@@ -1,0 +1,20 @@
+[
+ ["variable.set", {"name": "t", "expr": "1.5 mm"}],
+ ["variable.set", {"name": "r", "expr": "2 mm"}],
+ ["variable.set", {"name": "side", "expr": "60 mm"}],
+ ["variable.set", {"name": "flange", "expr": "25 mm"}],
+ ["variable.set", {"name": "big_d", "expr": "20 mm"}],
+ ["variable.set", {"name": "hole_d", "expr": "6 mm"}],
+ ["sketch.create", {"plane": "xy", "name": "Base"}],
+ ["sketch.rect", {"sketch": "Base", "from": [0, 0], "to": ["side", "side"]}],
+ ["sketch.circle", {"sketch": "Base", "center": ["side / 2", "side / 2"], "radius": "big_d / 2"}],
+ ["sketch.circle", {"sketch": "Base", "center": ["side / 2", "side / 5"], "radius": "hole_d / 2"}],
+ ["sketch.circle", {"sketch": "Base", "center": ["side / 2", "4 * side / 5"], "radius": "hole_d / 2"}],
+ ["feature.sheetMetal", {"sketch": "Base", "name": "Bracket", "thickness": "t", "radius": "r", "kFactor": 0.5,
+   "flanges": [{"edge": "e5", "length": "flange", "angle": "90 deg"},
+               {"edge": "e7", "length": "flange", "angle": "90 deg"}]}],
+ ["assert.add", {"name": "volume", "measure": "volume", "of": "Bracket", "eq": "t * (side^2 - pi * (big_d / 2)^2 - 2 * pi * (hole_d / 2)^2) + 2 * (pi / 2 * (r + t / 2) * t * side + flange * t * side)"}],
+ ["assert.add", {"name": "radius", "measure": "bendRadius", "of": "Bracket", "min": "t"}],
+ ["material.preset", {"body": "Bracket", "preset": "steel"}],
+ ["document.check", {}]
+]

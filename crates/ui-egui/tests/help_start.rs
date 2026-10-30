@@ -11,7 +11,12 @@
 )]
 
 use craft3d_engine::{Access, Session, Workspace};
-use craft3d_ui_egui::shell::{EXAMPLES, RecentFiles, run_example};
+use craft3d_ui_egui::shell::{EXAMPLES, ExampleSection, RecentFiles, run_example};
+
+/// The examples of one section of the start screen.
+fn in_section(section: ExampleSection) -> usize {
+    EXAMPLES.iter().filter(|e| e.section == section).count()
+}
 use craft3d_ui_egui::{FileAction, Shell};
 use egui::{Event, Pos2, vec2};
 use serde_json::{Value, json};
@@ -164,13 +169,21 @@ fn the_start_screen_is_up_while_no_document_is_open() {
         (new - 550.0).abs() < 120.0,
         "the buttons near the middle: {new}"
     );
-    // A card for each example.
+    // A card for each example of the section shown (the parts first),
+    // and the sections to choose from.
     let cards = shell
         .start_hits()
         .iter()
         .filter(|(name, _)| name.starts_with("example:"))
         .count();
-    assert_eq!(cards, EXAMPLES.len());
+    assert_eq!(cards, in_section(ExampleSection::Parts));
+    for section in ExampleSection::ALL {
+        let hit = format!("section:{}", section.word());
+        assert!(
+            shell.start_hits().iter().any(|(name, _)| *name == hit),
+            "{hit}"
+        );
+    }
     run(&mut session, "file.new", json!({}));
     window.frame(&mut shell, &mut session, Vec::new());
     assert!(!shell.start_shown());
@@ -189,17 +202,58 @@ fn the_start_screen_is_up_while_no_document_is_open() {
 }
 
 #[test]
-fn all_ten_examples_fit_on_the_start_screen_at_common_window_sizes() {
-    assert_eq!(EXAMPLES.len(), 10);
-    for (width, height) in [
-        (1024.0, 700.0),
-        (1280.0, 800.0),
-        (1366.0, 768.0),
-        (1600.0, 1000.0),
-    ] {
+fn every_section_fits_on_the_start_screen_at_common_window_sizes() {
+    assert_eq!(in_section(ExampleSection::Parts), 10);
+    for section in ExampleSection::ALL {
+        let count = in_section(section);
+        assert!((1..=10).contains(&count), "{section:?}: {count}");
+        for (width, height) in [
+            (1024.0, 700.0),
+            (1280.0, 800.0),
+            (1366.0, 768.0),
+            (1600.0, 1000.0),
+        ] {
+            let mut session = Session::new(Workspace::none());
+            let mut shell = Shell::new();
+            shell.show_section(section);
+            let mut window = Window::sized(width, height);
+            for _ in 0..3 {
+                window.frame(&mut shell, &mut session, Vec::new());
+            }
+            let viewport = shell.viewport_rect().unwrap();
+            let cards: Vec<egui::Rect> = shell
+                .start_hits()
+                .iter()
+                .filter(|(name, _)| name.starts_with("example:"))
+                .map(|(_, rect)| *rect)
+                .collect();
+            assert_eq!(cards.len(), count, "{section:?} {width} x {height}");
+            // At most two rows of five, every card inside the viewport:
+            // nothing to scroll to.
+            let mut rows: Vec<f32> = cards.iter().map(|r| r.top().round()).collect();
+            rows.dedup();
+            assert_eq!(
+                rows.len(),
+                count.div_ceil(5),
+                "{section:?} {width} x {height}: rows at {rows:?}"
+            );
+            for card in &cards {
+                assert!(
+                    viewport.contains_rect(*card),
+                    "{section:?} {width} x {height}: card {card:?} outside {viewport:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn on_a_phone_the_cards_stay_within_the_width() {
+    for section in ExampleSection::ALL {
         let mut session = Session::new(Workspace::none());
         let mut shell = Shell::new();
-        let mut window = Window::sized(width, height);
+        shell.show_section(section);
+        let mut window = Window::sized(390.0, 844.0);
         for _ in 0..3 {
             window.frame(&mut shell, &mut session, Vec::new());
         }
@@ -210,19 +264,51 @@ fn all_ten_examples_fit_on_the_start_screen_at_common_window_sizes() {
             .filter(|(name, _)| name.starts_with("example:"))
             .map(|(_, rect)| *rect)
             .collect();
-        assert_eq!(cards.len(), 10, "{width} x {height}");
-        // Two rows of five, every card inside the viewport: nothing to
-        // scroll to.
-        let mut rows: Vec<f32> = cards.iter().map(|r| r.top().round()).collect();
-        rows.dedup();
-        assert_eq!(rows.len(), 2, "{width} x {height}: rows at {rows:?}");
+        assert!(!cards.is_empty(), "{section:?}");
         for card in &cards {
             assert!(
-                viewport.contains_rect(*card),
-                "{width} x {height}: card {card:?} outside {viewport:?}"
+                card.left() >= viewport.left() - 0.5 && card.right() <= viewport.right() + 0.5,
+                "{section:?}: card {card:?} wider than {viewport:?}"
             );
         }
     }
+}
+
+#[test]
+fn a_click_on_a_section_shows_its_cards() {
+    let mut session = Session::new(Workspace::none());
+    let mut shell = Shell::new();
+    let mut window = Window::sized(1280.0, 800.0);
+    for _ in 0..3 {
+        window.frame(&mut shell, &mut session, Vec::new());
+    }
+    assert_eq!(shell.start_section(), ExampleSection::Parts);
+    let at = shell
+        .start_hits()
+        .iter()
+        .find(|(name, _)| name == "section:assemblies")
+        .map(|(_, rect)| rect.center())
+        .unwrap();
+    for pressed in [true, false] {
+        window.frame(
+            &mut shell,
+            &mut session,
+            vec![egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+    }
+    window.frame(&mut shell, &mut session, Vec::new());
+    assert_eq!(shell.start_section(), ExampleSection::Assemblies);
+    let cards = shell
+        .start_hits()
+        .iter()
+        .filter(|(name, _)| name.starts_with("example:asm-"))
+        .count();
+    assert_eq!(cards, in_section(ExampleSection::Assemblies));
 }
 
 #[test]
@@ -243,7 +329,7 @@ fn a_click_on_new_document_asks_the_host_for_a_new_document() {
             .unwrap_or_else(|| panic!("{name} on the start screen"))
     };
     let button = hit(&shell, "new");
-    assert!(shell.start_hits().len() >= 2 + EXAMPLES.len());
+    assert!(shell.start_hits().len() >= 2 + in_section(ExampleSection::Parts));
     for pressed in [true, false] {
         window.frame(
             &mut shell,
@@ -420,6 +506,13 @@ fn every_example_builds_in_a_new_document_and_passes_its_assertions() {
         assert_eq!(built["example"], example.id);
         let listed = run(&mut session, "assert.list", json!({}));
         assert_eq!(listed["ok"], true, "{}: {listed}", example.id);
+        // A published Jig opens in use, on its parameters.
+        assert_eq!(
+            session.document_status().unwrap().jig_in_use,
+            example.section == ExampleSection::Jigs,
+            "{}",
+            example.id
+        );
         let status = session.document_status().unwrap();
         assert!(status.path.is_none(), "an example is a new document");
     }
@@ -430,7 +523,8 @@ fn every_example_builds_in_a_new_document_and_passes_its_assertions() {
 fn a_chosen_example_waits_for_the_host() {
     let mut shell = Shell::new();
     assert!(shell.take_example().is_none());
-    shell.choose_example(&EXAMPLES[2]);
+    let case = EXAMPLES.iter().find(|e| e.id == "case").unwrap();
+    shell.choose_example(case);
     assert_eq!(shell.take_example().map(|e| e.id), Some("case"));
     assert!(shell.take_example().is_none());
 }

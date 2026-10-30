@@ -61,8 +61,9 @@ numbers yourself.
 
 - [15. Reference](15-reference.md): every command by family, the MCP tools, keys and mouse, units and
   functions, the command-line programs.
-- [Example models](../examples/README.md): ten small parts (a bracket, a flange, a gear, …), each a script
-  with a picture that checks its own volume. The window's start screen builds all ten with one click.
+- [Example models](../examples/README.md): fifteen small parts (a bracket, a flange, a gear, a G2 fin, …), each a
+  script with a picture that checks its own volume. The window's start screen builds ten of them with one
+  click, and opens three published Jigs and three assemblies.
 - [The Jigs collection](https://github.com/johancoppens/3dcraft-jigs): Jigs to download and use.
 - [The field test](field-test.md): for testers of 0.1.0, how to install, connect an agent, five tasks to
   start with, and how to report what you find.

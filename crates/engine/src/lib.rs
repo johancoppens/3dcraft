@@ -56,6 +56,7 @@ mod meshes;
 mod motion;
 mod name_refs;
 mod offset_cmds;
+mod open_bytes;
 mod output_cmds;
 mod param_cmds;
 mod params;

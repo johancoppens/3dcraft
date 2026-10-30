@@ -1,0 +1,23 @@
+[
+ ["variable.set", {"name": "length", "expr": "80 mm"}],
+ ["variable.set", {"name": "width", "expr": "40 mm"}],
+ ["variable.set", {"name": "height", "expr": "30 mm"}],
+ ["variable.set", {"name": "corner_r", "expr": "8 mm"}],
+ ["variable.set", {"name": "bore_d", "expr": "24 mm"}],
+ ["variable.set", {"name": "chamfer", "expr": "1.5 mm"}],
+ ["variable.set", {"name": "hole_d", "expr": "6.6 mm"}],
+ ["feature.block", {"size": ["length", "width", "height"], "name": "Blank"}],
+ ["feature.fillet", {"edges": [["F1:face(2)", "F1:face(4)"], ["F1:face(2)", "F1:face(5)"], ["F1:face(3)", "F1:face(4)"], ["F1:face(3)", "F1:face(5)"]], "radius": "corner_r", "name": "Rounded"}],
+ ["feature.cylinder", {"radius": "bore_d / 2", "height": "height + 2 mm", "position": ["length / 2", "width / 2", "-1 mm"], "name": "BoreTool"}],
+ ["feature.boolean", {"op": "subtract", "target": "Rounded", "tool": "BoreTool", "name": "Bored"}],
+ ["feature.chamfer", {"edges": [["F1:face(1)", "F3:face(2)"], ["F1:face(0)", "F3:face(2)"]], "distance": "chamfer", "name": "Chamfered"}],
+ ["sketch.create", {"name": "BoltHoles", "plane": "xy"}],
+ ["sketch.circle", {"sketch": "BoltHoles", "center": ["corner_r + 4 mm", "width / 2"], "radius": "hole_d / 2"}],
+ ["sketch.circle", {"sketch": "BoltHoles", "center": ["length - corner_r - 4 mm", "width / 2"], "radius": "hole_d / 2"}],
+ ["feature.extrude", {"sketch": "BoltHoles", "throughAll": true, "cut": "Chamfered", "name": "Clamp"}],
+ ["assert.add", {"name": "volume", "measure": "volume", "of": "Clamp", "eq": "(length * width - (4 - pi) * corner_r^2) * height - pi * (bore_d / 2)^2 * height - 2 * pi * (bore_d / 2 + chamfer / 3) * chamfer^2 - 2 * pi * (hole_d / 2)^2 * height"}],
+ ["assert.add", {"name": "bolt holes", "measure": "count", "of": {"kind": "face", "where": {"hole": true, "radius": "hole_d / 2"}}, "eq": 2}],
+ ["assert.add", {"name": "walls", "measure": "thickness", "of": "Clamp", "min": "3 mm"}],
+ ["material.preset", {"body": "Clamp", "preset": "steel"}],
+ ["document.check", {}]
+]

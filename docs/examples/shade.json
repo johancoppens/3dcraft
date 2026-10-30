@@ -1,0 +1,15 @@
+[
+ ["variable.set", {"name": "big", "expr": "70 mm"}],
+ ["variable.set", {"name": "small", "expr": "35 mm"}],
+ ["variable.set", {"name": "height", "expr": "80 mm"}],
+ ["variable.set", {"name": "t", "expr": "1.5 mm"}],
+ ["sketch.create", {"name": "Low", "plane": "xy"}],
+ ["sketch.arc", {"sketch": "Low", "center": [0, 0], "start": ["big", 0], "end": ["-big", 0]}],
+ ["sketch.create", {"name": "High", "plane": "xy", "offset": "height"}],
+ ["sketch.arc", {"sketch": "High", "center": [0, 0], "start": ["small", 0], "end": ["-small", 0]}],
+ ["feature.developable", {"a": "Low", "b": "High", "name": "Panel"}],
+ ["feature.plate", {"faces": ["F3:face(0)"], "thickness": "t", "side": "mid", "name": "Shade"}],
+ ["assert.add", {"name": "volume", "measure": "volume", "of": "Shade", "min": "0.999 * pi / 2 * (big + small) * sqrt((big - small)^2 + height^2) * t", "max": "1.001 * pi / 2 * (big + small) * sqrt((big - small)^2 + height^2) * t"}],
+ ["body.appearance", {"body": "Shade", "color": "#efe3c8", "metallic": 0, "roughness": 0.8, "subsurface": 0.6, "subsurfaceColor": "#ffb36b"}],
+ ["document.check", {}]
+]

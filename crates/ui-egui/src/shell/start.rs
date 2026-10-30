@@ -19,16 +19,70 @@ use crate::theme::{Tokens, color, color_alpha};
 use craft3d_engine::Session;
 use serde_json::{Value, json};
 
-/// One of the example models of the user guide (`docs/examples`): a
-/// command script that builds it in a new document, in millimetres.
+/// A section of the start screen's examples.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ExampleSection {
+    /// The guide's example parts, built by their scripts.
+    #[default]
+    Parts,
+    /// Published Jigs, opened on their parameters.
+    Jigs,
+    /// Packed assemblies, opened ready to play.
+    Assemblies,
+}
+
+impl ExampleSection {
+    /// Every section, in the start screen's order.
+    pub const ALL: [ExampleSection; 3] = [
+        ExampleSection::Parts,
+        ExampleSection::Jigs,
+        ExampleSection::Assemblies,
+    ];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            ExampleSection::Parts => "Parts",
+            ExampleSection::Jigs => "Jigs",
+            ExampleSection::Assemblies => "Assemblies",
+        }
+    }
+
+    /// The word for the section in a hit (`section:<word>`).
+    pub fn word(self) -> &'static str {
+        match self {
+            ExampleSection::Parts => "parts",
+            ExampleSection::Jigs => "jigs",
+            ExampleSection::Assemblies => "assemblies",
+        }
+    }
+}
+
+/// How an example is made in a new document.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Source {
+    /// A command script of the guide (`docs/examples/<id>.json`), run in a
+    /// new document in millimetres.
+    Script(&'static str),
+    /// A published file built into the program
+    /// (`docs/examples/published`), opened as it is, without a file of its
+    /// own (docs/decisions.md, 2026-10-30).
+    File {
+        name: &'static str,
+        bytes: &'static [u8],
+    },
+}
+
+/// One of the start screen's examples: a part of the user guide
+/// (`docs/examples`), or a published Jig or assembly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Example {
-    /// The script's name, without `.json`.
+    /// The script's name, without `.json`, or the published file's id.
     pub id: &'static str,
     pub title: &'static str,
     /// What it shows, in a few words.
     pub summary: &'static str,
-    script: &'static str,
+    pub section: ExampleSection,
+    source: Source,
     /// Its picture, 160 × 120 (`docs/examples/thumbs`).
     thumb: &'static [u8],
 }
@@ -39,24 +93,88 @@ macro_rules! example {
             id: $id,
             title: $title,
             summary: $summary,
-            script: include_str!(concat!("../../../../docs/examples/", $id, ".json")),
+            section: ExampleSection::Parts,
+            source: Source::Script(include_str!(concat!(
+                "../../../../docs/examples/",
+                $id,
+                ".json"
+            ))),
             thumb: include_bytes!(concat!("../../../../docs/examples/thumbs/", $id, ".png")),
         }
     };
 }
 
-/// The guide's examples, in the order its README lists them.
-pub const EXAMPLES: [Example; 10] = [
+macro_rules! published {
+    ($section:expr, $id:literal, $file:literal, $title:literal, $summary:literal) => {
+        Example {
+            id: $id,
+            title: $title,
+            summary: $summary,
+            section: $section,
+            source: Source::File {
+                name: $file,
+                bytes: include_bytes!(concat!("../../../../docs/examples/published/", $file)),
+            },
+            thumb: include_bytes!(concat!("../../../../docs/examples/thumbs/", $id, ".png")),
+        }
+    };
+}
+
+/// The start screen's examples, section by section: ten of the guide's
+/// parts, then the published Jigs and assemblies.
+pub const EXAMPLES: [Example; 16] = [
     example!("bracket", "L-bracket", "extrude, fillet, holes"),
+    example!("nameplate", "Name plate", "text, fillet, materials"),
+    example!("clamp", "Clamp block", "fillet, bore, chamfer"),
+    example!("channel", "Sheet-metal bracket", "sheet metal, bends"),
+    example!("fin", "G2 fin", "surface network, curvature seam"),
+    example!("shade", "Lamp shade", "developable, plate"),
     example!("flange", "Bolt flange", "pattern, boolean, chamfer"),
     example!("case", "Shelled case", "fillet, shell"),
-    example!("bushing", "Flanged bushing", "revolve, thread"),
-    example!("pipe", "Bent pipe", "sweep along a path"),
     example!("spring", "Coil spring", "sweep along a helix"),
-    example!("hopper", "Hopper", "loft"),
-    example!("panel", "Perforated panel", "sketch pattern"),
-    example!("wedge", "Wedge", "datums, fill, intersect"),
     example!("gear", "Involute gear", "curves from formulas, pattern"),
+    published!(
+        ExampleSection::Jigs,
+        "jig-planetary",
+        "planetary-gearbox.3dcraftjig",
+        "Planetary gearbox",
+        "a Jig: module and teeth"
+    ),
+    published!(
+        ExampleSection::Jigs,
+        "jig-reducer",
+        "gear-reducer.3dcraftjig",
+        "Gear reducer",
+        "a Jig: a ratio and its gears"
+    ),
+    published!(
+        ExampleSection::Jigs,
+        "jig-strandbeest",
+        "strandbeest-leg.3dcraftjig",
+        "Strandbeest leg",
+        "a Jig: Jansen's linkage"
+    ),
+    published!(
+        ExampleSection::Assemblies,
+        "asm-planetary",
+        "planetary-gearbox.3dcraftasm",
+        "Planetary gearbox",
+        "an assembly: gears that turn"
+    ),
+    published!(
+        ExampleSection::Assemblies,
+        "asm-reducer",
+        "gear-reducer.3dcraftasm",
+        "Gear reducer",
+        "an assembly: two stages"
+    ),
+    published!(
+        ExampleSection::Assemblies,
+        "asm-walker",
+        "strandbeest-walker.3dcraftasm",
+        "Strandbeest walker",
+        "an assembly: four legs walk"
+    ),
 ];
 
 /// The logo: the application's icon (`packaging/icons`).
@@ -133,8 +251,17 @@ pub fn example(id: &str) -> Option<&'static Example> {
 /// its script's commands). A step that fails closes the new document
 /// again and is the error.
 pub fn run_example(session: &mut Session, example: &Example) -> Result<Value, String> {
+    let text = match example.source {
+        Source::Script(text) => text,
+        Source::File { name, bytes } => {
+            let opened = session
+                .open_bytes(name, bytes)
+                .map_err(|e| format!("example {}: {}", example.id, e.message()))?;
+            return Ok(json!({ "example": example.id, "opened": opened }));
+        }
+    };
     let script: Value =
-        serde_json::from_str(example.script).map_err(|e| format!("example {}: {e}", example.id))?;
+        serde_json::from_str(text).map_err(|e| format!("example {}: {e}", example.id))?;
     let steps = craft3d_engine::task_score::parse_script(&script)
         .map_err(|e| format!("example {}: {}", example.id, e.message()))?;
     session
@@ -303,6 +430,8 @@ impl AgentSetup {
 pub(crate) struct StartMemory {
     /// The example chosen, until the host builds it.
     pub(super) chosen: Option<&'static Example>,
+    /// The section of examples shown.
+    section: ExampleSection,
     agent: AgentSetup,
     /// The card's height in the last frame, to centre it in this one.
     height: f32,
@@ -370,7 +499,21 @@ impl Shell {
 
     /// Chooses an example as a click on the start screen does.
     pub fn choose_example(&mut self, example: &'static Example) {
+        // An assembly opens ready to play: the player on its motion.
+        if example.section == ExampleSection::Assemblies {
+            self.state.timeline.motion = true;
+        }
         self.start.chosen = Some(example);
+    }
+
+    /// The section of examples the start screen shows.
+    pub fn start_section(&self) -> ExampleSection {
+        self.start.section
+    }
+
+    /// Shows a section of examples, as a click on its name does.
+    pub fn show_section(&mut self, section: ExampleSection) {
+        self.start.section = section;
     }
 
     /// How an agent reaches this window, for the start screen.
@@ -506,7 +649,7 @@ impl Shell {
                 );
             });
             ui.add_space(space * 1.4);
-            heading(ui, &tokens, "Examples");
+            self.section_row(ui);
             ui.add_space(space * 0.4);
             self.example_grid(ui);
             ui.add_space(space * 1.4);
@@ -568,8 +711,44 @@ impl Shell {
             .push(("card".to_string(), shown.response.rect));
     }
 
-    /// The examples as cards: the thumbnail and the name; a click builds
-    /// it in a new document.
+    /// "Examples" and the names of the sections that have examples, one
+    /// of them chosen; a click shows that section's cards. A single
+    /// section shows only the heading.
+    fn section_row(&mut self, ui: &mut egui::Ui) {
+        let tokens = self.tokens;
+        let sections: Vec<ExampleSection> = ExampleSection::ALL
+            .into_iter()
+            .filter(|section| EXAMPLES.iter().any(|e| e.section == *section))
+            .collect();
+        if !sections.contains(&self.start.section) {
+            self.start.section = sections.first().copied().unwrap_or_default();
+        }
+        ui.horizontal_wrapped(|ui| {
+            heading(ui, &tokens, "Examples");
+            if sections.len() < 2 {
+                return;
+            }
+            ui.add_space(tokens.inset);
+            for section in sections {
+                let chosen = section == self.start.section;
+                let text = egui::RichText::new(section.title()).color(color(if chosen {
+                    tokens.text
+                } else {
+                    tokens.text_dim
+                }));
+                let response = ui.selectable_label(chosen, text);
+                self.start
+                    .hits
+                    .push((format!("section:{}", section.word()), response.rect));
+                if response.clicked() {
+                    self.start.section = section;
+                }
+            }
+        });
+    }
+
+    /// The examples of the section shown as cards: the thumbnail and the
+    /// name; a click builds or opens it in a new document.
     fn example_grid(&mut self, ui: &mut egui::Ui) {
         let tokens = self.tokens;
         let gap = tokens.inset;
@@ -608,14 +787,17 @@ impl Shell {
         // others on the left.
         let block = per_row as f32 * card.x + (per_row as f32 - 1.0) * gap;
         let pad = ((ui.available_width() - block) * 0.5).max(0.0);
-        for (row, examples) in EXAMPLES.chunks(per_row).enumerate() {
+        let section = self.start.section;
+        let shown: Vec<&'static Example> =
+            EXAMPLES.iter().filter(|e| e.section == section).collect();
+        for (row, examples) in shown.chunks(per_row).enumerate() {
             if row > 0 {
                 ui.add_space(gap);
             }
             ui.horizontal(|ui| {
                 ui.add_space(pad);
                 ui.spacing_mut().item_spacing.x = gap;
-                for example in examples {
+                for &example in examples {
                     let index = EXAMPLES.iter().position(|e| e.id == example.id);
                     let (rect, response) = ui.allocate_exact_size(card, egui::Sense::click());
                     let response = response
@@ -788,8 +970,11 @@ mod tests {
             id: "broken",
             title: "Broken",
             summary: "a step that fails",
+            section: ExampleSection::Parts,
             thumb: &[],
-            script: r#"[["feature.block", {"size": [1, 2, 3]}], ["feature.fillet", {"edges": "nope"}]]"#,
+            source: Source::Script(
+                r#"[["feature.block", {"size": [1, 2, 3]}], ["feature.fillet", {"edges": "nope"}]]"#,
+            ),
         };
         let mut session = Session::new(craft3d_engine::Workspace::none());
         session.execute("file.new", &json!({})).unwrap();
@@ -799,15 +984,27 @@ mod tests {
         assert_eq!(session.document_statuses().len(), 1);
         // A script that does not read opens nothing.
         let unreadable = Example {
-            script: "{",
+            source: Source::Script("{"),
             ..broken
         };
         assert!(run_example(&mut session, &unreadable).is_err());
         let not_steps = Example {
-            script: r#"{"steps": 1}"#,
+            source: Source::Script(r#"{"steps": 1}"#),
             ..broken
         };
         assert!(run_example(&mut session, &not_steps).is_err());
+        // A published file that is no document, or not what its name
+        // says, opens nothing either.
+        for (name, bytes) in [
+            ("bad.3dcraftjig", &b"not a zip"[..]),
+            ("bad.3dcraftasm", &b""[..]),
+        ] {
+            let bad = Example {
+                source: Source::File { name, bytes },
+                ..broken
+            };
+            assert!(run_example(&mut session, &bad).is_err());
+        }
         assert_eq!(session.document_statuses().len(), 1);
     }
 
@@ -822,9 +1019,12 @@ mod tests {
             egui::vec2(984.0, 616.0),
         ] {
             let compact = StartLayout::for_room(room);
-            // Two rows of five for the ten examples.
+            // At most two rows of five per section.
             assert_eq!(compact.per_row, 5);
-            assert_eq!(EXAMPLES.len().div_ceil(compact.per_row), 2);
+            for section in ExampleSection::ALL {
+                let count = EXAMPLES.iter().filter(|e| e.section == section).count();
+                assert!(count.div_ceil(compact.per_row) <= 2, "{section:?}");
+            }
             assert!(compact.width <= room.x);
             assert!(compact.thumb.y < roomy.thumb.y && compact.logo < roomy.logo);
             assert!(compact.spacing < roomy.spacing);
@@ -847,11 +1047,32 @@ mod tests {
     }
 
     #[test]
-    fn every_example_reads_as_a_script() {
+    fn every_example_reads_as_a_script_or_opens() {
         for example in &EXAMPLES {
-            let script: Value = serde_json::from_str(example.script).unwrap();
-            let steps = craft3d_engine::task_score::parse_script(&script).unwrap();
-            assert!(!steps.is_empty(), "{}", example.id);
+            match example.source {
+                Source::Script(text) => {
+                    let script: Value = serde_json::from_str(text).unwrap();
+                    let steps = craft3d_engine::task_score::parse_script(&script).unwrap();
+                    assert!(!steps.is_empty(), "{}", example.id);
+                    assert_eq!(example.section, ExampleSection::Parts);
+                }
+                Source::File { name, .. } => {
+                    let mut session = Session::new(craft3d_engine::Workspace::none());
+                    let opened = run_example(&mut session, example)
+                        .unwrap_or_else(|e| panic!("{}: {e}", example.id));
+                    let jig = name.ends_with(".3dcraftjig");
+                    assert_eq!(opened["opened"]["jigInUse"] == true, jig, "{opened}");
+                    assert_eq!(opened["opened"]["assembly"] == true, !jig, "{opened}");
+                    assert_eq!(
+                        example.section,
+                        if jig {
+                            ExampleSection::Jigs
+                        } else {
+                            ExampleSection::Assemblies
+                        }
+                    );
+                }
+            }
             assert_eq!(super::example(example.id), Some(example));
         }
         assert_eq!(super::example("nope"), None);
