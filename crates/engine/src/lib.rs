@@ -15,6 +15,7 @@
 pub mod analysis;
 mod analysis_cmds;
 mod angle_warnings;
+pub mod animation;
 mod appearance;
 mod appearance_cmds;
 mod asm;
@@ -58,6 +59,7 @@ mod output_cmds;
 mod param_cmds;
 mod params;
 mod pick_cmds;
+pub mod pictures;
 mod plate_cmds;
 mod pool;
 mod query_cmds;
@@ -460,6 +462,10 @@ pub struct Session {
     pub(crate) scene_job: Option<regen_elsewhere::SceneJob>,
     /// The last number a job of scenes was handed out under.
     pub(crate) scene_token: u64,
+    /// The host's renderer besides the CPU's (`pictures.rs`).
+    pub(crate) pictures: pictures::Hosted<dyn pictures::PictureRenderer>,
+    /// The host's video encoder for `view.replay` (`pictures.rs`).
+    pub(crate) video: pictures::Hosted<dyn pictures::VideoEncoder>,
 }
 
 /// Most documents open at once.
@@ -489,6 +495,8 @@ impl Session {
             regen_elsewhere: false,
             scene_job: None,
             scene_token: 0,
+            pictures: pictures::Hosted::default(),
+            video: pictures::Hosted::default(),
         }
     }
 

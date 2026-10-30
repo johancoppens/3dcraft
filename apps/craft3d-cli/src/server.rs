@@ -6,7 +6,7 @@
 
 use crate::args::{self, Arg, Args};
 use crate::{CliError, Parsed};
-use craft3d_engine::{Access, RecoveryOptions, Session, Workspace};
+use craft3d_engine::{Access, RecoveryOptions, Workspace};
 use std::io::ErrorKind;
 
 pub(crate) enum Protocol {
@@ -194,7 +194,7 @@ pub(crate) fn serve(mut args: Args, protocol: Protocol) -> Result<Parsed<()>, Cl
         );
         return finish(craft3d_automation::bridge::serve(&config, input, output));
     }
-    let mut session = Session::new(workspace);
+    let mut session = crate::session(workspace);
     if let Some(options) = recovery {
         session.enable_recovery(options);
     }

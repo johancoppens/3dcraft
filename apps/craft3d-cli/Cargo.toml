@@ -11,7 +11,15 @@ workspace = true
 [dependencies]
 craft3d-engine.workspace = true
 craft3d-automation.workspace = true
+# The headless renderer of view.render and view.replay (gpu.rs).
+craft3d-gpu.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+# The parity test holds the headless pictures to the CPU renderer's with
+# the GPU crate's own rules (src/gpu/tests.rs).
+craft3d-render.workspace = true
+craft3d-math.workspace = true
 
 # The commit the program is built from, for the bug report (build.rs).
 [build-dependencies]

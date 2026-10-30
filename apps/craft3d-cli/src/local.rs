@@ -300,7 +300,7 @@ pub(crate) fn run(args: Args) -> Result<Parsed<()>, CliError> {
     };
     steps.extend(options.steps);
 
-    let mut session = Session::new(Workspace::unrestricted());
+    let mut session = crate::session(Workspace::unrestricted());
     match &options.file {
         Some(file) => open(&mut session, file)?,
         None => {
@@ -392,7 +392,7 @@ pub(crate) fn info(args: Args) -> Result<Parsed<()>, CliError> {
             None => CliError::Usage("missing FILE".to_string()),
         });
     };
-    let mut session = Session::new(Workspace::unrestricted());
+    let mut session = crate::session(Workspace::unrestricted());
     open(&mut session, file)?;
     let inspect = execute(&mut session, "document.inspect", &Value::Null)?;
     let pretty = serde_json::to_string_pretty(&inspect)
@@ -442,6 +442,7 @@ pub(crate) fn render(args: Args) -> Result<Parsed<()>, CliError> {
             "--focus",
             "--accumulate",
             "--backdrop",
+            "--renderer",
         ],
         |name, value| {
             // The look's key of a layer-2 option (camelCase).
@@ -549,6 +550,9 @@ pub(crate) fn render(args: Args) -> Result<Parsed<()>, CliError> {
                 "--view" => {
                     params.insert("view".into(), value.into());
                 }
+                "--renderer" => {
+                    params.insert("renderer".into(), value.into());
+                }
                 _ => {
                     params.insert("mode".into(), value.into());
                 }
@@ -574,7 +578,7 @@ pub(crate) fn render(args: Args) -> Result<Parsed<()>, CliError> {
     if !look.is_empty() {
         params.insert("look".into(), Value::Object(look));
     }
-    let mut session = Session::new(Workspace::unrestricted());
+    let mut session = crate::session(Workspace::unrestricted());
     open(&mut session, file)?;
     let result = execute(&mut session, "view.render", &Value::Object(params))?;
     print_json(&result).map(Parsed::Run)
@@ -702,7 +706,7 @@ pub(crate) fn convert(args: Args) -> Result<Parsed<()>, CliError> {
                 .to_string(),
         ));
     }
-    let mut session = Session::new(Workspace::unrestricted());
+    let mut session = crate::session(Workspace::unrestricted());
     open(&mut session, input)?;
     let result = if native {
         execute(&mut session, "file.save", &json!({ "path": output }))?

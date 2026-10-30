@@ -12,7 +12,7 @@
 
 use crate::args::{self, Arg, Args};
 use crate::{CliError, Parsed, print};
-use craft3d_engine::{Session, Workspace};
+use craft3d_engine::Workspace;
 use serde_json::{Map, Value, json};
 use std::io::Write;
 
@@ -416,7 +416,7 @@ pub(crate) fn check_range(args: Args) -> Result<Parsed<()>, CliError> {
     }
     let error =
         |e: craft3d_engine::CommandError| CliError::Code(EXIT_ERROR, e.message().to_string());
-    let mut session = Session::new(Workspace::unrestricted());
+    let mut session = crate::session(Workspace::unrestricted());
     // A run may take hours: what the kernel keeps goes after every point.
     session.set_lean_sampling(true);
     session

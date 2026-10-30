@@ -21,8 +21,8 @@ use serde_json::Value;
 pub(crate) static SPECS: &[CommandSpec] = &[spec!(
     "view.replay",
     "Replay",
-    r#"{"dir": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the finished model, "tolerance": number = the picture's at to, as view.render, "from": id or name = the first feature, "to": id or name = the rollback marker or the last feature, "every": boolean = false, "framesPerStep": integer = 1, "hold": integer = 0, "orbit": number = 0, "fps": integer = 30, "motion": {t, frames, collisions} = none}"#,
-    "Renders how the document is built, for a showcase video: the history is rolled back to nothing and forward one feature at a time, from from to to, and each step is drawn with the CPU renderer as view.render would, from one camera framed on the model as it is at to, so the picture stays put. Writes the frames as dir/frame-00000.png, frame-00001.png, ... under the write root (frames of an earlier, longer replay there are removed) and dir/captions.srt, a subtitle per step with the feature's place, name and type, timed at fps. The first framesPerStep frames show the model before from (nothing, from the first feature), then framesPerStep frames per step, then hold more of the end; without an orbit the last frame is the picture view.render gives of the document with the same view, projection, zoom, box and tolerance. Without tolerance every step is meshed at the tolerance view.render chooses for the model as it is at to, for the camera of the replay. A step that changes no body (a sketch, a datum, a failed or suppressed feature) gets no frames unless every is true. orbit turns the camera that many degrees about the vertical over the whole replay (the model is then framed so that it stays in the picture all round). The document does not change: not its rollback marker, not its undo history. At most 3600 frames, and 8e9 pixels in all. Returns the frame count, the steps (with the frames each got, or none) and the captions. craft3d-cli replay makes an MP4 or a GIF of it. With motion ({t: [from, to] = [0, 1], frames: integer = 61, collisions: boolean = false}) it replays the motion instead of the history: frames values of t evenly from t[0] to t[1] (both included), each state made as view.motion makes it (only the features that depend on t are rebuilt and meshed again), framed on the box around every state, one frame each (hold more of the last), captioned t = ...; collisions: true draws the bodies that overlap at each t red. from, to, every and framesPerStep do not go with motion, and the document needs a timeline (view.motion). The result then has motion.frames: per frame its t and how many pairs collide. The motion is drawn a few frames at a time, so what it holds does not grow with the number of frames; frames whose meshes need more than 20000000 triangles at once are refused (give a coarser tolerance).",
+    r#"{"dir": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the finished model, "tolerance": number = the picture's at to, as view.render, "from": id or name = the first feature, "to": id or name = the rollback marker or the last feature, "every": boolean = false, "framesPerStep": integer = 1, "hold": integer = 0, "orbit": number = 0, "fps": integer = 30, "motion": {t, frames, collisions} = none, "animate": [{"variable": name, "from": number, "to": number, "keys": [{"t": 0 to 1, "value": number}], "unit": string, "easing": "linear|in|out|inOut" = "linear"}] = none, "frames": integer = 2 s at fps, "duration": seconds, "camera": {"keys": [{"t": 0 to 1, "eye": [x, y, z], "target": [x, y, z], "up": [x, y, z], "fov": degrees}], "orbit": degrees = 0, "dolly": factor = 1, "easing": "linear|in|out|inOut" = "linear"} = the framed camera, standing still, "background": "light|dark" = "light", "look": {as view.render's; accumulate = 16} = the plain look, "renderer": "auto|cpu|gpu" = "auto", "video": string (.mp4, .webm or .gif) = none}"#,
+    "Renders how the document is built, for a showcase video: the history is rolled back to nothing and forward one feature at a time, from from to to, and each step is drawn as view.render would, from one camera framed on the model as it is at to, so the picture stays put. Writes the frames as dir/frame-00000.png, frame-00001.png, ... under the write root (frames of an earlier, longer replay there are removed) and dir/captions.srt, a subtitle per step with the feature's place, name and type, timed at fps. The first framesPerStep frames show the model before from (nothing, from the first feature), then framesPerStep frames per step, then hold more of the end; without an orbit the last frame is the picture view.render gives of the document with the same view, projection, zoom, box and tolerance. Without tolerance every step is meshed at the tolerance view.render chooses for the model as it is at to, for the camera of the replay. A step that changes no body (a sketch, a datum, a failed or suppressed feature) gets no frames unless every is true. orbit turns the camera that many degrees about the vertical over the whole replay (the model is then framed so that it stays in the picture all round). The document does not change: not its rollback marker, not its undo history. At most 3600 frames, and 8e9 pixels in all. Returns the frame count, the steps (with the frames each got, or none) and the captions. craft3d-cli replay makes an MP4 or a GIF of it. With motion ({t: [from, to] = [0, 1], frames: integer = 61, collisions: boolean = false}) it replays the motion instead of the history: frames values of t evenly from t[0] to t[1] (both included), each state made as view.motion makes it (only the features that depend on t are rebuilt and meshed again), framed on the box around every state, one frame each (hold more of the last), captioned t = ...; collisions: true draws the bodies that overlap at each t red. from, to, every and framesPerStep do not go with motion, and the document needs a timeline (view.motion). The result then has motion.frames: per frame its t and how many pairs collide. The motion is drawn a few frames at a time, so what it holds does not grow with the number of frames; frames whose meshes need more than 20000000 triangles at once are refused (give a coarser tolerance). With animate it renders an animation instead (an exploded view, a stroke, a parameter sweep): frames states (or duration seconds at fps; 2 s by default), state k at s = k / (frames - 1) from 0 to 1, each the document with every track's variable set to its value at s (from to to, or through keys [{t, value}] with t from 0 to 1 rising; easing moves a value between two keys: linear, in, out, inOut; unit is written after each value, as \"mm\" or \"deg\", and must give the variable the dimension it has, a track of the timeline t takes 0 to 1 and no unit) and regenerated from the document's own regeneration, so only what the variables touch is rebuilt; a track of the document's timeline t is played as the motion is (view.motion: an assembly's parts are placed by its solve, the only track an assembly takes), an empty list animates the camera alone. Each frame is captioned with the values; the result has animate: {tracks, states, failed: the frames whose features failed}. frames and duration go with animate only; from, to, every, framesPerStep and motion do not. camera moves the camera over every replay: keys (t from 0, the first frame, to 1, the last, hold included) give eye, target, up and fov, the others the framed camera's, and the camera passes through them on a Catmull-Rom spline (the up and the field of view between them); orbit (or the top-level orbit, not both) turns it about the vertical through its target, dolly moves it towards the target (0.5 ends at half the distance), easing paces all of it. look and background are view.render's: the studio look's frames average look.accumulate frames each (16 when not given, the window's settled picture; on the CPU at most what its 2^26 samples allow). renderer is view.render's: auto draws on the session's GPU renderer when it has one (craft3d-cli and craft3d-cli serve), else on the CPU on every core; the result says renderer, adapter and rendererFallback. video makes a video of the frames under the write root with ffmpeg (found on PATH or named by CRAFT3D_FFMPEG; an MP4 gets the captions as a subtitle track), in a session whose host has an encoder (craft3d-cli and its serve): refused before a frame is drawn when ffmpeg is missing, and the PNG sequence of dir alone is the alternative.",
     doc: true,
     view_replay
 )];
@@ -85,7 +85,9 @@ fn frame_index(name: &str) -> Option<u64> {
 mod native {
     use super::*;
     use crate::CommandError;
+    use crate::animation::{CameraPath, Track};
     use crate::commands::{Framing, feature_ref, vec3};
+    use crate::pictures::{Choice, Painter, Shading};
     use craft3d_doc::FeatureId;
     use craft3d_math::{Bbox3, Vec3};
     use craft3d_regen::Status;
@@ -94,6 +96,8 @@ mod native {
     use craft3d_topo::Body;
     use serde_json::json;
     use std::sync::Arc;
+
+    const ID: &str = "view.replay";
 
     /// The bodies of one state of the history, in the order of the
     /// regeneration (the order `view.render` draws them in).
@@ -357,17 +361,6 @@ mod native {
         .zoomed(framing.zoom)
     }
 
-    /// `camera` turned by `degrees` about the vertical through its target.
-    fn turned(camera: &Camera, degrees: f64) -> Camera {
-        let (s, c) = degrees.to_radians().sin_cos();
-        let turn = |v: Vec3| Vec3::new(c * v.x - s * v.y, s * v.x + c * v.y, v.z);
-        Camera {
-            eye: camera.target + turn(camera.eye - camera.target),
-            up: turn(camera.up),
-            ..*camera
-        }
-    }
-
     /// The bodies of `doc` as `regen` built them, each with its faces'
     /// colours, without those the view hides.
     fn bodies_of(doc: &craft3d_doc::Document, regen: &craft3d_regen::Regen) -> Bodies {
@@ -381,16 +374,543 @@ mod native {
             .collect()
     }
 
+    /// The parameters of `view.replay`.
+    pub(super) const KEYS: &[&str] = &[
+        "dir",
+        "width",
+        "height",
+        "view",
+        "projection",
+        "zoom",
+        "box",
+        "tolerance",
+        "from",
+        "to",
+        "every",
+        "framesPerStep",
+        "hold",
+        "orbit",
+        "fps",
+        "motion",
+        "background",
+        "look",
+        "renderer",
+        "camera",
+        "animate",
+        "frames",
+        "duration",
+        "video",
+    ];
+
+    /// The keys of one kind of replay that the others do not take.
+    const HISTORY_ONLY: [&str; 4] = ["from", "to", "every", "framesPerStep"];
+    const ANIMATION_ONLY: [&str; 2] = ["frames", "duration"];
+
+    /// What every kind of replay shares: where the frames go, their size,
+    /// the framing, the camera's path, the look and the pacing.
+    struct Options {
+        dir_param: String,
+        dir: std::path::PathBuf,
+        width: u64,
+        height: u64,
+        framing: Framing,
+        hold: u64,
+        fps: u64,
+        path: CameraPath,
+        tolerance: Option<f64>,
+        background: [u8; 3],
+        look: crate::look::LookSpec,
+    }
+
+    impl Options {
+        fn of(session: &Session, p: &Params) -> Result<Options, CommandError> {
+            let dir_param = p.required_str("dir")?.to_string();
+            let width = p.integer("width", 16, 4096)?.unwrap_or(800);
+            let height = p.integer("height", 16, 4096)?.unwrap_or(600);
+            let framing = Framing::from_params(p, ID)?;
+            let hold = p.integer("hold", 0, MAX_REPLAY_FRAMES)?.unwrap_or(0);
+            let fps = p.integer("fps", 1, 240)?.unwrap_or(30);
+            let path = CameraPath::parse(ID, p.get("camera"), p.number("orbit")?)?;
+            if framing.orthographic && path.has_fov() {
+                return fail(format!(
+                    "{ID}: a camera key's `fov` is a perspective camera's; this replay is orthographic"
+                ));
+            }
+            let background = match p.str("background")?.unwrap_or("light") {
+                "light" => crate::commands::VIEWPORT_BACKGROUND,
+                "dark" => crate::commands::DARK_BACKGROUND,
+                other => {
+                    let other: String = other.chars().take(40).collect();
+                    return fail(format!(
+                        "{ID}: unknown background `{other}`; use light or dark"
+                    ));
+                }
+            };
+            let look = crate::look::look_param(ID, p.get("look"))?;
+            if session.writes_to_memory() {
+                return fail(format!(
+                    "{ID}: the frames go to a folder on disk, and this session keeps its files in memory"
+                ));
+            }
+            let dir = session.workspace.resolve_write(&dir_param)?;
+            let tolerance = match p.number("tolerance")? {
+                Some(t) if t > 0.0 => Some(t),
+                Some(_) => return fail(format!("{ID}: `tolerance` must be positive")),
+                None => None,
+            };
+            Ok(Options {
+                dir_param,
+                dir,
+                width,
+                height,
+                framing,
+                hold,
+                fps,
+                path,
+                tolerance,
+                background,
+                look,
+            })
+        }
+
+        fn aspect(&self) -> f64 {
+            self.width as f64 / self.height as f64
+        }
+
+        /// The limits on frames and pixels.
+        fn check_count(&self, frames: u64, what: &str) -> Result<(), CommandError> {
+            if frames > MAX_REPLAY_FRAMES {
+                return fail(format!(
+                    "{ID}: {frames} frames ({what}) exceed the limit of {MAX_REPLAY_FRAMES}"
+                ));
+            }
+            let pixels = frames
+                .saturating_mul(self.width)
+                .saturating_mul(self.height);
+            if pixels > MAX_REPLAY_PIXELS {
+                return fail(format!(
+                    "{ID}: {frames} frames of {}x{} are {pixels} pixels, more than the limit of {MAX_REPLAY_PIXELS}; make them smaller or fewer",
+                    self.width, self.height
+                ));
+            }
+            Ok(())
+        }
+
+        /// The camera of the replay before its path moves it: framed on
+        /// `model` as `view.render` frames it, or all round for an orbit.
+        fn base_camera(&self, model: &Bbox3) -> Result<Camera, CommandError> {
+            if self.path.orbit == 0.0 {
+                self.framing.camera(model, self.aspect())
+            } else {
+                orbit_camera(
+                    &self.framing,
+                    &self.framing.look_at.unwrap_or(*model),
+                    self.path.orbit,
+                    self.aspect(),
+                )
+                .ok_or_else(|| CommandError::new(format!("{ID}: cannot frame the model")))
+            }
+        }
+
+        fn render_params(&self) -> RenderParams {
+            // Both are within 16..=4096.
+            RenderParams {
+                width: self.width as u32,
+                height: self.height as u32,
+                background: self.background,
+                ..RenderParams::default()
+            }
+        }
+
+        /// The studio look resolved for the model in `model` of a document
+        /// in `mm_per_unit`, with the frames each picture averages: the
+        /// look's `accumulate`, else [`crate::look::VIEWPORT_ACCUMULATE`]
+        /// (the window's, so a replay's frames are as settled as its
+        /// screenshots), on the CPU at most what its sample limit allows.
+        /// `None` for the plain look.
+        fn studio(
+            &self,
+            model: &Bbox3,
+            mm_per_unit: f64,
+            on_host: bool,
+        ) -> Result<Option<(StudioLook, Arc<Prepared>)>, CommandError> {
+            let Some(env) = self
+                .look
+                .prepared()
+                .map_err(|e| CommandError::new(format!("{ID}: look: {e}")))?
+            else {
+                return Ok(None);
+            };
+            let params = self.render_params();
+            let cap = crate::pictures::cpu_frame_cap(&params);
+            let frames = match self.look.accumulate {
+                Some(n) if !on_host && n > cap => {
+                    return fail(format!(
+                        "{ID}: look.accumulate {n} is more frames than the CPU renderer averages at {}x{} (at most {cap}); give fewer, or draw on the GPU",
+                        self.width, self.height
+                    ));
+                }
+                Some(n) => n,
+                None if on_host => crate::look::VIEWPORT_ACCUMULATE,
+                None => crate::look::VIEWPORT_ACCUMULATE.min(cap),
+            };
+            Ok(Some((
+                self.look.resolved(model, mm_per_unit, None, frames),
+                env,
+            )))
+        }
+
+        /// The tessellation of every state: at the tolerance given, or at
+        /// the picture's tolerance of the state `(doc, regen)` for the
+        /// replay's camera, as `view.render` meshes it.
+        fn tess(
+            &self,
+            doc: &craft3d_doc::Document,
+            regen: &craft3d_regen::Regen,
+            meshes: &crate::meshes::MeshStore,
+            camera: Option<&Camera>,
+        ) -> Result<TessParams, CommandError> {
+            if let Some(chordal_tolerance) = self.tolerance {
+                return Ok(TessParams {
+                    chordal_tolerance,
+                    ..TessParams::default()
+                });
+            }
+            let rung = crate::scene::picture_tolerance(regen, doc, |model| {
+                let camera = match camera {
+                    Some(camera) => *camera,
+                    None => self.base_camera(model).ok()?,
+                };
+                // Both are within 16..=4096.
+                crate::scene::pixel_footprint(&camera, self.height as u32, model)
+            });
+            let settled = crate::scene::picture_scene_of(doc, regen, 0, rung, meshes);
+            if let Some(problem) = settled.problems.first() {
+                return fail(format!("{ID}: {problem}"));
+            }
+            Ok(TessParams {
+                chordal_tolerance: settled.tolerance,
+                max_angle: settled.max_angle,
+                max_triangles: Some(crate::scene::DISPLAY_MAX_TRIANGLES),
+                ..TessParams::default()
+            })
+        }
+
+        fn create_dir(&self) -> Result<(), CommandError> {
+            std::fs::create_dir_all(&self.dir).map_err(|e| {
+                CommandError::new(format!(
+                    "{ID}: cannot create the directory `{}`: {e}",
+                    self.dir_param
+                ))
+            })
+        }
+
+        /// Writes the captions and removes frames an earlier, longer
+        /// replay left in the directory (they would run on after this
+        /// one's in a video made of it).
+        fn finish(&self, frames: u64, srt: &str) -> Result<(), CommandError> {
+            crate::workspace::write_atomic(&self.dir.join("captions.srt"), srt.as_bytes())?;
+            if let Ok(entries) = std::fs::read_dir(&self.dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    if name
+                        .to_str()
+                        .and_then(frame_index)
+                        .is_some_and(|index| index >= frames)
+                    {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        /// What every result says.
+        fn result(&self, frames: u64, model: &Bbox3, studio: Option<&StudioLook>) -> Value {
+            let mut result = json!({
+                "dir": self.dir_param,
+                "frames": frames,
+                "framePattern": "frame-%05d.png",
+                "fps": self.fps,
+                "width": self.width,
+                "height": self.height,
+                "view": self.framing.view,
+                "orbit": self.path.orbit,
+                "box": model.corners().map(|(lo, hi)| json!([vec3(lo), vec3(hi)])),
+                "captions": "captions.srt",
+            });
+            if let (Some(look), Some(map)) = (studio, result.as_object_mut()) {
+                let mut said = self.look.json();
+                if let Some(said) = said.as_object_mut() {
+                    said.insert("accumulate".into(), look.accumulate.into());
+                }
+                map.insert("look".into(), said);
+            }
+            result
+        }
+    }
+
+    /// The studio look as the renderers take it.
+    type StudioLook = craft3d_render::studio::Look;
+    type Prepared = craft3d_render::studio::Prepared;
+
+    /// A picture to draw: the bodies of a state, the first frame it is
+    /// and how many frames show it (more than one only while the camera
+    /// stands still), and the key its mesh goes by on the GPU.
+    struct Job<'a> {
+        bodies: &'a Bodies,
+        first: u64,
+        n: u64,
+        key: u64,
+    }
+
+    /// How the frames are drawn.
+    struct Canvas<'a> {
+        params: RenderParams,
+        studio: Option<(StudioLook, Arc<Prepared>)>,
+        base: Camera,
+        path: &'a CameraPath,
+        /// All frames, the hold included: the camera's path runs over them.
+        frames: u64,
+        dir: &'a std::path::Path,
+    }
+
+    impl Canvas<'_> {
+        fn camera(&self, frame: u64) -> Result<Camera, CommandError> {
+            let s = frame as f64 / self.frames.saturating_sub(1).max(1) as f64;
+            self.path.at(&self.base, s).ok_or_else(|| {
+                CommandError::new(format!(
+                    "{ID}: the camera has no direction at frame {frame} (its eye on its target, or looking along its up)"
+                ))
+            })
+        }
+
+        fn shading(&self) -> Shading<'_> {
+            match &self.studio {
+                Some((look, env)) => Shading::Studio(look, env),
+                None => Shading::Plain,
+            }
+        }
+
+        fn threads(&self) -> usize {
+            // The studio look holds more per sample: its geometry, its
+            // light and its occlusion.
+            let per_sample = if self.studio.is_some() { 4 } else { 1 };
+            threads_for(
+                self.params.width.into(),
+                u64::from(self.params.height).saturating_mul(per_sample),
+                self.params.ssaa,
+            )
+        }
+
+        /// Draws `jobs` and writes their frames: on the host's renderer one
+        /// at a time (the PNGs made a batch at a time on every core), on the
+        /// CPU on every core.
+        fn paint(
+            &self,
+            painter: &mut Painter,
+            meshes: &Meshes,
+            jobs: &[Job<'_>],
+        ) -> Result<(), CommandError> {
+            let threads = self.threads();
+            let write = |png: &[u8], first: u64, n: u64| -> Result<(), CommandError> {
+                for f in first..first.saturating_add(n) {
+                    crate::workspace::write_atomic(&self.dir.join(frame_name(f)), png)?;
+                }
+                Ok(())
+            };
+            if painter.on_host() {
+                for batch in jobs.chunks(threads.max(1)) {
+                    let mut drawn = Vec::with_capacity(batch.len());
+                    for job in batch {
+                        let (mesh, colors) = meshes.joined(job.bodies)?;
+                        let camera = self.camera(job.first)?;
+                        let frame = painter.draw(
+                            &mesh,
+                            &colors,
+                            &camera,
+                            &self.params,
+                            self.shading(),
+                            Some(job.key),
+                        )?;
+                        drawn.push((frame, job.first, job.n));
+                    }
+                    in_parallel(drawn.len(), threads, |k| {
+                        let Some((frame, first, n)) = drawn.get(k) else {
+                            return Ok(());
+                        };
+                        let png = frame
+                            .to_png()
+                            .map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
+                        write(&png, *first, *n)
+                    })?;
+                }
+                return Ok(());
+            }
+            in_parallel(jobs.len(), threads, |k| {
+                let Some(job) = jobs.get(k) else {
+                    return Ok(());
+                };
+                let (mesh, colors) = meshes.joined(job.bodies)?;
+                let camera = self.camera(job.first)?;
+                let png = crate::pictures::cpu_draw(
+                    &mesh,
+                    &colors,
+                    &camera,
+                    &self.params,
+                    self.shading(),
+                )
+                .and_then(|f| f.to_png())
+                .map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
+                write(&png, job.first, job.n)
+            })?;
+            painter.count_cpu(jobs.len() as u64);
+            Ok(())
+        }
+
+        /// The jobs of states shown from frame `first` for `n` frames: one
+        /// picture written `n` times while the camera stands still, else a
+        /// picture per frame.
+        fn jobs_of<'b>(&self, units: &[(&'b Bodies, u64, u64, u64)]) -> Vec<Job<'b>> {
+            let mut jobs = Vec::new();
+            for &(bodies, first, n, key) in units {
+                if self.path.is_still() {
+                    jobs.push(Job {
+                        bodies,
+                        first,
+                        n,
+                        key,
+                    });
+                } else {
+                    for f in first..first.saturating_add(n) {
+                        jobs.push(Job {
+                            bodies,
+                            first: f,
+                            n: 1,
+                            key,
+                        });
+                    }
+                }
+            }
+            jobs
+        }
+    }
+
+    /// The length unit of `doc` in millimetres (for the lens).
+    fn mm_per_unit(doc: &craft3d_doc::Document) -> f64 {
+        doc.units.length.as_expr_unit().factor()
+    }
+
+    /// A key for a state's mesh on the GPU, unique in the process.
+    fn fresh_key() -> u64 {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// The video asked for: the path as given and where it goes.
+    pub(super) fn video_param(
+        session: &Session,
+        p: &Params,
+    ) -> Result<Option<(String, std::path::PathBuf)>, CommandError> {
+        let Some(video) = p.str("video")? else {
+            return Ok(None);
+        };
+        let extension = std::path::Path::new(video)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase);
+        if !matches!(extension.as_deref(), Some("mp4" | "webm" | "gif")) {
+            return fail(format!(
+                "{ID}: `video` must be a file name ending in .mp4, .webm or .gif; for a PNG sequence give dir alone"
+            ));
+        }
+        let resolved = session.workspace.resolve_write(video)?;
+        Ok(Some((video.to_string(), resolved)))
+    }
+
+    /// `view.replay`: the history, the motion, or an animation, drawn by
+    /// the renderer the session and `renderer` choose, and made into a
+    /// video when `video` asks.
+    pub(super) fn view_replay(session: &mut Session, params: &Value) -> Run {
+        let p = Params::new(ID, params, KEYS)?;
+        let choice = Choice::from_param(ID, p.get("renderer"))?;
+        let video = video_param(session, &p)?;
+        // A video needs the host's encoder, ready before a frame is drawn.
+        let mut encoder = None;
+        if let Some((given, _)) = &video {
+            let Some(mut found) = session.video.take() else {
+                return fail(format!(
+                    "{ID}: this session cannot start ffmpeg to make `{given}` (craft3d-cli and craft3d-cli serve can); give dir alone for the PNG sequence, frame-00000.png and on, and make the video of it yourself"
+                ));
+            };
+            let ready = found.ready();
+            if let Err(why) = ready {
+                session.video.put(found);
+                return fail(format!(
+                    "{ID}: cannot make `{given}`: {why}; give dir alone for the PNG sequence (frame-00000.png and on, with captions.srt), or install ffmpeg"
+                ));
+            }
+            encoder = Some(found);
+        }
+        let painter = Painter::new(session, ID, choice);
+        let made = painter.and_then(|mut painter| {
+            let made = if p.has("animate") {
+                animate_replay(session, &p, &mut painter)
+            } else if p.has("motion") {
+                motion_replay(session, &p, &mut painter)
+            } else {
+                history_replay(session, &p, &mut painter)
+            };
+            painter.finish(session);
+            made.map(|mut result| {
+                painter.used.insert_into(&mut result);
+                result
+            })
+        });
+        let made = match (made, &video, encoder.as_mut()) {
+            (Ok(mut result), Some((given, out)), Some(encoder)) => {
+                let dir = session
+                    .workspace
+                    .resolve_write(result.get("dir").and_then(Value::as_str).unwrap_or("."));
+                let count = result.get("frames").and_then(Value::as_u64).unwrap_or(0);
+                let fps = result.get("fps").and_then(Value::as_u64).unwrap_or(30);
+                dir.and_then(|dir| {
+                    let said = encoder.encode(&dir, count, fps, out).map_err(|why| {
+                        CommandError::new(format!(
+                            "{ID}: ffmpeg could not make `{given}`: {why}; the frames are in `{}`",
+                            result.get("dir").and_then(Value::as_str).unwrap_or(".")
+                        ))
+                    })?;
+                    if let Some(map) = result.as_object_mut() {
+                        map.insert("video".into(), json!(given));
+                        if let Some(said) = said.as_object() {
+                            for (key, value) in said {
+                                map.insert(key.clone(), value.clone());
+                            }
+                        }
+                    }
+                    Ok(result)
+                })
+            }
+            (made, ..) => made,
+        };
+        if let Some(found) = encoder {
+            session.video.put(found);
+        }
+        made
+    }
+
     /// `view.replay` over the motion (`motion`): a frame per value of `t`,
     /// each state made as `view.motion` makes it.
-    fn motion_replay(session: &mut Session, p: &Params) -> Run {
-        const ID: &str = "view.replay";
-        if let Some(key) = ["from", "to", "every", "framesPerStep"]
+    fn motion_replay(session: &mut Session, p: &Params, painter: &mut Painter) -> Run {
+        if let Some(key) = HISTORY_ONLY
             .into_iter()
+            .chain(ANIMATION_ONLY)
             .find(|key| p.has(key))
         {
             return fail(format!(
-                "{ID}: `{key}` is about replaying the history; with `motion` the frames are the moments of the motion"
+                "{ID}: `{key}` does not go with `motion`: the frames are the moments of the motion"
             ));
         }
         let motion_value = p.get("motion").cloned().unwrap_or(Value::Null);
@@ -403,44 +923,9 @@ mod native {
         let range = crate::motion::t_range(ID, &m)?;
         let count = m.integer("frames", 2, MAX_REPLAY_FRAMES)?.unwrap_or(61);
         let red = m.bool("collisions")?.unwrap_or(false);
-        let dir_param = p.required_str("dir")?;
-        let width = p.integer("width", 16, 4096)?.unwrap_or(800);
-        let height = p.integer("height", 16, 4096)?.unwrap_or(600);
-        let framing = Framing::from_params(p, ID)?;
-        let hold = p.integer("hold", 0, MAX_REPLAY_FRAMES)?.unwrap_or(0);
-        let fps = p.integer("fps", 1, 240)?.unwrap_or(30);
-        let orbit = match p.number("orbit")? {
-            None => 0.0,
-            Some(o) if o.is_finite() && o.abs() <= 3600.0 => o,
-            Some(_) => {
-                return fail(format!(
-                    "{ID}: `orbit` must be a number of degrees within ±3600"
-                ));
-            }
-        };
-        let given = match p.number("tolerance")? {
-            Some(t) if t > 0.0 => Some(t),
-            Some(_) => return fail(format!("{ID}: `tolerance` must be positive")),
-            None => None,
-        };
-        let frames = count.saturating_add(hold);
-        if frames > MAX_REPLAY_FRAMES {
-            return fail(format!(
-                "{ID}: {frames} frames (frames {count} plus hold {hold}) exceed the limit of {MAX_REPLAY_FRAMES}"
-            ));
-        }
-        let pixels = frames.saturating_mul(width).saturating_mul(height);
-        if pixels > MAX_REPLAY_PIXELS {
-            return fail(format!(
-                "{ID}: {frames} frames of {width}x{height} are {pixels} pixels, more than the limit of {MAX_REPLAY_PIXELS}; make them smaller or fewer"
-            ));
-        }
-        if session.writes_to_memory() {
-            return fail(format!(
-                "{ID}: the frames go to a folder on disk, and this session keeps its files in memory"
-            ));
-        }
-        let dir = session.workspace.resolve_write(dir_param)?;
+        let o = Options::of(session, p)?;
+        let frames = count.saturating_add(o.hold);
+        o.check_count(frames, &format!("frames {count} plus hold {}", o.hold))?;
         let store = session.scene.meshes.clone();
         let open = session.document_mut()?;
         let base = Arc::clone(open.history.current());
@@ -474,63 +959,34 @@ mod native {
                 "{ID}: there are no bodies over the motion; check document.inspect for failed features"
             ));
         }
-        let aspect = width as f64 / height as f64;
-        let framed = framing.look_at.unwrap_or(model);
-        let camera = if orbit == 0.0 {
-            framing.camera(&framed, aspect)?
-        } else {
-            orbit_camera(&framing, &framed, orbit, aspect)
-                .ok_or_else(|| CommandError::new(format!("{ID}: cannot frame the model")))?
-        };
-        let tess = match given {
-            Some(chordal_tolerance) => TessParams {
-                chordal_tolerance,
-                ..TessParams::default()
-            },
-            None => {
-                // Both are within 16..=4096.
-                let rung = crate::scene::picture_tolerance(&last_regen, &last_doc, |model| {
-                    crate::scene::pixel_footprint(&camera, height as u32, model)
-                });
-                let settled =
-                    crate::scene::picture_scene_of(&last_doc, &last_regen, 0, rung, &store);
-                if let Some(problem) = settled.problems.first() {
-                    return fail(format!("{ID}: {problem}"));
-                }
-                TessParams {
-                    chordal_tolerance: settled.tolerance,
-                    max_angle: settled.max_angle,
-                    max_triangles: Some(crate::scene::DISPLAY_MAX_TRIANGLES),
-                    ..TessParams::default()
-                }
-            }
-        };
+        let framed = o.framing.look_at.unwrap_or(model);
+        let camera = o.base_camera(&framed)?;
+        let tess = o.tess(&last_doc, &last_regen, &store, Some(&camera))?;
         drop((last_doc, last_regen));
         let names = |id: FeatureId| {
             base.feature(id)
                 .map_or_else(|| id.to_string(), |f| f.name.clone())
         };
-        let render_params = RenderParams {
-            width: width as u32,
-            height: height as u32,
-            background: crate::commands::VIEWPORT_BACKGROUND,
-            ..RenderParams::default()
+        let studio = o.studio(&model, mm_per_unit(&base), painter.on_host())?;
+        o.create_dir()?;
+        let canvas = Canvas {
+            params: o.render_params(),
+            studio,
+            base: camera,
+            path: &o.path,
+            frames,
+            dir: &o.dir,
         };
-        std::fs::create_dir_all(&dir).map_err(|e| {
-            CommandError::new(format!(
-                "{ID}: cannot create the directory `{dir_param}`: {e}"
-            ))
-        })?;
-        let threads = threads_for(width, height, render_params.ssaa);
+        let chunk_size = canvas.threads().saturating_mul(2).max(1);
         let mut memo = crate::motion::PairMemo::default();
         let mut meshes = Meshes::default();
         let mut srt = String::new();
         let mut frames_json = Vec::new();
         let mut frame = 0_u64;
         let last_index = ts.len().saturating_sub(1);
-        for (chunk_index, chunk) in ts.chunks(threads.saturating_mul(2).max(1)).enumerate() {
-            let first_k = chunk_index.saturating_mul(threads.saturating_mul(2).max(1));
-            let mut states: Vec<(Bodies, u64, u64)> = Vec::new();
+        for (chunk_index, chunk) in ts.chunks(chunk_size).enumerate() {
+            let first_k = chunk_index.saturating_mul(chunk_size);
+            let mut states: Vec<(Bodies, u64, u64, u64)> = Vec::new();
             for (offset, &t) in chunk.iter().enumerate() {
                 let k = first_k.saturating_add(offset);
                 let (doc, regen) = sweep
@@ -544,16 +1000,16 @@ mod native {
                 } else {
                     (doc, 0)
                 };
-                let n = if k == last_index { 1 + hold } else { 1 };
+                let n = if k == last_index { 1 + o.hold } else { 1 };
                 let text = format!("t = {}", crate::assert_cmds::shown(t));
                 srt.push_str(&format!(
                     "{}\n{} --> {}\n{text}\n\n",
                     k + 1,
-                    srt_time(frame, fps),
-                    srt_time(frame.saturating_add(n), fps)
+                    srt_time(frame, o.fps),
+                    srt_time(frame.saturating_add(n), o.fps)
                 ));
                 frames_json.push(json!({"t": t, "frame": frame, "collisions": collided}));
-                states.push((bodies_of(&doc, &regen), frame, n));
+                states.push((bodies_of(&doc, &regen), frame, n, fresh_key()));
                 frame = frame.saturating_add(n);
             }
             // The meshes of this chunk's bodies: those of the chunk before
@@ -569,119 +1025,376 @@ mod native {
                     meshes.triangles()
                 ));
             }
-            let mut jobs: Vec<(&Bodies, u64, u64)> = Vec::new();
-            for (bodies, first, n) in &states {
-                if orbit == 0.0 {
-                    jobs.push((bodies, *first, *n));
-                } else {
-                    for f in *first..first.saturating_add(*n) {
-                        jobs.push((bodies, f, 1));
+            let units: Vec<(&Bodies, u64, u64, u64)> = states
+                .iter()
+                .map(|(bodies, first, n, key)| (bodies, *first, *n, *key))
+                .collect();
+            canvas.paint(painter, &meshes, &canvas.jobs_of(&units))?;
+        }
+        o.finish(frame, &srt)?;
+        let mut result = o.result(frame, &model, canvas.studio.as_ref().map(|(l, _)| l));
+        if let Some(map) = result.as_object_mut() {
+            map.insert(
+                "motion".into(),
+                json!({"t": [range.0, range.1], "frames": frames_json, "collisions": red}),
+            );
+        }
+        Ok(result)
+    }
+
+    /// One variable track and the variable's dimension as the document
+    /// has it.
+    struct Tracked {
+        track: Track,
+        dimension: craft3d_expr::Dimension,
+    }
+
+    /// The states of an animation, frame by frame: the document with its
+    /// tracks' values set (each a function of its values alone), the
+    /// timeline's through the motion's sweep.
+    struct Animation {
+        base: Arc<craft3d_doc::Document>,
+        tracks: Vec<Tracked>,
+        timeline: Option<Track>,
+        sweep: Option<crate::motion::Sweep>,
+        cache: craft3d_regen::RegenCache,
+        count: u64,
+    }
+
+    impl Animation {
+        /// The place `s` of state `k`.
+        fn s(&self, k: u64) -> f64 {
+            k as f64 / self.count.saturating_sub(1).max(1) as f64
+        }
+
+        /// The state of frame `k`, its regeneration and its caption.
+        fn at(
+            &mut self,
+            k: u64,
+        ) -> Result<
+            (
+                Arc<craft3d_doc::Document>,
+                Arc<craft3d_regen::Regen>,
+                String,
+            ),
+            CommandError,
+        > {
+            let s = self.s(k);
+            let mut caption: Vec<String> = Vec::new();
+            let t = self.timeline.as_ref().map(|track| track.at(s));
+            if let Some(t) = t {
+                caption.push(format!(
+                    "{} = {}",
+                    crate::motion::TIMELINE,
+                    crate::assert_cmds::shown(t)
+                ));
+            }
+            for tracked in &self.tracks {
+                caption.push(format!(
+                    "{} = {}",
+                    tracked.track.variable,
+                    tracked.track.expr_at(s)
+                ));
+            }
+            let caption = caption.join(", ");
+            let at_t = |e: String| CommandError::new(format!("{ID}: at frame {k}: {e}"));
+            if let (Some(t), Some(sweep), true) = (t, self.sweep.as_mut(), self.tracks.is_empty()) {
+                let (doc, regen) = sweep.at(t).map_err(at_t)?;
+                return Ok((doc, regen, caption));
+            }
+            let mut doc = match (t, self.sweep.as_mut()) {
+                (Some(t), Some(sweep)) => sweep.settled(t).map_err(at_t)?,
+                _ => craft3d_doc::Document::clone(&self.base),
+            };
+            for tracked in &self.tracks {
+                let expr = tracked.track.expr_at(s);
+                doc.set_variable(&tracked.track.variable, &expr)
+                    .map_err(|e| {
+                        CommandError::new(format!(
+                            "{ID}: at frame {k}: `{}` = `{expr}`: {e}",
+                            tracked.track.variable
+                        ))
+                    })?;
+            }
+            if k == 0 && !self.tracks.is_empty() {
+                let evaluated = doc
+                    .variable_table()
+                    .map_err(|e| CommandError::new(format!("{ID}: {e}")))?
+                    .evaluate();
+                for tracked in &self.tracks {
+                    let name = &tracked.track.variable;
+                    match evaluated.get(name) {
+                        Some(Ok(q)) if q.dimension == tracked.dimension => {}
+                        Some(Ok(q)) => {
+                            return fail(format!(
+                                "{ID}: `{name}` is {} in the document, and the track makes it {}; give the track the variable's unit (\"unit\": \"mm\", \"deg\", ...)",
+                                tracked.dimension.described(),
+                                q.dimension.described()
+                            ));
+                        }
+                        Some(Err(e)) => {
+                            return fail(format!(
+                                "{ID}: `{name}` = `{}` does not evaluate: {e}",
+                                tracked.track.expr_at(0.0)
+                            ));
+                        }
+                        None => return fail(format!("{ID}: `{name}` does not evaluate")),
                     }
                 }
             }
-            let meshes = &meshes;
-            let (dir, camera, render_params) = (&dir, &camera, &render_params);
-            let draw = |job: usize| -> Result<(), CommandError> {
-                let Some(&(bodies, first, n)) = jobs.get(job) else {
-                    return Ok(());
-                };
-                let (mesh, colors) = meshes.joined(bodies)?;
-                let angle = orbit * first as f64 / frames.saturating_sub(1).max(1) as f64;
-                let png = craft3d_render::render_colored(
-                    &mesh,
-                    &colors,
-                    &turned(camera, angle),
-                    render_params,
-                )
-                .and_then(|f| f.to_png())
-                .map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
-                for f in first..first.saturating_add(n) {
-                    crate::workspace::write_atomic(&dir.join(frame_name(f)), &png)?;
-                }
-                Ok(())
-            };
-            in_parallel(jobs.len(), threads, draw)?;
+            let regen = craft3d_regen::regenerate_cached(&doc, &mut self.cache);
+            Ok((Arc::new(doc), Arc::new(regen), caption))
         }
-        crate::workspace::write_atomic(&dir.join("captions.srt"), srt.as_bytes())?;
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let name = entry.file_name();
-                if name
-                    .to_str()
-                    .and_then(frame_index)
-                    .is_some_and(|index| index >= frame)
-                {
-                    let _ = std::fs::remove_file(entry.path());
-                }
-            }
-        }
-        Ok(json!({
-            "dir": dir_param,
-            "frames": frame,
-            "framePattern": "frame-%05d.png",
-            "fps": fps,
-            "width": width,
-            "height": height,
-            "view": framing.view,
-            "orbit": orbit,
-            "box": model.corners().map(|(lo, hi)| json!([vec3(lo), vec3(hi)])),
-            "motion": {"t": [range.0, range.1], "frames": frames_json, "collisions": red},
-            "captions": "captions.srt",
-        }))
     }
 
-    pub(super) fn view_replay(session: &mut Session, params: &Value) -> Run {
-        let p = Params::new(
-            "view.replay",
-            params,
-            &[
-                "dir",
-                "width",
-                "height",
-                "view",
-                "projection",
-                "zoom",
-                "box",
-                "tolerance",
-                "from",
-                "to",
-                "every",
-                "framesPerStep",
-                "hold",
-                "orbit",
-                "fps",
-                "motion",
-            ],
-        )?;
-        if p.has("motion") {
-            return motion_replay(session, &p);
+    /// `view.replay` with `animate`: frames over which variables (and the
+    /// timeline) follow their tracks and the camera its path.
+    fn animate_replay(session: &mut Session, p: &Params, painter: &mut Painter) -> Run {
+        if let Some(key) = HISTORY_ONLY
+            .into_iter()
+            .chain(["motion"])
+            .find(|key| p.has(key))
+        {
+            return fail(format!(
+                "{ID}: `{key}` does not go with `animate`: the frames are the animation's"
+            ));
         }
-        let dir_param = p.required_str("dir")?;
-        let width = p.integer("width", 16, 4096)?.unwrap_or(800);
-        let height = p.integer("height", 16, 4096)?.unwrap_or(600);
-        let framing = Framing::from_params(&p, "view.replay")?;
-        let every = p.bool("every")?.unwrap_or(false);
-        let per_step = p.integer("framesPerStep", 1, 600)?.unwrap_or(1);
-        let hold = p.integer("hold", 0, MAX_REPLAY_FRAMES)?.unwrap_or(0);
-        let fps = p.integer("fps", 1, 240)?.unwrap_or(30);
-        let orbit = match p.number("orbit")? {
-            None => 0.0,
-            Some(o) if o.is_finite() && o.abs() <= 3600.0 => o,
-            Some(_) => {
-                return fail("view.replay: `orbit` must be a number of degrees within ±3600");
+        let tracks = Track::parse_all(ID, p.get("animate").unwrap_or(&Value::Null))?;
+        let o = Options::of(session, p)?;
+        let count = match (p.get("frames"), p.get("duration")) {
+            (Some(_), Some(_)) => {
+                return fail(format!("{ID}: give `frames` or `duration`, not both"));
             }
+            (Some(_), None) => p.integer("frames", 2, MAX_REPLAY_FRAMES)?.unwrap_or(2),
+            (None, Some(_)) => match p.number("duration")? {
+                Some(d) if d > 0.0 && d <= MAX_REPLAY_FRAMES as f64 => {
+                    // At least two frames; at most what the limit allows
+                    // (checked below).
+                    ((d * o.fps as f64).round() as u64).max(2)
+                }
+                _ => {
+                    return fail(format!(
+                        "{ID}: `duration` must be seconds, more than 0 and at most {MAX_REPLAY_FRAMES}"
+                    ));
+                }
+            },
+            (None, None) => o.fps.saturating_mul(2).max(2),
         };
-        if session.writes_to_memory() {
-            return fail(
-                "view.replay: the frames go to a folder on disk, and this session keeps its files in memory",
+        let frames = count.saturating_add(o.hold);
+        o.check_count(frames, &format!("{count} plus hold {}", o.hold))?;
+        let store = session.scene.meshes.clone();
+        let open = session.document_mut()?;
+        let base = Arc::clone(open.history.current());
+        if base.features.is_empty() {
+            return fail(format!("{ID}: the document has no features to animate"));
+        }
+        let has_timeline = crate::motion::timeline(&base).is_ok();
+        let evaluated = base
+            .variable_table()
+            .map_err(|e| CommandError::new(format!("{ID}: {e}")))?
+            .evaluate();
+        let mut timeline = None;
+        let mut tracked = Vec::new();
+        for track in tracks {
+            let name = track.variable.as_str();
+            if name == crate::motion::TIMELINE && has_timeline {
+                if track.unit.is_some() || track.values.iter().any(|v| !(0.0..=1.0).contains(v)) {
+                    return fail(format!(
+                        "{ID}: the timeline `{name}` runs from 0 to 1, a plain number: its track takes values from 0 to 1 and no unit"
+                    ));
+                }
+                timeline = Some(track);
+                continue;
+            }
+            if base.variable(name).is_none() {
+                let name: String = name.chars().take(60).collect();
+                return fail(format!(
+                    "{ID}: the document has no variable `{name}` (variable.list names them)"
+                ));
+            }
+            if base.is_assembly() {
+                return fail(format!(
+                    "{ID}: an assembly animates its timeline `{}` (its drivers are formulas of it); `{name}` cannot be animated here",
+                    crate::motion::TIMELINE
+                ));
+            }
+            let dimension = match evaluated.get(name) {
+                Some(Ok(q)) => q.dimension,
+                _ => {
+                    return fail(format!(
+                        "{ID}: `{name}` does not evaluate in the document; fix it before animating it"
+                    ));
+                }
+            };
+            tracked.push(Tracked { track, dimension });
+        }
+        if base.is_assembly() && timeline.is_none() {
+            // An assembly's parts are placed by its solve at a moment of
+            // its timeline: the document's own, when no track moves it.
+            match crate::motion::timeline(&base) {
+                Ok(t0) => {
+                    timeline = Some(Track {
+                        variable: crate::motion::TIMELINE.to_string(),
+                        times: vec![0.0],
+                        values: vec![t0],
+                        unit: None,
+                        easing: crate::animation::Easing::Linear,
+                    });
+                }
+                Err(why) => {
+                    return fail(format!(
+                        "{ID}: an assembly is animated through its timeline: {why}"
+                    ));
+                }
+            }
+        }
+        let sweep = if timeline.is_some() {
+            Some(crate::motion::Sweep::of(open, &base))
+        } else {
+            None
+        };
+        if !base.is_assembly() {
+            open.regen();
+        }
+        let mut animation = Animation {
+            base: Arc::clone(&base),
+            tracks: tracked,
+            timeline,
+            sweep,
+            cache: open.cache.clone(),
+            count,
+        };
+        // The box over every state, unless `box` frames the camera: the
+        // states are made twice rather than kept, as for the motion.
+        let mut model = Bbox3::EMPTY;
+        let mut last = None;
+        for k in 0..count {
+            let (doc, regen, _) = animation.at(k)?;
+            if (o.framing.look_at.is_none() || k + 1 == count)
+                && let Some((lo, hi)) = crate::scene::bodies_box(&doc, &regen).corners()
+            {
+                model.add(lo);
+                model.add(hi);
+            }
+            if k + 1 == count {
+                last = Some((doc, regen));
+            }
+        }
+        let Some((last_doc, last_regen)) = last else {
+            return fail(format!("{ID}: nothing to animate"));
+        };
+        if model.is_empty() {
+            return fail(format!(
+                "{ID}: there are no bodies over the animation; check document.inspect for failed features"
+            ));
+        }
+        let framed = o.framing.look_at.unwrap_or(model);
+        let camera = o.base_camera(&framed)?;
+        let tess = o.tess(&last_doc, &last_regen, &store, Some(&camera))?;
+        drop((last_doc, last_regen));
+        let names = |id: FeatureId| {
+            base.feature(id)
+                .map_or_else(|| id.to_string(), |f| f.name.clone())
+        };
+        let studio = o.studio(&model, mm_per_unit(&base), painter.on_host())?;
+        o.create_dir()?;
+        let canvas = Canvas {
+            params: o.render_params(),
+            studio,
+            base: camera,
+            path: &o.path,
+            frames,
+            dir: &o.dir,
+        };
+        let chunk_size = canvas.threads().saturating_mul(2).max(1) as u64;
+        let mut meshes = Meshes::default();
+        let mut srt = String::new();
+        let mut failed: Vec<Value> = Vec::new();
+        let mut frame = 0_u64;
+        let mut k = 0_u64;
+        while k < count {
+            let end = k.saturating_add(chunk_size).min(count);
+            let mut states: Vec<(Bodies, u64, u64, u64)> = Vec::new();
+            for j in k..end {
+                let (doc, regen, caption) = animation.at(j)?;
+                let n = if j + 1 == count { 1 + o.hold } else { 1 };
+                srt.push_str(&format!(
+                    "{}\n{} --> {}\n{caption}\n\n",
+                    j + 1,
+                    srt_time(frame, o.fps),
+                    srt_time(frame.saturating_add(n), o.fps)
+                ));
+                let broken: Vec<String> = doc
+                    .features
+                    .iter()
+                    .filter(|f| {
+                        matches!(
+                            regen.feature(f.id).map(|r| &r.status),
+                            Some(Status::Failed(_))
+                        )
+                    })
+                    .map(|f| f.name.clone())
+                    .collect();
+                if !broken.is_empty() && failed.len() < 50 {
+                    failed.push(json!({"frame": frame, "failed": broken}));
+                }
+                states.push((bodies_of(&doc, &regen), frame, n, fresh_key()));
+                frame = frame.saturating_add(n);
+            }
+            meshes.keep_only(states.iter().map(|(bodies, ..)| bodies));
+            for (bodies, ..) in &states {
+                meshes.fill(bodies, &names, &tess)?;
+            }
+            if meshes.triangles() > MAX_REPLAY_TRIANGLES {
+                return fail(format!(
+                    "{ID}: the frames from {k} need {} triangles at once, more than the {MAX_REPLAY_TRIANGLES} a replay holds; give a coarser tolerance or a smaller model",
+                    meshes.triangles()
+                ));
+            }
+            let units: Vec<(&Bodies, u64, u64, u64)> = states
+                .iter()
+                .map(|(bodies, first, n, key)| (bodies, *first, *n, *key))
+                .collect();
+            canvas.paint(painter, &meshes, &canvas.jobs_of(&units))?;
+            k = end;
+        }
+        o.finish(frame, &srt)?;
+        let mut result = o.result(frame, &model, canvas.studio.as_ref().map(|(l, _)| l));
+        let mut tracks_json: Vec<Value> = Vec::new();
+        if let Some(track) = &animation.timeline {
+            tracks_json.push(json!({
+                "variable": crate::motion::TIMELINE,
+                "from": track.at(0.0),
+                "to": track.at(1.0),
+                "timeline": true,
+            }));
+        }
+        for tracked in &animation.tracks {
+            tracks_json.push(json!({
+                "variable": tracked.track.variable,
+                "from": tracked.track.expr_at(0.0),
+                "to": tracked.track.expr_at(1.0),
+            }));
+        }
+        if let Some(map) = result.as_object_mut() {
+            map.insert(
+                "animate".into(),
+                json!({"tracks": tracks_json, "states": count, "failed": failed}),
             );
         }
-        let dir = session.workspace.resolve_write(dir_param)?;
-        let given = match p.number("tolerance")? {
-            Some(t) if t > 0.0 => Some(t),
-            Some(_) => return fail("view.replay: `tolerance` must be positive"),
-            None => None,
-        };
+        Ok(result)
+    }
+
+    /// `view.replay` of the history.
+    fn history_replay(session: &mut Session, p: &Params, painter: &mut Painter) -> Run {
+        if let Some(key) = ANIMATION_ONLY.into_iter().find(|key| p.has(key)) {
+            return fail(format!(
+                "{ID}: `{key}` is for an animation (`animate`); the history's frames are framesPerStep and hold"
+            ));
+        }
+        let every = p.bool("every")?.unwrap_or(false);
+        let per_step = p.integer("framesPerStep", 1, 600)?.unwrap_or(1);
+        let o = Options::of(session, p)?;
         let meshes = session.scene.meshes.clone();
 
         let open = session.document_mut()?;
@@ -692,19 +1405,19 @@ mod native {
         let mut doc = craft3d_doc::Document::clone(open.history.current());
         let count = doc.features.len();
         if count == 0 {
-            return fail("view.replay: the document has no features to replay");
+            return fail(format!("{ID}: the document has no features to replay"));
         }
         let index_of = |id: FeatureId| doc.features.iter().position(|f| f.id == id);
         let from = match p.get("from") {
             None | Some(Value::Null) => 0,
-            Some(_) => index_of(feature_ref(&doc, &p, "view.replay", "from")?).unwrap_or(0),
+            Some(_) => index_of(feature_ref(&doc, p, ID, "from")?).unwrap_or(0),
         };
         let to = match p.get("to") {
             None | Some(Value::Null) => doc.rollback.and_then(index_of).unwrap_or(count - 1),
-            Some(_) => index_of(feature_ref(&doc, &p, "view.replay", "to")?).unwrap_or(count - 1),
+            Some(_) => index_of(feature_ref(&doc, p, ID, "to")?).unwrap_or(count - 1),
         };
         if to < from {
-            return fail("view.replay: `to` comes before `from` in the history");
+            return fail(format!("{ID}: `to` comes before `from` in the history"));
         }
 
         // Every state of the range, regenerated on the copy.
@@ -715,22 +1428,11 @@ mod native {
                 .features
                 .get(index)
                 .map(|f| f.id)
-                .ok_or_else(|| CommandError::new("view.replay: lost a feature"))?;
+                .ok_or_else(|| CommandError::new(format!("{ID}: lost a feature")))?;
             doc.set_rollback(Some(id))
-                .map_err(|e| CommandError::new(format!("view.replay: {e}")))?;
+                .map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
             let mut cache = pristine.clone();
             Ok(craft3d_regen::regenerate_cached(doc, &mut cache))
-        };
-        let bodies_of = |doc: &craft3d_doc::Document, regen: &craft3d_regen::Regen| -> Bodies {
-            // What the view hides is not drawn (`feature.visible`).
-            regen
-                .bodies()
-                .filter(|(id, _)| !doc.is_hidden(*id))
-                .map(|(id, b)| {
-                    let colors = crate::appearance::face_looks(doc, regen, id, b);
-                    (id, Arc::clone(b), Arc::new(colors))
-                })
-                .collect()
         };
         let start: Bodies = match from.checked_sub(1) {
             None => Vec::new(),
@@ -745,7 +1447,7 @@ mod native {
         for index in from..=to {
             let regen = at(&mut doc, index)?;
             let Some(feature) = doc.features.get(index) else {
-                return fail("view.replay: lost a feature");
+                return fail(format!("{ID}: lost a feature"));
             };
             let status = match regen.feature(feature.id).map(|o| &o.status) {
                 Some(Status::Ok) => "ok",
@@ -772,101 +1474,53 @@ mod native {
             }
         }
         let Some(final_regen) = final_regen else {
-            return fail("view.replay: nothing to replay");
+            return fail(format!("{ID}: nothing to replay"));
         };
         if steps.iter().all(|s| s.bodies.is_empty()) && !doc.hidden.is_empty() {
             let hidden: Vec<String> = doc.hidden.iter().map(ToString::to_string).collect();
             return fail(format!(
-                "view.replay: every body of the range is hidden in the view ({}); show them with feature.visible",
+                "{ID}: every body of the range is hidden in the view ({}); show them with feature.visible",
                 hidden.join(", ")
             ));
         }
         let shown = steps.iter().filter(|s| s.shown).count() as u64;
-        let frames = (shown + 1).saturating_mul(per_step).saturating_add(hold);
-        if frames > MAX_REPLAY_FRAMES {
-            return fail(format!(
-                "view.replay: {frames} frames ({shown} steps that change a body, plus the start, times framesPerStep {per_step}, plus hold {hold}) exceed the limit of {MAX_REPLAY_FRAMES}; use fewer framesPerStep, a shorter hold or a range (from, to)"
-            ));
-        }
-        let pixels = frames.saturating_mul(width).saturating_mul(height);
-        if pixels > MAX_REPLAY_PIXELS {
-            return fail(format!(
-                "view.replay: {frames} frames of {width}x{height} are {pixels} pixels, more than the limit of {MAX_REPLAY_PIXELS}; make them smaller or fewer"
-            ));
-        }
+        let frames = (shown + 1).saturating_mul(per_step).saturating_add(o.hold);
+        o.check_count(
+            frames,
+            &format!(
+                "{shown} steps that change a body, plus the start, times framesPerStep {per_step}, plus hold {}; use fewer framesPerStep, a shorter hold or a range (from, to)",
+                o.hold
+            ),
+        )?;
 
-        // The camera, framed on the model as it is at the end.
         let names = |id: FeatureId| {
             doc.feature(id)
                 .map_or_else(|| id.to_string(), |f| f.name.clone())
         };
         // Framed, as view.render frames, on the box around the bodies at
-        // `to` from their B-rep.
-        let model = crate::scene::bodies_box(&doc, &final_regen);
-        let aspect = width as f64 / height as f64;
-        // Every step is sampled as view.render samples the state at `to`
-        // (the document's own when the replay ends where it does, so that
-        // the last frame is its picture): at the tolerance given, or at the
-        // tolerance of the picture's scene of that state for the replay's
-        // camera (`crate::scene::picture_tolerance` and the ladder of
+        // `to` from their B-rep. Every step is sampled as view.render
+        // samples the state at `to` (the document's own when the replay
+        // ends where it does, so that the last frame is its picture): at
+        // the tolerance given, or at the tolerance of the picture's scene
+        // of that state for the replay's camera
+        // (`crate::scene::picture_tolerance` and the ladder of
         // `crate::scene::picture_scene_of`), with the display's angle, each
         // body within the display's triangles.
-        let tess = match given {
-            Some(chordal_tolerance) => TessParams {
-                chordal_tolerance,
-                ..TessParams::default()
-            },
-            None => {
-                let rung = crate::scene::picture_tolerance(&final_regen, &doc, |model| {
-                    let camera = if orbit == 0.0 {
-                        framing.camera(model, aspect).ok()?
-                    } else {
-                        orbit_camera(&framing, &framing.look_at.unwrap_or(*model), orbit, aspect)?
-                    };
-                    // Both are within 16..=4096.
-                    crate::scene::pixel_footprint(&camera, height as u32, model)
-                });
-                let settled = crate::scene::picture_scene_of(&doc, &final_regen, 0, rung, &meshes);
-                if let Some(problem) = settled.problems.first() {
-                    return fail(format!("view.replay: {problem}"));
-                }
-                TessParams {
-                    chordal_tolerance: settled.tolerance,
-                    max_angle: settled.max_angle,
-                    max_triangles: Some(crate::scene::DISPLAY_MAX_TRIANGLES),
-                    ..TessParams::default()
-                }
-            }
-        };
+        let model = crate::scene::bodies_box(&doc, &final_regen);
+        let tess = o.tess(&doc, &final_regen, &meshes, None)?;
         let mut meshes = Meshes::default();
         meshes.fill(&last, &names, &tess)?;
         if model.is_empty() {
-            return fail(
-                "view.replay: there are no bodies at the end of the replay; check document.inspect for failed features",
-            );
+            return fail(format!(
+                "{ID}: there are no bodies at the end of the replay; check document.inspect for failed features"
+            ));
         }
-        let camera = if orbit == 0.0 {
-            framing.camera(&model, aspect)?
-        } else {
-            orbit_camera(&framing, &framing.look_at.unwrap_or(model), orbit, aspect)
-                .ok_or_else(|| CommandError::new("view.replay: cannot frame the model"))?
-        };
-        // Both are within 16..=4096.
-        let render_params = RenderParams {
-            width: width as u32,
-            height: height as u32,
-            background: crate::commands::VIEWPORT_BACKGROUND,
-            ..RenderParams::default()
-        };
-
-        std::fs::create_dir_all(&dir).map_err(|e| {
-            CommandError::new(format!(
-                "view.replay: cannot create the directory `{dir_param}`: {e}"
-            ))
-        })?;
+        let camera = o.base_camera(&model)?;
+        let studio = o.studio(&model, mm_per_unit(&doc), painter.on_host())?;
+        o.create_dir()?;
         // What to draw where: the start, each step shown, the hold on the
         // last one shown (or on the start when none is).
-        let mut units: Vec<(&Bodies, u64, u64)> = Vec::new();
+        let mut units: Vec<(&Bodies, u64, u64, u64)> = Vec::new();
         let mut frame = 0_u64;
         let mut unit = |count: u64| -> (u64, u64) {
             let first = frame;
@@ -874,26 +1528,26 @@ mod native {
             (first, frame.saturating_sub(1))
         };
         let last_shown = steps.iter().rposition(|s| s.shown);
-        let start_count = per_step.saturating_add(if last_shown.is_none() { hold } else { 0 });
+        let start_count = per_step.saturating_add(if last_shown.is_none() { o.hold } else { 0 });
         meshes.fill(&start, &names, &tess)?;
         let (first, _) = unit(start_count);
-        units.push((&start, first, start_count));
+        units.push((&start, first, start_count, fresh_key()));
         let mut steps_json = Vec::new();
         let mut srt = String::new();
         let mut cue = 0_u64;
         for (k, step) in steps.iter().enumerate() {
             let text = caption(step.place, count, &step.name, step.kind);
             let range = if step.shown {
-                let extra = if Some(k) == last_shown { hold } else { 0 };
+                let extra = if Some(k) == last_shown { o.hold } else { 0 };
                 let n = per_step.saturating_add(extra);
                 let (first, last) = unit(n);
-                units.push((&step.bodies, first, n));
+                units.push((&step.bodies, first, n, fresh_key()));
                 meshes.fill(&step.bodies, &names, &tess)?;
                 cue += 1;
                 srt.push_str(&format!(
                     "{cue}\n{} --> {}\n{text}\n\n",
-                    srt_time(first, fps),
-                    srt_time(last.saturating_add(1), fps)
+                    srt_time(first, o.fps),
+                    srt_time(last.saturating_add(1), o.fps)
                 ));
                 json!([first, last])
             } else {
@@ -908,74 +1562,22 @@ mod native {
                 "caption": text,
             }));
         }
-        // With an orbit every frame is a picture of its own; without, a
-        // unit is drawn once and written as often as it is shown.
-        let jobs: Vec<(&Bodies, u64, u64)> = if orbit == 0.0 {
-            units
-        } else {
-            units
-                .into_iter()
-                .flat_map(|(bodies, first, n)| {
-                    (first..first.saturating_add(n)).map(move |f| (bodies, f, 1))
-                })
-                .collect()
+        let canvas = Canvas {
+            params: o.render_params(),
+            studio,
+            base: camera,
+            path: &o.path,
+            frames,
+            dir: &o.dir,
         };
-        let meshes = &meshes;
-        let (dir, camera, render_params) = (&dir, &camera, &render_params);
-        let draw = |job: usize| -> Result<(), CommandError> {
-            let Some(&(bodies, first, n)) = jobs.get(job) else {
-                return Ok(());
-            };
-            let (mesh, colors) = meshes.joined(bodies)?;
-            let angle = orbit * first as f64 / frames.saturating_sub(1).max(1) as f64;
-            let png = craft3d_render::render_colored(
-                &mesh,
-                &colors,
-                &turned(camera, angle),
-                render_params,
-            )
-            .and_then(|f| f.to_png())
-            .map_err(|e| CommandError::new(format!("view.replay: {e}")))?;
-            for f in first..first.saturating_add(n) {
-                crate::workspace::write_atomic(&dir.join(frame_name(f)), &png)?;
-            }
-            Ok(())
-        };
-        in_parallel(
-            jobs.len(),
-            threads_for(width, height, render_params.ssaa),
-            draw,
-        )?;
-        crate::workspace::write_atomic(&dir.join("captions.srt"), srt.as_bytes())?;
-        // Frames an earlier, longer replay left here would run on after
-        // this one's in a video made from the directory.
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let name = entry.file_name();
-                if name
-                    .to_str()
-                    .and_then(frame_index)
-                    .is_some_and(|index| index >= frame)
-                {
-                    let _ = std::fs::remove_file(entry.path());
-                }
-            }
+        canvas.paint(painter, &meshes, &canvas.jobs_of(&units))?;
+        o.finish(frame, &srt)?;
+        let mut result = o.result(frame, &model, canvas.studio.as_ref().map(|(l, _)| l));
+        if let Some(map) = result.as_object_mut() {
+            map.insert("shownSteps".into(), json!(shown));
+            map.insert("steps".into(), json!(steps_json));
         }
-
-        Ok(json!({
-            "dir": dir_param,
-            "frames": frame,
-            "framePattern": "frame-%05d.png",
-            "fps": fps,
-            "width": width,
-            "height": height,
-            "view": framing.view,
-            "orbit": orbit,
-            "box": model.corners().map(|(lo, hi)| json!([vec3(lo), vec3(hi)])),
-            "shownSteps": shown,
-            "steps": steps_json,
-            "captions": "captions.srt",
-        }))
+        Ok(result)
     }
 }
 

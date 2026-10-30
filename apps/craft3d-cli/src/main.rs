@@ -12,12 +12,15 @@
 
 mod args;
 mod check_range;
+mod gpu;
 mod local;
 mod replay;
 mod score;
 mod server;
+mod video;
 
 use args::{Arg, Args};
+use craft3d_engine::{Session, Workspace};
 use std::fmt;
 use std::io::Write;
 use std::process::ExitCode;
@@ -135,9 +138,11 @@ Usage: craft3d-cli render FILE --out PNG [--size WxH] [--view V] [--mode M]
                           [--bloom B] [--fstop N] [--focus D|X,Y,Z]
                           [--accumulate N]
                           [--backdrop environment|plain]
+                          [--renderer auto|cpu|gpu]
 
-Renders the bodies of a .3dcraft file to a PNG with the CPU renderer (no
-window, no GPU) and prints what it drew as one line of JSON. The bodies are
+Renders the bodies of a .3dcraft file to a PNG without a window and prints
+what it drew as one line of JSON (its renderer says which drew it). The
+bodies are
 meshed for the picture (the command view.render without a tolerance):
 between a quarter and half a pixel where it shows the model, never finer
 than the floor of 2e-4 of the diagonal of the bodies' box, within a total
@@ -171,11 +176,14 @@ Options:
   --fstop N, --focus D|X,Y,Z  Depth of field of a thin lens: its f-number
                   (default 2.8) and the distance along the view or the
                   point it focuses on (default the model's centre)
-  --accumulate N  Frames averaged into the picture, 1 to 256, as long as
-                  all frames' samples stay within the renderer's limit
+  --accumulate N  Frames averaged into the picture, 1 to 256; on the CPU
+                  as long as all frames' samples stay within its limit
                   (64 Mi). Default 1
   --backdrop B    environment (default) or plain: the --background colour
-                  behind the model, which the environment still lights";
+                  behind the model, which the environment still lights
+  --renderer R    auto (the default): the GPU when this machine has an
+                  adapter, else the CPU; gpu: the GPU or an error; cpu: the
+                  CPU renderer, the reference the GPU is checked against";
 
 const HELP_CONVERT: &str = "\
 Usage: craft3d-cli convert IN OUT [--quality Q] [--tolerance T] [--angle A]
@@ -225,14 +233,15 @@ Options:
 const HELP_REPLAY: &str = "\
 Usage: craft3d-cli replay FILE --out OUT [--size WxH] [--view V] [--orbit DEG]
                           [--fps N] [--frames-per-step N] [--hold N] [--every]
-                          [--from F] [--to F] [--params JSON] [--keep-frames]
+                          [--from F] [--to F] [--renderer R] [--params JSON]
+                          [--keep-frames]
 
 Renders how the .3dcraft file FILE is built (the command view.replay): the
 history is rolled forward one feature at a time from nothing, and every step
 that changes a body becomes a frame, seen from one camera framed on the
 finished model. Prints the result as one line of JSON.
 
-The extension of OUT picks what is made: .mp4 or .gif is a video made by
+The extension of OUT picks what is made: .mp4, .webm or .gif is a video made by
 ffmpeg (found on PATH, or named by CRAFT3D_FFMPEG; without it the command
 fails and keeps the frames in OUT.frames); anything else is a directory that
 gets the frames, frame-00000.png and on, and captions.srt. An MP4 carries the
@@ -251,13 +260,22 @@ Options:
                          (sketches, datums)
   --from F, --to F       The range of the history, by feature id or name.
                          Default: all of it, up to the rollback marker
+  --renderer R           auto (default: the GPU when there is an adapter),
+                         gpu or cpu
   --params JSON          More view.replay params, such as
                          '{\"projection\": \"orthographic\", \"zoom\": 1.2}'
   --keep-frames          Keep OUT.frames after the video is made
 
-Example:
+With --params '{\"animate\": [...]}' it renders an animation instead of the
+history: variables moved along tracks, the timeline t, a camera path
+(view.replay's animate, camera, look, duration).
+
+Examples:
   craft3d-cli replay part.3dcraft --out part.mp4 --size 1280x720 \\
-      --frames-per-step 6 --hold 60 --orbit 90";
+      --frames-per-step 6 --hold 60 --orbit 90
+  craft3d-cli replay part.3dcraft --out sweep.webm --size 1920x1080 \\
+      --params '{\"animate\": [{\"variable\": \"width\", \"from\": 20, \"to\": 40, \"unit\": \"mm\"}],
+                 \"duration\": 3, \"look\": {}, \"camera\": {\"orbit\": 45}}'";
 
 const HELP_SCORE: &str = "\
 Usage: craft3d-cli score TASK [--script FILE] [--tasks DIR]
@@ -526,6 +544,16 @@ fn run(mut args: Args) -> Result<(), CliError> {
         ))),
         Err(other) => Err(other),
     }
+}
+
+/// A session of the CLI: with the headless GPU renderer for its pictures
+/// (made when first asked for; `renderer: "cpu"` keeps to the CPU) and
+/// ffmpeg for `view.replay`'s videos.
+pub(crate) fn session(workspace: Workspace) -> Session {
+    let mut session = Session::new(workspace);
+    session.set_picture_renderer(Box::new(gpu::GpuPictures::default()));
+    session.set_video_encoder(Box::new(video::FfmpegEncoder::default()));
+    session
 }
 
 fn main() -> ExitCode {

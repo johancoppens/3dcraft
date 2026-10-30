@@ -443,6 +443,9 @@ dependencies = [
  "craft3d-automation",
  "craft3d-buildinfo",
  "craft3d-engine",
+ "craft3d-gpu",
+ "craft3d-math",
+ "craft3d-render",
  "serde_json",
 ]
 
