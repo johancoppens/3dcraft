@@ -425,7 +425,8 @@ fn an_edit_that_waits_reports_what_fails_on_a_host_that_works_a_piece_at_a_time(
 }
 
 /// Four blocks and three cylinders at scale `s`, a clearance between
-/// them (12 pairs) and an overlap of all (21 pairs), in a session that
+/// them (12 pairs) and an overlap of all (21 pairs, none of whose boxes
+/// meet), in a session that
 /// does it all at once and one that works a piece at a time; the
 /// cylinders moved once more, so that both assertions are to be measured.
 fn pairs_sessions(s: f64) -> (Session, Session) {
@@ -494,10 +495,19 @@ fn a_measure_over_many_pairs_of_bodies_is_taken_a_pair_at_a_time() {
                 checking += 1;
             }
         }
-        // 12 pairs, then 21: a piece each (the last piece of all says
-        // nothing is left).
-        assert!(checking >= 12 + 21 - 1, "scale {s}: {checking} pieces");
         let (got, want) = (listed(&mut session), listed(&mut whole));
+        // The clearance's 12 pairs, then the overlap's pairs whose boxes
+        // meet: a piece each (the last piece of all says nothing is
+        // left). Since 2026-10-30 an overlap checks only the pairs whose
+        // boxes meet, and here none do (the blocks lie in y from 0 to 10,
+        // the cylinders' boxes beyond y = 28): of its 21 pairs it checks none.
+        let overlap = &want["assertions"][1]["detail"];
+        assert_eq!(
+            (&overlap["pairs"], &overlap["checked"]),
+            (&json!(21), &json!(0)),
+            "{want}"
+        );
+        assert!(checking >= 12 - 1, "scale {s}: {checking} pieces");
         assert_eq!(got, want, "scale {s}");
         assert_eq!(want["ok"], true, "scale {s}: {want}");
         let pairs = &want["assertions"][0]["detail"]["pairs"];
