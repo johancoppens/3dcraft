@@ -5,11 +5,14 @@ collection, [johancoppens/3dcraft-jigs](https://github.com/johancoppens/3dcraft-
 `59d81b6f7716dc2d0496cbf2ebcb7ee5759ed417`. That repository is their source; they are not edited here
 (docs/decisions.md, 2026-10-30).
 
-| File | Title | Author | Source |
+| File | Title (`document.info.title`) | Author (`document.info.author`) | Source |
 |---|---|---|---|
-| `planetary-gearbox.3dcraftjig`, `planetary-gearbox.3dcraftasm` | Planetary gearbox | Johan Coppens (3DCraft Jigs) | [jigs/planetary-gearbox](https://github.com/johancoppens/3dcraft-jigs/tree/main/jigs/planetary-gearbox) |
-| `gear-reducer.3dcraftjig`, `gear-reducer.3dcraftasm` | Two-stage spur gear reducer | 3DCraft Jigs | [jigs/gear-reducer](https://github.com/johancoppens/3dcraft-jigs/tree/main/jigs/gear-reducer) |
-| `strandbeest-leg.3dcraftjig`, `strandbeest-walker.3dcraftasm` | Strandbeest leg and walker (after Theo Jansen's linkage) | 3DCraft Jigs | [jigs/strandbeest-leg](https://github.com/johancoppens/3dcraft-jigs/tree/main/jigs/strandbeest-leg) |
+| `planetary-gearbox.3dcraftjig` | Planetary gearbox | Johan Coppens | [jigs/planetary-gearbox](https://github.com/johancoppens/3dcraft-jigs/tree/main/jigs/planetary-gearbox) |
+| `planetary-gearbox.3dcraftasm` | Planetary gearbox (assembly) | 3DCraft Jigs | [jigs/planetary-gearbox](https://github.com/johancoppens/3dcraft-jigs/tree/main/jigs/planetary-gearbox) |
+| `gear-reducer.3dcraftjig` | Two-stage spur gear reducer | 3DCraft Jigs | [jigs/gear-reducer](https://github.com/johancoppens/3dcraft-jigs/tree/main/jigs/gear-reducer) |
+| `gear-reducer.3dcraftasm` | Two-stage gear reducer (assembly) | 3DCraft Jigs | [jigs/gear-reducer](https://github.com/johancoppens/3dcraft-jigs/tree/main/jigs/gear-reducer) |
+| `strandbeest-leg.3dcraftjig` | Strandbeest leg | 3DCraft Jigs | [jigs/strandbeest-leg](https://github.com/johancoppens/3dcraft-jigs/tree/main/jigs/strandbeest-leg) |
+| `strandbeest-walker.3dcraftasm` | Strandbeest walker, four legs (assembly) | 3DCraft Jigs | [jigs/strandbeest-leg](https://github.com/johancoppens/3dcraft-jigs/tree/main/jigs/strandbeest-leg) |
 
 The Jigs repository has two licences, as its README's *Licences* section says: its scripts and build
 sources are MIT (its `LICENSE` file, © 2026 Johan Coppens), and each Jig carries its own licence in its

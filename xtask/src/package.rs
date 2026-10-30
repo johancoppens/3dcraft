@@ -8,9 +8,10 @@
 //! - everywhere: `--formats web`, the browser build as a static site in
 //!   `3dcraft-web-<version>.zip` with `SHA256SUMS.txt` (`crate::web`).
 //!
-//! Each package carries `LICENSE` and `THIRD-PARTY-NOTICES.txt`, the
+//! Each package carries `LICENSE`, `THIRD-PARTY-NOTICES.txt` (the
 //! licences of the crates the programs are built from, made here from
-//! `Cargo.lock` (`crate::notices`).
+//! `Cargo.lock`, `crate::notices`) and `EXAMPLES-LICENSE.md`, the CC BY 4.0
+//! of the published Jigs and assemblies built into the programs.
 //!
 //! The files they carry (desktop entry, MIME type, Info.plist, WiX source,
 //! icons) live in `packaging/`. The external tools are the platform's own
@@ -265,6 +266,11 @@ pub fn run(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// The licence of the published Jigs and assemblies the desktop programs
+/// carry built in (CC BY 4.0, `docs/examples/published/LICENSE.md`), as
+/// it is named in every package.
+pub const EXAMPLES_LICENCE: &str = "EXAMPLES-LICENSE.md";
+
 struct Packer {
     repo: PathBuf,
     bin_dir: PathBuf,
@@ -385,6 +391,10 @@ impl Packer {
         self.repo.join("packaging").join(rel)
     }
 
+    fn examples_licence(&self) -> PathBuf {
+        self.repo.join("docs/examples/published/LICENSE.md")
+    }
+
     fn icon(&self, size: u32) -> PathBuf {
         self.packaging(&format!("icons/craft3d-{size}.png"))
     }
@@ -494,6 +504,11 @@ impl Packer {
             )?;
         }
         copy(&self.repo.join("LICENSE"), &root.join("LICENSE"), false)?;
+        copy(
+            &self.examples_licence(),
+            &root.join(EXAMPLES_LICENCE),
+            false,
+        )?;
         copy(&self.notices, &root.join(crate::notices::FILE_NAME), false)?;
         mkdir(&self.out)?;
         let file = self.out.join(format!("{name}.tar.gz"));
@@ -541,6 +556,11 @@ impl Packer {
         )?;
         copy(&self.icon(256), &app_dir.join(".DirIcon"), false)?;
         copy(&self.repo.join("LICENSE"), &app_dir.join("LICENSE"), false)?;
+        copy(
+            &self.examples_licence(),
+            &app_dir.join(EXAMPLES_LICENCE),
+            false,
+        )?;
         copy(
             &self.notices,
             &app_dir.join(crate::notices::FILE_NAME),
@@ -603,6 +623,11 @@ impl Packer {
         copy(
             &self.repo.join("LICENSE"),
             &contents.join("Resources").join("LICENSE"),
+            false,
+        )?;
+        copy(
+            &self.examples_licence(),
+            &contents.join("Resources").join(EXAMPLES_LICENCE),
             false,
         )?;
         copy(
@@ -670,6 +695,7 @@ impl Packer {
             copy(&exe, &dir.join(file_name), true)?;
         }
         copy(&self.repo.join("LICENSE"), &dir.join("LICENSE.txt"), false)?;
+        copy(&self.examples_licence(), &dir.join(EXAMPLES_LICENCE), false)?;
         copy(&self.notices, &dir.join(crate::notices::FILE_NAME), false)?;
         copy_fonts(&dir.join("fonts"))?;
         let ico = ico(&self.icon_pngs(&ICO_SIZES)?)?;
