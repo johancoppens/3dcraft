@@ -58,20 +58,17 @@ fn the_planet_in_its_ring_is_proven_to_its_backlash() {
         env!("CARGO_MANIFEST_DIR")
     );
     run(&mut s, "file.open", json!({"path": path}));
-    let (found, proven) = timed(
+    let started = Instant::now();
+    let out = run(
         &mut s,
-        "measure.clearance",
-        json!({"from": "Planet1", "to": "Ring"}),
-        "clearance",
-        "planet in ring",
-    );
-    let jn = 0.1 * 20f64.to_radians().cos();
-    assert!(found > 0.3 * jn && found < 0.7 * jn, "{found}");
-    assert!(proven >= 0.3 * jn, "proven only {proven}");
-    let got = status(
-        &mut s,
+        "assert.add",
         json!({"name": "x", "measure": "clearance", "from": "Planet1", "to": "Ring", "min": "0.3 * jn", "max": "0.7 * jn"}),
     );
+    eprintln!(
+        "planet in ring: {out} in {:.3} s",
+        started.elapsed().as_secs_f64()
+    );
+    let got = out["status"].as_str().unwrap_or_default();
     assert_eq!(got, "passed");
 }
 

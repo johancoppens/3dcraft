@@ -1493,9 +1493,13 @@ const MAX_SEEDS: usize = 256;
 /// along the inward normal from one of them. Per pair of faces it could
 /// leave and come out through: their boxes' distance, the distance of one
 /// to the other's plane, coaxial cylinders' radii, a round's own diameter,
-/// the mesh's distance less what the mesh can be off by. Pairs are taken
-/// in order of their cheap bound, until that bound is above the least
-/// found. With the places where it was least, to search from.
+/// the mesh's distance less what the mesh can be off by; where that is
+/// short of the least found, the exact faces' bound
+/// ([`crate::verify_bound::prove_rays`]), and the better of the two
+/// counts. Pairs are taken in order of their boxes' distance while that
+/// is below the bound so far; each round's short pairs are proven before
+/// the next round looks further. With the places where it was least, to
+/// search from.
 fn thickness_bound(part: &Part<'_>, tol: f64, below: f64) -> (f64, Vec<(usize, Vec3)>) {
     // Only pairs whose boxes are nearer than `below` (the least found):
     // the others cannot bring the bound under it, and the bound is never
@@ -1514,67 +1518,91 @@ fn thickness_bound(part: &Part<'_>, tol: f64, below: f64) -> (f64, Vec<(usize, V
         }
     }
     pairs.sort_by(|x, y| x.0.total_cmp(&y.0).then((x.1, x.2).cmp(&(y.1, y.2))));
-    let mut lower = f64::INFINITY;
+    // Past the cap, what is left is bounded by its boxes.
+    let mut floor = f64::INFINITY;
     if let Some(&(d, ..)) = pairs.get(MAX_BOUND_PAIRS) {
-        // Past the cap, what is left is bounded by its boxes.
-        lower = d;
+        floor = d;
         pairs.truncate(MAX_BOUND_PAIRS);
     }
+    let close = (0.25 * part.linear).max(1e-12 * below);
     let mut seeds: Vec<(usize, Vec3)> = Vec::new();
     let mut budget = BOUND_WORK;
+    let mut nodes = crate::verify_bound::MAX_NODES;
     let flat = |f| matches!(shape(part.body(), f), Shape::Flat(..));
-    for (boxes, a, b) in pairs {
-        if boxes >= lower {
-            break;
-        }
-        let (Some(cheap), found) = pair_bound(part, a, b, tol) else {
-            continue;
-        };
-        if seeds.len() < MAX_SEEDS {
-            seeds.extend(found);
-        }
-        if cheap >= lower {
-            continue;
-        }
-        // Between flat faces the planes bound it as well as the mesh; the
-        // mesh is asked when a face is round.
-        let bound = if a != b && !(flat(a) && flat(b)) {
-            match mesh_bound(part, a, b, &mut budget) {
-                Some((d, p, q)) => {
-                    if seeds.len() < MAX_SEEDS && d.is_finite() {
-                        seeds.push((a, p));
-                        seeds.push((b, q));
+    // Per pair looked at, its bound (infinite: no line comes out there).
+    let mut bounds: Vec<f64> = Vec::new();
+    let mut next = 0;
+    loop {
+        let round = bounds.len();
+        let mut lower = bounds.iter().copied().fold(floor, f64::min);
+        while let Some(&(boxes, a, b)) = pairs.get(next) {
+            if boxes >= lower {
+                break;
+            }
+            next += 1;
+            let (cheap, found) = pair_bound(part, a, b, tol);
+            if seeds.len() < MAX_SEEDS {
+                seeds.extend(found);
+            }
+            let Some(cheap) = cheap else {
+                bounds.push(f64::INFINITY);
+                continue;
+            };
+            // Between flat faces the planes bound it as well as the mesh;
+            // the mesh is asked when a face is round, and only when the
+            // cheap bound is short.
+            let bound = if a != b && !(flat(a) && flat(b)) && cheap < lower {
+                match mesh_bound(part, a, b, &mut budget) {
+                    Some((d, p, q)) => {
+                        if seeds.len() < MAX_SEEDS && d.is_finite() {
+                            seeds.push((a, p));
+                            seeds.push((b, q));
+                        }
+                        cheap.max(d)
                     }
-                    cheap.max(d)
+                    // Out of work: what is left is bounded by its boxes,
+                    // the least of them this pair's.
+                    None => {
+                        floor = floor.min(boxes);
+                        bounds.push(boxes);
+                        next = pairs.len();
+                        break;
+                    }
                 }
-                // Out of work: what is left is bounded by its boxes, the
-                // least of them this pair's.
-                None => {
-                    lower = lower.min(boxes);
-                    break;
+            } else {
+                cheap
+            };
+            bounds.push(bound);
+            lower = lower.min(bound);
+        }
+        // The pairs of this round the mesh leaves short: on the exact
+        // faces.
+        let short: Vec<(usize, (usize, usize))> = bounds
+            .iter()
+            .enumerate()
+            .skip(round)
+            .filter(|(_, b)| **b < below - close)
+            .filter_map(|(i, _)| pairs.get(i).map(|&(_, a, b)| (i, (a, b))))
+            .collect();
+        if !short.is_empty() && nodes > 0 {
+            let list: Vec<(usize, usize)> = short.iter().map(|(_, p)| *p).collect();
+            let proven = crate::verify_bound::prove_rays(part, &list, below, close, &mut nodes);
+            for ((i, _), proof) in short.iter().zip(proven) {
+                if let (Some(slot), Some(p)) = (bounds.get_mut(*i), proof) {
+                    *slot = slot.max(p);
                 }
             }
-        } else {
-            cheap
-        };
-        if bound < 0.9 * below {
-            let kind = |f: usize| match part.body().faces.get(f).map(|x| &x.surface) {
-                Some(Surface::Plane(_)) => "plane",
-                Some(Surface::Cylinder(_)) => "cyl",
-                Some(Surface::Cone(_)) => "cone",
-                Some(Surface::Sphere(_)) => "sphere",
-                Some(Surface::Torus(_)) => "torus",
-                _ => "free",
-            };
-            eprintln!(
-                "DBG thick pair {a}:{} {b}:{} cheap {cheap} bound {bound} boxes {boxes}",
-                kind(a),
-                kind(b)
-            );
         }
-        lower = lower.min(bound);
+        if bounds.len() == round {
+            break;
+        }
     }
-    eprintln!("DBG thick lower {lower} below {below} budget left {budget}");
+    let lower = bounds.iter().copied().fold(floor, f64::min);
+    eprintln!(
+        "DBG thick lower {lower} below {below} pairs {} of {} nodes left {nodes}",
+        bounds.len(),
+        pairs.len()
+    );
     (lower.max(0.0), seeds)
 }
 

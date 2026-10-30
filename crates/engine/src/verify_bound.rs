@@ -179,6 +179,9 @@ struct Prim<'a> {
     boundary: Vec<Bound<'a>>,
     sym: Sym,
     root: Param,
+    /// A face's outward normal is its surface's times this (-1 for a
+    /// reversed face); 1 for an edge or a vertex.
+    sign: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -198,6 +201,9 @@ struct Rec {
     /// A face's piece known to lie within the face (no reach past it).
     inside: bool,
     cone: Option<Cone>,
+    /// A face's piece: the cone around its outward normals, oriented
+    /// (every outward normal within the half-angle of the axis itself).
+    out: Option<Cone>,
     /// The pieces it was cut into, per direction cut (u or t, v).
     children: [Option<Vec<usize>>; 2],
 }
@@ -519,6 +525,10 @@ struct Search<'p, 'a> {
     tol: f64,
     /// Strata a piece of which could not be enclosed.
     failed: std::collections::BTreeSet<usize>,
+    /// Bounding lines into the material (a thickness) rather than
+    /// distances: side 0's pieces are where a line leaves, side 1's where
+    /// it comes out ([`Search::ray_bound`]).
+    rays: bool,
 }
 
 impl<'p, 'a> Search<'p, 'a>
@@ -593,6 +603,7 @@ where
                     boundary,
                     sym: surface_sym(surface),
                     root,
+                    sign: if face.reversed { -1.0 } else { 1.0 },
                 })
             }
             Kind::Edge => {
@@ -615,6 +626,7 @@ where
                     boundary: Vec::new(),
                     sym: curve_sym(&edge.curve),
                     root: Param::Edge(edge.range),
+                    sign: 1.0,
                 })
             }
             Kind::Vertex => {
@@ -633,6 +645,7 @@ where
                     boundary: Vec::new(),
                     sym: Sym::None,
                     root: Param::Vertex(v.point),
+                    sign: 1.0,
                 })
             }
         }
@@ -650,12 +663,14 @@ where
     fn try_rec(&mut self, prim_id: usize, param: Option<(Param, bool)>) -> Option<Made> {
         let prim = self.prims.get(prim_id)?;
         let (param, inside) = param.unwrap_or((prim.root, false));
+        let mut normal = None;
         let (piece, center) = match param {
             Param::Face(u, v) => {
                 let s = prim.surface?;
                 let piece = surface_piece(s, &prim.snets, u, v)?;
-                let c = s.eval(0.5 * (u.0 + u.1), 0.5 * (v.0 + v.1));
-                (piece, c)
+                let (um, vm) = (0.5 * (u.0 + u.1), 0.5 * (v.0 + v.1));
+                normal = s.normal(um, vm).map(|n| n * prim.sign);
+                (piece, s.eval(um, vm))
             }
             Param::Edge(t) => {
                 let c = prim.curve?;
@@ -669,6 +684,7 @@ where
         }
         let bbox = piece.bbox();
         let cone = piece.cone();
+        let out = oriented(cone, normal);
         let mut inside = inside || prim.kind != Kind::Face;
         if !inside {
             match self.membership(prim_id, &bbox, center) {
@@ -685,6 +701,7 @@ where
             center,
             inside,
             cone,
+            out,
             children: [None, None],
         });
         Some(Made::Rec(self.recs.len() - 1))
@@ -808,11 +825,25 @@ where
     /// The proven bound on a pair of pieces; `None` when the pair cannot
     /// hold a critical pair (nothing the least can be at).
     fn bound(&self, a: &Rec, b: &Rec, enough: f64) -> Option<f64> {
+        if self.rays {
+            return self.ray_bound(a, b, enough);
+        }
         let (pa, pb) = (self.prims.get(a.prim)?, self.prims.get(b.prim)?);
         let slack = pa.slack + pb.slack;
+        let lb = self.lower(pa, a, pb, b, enough + slack) - slack;
+        if lb < enough && excluded(a, b) {
+            return None;
+        }
+        Some(lb.max(0.0))
+    }
+
+    /// A proven bound below the distance of any point of piece `a` from
+    /// any of `b` (the strata's slack not taken off); it stops at the
+    /// boxes' distance when that is `enough`.
+    fn lower(&self, pa: &Prim<'_>, a: &Rec, pb: &Prim<'_>, b: &Rec, enough: f64) -> f64 {
         let mut lb = boxes_distance(&a.bbox, &b.bbox);
-        if lb - slack >= enough {
-            return Some(lb - slack);
+        if lb >= enough {
+            return lb;
         }
         let along = |d: Vec3| b.piece.least(d) - a.piece.most(d);
         let c = center(&b.bbox) - center(&a.bbox);
@@ -849,9 +880,69 @@ where
                 }
             }
         }
-        let lb = lb - slack;
-        if lb < enough && excluded(a, b) {
-            return None;
+        lb
+    }
+
+    /// The proven bound below the length of a line that leaves piece `a`
+    /// (of a face of side 0) into the material along the inward normal
+    /// and comes out of the body through piece `b` (of a face of side
+    /// 1); `None` when no such line can come out there. Every line is
+    /// `w = q − p = −t n_a(p)`, `t > 0`, and comes out where it does not
+    /// point into `b`: `n_b(q) · w ≥ 0`.
+    fn ray_bound(&self, a: &Rec, b: &Rec, enough: f64) -> Option<f64> {
+        let (pa, pb) = (self.prims.get(a.prim)?, self.prims.get(b.prim)?);
+        let mut lb = self.lower(pa, a, pb, b, enough);
+        let range = |e: Vec3| {
+            (
+                b.piece.least(e) - a.piece.most(e),
+                b.piece.most(e) - a.piece.least(e),
+            )
+        };
+        // Coming out: some n_a and n_b more than a right angle apart.
+        if let (Some(ca), Some(cb)) = (a.out, b.out) {
+            let apart = ca.axis.dot(cb.axis).clamp(-1.0, 1.0).acos();
+            if apart + ca.half_angle + cb.half_angle < FRAC_PI_2 - ANGLE_MARGIN {
+                return None;
+            }
+        }
+        // Along the inward normals: `w` within the cone about `e = −c_a`,
+        // so `w · e ≥ |w⊥| / tan β` and `|w| ≥ |(w · e, |w⊥|)|`.
+        if let Some(ca) = a.out
+            && let Some((e1, e2)) = square_to(-ca.axis)
+        {
+            let (lo, hi) = range(-ca.axis);
+            if hi < 0.0 {
+                return None;
+            }
+            let across = least_abs(range(e1)).hypot(least_abs(range(e2)));
+            let tan = ca.half_angle.tan();
+            if across > tan * hi {
+                return None;
+            }
+            let mut along = lo.max(0.0);
+            if tan > 0.0 {
+                along = along.max(across / tan);
+            }
+            lb = lb.max(along.hypot(across));
+        }
+        match pa.sym {
+            // A cylinder's normals are square to its axis: so is `w`.
+            Sym::Axis {
+                o,
+                z,
+                shape: Shape::Cylinder { r },
+            } if pa.kind == Kind::Face => {
+                let (lo, hi) = range(z);
+                if lo > 0.0 || hi < 0.0 {
+                    return None;
+                }
+                let radial = |p: Vec3| (p - o) - z * (p - o).dot(z);
+                lb = lb.max(focal(a, b, r, o, |p| from_axis(p, o, z), radial));
+            }
+            Sym::Sphere { c, r } => {
+                lb = lb.max(focal(a, b, r, c, |p| p.distance(c), |p| p - c));
+            }
+            _ => {}
         }
         Some(lb.max(0.0))
     }
@@ -924,6 +1015,74 @@ where
         let (ib, mb) = section_image(pb, b, o, z, e1, e2);
         img_distance(&ia, &ib) - ma - mb
     }
+}
+
+/// What the angle between two cones' axes may be off by in rounding
+/// (`acos` near 1 turns an error of 1e-16 in the cosine into 1.5e-8).
+const ANGLE_MARGIN: f64 = 1e-7;
+
+/// The least `|x|` over `[lo, hi]`.
+fn least_abs((lo, hi): (f64, f64)) -> f64 {
+    if lo > 0.0 {
+        lo
+    } else if hi < 0.0 {
+        -hi
+    } else {
+        0.0
+    }
+}
+
+/// A piece's cone oriented by its outward normal at the middle: every
+/// normal of a connected regular piece is within the half-angle (below a
+/// right angle) of the axis or of its opposite, and turning continuously
+/// it cannot pass from one to the other, so all are on the side of the
+/// middle's. `None` without a cone, a normal, or where the two disagree.
+fn oriented(cone: Option<Cone>, normal: Option<Vec3>) -> Option<Cone> {
+    let (cone, normal) = (cone?, normal?);
+    let dot = cone.axis.dot(normal.normalized()?);
+    if dot.abs() < 0.5 * cone.half_angle.cos() {
+        return None;
+    }
+    Some(Cone {
+        axis: if dot < 0.0 { -cone.axis } else { cone.axis },
+        half_angle: cone.half_angle,
+    })
+}
+
+/// What a line along the inward normal of a convex cylinder or sphere
+/// must travel to reach piece `b`: the line passes through the axis (the
+/// centre) at the radius `r`, so a point of it at `t` is `|t − r|` from
+/// the axis; a point of `b` at most `d` from it is reached after at least
+/// `r − min(d, r)`. 0 where `a` is not convex (normals pointing away from
+/// the axis) or has no oriented cone.
+fn focal(
+    a: &Rec,
+    b: &Rec,
+    r: f64,
+    o: Vec3,
+    from: impl Fn(Vec3) -> f64,
+    radial: impl Fn(Vec3) -> Vec3,
+) -> f64 {
+    let Some(ca) = a.out else {
+        return 0.0;
+    };
+    if !(ca.axis.dot(radial(a.center)) > 0.0) {
+        return 0.0;
+    }
+    let Some((l, h)) = b.bbox.corners() else {
+        return 0.0;
+    };
+    let mut far = 0.0_f64;
+    for x in [l.x, h.x] {
+        for y in [l.y, h.y] {
+            for z in [l.z, h.z] {
+                far = far.max(from(Vec3::new(x, y, z)));
+            }
+        }
+    }
+    // The distance from an axis or a centre is convex: most at a corner.
+    let margin = 1e-14 * (o.length() + r + far + 1.0);
+    (r - far.min(r) - margin).max(0.0)
 }
 
 /// The most distance from `q` of a piece's box (its farthest corner).
@@ -1118,15 +1277,6 @@ fn excluded(a: &Rec, b: &Rec) -> bool {
             b.piece.most(e) - a.piece.least(e),
         )
     };
-    let least_abs = |(lo, hi): (f64, f64)| {
-        if lo > 0.0 {
-            lo
-        } else if hi < 0.0 {
-            -hi
-        } else {
-            0.0
-        }
-    };
     let most_abs = |(lo, hi): (f64, f64)| lo.abs().max(hi.abs());
     for rec in [a, b] {
         let (Some(cone), Some(kind)) = (rec.cone, rec.piece.cone_kind()) else {
@@ -1245,6 +1395,7 @@ pub(crate) fn prove(
         recs: Vec::new(),
         tol,
         failed: std::collections::BTreeSet::new(),
+        rays: false,
     };
     let mut best = found;
     let mut nearer: Option<Nearer> = None;
@@ -1435,6 +1586,134 @@ pub(crate) fn prove(
     Proof { lower, nearer }
 }
 
+/// Proves, for each pair of faces `(a, b)` of `part` in `pairs`, a bound
+/// below the length of every line that leaves face `a` into the material
+/// along its inward normal and comes out of the body through face `b`
+/// (docs/design/verification.md › *The proven thickness*), as close to
+/// `found` as `close` or as the work in `budget` (pairs of pieces, spent
+/// from it) allows: then the least bound left, honestly short. `None`
+/// for a pair whose faces could not be cut into pieces. The same search
+/// as [`prove`] over the faces alone (a line's ends need not be critical
+/// for a distance, so no strata), with [`Search::ray_bound`] for the
+/// bound of a pair of pieces.
+pub(crate) fn prove_rays(
+    part: &Part<'_>,
+    pairs: &[(usize, usize)],
+    found: f64,
+    close: f64,
+    budget: &mut usize,
+) -> Vec<Option<f64>> {
+    let parts = std::slice::from_ref(part);
+    let mut search = Search {
+        parts: [parts, parts],
+        prims: Vec::new(),
+        keys: BTreeMap::new(),
+        recs: Vec::new(),
+        tol: part.linear,
+        failed: std::collections::BTreeSet::new(),
+        rays: true,
+    };
+    let enough = |_: f64| found - close;
+    let mut best = found;
+    let mut nearer = None;
+    let mut least = vec![f64::INFINITY; pairs.len()];
+    let mut made: Vec<Option<(usize, usize)>> = Vec::new();
+    for &(a, b) in pairs {
+        let pa = search.prim((0, 0, Kind::Face, a));
+        let pb = search.prim((1, 0, Kind::Face, b));
+        made.push(pa.zip(pb));
+    }
+    let mut first: BTreeMap<usize, usize> = BTreeMap::new();
+    for (i, rec) in search.recs.iter().enumerate() {
+        first.entry(rec.prim).or_insert(i);
+    }
+    let mut heap = BinaryHeap::new();
+    let mut seq = 0_u64;
+    for (id, prims) in made.iter().enumerate() {
+        let Some((pa, pb)) = prims else {
+            continue;
+        };
+        let (Some(&ra), Some(&rb)) = (first.get(pa), first.get(pb)) else {
+            continue;
+        };
+        *budget = budget.saturating_sub(1);
+        consider(
+            &search,
+            ra,
+            rb,
+            id,
+            &[],
+            &mut best,
+            &mut nearer,
+            &mut least,
+            &mut heap,
+            &mut seq,
+            enough,
+        );
+    }
+    while let Some(node) = heap.pop() {
+        if node.bound >= enough(best) || *budget == 0 {
+            if let Some(slot) = least.get_mut(node.pair) {
+                *slot = slot.min(node.bound);
+            }
+            for rest in heap.drain() {
+                if let Some(slot) = least.get_mut(rest.pair) {
+                    *slot = slot.min(rest.bound);
+                }
+            }
+            break;
+        }
+        let (Some(ra), Some(rb)) = (search.recs.get(node.a), search.recs.get(node.b)) else {
+            continue;
+        };
+        let c = center(&rb.bbox) - center(&ra.bbox);
+        let size = ra.bbox.diagonal() + rb.bbox.diagonal();
+        let d = c.normalized().filter(|_| c.length() > 1e-9 * size);
+        let Some((which, dir)) = cut_apart(&search, ra, rb, d, node.bound <= 0.0) else {
+            if let Some(slot) = least.get_mut(node.pair) {
+                *slot = slot.min(node.bound);
+            }
+            continue;
+        };
+        let (keep, split) = if which == 0 {
+            (node.b, node.a)
+        } else {
+            (node.a, node.b)
+        };
+        for piece in search.children(split, dir) {
+            let (x, y) = if which == 0 {
+                (piece, keep)
+            } else {
+                (keep, piece)
+            };
+            *budget = budget.saturating_sub(1);
+            consider(
+                &search,
+                x,
+                y,
+                node.pair,
+                &[],
+                &mut best,
+                &mut nearer,
+                &mut least,
+                &mut heap,
+                &mut seq,
+                enough,
+            );
+        }
+    }
+    made.iter()
+        .zip(least)
+        .map(|(prims, least)| {
+            let (pa, pb) = (*prims)?;
+            if search.failed.contains(&pa) || search.failed.contains(&pb) {
+                return None;
+            }
+            Some(least)
+        })
+        .collect()
+}
+
 /// The piece and direction to cut: the one that spreads most along `d`
 /// (the larger piece where neither spreads).
 fn cut_apart(
@@ -1492,7 +1771,7 @@ fn consider(
     let (Some(ra), Some(rb)) = (search.recs.get(a), search.recs.get(b)) else {
         return;
     };
-    if ra.inside && rb.inside {
+    if ra.inside && rb.inside && !search.rays {
         let d = ra.center.distance(rb.center);
         if d < *best
             && let Some(&(fa, fb)) = pair_faces.get(pair)
@@ -1611,6 +1890,7 @@ mod tests {
             recs: Vec::new(),
             tol: tolerance.linear,
             failed: std::collections::BTreeSet::new(),
+            rays: false,
         };
         let top = body
             .faces
