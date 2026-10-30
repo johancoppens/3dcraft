@@ -65,6 +65,8 @@ use craft3d_doc::{
 };
 use craft3d_expr::Evaluation;
 use craft3d_regen::Regen;
+use craft3d_render::studio::layers::{Optics as RenderOptics, TangentField};
+use craft3d_topo::Body;
 use std::cell::OnceCell;
 use std::collections::BTreeMap;
 
@@ -624,6 +626,107 @@ pub(crate) fn finish(appearance: &craft3d_doc::Appearance) -> craft3d_render::Fi
     craft3d_render::Finish::from_factors(appearance.metallic, appearance.roughness)
 }
 
+/// Model units of `doc` per millimetre.
+pub(crate) fn units_per_mm(doc: &Document) -> f64 {
+    1e-3 / crate::appearance_cmds::metres_per_unit(doc.units.length)
+}
+
+/// The direction of an anisotropic face's lobe from its surface's own
+/// parametrisation: the `u` direction, which is a plane's first axis and
+/// the turn around the axis of a cylinder, cone, sphere or torus. A
+/// freeform face (Bézier, NURBS) takes its `u` direction at the middle of
+/// its domain as a fixed axis (an approximation: per-point tangents from
+/// the tessellator's parameters would follow it everywhere).
+pub(crate) fn tangent_field(surface: &craft3d_geom::Surface) -> TangentField {
+    use craft3d_geom::Surface;
+    let narrow = |v: craft3d_math::Vec3| [v.x as f32, v.y as f32, v.z as f32];
+    let around = |frame: &craft3d_math::Frame| TangentField::Around {
+        origin: [frame.origin().x, frame.origin().y, frame.origin().z],
+        axis: narrow(frame.z()),
+    };
+    match surface {
+        Surface::Plane(p) => TangentField::Axis(narrow(p.frame().x())),
+        Surface::Cylinder(c) => around(c.frame()),
+        Surface::Cone(c) => around(c.frame()),
+        Surface::Sphere(s) => around(s.frame()),
+        Surface::Torus(t) => around(t.frame()),
+        Surface::Bezier(_) | Surface::Nurbs(_) => {
+            let ((u0, u1), (v0, v1)) = surface.domain();
+            let (_, du, _) = surface.derivatives(0.5 * (u0 + u1), 0.5 * (v0 + v1));
+            TangentField::Axis(narrow(du))
+        }
+    }
+}
+
+/// The layers of `appearance` as the renderers take them for the face
+/// `face` of `body` (`None` for none), the absorption's length converted
+/// from millimetres with `per_mm` model units per millimetre.
+pub(crate) fn render_optics(
+    appearance: &craft3d_doc::Appearance,
+    body: Option<&Body>,
+    face: usize,
+    per_mm: f64,
+) -> Option<RenderOptics> {
+    let o = &appearance.optics;
+    if o.is_none() {
+        return None;
+    }
+    let tangent = match o.direction {
+        craft3d_doc::AnisotropyDirection::Axis(a) => {
+            TangentField::Axis([a[0] as f32, a[1] as f32, a[2] as f32])
+        }
+        craft3d_doc::AnisotropyDirection::Parametric => body
+            .and_then(|b| b.faces.get(face))
+            .map_or(TangentField::Axis([1.0, 0.0, 0.0]), |f| {
+                tangent_field(&f.surface)
+            }),
+    };
+    let absorption = o.absorption.map_or([0.0; 3], |c| {
+        craft3d_render::studio::layers::absorption_coefficients(c, o.absorption_distance * per_mm)
+    });
+    Some(
+        RenderOptics {
+            anisotropy: o.anisotropy as f32,
+            tangent,
+            clearcoat: o.clearcoat as f32,
+            clearcoat_roughness: o.clearcoat_roughness as f32,
+            transmission: o.transmission as f32,
+            ior: o.ior as f32,
+            thin_walled: o.thin_walled,
+            absorption,
+            subsurface: o.subsurface as f32,
+            subsurface_color: o.subsurface_color,
+        }
+        .sanitized(),
+    )
+}
+
+/// A face's look as the renderers take it: colour, finish and layers.
+pub(crate) type FaceLook = ([u8; 3], craft3d_render::Finish, Option<RenderOptics>);
+
+/// The looks of the faces of `body` (the body of `feature`), by face.
+pub(crate) fn face_looks(
+    doc: &Document,
+    regen: &Regen,
+    feature: FeatureId,
+    body: &Body,
+) -> Vec<Option<FaceLook>> {
+    let per_mm = units_per_mm(doc);
+    face_appearances(doc, regen, feature, body.faces.len())
+        .into_iter()
+        .enumerate()
+        .map(|(face, a)| {
+            a.map(|a| {
+                (
+                    a.color,
+                    finish(&a),
+                    render_optics(&a, Some(body), face, per_mm),
+                )
+            })
+        })
+        .collect()
+}
+
 /// Gives the faces of the body of `feature`, whose ids in a scene's or a
 /// picture's mesh start at `first_face_id`, their colours in `colors`.
 pub(crate) fn color_faces(
@@ -634,14 +737,19 @@ pub(crate) fn color_faces(
     first_face_id: u32,
     faces: usize,
 ) {
+    let body = regen
+        .feature(feature)
+        .and_then(|result| result.body.as_deref());
+    let per_mm = units_per_mm(values.doc());
     for (face, appearance) in face_appearances_in(values, regen, feature, faces)
         .into_iter()
         .enumerate()
     {
-        if let (Some(appearance), Ok(face)) = (appearance, u32::try_from(face))
-            && let Some(id) = first_face_id.checked_add(face)
+        if let (Some(appearance), Ok(index)) = (appearance, u32::try_from(face))
+            && let Some(id) = first_face_id.checked_add(index)
         {
             colors.set_look(id, Some((appearance.color, finish(&appearance))));
+            colors.set_optics(id, render_optics(&appearance, body, face, per_mm));
         }
     }
 }

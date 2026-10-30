@@ -32,13 +32,14 @@ use crate::scene::{
 };
 use craft3d_doc::Document;
 use craft3d_math::{Bbox3, Vec3};
+use craft3d_render::studio::layers::{Optics, TangentField};
 use craft3d_render::{FaceColors, Finish};
 use craft3d_tess::Mesh;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// What the bytes of a scene start with, with the form's version.
-const MAGIC: &[u8; 8] = b"C3DSCN\x00\x02";
+const MAGIC: &[u8; 8] = b"C3DSCN\x00\x03";
 
 /// The scene's bytes. The revision is the page's own and is left out.
 pub(crate) fn encode(scene: &Scene) -> Vec<u8> {
@@ -76,6 +77,12 @@ pub(crate) fn encode(scene: &Scene) -> Vec<u8> {
             }
             None => w.u8(0),
         }
+    }
+    let optics: Vec<(u32, &Optics)> = scene.face_colors.optics_faces().collect();
+    w.len(optics.len());
+    for (face, o) in optics {
+        w.u32(face);
+        w.optics(o);
     }
     w.len(scene.sketches.len());
     for sketch in &scene.sketches {
@@ -209,6 +216,16 @@ pub(crate) fn decode(bytes: &[u8], doc: &Document, revision: u64) -> Result<Scen
             )),
         ) {
             return Err("a face colour of the scene is out of range".into());
+        }
+    }
+    for _ in 0..r.count(OPTICS)? {
+        let face = r.u32()?;
+        if face >= face_end {
+            return Err("a face's layers of the scene are of no face of its bodies".into());
+        }
+        let optics = r.optics()?;
+        if !face_colors.set_optics(face, Some(optics)) {
+            return Err("a face's layers of the scene are out of range".into());
         }
     }
     let count = r.count(SKETCH)?;
@@ -351,6 +368,9 @@ pub(crate) fn decode(bytes: &[u8], doc: &Document, revision: u64) -> Result<Scen
 const BODY: usize = 4 + 4 + 16 + 4 + 4 + 28;
 /// A face colour: the face, the colour, the metal, whether it is rough.
 const FACE_COLOR: usize = 4 + 3 + 1 + 1;
+/// A face's layers: the face, nine `f32`, the tangent field's kind and
+/// axis, two flags and the scattering colour's flag.
+const OPTICS: usize = 4 + 9 * 4 + 1 + 12 + 1 + 1;
 /// A sketch: two texts, four vectors and two counts.
 const SKETCH: usize = 4 + 4 + 4 * 24 + 4 + 4;
 /// A sketch's polyline: a text, its kind, construction and its points.
@@ -446,6 +466,44 @@ struct Writer {
 impl Writer {
     fn bytes(&mut self, b: &[u8]) {
         self.out.extend_from_slice(b);
+    }
+    fn f32(&mut self, v: f32) {
+        self.u32(v.to_bits());
+    }
+    /// A face's layers (see [`OPTICS`]).
+    fn optics(&mut self, o: &Optics) {
+        for v in [
+            o.anisotropy,
+            o.clearcoat,
+            o.clearcoat_roughness,
+            o.transmission,
+            o.ior,
+        ] {
+            self.f32(v);
+        }
+        for v in o.absorption {
+            self.f32(v);
+        }
+        self.f32(o.subsurface);
+        match o.tangent {
+            TangentField::Axis(axis) => {
+                self.u8(0);
+                axis.into_iter().for_each(|v| self.f32(v));
+            }
+            TangentField::Around { origin, axis } => {
+                self.u8(1);
+                axis.into_iter().for_each(|v| self.f32(v));
+                origin.into_iter().for_each(|v| self.f64(v));
+            }
+        }
+        self.bool(o.thin_walled);
+        match o.subsurface_color {
+            Some(c) => {
+                self.u8(1);
+                self.bytes(&c);
+            }
+            None => self.u8(0),
+        }
     }
     fn u8(&mut self, v: u8) {
         self.out.push(v);
@@ -568,6 +626,52 @@ struct Reader<'a> {
 const SHORT: &str = "the scene's bytes end too soon";
 
 impl Reader<'_> {
+    fn f32(&mut self) -> Result<f32, String> {
+        Ok(f32::from_bits(self.u32()?))
+    }
+    /// A face's layers, as [`Writer::optics`] writes them.
+    fn optics(&mut self) -> Result<Optics, String> {
+        let mut head = [0.0_f32; 5];
+        for v in &mut head {
+            *v = self.f32()?;
+        }
+        let [
+            anisotropy,
+            clearcoat,
+            clearcoat_roughness,
+            transmission,
+            ior,
+        ] = head;
+        let absorption = [self.f32()?, self.f32()?, self.f32()?];
+        let subsurface = self.f32()?;
+        let tangent = match self.u8()? {
+            0 => TangentField::Axis([self.f32()?, self.f32()?, self.f32()?]),
+            1 => {
+                let axis = [self.f32()?, self.f32()?, self.f32()?];
+                let origin = [self.f64()?, self.f64()?, self.f64()?];
+                TangentField::Around { origin, axis }
+            }
+            _ => return Err("a face's tangent field is of no known kind".into()),
+        };
+        let thin_walled = self.bool()?;
+        let subsurface_color = if self.bool()? {
+            Some([self.u8()?, self.u8()?, self.u8()?])
+        } else {
+            None
+        };
+        Ok(Optics {
+            anisotropy,
+            tangent,
+            clearcoat,
+            clearcoat_roughness,
+            transmission,
+            ior,
+            thin_walled,
+            absorption,
+            subsurface,
+            subsurface_color,
+        })
+    }
     fn take(&mut self, n: usize) -> Result<&[u8], String> {
         let end = self.at.checked_add(n).ok_or(SHORT)?;
         let got = self.bytes.get(self.at..end).ok_or(SHORT)?;
@@ -753,9 +857,14 @@ mod tests {
             ),
             (
                 "feature.sphere",
-                json!({"radius": 3, "position": [30, 0, 0]}),
+                json!({"radius": 3, "position": [30, 0, 0], "name": "S"}),
             ),
             ("datum.plane", json!({"from": "xy", "distance": 4})),
+            ("material.preset", json!({"body": "S", "preset": "glass"})),
+            (
+                "body.appearance",
+                json!({"body": "B", "color": "#808080", "metallic": 1, "anisotropy": 0.6, "clearcoat": 0.5, "subsurface": 0.2}),
+            ),
         ] {
             s.execute(id, &params).unwrap();
         }
@@ -772,6 +881,9 @@ mod tests {
         assert_eq!(encode(&back), bytes);
         assert_eq!(back, *scene);
         assert_eq!(back.datums.len(), 1);
+        // The layers cross too: the glass sphere's and the brushed block's.
+        assert!(back.face_colors.has_transmission());
+        assert!(back.face_colors.optics_table().len() >= 2);
     }
 
     #[test]

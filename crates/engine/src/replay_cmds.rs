@@ -101,7 +101,7 @@ mod native {
     /// (`appearance`), which a body keeps from one state to the next.
     type Bodies = Vec<(FeatureId, Arc<Body>, Arc<Vec<Option<Look>>>)>;
     /// A face's colour and finish.
-    type Look = ([u8; 3], craft3d_render::Finish);
+    type Look = crate::appearance::FaceLook;
 
     fn same(a: &Bodies, b: &Bodies) -> bool {
         a.len() == b.len()
@@ -209,8 +209,10 @@ mod native {
                     .map_err(|_| CommandError::new("view.replay: mesh too large"))?;
                 let face_base = all.face_ids.iter().copied().max().map_or(0, |m| m + 1);
                 for (face, look) in faces.iter().enumerate() {
-                    if let (Some(look), Ok(face)) = (look, u32::try_from(face)) {
-                        colors.set_look(face_base.saturating_add(face), Some(*look));
+                    if let (Some((color, finish, optics)), Ok(face)) = (look, u32::try_from(face)) {
+                        let id = face_base.saturating_add(face);
+                        colors.set_look(id, Some((*color, *finish)));
+                        colors.set_optics(id, *optics);
                     }
                 }
                 all.positions.extend(&mesh.positions);
@@ -373,10 +375,7 @@ mod native {
             .bodies()
             .filter(|(id, _)| !doc.is_hidden(*id))
             .map(|(id, b)| {
-                let colors = crate::appearance::face_appearances(doc, regen, id, b.faces.len())
-                    .into_iter()
-                    .map(|a| a.map(|a| (a.color, crate::appearance::finish(&a))))
-                    .collect();
+                let colors = crate::appearance::face_looks(doc, regen, id, b);
                 (id, Arc::clone(b), Arc::new(colors))
             })
             .collect()
@@ -728,10 +727,7 @@ mod native {
                 .bodies()
                 .filter(|(id, _)| !doc.is_hidden(*id))
                 .map(|(id, b)| {
-                    let colors = crate::appearance::face_appearances(doc, regen, id, b.faces.len())
-                        .into_iter()
-                        .map(|a| a.map(|a| (a.color, crate::appearance::finish(&a))))
-                        .collect();
+                    let colors = crate::appearance::face_looks(doc, regen, id, b);
                     (id, Arc::clone(b), Arc::new(colors))
                 })
                 .collect()

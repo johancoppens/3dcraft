@@ -1716,10 +1716,23 @@ fn export_material(
     materials: &mut Vec<craft3d_meshio::Material>,
     appearance: &craft3d_doc::Appearance,
 ) -> u32 {
+    let o = &appearance.optics;
+    let layered = craft3d_meshio::Material {
+        name: String::new(),
+        color: appearance.color,
+        metallic: appearance.metallic,
+        roughness: appearance.roughness,
+        clearcoat: (o.clearcoat > 0.0).then_some((o.clearcoat, o.clearcoat_roughness)),
+        anisotropy: (o.anisotropy != 0.0).then_some(o.anisotropy),
+        transmission: (o.transmission > 0.0).then_some(o.transmission),
+        ior: (o.transmission > 0.0).then_some(o.ior),
+        transmission_filter: o.absorption.filter(|_| o.transmission > 0.0),
+    };
     let same = |m: &craft3d_meshio::Material| {
-        m.color == appearance.color
-            && m.metallic == appearance.metallic
-            && m.roughness == appearance.roughness
+        craft3d_meshio::Material {
+            name: String::new(),
+            ..m.clone()
+        } == layered
     };
     if let Some(at) = materials.iter().position(same) {
         return u32::try_from(at).unwrap_or(u32::MAX);
@@ -1731,12 +1744,17 @@ fn export_material(
     if let Some(roughness) = appearance.roughness {
         name.push_str(&format!(" roughness {roughness}"));
     }
-    let material = craft3d_meshio::Material {
-        name,
-        color: appearance.color,
-        metallic: appearance.metallic,
-        roughness: appearance.roughness,
-    };
+    for (what, v) in [
+        ("anisotropy", o.anisotropy),
+        ("clearcoat", o.clearcoat),
+        ("transmission", o.transmission),
+        ("subsurface", o.subsurface),
+    ] {
+        if v != 0.0 {
+            name.push_str(&format!(" {what} {v}"));
+        }
+    }
+    let material = craft3d_meshio::Material { name, ..layered };
     materials.push(material);
     u32::try_from(materials.len().saturating_sub(1)).unwrap_or(u32::MAX)
 }

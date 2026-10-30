@@ -878,6 +878,7 @@ fn build_shown(doc: &Document, assembly: &Assembly, instances: &mut [InstanceSta
                     color: craft3d_doc::BodyColor::Fixed(colour),
                     metallic: appearance.as_ref().and_then(|a| a.metallic),
                     roughness: appearance.as_ref().and_then(|a| a.roughness),
+                    optics: appearance.as_ref().map(|a| a.optics).unwrap_or_default(),
                 });
             }
             let material = props

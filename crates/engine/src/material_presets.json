@@ -1,0 +1,60 @@
+[
+  {
+    "preset": "steel",
+    "label": "Steel",
+    "color": [140, 142, 146],
+    "metallic": 1.0,
+    "roughness": 0.35,
+    "material": {"name": "Steel", "density": 7850}
+  },
+  {
+    "preset": "aluminium-brushed",
+    "label": "Aluminium, brushed",
+    "color": [212, 214, 218],
+    "metallic": 1.0,
+    "roughness": 0.3,
+    "anisotropy": 0.75,
+    "material": {"name": "Aluminium", "density": 2700}
+  },
+  {
+    "preset": "abs",
+    "label": "ABS plastic",
+    "color": [232, 230, 222],
+    "metallic": 0.0,
+    "roughness": 0.45,
+    "subsurface": 0.1,
+    "material": {"name": "ABS", "density": 1040}
+  },
+  {
+    "preset": "glass",
+    "label": "Glass",
+    "color": [250, 252, 252],
+    "metallic": 0.0,
+    "roughness": 0.02,
+    "transmission": 1.0,
+    "ior": 1.52,
+    "absorption": [196, 226, 212],
+    "absorptionDistance": 50,
+    "material": {"name": "Glass", "density": 2500}
+  },
+  {
+    "preset": "car-paint",
+    "label": "Car paint",
+    "color": [150, 16, 24],
+    "metallic": 0.4,
+    "roughness": 0.45,
+    "clearcoat": 1.0,
+    "clearcoatRoughness": 0.04,
+    "material": {"name": "Steel, painted", "density": 7850}
+  },
+  {
+    "preset": "wood",
+    "label": "Wood",
+    "color": [170, 122, 74],
+    "metallic": 0.0,
+    "roughness": 0.65,
+    "subsurface": 0.2,
+    "subsurfaceColor": [200, 120, 60],
+    "material": {"name": "Wood", "density": 700}
+  }
+]

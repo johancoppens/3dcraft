@@ -186,6 +186,7 @@ fn freecad_reads_a_coloured_3mf_box_as_the_same_solid() {
                 color: [181, 140, 60],
                 metallic: Some(1.0),
                 roughness: Some(0.3),
+                ..craft3d_meshio::Material::default()
             },
         ],
     };

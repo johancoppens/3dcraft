@@ -266,6 +266,43 @@ craft3d-cli render part.3dcraft --out part.png --look studio --fstop 4 --accumul
 In the browser on WebGL2 the second layer's reflections, contact shadows and depth of field are left
 out.
 
+### Materials
+
+Beyond its colour, metallic and roughness, a body or a face can have the layers of a real material,
+which the studio look draws (the plain look keeps showing the colour):
+
+- **anisotropy** (−1 to 1): the highlight stretched in one direction, as on brushed or turned metal.
+  It follows the face's own direction: around the axis of a turned face (cylinder, cone, sphere,
+  torus), along the first axis of a flat one; `anisotropyAxis` `[x, y, z]` gives a direction of your
+  own instead;
+- **clearcoat** (0 to 1) with its own `clearcoatRoughness`: a clear, glossy layer over the colour,
+  as on car paint;
+- **transmission** (0 to 1): light passes through, as through glass or clear plastic, bent by the
+  index of refraction `ior` (1.5 by default). `thinWalled` is for a sheet: light passes straight
+  through. `absorption` is the colour light takes after `absorptionDistance` millimetres inside
+  (10 by default), so thick glass looks greener than thin glass;
+- **subsurface** (0 to 1): light wraps past the edge of the shadow, as in wax, skin or wood, tinted
+  by `subsurfaceColor`.
+
+A small library gives ready sets: `material.presets` lists them (steel, aluminium-brushed, abs,
+glass, car-paint, wood) and `material.preset` gives one to a body, its look and its density
+together; any number beside it changes the preset:
+
+```text
+material.preset {"body": "Housing", "preset": "car-paint", "color": "#1f4fa0"}
+material.preset {"body": "Window", "preset": "glass"}
+body.appearance {"body": "Blades", "color": "#c8ccd2", "metallic": 1, "roughness": 0.3, "anisotropy": 0.8}
+```
+
+What you see through glass is worked out on the picture itself: the view of what lies behind it,
+moved by the refraction as a slab of the glass's thickness would move it. Glass behind glass is not
+seen through, and a transparent body casts no shadow. Exports keep what their formats can: an OBJ
+export's material library has the clear coat (`Pc`, `Pcr`), the anisotropy (`aniso`), the index of
+refraction (`Ni`) and the transmission (`d`, `Tf`); a 3MF export gives a transmissive material a
+display colour with transparency; a STEP export writes the transmission as the surface's
+transparency. Subsurface, the anisotropy's direction and the absorption's length are kept only in
+the `.3dcraft` file.
+
 ## Pointing at things
 
 A click selects what is under the pointer: a corner (vertex) when one is within a few points, else an

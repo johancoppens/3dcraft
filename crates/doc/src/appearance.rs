@@ -21,7 +21,8 @@ use serde::{Deserialize, Serialize};
 
 /// How a body is drawn. `color` is sRGB; `metallic` and `roughness` are
 /// the two numbers of a metallic-roughness material (0 to 1 each), which
-/// both renderers shade with and OBJ's material library carries.
+/// both renderers shade with and OBJ's material library carries; `optics`
+/// the layers beyond them (format version 54).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Appearance {
     pub color: [u8; 3],
@@ -29,6 +30,137 @@ pub struct Appearance {
     pub metallic: Option<f64>,
     #[serde(default)]
     pub roughness: Option<f64>,
+    #[serde(default)]
+    pub optics: Optics,
+}
+
+/// Where an anisotropic face's lobe is stretched: along the `u`
+/// direction of the face's own parametrisation (around the axis of a
+/// cylinder, cone, sphere or torus; a plane's first axis), or along an
+/// axis given in the model's axes, projected on the face.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub enum AnisotropyDirection {
+    #[default]
+    Parametric,
+    Axis([f64; 3]),
+}
+
+/// The layers of a material beyond its colour, metallic and roughness,
+/// which the studio look shades (docs/design/rendering.md, *Layer 3:
+/// materials*): anisotropy (brushed metal), a clear coat (car paint),
+/// transmission (glass, clear plastic) and a subsurface approximation
+/// (wax, skin, translucent plastic). The default has none of them.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Optics {
+    /// −1 to 1: positive stretches the highlight along `direction`.
+    #[serde(default)]
+    pub anisotropy: f64,
+    #[serde(default)]
+    pub direction: AnisotropyDirection,
+    /// 0 to 1.
+    #[serde(default)]
+    pub clearcoat: f64,
+    /// 0 to 1.
+    #[serde(default)]
+    pub clearcoat_roughness: f64,
+    /// The share of the diffuse light that passes through, 0 to 1.
+    #[serde(default)]
+    pub transmission: f64,
+    /// The index of refraction, 1 to 3.
+    #[serde(default = "Optics::default_ior")]
+    pub ior: f64,
+    /// A thin sheet: light passes straight through, not refracted.
+    #[serde(default)]
+    pub thin_walled: bool,
+    /// The colour (sRGB) light takes after `absorption_distance`
+    /// millimetres inside; `None` for clear.
+    #[serde(default)]
+    pub absorption: Option<[u8; 3]>,
+    /// Millimetres, whatever the document's length unit.
+    #[serde(default = "Optics::default_absorption_distance")]
+    pub absorption_distance: f64,
+    /// The subsurface wrap, 0 to 1.
+    #[serde(default)]
+    pub subsurface: f64,
+    /// The colour of the light that scatters inside (sRGB); `None` for
+    /// the base colour.
+    #[serde(default)]
+    pub subsurface_color: Option<[u8; 3]>,
+}
+
+impl Default for Optics {
+    fn default() -> Self {
+        Optics {
+            anisotropy: 0.0,
+            direction: AnisotropyDirection::Parametric,
+            clearcoat: 0.0,
+            clearcoat_roughness: 0.0,
+            transmission: 0.0,
+            ior: Optics::default_ior(),
+            thin_walled: false,
+            absorption: None,
+            absorption_distance: Optics::default_absorption_distance(),
+            subsurface: 0.0,
+            subsurface_color: None,
+        }
+    }
+}
+
+/// The most a length of absorption may be, in millimetres (a kilometre).
+pub const MAX_ABSORPTION_DISTANCE: f64 = 1e6;
+
+impl Optics {
+    /// The index of refraction of a material without one: 1.5 (glass).
+    pub fn default_ior() -> f64 {
+        1.5
+    }
+
+    /// The length of absorption without one: 10 mm.
+    pub fn default_absorption_distance() -> f64 {
+        10.0
+    }
+
+    /// True when it is the default (no layer).
+    pub fn is_none(&self) -> bool {
+        *self == Optics::default()
+    }
+
+    /// Why these are not layers: a number outside its range.
+    pub fn check(&self) -> Result<(), String> {
+        let ranges = [
+            ("anisotropy", self.anisotropy, -1.0, 1.0),
+            ("clearcoat", self.clearcoat, 0.0, 1.0),
+            ("clearcoatRoughness", self.clearcoat_roughness, 0.0, 1.0),
+            ("transmission", self.transmission, 0.0, 1.0),
+            ("ior", self.ior, 1.0, 3.0),
+            ("subsurface", self.subsurface, 0.0, 1.0),
+        ];
+        for (name, value, lo, hi) in ranges {
+            if !(lo..=hi).contains(&value) {
+                return Err(format!(
+                    "{name} must be between {lo} and {hi}, but it is {value}"
+                ));
+            }
+        }
+        if !(self.absorption_distance.is_finite()
+            && self.absorption_distance > 0.0
+            && self.absorption_distance <= MAX_ABSORPTION_DISTANCE)
+        {
+            return Err(format!(
+                "absorptionDistance must be a positive length up to {MAX_ABSORPTION_DISTANCE} mm, but it is {}",
+                self.absorption_distance
+            ));
+        }
+        if let AnisotropyDirection::Axis(axis) = self.direction {
+            let length = axis.iter().map(|c| c * c).sum::<f64>().sqrt();
+            if !(length.is_finite() && length > 0.0) {
+                return Err(format!(
+                    "the anisotropy's axis must be a direction, but it is {axis:?}"
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Appearance {
@@ -38,10 +170,12 @@ impl Appearance {
             color,
             metallic: None,
             roughness: None,
+            optics: Optics::default(),
         }
     }
 
-    /// Why this is not an appearance: a factor outside 0 to 1.
+    /// Why this is not an appearance: a factor outside 0 to 1, or layers
+    /// out of range ([`Optics::check`]).
     pub fn check(&self) -> Result<(), String> {
         for (name, value) in [("metallic", self.metallic), ("roughness", self.roughness)] {
             if let Some(value) = value
@@ -50,7 +184,7 @@ impl Appearance {
                 return Err(format!("{name} must be between 0 and 1, but it is {value}"));
             }
         }
-        Ok(())
+        self.optics.check()
     }
 
     /// The colour as `#rrggbb`.
@@ -187,6 +321,8 @@ pub struct BodyAppearance {
     pub metallic: Option<f64>,
     #[serde(default)]
     pub roughness: Option<f64>,
+    #[serde(default)]
+    pub optics: Optics,
 }
 
 impl From<Appearance> for BodyAppearance {
@@ -195,6 +331,7 @@ impl From<Appearance> for BodyAppearance {
             color: BodyColor::Fixed(appearance.color),
             metallic: appearance.metallic,
             roughness: appearance.roughness,
+            optics: appearance.optics,
         }
     }
 }
@@ -249,6 +386,7 @@ impl BodyAppearance {
             color,
             metallic: self.metallic,
             roughness: self.roughness,
+            optics: self.optics,
         }
     }
 
@@ -605,6 +743,34 @@ mod tests {
             ..Appearance::color([0; 3])
         };
         assert!(doc.set_appearance(ids[0], Some(shiny)).is_err());
+        for optics in [
+            Optics {
+                anisotropy: 1.5,
+                ..Optics::default()
+            },
+            Optics {
+                ior: 0.5,
+                ..Optics::default()
+            },
+            Optics {
+                transmission: f64::NAN,
+                ..Optics::default()
+            },
+            Optics {
+                absorption_distance: 0.0,
+                ..Optics::default()
+            },
+            Optics {
+                direction: AnisotropyDirection::Axis([0.0; 3]),
+                ..Optics::default()
+            },
+        ] {
+            let layered = Appearance {
+                optics,
+                ..Appearance::color([0; 3])
+            };
+            assert!(doc.set_appearance(ids[0], Some(layered)).is_err());
+        }
         for density in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             let material = Material::new("X", density);
             assert!(doc.set_material(ids[0], Some(material)).is_err());
@@ -699,6 +865,7 @@ mod tests {
             color: BodyColor::Exprs(Box::new([Expr::new(r), Expr::new(g), Expr::new(b)])),
             metallic: Some(0.5),
             roughness: None,
+            optics: Optics::default(),
         };
         let resolved = exprs("k * 100", "254.5", "0.49")
             .resolve(Some(&values))

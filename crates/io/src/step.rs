@@ -32,7 +32,7 @@
 //! | Bézier patch, NURBS surface | `B_SPLINE_SURFACE_WITH_KNOTS`; rational: the complex instance with `RATIONAL_B_SPLINE_SURFACE` |
 //! | line, circle, ellipse | `LINE`, `CIRCLE`, `ELLIPSE` |
 //! | NURBS curve | `B_SPLINE_CURVE_WITH_KNOTS`; rational: the complex instance with `RATIONAL_B_SPLINE_CURVE` |
-//! | colour of a body, of a face | `STYLED_ITEM` of the solid (or the shell model), of the `ADVANCED_FACE`, with `PRESENTATION_STYLE_ASSIGNMENT` → `SURFACE_STYLE_USAGE` (`.BOTH.`) → `SURFACE_SIDE_STYLE` → `SURFACE_STYLE_FILL_AREA` → `FILL_AREA_STYLE` → `FILL_AREA_STYLE_COLOUR` → `COLOUR_RGB` (0 to 1), all items of a body in one `MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION` in the body's context (the AP214/AP242 presentation resources, as other modellers write them) |
+//! | colour of a body, of a face | `STYLED_ITEM` of the solid (or the shell model), of the `ADVANCED_FACE`, with `PRESENTATION_STYLE_ASSIGNMENT` → `SURFACE_STYLE_USAGE` (`.BOTH.`) → `SURFACE_SIDE_STYLE` → `SURFACE_STYLE_FILL_AREA` → `FILL_AREA_STYLE` → `FILL_AREA_STYLE_COLOUR` → `COLOUR_RGB` (0 to 1), and for a transmissive one (layer 3) a `SURFACE_STYLE_RENDERING_WITH_PROPERTIES` (`.NORMAL_SHADING.`, the colour) with a `SURFACE_STYLE_TRANSPARENT` of its transmission beside the fill, all items of a body in one `MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION` in the body's context (the AP214/AP242 presentation resources, as other modellers write them) |
 //!
 //! # Conventions
 //!
@@ -189,6 +189,13 @@ pub struct StepBody<'a> {
     /// own, written as a style of the face where it differs from the
     /// body's.
     pub face_colors: &'a [Option<[u8; 3]>],
+    /// The share of the light the body lets through (layer 3's
+    /// transmission, 0 to 1), written with its colour as a
+    /// `SURFACE_STYLE_TRANSPARENT`; `None` or 0 for an opaque one.
+    pub transparency: Option<f64>,
+    /// Empty, or per face: the transparency of a face with a colour of
+    /// its own (as `face_colors`).
+    pub face_transparency: &'a [Option<f64>],
 }
 
 impl<'a> StepBody<'a> {
@@ -199,6 +206,8 @@ impl<'a> StepBody<'a> {
             body,
             color: None,
             face_colors: &[],
+            transparency: None,
+            face_transparency: &[],
         }
     }
 }
@@ -1047,9 +1056,13 @@ impl Writer<'_> {
     /// in the body's colour and per face whose colour differs from it, in
     /// one presentation representation. One style per colour.
     fn styles(&mut self, item: &StepBody<'_>, solids: &[u64], written: &Written, context: u64) {
-        let mut styles: BTreeMap<[u8; 3], u64> = BTreeMap::new();
-        let mut style = |writer: &mut Self, color: [u8; 3]| -> u64 {
-            if let Some(&id) = styles.get(&color) {
+        let mut styles: BTreeMap<([u8; 3], u64), u64> = BTreeMap::new();
+        let mut style = |writer: &mut Self, color: [u8; 3], transparency: Option<f64>| -> u64 {
+            let transparency = transparency
+                .filter(|t| t.is_finite() && *t > 0.0)
+                .map(|t| t.min(1.0));
+            let key = (color, transparency.map_or(0, f64::to_bits));
+            if let Some(&id) = styles.get(&key) {
                 return id;
             }
             let [r, g, b] = color.map(|c| Param::Real(f64::from(c) / 255.0));
@@ -1057,20 +1070,37 @@ impl Writer<'_> {
             let fill = writer.add("FILL_AREA_STYLE_COLOUR", vec![empty(), Param::Ref(rgb)]);
             let area = writer.add("FILL_AREA_STYLE", vec![empty(), Param::refs([fill])]);
             let surface = writer.add("SURFACE_STYLE_FILL_AREA", vec![Param::Ref(area)]);
-            let side = writer.add("SURFACE_SIDE_STYLE", vec![empty(), Param::refs([surface])]);
+            let mut side_styles = vec![surface];
+            if let Some(t) = transparency {
+                // AP214's rendering properties: the colour again, with the
+                // share of light let through.
+                let transparent = writer.add("SURFACE_STYLE_TRANSPARENT", vec![Param::Real(t)]);
+                side_styles.push(writer.add(
+                    "SURFACE_STYLE_RENDERING_WITH_PROPERTIES",
+                    vec![
+                        Param::enumeration("NORMAL_SHADING"),
+                        Param::Ref(rgb),
+                        Param::refs([transparent]),
+                    ],
+                ));
+            }
+            let side = writer.add(
+                "SURFACE_SIDE_STYLE",
+                vec![empty(), Param::refs(side_styles)],
+            );
             let usage = writer.add(
                 "SURFACE_STYLE_USAGE",
                 vec![Param::enumeration("BOTH"), Param::Ref(side)],
             );
             let assignment =
                 writer.add("PRESENTATION_STYLE_ASSIGNMENT", vec![Param::refs([usage])]);
-            styles.insert(color, assignment);
+            styles.insert(key, assignment);
             assignment
         };
         let mut styled = Vec::new();
         if let Some(color) = item.color {
             for &solid in solids {
-                let assignment = style(self, color);
+                let assignment = style(self, color, item.transparency);
                 styled.push(self.add(
                     "STYLED_ITEM",
                     vec![text("color"), Param::refs([assignment]), Param::Ref(solid)],
@@ -1079,8 +1109,11 @@ impl Writer<'_> {
         }
         for (&face, &id) in &written.faces {
             let own = item.face_colors.get(face as usize).copied().flatten();
-            if let Some(color) = own.filter(|&c| Some(c) != item.color) {
-                let assignment = style(self, color);
+            let clear = item.face_transparency.get(face as usize).copied().flatten();
+            if let Some(color) =
+                own.filter(|&c| Some(c) != item.color || clear != item.transparency)
+            {
+                let assignment = style(self, color, clear);
                 styled.push(self.add(
                     "STYLED_ITEM",
                     vec![text("color"), Param::refs([assignment]), Param::Ref(id)],

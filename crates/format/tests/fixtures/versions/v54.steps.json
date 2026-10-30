@@ -1,0 +1,9 @@
+[
+ ["feature.block", {"size": [40, 30, 4], "name": "Pane"}],
+ ["feature.cylinder", {"position": [80, 0, 0], "radius": 10, "height": 30, "name": "Shaft"}],
+ ["feature.block", {"size": [20, 20, 20], "position": [-60, 0, 0], "name": "Box"}],
+ ["material.preset", {"body": "Pane", "preset": "glass"}],
+ ["body.appearance", {"body": "Shaft", "color": [200, 202, 206], "metallic": 1, "roughness": 0.3, "anisotropy": 0.8, "anisotropyAxis": [0, 0, 1]}],
+ ["material.preset", {"body": "Box", "preset": "car-paint", "color": "#1f4fa0"}],
+ ["face.appearance", {"faces": ["F3:face(1)"], "color": "#a07040", "subsurface": 0.4, "subsurfaceColor": "#ff8040", "thinWalled": true, "transmission": 0.3, "ior": 1.33, "absorption": "#80c0ff", "absorptionDistance": 5, "clearcoat": 0.5, "clearcoatRoughness": 0.2}]
+]

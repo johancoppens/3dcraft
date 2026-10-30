@@ -44,6 +44,7 @@ mod jig_cmds;
 mod loft_cmds;
 pub mod look;
 mod mass;
+mod material_cmds;
 mod measure_pieces;
 mod memory_files;
 mod meshes;
@@ -565,6 +566,7 @@ impl Session {
                 sweep_path_cmds::SPECS,
                 body_cmds::SPECS,
                 appearance_cmds::SPECS,
+                material_cmds::SPECS,
                 blend_cmds::SPECS,
                 face_cmds::SPECS,
                 datum_cmds::SPECS,

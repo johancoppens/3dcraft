@@ -27,16 +27,20 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
-    spec!("body.appearance", "Body Colour", r##"{"body": id or name, "color": "#rrggbb" or [r, g, b] (each a number or an expression), "metallic": number, "roughness": number, "clear": boolean = false}"##,
-        "Gives the body of a feature a colour (sRGB: \"#c8102e\" or [200, 16, 46], each 0 to 255; in [r, g, b] each may also be an expression of the variables that gives a plain number from 0 to 255, rounded, such as [\"woods[wood].red\", \"if(dark, 40, 90)\", 60], and the colour then follows them: a Jig's choice recolours the body; refused when they do not evaluate now, and a colour whose expressions stop evaluating draws the body without it, which document.check and document.inspect (colorError) say), and optionally metallic and roughness (0 to 1, kept for exporters; the viewport shades from the colour). The body keeps it through every regeneration and edit; bodies made from it keep it too: a boolean's result has its target's colour; the faces a tool cut take the target's colour too, while the faces a union or an intersection takes from a coloured tool keep the tool's; set a colour on the later feature to colour its whole body. Given to a feature that is switched off (suppressed, or inactive by its condition), it colours the body that feature passes on when that body has no colour of its own; a colour of a feature that is on whose expressions stop evaluating gives the body no colour (not another feature's). view.render, view.replay, the viewport and 3MF exports show it. clear takes the colour away (the theme's again).", doc: true, body_appearance_cmd),
+    spec!("body.appearance", "Body Colour", r##"{"body": id or name, "color": "#rrggbb" or [r, g, b] (each a number or an expression), "metallic": number, "roughness": number, "anisotropy": number, "anisotropyAxis": [x, y, z], "clearcoat": number, "clearcoatRoughness": number, "transmission": number, "ior": number, "thinWalled": boolean, "absorption": "#rrggbb" or [r, g, b], "absorptionDistance": number (mm), "subsurface": number, "subsurfaceColor": "#rrggbb" or [r, g, b], "clear": boolean = false}"##,
+        "Gives the body of a feature a colour (sRGB: \"#c8102e\" or [200, 16, 46], each 0 to 255; in [r, g, b] each may also be an expression of the variables that gives a plain number from 0 to 255, rounded, such as [\"woods[wood].red\", \"if(dark, 40, 90)\", 60], and the colour then follows them: a Jig's choice recolours the body; refused when they do not evaluate now, and a colour whose expressions stop evaluating draws the body without it, which document.check and document.inspect (colorError) say), and optionally metallic and roughness (0 to 1), and the layers the studio look shades beyond them (docs/guide: Materials): anisotropy (−1 to 1; the highlight stretched along the face's own u direction, around the axis of a turned face, or along anisotropyAxis), clearcoat and clearcoatRoughness (0 to 1: a clear layer over the colour, car paint), transmission (0 to 1: glass and clear plastic, with ior 1 to 3, default 1.5, thinWalled for a sheet, absorption the colour light takes after absorptionDistance mm inside, default 10), subsurface (0 to 1, a wrap of the light past the shadow's edge for wax, skin or wood, tinted by subsurfaceColor). material.preset gives a ready set. The body keeps it through every regeneration and edit; bodies made from it keep it too: a boolean's result has its target's colour; the faces a tool cut take the target's colour too, while the faces a union or an intersection takes from a coloured tool keep the tool's; set a colour on the later feature to colour its whole body. Given to a feature that is switched off (suppressed, or inactive by its condition), it colours the body that feature passes on when that body has no colour of its own; a colour of a feature that is on whose expressions stop evaluating gives the body no colour (not another feature's). view.render, view.replay, the viewport and 3MF exports show it. clear takes the colour away (the theme's again).", doc: true, body_appearance_cmd),
     spec!("body.material", "Body Material", r#"{"body": id or name, "name": string, "density": number (kg/m³), "7.85 g/cm3" or an expression ("sheets[material].density g/cm3"), "clear": boolean = false}"#,
         "Gives the body of a feature a material: a name and a density, a number in kg/m³ or a string with a unit (kg/m3, g/cm3, g/mm3, lb/in3, lb/ft3), or an expression of the variables that gives a plain number, in kg/m³ or in the unit after it (\"sheets[material].density g/cm3\", \"if(pla, 1240, 700)\"): the density then follows them (a Jig's choice of material changes the mass); refused when it does not evaluate now to a positive number, and a density that stops evaluating gives no mass, which document.check and document.inspect (densityError) say. document.inspect and document.measure then give the body's mass (kg) and its inertia tensor about the centroid (kg times the document's length unit squared), computed exactly from the B-rep; body.material itself measures nothing and says which bodies have the material. Bodies made from it keep it, as with body.appearance (a boolean's result has its target's). Given to a feature that is switched off (suppressed, or inactive by its condition), it weighs the body that feature passes on when that body has no material of its own. clear takes it away.", doc: true, body_material_cmd),
-    spec!("face.appearance", "Face Colour", r##"{"faces": [persistent name], "body": id or name = the body that has the face, "selection": boolean = false, "color": "#rrggbb" or [r, g, b], "metallic": number, "roughness": number, "clear": boolean = false}"##,
-        "Gives faces a colour of their own (sRGB: \"#2f6fd6\" or [47, 111, 214]), and optionally metallic and roughness (0 to 1). The faces are given by their persistent names (as document.inspect, select.get or ui.pick give them; body says whose body when the name alone does not), or selection: true takes the faces of the current selection (select.get): select a face, then colour it. The colour is kept in the document by the body's feature and the face's name there, so it survives every regeneration and every upstream edit that keeps the face; the faces later features make of it (the copies of a pattern, a transform or a boolean, the pieces of a face cut in two) take it too, by the rule of body.appearance (the wall a tool cut has the target's colour). It goes before the body's colour at the same feature; a colour set with body.appearance on a strictly later feature's body goes before it (that body is then all in that colour, as for any earlier colour), and a face colour on that later body before that again. A face that several faces were merged into (aliases) has the colour of its own name, else of its aliases in their order. A face an edit takes away keeps its entry, colours nothing and is listed under lostFaces here and in document.inspect (undo brings the face and its colour back); it never moves to another face. clear takes the colour away (also a lost face's, by its name and body). The viewport, view.render, view.replay and the 3MF and STEP exports show it. One undo step.", doc: true, names: ["faces"], face_appearance_cmd),
+    spec!("face.appearance", "Face Colour", r##"{"faces": [persistent name], "body": id or name = the body that has the face, "selection": boolean = false, "color": "#rrggbb" or [r, g, b], "metallic": number, "roughness": number, "anisotropy": number, "anisotropyAxis": [x, y, z], "clearcoat": number, "clearcoatRoughness": number, "transmission": number, "ior": number, "thinWalled": boolean, "absorption": "#rrggbb" or [r, g, b], "absorptionDistance": number (mm), "subsurface": number, "subsurfaceColor": "#rrggbb" or [r, g, b], "clear": boolean = false}"##,
+        "Gives faces a colour of their own (sRGB: \"#2f6fd6\" or [47, 111, 214]), and optionally metallic and roughness (0 to 1) and the layers of body.appearance (anisotropy, clear coat, transmission, subsurface). The faces are given by their persistent names (as document.inspect, select.get or ui.pick give them; body says whose body when the name alone does not), or selection: true takes the faces of the current selection (select.get): select a face, then colour it. The colour is kept in the document by the body's feature and the face's name there, so it survives every regeneration and every upstream edit that keeps the face; the faces later features make of it (the copies of a pattern, a transform or a boolean, the pieces of a face cut in two) take it too, by the rule of body.appearance (the wall a tool cut has the target's colour). It goes before the body's colour at the same feature; a colour set with body.appearance on a strictly later feature's body goes before it (that body is then all in that colour, as for any earlier colour), and a face colour on that later body before that again. A face that several faces were merged into (aliases) has the colour of its own name, else of its aliases in their order. A face an edit takes away keeps its entry, colours nothing and is listed under lostFaces here and in document.inspect (undo brings the face and its colour back); it never moves to another face. clear takes the colour away (also a lost face's, by its name and body). The viewport, view.render, view.replay and the 3MF and STEP exports show it. One undo step.", doc: true, names: ["faces"], face_appearance_cmd),
 ];
 
 /// The feature of `key`, which must be one that can make a body.
-fn body_ref(doc: &Document, p: &Params, command: &str) -> Result<FeatureId, CommandError> {
+pub(crate) fn body_ref(
+    doc: &Document,
+    p: &Params,
+    command: &str,
+) -> Result<FeatureId, CommandError> {
     let id = feature_ref(doc, p, command, "body")?;
     let kind = doc.feature(id).map(|f| &f.kind);
     if let Some(kind) = kind
@@ -51,7 +55,7 @@ fn body_ref(doc: &Document, p: &Params, command: &str) -> Result<FeatureId, Comm
 }
 
 /// A colour from `#rrggbb`, `#rgb` or `[r, g, b]` (0 to 255).
-fn color_param(command: &str, value: &Value) -> Result<[u8; 3], CommandError> {
+pub(crate) fn color_param(command: &str, value: &Value) -> Result<[u8; 3], CommandError> {
     let bad = || {
         CommandError::new(format!(
             "{command}: `color` must be \"#rrggbb\" or [r, g, b] with whole numbers from 0 to 255, got {value}"
@@ -113,7 +117,7 @@ fn body_color_param(command: &str, value: &Value) -> Result<BodyColor, CommandEr
 }
 
 /// A factor from 0 to 1.
-fn factor(p: &Params, key: &str) -> Result<Option<f64>, CommandError> {
+pub(crate) fn factor(p: &Params, key: &str) -> Result<Option<f64>, CommandError> {
     match p.number(key)? {
         Some(x) if !(0.0..=1.0).contains(&x) => fail(format!(
             "{}: `{key}` must be between 0 and 1, got {x}",
@@ -189,7 +193,7 @@ fn body_appearance_json(values: &Values, appearance: &BodyAppearance) -> Value {
     out
 }
 
-fn appearance_json(appearance: &Appearance) -> Value {
+pub(crate) fn appearance_json(appearance: &Appearance) -> Value {
     let mut out = json!({ "color": appearance.hex() });
     if let Some(map) = out.as_object_mut() {
         if let Some(m) = appearance.metallic {
@@ -198,23 +202,23 @@ fn appearance_json(appearance: &Appearance) -> Value {
         if let Some(r) = appearance.roughness {
             map.insert("roughness".into(), r.into());
         }
+        crate::material_cmds::optics_into(map, &appearance.optics);
     }
     out
 }
 
 fn body_appearance_cmd(session: &mut Session, params: &Value) -> Run {
     const ID: &str = "body.appearance";
-    let p = Params::new(
-        ID,
-        params,
-        &["body", "color", "metallic", "roughness", "clear"],
-    )?;
+    let mut keys = vec!["body", "color", "metallic", "roughness", "clear"];
+    keys.extend(crate::material_cmds::OPTICS_KEYS);
+    let p = Params::new(ID, params, &keys)?;
     let doc = session.document()?.history.current();
     let id = body_ref(doc, &p, ID)?;
     let clear = p.bool("clear")?.unwrap_or(false);
     let appearance = if clear {
         if let Some(key) = ["color", "metallic", "roughness"]
             .into_iter()
+            .chain(crate::material_cmds::OPTICS_KEYS)
             .find(|key| p.has(key))
         {
             return fail(format!(
@@ -228,6 +232,7 @@ fn body_appearance_cmd(session: &mut Session, params: &Value) -> Run {
             color,
             metallic: factor(&p, "metallic")?,
             roughness: factor(&p, "roughness")?,
+            optics: crate::material_cmds::optics_param(&p, craft3d_doc::Optics::default())?,
         };
         // Expressions are checked against the variables as they are: a
         // colour that does not evaluate is refused with the reason.
@@ -394,6 +399,17 @@ fn face_appearance_cmd(session: &mut Session, params: &Value) -> Run {
             "metallic",
             "roughness",
             "clear",
+            "anisotropy",
+            "anisotropyAxis",
+            "clearcoat",
+            "clearcoatRoughness",
+            "transmission",
+            "ior",
+            "thinWalled",
+            "absorption",
+            "absorptionDistance",
+            "subsurface",
+            "subsurfaceColor",
         ],
     )?;
     session.document()?;
@@ -401,6 +417,7 @@ fn face_appearance_cmd(session: &mut Session, params: &Value) -> Run {
     let appearance = if clear {
         if let Some(key) = ["color", "metallic", "roughness"]
             .into_iter()
+            .chain(crate::material_cmds::OPTICS_KEYS)
             .find(|key| p.has(key))
         {
             return fail(format!(
@@ -414,6 +431,7 @@ fn face_appearance_cmd(session: &mut Session, params: &Value) -> Run {
             color,
             metallic: factor(&p, "metallic")?,
             roughness: factor(&p, "roughness")?,
+            optics: crate::material_cmds::optics_param(&p, craft3d_doc::Optics::default())?,
         })
     };
     let (wanted, skipped) = wanted_faces(session, &p)?;
@@ -603,7 +621,7 @@ pub(crate) fn metres_per_unit(unit: LengthUnit) -> f64 {
 /// now; with an expression also that (`densityExpr`, with the unit it is
 /// in when that is not kg/m³: `densityUnit`, kg/m³ per unit of it), and
 /// the reason instead of the density when it does not evaluate.
-fn described_material(values: &Values, material: &Material) -> Value {
+pub(crate) fn described_material(values: &Values, material: &Material) -> Value {
     let mut described = json!({ "name": material.name });
     if let Some(map) = described.as_object_mut() {
         match crate::appearance::density_in(values, material) {

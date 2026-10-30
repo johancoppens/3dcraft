@@ -80,13 +80,34 @@ pub struct Material {
     pub metallic: Option<f64>,
     /// The roughness, 0 to 1, where one is given (`Pr` in the library).
     pub roughness: Option<f64>,
+    /// A clear coat's strength and roughness, 0 to 1 (`Pc`, `Pcr`).
+    pub clearcoat: Option<(f64, f64)>,
+    /// The anisotropy, −1 to 1 (`aniso` of its size, with `anisor` 0.25,
+    /// a quarter turn, for a negative one).
+    pub anisotropy: Option<f64>,
+    /// The share of light let through, 0 to 1: OBJ's dissolve `d` is one
+    /// minus it, with the transmission filter `Tf` and the index of
+    /// refraction `Ni`; 3MF's display colour takes it as its alpha.
+    pub transmission: Option<f64>,
+    pub ior: Option<f64>,
+    /// The colour the light takes through it (sRGB), OBJ's `Tf`.
+    pub transmission_filter: Option<[u8; 3]>,
 }
 
 impl Material {
-    /// The colour as 3MF writes it: `#RRGGBB`.
+    /// The colour as 3MF writes it: `#RRGGBB`, or `#RRGGBBAA` with the
+    /// alpha one minus the transmission when it lets light through.
     pub fn display_color(&self) -> String {
         let [r, g, b] = self.color;
-        format!("#{r:02X}{g:02X}{b:02X}")
+        match self.transmission.filter(|t| t.is_finite() && *t > 0.0) {
+            Some(t) => {
+                // Within 0..=255 after the clamp.
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let alpha = ((1.0 - t.min(1.0)) * 255.0).round() as u8;
+                format!("#{r:02X}{g:02X}{b:02X}{alpha:02X}")
+            }
+            None => format!("#{r:02X}{g:02X}{b:02X}"),
+        }
     }
 }
 
@@ -357,6 +378,31 @@ pub fn write_obj_with_mtl(
         }
         if let Some(metallic) = material.metallic.filter(|v| v.is_finite()) {
             let _ = writeln!(mtl, "Pm {:.6}", metallic.clamp(0.0, 1.0));
+        }
+        let unit = |v: f64| v.clamp(0.0, 1.0);
+        if let Some((c, r)) = material
+            .clearcoat
+            .filter(|(c, r)| c.is_finite() && r.is_finite() && *c > 0.0)
+        {
+            let _ = writeln!(mtl, "Pc {:.6}", unit(c));
+            let _ = writeln!(mtl, "Pcr {:.6}", unit(r));
+        }
+        if let Some(a) = material.anisotropy.filter(|a| a.is_finite() && *a != 0.0) {
+            let _ = writeln!(mtl, "aniso {:.6}", unit(a.abs()));
+            if a < 0.0 {
+                let _ = writeln!(mtl, "anisor 0.250000");
+            }
+        }
+        if let Some(t) = material.transmission.filter(|t| t.is_finite() && *t > 0.0) {
+            let _ = writeln!(mtl, "d {:.6}", 1.0 - unit(t));
+            let [r, g, b] = material
+                .transmission_filter
+                .unwrap_or([255; 3])
+                .map(|c| f64::from(c) / 255.0);
+            let _ = writeln!(mtl, "Tf {r:.6} {g:.6} {b:.6}");
+        }
+        if let Some(ior) = material.ior.filter(|v| v.is_finite()) {
+            let _ = writeln!(mtl, "Ni {:.6}", ior.clamp(1.0, 10.0));
         }
     }
     let mut out = String::from("# 3DCraft\n");
@@ -870,6 +916,7 @@ f 4 5 6
                     color: [200, 30, 4],
                     metallic: Some(0.25),
                     roughness: Some(0.5),
+                    ..Material::default()
                 },
             ],
         };
@@ -983,6 +1030,7 @@ f 4 5 6
                     color: [200, 30, 4],
                     metallic: Some(0.25),
                     roughness: Some(0.5),
+                    ..Material::default()
                 },
                 // Unused, and named like the first once its `#` is gone.
                 Material {

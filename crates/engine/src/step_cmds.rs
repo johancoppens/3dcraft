@@ -33,26 +33,38 @@ pub(crate) fn export(
     let open = session.document_mut()?;
     let regen = open.regen();
     let doc = &open.bodies_doc();
-    // Each body with its name and colours (`appearance`).
-    #[allow(clippy::type_complexity)]
-    let named: Vec<(
-        String,
-        &craft3d_topo::Body,
-        Option<[u8; 3]>,
-        Vec<Option<[u8; 3]>>,
-    )> = regen
+    // Each body with its name and colours (`appearance`), and the share of
+    // light each lets through (layer 3's transmission).
+    struct Named<'b> {
+        name: String,
+        body: &'b craft3d_topo::Body,
+        color: Option<[u8; 3]>,
+        faces: Vec<Option<[u8; 3]>>,
+        clear: Option<f64>,
+        clear_faces: Vec<Option<f64>>,
+    }
+    let transmission =
+        |a: &craft3d_doc::Appearance| Some(a.optics.transmission).filter(|t| *t > 0.0);
+    let named: Vec<Named<'_>> = regen
         .bodies()
         .filter(|(id, _)| only.is_none_or(|only| only.contains(id)))
         .map(|(id, body)| {
             let name = doc
                 .feature(id)
                 .map_or_else(|| id.to_string(), |f| f.name.clone());
-            let color = crate::appearance::body_appearance(doc, &regen, id).map(|a| a.color);
-            let faces = crate::appearance::face_appearances(doc, &regen, id, body.faces.len())
-                .into_iter()
-                .map(|a| a.map(|a| a.color))
-                .collect();
-            (name, &**body, color, faces)
+            let own = crate::appearance::body_appearance(doc, &regen, id);
+            let looks = crate::appearance::face_appearances(doc, &regen, id, body.faces.len());
+            Named {
+                name,
+                body,
+                color: own.map(|a| a.color),
+                clear: own.as_ref().and_then(transmission),
+                faces: looks.iter().map(|a| a.map(|a| a.color)).collect(),
+                clear_faces: looks
+                    .iter()
+                    .map(|a| a.as_ref().and_then(transmission))
+                    .collect(),
+            }
         })
         .collect();
     if named.is_empty() {
@@ -62,10 +74,12 @@ pub(crate) fn export(
     }
     let bodies: Vec<StepBody<'_>> = named
         .iter()
-        .map(|(name, body, color, faces)| StepBody {
-            color: *color,
-            face_colors: faces,
-            ..StepBody::new(name, body)
+        .map(|n| StepBody {
+            color: n.color,
+            face_colors: &n.faces,
+            transparency: n.clear,
+            face_transparency: &n.clear_faces,
+            ..StepBody::new(&n.name, n.body)
         })
         .collect();
     let tolerance = craft3d_math::Tolerance::new(doc.tolerance.linear, doc.tolerance.angular)

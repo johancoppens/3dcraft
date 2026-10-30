@@ -377,6 +377,10 @@ pub struct BodyAppearance {
     pub metallic: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roughness: Option<f64>,
+    /// The layers beyond metallic and roughness (version 54). Written only
+    /// when there are any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optics: Option<Optics>,
 }
 
 /// `[200, 16, 46]`, or `["woods[wood].red", "120", "if(dark, 40, 90)"]`.
@@ -397,6 +401,63 @@ pub struct Appearance {
     pub metallic: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roughness: Option<f64>,
+    /// The layers beyond metallic and roughness (version 54). Written only
+    /// when there are any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optics: Option<Optics>,
+}
+
+/// The layers of a material beyond its colour, metallic and roughness
+/// (version 54; docs/design/rendering.md, *Layer 3: materials*). A field
+/// left out has its default: no anisotropy (along the face's
+/// parametrisation), no clear coat, no transmission, an index of
+/// refraction of 1.5, not thin-walled, no absorption over 10 mm, no
+/// subsurface wrap, the base colour scattering.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Optics {
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub anisotropy: f64,
+    #[serde(default, skip_serializing_if = "AnisotropyDirection::is_parametric")]
+    pub direction: AnisotropyDirection,
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub clearcoat: f64,
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub clearcoat_roughness: f64,
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub transmission: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ior: Option<f64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub thin_walled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub absorption: Option<[u8; 3]>,
+    /// Millimetres.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub absorption_distance: Option<f64>,
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub subsurface: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subsurface_color: Option<[u8; 3]>,
+}
+
+fn is_zero_f64(v: &f64) -> bool {
+    *v == 0.0
+}
+
+/// `"parametric"` (the face's own `u` direction) or `{"axis": [x, y, z]}`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AnisotropyDirection {
+    #[default]
+    Parametric,
+    Axis([f64; 3]),
+}
+
+impl AnisotropyDirection {
+    fn is_parametric(&self) -> bool {
+        *self == AnisotropyDirection::Parametric
+    }
 }
 
 /// `density` is in kg/m³, whatever the document's length unit; with

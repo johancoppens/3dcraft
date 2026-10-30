@@ -28,8 +28,8 @@ pub mod table;
 pub mod visibility;
 
 pub use appearance::{
-    Appearance, BodyAppearance, BodyColor, BodyProperties, FaceProperties, MAX_FACE_APPEARANCES,
-    Material,
+    AnisotropyDirection, Appearance, BodyAppearance, BodyColor, BodyProperties, FaceProperties,
+    MAX_FACE_APPEARANCES, Material, Optics,
 };
 pub use assembly::{
     Assembly, Coupling, CouplingKind, Instance, InstanceMode, Mate, MateKind, MateRef,

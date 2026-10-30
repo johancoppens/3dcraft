@@ -8,7 +8,7 @@ The full description of any command, with every value it takes and what it refus
 
 ## Commands
 
-3DCraft 0.1.0 has 154 commands. A command's id is its family and its name: `feature.fillet`.
+3DCraft 0.1.0 has 156 commands. A command's id is its family and its name: `feature.fillet`.
 
 ### Documents and files
 
@@ -70,7 +70,8 @@ The full description of any command, with every value it takes and what it refus
 | `feature.visible` | Hide a feature in the view |
 | `history.rollback` | Build only up to a feature; insert after it |
 | `datum.plane`, `datum.axis`, `datum.point`, `datum.helix`, `datum.references` | Construction geometry |
-| `body.appearance`, `face.appearance`, `body.material` | Colours and density |
+| `body.appearance`, `face.appearance`, `body.material` | Colours, material layers (anisotropy, clear coat, transmission, subsurface) and density |
+| `material.presets`, `material.preset` | The material library: steel, brushed aluminium, ABS, glass, car paint, wood |
 | `body.split` | One body per piece |
 
 ### Assemblies

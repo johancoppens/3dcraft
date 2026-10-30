@@ -691,11 +691,13 @@ fn appearance_to_manifest(appearance: doc::Appearance) -> manifest::Appearance {
         color,
         metallic,
         roughness,
+        optics,
     } = appearance;
     manifest::Appearance {
         color,
         metallic,
         roughness,
+        optics: optics_to_manifest(optics),
     }
 }
 
@@ -704,11 +706,87 @@ fn appearance_to_doc(appearance: manifest::Appearance) -> doc::Appearance {
         color,
         metallic,
         roughness,
+        optics,
     } = appearance;
     doc::Appearance {
         color,
         metallic,
         roughness,
+        optics: optics_to_doc(optics),
+    }
+}
+
+/// The layers as the file keeps them: `None` for none, and each field at
+/// its default left out.
+fn optics_to_manifest(optics: doc::Optics) -> Option<manifest::Optics> {
+    if optics.is_none() {
+        return None;
+    }
+    let doc::Optics {
+        anisotropy,
+        direction,
+        clearcoat,
+        clearcoat_roughness,
+        transmission,
+        ior,
+        thin_walled,
+        absorption,
+        absorption_distance,
+        subsurface,
+        subsurface_color,
+    } = optics;
+    Some(manifest::Optics {
+        anisotropy,
+        direction: match direction {
+            doc::AnisotropyDirection::Parametric => manifest::AnisotropyDirection::Parametric,
+            doc::AnisotropyDirection::Axis(axis) => manifest::AnisotropyDirection::Axis(axis),
+        },
+        clearcoat,
+        clearcoat_roughness,
+        transmission,
+        ior: (ior != doc::Optics::default_ior()).then_some(ior),
+        thin_walled,
+        absorption,
+        absorption_distance: (absorption_distance != doc::Optics::default_absorption_distance())
+            .then_some(absorption_distance),
+        subsurface,
+        subsurface_color,
+    })
+}
+
+fn optics_to_doc(optics: Option<manifest::Optics>) -> doc::Optics {
+    let Some(optics) = optics else {
+        return doc::Optics::default();
+    };
+    let manifest::Optics {
+        anisotropy,
+        direction,
+        clearcoat,
+        clearcoat_roughness,
+        transmission,
+        ior,
+        thin_walled,
+        absorption,
+        absorption_distance,
+        subsurface,
+        subsurface_color,
+    } = optics;
+    doc::Optics {
+        anisotropy,
+        direction: match direction {
+            manifest::AnisotropyDirection::Parametric => doc::AnisotropyDirection::Parametric,
+            manifest::AnisotropyDirection::Axis(axis) => doc::AnisotropyDirection::Axis(axis),
+        },
+        clearcoat,
+        clearcoat_roughness,
+        transmission,
+        ior: ior.unwrap_or_else(doc::Optics::default_ior),
+        thin_walled,
+        absorption,
+        absorption_distance: absorption_distance
+            .unwrap_or_else(doc::Optics::default_absorption_distance),
+        subsurface,
+        subsurface_color,
     }
 }
 
@@ -751,6 +829,7 @@ fn body_to_manifest(body: &doc::BodyProperties) -> manifest::BodyProperties {
                 color,
                 metallic,
                 roughness,
+                optics,
             } = appearance;
             manifest::BodyAppearance {
                 color: match color {
@@ -761,6 +840,7 @@ fn body_to_manifest(body: &doc::BodyProperties) -> manifest::BodyProperties {
                 },
                 metallic: *metallic,
                 roughness: *roughness,
+                optics: optics_to_manifest(*optics),
             }
         }),
         material: material.as_ref().map(|material| {
@@ -791,6 +871,7 @@ fn body_to_doc(body: manifest::BodyProperties) -> doc::BodyProperties {
                 color,
                 metallic,
                 roughness,
+                optics,
             } = appearance;
             doc::BodyAppearance {
                 color: match color {
@@ -801,6 +882,7 @@ fn body_to_doc(body: manifest::BodyProperties) -> doc::BodyProperties {
                 },
                 metallic,
                 roughness,
+                optics: optics_to_doc(optics),
             }
         }),
         material: material.map(|material| {
