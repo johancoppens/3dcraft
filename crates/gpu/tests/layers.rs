@@ -701,6 +701,62 @@ fn the_viewport_draws_layer_three_as_the_cpu_renderer() {
                     stats.doubt_share()
                 );
                 report(&label, &cpu, &gpu);
+                if stats.most > MOST_LEVELS {
+                    // Diagnosis: the same without the traced effects, and
+                    // without the specular shadow.
+                    for (what, look) in [
+                        (
+                            "untraced",
+                            Look {
+                                ssr: false,
+                                ground_reflection: 0.0,
+                                ..studio.look
+                            },
+                        ),
+                        (
+                            "no specular shadow",
+                            Look {
+                                specular_shadow: false,
+                                ..studio.look
+                            },
+                        ),
+                    ] {
+                        onscreen.set_studio(Some(Studio {
+                            env: scene.env.clone(),
+                            look,
+                        }));
+                        let gpu = picture(&mut onscreen);
+                        let cpu = cpu_render(&scene, &colors, &params, &look);
+                        let stats = compare(&scene, &colors, &cpu, &gpu);
+                        eprintln!("DIAGNOSE {label} | {what}: {stats:?}");
+                        report(&format!("{label} | {what}"), &cpu, &gpu);
+                    }
+                    let w = cpu.frame.width as usize;
+                    for i in 0..cpu.frame.ids.len() {
+                        let d = (0..3)
+                            .map(|k| cpu.frame.rgb[3 * i + k].abs_diff(gpu.rgb[3 * i + k]))
+                            .max()
+                            .unwrap();
+                        if d > MOST_LEVELS && !cpu.band[i] {
+                            let (x, y) = ((i % w) as i64, (i / w) as i64);
+                            for dy in -2..=2_i64 {
+                                let row: Vec<String> = (-2..=2_i64)
+                                    .map(|dx| {
+                                        let j = ((y + dy) * w as i64 + x + dx) as usize;
+                                        format!(
+                                            "{}{}{:?}/{:?}",
+                                            cpu.frame.ids[j],
+                                            if cpu.band[j] { "b" } else { "" },
+                                            &cpu.frame.rgb[3 * j..3 * j + 3],
+                                            &gpu.rgb[3 * j..3 * j + 3]
+                                        )
+                                    })
+                                    .collect();
+                                eprintln!("AROUND {label} | {}", row.join(" "));
+                            }
+                        }
+                    }
+                }
                 check(&mut failures, &label, &stats);
             }
         }
