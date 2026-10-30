@@ -50,6 +50,10 @@ fn build(session: &mut Session, s: f64) {
             "datum.plane",
             json!({"from": "xy", "distance": mm(3.0), "name": "Top"}),
         ),
+        // Last, an edit that needs no bodies: on the page the state is
+        // then not regenerated there (an edit that follows a body, the
+        // boolean, regenerates the state before it on the page).
+        ("variable.set", json!({"name": "k", "expr": "1"})),
     ] {
         session
             .execute(id, &params)
