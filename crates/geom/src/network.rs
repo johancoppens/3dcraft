@@ -1529,7 +1529,7 @@ fn hold_tangent(
         v.elevate()?;
     }
     // The second row's basis function must end at or before `next`.
-    localize_rows(&mut v, next, rows)?;
+    tag(localize_rows(&mut v, next, rows), "hold localize")?;
     let q = v.degree;
     within_budget(net.rows.len(), count(q, &runs(&v)))?;
     net.refine_v(q, &runs(&v))?;
@@ -2685,10 +2685,13 @@ fn bend(
         // Only the control point beside the end moves (and the one after
         // it, in curvature): their basis functions must stop short of the
         // next crossing.
-        localize_rows(
-            &mut raw,
-            if at_start { next } else { 1.0 - next },
-            if g2 { 3 } else { 2 },
+        tag(
+            localize_rows(
+                &mut raw,
+                if at_start { next } else { 1.0 - next },
+                if g2 { 3 } else { 2 },
+            ),
+            "bend localize",
         )?;
         let p_deg = raw.degree;
         let (Some(&h0), Some(&h1), Some(&k1), Some(&kp1)) = (
@@ -2705,12 +2708,15 @@ fn bend(
             *slot = h_of(p1, w1);
         }
         if g2 {
-            bend_curvature(
-                &mut raw,
-                face,
-                lines.get(k).copied().flatten(),
-                net,
-                &format!("{label}: {}", name(family, k)),
+            tag(
+                bend_curvature(
+                    &mut raw,
+                    face,
+                    lines.get(k).copied().flatten(),
+                    net,
+                    &format!("{label}: {}", name(family, k)),
+                ),
+                "bend curvature",
             )?;
         }
         track.raw = if at_start { raw } else { reverse(&raw) };
@@ -3109,6 +3115,11 @@ fn hold_curvature_fields(
     put_on_third_row(net, &delta, origin, rows.c2, tol, label)
 }
 
+/// TEMPORARY (debugging): an error tagged with where it was made.
+fn tag<T>(r: Result<T, NetworkError>, at: &str) -> Result<T, NetworkError> {
+    r.map_err(|e| NetworkError::Refused(format!("[{at}] {e}")))
+}
+
 /// TEMPORARY (debugging): keep a sheet whose seam is not proven G2, and
 /// the largest residual of the last curvature solve (f64 bits).
 #[doc(hidden)]
@@ -3156,7 +3167,7 @@ fn hold_curvature_implicit(
             "{label}: curvature to this kind of face is not supported (owed: its implicit form)"
         ));
     };
-    let rows = edge_rows(net, origin)?;
+    let rows = tag(edge_rows(net, origin), "edge rows")?;
     let r0 = mapped(&net.column(0)?, |h| h_about(h, origin));
     let (n_raw, r_raw) = match form {
         continuity::ImplicitForm::Plane(l) => (constant(l), constant([0.0; 4])),
@@ -3262,8 +3273,8 @@ fn hold_curvature_implicit(
     while rho_up.degree < out {
         rho_up.elevate()?;
     }
-    let n_pieces = on_breaks(&n_up)?;
-    let rho_pieces = on_breaks(&rho_up)?;
+    let n_pieces = tag(on_breaks(&n_up), "n pieces")?;
+    let rho_pieces = tag(on_breaks(&rho_up), "rho pieces")?;
     let pieces = breaks.len() + 1;
     let equations = pieces * (out + 1) + 4 * at.len();
     let work = unknowns
@@ -3285,7 +3296,10 @@ fn hold_curvature_implicit(
             knots: knots.clone(),
             points: pts,
         };
-        let (_, ps) = bezier_pieces_batched(unit)?;
+        let (_, ps) = tag(
+            bezier_pieces_batched(unit).map_err(Into::into),
+            "extraction",
+        )?;
         if ps.len() != pieces {
             return Err(internal());
         }
@@ -3381,7 +3395,10 @@ fn hold_curvature_implicit(
             })
             .collect(),
     };
-    put_on_third_row(net, &delta, origin, rows.c2, tol, label)
+    tag(
+        put_on_third_row(net, &delta, origin, rows.c2, tol, label),
+        "third row",
+    )
 }
 
 /// The solution of least norm of `A x = b` (rows of `A`): every equation

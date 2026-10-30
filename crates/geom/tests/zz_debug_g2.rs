@@ -91,3 +91,87 @@ fn debug_dome() {
         println!("  continuity {c:?}");
     }
 }
+
+#[test]
+fn debug_blend() {
+    use craft3d_geom::Cylinder;
+    let line =
+        |a: Vec3, b: Vec3| NurbsCurve::polynomial(1, vec![0.0, 0.0, 1.0, 1.0], vec![a, b]).unwrap();
+    let (d, r1, r2, h) = (2.0, 1.0, 0.6, 1.5);
+    let frame = |x: f64| Frame::new(v(x, 0.0, 0.0), v(0.0, 0.0, 1.0), v(1.0, 0.0, 0.0)).unwrap();
+    let a = Surface::Cylinder(Cylinder::new(frame(-d), r1).unwrap());
+    let b = Surface::Cylinder(Cylinder::new(frame(d), r2).unwrap());
+    let us = vec![
+        line(v(-d, r1, 0.0), v(-d, r1, h)),
+        line(v(d, r2, 0.0), v(d, r2, h)),
+    ];
+    let vs: Vec<NurbsCurve> = [0.0, 0.5, 1.0]
+        .iter()
+        .map(|f: &f64| {
+            let z = h * f;
+            NurbsCurve::polynomial(
+                3,
+                vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                vec![
+                    v(-d, r1, z),
+                    v(-d + 0.8, r1, z),
+                    v(d - 0.8, r2, z),
+                    v(d, r2, z),
+                ],
+            )
+            .unwrap()
+        })
+        .collect();
+    for edges in [
+        [
+            Condition::Curvature {
+                surface: &a,
+                weight: 1.0,
+            },
+            Condition::Free,
+            Condition::Free,
+            Condition::Free,
+        ],
+        [
+            Condition::Free,
+            Condition::Curvature {
+                surface: &b,
+                weight: 1.0,
+            },
+            Condition::Free,
+            Condition::Free,
+        ],
+        [
+            Condition::Curvature {
+                surface: &a,
+                weight: 1.0,
+            },
+            Condition::Curvature {
+                surface: &b,
+                weight: 1.0,
+            },
+            Condition::Free,
+            Condition::Free,
+        ],
+    ] {
+        let made = gordon(&Network {
+            u: &us,
+            v: &vs,
+            edges,
+            tolerance: 1e-6,
+            angular: 1e-9,
+        });
+        match made {
+            Ok(p) => println!(
+                "BLEND ok seams {:?} degrees {:?} counts {:?}",
+                p.seams
+                    .iter()
+                    .map(|s| s.map(|c| (c.order, c.curvature.found, c.curvature.bound)))
+                    .collect::<Vec<_>>(),
+                p.surface.degrees(),
+                p.surface.counts()
+            ),
+            Err(e) => println!("BLEND err {e}"),
+        }
+    }
+}
