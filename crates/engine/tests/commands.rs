@@ -637,8 +637,8 @@ fn the_registry_describes_every_command() {
         .count();
     assert_eq!(
         needs,
-        commands.len() - 8,
-        "all but file.new, assembly.new, file.open, file.list, the three recovery commands and session.report need a document"
+        commands.len() - 9,
+        "all but file.new, assembly.new, file.open, file.list, the three recovery commands, session.report and material.presets need a document"
     );
 }
 
