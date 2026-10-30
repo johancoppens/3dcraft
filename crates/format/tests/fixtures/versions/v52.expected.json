@@ -1,0 +1,52 @@
+{
+  "format_version": 52,
+  "written_by": "6e0aea5f34cd794802fa37a3b7536ba6b6bdb20d",
+  "how": "the engine of that commit (on the Strix, Check run 40993160189, by a temporary test, crates/engine/tests/zz_write_fixture_v52.rs, that ran v52.steps.json in a session as craft3d-cli run --new '{\"units\": \"mm\"}' --script does, saved v52.3dcraftasm and printed it), then document.inspect of the file opened again with the part's file deleted; a packed assembly (format 52): Bar[1] and Bar[2] picked from one source in two configurations (len 40 mm and 60 mm), Peg[1] pinned and hidden, mates Ground (fixed), Hinge (revolute, limits, driven 30 deg by Hinge_angle) and Slide (slider, offset, flip), the rack coupling Rack",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Bar[1]",
+      "status": "ok"
+    },
+    {
+      "id": "F2",
+      "name": "Bar[2]",
+      "status": "ok"
+    },
+    {
+      "id": "F3",
+      "name": "Peg[1]",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F1",
+      "kind": "solid",
+      "faces": 6,
+      "edges": 12,
+      "vertices": 8,
+      "volume": 320.0,
+      "area": 496.00000000000034
+    },
+    {
+      "feature": "F2",
+      "kind": "solid",
+      "faces": 6,
+      "edges": 12,
+      "vertices": 8,
+      "volume": 480.00000000000034,
+      "area": 736.0000000000003
+    },
+    {
+      "feature": "F3",
+      "kind": "solid",
+      "faces": 6,
+      "edges": 12,
+      "vertices": 8,
+      "volume": 8.000000000000002,
+      "area": 24.000000000000007
+    }
+  ]
+}
