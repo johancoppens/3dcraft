@@ -1728,7 +1728,7 @@ pub(crate) fn plate_thickness(
     let deepest = range.map_or(f64::INFINITY, |(_, hi)| hi + 2.0 * tol);
     let mut taken: BTreeSet<[i64; 3]> = BTreeSet::new();
     let mut points: Vec<Vec3> = Vec::new();
-    let mut sampled: BTreeSet<usize> = BTreeSet::new();
+    let mut sampled: Vec<bool> = vec![false; body.vertices.len()];
     // Where a point behind the face projects onto it, when it is behind
     // (no deeper than `deepest`) and within the face's box.
     let onto = |point: Vec3| -> Option<Vec3> {
@@ -1765,12 +1765,15 @@ pub(crate) fn plate_thickness(
             // at the face's own outline.
             if normal.dot(centre - vertex.point).abs() <= tol
                 && face_box.contains(vertex.point, 2.0 * nudge)
+                && let Some(seen) = sampled.get_mut(index)
             {
-                sampled.insert(index);
+                *seen = true;
             }
             continue;
         };
-        sampled.insert(index);
+        if let Some(seen) = sampled.get_mut(index) {
+            *seen = true;
+        }
         if !take(q, &mut points) {
             return Ok(None);
         }
@@ -1802,7 +1805,7 @@ pub(crate) fn plate_thickness(
         }
         if [edge.start, edge.end]
             .iter()
-            .all(|v| sampled.contains(&(v.0 as usize)))
+            .all(|v| sampled.get(v.0 as usize).copied().unwrap_or(false))
         {
             continue;
         }
