@@ -20,7 +20,7 @@ open, save, import and export files, and let you look, play, click and select.
 | 6 | **History player** | Watch the design being built, step by step |
 | 7 | **View buttons** | **Fit**, **Iso**, **Persp**, **Ortho** and **Studio** |
 | 8 | **View cube** | Click a side, edge or corner to look from there |
-| 9 | **Display bar** | **Sketches**, **Datums**, **See-through** and **Section** |
+| 9 | **Display bar** | **Sketches**, **Datums**, **Edges**, **See-through** and **Section** |
 
 At the bottom is the **status bar**: the document's units, its file, when it was autosaved, the last
 command and its answer, and which renderer drew the picture. While 3DCraft is working, a thin bar runs
@@ -186,7 +186,9 @@ motion with `motion.check` ([Measure and check](10-measure.md#over-a-motion)), a
 
 The **display bar** at the bottom of the view:
 
-- **Sketches** and **Datums** show or hide sketches and construction planes, axes and points.
+- **Sketches** and **Datums** show or hide sketches and construction planes, axes and points;
+  **Edges** shows or hides the dark lines along the bodies' edges (an edge you point at or select is
+  still drawn). In a narrow window these three show their icons only; hover for the name.
 - **See-through** makes the bodies transparent (drag the percentage), to look at pockets and cavities.
 - **Section** cuts the view open with a plane across X, Y or Z; **Offset** moves it and **Flip side**
   keeps the other half.
@@ -240,6 +242,17 @@ field. An orthographic view has no lens and stays sharp.
 While the camera stands still the window keeps refining the picture: it averages 16 frames
 (`accumulate`, 1 to 256), each with its samples moved a little within the pixel and the lens turned,
 so edges smooth out and the blur fills in; moving the camera starts again from a sharp first frame.
+The lines along the edges are drawn over the finished picture, so they cannot blur with it. With
+depth of field they fade instead where the lens blurs the model (`"edges": "soft"`, the default of the
+studio look): crisp at the focus, fainter the further from it. `"edges": "sharp"` keeps them crisp
+everywhere, as the plain look draws them, and `"edges": "off"` leaves them out of the studio look
+(the **Edges** toggle hides them in every look).
+
+```text
+ui.set {"look": {"mode": "studio", "dof": {"fstop": 2, "focus": "picked"}, "edges": "soft"}}
+ui.set {"show": {"edges": false}}
+```
+
 `view.render` and `craft3d-cli render` draw one frame unless `accumulate` (`--accumulate`) asks for
 more; they refuse a still whose frames together would take too long (all frames' samples over
 2^26, about 34 frames of the default 800 × 600 picture). `ui.screenshot` with `window: true` waits

@@ -132,6 +132,11 @@ pub struct EdgeLook {
     pub fade_floor: f64,
     /// The side of a tile of the density, in pixels (4 to 64).
     pub tile: u32,
+    /// The edges follow the studio look's lens: where its depth of field
+    /// is drawn, each pixel of an edge keeps `w / (w + π c / 2)` of its
+    /// ink, `w` the line's width and `c` the blur radius at its distance
+    /// (`craft3d_ui_egui::viewport::EdgeBlur`, the oracle).
+    pub soft: bool,
 }
 
 impl EdgeLook {
@@ -146,6 +151,7 @@ impl EdgeLook {
         dense_cap: 1.0e30,
         fade_floor: 1.0,
         tile: 16,
+        soft: false,
     };
 
     /// The side of a tile, within what the passes take.
@@ -1761,7 +1767,7 @@ impl Onscreen {
         }
         let scene = scene_uniforms(mesh, camera, params, cut.as_ref())?;
         self.depth_numbers = [scene[11], scene[20], scene[21]];
-        let line_uniforms = lines_uniforms(lines, camera, params, overlay, self.samples)?;
+        let mut line_uniforms = lines_uniforms(lines, camera, params, overlay, self.samples)?;
         // The studio look: for an opaque, whole picture of the bodies.
         let lit = match &self.look {
             Some(look) if options.bodies && !see_through && cut.is_none() => {
@@ -1804,6 +1810,16 @@ impl Onscreen {
             }
             _ => None,
         };
+        // Edges that follow the lens: its numbers, as the studio's.
+        if overlay.edges.soft
+            && let Some((drawn, ..)) = &lit
+            && let Some(blur) = edge_blur(&drawn.look, camera, &mesh.bounds, params.height)
+        {
+            for (slot, value) in line_uniforms.iter_mut().skip(LINES_BLUR).zip(blur) {
+                // Deliberate narrowing at the GPU boundary.
+                *slot = value as f32;
+            }
+        }
         if lit.is_some() && self.studio.is_none() {
             let (device, layout, samples) = (self.device.clone(), &self.scene_layout, self.samples);
             self.studio = Some(
@@ -2967,6 +2983,27 @@ impl Onscreen {
         self.queue.submit([encoder.finish()]);
         Ok(())
     }
+}
+
+/// Where the lens's numbers start in `lines.wgsl`'s uniform block:
+/// `more.yzw`.
+const LINES_BLUR: usize = 21;
+
+/// The numbers of the blur of `look`'s lens over the edges of a picture
+/// `height` pixels high (`more.yzw` of `lines.wgsl`): the blur radius in
+/// pixels far away, the distance in focus and the largest radius; `None`
+/// without a lens or where it blurs nothing.
+fn edge_blur(
+    look: &craft3d_render::studio::Look,
+    camera: &Camera,
+    bounds: &Bbox3,
+    height: u32,
+) -> Option<[f64; 3]> {
+    let dof = look.dof.as_ref()?;
+    let lens = craft3d_render::studio::polish::Lens::new(dof, camera, bounds, height as usize)?;
+    let scale = lens.aperture * lens.height / (4.0 * lens.half * lens.focus);
+    let numbers = [scale, lens.focus, lens.cap];
+    numbers.iter().all(|n| n.is_finite()).then_some(numbers)
 }
 
 /// The numbers of `lines.wgsl`'s uniform block.

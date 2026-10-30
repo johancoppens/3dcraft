@@ -374,6 +374,8 @@ struct FrameKey {
     datums: bool,
     /// The sketches are drawn.
     sketches: bool,
+    /// How the bodies' edges are drawn ([`Shell::edges_drawn`]).
+    edges: EdgesDrawn,
     /// How the bodies are lit.
     look: crate::state::LookState,
     /// The studio look's environment is prepared (always true for the
@@ -875,6 +877,15 @@ fn stopwatch() -> impl FnOnce() -> Option<f64> {
 }
 
 impl Shell {
+    /// How the bodies' edges are drawn now: `show.edges`, and the look's
+    /// `edges`.
+    fn edges_drawn(&self) -> EdgesDrawn {
+        EdgesDrawn {
+            shown: self.state.show.edges,
+            mode: self.state.look.edge_mode(),
+        }
+    }
+
     /// The studio look the viewport draws with, or `None` for the plain
     /// look, and while the environment is being prepared (on a thread of
     /// its own on the desktop, fetched by the page in the browser): a frame
@@ -1422,6 +1433,7 @@ impl Shell {
             self.section_cut(),
             self.state.show.datums,
             self.state.show.sketches,
+            self.edges_drawn(),
         )
         .with_selection(self.selection_marks())
         .with(viewport::Marks {
@@ -2999,6 +3011,7 @@ impl Shell {
             section: self.section(),
             datums: self.state.show.datums,
             sketches: self.state.show.sketches,
+            edges: self.edges_drawn(),
             look: self.state.look.clone(),
             look_ready: self.look_ready(),
             tokens,
@@ -3393,6 +3406,7 @@ impl Shell {
                 cut,
                 key.datums,
                 key.sketches,
+                key.edges,
             )
             .with_selection(&chosen),
         );
@@ -3477,6 +3491,7 @@ impl Shell {
                 cut.clone(),
                 key.datums,
                 key.sketches,
+                key.edges,
             )
             .with_selection(&chosen),
             opacity: key.opacity,
@@ -3653,6 +3668,14 @@ const GPU_TARGET_SIDE: u64 = 8192;
 
 /// Paints the overlay, which is in image pixels, into `rect`, which is the
 /// same image in points.
+/// How the bodies' edges are drawn: shown or not (`show.edges`), and in
+/// the studio look as its `edges` says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EdgesDrawn {
+    shown: bool,
+    mode: crate::state::EdgeMode,
+}
+
 /// The marks of a highlighted edge and a highlighted vertex, the section
 /// the picture is cut open with, and the datums when they are shown.
 fn marks_of(
@@ -3662,6 +3685,7 @@ fn marks_of(
     cut: Option<viewport::SectionCut>,
     datums: bool,
     sketches: bool,
+    edges_drawn: EdgesDrawn,
 ) -> viewport::Marks {
     let edges = edge.map_or_else(viewport::Marks::default, |edge| {
         viewport::edge_marks(scene, edge)
@@ -3672,6 +3696,8 @@ fn marks_of(
     viewport::Marks {
         cut,
         hide_sketches: !sketches,
+        hide_edges: !edges_drawn.shown || edges_drawn.mode == crate::state::EdgeMode::Off,
+        soft_edges: edges_drawn.mode == crate::state::EdgeMode::Soft,
         ..edges
             .with(vertices)
             .with(viewport::datum_marks(scene, datums))
@@ -3875,10 +3901,15 @@ fn paint_overlay(
                 line.from[1] + (line.to[1] - line.from[1]) * t,
             ]
         };
+        let wide = f64::from(line.width(tokens)) * pixels_per_point;
         for k in 0..pieces {
             let (t0, t1) = (k as f64 / pieces as f64, (k + 1) as f64 / pieces as f64);
             let middle = at(0.5 * (t0 + t1));
-            let fade = viewport::edge_fade(long, density.at(middle[0], middle[1]), tokens);
+            let mut fade = viewport::edge_fade(long, density.at(middle[0], middle[1]), tokens);
+            // Where the studio look's lens blurs it, as at the piece's middle.
+            if let Some(blur) = &overlay.blur {
+                fade *= blur.fade_along(edge.depth, 0.5 * (t0 + t1), wide);
+            }
             painter.line_segment([place(at(t0)), place(at(t1))], stroke(fade));
         }
     }

@@ -89,6 +89,9 @@ pub struct EdgeInk {
     /// as the GPU cuts it where the point of the segment under a pixel is
     /// hidden, not rounded.
     pub cut: [bool; 2],
+    /// The distances along the view of the stretch's two ends (`from`,
+    /// `to`), for the lens's blur along it ([`Overlay::blur`]).
+    pub depth: [f64; 2],
 }
 
 impl OverlayLine {
@@ -144,6 +147,104 @@ pub struct Overlay {
     pub lines: Vec<OverlayLine>,
     /// The point entities of sketches, as dots.
     pub points: Vec<OverlayPoint>,
+    /// The studio look's lens, when the bodies' edges follow it
+    /// (`look.edges: soft` with depth of field): each edge then fades by
+    /// [`EdgeBlur::fade`] at its distance. `None`: drawn as ever.
+    pub blur: Option<EdgeBlur>,
+}
+
+/// How much the studio look's lens blurs what lies at each distance, for
+/// the bodies' edges over its picture (`look.edges: soft`). The edges are
+/// drawn after the picture is shaded, focused and bloomed, so they are not
+/// blurred with it; instead each pixel of an edge keeps the share of its
+/// ink that a line of its width keeps at its middle once spread over the
+/// lens's circle of confusion: a line `w` pixels wide over a disc of
+/// radius `c` covers about `2 w / (π c)` of it when the disc is much
+/// wider, which `w / (w + π c / 2)` follows from 1 in focus down. In focus
+/// an edge is crisp; far from it, it fades into the blurred picture. The
+/// GPU's lines (`lines.wgsl`) take the same numbers from the same lens.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EdgeBlur {
+    /// The blur radius in pixels of what lies infinitely far:
+    /// `a h / (4 half zf)` (`craft3d_render::studio::polish::coc_radius`).
+    pub scale: f64,
+    /// The distance in focus, along the view.
+    pub focus: f64,
+    /// The largest blur radius, in pixels (`DOF_MAX_COC` of the height).
+    pub cap: f64,
+}
+
+impl EdgeBlur {
+    /// The blur of `look`'s lens for a picture `height` pixels high of a
+    /// mesh within `bounds`, seen with `camera`; `None` without a lens,
+    /// or where the lens blurs nothing ([`craft3d_render::studio::polish::Lens::new`]).
+    pub fn new(
+        look: &craft3d_render::studio::Look,
+        camera: &craft3d_render::Camera,
+        bounds: &craft3d_math::Bbox3,
+        height: u32,
+    ) -> Option<EdgeBlur> {
+        let dof = look.dof.as_ref()?;
+        let lens = craft3d_render::studio::polish::Lens::new(dof, camera, bounds, height as usize)?;
+        let scale = lens.aperture * lens.height / (4.0 * lens.half * lens.focus);
+        (scale.is_finite() && lens.focus.is_finite() && lens.cap.is_finite()).then_some(EdgeBlur {
+            scale,
+            focus: lens.focus,
+            cap: lens.cap,
+        })
+    }
+
+    /// The blur radius in pixels at view distance `z`, capped: the cap
+    /// at or behind the eye, none for a distance that is not a number.
+    pub fn radius(&self, z: f64) -> f64 {
+        let c = if z > 0.0 {
+            self.scale * (z - self.focus).abs() / z
+        } else if z <= 0.0 {
+            self.cap
+        } else {
+            0.0
+        };
+        if c.is_nan() { 0.0 } else { c.min(self.cap) }
+    }
+
+    /// The share of its ink a line `width` pixels wide keeps at view
+    /// distance `z`: 1 in focus, falling as the blur grows.
+    pub fn fade(&self, z: f64, width: f64) -> f64 {
+        let c = self.radius(z);
+        let w = if width.is_finite() {
+            width.max(0.0)
+        } else {
+            0.0
+        };
+        if c > 0.0 {
+            w / (w + std::f64::consts::FRAC_PI_2 * c)
+        } else {
+            1.0
+        }
+    }
+
+    /// The fade of `line` at the fraction `t` of the way from its run's
+    /// start, at the depths `ends` of that run: the reciprocal of the
+    /// distance changes evenly along a line on the screen.
+    pub fn fade_along(&self, ends: [f64; 2], t: f64, width: f64) -> f64 {
+        let t = if t.is_finite() {
+            t.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let [a, b] = ends;
+        let z = if a > 0.0 && b > 0.0 {
+            let inverse = 1.0 / a + (1.0 / b - 1.0 / a) * t;
+            if inverse > 0.0 {
+                1.0 / inverse
+            } else {
+                a + (b - a) * t
+            }
+        } else {
+            a + (b - a) * t
+        };
+        self.fade(z, width)
+    }
 }
 
 /// How opaque a line or dot is drawn, 0 to 255: full, or the theme's
@@ -241,6 +342,14 @@ pub struct Marks {
     pub datums: Vec<SceneDatum>,
     /// The sketches are not drawn (`UiState::show`).
     pub hide_sketches: bool,
+    /// The bodies' edges, and the outline of the section's cap, are not
+    /// drawn (`UiState::show`, or the studio look's `edges: off`). The
+    /// lines and points of these marks are drawn all the same.
+    pub hide_edges: bool,
+    /// The bodies' edges fade where the studio look's lens blurs the
+    /// model ([`EdgeBlur`]; `edges: soft`). Without a lens nothing
+    /// changes.
+    pub soft_edges: bool,
     /// The paths of points over the motion (`view.trace`), as polylines,
     /// tested against the bodies like a sketch.
     pub traces: Vec<Vec<Vec3>>,
@@ -288,6 +397,8 @@ impl Marks {
         self.datums.extend(other.datums);
         self.cut = self.cut.or(other.cut);
         self.hide_sketches |= other.hide_sketches;
+        self.hide_edges |= other.hide_edges;
+        self.soft_edges |= other.soft_edges;
         self.traces.extend(other.traces);
         self
     }
@@ -306,9 +417,13 @@ impl Marks {
         }
     }
 
-    /// The lines the section adds: the outline of its cap.
+    /// The lines the section adds: the outline of its cap (none when the
+    /// edges are hidden).
     pub fn outline(&self) -> &[[Vec3; 2]] {
-        self.cut.as_ref().map_or(&[], |cut| cut.outline.as_slice())
+        match &self.cut {
+            Some(cut) if !self.hide_edges => cut.outline.as_slice(),
+            _ => &[],
+        }
     }
 
     /// The lines of the datums: the four sides of each plane's square
@@ -1130,6 +1245,7 @@ fn build_overlay(
                 return;
             };
             let at = |t: f64| [from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t];
+            let depth_at = |t: f64| projector.depth_between(&from, &to, t.clamp(0.0, 1.0));
             let outline = edge.map(|_| OutlineTest { step: OUTLINE_STEP });
             let mut joined = false;
             for stretch in stretches(map.filter(|_| tested), &projector, &from, &to, outline) {
@@ -1155,6 +1271,7 @@ fn build_overlay(
                         silhouette: stretch.outline,
                         joined,
                         cut: [stretch.from > 0.0, stretch.to < 1.0],
+                        depth: [depth_at(stretch.from), depth_at(stretch.to)],
                         ..edge
                     }),
                 });
@@ -1169,7 +1286,12 @@ fn build_overlay(
         Some(marks) => marks.kept(a, b),
         None => Some([a, b]),
     };
-    for (body, color) in scene.into_iter().flat_map(body_colors) {
+    let edges_shown = !marks.is_some_and(|marks| marks.hide_edges);
+    for (body, color) in scene
+        .into_iter()
+        .filter(|_| edges_shown)
+        .flat_map(body_colors)
+    {
         for edge in body.edges.iter() {
             let ink = EdgeInk {
                 body: color,
@@ -1177,6 +1299,7 @@ fn build_overlay(
                 silhouette: false,
                 joined: false,
                 cut: [false; 2],
+                depth: [0.0; 2],
             };
             for pair in edge.windows(2) {
                 if let [a, b] = *pair
@@ -1432,7 +1555,7 @@ pub fn compose_with(
         tokens,
         slack,
     );
-    let overlay = overlay_see_through(
+    let mut overlay = overlay_see_through(
         scene,
         camera,
         &frame,
@@ -1441,6 +1564,7 @@ pub fn compose_with(
         renderer.marks(),
         renderer.opacity() < 1.0,
     );
+    overlay.blur = renderer.edge_blur(scene, camera, frame.height);
     Ok(Composed {
         width: frame.width,
         height: frame.height,
@@ -1570,6 +1694,7 @@ pub fn rasterise(composed: Composed, tokens: &Tokens, scale: f64) -> Picture {
     };
     let density = EdgeDensity::new(&overlay, width, height, tokens, scale);
     let mut colors = EdgeColorCache::default();
+    let blur = overlay.blur;
     let lines = &overlay.lines;
     let mut k = 0;
     while let Some(line) = lines.get(k) {
@@ -1631,6 +1756,13 @@ pub fn rasterise(composed: Composed, tokens: &Tokens, scale: f64) -> Picture {
                 .map_or(edge.cut[1], |e| e.cut[1]),
         ];
         let long = fade_short(edge.extent, tokens, scale);
+        // The run's ends lie on one segment: its depth between them.
+        let ends = [
+            edge.depth[0],
+            run.last()
+                .and_then(|l| l.edge)
+                .map_or(edge.depth[1], |e| e.depth[1]),
+        ];
         let w = width as usize;
         cover_line(
             width,
@@ -1648,9 +1780,12 @@ pub fn rasterise(composed: Composed, tokens: &Tokens, scale: f64) -> Picture {
                     return;
                 };
                 let (px, py) = (index % w.max(1), index / w.max(1));
-                let alpha = (half + 0.5 - distance).clamp(0.0, 1.0)
+                let mut alpha = (half + 0.5 - distance).clamp(0.0, 1.0)
                     * alpha
                     * edge_fade(long, density.at(px as f64 + 0.5, py as f64 + 0.5), tokens);
+                if let Some(blur) = &blur {
+                    alpha *= blur.fade_along(ends, along, half * 2.0);
+                }
                 if alpha <= 0.0 {
                     return;
                 }
@@ -2401,6 +2536,7 @@ mod tests {
                 silhouette: false,
                 joined: false,
                 cut: [false; 2],
+                depth: [1.0; 2],
             }),
         };
         let mut overlay = Overlay::default();

@@ -2151,3 +2151,238 @@ fn a_click_in_the_direct_viewport_picks_and_highlights_what_the_oracle_shows() {
     let (_, _, cleared) = shell.direct_picture().unwrap().unwrap();
     assert_eq!(cleared, direct_plain);
 }
+
+/// In the studio look with depth of field, `look.edges: soft` fades the
+/// bodies' edges where the lens blurs the model (`viewport::EdgeBlur`):
+/// the GPU's lines do it as the CPU oracle does. Both are compared over
+/// the GPU's own picture of the bodies without edges, so that only the
+/// lines differ: along the edges, where the soft and the sharp oracle
+/// are distinct, the GPU's pixel is nearest the soft one.
+#[test]
+fn the_direct_path_fades_edges_with_the_lens_as_the_oracle_does() {
+    const DISTINCT: u8 = 24;
+    let mut session = Session::new(Workspace::none());
+    run(&mut session, "file.new", json!({"units": "mm"}));
+    // A row of plates going away from the camera: edges at many depths.
+    for k in 0..8 {
+        let at = f64::from(k) * 14.0;
+        run(
+            &mut session,
+            "feature.block",
+            json!({"size": [10, 10, 6], "position": [at, at, 0]}),
+        );
+    }
+    let studio = json!({"mode": "studio"});
+    craft3d_engine::look::LookSpec::patched(&craft3d_engine::look::LookSpec::default(), &studio)
+        .unwrap()
+        .prepared()
+        .unwrap()
+        .expect("the studio look's environment");
+    let state = headless_render_state()
+        .unwrap_or_else(|e| panic!("the direct path cannot be tested: {e}; {ADAPTER_HINT}"));
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let tokens = shell.tokens;
+    shell.attach_gpu(&state).unwrap();
+    let mut window = Window::new(1000.0, 700.0);
+    window.frame(&mut shell, &mut session, Vec::new());
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"view": "iso", "look": {"mode": "studio", "bloom": 0, "accumulate": 1,
+               "dof": {"fstop": 0.5, "focus": [5, 5, 3]}}}),
+    );
+    let mut picture = |shell: &mut Shell, session: &mut Session, edges: &str| {
+        call(shell, session, "ui.set", json!({"look": {"edges": edges}}));
+        for _ in 0..3 {
+            window.frame(shell, session, Vec::new());
+        }
+        let (_, _, rgb) = shell.direct_picture().unwrap().unwrap();
+        rgb
+    };
+    let soft = picture(&mut shell, &mut session, "soft");
+    let bare = picture(&mut shell, &mut session, "off");
+    let sharp = picture(&mut shell, &mut session, "sharp");
+    let soft_again = picture(&mut shell, &mut session, "soft");
+    assert_eq!(soft, soft_again, "the same picture again");
+    assert_ne!(soft, sharp);
+    let [w, h] = shell.viewport_size();
+    let scene = scene(&mut session, shell.scene_quality());
+    let camera = shell.state.camera;
+    let studio = shell.studio().expect("the studio look is ready");
+    let params = viewport::render_params(
+        Quality {
+            width: w,
+            height: h,
+            ssaa: 1,
+        },
+        &tokens,
+    );
+    let frame = craft3d_render::render_colored(
+        &scene.mesh,
+        &scene.face_colors,
+        &camera.to_render(),
+        &params,
+    )
+    .unwrap();
+    let slack = viewport::depth_slack(Backend::Gpu, Some(&scene), &camera);
+    let overlay = viewport::overlay_see_through(
+        Some(&scene),
+        &camera,
+        &frame,
+        None,
+        slack,
+        &viewport::Marks::default(),
+        false,
+    );
+    let blur = viewport::EdgeBlur::new(
+        &studio.look,
+        &camera.to_render(),
+        &craft3d_render::section_bounds(&scene.mesh),
+        h,
+    )
+    .expect("the lens blurs");
+    let oracle = |blur: Option<viewport::EdgeBlur>| {
+        viewport::rasterise(
+            Composed {
+                width: w,
+                height: h,
+                rgb: bare.clone(),
+                overlay: Overlay {
+                    blur,
+                    ..overlay.clone()
+                },
+                coverage: frame.coverage(),
+                triangles: scene.triangles(),
+                backend: Backend::Gpu,
+            },
+            &tokens,
+            1.0,
+        )
+        .rgb
+    };
+    let (cpu_soft, cpu_sharp) = (oracle(Some(blur)), oracle(None));
+    let wu = w as usize;
+    let at = |rgb: &[u8], (y, x): (usize, usize)| {
+        let i = (y * wu + x) * 3;
+        [rgb[i], rgb[i + 1], rgb[i + 2]]
+    };
+    let mut pixels = std::collections::BTreeSet::new();
+    for line in overlay
+        .lines
+        .iter()
+        .filter(|l| l.edge.is_some() && !l.hidden)
+    {
+        let length = (line.to[0] - line.from[0]).hypot(line.to[1] - line.from[1]);
+        let steps = (length * 2.0).ceil().max(1.0) as usize;
+        for i in 0..=steps {
+            let t = i as f64 / steps as f64;
+            let (x, y) = (
+                line.from[0] + (line.to[0] - line.from[0]) * t,
+                line.from[1] + (line.to[1] - line.from[1]) * t,
+            );
+            if x >= 0.0 && y >= 0.0 && x < f64::from(w) && y < f64::from(h) {
+                pixels.insert((y as usize, x as usize));
+            }
+        }
+    }
+    // (distinct, nearest the soft oracle, within 8 levels of it)
+    let mut count = (0, 0, 0);
+    for &p in &pixels {
+        let (o, other, g) = (at(&cpu_soft, p), at(&cpu_sharp, p), at(&soft, p));
+        if levels(o, other) < DISTINCT {
+            continue;
+        }
+        count.0 += 1;
+        count.1 += usize::from(levels(g, o) < levels(g, other));
+        count.2 += usize::from(levels(g, o) <= 8);
+    }
+    println!(
+        "lens fade: {} pixels along the edges; {} distinct, {} nearest the soft oracle, {} within 8 levels",
+        pixels.len(),
+        count.0,
+        count.1,
+        count.2
+    );
+    for (suffix, rgb) in [
+        ("gpu-soft", &soft),
+        ("gpu-sharp", &sharp),
+        ("gpu-off", &bare),
+        ("cpu-soft", &cpu_soft),
+        ("cpu-sharp", &cpu_sharp),
+    ] {
+        write_png(&evidence(&format!("viewport-lens-{suffix}.png")), w, h, rgb);
+    }
+    assert!(count.0 >= 100, "the test is hollow: {count:?}");
+    assert!(
+        count.1 * 3 >= count.0 * 2,
+        "the GPU's pixel is nearest the soft oracle at {} of {}",
+        count.1,
+        count.0
+    );
+}
+
+/// Evidence for the developer, not a check: a model of his
+/// (`CRAFT3D_EDGES_EVIDENCE`, a `.3dcraft` path) in the studio look with
+/// depth of field, its edges `sharp`, `soft` and `off`, and hidden with
+/// `show.edges`, from both paths (`ui.screenshot`, the CPU oracle, and the
+/// direct path). Run by hand: `cargo test -p craft3d-ui-egui --test
+/// gpu_viewport -- --ignored edges_evidence`.
+#[test]
+#[ignore = "evidence on a model outside the repository"]
+fn edges_evidence_on_a_model_in_the_studio_look_with_a_lens() {
+    let Ok(path) = std::env::var("CRAFT3D_EDGES_EVIDENCE") else {
+        println!("CRAFT3D_EDGES_EVIDENCE is not set: nothing to draw");
+        return;
+    };
+    // Run by hand on a file named by the one who runs it.
+    let mut session = Session::new(Workspace::unrestricted());
+    run(&mut session, "file.open", json!({"path": path}));
+    let studio = json!({"mode": "studio"});
+    craft3d_engine::look::LookSpec::patched(&craft3d_engine::look::LookSpec::default(), &studio)
+        .unwrap()
+        .prepared()
+        .unwrap()
+        .expect("the studio look's environment");
+    let state = headless_render_state()
+        .unwrap_or_else(|e| panic!("the direct path cannot be tested: {e}; {ADAPTER_HINT}"));
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    shell.attach_gpu(&state).unwrap();
+    let mut window = Window::new(1280.0, 800.0);
+    window.frame(&mut shell, &mut session, Vec::new());
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"view": "iso", "look": {"mode": "studio", "accumulate": 1,
+               "dof": {"fstop": 1.4}}}),
+    );
+    for (name, patch) in [
+        ("sharp", json!({"look": {"edges": "sharp"}})),
+        ("soft", json!({"look": {"edges": "soft"}})),
+        ("off", json!({"look": {"edges": "off"}})),
+        (
+            "hidden",
+            json!({"look": {"edges": "sharp"}, "show": {"edges": false}}),
+        ),
+    ] {
+        call(&mut shell, &mut session, "ui.set", patch);
+        for _ in 0..3 {
+            window.frame(&mut shell, &mut session, Vec::new());
+        }
+        let (w, h, rgb) = shell.direct_picture().unwrap().unwrap();
+        write_png(
+            &evidence(&format!("edges-model-gpu-{name}.png")),
+            w,
+            h,
+            &rgb,
+        );
+        let cpu = evidence(&format!("edges-model-cpu-{name}.png"));
+        call(
+            &mut shell,
+            &mut session,
+            "ui.screenshot",
+            json!({"width": 1280, "height": 800, "scale": 1.0, "path": cpu}),
+        );
+    }
+}

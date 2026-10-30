@@ -25,6 +25,8 @@ pub struct ControlsLayout {
     pub camera_plate: Option<Rect>,
     pub sketches: Option<Rect>,
     pub datums: Option<Rect>,
+    /// The Edges toggle: the bodies' edges shown or not.
+    pub edges: Option<Rect>,
     /// The Studio toggle: the studio look or the plain one.
     pub studio: Option<Rect>,
     pub see_through: Option<Rect>,
@@ -66,6 +68,7 @@ impl ControlsLayout {
         [
             ("sketches", self.sketches),
             ("datums", self.datums),
+            ("edges", self.edges),
             ("studio", self.studio),
             ("see-through", self.see_through),
             ("section", self.section_toggle),

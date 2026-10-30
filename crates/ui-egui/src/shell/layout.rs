@@ -3,8 +3,8 @@
 //! - **The navigation cluster** in the top right corner: the camera plate
 //!   (*Fit* and *Iso*, actions; a divider; *Persp* | *Ortho*, a choice) and
 //!   under it, centred on it, the view cube (2026-10-21; it was above).
-//! - **The display bar** at the bottom centre: *Sketches* and *Datums*
-//!   (toggles) and the *See-through* field, a divider, the *Section*
+//! - **The display bar** at the bottom centre: *Sketches*, *Datums* and
+//!   *Edges* (toggles) and the *See-through* field, a divider, the *Section*
 //!   toggle. While the section is on its options open inline to the right
 //!   of the Section chip, after a divider: *X* | *Y* | *Z*, the *Offset*
 //!   field and *Flip side* (which half is kept); the chip stays where it
@@ -19,8 +19,9 @@
 //! plain button that lights up under the pointer; a *choice* is a
 //! segmented track whose chosen segment is filled.
 //!
-//! In a viewport too narrow for the names the chips show their icons
-//! only (with the name as a tooltip); what still does not fit is left
+//! In a viewport too narrow for the names, the display bar's three
+//! toggles show their icons only first (with the name as a tooltip), and
+//! where that is not enough every chip does; what still does not fit is left
 //! out (the triad first, then the cube), so nothing is ever drawn outside
 //! the viewport or over another control. They are widgets over the
 //! viewport, so a click on them is not a click in the viewport and picks
@@ -45,6 +46,7 @@ pub struct ControlWidths {
     pub iso: f32,
     pub sketches: f32,
     pub datums: f32,
+    pub edges: f32,
     pub studio: f32,
     pub section: f32,
     pub flip: f32,
@@ -88,6 +90,7 @@ impl ControlWidths {
             iso: with_icon("Iso"),
             sketches: with_icon("Sketches"),
             datums: with_icon("Datums"),
+            edges: with_icon("Edges"),
             studio: with_icon("Studio"),
             section: with_icon("Section"),
             flip: with_icon("Flip side"),
@@ -109,6 +112,7 @@ impl ControlWidths {
             self.iso,
             self.sketches,
             self.datums,
+            self.edges,
             self.studio,
             self.section,
             self.flip,
@@ -131,6 +135,7 @@ impl ControlWidths {
             iso: icon + chars(3.0),
             sketches: icon + chars(8.0),
             datums: icon + chars(6.0),
+            edges: icon + chars(5.0),
             studio: icon + chars(6.0),
             section: icon + chars(7.0),
             flip: icon + chars(9.0),
@@ -194,23 +199,33 @@ pub fn controls_layout(
     if !(area.width() > 0.0 && area.height() > 0.0) {
         return empty;
     }
-    let build = |compact: bool| {
+    let build = |compact: bool, tight: bool| {
         let n = Nav {
             tokens,
             w: widths,
             area,
             compact,
+            tight,
             on: section_on,
         };
         let mut layout = n.layout();
         layout.compact = compact;
         layout
     };
-    let full = build(false);
+    // Named; then the display toggles by their icons; then every chip.
+    // The bar is placed for its options open either way, so the choice is
+    // the same with the section on and off and nothing moves when it
+    // opens.
+    let full = build(false, false);
     let mut layout = if complete(&full, area, section_on) {
         full
     } else {
-        build(true)
+        let tight = build(false, true);
+        if complete(&tight, area, section_on) {
+            tight
+        } else {
+            build(true, true)
+        }
     };
     prune(&mut layout, area);
     layout
@@ -224,6 +239,9 @@ struct Nav<'a> {
     area: Rect,
     /// Chips by their icons only.
     compact: bool,
+    /// The display bar's toggles (Sketches, Datums, Edges) by their
+    /// icons only.
+    tight: bool,
     /// The section is on: its options are laid out.
     on: bool,
 }
@@ -245,6 +263,16 @@ impl Nav<'_> {
     /// A chip that is `natural` wide with its name, square without.
     fn chip(&self, natural: f32) -> f32 {
         if self.compact { self.h() } else { natural }
+    }
+
+    /// One of the display bar's toggles: [`Self::chip`], square too
+    /// while the layout is tight.
+    fn show_chip(&self, natural: f32) -> f32 {
+        if self.tight {
+            self.h()
+        } else {
+            self.chip(natural)
+        }
     }
 
     /// The triad's place, at the bottom left.
@@ -335,10 +363,14 @@ impl Nav<'_> {
         // The display bar, centred on what it is with the section off.
         let triad = self.triad();
         out.triad = Some(triad);
-        let (sketches, datums) = (self.chip(self.w.sketches), self.chip(self.w.datums));
+        let (sketches, datums, edges) = (
+            self.show_chip(self.w.sketches),
+            self.show_chip(self.w.datums),
+            self.show_chip(self.w.edges),
+        );
         let section = self.chip(self.w.section);
         let see = self.w.see_through;
-        let off_w = pad + sketches + sp + datums + sp + see + gap + section + pad;
+        let off_w = pad + sketches + sp + datums + sp + edges + sp + see + gap + section + pad;
         let flip = self.chip(self.w.flip);
         let axes = 3.0 * self.w.axis;
         let extra = gap + axes + sp + self.w.offset + sp + flip;
@@ -359,6 +391,8 @@ impl Nav<'_> {
         x += sketches + sp;
         out.datums = Some(self.at(x, y, datums));
         x += datums + sp;
+        out.edges = Some(self.at(x, y, edges));
+        x += edges + sp;
         out.see_through = Some(self.at(x, y, see));
         x += see;
         out.dividers[1] = Some(self.vertical(x, y));
@@ -385,6 +419,7 @@ fn complete(layout: &ControlsLayout, area: Rect, section_on: bool) -> bool {
     let controls = [
         layout.sketches,
         layout.datums,
+        layout.edges,
         layout.studio,
         layout.see_through,
         layout.section_toggle,
@@ -437,6 +472,7 @@ fn prune(layout: &mut ControlsLayout, area: Rect) {
         for slot in [
             &mut layout.sketches,
             &mut layout.datums,
+            &mut layout.edges,
             &mut layout.see_through,
             &mut layout.section_toggle,
             &mut layout.axes,
@@ -453,6 +489,7 @@ fn prune(layout: &mut ControlsLayout, area: Rect) {
     for slot in [
         &mut layout.sketches,
         &mut layout.datums,
+        &mut layout.edges,
         &mut layout.studio,
         &mut layout.see_through,
         &mut layout.section_toggle,
@@ -830,17 +867,22 @@ impl Shell {
         }
     }
 
-    /// Sketches, Datums and See-through.
+    /// Sketches, Datums, Edges and See-through.
     fn nav_show(&mut self, ui: &mut egui::Ui, layout: &ControlsLayout, named: bool) {
         let tokens = self.tokens;
-        let (Some(sketches), Some(datums), Some(field)) =
-            (layout.sketches, layout.datums, layout.see_through)
-        else {
+        let (Some(sketches), Some(datums), Some(edges), Some(field)) = (
+            layout.sketches,
+            layout.datums,
+            layout.edges,
+            layout.see_through,
+        ) else {
             self.show_hits.clear();
             self.transparency_rect = None;
             return;
         };
         let mut show = self.state.show;
+        // A tight bar has these three by their icons.
+        let named_in = |rect: Rect| named && rect.width() > tokens.nav_height + 0.5;
         if toggle(
             ui,
             sketches,
@@ -848,7 +890,7 @@ impl Shell {
                 id: "sketches",
                 icon: Icon::Sketches,
                 label: "Sketches",
-                named,
+                named: named_in(sketches),
             },
             show.sketches,
             &tokens,
@@ -865,7 +907,7 @@ impl Shell {
                 id: "datums",
                 icon: Icon::Datums,
                 label: "Datums",
-                named,
+                named: named_in(datums),
             },
             show.datums,
             &tokens,
@@ -875,7 +917,24 @@ impl Shell {
         {
             show.datums = !show.datums;
         }
-        self.show_hits = vec![("sketches", sketches), ("datums", datums)];
+        if toggle(
+            ui,
+            edges,
+            Chip {
+                id: "edges",
+                icon: Icon::Edges,
+                label: "Edges",
+                named: named_in(edges),
+            },
+            show.edges,
+            &tokens,
+        )
+        .on_hover_text("Show the bodies' edges")
+        .clicked()
+        {
+            show.edges = !show.edges;
+        }
+        self.show_hits = vec![("sketches", sketches), ("datums", datums), ("edges", edges)];
         self.see_through_field(ui, field);
         self.set_show(ui, show);
     }
@@ -981,7 +1040,8 @@ mod tests {
     }
 
     /// At both window sizes, with the section off and on, every control
-    /// is there with its name, the cube and the triad too, inside the
+    /// is there with its name (in the smaller window the display bar's
+    /// three toggles may show their icons only), the cube and the triad too, inside the
     /// viewport less its margin and clear of each other; the cluster is
     /// in the top right corner with the cube centred under the camera
     /// plate, the bar at the bottom, the triad bottom left, at the theme's
@@ -1000,6 +1060,7 @@ mod tests {
                 let mut expected = vec![
                     "sketches",
                     "datums",
+                    "edges",
                     "see-through",
                     "section",
                     "fit",
@@ -1019,6 +1080,24 @@ mod tests {
                 }
                 assert_eq!(layout.axes.is_some(), on);
                 assert!(!layout.compact, "{on} {viewport:?}");
+                // With the Edges toggle (2026-10-30) the bar of the
+                // smaller window is too narrow for the display toggles'
+                // names at seven points a character: they show their
+                // icons there, every other chip its name; in the larger
+                // window every chip has its name.
+                let shows = [layout.sketches, layout.datums, layout.edges];
+                let named = |r: Option<Rect>| r.is_some_and(|r| r.width() > tokens.nav_height);
+                if viewport.width() > 1200.0 {
+                    assert!(shows.iter().all(|r| named(*r)), "{on} {layout:?}");
+                } else {
+                    assert!(
+                        shows.iter().all(|r| named(*r)) || shows.iter().all(|r| !named(*r)),
+                        "the three alike: {layout:?}"
+                    );
+                }
+                for r in [layout.section_toggle, layout.fit, layout.iso, layout.studio] {
+                    assert!(named(r), "{on} {viewport:?}: {r:?}");
+                }
                 assert!(complete(&layout, area, on), "{on} {layout:?}");
                 for (name, rect) in layout.controls() {
                     assert_eq!(rect.height(), tokens.nav_height, "{name}");

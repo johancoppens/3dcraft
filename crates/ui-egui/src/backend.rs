@@ -151,6 +151,29 @@ impl BodyRenderer {
         &self.marks
     }
 
+    /// The lens the bodies' edges follow in a frame `height` pixels high
+    /// of `scene` seen with `camera` (`look.edges: soft`): the studio
+    /// look's depth of field, where it draws the frame (opaque bodies, not
+    /// cut open). `None` draws the edges as ever.
+    pub fn edge_blur(
+        &self,
+        scene: Option<&Scene>,
+        camera: &CameraState,
+        height: u32,
+    ) -> Option<crate::viewport::EdgeBlur> {
+        let studio = self.studio.as_ref()?;
+        if !self.marks.soft_edges || self.opacity() < 1.0 || self.marks.section().is_some() {
+            return None;
+        }
+        let scene = scene?;
+        crate::viewport::EdgeBlur::new(
+            &cpu_look(studio.look),
+            &camera.to_render(),
+            &craft3d_render::section_bounds(&scene.mesh),
+            height,
+        )
+    }
+
     /// How opaque the bodies of the frames made from now on are, 0 to 1
     /// (`RenderParams::opacity`). Below 1 the bodies are see-through: both
     /// renderers draw that; a device that cannot

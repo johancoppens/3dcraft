@@ -506,3 +506,50 @@ it off (`groundReflection` 0); a ground of finite extent (a studio floor fading 
 and a rougher, blurred reflection would be the general fix. (2) The CPU takes 0.58 s for the polished
 flange at 480 × 360 against 0.16 s for layer 1, and 11 s for 16 frames with the lens: fine for
 `view.render` and the tests, not for a CPU viewport, which is why the window's other paths draw one frame.
+
+### The bodies' edges: shown or not, and under the lens (2026-10-30)
+
+The developer looked at the turbofan in the studio look with depth of field: the black edges, drawn
+after the picture is shaded, stay sharp where the model behind them is blurred, and could not be hidden.
+
+**`show.edges`** (`ui.set {"show": {"edges": false}}`, the *Edges* toggle on the display bar) hides the
+bodies' edges and the outline of a section's cap with them, in every look, on both drawing paths and in
+`ui.screenshot`, as `show.sketches` and `show.datums` do: `Marks::hide_edges` leaves the bodies' edges
+out of the CPU overlay (`build_overlay`, `Marks::outline`) and out of the GPU's segments
+(`direct::segments_marked`). A highlighted or selected edge or vertex is drawn either way: it is feedback
+on what the pointer or the selection names, not a line of the model. Shown, nothing changes, bit for bit.
+
+**The studio look's `look.edges`: `soft` (the default), `sharp`, `off`.** Two ways were open: draw the
+edges into the shaded picture before the lens and bloom, so they blur with it, or keep drawing them over
+the finished picture and make them follow the lens there. *Decision: the second, as a look option.*
+*Reasons.* (1) The edges are an overlay of the window, not part of the picture the studio look makes:
+`view.render` and `craft3d-cli render` draw no edges, and the lens pass of both renderers
+(`studio::polish`, `polish.wgsl`) gathers from the shaded colour and its depth only. Drawing edges into
+it would add a second line rasteriser inside the CPU's studio frame and a line pass into the GPU's
+studio target before the lens, each with its own depth handling, and make the edges' hiding test
+(`depth_test.wgsl`, the CPU's `stretches`) part of the lens's input: a much larger change to the oracle
+for a line that is a few pixels wide. (2) A thin line spread over a circle of confusion mostly
+disappears into the blur anyway: a line `w` pixels wide spread over a disc of radius `c ≫ w` leaves about
+`2 w / (π c)` of its ink at its middle. So `soft` keeps each edge pixel's share `w / (w + π c / 2)`
+(`viewport::EdgeBlur::fade`), `c` the lens's blur radius at that pixel's distance along the view, from
+the same `Lens` the polish pass uses (`a h / (4 half zf) · |z − zf| / z`, capped at `DOF_MAX_COC`): 1 at
+the focus, fading with the blur. The distance along a line goes evenly in its reciprocal, as the GPU
+interpolates it (`EdgeInk::depth`, `EdgeBlur::fade_along`; `lens_fade` in `lines.wgsl` takes the same
+three numbers in `more.yzw`). (3) The developer may want edges crisp for a technical look or gone for a
+clean one: `sharp` is the plain look's lines, `off` leaves them out of the studio look; the *Edges*
+toggle hides them in every look. *Default `soft`*: without a lens it is `sharp` bit for bit, so only a
+picture with depth of field changes. The option is the window's (`LookState::edges`, not the engine's
+`LookSpec`), since only the window draws edges. The plain look ignores it.
+
+*Limit.* `soft` fades, it does not spread: an edge far from the focus becomes faint, not wide. Bloom
+does not reach the edges either. Both would need the edges in the picture before the lens, the first
+way, should it ever be wanted.
+
+*Tests.* `crates/ui-egui/tests/show_edges.rs` (toggling changes only the pixels near an edge, and back
+restores the same bytes; a highlighted edge stays; both paths honour the marks; `look.edges` checked,
+plain look unchanged; `soft` = `sharp` without a lens; the fade's formula); `gpu_viewport.rs`
+`the_direct_path_fades_edges_with_the_lens_as_the_oracle_does` (along the edges, where the CPU's soft
+and sharp pictures differ by 24 levels or more, at least two thirds of the GPU's pixels are nearest the
+soft one); the layout tests with the *Edges* chip. With it the 1280 × 800 window's display bar is too
+narrow for the three toggles' names with the section open: those three show their icons (their names as
+tooltips) before any other chip loses its name.
