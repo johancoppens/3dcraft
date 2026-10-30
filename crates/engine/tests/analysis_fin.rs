@@ -14,7 +14,7 @@ mod common;
 
 use common::checked::{new_document, run, session_in, workdir};
 use craft3d_engine::Session;
-use craft3d_engine::analysis::{CurvatureKind, vertex_values};
+use craft3d_engine::analysis::{CurvatureKind, refined_map, vertex_values};
 use serde_json::{Value, json};
 
 fn fin(s: &mut Session, kind: &str) {
@@ -67,15 +67,23 @@ fn mean_at(s: &mut Session, p: [f64; 3]) -> f64 {
 /// value at a triangle's centroid (the mean of its corners', as the
 /// rasteriser interpolates it) and the exact mean curvature there, as a
 /// share of the largest |H| on the fin; with the triangle count.
-fn map_error(kind: &str) -> (f64, usize, f64) {
-    let mut s = session_in(&workdir("analysis-fin", kind));
+fn map_error(kind: &str, refined: bool) -> (f64, usize, f64) {
+    let mut s = session_in(&workdir("analysis-fin", &format!("{kind}-{refined}")));
     new_document(&mut s, 1.0);
     fin(&mut s, kind);
     let sc = s.scene(None).unwrap().unwrap();
-    let values = vertex_values(&mut s, &sc, CurvatureKind::Mean).unwrap();
+    let (mesh, values) = if refined {
+        refined_map(&mut s, &sc, CurvatureKind::Mean).unwrap()
+    } else {
+        (
+            (*sc.mesh).clone(),
+            vertex_values(&mut s, &sc, CurvatureKind::Mean).unwrap(),
+        )
+    };
+    assert_eq!(mesh.positions.len(), values.len());
     let fin_body = sc.bodies.iter().find(|b| b.feature != "F1").unwrap();
     let first = fin_body.first_face_id;
-    let mesh = &sc.mesh;
+    let mesh = &mesh;
     let tris: Vec<[u32; 3]> = mesh
         .triangles
         .iter()
@@ -109,16 +117,26 @@ fn map_error(kind: &str) -> (f64, usize, f64) {
         }
     }
     println!(
-        "{kind}: {} triangles on the fin, largest |H| {largest:.5}, worst map error {worst:.4} of it at {worst_at:?}, scene tolerance {}",
+        "{kind} (refined {refined}): {} triangles on the fin, largest |H| {largest:.5}, worst map error {worst:.4} of it at {worst_at:?}, scene tolerance {}",
         tris.len(),
         sc.tolerance
     );
     (worst, tris.len(), largest)
 }
 
+/// The scene's mesh of the G2 fin is too coarse for its map (measured
+/// 2026-10-30: 28 triangles, a quarter of the largest |H| off at a
+/// centroid); refined for the analysis (`refined_map`), every centroid is
+/// within 5 % of it.
 #[test]
 fn the_fins_map_follows_the_exact_curvature() {
-    let (g2, _, _) = map_error("curvature");
-    let (g1, _, _) = map_error("tangent");
-    println!("map error: G2 {g2:.4}, G1 {g1:.4}");
+    for kind in ["curvature", "tangent"] {
+        let (coarse, _, _) = map_error(kind, false);
+        let (fine, triangles, _) = map_error(kind, true);
+        println!(
+            "{kind}: map error {coarse:.4} on the scene's mesh, {fine:.4} refined ({triangles} triangles)"
+        );
+        assert!(fine <= 0.05, "{kind}: {fine}");
+        assert!(fine <= coarse, "{kind}: {fine} > {coarse}");
+    }
 }

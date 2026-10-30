@@ -4649,11 +4649,16 @@ fn render_picture(
     let mut values: Vec<f32> = Vec::new();
     let mut combs: Vec<Vec<craft3d_math::Vec3>> = Vec::new();
     let mut render_params = render_params;
+    // The curvature map's mesh, refined where the curvature changes fast
+    // (`analysis::refined_map`); the other modes draw the scene's.
+    let mut refined: Option<Mesh> = None;
     if analysis.is_on() && !ids {
         let mut range = analysis.range.unwrap_or([-1.0, 1.0]);
         if analysis.mode == Some(craft3d_render::analysis::AnalysisMode::Curvature) {
-            values = crate::analysis::vertex_values(session, &scene, analysis.curvature)
+            let (mesh, map) = crate::analysis::refined_map(session, &scene, analysis.curvature)
                 .map_err(|e| CommandError::new(format!("view.render: {e}")))?;
+            values = map;
+            refined = Some(mesh);
             range = analysis
                 .range
                 .unwrap_or_else(|| crate::analysis::auto_range(&values, analysis.curvature));
@@ -4679,7 +4684,13 @@ fn render_picture(
         Some(env) if !ids && render_params.section.is_none() => Shading::Studio(&studio_look, env),
         _ => Shading::Plain,
     };
-    let frame = painter.draw(all, colors, &camera, &render_params, shading, None)?;
+    // An analysis is drawn on the mesh refined where its values change fast.
+    let mesh = if render_params.analysis.is_some() {
+        refined.as_ref().unwrap_or(all)
+    } else {
+        all
+    };
+    let frame = painter.draw(mesh, colors, &camera, &render_params, shading, None)?;
     let mut frame = frame;
     if !combs.is_empty() {
         craft3d_render::analysis::draw_lines(

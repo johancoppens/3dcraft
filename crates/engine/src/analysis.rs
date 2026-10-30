@@ -594,6 +594,170 @@ pub fn vertex_values(
     Ok(out)
 }
 
+/// Most rounds of refinement of an analysis picture's mesh.
+const REFINE_ROUNDS: usize = 8;
+
+/// An edge inside a face whose ends' values differ by more than this
+/// share of the map's range is split.
+const REFINE_STEP: f64 = 0.02;
+
+/// The scene's mesh refined for an analysis picture where the curvature
+/// changes fast, with the curvature of `kind` at every vertex (as
+/// [`vertex_values`]): the map interpolates a value per vertex, so where
+/// the values of an edge's ends differ by more than [`REFINE_STEP`] of the
+/// range, the edge is split at its midpoint, the new vertex put on the
+/// face's exact surface with the surface's normal and its exact value;
+/// a triangle with one, two or three split edges becomes two, three or
+/// four, so the mesh stays conforming (both triangles of an edge split
+/// it). Edges on a face's border (one triangle) are not split, so faces
+/// do not crack apart; nor are edges shorter than the scene's tolerance.
+/// At most [`REFINE_ROUNDS`] rounds and [`MAX_MAP_VERTICES`] vertices.
+/// For the analysis views only: the scene's own mesh is not changed.
+pub fn refined_map(
+    session: &mut Session,
+    scene: &Scene,
+    kind: CurvatureKind,
+) -> Result<(craft3d_tess::Mesh, Vec<f32>), CommandError> {
+    use std::collections::BTreeMap;
+    let mut mesh: craft3d_tess::Mesh = (*scene.mesh).clone();
+    let mut values = vertex_values(session, scene, kind)?;
+    let bodies = scene_bodies(session, scene)?;
+    let [low, high] = auto_range(&values, kind);
+    let step = REFINE_STEP * (high - low).abs();
+    if !(step.is_finite() && step > 0.0) {
+        return Ok((mesh, values));
+    }
+    let floor = scene.tolerance;
+    let reach = (scene.tolerance * 4.0).max(scene.bodies_box.diagonal() * 1e-9);
+    // The surface of a face id, and whether the face is reversed.
+    let surface_of = |face: u32| -> Option<(&Surface, bool)> {
+        scene
+            .bodies
+            .iter()
+            .zip(&bodies)
+            .filter(|(sb, _)| sb.first_face_id <= face)
+            .max_by_key(|(sb, _)| sb.first_face_id)
+            .and_then(|(sb, body)| {
+                let body = body.as_ref()?;
+                let topo = body
+                    .faces
+                    .get(face.checked_sub(sb.first_face_id)? as usize)?;
+                Some((&topo.surface, topo.reversed))
+            })
+    };
+    for _ in 0..REFINE_ROUNDS {
+        // Each edge with its triangles' face and how many use it.
+        let mut uses: BTreeMap<(u32, u32), (u32, u32)> = BTreeMap::new();
+        for (tri, &face) in mesh.triangles.iter().zip(&mesh.face_ids) {
+            for k in 0..3 {
+                let corner = |i: usize| tri.get(i % 3).copied().unwrap_or(0);
+                let (a, b) = (corner(k), corner(k + 1));
+                let entry = uses.entry((a.min(b), a.max(b))).or_insert((0, face));
+                entry.0 += 1;
+            }
+        }
+        let value = |i: u32| values.get(i as usize).map_or(f32::NAN, |v| *v);
+        let position = |i: u32| mesh.positions.get(i as usize).copied();
+        let marked: Vec<((u32, u32), u32)> = uses
+            .iter()
+            .filter(|(key, use_)| {
+                let ((a, b), n) = (**key, use_.0);
+                let (va, vb) = (f64::from(value(a)), f64::from(value(b)));
+                let long = match (position(a), position(b)) {
+                    (Some(p), Some(q)) => p.distance(q) > floor,
+                    _ => false,
+                };
+                n == 2 && long && va.is_finite() && vb.is_finite() && (va - vb).abs() > step
+            })
+            .map(|(k, &(_, face))| (*k, face))
+            .collect();
+        if marked.is_empty() || mesh.positions.len().saturating_add(marked.len()) > MAX_MAP_VERTICES
+        {
+            break;
+        }
+        // The midpoints, on the exact surface where it can be found.
+        let mut fresh: Vec<((u32, u32), Vec3, Vec3, f32)> = Vec::with_capacity(marked.len());
+        for ((a, b), face) in marked {
+            let (Some(p), Some(q)) = (position(a), position(b)) else {
+                continue;
+            };
+            let na = mesh.normals.get(a as usize).copied().unwrap_or(Vec3::ZERO);
+            let nb = mesh.normals.get(b as usize).copied().unwrap_or(Vec3::ZERO);
+            let guess = (p + q) * 0.5;
+            let mut point = guess;
+            let mut normal = (na + nb).normalized().unwrap_or(Vec3::ZERO);
+            let mut v = 0.5 * (value(a) + value(b));
+            if let Some((surface, reversed)) = surface_of(face)
+                && let Ok((u, w)) = surface.project(guess)
+                && (surface.eval(u, w) - guess).length() <= reach
+            {
+                point = surface.eval(u, w);
+                if let Some(n) = surface.normal(u, w) {
+                    normal = if n.dot(na + nb) < 0.0 { -n } else { n };
+                }
+                if let Some((kg, h)) = curvatures(surface, u, w) {
+                    let h = if reversed { h } else { -h };
+                    v = kind.of(kg, h) as f32;
+                }
+            }
+            fresh.push(((a, b), point, normal, v));
+        }
+        let mut middle: BTreeMap<(u32, u32), u32> = BTreeMap::new();
+        for (key, point, normal, v) in fresh {
+            let Ok(index) = u32::try_from(mesh.positions.len()) else {
+                break;
+            };
+            mesh.positions.push(point);
+            mesh.normals.push(normal);
+            values.push(v);
+            middle.insert(key, index);
+        }
+        // Each triangle split by its split edges (in its own turn order).
+        let mut triangles = Vec::with_capacity(mesh.triangles.len() * 2);
+        let mut faces = Vec::with_capacity(mesh.triangles.len() * 2);
+        for (tri, &face) in mesh.triangles.iter().zip(&mesh.face_ids) {
+            let corner = |i: usize| tri.get(i % 3).copied().unwrap_or(0);
+            let mid = |k: usize| {
+                let (a, b) = (corner(k), corner(k + 1));
+                middle.get(&(a.min(b), a.max(b))).copied()
+            };
+            let ms = [mid(0), mid(1), mid(2)];
+            let count = ms.iter().filter(|m| m.is_some()).count();
+            // Turned so that the split edges come first: edge k runs from
+            // corner k to corner k + 1.
+            let turn = (0..3)
+                .find(|&r| match count {
+                    1 => ms.get(r).copied().flatten().is_some(),
+                    2 => {
+                        ms.get(r).copied().flatten().is_some()
+                            && ms.get((r + 1) % 3).copied().flatten().is_some()
+                    }
+                    _ => true,
+                })
+                .unwrap_or(0);
+            let c = |k: usize| corner(k + turn);
+            let m = |k: usize| ms.get((k + turn) % 3).copied().flatten();
+            let new: Vec<[u32; 3]> = match (count, m(0), m(1), m(2)) {
+                (1, Some(m0), _, _) => vec![[c(0), m0, c(2)], [m0, c(1), c(2)]],
+                (2, Some(m0), Some(m1), _) => {
+                    vec![[m0, c(1), m1], [c(0), m0, m1], [c(0), m1, c(2)]]
+                }
+                (3, Some(m0), Some(m1), Some(m2)) => {
+                    vec![[c(0), m0, m2], [m0, c(1), m1], [m2, m1, c(2)], [m0, m1, m2]]
+                }
+                _ => vec![*tri],
+            };
+            for t in new {
+                triangles.push(t);
+                faces.push(face);
+            }
+        }
+        mesh.triangles = triangles;
+        mesh.face_ids = faces;
+    }
+    Ok((mesh, values))
+}
+
 /// A range for the map from its values: symmetric about 0 for the
 /// Gaussian and the mean curvature, from 0 for the largest; to the 95th
 /// percentile of the magnitudes, so that a few singular places (a pole,
