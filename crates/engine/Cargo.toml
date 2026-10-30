@@ -16,6 +16,8 @@ craft3d-geom.workspace = true
 craft3d-doc.workspace = true
 craft3d-ops.workspace = true
 craft3d-regen.workspace = true
+# Fonts: the built-in ones and the document's (`fonts.rs`, `text_cmds.rs`).
+craft3d-font.workspace = true
 craft3d-expr.workspace = true
 craft3d-kernel.workspace = true
 craft3d-tess.workspace = true

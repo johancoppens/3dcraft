@@ -468,6 +468,7 @@ dependencies = [
  "craft3d-doc",
  "craft3d-drawing",
  "craft3d-expr",
+ "craft3d-font",
  "craft3d-format",
  "craft3d-geom",
  "craft3d-io",
@@ -592,6 +593,7 @@ version = "0.1.0"
 dependencies = [
  "craft3d-doc",
  "craft3d-expr",
+ "craft3d-font",
  "craft3d-geom",
  "craft3d-kernel",
  "craft3d-math",

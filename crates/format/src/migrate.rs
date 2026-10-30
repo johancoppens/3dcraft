@@ -36,7 +36,7 @@ const STEPS: &[Step] = &[
     v26_to_v27, v27_to_v28, v28_to_v29, v29_to_v30, v30_to_v31, v31_to_v32, v32_to_v33, v33_to_v34,
     v34_to_v35, v35_to_v36, v36_to_v37, v37_to_v38, v38_to_v39, v39_to_v40, v40_to_v41, v41_to_v42,
     v42_to_v43, v43_to_v44, v44_to_v45, v45_to_v46, v46_to_v47, v47_to_v48, v48_to_v49, v49_to_v50,
-    v50_to_v51, v51_to_v52, v52_to_v53, v53_to_v54,
+    v50_to_v51, v51_to_v52, v52_to_v53, v53_to_v54, v54_to_v55,
 ];
 
 /// Version 2 adds the `cone` and `torus` feature kinds and an optional
@@ -1023,6 +1023,16 @@ fn v52_to_v53(manifest: Value) -> Result<Value, String> {
 /// an older build says a newer 3DCraft is needed instead of refusing the
 /// field.
 fn v53_to_v54(manifest: Value) -> Result<Value, String> {
+    Ok(manifest)
+}
+
+/// Version 55 adds texts to sketches (a sketch entity of type `text`) and
+/// the document's `fonts`, each font's bytes the entry
+/// `blobs/<sha256>.font` (docs/design/text.md). A file of an older version
+/// has neither, which is what a missing field reads as, so nothing changes
+/// (an identity step); the version was raised so that an older build says
+/// a newer 3DCraft is needed instead of refusing the fields.
+fn v54_to_v55(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 

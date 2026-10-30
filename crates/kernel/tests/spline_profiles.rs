@@ -875,3 +875,45 @@ fn a_loop_of_splines_is_a_hole_in_the_profile_around_it() {
         assert!(welded.is_closed(), "x{k}");
     }
 }
+
+/// A closed spline of degree 2 whose pieces are straight (a glyph's lines
+/// raised to the degree of its curves): each piece is a line, exactly.
+#[test]
+fn straight_pieces_of_a_spline_are_lines() {
+    use craft3d_kernel::profile::{Curve2, Shape, SketchCurve, Spline2, detect_profiles};
+    let tol = craft3d_math::Tolerance::new(1e-6, 1e-9).unwrap();
+    // A square 0..2, each side a degree-2 Bézier with its middle point,
+    // joined at double knots; one side bulging, a true curve.
+    let control = vec![
+        [0.0, 0.0],
+        [1.0, 0.0],
+        [2.0, 0.0],
+        [2.0, 1.0],
+        [2.0, 2.0],
+        [1.0, 2.5],
+        [0.0, 2.0],
+        [0.0, 1.0],
+        [0.0, 0.0],
+    ];
+    let knots = vec![0.0, 0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 4.0];
+    let curves = [SketchCurve {
+        id: 1,
+        curve: Curve2::Spline(Spline2 {
+            degree: 2,
+            knots,
+            control,
+        }),
+    }];
+    let profiles = detect_profiles(&curves, &tol).unwrap();
+    assert_eq!(profiles.len(), 1);
+    let segments = &profiles[0].outer.segments;
+    assert_eq!(segments.len(), 4);
+    let lines = segments
+        .iter()
+        .filter(|s| matches!(s.shape, Shape::Line))
+        .count();
+    assert_eq!(lines, 3);
+    // The square and the parabolic cap over the top, whose apex is half
+    // the control point's rise: 4 + (2/3)·2·0.25.
+    assert!((profiles[0].area() - (4.0 + 1.0 / 3.0)).abs() < 1e-12);
+}

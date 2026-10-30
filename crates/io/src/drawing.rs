@@ -174,6 +174,10 @@ pub fn sketch_outline(
             // compile until it is mapped.
             match &entity.geometry {
                 Geometry::Point { .. } | Geometry::Image { .. } => {}
+                // A text has no curves of its own here: its glyphs are
+                // laid out by regeneration, and the caller hands them in
+                // as splines of a copy of the sketch.
+                Geometry::Text(_) => {}
                 &Geometry::Line { start, end } => {
                     let (from, to) = (
                         nodes.at(start, position(start)?),

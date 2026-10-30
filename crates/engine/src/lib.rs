@@ -39,6 +39,7 @@ mod export_bodies;
 mod face_cmds;
 mod file_cmds;
 mod fold_cmds;
+pub mod fonts;
 mod helix_cmds;
 mod import_cmds;
 mod interference_cmds;
@@ -94,6 +95,7 @@ mod sweep_cmds;
 mod sweep_path_cmds;
 mod table_cmds;
 pub mod task_score;
+mod text_cmds;
 mod typed;
 mod unit_cmds;
 mod verify;
@@ -558,6 +560,7 @@ impl Session {
                 sketch_path_cmds::SPECS,
                 sketch_pattern_cmds::SPECS,
                 sketch_spline_cmds::SPECS,
+                text_cmds::SPECS,
                 sketch_curve_cmds::SPECS,
                 sweep_cmds::SPECS,
                 loft_cmds::SPECS,

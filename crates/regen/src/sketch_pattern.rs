@@ -839,9 +839,16 @@ fn words_of(
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CurveIds {
     nested: Vec<Vec<u64>>,
+    /// The name words of the curves of the sketch's texts
+    /// (`e7.glyph(3,U+0041).contour(1)`), in the order the texts made
+    /// them: numbered [`NESTED`] | [`TEXT`] | their place here, so that
+    /// adding them does not renumber the curves of nested patterns.
+    texts: Vec<Vec<u64>>,
 }
 
 const NESTED: u64 = 1 << 63;
+/// Marks the kernel number of a text's curve among the nested numbers.
+const TEXT: u64 = 1 << 31;
 
 impl CurveIds {
     /// The numbers of the curves of the patterns of `sketch` as evaluated.
@@ -859,7 +866,10 @@ impl CurveIds {
         })?;
         nested.sort_unstable();
         nested.dedup();
-        Ok(Self { nested })
+        Ok(Self {
+            nested,
+            texts: Vec::new(),
+        })
     }
 
     /// The kernel's number for a curve with these name words.
@@ -871,19 +881,41 @@ impl CurveIds {
                 .binary_search_by(|w| w.as_slice().cmp(words))
                 .ok()
                 .and_then(|at| u64::try_from(at).ok())
-                .map(|at| NESTED | at),
+                .map(|at| NESTED | at)
+                .or_else(|| {
+                    let at = self.texts.iter().position(|w| w.as_slice() == words)?;
+                    u64::try_from(at).ok().map(|at| NESTED | TEXT | at)
+                }),
         }
+    }
+
+    /// Numbers the curves of texts, by their name words; returns their
+    /// kernel numbers, in order.
+    pub(crate) fn add_texts(&mut self, words: Vec<Vec<u64>>) -> Vec<u64> {
+        let mut out = Vec::with_capacity(words.len());
+        for w in words {
+            let at = u64::try_from(self.texts.len()).unwrap_or(u64::MAX >> 34);
+            out.push(NESTED | TEXT | at);
+            self.texts.push(w);
+        }
+        out
     }
 
     /// The name words of a kernel number: the number itself unless it is
     /// one of the nested curves'.
     pub fn words(&self, id: u64) -> Vec<u64> {
-        if is_nested(id)
-            && let Some(words) = usize::try_from(id & !NESTED)
-                .ok()
-                .and_then(|at| self.nested.get(at))
-        {
-            return words.clone();
+        if is_nested(id) {
+            let at = id & !NESTED;
+            let found = if at & TEXT != 0 {
+                usize::try_from(at & !TEXT)
+                    .ok()
+                    .and_then(|k| self.texts.get(k))
+            } else {
+                usize::try_from(at).ok().and_then(|k| self.nested.get(k))
+            };
+            if let Some(words) = found {
+                return words.clone();
+            }
         }
         vec![id]
     }
@@ -900,7 +932,7 @@ impl CurveIds {
 
     /// The sources of a name made of kernel numbers, in name words.
     pub(crate) fn expand(&self, sources: &[u64]) -> Vec<u64> {
-        if self.nested.is_empty() {
+        if self.nested.is_empty() && self.texts.is_empty() {
             return sources.to_vec();
         }
         sources.iter().flat_map(|&s| self.words(s)).collect()
@@ -908,7 +940,7 @@ impl CurveIds {
 
     /// True when no curve has a number of its own.
     pub fn is_empty(&self) -> bool {
-        self.nested.is_empty()
+        self.nested.is_empty() && self.texts.is_empty()
     }
 
     /// The numbers of two sketches' curves handed to the kernel together
@@ -919,7 +951,16 @@ impl CurveIds {
         let by = u64::try_from(self.nested.len()).unwrap_or(u64::MAX);
         let mut nested = self.nested.clone();
         nested.extend(other.nested.iter().cloned());
-        (CurveIds { nested }, by)
+        // The other sketch's text curves are not renumbered: a sweep's
+        // path is never a text (its curves are open or closed outlines,
+        // not one path), so only this sketch's texts are kept.
+        (
+            CurveIds {
+                nested,
+                texts: self.texts.clone(),
+            },
+            by,
+        )
     }
 
     /// A kernel number of the other sketch of [`CurveIds::joined`] as the
@@ -936,7 +977,7 @@ impl CurveIds {
     /// number (`e9223372036854775808`), with those of nested patterns
     /// named as the sketch names them (`e3[2][1]`).
     pub(crate) fn rename_in(&self, text: &str) -> String {
-        if self.nested.is_empty() {
+        if self.nested.is_empty() && self.texts.is_empty() {
             return text.to_string();
         }
         let mut out = String::with_capacity(text.len());
@@ -1008,6 +1049,12 @@ pub(crate) fn instance_curves(
                 .ok_or_else(|| format!("{id} in {} has no solved position", name()))
         };
         let curve = match &entity.geometry {
+            Geometry::Text(_) => {
+                return Err(format!(
+                    "{} is a text, which a pattern does not repeat",
+                    entity.id
+                ));
+            }
             &Geometry::Line { start, end } => Curve2::Line {
                 start: at(start)?,
                 end: at(end)?,

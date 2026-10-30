@@ -100,6 +100,9 @@ struct Entry {
 struct Solve {
     sketch: Sketch,
     values: Vec<Evaluated>,
+    /// Name, hash and whether its bytes are there, of every font of the
+    /// document, for a sketch with texts.
+    fonts: Vec<(String, String, bool)>,
     units: Units,
     tolerance: (u64, u64),
     outcome: (Status, Option<SketchResult>),
@@ -402,10 +405,25 @@ impl RegenCache {
         let mut values = evaluated(variables, &sketch.exprs());
         values.extend(fit_values(&fits));
         let tolerance = bits(doc.tolerance);
+        // The fonts its texts are set in: a font added, changed or
+        // removed lays them out again.
+        let fonts: Vec<(String, String, bool)> = if sketch
+            .entities
+            .iter()
+            .any(|e| matches!(e.geometry, craft3d_doc::Geometry::Text(_)))
+        {
+            doc.fonts
+                .iter()
+                .map(|f| (f.name.clone(), f.sha256.clone(), f.bytes().is_some()))
+                .collect()
+        } else {
+            Vec::new()
+        };
         if let Some(solve) = self.solves.get(&id)
             && solve.units == doc.units
             && solve.tolerance == tolerance
             && solve.values == values
+            && solve.fonts == fonts
             && solve.sketch == *sketch
         {
             return solve.outcome.clone();
@@ -416,6 +434,7 @@ impl RegenCache {
             Solve {
                 sketch: sketch.clone(),
                 values,
+                fonts,
                 units: doc.units,
                 tolerance,
                 outcome: outcome.clone(),

@@ -688,7 +688,7 @@ impl Outcome {
 }
 
 /// The measures, by name: what `assert.add` takes under `measure`.
-pub(crate) const MEASURES: [&str; 41] = [
+pub(crate) const MEASURES: [&str; 42] = [
     "volume",
     "area",
     "mass",
@@ -730,6 +730,7 @@ pub(crate) const MEASURES: [&str; 41] = [
     "bendable",
     "continuity",
     "draft",
+    "textExtent",
 ];
 
 /// Takes the measure `name` with the parameters `p`.
@@ -759,6 +760,7 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
         "draft" => crate::analysis::draft_measure(ctx, p),
         "value" => value(ctx, p),
         "continuity" => crate::continuity_cmds::take(ctx, p),
+        "textExtent" => crate::text_cmds::take(ctx, p),
         _ => Err(format!(
             "unknown measure `{}`; one of {}",
             name.chars().take(40).collect::<String>(),

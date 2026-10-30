@@ -25,6 +25,7 @@ pub mod sets;
 pub mod sheetmetal;
 pub mod sketch;
 pub mod table;
+pub mod text;
 pub mod visibility;
 
 pub use appearance::{
@@ -43,9 +44,10 @@ pub use datum::{
 };
 pub use fold::{Crease, CreaseKind, Fold, FoldPanels, MAX_FOLD_CREASES, PanelSide};
 pub use name::{
-    CurveIndex, CurvePath, CurveRef, FaceLists, MAX_CURVE_ENTITY, MAX_CURVE_INDEX,
-    MAX_CURVE_LEVELS, MAX_NAME_DEPTH, MAX_NAME_FACES, MAX_NAME_SOURCES, NameRole, OffsetGroup,
-    OffsetHead, OffsetKind, PersistentName, curve_groups, decode_continuation, offset_groups,
+    CurveIndex, CurvePath, CurveRef, FaceLists, GlyphContour, MAX_CURVE_ENTITY, MAX_CURVE_INDEX,
+    MAX_CURVE_LEVELS, MAX_GLYPH_FIELD, MAX_NAME_DEPTH, MAX_NAME_FACES, MAX_NAME_SOURCES, NameRole,
+    OffsetGroup, OffsetHead, OffsetKind, PersistentName, curve_groups, decode_continuation,
+    offset_groups,
 };
 pub use output::{MAX_OUTPUTS, Output, OutputDef};
 pub use public::{
@@ -59,6 +61,10 @@ pub use sheetmetal::{
     MAX_FLANGE_ID, MAX_SHEET_FLANGES, Pick, ReliefShape, SheetCorner, SheetMetal,
 };
 pub use table::{MAX_TABLES, Table, TableCell, TableColumn};
+pub use text::{
+    DocFont, MAX_DOC_FONTS, MAX_FONT_NAME, MAX_TEXT_FORMULAS, MAX_TEXT_TEMPLATE, SketchText,
+    TextAlign, TextAnchor, TextPart, TextPath, TextSide, TextSizeOf, TextTemplate,
+};
 
 pub use sketch::{
     CenterRef, Constraint, ConstraintId, ConstraintKind, DistanceDirection, Entity, EntityId,
@@ -2039,6 +2045,10 @@ pub struct Document {
     /// features of its own.
     #[serde(default)]
     pub assembly: Option<Assembly>,
+    /// The fonts the document's texts use, with their bytes when the font
+    /// allows keeping them ([`text`]).
+    #[serde(default)]
+    pub fonts: Vec<DocFont>,
 }
 
 fn check_feature_name(name: &str) -> Result<(), DocError> {
@@ -2088,6 +2098,45 @@ impl Document {
         }
     }
 
+    /// The fonts: at most [`MAX_DOC_FONTS`], names unique and short, a
+    /// hash of 64 hexadecimal digits that is the hash of the bytes kept.
+    fn validate_fonts(&self) -> Result<(), DocError> {
+        if self.fonts.len() > MAX_DOC_FONTS {
+            return Err(DocError::Invalid(format!(
+                "a document keeps at most {MAX_DOC_FONTS} fonts"
+            )));
+        }
+        let mut names = std::collections::BTreeSet::new();
+        for font in &self.fonts {
+            if font.name.trim().is_empty() || font.name.len() > MAX_FONT_NAME {
+                return Err(DocError::Invalid(format!(
+                    "a font's name is 1 to {MAX_FONT_NAME} bytes"
+                )));
+            }
+            if !names.insert(font.name.as_str()) {
+                return Err(DocError::Invalid(format!(
+                    "two fonts are called `{}`",
+                    font.name
+                )));
+            }
+            if font.sha256.len() != 64 || !font.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err(DocError::Invalid(format!(
+                    "font `{}`: its hash is not 64 hexadecimal digits",
+                    font.name
+                )));
+            }
+            if let Some(blob) = &font.blob
+                && blob.sha256() != font.sha256.to_ascii_lowercase()
+            {
+                return Err(DocError::Invalid(format!(
+                    "font `{}`: its bytes do not have its hash",
+                    font.name
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Checks the rules every document built through this API satisfies,
     /// for documents that come from elsewhere (a file): tolerances are
     /// positive and finite (the linear one within
@@ -2097,6 +2146,7 @@ impl Document {
     /// are not evaluated: a formula that fails is a regeneration result,
     /// not an invalid document.
     pub fn validate(&self) -> Result<(), DocError> {
+        self.validate_fonts()?;
         let positive = |v: f64| v.is_finite() && v > 0.0;
         if !(positive(self.tolerance.linear) && positive(self.tolerance.angular)) {
             return Err(DocError::Invalid(

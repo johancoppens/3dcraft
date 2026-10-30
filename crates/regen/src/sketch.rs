@@ -75,6 +75,9 @@ pub struct SketchResult {
     /// The curves regeneration fitted (formula curves and live splines),
     /// in the order of their ids.
     pub curves: Vec<FittedCurve>,
+    /// The texts as laid out, in the order of their ids (empty when the
+    /// sketch did not solve).
+    pub texts: Vec<crate::text::TextLayout>,
 }
 
 /// A curve of a sketch as regeneration fitted it.
@@ -112,6 +115,14 @@ impl SketchResult {
     pub fn curve(&self, id: EntityId) -> Option<&FittedCurve> {
         match self.curves.binary_search_by_key(&id, |c| c.id) {
             Ok(at) => self.curves.get(at),
+            Err(_) => None,
+        }
+    }
+
+    /// A text as it was laid out.
+    pub fn text(&self, id: EntityId) -> Option<&crate::text::TextLayout> {
+        match self.texts.binary_search_by_key(&id, |t| t.id) {
+            Ok(at) => self.texts.get(at),
             Err(_) => None,
         }
     }
@@ -385,7 +396,10 @@ fn problem(
     let mut image_maps = Vec::new();
     for entity in &sketch.entities {
         input.entities.push(match entity.geometry {
-            Geometry::Spline { .. } | Geometry::Formula { .. } | Geometry::Interpolated { .. } => {
+            Geometry::Spline { .. }
+            | Geometry::Formula { .. }
+            | Geometry::Interpolated { .. }
+            | Geometry::Text(_) => {
                 continue;
             }
             Geometry::Image { of, .. } => {
@@ -460,6 +474,7 @@ fn problem(
             Geometry::Formula { .. } | Geometry::Interpolated { .. } => Err(format!(
                 "{curve} is a fitted curve, which is tangent to another as its own constraint"
             )),
+            Geometry::Text(_) => Err(format!("{curve} is a text, which no constraint takes")),
             Geometry::Spline { control, .. } => {
                 let leg = if control.first() == Some(&at) {
                     control.get(1)
@@ -1105,7 +1120,8 @@ fn stored(sketch: &Sketch) -> (Points, Radii) {
             | Geometry::Spline { .. }
             | Geometry::Image { .. }
             | Geometry::Formula { .. }
-            | Geometry::Interpolated { .. } => {}
+            | Geometry::Interpolated { .. }
+            | Geometry::Text(_) => {}
         }
     }
     points.sort_by_key(|(id, ..)| *id);
@@ -1686,6 +1702,7 @@ pub(crate) fn solve_sketch(
             image_places: Vec::new(),
             curve_ids: curve_ids.clone().unwrap_or_default(),
             curves: fitted.clone(),
+            texts: Vec::new(),
         };
         (Status::Failed(reason), Some(result))
     };
@@ -1922,6 +1939,39 @@ pub(crate) fn solve_sketch(
             finite.then_some(place)
         })
         .collect();
+    // The texts, laid out at their solved points; their curves numbered
+    // after the curves of nested patterns.
+    let (mut texts, text_failed) = {
+        let point = |id: EntityId| found(id);
+        let radius = |id: EntityId| match radii.binary_search_by_key(&id, |(c, _)| *c) {
+            Ok(at) => radii.get(at).map(|&(_, r)| r),
+            Err(_) => None,
+        };
+        let fitted = |id: EntityId| curves.iter().find(|c| c.id == id).map(|c| c.spline.clone());
+        crate::text::lay_out_all(
+            doc,
+            variables,
+            sketch,
+            &crate::text::Solved {
+                point: &point,
+                radius: &radius,
+                fitted: &fitted,
+            },
+        )
+    };
+    let mut curve_ids = curve_ids;
+    let words: Vec<Vec<u64>> = texts
+        .iter()
+        .flat_map(|t| t.curves.iter().map(|c| c.name.encode().unwrap_or_default()))
+        .collect();
+    let mut numbers = curve_ids.add_texts(words).into_iter();
+    for curve in texts.iter_mut().flat_map(|t| t.curves.iter_mut()) {
+        curve.id = numbers.next().unwrap_or_default();
+    }
+    let status = match (status, text_failed) {
+        (Status::Ok, Some(why)) => Status::Failed(why),
+        (status, _) => status,
+    };
     let result = SketchResult {
         origin,
         x_axis,
@@ -1935,6 +1985,7 @@ pub(crate) fn solve_sketch(
         image_places,
         curve_ids,
         curves,
+        texts,
     };
     (status, Some(result))
 }
@@ -2218,7 +2269,8 @@ pub fn settle_sketches_cached(doc: &mut Document, cache: &mut crate::RegenCache)
                 | Geometry::Spline { .. }
                 | Geometry::Image { .. }
                 | Geometry::Formula { .. }
-                | Geometry::Interpolated { .. } => {}
+                | Geometry::Interpolated { .. }
+                | Geometry::Text(_) => {}
             }
         }
     }

@@ -211,6 +211,109 @@ pub struct CurvePath {
     /// The index in each outer pattern, the innermost first: `At`,
     /// `Grid` or `All` (never `Seed`).
     pub outer: Vec<CurveIndex>,
+    /// For a curve of a text (the text entity is `curve`, a seed): which
+    /// contour of which glyph (`e7.glyph(3,U+0041).contour(1)`).
+    pub text: Option<GlyphContour>,
+}
+
+/// A contour of a glyph of a text, as a name keeps it: the glyph's place
+/// in the text (every character counts), the character it is, and the
+/// contour of its outline (or stroke of the single-stroke font). The
+/// character is part of the name, so a text that changes fails a
+/// reference to a glyph it no longer has instead of handing it another.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GlyphContour {
+    pub glyph: u32,
+    pub ch: char,
+    pub contour: u32,
+}
+
+/// The largest glyph place and contour number a name holds.
+pub const MAX_GLYPH_FIELD: u32 = 0xFFFD;
+
+/// The tags (bits 48 to 63) of the two words of a [`GlyphContour`] after
+/// its text's curve word: the place and contour (`place + 1` and
+/// `contour + 1` from bit 0 and bit 16), then the character. Bits 32 to
+/// 47 are 0, a combination no [`CurveRef`] encodes to, and the tags are
+/// neither a continuation's nor an [`OffsetHead`]'s.
+const TEXT_GLYPH: u64 = 7;
+const TEXT_CHAR: u64 = 8;
+
+impl GlyphContour {
+    fn encode(self) -> Option<[u64; 2]> {
+        if self.glyph > MAX_GLYPH_FIELD || self.contour > MAX_GLYPH_FIELD {
+            return None;
+        }
+        Some([
+            (TEXT_GLYPH << SECOND_SHIFT)
+                | (u64::from(self.glyph) + 1)
+                | ((u64::from(self.contour) + 1) << 16),
+            (TEXT_CHAR << SECOND_SHIFT) | u64::from(u32::from(self.ch)),
+        ])
+    }
+
+    fn decode(words: &[u64]) -> Option<Self> {
+        let [a, b] = words else { return None };
+        let tag = |w: u64| (w >> SECOND_SHIFT) & FIELD;
+        if (a >> INDEX_SHIFT) & FIELD != 0 || (b >> INDEX_SHIFT) & FIELD != 0 {
+            return None;
+        }
+        if tag(*a) != TEXT_GLYPH || tag(*b) != TEXT_CHAR {
+            return None;
+        }
+        let field = |v: u64| {
+            u32::try_from(v.checked_sub(1)?)
+                .ok()
+                .filter(|&i| i <= MAX_GLYPH_FIELD)
+        };
+        let glyph = field(a & FIELD)?;
+        let contour = field((a >> 16) & FIELD)?;
+        let ch = char::from_u32(u32::try_from(b & MAX_CURVE_ENTITY).ok()?)?;
+        Some(Self { glyph, ch, contour })
+    }
+
+    /// Reads `glyph(3,U+0041).contour(1)`.
+    fn parse(text: &str) -> Option<Self> {
+        let rest = text.strip_prefix("glyph(")?;
+        let (inside, rest) = rest.split_once(')')?;
+        let (place, code) = inside.split_once(',')?;
+        let contour = rest.strip_prefix(".contour(")?.strip_suffix(')')?;
+        let number = |t: &str| -> Option<u32> {
+            let t = t.trim();
+            (!t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()))
+                .then(|| t.parse::<u32>().ok())
+                .flatten()
+                .filter(|&n| n <= MAX_GLYPH_FIELD)
+        };
+        let hex = code.trim().strip_prefix("U+")?;
+        if hex.is_empty() || hex.len() > 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        let ch = char::from_u32(u32::from_str_radix(hex, 16).ok()?)?;
+        Some(Self {
+            glyph: number(place)?,
+            ch,
+            contour: number(contour)?,
+        })
+    }
+}
+
+impl fmt::Display for GlyphContour {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "glyph({},U+{:04X}).contour({})",
+            self.glyph,
+            u32::from(self.ch),
+            self.contour
+        )
+    }
+}
+
+/// Whether `word` is one of the words of a [`GlyphContour`].
+fn is_text_word(word: u64) -> bool {
+    (word >> INDEX_SHIFT) & FIELD == 0
+        && matches!((word >> SECOND_SHIFT) & FIELD, TEXT_GLYPH | TEXT_CHAR)
 }
 
 /// One continuation word: an outer level's index.
@@ -262,6 +365,17 @@ impl CurvePath {
         Self {
             curve,
             outer: Vec::new(),
+            text: None,
+        }
+    }
+
+    /// Contour `contour` of glyph `glyph` (the character `ch`) of the text
+    /// entity `entity`.
+    pub fn glyph(entity: u64, glyph: u32, ch: char, contour: u32) -> Self {
+        Self {
+            curve: CurveRef::seed(entity),
+            outer: Vec::new(),
+            text: Some(GlyphContour { glyph, ch, contour }),
         }
     }
 
@@ -292,6 +406,7 @@ impl CurvePath {
                 index: first,
             },
             outer: levels.collect(),
+            text: None,
         }
     }
 
@@ -320,6 +435,9 @@ impl CurvePath {
     /// `*` on an outer level only inside-out, and an inner index written
     /// out when there are outer ones.
     pub fn is_canonical(&self) -> bool {
+        if self.text.is_some() {
+            return self.outer.is_empty() && self.curve.index == CurveIndex::Seed;
+        }
         if self.outer.is_empty() {
             return true;
         }
@@ -354,6 +472,9 @@ impl CurvePath {
         for index in &self.outer {
             out.push(continuation(*index)?);
         }
+        if let Some(text) = self.text {
+            out.extend(text.encode()?);
+        }
         Some(out)
     }
 
@@ -368,13 +489,23 @@ impl CurvePath {
             .map_while(|&w| decode_continuation(w))
             .take(MAX_CURVE_LEVELS)
             .collect();
-        let path = Self { curve, outer };
-        let taken = 1 + path.outer.len();
+        let after = rest.get(outer.len()..).unwrap_or_default();
+        let text = after.get(..2).and_then(GlyphContour::decode);
+        let taken = 1 + outer.len() + if text.is_some() { 2 } else { 0 };
+        let path = Self { curve, outer, text };
         path.is_canonical().then_some((path, taken))
     }
 
     /// Reads `e3`, `e3[2]`, `e3[2][1]`, `e3[*][1]`, `e5[1][2,4]`.
     pub fn parse(text: &str) -> Option<Self> {
+        if let Some((curve, glyph)) = text.split_once('.') {
+            let path = Self {
+                curve: CurveRef::parse(curve)?,
+                outer: Vec::new(),
+                text: Some(GlyphContour::parse(glyph)?),
+            };
+            return path.is_canonical().then_some(path);
+        }
         let (first, rest) = match text.find(']') {
             Some(at) => (text.get(..=at)?, text.get(at + 1..)?),
             None => (text, ""),
@@ -394,7 +525,11 @@ impl CurvePath {
             outer.push(index);
             rest = after;
         }
-        let path = Self { curve, outer };
+        let path = Self {
+            curve,
+            outer,
+            text: None,
+        };
         path.is_canonical().then_some(path)
     }
 }
@@ -409,6 +544,9 @@ impl fmt::Display for CurvePath {
                 CurveIndex::Grid(i, j) => write!(f, "[{i},{j}]")?,
                 CurveIndex::All => f.write_str("[*]")?,
             }
+        }
+        if let Some(text) = &self.text {
+            write!(f, ".{text}")?;
         }
         Ok(())
     }
@@ -427,9 +565,9 @@ pub fn curve_groups(sources: &[u64]) -> Result<Vec<&[u64]>, &'static str> {
             .get(1..)
             .unwrap_or_default()
             .iter()
-            .take_while(|&&w| decode_continuation(w).is_some())
+            .take_while(|&&w| decode_continuation(w).is_some() || is_text_word(w))
             .count();
-        if decode_continuation(first).is_some() {
+        if decode_continuation(first).is_some() || is_text_word(first) {
             return Err("a continuation word of a nested pattern follows no curve");
         }
         if followed > 0 && CurvePath::read(rest).is_none_or(|(_, n)| n != followed + 1) {
@@ -1777,6 +1915,34 @@ impl TryFrom<String> for PersistentName {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn glyph_contours_of_a_text_are_names_that_read_back() {
+        for text in [
+            "F2:side(e7.glyph(3,U+0041).contour(1))",
+            "F2:startCap(e7.glyph(0,U+004F).contour(0),e7.glyph(0,U+004F).contour(1))",
+            "F2:piece(2)/F2:side(e9.glyph(12,U+00E9).contour(0))",
+        ] {
+            let name = text.parse::<PersistentName>().unwrap();
+            assert_eq!(name.to_string(), text);
+        }
+        let path = CurvePath::glyph(7, 3, 'A', 1);
+        let words = path.encode().unwrap();
+        assert_eq!(words.len(), 3);
+        assert_eq!(CurvePath::read(&words), Some((path.clone(), 3)));
+        assert_eq!(curve_groups(&words).unwrap().len(), 1);
+        // A different character is a different name.
+        assert_ne!(CurvePath::glyph(7, 3, 'B', 1).encode(), Some(words));
+        for bad in [
+            "F2:side(e7.glyph(3).contour(1))",
+            "F2:side(e7.glyph(3,U+ZZ).contour(1))",
+            "F2:side(e7.glyph(3,U+110000).contour(1))",
+            "F2:side(e7[2].glyph(3,U+0041).contour(1))",
+            "F2:side(e7.glyph(70000,U+0041).contour(1))",
+        ] {
+            assert!(bad.parse::<PersistentName>().is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn a_short_cap_stands_for_the_caps_of_its_role() {

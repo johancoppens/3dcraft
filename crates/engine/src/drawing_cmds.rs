@@ -302,6 +302,35 @@ fn sketch(session: &mut Session, p: &Params) -> Result<Source, CommandError> {
         doc.tolerance.linear,
     )
     .map_err(|e| CommandError::new(format!("{ID}: the sketch `{name}`: {e}")))?;
+    // The texts' glyphs, each contour or stroke a path of its own, as
+    // regeneration laid them out (exact: the font's own curves).
+    let mut outline = outline;
+    for text in &solved.texts {
+        if text.construction && !construction {
+            continue;
+        }
+        for curve in &text.curves {
+            let s = &curve.spline;
+            let Some(&start) = s.control.first() else {
+                continue;
+            };
+            let spline =
+                craft3d_drawing::Spline::new(s.degree, s.knots.clone(), s.control.clone(), None)
+                    .map_err(|e| {
+                        CommandError::new(format!("{ID}: the sketch `{name}`: {}: {e}", curve.name))
+                    })?;
+            let path = craft3d_drawing::Path::Chain {
+                start,
+                segments: vec![craft3d_drawing::Segment::Spline(spline)],
+                closed: curve.closed,
+            };
+            if text.construction {
+                outline.construction.push(path);
+            } else {
+                outline.paths.push(path);
+            }
+        }
+    }
     if outline.paths.is_empty() && outline.construction.is_empty() {
         return fail(format!(
             "{ID}: the sketch `{name}` has no lines, arcs or circles to export{}",

@@ -94,6 +94,28 @@ pub struct Document {
     /// couplings. Absent for a part (and in files before version 52).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assembly: Option<Assembly>,
+    /// The fonts the document's texts use (format version 55): each with
+    /// its bytes as the entry `blobs/<sha256>.font` when the font allows
+    /// a document to keep them (`embedded`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fonts: Vec<Font>,
+}
+
+/// A font of the document (format version 55).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Font {
+    pub name: String,
+    pub family: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub style: String,
+    pub sha256: String,
+    pub embedding: String,
+    /// Whether the file holds the font's bytes (`blobs/<sha256>.font`);
+    /// false for a font that may not be kept, which the document only
+    /// names.
+    #[serde(default)]
+    pub embedded: bool,
 }
 
 /// An assembly: `{"instances": [...], "mates": [...], "couplings": [...],
@@ -1776,6 +1798,92 @@ pub enum SketchGeometry {
         degree: u32,
         through: Vec<u64>,
     },
+    /// A text (format version 55): a template with formulas in braces, a
+    /// font, a size and the point `at` it is anchored at; laid out at
+    /// every regeneration, nothing of the layout is stored.
+    #[serde(rename_all = "camelCase")]
+    Text {
+        text: String,
+        font: String,
+        size: String,
+        #[serde(default)]
+        size_of: TextSizeOf,
+        at: u64,
+        #[serde(default)]
+        anchor: TextAnchor,
+        #[serde(default)]
+        align: TextAlign,
+        #[serde(default = "zero_expr")]
+        rotation: String,
+        #[serde(default = "one_expr")]
+        line_spacing: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        width: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<TextPath>,
+    },
+}
+
+fn zero_expr() -> String {
+    "0".to_string()
+}
+
+fn one_expr() -> String {
+    "1".to_string()
+}
+
+/// What a text's size measures (format version 55).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TextSizeOf {
+    #[default]
+    Cap,
+    Em,
+}
+
+/// Which line of a text sits on its point (format version 55).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TextAnchor {
+    #[default]
+    Baseline,
+    Top,
+    Middle,
+    Bottom,
+}
+
+/// How a text's lines sit against its point (format version 55).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TextAlign {
+    #[default]
+    Left,
+    Center,
+    Right,
+}
+
+/// Which side of its curve a text stands on (format version 55).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TextSide {
+    #[default]
+    Left,
+    Right,
+}
+
+/// A text along a curve of its sketch (format version 55).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TextPath {
+    pub curve: u64,
+    #[serde(default = "zero_expr")]
+    pub start: String,
+    #[serde(default = "zero_expr")]
+    pub offset: String,
+    #[serde(default)]
+    pub side: TextSide,
+    #[serde(default)]
+    pub reversed: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

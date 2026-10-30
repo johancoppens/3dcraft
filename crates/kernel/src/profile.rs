@@ -537,6 +537,34 @@ fn degenerate(id: u64, reason: &'static str) -> KernelError {
     KernelError::DegenerateCurve { id, reason }
 }
 
+/// A piece of higher degree that is a straight segment: every control
+/// point within a thousandth of the tolerance of the chord between its
+/// ends, in order along it. A Bézier lies in the hull of its control
+/// points, and with their projections in order it runs once from end to
+/// end, so it is that segment to within the same distance (a line of a
+/// glyph raised to the degree of the curves around it, docs/design/text.md).
+fn straight_piece(control: &[P2], tol: f64) -> Option<Curve2> {
+    let (&start, &end) = (control.first()?, control.last()?);
+    let d = sub(end, start);
+    let len = length(d);
+    if !(len > tol) || control.len() < 3 {
+        return None;
+    }
+    let mut along = 0.0;
+    for p in control {
+        let v = sub(*p, start);
+        if (cross(d, v) / len).abs() > tol * 1e-3 {
+            return None;
+        }
+        let a = dot(d, v) / len;
+        if a < along - tol * 1e-3 {
+            return None;
+        }
+        along = a.max(along);
+    }
+    Some(Curve2::Line { start, end })
+}
+
 /// A curve must be finite, within range and longer than the tolerance.
 pub(crate) fn validate(curve: &SketchCurve, tol: f64) -> Result<(), KernelError> {
     let id = curve.id;
@@ -1388,7 +1416,7 @@ fn detect(
             }
             let straight = match (part.degree, part.control.as_slice()) {
                 (1, &[start, end]) => Some(Curve2::Line { start, end }),
-                _ => None,
+                _ => straight_piece(&part.control, tol),
             };
             if let Some(Curve2::Line { start, end }) = straight
                 && distance(start, end) <= tol

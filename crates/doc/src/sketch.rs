@@ -540,6 +540,10 @@ pub enum Geometry {
         degree: u32,
         through: Vec<EntityId>,
     },
+    /// A text ([`crate::SketchText`]): no unknowns of its own; its point
+    /// `at` places it, and regeneration lays it out into the outlines of
+    /// its glyphs (docs/design/text.md).
+    Text(Box<crate::SketchText>),
 }
 
 /// Expressions with the names of their parameters.
@@ -581,6 +585,7 @@ impl Geometry {
             Geometry::Image { .. } => "image",
             Geometry::Formula { .. } => "formula",
             Geometry::Interpolated { .. } => "interpolated",
+            Geometry::Text(_) => "text",
         }
     }
 
@@ -600,13 +605,17 @@ impl Geometry {
                 }
             }
             Geometry::Interpolated { through, .. } => through.clone(),
+            Geometry::Text(text) => text.points(),
         }
     }
 
     /// For a curve with two ends, the points it starts and ends at.
     pub fn ends(&self) -> Option<(EntityId, EntityId)> {
         match self {
-            Geometry::Point { .. } | Geometry::Circle { .. } | Geometry::Image { .. } => None,
+            Geometry::Point { .. }
+            | Geometry::Circle { .. }
+            | Geometry::Image { .. }
+            | Geometry::Text(_) => None,
             Geometry::Line { start, end } | Geometry::Arc { start, end, .. } => {
                 Some((*start, *end))
             }
@@ -812,6 +821,8 @@ pub enum Role {
     Spline,
     /// A formula curve or a live spline: `pointOn` and `tangent` take it.
     Fitted,
+    /// A text: no constraint takes it (its point places it).
+    Text,
 }
 
 impl Role {
@@ -822,6 +833,7 @@ impl Role {
             Geometry::Circle { .. } | Geometry::Arc { .. } => Role::Round,
             Geometry::Spline { .. } => Role::Spline,
             Geometry::Formula { .. } | Geometry::Interpolated { .. } => Role::Fitted,
+            Geometry::Text(_) => Role::Text,
         }
     }
 
@@ -832,6 +844,7 @@ impl Role {
             Role::Round => "a circle or arc",
             Role::Spline => "a spline",
             Role::Fitted => "a formula curve or live spline",
+            Role::Text => "a text",
         }
     }
 }
@@ -1433,6 +1446,59 @@ impl Sketch {
         self.push(Geometry::Interpolated { degree, through }, construction)
     }
 
+    /// A text anchored at the point `text.at` ([`Geometry::Text`]).
+    pub fn add_text(
+        &mut self,
+        text: crate::SketchText,
+        construction: bool,
+    ) -> Result<EntityId, SketchError> {
+        if let Some(fault) = self.text_fault(&text) {
+            return invalid(fault);
+        }
+        self.push(Geometry::Text(Box::new(text)), construction)
+    }
+
+    /// Why a text cannot be, if it cannot: its own fault, its point is a
+    /// point with coordinates, and the curve it follows is a curve of the
+    /// sketch.
+    pub fn text_fault(&self, text: &crate::SketchText) -> Option<String> {
+        if let Some(fault) = text.fault() {
+            return Some(fault);
+        }
+        match self.entity(text.at).map(|e| &e.geometry) {
+            Ok(Geometry::Point { .. }) => {}
+            Ok(other) => {
+                return Some(format!(
+                    "{} is a {}, not a point with coordinates of its own",
+                    text.at,
+                    other.type_name()
+                ));
+            }
+            Err(e) => return Some(e.to_string()),
+        }
+        if let Some(path) = &text.path {
+            match self.entity(path.curve).map(|e| &e.geometry) {
+                Ok(
+                    Geometry::Line { .. }
+                    | Geometry::Arc { .. }
+                    | Geometry::Circle { .. }
+                    | Geometry::Spline { .. }
+                    | Geometry::Formula { .. }
+                    | Geometry::Interpolated { .. },
+                ) => {}
+                Ok(other) => {
+                    return Some(format!(
+                        "{} is a {}; a text follows a line, arc, circle or spline",
+                        path.curve,
+                        other.type_name()
+                    ));
+                }
+                Err(e) => return Some(e.to_string()),
+            }
+        }
+        None
+    }
+
     /// Why a formula curve cannot be, if it cannot: its ends are points
     /// with coordinates (an image point follows its pattern, the curve its
     /// formulas, and both cannot hold it), and its formulas are written.
@@ -1829,6 +1895,9 @@ impl Sketch {
         // parameter is bound, are [`Sketch::formula_exprs`].
         for entity in &self.entities {
             out.extend(entity.geometry.formula_exprs(entity.id).1);
+            if let Geometry::Text(text) = &entity.geometry {
+                out.extend(text.exprs(entity.id));
+            }
         }
         out
     }
@@ -1876,8 +1945,10 @@ impl Sketch {
             out.extend(pattern.exprs_mut());
         }
         for entity in &mut self.entities {
-            if let Geometry::Formula { from, to, .. } = &mut entity.geometry {
-                out.extend([from, to]);
+            match &mut entity.geometry {
+                Geometry::Formula { from, to, .. } => out.extend([from, to]),
+                Geometry::Text(text) => out.extend(text.exprs_mut()),
+                _ => {}
             }
         }
         out
@@ -2104,6 +2175,11 @@ impl Sketch {
                 return invalid(format!("{id}: {seed} is in the seed twice"));
             }
             let entity = self.entity(*seed)?;
+            if matches!(entity.geometry, Geometry::Text(_)) {
+                return invalid(format!(
+                    "{id}: {seed} is a text; a pattern of a text is not supported yet (make one text per place)"
+                ));
+            }
             if matches!(entity.geometry, Geometry::Image { .. }) {
                 return invalid(format!(
                     "{id}: {seed} is an image point; a pattern of a pattern's images is not supported yet (put the pattern itself in the seed)"
@@ -2553,6 +2629,11 @@ impl Sketch {
                 }
                 Geometry::Formula { .. } => {
                     if let Some(fault) = self.formula_fault(&entity.geometry) {
+                        return invalid(format!("{id}: {fault}"));
+                    }
+                }
+                Geometry::Text(text) => {
+                    if let Some(fault) = self.text_fault(text) {
                         return invalid(format!("{id}: {fault}"));
                     }
                 }

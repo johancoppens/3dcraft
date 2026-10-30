@@ -49,6 +49,7 @@ pub(crate) fn to_manifest(document: &doc::Document) -> manifest::Document {
         outputs,
         inserted,
         assembly,
+        fonts,
     } = document;
     let doc::Units { length, angle } = units;
     let doc::Tolerance {
@@ -106,6 +107,29 @@ pub(crate) fn to_manifest(document: &doc::Document) -> manifest::Document {
         outputs: outputs.iter().map(output_to_manifest).collect(),
         inserted: inserted.iter().map(inserted_to_manifest).collect(),
         assembly: assembly.as_ref().map(assembly_to_manifest),
+        fonts: fonts
+            .iter()
+            .map(|font| {
+                let doc::DocFont {
+                    name,
+                    family,
+                    style,
+                    sha256,
+                    embedding,
+                    blob,
+                    // Never saved: a font that may not be kept.
+                    session: _,
+                } = font;
+                manifest::Font {
+                    name: name.clone(),
+                    family: family.clone(),
+                    style: style.clone(),
+                    sha256: sha256.clone(),
+                    embedding: embedding.clone(),
+                    embedded: blob.is_some(),
+                }
+            })
+            .collect(),
     }
 }
 
@@ -2180,6 +2204,7 @@ fn entity_to_manifest(entity: &doc::Entity) -> manifest::SketchEntity {
                     through: through.iter().map(raw).collect(),
                 }
             }
+            doc::Geometry::Text(text) => text_to_manifest(text),
             doc::Geometry::Image {
                 of,
                 pattern: doc::PatternId(pattern),
@@ -2195,6 +2220,130 @@ fn entity_to_manifest(entity: &doc::Entity) -> manifest::SketchEntity {
             },
         },
     }
+}
+
+fn text_to_manifest(text: &doc::SketchText) -> manifest::SketchGeometry {
+    let doc::SketchText {
+        text,
+        font,
+        size,
+        size_of,
+        at: doc::EntityId(at),
+        anchor,
+        align,
+        rotation,
+        line_spacing,
+        width,
+        path,
+    } = text;
+    manifest::SketchGeometry::Text {
+        text: text.to_string(),
+        font: font.clone(),
+        size: expr_to_manifest(size),
+        size_of: match size_of {
+            doc::TextSizeOf::Cap => manifest::TextSizeOf::Cap,
+            doc::TextSizeOf::Em => manifest::TextSizeOf::Em,
+        },
+        at: *at,
+        anchor: match anchor {
+            doc::TextAnchor::Baseline => manifest::TextAnchor::Baseline,
+            doc::TextAnchor::Top => manifest::TextAnchor::Top,
+            doc::TextAnchor::Middle => manifest::TextAnchor::Middle,
+            doc::TextAnchor::Bottom => manifest::TextAnchor::Bottom,
+        },
+        align: match align {
+            doc::TextAlign::Left => manifest::TextAlign::Left,
+            doc::TextAlign::Center => manifest::TextAlign::Center,
+            doc::TextAlign::Right => manifest::TextAlign::Right,
+        },
+        rotation: expr_to_manifest(rotation),
+        line_spacing: expr_to_manifest(line_spacing),
+        width: width.as_ref().map(expr_to_manifest),
+        path: path.as_ref().map(|path| {
+            let doc::TextPath {
+                curve: doc::EntityId(curve),
+                start,
+                offset,
+                side,
+                reversed,
+            } = path;
+            manifest::TextPath {
+                curve: *curve,
+                start: expr_to_manifest(start),
+                offset: expr_to_manifest(offset),
+                side: match side {
+                    doc::TextSide::Left => manifest::TextSide::Left,
+                    doc::TextSide::Right => manifest::TextSide::Right,
+                },
+                reversed: *reversed,
+            }
+        }),
+    }
+}
+
+/// A text read back. A template that does not read (a file edited by
+/// hand) is kept as literal text, braces and all, so nothing is lost and
+/// the text shows what is wrong.
+#[allow(clippy::too_many_arguments)]
+fn text_to_doc(
+    text: String,
+    font: String,
+    size: String,
+    size_of: manifest::TextSizeOf,
+    at: u64,
+    anchor: manifest::TextAnchor,
+    align: manifest::TextAlign,
+    rotation: String,
+    line_spacing: String,
+    width: Option<String>,
+    path: Option<manifest::TextPath>,
+) -> doc::Geometry {
+    let template = doc::TextTemplate::parse(&text).unwrap_or(doc::TextTemplate {
+        parts: vec![doc::TextPart::Literal(text)],
+    });
+    doc::Geometry::Text(Box::new(doc::SketchText {
+        text: template,
+        font,
+        size: doc::Expr(size),
+        size_of: match size_of {
+            manifest::TextSizeOf::Cap => doc::TextSizeOf::Cap,
+            manifest::TextSizeOf::Em => doc::TextSizeOf::Em,
+        },
+        at: doc::EntityId(at),
+        anchor: match anchor {
+            manifest::TextAnchor::Baseline => doc::TextAnchor::Baseline,
+            manifest::TextAnchor::Top => doc::TextAnchor::Top,
+            manifest::TextAnchor::Middle => doc::TextAnchor::Middle,
+            manifest::TextAnchor::Bottom => doc::TextAnchor::Bottom,
+        },
+        align: match align {
+            manifest::TextAlign::Left => doc::TextAlign::Left,
+            manifest::TextAlign::Center => doc::TextAlign::Center,
+            manifest::TextAlign::Right => doc::TextAlign::Right,
+        },
+        rotation: doc::Expr(rotation),
+        line_spacing: doc::Expr(line_spacing),
+        width: width.map(doc::Expr),
+        path: path.map(|p| {
+            let manifest::TextPath {
+                curve,
+                start,
+                offset,
+                side,
+                reversed,
+            } = p;
+            doc::TextPath {
+                curve: doc::EntityId(curve),
+                start: doc::Expr(start),
+                offset: doc::Expr(offset),
+                side: match side {
+                    manifest::TextSide::Left => doc::TextSide::Left,
+                    manifest::TextSide::Right => doc::TextSide::Right,
+                },
+                reversed,
+            }
+        }),
+    }))
 }
 
 fn index_to_manifest(index: &doc::InstanceIndex) -> manifest::InstanceIndex {
@@ -2440,6 +2589,31 @@ fn entity_to_doc(entity: manifest::SketchEntity) -> doc::Entity {
                     through: through.into_iter().map(Id).collect(),
                 }
             }
+            manifest::SketchGeometry::Text {
+                text,
+                font,
+                size,
+                size_of,
+                at,
+                anchor,
+                align,
+                rotation,
+                line_spacing,
+                width,
+                path,
+            } => text_to_doc(
+                text,
+                font,
+                size,
+                size_of,
+                at,
+                anchor,
+                align,
+                rotation,
+                line_spacing,
+                width,
+                path,
+            ),
             manifest::SketchGeometry::Image { of, pattern, index } => doc::Geometry::Image {
                 of: Id(of),
                 pattern: doc::PatternId(pattern),
@@ -2568,6 +2742,7 @@ pub(crate) fn to_doc(document: manifest::Document, blobs: &Blobs) -> doc::Docume
         outputs,
         inserted,
         assembly,
+        fonts,
     } = document;
     doc::Document {
         units: doc::Units {
@@ -2621,6 +2796,35 @@ pub(crate) fn to_doc(document: manifest::Document, blobs: &Blobs) -> doc::Docume
         outputs: outputs.into_iter().map(output_to_doc).collect(),
         inserted: inserted.into_iter().map(inserted_to_doc).collect(),
         assembly: assembly.map(|a| assembly_to_doc(a, blobs)),
+        fonts: fonts
+            .into_iter()
+            .map(|font| {
+                let manifest::Font {
+                    name,
+                    family,
+                    style,
+                    sha256,
+                    embedding,
+                    embedded,
+                } = font;
+                // Every embedded font's bytes are there: checked before
+                // conversion (`missing_blob`).
+                let blob = if embedded {
+                    blobs.get(&sha256).cloned()
+                } else {
+                    None
+                };
+                doc::DocFont {
+                    name,
+                    family,
+                    style,
+                    sha256,
+                    embedding,
+                    blob,
+                    session: None,
+                }
+            })
+            .collect(),
     }
 }
 

@@ -204,6 +204,17 @@ pub(crate) fn drawn<'a>(
     for entity in sketch.entities.iter().filter(|e| !e.construction) {
         let curve = match &entity.geometry {
             Geometry::Point { .. } | Geometry::Image { .. } => continue,
+            Geometry::Text(_) => {
+                // The contours of its glyphs, as laid out.
+                let laid = solved
+                    .text(entity.id)
+                    .ok_or_else(|| format!("sketch `{name}`: {} was not laid out", entity.id))?;
+                curves.extend(laid.curves.iter().map(|c| SketchCurve {
+                    id: c.id,
+                    curve: Curve2::Spline(c.spline.clone()),
+                }));
+                continue;
+            }
             &Geometry::Line { start, end } => Curve2::Line {
                 start: point(start)?,
                 end: point(end)?,

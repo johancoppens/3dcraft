@@ -1331,6 +1331,12 @@ fn sketch_inspect(session: &mut Session, params: &Value) -> Run {
                             map.insert("fit".into(), fit_json(fitted));
                         }
                     }
+                    Geometry::Text(ref text) => {
+                        map.insert(
+                            "text".into(),
+                            crate::text_cmds::text_json(entity.id, text, solved.map(|s| &**s)),
+                        );
+                    }
                     Geometry::Image { of, pattern, index } => {
                         map.insert("of".into(), of.to_string().into());
                         map.insert("pattern".into(), pattern.to_string().into());

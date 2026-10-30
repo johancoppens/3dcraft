@@ -60,7 +60,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 /// The format version this build writes, and the newest it reads.
-pub const FORMAT_VERSION: u32 = 54;
+pub const FORMAT_VERSION: u32 = 55;
 
 /// The version that made `floor`, `ceil`, `round`, `trunc` and `mod`
 /// function names: a variable of an older file with such a name is
@@ -143,6 +143,9 @@ const BLOB_EXTENSION: &str = ".step";
 /// Where the source documents packed into an assembly are:
 /// `blobs/<sha256>.3dcraft` (format version 52).
 const PACKED_EXTENSION: &str = ".3dcraft";
+/// Where the fonts a document keeps are: `blobs/<sha256>.font` (format
+/// version 55).
+const FONT_EXTENSION: &str = ".font";
 
 /// Largest `.3dcraft` file that is read: 256 MiB. Checked before the file
 /// is read or parsed.
@@ -293,9 +296,9 @@ impl fmt::Display for FormatError {
             ),
             FormatError::MissingBlob { sha256 } => write!(
                 f,
-                "the file has an imported STEP file or a packed source document whose bytes are \
-                 missing: there is no entry `{BLOB_DIR}{sha256}{BLOB_EXTENSION}` (or \
-                 `{PACKED_EXTENSION}`); open an earlier copy of the file"
+                "the file has an imported STEP file, a packed source document or a font whose \
+                 bytes are missing: there is no entry `{BLOB_DIR}{sha256}{BLOB_EXTENSION}` (or \
+                 `{PACKED_EXTENSION}`, `{FONT_EXTENSION}`); open an earlier copy of the file"
             ),
             FormatError::DamagedBlob { name } => write!(
                 f,
@@ -439,6 +442,14 @@ fn blobs_of(document: &Document) -> BTreeMap<String, &craft3d_doc::Blob> {
                 .or_insert(blob);
         }
     }
+    // The fonts a document may keep (never one only this session has).
+    for font in &document.fonts {
+        if let Some(blob) = &font.blob {
+            blobs
+                .entry(format!("{BLOB_DIR}{}{FONT_EXTENSION}", blob.sha256()))
+                .or_insert(blob);
+        }
+    }
     blobs
 }
 
@@ -503,6 +514,7 @@ pub fn from_bytes_noted(bytes: &[u8]) -> Result<(Document, Vec<String>), FormatE
         if let Some(hash) = entry.name.strip_prefix(BLOB_DIR).and_then(|rest| {
             rest.strip_suffix(BLOB_EXTENSION)
                 .or_else(|| rest.strip_suffix(PACKED_EXTENSION))
+                .or_else(|| rest.strip_suffix(FONT_EXTENSION))
         }) {
             raw.insert(hash.to_string(), (entry.name, entry.data));
         }
@@ -683,6 +695,24 @@ fn read_manifest(
             });
         }
         blobs.insert(sha256.clone(), blob);
+    }
+    // Each font the file keeps, the same way.
+    for font in document.fonts.iter().filter(|f| f.embedded) {
+        if blobs.contains_key(&font.sha256) {
+            continue;
+        }
+        let Some((name, data)) = raw.get(&font.sha256) else {
+            return Err(FormatError::MissingBlob {
+                sha256: font.sha256.clone(),
+            });
+        };
+        let blob = craft3d_doc::Blob::new(data.to_vec());
+        if blob.sha256() != font.sha256 {
+            return Err(FormatError::DamagedBlob {
+                name: (*name).to_string(),
+            });
+        }
+        blobs.insert(font.sha256.clone(), blob);
     }
     let blobs = &blobs;
     // An output is computed from a measure or from an expression, one of

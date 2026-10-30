@@ -54,6 +54,7 @@ mod sketch;
 mod sketch_pattern;
 mod split;
 mod sweep;
+pub mod text;
 mod thicken;
 mod thread;
 pub mod work;

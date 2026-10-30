@@ -878,6 +878,13 @@ fn model_size(regen: &Regen, doc: &Document) -> f64 {
                         extent.add(solved.to_world(p[0], p[1]));
                     }
                 }
+                // A text lies within the box of its curves' control points.
+                Geometry::Text(_) => {
+                    if let Some([x0, y0, x1, y1]) = solved.text(entity.id).and_then(|t| t.ink) {
+                        extent.add(solved.to_world(x0, y0));
+                        extent.add(solved.to_world(x1, y1));
+                    }
+                }
             }
         }
     }
@@ -1097,7 +1104,8 @@ fn sample_arc(
 
 fn polyline(solved: &SketchResult, entity: &Entity, tolerance: f64) -> Option<ScenePolyline> {
     let (curve, points) = match entity.geometry {
-        Geometry::Point { .. } | Geometry::Image { .. } => return None,
+        // A text's curves are drawn by `text_polylines`.
+        Geometry::Point { .. } | Geometry::Image { .. } | Geometry::Text(_) => return None,
         Geometry::Formula { .. } | Geometry::Interpolated { .. } => {
             let fitted = solved.curve(entity.id)?;
             let points = craft3d_regen::curve_fit::polyline(&fitted.spline, tolerance)
@@ -1239,6 +1247,29 @@ fn instance_polyline(
     })
 }
 
+/// The curves of the texts of a sketch, each named as the sketch calls it
+/// (`e7.glyph(3,U+0041).contour(1)`).
+fn text_polylines(solved: &SketchResult, tolerance: f64) -> Vec<ScenePolyline> {
+    let mut out = Vec::new();
+    for text in &solved.texts {
+        for curve in &text.curves {
+            let points: Vec<Vec3> = craft3d_regen::curve_fit::polyline(&curve.spline, tolerance)
+                .into_iter()
+                .map(|[x, y]| solved.to_world(x, y))
+                .collect();
+            if points.len() >= 2 && points.iter().all(|p| p.is_finite()) {
+                out.push(ScenePolyline {
+                    entity: curve.name.to_string(),
+                    curve: SketchCurve::Spline,
+                    construction: text.construction,
+                    points,
+                });
+            }
+        }
+    }
+    out
+}
+
 fn scene_sketch(
     feature: &craft3d_doc::Feature,
     sketch: &Sketch,
@@ -1250,6 +1281,7 @@ fn scene_sketch(
         .iter()
         .filter_map(|entity| polyline(solved, entity, tolerance))
         .collect();
+    polylines.extend(text_polylines(solved, tolerance));
     // The instances of the sketch's patterns, as the curves they are.
     if let Ok(instances) = craft3d_regen::pattern_instances(sketch, solved) {
         polylines.extend(instances.iter().filter_map(|(curve, construction)| {
