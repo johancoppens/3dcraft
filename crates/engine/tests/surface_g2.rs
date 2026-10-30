@@ -65,10 +65,11 @@ fn fin_curves(s: &mut Session, k: f64) -> String {
 
 /// The fin's edge along its first u curve.
 fn seam_edge(s: &mut Session, fin: &str) -> String {
-    edges_of(s, fin)
-        .into_iter()
-        .find(|n| n.contains("startEdge(0,"))
-        .expect("the first u curve's edge")
+    let all = edges_of(s, fin);
+    all.iter()
+        .find(|n| n.replace(' ', "").contains("startEdge(0,"))
+        .cloned()
+        .unwrap_or_else(|| panic!("no edge along the first u curve in {all:?}"))
 }
 
 fn edges_of(s: &mut Session, feature: &str) -> Vec<String> {
