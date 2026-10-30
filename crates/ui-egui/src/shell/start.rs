@@ -78,7 +78,7 @@ impl Example {
     /// the page and open there. `None` for a script or a built-in file.
     pub fn to_fetch(&self) -> Option<&'static str> {
         match self.source {
-            Source::File { name, bytes } if bytes.is_empty() => Some(name),
+            Source::File { name, bytes: [] } => Some(name),
             _ => None,
         }
     }
