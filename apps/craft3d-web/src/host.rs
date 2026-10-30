@@ -2104,10 +2104,11 @@ mod tests {
         assert_eq!(export_types(None)[0].extensions, ["step", "stp"]);
         assert_eq!(export_types(Some("svg"))[0].description, "SVG");
         assert_eq!(open_types(Ask::Import)[0].extensions, ["step", "stp"]);
-        // Open takes a document or a published Jig (2026-10-23).
+        // Open takes a document, a published Jig (2026-10-23) or an
+        // assembly (2026-10-30).
         assert_eq!(
             open_types(Ask::Open)[0].extensions,
-            [EXTENSION, JIG_EXTENSION]
+            [EXTENSION, JIG_EXTENSION, ASSEMBLY_EXTENSION]
         );
     }
 
