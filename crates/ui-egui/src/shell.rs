@@ -2984,7 +2984,8 @@ impl Shell {
                     egui::Stroke::new(tokens.divider_width, color(tokens.plate_rim)),
                 );
             });
-        self.tree_panel = Some(rect.intersect(viewport));
+        // Its place while it is open; closing, it is on its way out.
+        self.tree_panel = self.state.panels.drawer.then(|| rect.intersect(viewport));
     }
 
     /// The split on the right of the side panel `panel`: dragged, it sets

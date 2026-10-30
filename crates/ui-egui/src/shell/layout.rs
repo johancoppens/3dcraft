@@ -865,7 +865,8 @@ impl Shell {
         let mut layout = controls_layout(rect, &tokens, &widths, self.state.section.on);
         // The narrow layout's compact player, while the drawer with the
         // whole player is shut.
-        if self.narrow() && self.timeline.has_timeline && !self.state.panels.drawer {
+        let timeline = self.timeline.steps > 0 || self.timeline.has_timeline;
+        if self.narrow() && timeline && !self.state.panels.drawer {
             let side = (tokens.touch_target + 6.0).max(tokens.nav_height);
             let width = self.compact_player_width(side, super::player::COMPACT_LABEL)
                 + 2.0 * tokens.nav_padding;

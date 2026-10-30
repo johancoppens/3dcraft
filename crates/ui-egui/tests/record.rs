@@ -114,6 +114,9 @@ fn record(
 ) -> (Vec<PathBuf>, Value, egui::Rect) {
     let mut s = session(root);
     let mut shell = Shell::new();
+    // The desktop layout in this small window (the narrow one's viewport
+    // takes the whole width: `tests/mobile.rs`).
+    shell.tokens.narrow_width = 0.0;
     shell.attach_gpu(state).unwrap();
     // As the window does for a frame-exact recording.
     shell.set_frame_exact(true);
@@ -308,6 +311,9 @@ fn recording_refuses_what_it_cannot_do() {
     let root = dir("record-refused");
     let mut s = session(&root);
     let mut shell = Shell::new();
+    // The desktop layout in this small window (the narrow one's viewport
+    // takes the whole width: `tests/mobile.rs`).
+    shell.tokens.narrow_width = 0.0;
     for method in ["ui.record", "ui.advance"] {
         let answer = shell
             .handle_method(&mut s, method, Some(&json!({})))

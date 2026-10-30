@@ -640,7 +640,10 @@ impl Shell {
             |ui| {
                 ui.spacing_mut().item_spacing.x = PLAYER_GAP;
                 ui.style_mut().visuals.override_text_color = Some(color(tokens.plate_text));
-                if self.state.timeline.motion {
+                // An assembly has no history: its motion is what plays.
+                let motion = self.state.timeline.motion
+                    || (self.timeline.steps == 0 && self.timeline.has_timeline);
+                if motion {
                     let playing = self.state.timeline.playing;
                     let (icon, name) = if playing {
                         (Icon::Pause, "Pause")
@@ -648,6 +651,11 @@ impl Shell {
                         (Icon::Play, "Play")
                     };
                     if icon_button(ui, icon, name, false, true, &tokens).clicked() {
+                        if !self.state.timeline.motion {
+                            self.state.timeline.motion = true;
+                            let t = self.timeline.motion_t().unwrap_or(0.0);
+                            self.go_to_t(t);
+                        }
                         self.toggle_playing();
                     }
                     let shown = self.timeline.motion_t().unwrap_or(0.0);

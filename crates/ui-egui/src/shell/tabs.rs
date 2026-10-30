@@ -431,10 +431,17 @@ impl Shell {
         let count = self.tabs.len();
         let gaps = tokens.tab_gap * count.saturating_sub(1) as f32;
         let fair = (ui.available_width() - gaps) / count.max(1) as f32;
-        let width = if fair.is_finite() {
-            fair.clamp(tokens.tab_min_width, tokens.tab_max_width)
+        // In the narrow layout a tab keeps a readable width (more of them
+        // scroll, and the list at the end names them all).
+        let least = if self.narrow() {
+            tokens.tab_max_width * 0.6
         } else {
             tokens.tab_min_width
+        };
+        let width = if fair.is_finite() {
+            fair.clamp(least, tokens.tab_max_width)
+        } else {
+            least
         };
         let active = self.active_tab();
         let scroll_to = active.filter(|at| self.tab_scrolled != Some(*at));
@@ -448,7 +455,7 @@ impl Shell {
         let mut in_view = false;
         // When even the narrowest tabs do not fit (a phone, many
         // documents), a button at the row's end lists them all.
-        let overflow = fair < tokens.tab_min_width && count > 1;
+        let overflow = fair < least && count > 1;
         let menu_width = if overflow { OVERFLOW_WIDTH } else { 0.0 };
         let row = ui.available_size();
         let mut chosen = None;
