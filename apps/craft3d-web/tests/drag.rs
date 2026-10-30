@@ -45,6 +45,7 @@ type Replies = Arc<Mutex<Vec<Reply>>>;
 /// thread), as a Web Worker has its own instance.
 struct Worker {
     tx: Sender<Message>,
+    thread: Option<std::thread::JoinHandle<()>>,
     /// It has no job (answered the last, or was told to leave it).
     idle: Arc<Mutex<bool>>,
 }
@@ -53,8 +54,12 @@ fn spawn(replies: &Replies) -> Worker {
     let (tx, rx) = channel();
     let idle = Arc::new(Mutex::new(true));
     let (replies, flag) = (Arc::clone(replies), Arc::clone(&idle));
-    std::thread::spawn(move || work(&rx, &replies, &flag));
-    Worker { tx, idle }
+    let thread = std::thread::spawn(move || work(&rx, &replies, &flag));
+    Worker {
+        tx,
+        thread: Some(thread),
+        idle,
+    }
 }
 
 fn work(rx: &Receiver<Message>, replies: &Replies, idle: &Mutex<bool>) {
@@ -131,7 +136,17 @@ impl Transport for Transported {
             .map_err(|e| e.to_string())
     }
     fn stop(&mut self) {
-        self.worker = None;
+        // Ended: it sees that at its next look at its messages (within a
+        // piece) and is waited for, so that no two workers run at once
+        // in this process (they would share what the kernel keeps per
+        // process, which two Web Workers never do).
+        if let Some(mut worker) = self.worker.take() {
+            let thread = worker.thread.take();
+            drop(worker);
+            if let Some(thread) = thread {
+                let _ = thread.join();
+            }
+        }
     }
     fn cancel(&mut self) {
         if self.before {
@@ -141,6 +156,12 @@ impl Transport for Transported {
         if let Some(worker) = &self.worker {
             let _ = worker.tx.send(Message::Cancel);
         }
+    }
+}
+
+impl Drop for Transported {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
 
