@@ -1872,7 +1872,14 @@ pub fn gordon(net: &Network<'_>) -> Result<Patch, NetworkError> {
                 surface: s,
                 weight: *weight,
             },
-            _ => Condition::Free,
+            (Condition::Free, _) => Condition::Free,
+            // A held edge always has its face moved with it above.
+            (
+                Condition::Position(_) | Condition::Tangent { .. } | Condition::Curvature { .. },
+                None,
+            ) => {
+                return Err(internal());
+            }
         };
     }
     let mut patch = gordon_here(&Network {

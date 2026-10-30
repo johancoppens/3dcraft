@@ -597,6 +597,9 @@ pub fn vertex_values(
 /// Most rounds of refinement of an analysis picture's mesh.
 const REFINE_ROUNDS: usize = 8;
 
+/// Most vertices [`refined_map`] adds to the scene's mesh.
+const MAX_MAP_GROWTH: usize = 1_000_000;
+
 /// An edge inside a face whose ends' values differ by more than this
 /// share of the map's range is split.
 const REFINE_STEP: f64 = 0.02;
@@ -609,13 +612,13 @@ const REFINE_STEP: f64 = 0.02;
 /// face's exact surface with the surface's normal and its exact value;
 /// a triangle with one, two or three split edges becomes two, three or
 /// four, so the mesh stays conforming within a face (both triangles of
-/// an edge split it). An edge on a face's border is split too (its new
-/// point lies on the exact surface, within the tolerance of the face's
-/// edge, as the border's own points are; the neighbouring face keeps its
-/// chord, so the two meet within the chordal tolerance, as any two faces'
-/// meshes do: left unsplit, the border's triangles kept the coarse
-/// values, a fifth of the range off on the fin). Edges shorter than the
-/// scene's tolerance are not split.
+/// an edge split it). An edge on a face's border is split too, its new
+/// point kept on the chord (the neighbouring face's mesh keeps that
+/// chord, so no crack opens) with the surface's value and normal there
+/// (left unsplit, the border's triangles kept the coarse values, a fifth
+/// of the range off on the fin). Edges shorter than the scene's
+/// tolerance are not split. At most [`MAX_MAP_GROWTH`] vertices are
+/// added (and never past [`MAX_MAP_VERTICES`]).
 /// At most [`REFINE_ROUNDS`] rounds and [`MAX_MAP_VERTICES`] vertices.
 /// For the analysis views only: the scene's own mesh is not changed.
 pub fn refined_map(
@@ -633,6 +636,9 @@ pub fn refined_map(
         return Ok((mesh, values));
     }
     let floor = scene.tolerance;
+    // Poles and sharp blends would split in every round: the growth is
+    // bounded by the scene's own size plus a million vertices.
+    let most = MAX_MAP_VERTICES.min(scene.mesh.positions.len().saturating_add(MAX_MAP_GROWTH));
     let reach = (scene.tolerance * 4.0).max(scene.bodies_box.diagonal() * 1e-9);
     // The surface of a face id, and whether the face is reversed.
     let surface_of = |face: u32| -> Option<(&Surface, bool)> {
@@ -663,7 +669,7 @@ pub fn refined_map(
         }
         let value = |i: u32| values.get(i as usize).map_or(f32::NAN, |v| *v);
         let position = |i: u32| mesh.positions.get(i as usize).copied();
-        let marked: Vec<((u32, u32), u32)> = uses
+        let marked: Vec<((u32, u32), u32, bool)> = uses
             .iter()
             .filter(|(key, use_)| {
                 let ((a, b), n) = (**key, use_.0);
@@ -678,15 +684,14 @@ pub fn refined_map(
                     && vb.is_finite()
                     && (va - vb).abs() > step
             })
-            .map(|(k, &(_, face))| (*k, face))
+            .map(|(k, &(n, face))| (*k, face, n == 1))
             .collect();
-        if marked.is_empty() || mesh.positions.len().saturating_add(marked.len()) > MAX_MAP_VERTICES
-        {
+        if marked.is_empty() || mesh.positions.len().saturating_add(marked.len()) > most {
             break;
         }
         // The midpoints, on the exact surface where it can be found.
         let mut fresh: Vec<((u32, u32), Vec3, Vec3, f32)> = Vec::with_capacity(marked.len());
-        for ((a, b), face) in marked {
+        for ((a, b), face, border) in marked {
             let (Some(p), Some(q)) = (position(a), position(b)) else {
                 continue;
             };
@@ -700,9 +705,16 @@ pub fn refined_map(
                 && let Ok((u, w)) = surface.project(guess)
                 && (surface.eval(u, w) - guess).length() <= reach
             {
-                point = surface.eval(u, w);
+                // On a face's border the point stays on the chord: the
+                // neighbouring face's mesh keeps that chord, and a point
+                // put on the surface would open a crack of up to the
+                // sagitta against it. Its value and normal are the
+                // surface's there all the same.
+                if !border {
+                    point = surface.eval(u, w);
+                }
                 if let Some(n) = surface.normal(u, w) {
-                    normal = if n.dot(na + nb) < 0.0 { -n } else { n };
+                    normal = if reversed { -n } else { n };
                 }
                 if let Some((kg, h)) = curvatures(surface, u, w) {
                     let h = if reversed { h } else { -h };

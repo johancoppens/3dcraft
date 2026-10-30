@@ -38,13 +38,16 @@
 //! What no such change can do: one that ends with the curve's own position
 //! and tangent has `∫ Δκ ds ≈ 0` and `∫ (L − s) Δκ ds ≈ 0` over its reach
 //! `L` (to first order in the change), so the change of curvature `Δκ`
-//! must change sign twice. The curvature along a line from the seam goes
+//! must change sign twice (on an open reach, where only the far point
+//! is kept, only the second holds, and once suffices). The curvature along a line from the seam goes
 //! from the face's to the sheet's own with one swing past it, of least
 //! variation: for a straight curve (the quintic `t²(1 − t)³` in the
 //! limit of fine spans) the swing is at most about 0.38 of the change at
 //! the seam, and back by 0.22.
 
-use super::{NetworkError, Raw, derivative, eval, internal, refuse, second_at_start};
+use super::{NetworkError, Raw, internal, refuse, second_at_start};
+#[cfg(test)]
+use super::{derivative, eval};
 use crate::refine::SAME_KNOT;
 use craft3d_math::quadrature::gauss_legendre;
 
@@ -177,115 +180,257 @@ pub(super) fn profile(
     if free == 0 {
         return Ok(c);
     }
-    // The third derivatives of the basis functions that take part.
-    let thirds: Vec<Raw> = (0..inside)
-        .map(|j| {
-            let mut points = vec![[0.0; 4]; count];
-            if let Some(slot) = points.get_mut(j) {
-                *slot = [1.0, 0.0, 0.0, 0.0];
-            }
-            let unit = Raw {
-                degree: q,
-                knots: knots.to_vec(),
-                points,
-            };
-            derivative(&derivative(&derivative(&unit)?)?)
-        })
-        .collect::<Result<_, _>>()?;
-    // Their Gram matrix over the reach, exactly: Gauss–Legendre with
-    // q − 2 nodes per span integrates the products (degree 2q − 6).
-    let nodes = gauss_legendre(q - 2);
-    let mut gram = vec![vec![0.0; inside]; inside];
-    for w in knots.windows(2) {
-        let [a, b] = w else { continue };
-        if !(b - a > SAME_KNOT && *b <= end + SAME_KNOT) {
+    // The Gram matrix of the basis functions' third derivatives over the
+    // reach, exactly (Gauss–Legendre with q − 2 nodes per span integrates
+    // their products, of degree 2q − 6) and banded: on a span only q + 1
+    // of them are not zero, so it is kept as `band[i][o] = M[i][i + o]`,
+    // o ≤ q, and the work and room are linear in the control points.
+    let nodes_count = q - 2;
+    if nodes_count > craft3d_math::quadrature::MAX_NODES {
+        return Err(internal());
+    }
+    let nodes = gauss_legendre(nodes_count);
+    let mut band = vec![vec![0.0; q + 1]; inside];
+    for s in q..count {
+        let (Some(&a), Some(&b)) = (knots.get(s), knots.get(s + 1)) else {
+            break;
+        };
+        if !(b - a > SAME_KNOT && b <= end + SAME_KNOT) {
             continue;
         }
         let (mid, half) = (0.5 * (a + b), 0.5 * (b - a));
         for (x, weight) in &nodes {
             let t = mid + half * x;
-            let values: Vec<f64> = thirds
-                .iter()
-                .map(|d| eval(d, t).map(|h| h[0]))
-                .collect::<Result<_, _>>()?;
-            for (row, vi) in gram.iter_mut().zip(&values) {
-                for (slot, vj) in row.iter_mut().zip(&values) {
-                    *slot += weight * half * vi * vj;
+            let values = thirds_at(knots, q, s, t);
+            let first = s - q;
+            for (i, vi) in values.iter().enumerate() {
+                let row = first + i;
+                if row >= inside {
+                    continue;
+                }
+                for (j, vj) in values.iter().enumerate().skip(i) {
+                    if first + j >= inside {
+                        continue;
+                    }
+                    if let Some(slot) = band.get_mut(row).and_then(|r| r.get_mut(j - i)) {
+                        *slot += weight * half * vi * vj;
+                    }
                 }
             }
         }
     }
-    // The free coefficients (3 and on): Σ_g M_fg x_g = −Σ_k M_fk c_k.
-    let mut system: Vec<Vec<f64>> = (3..inside)
+    // The free coefficients (3 and on): Σ_g M_fg x_g = −Σ_k M_fk c_k, the
+    // fixed ones being 1 and 2 (0 is zero).
+    let entry = |i: usize, j: usize| -> f64 {
+        let (lo, hi) = (i.min(j), i.max(j));
+        band.get(lo)
+            .and_then(|r| r.get(hi - lo))
+            .copied()
+            .unwrap_or(0.0)
+    };
+    let rhs: Vec<f64> = (3..inside)
         .map(|f| {
-            let row = gram.get(f).ok_or_else(internal)?;
-            let mut out: Vec<f64> = row.get(3..inside).ok_or_else(internal)?.to_vec();
-            let rhs: f64 = (0..3)
-                .map(|k| row.get(k).copied().unwrap_or(0.0) * c.get(k).copied().unwrap_or(0.0))
-                .sum();
-            out.push(-rhs);
-            Ok(out)
+            -(1..3)
+                .map(|k| entry(f, k) * c.get(k).copied().unwrap_or(0.0))
+                .sum::<f64>()
         })
-        .collect::<Result<_, NetworkError>>()?;
-    let x = solve(&mut system, free)?;
+        .collect();
+    let system: Vec<Vec<f64>> = (3..inside)
+        .map(|f| (0..=q).map(|o| entry(f, f + o)).collect())
+        .collect();
+    let x = solve_banded_spd(&system, &rhs, q)?;
     for (slot, value) in c.iter_mut().skip(3).zip(x) {
         *slot = value;
     }
     Ok(c)
 }
 
-/// Gaussian elimination with partial pivoting on the augmented rows of a
-/// symmetric positive definite system of `n` unknowns.
-fn solve(rows: &mut [Vec<f64>], n: usize) -> Result<Vec<f64>, NetworkError> {
-    let scale = (0..n)
-        .filter_map(|i| rows.get(i).and_then(|r| r.get(i)))
-        .fold(0.0_f64, |m, x| m.max(x.abs()));
-    for col in 0..n {
-        let pivot = (col..n)
-            .max_by(|a, b| {
-                let size = |r: usize| {
-                    rows.get(r)
-                        .and_then(|row| row.get(col))
-                        .map_or(0.0, |v| v.abs())
-                };
-                size(*a).total_cmp(&size(*b))
-            })
-            .ok_or_else(internal)?;
-        rows.swap(col, pivot);
-        let (top, rest) = rows.split_at_mut(col + 1);
-        let lead = top.last().ok_or_else(internal)?;
-        let diagonal = lead.get(col).copied().unwrap_or(0.0);
-        if !(diagonal.is_finite() && diagonal.abs() > 1e-13 * scale) {
-            return refuse(
-                "the change across a curvature edge could not be spread over its reach (its fairness system is singular)"
-                    .to_string(),
-            );
+/// `(q − 2)/(t_{i+q+1} − t_{i+3})`-style factors of the derivative's
+/// recurrence: `p / (knots[i + p + 1 + lift] − knots[i + 1 + lift])`, zero
+/// on an empty span (as `derivative` takes them).
+fn factor(knots: &[f64], p: usize, i: usize, lift: usize) -> f64 {
+    match (knots.get(i + q_plus(p, lift)), knots.get(i + 1 + lift)) {
+        (Some(hi), Some(lo)) if hi > lo => p as f64 / (hi - lo),
+        _ => 0.0,
+    }
+}
+
+fn q_plus(p: usize, lift: usize) -> usize {
+    p + 1 + lift
+}
+
+/// The coefficients of `c_k … c_{k+3}` in the `k`-th control value of
+/// the third derivative of `Σ c_j N_j` (degree `q`): three differences,
+/// each with its factor (Piegl & Tiller, eq. 3.4 applied thrice).
+fn third_row(knots: &[f64], q: usize, k: usize) -> [f64; 4] {
+    // c'_i = a1_i (c_{i+1} − c_i), on degree q.
+    let a1 = |i: usize| factor(knots, q, i, 0);
+    // c''_i = a2_i (c'_{i+1} − c'_i), on degree q − 1 (knots shifted by one).
+    let a2 = |i: usize| factor(knots, q - 1, i, 1);
+    let a3 = |i: usize| factor(knots, q - 2, i, 2);
+    let first = |i: usize| [-a1(i), a1(i)];
+    let second = |i: usize| {
+        let (lo, hi) = (first(i), first(i + 1));
+        let f = a2(i);
+        [-f * lo[0], f * (hi[0] - lo[1]), f * hi[1]]
+    };
+    let (lo, hi) = (second(k), second(k + 1));
+    let f = a3(k);
+    [
+        -f * lo[0],
+        f * (hi[0] - lo[1]),
+        f * (hi[1] - lo[2]),
+        f * hi[2],
+    ]
+}
+
+/// The third derivatives at `t` (in the span `[knots[s], knots[s + 1])`)
+/// of the `q + 1` basis functions of degree `q` not zero there,
+/// `N_{s−q} … N_s`: the degree `q − 3` basis there (Cox–de Boor, Piegl
+/// & Tiller A2.2) combined by [`third_row`].
+fn thirds_at(knots: &[f64], q: usize, s: usize, t: f64) -> Vec<f64> {
+    let r = q - 3;
+    // Degree r on the knots without their first and last three:
+    // knots3[x] = knots[x + 3]; t lies in its span s − 3.
+    let k3 = |x: usize| knots.get(x + 3).copied().unwrap_or(0.0);
+    let sp = s - 3;
+    let mut n = vec![0.0; r + 1];
+    if let Some(n0) = n.get_mut(0) {
+        *n0 = 1.0;
+    }
+    let mut left = vec![0.0; r + 1];
+    let mut right = vec![0.0; r + 1];
+    for j in 1..=r {
+        if let Some(l) = left.get_mut(j) {
+            *l = t - k3(sp + 1 - j);
         }
-        for row in rest.iter_mut().take(n - col - 1) {
-            let factor = row.get(col).copied().unwrap_or(0.0) / diagonal;
-            if factor == 0.0 {
-                continue;
+        if let Some(rt) = right.get_mut(j) {
+            *rt = k3(sp + j) - t;
+        }
+        let mut saved = 0.0;
+        for i in 0..j {
+            let ri = right.get(i + 1).copied().unwrap_or(0.0);
+            let lj = left.get(j - i).copied().unwrap_or(0.0);
+            let denom = ri + lj;
+            let temp = if denom != 0.0 {
+                n.get(i).copied().unwrap_or(0.0) / denom
+            } else {
+                0.0
+            };
+            if let Some(slot) = n.get_mut(i) {
+                *slot = saved + ri * temp;
             }
-            for (slot, value) in row.iter_mut().zip(lead).skip(col) {
-                *slot -= factor * value;
+            saved = lj * temp;
+        }
+        if let Some(slot) = n.get_mut(j) {
+            *slot = saved;
+        }
+    }
+    // M_{sp − r + i} = n[i]; M_k's control value of the third derivative
+    // is Σ_m row(k)[m] c_{k+m}, and M_k of knots3 index k pairs with the
+    // original coefficients from k on (the derivative drops one knot each
+    // side, so indices of control values stay aligned).
+    let mut out = vec![0.0; q + 1];
+    let first_j = s - q;
+    for (i, mi) in n.iter().enumerate() {
+        let k = sp - r + i;
+        let row = third_row(knots, q, k);
+        for (m, lm) in row.iter().enumerate() {
+            if let Some(slot) = (k + m).checked_sub(first_j).and_then(|o| out.get_mut(o)) {
+                *slot += mi * lm;
             }
         }
     }
-    let mut x = vec![0.0; n];
+    out
+}
+
+/// Solves the symmetric positive definite banded system (`rows[i][o]` is
+/// the entry at `(i, i + o)`, `o ≤ width`) by LDLᵀ, after scaling it to
+/// unit diagonal (Jacobi), so that the test for a singular system is
+/// relative: a pivot at or below 1e-12 of its unit diagonal is refused.
+fn solve_banded_spd(
+    rows: &[Vec<f64>],
+    rhs: &[f64],
+    width: usize,
+) -> Result<Vec<f64>, NetworkError> {
+    let n = rows.len();
+    let at = |i: usize, o: usize| rows.get(i).and_then(|r| r.get(o)).copied().unwrap_or(0.0);
+    let singular = || {
+        refuse::<Vec<f64>>(
+            "the change across a curvature edge could not be spread over its reach (its fairness system is singular)"
+                .to_string(),
+        )
+    };
+    let mut scale = Vec::with_capacity(n);
+    for i in 0..n {
+        let d = at(i, 0);
+        if !(d.is_finite() && d > 0.0) {
+            return singular();
+        }
+        scale.push(1.0 / d.sqrt());
+    }
+    let sc = |i: usize| scale.get(i).copied().unwrap_or(0.0);
+    // lower[j][o] = L[j][j − o], o in 1..=width; diag[i] = D[i].
+    let mut lower = vec![vec![0.0; width + 1]; n];
+    let mut diag = vec![0.0; n];
+    let l = |lower: &Vec<Vec<f64>>, j: usize, i: usize| -> f64 {
+        j.checked_sub(i)
+            .filter(|o| *o >= 1 && *o <= width)
+            .and_then(|o| lower.get(j).and_then(|r| r.get(o)))
+            .copied()
+            .unwrap_or(0.0)
+    };
+    for i in 0..n {
+        let from = i.saturating_sub(width);
+        let mut d = at(i, 0) * sc(i) * sc(i);
+        for k in from..i {
+            let lik = l(&lower, i, k);
+            d -= lik * lik * diag.get(k).copied().unwrap_or(0.0);
+        }
+        if !(d.is_finite() && d > 1e-12) {
+            return singular();
+        }
+        if let Some(slot) = diag.get_mut(i) {
+            *slot = d;
+        }
+        for j in (i + 1)..n.min(i + width + 1) {
+            let mut v = at(i, j - i) * sc(i) * sc(j);
+            for k in j.saturating_sub(width)..i {
+                v -= l(&lower, i, k) * l(&lower, j, k) * diag.get(k).copied().unwrap_or(0.0);
+            }
+            if let Some(slot) = lower.get_mut(j).and_then(|r| r.get_mut(j - i)) {
+                *slot = v / d;
+            }
+        }
+    }
+    // L y = S b, D z = y, Lᵀ x̂ = z, x = S x̂.
+    let mut y: Vec<f64> = (0..n)
+        .map(|i| rhs.get(i).copied().unwrap_or(0.0) * sc(i))
+        .collect();
+    for i in 0..n {
+        let mut v = y.get(i).copied().unwrap_or(0.0);
+        for k in i.saturating_sub(width)..i {
+            v -= l(&lower, i, k) * y.get(k).copied().unwrap_or(0.0);
+        }
+        if let Some(slot) = y.get_mut(i) {
+            *slot = v;
+        }
+    }
+    for (v, d) in y.iter_mut().zip(&diag) {
+        *v /= d;
+    }
     for i in (0..n).rev() {
-        let row = rows.get(i).ok_or_else(internal)?;
-        let mut value = row.get(n).copied().unwrap_or(0.0);
-        for (a, xj) in row.iter().zip(&x).skip(i + 1).take(n - i - 1) {
-            value -= a * xj;
+        let mut v = y.get(i).copied().unwrap_or(0.0);
+        for j in (i + 1)..n.min(i + width + 1) {
+            v -= l(&lower, j, i) * y.get(j).copied().unwrap_or(0.0);
         }
-        let diagonal = row.get(i).copied().unwrap_or(0.0);
-        let solved = value / diagonal;
-        if !solved.is_finite() {
-            return Err(internal());
+        if let Some(slot) = y.get_mut(i) {
+            *slot = v;
         }
-        if let Some(slot) = x.get_mut(i) {
-            *slot = solved;
-        }
+    }
+    let x: Vec<f64> = y.iter().enumerate().map(|(i, v)| v * sc(i)).collect();
+    if x.iter().any(|v| !v.is_finite()) {
+        return Err(internal());
     }
     Ok(x)
 }
@@ -355,6 +500,27 @@ mod tests {
                     < 1e-9
             );
         }
+    }
+
+    /// A dense curve (2^16 control points, the most a spline may have)
+    /// with an open reach: the whole curve takes part, and the banded
+    /// solve stays linear in it (the dense one held a 34 GB Gram matrix).
+    #[test]
+    fn a_profile_over_a_dense_curve_is_linear_in_its_points() {
+        let q = 3;
+        let count = crate::MAX_CONTROL_POINTS;
+        let inner: Vec<f64> = (1..count - q)
+            .map(|j| j as f64 / (count - q) as f64)
+            .collect();
+        let k = knots(q, &inner);
+        let started = std::time::Instant::now();
+        for order in [Order::Tangent, Order::Curvature] {
+            let c = profile(&k, q, 1.0, order, End::Point).unwrap();
+            assert_eq!(c.len(), count);
+            assert!(c.iter().all(|x| x.is_finite()));
+        }
+        let took = started.elapsed();
+        assert!(took.as_secs_f64() < 5.0, "{took:?}");
     }
 
     /// The curvature profile tends to the quintic's: `G″ = (1 − s)(20s² −
