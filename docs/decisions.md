@@ -1,10 +1,17 @@
 # Decisions
 
-> **Last updated:** 2026-10-29
+> **Last updated:** 2026-10-30
 
 Decisions that shape the project, newest first, each with its reason. An agent that needs something listed under *Open decisions* asks the developer; it does not pick silently. When one is settled, move it up with the date.
 
 ## Taken
+
+### 2026-10-30: The web module's hard limit is 12 MiB gzip (decided by the developer)
+
+The web module's hard limit is 12 MiB gzip (was 8 MiB): R1 still grows (text, units, class-A); one first load on a slow
+network stays acceptable and is cached afterwards; the 10 % rule per change stays, so growth remains a logged decision.
+Later: measure time to first picture on a Chromebook rather than bytes (`cargo xtask web-size`, [`testing.md`](testing.md)
+› *Web module size*).
 
 ### 2026-10-29: Assemblies in R1 (decided by the developer)
 

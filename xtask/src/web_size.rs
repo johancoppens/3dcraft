@@ -22,8 +22,9 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The gzip size no module may exceed, whatever the baseline: 8 MiB.
-pub const LIMIT_GZIP: u64 = 8 * 1024 * 1024;
+/// The gzip size no module may exceed, whatever the baseline: 12 MiB
+/// (the developer, 2026-10-30; 8 MiB before, docs/decisions.md).
+pub const LIMIT_GZIP: u64 = 12 * 1024 * 1024;
 /// How far the gzip size may grow over the baseline, in percent.
 pub const MARGIN_PERCENT: u64 = 10;
 /// The baseline, relative to the repository.
