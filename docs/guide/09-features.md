@@ -228,8 +228,8 @@ sheet's second derivative across the edge is put exactly where the face asks it,
  ["sketch.spline", {"sketch": "Bottom", "through": [[20, 0], [23, 6.5], [27, 13], [35, 25]]}],
  ["sketch.create", {"name": "Top", "offset": "30 mm"}],
  ["sketch.spline", {"sketch": "Top", "through": [[20, 0], [23, 6.5], [27, 13], [35, 25]]}],
- ["feature.surface.network", {"u": ["Seam", "Far"], "v": ["Bottom", "Top"], "edges": {"uFirst": {"kind": "curvature", "face": "F1:side(0)"}}, "name": "Fin"}],
- ["measure.continuity", {"edge": "F7:startEdge(0,2)", "face": "F1:side(0)"}]
+ ["feature.surface.network", {"u": ["Seam", "Far"], "v": ["Bottom", "Top"], "edges": {"uFirst": {"kind": "curvature", "face": "F1:face(0)"}}, "name": "Fin"}],
+ ["measure.continuity", {"edge": "F6:startEdge(e0,e2)", "face": "F1:face(0)"}]
 ]
 ```
 
