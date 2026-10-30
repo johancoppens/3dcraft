@@ -403,3 +403,78 @@ fn the_turbofan_built_in_pieces_is_the_one_built_in_one_go() {
         },
     );
 }
+
+/// A state replaced after `n` pieces of its build, then the next built
+/// to the end in the same worker: the same scene as a session that
+/// builds the next in one go?
+#[test]
+#[ignore = "diagnosis: run in release with --ignored --nocapture"]
+fn a_build_replaced_part_way_leaves_the_next_as_it_is_built_in_one_go() {
+    let request = |value: &str| {
+        let mut page = Session::new(Workspace::memory());
+        for (id, params) in turbofan() {
+            page.execute(&id, &params).unwrap();
+        }
+        page.execute("variable.set", &json!({"name": "scallopR", "expr": value}))
+            .unwrap();
+        page.set_stepwise(true);
+        page.set_checks_elsewhere(true);
+        page.set_regen_elsewhere(true);
+        let token = page.scene_job(quality()).unwrap();
+        (page.scene_request(token).unwrap(), page)
+    };
+    let (first, _) = request("2.6 mm");
+    let (second, _) = request("2.7 mm");
+    let mut fresh = Session::new(Workspace::memory());
+    for (id, params) in turbofan() {
+        fresh.execute(&id, &params).unwrap();
+    }
+    fresh
+        .execute(
+            "variable.set",
+            &json!({"name": "scallopR", "expr": "2.7 mm"}),
+        )
+        .unwrap();
+    let want = craft3d_engine::scene_bytes(&fresh.scene_with(quality()).unwrap().unwrap());
+    let quick = |s: &Session| {
+        let mut s = s.clone();
+        craft3d_engine::scene_bytes(&s.scene_with(SceneQuality::Preview).unwrap().unwrap())
+    };
+    let want_preview = quick(&fresh);
+    // The whole first state first (as when the page opened it), then
+    // the first value replaced part way, then the second.
+    let (opened, _) = request("2.5 mm");
+    for n in [0_usize, 1, 3, 10, 30, 60, 100, 1000] {
+        craft3d_engine::scene_forget();
+        scene_begin(&opened.document, &opened.work);
+        while craft3d_engine::scene_next().is_some() {}
+        scene_begin(&first.document, &first.work);
+        for _ in 0..n {
+            if scene_step(|| true) == SceneStep::Done {
+                break;
+            }
+        }
+        scene_begin(&second.document, &second.work);
+        let mut parts = Vec::new();
+        while let Some(part) = craft3d_engine::scene_next() {
+            parts.push(part);
+        }
+        let (_, mut page) = request("2.7 mm");
+        let token = page.scene_job(quality()).unwrap();
+        for part in &parts {
+            page.scene_answered(token, Ok(part));
+        }
+        let got = craft3d_engine::scene_bytes(&page.scene_with(quality()).unwrap().unwrap());
+        let got_preview =
+            craft3d_engine::scene_bytes(&page.scene_with(SceneQuality::Preview).unwrap().unwrap());
+        println!(
+            "replaced after {n} pieces: display {}, preview {}",
+            if got == want { "equal" } else { "DIFFERS" },
+            if got_preview == want_preview {
+                "equal"
+            } else {
+                "DIFFERS"
+            },
+        );
+    }
+}
