@@ -2004,17 +2004,17 @@ mod tests {
             crate::interference_cmds::boxes_meet(x.as_ref(), y.as_ref(), margin)
         };
         let mut one = Vec::new();
-        for i in 0..a.len() {
-            for j in i + 1..a.len() {
-                if meet(&a[i], &a[j]) {
+        for (i, x) in a.iter().enumerate() {
+            for (j, y) in a.iter().enumerate().skip(i + 1) {
+                if meet(x, y) {
                     one.push((i, j, false));
                 }
             }
         }
         let mut two = Vec::new();
-        for i in 0..a.len() {
-            for j in 0..b.len() {
-                if meet(&a[i], &b[j]) {
+        for (i, x) in a.iter().enumerate() {
+            for (j, y) in b.iter().enumerate() {
+                if meet(x, y) {
                     two.push((i, j, true));
                 }
             }

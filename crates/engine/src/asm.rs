@@ -1483,6 +1483,10 @@ fn mate_spec(
     })
 }
 
+/// A linear coupling's terms as the solver takes them: `(spec, variable,
+/// coefficient)`.
+type LinearTerms = Vec<(usize, usize, f64)>;
+
 /// A linear coupling's terms for the solver, `(spec, variable,
 /// coefficient)`, and its right-hand side: `Σ cᵢ · qᵢ = value` in base
 /// units (millimetres, radians), each length motion's coefficient taken
@@ -1495,7 +1499,7 @@ fn linear_terms(
     c: &craft3d_doc::Coupling,
     values: Option<&craft3d_expr::Evaluation>,
     at: &dyn Fn(&str) -> Result<usize, String>,
-) -> Result<(Vec<(usize, usize, f64)>, f64), String> {
+) -> Result<(LinearTerms, f64), String> {
     let value = eval(values, c.value.source())
         .map_err(|e| format!("its value {}: {e}", c.value.source()))?;
     if !value.value.is_finite() {
