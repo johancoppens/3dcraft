@@ -2335,7 +2335,8 @@ fn edges_evidence_on_a_model_in_the_studio_look_with_a_lens() {
         println!("CRAFT3D_EDGES_EVIDENCE is not set: nothing to draw");
         return;
     };
-    let mut session = Session::new(Workspace::none());
+    // Run by hand on a file named by the one who runs it.
+    let mut session = Session::new(Workspace::unrestricted());
     run(&mut session, "file.open", json!({"path": path}));
     let studio = json!({"mode": "studio"});
     craft3d_engine::look::LookSpec::patched(&craft3d_engine::look::LookSpec::default(), &studio)
