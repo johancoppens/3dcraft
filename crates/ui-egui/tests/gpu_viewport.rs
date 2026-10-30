@@ -2319,3 +2319,65 @@ fn the_direct_path_fades_edges_with_the_lens_as_the_oracle_does() {
         count.0
     );
 }
+
+/// Evidence for the developer, not a check: a model of his
+/// (`CRAFT3D_EDGES_EVIDENCE`, a `.3dcraft` path) in the studio look with
+/// depth of field, its edges `sharp`, `soft` and `off`, and hidden with
+/// `show.edges`, from both paths (`ui.screenshot`, the CPU oracle, and the
+/// direct path). Run by hand: `cargo test -p craft3d-ui-egui --test
+/// gpu_viewport -- --ignored edges_evidence`.
+#[test]
+#[ignore = "evidence on a model outside the repository"]
+fn edges_evidence_on_a_model_in_the_studio_look_with_a_lens() {
+    let Ok(path) = std::env::var("CRAFT3D_EDGES_EVIDENCE") else {
+        println!("CRAFT3D_EDGES_EVIDENCE is not set: nothing to draw");
+        return;
+    };
+    let mut session = Session::new(Workspace::none());
+    run(&mut session, "file.open", json!({"path": path}));
+    craft3d_engine::look::LookSpec::default()
+        .prepared()
+        .unwrap()
+        .unwrap();
+    let state = headless_render_state()
+        .unwrap_or_else(|e| panic!("the direct path cannot be tested: {e}; {ADAPTER_HINT}"));
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    shell.attach_gpu(&state).unwrap();
+    let mut window = Window::new(1280.0, 800.0);
+    window.frame(&mut shell, &mut session, Vec::new());
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"view": "iso", "look": {"mode": "studio", "accumulate": 1,
+               "dof": {"fstop": 1.4}}}),
+    );
+    for (name, patch) in [
+        ("sharp", json!({"look": {"edges": "sharp"}})),
+        ("soft", json!({"look": {"edges": "soft"}})),
+        ("off", json!({"look": {"edges": "off"}})),
+        (
+            "hidden",
+            json!({"look": {"edges": "sharp"}, "show": {"edges": false}}),
+        ),
+    ] {
+        call(&mut shell, &mut session, "ui.set", patch);
+        for _ in 0..3 {
+            window.frame(&mut shell, &mut session, Vec::new());
+        }
+        let (w, h, rgb) = shell.direct_picture().unwrap().unwrap();
+        write_png(
+            &evidence(&format!("edges-model-gpu-{name}.png")),
+            w,
+            h,
+            &rgb,
+        );
+        let cpu = evidence(&format!("edges-model-cpu-{name}.png"));
+        call(
+            &mut shell,
+            &mut session,
+            "ui.screenshot",
+            json!({"width": 1280, "height": 800, "scale": 1.0, "path": cpu}),
+        );
+    }
+}
