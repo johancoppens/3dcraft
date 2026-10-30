@@ -1367,7 +1367,14 @@ impl Shell {
         let tokens = self.tokens;
         ui.add_space(tokens.inset * 0.5);
         let jig = has_document && self.params.list.as_ref().is_some_and(|l| l.jig);
-        if jig {
+        // An assembly's joints that can be set by hand are sliders there.
+        let joints = has_document && self.has_joint_sliders();
+        let tree_label = if self.is_assembly_shown() {
+            "Assembly"
+        } else {
+            "Features"
+        };
+        if jig || joints {
             ui.horizontal(|ui| {
                 let open = self.state.parameters.open;
                 let mut label = egui::RichText::new("Parameters");
@@ -1376,12 +1383,12 @@ impl Shell {
                 }
                 if ui
                     .selectable_label(open, label)
-                    .on_hover_text("The document's public parameters: set them, the model follows")
+                    .on_hover_text("The document's public parameters and an assembly's free joints: set them, the model follows")
                     .clicked()
                 {
                     self.state.parameters.open = true;
                 }
-                let mut label = egui::RichText::new("Features");
+                let mut label = egui::RichText::new(tree_label);
                 if !open {
                     label = label.strong();
                 }
@@ -1394,7 +1401,7 @@ impl Shell {
                 }
             });
         } else {
-            let header = ui.label(egui::RichText::new("Features").strong());
+            let header = ui.label(egui::RichText::new(tree_label).strong());
             if has_document {
                 // A document without public parameters has no
                 // Parameters tab: how it gets one.
@@ -1402,8 +1409,13 @@ impl Shell {
             }
         }
         ui.separator();
-        if jig && self.state.parameters.open {
-            self.parameters_tab(ui);
+        if (jig || joints) && self.state.parameters.open {
+            if joints {
+                self.joints_ui(ui);
+            }
+            if jig {
+                self.parameters_tab(ui);
+            }
         } else {
             self.params.hits.clear();
             self.tree(ui, has_document);

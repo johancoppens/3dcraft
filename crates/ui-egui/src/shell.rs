@@ -28,6 +28,7 @@ mod dialogs;
 mod edit;
 pub mod help;
 mod icons;
+mod joints;
 mod layout;
 pub mod number_field;
 mod params;
@@ -636,6 +637,9 @@ pub struct Shell {
     outline: Option<craft3d_engine::AssemblyOutline>,
     /// Where the last frame drew each instance row's eye and Open button.
     instance_hits: Vec<(String, &'static str, egui::Rect)>,
+    /// The joints of the Parameters tab: the slider dragged now (its
+    /// mate and value), and where each slider was drawn.
+    joints: joints::Joints,
     /// The document's assertions as checked at the last [`Self::sync`],
     /// listed under the features.
     assertion_rows: Vec<craft3d_engine::AssertionState>,
@@ -972,6 +976,7 @@ impl Shell {
             rows: Vec::new(),
             outline: None,
             instance_hits: Vec::new(),
+            joints: joints::Joints::default(),
             assertion_rows: Vec::new(),
             file_action: None,
             problem: None,
@@ -1821,6 +1826,7 @@ impl Shell {
                 })
                 .collect();
         }
+        self.sync_joint_handles(session, &scene);
         if self.state.camera.auto_fit && scene.bbox != self.framed {
             self.framed = scene.bbox;
             let aspect = self.aspect();
@@ -3180,6 +3186,12 @@ impl Shell {
         scene: Option<&Scene>,
     ) -> bool {
         let mut moving = false;
+        // Alt and a drag on a part of an assembly move it along its free
+        // motion, not the camera.
+        if self.part_drag(ui, response, rect, scene) {
+            self.drag_from = None;
+            return true;
+        }
         // Ctrl and a drag draw a box to select with, not a turn.
         if self.box_drag(ui, response) {
             ui.ctx().request_repaint();

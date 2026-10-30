@@ -24,6 +24,8 @@ pub struct AssemblyOutline {
     pub free: Vec<String>,
     /// Why the solve failed, when it did.
     pub solve_error: Option<String>,
+    /// The document's length unit (`mm`): what a distance is set in.
+    pub unit: String,
 }
 
 /// An instance row.
@@ -69,6 +71,29 @@ pub struct OutlineMate {
     pub driven: bool,
     /// The variables that drive its free motions, by free motion.
     pub variables: Vec<String>,
+    /// Its main free motion can be set by hand (`joint.set`): it has one,
+    /// and no formula of other variables (a driver of `t`) drives it.
+    pub settable: bool,
+    /// The limits of its main free motion, evaluated.
+    pub limits: Option<(f64, f64)>,
+}
+
+/// A part of an assembly that the view can drag along a free motion
+/// ([`Session::assembly_joint_of`]): the mate whose main free motion
+/// moves it, that motion's axis in the world, and its value now.
+#[derive(Clone, Debug, PartialEq)]
+pub struct JointHandle {
+    pub mate: String,
+    /// An angle about `axis` (a revolute or cylindrical mate), else a
+    /// distance along it.
+    pub angle: bool,
+    pub origin: [f64; 3],
+    pub axis: [f64; 3],
+    /// Radians or model units.
+    pub value: f64,
+    pub limits: Option<(f64, f64)>,
+    /// The document's length unit.
+    pub unit: String,
 }
 
 impl Session {
@@ -87,6 +112,7 @@ impl Session {
                 .map(|(_, free)| free.clone())
                 .unwrap_or_default(),
             solve_error: placed.solve_error.clone(),
+            unit: crate::commands::length_unit(&doc).to_string(),
             ..AssemblyOutline::default()
         };
         for st in placed.instances.iter().filter(|i| i.flex_of.is_none()) {
@@ -102,6 +128,7 @@ impl Session {
                 (None, None) => "ok",
             };
             let angle = matches!(mate.kind, MateKind::Revolute | MateKind::Cylindrical);
+            let settable = settable(&doc, mate);
             out.mates.push(OutlineMate {
                 name: mate.name.clone(),
                 kind: mate.kind.name(),
@@ -115,10 +142,62 @@ impl Session {
                     .iter()
                     .map(|w| crate::asm::joint_variable(&mate.name, w))
                     .collect(),
+                settable,
+                limits: crate::asm::mate_limits(&doc, mate),
             });
         }
         Some(out)
     }
+
+    /// The free motion a drag on the shown body of `feature` (an instance's
+    /// placed body, `F3`) moves along: the first mate in the assembly's
+    /// order that has the instance on a side, a free motion and no
+    /// formula driving it. `None` for a part, or an instance no such mate
+    /// moves.
+    pub fn assembly_joint_of(&mut self, feature: &str) -> Option<JointHandle> {
+        let open = self.documents.get_mut(self.active)?;
+        let doc = Arc::clone(open.history.current());
+        let assembly = doc.assembly.as_ref()?;
+        let placed = open.shown_placed()?;
+        let instance = placed
+            .instances
+            .iter()
+            .find(|i| i.bodies.iter().any(|b| b.to_string() == feature))?;
+        // An instance of a flexible subassembly is named `Sub/Inner` in the
+        // solve and its mates are the subassembly's: only the assembly's own.
+        let name = instance.name.as_str();
+        let mate = assembly.mates.iter().find(|m| {
+            let on = |r: &craft3d_doc::MateRef| r.instance == name;
+            (on(&m.a) || on(&m.b)) && settable(&doc, m)
+        })?;
+        let state = placed.mates.iter().find(|m| m.name == mate.name)?;
+        let frame = crate::asm::frame_of_ref(&placed, &mate.a.to_string()).ok()?;
+        let angle = matches!(mate.kind, MateKind::Revolute | MateKind::Cylindrical);
+        Some(JointHandle {
+            mate: mate.name.clone(),
+            angle,
+            origin: [frame.origin.x, frame.origin.y, frame.origin.z],
+            axis: [frame.z.x, frame.z.y, frame.z.z],
+            value: state.free?,
+            limits: crate::asm::mate_limits(&doc, mate),
+            unit: crate::commands::length_unit(&doc).to_string(),
+        })
+    }
+}
+
+/// True when `mate`'s main free motion can be set by hand: it has one, and
+/// its variable, when it has one, refers to no variable of the document
+/// (a value `joint.set` wrote, not a driver).
+fn settable(doc: &Document, mate: &craft3d_doc::Mate) -> bool {
+    let Some(which) = mate.kind.free().first() else {
+        return false;
+    };
+    let var = crate::asm::joint_variable(&mate.name, which);
+    doc.variable(&var).is_none_or(|v| {
+        !doc.variables
+            .iter()
+            .any(|other| craft3d_expr::refers_to_variable(v.expr.source(), &other.name))
+    })
 }
 
 /// `st` and, nested under it, its subassembly's instances.

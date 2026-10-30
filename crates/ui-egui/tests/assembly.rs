@@ -53,7 +53,19 @@ impl Window {
     }
 
     fn events(&mut self, shell: &mut Shell, session: &mut Session, events: Vec<egui::Event>) {
+        self.events_with(shell, session, events, egui::Modifiers::NONE);
+    }
+
+    fn events_with(
+        &mut self,
+        shell: &mut Shell,
+        session: &mut Session,
+        events: Vec<egui::Event>,
+        modifiers: egui::Modifiers,
+    ) {
         self.time += 1.0 / 60.0;
+        let mut events = events;
+        events.insert(0, egui::Event::ModifiersChanged(modifiers));
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 700.0))),
             time: Some(self.time),
@@ -78,6 +90,45 @@ impl Window {
                 }],
             );
         }
+        for _ in 0..3 {
+            self.frame(shell, session);
+        }
+    }
+
+    /// A drag with the primary button from `from` to `to` in steps,
+    /// holding `modifiers`.
+    fn drag(
+        &mut self,
+        shell: &mut Shell,
+        session: &mut Session,
+        from: Pos2,
+        to: Pos2,
+        modifiers: egui::Modifiers,
+    ) {
+        let button = |pos: Pos2, pressed: bool| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers,
+        };
+        self.events_with(
+            shell,
+            session,
+            vec![egui::Event::PointerMoved(from)],
+            modifiers,
+        );
+        self.events_with(shell, session, vec![button(from, true)], modifiers);
+        for k in 1..=8 {
+            let f = k as f32 / 8.0;
+            let at = from + (to - from) * f;
+            self.events_with(
+                shell,
+                session,
+                vec![egui::Event::PointerMoved(at)],
+                modifiers,
+            );
+        }
+        self.events_with(shell, session, vec![button(to, false)], modifiers);
         for _ in 0..3 {
             self.frame(shell, session);
         }
@@ -287,4 +338,163 @@ fn the_tree_of_an_assembly_lists_instances_then_mates() {
     let open = hit(&shell, "open");
     window.click(&mut shell, &mut s, open);
     assert_eq!(s.document_statuses().len(), before + 1);
+}
+
+/// The value of mate `name` as `assembly.inspect` gives it (radians).
+fn mate_value(s: &mut Session, name: &str) -> f64 {
+    let inspected = run(s, "assembly.inspect", json!({}));
+    inspected["mates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["name"] == name)
+        .and_then(|m| m["value"].as_f64())
+        .unwrap_or_else(|| panic!("no value of {name}: {inspected}"))
+}
+
+/// A joint that can be set by hand is a slider on the Parameters tab:
+/// dragging it sets the joint (`joint.set`).
+#[test]
+fn a_free_joint_is_a_slider_on_the_parameters_tab() {
+    let (mut s, _dir) = window_session("slider");
+    let mut shell = Shell::new();
+    let mut window = Window::new();
+    four_bar(&mut s);
+    run(
+        &mut s,
+        "joint.set",
+        json!({ "mate": "Drive", "value": "60 deg" }),
+    );
+    call(
+        &mut shell,
+        &mut s,
+        "ui.set",
+        json!({ "parameters": { "open": true } }),
+    );
+    for _ in 0..3 {
+        window.frame(&mut shell, &mut s);
+    }
+    let hits = shell.joint_slider_hits().to_vec();
+    let names: Vec<&str> = hits.iter().map(|(n, _)| n.as_str()).collect();
+    // Every revolute's angle can be set; the fixed Base has none.
+    assert_eq!(names, ["Drive", "Elbow", "Knee", "Hip"]);
+    let rect = hits[0].1;
+    let before = mate_value(&mut s, "Drive");
+    assert!((before.to_degrees() - 60.0).abs() < 1e-6);
+    // From the slider's middle part to its right end.
+    let from = egui::pos2(rect.right() - rect.width() * 0.45, rect.center().y);
+    let to = egui::pos2(rect.right() - 4.0, rect.center().y);
+    window.drag(&mut shell, &mut s, from, to, egui::Modifiers::NONE);
+    let after = mate_value(&mut s, "Drive");
+    assert!(
+        (after - before).abs() > 1e-3,
+        "the slider did not set Drive: {} deg",
+        after.to_degrees()
+    );
+    let inspected = run(&mut s, "assembly.inspect", json!({}));
+    assert_eq!(inspected["solve"]["ok"], true, "{inspected}");
+}
+
+/// Alt and a drag on a part of an assembly turn it about its joint toward
+/// the pointer (the crank turns, the linkage follows), as `joint.set`.
+#[test]
+fn alt_drag_turns_a_part_about_its_joint() {
+    use craft3d_math::Vec3;
+    use craft3d_ui_egui::camera::Projector;
+    let (mut s, _dir) = window_session("drag");
+    let mut shell = Shell::new();
+    let mut window = Window::new();
+    four_bar(&mut s);
+    run(
+        &mut s,
+        "joint.set",
+        json!({ "mate": "Drive", "value": "60 deg" }),
+    );
+    // Seen from above, so the crank's plane is the screen's.
+    call(
+        &mut shell,
+        &mut s,
+        "ui.set",
+        json!({ "camera": { "yaw": -90.0, "pitch": 89.0 } }),
+    );
+    for _ in 0..4 {
+        window.frame(&mut shell, &mut s);
+    }
+    let rect = shell.viewport_rect().expect("a viewport");
+    let [w, h] = shell.viewport_size();
+    let projector =
+        Projector::new(&shell.state.camera.to_render(), f64::from(w), f64::from(h)).unwrap();
+    let screen = |angle: f64| {
+        let a = angle.to_radians();
+        let p = projector
+            .project(Vec3::new(14.0 * a.cos(), 14.0 * a.sin(), 2.0))
+            .unwrap();
+        egui::pos2(
+            rect.left() + (p.x as f32) * rect.width() / w as f32,
+            rect.top() + (p.y as f32) * rect.height() / h as f32,
+        )
+    };
+    let camera = shell.state.camera;
+    window.drag(
+        &mut shell,
+        &mut s,
+        screen(60.0),
+        screen(100.0),
+        egui::Modifiers::ALT,
+    );
+    let after = mate_value(&mut s, "Drive").to_degrees();
+    assert!(
+        (after - 100.0).abs() < 3.0,
+        "the crank was dragged to 100 deg, it is at {after} deg"
+    );
+    // The camera did not turn meanwhile.
+    assert_eq!(shell.state.camera.yaw, camera.yaw);
+    assert_eq!(shell.state.camera.pitch, camera.pitch);
+}
+
+/// The four-bar moving over `t` (its crank driven by `360 deg * t`) in
+/// three pictures of the viewport, printed as EVIDENCE for whoever looks.
+#[test]
+fn the_four_bar_moves_over_t_in_the_viewport() {
+    let (mut s, _dir) = window_session("evidence");
+    let mut shell = Shell::new();
+    let mut window = Window::new();
+    four_bar(&mut s);
+    run(&mut s, "variable.set", json!({ "name": "t", "expr": "0" }));
+    run(
+        &mut s,
+        "variable.set",
+        json!({ "name": "Drive_angle", "expr": "360 deg * t" }),
+    );
+    call(
+        &mut shell,
+        &mut s,
+        "ui.set",
+        json!({ "camera": { "yaw": -90.0, "pitch": 89.0 } }),
+    );
+    let mut pictures = Vec::new();
+    for t in [0.05, 0.2, 0.35] {
+        run(&mut s, "view.motion", json!({ "t": t }));
+        for _ in 0..3 {
+            window.frame(&mut shell, &mut s);
+        }
+        let (lo, hi) = crank_box(&shell);
+        let a = 360.0_f64.to_radians() * t;
+        let mid = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0];
+        assert!(
+            (mid[0] - 10.0 * a.cos()).abs() < 1.0 && (mid[1] - 10.0 * a.sin()).abs() < 1.0,
+            "t = {t}: crank at {mid:?}"
+        );
+        let shot = call(
+            &mut shell,
+            &mut s,
+            "ui.screenshot",
+            json!({ "width": 480, "height": 320, "scale": 1.0 }),
+        );
+        let text = shot["base64"].as_str().unwrap().to_string();
+        println!("EVIDENCE four-bar-t{t} {text}");
+        pictures.push(text);
+    }
+    assert_ne!(pictures[0], pictures[1]);
+    assert_ne!(pictures[1], pictures[2]);
 }

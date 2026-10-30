@@ -2258,10 +2258,14 @@ mod tests {
         let dir = std::fs::canonicalize(&dir).unwrap();
         let (requests, incoming) = mpsc::channel::<Request>();
         let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
-        let session = Session::new(Workspace {
-            read: Access::Root(dir.clone()),
-            write: Access::Root(dir.clone()),
-        });
+        // The window's own session: the user's authority narrowed to the
+        // automation roots (`--automation-read-root`).
+        let options = crate::args::Options {
+            read_root: Some(dir.to_string_lossy().to_string()),
+            write_root: Some(dir.to_string_lossy().to_string()),
+            ..crate::args::Options::default()
+        };
+        let session = super::session(&options).unwrap();
         let mut desk =
             Desk::new(Host::new(session), incoming, picker).with_engine_thread(Arc::new(|| {}));
         let mut id = 0;
@@ -2306,16 +2310,21 @@ mod tests {
             json!({"path": "demo/asm/bar.3dcraft"}),
         );
         execute(&mut desk, "assembly.new", json!({}));
-        for (name, len) in [
-            ("Ground", "64 mm"),
-            ("Crank", "24 mm"),
-            ("Coupler", "64 mm"),
-            ("Rocker", "24 mm"),
+        // One source named by its absolute path, as an agent may.
+        let absolute = dir
+            .join("demo/asm/bar.3dcraft")
+            .to_string_lossy()
+            .to_string();
+        for (name, len, source) in [
+            ("Ground", "64 mm", "demo/asm/bar.3dcraft"),
+            ("Crank", "24 mm", absolute.as_str()),
+            ("Coupler", "64 mm", "demo/asm/bar.3dcraft"),
+            ("Rocker", "24 mm", "demo/asm/bar.3dcraft"),
         ] {
             execute(
                 &mut desk,
                 "instance.add",
-                json!({"source": "demo/asm/bar.3dcraft", "name": name, "body": "Bar",
+                json!({"source": source, "name": name, "body": "Bar",
                        "params": {"len": len}}),
             );
         }

@@ -942,6 +942,32 @@ fn frame_of(f: &craft3d_math::Frame) -> solver::Frame {
     }
 }
 
+/// A mate's limits on its main free motion, evaluated (radians, model
+/// units); `None` without limits or when they do not evaluate.
+pub(crate) fn mate_limits(doc: &Document, mate: &craft3d_doc::Mate) -> Option<(f64, f64)> {
+    let (lo, hi) = mate.limits.as_ref()?;
+    let values = evaluation(doc);
+    let convert = |q: Quantity| {
+        if q.dimension == Dimension::LENGTH {
+            in_units(doc, q.value)
+        } else {
+            q.value
+        }
+    };
+    let lo = convert(eval(values.as_ref(), lo.source()).ok()?);
+    let hi = convert(eval(values.as_ref(), hi.source()).ok()?);
+    (lo.is_finite() && hi.is_finite() && lo < hi).then_some((lo, hi))
+}
+
+/// The frame `name` (as a mate names it) means in an assembly placed, in
+/// the world.
+pub(crate) fn frame_of_ref(placed: &Arc<Placed>, name: &str) -> Result<solver::Frame, String> {
+    if let Some(world) = name.strip_prefix("world/") {
+        return world_frame(world);
+    }
+    frame_in(&Built::Assembly(Arc::clone(placed)), None, name)
+}
+
 /// Where the point `name` (`Instance/Feature:name` or `Instance/Datum`,
 /// as a mate names it) is in an assembly placed: the origin of its frame.
 pub(crate) fn point_in(placed: &Arc<Placed>, name: &str) -> Result<Vec3, String> {

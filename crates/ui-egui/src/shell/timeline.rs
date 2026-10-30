@@ -96,6 +96,12 @@ impl Timeline {
         if id == "view.scrub" {
             self.pending.retain(|(queued, _)| *queued != "view.scrub");
         }
+        // Likewise the last value of a joint dragged.
+        if id == "joint.set" {
+            self.pending.retain(|(queued, earlier)| {
+                *queued != "joint.set" || earlier.get("mate") != params.get("mate")
+            });
+        }
         // One moment of the motion waits at most: a later one takes the
         // place of an earlier one, keeping what the earlier one set and
         // the later one does not (its collisions).
