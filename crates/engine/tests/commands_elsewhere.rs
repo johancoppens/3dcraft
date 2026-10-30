@@ -272,7 +272,7 @@ fn a_late_answer_is_not_taken_and_a_stopped_worker_leaves_errors() {
         .execute("select.set", &json!({"names": ["B"]}))
         .unwrap();
     assert_eq!(done["deferred"], true);
-    page.execute("variable.set", &json!({"name": "w", "expr": "42 mm"}))
+    page.execute("param.set", &json!({"values": {"w": "42 mm"}}))
         .unwrap();
     let answered = answer_commands(&mut page);
     let error = answered[0].result.clone().unwrap_err();
