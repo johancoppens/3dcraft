@@ -2761,31 +2761,6 @@ fn bend(
             if g2 { 3 } else { 2 },
         )?;
         let p_deg = raw.degree;
-        if g2 {
-            // The tangent turned by a change of least curvature variation
-            // that leaves the second derivative at the edge as it was
-            // (`fair`): `d = (target − C′(0)) w₀ G(t)` in homogeneous
-            // coordinates, `G(0) = 0`, `G′(0) = 1`, `G″(0) = 0`.
-            let w0 = raw.points.first().map(|h| h[3]).ok_or_else(internal)?;
-            let shape = fair::profile(
-                &raw.knots,
-                p_deg,
-                reach,
-                fair::Order::Tangent,
-                fair::End::Kept,
-            )?;
-            add_profile(&mut raw, &shape, (target - tangent) * w0);
-            bend_curvature(
-                &mut raw,
-                face,
-                lines.get(k).copied().flatten(),
-                net,
-                reach,
-                &format!("{label}: {}", name(family, k)),
-            )?;
-            track.raw = if at_start { raw } else { reverse(&raw) };
-            continue;
-        }
         let (Some(&h0), Some(&h1), Some(&k1), Some(&kp1)) = (
             raw.points.first(),
             raw.points.get(1),
@@ -2796,8 +2771,37 @@ fn bend(
         };
         let (p0, w0, w1) = (point(h0).ok_or_else(internal)?, h0[3], h1[3]);
         let p1 = p0 + target * ((kp1 - k1) * w0 / (p_deg as f64 * w1));
+        if g2 {
+            // The tangent turned by a change of least curvature variation
+            // that leaves the second derivative at the edge as it was
+            // (`fair`): `d = (target − C′(0)) w₀ G(t)` in homogeneous
+            // coordinates, `G(0) = 0`, `G′(0) = 1`, `G″(0) = 0`. The
+            // second point is set by the exact formula all the same (the
+            // profile's coefficient there is that change, rounded apart).
+            let mut shape = fair::profile(
+                &raw.knots,
+                p_deg,
+                reach,
+                fair::Order::Tangent,
+                fair::End::Point,
+            )?;
+            if let Some(c1) = shape.get_mut(1) {
+                *c1 = 0.0;
+            }
+            add_profile(&mut raw, &shape, (target - tangent) * w0);
+        }
         if let Some(slot) = raw.points.get_mut(1) {
             *slot = h_of(p1, w1);
+        }
+        if g2 {
+            bend_curvature(
+                &mut raw,
+                face,
+                lines.get(k).copied().flatten(),
+                net,
+                reach,
+                &format!("{label}: {}", name(family, k)),
+            )?;
         }
         track.raw = if at_start { raw } else { reverse(&raw) };
     }
@@ -2971,7 +2975,7 @@ fn bend_curvature(
         raw.degree,
         reach,
         fair::Order::Curvature,
-        fair::End::Kept,
+        fair::End::Point,
     )?;
     let normal = Vec3::new(n[0], n[1], n[2]);
     let len = normal.length();
