@@ -554,6 +554,9 @@ fn clicking_a_row_selects_the_feature_and_its_sketch_is_highlighted() {
 fn resizing_the_window_draws_coarse_frames_and_then_a_sharp_one() {
     let mut session = part();
     let mut shell = Shell::new();
+    // The desktop layout at every size here: the narrow one, with its
+    // taller bars, is `tests/mobile.rs`'s.
+    shell.tokens.narrow_width = 0.0;
     let mut window = Window::new(1000.0, 700.0);
     window.idle(&mut shell, &mut session, 3);
     let [w, h] = shell.viewport_size();
@@ -562,10 +565,9 @@ fn resizing_the_window_draws_coarse_frames_and_then_a_sharp_one() {
     let framed = shell.state.camera;
 
     // The window gets narrower and a little taller every frame, as when its
-    // corner is dragged (staying wider than `Tokens::narrow_width`, whose
-    // narrow layout has taller bars).
+    // corner is dragged.
     for step in 1..=5 {
-        window.size = vec2(1000.0 - 30.0 * step as f32, 700.0 + 10.0 * step as f32);
+        window.size = vec2(1000.0 - 80.0 * step as f32, 700.0 + 10.0 * step as f32);
         let _ = window.frame(&mut shell, &mut session, Vec::new());
         let [w, h] = shell.viewport_size();
         let stats = shell.render_stats().unwrap();
