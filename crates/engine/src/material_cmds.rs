@@ -26,7 +26,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!(
         "material.preset",
         "Material Preset",
-        r##"{"body": id or name, "preset": "steel" | "aluminium-brushed" | "abs" | "glass" | "car-paint" | "wood", "color": "#rrggbb" or [r, g, b], "metallic": number, "roughness": number, "anisotropy": number, "anisotropyAxis": [x, y, z], "clearcoat": number, "clearcoatRoughness": number, "transmission": number, "ior": number, "thinWalled": boolean, "absorption": "#rrggbb" or [r, g, b], "absorptionDistance": number (mm), "subsurface": number, "subsurfaceColor": "#rrggbb" or [r, g, b]}"##,
+        r##"{"body": id or name, "preset": "steel" | "aluminium-brushed" | "abs" | "glass" | "car-paint" | "wood", "color": "#rrggbb" or [r, g, b], "metallic": number, "roughness": number, "anisotropy": number, "anisotropyAxis": [x, y, z] or "parametric", "clearcoat": number, "clearcoatRoughness": number, "transmission": number, "ior": number, "thinWalled": boolean, "absorption": "#rrggbb" or [r, g, b], "absorptionDistance": number (mm), "subsurface": number, "subsurfaceColor": "#rrggbb" or [r, g, b]}"##,
         "Gives the body of a feature a preset of the material library (material.presets lists them): its appearance (colour, metallic, roughness and the layers the studio look shades: anisotropy for brushed metal, a clear coat for car paint, transmission for glass, a subsurface wrap for wax-like plastics and wood) and its material (name and density, so document.measure weighs it). Any number given beside the preset changes it (the presets are data; their numbers are a starting point): {\"preset\": \"car-paint\", \"color\": \"#1f4fa0\"} is a blue car paint. One undo step; body.appearance and body.material change either half afterwards.",
         doc: true,
         material_preset_cmd
@@ -52,7 +52,7 @@ pub(crate) const OPTICS_KEYS: [&str; 11] = [
 /// The layers `p` gives, starting from `base`: each key present replaces
 /// its number. Refused when one is out of its range (anisotropy −1 to 1,
 /// the others 0 to 1, ior 1 to 3, absorptionDistance a positive number of
-/// millimetres, anisotropyAxis a direction).
+/// millimetres, anisotropyAxis a direction or `"parametric"`).
 pub(crate) fn optics_param(p: &Params, base: Optics) -> Result<Optics, CommandError> {
     let id = p.command();
     let mut o = base;
@@ -60,19 +60,25 @@ pub(crate) fn optics_param(p: &Params, base: Optics) -> Result<Optics, CommandEr
         o.anisotropy = a;
     }
     if let Some(value) = p.get("anisotropyAxis") {
-        let axis = value
-            .as_array()
-            .filter(|a| a.len() == 3)
-            .and_then(|a| {
-                let v: Vec<f64> = a.iter().filter_map(Value::as_f64).collect();
-                <[f64; 3]>::try_from(v).ok()
-            })
-            .ok_or_else(|| {
-                CommandError::new(format!(
-                    "{id}: `anisotropyAxis` must be three numbers [x, y, z], got {value}"
-                ))
-            })?;
-        o.direction = AnisotropyDirection::Axis(axis);
+        // "parametric", as the appearance is said back: the face's own
+        // direction again.
+        if value.as_str() == Some("parametric") {
+            o.direction = AnisotropyDirection::Parametric;
+        } else {
+            let axis = value
+                .as_array()
+                .filter(|a| a.len() == 3)
+                .and_then(|a| {
+                    let v: Vec<f64> = a.iter().filter_map(Value::as_f64).collect();
+                    <[f64; 3]>::try_from(v).ok()
+                })
+                .ok_or_else(|| {
+                    CommandError::new(format!(
+                        "{id}: `anisotropyAxis` must be three numbers [x, y, z] or \"parametric\", got {value}"
+                    ))
+                })?;
+            o.direction = AnisotropyDirection::Axis(axis);
+        }
     }
     for (key, slot) in [
         ("clearcoat", &mut o.clearcoat),

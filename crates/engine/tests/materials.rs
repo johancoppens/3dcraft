@@ -124,6 +124,38 @@ fn layers_are_given_and_said_back() {
 }
 
 #[test]
+fn the_layers_said_back_can_be_given_again() {
+    // What body.appearance says back is what it takes: each layer given
+    // back, the axis "parametric" too, gives the same appearance.
+    let dir = workdir("materials", "round-trip");
+    let mut s = model(&dir);
+    let first = run(
+        &mut s,
+        "body.appearance",
+        json!({"body": "Shaft", "color": [200, 202, 206], "metallic": 1, "roughness": 0.3,
+               "anisotropy": 0.8, "anisotropyAxis": [0, 0, 1], "clearcoat": 0.5}),
+    );
+    assert_eq!(
+        first["appearance"]["anisotropyAxis"],
+        json!([0.0, 0.0, 1.0])
+    );
+    // Back to the face's own direction by the word it is said back with.
+    let parametric = run(
+        &mut s,
+        "body.appearance",
+        json!({"body": "Shaft", "color": [200, 202, 206], "anisotropy": 0.8,
+               "anisotropyAxis": "parametric"}),
+    );
+    let said = parametric["appearance"].clone();
+    assert_eq!(said["anisotropyAxis"], "parametric", "{said}");
+    let mut again = said.as_object().unwrap().clone();
+    again.insert("body".into(), json!("Shaft"));
+    let back = run(&mut s, "body.appearance", json!(again));
+    assert_eq!(back["appearance"], said);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn bad_layers_are_refused() {
     let dir = workdir("materials", "refused");
     let mut s = model(&dir);

@@ -274,13 +274,14 @@ which the studio look draws (the plain look keeps showing the colour):
 - **anisotropy** (−1 to 1): the highlight stretched in one direction, as on brushed or turned metal.
   It follows the face's own direction: around the axis of a turned face (cylinder, cone, sphere,
   torus), along the first axis of a flat one; `anisotropyAxis` `[x, y, z]` gives a direction of your
-  own instead;
+  own instead (`"parametric"` gives the face's own direction back, as the appearance is said back);
 - **clearcoat** (0 to 1) with its own `clearcoatRoughness`: a clear, glossy layer over the colour,
   as on car paint;
 - **transmission** (0 to 1): light passes through, as through glass or clear plastic, bent by the
   index of refraction `ior` (1.5 by default). `thinWalled` is for a sheet: light passes straight
   through. `absorption` is the colour light takes after `absorptionDistance` millimetres inside
-  (10 by default), so thick glass looks greener than thin glass;
+  (10 by default), so thick glass looks greener than thin glass. A `thinWalled` face has no
+  inside for light to cross, so `absorption` has no effect on it;
 - **subsurface** (0 to 1): light wraps past the edge of the shadow, as in wax, skin or wood, tinted
   by `subsurfaceColor`.
 
