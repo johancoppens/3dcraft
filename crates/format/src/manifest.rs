@@ -654,8 +654,8 @@ pub enum FeatureKind {
         /// The last section joins the first. Written only when set.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         closed: bool,
-        /// Guide curves, as a developable's rails (format version 54, a
-        /// TEMPORARY number). Written only when there are any.
+        /// Guide curves, as a developable's rails (format version 53).
+        /// Written only when there are any.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         guides: Vec<Rail>,
     },
@@ -851,7 +851,7 @@ pub enum FeatureKind {
     /// `{"edges": [names]}` (edges of earlier bodies, end to end).
     Developable { a: Rail, b: Rail },
     /// A sheet through a network of curves that cross (format version
-    /// 54, a TEMPORARY number): `u` and `v` are rails as a developable's,
+    /// 53): `u` and `v` are rails as a developable's,
     /// `edges` the conditions of its four edges (written only when one is
     /// held).
     SurfaceNetwork {
@@ -1135,8 +1135,7 @@ pub enum CreaseKind {
     Cut,
 }
 
-/// What an edge of a network surface is held to (format version 54, a
-/// TEMPORARY number).
+/// What an edge of a network surface is held to (format version 53).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum EdgeHold {
