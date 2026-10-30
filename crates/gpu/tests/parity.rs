@@ -12,8 +12,8 @@
 mod common;
 
 use common::{
-    compare, compare_see_through, evidence, frame_difference, offscreens, orthographic, params,
-    perspective, write_evidence,
+    compare, compare_see_through, compare_with, evidence, frame_difference, offscreens,
+    orthographic, params, perspective, write_evidence,
 };
 use craft3d_gpu::{Camera, FaceColors, Frame, Mesh, NO_FACE, Projection, RenderParams};
 use craft3d_math::Vec3;
@@ -893,6 +893,27 @@ fn the_same_input_gives_the_same_frame() {
 /// the frame of one step, bit for bit: the teapot in perspective and
 /// orthographic, opaque, seen through, cut open with a cap and both, and
 /// the same square drawn twice, where the one drawn first must stay.
+///
+/// Three claims per view and adapter:
+///
+/// 1. The two-step frame, which production draws, matches the CPU
+///    renderer (oracle 7) within the parity tolerances of `common`.
+/// 2. The one-step frame matches the CPU renderer as well, and the
+///    two-step frame is nowhere further from it ([`Parity::worse_than`]).
+/// 3. The two frames are the same bit for bit, except where the one-step
+///    frame lost a write: on the Radeon 8060S (Mesa, RADV and radeonsi)
+///    one of several writes of a sample in one step is now and then lost
+///    (about one teapot in 250, more seen through; docs/design/rendering.md,
+///    *The Radeon loses one of several writes of a sample*), which is why
+///    production draws in two steps. A lost write does not repeat at the
+///    same pixel from one frame to the next, so a pixel where the frames
+///    differ is the one-step frame's lost write when the one-step frame
+///    drawn again ([`ONE_STEP_REDRAWS`] times at most) gives the two-step
+///    value there; it is reported, with its evidence, and does not fail.
+///    A difference that the one-step frame repeats every time is the
+///    two-step frame's: a lost write there, or a tie rule that is not the
+///    one step's. It fails. So does a one-step frame that is out of
+///    parity with the CPU renderer other than by such lost writes.
 #[test]
 fn two_steps_give_the_one_step_frame() {
     let teapot = teapot_mesh();
@@ -949,7 +970,12 @@ fn two_steps_give_the_one_step_frame() {
         ("coincident", &coincident, square, &size),
         ("coincident see-through", &coincident, square, &see_through),
     ];
-    let mut differences = Vec::new();
+    // The oracle's frames, once per view.
+    let cpu: Vec<Frame> = views
+        .iter()
+        .map(|(_, mesh, camera, params)| craft3d_render::render(mesh, camera, params).unwrap())
+        .collect();
+    let mut failures = Vec::new();
     let mut two_steps = 0;
     for (index, adapter) in craft3d_gpu::adapters().iter().enumerate() {
         let mut one = craft3d_gpu::Offscreen::on_adapter(adapter).unwrap();
@@ -962,21 +988,96 @@ fn two_steps_give_the_one_step_frame() {
             continue;
         }
         two_steps += 1;
-        for (what, mesh, camera, params) in &views {
+        for ((what, mesh, camera, params), cpu) in views.iter().zip(&cpu) {
+            let label = format!("{what}, {name}");
             let expected = one.render(mesh, camera, params).unwrap();
             let got = two.render(mesh, camera, params).unwrap();
-            assert!(expected.coverage() > 0.05, "{what}, {name}");
-            let evidence = format!("two-steps-{index}-{}", what.replace(' ', "-"));
-            if let Some(report) = frame_difference(&evidence, &expected, &got) {
-                differences.push(format!("{what}, {name}: {report}"));
-            }
+            assert!(expected.coverage() > 0.05, "{label}");
             if *what == "coincident" {
-                assert!(got.ids.iter().all(|&id| id != 3), "{name}");
+                assert!(got.ids.iter().all(|&id| id != 3), "{label}");
+            }
+            // 1. Production's frame against the oracle, strictly.
+            let (parity_two, _) = compare_with(mesh, camera, params, cpu, &got);
+            println!("{label}, two steps: {parity_two:?}");
+            if let Some(failure) = parity_two.failure(&format!("{label}, two steps")) {
+                failures.push(failure);
+            }
+            // 3. Bit for bit, but for the one-step frame's lost writes.
+            let evidence = format!("two-steps-{index}-{}", what.replace(' ', "-"));
+            let Some(report) = frame_difference(&evidence, &expected, &got) else {
+                continue;
+            };
+            let differs = differing_pixels(&expected, &got);
+            let mut kept = differs.clone();
+            for _ in 0..ONE_STEP_REDRAWS {
+                if kept.is_empty() {
+                    break;
+                }
+                let again = one.render(mesh, camera, params).unwrap();
+                kept.retain(|&i| !same_pixel(&again, &got, i));
+            }
+            let lost = differs.len() - kept.len();
+            let same_size = (expected.width, expected.height) == (got.width, got.height)
+                && expected.ids.len() == got.ids.len();
+            if !kept.is_empty() || !same_size || expected.sample.to_bits() != got.sample.to_bits() {
+                failures.push(format!(
+                    "{label}: the two-step frame differs from the one-step frame at {} \
+                     pixels the one-step frame gives every time it is drawn; {report}",
+                    kept.len()
+                ));
+                continue;
+            }
+            println!(
+                "{label}: the one-step frame lost {lost} writes (the Radeon's lost writes, \
+                 docs/design/rendering.md; production draws in two steps); {report}"
+            );
+            // 2. Where the frames are the same, the one-step frame has the
+            // two-step frame's parity. Here they differ only by the
+            // one-step frame's lost writes: it is compared with the oracle
+            // as drawn, and the two-step frame must be nowhere further
+            // from it; that the lost writes take it out of parity is
+            // reported, not failed (they are the driver's, as above).
+            let (parity_one, _) = compare_with(mesh, camera, params, cpu, &expected);
+            println!("{label}, one step: {parity_one:?}");
+            let worse = parity_two.worse_than(&parity_one);
+            if !worse.is_empty() {
+                failures.push(format!(
+                    "{label}: the two-step frame is further from the CPU frame than the \
+                     one-step frame: {}",
+                    worse.join(", ")
+                ));
+            }
+            if let Some(failure) = parity_one.failure(&format!("{label}, one step")) {
+                println!(
+                    "{label}: the lost writes take the one-step frame out of parity: {failure}"
+                );
             }
         }
     }
     println!("{two_steps} adapters draw in two steps");
-    assert!(differences.is_empty(), "{}", differences.join("\n"));
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// How often [`two_steps_give_the_one_step_frame`] draws the one-step
+/// frame again where it differs from the two-step frame. A lost write was
+/// seen in at most one teapot of about 140 (see-through, on Vulkan), so
+/// that it repeats at one pixel in all of three frames drawn again is
+/// below one in a million.
+const ONE_STEP_REDRAWS: usize = 3;
+
+/// The pixels where two frames of one size differ: colour, face id or the
+/// bits of the distance.
+fn differing_pixels(a: &Frame, b: &Frame) -> Vec<usize> {
+    (0..a.ids.len().min(b.ids.len()))
+        .filter(|&i| !same_pixel(a, b, i))
+        .collect()
+}
+
+/// Whether two frames of one size agree at pixel `i`, bit for bit.
+fn same_pixel(a: &Frame, b: &Frame, i: usize) -> bool {
+    a.rgb.get(i * 3..i * 3 + 3) == b.rgb.get(i * 3..i * 3 + 3)
+        && a.ids.get(i) == b.ids.get(i)
+        && a.depth.get(i).map(|d| d.to_bits()) == b.depth.get(i).map(|d| d.to_bits())
 }
 
 /// [`the_same_input_gives_the_same_frame`] many times over in one process:
