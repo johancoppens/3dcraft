@@ -19,8 +19,9 @@ use egui::{Rect, pos2, vec2};
 /// out as `layout`: its top left corner, its width and the most height
 /// it may take. Under the camera plate, its right edge a gap left of the
 /// view cube when it fits there; else under the cube against the right
-/// margin; above the display bar either way. `None` when there is no room
-/// for its header and a row.
+/// margin, narrower where it would reach the triad; above the display bar
+/// and the triad where its columns cross them. `None` when there is no
+/// room for its header and a row.
 pub fn popover_place(rect: Rect, layout: &ControlsLayout, tokens: &Tokens) -> Option<Rect> {
     if !rect.is_finite() {
         return None;
@@ -32,29 +33,40 @@ pub fn popover_place(rect: Rect, layout: &ControlsLayout, tokens: &Tokens) -> Op
     if !(width.is_finite() && width > 0.0) {
         return None;
     }
-    // Above the display bar and the triad.
-    let bottom = [layout.bar, layout.triad]
-        .into_iter()
-        .flatten()
-        .fold(area.bottom(), |b, r| b.min(r.top() - gap));
+    // The plates and the triad below it: the popover ends a gap above
+    // those its columns cross.
+    let below = [layout.bar, layout.triad];
+    let bottom = |left: f32, right: f32| {
+        below
+            .into_iter()
+            .flatten()
+            .filter(|r| r.right() > left && r.left() < right)
+            .fold(area.bottom(), |b, r| b.min(r.top() - gap))
+    };
     let below_plate = layout.camera_plate.map_or(area.top(), |p| p.bottom() + gap);
+    // (right, top, width) in the order they are tried.
     let mut places = Vec::new();
     match layout.cube {
         Some(cube) => {
             // Beside the cube, under the plate.
             let right = cube.left() - gap;
             if right - area.left() >= width {
-                places.push((right, below_plate));
+                places.push((right, below_plate, width));
             }
-            // Under the cube.
-            places.push((area.right(), cube.bottom() + gap));
+            // Under the cube; then, narrower, clear of the triad.
+            places.push((area.right(), cube.bottom() + gap, width));
+            if let Some(triad) = layout.triad {
+                let narrow = (area.right() - triad.right() - gap).min(width);
+                places.push((area.right(), cube.bottom() + gap, narrow));
+            }
         }
-        None => places.push((area.right(), below_plate)),
+        None => places.push((area.right(), below_plate, width)),
     }
-    places.into_iter().find_map(|(right, top)| {
-        let height = bottom - top;
-        (height.is_finite() && height >= least)
-            .then(|| Rect::from_min_size(pos2(right - width, top), vec2(width, height)))
+    places.into_iter().find_map(|(right, top, width)| {
+        let left = right - width;
+        let height = bottom(left, right) - top;
+        (width.is_finite() && width >= least && height.is_finite() && height >= least)
+            .then(|| Rect::from_min_size(pos2(left, top), vec2(width, height)))
     })
 }
 
@@ -86,54 +98,59 @@ impl Shell {
             .fixed_pos(place.min)
             .constrain(false)
             .show(ui.ctx(), |ui| {
-                egui::Frame::new()
-                    .fill(color(tokens.panel_fill))
-                    .stroke(egui::Stroke::new(stroke, color(tokens.plate_rim)))
-                    .corner_radius(tokens.nav_control_radius)
-                    .inner_margin(inset)
-                    .show(ui, |ui| {
-                        ui.set_width(inner_width);
-                        let (rect, response) = ui.allocate_exact_size(
-                            vec2(inner_width, tokens.nav_height),
-                            egui::Sense::click(),
-                        );
-                        header = rect;
-                        let ink = if response.hovered() {
-                            color(tokens.text)
-                        } else {
-                            color(tokens.text_dim)
-                        };
-                        ui.painter().text(
-                            pos2(rect.left(), rect.center().y),
-                            egui::Align2::LEFT_CENTER,
-                            title,
-                            egui::FontId::proportional(tokens.control_font),
-                            ink,
-                        );
-                        chevron(ui.painter(), rect, *open, ink, &tokens);
-                        let response = response.on_hover_text(if *open {
-                            "Fold the options away (Esc)"
-                        } else {
-                            "Show the options"
+                // Its own room, not the size the area had last frame (folded,
+                // that would keep the options cut short once unfolded).
+                let room = Rect::from_min_size(ui.max_rect().min, place.size());
+                ui.scope_builder(egui::UiBuilder::new().max_rect(room), |ui| {
+                    egui::Frame::new()
+                        .fill(color(tokens.panel_fill))
+                        .stroke(egui::Stroke::new(stroke, color(tokens.plate_rim)))
+                        .corner_radius(tokens.nav_control_radius)
+                        .inner_margin(inset)
+                        .show(ui, |ui| {
+                            ui.set_width(inner_width);
+                            let (rect, response) = ui.allocate_exact_size(
+                                vec2(inner_width, tokens.nav_height),
+                                egui::Sense::click(),
+                            );
+                            header = rect;
+                            let ink = if response.hovered() {
+                                color(tokens.text)
+                            } else {
+                                color(tokens.text_dim)
+                            };
+                            ui.painter().text(
+                                pos2(rect.left(), rect.center().y),
+                                egui::Align2::LEFT_CENTER,
+                                title,
+                                egui::FontId::proportional(tokens.control_font),
+                                ink,
+                            );
+                            chevron(ui.painter(), rect, *open, ink, &tokens);
+                            let response = response.on_hover_text(if *open {
+                                "Fold the options away (Esc)"
+                            } else {
+                                "Show the options"
+                            });
+                            if response.clicked() {
+                                *open = !*open;
+                                ui.ctx().request_repaint();
+                            }
+                            if *open {
+                                let spacing = ui.spacing().item_spacing.y;
+                                let room = place.height()
+                                    - 2.0 * (inset + stroke)
+                                    - tokens.nav_height
+                                    - spacing
+                                    - 1.0;
+                                egui::ScrollArea::both()
+                                    .id_salt((id, "options"))
+                                    .auto_shrink([false, true])
+                                    .max_height(room.max(0.0))
+                                    .show(ui, |ui| options(self, ui));
+                            }
                         });
-                        if response.clicked() {
-                            *open = !*open;
-                            ui.ctx().request_repaint();
-                        }
-                        if *open {
-                            let spacing = ui.spacing().item_spacing.y;
-                            let room = place.height()
-                                - 2.0 * (inset + stroke)
-                                - tokens.nav_height
-                                - spacing
-                                - 1.0;
-                            egui::ScrollArea::both()
-                                .id_salt((id, "options"))
-                                .auto_shrink([false, true])
-                                .max_height(room.max(0.0))
-                                .show(ui, |ui| options(self, ui));
-                        }
-                    });
+                });
             });
         Drawn {
             header,

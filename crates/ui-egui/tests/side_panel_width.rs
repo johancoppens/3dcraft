@@ -2,7 +2,7 @@
 //! long rows (a long file name in a tab, instances and mates with long
 //! names, a long assertion message), the Parameters tab and the player
 //! playing never change it; only a drag on the split does, held to the
-//! tokens' range, and a double click on the split gives the default back.
+//! tokens' range.
 
 #![allow(
     clippy::unwrap_used,

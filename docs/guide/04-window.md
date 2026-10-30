@@ -99,8 +99,7 @@ The **Help** menu:
 ## The feature list
 
 The left panel shows the history of the design, one row per step: the name, the kind of feature and its
-state. Drag its right edge to make it wider or narrower (a double click on the edge gives the usual width
-back); it keeps that width whatever it shows, and a name too long for it ends in "…", the whole name on
+state. Drag its right edge to make it wider or narrower; it keeps that width whatever it shows, and a name too long for it ends in "…", the whole name on
 hover. Each row has a mark:
 
 | Mark | Means |

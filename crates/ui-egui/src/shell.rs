@@ -2817,7 +2817,7 @@ impl Shell {
 
     /// The split on the right of the side panel `panel`: dragged, it sets
     /// the panel's width (`state.panels.treeWidth`) within the tokens'
-    /// range; a double click gives the default width back. Interacted
+    /// range. Interacted
     /// after the panel's contents, so it lies over its scroll bar.
     fn tree_split(&mut self, ui: &mut egui::Ui, panel: egui::Rect) {
         let tokens = self.tokens;
@@ -2826,10 +2826,11 @@ impl Shell {
                 ..=panel.right() + tokens.tree_split_grip * 0.5,
             panel.y_range(),
         );
+        // A drag only: a click there still reaches the viewport.
         let split = ui.interact(
             grip,
             egui::Id::new("craft3d-tree-split"),
-            egui::Sense::click_and_drag(),
+            egui::Sense::drag(),
         );
         if split.hovered() || split.dragged() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
@@ -2842,10 +2843,7 @@ impl Shell {
             );
         }
         let window = ui.ctx().content_rect().width();
-        if split.double_clicked() {
-            self.state.panels.tree_width = tokens.tree_width;
-            ui.ctx().request_repaint();
-        } else if split.dragged()
+        if split.dragged()
             && let Some(at) = split.interact_pointer_pos()
         {
             self.state.panels.tree_width = tree_width(&tokens, at.x - panel.left(), window);
