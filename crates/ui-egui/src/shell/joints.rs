@@ -239,7 +239,7 @@ impl Shell {
             let instance = outline
                 .instances
                 .iter()
-                .find(|i| i.own && i.features.iter().any(|f| *f == item.feature))?;
+                .find(|i| i.own && i.features.contains(&item.feature))?;
             Some((
                 instance.name.clone(),
                 format!("{}/{}", instance.name, item.name),
