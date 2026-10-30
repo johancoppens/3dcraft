@@ -3279,6 +3279,11 @@ fn hold_curvature_fields(
 /// analytic face may do in its least-squares solve.
 pub const MAX_CURVATURE_WORK: u64 = 1 << 33;
 
+/// Below this share of its length an equation of the curvature hold's
+/// least squares is taken as dependent on those already taken (unit rows:
+/// far above the rounding of their Householder reduction, about `n ε`).
+const DEPENDENT: f64 = 1e-9;
+
 /// Curvature along a plane, cylinder, cone or sphere (after
 /// `hold_tangent`): the face's second order is one linear equation in the
 /// second derivative across, `N·X₂ = r` (`N = L` and `r = 0` for a plane
@@ -3526,7 +3531,12 @@ fn hold_curvature_implicit(
             rhs.push(d.get(comp).copied().unwrap_or(0.0) * sc);
         }
     }
-    let solution = least_norm(&mut a_rows, &mut rhs, angular)?;
+    // Dependent means dependent within the system's rounding, not within
+    // the model's angular tolerance: a loose tolerance (far from the
+    // origin it is a thousandth) would drop equations the change can
+    // meet, and leave the seam off the face's curvature between the
+    // crossings (measured: 7.8 per unit against a threshold of 0.56).
+    let solution = least_norm(&mut a_rows, &mut rhs, angular.min(DEPENDENT))?;
     let delta = Raw {
         degree: big_d,
         knots,
