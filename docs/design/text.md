@@ -72,5 +72,6 @@ Font bytes are hostile: at most 32 MiB, 2 000 contours and 20 000 segments a gly
 ## Owed
 
 - Text wrapped onto a cylinder, a cone or another developable surface, embossed or engraved (`feature.wrap`): the method is the development's map (`docs/design/developable.md`: an isometry, exact in closed form on a cylinder, `(s, z) → (r cos(s/r), r sin(s/r), z)`, and a cone, polar about the apex's image) applied to the profile's curves (fitted within the tolerance), a sheet of the glyph regions on the surface, `kernel::plate` to give it a thickness out (emboss) or in (engrave) with square rims, and a boolean with the body; not built.
+- FreeCAD's DXF reader measures a glyph's area 2.7 % (quadratic) to 3.5 % (raised to cubic) off our exact one, which the kernel's extrusion and the font's own outline agree on; its SVG reader holds it. Whether writing each Bézier piece as a SPLINE of its own reads exactly is owed (`freecad_reads_the_outline_of_text` holds the DXF to its wires only).
 - Shaping (ligatures, marks, right to left, complex scripts): R2, with rustybuzz.
 - A pattern of a text (refused: one text per place), a text as a sweep's path.
