@@ -67,6 +67,15 @@ fn debug_dome() {
         })
         .unwrap();
         let res = f64::from_bits(DEBUG_RESIDUAL.load(std::sync::atomic::Ordering::Relaxed));
+        let after = f64::from_bits(
+            craft3d_geom::network::DEBUG_AFTER.load(std::sync::atomic::Ordering::Relaxed),
+        );
+        let own = f64::from_bits(
+            craft3d_geom::network::DEBUG_OWN.load(std::sync::atomic::Ordering::Relaxed),
+        );
+        println!(
+            "SOLVE worst equation residual {res:e}, condition after {after:e}, own polynomials {own:e}"
+        );
         println!(
             "KIND g2={kind} residual-code {res:e} degrees {:?} counts {:?} ku {:?} kv {:?}",
             patch.surface.degrees(),

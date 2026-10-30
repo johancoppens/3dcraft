@@ -2077,8 +2077,11 @@ pub fn gordon(net: &Network<'_>) -> Result<Patch, NetworkError> {
         let Some((surface, weight, g2)) = net.edges.get(e).and_then(Condition::held) else {
             continue;
         };
-        *side = bend(
-            e, surface, weight, g2, net, &mut us, &mut vs, &common_u, &common_v,
+        *side = tag(
+            bend(
+                e, surface, weight, g2, net, &mut us, &mut vs, &common_u, &common_v,
+            ),
+            &format!("bend {e}"),
         )?;
     }
 
@@ -2214,15 +2217,18 @@ pub fn gordon(net: &Network<'_>) -> Result<Patch, NetworkError> {
         } else {
             carried
         };
-        let scalars = hold_tangent(
-            &mut work,
-            &fields,
-            &at,
-            next,
-            net.angular,
-            tol,
-            e,
-            if g2 { 3 } else { 2 },
+        let scalars = tag(
+            hold_tangent(
+                &mut work,
+                &fields,
+                &at,
+                next,
+                net.angular,
+                tol,
+                e,
+                if g2 { 3 } else { 2 },
+            ),
+            &format!("hold tangent {e}"),
         )?;
         if g2 {
             match (spline_face, &second, fields.first()) {
@@ -2238,7 +2244,10 @@ pub fn gordon(net: &Network<'_>) -> Result<Patch, NetworkError> {
                     e,
                 )?,
                 (false, _, _) => {
-                    hold_curvature_implicit(&mut work, surface, &at, net.angular, tol, e)?;
+                    tag(
+                        hold_curvature_implicit(&mut work, surface, &at, net.angular, tol, e),
+                        &format!("curvature {e}"),
+                    )?;
                 }
                 _ => return Err(internal()),
             }
@@ -3125,6 +3134,10 @@ fn tag<T>(r: Result<T, NetworkError>, at: &str) -> Result<T, NetworkError> {
 #[doc(hidden)]
 pub static DEBUG_KEEP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 #[doc(hidden)]
+pub static DEBUG_AFTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[doc(hidden)]
+pub static DEBUG_OWN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[doc(hidden)]
 pub static DEBUG_RESIDUAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Most floating-point work (multiplications) one curvature hold along an
@@ -3380,10 +3393,7 @@ fn hold_curvature_implicit(
             let r: f64 = row.iter().zip(&solution).map(|(a, x)| a * x).sum::<f64>() - b;
             worst = worst.max(r.abs() / len);
         }
-        DEBUG_RESIDUAL.store(
-            (worst + 1e3 * (keep_rows.len() as f64) + (unknowns as f64) * 1e6).to_bits(),
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        DEBUG_RESIDUAL.store(worst.to_bits(), std::sync::atomic::Ordering::Relaxed);
     }
     let delta = Raw {
         degree: big_d,
@@ -3398,7 +3408,49 @@ fn hold_curvature_implicit(
     tag(
         put_on_third_row(net, &delta, origin, rows.c2, tol, label),
         "third row",
-    )
+    )?;
+    {
+        let after = edge_rows(net, origin)?;
+        let c0 = mapped(&net.column(0)?, |h| h_about(h, origin));
+        let qm = match form {
+            continuity::ImplicitForm::Quadric(q, _) | continuity::ImplicitForm::Cone(q, ..) => {
+                Some(q)
+            }
+            continuity::ImplicitForm::Plane(_) => None,
+        };
+        let qx = |h: H| -> H {
+            match qm {
+                Some(q) => {
+                    let r = |i: usize| q.get(i).copied().unwrap_or([0.0; 4]);
+                    [
+                        h_dot(r(0), h),
+                        h_dot(r(1), h),
+                        h_dot(r(2), h),
+                        h_dot(r(3), h),
+                    ]
+                }
+                None => [0.0; 4],
+            }
+        };
+        let mut worst = 0.0_f64;
+        let mut own_worst = 0.0_f64;
+        for k in 0..=16 {
+            let u = f64::from(k) / 16.0;
+            let x1 = eval(&after.x1, u)?;
+            let x2 = eval(&after.x2, u)?;
+            let n = qx(eval(&c0, u)?);
+            let r = -h_dot(x1, qx(x1));
+            let scale = r.abs().max(f64::MIN_POSITIVE);
+            worst = worst.max((h_dot(n, x2) - r).abs() / scale);
+            let nn = eval(&n_raw, u)?;
+            let rr = eval(&rho, u)?[0];
+            let dd = eval(&delta, u)?;
+            own_worst = own_worst.max((h_dot(nn, dd) - rr).abs() / scale);
+        }
+        DEBUG_AFTER.store(worst.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        DEBUG_OWN.store(own_worst.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    }
+    Ok(())
 }
 
 /// The solution of least norm of `A x = b` (rows of `A`): every equation
