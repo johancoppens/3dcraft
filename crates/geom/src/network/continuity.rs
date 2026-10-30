@@ -67,7 +67,7 @@
 //!   a plane; for a spline face, its form at the corresponding point on
 //!   `X` and `Y` put into its tangent plane (Cramer's rule in `U_b, V_b`),
 //!   through `det[Y, Y_a, Y_t, Y_ab] = −ω⁴ (B_a × B_t)·B_ab` (Farin ch. 22).
-
+//!
 //! **Rounding.** Every coefficient carries a bound on its rounding error,
 //! carried through each sum and product (running error analysis, Higham
 //! ch. 3). The faces and the edge are first written about a point of the
@@ -265,8 +265,9 @@ impl Poly {
     /// the recurrence `C(n,k+1) = C(n,k)(n−k)/(k+1)`, two roundings a step
     /// (exact while `C(n,k)·n < 2⁵³`, about `n ≤ 56`, but not beyond), so
     /// within `2n` roundings; a term is `C(m,i)·C(n,j)/C(m+n,k)·a·b`, four
-    /// more; the sum adds `min(m,n)`. So `γ_k` with `k = 4(m+n) + min(m,n)
-    /// + 4` (Higham, lemma 3.1 and §3.1), taken with a margin of 4.
+    /// more; the sum adds `min(m,n)`. So `γ_k` with
+    /// `k = 4(m+n) + min(m,n) + 4` (Higham, lemma 3.1 and §3.1), taken
+    /// with a margin of 4.
     fn mul_gamma(m: usize, n: usize) -> f64 {
         let k = (4 * (m + n) + m.min(n) + 8) as f64;
         let ke = k * EPS;
