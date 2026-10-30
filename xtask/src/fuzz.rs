@@ -703,6 +703,18 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
     }
     println!("{}", Value::Object(short));
+    // Every finding with its minimal design inline, so a run on a machine
+    // whose files cannot be read (the Strix, through a Check run) still
+    // hands over its reproducers in its log.
+    for f in &findings {
+        let design = f
+            .get("reproducer")
+            .and_then(Value::as_str)
+            .and_then(|p| read_design(Path::new(p)))
+            .unwrap_or(Value::Null);
+        println!("finding: {f}");
+        println!("design {}: {design}", number(f, "seed"));
+    }
     println!("summary: {}", out.join("summary.json").display());
     Ok(())
 }
