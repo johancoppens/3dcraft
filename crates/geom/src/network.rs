@@ -1570,7 +1570,7 @@ fn hold_tangent(
         v.elevate()?;
     }
     // The second row's basis function must end at or before `next`.
-    tag(localize_rows(&mut v, next, rows), "hold localize")?;
+    localize_rows(&mut v, next, rows)?;
     let q = v.degree;
     within_budget(net.rows.len(), count(q, &runs(&v)))?;
     net.refine_v(q, &runs(&v))?;
@@ -2118,11 +2118,8 @@ pub fn gordon(net: &Network<'_>) -> Result<Patch, NetworkError> {
         let Some((surface, weight, g2)) = net.edges.get(e).and_then(Condition::held) else {
             continue;
         };
-        *side = tag(
-            bend(
-                e, surface, weight, g2, net, &mut us, &mut vs, &common_u, &common_v,
-            ),
-            &format!("bend {e}"),
+        *side = bend(
+            e, surface, weight, g2, net, &mut us, &mut vs, &common_u, &common_v,
         )?;
     }
 
@@ -2258,18 +2255,15 @@ pub fn gordon(net: &Network<'_>) -> Result<Patch, NetworkError> {
         } else {
             carried
         };
-        let scalars = tag(
-            hold_tangent(
-                &mut work,
-                &fields,
-                &at,
-                next,
-                net.angular,
-                tol,
-                e,
-                if g2 { 3 } else { 2 },
-            ),
-            &format!("hold tangent {e}"),
+        let scalars = hold_tangent(
+            &mut work,
+            &fields,
+            &at,
+            next,
+            net.angular,
+            tol,
+            e,
+            if g2 { 3 } else { 2 },
         )?;
         if g2 {
             match (spline_face, &second, fields.first()) {
@@ -2285,10 +2279,7 @@ pub fn gordon(net: &Network<'_>) -> Result<Patch, NetworkError> {
                     e,
                 )?,
                 (false, _, _) => {
-                    tag(
-                        hold_curvature_implicit(&mut work, surface, &at, net.angular, tol, e),
-                        &format!("curvature {e}"),
-                    )?;
+                    hold_curvature_implicit(&mut work, surface, &at, net.angular, tol, e)?;
                 }
                 _ => return Err(internal()),
             }
@@ -2355,21 +2346,18 @@ pub fn gordon(net: &Network<'_>) -> Result<Patch, NetworkError> {
         let Some(Some(curve)) = boundary.get(e) else {
             return Err(internal());
         };
-        let found = tag(
-            continuity(
-                &Surface::Nurbs(surface.clone()),
-                face,
-                curve,
-                tol,
-                net.angular,
-            ),
-            "measure",
+        let found = continuity(
+            &Surface::Nurbs(surface.clone()),
+            face,
+            curve,
+            tol,
+            net.angular,
         )
         .map_err(|err| match err {
             NetworkError::Refused(why) => NetworkError::Refused(format!("{label}: {why}")),
             other => other,
         })?;
-        if found.order != Order::G2 && !DEBUG_KEEP.load(std::sync::atomic::Ordering::Relaxed) {
+        if found.order != Order::G2 {
             return refuse(format!(
                 "{label}: the surface could not be proven to meet its face in curvature (G2): {}",
                 describe(&found)
@@ -2738,13 +2726,10 @@ fn bend(
         // Only the control point beside the end moves (and the one after
         // it, in curvature): their basis functions must stop short of the
         // next crossing.
-        tag(
-            localize_rows(
-                &mut raw,
-                if at_start { next } else { 1.0 - next },
-                if g2 { 3 } else { 2 },
-            ),
-            "bend localize",
+        localize_rows(
+            &mut raw,
+            if at_start { next } else { 1.0 - next },
+            if g2 { 3 } else { 2 },
         )?;
         let p_deg = raw.degree;
         let (Some(&h0), Some(&h1), Some(&k1), Some(&kp1)) = (
@@ -2761,15 +2746,12 @@ fn bend(
             *slot = h_of(p1, w1);
         }
         if g2 {
-            tag(
-                bend_curvature(
-                    &mut raw,
-                    face,
-                    lines.get(k).copied().flatten(),
-                    net,
-                    &format!("{label}: {}", name(family, k)),
-                ),
-                "bend curvature",
+            bend_curvature(
+                &mut raw,
+                face,
+                lines.get(k).copied().flatten(),
+                net,
+                &format!("{label}: {}", name(family, k)),
             )?;
         }
         track.raw = if at_start { raw } else { reverse(&raw) };
@@ -3168,22 +3150,6 @@ fn hold_curvature_fields(
     put_on_third_row(net, &delta, origin, rows.c2, tol, label)
 }
 
-/// TEMPORARY (debugging): an error tagged with where it was made.
-fn tag<T>(r: Result<T, NetworkError>, at: &str) -> Result<T, NetworkError> {
-    r.map_err(|e| NetworkError::Refused(format!("[{at}] {e}")))
-}
-
-/// TEMPORARY (debugging): keep a sheet whose seam is not proven G2, and
-/// the largest residual of the last curvature solve (f64 bits).
-#[doc(hidden)]
-pub static DEBUG_KEEP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-#[doc(hidden)]
-pub static DEBUG_AFTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-#[doc(hidden)]
-pub static DEBUG_OWN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-#[doc(hidden)]
-pub static DEBUG_RESIDUAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
 /// Most floating-point work (multiplications) one curvature hold along an
 /// analytic face may do in its least-squares solve.
 pub const MAX_CURVATURE_WORK: usize = 1 << 33;
@@ -3224,7 +3190,7 @@ fn hold_curvature_implicit(
             "{label}: curvature to this kind of face is not supported (owed: its implicit form)"
         ));
     };
-    let rows = tag(edge_rows(net, origin), "edge rows")?;
+    let rows = edge_rows(net, origin)?;
     let r0 = mapped(&net.column(0)?, |h| h_about(h, origin));
     let (n_raw, r_raw) = match form {
         continuity::ImplicitForm::Plane(l) => (constant(l), constant([0.0; 4])),
@@ -3344,8 +3310,8 @@ fn hold_curvature_implicit(
     while rho_up.degree < out {
         rho_up.elevate()?;
     }
-    let n_pieces = tag(on_breaks(&n_up), "n pieces")?;
-    let rho_pieces = tag(on_breaks(&rho_up), "rho pieces")?;
+    let n_pieces = on_breaks(&n_up)?;
+    let rho_pieces = on_breaks(&rho_up)?;
     let pieces = breaks.len() + 1;
     let equations = pieces * (out + 1) + 4 * at.len();
     let work = unknowns
@@ -3367,10 +3333,7 @@ fn hold_curvature_implicit(
             knots: knots.clone(),
             points: pts,
         };
-        let (_, ps) = tag(
-            bezier_pieces_batched(unit).map_err(Into::into),
-            "extraction",
-        )?;
+        let (_, ps) = bezier_pieces_batched(unit)?;
         if ps.len() != pieces {
             return Err(internal());
         }
@@ -3437,22 +3400,7 @@ fn hold_curvature_implicit(
             rhs.push(d.get(comp).copied().unwrap_or(0.0) * sc);
         }
     }
-    let (keep_rows, keep_rhs) = (a_rows.clone(), rhs.clone());
     let solution = least_norm(&mut a_rows, &mut rhs, angular)?;
-    {
-        let mut worst = 0.0_f64;
-        for (row, b) in keep_rows.iter().zip(&keep_rhs) {
-            let len = row
-                .iter()
-                .map(|x| x * x)
-                .sum::<f64>()
-                .sqrt()
-                .max(f64::MIN_POSITIVE);
-            let r: f64 = row.iter().zip(&solution).map(|(a, x)| a * x).sum::<f64>() - b;
-            worst = worst.max(r.abs() / len);
-        }
-        DEBUG_RESIDUAL.store(worst.to_bits(), std::sync::atomic::Ordering::Relaxed);
-    }
     let delta = Raw {
         degree: big_d,
         knots,
@@ -3463,52 +3411,7 @@ fn hold_curvature_implicit(
             })
             .collect(),
     };
-    tag(
-        put_on_third_row(net, &delta, origin, rows.c2, tol, label),
-        "third row",
-    )?;
-    {
-        let after = edge_rows(net, origin)?;
-        let c0 = mapped(&net.column(0)?, |h| h_about(h, origin));
-        let qm = match form {
-            continuity::ImplicitForm::Quadric(q, _) | continuity::ImplicitForm::Cone(q, ..) => {
-                Some(q)
-            }
-            continuity::ImplicitForm::Plane(_) => None,
-        };
-        let qx = |h: H| -> H {
-            match qm {
-                Some(q) => {
-                    let r = |i: usize| q.get(i).copied().unwrap_or([0.0; 4]);
-                    [
-                        h_dot(r(0), h),
-                        h_dot(r(1), h),
-                        h_dot(r(2), h),
-                        h_dot(r(3), h),
-                    ]
-                }
-                None => [0.0; 4],
-            }
-        };
-        let mut worst = 0.0_f64;
-        let mut own_worst = 0.0_f64;
-        for k in 0..=16 {
-            let u = f64::from(k) / 16.0;
-            let x1 = eval(&after.x1, u)?;
-            let x2 = eval(&after.x2, u)?;
-            let n = qx(eval(&c0, u)?);
-            let r = -h_dot(x1, qx(x1));
-            let scale = r.abs().max(f64::MIN_POSITIVE);
-            worst = worst.max((h_dot(n, x2) - r).abs() / scale);
-            let nn = eval(&n_raw, u)?;
-            let rr = eval(&rho, u)?[0];
-            let dd = eval(&delta, u)?;
-            own_worst = own_worst.max((h_dot(nn, dd) - rr).abs() / scale);
-        }
-        DEBUG_AFTER.store(worst.to_bits(), std::sync::atomic::Ordering::Relaxed);
-        DEBUG_OWN.store(own_worst.to_bits(), std::sync::atomic::Ordering::Relaxed);
-    }
-    Ok(())
+    put_on_third_row(net, &delta, origin, rows.c2, tol, label)
 }
 
 /// The solution of least norm of `A x = b` (rows of `A`): every equation
