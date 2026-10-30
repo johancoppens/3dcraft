@@ -243,58 +243,224 @@ fn three_d_craft_on_a_cylinder_is_rendered_and_joined() {
     let _ = out;
 }
 
+/// The wrapped feature `name`'s body, regenerated from the saved document.
+fn body_of(
+    s: &mut Session,
+    dir: &std::path::Path,
+    name: &str,
+) -> Option<std::sync::Arc<craft3d_topo::Body>> {
+    let path = dir.join("dump.3dcraft");
+    common::plain::run(s, "file.save", json!({"path": "dump.3dcraft"}));
+    let doc = craft3d_format::load(&path).ok()?;
+    let regen = craft3d_regen::regenerate(&doc);
+    let f = doc.features.iter().find(|f| f.name == name)?;
+    regen.feature(f.id)?.body.clone()
+}
+
+/// Every face of `body`: its surface, and each loop's coedges with their
+/// curves, lengths and ends in the surface's parameters, and the loop's
+/// signed area there (times the face's sense: positive for an outer loop).
+fn dump(body: &craft3d_topo::Body, only: Option<usize>) {
+    use craft3d_geom::Surface;
+    for (i, face) in body.faces.iter().enumerate() {
+        if only.is_some_and(|o| o != i) {
+            continue;
+        }
+        let kind = match &face.surface {
+            Surface::Cylinder(c) => format!("cylinder r {:.6}", c.radius()),
+            Surface::Cone(c) => format!("cone r {:.6} a {:.6}", c.radius(), c.half_angle()),
+            other => other.kind().to_string(),
+        };
+        let sense = if face.reversed { -1.0 } else { 1.0 };
+        println!("FACE {i}: {kind}, reversed {}", face.reversed);
+        for l in &face.loops {
+            let lp = body.loop_(*l).unwrap();
+            let mut poly: Vec<(f64, f64)> = Vec::new();
+            let pu = face.surface.period_u();
+            for c in &lp.coedges {
+                let e = body.edge(c.edge).unwrap();
+                let (t0, t1) = e.range;
+                let mut len = 0.0;
+                let mut prev = e.curve.eval(t0);
+                let n = 64;
+                let mut uvs = Vec::new();
+                for k in 0..=n {
+                    let a = f64::from(k) / f64::from(n);
+                    let t = if c.reversed {
+                        t1 + (t0 - t1) * a
+                    } else {
+                        t0 + (t1 - t0) * a
+                    };
+                    let p = e.curve.eval(t);
+                    len += p.distance(prev);
+                    prev = p;
+                    let (mut u, v) = face.surface.project(p).unwrap_or((f64::NAN, f64::NAN));
+                    if let (Some(per), Some(&(lu, _))) = (pu, poly.last()) {
+                        u += ((lu - u) / per).round() * per;
+                    }
+                    uvs.push((u, v));
+                    if k < n {
+                        poly.push((u, v));
+                    }
+                }
+                let (a, b) = (uvs[0], uvs[n as usize]);
+                println!(
+                    "  edge {} {} rev {} len {:.6e} uv ({:.6},{:.6}) -> ({:.6},{:.6})",
+                    c.edge.0,
+                    e.curve.kind(),
+                    c.reversed,
+                    len,
+                    a.0,
+                    a.1,
+                    b.0,
+                    b.1
+                );
+            }
+            let mut area = 0.0;
+            for k in 0..poly.len() {
+                let (p, q) = (poly[k], poly[(k + 1) % poly.len()]);
+                area += p.0 * q.1 - q.0 * p.1;
+            }
+            println!(
+                "  LOOP {}: {} coedges, signed area x sense {:.6e}",
+                l.0,
+                lp.coedges.len(),
+                0.5 * area * sense
+            );
+        }
+    }
+}
+
 /// Diagnosis: each glyph of "3DCraft" wrapped alone, where the text puts
-/// it; prints which ones fail to mesh (a malformed face) or to join.
+/// it, on a cylinder and on a cone; prints which ones fail to mesh (a
+/// malformed face) or to join, and dumps the face that fails.
 #[test]
 #[ignore = "diagnosis of the open bug: run with --ignored --nocapture"]
 fn diagnose_three_d_craft() {
-    for (i, c) in "3DCraft".chars().enumerate() {
-        let dir = common::workdir("wrap", "diagnose");
-        let mut s = common::session_in(&dir);
-        run(&mut s, "file.new", json!({"units": "mm"}));
-        built(
-            &mut s,
-            "feature.cylinder",
-            json!({"radius": 20, "height": 40, "name": "Body"}),
-        );
-        run(&mut s, "sketch.create", json!({"name": "Label"}));
-        // The whole text, every other glyph a space: the glyph at its own place.
-        let text: String = "3DCraft"
-            .chars()
-            .enumerate()
-            .map(|(k, d)| if k == i { d } else { ' ' })
-            .collect();
-        let _ = c;
-        run(
-            &mut s,
-            "sketch.text",
-            json!({"sketch": "Label", "text": text, "size": 6, "at": [0, 12], "align": "center"}),
-        );
-        let alone = common::plain::run(
-            &mut s,
-            "feature.extrude",
-            json!({"sketch": "Label", "wrap": "F1:face(0)", "distance": 1, "name": "Alone"}),
-        );
-        let shown = common::plain::run(
-            &mut s,
-            "view.render",
-            json!({"path": "x.png", "width": 100, "height": 80}),
-        );
-        let joined = common::plain::run(
-            &mut s,
-            "feature.boolean",
-            json!({"target": "Body", "tool": "Alone", "op": "union"}),
-        );
-        println!(
-            "DIAG {c}: alone {} | render {} | join {}",
-            alone["status"],
-            shown
-                .get("error")
-                .map_or("ok".to_string(), |e| e.to_string()),
-            joined
-                .get("error")
-                .or(joined.get("status"))
-                .map_or(String::new(), |e| e.to_string())
-        );
+    for surface in ["cylinder", "cone"] {
+        for (i, c) in "3DCraft".chars().enumerate() {
+            let dir = common::workdir("wrap", &format!("diagnose-{surface}-{i}"));
+            let mut s = common::session_in(&dir);
+            run(&mut s, "file.new", json!({"units": "mm"}));
+            if surface == "cylinder" {
+                built(
+                    &mut s,
+                    "feature.cylinder",
+                    json!({"radius": 20, "height": 40, "name": "Body"}),
+                );
+            } else {
+                built(
+                    &mut s,
+                    "feature.cone",
+                    json!({"radius": 30, "height": 60, "name": "Body"}),
+                );
+            }
+            run(&mut s, "sketch.create", json!({"name": "Label"}));
+            // The whole text, every other glyph a space: the glyph at its own place.
+            let text: String = "3DCraft"
+                .chars()
+                .enumerate()
+                .map(|(k, d)| if k == i { d } else { ' ' })
+                .collect();
+            run(
+                &mut s,
+                "sketch.text",
+                json!({"sketch": "Label", "text": text, "size": 6, "at": [0, 12], "align": "center"}),
+            );
+            let alone = common::plain::run(
+                &mut s,
+                "feature.extrude",
+                json!({"sketch": "Label", "wrap": "F1:face(0)", "distance": 1, "name": "Alone"}),
+            );
+            let meshed = body_of(&mut s, &dir, "Alone").map(|b| {
+                let r = craft3d_tess::tessellate_body(&b, &craft3d_tess::TessParams::default());
+                if let Err(craft3d_tess::TessError::Face { face, .. }) = &r {
+                    dump(&b, Some(*face));
+                }
+                r.err().map_or("ok".to_string(), |e| e.to_string())
+            });
+            let joined = common::plain::run(
+                &mut s,
+                "feature.boolean",
+                json!({"target": "Body", "tool": "Alone", "op": "union"}),
+            );
+            println!(
+                "DIAG {surface} {c}: alone {} | mesh {:?} | join {}",
+                alone.get("error").unwrap_or(&alone["status"]),
+                meshed,
+                joined
+                    .get("error")
+                    .or(joined.get("status"))
+                    .map_or(String::new(), |e| e.to_string())
+            );
+        }
     }
+}
+
+/// Diagnosis: every printable glyph of the sans and mono fonts, at two
+/// sizes, wrapped on a cylinder and a cone; prints each that fails to wrap
+/// or to mesh.
+#[test]
+#[ignore = "diagnosis: run with --ignored --nocapture"]
+fn diagnose_every_glyph() {
+    let mut failures = 0;
+    let mut total = 0;
+    for surface in ["cylinder", "cone"] {
+        for font in ["sans", "mono"] {
+            for size in [2.0, 6.0] {
+                let dir = common::workdir("wrap", &format!("every-{surface}-{font}-{size}"));
+                let mut s = common::session_in(&dir);
+                run(&mut s, "file.new", json!({"units": "mm"}));
+                if surface == "cylinder" {
+                    built(
+                        &mut s,
+                        "feature.cylinder",
+                        json!({"radius": 20, "height": 40, "name": "Body"}),
+                    );
+                } else {
+                    built(
+                        &mut s,
+                        "feature.cone",
+                        json!({"radius": 30, "height": 60, "name": "Body"}),
+                    );
+                }
+                for c in '!'..='~' {
+                    total += 1;
+                    let sk = format!("S{}", c as u32);
+                    common::plain::run(&mut s, "sketch.create", json!({"name": sk}));
+                    common::plain::run(
+                        &mut s,
+                        "sketch.text",
+                        json!({"sketch": sk, "text": c.to_string(), "size": size, "font": font, "at": [-3, 12]}),
+                    );
+                    let name = format!("W{}", c as u32);
+                    let out = s
+                        .execute(
+                            "feature.extrude",
+                            &json!({"sketch": sk, "wrap": "F1:face(0)", "distance": 0.5, "name": name}),
+                        )
+                        .unwrap_or_else(|e| json!({"error": e.to_string()}));
+                    let mesh = body_of(&mut s, &dir, &name).map(|b| {
+                        let r =
+                            craft3d_tess::tessellate_body(&b, &craft3d_tess::TessParams::default());
+                        if let Err(craft3d_tess::TessError::Face { face, .. }) = &r {
+                            dump(&b, Some(*face));
+                        }
+                        r.err().map(|e| e.to_string())
+                    });
+                    let bad = out.get("error").is_some() || !matches!(mesh, Some(None));
+                    if bad {
+                        failures += 1;
+                        println!(
+                            "EVERY {surface} {font} {size} {c:?}: extrude {} | mesh {:?}",
+                            out.get("error").unwrap_or(&out["status"]),
+                            mesh
+                        );
+                    }
+                    let _ = s.execute("feature.delete", &json!({"feature": name}));
+                }
+            }
+        }
+    }
+    println!("EVERY: {failures} of {total} failed");
 }
