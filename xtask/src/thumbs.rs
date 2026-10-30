@@ -291,6 +291,8 @@ pub fn run(_args: &[String]) -> Result<(), String> {
     let scripts = EXAMPLES.iter().map(|id| (*id, None));
     let published = PUBLISHED.iter().map(|(id, file)| (*id, Some(*file)));
     let mut pictures = Vec::new();
+    // Every example is tried, so one run names every one that fails.
+    let mut failed = Vec::new();
     for (id, file) in scripts.chain(published) {
         let thumb_png = work.join(format!("{id}.png"));
         let picture_png = work.join(format!("{id}-picture.png"));
@@ -328,7 +330,9 @@ pub fn run(_args: &[String]) -> Result<(), String> {
             .status()
             .map_err(|e| format!("cannot run {}: {e}", cli.display()))?;
         if !status.success() {
-            return Err(format!("{id}: craft3d-cli failed ({status})"));
+            eprintln!("{id}: craft3d-cli failed ({status})");
+            failed.push(id);
+            continue;
         }
         let bytes = std::fs::read(&thumb_png).map_err(|e| e.to_string())?;
         let (width, height, rgb) = read_rgb(&bytes)?;
@@ -357,6 +361,12 @@ pub fn run(_args: &[String]) -> Result<(), String> {
             }
             pictures.push((id, png));
         }
+    }
+    if !failed.is_empty() {
+        return Err(format!(
+            "craft3d-cli failed for {}; nothing was written",
+            failed.join(", ")
+        ));
     }
     for (id, png) in made {
         std::fs::write(out_dir.join(format!("{id}.png")), &png).map_err(|e| e.to_string())?;
