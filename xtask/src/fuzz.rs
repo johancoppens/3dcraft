@@ -132,7 +132,9 @@ enum Cap {
     /// A systemd scope with `MemoryMax` (no swap): the whole process.
     Systemd,
     /// `prlimit --as`, where there is no user systemd (a CI runner): the
-    /// address space, a little looser than the memory used, but a cap.
+    /// address space, at twice the memory asked for (reserved but unused
+    /// address space, thread stacks and malloc arenas, counts too), with
+    /// two malloc arenas.
     AddressSpace(u64),
     None,
 }
@@ -179,6 +181,12 @@ impl Launcher {
             Cap::AddressSpace(limit) => {
                 let mut c = Command::new("prlimit");
                 c.arg(format!("--as={limit}")).args(["--", "timeout"]);
+                // glibc reserves 64 MB of address space per malloc arena,
+                // up to eight per core: on a machine of many cores that,
+                // not the memory used, filled a 2 GB cap (thread stacks
+                // and allocations of a few MB refused, 17 false findings
+                // in 36296 seeds on 2026-10-30). Two arenas.
+                c.env("MALLOC_ARENA_MAX", "2");
                 c
             }
             Cap::None => Command::new("timeout"),
@@ -598,7 +606,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     };
     let capped = if works("systemd-run", &["--user", "--scope", "-q", "true"]) {
         Cap::Systemd
-    } else if let Some(limit) = bytes(&config.memory)
+    } else if let Some(limit) = bytes(&config.memory).and_then(|b| b.checked_mul(2))
         && works("prlimit", &[&format!("--as={limit}"), "--", "true"])
     {
         eprintln!("fuzz: no user systemd; the seeds' address space is capped by prlimit");
