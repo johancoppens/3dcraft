@@ -1097,7 +1097,12 @@ fn measure(
     breaks.dedup_by(|x, y| (*x - *y).abs() <= SAME_KNOT);
     let mut per_row: Vec<Vec<P4>> = Vec::with_capacity(rows.len());
     for (raw, mag) in &rows {
-        per_row.push(row_pieces(raw, &breaks, *mag)?);
+        per_row.push(row_pieces(raw, &breaks, *mag).map_err(|e| {
+            NetworkError::Refused(format!(
+                "[row pieces degree {} knots {:?} breaks {:?}] {e}",
+                raw.degree, raw.knots, breaks
+            ))
+        })?);
     }
     let mut bounds = vec![0.0];
     bounds.extend(breaks.iter().copied());

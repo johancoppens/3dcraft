@@ -2314,12 +2314,15 @@ pub fn gordon(net: &Network<'_>) -> Result<Patch, NetworkError> {
         let Some(Some(curve)) = boundary.get(e) else {
             return Err(internal());
         };
-        let found = continuity(
-            &Surface::Nurbs(surface.clone()),
-            face,
-            curve,
-            tol,
-            net.angular,
+        let found = tag(
+            continuity(
+                &Surface::Nurbs(surface.clone()),
+                face,
+                curve,
+                tol,
+                net.angular,
+            ),
+            "measure",
         )
         .map_err(|err| match err {
             NetworkError::Refused(why) => NetworkError::Refused(format!("{label}: {why}")),
