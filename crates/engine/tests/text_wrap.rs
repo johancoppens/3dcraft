@@ -249,7 +249,8 @@ fn three_d_craft_on_a_cylinder_is_rendered_and_joined() {
 #[ignore = "diagnosis of the open bug: run with --ignored --nocapture"]
 fn diagnose_three_d_craft() {
     for (i, c) in "3DCraft".chars().enumerate() {
-        let mut s = session();
+        let dir = common::workdir("wrap", "diagnose");
+        let mut s = common::session_in(&dir);
         run(&mut s, "file.new", json!({"units": "mm"}));
         built(
             &mut s,
@@ -269,7 +270,7 @@ fn diagnose_three_d_craft() {
             "sketch.text",
             json!({"sketch": "Label", "text": text, "size": 6, "at": [0, 12], "align": "center"}),
         );
-        let alone = run(
+        let alone = common::plain::run(
             &mut s,
             "feature.extrude",
             json!({"sketch": "Label", "wrap": "F1:face(0)", "distance": 1, "name": "Alone"}),
@@ -279,7 +280,7 @@ fn diagnose_three_d_craft() {
             "view.render",
             json!({"path": "/tmp/x.png", "width": 100, "height": 80}),
         );
-        let joined = run(
+        let joined = common::plain::run(
             &mut s,
             "feature.boolean",
             json!({"target": "Body", "tool": "Alone", "op": "union"}),
