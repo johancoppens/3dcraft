@@ -135,3 +135,35 @@ fn text_evidence() {
     craft3d_testkit::evidence::print("stroke.svg", &svg);
     std::fs::write(evidence_dir().join("stroke.svg"), &svg).unwrap();
 }
+
+#[test]
+#[ignore = "evidence for the developer: run with --ignored"]
+fn wrapped_text_evidence() {
+    let dir = workdir("text", "wrap-evidence");
+    let mut s = session_in(&dir);
+    for (shape, params) in [
+        (
+            "cylinder",
+            json!({"radius": 20, "height": 40, "name": "Body"}),
+        ),
+        ("cone", json!({"radius": 30, "height": 60, "name": "Body"})),
+    ] {
+        for (how, depth, op) in [("raised", 1.0, "join"), ("engraved", -0.8, "cut")] {
+            new_document(&mut s, 1.0);
+            built(&mut s, &format!("feature.{shape}"), params.clone());
+            run(&mut s, "sketch.create", json!({"name": "Label"}));
+            run(
+                &mut s,
+                "sketch.text",
+                json!({"sketch": "Label", "text": "3DCraft", "size": 6, "at": [0, 12], "align": "center"}),
+            );
+            let mut extrude =
+                json!({"sketch": "Label", "wrap": "F1:face(0)", "distance": depth, "name": "Text"});
+            extrude[op] = json!("Body");
+            built(&mut s, "feature.extrude", extrude);
+            for view in ["right", "iso"] {
+                picture(&mut s, &dir, &format!("{shape}-{how}-{view}.png"), view);
+            }
+        }
+    }
+}
