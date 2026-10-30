@@ -332,7 +332,12 @@ fn a_profile_past_the_apex_is_refused() {
             json!({"sketch": "L", "wrap": "F1:face(0)", "distance": 0.3}),
         ));
     }
+    // Past the apex one way, off the face the other.
     assert!(reasons.iter().any(|r| r.contains("apex")), "{reasons:?}");
+    assert!(
+        reasons.iter().any(|r| r.contains("leaves the face")),
+        "{reasons:?}"
+    );
 }
 
 /// `feature.edit` with a distance alone changes the depth and keeps the
@@ -438,7 +443,9 @@ fn wrapped_text_reads_from_outside_on_a_wall_and_in_a_bore() {
         assert_eq!(u.len(), 2, "{u:?}");
         // From outside the wall u runs to the right; from inside the bore
         // to the left.
-        assert_eq!(u[0] < u[1], !reversed, "reversed {reversed}: {u:?}");
+        let tau = std::f64::consts::TAU;
+        let ahead = (u[1] - u[0]).rem_euclid(tau) < 0.5 * tau;
+        assert_eq!(ahead, !reversed, "reversed {reversed}: {u:?}");
         deep(&mut s);
     }
 }

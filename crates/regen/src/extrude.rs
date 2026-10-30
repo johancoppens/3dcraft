@@ -661,9 +661,15 @@ pub(crate) fn build(
                 }
             }
             .ok_or_else(|| format!("wrap: the face {face} is not there"))?;
-            let made =
-                craft3d_kernel::wrap::wrap(&profiles, &on.surface, on.reversed, depth, &tolerance)
-                    .map_err(|e| format!("wrap: onto the face {face}: {e}"))?;
+            let made = craft3d_kernel::wrap::wrap_onto(
+                &profiles,
+                &on.surface,
+                on.reversed,
+                Some((body, on)),
+                depth,
+                &tolerance,
+            )
+            .map_err(|e| format!("wrap: onto the face {face}: {e}"))?;
             return Ok((made.body, made.origins));
         }
     };

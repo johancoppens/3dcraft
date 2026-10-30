@@ -117,7 +117,12 @@ fn a_flat_plate_is_its_area_times_the_thickness_on_every_side() {
     for k in SCALES {
         let frame = Frame::WORLD;
         let body = sheet([0.0, 0.0], [3.0, 2.0], None, &frame, k);
-        for side in [Side::Out, Side::In, Side::Mid] {
+        for side in [
+            Side::Out,
+            Side::In,
+            Side::Mid,
+            Side::Levels(-0.05 * k, 0.2 * k),
+        ] {
             let made = plated(&body, 0.25 * k, side, &BTreeMap::new(), k);
             assert_eq!(
                 made.body.faces.len(),
@@ -142,6 +147,8 @@ fn a_flat_plate_is_its_area_times_the_thickness_on_every_side() {
                 Side::Out => 0.125,
                 Side::In => -0.125,
                 Side::Mid => 0.0,
+                // Levels from below the faces to above them.
+                Side::Levels(..) => 0.075,
             };
             assert!(
                 (z - expected).abs() <= 1e-9,

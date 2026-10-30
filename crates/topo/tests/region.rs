@@ -181,3 +181,130 @@ fn the_reference_solids_are_clean_at_every_scale() {
         }
     }
 }
+
+#[test]
+fn crossing_and_nested_holes_are_found() {
+    let r = 2.0;
+    let outer = |b: &mut Body| patch_loop(b, r, (-1.0, 1.0), (0.0, 2.0), false);
+    // Two holes that overlap.
+    let crossing = sheet(r, false, |b| {
+        vec![
+            outer(b),
+            patch_loop(b, r, (-0.3, 0.1), (0.5, 1.0), true),
+            patch_loop(b, r, (0.0, 0.4), (0.7, 1.2), true),
+        ]
+    });
+    assert!(regionless(&crossing));
+    // A hole inside a hole.
+    let nested = sheet(r, false, |b| {
+        vec![
+            outer(b),
+            patch_loop(b, r, (-0.5, 0.5), (0.3, 1.5), true),
+            patch_loop(b, r, (-0.1, 0.1), (0.8, 1.0), true),
+        ]
+    });
+    assert!(regionless(&nested));
+}
+
+#[test]
+fn holes_across_the_seam() {
+    let r = 2.0;
+    // The patch and its hole both reach across u = π: fine.
+    let good = sheet(r, false, |b| {
+        vec![
+            patch_loop(b, r, (2.0, 4.0), (0.0, 2.0), false),
+            patch_loop(b, r, (3.0, 3.3), (0.5, 1.0), true),
+        ]
+    });
+    assert_eq!(check(&good, &tol()), vec![]);
+    // The hole across the seam and across the patch's border.
+    let across = sheet(r, false, |b| {
+        vec![
+            patch_loop(b, r, (2.0, 3.2), (0.0, 2.0), false),
+            patch_loop(b, r, (3.0, 3.4), (0.5, 1.0), true),
+        ]
+    });
+    assert!(regionless(&across));
+}
+
+/// A loop on a plane that crosses itself while enclosing a positive area.
+#[test]
+fn a_loop_on_a_plane_that_crosses_itself_is_found() {
+    let mut body = Body::new(BodyKind::Sheet);
+    let points = [
+        Vec3::new(0.0, 0.0, 0.0),
+        Vec3::new(4.0, 0.0, 0.0),
+        Vec3::new(4.0, 4.0, 0.0),
+        Vec3::new(-1.0, 1.0, 0.0),
+        Vec3::new(0.0, 3.0, 0.0),
+    ];
+    let v: Vec<_> = points.iter().map(|p| body.add_vertex(*p)).collect();
+    let mut coedges = Vec::new();
+    for i in 0..points.len() {
+        let j = (i + 1) % points.len();
+        let e = body.add_edge(
+            Curve3::Line(Line::through(points[i], points[j]).unwrap()),
+            (0.0, points[i].distance(points[j])),
+            v[i],
+            v[j],
+        );
+        coedges.push(Coedge {
+            edge: e,
+            reversed: false,
+        });
+    }
+    let l = body.add_loop(coedges);
+    let face = body.add_face(
+        Surface::Plane(craft3d_geom::Plane::new(Frame::WORLD)),
+        false,
+        vec![l],
+    );
+    body.add_shell(vec![face]);
+    assert!(regionless(&body), "{:?}", check(&body, &tol()));
+}
+
+/// The cost of the rule on a perforated tube: 100, 400 and 1600 holes in
+/// rows and columns, checked whole (and a hole left outside still found at
+/// 1600). Printed for docs/design/topology.md.
+#[test]
+fn a_perforated_tube_is_checked_in_time_about_its_holes() {
+    let r = 10.0;
+    for n in [10_usize, 20, 40] {
+        let make = |stray: bool| {
+            sheet(r, false, |b| {
+                let mut loops = vec![patch_loop(b, r, (-1.5, 1.5), (0.0, 30.0), false)];
+                for i in 0..n {
+                    for j in 0..n {
+                        let u = -1.4 + 2.8 * (i as f64 + 0.25) / n as f64;
+                        let z = 0.5 + 29.0 * (j as f64 + 0.25) / n as f64;
+                        loops.push(patch_loop(
+                            b,
+                            r,
+                            (u, u + 0.5 * 2.8 / n as f64),
+                            (z, z + 0.4 * 29.0 / n as f64),
+                            true,
+                        ));
+                    }
+                }
+                if stray {
+                    loops.push(patch_loop(b, r, (2.0, 2.2), (1.0, 2.0), true));
+                }
+                loops
+            })
+        };
+        let body = make(false);
+        let started = std::time::Instant::now();
+        let found = check(&body, &tol());
+        let whole = started.elapsed().as_secs_f64();
+        let started = std::time::Instant::now();
+        let region = craft3d_topo::regionless(&body, &tol());
+        let rule = started.elapsed().as_secs_f64();
+        println!(
+            "REGION {} holes: check {whole:.4} s, the region rule {rule:.4} s",
+            n * n
+        );
+        assert_eq!(found, vec![], "{} holes", n * n);
+        assert!(region.is_empty());
+        assert!(regionless(&make(true)), "{} holes and a stray one", n * n);
+    }
+}

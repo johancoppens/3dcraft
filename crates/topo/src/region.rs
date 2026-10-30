@@ -45,7 +45,7 @@ use craft3d_math::{Tolerance, Vec3};
 use std::f64::consts::PI;
 
 /// Most points one face is followed at; a larger face is passed.
-pub const MOST_PER_FACE: usize = 1 << 15;
+pub const MOST_PER_FACE: usize = 1 << 18;
 /// Steps of a spline edge.
 const SPLINE_STEPS: usize = 16;
 /// Steps of a line on a curved surface.
@@ -54,13 +54,16 @@ const LINE_STEPS: usize = 4;
 const CONIC_STEP: f64 = PI / 16.0;
 /// Most pairs of steps looked at for a crossing; a face that needs more
 /// is not held to it.
-const MOST_PAIRS: usize = 1 << 22;
+const MOST_PAIRS: usize = 1 << 24;
 /// Most steps of a conic.
 const MOST_CONIC_STEPS: usize = 64;
 
 /// One loop in the surface's parameters.
 struct Ring {
     points: Vec<[f64; 2]>,
+    /// Where the loop ends against where it starts, in whole periods (0
+    /// for a loop that does not wind around a closed surface).
+    winds: [f64; 2],
     /// How far the polyline may be from the curves, in parameters.
     error: f64,
     low: [f64; 2],
@@ -98,7 +101,7 @@ pub fn region_fault(body: &Body, face: &Face, tol: &Tolerance) -> Option<String>
     let mut total = 0_usize;
     for id in &face.loops {
         let lp = body.loop_(*id)?;
-        let ring = follow(body, &lp.coedges, &mut chart, &mut total)?;
+        let ring = follow(body, &lp.coedges, &mut chart, &mut total, false)?;
         rings.push(ring);
     }
     // Areas with the face's sense: positive for a loop that runs
@@ -193,6 +196,11 @@ pub fn region_fault(body: &Body, face: &Face, tol: &Tolerance) -> Option<String>
         }
         // Each hole wound once by the outer loop, by no other hole.
         let mut work = 0_usize;
+        let widest = (0..rings.len())
+            .map(|j| margin_of(j, j))
+            .fold(0.0, f64::max)
+            * 2.0;
+        let grid = Grid::new(&rings, widest);
         if !matches!(surface, Surface::Plane(_)) {
             for (k, ring) in rings.iter().enumerate() {
                 if k == o {
@@ -204,7 +212,16 @@ pub fn region_fault(body: &Body, face: &Face, tol: &Tolerance) -> Option<String>
                 // point of a polyline (which the crossing test of steps,
                 // with its margin, does not see).
                 for point in ring.points.iter() {
-                    let clear = rings.iter().enumerate().all(|(j, other)| {
+                    // Only the loops whose boxes (grown by the largest
+                    // margin) hold the point can be near it or wind
+                    // around it: found in the grid, not by a look at
+                    // every loop.
+                    let near = grid.at(*point);
+                    work = work.saturating_add(near.len().saturating_add(1));
+                    let clear = near.iter().all(|&j| {
+                        let Some(other) = rings.get(j) else {
+                            return true;
+                        };
                         j == k || other.box_distance(*point) > margin_of(j, k) || {
                             work = work.saturating_add(other.points.len());
                             distance(*point, &other.points) > margin_of(j, k)
@@ -216,14 +233,15 @@ pub fn region_fault(body: &Body, face: &Face, tol: &Tolerance) -> Option<String>
                     if !clear {
                         continue;
                     }
-                    let wound: i64 = rings
+                    let wound: i64 = near
                         .iter()
-                        .enumerate()
-                        .filter(|(j, _)| *j != k)
-                        .map(|(_, other)| {
+                        .filter(|j| **j != k)
+                        .filter_map(|j| rings.get(*j))
+                        .map(|other| {
                             if other.box_distance(*point) > 0.0 {
                                 0
                             } else {
+                                work = work.saturating_add(other.points.len());
                                 winding(*point, &other.points)
                             }
                         })
@@ -262,6 +280,85 @@ pub fn region_fault(body: &Body, face: &Face, tol: &Tolerance) -> Option<String>
             format!("its loops {i} and {j} cross")
         }
     })
+}
+
+/// Whether each of `points` (on the surface of `face`) lies on the face,
+/// by the parity of the loops' crossings of a ray from it in the
+/// surface's parameters (along v, or along u when v is the one that
+/// closes); `None` where the face cannot be charted without doubt, as for
+/// [`region_fault`], bands around a closed surface included.
+pub fn face_holds(body: &Body, face: &Face, tol: &Tolerance, points: &[Vec3]) -> Option<Vec<bool>> {
+    if face.loops.is_empty() {
+        return None;
+    }
+    let surface = &face.surface;
+    let periods = [surface.period_u(), surface.period_v()];
+    if periods.iter().all(Option::is_some) {
+        return None;
+    }
+    let freeform = matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_));
+    if freeform
+        && (craft3d_geom::closure::closes(surface).iter().any(|c| *c)
+            || !craft3d_geom::pole::poles(surface).is_empty())
+    {
+        return None;
+    }
+    let mut chart = Chart {
+        surface,
+        periods,
+        freeform,
+        near: 10.0 * body.working_tolerance(tol.linear),
+        last: None,
+        scale: f64::INFINITY,
+    };
+    let mut total = 0_usize;
+    let mut rings = Vec::with_capacity(face.loops.len());
+    for id in &face.loops {
+        let lp = body.loop_(*id)?;
+        rings.push(follow(body, &lp.coedges, &mut chart, &mut total, true)?);
+    }
+    // The ray runs along `r`; the other parameter `o` may close.
+    let (r, o) = if periods[1].is_some() { (0, 1) } else { (1, 0) };
+    let period = periods.get(o).copied().flatten();
+    let mut out = Vec::with_capacity(points.len());
+    for p in points {
+        chart.last = None;
+        let q = chart.at(*p)?;
+        let (qr, qo) = (q.get(r).copied()?, q.get(o).copied()?);
+        let mut crossings = 0_usize;
+        for ring in &rings {
+            let n = ring.points.len();
+            let (lo, hi) = (ring.low.get(o).copied()?, ring.high.get(o).copied()?);
+            let shifts: Vec<f64> = match period {
+                Some(per) => {
+                    let first = ((lo - qo) / per).floor() as i64 - 1;
+                    let last = ((hi - qo) / per).ceil() as i64 + 1;
+                    (first..=last).map(|k| qo + k as f64 * per).collect()
+                }
+                None => vec![qo],
+            };
+            for at in shifts {
+                for i in 0..n {
+                    let a = *ring.points.get(i)?;
+                    let mut b = *ring.points.get((i + 1) % n)?;
+                    if i + 1 == n {
+                        b = [b[0] + ring.winds[0], b[1] + ring.winds[1]];
+                    }
+                    let (ao, bo) = (a.get(o).copied()?, b.get(o).copied()?);
+                    if (ao <= at) == (bo <= at) {
+                        continue;
+                    }
+                    let t = (at - ao) / (bo - ao);
+                    let (ar, br) = (a.get(r).copied()?, b.get(r).copied()?);
+                    if ar + t * (br - ar) > qr {
+                        crossings += 1;
+                    }
+                }
+            }
+        }
+        out.push(crossings % 2 == 1);
+    }
+    Some(out)
 }
 
 /// Every face of `body` whose loops do not bound a region, with why.
@@ -344,6 +441,7 @@ fn follow(
     coedges: &[Coedge],
     chart: &mut Chart<'_>,
     total: &mut usize,
+    bands: bool,
 ) -> Option<Ring> {
     let planar = matches!(chart.surface, Surface::Plane(_));
     let mut points = Vec::new();
@@ -398,11 +496,16 @@ fn follow(
     let (Some(s), Some(end)) = (start, chart.last) else {
         return None;
     };
+    let mut winds = [0.0; 2];
     for (d, period) in chart.periods.iter().enumerate() {
-        if let (Some(p), Some(a), Some(b)) = (period, s.get(d), end.get(d))
+        if let (Some(p), Some(a), Some(b), Some(w)) =
+            (period, s.get(d), end.get(d), winds.get_mut(d))
             && (a - b).abs() > 0.5 * p
         {
-            return None;
+            if !bands {
+                return None;
+            }
+            *w = b - a;
         }
     }
     if points.len() < 3 {
@@ -416,6 +519,7 @@ fn follow(
     }
     Some(Ring {
         points,
+        winds,
         error,
         low,
         high,
@@ -528,50 +632,171 @@ fn cross(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2], margin: f64) -> boo
 
 /// The first pair of loops (or a loop and itself) whose steps cross.
 fn crossing(rings: &[Ring], margin_of: &dyn Fn(usize, usize) -> f64) -> Option<(usize, usize)> {
-    // Every step: (lowest u, highest u, ring, index).
-    let mut steps: Vec<(f64, f64, usize, usize)> = Vec::new();
+    // Every step: (lowest u, highest u, lowest v, highest v, ring, index).
+    let mut steps: Vec<(f64, f64, f64, f64, usize, usize)> = Vec::new();
     for (r, ring) in rings.iter().enumerate() {
         let n = ring.points.len();
         for i in 0..n {
             let (Some(a), Some(b)) = (ring.points.get(i), ring.points.get((i + 1) % n)) else {
                 continue;
             };
-            steps.push((a[0].min(b[0]), a[0].max(b[0]), r, i));
+            steps.push((
+                a[0].min(b[0]),
+                a[0].max(b[0]),
+                a[1].min(b[1]),
+                a[1].max(b[1]),
+                r,
+                i,
+            ));
         }
     }
-    steps.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.2.cmp(&y.2)).then(x.3.cmp(&y.3)));
     let largest_margin = (0..rings.len())
-        .flat_map(|i| (0..rings.len()).map(move |j| (i, j)))
-        .map(|(i, j)| margin_of(i, j))
-        .fold(0.0, f64::max);
+        .map(|i| margin_of(i, i))
+        .fold(0.0, f64::max)
+        * 2.0;
     let point = |r: usize, i: usize| -> Option<([f64; 2], [f64; 2])> {
         let ring = rings.get(r)?;
         let n = ring.points.len();
         Some((*ring.points.get(i)?, *ring.points.get((i + 1) % n)?))
     };
-    let mut active: Vec<(f64, usize, usize)> = Vec::new();
-    let mut work = 0_usize;
-    for &(low, high, r, i) in &steps {
-        active.retain(|(h, _, _)| *h + largest_margin >= low);
-        let (a, b) = point(r, i)?;
-        work = work.saturating_add(active.len());
-        if work > MOST_PAIRS {
-            return None;
+    // Bands across v, each step in every band it reaches (with the
+    // margin), each band swept along u: steps far apart in v are never
+    // paired, so a face of many holes in rows and columns (a perforated
+    // tube) costs about its steps, not their square.
+    let (v_low, v_high) = steps
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), s| {
+            (l.min(s.2), h.max(s.3))
+        });
+    let count = ((steps.len() as f64).sqrt().ceil() as usize).clamp(1, 512);
+    let height = (v_high - v_low) / count as f64;
+    let band_of = |v: f64| {
+        let f = (v - v_low) / height;
+        if f.is_finite() && f > 0.0 {
+            (f as usize).min(count - 1)
+        } else {
+            0
         }
-        for &(_, s, j) in &active {
-            if s == r {
-                let n = rings.get(r).map_or(0, |x| x.points.len());
-                // Steps that meet at a point of the loop.
-                if j == i || (j + 1) % n == i || (i + 1) % n == j {
-                    continue;
+    };
+    let mut bands: Vec<Vec<usize>> = vec![Vec::new(); count];
+    for (k, st) in steps.iter().enumerate() {
+        for b in band_of(st.2 - largest_margin)..=band_of(st.3 + largest_margin) {
+            if let Some(band) = bands.get_mut(b) {
+                band.push(k);
+            }
+        }
+    }
+    let mut work = 0_usize;
+    for band in &mut bands {
+        band.sort_by(|x, y| {
+            let (Some(x), Some(y)) = (steps.get(*x), steps.get(*y)) else {
+                return std::cmp::Ordering::Equal;
+            };
+            x.0.total_cmp(&y.0).then(x.4.cmp(&y.4)).then(x.5.cmp(&y.5))
+        });
+        let mut active: Vec<(f64, usize, usize)> = Vec::new();
+        for k in band.iter() {
+            let Some(&(low, high, _, _, r, i)) = steps.get(*k) else {
+                continue;
+            };
+            active.retain(|(h, _, _)| *h + largest_margin >= low);
+            let (a, b) = point(r, i)?;
+            work = work.saturating_add(active.len().saturating_add(1));
+            if work > MOST_PAIRS {
+                return None;
+            }
+            for &(_, s, j) in &active {
+                if s == r {
+                    let n = rings.get(r).map_or(0, |x| x.points.len());
+                    // Steps that meet at a point of the loop.
+                    if j == i || (j + 1) % n == i || (i + 1) % n == j {
+                        continue;
+                    }
+                }
+                let (c, d) = point(s, j)?;
+                if cross(a, b, c, d, margin_of(r, s)) {
+                    return Some((s.min(r), s.max(r)));
                 }
             }
-            let (c, d) = point(s, j)?;
-            if cross(a, b, c, d, margin_of(r, s)) {
-                return Some((s.min(r), s.max(r)));
-            }
+            active.push((high, r, i));
         }
-        active.push((high, r, i));
     }
     None
+}
+
+/// The loops by the cells of a grid over their boxes (grown by a margin):
+/// the loops whose boxes hold a point are among those of its cell.
+struct Grid {
+    low: [f64; 2],
+    size: [f64; 2],
+    n: usize,
+    cells: Vec<Vec<usize>>,
+    /// Every loop, for a point outside the grid.
+    all: Vec<usize>,
+}
+
+impl Grid {
+    fn new(rings: &[Ring], margin: f64) -> Grid {
+        let mut low = [f64::INFINITY; 2];
+        let mut high = [f64::NEG_INFINITY; 2];
+        for r in rings {
+            low = [low[0].min(r.low[0] - margin), low[1].min(r.low[1] - margin)];
+            high = [
+                high[0].max(r.high[0] + margin),
+                high[1].max(r.high[1] + margin),
+            ];
+        }
+        let n = ((rings.len() as f64).sqrt().ceil() as usize).clamp(1, 256);
+        let size = [
+            ((high[0] - low[0]) / n as f64).max(f64::MIN_POSITIVE),
+            ((high[1] - low[1]) / n as f64).max(f64::MIN_POSITIVE),
+        ];
+        let mut grid = Grid {
+            low,
+            size,
+            n,
+            cells: vec![Vec::new(); n * n],
+            all: (0..rings.len()).collect(),
+        };
+        if !(size[0].is_finite() && size[1].is_finite()) {
+            grid.n = 0;
+            return grid;
+        }
+        for (j, r) in rings.iter().enumerate() {
+            let a = grid.cell([r.low[0] - margin, r.low[1] - margin]);
+            let b = grid.cell([r.high[0] + margin, r.high[1] + margin]);
+            for x in a[0]..=b[0] {
+                for y in a[1]..=b[1] {
+                    if let Some(cell) = grid.cells.get_mut(x * n + y) {
+                        cell.push(j);
+                    }
+                }
+            }
+        }
+        grid
+    }
+
+    fn cell(&self, p: [f64; 2]) -> [usize; 2] {
+        let at = |x: f64, low: f64, size: f64| {
+            let f = (x - low) / size;
+            if f.is_finite() && f > 0.0 {
+                (f as usize).min(self.n.saturating_sub(1))
+            } else {
+                0
+            }
+        };
+        let [px, py] = p;
+        let ([lx, ly], [sx, sy]) = (self.low, self.size);
+        [at(px, lx, sx), at(py, ly, sy)]
+    }
+
+    fn at(&self, p: [f64; 2]) -> &[usize] {
+        if self.n == 0 {
+            return &self.all;
+        }
+        let [x, y] = self.cell(p);
+        self.cells
+            .get(x * self.n + y)
+            .map_or(self.all.as_slice(), Vec::as_slice)
+    }
 }

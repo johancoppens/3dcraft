@@ -1113,7 +1113,19 @@ fn run_case(case: &Value, snap: Option<&Value>, verbose: bool) -> Vec<Outcome> {
             Ok(Ok(result)) => {
                 digest(&result);
                 booleans_ms = started.elapsed().as_secs_f64() * 1e3;
+                // The cost of `topo::check`'s region rule on the result,
+                // against the whole check (docs/design/topology.md).
+                let timed = std::time::Instant::now();
+                let _ = craft3d_topo::regionless(&result.body, &tolerance);
+                let region = timed.elapsed().as_secs_f64();
+                let timed = std::time::Instant::now();
                 let defects = check(&result.body, &tolerance);
+                let whole = timed.elapsed().as_secs_f64();
+                {
+                    let mut t = REGION_SECONDS.lock().unwrap();
+                    t.0 += region;
+                    t.1 += whole;
+                }
                 // The boolean's own check in full (volumes, reach, the
                 // faces far from the other operand, seeded points).
                 let broken = match craft3d_kernel::boolean::verify(
@@ -1455,6 +1467,10 @@ fn table(rows: &BTreeMap<(String, String), Row>, categories: &[String]) -> Strin
     out
 }
 
+/// Seconds spent in the region rule and in the whole check of the
+/// results, over every thread.
+static REGION_SECONDS: std::sync::Mutex<(f64, f64)> = std::sync::Mutex::new((0.0, 0.0));
+
 #[test]
 fn the_kernel_agrees_with_the_reference_kernel() {
     let started = std::time::Instant::now();
@@ -1595,6 +1611,8 @@ fn the_kernel_agrees_with_the_reference_kernel() {
         }
     }
     let _ = writeln!(report, "\ntook {:.1} s", started.elapsed().as_secs_f64());
+    let (region, whole) = *REGION_SECONDS.lock().unwrap();
+    println!("REGION: checks of the results {whole:.3} s, of which the region rule {region:.3} s");
     println!("{report}");
     if !filtered {
         let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/evidence/booleans");

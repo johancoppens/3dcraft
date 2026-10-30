@@ -672,6 +672,20 @@ pub fn wrap(
     depth: f64,
     tolerance: &Tolerance,
 ) -> Result<OpResult, KernelError> {
+    wrap_onto(profiles, surface, reversed, None, depth, tolerance)
+}
+
+/// [`wrap`] onto a face of a body: the profiles must lie on the face
+/// (every end and middle of their curves, `craft3d_topo::face_holds`), or
+/// they are refused; a face that cannot be charted is not held to it.
+pub fn wrap_onto(
+    profiles: &[Profile],
+    surface: &Surface,
+    reversed: bool,
+    face: Option<(&Body, &craft3d_topo::Face)>,
+    depth: f64,
+    tolerance: &Tolerance,
+) -> Result<OpResult, KernelError> {
     if !(depth.is_finite() && depth.abs() > tolerance.linear) {
         return Err(KernelError::InvalidSize {
             name: "depth",
@@ -684,6 +698,28 @@ pub fn wrap(
     };
     if profiles.is_empty() {
         return Err(refuse("there is no profile to wrap"));
+    }
+    if let Some((body, on)) = face {
+        let mut points = Vec::new();
+        for p in profiles {
+            for l in std::iter::once(&p.outer).chain(p.holes.iter()) {
+                for segment in &l.segments {
+                    for t in [0.0, 0.5] {
+                        let (u, v) = dev.uv(on_segment(segment, t))?;
+                        points.push(surface.eval(u, v));
+                    }
+                }
+            }
+        }
+        if let Some(held) = craft3d_topo::face_holds(body, on, tolerance, &points)
+            && let Some(k) = held.iter().position(|h| !h)
+        {
+            let at = points.get(k).copied().unwrap_or(Vec3::ZERO);
+            return Err(refuse(format!(
+                "the profile leaves the face at ({:.6}, {:.6}, {:.6}): a wrapped profile lies on the face it is wrapped onto",
+                at.x, at.y, at.z
+            )));
+        }
     }
     let mut parts = Vec::with_capacity(profiles.len());
     for p in profiles {
