@@ -82,6 +82,43 @@ impl Example {
             _ => None,
         }
     }
+
+    /// The fonts a script example's texts are set in, each once, in order:
+    /// the `font` of every `sketch.text…` step, `sans` (the commands'
+    /// default) for a `sketch.text` or `sketch.textOnCurve` without one. A
+    /// host whose fonts come later (the web page fetches them) wants these
+    /// before it runs the script. Empty for a published file, and for a
+    /// script that cannot be read (running it says why).
+    pub fn fonts(&self) -> Vec<String> {
+        let Source::Script(text) = self.source else {
+            return Vec::new();
+        };
+        let Ok(Value::Array(steps)) = serde_json::from_str::<Value>(text) else {
+            return Vec::new();
+        };
+        let mut out: Vec<String> = Vec::new();
+        for step in &steps {
+            let Some(command) = step.get(0).and_then(Value::as_str) else {
+                continue;
+            };
+            if !command.starts_with("sketch.text") {
+                continue;
+            }
+            let font = match step
+                .get(1)
+                .and_then(|p| p.get("font"))
+                .and_then(Value::as_str)
+            {
+                Some(font) => font,
+                None if matches!(command, "sketch.text" | "sketch.textOnCurve") => "sans",
+                None => continue,
+            };
+            if !out.iter().any(|f| f == font) {
+                out.push(font.to_string());
+            }
+        }
+        out
+    }
 }
 
 /// One of the start screen's examples: a part of the user guide

@@ -437,6 +437,10 @@ fn store_prefs(text: &str) {
     }
 }
 
+/// What came of the font fetches that ended: (font, outcome), for the
+/// next frame.
+type FontNews = Rc<RefCell<Vec<(String, Result<(), String>)>>>;
+
 struct Page {
     host: WebHost,
     inbox: Inbox,
@@ -460,7 +464,7 @@ struct Page {
     /// The built-in fonts asked for (`crate::fonts`), and the failures of
     /// their fetches, for the next frame to say.
     fonts: crate::fonts::FontFetches,
-    font_news: Rc<RefCell<Vec<(String, Result<(), String>)>>>,
+    font_news: FontNews,
     title: String,
     stored: String,
     /// The assertions and outputs, measured in the checking worker
@@ -998,21 +1002,10 @@ impl Page {
         let news: Vec<(String, Result<(), String>)> =
             self.font_news.borrow_mut().drain(..).collect();
         for (name, outcome) in news {
-            match outcome {
-                Ok(()) => self.host.note(
-                    "font",
-                    true,
-                    format!("the font {name} is here: run the text command again"),
-                ),
-                Err(why) => {
-                    self.fonts.failed(&name);
-                    self.host.note(
-                        "font",
-                        false,
-                        format!("the font {name} could not be fetched: {why}"),
-                    );
-                }
+            if outcome.is_err() {
+                self.fonts.failed(&name);
             }
+            self.host.font_fetched(&name, outcome);
         }
         for (name, url) in self.fonts.due() {
             let (news, ctx) = (Rc::clone(&self.font_news), ctx.clone());

@@ -341,6 +341,10 @@ pub struct WebHost {
     fetching: Option<String>,
     /// The address of a published example to fetch, for the page.
     example_fetch: Option<String>,
+    /// The built-in fonts the chosen example waits for, once said; and
+    /// those whose fetch failed (the example then runs and says why).
+    example_fonts: Option<Vec<String>>,
+    fonts_failed: BTreeSet<String>,
     /// The scene to show is not there yet: the window is drawn as it was
     /// (`Shell::ui_away`), with the work over it.
     away: bool,
@@ -382,6 +386,8 @@ impl WebHost {
             about: None,
             fetching: None,
             example_fetch: None,
+            example_fonts: None,
+            fonts_failed: BTreeSet::new(),
             away: false,
             last_answer: None,
         }
@@ -412,6 +418,65 @@ impl WebHost {
     /// (`examples/<file>`, beside the page), once.
     pub fn take_example_fetch(&mut self) -> Option<String> {
         self.example_fetch.take()
+    }
+
+    /// Whether a script example must wait for built-in fonts its texts
+    /// use that are not here yet (the page fetches them, `crate::fonts`):
+    /// each is wanted, and the wait is said once. A font that failed to
+    /// come is not waited for: the example runs and says why.
+    fn waits_for_fonts(&mut self, example: &craft3d_ui_egui::shell::Example) -> bool {
+        let missing: Vec<String> = example
+            .fonts()
+            .into_iter()
+            .filter(|f| !craft3d_engine::fonts::ready(f) && !self.fonts_failed.contains(f))
+            // Only a built-in font is fetched; another is the document's.
+            .filter(|f| craft3d_engine::fonts::want(f).is_ok())
+            .collect();
+        if missing.is_empty() {
+            return false;
+        }
+        if self.example_fonts.as_ref() != Some(&missing) {
+            self.note(
+                "example",
+                true,
+                format!(
+                    "fetching the font {} for {}",
+                    missing.join(", "),
+                    example.title
+                ),
+            );
+            self.example_fonts = Some(missing);
+        }
+        true
+    }
+
+    /// What came of fetching built-in font `name` (the page's): said, and
+    /// a failure remembered so a waiting example runs and says why.
+    pub fn font_fetched(&mut self, name: &str, outcome: Result<(), String>) {
+        let waiting = self
+            .example_fonts
+            .as_ref()
+            .is_some_and(|f| f.iter().any(|f| f == name));
+        match outcome {
+            Ok(()) => {
+                self.fonts_failed.remove(name);
+                if !waiting {
+                    self.note(
+                        "font",
+                        true,
+                        format!("the font {name} is here: run the text command again"),
+                    );
+                }
+            }
+            Err(why) => {
+                self.fonts_failed.insert(name.to_string());
+                self.note(
+                    "font",
+                    false,
+                    format!("the font {name} could not be fetched: {why}"),
+                );
+            }
+        }
     }
 
     /// The name of the file being fetched, while it is.
@@ -823,7 +888,13 @@ impl WebHost {
             let _ = self.shell.take_example();
             self.fetching(name);
             self.example_fetch = Some(format!("examples/{name}"));
+        } else if let Some(example) = self.shell.peek_example()
+            && self.waits_for_fonts(example)
+        {
+            // Its texts' fonts are being fetched: it runs once they are
+            // here (a frame after `font_fetched`).
         } else if let Some(example) = self.shell.take_example() {
+            self.example_fonts = None;
             let session = &mut self.session;
             let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 craft3d_ui_egui::shell::run_example(session, example)
@@ -2208,6 +2279,62 @@ mod tests {
         // Nothing is left in memory, and nothing is recent in the browser.
         assert!(host.session.file_names().is_empty());
         assert!(host.shell.recent_files().is_empty());
+    }
+
+    /// A script example whose text needs a built-in font that is not here
+    /// (on the page it is fetched on first use) waits for it, then runs:
+    /// it does not fail and close its new document on the first click.
+    #[test]
+    fn an_example_with_text_waits_for_its_font_then_builds() {
+        let mut host = host();
+        let example = craft3d_ui_egui::shell::EXAMPLES
+            .iter()
+            .find(|e| e.id == "nameplate")
+            .unwrap();
+        assert_eq!(example.fonts(), ["sans"]);
+        host.shell.choose_example(example);
+        if !craft3d_engine::fonts::ready("sans") {
+            host.pump();
+            // Waiting: no document yet, the font wanted, the wait said.
+            assert!(host.session.document_statuses().is_empty());
+            assert!(
+                craft3d_engine::fonts::wanted()
+                    .iter()
+                    .any(|(name, _)| *name == "sans")
+            );
+            let report = host.shell.last_command.as_ref().unwrap();
+            assert!(report.ok && report.text.contains("fetching the font sans"));
+            host.pump();
+            assert!(host.session.document_statuses().is_empty());
+            // The page fetched it.
+            let (_, file) = craft3d_engine::fonts::wanted()
+                .into_iter()
+                .find(|(name, _)| *name == "sans")
+                .unwrap();
+            let bytes = std::fs::read(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../assets/fonts")
+                    .join(file),
+            )
+            .unwrap();
+            host.font_fetched("sans", craft3d_engine::fonts::register("sans", &bytes));
+        }
+        host.pump();
+        assert_eq!(host.session.document_statuses().len(), 1);
+        let report = host.shell.last_command.as_ref().unwrap();
+        assert!(report.ok, "{}", report.text);
+    }
+
+    /// A font that cannot be fetched is not waited for: the example runs
+    /// and says why it failed.
+    #[test]
+    fn a_font_that_failed_lets_the_example_run_and_say_why() {
+        let mut host = host();
+        host.font_fetched("serif", Err("offline".into()));
+        assert!(!host.shell.last_command.as_ref().unwrap().ok);
+        assert!(host.fonts_failed.contains("serif"));
+        host.font_fetched("serif", Ok(()));
+        assert!(!host.fonts_failed.contains("serif"));
     }
 
     /// An assembly on the page: regeneration elsewhere is refused for it
