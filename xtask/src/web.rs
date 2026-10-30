@@ -306,6 +306,9 @@ pub fn package(
     crate::package::write(&site.join("LICENSE"), &licence)?;
     // The studio look's environments, fetched by the page when chosen
     // (not in the module: they would weigh on every load).
+    // The built-in fonts, fetched by the page when a text first uses one
+    // (not in the module: the web budget, docs/design/text.md).
+    crate::package::copy_fonts(&site.join("fonts"))?;
     let environments = repo.join("assets").join("environments");
     for name in ["studio.hdr", "outdoor.hdr", "workshop.hdr", "LICENSE.md"] {
         let bytes = crate::package::read(&environments.join(name))?;

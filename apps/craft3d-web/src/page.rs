@@ -457,6 +457,10 @@ struct Page {
     /// module), and what came of it: `None` while it is on its way, the
     /// error when it failed.
     environments: Rc<RefCell<BTreeMap<String, Option<String>>>>,
+    /// The built-in fonts asked for (`crate::fonts`), and the failures of
+    /// their fetches, for the next frame to say.
+    fonts: crate::fonts::FontFetches,
+    font_news: Rc<RefCell<Vec<(String, Result<(), String>)>>>,
     title: String,
     stored: String,
     /// The assertions and outputs, measured in the checking worker
@@ -575,6 +579,8 @@ impl Page {
             unsaved,
             gpu_error,
             environments: Rc::new(RefCell::new(BTreeMap::new())),
+            fonts: crate::fonts::FontFetches::default(),
+            font_news: Rc::new(RefCell::new(Vec::new())),
             title: String::new(),
             stored,
             checks,
@@ -985,9 +991,47 @@ impl Page {
     }
 }
 
+impl Page {
+    /// Fetches the built-in fonts a text asked for (once each), and says
+    /// what came of the fetches that ended.
+    fn fetch_fonts(&mut self, ctx: &egui::Context) {
+        let news: Vec<(String, Result<(), String>)> =
+            self.font_news.borrow_mut().drain(..).collect();
+        for (name, outcome) in news {
+            match outcome {
+                Ok(()) => self.host.note(
+                    "font",
+                    true,
+                    format!("the font {name} is here: run the text command again"),
+                ),
+                Err(why) => {
+                    self.fonts.failed(&name);
+                    self.host.note(
+                        "font",
+                        false,
+                        format!("the font {name} could not be fetched: {why}"),
+                    );
+                }
+            }
+        }
+        for (name, url) in self.fonts.due() {
+            let (news, ctx) = (Rc::clone(&self.font_news), ctx.clone());
+            wasm_bindgen_futures::spawn_local(async move {
+                let outcome = match fetch(&url).await {
+                    Ok(bytes) => craft3d_engine::fonts::register(name, &bytes),
+                    Err(why) => Err(why),
+                };
+                news.borrow_mut().push((name.to_string(), outcome));
+                ctx.request_repaint();
+            });
+        }
+    }
+}
+
 impl eframe::App for Page {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.fetch_environment(ctx);
+        self.fetch_fonts(ctx);
         // Files dropped on the page are read in the background.
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         for file in dropped {

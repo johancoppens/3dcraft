@@ -63,6 +63,16 @@
         <Component Id="Licence">
           <File Id="LICENSE.txt" Source="$(var.Licence)" Name="LICENSE.txt" KeyPath="yes" />
         </Component>
+        <!-- The built-in fonts beside the program, with their licences
+             (fetched by `cargo xtask fonts`, never committed). -->
+        <Directory Id="FontsFolder" Name="fonts">
+          <Component Id="Fonts">
+            <File Id="NotoSans_Regular.otf" Source="$(var.BinDir)\fonts\NotoSans-Regular.otf" KeyPath="yes" />
+            <File Id="NotoSans_OFL.txt" Source="$(var.BinDir)\fonts\NotoSans-OFL.txt" />
+            <File Id="JetBrainsMono_Regular.ttf" Source="$(var.BinDir)\fonts\JetBrainsMono-Regular.ttf" />
+            <File Id="JetBrainsMono_OFL.txt" Source="$(var.BinDir)\fonts\JetBrainsMono-OFL.txt" />
+          </Component>
+        </Directory>
       </Directory>
     </StandardDirectory>
 
@@ -70,6 +80,7 @@
       <ComponentRef Id="App" />
       <ComponentRef Id="Cli" />
       <ComponentRef Id="Licence" />
+      <ComponentRef Id="Fonts" />
     </Feature>
   </Package>
 </Wix>

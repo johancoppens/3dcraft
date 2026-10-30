@@ -41,6 +41,7 @@
 
 pub mod checks;
 pub mod flags;
+pub mod fonts;
 pub mod host;
 #[cfg(target_arch = "wasm32")]
 mod page;

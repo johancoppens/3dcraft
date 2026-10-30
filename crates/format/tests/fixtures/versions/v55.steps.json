@@ -1,0 +1,11 @@
+[
+ ["variable.set", {"name": "n", "expr": "55"}],
+ ["sketch.create", {"name": "Rings"}],
+ ["sketch.text", {"sketch": "Rings", "text": "0O{n - 55}", "font": "stroke", "size": 10}],
+ ["feature.extrude", {"sketch": "Rings", "distance": 2, "name": "Rings3D"}],
+ ["sketch.create", {"name": "Engraving", "plane": "xy", "offset": 10}],
+ ["sketch.circle", {"sketch": "Engraving", "center": [0, 0], "radius": 30, "construction": true}],
+ ["sketch.textOnCurve", {"sketch": "Engraving", "curve": "e2", "text": "FORMAT {n}", "font": "stroke", "size": 5, "offset": 1, "side": "right", "align": "center", "start": 47}],
+ ["sketch.text", {"sketch": "Engraving", "text": "Line one\nLine {{two}}", "font": "stroke", "size": 3, "sizeOf": "em", "at": [0, -50], "anchor": "top", "align": "right", "rotation": 15, "lineSpacing": 1.3, "width": 30}],
+ ["font.add", {"path": "restricted.ttf", "name": "needed"}]
+]

@@ -1,0 +1,75 @@
+# Text and fonts
+
+Text in sketches: closed profiles of a font's glyphs that extrude, cut and emboss as any profile does, a text along a curve, a single-stroke font for engraving and plotters, and the fonts a document keeps. Roadmap: [`../roadmap.md`](../roadmap.md) › *R1* (text and fonts, decided 2026-10-30). Code: `crates/font` (`craft3d-font`, L0, standalone: font files, outlines, layout, the fill rule, the stroke font), `crates/doc/src/text.rs` (the text entity and the document's fonts), `crates/regen/src/text.rs` (layout in regeneration), `crates/engine/src/text_cmds.rs` and `fonts.rs` (commands, the built-in fonts at run time), `apps/craft3d-web/src/fonts.rs` (the page's lazy fetch). Guide: [`../guide/09-features.md`](../guide/09-features.md) › *Text*.
+
+## Interface
+
+- `sketch.text {sketch, text, size, font = "sans", sizeOf = cap|em, at, anchor = baseline|top|middle|bottom, align = left|center|right, rotation, lineSpacing, width, construction}`: a text entity (`Geometry::Text`) anchored at a point entity `at` (so constraints place it). `text` is a template: literal text with formulas in braces (`"Part {partNo}"`), `{{` and `}}` for a brace; a formula's length is written in the document's unit, an angle in its angle unit, a number plainly (whole numbers without a point, others with up to six decimals).
+- `sketch.textOnCurve {sketch, curve, text, size, start, offset, side = left|right, reversed, align, anchor, lineSpacing}`: the same along a line, arc, circle or spline of the sketch.
+- `sketch.textEdit {sketch, entity, …}`: any field changed.
+- `font.add {path | builtin, name, replace}`, `font.list {}`.
+- Measure `textExtent {sketch, text, what = width|height|capHeight|lines|inkWidth|inkHeight}` for assertions and outputs (`assert.add`, `variable.measure`).
+- Names: each contour of a glyph is a curve `e7.glyph(i,U+XXXX).contour(j)`: the text entity, the character's place in the text (every character counts, spaces and newlines too), the character, and the contour (the stroke, in the stroke font). Kept in a name as the text's curve word and two words with the tags 7 and 8 (`craft3d_doc::GlyphContour`), so faces swept from it are `F2:side(e7.glyph(0,U+0041).contour(0))` and caps list them.
+- Format 55 (temporary number until merge): the sketch entity of type `text`, and the document's `fonts`, each font's bytes the entry `blobs/<sha256>.font` when it may be kept.
+
+## Method
+
+### Fonts read into exact curves
+
+`craft3d-font` reads OpenType and TrueType files with `ttf-parser` (MIT/Apache-2.0, no_std, approved 2026-10-30). Outlines come as the font has them: TrueType lines and quadratic Béziers (implied on-curve points resolved by the parser), CFF lines and cubic Béziers; the numbers are the font's, `f32` converted to `f64` exactly. A glyph contour becomes **one B-spline** in regeneration: its degree is the highest of its segments (2 for TrueType, 3 for CFF), every segment raised to it (degree elevation, exact), joined at knots as often as the degree. The profile code cuts a spline at such knots ([`sweeps.md`](sweeps.md)), so each segment is a piece, and a piece whose control points lie on its chord in order is a line (`profile::straight_piece`, below): a glyph's straight sides sweep planes. The map from font units to the sketch is a scale, a turn and a shift (along a curve, one such map per glyph), which keeps Béziers Béziers, so the profile is the font's outline exactly.
+
+**Kerning.** Between neighbouring glyphs: the GPOS `kern` feature's pair adjustments (format 1, pairs; format 2, classes; the first subtable of a lookup that covers the pair applies, lookups add), or, in a font without one, the `kern` table's first horizontal subtable. Shaping (ligatures, contextual forms, complex scripts) is not done: R2 (rustybuzz).
+
+**Layout.** Left to right; lines at newlines and, with a width, at spaces (a word wider than the line between characters; the spaces at a break dropped); line height `(ascender − descender + lineGap) × lineSpacing`; each line aligned left, centred or right of the anchor; the anchor's height the first baseline, the capitals' top, the middle between that top and the last baseline, or the last baseline. `size` is the cap height (the font's `OS/2 sCapHeight`, else the top of its "H", else 0.7 em) or the em.
+
+### The fill rule
+
+A glyph may overlap itself (contours of a variable font, a stem drawn through a bowl) or cross itself; the font fills the points its contours wind round a nonzero number of times (TrueType and CFF both). A sketch profile must be simple loops that neither touch nor cross, so `fill_nonzero` replaces the contours by the boundary of the region they fill, with our own code (no polygon clipper, no flattening):
+
+1. Every pair of segments whose boxes meet is intersected by subdivision of their control polygons down to `eps` (1e-7 em). Segments that share a joint are not intersected near it (their halves at the joint are skipped), since a smooth joint keeps them within `eps` of each other over a stretch. Hits are clustered; a cluster that spreads over more than 64 `eps` is two curves along each other and refused; straight segments on one line are checked first, exactly.
+2. Each segment is cut at the points on it, a point shared by both segments exactly (a segment's end where the meeting is at one).
+3. A piece is a boundary of the filled region when the winding number just left of its middle and just right of it differ in being zero; it is kept, turned so the filled side is on its left. The winding number is exact for the curves: crossings of a ray with the y-monotone parts of each segment (split at the roots of `y'`), each found by bisection, half open in y so a joint counts once. A contour no other meets is decided by one piece.
+4. The kept pieces are joined end to end (the next piece of the same or the next segment first), and pieces of one segment that follow each other are made one again (the sub-curve over their joint range), so a glyph without overlaps comes back as it went in.
+
+### The single-stroke font
+
+The Hershey data's terms (use by anyone, "providing that" an acknowledgement is distributed and the data is not converted to the format NTIS distributes) are conditions on a dataset of unclear provenance; the conservative choice (2026-10-30) is our own glyphs, drawn for 3DCraft as data in `crates/font/src/stroke.rs`: a grid of 30 units to the em (capitals 21, x-height 14, descender −7), each glyph a path of `M` (start a stroke), `L` (line), `A` (elliptic arc from angle to angle, either way, as cubic Béziers of at most a quarter turn each, `k = 4/3 tan(θ/4)`) and `E` (a closed ellipse). Letters A–Z, a–z, digits, common punctuation and signs, and accented Latin (grave, acute, circumflex, diaeresis, tilde, ring, caron, cedilla, slash on 66 base letters). A stroke text gives open curves (a ring, closed ones): for DXF and SVG export and engraving paths, not for extruding (an extrusion names the open curve).
+
+### Fonts in the document
+
+`font.add` keeps a font's bytes in the document (`DocFont { name, family, style, sha256, embedding, blob }`), so a document opens the same everywhere. The OpenType embedding bits are respected (`OS/2 fsType`): installable and editable fonts are kept; restricted, preview-and-print (the document is edited, so it is not a preview) and bitmap-only (bit 9: outlines must not be embedded) fonts are not: the document records the font by name and hash, the bytes are used for this session only (`DocFont::session`, never saved), and after a reopen a text in it fails with "the document needs font …: add it again on this machine". A built-in font a text names is added to the document when first used. The sketch solve's cache key holds every font's name, hash and whether its bytes are there.
+
+### Built-in fonts
+
+Noto Sans Regular (CFF, cubic) as `sans` and JetBrains Mono Regular (TrueType, quadratic) as `mono`, both SIL OFL 1.1 (`ATTRIBUTION.md`). Never committed: `craft3d_font::BUILTIN` pins each file and its licence to a URL (a commit of notofonts.github.io, a release tag of JetBrains Mono) and a SHA-256; `cargo xtask fonts` fetches them into `$CRAFT3D_FONTS` or `assets/fonts/` (gitignored), the Check and Gate workflows run it into a directory kept between runs, and `cargo xtask package` copies them into every package: `share/craft3d/fonts` (Linux), `Contents/Resources/fonts` (macOS), `fonts\` beside the program (Windows zip and MSI), `fonts/` of the web site. At run time the desktop and the CLI look in `$CRAFT3D_FONTS`, beside the program (`fonts`, `../share/craft3d/fonts`, `../Resources/fonts`) and in the source tree's `assets/fonts`, and check the pinned SHA-256. The browser has no files: a text in a built-in font that is not here fails with "being fetched", the page fetches `fonts/<file>` (once per font), registers it (`craft3d_engine::fonts::register`, checked against the SHA-256) and says so; the command is run again. The fonts are never in the module (the web budget).
+
+### Text along a curve
+
+The curve by arc length: exact for lines, arcs and circles (a circle starts at angle 0, counter-clockwise), a polyline of the spline within a hundredth of the tolerance otherwise. Each glyph is placed rigidly, its baseline's middle on the curve at `start + x` (the glyph's middle along the laid-out line), its baseline along the tangent there and lifted by `offset` along the normal: so every glyph keeps its exact shape and its area, and its baseline is tangent to the curve (an offset curve's tangent is the curve's). `side: right` stands it on the other side of the curve and runs it the other way, so it still reads; `reversed` runs the curve the other way. On an open curve a glyph past either end is refused with the length it needs.
+
+### Straight pieces of a spline are lines
+
+`profile::straight_piece` (kernel, 2026-10-30): a piece of a spline of degree above one whose control points all lie within a thousandth of the tolerance of the chord between its ends, with their projections in order along it, is the line between its ends. A Bézier lies in the hull of its control points, and with their projections in order it runs once from end to end, so it is that segment within the same distance: general for any spline, not a rule for text, though text is what makes such pieces (a glyph's lines raised to the degree of its curves).
+
+### Caps and hostile input
+
+Font bytes are hostile: at most 32 MiB, 2 000 contours and 20 000 segments a glyph, 10 000 characters a text, 64 formulas a template, 20 000 curves the texts of a sketch, the subdivision of the fill rule 4 000 000 steps and 50 000 hits a glyph, 4 096 control points a contour (the kernel's spline cap), 64 fonts a document. Nothing panics: `hostile_font_bytes_never_panic` runs seeded truncations and byte flips of both built-in fonts through parsing, metrics, layout, outlines and the fill rule.
+
+## Tests (oracles)
+
+- Glyph areas against the font's outline integrated independently (the shoelace formula on 2 000 samples a segment), both fonts (`crates/font/tests/fonts.rs`).
+- The advance width of a string is the sum of its advances and kerning; the GPOS kerning of "AV" is read (negative).
+- "O" has one hole, "B" and "8" two, "i" two regions, "%" three regions and two holes.
+- `fsType` read for every permission; a restricted font is not kept, and a reopened document asks for it (`crates/engine/tests/text.rs`).
+- An extruded text is valid, deep-checked, its meshes watertight, its volume the glyphs' area times the depth (1e-6), in both fonts; a changed formula or text regenerates; a reference to the top of a glyph that moved fails by its name and comes back when the glyph does; text on a circle has every glyph's baseline middle at the radius plus the offset (1e-9) and its baseline square to the radius (1e-12), and its extrusion has the glyphs' area; the same text from 1e-3 to 1e3 scales as the cube; a stroke text exports DXF and SVG and is refused as a profile; `textExtent` in an assertion and an output; save and reopen bit for bit.
+- The web page fetches a font once, only when a text wants it (`apps/craft3d-web/src/fonts.rs`).
+
+## Findings and history
+
+- 2026-10-30: built (agent `text`). Phase 4, text wrapped onto a cylinder or developable surface: see *Owed*.
+
+## Owed
+
+- Text wrapped onto a cylinder, a cone or another developable surface, embossed or engraved (`feature.wrap`): the method is the development's map (`docs/design/developable.md`: an isometry, exact in closed form on a cylinder, `(s, z) → (r cos(s/r), r sin(s/r), z)`, and a cone, polar about the apex's image) applied to the profile's curves (fitted within the tolerance), a sheet of the glyph regions on the surface, `kernel::plate` to give it a thickness out (emboss) or in (engrave) with square rims, and a boolean with the body; not built.
+- Shaping (ligatures, marks, right to left, complex scripts): R2, with rustybuzz.
+- A pattern of a text (refused: one text per place), a text as a sweep's path.

@@ -289,6 +289,20 @@ fn set_mode(_path: &Path, _executable: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// The built-in fonts and their licences (`cargo xtask fonts` fetches
+/// them first, pinned by SHA-256), copied into `dir`: where the program
+/// looks for them beside itself (docs/design/text.md).
+pub(crate) fn copy_fonts(dir: &Path) -> Result<(), String> {
+    crate::fonts::run()?;
+    let from = crate::fonts::dir();
+    for font in craft3d_font::BUILTIN {
+        for file in [font.file, font.licence] {
+            copy(&from.join(file), &dir.join(file), false)?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn write(to: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(dir) = to.parent() {
         mkdir(dir)?;
@@ -391,6 +405,7 @@ impl Packer {
             copy(&self.binary(name)?, &prefix.join("bin").join(name), true)?;
         }
         let share = prefix.join("share");
+        copy_fonts(&share.join("craft3d").join("fonts"))?;
         let linux = |f: &str| self.packaging(&format!("linux/{f}"));
         copy(
             &linux(&format!("{APP_ID}.desktop")),
@@ -557,6 +572,7 @@ impl Packer {
             plist.replace("@VERSION@", &self.version).as_bytes(),
         )?;
         write(&contents.join("PkgInfo"), b"APPL????")?;
+        copy_fonts(&contents.join("Resources").join("fonts"))?;
         let icns = icns(&self.icon_pngs(&ICNS_SIZES)?)?;
         write(&contents.join("Resources").join("craft3d.icns"), &icns)?;
         let jig = icns_of(&self.jig_icon_pngs(&ICNS_SIZES)?)?;
@@ -628,6 +644,7 @@ impl Packer {
             copy(&exe, &dir.join(file_name), true)?;
         }
         copy(&self.repo.join("LICENSE"), &dir.join("LICENSE.txt"), false)?;
+        copy_fonts(&dir.join("fonts"))?;
         let ico = ico(&self.icon_pngs(&ICO_SIZES)?)?;
         write(&dir.join("craft3d.ico"), &ico)?;
         let jig = ico_of(&self.jig_icon_pngs(&ICO_SIZES)?)?;

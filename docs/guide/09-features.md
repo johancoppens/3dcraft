@@ -33,6 +33,47 @@ numbers other than 0 (`[1, "25 mm", 0]`: give all as lengths or all as numbers).
 - **Offset profile** (`feature.offsetProfile`): every loop of a sketch grown or shrunk by a distance;
   extrude it, or export it as a laser's path with its kerf.
 
+## Text
+
+`sketch.text` puts a text in a sketch: the outlines of its letters, closed profiles that extrude, cut and
+emboss as any profile does. Text may hold formulas in braces, written again at every regeneration: a
+length in the document's unit, an angle in its angle unit, a number as it is (`{{` and `}}` write a
+brace). `size` is the height of the capitals (or, with `sizeOf: "em"`, the em). A raised serial number
+on a plate:
+
+```json
+[
+ ["variable.set", {"name": "partNo", "expr": "42"}],
+ ["feature.block", {"size": [60, 20, 3], "name": "Plate"}],
+ ["sketch.create", {"name": "Label", "face": "F1:face(1)"}],
+ ["sketch.text", {"sketch": "Label", "text": "No. {partNo}", "size": "8 mm", "at": [30, 10], "align": "center", "anchor": "middle"}],
+ ["feature.extrude", {"sketch": "Label", "distance": "1 mm", "join": "Plate", "name": "Raised"}]
+]
+```
+
+- **Fonts.** `sans` (Noto Sans) and `mono` (JetBrains Mono) come with 3DCraft; `stroke` is the
+  single-stroke font, for engraving, CNC, lasers and pen plotters: its letters are open strokes, exported
+  with `file.export` as DXF or SVG of the sketch, not extruded. `font.add` adds any OpenType or
+  TrueType file under a name (`font.list` lists them all). The document keeps the font, so it opens the
+  same on another machine, unless the font forbids that (its embedding permission): then the document only
+  names the font, and asks for it again when it is opened.
+- **Placing it.** The text stands on its point `at` (a point of the sketch, so constraints can move it):
+  `anchor` says which line sits there (the first baseline, the top of the capitals, the middle, the last
+  baseline), `align` whether the lines go right of it, around it or left of it, and `rotation` turns it.
+  Lines break at newlines (`\n` in JSON), and with a `width` also at spaces. `lineSpacing` scales the
+  font's own line height.
+- **Along a curve.** `sketch.textOnCurve` sets the letters upright along a line, arc, circle or spline of
+  the sketch: each letter keeps its shape, its baseline along the curve; `start` is the length along the
+  curve where it starts, `offset` lifts it off the curve, `side: "right"` puts it on the other side
+  (still reading left to right), `reversed` runs the curve the other way.
+- **Names.** Each outline of a letter is named after the text, the letter's place in the text and the
+  letter: the side of the B of `"AB"` extruded is `F3:side(e2.glyph(1,U+0042).contour(0))`. Change the text
+  and a face of a letter that is no longer at its place fails by its name; it is never handed to another
+  letter. `sketch.textEdit` changes the text, font, size or anything else; `sketch.inspect` lists the
+  glyphs with their contours.
+- **Measuring.** The measure `textExtent` (`what`: `width`, `height`, `capHeight`, `lines`, `inkWidth`,
+  `inkHeight`) holds a text to a size in an assertion, or makes it an output for formulas.
+
 ## Booleans
 
 `feature.boolean` with `op` `union`, `subtract` or `intersect` combines the body of `target` with the

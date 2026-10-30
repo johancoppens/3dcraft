@@ -329,7 +329,7 @@ fn parse_path(path: &str, shift: P2, out: &mut Vec<Contour>) -> Result<(), FontE
                     current.push(Seg::cubic(p0, p1, p2, p3));
                     a = b;
                 }
-                pen = Some(point(a1));
+                pen = current.last().map(Seg::end).or(Some(point(a1)));
             }
             "E" => {
                 flush(&mut current, out);

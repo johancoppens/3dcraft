@@ -197,6 +197,40 @@ fn collinear_overlap(a: &Seg, b: &Seg, eps: f64) -> bool {
     hi - lo > eps
 }
 
+/// Where `a` and `b` meet, from a guess: Newton's method on
+/// `a(ta) − b(tb) = 0` (two equations, two unknowns), kept in [0, 1];
+/// the guess itself where the curves are tangent there.
+fn refine(a: &Seg, b: &Seg, ta: f64, tb: f64) -> (f64, f64) {
+    let (mut s, mut t) = (ta, tb);
+    for _ in 0..12 {
+        let f = sub(a.eval(s), b.eval(t));
+        let (da, db) = (a.derivative(s), b.derivative(t));
+        // [da, −db] (ds, dt) = −f.
+        let det = -cross(da, db);
+        let scale = (da[0].hypot(da[1]) * db[0].hypot(db[1])).max(f64::MIN_POSITIVE);
+        if !(det.abs() > 1e-12 * scale) {
+            return (ta, tb);
+        }
+        let ds = (f[0] * db[1] - f[1] * db[0]) / det;
+        let dt = (da[1] * f[0] - da[0] * f[1]) / det;
+        let (ns, nt) = ((s + ds).clamp(0.0, 1.0), (t + dt).clamp(0.0, 1.0));
+        if !(ns.is_finite() && nt.is_finite()) {
+            return (ta, tb);
+        }
+        let done = (ns - s).abs() < 1e-15 && (nt - t).abs() < 1e-15;
+        (s, t) = (ns, nt);
+        if done {
+            break;
+        }
+    }
+    // Only a step that brought the curves together is taken.
+    if dist(a.eval(s), b.eval(t)) <= dist(a.eval(ta), b.eval(tb)) {
+        (s, t)
+    } else {
+        (ta, tb)
+    }
+}
+
 /// A point where segments meet, made one.
 struct Node {
     at: P2,
@@ -245,7 +279,10 @@ pub fn fill_nonzero(contours: &[Contour], eps: f64) -> Result<Vec<Contour>, Font
             }
         }
         let contour = Contour { segs, closed: true };
-        if contour.segs.is_empty() || contour.signed_area().abs() <= eps * eps {
+        // A contour of no extent is nothing; one whose signed area is zero
+        // may still fill (a figure of eight: two lobes wound both ways).
+        let b = contour.bbox();
+        if contour.segs.is_empty() || (b[2] - b[0]).max(b[3] - b[1]) <= eps {
             continue;
         }
         total = total.saturating_add(contour.segs.len());
@@ -371,6 +408,9 @@ pub fn fill_nonzero(contours: &[Contour], eps: f64) -> Result<Vec<Contour>, Font
                 let spread = cluster
                     .iter()
                     .fold(0.0f64, |m, h| m.max(dist(a.seg.eval(h.0), a.seg.eval(ta))));
+                // The meeting point to the last bits: Newton on
+                // a(ta) = b(tb) from the cluster's middle.
+                let (ta, tb) = refine(&a.seg, &b.seg, ta, tb);
                 let pa = a.seg.eval(ta);
                 // The joint two segments of a contour share is not a
                 // crossing.
@@ -540,14 +580,27 @@ pub fn fill_nonzero(contours: &[Contour], eps: f64) -> Result<Vec<Contour>, Font
                         && kept.get(k).is_some_and(|q| dist(q.0.start(), end) <= join)
                 })
                 .collect();
+            // Of several (contours that touch at a point), the one that
+            // turns furthest left: the filled side is on the left, so that
+            // keeps each loop round its own region.
+            let incoming = piece.0.derivative(1.0);
+            let turn = |k: usize| {
+                kept.get(k).map_or(f64::NEG_INFINITY, |q| {
+                    let out = q.0.derivative(0.0);
+                    cross(incoming, out).atan2(incoming[0] * out[0] + incoming[1] * out[1])
+                })
+            };
             let preferred = candidates
                 .iter()
                 .copied()
-                .find(|&k| {
-                    kept.get(k)
-                        .is_some_and(|q| q.1 == piece.1 || next_of.get(piece.1) == Some(&q.1))
+                .fold(None::<(usize, f64)>, |best, k| {
+                    let a = turn(k);
+                    match best {
+                        Some((_, b)) if b >= a => best,
+                        _ => Some((k, a)),
+                    }
                 })
-                .or_else(|| candidates.first().copied());
+                .map(|(k, _)| k);
             match preferred {
                 Some(k) => at = k,
                 None => {
