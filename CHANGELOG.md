@@ -16,7 +16,7 @@ Every item below is in `main` as of 2026-10-30. Branches still merging for this 
 - **Features.** Blocks, cylinders, cones, spheres and tori; extrude, revolve, sweep (along a path or a helix) and loft from sketches; patterns, mirror and move; shell, draft, offset, move and delete faces, thicken; ISO metric threads (cosmetic or modelled); datum planes, axes, points and helices; sheet bodies; several bodies in one document.
 - **Fillets and chamfers** on edges, chosen by name, by description or by pointing at them.
 - **Names that stay put.** Faces and edges are named by how they were made, so a fillet does not jump to another edge when an earlier feature changes, and a face that is gone is reported instead of silently replaced.
-- **Units.** Millimetres, inches and the other length units per document, angles in degrees or radians; the length unit can be changed later while keeping the sizes.
+- **Units.** Millimetres, inches and the other length units per document, angles in degrees or radians; the length unit can be changed later while keeping the sizes. Mass, time, force, pressure and stress, moment and energy in expressions (`1000 N / (100 * (1 mm)^2)` is 10 MPa), so a design rule can say `"max": "235 MPa"`.
 - **Colours and materials** per body and per face, with metallic and roughness, following the face through later edits and kept in 3MF, OBJ and STEP exports.
 
 ### Sketches
@@ -95,7 +95,7 @@ Every item below is in `main` as of 2026-10-30. Branches still merging for this 
 ### AI agents and the command line
 
 - **Drive it with an AI agent.** A built-in MCP server (`craft3d-cli mcp`) that any MCP client can start: headless, or bridged to the open window so you see every step as the agent works. The start screen shows the configuration for your computer, with *Copy configuration* and *Copy for Claude Code*.
-- **Everything is a command**, with a name and plain JSON parameters; the same commands run from the command line, a script or the JSON control channel, and the agent can light up faces, fly the camera, play the history, take pictures of the window and get the bug report (`session.report`).
+- **Everything is a command**, with a name and plain JSON parameters; the same commands run from the command line, a script or the JSON control channel, and the agent can light up faces, fly the camera, play the history, take pictures of the window, record it as a video (`ui.record`) and get the bug report (`session.report`).
 - **The command line.** `craft3d-cli` runs commands and scripts, prints a document's state, renders pictures, converts files, draws a model as seen to DXF or SVG, makes a video of how a design is built, scores a design against a task, proves a Jig over its range, and serves MCP and a JSON-lines protocol.
 
 ### Known limitations
