@@ -32,9 +32,9 @@ const MAX_BODIES: usize = 200;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("measure.below", "Volume Below a Plane", r#"{"of": subject = all bodies, "plane": "xy|yz|zx" or datum plane (name or id) or a flat face by name or {point: [expr, expr, expr], normal: [number, number, number]} = "xy", "offset": length expr = 0, "xAxis": direction = the world axis most square to the normal}"#,
-        "The part of closed bodies on one side of a plane, exactly: the plane is given as measure.symmetry takes it (a base plane, a datum plane, a flat face by its persistent name with its outward normal, or a point and a normal) and moved by offset along its normal, and below is the side the normal points away from. Returns volume (the document's unit cubed), centroid (null when nothing is below), surface (the area of the bodies' surface below the plane), and section, the section of the bodies by the plane, as measure.section gives it. The part below is the boolean intersection with a half-space and is integrated on the exact B-rep; the section's moments are Green's theorem along the curves in which the plane cuts the bodies. A body wholly below gives all of itself and no section; wholly above, nothing. Bodies that overlap are counted once each. offset in the result is how far the plane was moved. Refused: a sheet (no inside), a normal of no length, nothing found below where a vertex of a body lies below the plane. Read-only.", doc: true, names: ["of"], measure_below),
+        "The part of closed bodies on one side of a plane, exactly: the plane is given as measure.symmetry takes it (a base plane, a datum plane, a flat face by its persistent name with its outward normal, or a point and a normal) and moved by offset along its normal, and below is the side the normal points away from. Returns volume (the document's unit cubed), centroid (null when nothing is below), surface (the area of the bodies' surface below the plane), and section, the section of the bodies by the plane, as measure.section gives it without its torsion. The part below is the boolean intersection with a half-space and is integrated on the exact B-rep; the section's moments are Green's theorem along the curves in which the plane cuts the bodies. A body wholly below gives all of itself and no section; wholly above, nothing. Bodies that overlap are counted once each. offset in the result is how far the plane was moved. Refused: a sheet (no inside), a normal of no length, nothing found below where a vertex of a body lies below the plane. Read-only.", doc: true, names: ["of"], measure_below),
     spec!("measure.section", "Section by a Plane", r#"{"of": subject = all bodies, "plane": "xy|yz|zx" or datum plane (name or id) or a flat face by name or {point: [expr, expr, expr], normal: [number, number, number]} = "xy", "offset": length expr = 0, "xAxis": direction = the world axis most square to the normal, "torsion": boolean = true, "torsionTolerance": number = 1e-4, "maxElements": integer = 60000}"#,
-        "The section of closed bodies by a plane (plane, moved by offset along its normal, as measure.below takes them), exactly: area, centroid, and the second moments about axes through the centroid, ix = ∫y² dA about the axis along xAxis (square to the normal; by default the world axis most square to it, made square), iy = ∫x² dA about the axis along y = normal × xAxis, ixy = ∫xy dA, and the principal moments (major, minor, and majorAxis, the direction of the axis about which the moment is largest), in the document's unit to the fourth power; xAxis and yAxis say the axes used. From Green's theorem along the curves in which the plane cuts the bodies (each edge summed by two Gauss–Legendre rules until they agree); a cross-section of a beam, the cut of a body at a level. With torsion (default true), also the St Venant torsion of the section, for any section with any number of holes: torsion, the torsion constant J (the document's unit to the fourth power), shearCentre, the shear centre (Trefftz's, independent of Poisson's ratio) as a point, and shearOffset, it from the centroid along xAxis and yAxis, and warping, the warping constant Cw about it (the unit to the sixth power); torsionSolve says how they were found: converged, change (of J between the last two rounds), elements, rounds and tolerance. Solved by finite elements (quadratic triangles whose boundary nodes lie on the exact curves) for the warping function, refined adaptively until J and the shear centre change by less than torsionTolerance (relative, 1e-9 to 0.1) from one round to the next, at most maxElements elements (up to 400000); a solve that reaches the cap gives what it reached with converged false, never a number that claims more. Read-only.", doc: true, names: ["of"], measure_section),
+        "The section of closed bodies by a plane (plane, moved by offset along its normal, as measure.below takes them), exactly: area, centroid, and the second moments about axes through the centroid, ix = ∫y² dA about the axis along xAxis (square to the normal; by default the world axis most square to it, made square), iy = ∫x² dA about the axis along y = normal × xAxis, ixy = ∫xy dA, and the principal moments (major, minor, and majorAxis, the direction of the axis about which the moment is largest), in the document's unit to the fourth power; xAxis and yAxis say the axes used. From Green's theorem along the curves in which the plane cuts the bodies (each edge summed by two Gauss–Legendre rules until they agree); a cross-section of a beam, the cut of a body at a level. With torsion (default true), also the St Venant torsion of the section, for any section with any number of holes: torsion, the torsion constant J (the document's unit to the fourth power), shearCentre, the shear centre (Trefftz's, independent of Poisson's ratio) as a point, and shearOffset, it from the centroid along xAxis and yAxis, and warping, the warping constant Cw about it (the unit to the sixth power); torsionSolve says how they were found: converged, change (of J between the last two rounds), elements, rounds and tolerance. Solved by finite elements (quadratic triangles whose boundary nodes lie on the exact curves) for the warping function, refined adaptively until J and the shear centre change by less than torsionTolerance (relative, 1e-9 to 0.1) from one round to the next, at most maxElements elements (up to 200000; 60000 in the browser); a solve that reaches the cap gives what it reached with converged false, never a number that claims more. A torsion that cannot be solved for at all (section faces that overlap or touch, a cap below the first mesh) leaves torsion, shearCentre, shearOffset and warping null with torsionSolve.error saying why, unless torsion: true was given, which makes it the command's error. Read-only.", doc: true, names: ["of"], measure_section),
     spec!("measure.levelFor", "Level for a Volume", r#"{"of": subject = all bodies, "plane": "xy|yz|zx" or datum plane (name or id) or a flat face by name or {point: [expr, expr, expr], normal: [number, number, number]} = "xy", "volume": volume expr, "xAxis": direction = the world axis most square to the normal}"#,
         "The offset along its normal of plane (as measure.below takes it; only its direction and the point it is measured from count) at which the volume of the bodies below it is volume (the fill level of a tank for a volume of liquid; the plane at which a body floating with a known volume under it lies): found by the kernel by Newton's method on the section's area within a bracket, an offset the boolean refuses stepped around by other points of the bracket, at most 64 steps (not converging is an error, and so is a volume not strictly between 0 and the bodies' whole volume). Returns offset, steps, residual (how far the volume below is from the one asked for) and everything measure.below gives at that offset. Read-only.", doc: true, names: ["of"], measure_level_for),
     spec!("measure.floating", "Floating Equilibrium", r#"{"of": subject = all bodies, "plane": "xy|yz|zx" or datum plane (name or id) or a flat face by name or {point: [expr, expr, expr], normal: [number, number, number]} = "xy", "volume": volume expr, "mass": number, "density": number, "centerOfGravity": [expr, expr, expr], "heel": angle expr = 0, "trim": angle expr = 0, "xAxis": direction = the world axis most square to the normal}"#,
@@ -241,7 +241,12 @@ fn measured(
     measured_twisted(ctx, p, asked, allowed).map(|(found, plane, level, _)| (found, plane, level))
 }
 
-type Measured = (BelowPlane, CutPlane, Option<Level>, Option<Torsion>);
+type Measured = (
+    BelowPlane,
+    CutPlane,
+    Option<Level>,
+    Option<Result<Torsion, CutError>>,
+);
 
 fn measured_twisted(
     ctx: &Ctx<'_>,
@@ -365,7 +370,8 @@ fn torsion_json(out: &mut Map<String, Value>, t: &Torsion, options: &TorsionOpti
 fn measure_section(session: &mut Session, params: &Value) -> Run {
     const ID: &str = "measure.section";
     let p = Params::new(ID, params, &SECTION_KEYS)?;
-    let twist = p.bool("torsion")?.unwrap_or(true);
+    let asked_for = p.bool("torsion")?;
+    let twist = asked_for.unwrap_or(true);
     let mut options = TorsionOptions::default();
     if let Some(tolerance) = p.number("torsionTolerance")? {
         if !(tolerance.is_finite() && (1e-9..=0.1).contains(&tolerance)) {
@@ -409,13 +415,25 @@ fn measure_section(session: &mut Session, params: &Value) -> Run {
     let mut out = section_json(&found, &plane);
     out.insert("offset".into(), num(found.offset));
     out.insert("normal".into(), vec3(plane.normal));
-    match &torsion {
-        Some(t) => torsion_json(&mut out, t, &options),
-        None if twist => {
-            for key in ["torsion", "shearCentre", "shearOffset", "warping"] {
-                out.insert(key.into(), Value::Null);
-            }
+    let nulls = |out: &mut Map<String, Value>| {
+        for key in ["torsion", "shearCentre", "shearOffset", "warping"] {
+            out.insert(key.into(), Value::Null);
         }
+    };
+    match torsion {
+        Some(Ok(t)) => torsion_json(&mut out, &t, &options),
+        // Asked for by name, a torsion that cannot be solved for is the
+        // command's error; by default the section is still given, with
+        // the reason.
+        Some(Err(e)) if asked_for == Some(true) => return Err(err(e.to_string())),
+        Some(Err(e)) => {
+            nulls(&mut out);
+            let mut solve = Map::new();
+            solve.insert("error".into(), e.to_string().into());
+            solve.insert("tolerance".into(), num(options.tolerance));
+            out.insert("torsionSolve".into(), Value::Object(solve));
+        }
+        None if twist => nulls(&mut out),
         None => {}
     }
     out.insert("lengthUnit".into(), length_unit(doc).into());
@@ -881,7 +899,9 @@ fn torsion_measure(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
     let options = TorsionOptions::default();
     let (found, plane, _, torsion) =
         measured_twisted(ctx, p, Asked::Twist(options), keys_of(name))?;
-    let t = torsion.ok_or("the plane does not cut the bodies: there is no section")?;
+    let t = torsion
+        .ok_or("the plane does not cut the bodies: there is no section")?
+        .map_err(|e| e.to_string())?;
     let (value, dim) = if name == "sectionTorsion" {
         (t.constant, Dim::Length(4))
     } else {

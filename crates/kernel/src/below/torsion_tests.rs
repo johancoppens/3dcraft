@@ -46,7 +46,7 @@ fn twist(body: &Body, plane: &CutPlane, offset: f64, k: f64) -> Torsion {
         &tess,
     )
     .unwrap();
-    let t = t.unwrap();
+    let t = t.unwrap().unwrap();
     eprintln!(
         "J {:.9e} change {:.2e} shear ({:.6e}, {:.6e}) Cw {:.6e} converged {} elements {} rounds {} in {:.0} ms",
         t.constant,
@@ -142,7 +142,7 @@ fn a_circle_twists_by_its_polar_moment() {
         let body = cylinder(&Frame::WORLD, r, 3.0 * k).unwrap();
         let t = twist(&body, &upright(), 1.5 * k, k);
         assert!(t.converged);
-        near(t.constant, PI * r.powi(4) / 2.0, 2e-4, "circle J");
+        near(t.constant, PI * r.powi(4) / 2.0, 1e-8, "circle J");
         assert!(t.shear_offset.0.hypot(t.shear_offset.1) <= 1e-6 * r);
         assert!(t.warping.abs() <= 1e-6 * r.powi(6));
     }
@@ -164,7 +164,7 @@ fn an_annulus_twists_by_its_polar_moment() {
     near(
         t.constant,
         PI * (big.powi(4) - small.powi(4)) / 2.0,
-        2e-4,
+        1e-6,
         "annulus J",
     );
     assert!(t.shear_offset.0.hypot(t.shear_offset.1) <= 1e-6 * big);
@@ -257,7 +257,7 @@ fn a_thin_channel_matches_the_open_thin_walled_forms() {
         &tess,
     )
     .unwrap();
-    let t = t.unwrap();
+    let t = t.unwrap().unwrap();
     assert!(t.converged);
     let thin = (100.0 + 2.0 * 50.0) * 8.0 / 3.0;
     near(t.constant, thin, 0.08, "Σ b t³ / 3");
@@ -268,7 +268,11 @@ fn a_thin_channel_matches_the_open_thin_walled_forms() {
     near(-at.x, e, 0.05, "shear centre behind the web");
     assert!(at.y.abs() <= 1e-4, "on the axis of symmetry: {}", at.y);
     assert!((at.x - centroid.x - t.shear_offset.0).abs() < 1e-9);
-    assert!(t.warping > 0.0);
+    // The thin-walled warping constant of a channel,
+    // Cw = t b³ h² (3b + 2h) / (12 (6b + h)), within the thin-wall error.
+    let (b, h, th): (f64, f64, f64) = (50.0, 100.0, 2.0);
+    let cw = th * b.powi(3) * h * h * (3.0 * b + 2.0 * h) / (12.0 * (6.0 * b + h));
+    near(t.warping, cw, 0.03, "Cw");
 }
 
 /// Moved and turned together with its plane, a section has the same
@@ -337,8 +341,9 @@ fn a_box_cut_through_a_hole_in_its_wall_is_open() {
 }
 
 /// What cannot be measured is said, never a panic: a plane that cuts
-/// nothing, a tolerance or an element cap out of range, a sliver of a
-/// section, and an element cap reached.
+/// nothing, a tolerance or an element cap out of range, a mesher that
+/// fails, a sliver of a section, and an element cap reached. A torsion
+/// that cannot be solved for keeps the section's own measures.
 #[test]
 fn what_cannot_be_twisted_is_said() {
     let k = 1.0;
@@ -355,61 +360,124 @@ fn what_cannot_be_twisted_is_said() {
         };
         assert!(run(0.5, options).is_err());
     }
-    // Capped: either no mesh fits, or an answer that says it did not
-    // converge.
+    // Capped: either no mesh fits (the torsion's own error, the section
+    // kept), or an answer that says it did not converge.
     for cap in [1, 50, 400] {
         let options = TorsionOptions {
             tolerance: 1e-9,
             max_elements: cap,
         };
-        match run(0.5, options) {
-            Ok((_, t)) => {
-                let t = t.unwrap();
-                assert!(!t.converged && t.elements <= cap);
-            }
-            Err(e) => assert!(matches!(e, CutError::Torsion(_))),
+        let (found, torsion) = run(0.5, options).unwrap();
+        assert!((found.section.area - 4.0).abs() < 1e-9);
+        match torsion {
+            Some(Ok(t)) => assert!(!t.converged && t.elements <= cap),
+            Some(Err(e)) => assert!(matches!(e, CutError::Torsion(_)), "{e}"),
+            None => panic!("the section has area"),
         }
     }
     let failing =
         |_: &[P2], _: &[(usize, usize)], _: &[P2], _: &[f64]| -> Result<RegionMesh, String> {
             Err("no".into())
         };
-    assert!(
-        section_torsion(
-            &[&body],
-            &upright(),
-            0.5,
-            &tol(k),
-            &TorsionOptions::default(),
-            &failing
-        )
-        .is_err()
-    );
     let empty =
         |_: &[P2], _: &[(usize, usize)], _: &[P2], _: &[f64]| -> Result<RegionMesh, String> {
             Ok(RegionMesh::default())
         };
-    assert!(
-        section_torsion(
+    for mesher in [&failing as &Mesher<'_>, &empty] {
+        let (found, torsion) = section_torsion(
             &[&body],
             &upright(),
             0.5,
             &tol(k),
             &TorsionOptions::default(),
-            &empty
+            mesher,
         )
-        .is_err()
-    );
+        .unwrap();
+        assert!((found.section.area - 4.0).abs() < 1e-9);
+        assert!(matches!(torsion, Some(Err(CutError::Torsion(_)))));
+    }
     // A sliver, 1000 by 0.01: thin-strip J = b t³ / 3 (1 − 0.63 t / b).
     let sliver = block(&Frame::WORLD, 1000.0, 0.01, 1.0).unwrap();
     let options = TorsionOptions {
         tolerance: 1e-3,
         max_elements: 20_000,
     };
-    let result = section_torsion(&[&sliver], &upright(), 0.5, &tol(k), &options, &tess);
-    if let Ok((_, Some(t))) = result
-        && t.converged
-    {
-        near(t.constant, 1000.0 * 1e-6 / 3.0, 0.01, "sliver");
+    let (_, torsion) =
+        section_torsion(&[&sliver], &upright(), 0.5, &tol(k), &options, &tess).unwrap();
+    match torsion {
+        Some(Ok(t)) if t.converged => near(t.constant, 1000.0 * 1e-6 / 3.0, 0.01, "sliver"),
+        Some(Ok(_)) => {}
+        Some(Err(e)) => assert!(matches!(e, CutError::Torsion(_)), "{e}"),
+        None => panic!("the sliver has area"),
     }
+}
+
+/// Two separate rectangles, mirror images about the plane x = 0: J is
+/// the sum of the two (each by the series), and the shear centre lies on
+/// the axis of symmetry, the same for meshes refined to two tolerances, within their tolerance
+/// (each piece's free constant of ψ is taken off by its own mean, not by
+/// where its held vertex happens to be).
+#[test]
+fn two_separate_pieces_twist_as_their_sum() {
+    let k = 1.0;
+    let left = block(
+        &Frame::new(Vec3::new(-5.0, -0.5, 0.0), Vec3::Z, Vec3::X).unwrap(),
+        3.0,
+        1.0,
+        1.0,
+    )
+    .unwrap();
+    let right = block(
+        &Frame::new(Vec3::new(2.0, -0.2, 0.0), Vec3::Z, Vec3::X).unwrap(),
+        3.0,
+        1.0,
+        1.0,
+    )
+    .unwrap();
+    // The mirror image of `left` about x = 0.
+    let mirror = block(
+        &Frame::new(Vec3::new(2.0, -0.5, 0.0), Vec3::Z, Vec3::X).unwrap(),
+        3.0,
+        1.0,
+        1.0,
+    )
+    .unwrap();
+    for tolerance in [1e-4, 1e-5] {
+        let options = TorsionOptions {
+            tolerance,
+            ..TorsionOptions::default()
+        };
+        let (found, torsion) =
+            section_torsion(&[&left, &mirror], &upright(), 0.5, &tol(k), &options, &tess).unwrap();
+        let t = torsion.unwrap().unwrap();
+        near(t.constant, 2.0 * rectangle(3.0, 1.0), 3e-4, "J₁ + J₂");
+        let c = found.section.centroid.unwrap();
+        assert!(c.x.abs() < 1e-9);
+        // Within the solve's tolerance of the section's size, √A ≈ 2.4.
+        assert!(t.shear_centre.x.abs() <= 1e-3, "{:?}", t.shear_centre);
+        assert!(t.shear_centre.y.abs() <= 1e-3, "{:?}", t.shear_centre);
+    }
+    // `right` is `left` turned half a turn about (0, 0.15): the pair is
+    // symmetric about that point, so the shear centre is there, the same
+    // at both tolerances.
+    let mut moved = Vec::new();
+    for tolerance in [1e-4, 1e-5] {
+        let options = TorsionOptions {
+            tolerance,
+            ..TorsionOptions::default()
+        };
+        let (_, torsion) =
+            section_torsion(&[&left, &right], &upright(), 0.5, &tol(k), &options, &tess).unwrap();
+        let t = torsion.unwrap().unwrap();
+        near(
+            t.constant,
+            2.0 * rectangle(3.0, 1.0),
+            3e-4,
+            "J₁ + J₂ shifted",
+        );
+        moved.push(t.shear_centre);
+    }
+    let (a, b) = (moved[0], moved[1]);
+    assert!((a - b).length() <= 1e-3, "{a:?} vs {b:?}");
+    assert!(a.x.abs() <= 1e-3 && (a.y - 0.15).abs() <= 1e-3, "{a:?}");
 }

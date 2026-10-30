@@ -508,11 +508,24 @@ fn what_cannot_be_twisted_is_refused() {
         json!({"offset": 50, "maxElements": 3000, "torsionTolerance": 1e-9}),
     );
     assert_eq!(capped["torsionSolve"]["converged"], false, "{capped}");
-    // A cap below the first mesh: refused, with why.
-    let message = refused(
+    // A cap below the first mesh: the section is still given, its torsion
+    // null with why; asked for by name, the command's error.
+    let low = run(
         &mut s,
         "measure.section",
         json!({"offset": 50, "maxElements": 10}),
+    );
+    assert!(low["torsion"].is_null(), "{low}");
+    assert!(
+        (low["area"].as_f64().unwrap() - 40000.0).abs() < 1e-6,
+        "{low}"
+    );
+    let why = low["torsionSolve"]["error"].as_str().unwrap();
+    assert!(why.contains("no solution within 10 elements"), "{why}");
+    let message = refused(
+        &mut s,
+        "measure.section",
+        json!({"offset": 50, "maxElements": 10, "torsion": true}),
     );
     assert!(
         message.contains("no solution within 10 elements"),

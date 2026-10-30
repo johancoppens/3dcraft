@@ -17,14 +17,21 @@
 //! the polar moment. A Galerkin solution `ψ_h` has `a(ψ_h, ψ_h) ≤ a(ψ, ψ)`,
 //! so `J_h ≥ J` on the meshed region, and `J_h − J = a(ψ − ψ_h, ψ − ψ_h)`,
 //! the square of the error in the energy norm: `J` converges twice as
-//! fast as the warping function.
+//! fast as the warping function. (On curved elements this holds up to
+//! the quadrature: the 12-point rule is exact for straight ones only, so
+//! the bound is not a proof there, but its error is far below the
+//! tolerance.)
 //!
 //! The shear centre is Trefftz's: the pole about which the warping
 //! function `ψ_S = ψ − y_s x + x_s y + c` (a twist about `(x_s, y_s)`) is
 //! orthogonal to `x` and `y`, `∫ ψ_S x dA = ∫ ψ_S y dA = 0`, two linear
 //! equations in `(x_s, y_s)` with the section's second moments; it does
 //! not depend on Poisson's ratio. The warping constant is
-//! `Cw = ∫ ψ_S² dA` with `ψ_S` of mean zero.
+//! `Cw = ∫ ψ_S² dA` with `ψ_S` of mean zero. That is, `(x_s, y_s, c)`
+//! make `∫ ψ_S² dA` least; a section of separate pieces has a free
+//! constant `c_i` on each, and taking each off as that piece's own mean
+//! (of ψ, x and y) keeps the pole and `Cw` from depending on where the
+//! solve held each piece.
 //!
 //! Method. Quadratic (six-node) triangles, isoparametric: the middle node
 //! of an edge on the boundary lies on the exact curve (at the middle of
@@ -36,10 +43,12 @@
 //! element is integrated by Dunavant's 12-point rule (exact to degree 6);
 //! the linear system, with one node of every connected piece held at zero
 //! (the constant `ψ` is free), by conjugate gradients with a Jacobi
-//! preconditioner. Refinement is adaptive: the residual error indicator
+//! preconditioner, started from the last round's solution and held to a
+//! total budget of work ([`MAX_WORK`]). Refinement is adaptive: the residual error indicator
 //! (the jumps of `∂ψ_h/∂n` across interior edges and the residual of the
 //! Neumann condition on boundary edges, each weighted by the edge's
-//! length; Verfürth, *A Review of A Posteriori Error Estimation*, 1996)
+//! length; the interior term `h² ‖Δψ_h‖²`, which is not zero for
+//! quadratic elements, is left out; Verfürth, *A Review of A Posteriori Error Estimation*, 1996)
 //! marks the elements that carry half of the estimated error (Dörfler
 //! marking), every edge of a marked element is halved (a boundary edge at
 //! the middle of its parameter span, on the curve), and the points are
@@ -87,8 +96,15 @@ pub type Mesher<'m> =
 pub const DEFAULT_TOLERANCE: f64 = 1e-4;
 /// The most elements, by default.
 pub const DEFAULT_MAX_ELEMENTS: usize = 60_000;
-/// The most elements a caller may allow.
-pub const MAX_ELEMENTS: usize = 400_000;
+/// The most elements a caller may allow: fewer in the browser, whose
+/// memory is smaller and where an allocation that fails aborts.
+#[cfg(not(target_arch = "wasm32"))]
+pub const MAX_ELEMENTS: usize = 200_000;
+#[cfg(target_arch = "wasm32")]
+pub const MAX_ELEMENTS: usize = 60_000;
+/// The most work of the linear solves of one section, in multiply-adds of
+/// the matrix summed over every step of conjugate gradients in every round.
+pub const MAX_WORK: u64 = 4_000_000_000;
 /// The most rounds of meshing and solving.
 pub const MAX_ROUNDS: usize = 40;
 /// The share of the estimated error the marked elements carry.
@@ -135,7 +151,8 @@ impl Default for TorsionOptions {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Torsion {
     /// The St Venant torsion constant `J` (length⁴): an upper bound on
-    /// the meshed region, `change` from the round before.
+    /// the meshed region (up to quadrature on curved elements), `change`
+    /// from the round before.
     pub constant: f64,
     /// `|J − J of the round before|`.
     pub change: f64,
@@ -157,7 +174,11 @@ pub struct Torsion {
 
 /// The section of `bodies` by the plane `{p : p · side.normal = offset}`
 /// as [`below`](super::below) measures it, and its torsion: `None` where
-/// the plane cuts nothing. Sections whose faces overlap are an error.
+/// the plane cuts nothing, and an error of its own where the torsion
+/// cannot be solved for (faces that overlap or touch, a mesh that keeps
+/// folding, a cap below the first mesh), so the section is not lost with
+/// it. An offset or options out of range, and a cut that fails, are the
+/// outer error.
 pub fn section_torsion(
     bodies: &[&Body],
     side: &CutPlane,
@@ -165,7 +186,7 @@ pub fn section_torsion(
     tolerance: &Tolerance,
     options: &TorsionOptions,
     mesher: &Mesher<'_>,
-) -> Result<(BelowPlane, Option<Torsion>), CutError> {
+) -> Result<(BelowPlane, Option<Result<Torsion, CutError>>), CutError> {
     if !offset.is_finite() {
         return Err(CutError::NotFinite("the offset"));
     }
@@ -190,8 +211,8 @@ pub fn section_torsion(
         x: side.x_axis,
         y: side.y_axis(),
     };
-    let boundary = Boundary::of(&parts, &axes, section.area)?;
-    let torsion = solve(boundary, &axes, section.area, options, mesher)?;
+    let torsion = Boundary::of(&parts, &axes, section.area)
+        .and_then(|boundary| solve(boundary, &axes, section.area, options, mesher));
     Ok((found, Some(torsion)))
 }
 
@@ -621,7 +642,7 @@ struct Element {
 /// An edge of the mesh: the elements beside it (with its place in each)
 /// and the boundary piece it is, if any.
 struct EdgeInfo {
-    sides: Vec<(usize, usize)>,
+    sides: [Option<(usize, usize)>; 2],
     seg: Option<usize>,
 }
 
@@ -637,62 +658,74 @@ struct Mesh {
 /// The sparse symmetric matrix of the system, by rows.
 struct Csr {
     start: Vec<usize>,
-    col: Vec<usize>,
+    col: Vec<u32>,
     val: Vec<f64>,
     diag: Vec<f64>,
 }
 
 impl Csr {
-    fn from_triplets(n: usize, mut t: Vec<(usize, usize, f64)>) -> Csr {
-        t.sort_by_key(|a| (a.0, a.1));
-        let mut start = vec![0; n + 1];
-        let (mut col, mut val) = (
-            Vec::with_capacity(t.len() / 2),
-            Vec::with_capacity(t.len() / 2),
-        );
-        let mut diag = vec![0.0; n];
-        let mut last: Option<(usize, usize)> = None;
-        for (r, c, v) in t {
-            if last == Some((r, c)) {
-                if let Some(x) = val.last_mut() {
-                    *x += v;
-                }
-            } else {
-                col.push(c);
-                val.push(v);
-                if let Some(s) = start.get_mut(r + 1) {
-                    *s += 1;
-                }
-                last = Some((r, c));
-            }
-        }
-        for k in 1..=n {
-            let before = start.get(k - 1).copied().unwrap_or(0);
-            if let Some(s) = start.get_mut(k) {
-                *s += before;
-            }
-        }
-        for (r, d) in diag.iter_mut().enumerate() {
-            let (a, b) = (
-                start.get(r).copied().unwrap_or(0),
-                start.get(r + 1).copied().unwrap_or(0),
-            );
-            for (c, v) in col
-                .get(a..b)
-                .unwrap_or(&[])
-                .iter()
-                .zip(val.get(a..b).unwrap_or(&[]))
-            {
-                if *c == r {
-                    *d += v;
+    /// The pattern of the matrix of `mesh`: a row per node, a column per
+    /// node it shares an element with, values zero. Built row by row, never
+    /// as a list of every element's entries; `None` when memory for it
+    /// cannot be had.
+    fn pattern(mesh: &Mesh) -> Option<Csr> {
+        let n = mesh.nodes;
+        let mut rows: Vec<Vec<u32>> = Vec::new();
+        rows.try_reserve_exact(n).ok()?;
+        rows.resize_with(n, Vec::new);
+        for e in &mesh.elements {
+            for &i in &e.nodes {
+                let row = rows.get_mut(i)?;
+                row.try_reserve(6).ok()?;
+                for &j in &e.nodes {
+                    row.push(u32::try_from(j).ok()?);
                 }
             }
         }
-        Csr {
+        let mut start = Vec::new();
+        start.try_reserve_exact(n + 1).ok()?;
+        start.push(0);
+        let mut col: Vec<u32> = Vec::new();
+        for row in &mut rows {
+            row.sort_unstable();
+            row.dedup();
+            col.try_reserve(row.len()).ok()?;
+            col.extend_from_slice(row);
+            *row = Vec::new();
+            start.push(col.len());
+        }
+        let mut val = Vec::new();
+        val.try_reserve_exact(col.len()).ok()?;
+        val.resize(col.len(), 0.0);
+        let mut diag = Vec::new();
+        diag.try_reserve_exact(n).ok()?;
+        diag.resize(n, 0.0);
+        Some(Csr {
             start,
             col,
             val,
             diag,
+        })
+    }
+
+    /// Adds `v` at row `i`, column `j` (which the pattern has).
+    fn add(&mut self, i: usize, j: usize, v: f64) {
+        let (Some(&a), Some(&b)) = (self.start.get(i), self.start.get(i + 1)) else {
+            return;
+        };
+        let Ok(j32) = u32::try_from(j) else {
+            return;
+        };
+        if let Some(cols) = self.col.get(a..b)
+            && let Ok(k) = cols.binary_search(&j32)
+            && let Some(slot) = self.val.get_mut(a + k)
+        {
+            *slot += v;
+            if i == j
+                && let Some(d) = self.diag.get_mut(i)
+            {
+                *d += v;
+            }
         }
     }
 
@@ -710,7 +743,7 @@ impl Csr {
                 .iter()
                 .zip(self.val.get(a..b).unwrap_or(&[]))
             {
-                sum += v * x.get(*c).copied().unwrap_or(0.0);
+                sum += v * x.get(*c as usize).copied().unwrap_or(0.0);
             }
             *out = sum;
         }
@@ -721,16 +754,30 @@ fn dot(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
-/// Conjugate gradients with a Jacobi preconditioner, from zero, until the
-/// residual is at most `floor`; `None` when it does not get there within
-/// its steps.
-fn conjugate_gradients(a: &Csr, f: &[f64], floor: f64) -> Option<Vec<f64>> {
+/// Conjugate gradients with a Jacobi preconditioner, from `x` (the last
+/// round's solution carried over, or zero), until the residual is at most
+/// `floor`; `None` when it does not get there within its steps or the
+/// `work` left (multiply-adds of the matrix, spent as it goes).
+fn conjugate_gradients(
+    a: &Csr,
+    f: &[f64],
+    mut x: Vec<f64>,
+    floor: f64,
+    work: &mut u64,
+) -> Option<Vec<f64>> {
     let n = f.len();
-    let mut x = vec![0.0; n];
-    let mut r = f.to_vec();
+    if x.len() != n {
+        x = vec![0.0; n];
+    }
+    let mut r = vec![0.0; n];
+    a.times(&x, &mut r);
+    for (r, f) in r.iter_mut().zip(f) {
+        *r = f - *r;
+    }
     if dot(&r, &r).sqrt() <= floor {
         return Some(x);
     }
+    let per_step = u64::try_from(a.col.len()).unwrap_or(u64::MAX);
     let inv: Vec<f64> = a
         .diag
         .iter()
@@ -742,6 +789,7 @@ fn conjugate_gradients(a: &Csr, f: &[f64], floor: f64) -> Option<Vec<f64>> {
     let mut ap = vec![0.0; n];
     let steps = (2 * n + 1000).min(200_000);
     for _ in 0..steps {
+        *work = work.checked_sub(per_step)?;
         a.times(&p, &mut ap);
         let pap = dot(&p, &ap);
         if !(pap.is_finite() && pap > 0.0) {
@@ -786,6 +834,8 @@ struct Round {
 struct Solved {
     round: Round,
     indicator: Vec<f64>,
+    /// The solution at each node's place, for the next round's start.
+    values: BTreeMap<Place, f64>,
 }
 
 fn solve(
@@ -802,6 +852,8 @@ fn solve(
     let mut why = "the element cap is below what the first mesh takes";
     let mut change = f64::INFINITY;
     let mut rounds = 0;
+    let mut work = MAX_WORK;
+    let mut carried: BTreeMap<Place, f64> = BTreeMap::new();
     for _ in 0..MAX_ROUNDS {
         let segments: Vec<(usize, usize)> = boundary.segs.iter().map(|s| (s.a, s.b)).collect();
         let inner: Vec<P2> = interior.iter().map(|(p, _)| *p).collect();
@@ -871,12 +923,16 @@ fn solve(
             split_segs(&mut boundary, axes, &halve)?;
             continue;
         }
-        let Some(solved) = solve_once(&mesh) else {
-            why = "the linear solver did not converge";
-            break;
+        let solved = match solve_once(&mesh, &carried, &mut work) {
+            Ok(solved) => solved,
+            Err(reason) => {
+                why = reason;
+                break;
+            }
         };
         rounds += 1;
         let round = solved.round;
+        carried = solved.values;
         let size = round.area.sqrt();
         let mut done = false;
         if let Some((before, _)) = last {
@@ -1030,13 +1086,14 @@ fn build(region: &RegionMesh, boundary: &Boundary<'_>, axes: &Axes) -> Result<Me
             }
             let key = (a.min(b), a.max(b));
             let info = edges.entry(key).or_insert_with(|| EdgeInfo {
-                sides: Vec::new(),
+                sides: [None, None],
                 seg: pieces.get(&key).copied(),
             });
-            if info.sides.len() >= 2 {
-                return Err(bad("an edge with more than two triangles"));
+            match info.sides {
+                [None, _] => info.sides[0] = Some((t, k)),
+                [Some(_), None] => info.sides[1] = Some((t, k)),
+                [Some(_), Some(_)] => return Err(bad("an edge with more than two triangles")),
             }
-            info.sides.push((t, k));
         }
     }
     // The middle nodes, numbered in the edges' order.
@@ -1121,11 +1178,25 @@ fn root(parent: &mut [usize], mut v: usize) -> usize {
     v
 }
 
-/// Assembles and solves the warping problem on `mesh`, and measures it.
-/// `None` when the linear solver does not converge.
-fn solve_once(mesh: &Mesh) -> Option<Solved> {
+/// A node's place, bit for bit: how a solution is carried from one round
+/// to the next (the vertices of a mesh are the vertices and the edge
+/// middles of the one before).
+type Place = (u64, u64);
+
+fn place(p: P2) -> Place {
+    (p.0.to_bits(), p.1.to_bits())
+}
+
+/// Assembles and solves the warping problem on `mesh`, starting from the
+/// values `carried` from the round before, and measures it; the error is
+/// why it could not.
+fn solve_once(
+    mesh: &Mesh,
+    carried: &BTreeMap<Place, f64>,
+    work: &mut u64,
+) -> Result<Solved, &'static str> {
     let n = mesh.nodes;
-    // One vertex of every connected piece is held at zero.
+    // The connected pieces, by union-find over the elements' corners.
     let mut parent: Vec<usize> = (0..mesh.vertices).collect();
     for e in &mesh.elements {
         let [a, b, c, ..] = e.nodes;
@@ -1138,18 +1209,28 @@ fn solve_once(mesh: &Mesh) -> Option<Solved> {
             }
         }
     }
+    // Each element's piece, numbered in the order the pieces are met, and
+    // one vertex of every piece held at zero (ψ is free by a constant on
+    // each piece).
     let mut held = vec![false; n];
-    let mut seen = BTreeSet::new();
+    let mut pieces: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut piece_of = Vec::with_capacity(mesh.elements.len());
+    let mut held_of: Vec<usize> = Vec::new();
     for e in &mesh.elements {
         let v = e.nodes[0];
-        if seen.insert(root(&mut parent, v))
-            && let Some(h) = held.get_mut(v)
-        {
-            *h = true;
+        let r = root(&mut parent, v);
+        let next = pieces.len();
+        let k = *pieces.entry(r).or_insert(next);
+        if k == next {
+            if let Some(h) = held.get_mut(v) {
+                *h = true;
+            }
+            held_of.push(v);
         }
+        piece_of.push(k);
     }
     let is_held = |i: usize| held.get(i).copied().unwrap_or(false);
-    let mut triplets = Vec::with_capacity(mesh.elements.len() * 36);
+    let mut a = Csr::pattern(mesh).ok_or("there is not memory enough for the system")?;
     let mut f = vec![0.0; n];
     let mut magnitude = 0.0;
     // The section's integrals on the mesh: area, ∫x, ∫y, ∫x², ∫y², ∫xy.
@@ -1178,36 +1259,75 @@ fn solve_once(mesh: &Mesh) -> Option<Solved> {
             }
         }
         for (row, (&i, fi)) in ke.iter().zip(e.nodes.iter().zip(fe)) {
-            if !is_held(i)
-                && let Some(slot) = f.get_mut(i)
-            {
+            if is_held(i) {
+                continue;
+            }
+            if let Some(slot) = f.get_mut(i) {
                 *slot += fi;
             }
             for (&j, kij) in e.nodes.iter().zip(row) {
-                if !is_held(i) && !is_held(j) {
-                    triplets.push((i, j, *kij));
+                if !is_held(j) {
+                    a.add(i, j, *kij);
                 }
             }
         }
     }
-    for (i, h) in held.iter().enumerate() {
-        if *h {
-            triplets.push((i, i, 1.0));
+    for &v in &held_of {
+        a.add(v, v, 1.0);
+    }
+    // The start: the last round's value at the same place, else the mean
+    // of the edge's ends; then each piece moved so its held vertex is 0.
+    let mut x0 = vec![0.0; n];
+    if !carried.is_empty() {
+        for e in &mesh.elements {
+            for (&i, &p) in e.nodes.iter().zip(&e.at).take(3) {
+                if let (Some(slot), Some(v)) = (x0.get_mut(i), carried.get(&place(p))) {
+                    *slot = *v;
+                }
+            }
+        }
+        for e in &mesh.elements {
+            let corner = |k: usize| {
+                e.nodes
+                    .get(k)
+                    .and_then(|&i| x0.get(i))
+                    .copied()
+                    .unwrap_or(0.0)
+            };
+            let ends = [(0, 1), (1, 2), (2, 0)].map(|(a, b)| 0.5 * (corner(a) + corner(b)));
+            for ((&i, &p), mean) in e.nodes.iter().zip(&e.at).skip(3).zip(ends) {
+                let v = carried.get(&place(p)).copied().unwrap_or(mean);
+                if let Some(slot) = x0.get_mut(i) {
+                    *slot = v;
+                }
+            }
+        }
+        let shift: Vec<f64> = held_of
+            .iter()
+            .map(|&v| x0.get(v).copied().unwrap_or(0.0))
+            .collect();
+        // Moved once per node: by its piece's shift; held ones to zero.
+        let mut moved = vec![false; n];
+        for (e, k) in mesh.elements.iter().zip(&piece_of) {
+            let by = shift.get(*k).copied().unwrap_or(0.0);
+            for &i in &e.nodes {
+                if let (Some(done), Some(slot)) = (moved.get_mut(i), x0.get_mut(i))
+                    && !*done
+                {
+                    *done = true;
+                    *slot = if is_held(i) { 0.0 } else { *slot - by };
+                }
+            }
         }
     }
-    let a = Csr::from_triplets(n, triplets);
-    let psi = conjugate_gradients(&a, &f, 1e-11 * magnitude.max(f64::MIN_POSITIVE))?;
-    let [area, sx, sy, ixx, iyy, ixy] = m;
+    let psi = conjugate_gradients(&a, &f, x0, 1e-11 * magnitude.max(f64::MIN_POSITIVE), work)
+        .ok_or("the linear solver did not converge within its steps or the work allowed")?;
+    let [area, ..] = m;
     if !(area.is_finite() && area > 0.0) {
-        return None;
+        return Err("the mesh has no area");
     }
-    let polar = ixx + iyy;
+    let polar = m[3] + m[4];
     let j = polar - dot(&psi, &f);
-    // Moments about the mesh's own centroid.
-    let (cx, cy) = (sx / area, sy / area);
-    let i_x = iyy - area * cy * cy;
-    let i_y = ixx - area * cx * cx;
-    let product = ixy - area * cx * cy;
     let value = |e: &Element, q: &At| -> f64 {
         e.nodes
             .iter()
@@ -1215,38 +1335,70 @@ fn solve_once(mesh: &Mesh) -> Option<Solved> {
             .map(|(&i, ni)| ni * psi.get(i).copied().unwrap_or(0.0))
             .sum()
     };
-    let (mut s, mut spx, mut spy) = (0.0, 0.0, 0.0);
-    for e in &mesh.elements {
+    // Per piece: area, ∫x, ∫y, ∫x², ∫y², ∫xy, ∫ψ, ∫ψx, ∫ψy.
+    let mut per = vec![[0.0; 9]; pieces.len()];
+    for (e, k) in mesh.elements.iter().zip(&piece_of) {
+        let Some(sums) = per.get_mut(*k) else {
+            continue;
+        };
         for &(_, l2, l3, w) in &RULE {
             let q = at(&e.at, l2, l3);
             let wd = 0.5 * w * q.det;
             let v = value(e, &q);
-            s += wd * v;
-            spx += wd * v * q.p.0;
-            spy += wd * v * q.p.1;
+            let (x, y) = q.p;
+            for (s, t) in sums
+                .iter_mut()
+                .zip([1.0, x, y, x * x, y * y, x * y, v, v * x, v * y])
+            {
+                *s += wd * t;
+            }
         }
     }
-    let ipx = spx - cx * s;
-    let ipy = spy - cy * s;
-    let det = i_x * i_y - product * product;
-    if !(det.is_finite() && det > 0.0) {
-        return None;
+    // The pole (x_s, y_s) and the constants c_i that make ∫ψ_S² least,
+    // ψ_S = ψ − y_s x + x_s y + c_i on piece i: each c_i takes off the
+    // piece's own mean, so with x̃, ỹ, ψ̃ from each piece's means,
+    // ∫ψ̃x̃ − y_s ∫x̃² + x_s ∫x̃ỹ = 0 and ∫ψ̃ỹ − y_s ∫x̃ỹ + x_s ∫ỹ² = 0
+    // (for one piece, Trefftz's conditions about the centroid).
+    let (mut xx, mut yy, mut xy, mut px, mut py) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    let mut means = Vec::with_capacity(per.len());
+    for [a, sx, sy, sxx, syy, sxy, sp, spx, spy] in &per {
+        if !(a.is_finite() && *a > 0.0) {
+            means.push((0.0, 0.0, 0.0));
+            continue;
+        }
+        let (mx, my, mp) = (sx / a, sy / a, sp / a);
+        xx += sxx - a * mx * mx;
+        yy += syy - a * my * my;
+        xy += sxy - a * mx * my;
+        px += spx - a * mp * mx;
+        py += spy - a * mp * my;
+        means.push((mx, my, mp));
     }
-    // ∫ψ_S x' = ipx − y_s i_y + x_s product = 0 and
-    // ∫ψ_S y' = ipy − y_s product + x_s i_x = 0.
-    let xs = (product * ipx - i_y * ipy) / det;
-    let ys = (i_x * ipx - product * ipy) / det;
-    let mean = (s - ys * sx + xs * sy) / area;
+    let det = xx * yy - xy * xy;
+    if !(det.is_finite() && det > 0.0) {
+        return Err("the section's second moments are not positive");
+    }
+    let xs = (xy * px - xx * py) / det;
+    let ys = (yy * px - xy * py) / det;
     let mut warping = 0.0;
-    for e in &mesh.elements {
+    for (e, k) in mesh.elements.iter().zip(&piece_of) {
+        let (mx, my, mp) = means.get(*k).copied().unwrap_or((0.0, 0.0, 0.0));
         for &(_, l2, l3, w) in &RULE {
             let q = at(&e.at, l2, l3);
             let wd = 0.5 * w * q.det;
-            let v = value(e, &q) - ys * q.p.0 + xs * q.p.1 - mean;
+            let v = (value(e, &q) - mp) - ys * (q.p.0 - mx) + xs * (q.p.1 - my);
             warping += wd * v * v;
         }
     }
     let indicator = indicators(mesh, &psi);
+    let mut values = BTreeMap::new();
+    for e in &mesh.elements {
+        for (&i, &p) in e.nodes.iter().zip(&e.at) {
+            if let Some(v) = psi.get(i) {
+                values.insert(place(p), *v);
+            }
+        }
+    }
     let round = Round {
         j,
         shear: (xs, ys),
@@ -1254,7 +1406,14 @@ fn solve_once(mesh: &Mesh) -> Option<Solved> {
         area,
     };
     let finite = j.is_finite() && xs.is_finite() && ys.is_finite() && warping.is_finite();
-    finite.then_some(Solved { round, indicator })
+    if !finite {
+        return Err("the solution is not finite");
+    }
+    Ok(Solved {
+        round,
+        indicator,
+        values,
+    })
 }
 
 /// The gradient of the solution on element `e` at `s` along its edge `k`,
@@ -1289,8 +1448,8 @@ fn edge_gradient(e: &Element, psi: &[f64], k: usize, s: f64) -> (P2, P2, P2, f64
 fn indicators(mesh: &Mesh, psi: &[f64]) -> Vec<f64> {
     let mut eta = vec![0.0; mesh.elements.len()];
     for info in mesh.edges.values() {
-        match info.sides.as_slice() {
-            [(t1, k1), (t2, k2)] => {
+        match &info.sides {
+            [Some((t1, k1)), Some((t2, k2))] => {
                 let (Some(e1), Some(e2)) = (mesh.elements.get(*t1), mesh.elements.get(*t2)) else {
                     continue;
                 };
@@ -1309,7 +1468,7 @@ fn indicators(mesh: &Mesh, psi: &[f64]) -> Vec<f64> {
                     }
                 }
             }
-            [(t1, k1)] => {
+            [Some((t1, k1)), None] => {
                 let Some(e1) = mesh.elements.get(*t1) else {
                     continue;
                 };
