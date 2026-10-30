@@ -19,7 +19,7 @@ after every change.
 | `measure.ray {"from", "direction"}` | Every place a line meets the bodies, entering or leaving |
 | `measure.symmetry {"of", "plane"}` | How far the bodies are from symmetric in a plane |
 | `document.interference` | For each pair of bodies: clear, touch or overlap (with the common volume) |
-| `measure.continuity {"edge", "face"}` | How two faces meet along an edge: G0, G1 or G2, with the largest gap in position, tangent-plane angle and curvature, proven ([continuity](#continuity-across-a-seam)) |
+| `measure.continuity {"edge", "face"}` | How two faces meet along an edge: G0, G1 or G2, with the largest gaps in position, tangent-plane angle, curvature and twist, proven ([continuity](#continuity-across-a-seam)) |
 | `measure.below`, `measure.section`, `measure.levelFor`, `measure.floating` | The volume below a plane, a section's area and second moments, the level for a volume, the level and tilt a body floats at ([below](#below-a-plane-sections-and-levels)) |
 
 A subject (`of`, `from`, `to`) is a body by its feature's name, a list of them, or a query as
@@ -236,16 +236,20 @@ the two readings are the same.
 
 `measure.continuity {"edge": "F7:startEdge(0,2)", "face": "F1:side(0)"}` says how a sheet meets a face
 along an edge (without `face`, the edge's two faces). `order` is the highest of **G0** (in position), **G1**
-(one tangent plane) and **G2** (the same normal curvature across the edge too) whose gaps are *proven*
-within their thresholds all along the edge, not only where it was looked at: `position`, `angle` (radians)
-and `curvature` (the difference across the edge, per length unit) each give `bound` (nothing along the edge
-is beyond it), `found` (the largest seen, with `param` and `at`), `threshold` and `within`.
+(one tangent plane) and **G2** (the same curvature too: normal curvature across and along the edge, and
+twist) whose gaps are *proven* within their thresholds all along the edge, not only where it was looked at:
+`position`, `angle` (radians), and per length unit `curvature` (the difference of the normal curvatures
+across the edge), `twist` (of how fast the normal turns about the edge along it) and `along` (of the normal
+curvatures along the edge), each face with its own normal, each give `bound` (nothing along the edge is
+beyond it), `found` (the largest seen, with `param` and `at`), `threshold` and `within`.
 
-The thresholds are the document's: the tolerance, the angular tolerance, and for curvature the smaller of
-angular / L and 2 × tolerance / L², L the edge's length (what turns the normals apart by the angular
-tolerance, or opens a gap of the tolerance, over that length). Nearly G2 is not G2: a seam whose curvature
-differs by more than that is G1, and one whose bound cannot be brought within the threshold is not reached
-either. One of the faces must be a spline face the edge runs along a parameter line of (a network sheet's
+The thresholds are the document's: the tolerance, the angular tolerance, and for curvature, twist and along
+the smaller of angular / L and 2 × tolerance / L², L the edge's length (what turns the normals apart by the
+angular tolerance, or opens a gap of the tolerance, over that length). Nearly G2 is not G2: a seam whose
+curvature differs by more than that is G1, and so is one whose normals part, or whose cross tangent turns
+about the edge, within the angular tolerance but enough to bend or twist it beyond the curvature threshold.
+One whose bounds cannot be brought within the thresholds is not reached either (`exhausted` says when the
+work allowed ran out first). One of the faces must be a spline face the edge runs along a parameter line of (a network sheet's
 edge is); the other a plane, cylinder, cone or sphere, or a spline face in the same parametrisation along the
 seam. Two analytic faces and a torus are refused, with the reason.
 

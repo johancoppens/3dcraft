@@ -5416,3 +5416,45 @@ fn a_manifest_with_unsound_flange_ids_is_an_invalid_document() {
         }
     }
 }
+
+/// A network surface with an edge held in curvature (G2) and one held
+/// tangent: written with its kind and weight, read back the same
+/// (AGENTS.md §8).
+#[test]
+fn a_network_held_in_curvature_round_trips() {
+    use craft3d_doc::{EdgeHold, NetworkEdges, PersistentName, Rail, SurfaceNetwork};
+    let mut doc = small();
+    let face: PersistentName = "F1:face(2)".parse().unwrap();
+    let edge = |k: u32| -> PersistentName { format!("F1:edge({k})").parse().unwrap() };
+    doc.add_feature(
+        Some("Skin"),
+        FeatureKind::SurfaceNetwork(SurfaceNetwork {
+            u: vec![Rail::Edges(vec![edge(0)]), Rail::Edges(vec![edge(2)])],
+            v: vec![Rail::Edges(vec![edge(1)]), Rail::Edges(vec![edge(3)])],
+            edges: NetworkEdges {
+                u_first: EdgeHold::Curvature {
+                    face: face.clone(),
+                    weight: Expr::new("1.5"),
+                },
+                v_last: EdgeHold::Tangent {
+                    face,
+                    weight: Expr::new("1"),
+                },
+                ..NetworkEdges::default()
+            },
+        }),
+    )
+    .unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["format_version"], FORMAT_VERSION);
+    let features = value["document"]["features"].as_array().unwrap();
+    let kind = &features[features.len() - 1]["kind"];
+    assert_eq!(kind["type"], "surfaceNetwork");
+    assert_eq!(kind["edges"]["uFirst"]["kind"], "curvature");
+    assert_eq!(kind["edges"]["uFirst"]["weight"], "1.5");
+    assert_eq!(kind["edges"]["vLast"]["kind"], "tangent");
+    assert!(kind["edges"].get("uLast").is_none(), "{kind}");
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+}

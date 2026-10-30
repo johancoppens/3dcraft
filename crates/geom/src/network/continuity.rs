@@ -34,7 +34,10 @@
 //!   distance of a plane (`L·X₀ / w`), of a sphere or cylinder
 //!   (`|ρ − R| = |XᵀQX| / (w (|P(x − c w)| + R w))`, `P` the projection
 //!   off the axis) or of a cone (to the generatrix in the point's
-//!   meridian plane, which lies on the cone); to a spline face, the
+//!   meridian plane, which lies on the cone; the quadric is the double
+//!   cone, so near the apex the distance is to the nearer of its two
+//!   nappes, and to the whole line beyond the face's own extent); to a
+//!   spline face, the
 //!   distance between corresponding points `|x₀ω − y₀w| / (wω)`. Every
 //!   point of a face is at least as far as its nearest, so each is an
 //!   upper bound on the distance to the face.
@@ -44,24 +47,38 @@
 //!   point; for a cone it is the normal of the quadric's level surface
 //!   through the point, the cone's own on it), `n` for a plane, `W_b` for
 //!   a spline face.
-//! - *Curvature*: across the edge, in the direction `S_v` the face `a`
-//!   leaves it. Against an implicit face `g = 0` the second-order contact
-//!   `h″ = d²/dv² g(S)`: `G2 ⇔ h = h′ = h″ = 0`, and `|h″| / (|∇g| |S_v|²)`
-//!   is the difference of the normal curvatures in that direction wherever
-//!   the faces share their tangent plane (exactly; in homogeneous terms
-//!   `P₂ = H₂w² − 4ww₁H₁ + (6w₁² − 2ww₂)H`, `H = XᵀQX` and its
-//!   derivatives across, for a quadric; `L·X` likewise for a plane).
-//!   Against a spline face: `n_b·S_vv − II_b(S_v)`, `S_v` put into its
-//!   tangent plane, through `det[Y, Y_a, Y_t, Y_ab] = −ω⁴ (B_a × B_t)·B_ab`
-//!   (its second fundamental form, Farin ch. 22) and Cramer's rule, over
-//!   `|S_v|²`.
-//!
+//! - *Second order* (G2 here): the second fundamental forms agree on
+//!   the edge's tangent vectors. With `u` along the edge and `v` the
+//!   direction the face `a` leaves it, three gaps, each held to the
+//!   curvature threshold: across `(n_a·S_vv − II_b(S_v, S_v)) / |S_v|²`,
+//!   twist `(n_a·S_uv − II_b(S_u, S_v)) / (|S_u| |S_v|)` and along
+//!   `(n_a·S_uu − II_b(S_u, S_u)) / |S_u|²`, `n_a` the face `a`'s own unit
+//!   normal (oriented as `b`'s). Since G1 lets the normals part by up to
+//!   the angular tolerance, each is bounded as `n_b·S_xy − II_b(X, Y)`
+//!   plus `|n_a − n_b| |S_xy| / (|X| |Y|)`, `|n_a − n_b|` from the angle's
+//!   bound on the same piece. So a seam whose normals part, or whose cross
+//!   tangent turns about the edge, by up to the angular tolerance is not
+//!   G2 when that bends or twists it beyond the curvature threshold.
+//!   `II_b` is `b`'s form where `a` is: for an implicit face `g = 0`, that
+//!   of its level surface through the point, `−Hess g(X, Y) / |∇g|`, so
+//!   `n_b·S_xy − II_b(X, Y) = ∂x∂y g(S) / |∇g|`: in homogeneous terms
+//!   `P_xy = H_xy w² − 2w(H_x w_y + H_y w_x) + (6 w_x w_y − 2 w w_xy) H`,
+//!   `H = XᵀQX` and its derivatives, for a quadric, `L·X / w` likewise for
+//!   a plane; for a spline face, its form at the corresponding point on
+//!   `X` and `Y` put into its tangent plane (Cramer's rule in `U_b, V_b`),
+//!   through `det[Y, Y_a, Y_t, Y_ab] = −ω⁴ (B_a × B_t)·B_ab` (Farin ch. 22).
+
 //! **Rounding.** Every coefficient carries a bound on its rounding error,
 //! carried through each sum and product (running error analysis, Higham
-//! ch. 3): what enters (the rows' coefficients after cutting into pieces
-//! and taking derivatives) gets `16 (p + 2) ε` of the magnitudes it came
-//! from, and each product of degrees `m` and `n` adds `4 (m + n + 2) ε`
-//! times the product of the magnitudes. Bounds take the errors in.
+//! ch. 3). The faces and the edge are first written about a point of the
+//! edge, so the rows are formed from local points and nothing cancels far
+//! from the origin; a row across, `Σ cᵢ Pᵢ`, enters with `16 (p + q + 4) ε`
+//! times `Σ |cᵢ|` (bounded from the knots) times the net's local
+//! magnitude (`spline_rows`); derivatives along the edge and the cut into
+//! pieces add their own; each product of degrees `m` and `n` adds `γ_k`,
+//! `k = 4 (m + n) + min(m, n) + 8`, times the product of the magnitudes
+//! (`Poly::mul_gamma`). A NaN anywhere makes a bound infinite. Bounds take
+//! the errors in.
 //!
 //! **Thresholds** come from the document: the position from the
 //! tolerance, the angle from the angular tolerance, and the curvature
@@ -93,7 +110,9 @@ pub enum Order {
     G0,
     /// In position and with one tangent plane.
     G1,
-    /// In position, with one tangent plane and the same normal curvature.
+    /// In position, with one tangent plane and the same second
+    /// fundamental form on the edge's tangent vectors (normal curvature
+    /// across and along, and twist).
     G2,
 }
 
@@ -107,6 +126,11 @@ impl Order {
         }
     }
 }
+
+/// Most work the measure does on one edge (in units of a product of two
+/// coefficients, about): it runs inside assertions after every
+/// regeneration, so past this an order not yet decided is not reached.
+pub const MAX_SEAM_WORK: u64 = 1 << 32;
 
 /// One measured gap along an edge.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -141,11 +165,29 @@ pub struct Continuity {
     pub order: Order,
     pub position: Gap,
     pub angle: Gap,
+    /// The normal curvature across the edge: `n·S_vv − II_b(S_v)` over
+    /// `|S_v|²`, `v` the direction the face `a` leaves it.
     pub curvature: Gap,
+    /// The twist: `n·S_uv − II_b(S_u, S_v)` over `|S_u| |S_v|`, `u` along
+    /// the edge, held to the curvature threshold.
+    pub twist: Gap,
+    /// The normal curvature along the edge: `n·S_uu − II_b(S_u, S_u)` over
+    /// `|S_u|²`, held to the curvature threshold.
+    pub along: Gap,
     /// The length the curvature threshold is derived from.
     pub length: f64,
     /// Pieces the edge was cut into.
     pub pieces: usize,
+    /// The work allowed ([`MAX_SEAM_WORK`], [`MAX_SEAM_PIECES`]) was
+    /// spent before every gap was decided.
+    pub exhausted: bool,
+}
+
+impl Continuity {
+    /// The three gaps of the second order: across, twist, along.
+    pub fn second_order(&self) -> [&Gap; 3] {
+        [&self.curvature, &self.twist, &self.along]
+    }
 }
 
 /// The thresholds of an edge of length `length`: tolerance, angular
@@ -189,16 +231,46 @@ impl Poly {
         self.c.len().saturating_sub(1)
     }
 
+    /// A NaN anywhere (`f64::max` and `min` would pass it over): then
+    /// nothing is known.
+    fn unknown(&self) -> bool {
+        self.e.is_nan() || self.c.iter().any(|x| x.is_nan())
+    }
+
     fn mag(&self) -> f64 {
+        if self.unknown() {
+            return f64::INFINITY;
+        }
         self.c.iter().fold(0.0_f64, |m, x| m.max(x.abs()))
     }
 
     fn lo(&self) -> f64 {
+        if self.unknown() {
+            return f64::NEG_INFINITY;
+        }
         self.c.iter().copied().fold(f64::INFINITY, f64::min) - self.e
     }
 
     fn hi(&self) -> f64 {
+        if self.unknown() {
+            return f64::INFINITY;
+        }
         self.c.iter().copied().fold(f64::NEG_INFINITY, f64::max) + self.e
+    }
+
+    /// The rounding of a product of degrees `m` and `n`, relative to the
+    /// product of the factors' magnitudes. Each coefficient is
+    /// `Σ C(m,i) C(n,j) / C(m+n,i+j) aᵢ bⱼ` over at most `min(m,n) + 1`
+    /// terms whose weights sum to 1 (Vandermonde). The binomials come from
+    /// the recurrence `C(n,k+1) = C(n,k)(n−k)/(k+1)`, two roundings a step
+    /// (exact while `C(n,k)·n < 2⁵³`, about `n ≤ 56`, but not beyond), so
+    /// within `2n` roundings; a term is `C(m,i)·C(n,j)/C(m+n,k)·a·b`, four
+    /// more; the sum adds `min(m,n)`. So `γ_k` with `k = 4(m+n) + min(m,n)
+    /// + 4` (Higham, lemma 3.1 and §3.1), taken with a margin of 4.
+    fn mul_gamma(m: usize, n: usize) -> f64 {
+        let k = (4 * (m + n) + m.min(n) + 8) as f64;
+        let ke = k * EPS;
+        ke / (1.0 - ke).max(0.5)
     }
 
     fn mul(&self, o: &Poly) -> Poly {
@@ -216,10 +288,12 @@ impl Poly {
             }
         }
         let (ma, mb) = (self.mag(), o.mag());
-        let gamma = 4.0 * (m + n + 2) as f64 * EPS;
+        let gamma = Poly::mul_gamma(m, n);
+        // What the factors carried, through weights within `γ` of summing
+        // to 1, and the product's own rounding.
         Poly {
             c: out,
-            e: ma * o.e + mb * self.e + self.e * o.e + gamma * ma * mb,
+            e: (1.0 + gamma) * (ma * o.e + mb * self.e + self.e * o.e) + gamma * ma * mb,
         }
     }
 
@@ -614,26 +688,6 @@ impl ImplicitForm {
     }
 }
 
-/// `[x − o w, w]`.
-fn about(raw: &Raw, o: Vec3) -> Raw {
-    Raw {
-        degree: raw.degree,
-        knots: raw.knots.clone(),
-        points: raw
-            .points
-            .iter()
-            .map(|h| {
-                [
-                    h[0] - o.x * h[3],
-                    h[1] - o.y * h[3],
-                    h[2] - o.z * h[3],
-                    h[3],
-                ]
-            })
-            .collect(),
-    }
-}
-
 /// A row as it enters the measure, with a bound on the rounding of each of
 /// its coefficients (the coordinates', the weight's).
 type Row = (Raw, [f64; 2]);
@@ -770,11 +824,15 @@ impl Piece {
     }
 }
 
-/// Upper bounds of the three gaps over rows (as polynomials of a piece),
-/// and, for constant rows, lower bounds of their values.
+/// The gaps, in order: position, angle, and the three of the second
+/// order (curvature across, twist, curvature along).
+const GAPS: usize = 5;
+
+/// Upper bounds of the gaps over rows (as polynomials of a piece), and,
+/// for constant rows, lower bounds of their values.
 struct Gaps {
-    hi: [f64; 3],
-    lo: [f64; 3],
+    hi: [f64; GAPS],
+    lo: [f64; GAPS],
 }
 
 fn ratio(num_hi: f64, den_lo: f64) -> f64 {
@@ -790,21 +848,94 @@ fn ratio(num_hi: f64, den_lo: f64) -> f64 {
     num_hi / den_lo
 }
 
+fn add3(a: &V3, b: &V3) -> V3 {
+    [a[0].add(&b[0]), a[1].add(&b[1]), a[2].add(&b[2])]
+}
+
+/// A bound on `|n_a − n_b|` for unit normals (oriented alike) whose lines
+/// meet at an angle of sine at most `s`: `2 sin(θ / 2) = s √(2 / (1 +
+/// cos θ))`, written so that nothing cancels for small `s`, with room for
+/// its own rounding.
+fn normal_gap(s: f64) -> f64 {
+    if s.is_nan() {
+        return f64::INFINITY;
+    }
+    let s = s.clamp(0.0, 1.0);
+    let c = (1.0 - s * s).max(0.0).sqrt();
+    s * (2.0 / (1.0 + c)).sqrt() * (1.0 + 8.0 * EPS)
+}
+
+/// `∂x∂y (G / w)` times `w³`, `G = L·X` (from its derivatives).
+#[allow(clippy::too_many_arguments)]
+fn plane_second(
+    gxy: &Poly,
+    gx: &Poly,
+    gy: &Poly,
+    g: &Poly,
+    w: &Poly,
+    wx: &Poly,
+    wy: &Poly,
+    wxy: &Poly,
+) -> Poly {
+    gxy.mul(&w.mul(w))
+        .sub(&w.mul(&gx.mul(wy).add(&gy.mul(wx))))
+        .sub(&w.mul(wxy).mul(g))
+        .add(&wx.mul(wy).mul(g).scale(2.0))
+}
+
+/// `∂x∂y (H / w²)` times `w⁴`, `H = XᵀQX` (from its derivatives).
+#[allow(clippy::too_many_arguments)]
+fn quadric_second(
+    hxy: &Poly,
+    hx: &Poly,
+    hy: &Poly,
+    h: &Poly,
+    w: &Poly,
+    wx: &Poly,
+    wy: &Poly,
+    wxy: &Poly,
+) -> Poly {
+    hxy.mul(&w.mul(w))
+        .sub(&w.mul(&hx.mul(wy).add(&hy.mul(wx))).scale(2.0))
+        .add(&wx.mul(wy).scale(6.0).sub(&w.mul(wxy).scale(2.0)).mul(h))
+}
+
 fn gaps(rows: &[P4], other: &Other) -> Result<Gaps, NetworkError> {
     let row = |k: usize| rows.get(k).cloned().ok_or_else(internal);
-    let (x0, x0d, x1, x2) = (row(0)?, row(1)?, row(2)?, row(3)?);
-    let (w0, w0d, w1, w2) = (&x0[3], &x0d[3], &x1[3], &x2[3]);
-    let (p0, p0d, p1, p2) = (xyz4(&x0), xyz4(&x0d), xyz4(&x1), xyz4(&x2));
+    let (x0, x0d, x0dd, x1, x1d, x2) = (row(0)?, row(1)?, row(2)?, row(3)?, row(4)?, row(5)?);
+    let (w0, w0d, w0dd, w1, w1d, w2) = (&x0[3], &x0d[3], &x0dd[3], &x1[3], &x1d[3], &x2[3]);
+    let (p0, p0d, p0dd) = (xyz4(&x0), xyz4(&x0d), xyz4(&x0dd));
+    let (p1, p1d, p2) = (xyz4(&x1), xyz4(&x1d), xyz4(&x2));
+    // S_u, S_v times w²; S_vv, S_uv, S_uu times w³.
     let v0d = minus(&times(&p0d, w0), &times(&p0, w0d));
     let v1 = minus(&times(&p1, w0), &times(&p0, w1));
+    let a_vv = minus(
+        &times(&minus(&times(&p2, w0), &times(&p0, w2)), w0),
+        &times(&v1, &w1.scale(2.0)),
+    );
+    let v1u = minus(
+        &add3(&times(&p1d, w0), &times(&p1, w0d)),
+        &add3(&times(&p0d, w1), &times(&p0, w1d)),
+    );
+    let a_uv = minus(&times(&v1u, w0), &times(&v1, &w0d.scale(2.0)));
+    let a_uu = minus(
+        &times(&minus(&times(&p0dd, w0), &times(&p0, w0dd)), w0),
+        &times(&v0d, &w0d.scale(2.0)),
+    );
     let w = cross(&v0d, &v1);
-    let v1sq = dot(&v1, &v1);
-    let (v1sq_lo, v1sq_hi) = (v1sq.lo().max(0.0), v1sq.hi());
+    let (nu_lo, nu_hi) = (norm_lo(&v0d), norm_value_hi(&v0d));
+    let (nv_lo, nv_hi) = (norm_lo(&v1), norm_value_hi(&v1));
     let (w_lo, w_hi) = (norm_lo(&w), norm_value_hi(&w));
-    let (w0_lo, w0_hi) = (w0.lo(), w0.hi());
-    let mut hi = [0.0; 3];
-    let mut lo = [0.0; 3];
-    match other {
+    // A lower bound on a weight is of no use below zero.
+    let (w0_lo, w0_hi) = (w0.lo().max(0.0), w0.hi());
+    // `|X| |Y|` over `w⁴` for the pairs (v, v), (u, v), (u, u).
+    let den_lo = [nv_lo * nv_lo, nu_lo * nv_lo, nu_lo * nu_lo];
+    let den_hi = [nv_hi * nv_hi, nu_hi * nv_hi, nu_hi * nu_hi];
+    let mut hi = [0.0; GAPS];
+    let mut lo = [0.0; GAPS];
+    // The second-order numerators and the factor of their denominators
+    // beyond `|X| |Y|` (as lower and upper bounds).
+    let (nums, extra_lo, extra_hi): ([Poly; 3], f64, f64) = match other {
         Other::Plane { l } => {
             let lx = |x: &P4| {
                 x[0].scale(l[0])
@@ -812,32 +943,31 @@ fn gaps(rows: &[P4], other: &Other) -> Result<Gaps, NetworkError> {
                     .add(&x[2].scale(l[2]))
                     .add(&x[3].scale(l[3]))
             };
-            let (g0, g1, g2) = (lx(&x0), lx(&x1), lx(&x2));
+            let (g0, g0d, g0dd) = (lx(&x0), lx(&x0d), lx(&x0dd));
+            let (g1, g1d, g2) = (lx(&x1), lx(&x1d), lx(&x2));
             hi[0] = ratio(abs_hi(&g0), w0_lo);
             lo[0] = abs_value_lo(&g0) / w0_hi;
             let n = konst3(Vec3::new(l[0], l[1], l[2]));
             let z = cross(&w, &n);
             hi[1] = ratio(norm_hi(&z), w_lo);
             lo[1] = norm_value_lo(&z) / w_hi;
-            let p2l = g2
-                .mul(&w0.mul(w0))
-                .sub(&w0.mul(w1).mul(&g1).scale(2.0))
-                .sub(&w0.mul(w2).mul(&g0))
-                .add(&w1.mul(w1).mul(&g0).scale(2.0));
-            let num = p2l.mul(w0);
-            hi[2] = ratio(abs_hi(&num), v1sq_lo);
-            lo[2] = abs_value_lo(&num) / v1sq_hi;
+            let vv = plane_second(&g2, &g1, &g1, &g0, w0, w1, w1, w2);
+            let uv = plane_second(&g1d, &g0d, &g1, &g0, w0, w0d, w1, w1d);
+            let uu = plane_second(&g0dd, &g0d, &g0d, &g0, w0, w0d, w0d, w0dd);
+            ([vv.mul(w0), uv.mul(w0), uu.mul(w0)], 1.0, 1.0)
         }
         Other::Round { .. } | Other::Cone { .. } => {
             let q = match other {
                 Other::Round { q, .. } | Other::Cone { q, .. } => q,
                 _ => return Err(internal()),
             };
-            let qx0 = apply(q, &x0);
-            let qx1 = apply(q, &x1);
+            let (qx0, qx0d, qx1) = (apply(q, &x0), apply(q, &x0d), apply(q, &x1));
             let hh = dot4(&x0, &qx0);
-            let h1 = dot4(&x0, &qx1).scale(2.0);
-            let h2 = dot4(&x1, &qx1).add(&dot4(&x2, &qx0)).scale(2.0);
+            let h_u = dot4(&x0d, &qx0).scale(2.0);
+            let h_v = dot4(&x1, &qx0).scale(2.0);
+            let h_vv = dot4(&x1, &qx1).add(&dot4(&x2, &qx0)).scale(2.0);
+            let h_uv = dot4(&x0d, &qx1).add(&dot4(&x1d, &qx0)).scale(2.0);
+            let h_uu = dot4(&x0d, &qx0d).add(&dot4(&x0dd, &qx0)).scale(2.0);
             // Position.
             let (den_lo, den_hi) = match other {
                 Other::Round {
@@ -885,23 +1015,19 @@ fn gaps(rows: &[P4], other: &Other) -> Result<Gaps, NetworkError> {
             let (g_lo, g_hi) = (norm_lo(&g), norm_value_hi(&g));
             hi[1] = ratio(norm_hi(&z), w_lo * g_lo);
             lo[1] = norm_value_lo(&z) / (w_hi * g_hi);
-            // Curvature.
-            let p2 = h2
-                .mul(&w0.mul(w0))
-                .sub(&w0.mul(w1).mul(&h1).scale(4.0))
-                .add(&w1.mul(w1).scale(6.0).sub(&w0.mul(w2).scale(2.0)).mul(&hh));
-            let num = p2.mul(w0);
-            hi[2] = ratio(abs_hi(&num), 2.0 * g_lo * v1sq_lo);
-            lo[2] = abs_value_lo(&num) / (2.0 * g_hi * v1sq_hi);
+            let vv = quadric_second(&h_vv, &h_v, &h_v, &hh, w0, w1, w1, w2);
+            let uv = quadric_second(&h_uv, &h_u, &h_v, &hh, w0, w0d, w1, w1d);
+            let uu = quadric_second(&h_uu, &h_u, &h_u, &hh, w0, w0d, w0d, w0dd);
+            ([vv.mul(w0), uv.mul(w0), uu.mul(w0)], 2.0 * g_lo, 2.0 * g_hi)
         }
         Other::Spline => {
-            let r = |k: usize| rows.get(4 + k).cloned().ok_or_else(internal);
+            let r = |k: usize| rows.get(6 + k).cloned().ok_or_else(internal);
             let (y0, y0d, y0dd, y1, y1d, y2) = (r(0)?, r(1)?, r(2)?, r(3)?, r(4)?, r(5)?);
             let (om, om_d, om1) = (&y0[3], &y0d[3], &y1[3]);
             let (q0, q0d, q1) = (xyz4(&y0), xyz4(&y0d), xyz4(&y1));
             // Position.
             let e0 = minus(&times(&p0, om), &times(&q0, w0));
-            let (om_lo, om_hi) = (om.lo(), om.hi());
+            let (om_lo, om_hi) = (om.lo().max(0.0), om.hi());
             hi[0] = ratio(norm_hi(&e0), w0_lo * om_lo);
             lo[0] = norm_value_lo(&e0) / (w0_hi * om_hi);
             // Angle.
@@ -912,30 +1038,53 @@ fn gaps(rows: &[P4], other: &Other) -> Result<Gaps, NetworkError> {
             let (wb_lo, wb_hi) = (norm_lo(&wb), norm_value_hi(&wb));
             hi[1] = ratio(norm_hi(&z), w_lo * wb_lo);
             lo[1] = norm_value_lo(&z) / (w_hi * wb_hi);
-            // Curvature.
-            let a2 = minus(
-                &times(&minus(&times(&p2, w0), &times(&p0, w2)), w0),
-                &times(&v1, &w1.scale(2.0)),
-            );
+            // The second order: `n_b·S_xy − II_b(X, Y)`, `X`, `Y` put into
+            // b's tangent plane by Cramer's rule in `(U_b, V_b)`.
             let m = dot(&wb, &wb);
-            let an = dot(&cross(&v1, &vb), &wb);
-            let bn = dot(&cross(&ub, &v1), &wb);
+            let coeffs = |x: &V3| (dot(&cross(x, &vb), &wb), dot(&cross(&ub, x), &wb));
+            let (au, bu) = coeffs(&v0d);
+            let (av, bv) = coeffs(&v1);
             let duu = det4(&y0, &y0d, &y1, &y0dd);
             let dut = det4(&y0, &y0d, &y1, &y1d);
             let dtt = det4(&y0, &y0d, &y1, &y2);
-            let q2 = an
-                .mul(&an)
-                .mul(&duu)
-                .add(&an.mul(&bn).mul(&dut).scale(2.0))
-                .add(&bn.mul(&bn).mul(&dtt));
+            let form = |ax: &Poly, bx: &Poly, ay: &Poly, by: &Poly| {
+                ax.mul(ay)
+                    .mul(&duu)
+                    .add(&ax.mul(by).add(&bx.mul(ay)).mul(&dut))
+                    .add(&bx.mul(by).mul(&dtt))
+            };
             let om2 = om.mul(om);
-            let num = dot(&wb, &a2)
-                .mul(w0)
-                .mul(&m.mul(&m))
-                .add(&om2.mul(&om2).mul(&q2));
+            let om4 = om2.mul(&om2);
+            let m2 = m.mul(&m);
+            let num = |a: &V3, q: Poly| dot(&wb, a).mul(w0).mul(&m2).add(&om4.mul(&q));
+            let nums = [
+                num(&a_vv, form(&av, &bv, &av, &bv)),
+                num(&a_uv, form(&au, &bu, &av, &bv)),
+                num(&a_uu, form(&au, &bu, &au, &bu)),
+            ];
             let (m_lo, m_hi) = (m.lo().max(0.0), m.hi());
-            hi[2] = ratio(abs_hi(&num), m_lo * m_lo * wb_lo * v1sq_lo);
-            lo[2] = abs_value_lo(&num) / (m_hi * m_hi * wb_hi * v1sq_hi);
+            (nums, m_lo * m_lo * wb_lo, m_hi * m_hi * wb_hi)
+        }
+    };
+    // Each face's own normal: `n_a·S_xy` differs from `n_b·S_xy` by at most
+    // `|n_a − n_b| |S_xy|`, and `|S_xy| / (|X| |Y|) = |A_xy| w / (|X| |Y|)`
+    // (with `w⁴` over each side).
+    let d = normal_gap(hi[1]);
+    for (k, (num, a)) in nums.iter().zip([&a_vv, &a_uv, &a_uu]).enumerate() {
+        let (geo_lo, geo_hi) = (
+            den_lo.get(k).copied().unwrap_or(0.0),
+            den_hi.get(k).copied().unwrap_or(f64::INFINITY),
+        );
+        let normals = if d > 0.0 {
+            d * ratio(norm_hi(a) * w0_hi, geo_lo)
+        } else {
+            0.0
+        };
+        let nb_hi = ratio(abs_hi(num), extra_lo * geo_lo);
+        let nb_lo = abs_value_lo(num) / (extra_hi * geo_hi);
+        if let (Some(h), Some(l)) = (hi.get_mut(2 + k), lo.get_mut(2 + k)) {
+            *h = nb_hi + normals;
+            *l = (nb_lo - normals).max(0.0);
         }
     }
     for x in &mut lo {
@@ -1024,22 +1173,107 @@ pub fn continuity(
 /// there and its first and second homogeneous derivatives across), about
 /// `origin`, each with the bound on its coefficients' rounding; `None`
 /// where the edge is not a parameter line of the face.
+///
+/// The face and the edge are first written about `origin` (a point of the
+/// edge), so the rows are formed from local points and nothing cancels
+/// far from the origin: `x − o` is exact where the two are within a factor
+/// two of each other (Sterbenz) and otherwise off by `ε` of the local
+/// value, as is `(x − o) w`, so the local net is the face to within `2 ε`
+/// of each local coefficient. A row across is `Σ cᵢ Pᵢ`, the `cᵢ` the
+/// basis functions' values, first or second derivatives across at the
+/// line, at most `p + 1` of them nonzero; `Σ |cᵢ|` is 1, at most
+/// `S₁ = 2p / D_p` and at most `S₂ = S₁ · 2(p − 1) / D_{p−1}`
+/// (`N′ᵢ = p (N_{i,p−1} / Δᵢ − N_{i+1,p−1} / Δᵢ₊₁)` and the partition of
+/// unity; `D_k` the shortest positive `t_{i+k} − t_i`). So each
+/// coefficient is within `γ S M` of the exact one, `M` the net's largest
+/// local coordinate (or weight) and `γ = 16 (p + q + 4) ε` with `p` the
+/// degree along and `q` across: the net's rounding (`2 ε`), the `cᵢ`'s
+/// (Cox–de Boor and the divided differences, `≤ 4 q ε` relative), the
+/// sum (`q + 1` terms) and the cut to the edge (convex combinations,
+/// `≤ 4 p ε`), with room. The direction across is not known before the
+/// line is found, so `S₁`, `S₂` are the larger of the two directions'.
 fn spline_rows(
     surface: &NurbsSurface,
     edge: &NurbsCurve,
     tolerance: f64,
     origin: Vec3,
 ) -> Result<Option<[Row; 3]>, NetworkError> {
-    let track = Track::new(edge, tolerance)?;
-    let Some(rows) = iso_track(surface, &track, tolerance)? else {
+    let local = NurbsSurface::new(
+        surface.degrees().0,
+        surface.degrees().1,
+        surface.knots_u().to_vec(),
+        surface.knots_v().to_vec(),
+        surface.counts().0,
+        surface.counts().1,
+        surface
+            .control_points()
+            .iter()
+            .map(|p| *p - origin)
+            .collect(),
+        surface.weights().to_vec(),
+    )?;
+    let local_edge = NurbsCurve::new(
+        edge.degree(),
+        edge.knots().to_vec(),
+        edge.control_points().iter().map(|p| *p - origin).collect(),
+        edge.weights().to_vec(),
+    )?;
+    let track = Track::new(&local_edge, tolerance)?;
+    let Some(rows) = iso_track(&local, &track, tolerance)? else {
         return Ok(None);
     };
-    Ok(Some(rows.map(|raw| {
-        let local = about(&raw, origin);
-        let (g, l) = (magnitude(&raw), magnitude(&local));
-        let f = 16.0 * (raw.degree + 2) as f64 * EPS;
-        (local, [f * g[0].max(l[0]), f * g[1].max(l[1])])
-    })))
+    let m =
+        local
+            .control_points()
+            .iter()
+            .zip(local.weights())
+            .fold([0.0_f64; 2], |[m, mw], (p, w)| {
+                let w = w.abs();
+                [
+                    m.max(p.x.abs() * w).max(p.y.abs() * w).max(p.z.abs() * w),
+                    mw.max(w),
+                ]
+            });
+    let (pu, pv) = local.degrees();
+    let (su, sv) = (
+        across_sums(local.knots_u(), pu),
+        across_sums(local.knots_v(), pv),
+    );
+    let sums = [1.0, su[0].max(sv[0]), su[1].max(sv[1])];
+    let q = pu.max(pv);
+    let mut out = Vec::with_capacity(3);
+    for (raw, sum) in rows.into_iter().zip(sums) {
+        let gamma = 16.0 * (raw.degree + q + 4) as f64 * EPS;
+        out.push((raw, [gamma * sum * m[0], gamma * sum * m[1]]));
+    }
+    let [x0, x1, x2]: [Row; 3] = out.try_into().map_err(|_| internal())?;
+    Ok(Some([x0, x1, x2]))
+}
+
+/// `[S₁, S₂]`: bounds on `Σ |N′ᵢ|` and `Σ |N″ᵢ|` of the basis of degree `p`
+/// on `knots` anywhere (see [`spline_rows`]); infinite where a span the
+/// bound divides by is missing.
+fn across_sums(knots: &[f64], p: usize) -> [f64; 2] {
+    let shortest = |k: usize| {
+        knots
+            .iter()
+            .zip(knots.iter().skip(k))
+            .map(|(a, b)| b - a)
+            .filter(|d| *d > 0.0)
+            .fold(f64::INFINITY, f64::min)
+    };
+    if p == 0 {
+        return [0.0, 0.0];
+    }
+    // With no positive span there is no bound.
+    let over = |x: f64, d: f64| if d.is_finite() { x / d } else { f64::INFINITY };
+    let s1 = over(2.0 * p as f64, shortest(p));
+    let s2 = if p == 1 {
+        0.0
+    } else {
+        s1 * over(2.0 * (p - 1) as f64, shortest(p - 1))
+    };
+    [s1, s2]
 }
 
 /// Rows written about `origin` with their allowances: the face `a`'s, and
@@ -1075,9 +1309,13 @@ fn measure(
         thr[0],
         angular.min(std::f64::consts::FRAC_PI_2).sin(),
         thr[2],
+        thr[2],
+        thr[2],
     ];
     let x0d = derived(&x0)?;
-    let mut rows: Vec<Row> = vec![x0, x0d, x1, x2];
+    let x0dd = derived(&x0d)?;
+    let x1d = derived(&x1)?;
+    let mut rows: Vec<Row> = vec![x0, x0d, x0dd, x1, x1d, x2];
     let spline_degree = match ys {
         Some([y0, y1, y2]) => {
             let q = y0.0.degree.max(y1.0.degree).max(y2.0.degree);
@@ -1091,7 +1329,7 @@ fn measure(
     };
     let p = rows
         .iter()
-        .take(4)
+        .take(6)
         .map(|(r, _)| r.degree)
         .max()
         .unwrap_or(0);
@@ -1115,7 +1353,20 @@ fn measure(
     let mut bounds = vec![0.0];
     bounds.extend(breaks.iter().copied());
     bounds.push(1.0);
-    let mut work: Vec<(Piece, [f64; 3])> = Vec::with_capacity(bounds.len());
+    // The work: each bound of a piece costs about the square of the
+    // polynomials' degree (their products), each piece looked at in 5 or
+    // 3 places as well.
+    let cost = (degree as u64 + 1).saturating_pow(2);
+    let first = cost.saturating_mul(6).saturating_mul(bounds.len() as u64);
+    if first > MAX_SEAM_WORK {
+        return refuse(format!(
+            "the edge's faces have too many knot spans along it to bound how they meet ({} pieces of degree {degree})",
+            bounds.len() - 1
+        ));
+    }
+    let mut spent = first;
+    let mut exhausted = false;
+    let mut work: Vec<(Piece, [f64; GAPS])> = Vec::with_capacity(bounds.len());
     for (k, w) in bounds.windows(2).enumerate() {
         let [a, b] = w else { return Err(internal()) };
         let rows: Vec<P4> = per_row
@@ -1131,10 +1382,10 @@ fn measure(
         let hi = gaps(&piece.rows, &other)?.hi;
         work.push((piece, hi));
     }
-    let mut found = [(0.0_f64, 0.0_f64, origin); 3];
+    let mut found = [(0.0_f64, 0.0_f64, origin); GAPS];
     let look = |piece: &Piece,
                 ts: &[f64],
-                found: &mut [(f64, f64, Vec3); 3]|
+                found: &mut [(f64, f64, Vec3); GAPS]|
      -> Result<(), NetworkError> {
         for &t in ts {
             let at = piece.at(t);
@@ -1160,7 +1411,7 @@ fn measure(
         look(piece, &[0.0, 0.25, 0.5, 0.75, 1.0], &mut found)?;
     }
     loop {
-        let decided: Vec<bool> = (0..3)
+        let decided: Vec<bool> = (0..GAPS)
             .map(|q| {
                 let lim = limit.get(q).copied().unwrap_or(0.0);
                 let all_within = work
@@ -1169,19 +1420,28 @@ fn measure(
                 all_within || found.get(q).is_some_and(|f| f.0 > lim)
             })
             .collect();
-        if decided.iter().all(|d| *d) || work.len() >= MAX_SEAM_PIECES {
+        if decided.iter().all(|d| *d) {
             break;
         }
-        let mut next: Vec<(Piece, [f64; 3])> = Vec::with_capacity(work.len() * 2);
+        if work.len() >= MAX_SEAM_PIECES {
+            exhausted = true;
+            break;
+        }
+        let mut next: Vec<(Piece, [f64; GAPS])> = Vec::with_capacity(work.len() * 2);
         let mut split = false;
         let total = work.len();
         for (index, (piece, hi)) in work.into_iter().enumerate() {
-            let open = (0..3).any(|q| {
+            let open = (0..GAPS).any(|q| {
                 !decided.get(q).copied().unwrap_or(true)
                     && hi.get(q).copied().unwrap_or(0.0) > limit.get(q).copied().unwrap_or(0.0)
             });
             let room = next.len() + (total - index) < MAX_SEAM_PIECES;
-            if open && room && piece.depth < 52 {
+            let affordable = spent.saturating_add(cost.saturating_mul(8)) <= MAX_SEAM_WORK;
+            if open && !affordable {
+                exhausted = true;
+            }
+            if open && room && affordable && piece.depth < 52 {
+                spent = spent.saturating_add(cost.saturating_mul(8));
                 let (l, r) = piece.halves();
                 for half in [l, r] {
                     look(&half, &[0.25, 0.5, 0.75], &mut found)?;
@@ -1218,15 +1478,16 @@ fn measure(
             found: conv(f),
             param,
             at,
-            threshold: thr.get(q).copied().unwrap_or(0.0),
+            threshold: thr.get(q.min(2)).copied().unwrap_or(0.0),
         }
     };
-    let (position, angle, curvature) = (gap(0, false), gap(1, true), gap(2, false));
+    let (position, angle) = (gap(0, false), gap(1, true));
+    let (curvature, twist, along) = (gap(2, false), gap(3, false), gap(4, false));
     let order = if !position.within() {
         Order::None
     } else if !angle.within() {
         Order::G0
-    } else if !curvature.within() {
+    } else if !(curvature.within() && twist.within() && along.within()) {
         Order::G1
     } else {
         Order::G2
@@ -1236,8 +1497,11 @@ fn measure(
         position,
         angle,
         curvature,
+        twist,
+        along,
         length,
         pieces: work.len(),
+        exhausted,
     })
 }
 
@@ -1256,11 +1520,21 @@ pub fn describe(c: &Continuity) -> String {
             g.bound, g.found, g.param, g.threshold
         )
     };
+    let spent = if c.exhausted {
+        format!(
+            "; the work allowed ({} pieces, {MAX_SEAM_WORK} units) was spent before every gap was decided, so an order not proven is not reached",
+            MAX_SEAM_PIECES
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "{}; {}; {}",
+        "{}; {}; {}; {}; {}{spent}",
         part("position", &c.position, ""),
         part("angle", &c.angle, " rad"),
-        part("curvature", &c.curvature, " per unit")
+        part("curvature across", &c.curvature, " per unit"),
+        part("twist", &c.twist, " per unit"),
+        part("curvature along", &c.along, " per unit")
     )
 }
 

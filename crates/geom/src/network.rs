@@ -79,7 +79,8 @@ use std::fmt;
 
 mod continuity;
 pub use continuity::{
-    Continuity, Gap, MAX_SEAM_DEGREE, MAX_SEAM_PIECES, Order, continuity, describe, thresholds,
+    Continuity, Gap, MAX_SEAM_DEGREE, MAX_SEAM_PIECES, MAX_SEAM_WORK, Order, continuity, describe,
+    thresholds,
 };
 
 type H = [f64; 4];

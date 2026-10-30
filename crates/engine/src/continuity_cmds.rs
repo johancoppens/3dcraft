@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("measure.continuity", "Continuity", r#"{"edge": edge name, "face": face name = the edge's other face}"#,
-        "How two faces meet along an edge, proven: order is G2 (one tangent plane and the same normal curvature across the edge), G1 (one tangent plane), G0 (in position) or none, the highest whose three gaps are proven within their thresholds all along the edge, not only where it was looked at. position (the distance between the faces, in the document's length unit), angle (between their tangent planes, radians) and curvature (the difference of their normal curvatures across the edge, in the direction the first face leaves it, per length unit) each give bound (proven: nothing along the edge is beyond it), found (the largest seen, at param 0 to 1 along the edge and at the point at), threshold and within. Thresholds come from the document: the tolerance, the angular tolerance, and for curvature min(angular / L, 2 tolerance / L^2), L the edge's length: what turns the normals apart by the angular tolerance or opens a gap of the tolerance over that length; an order whose bound does not come within its threshold is not reached (nearly G2 is G1). The edge's face, or one of the two faces, must be a spline face the edge runs along a parameter line of (a network sheet's edge is); the other a plane, cylinder, cone or sphere, or a spline face the edge runs along a parameter line of in the same parametrisation (a sheet held to that face is). Without face, the edge's two faces are compared. Refused with the reason: two analytic faces, a torus, an edge off its spline face's parameter lines. Read-only. As an assertion or output: measure continuity (edge, face) is the order as a number, -1 none, 0 G0, 1 G1, 2 G2: {\"measure\": \"continuity\", \"edge\": ..., \"min\": 2} asserts G2.", doc: true, names: ["edge", "face"], measure_continuity),
+        "How two faces meet along an edge, proven: order is G2 (one tangent plane and the same second fundamental form on the edge's tangent vectors: normal curvature across and along the edge, and twist), G1 (one tangent plane), G0 (in position) or none, the highest whose gaps are all proven within their thresholds all along the edge, not only where it was looked at. position (the distance between the faces, in the document's length unit), angle (between their tangent planes, radians), and per length unit curvature (the difference of their normal curvatures across the edge, in the direction the first face leaves it), twist (of the rate the normal turns about the edge as one goes along it) and along (of their normal curvatures along the edge), each face with its own normal, each give bound (proven: nothing along the edge is beyond it), found (the largest seen, at param 0 to 1 along the edge and at the point at), threshold and within. Thresholds come from the document: the tolerance, the angular tolerance, and for curvature, twist and along min(angular / L, 2 tolerance / L^2), L the edge's length: what turns the normals apart by the angular tolerance or opens a gap of the tolerance over that length; so a seam whose normals part, or whose cross tangent turns about the edge, within the angular tolerance is G1 but not G2 when that bends or twists it beyond the curvature threshold. An order whose bounds do not come within their thresholds is not reached (nearly G2 is G1); exhausted is true when the work allowed was spent first. The edge's face, or one of the two faces, must be a spline face the edge runs along a parameter line of (a network sheet's edge is); the other a plane, cylinder, cone or sphere, or a spline face the edge runs along a parameter line of in the same parametrisation (a sheet held to that face is). Without face, the edge's two faces are compared. Refused with the reason: two analytic faces, a torus, an edge off its spline face's parameter lines. Read-only. As an assertion or output: measure continuity (edge, face) is the order as a number, -1 none, 0 G0, 1 G1, 2 G2: {\"measure\": \"continuity\", \"edge\": ..., \"min\": 2} asserts G2.", doc: true, names: ["edge", "face"], measure_continuity),
 ];
 
 /// A face or an edge by name in the newest body that answers to it: the
@@ -140,8 +140,11 @@ pub(crate) fn continuity_json(c: &Continuity) -> Value {
         "position": gap_json(&c.position),
         "angle": gap_json(&c.angle),
         "curvature": gap_json(&c.curvature),
+        "twist": gap_json(&c.twist),
+        "along": gap_json(&c.along),
         "length": c.length,
         "pieces": c.pieces,
+        "exhausted": c.exhausted,
     })
 }
 
@@ -160,14 +163,14 @@ fn order_number(order: Order) -> f64 {
 pub(crate) fn take(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
     let c = measure(ctx, p)?;
     let number = order_number(c.order);
-    let next = match c.order {
-        Order::None => Some(&c.position),
-        Order::G0 => Some(&c.angle),
-        Order::G1 => Some(&c.curvature),
+    let next_beyond = match c.order {
+        Order::None => Some(c.position.beyond()),
+        Order::G0 => Some(c.angle.beyond()),
+        Order::G1 => Some(c.second_order().iter().any(|g| g.beyond())),
         Order::G2 => None,
     };
-    let upper = match next {
-        Some(g) if !g.beyond() => 2.0,
+    let upper = match next_beyond {
+        Some(false) => 2.0,
         _ => number,
     };
     let mut out = Outcome::number(Dim::Count, number);
