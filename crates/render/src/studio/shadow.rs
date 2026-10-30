@@ -11,6 +11,7 @@
 //! GPU draws its map with its rasteriser, which may cover a texel along
 //! a triangle's border differently ([`super`], *Tolerance*).
 
+use crate::Cut;
 use craft3d_math::{Bbox3, Vec3};
 use craft3d_tess::Mesh;
 
@@ -89,11 +90,34 @@ impl ShadowMap {
     /// Draws the mesh into the map: a texel holds the nearest triangle
     /// whose inside holds its centre (the top-left rule on a border).
     pub fn draw(mesh: &Mesh, view: LightView) -> ShadowMap {
+        Self::draw_cut(mesh, view, None)
+    }
+
+    /// [`Self::draw`] of what a section leaves: a texel of a triangle is
+    /// left out where the distance from the plane, interpolated from the
+    /// corners (linearly: the light's view is orthographic), says
+    /// [`Cut::clips`]; the cap casts no shadow (a point the light reaches
+    /// through the cap's plane from the kept half meets a face of the
+    /// kept half first).
+    pub fn draw_cut(mesh: &Mesh, view: LightView, cut: Option<&Cut>) -> ShadowMap {
         let n = SHADOW_SIZE;
         let mut depth = vec![f32::INFINITY; n * n];
         let projected: Vec<(f64, f64, f64)> =
             mesh.positions.iter().map(|&p| view.project(p)).collect();
         for tri in &mesh.triangles {
+            let place = |k: u32| mesh.positions.get(k as usize).copied();
+            // The corners' distances from the plane and which way the
+            // triangle faces it.
+            let cut_triangle = match (cut, place(tri[0]), place(tri[1]), place(tri[2])) {
+                (Some(cut), Some(pa), Some(pb), Some(pc)) => {
+                    let facing = (pb - pa)
+                        .cross(pc - pa)
+                        .normalized()
+                        .map_or(0.0, |f| f.dot(cut.normal));
+                    Some((cut, [cut.side(pa), cut.side(pb), cut.side(pc)], facing))
+                }
+                _ => None,
+            };
             let corner = |k: u32| projected.get(k as usize).copied();
             let (Some(a), Some(b), Some(c)) = (corner(tri[0]), corner(tri[1]), corner(tri[2]))
             else {
@@ -116,11 +140,18 @@ impl ShadowMap {
             let (Some((x0, x1)), Some((y0, y1))) = (range(lo_x, hi_x), range(lo_y, hi_y)) else {
                 continue;
             };
-            // Oriented so that the inside is positive.
-            let (a, b, c, area) = if area < 0.0 {
-                (a, c, b, -area)
+            // Oriented so that the inside is positive (the sides follow
+            // their corners).
+            let (a, b, c, area, cut_triangle) = if area < 0.0 {
+                (
+                    a,
+                    c,
+                    b,
+                    -area,
+                    cut_triangle.map(|(cut, [sa, sb, sc], f)| (cut, [sa, sc, sb], f)),
+                )
             } else {
-                (a, b, c, area)
+                (a, b, c, area, cut_triangle)
             };
             let edge = |p: (f64, f64, f64), q: (f64, f64, f64), x: f64, y: f64| {
                 let e = (q.0 - p.0) * (y - p.1) - (q.1 - p.1) * (x - p.0);
@@ -142,6 +173,11 @@ impl ShadowMap {
                     let wa = ((c.0 - b.0) * (py - b.1) - (c.1 - b.1) * (px - b.0)) / area;
                     let wb = ((a.0 - c.0) * (py - c.1) - (a.1 - c.1) * (px - c.0)) / area;
                     let wc = 1.0 - wa - wb;
+                    if let Some((cut, [sa, sb, sc], facing)) = cut_triangle
+                        && cut.clips(wa * sa + wb * sb + wc * sc, facing)
+                    {
+                        continue;
+                    }
                     let d = (wa * a.2 + wb * b.2 + wc * c.2) as f32;
                     if let Some(slot) = depth.get_mut(y * n + x)
                         && d < *slot

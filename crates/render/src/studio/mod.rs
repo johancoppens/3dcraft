@@ -50,10 +50,11 @@ pub use env::{Key, Level, Prepared};
 pub use hdr::{HdrError, HdrImage, decode_hdr};
 pub use tonemap::Tonemap;
 
+use crate::section::Cut;
 use crate::{
     Camera, FaceColors, Finish, Frame, MAX_SAMPLES, MAX_SIDE, MAX_SSAA, Mesh, NO_FACE, Projection,
-    RenderError, RenderParams, View, edge, render_colored, sample_range, section_bounds,
-    shared_edge,
+    RenderError, RenderParams, SECTION_FACE, View, edge, owns_sample, sample_range, section_bounds,
+    shared_edge, shared_place,
 };
 use craft3d_math::{Bbox3, Vec3};
 pub use shadow::{LightView, ShadowMap};
@@ -211,6 +212,11 @@ pub struct FrameLight<'a> {
     pub ground: Option<f64>,
     pub rest_up: f64,
     pub key_luminance: f64,
+    /// The share of the key's light that passes a surface that shadows a
+    /// point: 0 for opaque bodies, `1 − opacity` in a see-through picture
+    /// (every body is seen through by the same share; one layer counted,
+    /// as the shadow map holds one).
+    pub pass: f64,
 }
 
 /// The numbers of a frame's light that do not depend on the samples: the
@@ -266,17 +272,57 @@ impl<'a> FrameLight<'a> {
     /// [`Self::new`] with the key's shadow cast by `casting` (the mesh
     /// without the faces that let light through) instead.
     pub fn casting(mesh: &Mesh, casting: &Mesh, env: &'a Prepared, look: &Look) -> FrameLight<'a> {
+        Self::of_picture(mesh, casting, None, 1.0, env, look)
+    }
+
+    /// [`Self::casting`] for a picture cut open by `cut` (what is cut away
+    /// casts no shadow) whose bodies are seen through at `opacity` (a
+    /// shadow lets [`Self::pass`] of the key through).
+    pub fn of_picture(
+        mesh: &Mesh,
+        casting: &Mesh,
+        cut: Option<&Cut>,
+        opacity: f64,
+        env: &'a Prepared,
+        look: &Look,
+    ) -> FrameLight<'a> {
         let numbers = LightNumbers::new(&section_bounds(mesh), env, look);
+        let pass = if opacity < 1.0 {
+            1.0 - opacity.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         FrameLight {
             env,
             look: *look,
             rotation: look.rotation_radians(),
             exposure: look.exposure_scale(),
             key: numbers.key,
-            shadow: numbers.view.map(|view| ShadowMap::draw(casting, view)),
+            shadow: numbers
+                .view
+                .map(|view| ShadowMap::draw_cut(casting, view, cut)),
             ground: numbers.ground,
             rest_up: numbers.rest_up,
             key_luminance: numbers.key_luminance,
+            pass,
+        }
+    }
+
+    /// The key's visibility `vis` (0 to 1) as a see-through picture's
+    /// shadows let it through: `pass + (1 − pass) · vis`, `vis` itself
+    /// for opaque bodies (bit for bit).
+    pub fn see(&self, vis: f64) -> f64 {
+        self.pass + (1.0 - self.pass) * vis
+    }
+
+    /// The light a sample of the picture behind shows through what is in
+    /// front of it: the plain background (the colour over the exposure,
+    /// shown as it is) as the light the tone curve shows as that colour.
+    pub(crate) fn seen(&self, s: &Shaded) -> [f64; 3] {
+        if s.roughness == PLAIN_BACKDROP {
+            self.untoned(s.light.map(|v| v * self.exposure))
+        } else {
+            s.light
         }
     }
 
@@ -408,10 +454,12 @@ impl<'a> FrameLight<'a> {
                 let cos = n.dot(l);
                 let nl = cos.max(0.0);
                 let lit = nl > 0.0 || (wrap > 0.0 && cos + wrap > 0.0);
-                let vis = match &self.shadow {
-                    Some(map) if lit => map.visibility(p, n, radius),
-                    _ => 1.0,
-                } * contact;
+                let vis = self.see(
+                    match &self.shadow {
+                        Some(map) if lit => map.visibility(p, n, radius),
+                        _ => 1.0,
+                    } * contact,
+                );
                 (
                     e,
                     nl * vis,
@@ -607,7 +655,7 @@ impl<'a> FrameLight<'a> {
         if (rest + key).partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) || lz <= 0.0 {
             return 1.0;
         }
-        let vis = map.visibility(g, Vec3::Z, radius);
+        let vis = self.see(map.visibility(g, Vec3::Z, radius));
         (rest + key * vis) / (rest + key)
     }
 
@@ -696,9 +744,12 @@ pub(crate) struct Surface {
 
 /// [`crate::render_colored`] in the studio look, lit by `env`: the
 /// average of [`Look::accumulate`] frames ([`render_studio_frame`]),
-/// summed per pixel and rounded once. A see-through or cut-open picture
-/// is drawn in the plain look (the studio look of those is still to
-/// come). The samples of all frames together may not pass
+/// summed per pixel and rounded once. A see-through picture blends each
+/// sample's front over the surface behind it in light, both lit alike; a
+/// cut-open one leaves out what the section cuts away (from the light's
+/// view too) and lights its cap like a face; both take the path through
+/// the screen-space buffers (docs/design/rendering.md, *See-through and
+/// cut-open pictures in the studio look*). The samples of all frames together may not pass
 /// [`crate::MAX_SAMPLES`] ([`RenderError::TooManyFrames`]).
 pub fn render_studio(
     mesh: &Mesh,
@@ -744,15 +795,6 @@ fn studio_frames(
     env: &Prepared,
     mark: Option<f64>,
 ) -> Result<(Frame, Vec<f32>), RenderError> {
-    let plain = || {
-        render_colored(mesh, colors, camera, params).map(|frame| {
-            let n = frame.ids.len();
-            (frame, vec![0.0; n])
-        })
-    };
-    if params.opacity() < 1.0 || params.section.is_some() {
-        return plain();
-    }
     let frames = look.accumulate.clamp(1, polish::MAX_ACCUMULATE);
     let samples = u64::from(params.width)
         .saturating_mul(u64::from(params.height))
@@ -814,12 +856,6 @@ fn studio_frame(
     index: u32,
     mark: Option<f64>,
 ) -> Result<(Frame, Vec<f32>), RenderError> {
-    if params.opacity() < 1.0 || params.section.is_some() {
-        return render_colored(mesh, colors, camera, params).map(|frame| {
-            let n = frame.ids.len();
-            (frame, vec![0.0; n])
-        });
-    }
     let (width, height, ssaa) = (params.width, params.height, params.ssaa);
     if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
         return Err(RenderError::InvalidSize { width, height });
@@ -838,17 +874,41 @@ fn studio_frame(
     let (w, h) = (width as usize * s, height as usize * s);
     let mut view = View::new(camera, w, h)?;
     view.jitter = polish::jitter(index);
-    let surfaces = rasterise(mesh, &view, w, h)?;
-    // Layer 3: the picture without the faces that let light through (what
-    // they see) and those faces' nearest back faces, when there are any.
-    let opaque = colors
-        .has_transmission()
-        .then(|| without_transmissive(mesh, colors));
-    let light = FrameLight::casting(mesh, opaque.as_ref().unwrap_or(mesh), env, look);
+    // The section and see-through bodies (as the plain picture defines
+    // them): what is cut away is left out everywhere, the light's view
+    // included; the surface behind the front is shaded as the front is.
+    let cut = params
+        .section
+        .and_then(|section| Cut::new(&section, &section_bounds(mesh)));
+    let opacity = params.opacity();
+    let see_through = opacity < 1.0;
+    let raster = Raster {
+        cut: cut.as_ref(),
+        caps: true,
+        peel: see_through,
+    };
+    let (surfaces, peeled) = rasterise_layers(mesh, &view, (w, h), &|_, _| true, raster)?;
+    // Layer 3: the faces that let light through cast no shadow; the
+    // picture without them (what they see) and their nearest back faces
+    // when there are any. In a see-through picture what they see is the
+    // surface behind them, as through a thin sheet.
+    let transmits = colors.has_transmission();
+    let casting = transmits.then(|| without_transmissive(mesh, colors));
+    let refracts = transmits && !see_through;
+    let light = FrameLight::of_picture(
+        mesh,
+        casting.as_ref().unwrap_or(mesh),
+        cut.as_ref(),
+        opacity,
+        env,
+        look,
+    );
     let bounds = section_bounds(mesh);
     let diagonal = bounds.diagonal();
     let radius = diagonal * 0.5 * ao::AO_RADIUS;
-    let post = look.post() || opaque.is_some();
+    // A see-through or cut-open picture takes the buffers' path, as the
+    // GPU draws it (one sample per pixel, frames accumulated).
+    let post = look.post() || transmits || see_through || cut.is_some();
 
     let shade_all = |surfaces: &[Surface]| -> Vec<Shaded> {
         let point = |x: i64, y: i64| -> Option<Vec3> {
@@ -933,7 +993,15 @@ fn studio_frame(
                         }
                         _ => 1.0,
                     };
-                    let (base, finish, optics) = if params.highlight.contains(surface.face) {
+                    let (base, finish, optics) = if surface.face == SECTION_FACE {
+                        // The cap: its colour, lit like a face without a
+                        // finish of its own.
+                        (
+                            cut.map_or(params.color, |cut| cut.color),
+                            Finish::default(),
+                            None,
+                        )
+                    } else if params.highlight.contains(surface.face) {
                         (params.highlight.color, Finish::default(), None)
                     } else {
                         let (base, finish) = colors
@@ -954,12 +1022,57 @@ fn studio_frame(
     }
     // Per sample, the share of its light in doubt; empty for none.
     let mut doubt: Vec<[f32; 1]> = Vec::new();
-    if let Some(opaque) = &opaque {
-        let behind_surfaces = rasterise(opaque, &view, w, h)?;
+    if see_through {
+        // The front over the surface behind it, in light: `opacity · front
+        // + (1 − opacity) · behind`, a highlighted face not seen through
+        // (as in the plain picture). The front's reflections replace its
+        // share of the specular light only.
+        let behind = shade_all(&peeled);
+        for ((front, back), surface) in shaded.iter_mut().zip(&behind).zip(&surfaces) {
+            if surface.face == NO_FACE || params.highlight.contains(surface.face) {
+                continue;
+            }
+            let seen = light.seen(back);
+            for k in 0..3 {
+                let (Some(f), Some(t), Some(b), Some(wt)) = (
+                    front.light.get_mut(k),
+                    front.transmit.get(k),
+                    seen.get(k),
+                    front.weight.get_mut(k),
+                ) else {
+                    continue;
+                };
+                let lit = *f + t * b;
+                *f = opacity * lit + (1.0 - opacity) * b;
+                *wt *= opacity;
+            }
+            front.transmit = [0.0; 3];
+        }
+    }
+    if refracts {
+        let keep_opaque = |face: u32, _: bool| !colors.is_transmissive(face);
+        let (behind_surfaces, _) = rasterise_layers(
+            mesh,
+            &view,
+            (w, h),
+            &keep_opaque,
+            Raster {
+                peel: false,
+                ..raster
+            },
+        )?;
         let behind = shade_all(&behind_surfaces);
-        let backs = rasterise_where(mesh, &view, w, h, &|face, facing| {
-            !facing && colors.is_transmissive(face)
-        })?;
+        let (backs, _) = rasterise_layers(
+            mesh,
+            &view,
+            (w, h),
+            &|face, facing| !facing && colors.is_transmissive(face),
+            Raster {
+                caps: false,
+                peel: false,
+                ..raster
+            },
+        )?;
         let unsure = refract::pass_through(
             &refract::Scene {
                 view: &view,
@@ -1120,34 +1233,56 @@ fn studio_frame(
     Ok((frame, shares))
 }
 
-/// The nearest surface per sample, by the plain renderer's rules (the
-/// same coverage, depth key and tie rule as [`crate::render_colored`] for
-/// an opaque, whole picture).
-fn rasterise(mesh: &Mesh, view: &View, w: usize, h: usize) -> Result<Vec<Surface>, RenderError> {
-    rasterise_where(mesh, view, w, h, &|_, _| true)
+/// What a picture's rasterisation leaves out and keeps besides the
+/// nearest surface ([`rasterise_layers`]).
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Raster<'c> {
+    /// The section: what it cuts away is left out.
+    pub cut: Option<&'c Cut>,
+    /// Close the section with its cap where the count of the surfaces left
+    /// out is odd (when the section has a cap).
+    pub caps: bool,
+    /// Keep the nearest surface strictly behind the front one too (a
+    /// see-through picture).
+    pub peel: bool,
 }
 
-/// [`rasterise`] of the triangles `keep` takes, given their face and
-/// whether they face the viewer (their own normal, from the order of
-/// their corners, against the direction from the eye; the GPU tests the
-/// same per fragment).
-pub(crate) fn rasterise_where(
+/// The nearest surface per sample and, with [`Raster::peel`], the nearest
+/// one strictly behind it, by the plain renderer's rules for a cut-open,
+/// see-through picture (`crate::render_analysed`): the same coverage,
+/// depth keys and ties, the same count of the surfaces a section leaves
+/// out (over every triangle, also those `keep` leaves out, so that every
+/// picture of a frame has the same cap), the cap at the plane's own
+/// point (`View::cap_at` at the sample's jittered position) and the same
+/// rule for an edge or vertex the front lies on (no surface is its own
+/// "behind"). The cap is the face [`SECTION_FACE`] with the plane's
+/// normal.
+pub(crate) fn rasterise_layers(
     mesh: &Mesh,
     view: &View,
-    w: usize,
-    h: usize,
+    (w, h): (usize, usize),
     keep: &dyn Fn(u32, bool) -> bool,
-) -> Result<Vec<Surface>, RenderError> {
+    raster: Raster<'_>,
+) -> Result<(Vec<Surface>, Vec<Surface>), RenderError> {
     let projected: Vec<_> = mesh.positions.iter().map(|&p| view.project(p)).collect();
-    let mut out = vec![
-        Surface {
-            key: f64::INFINITY,
-            dist: f64::INFINITY,
-            normal: [0.0; 3],
-            face: NO_FACE,
-        };
-        w * h
-    ];
+    let none = Surface {
+        key: f64::INFINITY,
+        dist: f64::INFINITY,
+        normal: [0.0; 3],
+        face: NO_FACE,
+    };
+    let mut out = vec![none; w * h];
+    let peel = raster.peel;
+    let mut behind = if peel { vec![none; w * h] } else { Vec::new() };
+    // Per sample of a peeled picture, the edge or vertex of the mesh the
+    // front lies exactly on; 0 for none.
+    let mut front_on: Vec<u64> = if peel { vec![0; w * h] } else { Vec::new() };
+    let cut = raster.cut;
+    let sides: Vec<f64> = cut.map_or_else(Vec::new, |cut| {
+        mesh.positions.iter().map(|&p| cut.side(p)).collect()
+    });
+    let caps = raster.caps && cut.is_some_and(|cut| cut.cap);
+    let mut odd: Vec<bool> = if caps { vec![false; w * h] } else { Vec::new() };
     for (t, (tri, &face)) in mesh.triangles.iter().zip(&mesh.face_ids).enumerate() {
         let vertex = |k: u32| {
             let k = k as usize;
@@ -1156,6 +1291,7 @@ pub(crate) fn rasterise_where(
                 _ => Err(RenderError::InvalidMesh { triangle: t }),
             }
         };
+        let side = |k: u32| sides.get(k as usize).copied().unwrap_or(0.0);
         let [ia, ib, ic] = *tri;
         let [(pa, na, a), (pb, nb, b), (pc, nc, c)] = [vertex(ia)?, vertex(ib)?, vertex(ic)?];
         let (Some(a), Some(b), Some(c)) = (a, b, c) else {
@@ -1179,9 +1315,15 @@ pub(crate) fn rasterise_where(
             Projection::Orthographic { .. } => view.forward,
         };
         let facing = flat_normal.is_none_or(|f| f.dot(towards) <= 0.0);
-        if !keep(face, facing) {
+        let kept = keep(face, facing);
+        // Left out, and not counted either: nothing to do.
+        if !kept && !caps {
             continue;
         }
+        let cut_triangle = cut.map(|cut| {
+            let facing = flat_normal.map_or(0.0, |n| n.dot(cut.normal));
+            (cut, [side(ia), side(ib), side(ic)], facing)
+        });
         for y in y0..=y1 {
             let py = y as f64 + 0.5;
             for x in x0..=x1 {
@@ -1192,15 +1334,49 @@ pub(crate) fn rasterise_where(
                 if wa < 0.0 || wb < 0.0 || wc < 0.0 {
                     continue;
                 }
+                let on_edge = [wa, wb, wc];
                 let sum = wa + wb + wc;
                 let (wa, wb, wc) = (wa / sum, wb / sum, wc / sum);
                 let key = wa * a.key + wb * b.key + wc * c.key;
-                let Some(slot) = out.get_mut(y * w + x) else {
+                let i = y * w + x;
+                if let Some((cut, [sa, sb, sc], cut_facing)) = cut_triangle {
+                    // Interpolated like the position: perspective-correct.
+                    let (qa, qb, qc) = (wa * a.inv_w, wb * b.inv_w, wc * c.inv_w);
+                    let q = qa + qb + qc;
+                    let across = (qa * sa + qb * sb + qc * sc) / q;
+                    if cut.clips(across, cut_facing) {
+                        // Left out, and counted once per surface.
+                        if let Some(slot) = odd.get_mut(i)
+                            && owns_sample(on_edge, [&a, &b, &c])
+                        {
+                            *slot = !*slot;
+                        }
+                        continue;
+                    }
+                }
+                if !kept {
+                    continue;
+                }
+                let Some(nearest) = out.get(i).map(|s| s.key) else {
                     continue;
                 };
-                // Not nearer, NaN included.
-                if key.partial_cmp(&slot.key) != Some(std::cmp::Ordering::Less) {
-                    continue;
+                // Strict: on a tie the triangle drawn first wins. Negated,
+                // so that a key that is not a number is no front.
+                let front = key < nearest;
+                let place = if peel {
+                    shared_place(on_edge, [pa, pb, pc])
+                } else {
+                    0
+                };
+                let same_surface = place != 0 && front_on.get(i) == Some(&place);
+                if !front {
+                    let nearer_behind = peel
+                        && !same_surface
+                        && key > nearest
+                        && behind.get(i).is_some_and(|s| key < s.key);
+                    if !nearer_behind {
+                        continue;
+                    }
                 }
                 let (qa, qb, qc) = (wa * a.inv_w, wb * b.inv_w, wc * c.inv_w);
                 let q = qa + qb + qc;
@@ -1209,16 +1385,81 @@ pub(crate) fn rasterise_where(
                     .normalized()
                     .or(flat_normal)
                     .unwrap_or(Vec3::ZERO);
-                *slot = Surface {
+                let surface = Surface {
                     key,
                     dist: crate::distance_at(view, [wa, wb, wc], [&a, &b, &c]),
                     normal: [normal.x as f32, normal.y as f32, normal.z as f32],
                     face,
                 };
+                if !front {
+                    if let Some(slot) = behind.get_mut(i) {
+                        *slot = surface;
+                    }
+                    continue;
+                }
+                let Some(slot) = out.get_mut(i) else {
+                    continue;
+                };
+                // What was in front is now the one behind, unless it is
+                // this surface's other triangle.
+                if nearest.is_finite()
+                    && !same_surface
+                    && let Some(back) = behind.get_mut(i)
+                {
+                    *back = *slot;
+                }
+                if let Some(on) = front_on.get_mut(i) {
+                    *on = place;
+                }
+                *slot = surface;
             }
         }
     }
-    Ok(out)
+    // The cap: one more surface where the plane is inside a body, after
+    // the triangles, so that a triangle wins a tie.
+    if let Some(cut) = cut.filter(|_| caps) {
+        let normal = [
+            cut.normal.x as f32,
+            cut.normal.y as f32,
+            cut.normal.z as f32,
+        ];
+        for (i, _) in odd.iter().enumerate().filter(|&(_, &inside)| inside) {
+            let (px, py) = (
+                (i % w) as f64 + 0.5 + view.jitter.0,
+                (i / w) as f64 + 0.5 + view.jitter.1,
+            );
+            let Some((key, dist, _)) = view.cap_at(cut, px, py) else {
+                continue;
+            };
+            let cap = Surface {
+                key,
+                dist,
+                normal,
+                face: SECTION_FACE,
+            };
+            let Some(slot) = out.get_mut(i) else {
+                continue;
+            };
+            let nearest = slot.key;
+            if key < nearest {
+                if nearest.is_finite()
+                    && let Some(back) = behind.get_mut(i)
+                {
+                    *back = *slot;
+                }
+                *slot = cap;
+                if let Some(on) = front_on.get_mut(i) {
+                    *on = 0;
+                }
+            } else if key > nearest
+                && let Some(back) = behind.get_mut(i)
+                && key < back.key
+            {
+                *back = cap;
+            }
+        }
+    }
+    Ok((out, behind))
 }
 
 /// Per sample, true where the face seen has a solid texture that is in
