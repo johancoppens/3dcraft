@@ -3,7 +3,8 @@
      MS-RL; a build tool, not a dependency). `cargo xtask package` passes the
      variables: Version (numeric, x.y.z), BinDir (with craft3d.exe and
      craft3d-cli.exe), Icon (craft3d.ico), JigIcon (craft3d-jig.ico), AsmIcon
-     (craft3d-asm.ico) and Licence (LICENSE).
+     (craft3d-asm.ico) and Licence (LICENSE); THIRD-PARTY-NOTICES.txt, the
+     licences of the crates in the programs, is taken from BinDir.
 
      It installs both programs into Program Files\3DCraft for all users,
      adds that folder to the system PATH (so `craft3d-cli` works in a new
@@ -62,6 +63,7 @@
         </Component>
         <Component Id="Licence">
           <File Id="LICENSE.txt" Source="$(var.Licence)" Name="LICENSE.txt" KeyPath="yes" />
+          <File Id="THIRD_PARTY_NOTICES.txt" Source="$(var.BinDir)\THIRD-PARTY-NOTICES.txt" Name="THIRD-PARTY-NOTICES.txt" />
         </Component>
         <!-- The built-in fonts beside the program, with their licences
              (fetched by `cargo xtask fonts`, never committed). -->

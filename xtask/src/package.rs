@@ -8,6 +8,10 @@
 //! - everywhere: `--formats web`, the browser build as a static site in
 //!   `3dcraft-web-<version>.zip` with `SHA256SUMS.txt` (`crate::web`).
 //!
+//! Each package carries `LICENSE` and `THIRD-PARTY-NOTICES.txt`, the
+//! licences of the crates the programs are built from, made here from
+//! `Cargo.lock` (`crate::notices`).
+//!
 //! The files they carry (desktop entry, MIME type, Info.plist, WiX source,
 //! icons) live in `packaging/`. The external tools are the platform's own
 //! (`tar`, `hdiutil`, `codesign`) plus `appimagetool` on Linux and the WiX
@@ -199,10 +203,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
         Some(dir) => dir,
         None => target.join("package"),
     };
+    let stage = out.join("stage");
     let p = Packer {
         repo,
         bin_dir,
-        stage: out.join("stage"),
+        notices: stage.join(crate::notices::FILE_NAME),
+        stage,
         out,
         version: env!("CARGO_PKG_VERSION").to_string(),
         arch: arch_of(options.target.as_deref()),
@@ -212,6 +218,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
             .map_err(|e| format!("cannot clear {}: {e}", p.stage.display()))?;
     }
     mkdir(&p.stage)?;
+    // The licences of the crates in the programs, for every package; the
+    // packages are refused when the licence policy is broken.
+    let review = crate::notices::write(&p.repo, &p.notices)?;
+    eprint!("{}", review.summary());
     let mut made = Vec::new();
     for f in &formats {
         let file = match f.as_str() {
@@ -235,6 +245,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     &p.stage.join("web"),
                     &p.out,
                     &p.version,
+                    &p.notices,
                     &crate::web::Tools {
                         wasm_bindgen: options.wasm_bindgen.clone(),
                         wasm_opt: options.wasm_opt.clone(),
@@ -255,6 +266,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
 struct Packer {
     repo: PathBuf,
     bin_dir: PathBuf,
+    /// `THIRD-PARTY-NOTICES.txt`, written into the stage first.
+    notices: PathBuf,
     out: PathBuf,
     stage: PathBuf,
     version: String,
@@ -479,6 +492,7 @@ impl Packer {
             )?;
         }
         copy(&self.repo.join("LICENSE"), &root.join("LICENSE"), false)?;
+        copy(&self.notices, &root.join(crate::notices::FILE_NAME), false)?;
         mkdir(&self.out)?;
         let file = self.out.join(format!("{name}.tar.gz"));
         tool(
@@ -525,6 +539,11 @@ impl Packer {
         )?;
         copy(&self.icon(256), &app_dir.join(".DirIcon"), false)?;
         copy(&self.repo.join("LICENSE"), &app_dir.join("LICENSE"), false)?;
+        copy(
+            &self.notices,
+            &app_dir.join(crate::notices::FILE_NAME),
+            false,
+        )?;
         mkdir(&self.out)?;
         let file = self
             .out
@@ -582,6 +601,11 @@ impl Packer {
         copy(
             &self.repo.join("LICENSE"),
             &contents.join("Resources").join("LICENSE"),
+            false,
+        )?;
+        copy(
+            &self.notices,
+            &contents.join("Resources").join(crate::notices::FILE_NAME),
             false,
         )?;
         // An ad-hoc signature over the whole bundle: not a Developer ID
@@ -644,6 +668,7 @@ impl Packer {
             copy(&exe, &dir.join(file_name), true)?;
         }
         copy(&self.repo.join("LICENSE"), &dir.join("LICENSE.txt"), false)?;
+        copy(&self.notices, &dir.join(crate::notices::FILE_NAME), false)?;
         copy_fonts(&dir.join("fonts"))?;
         let ico = ico(&self.icon_pngs(&ICO_SIZES)?)?;
         write(&dir.join("craft3d.ico"), &ico)?;

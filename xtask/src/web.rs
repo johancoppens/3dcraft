@@ -13,7 +13,7 @@
 //!   HOSTING.md, _headers, .htaccess  server settings
 //!   environments/*.hdr, LICENSE.md   the studio look's environments (CC0),
 //!                                    fetched when chosen
-//!   LICENSE
+//!   LICENSE, THIRD-PARTY-NOTICES.txt
 //! ```
 //!
 //! `<hash>` is 16 lower-case hex digits (the first of the SHA-256 of the
@@ -250,13 +250,15 @@ pub fn module(
 
 /// Makes `out/3dcraft-web-<version>.zip` and puts its line into
 /// `out/SHA256SUMS.txt`. `target` is cargo's target directory, `stage` a
-/// directory of its own to work in.
+/// directory of its own to work in, `notices` the written
+/// `THIRD-PARTY-NOTICES.txt`.
 pub fn package(
     repo: &Path,
     target: &Path,
     stage: &Path,
     out: &Path,
     version: &str,
+    notices: &Path,
     tools: &Tools,
     build: Option<&[&str]>,
 ) -> Result<PathBuf, String> {
@@ -304,6 +306,8 @@ pub fn package(
     }
     let licence = crate::package::read(&repo.join("LICENSE"))?;
     crate::package::write(&site.join("LICENSE"), &licence)?;
+    let notices = crate::package::read(notices)?;
+    crate::package::write(&site.join(crate::notices::FILE_NAME), &notices)?;
     // The studio look's environments, fetched by the page when chosen
     // (not in the module: they would weigh on every load).
     // The built-in fonts, fetched by the page when a text first uses one

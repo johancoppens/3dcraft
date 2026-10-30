@@ -1,4 +1,4 @@
-//! Build tasks: `cargo xtask layers | wasm | ci | stats | health | freecad | boolean-corpus | fuzz | actions | package | web-size | example-thumbs`.
+//! Build tasks: `cargo xtask layers | wasm | ci | stats | health | freecad | boolean-corpus | fuzz | actions | notices | package | web-size | example-thumbs`.
 
 mod actions;
 mod boolean_corpus;
@@ -7,6 +7,7 @@ mod fonts;
 mod fuzz;
 mod health;
 mod layers;
+mod notices;
 mod package;
 mod stats;
 mod thumbs;
@@ -109,6 +110,10 @@ fn main() -> ExitCode {
             let args: Vec<String> = std::env::args().skip(2).collect();
             actions::run(&args)
         }
+        "notices" => {
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            notices::run(&args)
+        }
         "package" => {
             let args: Vec<String> = std::env::args().skip(2).collect();
             package::run(&args)
@@ -122,7 +127,7 @@ fn main() -> ExitCode {
             thumbs::run(&args)
         }
         other => Err(format!(
-            "unknown task `{other}`; tasks: layers, wasm, ci, stats, health, freecad, fonts, boolean-corpus, fuzz, actions, package, web-size, example-thumbs"
+            "unknown task `{other}`; tasks: layers, wasm, ci, stats, health, freecad, fonts, boolean-corpus, fuzz, actions, notices, package, web-size, example-thumbs"
         )),
     };
     match result {
