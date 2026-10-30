@@ -502,6 +502,7 @@ impl Host {
     /// a failure in the error dialog as well (every caller is the person's:
     /// an agent's requests are reported by the control channel).
     pub(crate) fn report(&mut self, label: &str, outcome: &Result<Value, String>) {
+        self.last_answer = outcome.as_ref().ok().cloned();
         let (ok, text) = match outcome {
             // Saved, but the picture for a gallery could not be drawn (a
             // body that cannot be meshed): said in words, first, rather
@@ -2182,7 +2183,13 @@ mod tests {
         assert!(host.shell.export_dialog().is_none());
         let (label, ok, said) = last(&host);
         assert!(ok && label == "file.export", "{said}");
-        assert!(said.contains("\"angle\":5.0"), "{said}");
+        // Said in words; the answer itself has the quality's angle.
+        assert!(
+            said.starts_with("Exported") && !craft3d_ui_egui::answer::looks_like_json(&said),
+            "{said}"
+        );
+        let answer = host.last_answer.as_ref().unwrap().to_string();
+        assert!(answer.contains("\"angle\":5.0"), "{answer}");
         assert_eq!(listing(&mine), ["part.stl"]);
         // A binary STL: a header of 80 bytes, the count, the triangles.
         assert!(std::fs::read(mine.join("part.stl")).unwrap().len() > 84);
@@ -2261,7 +2268,12 @@ mod tests {
         host.file_choice(dialogs.wait().unwrap());
         let (label, ok, said) = last(&host);
         assert!(ok && label == "file.export", "{said}");
-        assert!(said.contains("\"bodies\":2"), "{said}");
+        assert!(
+            said.starts_with("Exported") && !craft3d_ui_egui::answer::looks_like_json(&said),
+            "{said}"
+        );
+        let answer = host.last_answer.as_ref().unwrap().to_string();
+        assert!(answer.contains("\"bodies\":2"), "{answer}");
         assert_eq!(listing(&mine), ["part.step"]);
         // The model to DXF: a drawing of it as seen, from the view asked,
         // whatever is selected.

@@ -45,6 +45,9 @@ pub struct Host {
     /// The recent files as last read from or written to that file: what
     /// another window added since is what is new there.
     pub(crate) recent_baseline: craft3d_ui_egui::shell::RecentFiles,
+    /// The whole answer of the last file action the person started, which
+    /// the status bar says in words (`answer::summary`).
+    pub(crate) last_answer: Option<Value>,
 }
 
 fn methods() -> &'static [Method] {
@@ -359,6 +362,7 @@ impl Host {
             export_folder: None,
             recent_file: None,
             recent_baseline: craft3d_ui_egui::shell::RecentFiles::default(),
+            last_answer: None,
         }
     }
 
