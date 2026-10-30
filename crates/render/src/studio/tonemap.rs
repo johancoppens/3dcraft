@@ -155,7 +155,8 @@ pub fn undisplay(d: [f64; 3], curve: Tonemap) -> [f64; 3] {
 /// The light `x` for which the AgX sigmoid gives `y`: halvings of 0..1.
 fn agx_curve_inverse(y: f64) -> f64 {
     let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
-    if !(y > agx_curve(lo)) {
+    // Not above the curve's start, NaN included.
+    if y.partial_cmp(&agx_curve(lo)) != Some(std::cmp::Ordering::Greater) {
         return lo;
     }
     if y >= agx_curve(hi) {
