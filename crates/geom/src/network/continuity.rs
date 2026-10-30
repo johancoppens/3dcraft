@@ -463,8 +463,9 @@ enum Other {
         tan: f64,
         cos: f64,
     },
-    /// A spline face's rows `Y₀, Y₀′, Y₀″, Y₁, Y₁′, Y₂` along the edge.
-    Spline([Raw; 6]),
+    /// A spline face, its rows `Y₀, Y₀′, Y₀″, Y₁, Y₁′, Y₂` along the edge
+    /// following the face `a`'s.
+    Spline,
 }
 
 /// The quadric `xᵀAx + 2bᵀx + c` as a homogeneous 4 × 4 matrix.
@@ -633,14 +634,19 @@ fn about(raw: &Raw, o: Vec3) -> Raw {
     }
 }
 
-/// A row cut into pieces at `breaks`, with the rounding allowance of what
-/// enters (`magnitude`: of what it was made from).
-fn row_pieces(raw: &Raw, breaks: &[f64], magnitude: [f64; 2]) -> Result<Vec<P4>, NetworkError> {
+/// A row as it enters the measure, with a bound on the rounding of each of
+/// its coefficients (the coordinates', the weight's).
+type Row = (Raw, [f64; 2]);
+
+/// A row cut into pieces at `breaks`: its coefficients carry what it came
+/// in with (`allow`) and the cutting's own rounding (convex combinations,
+/// `16 (p + 2) ε` of its magnitude).
+fn row_pieces(raw: &Raw, breaks: &[f64], allow: [f64; 2]) -> Result<Vec<P4>, NetworkError> {
     let own = self::magnitude(raw);
     // The coordinates and the weight each by their own magnitudes.
     let allowance = |factor: f64| {
-        let xyz = factor * EPS * own[0].max(magnitude[0]);
-        let w = factor * EPS * own[1].max(magnitude[1]);
+        let xyz = allow[0] + factor * EPS * own[0];
+        let w = allow[1] + factor * EPS * own[1];
         [xyz, xyz, xyz, w]
     };
     let mut raw = raw.clone();
@@ -688,9 +694,15 @@ fn magnitude(raw: &Raw) -> [f64; 2] {
     })
 }
 
-/// A derivative's magnitude bound: its own, and `p / span` times its
-/// source's.
-fn derived(source: &Raw, d: &Raw, source_mag: [f64; 2]) -> [f64; 2] {
+/// The derivative of a row along the edge, with its allowance: each
+/// coefficient is `f (b − a)`, `f = p / span` (the shortest span over the
+/// `p` knots it spans is at least the shortest of the row's), so it
+/// carries `2 f` times what its source carried, and the difference's and
+/// the product's rounding, `4 ε f` times the source's magnitude (doubled
+/// for the rounding of `f` itself).
+fn derived(row: &Row) -> Result<Row, NetworkError> {
+    let (source, allow) = row;
+    let d = derivative(source)?;
     let p = source.degree as f64;
     let mut span = f64::INFINITY;
     for w in source.knots.windows(2) {
@@ -701,8 +713,12 @@ fn derived(source: &Raw, d: &Raw, source_mag: [f64; 2]) -> [f64; 2] {
         }
     }
     let f = if span.is_finite() { p / span } else { 0.0 };
-    let own = magnitude(d);
-    [own[0].max(f * source_mag[0]), own[1].max(f * source_mag[1])]
+    let mag = magnitude(source);
+    let a = |k: usize| {
+        2.0 * f * allow.get(k).copied().unwrap_or(f64::INFINITY)
+            + 8.0 * EPS * f * mag.get(k).copied().unwrap_or(f64::INFINITY)
+    };
+    Ok((d, [a(0), a(1)]))
 }
 
 /// One piece of the edge with every row on it.
@@ -878,7 +894,7 @@ fn gaps(rows: &[P4], other: &Other) -> Result<Gaps, NetworkError> {
             hi[2] = ratio(abs_hi(&num), 2.0 * g_lo * v1sq_lo);
             lo[2] = abs_value_lo(&num) / (2.0 * g_hi * v1sq_hi);
         }
-        Other::Spline(_) => {
+        Other::Spline => {
             let r = |k: usize| rows.get(4 + k).cloned().ok_or_else(internal);
             let (y0, y0d, y0dd, y1, y1d, y2) = (r(0)?, r(1)?, r(2)?, r(3)?, r(4)?, r(5)?);
             let (om, om_d, om1) = (&y0[3], &y0d[3], &y1[3]);
@@ -970,29 +986,25 @@ pub fn continuity(
     if track.point {
         return refuse("the edge is a point: there is no seam to measure".to_string());
     }
-    let Some([x0, x1, x2]) = iso_track(&sa, &track, tolerance)? else {
+    let origin = edge
+        .control_points()
+        .first()
+        .copied()
+        .ok_or_else(internal)?;
+    let Some(xs) = spline_rows(&sa, edge, tolerance, origin)? else {
         return refuse(
             "the edge does not run along a parameter line of its spline face, so the face cannot be written along it exactly (owed: a measure at the feet with a Lipschitz bound)".to_string(),
         );
     };
-    let origin = x0
-        .points
-        .first()
-        .copied()
-        .and_then(point)
-        .ok_or_else(internal)?;
-    let other = match other_face {
+    let (other, ys) = match other_face {
         Surface::Nurbs(_) | Surface::Bezier(_) => {
             let sb = spline(other_face)?.ok_or_else(internal)?;
-            let Some([y0, y1, y2]) = iso_track(&sb, &track, tolerance)? else {
+            let Some(ys) = spline_rows(&sb, edge, tolerance, origin)? else {
                 return refuse(
                     "the edge does not run along a parameter line of the other spline face, so the two cannot be compared at corresponding points (owed: a measure at the feet with a Lipschitz bound)".to_string(),
                 );
             };
-            let y0d = derivative(&y0)?;
-            let y0dd = derivative(&y0d)?;
-            let y1d = derivative(&y1)?;
-            Other::Spline([y0, y0d, y0dd, y1, y1d, y2])
+            (Other::Spline, Some(ys))
         }
         Surface::Torus(_) => {
             return refuse(
@@ -1000,33 +1012,58 @@ pub fn continuity(
                     .to_string(),
             );
         }
-        analytic => implicit_of(analytic, origin).ok_or_else(internal)?.other(),
+        analytic => (
+            implicit_of(analytic, origin).ok_or_else(internal)?.other(),
+            None,
+        ),
     };
-    measure(&x0, &x1, &x2, other, origin, tolerance, angular)
+    measure(xs, ys, other, origin, tolerance, angular)
 }
 
-/// Rows written about `origin`; a spline face's rows are taken as given
-/// (global) and moved there too.
+/// The rows `X₀, X₁, X₂` of a spline face along `edge` (its iso-curve
+/// there and its first and second homogeneous derivatives across), about
+/// `origin`, each with the bound on its coefficients' rounding; `None`
+/// where the edge is not a parameter line of the face.
+fn spline_rows(
+    surface: &NurbsSurface,
+    edge: &NurbsCurve,
+    tolerance: f64,
+    origin: Vec3,
+) -> Result<Option<[Row; 3]>, NetworkError> {
+    let track = Track::new(edge, tolerance)?;
+    let Some(rows) = iso_track(surface, &track, tolerance)? else {
+        return Ok(None);
+    };
+    Ok(Some(rows.map(|raw| {
+        let local = about(&raw, origin);
+        let (g, l) = (magnitude(&raw), magnitude(&local));
+        let f = 16.0 * (raw.degree + 2) as f64 * EPS;
+        (local, [f * g[0].max(l[0]), f * g[1].max(l[1])])
+    })))
+}
+
+/// Rows written about `origin` with their allowances: the face `a`'s, and
+/// a spline face `b`'s where `other` is one.
 fn measure(
-    x0: &Raw,
-    x1: &Raw,
-    x2: &Raw,
+    xs: [Row; 3],
+    ys: Option<[Row; 3]>,
     other: Other,
     origin: Vec3,
     tolerance: f64,
     angular: f64,
 ) -> Result<Continuity, NetworkError> {
-    let length = x0
-        .points
-        .windows(2)
-        .map(|w| match w {
-            [p, q] => match (point(*p), point(*q)) {
-                (Some(p), Some(q)) => p.distance(q),
-                _ => f64::INFINITY,
-            },
-            _ => 0.0,
-        })
-        .sum::<f64>();
+    let [x0, x1, x2] = xs;
+    let length =
+        x0.0.points
+            .windows(2)
+            .map(|w| match w {
+                [p, q] => match (point(*p), point(*q)) {
+                    (Some(p), Some(q)) => p.distance(q),
+                    _ => f64::INFINITY,
+                },
+                _ => 0.0,
+            })
+            .sum::<f64>();
     if !(length.is_finite() && length > 0.0) {
         return refuse(
             "the edge's face has no length along it, or its weights do not stay positive"
@@ -1039,26 +1076,18 @@ fn measure(
         angular.min(std::f64::consts::FRAC_PI_2).sin(),
         thr[2],
     ];
-    // Rows about the origin, with the magnitudes they were made from.
-    let mut rows: Vec<(Raw, [f64; 2])> = Vec::new();
-    let push = |raw: &Raw| (about(raw, origin), magnitude(raw));
-    let (a0, m0) = push(x0);
-    let a0d = derivative(&a0)?;
-    let m0d = derived(&a0, &a0d, m0);
-    rows.push((a0, m0));
-    rows.push((a0d, m0d));
-    rows.push(push(x1));
-    rows.push(push(x2));
-    let spline_degree = if let Other::Spline(ys) = &other {
-        for y in ys {
-            let moved = about(y, origin);
-            let (g, l) = (magnitude(y), magnitude(&moved));
-            let mag = [g[0].max(l[0]), g[1].max(l[1])];
-            rows.push((moved, mag));
+    let x0d = derived(&x0)?;
+    let mut rows: Vec<Row> = vec![x0, x0d, x1, x2];
+    let spline_degree = match ys {
+        Some([y0, y1, y2]) => {
+            let q = y0.0.degree.max(y1.0.degree).max(y2.0.degree);
+            let y0d = derived(&y0)?;
+            let y0dd = derived(&y0d)?;
+            let y1d = derived(&y1)?;
+            rows.extend([y0, y0d, y0dd, y1, y1d, y2]);
+            Some(q)
         }
-        Some(ys.iter().map(|y| y.degree).max().unwrap_or(0))
-    } else {
-        None
+        None => None,
     };
     let p = rows
         .iter()
@@ -1080,8 +1109,8 @@ fn measure(
     breaks.sort_by(f64::total_cmp);
     breaks.dedup_by(|x, y| (*x - *y).abs() <= SAME_KNOT);
     let mut per_row: Vec<Vec<P4>> = Vec::with_capacity(rows.len());
-    for (raw, mag) in &rows {
-        per_row.push(row_pieces(raw, &breaks, *mag)?);
+    for (raw, allow) in &rows {
+        per_row.push(row_pieces(raw, &breaks, *allow)?);
     }
     let mut bounds = vec![0.0];
     bounds.extend(breaks.iter().copied());
@@ -1233,4 +1262,116 @@ pub fn describe(c: &Continuity) -> String {
         part("angle", &c.angle, " rad"),
         part("curvature", &c.curvature, " per unit")
     )
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+    use super::*;
+    use crate::network::iso_curve;
+
+    // Double-double arithmetic (Dekker, Knuth): a reference for the rows
+    // far more exact than the rows themselves.
+    type Dd = (f64, f64);
+
+    fn two_sum(a: f64, b: f64) -> Dd {
+        let s = a + b;
+        let bb = s - a;
+        (s, (a - (s - bb)) + (b - bb))
+    }
+
+    fn add(x: Dd, y: Dd) -> Dd {
+        let (s, e) = two_sum(x.0, y.0);
+        two_sum(s, e + x.1 + y.1)
+    }
+
+    fn neg(x: Dd) -> Dd {
+        (-x.0, -x.1)
+    }
+
+    fn mul(x: Dd, b: f64) -> Dd {
+        let p = x.0 * b;
+        let e = x.0.mul_add(b, -p);
+        two_sum(p, e + x.1 * b)
+    }
+
+    fn div(x: Dd, b: f64) -> Dd {
+        let q = x.0 / b;
+        let r = add(x, neg(mul((q, 0.0), b)));
+        two_sum(q, r.0 / b)
+    }
+
+    /// A patch of degree 2 along u and 3 across, with an inner knot at a
+    /// third (so its slopes across do not come out exact), a unit or so
+    /// across, about a point a million and more from the origin.
+    fn far_patch() -> (NurbsSurface, Vec3) {
+        let o = Vec3::new(1_234_567.891, -2_345_678.912, 3_456_789.123);
+        let mut points = Vec::new();
+        for i in 0..3 {
+            for j in 0..5 {
+                let (i, j) = (f64::from(i), f64::from(j));
+                points.push(
+                    o + Vec3::new(
+                        0.37 * i + 0.11 * j * j,
+                        0.29 * j + 0.07 * i,
+                        0.13 * i * j + 0.05 * j,
+                    ),
+                );
+            }
+        }
+        let third = 1.0 / 3.0;
+        let s = NurbsSurface::new(
+            2,
+            3,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![0.0, 0.0, 0.0, 0.0, third, 1.0, 1.0, 1.0, 1.0],
+            3,
+            5,
+            points,
+            vec![1.0; 15],
+        )
+        .unwrap();
+        (s, o)
+    }
+
+    /// Every coefficient of the rows a far patch enters the measure with
+    /// is within its allowance of the exact one: the rows across are
+    /// differences of points a million from the origin, so their rounding
+    /// is of the points' size, not of the rows' own.
+    #[test]
+    fn the_rows_rounding_is_within_its_allowance_far_from_the_origin() {
+        let (s, _) = far_patch();
+        let edge = iso_curve(&s, true, 0.0).unwrap();
+        let origin = edge.control_points()[0];
+        let [x0, x1, x2] = spline_rows(&s, &edge, 1e-6, origin).unwrap().unwrap();
+        let t = s.knots_v()[4];
+        let p = s.control_points();
+        for k in 0..3 {
+            let at = |j: usize| p[k * 5 + j];
+            for c in 0..3 {
+                let get = |q: Vec3| [q.x, q.y, q.z][c];
+                // Differences of nearby doubles are exact (Sterbenz).
+                let d0 = get(at(0)) - get(origin);
+                let d10 = get(at(1)) - get(at(0));
+                let d21 = get(at(2)) - get(at(1));
+                // X₁ = 3 (P₁ − P₀) / t; X₂ = 2 / t (3 (P₂ − P₁) − 3 (P₁ − P₀) / t).
+                let r1 = mul(div((3.0, 0.0), t), d10);
+                let inner = add(mul((3.0, 0.0), d21), neg(div(mul((3.0, 0.0), d10), t)));
+                let c2 = div((2.0, 0.0), t);
+                let r2 = add(mul(c2, inner.0), mul(c2, inner.1));
+                for (row, exact) in [(&x0, d0), (&x1, r1.0 + r1.1), (&x2, r2.0 + r2.1)] {
+                    let got = row.0.points[k][c];
+                    assert!(
+                        (got - exact).abs() <= row.1[0],
+                        "control point {k}, coordinate {c}: {got:e} is {:e} off {exact:e}, the allowance is {:e}",
+                        (got - exact).abs(),
+                        row.1[0]
+                    );
+                }
+            }
+            for (row, exact) in [(&x0, 1.0), (&x1, 0.0), (&x2, 0.0)] {
+                assert!((row.0.points[k][3] - exact).abs() <= row.1[1]);
+            }
+        }
+    }
 }

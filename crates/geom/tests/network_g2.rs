@@ -6,7 +6,9 @@
 //! a blend between two parallel cylinders takes 1/R₁ and 1/R₂ across its
 //! two edges; G1-only and G2 pairs are told apart, a G2 patch disturbed
 //! by a curvature step ten times the threshold is not G2 (its position and
-//! tangent planes untouched), one a hundredth of it is; refusals.
+//! tangent planes untouched, the step found by the test's own evaluation),
+//! one a hundredth of it is; a sheet twisted within the angular tolerance
+//! is not G2; a dome a million units from the origin; refusals.
 
 // Test code: a failure in a helper is a failed test.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
@@ -330,6 +332,21 @@ fn disturbed(s: &NurbsSurface, delta: f64) -> NurbsSurface {
     .unwrap()
 }
 
+/// The blend's normal curvature across v = 0 at `u`, signed towards +y
+/// (the side its rulings' faces face).
+fn across_y(s: &NurbsSurface, u: f64) -> f64 {
+    let (_, k, n) = across(s, u, 0.0);
+    k * n.y.signum()
+}
+
+/// The largest change in curvature across v = 0 from `s` to `t`, at the
+/// samples, by the test's own evaluation.
+fn step(s: &NurbsSurface, t: &NurbsSurface) -> f64 {
+    samples()
+        .map(|u| (across_y(t, u) - across_y(s, u)).abs())
+        .fold(0.0, f64::max)
+}
+
 #[test]
 fn nearly_g2_is_not_g2() {
     for scale in SCALES {
@@ -352,28 +369,37 @@ fn nearly_g2_is_not_g2() {
         let exact =
             continuity(&Surface::Nurbs(patch.surface.clone()), &a, &edge, tol, ang).unwrap();
         assert_eq!(exact.order, Order::G2);
-        // A small step: well within the tolerance in position.
-        let probe = 1e-9 * scale;
-        let moved = continuity(
-            &Surface::Nurbs(disturbed(&patch.surface, probe)),
-            &a,
-            &edge,
-            tol,
-            ang,
-        )
-        .unwrap();
-        let per = moved.curvature.found / probe;
-        assert!(per > 0.0, "{moved:?}");
-        let threshold = moved.curvature.threshold;
+        // The disturbance moves S_vv along y only and leaves the normal
+        // (y) and S_v, so the curvature across changes by a step linear in
+        // it and the same all along the edge: found here independently,
+        // with a probe large enough that rounding does not blur it.
+        let probe = 1e-3 * scale;
+        let moved_surface = disturbed(&patch.surface, probe);
+        let dk = step(&patch.surface, &moved_surface);
+        for u in samples() {
+            let here = (across_y(&moved_surface, u) - across_y(&patch.surface, u)).abs();
+            assert!((here - dk).abs() <= 1e-9 * dk, "{here:e} vs {dk:e}");
+        }
+        // The measure's gap is that step (the undisturbed seam's own gap
+        // is far below it).
+        let moved = continuity(&Surface::Nurbs(moved_surface), &a, &edge, tol, ang).unwrap();
+        assert!(
+            (moved.curvature.found - dk).abs() <= 1e-6 * dk,
+            "measured {:e}, the step {dk:e} (scale {scale})",
+            moved.curvature.found
+        );
+        assert!(moved.curvature.bound >= dk * (1.0 - 1e-9), "{moved:?}");
+        let per = dk / probe;
+        let threshold = (ang / moved.length).min(2.0 * tol / (moved.length * moved.length));
+        assert_eq!(threshold, moved.curvature.threshold);
         // Ten times the threshold: G1, its position and angle untouched.
-        let big = continuity(
-            &Surface::Nurbs(disturbed(&patch.surface, 10.0 * threshold / per)),
-            &a,
-            &edge,
-            tol,
-            ang,
-        )
-        .unwrap();
+        let big_surface = disturbed(&patch.surface, 10.0 * threshold / per);
+        let big_step = step(&patch.surface, &big_surface);
+        assert!(
+            (big_step - 10.0 * threshold).abs() <= 1e-3 * big_step,
+            "{big_step:e}"
+        );
+        let big = continuity(&Surface::Nurbs(big_surface), &a, &edge, tol, ang).unwrap();
         assert_eq!(big.order, Order::G1, "{big:?}");
         assert!(big.curvature.beyond(), "{big:?}");
         assert!(big.position.bound <= 1e-12 * scale, "{big:?}");
@@ -387,6 +413,166 @@ fn nearly_g2_is_not_g2() {
         )
         .unwrap();
         assert_eq!(small.order, Order::G2, "{small:?}");
+    }
+}
+
+/// A sheet along the edge y = z = 0 of the plane z = 0, `l` long and wide,
+/// whose cross tangent turns about the edge by φ(u) ≈ `amplitude` ·
+/// sin(8πu): flat across (S_vv = 0) and never steeper than `amplitude`,
+/// but twisted, n·S_uv ≈ l φ′(u).
+fn twisted(l: f64, amplitude: f64) -> NurbsSurface {
+    let spans = 64;
+    let mut knots = vec![0.0; 4];
+    knots.extend((1..spans).map(|k| f64::from(k) / f64::from(spans)));
+    knots.extend([1.0; 4]);
+    let nu = spans as usize + 3;
+    let mut points = Vec::new();
+    for i in 0..nu {
+        // Greville abscissae: the sheet runs along x at unit speed.
+        let g = (knots[i + 1] + knots[i + 2] + knots[i + 3]) / 3.0;
+        let phi = amplitude * (8.0 * std::f64::consts::PI * g).sin();
+        for vj in [0.0, 0.5, 1.0] {
+            points.push(v(g * l, vj * l, vj * l * phi));
+        }
+    }
+    NurbsSurface::new(
+        3,
+        2,
+        knots,
+        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+        nu,
+        3,
+        points,
+        vec![1.0; nu * 3],
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_twist_within_the_angular_tolerance_is_not_g2() {
+    for scale in SCALES {
+        let (tol, ang) = (1e-6 * scale, 1e-9);
+        let s = twisted(scale, 0.5 * ang);
+        let plane = Surface::Plane(Plane::new(Frame::WORLD));
+        let edge = line(v(0.0, 0.0, 0.0), v(scale, 0.0, 0.0));
+        let c = continuity(&Surface::Nurbs(s.clone()), &plane, &edge, tol, ang).unwrap();
+        // Independently: the angle to the plane, the curvature across and
+        // the twist, n·S_uv / (|S_u| |S_v|), along the edge.
+        let wrapped = Surface::Nurbs(s);
+        let (mut angle, mut bend, mut twist) = (0.0_f64, 0.0_f64, 0.0_f64);
+        for k in 0..=1024 {
+            let u = f64::from(k) / 1024.0;
+            let (_, du, dv) = wrapped.derivatives(u, 0.0);
+            let (_, duv, dvv) = second_derivatives(&wrapped, u, 0.0);
+            let n = du.cross(dv).normalized().unwrap();
+            angle = angle.max(n.cross(v(0.0, 0.0, 1.0)).length().asin());
+            bend = bend.max(n.dot(dvv).abs() / dv.dot(dv));
+            twist = twist.max(n.dot(duv).abs() / (du.length() * dv.length()));
+        }
+        let threshold = (ang / scale).min(2.0 * tol / (scale * scale));
+        assert!(
+            angle <= ang && bend <= 1e-3 * threshold,
+            "{angle:e} {bend:e}"
+        );
+        assert!(twist >= 10.0 * threshold, "{twist:e} vs {threshold:e}");
+        // G1 by the measure, and not G2.
+        assert!(c.position.within() && c.angle.within(), "{c:?}");
+        assert_eq!(c.order, Order::G1, "scale {scale}: {c:?}");
+    }
+}
+
+/// The dome over a quarter of the equator of the sphere of radius `r`
+/// about `centre`.
+fn dome_at(r: f64, centre: Vec3) -> (Vec<NurbsCurve>, Vec<NurbsCurve>) {
+    let base = Frame::new(centre, v(0.0, 0.0, 1.0), v(1.0, 0.0, 0.0)).unwrap();
+    let top = Frame::new(
+        centre + v(0.0, 0.0, 0.8 * r),
+        v(0.0, 0.0, 1.0),
+        v(1.0, 0.0, 0.0),
+    )
+    .unwrap();
+    let us = vec![
+        arc(&base, r, 0.0, FRAC_PI_2).unwrap(),
+        arc(&top, 0.7 * r, 0.0, FRAC_PI_2).unwrap(),
+    ];
+    let vs = [0.0, 0.5, 1.0]
+        .iter()
+        .map(|f| {
+            let d = longitude(*f);
+            bezier([
+                centre + d * r,
+                centre + d * r + v(0.0, 0.0, 0.3 * r),
+                centre + d * (0.85 * r) + v(0.0, 0.0, 0.65 * r),
+                centre + d * (0.7 * r) + v(0.0, 0.0, 0.8 * r),
+            ])
+        })
+        .collect();
+    (us, vs)
+}
+
+/// The dome held in curvature to its sphere a million units from the
+/// origin, at every scale: G2, and the patch's curvature across, on an
+/// exact copy of it moved back to the origin, is the sphere's within what
+/// G2 promises.
+#[test]
+fn a_dome_held_in_curvature_far_from_the_origin_is_g2() {
+    let centre = v(1.0e6, -1.0e6, 1.0e6);
+    for scale in SCALES {
+        let r = 1.5 * scale;
+        // What coordinates of the centre's size can carry: their rounding,
+        // with room for the construction's arithmetic.
+        let carried = 4096.0 * f64::EPSILON * centre.length();
+        let tol = (1e-6 * scale).max(carried);
+        let ang = 1e-9_f64.max(carried / scale);
+        let sphere = Surface::Sphere(
+            Sphere::new(
+                Frame::new(centre, v(0.0, 0.0, 1.0), v(1.0, 0.0, 0.0)).unwrap(),
+                r,
+            )
+            .unwrap(),
+        );
+        let (us, vs) = dome_at(r, centre);
+        let held = Condition::Curvature {
+            surface: &sphere,
+            weight: 1.0,
+        };
+        let patch = gordon(&Network {
+            u: &us,
+            v: &vs,
+            edges: first(held),
+            tolerance: tol,
+            angular: ang,
+        })
+        .unwrap();
+        let seam = patch.seams[0].expect("the seam is measured");
+        assert_eq!(seam.order, Order::G2, "scale {scale}: {seam:?}");
+        // The copy at the origin: differences of nearby doubles are exact,
+        // so it is the same surface (but at the largest scale, where the
+        // patch reaches the origin and the copy is within a rounding).
+        let s = &patch.surface;
+        let (pu, pv) = s.degrees();
+        let (nu, nv) = s.counts();
+        let copy = NurbsSurface::new(
+            pu,
+            pv,
+            s.knots_u().to_vec(),
+            s.knots_v().to_vec(),
+            nu,
+            nv,
+            s.control_points().iter().map(|p| *p - centre).collect(),
+            s.weights().to_vec(),
+        )
+        .unwrap();
+        for u in samples() {
+            let (p, k, n) = across(&copy, u, 0.0);
+            let outward = p.normalized().unwrap();
+            let k_out = k * n.dot(outward).signum();
+            assert!(
+                (k_out + 1.0 / r).abs() <= seam.curvature.threshold + 1e-8 / r,
+                "curvature across {k_out:e}, the sphere's {:e} (scale {scale})",
+                -1.0 / r
+            );
+        }
     }
 }
 
