@@ -31,6 +31,13 @@ const BACKGROUND_ROUGHNESS: f32 = 0.45;
 const PLAIN_BACKDROP: f32 = -2.0;
 const CONTACT_STEPS: i32 = 12;
 const CONTACT_BIAS: f32 = 0.5;
+// Layer 3 (`craft3d_render::studio::layers`).
+const TANGENT_EPSILON: f32 = 0.0001;
+const MIN_ALPHA: f32 = 0.002;
+// `craft3d_gpu::mesh::optics_word`: the slot, and the bit of a face that
+// lets light through.
+const OPTICS_SLOT: u32 = 0xffffu;
+const TRANSMISSIVE: u32 = 0x10000u;
 
 struct Studio {
     // xyz: towards the key light. w: 1 when there is one.
@@ -85,6 +92,13 @@ struct Studio {
 @group(1) @binding(3) var shadow_map: texture_2d<u32>;
 @group(1) @binding(4) var ao_map: texture_2d<u32>;
 @group(1) @binding(5) var geometry_map: texture_2d<u32>;
+// Layer 3: the material table (`mesh::optics_table`); the light of the
+// picture without the faces that let light through (`f32` bits, as the
+// screen-space buffers); the view distance of the nearest back face of
+// one of those faces per sample (`f32` bits, infinity for none).
+@group(1) @binding(9) var optics_map: texture_2d<u32>;
+@group(1) @binding(10) var behind_map: texture_2d<u32>;
+@group(1) @binding(11) var backs_map: texture_2d<u32>;
 
 // tonemap::srgb_encode.
 fn srgb_encode(c: f32) -> f32 {
@@ -315,35 +329,219 @@ fn key_specular(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, r: f32, radius: f32,
 }
 
 // studio::Shaded: the linear light, and the weight of the environment's
-// specular light in it per channel with the roughness.
+// specular light in it per channel with the roughness; and what the light
+// behind a transmissive surface is multiplied by (layer 3).
 struct Shaded {
     light: vec3<f32>,
     weight: vec3<f32>,
     roughness: f32,
+    transmit: vec3<f32>,
 }
 
-// FrameLight::shade_parts: the light leaving the point, with the key's
-// contact shadow `contact` (1: none).
+// Layer 3 (`craft3d_render::studio::layers`): a face's layers beyond its
+// colour and finish, from its row of the material table
+// (`craft3d_gpu::mesh::optics_table`).
+struct Optics {
+    anisotropy: f32,
+    clearcoat: f32,
+    clearcoat_roughness: f32,
+    transmission: f32,
+    ior: f32,
+    thin: bool,
+    subsurface: f32,
+    around: bool,
+    absorption: vec3<f32>,
+    has_tint: bool,
+    // The subsurface colour's bytes.
+    tint: vec3<f32>,
+    axis: vec3<f32>,
+    // Relative to the mesh origin.
+    origin: vec3<f32>,
+}
+
+fn optics_texel(row: i32, k: i32) -> vec4<f32> {
+    return bitcast<vec4<f32>>(textureLoad(optics_map, vec2<i32>(k, row), 0));
+}
+
+// The layers of the slot `slot` (row plus one; 0: none, Optics::default).
+fn optics_of(slot: u32) -> Optics {
+    var o: Optics;
+    o.ior = 1.5;
+    if slot == 0u {
+        return o;
+    }
+    let row = i32(slot - 1u);
+    let a = optics_texel(row, 0);
+    let b = optics_texel(row, 1);
+    let c = optics_texel(row, 2);
+    o.anisotropy = a.x;
+    o.clearcoat = a.y;
+    o.clearcoat_roughness = a.z;
+    o.transmission = a.w;
+    o.ior = b.x;
+    o.thin = b.y > 0.5;
+    o.subsurface = b.z;
+    o.around = b.w > 0.5;
+    o.absorption = c.xyz;
+    o.has_tint = c.w > 0.5;
+    o.tint = optics_texel(row, 3).xyz;
+    o.axis = optics_texel(row, 4).xyz;
+    o.origin = optics_texel(row, 5).xyz;
+    return o;
+}
+
+// TangentField::at: the unit tangent in xyz and w = 1, or w = 0 where the
+// field gives none (TANGENT_EPSILON). `p` relative to the mesh origin.
+fn tangent_at(o: Optics, p: vec3<f32>, n: vec3<f32>) -> vec4<f32> {
+    var raw = o.axis;
+    if o.around {
+        raw = cross(o.axis, p - o.origin);
+    }
+    let along = raw - n * dot(n, raw);
+    let len = length(along);
+    let full = length(raw);
+    if !(len <= 3.4e38 && full <= 3.4e38 && len > TANGENT_EPSILON * full) {
+        return vec4<f32>(0.0);
+    }
+    return vec4<f32>(along / len, 1.0);
+}
+
+// layers::wrap_bands.
+fn wrap_bands(w_in: f32) -> vec3<f32> {
+    let w = clamp(w_in, 0.0, 1.0);
+    let s = (1.0 + w) * (1.0 + w);
+    return vec3<f32>(1.0, (1.0 + 1.5 * w - 0.5 * w * w * w) / s, (1.0 - w) * (1.0 - w));
+}
+
+// layers::wrapped_cosine.
+fn wrapped_cosine(nl: f32, w_in: f32) -> f32 {
+    let w = clamp(w_in, 0.0, 1.0);
+    return max(nl + w, 0.0) / ((1.0 + w) * (1.0 + w));
+}
+
+// FrameLight::irradiance_wrapped: the irradiance through the wrapped
+// kernel of `w`, band by band.
+fn irradiance_wrapped(n_in: vec3<f32>, w: f32) -> vec3<f32> {
+    let bands = wrap_bands(w);
+    let c = cos(studio.look.x);
+    let s = sin(studio.look.x);
+    let n = vec3<f32>(c * n_in.x + s * n_in.y, -s * n_in.x + c * n_in.y, n_in.z);
+    let x = n.x;
+    let y = n.y;
+    let z = n.z;
+    var e = studio.sh[0].rgb * (0.282094791 * bands.x);
+    e += studio.sh[1].rgb * (0.488602512 * y * bands.y);
+    e += studio.sh[2].rgb * (0.488602512 * z * bands.y);
+    e += studio.sh[3].rgb * (0.488602512 * x * bands.y);
+    e += studio.sh[4].rgb * (1.092548431 * x * y * bands.z);
+    e += studio.sh[5].rgb * (1.092548431 * y * z * bands.z);
+    e += studio.sh[6].rgb * (0.315391565 * (3.0 * z * z - 1.0) * bands.z);
+    e += studio.sh[7].rgb * (1.092548431 * x * z * bands.z);
+    e += studio.sh[8].rgb * (0.546274215 * (x * x - y * y) * bands.z);
+    return max(e, vec3<f32>(0.0));
+}
+
+// layers::aniso_ggx_dv.
+fn aniso_ggx_dv(at: f32, ab: f32, t: vec3<f32>, b: vec3<f32>, n: vec3<f32>, h: vec3<f32>,
+                v: vec3<f32>, l: vec3<f32>) -> f32 {
+    let th = dot(t, h);
+    let bh = dot(b, h);
+    let nh = dot(n, h);
+    let k = (th / at) * (th / at) + (bh / ab) * (bh / ab) + nh * nh;
+    let d = 1.0 / (PI * at * ab * k * k);
+    let nv = clamp(dot(n, v), 1e-4, 1.0);
+    let nl = clamp(dot(n, l), 0.0, 1.0);
+    let lv = nl * length(vec3<f32>(at * dot(t, v), ab * dot(b, v), nv));
+    let ll = nv * length(vec3<f32>(at * dot(t, l), ab * dot(b, l), nl));
+    let out = d * (0.5 / (lv + ll));
+    if !(abs(out) <= 3.4e38) {
+        return 0.0;
+    }
+    return max(out, 0.0);
+}
+
+// aniso_key_specular, per channel of F0.
+fn aniso_key_specular(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, t: vec3<f32>, b: vec3<f32>,
+                      r: f32, a: f32, radius: f32, f0: vec3<f32>) -> vec3<f32> {
+    let len = length(v + l);
+    if !(len > 0.0 && len <= 3.4e38) {
+        return vec3<f32>(0.0);
+    }
+    let hv = (v + l) / len;
+    let alpha = clamp(r * r + 0.5 * radius, 0.002, 1.0);
+    let at = max(alpha * (1.0 + a), MIN_ALPHA);
+    let ab = max(alpha * (1.0 - a), MIN_ALPHA);
+    let vh = clamp(dot(v, hv), 0.0, 1.0);
+    let f = f0 + (vec3<f32>(1.0) - f0) * powi(1.0 - vh, 5u);
+    return f * aniso_ggx_dv(at, ab, t, b, n, hv, v, l);
+}
+
+// layers::bent_reflection.
+fn bent_reflection(n: vec3<f32>, v: vec3<f32>, t: vec3<f32>, b: vec3<f32>, a: f32,
+                   r: f32) -> vec3<f32> {
+    var direction = t;
+    if a >= 0.0 {
+        direction = b;
+    }
+    let sideways = cross(direction, v);
+    let lobe = cross(sideways, direction);
+    let bend = abs(a) * clamp(5.0 * r, 0.0, 1.0);
+    let mixed = n * (1.0 - bend) + lobe * bend;
+    let len = length(mixed);
+    var bent = n;
+    if len > 0.0 && len <= 3.4e38 {
+        bent = mixed / len;
+    }
+    return bent * (2.0 * dot(bent, v)) - v;
+}
+
+// FrameLight::shade_layered: the light leaving the point, with the key's
+// contact shadow `contact` (1: none) and the layers `o`. With none
+// (`optics_of(0u)`) every layer enters as a factor of 1 or a term of 0:
+// layer 2's shading.
 fn studio_shade(base_bytes: vec3<f32>, metallic: f32, roughness: f32, p: vec3<f32>,
-                n: vec3<f32>, v: vec3<f32>, ao: f32, contact: f32) -> Shaded {
+                n: vec3<f32>, v: vec3<f32>, ao: f32, contact: f32, o: Optics) -> Shaded {
     let base = vec3<f32>(
         srgb_decode(base_bytes.x / 255.0),
         srgb_decode(base_bytes.y / 255.0),
         srgb_decode(base_bytes.z / 255.0),
     );
     let nv = clamp(dot(n, v), 1e-4, 1.0);
-    let reflected = n * (2.0 * dot(n, v)) - v;
+    // Anisotropy: its frame, where the field gives a tangent.
+    var aniso = false;
+    var t = vec3<f32>(0.0);
+    var bt = vec3<f32>(0.0);
+    if o.anisotropy != 0.0 {
+        let tw = tangent_at(o, p, n);
+        if tw.w > 0.5 {
+            aniso = true;
+            t = tw.xyz;
+            bt = cross(n, t);
+        }
+    }
+    var reflected = n * (2.0 * dot(n, v)) - v;
+    if aniso {
+        reflected = bent_reflection(n, v, t, bt, o.anisotropy, roughness);
+    }
     let ab = split_sum(nv, roughness);
     let prefiltered = radiance(reflected, roughness * studio.look.w);
     let irr = irradiance(n);
+    let wrap = o.subsurface;
+    var wrapped = irr;
+    if wrap > 0.0 {
+        wrapped = irradiance_wrapped(n, wrap);
+    }
     var key_light = vec3<f32>(0.0);
     var key_dot = 0.0;
     var key_vis = 1.0;
     var key_nl = 0.0;
+    var key_wrap = 0.0;
     if studio.key.w > 0.5 {
-        let nl = max(dot(n, studio.key.xyz), 0.0);
+        let cos_l = dot(n, studio.key.xyz);
+        let nl = max(cos_l, 0.0);
+        let lit = nl > 0.0 || (wrap > 0.0 && cos_l + wrap > 0.0);
         var vis = 1.0;
-        if studio.lv_v.w > 0.5 && nl > 0.0 {
+        if studio.lv_v.w > 0.5 && lit {
             vis = visibility(p, n, studio.key_light.w);
         }
         vis = vis * contact;
@@ -351,6 +549,7 @@ fn studio_shade(base_bytes: vec3<f32>, metallic: f32, roughness: f32, p: vec3<f3
         key_dot = nl * vis;
         key_vis = vis;
         key_nl = nl;
+        key_wrap = wrapped_cosine(cos_l, wrap) * vis;
     }
     // Specular occlusion (Lagarde and de Rousiers) with alpha = r * r.
     let occlusion = pow(nv + ao, exp2(-16.0 * roughness * roughness - 1.0)) - 1.0 + ao;
@@ -365,24 +564,85 @@ fn studio_shade(base_bytes: vec3<f32>, metallic: f32, roughness: f32, p: vec3<f3
     let weight = fs * multiple * specular_occlusion;
     let specular = prefiltered * fs * multiple * specular_occlusion;
     let light = irr * ao + key_light * key_dot;
-    let diffuse = base * (1.0 - metallic) * (vec3<f32>(1.0) - fs) / PI * light;
-    // The specular shadow: where the key is hidden its share of the
-    // prefiltered light is taken out.
+    var diffuse = base * (1.0 - metallic) * (vec3<f32>(1.0) - fs) / PI * light;
+    if wrap > 0.0 {
+        var tint = base;
+        if o.has_tint {
+            tint = vec3<f32>(
+                srgb_decode(o.tint.x / 255.0),
+                srgb_decode(o.tint.y / 255.0),
+                srgb_decode(o.tint.z / 255.0),
+            );
+        }
+        let light_w = wrapped * ao + key_light * key_wrap;
+        diffuse = diffuse * (1.0 - wrap)
+            + tint * (1.0 - metallic) * (vec3<f32>(1.0) - fs) / PI * light_w * wrap;
+    }
+    var transmit = vec3<f32>(0.0);
+    if o.transmission > 0.0 {
+        diffuse = diffuse * (1.0 - o.transmission);
+        transmit = o.transmission * (1.0 - metallic) * (vec3<f32>(1.0) - fs) * base;
+    }
+    // The key is part of the prefiltered light: where it is hidden its
+    // share of that light is taken out (the specular shadow); on an
+    // anisotropic face it is taken out everywhere, its share estimated at
+    // the bent normal, and its anisotropic lobe added instead.
     var keep = 1.0;
-    if studio.jitter.w > 0.5 && studio.key.w > 0.5 && key_vis < 1.0 && key_nl > 0.0 {
-        let ks = key_light * key_nl
-            * key_specular(n, v, studio.key.xyz, roughness, studio.key_light.w, f0) * multiple;
+    var key_aniso = vec3<f32>(0.0);
+    if studio.key.w > 0.5 && key_nl > 0.0
+        && ((studio.jitter.w > 0.5 && key_vis < 1.0) || aniso) {
+        var share_n = n;
+        var share_nl = key_nl;
+        if aniso {
+            let bent = reflected + v;
+            let len = length(bent);
+            if len > 0.0 && len <= 3.4e38 {
+                share_n = bent / len;
+            }
+            share_nl = max(dot(share_n, studio.key.xyz), 0.0);
+        }
+        let ks = key_light * share_nl
+            * key_specular(share_n, v, studio.key.xyz, roughness, studio.key_light.w, f0)
+            * multiple;
         let total = luminance(specular);
         var share = 0.0;
         if total > 0.0 {
             share = clamp(luminance(ks) / total, 0.0, 1.0);
         }
-        keep = 1.0 - (1.0 - key_vis) * share;
+        if aniso {
+            keep = 1.0 - share;
+            key_aniso = key_light * key_nl * key_vis
+                * aniso_key_specular(n, v, studio.key.xyz, t, bt, roughness, o.anisotropy,
+                                     studio.key_light.w, f0)
+                * multiple;
+        } else {
+            keep = 1.0 - (1.0 - key_vis) * share;
+        }
     }
     var out: Shaded;
     out.light = diffuse + specular * keep;
     out.weight = weight * keep;
+    if aniso {
+        // The bent lobe is no mirror: no reflection replaces it.
+        out.weight = vec3<f32>(0.0);
+        out.light = out.light + key_aniso;
+    }
     out.roughness = roughness;
+    out.transmit = transmit;
+    if o.clearcoat > 0.0 {
+        let rc = o.clearcoat_roughness;
+        let abc = split_sum(nv, rc);
+        let fc = clamp(o.clearcoat * (DIELECTRIC_F0 * abc.x + abc.y), 0.0, 1.0);
+        let coat_occlusion = pow(nv + ao, exp2(-16.0 * rc * rc - 1.0)) - 1.0 + ao;
+        let so = clamp(coat_occlusion, 0.0, 1.0);
+        let mirror = n * (2.0 * dot(n, v)) - v;
+        let coat_light = radiance(mirror, rc * studio.look.w);
+        out.light = out.light * (1.0 - fc) + coat_light * fc * so;
+        out.transmit = out.transmit * (1.0 - fc);
+        // The reflections replace the coat's light, the sharpest layer.
+        out.weight = vec3<f32>(fc * so);
+        out.roughness = rc;
+    }
     return out;
 }
 
@@ -531,6 +791,7 @@ fn fs_background_post(in: FullscreenOut) -> LightOut {
 struct ShadowOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) depth: f32,
+    @location(1) @interpolate(flat) optics: u32,
 }
 
 @vertex
@@ -542,11 +803,17 @@ fn vs_shadow(in: VertexIn) -> ShadowOut {
     out.clip = vec4<f32>(dot(rel, studio.lv_u.xyz) / r, dot(rel, studio.lv_v.xyz) / r,
                          clamp(d / (2.0 * r), 0.0, 1.0), 1.0);
     out.depth = d;
+    out.optics = in.optics;
     return out;
 }
 
+// A face that lets light through casts no shadow (layer 3,
+// `FrameLight::casting`).
 @fragment
 fn fs_shadow(in: ShadowOut) -> @location(0) u32 {
+    if (in.optics & TRANSMISSIVE) != 0u {
+        discard;
+    }
     return bitcast<u32>(in.depth);
 }
 
@@ -571,6 +838,26 @@ struct GeometryOut {
 
 @fragment
 fn fs_geometry(in: VertexOut) -> GeometryOut {
+    var out: GeometryOut;
+    let n = normal_of(in);
+    out.data = vec4<u32>(bitcast<u32>(in.dist), bitcast<u32>(n.x), bitcast<u32>(n.y),
+                         bitcast<u32>(n.z));
+    {{SET_DEPTH}}
+    return out;
+}
+
+// True for a fragment of a face that lets light through (layer 3).
+fn transmissive(in: VertexOut) -> bool {
+    return (in.optics & TRANSMISSIVE) != 0u;
+}
+
+// The geometry of the picture without the faces that let light through
+// (layer 3: what they see).
+@fragment
+fn fs_geometry_opaque(in: VertexOut) -> GeometryOut {
+    if transmissive(in) {
+        discard;
+    }
     var out: GeometryOut;
     let n = normal_of(in);
     out.data = vec4<u32>(bitcast<u32>(in.dist), bitcast<u32>(n.x), bitcast<u32>(n.y),
@@ -759,6 +1046,87 @@ fn fs_ao(in: FullscreenOut) -> @location(0) u32 {
     return bitcast<u32>(occlusion(vec2<i32>(x, y), rel, n, v, studio.ground.z, reach));
 }
 
+// The fragment's normal turned towards the viewer `v`.
+fn facing_normal(in: VertexOut, v: vec3<f32>) -> vec3<f32> {
+    var n = normal_of(in);
+    if !(length(n) > 0.0) {
+        n = v;
+    }
+    if dot(n, v) < 0.0 {
+        n = -n;
+    }
+    return n;
+}
+
+// The light of the picture behind at the sample `at`.
+fn light_behind(at: vec2<i32>) -> vec3<f32> {
+    return bitcast<vec3<f32>>(textureLoad(behind_map, at, 0).xyz);
+}
+
+// layers::refract: the direction of the unit ray `d` refracted into a
+// medium of index `ior` at the unit normal `n`, w = 1; w = 0 for none.
+fn refract_ray(d: vec3<f32>, n: vec3<f32>, ior: f32) -> vec4<f32> {
+    let eta = 1.0 / ior;
+    let c = -dot(n, d);
+    let k = 1.0 - eta * eta * (1.0 - c * c);
+    if !(k >= 0.0 && k <= 3.4e38) {
+        return vec4<f32>(0.0);
+    }
+    let r = d * eta + n * (eta * c - sqrt(k));
+    let len = length(r);
+    if !(len > 0.0 && len <= 3.4e38) {
+        return vec4<f32>(0.0);
+    }
+    return vec4<f32>(r / len, 1.0);
+}
+
+// layers::slab_path.
+fn slab_path(across_len: f32, nv: f32, n: vec3<f32>, refracted: vec3<f32>) -> f32 {
+    let cos_t = -dot(n, refracted);
+    if !(cos_t > 1e-6 && cos_t <= 3.4e38) {
+        return across_len;
+    }
+    return across_len * nv / cos_t;
+}
+
+// refract::pass_through for the fragment `in` shaded as `shaded`: its
+// light with the light from behind that passes through added.
+fn through(in: VertexOut, shaded: Shaded) -> vec3<f32> {
+    if all(shaded.transmit == vec3<f32>(0.0)) {
+        return shaded.light;
+    }
+    let o = optics_of(in.optics & OPTICS_SLOT);
+    let px = in.clip.x;
+    let py = in.clip.y;
+    let pixel = vec2<i32>(floor(in.clip.xy));
+    let v = toward_viewer(in.rel);
+    let n = facing_normal(in, v);
+    let back = bitcast<f32>(textureLoad(backs_map, pixel, 0).r);
+    var seen = light_behind(pixel);
+    var absorbed = vec3<f32>(1.0);
+    if !o.thin && back < 3.0e38 && back > in.dist {
+        let r = refract_ray(-v, n, o.ior);
+        if r.w > 0.5 {
+            let across_len = length(point_at(px, py, back) - point_at(px, py, in.dist));
+            let nv = clamp(dot(n, v), 1e-4, 1.0);
+            let path = slab_path(across_len, nv, n, r.xyz);
+            let out_at = in.rel + r.xyz * path;
+            absorbed = exp(-o.absorption * path);
+            let q = project_rel(out_at);
+            if q.w > 0.5 && q.x >= 0.0 && q.y >= 0.0 && q.x < studio.size.x
+                && q.y < studio.size.y {
+                seen = light_behind(vec2<i32>(i32(floor(q.x)), i32(floor(q.y))));
+            } else {
+                // Off the picture: the background along the view ray.
+                let ray = view_ray(px, py);
+                seen = radiance(ray[1], BACKGROUND_ROUGHNESS * studio.look.w)
+                    * ground_factor(scene.eye.xyz + out_at, ray[1]);
+            }
+        }
+    }
+    return shaded.light + shaded.transmit * absorbed * seen;
+}
+
 // The studio light of a fragment (`render_studio_frame`'s shading).
 fn studio_of(in: VertexOut) -> Shaded {
     var base = scene.base.rgb;
@@ -775,20 +1143,16 @@ fn studio_of(in: VertexOut) -> Shaded {
     if rough != 0u {
         roughness = f32(rough - 1u) / 255.0;
     }
+    var slot = in.optics & OPTICS_SLOT;
     if highlighted(in.face) {
         base = scene.highlight.rgb;
         metallic = 0.0;
         roughness = DEFAULT_ROUGHNESS;
+        slot = 0u;
     }
     let p = scene.eye.xyz + in.rel;
     let v = toward_viewer(in.rel);
-    var n = normal_of(in);
-    if !(length(n) > 0.0) {
-        n = v;
-    }
-    if dot(n, v) < 0.0 {
-        n = -n;
-    }
+    let n = facing_normal(in, v);
     var ao = 1.0;
     if studio.lv_w.w > 0.5 {
         ao = bitcast<f32>(textureLoad(ao_map, vec2<u32>(u32(in.clip.x), u32(in.clip.y)), 0).r);
@@ -797,7 +1161,7 @@ fn studio_of(in: VertexOut) -> Shaded {
     if studio.jitter.z > 0.5 && studio.key.w > 0.5 && dot(n, studio.key.xyz) > 0.0 {
         shadowed = contact(in.rel, studio.key.xyz, floor(in.clip.xy));
     }
-    return studio_shade(base, metallic, roughness, p, n, v, ao, shadowed);
+    return studio_shade(base, metallic, roughness, p, n, v, ao, shadowed, optics_of(slot));
 }
 
 @fragment
@@ -827,12 +1191,54 @@ struct PostLightOut {
     {{FRAG_DEPTH}}
 }
 
+// With the light from behind the faces that let light through (layer 3,
+// `refract::pass_through`).
 @fragment
 fn fs_studio_post(in: VertexOut) -> PostLightOut {
     var out: PostLightOut;
     let shaded = studio_of(in);
+    out.light = bits3(through(in, shaded), 0.0);
+    out.weight = bits3(shaded.weight, shaded.roughness);
+    {{SET_DEPTH}}
+    return out;
+}
+
+// The picture without the faces that let light through (layer 3: what
+// they see), shaded completely.
+@fragment
+fn fs_studio_behind(in: VertexOut) -> PostLightOut {
+    if transmissive(in) {
+        discard;
+    }
+    var out: PostLightOut;
+    let shaded = studio_of(in);
     out.light = bits3(shaded.light, 0.0);
     out.weight = bits3(shaded.weight, shaded.roughness);
+    {{SET_DEPTH}}
+    return out;
+}
+
+struct BacksOut {
+    @location(0) dist: u32,
+    {{FRAG_DEPTH}}
+}
+
+// The nearest back faces of the faces that let light through: their view
+// distance. A triangle faces away when its own normal points away from
+// the eye (`rasterise_where`: flat · (corner − eye) > 0 in perspective,
+// flat · forward in orthographic; on the triangle's plane flat · rel is
+// the same everywhere).
+@fragment
+fn fs_backs(in: VertexOut) -> BacksOut {
+    var towards = scene.forward.xyz;
+    if scene.forward.w > 0.5 {
+        towards = in.rel;
+    }
+    if !transmissive(in) || !(dot(in.flat_normal, towards) > 0.0) {
+        discard;
+    }
+    var out: BacksOut;
+    out.dist = bitcast<u32>(in.dist);
     {{SET_DEPTH}}
     return out;
 }

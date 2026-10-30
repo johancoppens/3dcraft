@@ -38,8 +38,8 @@ pub(crate) const SCENE_FLOATS: usize = 76;
 const MAX_HIGHLIGHT_FACE: u32 = 1 << 24;
 
 /// The vertex layout of [`GpuMesh`]: position, normal, the triangle's own
-/// normal, the face id, its colour and its finish.
-pub(crate) const MESH_ATTRIBUTES: [wgpu::VertexAttribute; 6] = [
+/// normal, the face id, its colour, its finish and its layers.
+pub(crate) const MESH_ATTRIBUTES: [wgpu::VertexAttribute; 7] = [
     wgpu::VertexAttribute {
         format: wgpu::VertexFormat::Float32x3,
         offset: 0,
@@ -69,6 +69,11 @@ pub(crate) const MESH_ATTRIBUTES: [wgpu::VertexAttribute; 6] = [
         format: wgpu::VertexFormat::Uint32,
         offset: 44,
         shader_location: 5,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Uint32,
+        offset: 48,
+        shader_location: 6,
     },
 ];
 
@@ -1720,7 +1725,13 @@ struct StudioReadback {
     /// their face ids and distances in a pass of their own.
     main_post: Drawing,
     data: Drawing,
+    /// Layer 3: the geometry and the light of the picture without the
+    /// faces that let light through, and their back faces.
+    geometry_behind: Drawing,
+    main_behind: Drawing,
+    backs: Drawing,
     targets: Option<StudioTargets>,
+    through: Option<studio::ThroughTargets>,
     polish: Option<studio::PolishTargets>,
     /// The sum of a picture's frames, at its pixels.
     accumulator: Option<studio::Accumulator>,
@@ -1778,6 +1789,45 @@ impl StudioReadback {
                 step,
             )
         });
+        let mesh_drawing = |label: &str,
+                            entry: &str,
+                            group: &wgpu::BindGroupLayout,
+                            format: wgpu::TextureFormat,
+                            count: usize| {
+            Drawing::build(two, |step| {
+                scene_pipeline_from(
+                    device,
+                    label,
+                    &module,
+                    ("vs_studio", entry),
+                    &[Some(scene_layout), Some(group)],
+                    &vec![target(format); count],
+                    1,
+                    step,
+                )
+            })
+        };
+        let geometry_behind = mesh_drawing(
+            "craft3d geometry behind",
+            "fs_geometry_opaque",
+            &gpu.layout_uniform,
+            studio::GEOMETRY_FORMAT,
+            1,
+        );
+        let main_behind = mesh_drawing(
+            "craft3d studio scene behind",
+            "fs_studio_behind",
+            &gpu.layout_main,
+            studio::LIGHT_FORMAT,
+            2,
+        );
+        let backs = mesh_drawing(
+            "craft3d back faces",
+            "fs_backs",
+            &gpu.layout_uniform,
+            studio::BITS_FORMAT,
+            1,
+        );
         let background = studio::fullscreen_pipeline(
             device,
             "craft3d background",
@@ -1788,6 +1838,10 @@ impl StudioReadback {
             1,
         );
         StudioReadback {
+            geometry_behind,
+            main_behind,
+            backs,
+            through: None,
             gpu,
             geometry,
             background,
@@ -1879,6 +1933,12 @@ impl Renderer {
                     look.targets = None;
                     look.targets = Some(StudioTargets::new(&device, size));
                 }
+                if !passes.transmit {
+                    look.through = None;
+                } else if look.through.as_ref().is_none_or(|t| t.size != size) {
+                    look.through = None;
+                    look.through = Some(studio::ThroughTargets::new(&device, size));
+                }
                 if passes.post
                     && look
                         .polish
@@ -1957,6 +2017,93 @@ impl Renderer {
             look.gpu
                 .encode_shadow(&self.device, &mut encoder, &self.scene_bind, mesh);
         }
+        // Layer 3: the picture without the faces that let light through,
+        // shaded completely with its own geometry and occlusion, and their
+        // nearest back faces (`render_studio_frame`'s `behind` and
+        // `backs`).
+        let through = if passes.transmit {
+            look.through.as_ref()
+        } else {
+            None
+        };
+        if passes.transmit {
+            let through = through.ok_or(GpuError::NothingDrawn)?;
+            let mesh_pass = |encoder: &mut wgpu::CommandEncoder,
+                             label: &str,
+                             colors: &[Option<wgpu::RenderPassColorAttachment<'_>>],
+                             drawing: &Drawing,
+                             bind: &wgpu::BindGroup| {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some(label),
+                    color_attachments: colors,
+                    depth_stencil_attachment: Some(depth_attachment(
+                        &targets.samples_depth,
+                        self.two,
+                        false,
+                    )),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_bind_group(0, &self.scene_bind, &[]);
+                pass.set_bind_group(1, bind, &[]);
+                draw_in_steps(&mut pass, &[(drawing, &draw_mesh)]);
+            };
+            if passes.geometry {
+                mesh_pass(
+                    &mut encoder,
+                    "craft3d geometry behind",
+                    &[attachment(
+                        &through.behind.geometry,
+                        wgpu::LoadOp::Clear(studio::no_back()),
+                    )],
+                    &look.geometry_behind,
+                    &look.gpu.uniform_bind,
+                );
+            }
+            if passes.ao {
+                look.gpu.encode_ao(
+                    &self.device,
+                    &mut encoder,
+                    &self.scene_bind,
+                    &through.behind.geometry,
+                    &through.behind.ao,
+                );
+            }
+            let bind = look.gpu.main_bind(
+                &self.device,
+                passes,
+                mesh,
+                (&through.behind.ao, &through.behind.geometry),
+                None,
+            )?;
+            look.gpu.encode_background_into(
+                &mut encoder,
+                &self.scene_bind,
+                &bind,
+                (&through.light, &through.weight),
+            );
+            mesh_pass(
+                &mut encoder,
+                "craft3d studio scene behind",
+                &[
+                    attachment(&through.light, wgpu::LoadOp::Load),
+                    attachment(&through.weight, wgpu::LoadOp::Load),
+                ],
+                &look.main_behind,
+                &bind,
+            );
+            mesh_pass(
+                &mut encoder,
+                "craft3d back faces",
+                &[attachment(
+                    &through.backs,
+                    wgpu::LoadOp::Clear(studio::no_back()),
+                )],
+                &look.backs,
+                &look.gpu.uniform_bind,
+            );
+        }
         if passes.geometry {
             let empty = wgpu::Color {
                 r: f64::from(f32::INFINITY.to_bits()),
@@ -1989,9 +2136,13 @@ impl Renderer {
                 &sized.ao,
             );
         }
-        let bind = look
-            .gpu
-            .main_bind(&self.device, passes, &sized.ao, &sized.geometry)?;
+        let bind = look.gpu.main_bind(
+            &self.device,
+            passes,
+            mesh,
+            (&sized.ao, &sized.geometry),
+            through,
+        )?;
         if passes.post {
             let polish = look.polish.as_ref().ok_or(GpuError::NothingDrawn)?;
             look.gpu

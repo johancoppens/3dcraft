@@ -14,8 +14,14 @@ pub const MAX_TRIANGLES: usize = 1 << 24;
 /// id (`u32`), the face's own colour (`u32`: red, green and blue in the
 /// low three bytes, and 1 in the high byte when the face has a colour of
 /// its own, 0 when it is shaded from the base colour) and its finish
-/// (`u32`, [`finish_word`]).
-pub(crate) const VERTEX_BYTES: usize = 48;
+/// (`u32`, [`finish_word`]), and its layers of layer 3 (`u32`,
+/// [`optics_word`]).
+pub(crate) const VERTEX_BYTES: usize = 52;
+/// The texels (`Rgba32Uint`, `f32` bits) of a row of the material table
+/// ([`optics_table`]).
+pub(crate) const OPTICS_TEXELS: usize = 6;
+/// The bit of [`optics_word`] that marks a face that lets light through.
+pub(crate) const TRANSMISSIVE_BIT: u32 = 1 << 16;
 const TRIANGLE_BYTES: usize = 3 * VERTEX_BYTES;
 /// Triangles per vertex buffer: 31 MB, well under every device's limit.
 const CHUNK_TRIANGLES: usize = 1 << 18;
@@ -31,6 +37,10 @@ pub(crate) struct Packed {
     pub chunks: Vec<Vec<u8>>,
     /// Number of triangles that are drawn.
     pub triangles: usize,
+    /// The material table ([`optics_table`]), a row per distinct layers.
+    pub optics: Vec<[u32; 4]>,
+    /// Whether a face lets light through.
+    pub transmission: bool,
 }
 
 fn narrow(v: Vec3) -> Option<[f32; 3]> {
@@ -80,6 +90,8 @@ pub(crate) fn pack(
         bounds: Bbox3::EMPTY,
         chunks: Vec::new(),
         triangles: 0,
+        optics: optics_table(colors, origin),
+        transmission: colors.has_transmission(),
     };
     let mut current: Vec<u8> = Vec::new();
     for (t, (tri, &face)) in mesh.triangles.iter().zip(&mesh.face_ids).enumerate() {
@@ -125,6 +137,7 @@ pub(crate) fn pack(
         }
         let color = color_word(colors.get(face));
         let finish = finish_word(colors.finish(face));
+        let optics = optics_word(colors, face);
         for (position, (_, normal)) in [a, b, c].into_iter().zip(corners) {
             push(&mut current, position);
             // A normal that cannot be narrowed counts as "no normal".
@@ -133,6 +146,7 @@ pub(crate) fn pack(
             current.extend_from_slice(&face.to_le_bytes());
             current.extend_from_slice(&color.to_le_bytes());
             current.extend_from_slice(&finish.to_le_bytes());
+            current.extend_from_slice(&optics.to_le_bytes());
         }
         packed.triangles += 1;
     }
@@ -163,6 +177,69 @@ pub(crate) fn finish_word(finish: Finish) -> u32 {
         | (finish.roughness.map_or(0, |r| u32::from(r) + 1) << 20)
 }
 
+/// A face's layers as the shaders take them: its row in the material
+/// table plus one in the low 16 bits (0 for none,
+/// `FaceColors::optics_slot`), and [`TRANSMISSIVE_BIT`] when it lets light
+/// through (the shadow map and the picture behind leave it out).
+pub(crate) fn optics_word(colors: &FaceColors, face: u32) -> u32 {
+    let transmissive = if colors.is_transmissive(face) {
+        TRANSMISSIVE_BIT
+    } else {
+        0
+    };
+    u32::from(colors.optics_slot(face)) | transmissive
+}
+
+/// The material table of `colors` for a mesh whose positions are relative
+/// to `origin`: per row of `FaceColors::optics_table`, [`OPTICS_TEXELS`]
+/// texels of four `f32` (as bits), read by `studio.wgsl`'s `optics_of`:
+///
+/// 0. anisotropy, clear coat, its roughness, transmission;
+/// 1. index of refraction, 1 when thin-walled, subsurface wrap, 1 when the
+///    tangent field turns around an axis;
+/// 2. the absorption coefficients, 1 when there is a subsurface colour;
+/// 3. the subsurface colour's bytes;
+/// 4. the field's axis;
+/// 5. the origin of a field around an axis, relative to `origin` (in
+///    `f32`; one that overflows is infinite, and the shader then finds no
+///    tangent there).
+pub(crate) fn optics_table(colors: &FaceColors, origin: Vec3) -> Vec<[u32; 4]> {
+    use craft3d_render::studio::layers::TangentField;
+    let mut out = Vec::with_capacity(colors.optics_table().len() * OPTICS_TEXELS);
+    let flag = |b: bool| if b { 1.0_f32 } else { 0.0 };
+    for o in colors.optics_table() {
+        let (around, axis, from) = match o.tangent {
+            TangentField::Axis(a) => (false, a, [0.0_f32; 3]),
+            TangentField::Around { origin: at, axis } => {
+                let rel = Vec3::new(at[0], at[1], at[2]) - origin;
+                // Deliberate narrowing at the GPU boundary.
+                (true, axis, [rel.x as f32, rel.y as f32, rel.z as f32])
+            }
+        };
+        let tint = o.subsurface_color.map_or([0.0; 3], |c| c.map(f32::from));
+        let rows: [[f32; 4]; OPTICS_TEXELS] = [
+            [
+                o.anisotropy,
+                o.clearcoat,
+                o.clearcoat_roughness,
+                o.transmission,
+            ],
+            [o.ior, flag(o.thin_walled), o.subsurface, flag(around)],
+            [
+                o.absorption[0],
+                o.absorption[1],
+                o.absorption[2],
+                flag(o.subsurface_color.is_some()),
+            ],
+            [tint[0], tint[1], tint[2], 0.0],
+            [axis[0], axis[1], axis[2], 0.0],
+            [from[0], from[1], from[2], 0.0],
+        ];
+        out.extend(rows.iter().map(|r| r.map(f32::to_bits)));
+    }
+    out
+}
+
 pub(crate) struct Chunk {
     pub buffer: wgpu::Buffer,
     pub vertices: u32,
@@ -180,6 +257,11 @@ pub struct GpuMesh {
     /// Which upload this is: the viewport's accumulation restarts for
     /// another mesh.
     pub(crate) serial: u64,
+    /// The material table of layer 3 ([`optics_table`]), when a face has
+    /// layers.
+    pub(crate) optics: Option<wgpu::TextureView>,
+    /// Whether a face lets light through (layer 3's transmission).
+    pub(crate) transmission: bool,
 }
 
 /// The serial of the next upload.
@@ -233,7 +315,55 @@ impl GpuMesh {
             queue.write_buffer(&buffer, 0, bytes);
             chunks.push(Chunk { buffer, vertices });
         }
+        let optics = if packed.optics.is_empty() {
+            None
+        } else {
+            let rows = packed.optics.len() / OPTICS_TEXELS;
+            let height = u32::try_from(rows)
+                .ok()
+                .filter(|&h| h <= device.limits().max_texture_dimension_2d)
+                .ok_or(GpuError::Unsupported("more layers than the device holds"))?;
+            let size = wgpu::Extent3d {
+                width: OPTICS_TEXELS as u32,
+                height,
+                depth_or_array_layers: 1,
+            };
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("craft3d optics"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba32Uint,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let bytes: Vec<u8> = packed
+                .optics
+                .iter()
+                .flatten()
+                .flat_map(|w| w.to_le_bytes())
+                .collect();
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &bytes,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some((OPTICS_TEXELS * 16) as u32),
+                    rows_per_image: Some(height),
+                },
+                size,
+            );
+            Some(texture.create_view(&wgpu::TextureViewDescriptor::default()))
+        };
         Ok(GpuMesh {
+            optics,
+            transmission: packed.transmission,
             chunks,
             origin: packed.origin,
             bounds: packed.bounds,
@@ -291,7 +421,7 @@ mod tests {
         // That face has no colour of its own, nor a finish.
         assert_eq!(bytes[40..44], [0, 0, 0, 0]);
         assert_eq!(bytes[44..48], [0, 0, 0, 0]);
-        let second = floats(&bytes[48..60]);
+        let second = floats(&bytes[VERTEX_BYTES..VERTEX_BYTES + 12]);
         assert_eq!(second, [1.0, -2.0, 0.0]);
         let (lo, hi) = packed.bounds.corners().unwrap();
         assert_eq!((lo, hi), (far, far + Vec3::new(2.0, 4.0, 0.0)));
@@ -327,6 +457,70 @@ mod tests {
         );
         let (lo, hi) = packed.bounds.corners().unwrap();
         assert_eq!((lo, hi), (far, far + Vec3::new(2.0, 4.0, 0.0)));
+    }
+
+    /// Layer 3: each corner carries its face's slot and transmissive bit,
+    /// and the table holds the layers relative to the mesh origin.
+    #[test]
+    fn layers_go_into_the_vertices_and_the_table() {
+        use craft3d_render::studio::layers::{Optics, TangentField};
+        let mut mesh = Mesh::default();
+        triangle(&mut mesh, [Vec3::ZERO, Vec3::X, Vec3::Y], 3);
+        triangle(&mut mesh, [Vec3::ZERO, Vec3::X * 4.0, Vec3::Y * 2.0], 5);
+        triangle(&mut mesh, [Vec3::ZERO, Vec3::X, Vec3::Y], 6);
+        let mut colors = FaceColors::new();
+        let brushed = Optics {
+            anisotropy: 0.5,
+            tangent: TangentField::Around {
+                origin: [10.0, 20.0, 30.0],
+                axis: [0.0, 0.0, 1.0],
+            },
+            ..Optics::default()
+        };
+        let glass = Optics {
+            transmission: 1.0,
+            ior: 1.4,
+            thin_walled: true,
+            absorption: [0.5, 0.25, 0.125],
+            subsurface: 0.25,
+            subsurface_color: Some([1, 2, 3]),
+            ..Optics::default()
+        };
+        assert!(colors.set_optics(3, Some(brushed)));
+        assert!(colors.set_optics(5, Some(glass)));
+        let packed = pack(&mesh, &colors, 1000).unwrap();
+        assert!(packed.transmission);
+        let word = |t: usize, corner: usize| {
+            let at = (3 * t + corner) * VERTEX_BYTES + 48;
+            u32::from_le_bytes(packed.chunks[0][at..at + 4].try_into().unwrap())
+        };
+        for corner in 0..3 {
+            assert_eq!(word(0, corner), 1);
+            assert_eq!(word(1, corner), 2 | TRANSMISSIVE_BIT);
+            assert_eq!(word(2, corner), 0);
+        }
+        assert_eq!(packed.optics.len(), 2 * OPTICS_TEXELS);
+        let row = |r: usize, k: usize| packed.optics[r * OPTICS_TEXELS + k].map(f32::from_bits);
+        assert_eq!(row(0, 0), [0.5, 0.0, 0.0, 0.0]);
+        assert_eq!(row(0, 1), [1.5, 0.0, 0.0, 1.0]);
+        assert_eq!(row(0, 4), [0.0, 0.0, 1.0, 0.0]);
+        let o = packed.origin;
+        assert_eq!(
+            row(0, 5),
+            [
+                (10.0 - o.x) as f32,
+                (20.0 - o.y) as f32,
+                (30.0 - o.z) as f32,
+                0.0
+            ]
+        );
+        assert_eq!(row(1, 0), [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(row(1, 1), [1.4, 1.0, 0.25, 0.0]);
+        assert_eq!(row(1, 2), [0.5, 0.25, 0.125, 1.0]);
+        assert_eq!(row(1, 3), [1.0, 2.0, 3.0, 0.0]);
+        // Without layers: no table, no bit, every word 0.
+        let plain = pack(&mesh, &FaceColors::new(), 1000).unwrap();
+        assert!(plain.optics.is_empty() && !plain.transmission);
     }
 
     #[test]

@@ -1772,7 +1772,9 @@ impl Onscreen {
         let lit = match &self.look {
             Some(look) if options.bodies && !see_through && cut.is_none() => {
                 let drawn = self.studio_as_drawn(look);
-                let deferred = drawn.look.post() || drawn.look.accumulate > 1;
+                // Layer 3's transmission takes the screen-space buffers
+                // (`Passes::transmit`).
+                let deferred = drawn.look.post() || drawn.look.accumulate > 1 || mesh.transmission;
                 let key = ProgressKey {
                     mesh: mesh.serial,
                     camera: *camera,
@@ -1839,7 +1841,12 @@ impl Onscreen {
                 let levels = frame.deferred.then_some(frame.passes.levels.as_slice());
                 let ready = match &mut self.studio {
                     Some(Ok(studio)) => guarded(&device, || {
-                        studio.ensure_size(&device, (params.width, params.height), levels);
+                        studio.ensure_size(
+                            &device,
+                            (params.width, params.height),
+                            levels,
+                            frame.passes.transmit,
+                        );
                         studio.gpu.ensure_env(&device, &queue, &drawn.env)
                     })
                     .and_then(|r| r),

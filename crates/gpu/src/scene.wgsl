@@ -71,6 +71,10 @@ struct VertexIn {
     // from bit 20 (0: none of its own; read by the studio look):
     // `craft3d_gpu::mesh::finish_word`.
     @location(5) finish: u32,
+    // Layer 3 (the studio look): the face's row in the material table
+    // plus one in the low 16 bits (0: none), and bit 16 when it lets
+    // light through: `craft3d_gpu::mesh::optics_word`.
+    @location(6) optics: u32,
 }
 
 struct VertexOut {
@@ -88,6 +92,7 @@ struct VertexOut {
     @location(4) dist: f32,
     @location(5) @interpolate(flat) color: u32,
     @location(6) @interpolate(flat) finish: u32,
+    @location(7) @interpolate(flat) optics: u32,
 }
 
 fn vertex(in: VertexIn) -> VertexOut {
@@ -124,6 +129,7 @@ fn vertex(in: VertexIn) -> VertexOut {
     out.face = in.face;
     out.color = in.color;
     out.finish = in.finish;
+    out.optics = in.optics;
     return out;
 }
 

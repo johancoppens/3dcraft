@@ -140,6 +140,8 @@ pub(crate) fn cap_vertices(mesh: &GpuMesh, cut: &Cut) -> Option<Vec<u8>> {
         // Nor coloured: drawn in the section's colour, without a finish.
         bytes.extend_from_slice(&0_u32.to_le_bytes());
         bytes.extend_from_slice(&0_u32.to_le_bytes());
+        // Nor layered.
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
     }
     Some(bytes)
 }

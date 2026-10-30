@@ -71,6 +71,10 @@ pub(crate) struct Passes {
     pub levels: Vec<(u32, u32)>,
     /// The frames a still picture averages (`Look::accumulate`, capped).
     pub frames: u32,
+    /// Layer 3: a face lets light through, so the picture without those
+    /// faces and their back faces are drawn first (and `post` is on, as
+    /// `render_studio_frame` takes its post path then).
+    pub transmit: bool,
 }
 
 /// The sizes of bloom's levels below a picture of `size` samples, as
@@ -226,7 +230,8 @@ pub(crate) fn studio_uniforms(
             return Err(GpuError::OutOfRange("the lens"));
         }
     }
-    let post = look.post();
+    let transmit = mesh.transmission;
+    let post = look.post() || transmit;
     let passes = Passes {
         shadow,
         ao,
@@ -241,6 +246,7 @@ pub(crate) fn studio_uniforms(
         bloom: post && bloom > 0.0,
         levels,
         frames: look.accumulate.clamp(1, polish::MAX_ACCUMULATE),
+        transmit,
     };
     Ok((out, passes))
 }
@@ -427,6 +433,9 @@ pub(crate) struct StudioGpu {
     /// A texel of each kind for a pass that is not drawn.
     pub no_bits: wgpu::TextureView,
     no_color: wgpu::TextureView,
+    /// A texel of four `u32`: the material table of a mesh without layers
+    /// and the picture behind of a frame without transmission.
+    no_light: wgpu::TextureView,
     pub env: Option<EnvTextures>,
 }
 
@@ -541,6 +550,9 @@ impl StudioGpu {
                 texture_entry(3, wgpu::TextureSampleType::Uint),
                 texture_entry(4, wgpu::TextureSampleType::Uint),
                 texture_entry(5, wgpu::TextureSampleType::Uint),
+                texture_entry(9, wgpu::TextureSampleType::Uint),
+                texture_entry(10, wgpu::TextureSampleType::Uint),
+                texture_entry(11, wgpu::TextureSampleType::Uint),
             ],
         );
         let layout_post = layout(
@@ -715,7 +727,16 @@ impl StudioGpu {
             1,
             wgpu::TextureUsages::TEXTURE_BINDING,
         ));
+        let no_light = view(&texture(
+            device,
+            "craft3d no light",
+            LIGHT_FORMAT,
+            (1, 1),
+            1,
+            wgpu::TextureUsages::TEXTURE_BINDING,
+        ));
         StudioGpu {
+            no_light,
             no_color,
             uniforms,
             layout_uniform,
@@ -861,14 +882,17 @@ impl StudioGpu {
         pass.draw(0..3, 0..1);
     }
 
-    /// Group 1 of the background and the surfaces, with `ao` the
-    /// occlusion (or [`Self::no_bits`]).
+    /// Group 1 of the background and the surfaces of `mesh`, with `ao`
+    /// the occlusion (or [`Self::no_bits`]) and `through` layer 3's
+    /// picture behind and back faces ([`ThroughTargets`]) when the
+    /// surfaces add the light that passes through them.
     pub(crate) fn main_bind(
         &self,
         device: &wgpu::Device,
         passes: &Passes,
-        ao: &wgpu::TextureView,
-        geometry: &wgpu::TextureView,
+        mesh: &GpuMesh,
+        (ao, geometry): (&wgpu::TextureView, &wgpu::TextureView),
+        through: Option<&ThroughTargets>,
     ) -> Result<wgpu::BindGroup, GpuError> {
         let env = self.env.as_ref().ok_or(GpuError::NothingDrawn)?;
         let shadow = if passes.shadow {
@@ -899,6 +923,9 @@ impl StudioGpu {
                 tex(3, shadow),
                 tex(4, ao),
                 tex(5, geometry),
+                tex(9, mesh.optics.as_ref().unwrap_or(&self.no_light)),
+                tex(10, through.map_or(&self.no_light, |t| &t.light)),
+                tex(11, through.map_or(&self.no_bits, |t| &t.backs)),
             ],
         }))
     }
@@ -944,9 +971,21 @@ impl StudioGpu {
         targets: &PolishTargets,
     ) {
         let [first, _] = &targets.light;
+        self.encode_background_into(encoder, scene_bind, bind, (first, &targets.weight));
+    }
+
+    /// [`Self::encode_background_post`] into the light and the weight
+    /// `targets`.
+    pub(crate) fn encode_background_into(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        scene_bind: &wgpu::BindGroup,
+        bind: &wgpu::BindGroup,
+        (light, weight): (&wgpu::TextureView, &wgpu::TextureView),
+    ) {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("craft3d background post"),
-            color_attachments: &[clear_attachment(first), clear_attachment(&targets.weight)],
+            color_attachments: &[clear_attachment(light), clear_attachment(weight)],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
@@ -1272,6 +1311,43 @@ impl StudioTargets {
     }
 }
 
+/// Layer 3's targets of a frame with faces that let light through
+/// (`render_studio_frame`'s `behind` and `backs`): the geometry and the
+/// occlusion of the picture without those faces, its light (and the
+/// weight its pass writes too), and the view distance of the nearest back
+/// face of one of those faces, at one sample per target sample.
+pub(crate) struct ThroughTargets {
+    pub size: (u32, u32),
+    pub behind: StudioTargets,
+    pub light: wgpu::TextureView,
+    pub weight: wgpu::TextureView,
+    pub backs: wgpu::TextureView,
+}
+
+impl ThroughTargets {
+    pub(crate) fn new(device: &wgpu::Device, size: (u32, u32)) -> ThroughTargets {
+        let attach = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+        let make = |label: &str, format| view(&texture(device, label, format, size, 1, attach));
+        ThroughTargets {
+            size,
+            behind: StudioTargets::new(device, size),
+            light: make("craft3d behind light", LIGHT_FORMAT),
+            weight: make("craft3d behind weight", LIGHT_FORMAT),
+            backs: make("craft3d back faces", BITS_FORMAT),
+        }
+    }
+}
+
+/// The colour that clears the back faces' target: infinity, none.
+pub(crate) fn no_back() -> wgpu::Color {
+    wgpu::Color {
+        r: f64::from(f32::INFINITY.to_bits()),
+        g: 0.0,
+        b: 0.0,
+        a: 0.0,
+    }
+}
+
 /// The studio look of the viewport renderer (`Onscreen`): the shared
 /// parts, the geometry pass at one sample per pixel with its depth, and
 /// the background and the surfaces at the viewport's samples; or, with the
@@ -1284,7 +1360,13 @@ pub(crate) struct StudioOnscreen {
     pub main: wgpu::RenderPipeline,
     /// The surfaces' light and weight at one sample per pixel.
     main_post: wgpu::RenderPipeline,
+    /// Layer 3: the geometry and the light of the picture without the
+    /// faces that let light through, and their back faces.
+    geometry_behind: wgpu::RenderPipeline,
+    main_behind: wgpu::RenderPipeline,
+    backs: wgpu::RenderPipeline,
     sized: Option<(StudioTargets, wgpu::TextureView)>,
+    through: Option<ThroughTargets>,
     /// The deferred path's buffers, the frame's picture and the sum.
     deferred: Option<Deferred>,
 }
@@ -1374,6 +1456,27 @@ impl StudioOnscreen {
             &[target(LIGHT_FORMAT), target(LIGHT_FORMAT)],
             1,
         );
+        let geometry_behind = mesh_pipeline(
+            "craft3d geometry behind",
+            "fs_geometry_opaque",
+            &[Some(scene_layout), Some(&gpu.layout_uniform)],
+            &[target(GEOMETRY_FORMAT)],
+            1,
+        );
+        let main_behind = mesh_pipeline(
+            "craft3d studio bodies behind",
+            "fs_studio_behind",
+            &[Some(scene_layout), Some(&gpu.layout_main)],
+            &[target(LIGHT_FORMAT), target(LIGHT_FORMAT)],
+            1,
+        );
+        let backs = mesh_pipeline(
+            "craft3d back faces",
+            "fs_backs",
+            &[Some(scene_layout), Some(&gpu.layout_uniform)],
+            &[target(BITS_FORMAT)],
+            1,
+        );
         let background = fullscreen_pipeline(
             device,
             "craft3d background",
@@ -1389,19 +1492,31 @@ impl StudioOnscreen {
             background,
             main,
             main_post,
+            geometry_behind,
+            main_behind,
+            backs,
             sized: None,
+            through: None,
             deferred: None,
         }
     }
 
     /// The targets of a picture of `size` pixels; with `levels` of bloom
-    /// for the deferred path when it is `Some`.
+    /// for the deferred path when it is `Some`, and layer 3's when
+    /// `transmit`.
     pub(crate) fn ensure_size(
         &mut self,
         device: &wgpu::Device,
         size: (u32, u32),
         deferred: Option<&[(u32, u32)]>,
+        transmit: bool,
     ) {
+        if !transmit {
+            self.through = None;
+        } else if self.through.as_ref().is_none_or(|t| t.size != size) {
+            self.through = None;
+            self.through = Some(ThroughTargets::new(device, size));
+        }
         if self.sized.as_ref().is_none_or(|(t, _)| t.size != size) {
             self.sized = None;
             let depth = view(&texture(
@@ -1459,6 +1574,13 @@ impl StudioOnscreen {
         if passes.shadow {
             self.gpu.encode_shadow(device, encoder, scene_bind, mesh);
         }
+        let through = if passes.transmit {
+            let through = self.through.as_ref().ok_or(GpuError::NothingDrawn)?;
+            self.encode_through(device, encoder, scene_bind, mesh, passes, through, depth)?;
+            Some(through)
+        } else {
+            None
+        };
         if passes.geometry {
             let empty = wgpu::Color {
                 r: f64::from(f32::INFINITY.to_bits()),
@@ -1501,9 +1623,9 @@ impl StudioOnscreen {
             self.gpu
                 .encode_ao(device, encoder, scene_bind, &sized.geometry, &sized.ao);
         }
-        let bind = self
-            .gpu
-            .main_bind(device, passes, &sized.ao, &sized.geometry)?;
+        let bind =
+            self.gpu
+                .main_bind(device, passes, mesh, (&sized.ao, &sized.geometry), through)?;
         if !deferred {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("craft3d background"),
@@ -1527,6 +1649,115 @@ impl StudioOnscreen {
             pass.draw(0..3, 0..1);
         }
         Ok(bind)
+    }
+
+    /// Layer 3's passes before the frame (`render_studio_frame`): the
+    /// picture without the faces that let light through, shaded
+    /// completely with its own geometry and occlusion, and the nearest
+    /// back faces of those faces, into `through`, with `depth` the depth
+    /// target of one sample per pixel.
+    #[allow(clippy::too_many_arguments)]
+    fn encode_through(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        scene_bind: &wgpu::BindGroup,
+        mesh: &GpuMesh,
+        passes: &Passes,
+        through: &ThroughTargets,
+        depth: &wgpu::TextureView,
+    ) -> Result<(), GpuError> {
+        let mesh_pass = |encoder: &mut wgpu::CommandEncoder,
+                         label: &str,
+                         colors: &[Option<wgpu::RenderPassColorAttachment<'_>>],
+                         pipeline: &wgpu::RenderPipeline,
+                         bind: &wgpu::BindGroup| {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some(label),
+                color_attachments: colors,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0.0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, scene_bind, &[]);
+            pass.set_bind_group(1, bind, &[]);
+            for chunk in &mesh.chunks {
+                pass.set_vertex_buffer(0, chunk.buffer.slice(..));
+                pass.draw(0..chunk.vertices, 0..1);
+            }
+        };
+        let attachment = |view, load| {
+            Some(wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })
+        };
+        if passes.geometry {
+            mesh_pass(
+                encoder,
+                "craft3d geometry behind",
+                &[attachment(
+                    &through.behind.geometry,
+                    wgpu::LoadOp::Clear(no_back()),
+                )],
+                &self.geometry_behind,
+                &self.gpu.uniform_bind,
+            );
+        }
+        if passes.ao {
+            self.gpu.encode_ao(
+                device,
+                encoder,
+                scene_bind,
+                &through.behind.geometry,
+                &through.behind.ao,
+            );
+        }
+        let bind = self.gpu.main_bind(
+            device,
+            passes,
+            mesh,
+            (&through.behind.ao, &through.behind.geometry),
+            None,
+        )?;
+        self.gpu.encode_background_into(
+            encoder,
+            scene_bind,
+            &bind,
+            (&through.light, &through.weight),
+        );
+        mesh_pass(
+            encoder,
+            "craft3d studio bodies behind",
+            &[
+                attachment(&through.light, wgpu::LoadOp::Load),
+                attachment(&through.weight, wgpu::LoadOp::Load),
+            ],
+            &self.main_behind,
+            &bind,
+        );
+        mesh_pass(
+            encoder,
+            "craft3d back faces",
+            &[attachment(&through.backs, wgpu::LoadOp::Clear(no_back()))],
+            &self.backs,
+            &self.gpu.uniform_bind,
+        );
+        Ok(())
     }
 
     /// The deferred path's frame after [`Self::encode_before`]: the
@@ -1672,6 +1903,33 @@ mod tests {
             format!("const SSR_EDGE: f32 = {:?};", polish::SSR_EDGE),
         );
         has(post, format!("const DOF_TAPS: i32 = {DOF_TAPS};"));
+        // Layer 3.
+        use craft3d_render::studio::layers;
+        has(
+            studio,
+            format!(
+                "const TANGENT_EPSILON: f32 = {:?};",
+                layers::TANGENT_EPSILON
+            ),
+        );
+        has(
+            studio,
+            format!("const MIN_ALPHA: f32 = {:?};", layers::MIN_ALPHA),
+        );
+        has(
+            studio,
+            format!(
+                "const TRANSMISSIVE: u32 = {:#x}u;",
+                crate::mesh::TRANSMISSIVE_BIT
+            ),
+        );
+        has(studio, "const OPTICS_SLOT: u32 = 0xffffu;".to_string());
+        assert_eq!(
+            u32::from(u16::MAX) & crate::mesh::TRANSMISSIVE_BIT,
+            0,
+            "the slot and the bit overlap"
+        );
+        const { assert!(layers::MAX_OPTICS <= u16::MAX as usize) };
         assert_eq!(polish::dof_taps(3.0, 7).len(), DOF_TAPS);
         const { assert!(DOF_TAPS <= 2 * TAP_VECTORS) };
         // The uniform block: fourteen vectors, the harmonics, the taps.
