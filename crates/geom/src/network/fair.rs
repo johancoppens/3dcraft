@@ -125,7 +125,82 @@ pub(super) fn localize(raw: &mut Raw, end: f64) -> Result<(), NetworkError> {
 /// (only basis functions that end by then take part; for an open reach,
 /// `end` = 1, all but those `far` keeps) and has the least `∫ G‴²` among
 /// those.
+///
+/// The minimum is sought among the splines on the reach's own grid
+/// (`end · j / FAIR_SPANS`, each taken as the curve's knot within
+/// `SAME_KNOT` of it, which [`localize`] put there) and then written on the
+/// curve's knots by knot refinement (exact: the grid is a subsequence of
+/// the curve's knots). A curve with many knots of its own would make the
+/// least-variation system as ill-conditioned as its spans are many
+/// (`∫ G‴²` grows as the fifth power of the inverse span, so 2¹⁶ spans
+/// read as singular); on the grid it is always the same small, well
+/// conditioned system, and the work stays linear in the curve's points.
 pub(super) fn profile(
+    knots: &[f64],
+    degree: usize,
+    end: f64,
+    order: Order,
+    far: End,
+) -> Result<Vec<f64>, NetworkError> {
+    let q = degree;
+    let count = knots
+        .len()
+        .checked_sub(q + 1)
+        .filter(|c| *c > 0)
+        .ok_or_else(internal)?;
+    // The grid, as the curve's own knots.
+    let last = if open(end) {
+        FAIR_SPANS - 1
+    } else {
+        FAIR_SPANS
+    };
+    let mut grid = Vec::with_capacity(last);
+    for j in 1..=last {
+        let t = end * j as f64 / FAIR_SPANS as f64;
+        if t >= 1.0 - SAME_KNOT {
+            continue;
+        }
+        let k = knots
+            .iter()
+            .copied()
+            .filter(|k| (k - t).abs() <= SAME_KNOT)
+            .min_by(|a, b| (a - t).abs().total_cmp(&(b - t).abs()))
+            .ok_or_else(internal)?;
+        if grid.last().is_none_or(|g| k > *g) {
+            grid.push(k);
+        }
+    }
+    let (Some(&a), Some(&b)) = (knots.first(), knots.last()) else {
+        return Err(internal());
+    };
+    let mut coarse = vec![a; q + 1];
+    coarse.extend_from_slice(&grid);
+    coarse.extend(vec![b; q + 1]);
+    let values = profile_on(&coarse, q, end, order, far)?;
+    // Written on the curve's knots: insert those the grid lacks.
+    let mut missing = Vec::new();
+    let mut g = grid.iter().peekable();
+    for k in knots.get(q + 1..count).ok_or_else(internal)? {
+        if g.peek().is_some_and(|x| **x == *k) {
+            g.next();
+        } else {
+            missing.push(*k);
+        }
+    }
+    let mut raw = Raw {
+        degree: q,
+        knots: coarse,
+        points: values.iter().map(|c| [*c, 0.0, 0.0, 0.0]).collect(),
+    };
+    raw.insert_all(&missing)?;
+    if raw.points.len() != count {
+        return Err(internal());
+    }
+    Ok(raw.points.iter().map(|h| h[0]).collect())
+}
+
+/// [`profile`] on the knots given, solved there.
+fn profile_on(
     knots: &[f64],
     degree: usize,
     end: f64,
@@ -502,16 +577,17 @@ mod tests {
         }
     }
 
-    /// A dense curve (2^16 control points, the most a spline may have)
+    /// A dense curve (nearly 2^16 control points, the most a spline may have)
     /// with an open reach: the whole curve takes part, and the banded
     /// solve stays linear in it (the dense one held a 34 GB Gram matrix).
     #[test]
     fn a_profile_over_a_dense_curve_is_linear_in_its_points() {
         let q = 3;
-        let count = crate::MAX_CONTROL_POINTS;
-        let inner: Vec<f64> = (1..count - q)
-            .map(|j| j as f64 / (count - q) as f64)
-            .collect();
+        // Spans a multiple of the grid's, so the grid is among the knots
+        // (as `localize` makes it).
+        let m = (crate::MAX_CONTROL_POINTS - q) / FAIR_SPANS * FAIR_SPANS;
+        let count = m + q;
+        let inner: Vec<f64> = (1..m).map(|j| j as f64 / m as f64).collect();
         let k = knots(q, &inner);
         let started = std::time::Instant::now();
         for order in [Order::Tangent, Order::Curvature] {
