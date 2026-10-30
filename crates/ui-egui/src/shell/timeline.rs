@@ -669,10 +669,13 @@ mod trace_tests {
             t: [0.0, 1.0],
             grow: false,
         };
-        assert!(same_traces(&[trace.clone()], &[trace.clone()]));
+        assert!(same_traces(
+            std::slice::from_ref(&trace),
+            std::slice::from_ref(&trace)
+        ));
         let mut moved = trace.clone();
         moved.points[1].x = 1.5;
-        assert!(!same_traces(&[trace.clone()], &[moved]));
+        assert!(!same_traces(std::slice::from_ref(&trace), &[moved]));
         assert!(!same_traces(&[trace], &[]));
     }
 }
