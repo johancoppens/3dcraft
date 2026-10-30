@@ -63,6 +63,10 @@ pub enum LineKind {
 pub struct ViewAnalysis {
     pub analysis: Option<craft3d_render::analysis::Analysis>,
     pub values: std::sync::Arc<Vec<f32>>,
+    /// The mesh the values belong to when it is not the scene's: the
+    /// curvature map's, refined where the curvature changes fast
+    /// (`craft3d_engine::analysis::refined_map`, as `view.render` draws it).
+    pub mesh: Option<std::sync::Arc<craft3d_tess::Mesh>>,
     pub combs: Vec<Vec<Vec3>>,
     /// Which curvature the map shows (`gaussian`, `mean`, `max`).
     pub curvature: String,
@@ -72,6 +76,14 @@ pub struct ViewAnalysis {
 }
 
 impl ViewAnalysis {
+    /// The mesh the analysis is drawn on: its own, or `scene`'s.
+    pub fn mesh_or<'a>(&'a self, scene: &'a craft3d_tess::Mesh) -> &'a craft3d_tess::Mesh {
+        match &self.mesh {
+            Some(mesh) if !self.values.is_empty() => mesh,
+            _ => scene,
+        }
+    }
+
     /// What tells uploads apart: the values' identity (0 for none).
     pub fn values_key(&self) -> usize {
         if self.values.is_empty() {
@@ -1670,7 +1682,7 @@ pub fn compose_with(
         rgb: frame.rgb,
         overlay,
         coverage,
-        triangles: scene.map_or(0, Scene::triangles),
+        triangles: renderer.drawn_triangles(scene),
         backend,
     })
 }

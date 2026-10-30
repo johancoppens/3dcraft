@@ -140,6 +140,18 @@ impl BodyRenderer {
         self.studio = studio;
     }
 
+    /// The triangles the frames draw of `scene`: the curvature map's own
+    /// mesh when the analysis has one, else the scene's.
+    pub fn drawn_triangles(&self, scene: Option<&Scene>) -> usize {
+        let Some(scene) = scene else {
+            return 0;
+        };
+        match &self.analysis {
+            Some(analysis) => analysis.mesh_or(&scene.mesh).triangles.len(),
+            None => scene.triangles(),
+        }
+    }
+
     /// The surface analysis of the frames made from now on
     /// (`craft3d_render::analysis`), which both renderers draw in the
     /// plain look in place of the shading, or `None`.
@@ -332,7 +344,8 @@ impl BodyRenderer {
         let values = self.analysis.as_ref().map_or(&no_values, |a| &a.values);
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(gpu) = &mut self.gpu {
-            match gpu.render(scene, camera, &params, studio, values) {
+            let analysed = self.analysis.as_ref().and_then(|a| a.mesh.as_deref());
+            match gpu.render(scene, camera, &params, studio, values, analysed) {
                 Ok(frame) => return Ok((frame, Backend::Gpu)),
                 Err(gpu::Failure::Frame(why)) => return Err(why),
                 // This frame on the CPU; the next one on the GPU again.
@@ -351,6 +364,11 @@ impl BodyRenderer {
         }
         let empty = craft3d_tess::Mesh::default();
         let mesh = scene.map_or(&empty, |scene| &scene.mesh);
+        // The curvature map's own mesh, when it has one.
+        let mesh = match &self.analysis {
+            Some(analysis) => analysis.mesh_or(mesh),
+            None => mesh,
+        };
         let colors = craft3d_render::FaceColors::new();
         let colors = scene.map_or(&colors, |scene| &scene.face_colors);
         let frame = match studio {
@@ -467,6 +485,7 @@ mod gpu {
             params: &RenderParams,
             studio: Option<&craft3d_gpu::Studio>,
             values: &std::sync::Arc<Vec<f32>>,
+            analysed: Option<&craft3d_tess::Mesh>,
         ) -> Result<Frame, Failure> {
             let values_key = if values.is_empty() {
                 0
@@ -485,7 +504,8 @@ mod gpu {
                         s.max_angle.map(f64::to_bits),
                         values_key,
                     ),
-                    &*s.mesh,
+                    // The curvature map's own mesh, when it has one.
+                    analysed.filter(|_| !values.is_empty()).unwrap_or(&*s.mesh),
                 )
             });
             // A render that panics inside wgpu (a driver bug) must not end

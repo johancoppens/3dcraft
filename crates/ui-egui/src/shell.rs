@@ -1952,10 +1952,16 @@ impl Shell {
         use craft3d_render::analysis::AnalysisMode;
         let spec = self.state.analysis.spec()?;
         let mut values = Vec::new();
+        let mut mesh = None;
         let mut range = spec.range.unwrap_or([-1.0, 1.0]);
         if spec.mode == Some(AnalysisMode::Curvature) {
-            values = craft3d_engine::analysis::vertex_values(session, scene, spec.curvature)
-                .map_err(|e| e.to_string())?;
+            // On the mesh refined where the curvature changes fast, as
+            // `view.render` draws the map.
+            let (refined, map) =
+                craft3d_engine::analysis::refined_map(session, scene, spec.curvature)
+                    .map_err(|e| e.to_string())?;
+            values = map;
+            mesh = Some(Arc::new(refined));
             range = spec
                 .range
                 .unwrap_or_else(|| craft3d_engine::analysis::auto_range(&values, spec.curvature));
@@ -1970,6 +1976,7 @@ impl Shell {
         Ok(viewport::ViewAnalysis {
             analysis: spec.analysis(range, self.tokens.analysis_colors()),
             values: Arc::new(values),
+            mesh,
             combs,
             curvature: spec.curvature.name().to_string(),
             unit,

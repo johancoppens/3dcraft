@@ -129,6 +129,27 @@ fn the_window_draws_an_analysis_and_its_combs() {
         "the comb is drawn: {before} -> {after}"
     );
 
+    // The window's curvature map is drawn on the mesh refined where the
+    // curvature changes fast (`analysis::refined_map`, as view.render):
+    // more triangles than the scene's.
+    let triangles = |shell: &mut Shell, session: &mut Session, mode: &str| {
+        call(
+            shell,
+            session,
+            "ui.set",
+            json!({"analysis": {"mode": mode, "combs": null}}),
+        );
+        call(shell, session, "ui.screenshot", size.clone())["triangles"]
+            .as_u64()
+            .unwrap()
+    };
+    let scene_triangles = triangles(&mut shell, &mut session, "zebra");
+    let map_triangles = triangles(&mut shell, &mut session, "curvature");
+    assert!(
+        map_triangles > scene_triangles,
+        "the map's mesh is refined: {scene_triangles} -> {map_triangles}"
+    );
+
     // The curvature map and draft are drawn too.
     for mode in ["curvature", "draft", "highlight"] {
         call(

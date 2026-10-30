@@ -715,6 +715,11 @@ impl Direct {
                 self.uploaded = None;
                 let empty = craft3d_tess::Mesh::default();
                 let mesh = scene.map_or(&empty, |s| &s.mesh);
+                // The curvature map's own mesh, when it has one.
+                let mesh = match self.analysis.as_ref().filter(|_| wanted.values != 0) {
+                    Some(analysis) => analysis.mesh_or(mesh),
+                    None => mesh,
+                };
                 let no_colors = craft3d_render::FaceColors::new();
                 let colors = scene.map_or(&no_colors, |s| &s.face_colors);
                 let values = self
