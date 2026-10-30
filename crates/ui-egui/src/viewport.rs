@@ -194,12 +194,15 @@ impl EdgeBlur {
         })
     }
 
-    /// The blur radius in pixels at view distance `z`, capped.
+    /// The blur radius in pixels at view distance `z`, capped: the cap
+    /// at or behind the eye, none for a distance that is not a number.
     pub fn radius(&self, z: f64) -> f64 {
         let c = if z > 0.0 {
             self.scale * (z - self.focus).abs() / z
-        } else {
+        } else if z <= 0.0 {
             self.cap
+        } else {
+            0.0
         };
         if c.is_nan() { 0.0 } else { c.min(self.cap) }
     }

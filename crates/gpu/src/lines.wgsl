@@ -350,9 +350,13 @@ fn lens_fade(z: f32, width: f32) -> f32 {
     if !(lines.more.y > 0.0) {
         return 1.0;
     }
-    var c = lines.more.w;
+    // The cap at or behind the eye, none for a distance that is not a
+    // number (`EdgeBlur::radius`).
+    var c = 0.0;
     if z > 0.0 {
         c = min(lines.more.y * abs(z - lines.more.z) / z, lines.more.w);
+    } else if z <= 0.0 {
+        c = lines.more.w;
     }
     if !(c > 0.0) {
         return 1.0;
