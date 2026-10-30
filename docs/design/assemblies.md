@@ -456,13 +456,31 @@ back with its sources, `crates/io/tests/step_freecad.rs` FreeCAD reading an asse
   click to fly and an eye per row work as for features; the eye issues `instance.edit {visible}` and *Open* issues
   `instance.open` (the source in a tab of its own). It is read from the placement the view shows: a moment of the
   motion when one is shown.
-- **Joints** (`ui-egui/src/shell/joints.rs`): a mate whose main free motion can be set by hand (it has one and no
-  formula of other variables drives it: a driver of `t` is played, not dragged) is a slider on the Parameters tab,
-  between its limits or a turn either way (a distance: the model's size either way), and **Alt and a drag** on a
-  part moves it along the first such mate of its instance (in the assembly's order): an angle by the sweep of the
-  pointer about the joint's axis on the plane across it, a distance by the point of the axis nearest the pointer's
-  ray. Both issue `joint.set` through the shell's queue, where a later value of the same joint takes the place of
-  an earlier one, so the window never waits for solves it would throw away.
+- **Joints** (`ui-egui/src/shell/joints.rs`): a mate whose main free motion can be set by hand and leaves the
+  assembly solved (`OutlineMate::settable`) is a slider on the Parameters tab, between its limits or a turn either
+  way (a distance: the model's size either way). Settable means: it has a free motion, no formula of other
+  variables drives it (a driver of `t` is played, not dragged), and either a value drives it already (setting
+  another keeps the degrees of freedom as they are) or the solve leaves it free: its first variable moves in the
+  null space of the solve's Jacobian (`asm_solve::main_moves`, at 10⁻³ of the fastest variable of a free motion,
+  distances at the solver's scale), so a driver of it adds one independent equation and contradicts nothing.
+  Whether the null space moves a variable does not depend on the basis the solver found. So a closed loop of one
+  degree of freedom offers every joint of the loop while none is driven, and only its driven one once one is; a
+  second driver in the loop, which made the assembly *Not solved*, is never offered. **Alt and a drag** on a part
+  moves it along the first such mate of its instance (in the assembly's order): an angle by the sweep of the
+  pointer about the joint's axis on the plane across it (unwrapped frame to frame, so a drag goes on past half a
+  turn), a distance by the point of the axis nearest the pointer's ray; the value moves the way the part does
+  (`JointHandle::sign`: −1 when the part is side a, whose frame the value is measured in). A part held to the world
+  (by a chain of fixed mates, or as the first instance of a floating assembly) is not dragged. Both issue
+  `joint.set` through the shell's queue, where a later value of the same joint takes the place of an earlier one,
+  so the window never waits for solves it would throw away; every value after a drag's first carries `merge`
+  (folded into the drag's undo step: one drag is one undo step, as a parameter slider's).
+- **Selections** of an assembly are made in its placed part, whose features are numbered in instance order (an
+  instance that is deleted or fails gives its id to the next). Each item is anchored to the name of the placed
+  feature it was made on (its instance: `Crank`, `Crank/Bar`) and found by that name at every check, never by the
+  id (rule 4): an instance that is not placed for now hides it, one that is gone drops it. Checks are keyed on the
+  revision and the generation of the files read (`assembly.reload` changes the placement without a revision).
+- **Rows** of the tree carry their instance's source (`InstanceState::source`), also inside a rigid
+  subassembly, and the whole tree holds at most 2,000 rows at any depth.
 - **Mates from two faces**: with two faces of two of the assembly's own instances selected, a right click offers
   *Revolute between these*, *Fixed*, *Slider*, *Cylindrical*, *Planar* and *Ball* above *Select other*; one issues
   `mate.add` with the faces named through their instances.

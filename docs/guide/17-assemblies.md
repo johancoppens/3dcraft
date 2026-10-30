@@ -80,8 +80,11 @@ The left panel of an assembly is its tree: the instances (a subassembly's own ne
 their kind and value, and how many degrees of freedom are left. Click a row to select the instance, double-click to
 fly to it, the eye hides it and **Open** opens its part in a tab of its own.
 
-Every joint you can set by hand is a slider on the **Parameters** tab. In the viewport, **Alt and a drag** on a part
-moves it along its free motion: drag the crank and the linkage follows. Both are `joint.set`.
+Every joint you can set by hand is a slider on the **Parameters** tab: the joints the assembly stays solved with. In
+a linkage that moves one way (a four-bar), every joint of the loop has a slider until you set one; then that one
+drives the loop and is its only slider. In the viewport, **Alt and a drag** on a part moves it along its free
+motion: drag the crank and the linkage follows (a part fixed to the world does not move). Both are `joint.set`, and
+one drag is one undo step.
 
 To join two parts, select a face of each (Ctrl-click the second), right-click and choose *Revolute between these*
 (or *Fixed*, *Slider*, *Cylindrical*, *Planar*, *Ball*): that is `mate.add`.

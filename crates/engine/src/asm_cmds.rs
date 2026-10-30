@@ -3,7 +3,7 @@
 //! sources in, and read what came of it. What they derive is in `asm.rs`.
 
 use crate::asm::{self, Built, Placed};
-use crate::commands::{Run, edit, fail, spec};
+use crate::commands::{Run, edit_merging, fail, spec};
 use crate::params::Params;
 use crate::{CommandError, CommandSpec, OpenDocument, Session};
 use craft3d_doc::{
@@ -34,8 +34,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Ties two mates' motions (one undo step): gear θa = −ratio·θb, rack d = radius·θ, screw d = lead·θ/360°. Returns the coupling with its status: a coupling whose mate takes no part, or whose value does not evaluate, fails by name and the solve is not ok.", doc: true, coupling_add),
     spec!("coupling.delete", "Delete Coupling", r#"{"name": string}"#,
         "Removes a coupling (one undo step).", doc: true, coupling_delete),
-    spec!("joint.set", "Set Joint", r#"{"mate": string, "value": expr or null, "which": "angle|distance|x|y" = the mate's main free motion}"#,
-        "Drives a mate's free motion (one undo step): sets the assembly variable <mate>_<which> to value (an angle or a length expression), creating it, so it can be used in formulas and published as a parameter (variable.publish); null removes the variable and leaves the motion free. Returns the mate with its status.", doc: true, joint_set),
+    spec!("joint.set", "Set Joint", r#"{"mate": string, "value": expr or null, "which": "angle|distance|x|y" = the mate's main free motion, "merge": boolean = false}"#,
+        "Drives a mate's free motion (one undo step): sets the assembly variable <mate>_<which> to value (an angle or a length expression), creating it, so it can be used in formulas and published as a parameter (variable.publish); null removes the variable and leaves the motion free. merge folds this change into the last undo step when that was a joint.set of the same variable (a slider or a part being dragged: one undo step for the whole drag). Returns the mate with its status.", doc: true, joint_set),
     spec!("assembly.solve", "Solve Assembly", r#"{}"#,
         "Solves the active assembly as it is and says how: ok, each mate's status and the value of its main free motion, the instances solved, the degrees of freedom left and each free motion in words (\"Bar[3] can still turn about z …\"), floating when no mate reaches the world (the first instance is then held where it is placed), and the error that names the mates that contradict each other.", doc: true, assembly_solve),
     spec!("assembly.inspect", "Inspect Assembly", r#"{"measures": boolean = false}"#,
@@ -57,7 +57,20 @@ fn asm_edit<T>(
     label: &str,
     change: impl FnOnce(&mut Document) -> Result<T, DocError>,
 ) -> Result<T, CommandError> {
-    edit(session, command, label, |doc| {
+    asm_edit_merging(session, command, label, None, false, change)
+}
+
+/// [`asm_edit`] as a step with a `key`, folded into the last undo step
+/// when `merge` is true and that step has the same key ([`edit_merging`]).
+fn asm_edit_merging<T>(
+    session: &mut Session,
+    command: &'static str,
+    label: &str,
+    key: Option<&str>,
+    merge: bool,
+    change: impl FnOnce(&mut Document) -> Result<T, DocError>,
+) -> Result<T, CommandError> {
+    edit_merging(session, command, label, key, merge, |doc| {
         let out = change(doc)?;
         doc.assembly()?.validate()?;
         Ok(out)
@@ -436,6 +449,7 @@ fn solve_json(placed: &Placed, assembly: &Assembly) -> Value {
     json!({
         "ok": placed.solve_error.is_none() && failed.is_empty(),
         "error": placed.solve_error,
+        "note": placed.solve_note,
         "floating": placed.floating,
         "failed": failed,
         "solved": solved,
@@ -1155,8 +1169,9 @@ fn coupling_delete(session: &mut Session, params: &Value) -> Run {
 
 fn joint_set(session: &mut Session, params: &Value) -> Run {
     const ID: &str = "joint.set";
-    let p = Params::new(ID, params, &["mate", "value", "which"])?;
+    let p = Params::new(ID, params, &["mate", "value", "which", "merge"])?;
     let name = p.required_str("mate")?.to_string();
+    let merge = p.bool("merge")?.unwrap_or(false);
     let assembly = assembly_of(session, ID)?;
     let mate = assembly
         .mate(&name)
@@ -1191,16 +1206,24 @@ fn joint_set(session: &mut Session, params: &Value) -> Run {
     }
     let value = p.expr("value")?;
     let var = asm::joint_variable(&name, &which);
-    asm_edit(session, ID, &format!("Set {var}"), |doc| match &value {
-        Some(expr) => doc.set_variable(&var, expr),
-        None => {
-            if doc.variables.iter().any(|v| v.name == var) {
-                doc.remove_variable(&var)
-            } else {
-                Ok(())
+    let key = format!("{ID} {var}");
+    asm_edit_merging(
+        session,
+        ID,
+        &format!("Set {var}"),
+        Some(&key),
+        merge,
+        |doc| match &value {
+            Some(expr) => doc.set_variable(&var, expr),
+            None => {
+                if doc.variables.iter().any(|v| v.name == var) {
+                    doc.remove_variable(&var)
+                } else {
+                    Ok(())
+                }
             }
-        }
-    })?;
+        },
+    )?;
     let mut result = one_mate(session, &name)?;
     if let Some(map) = result.as_object_mut() {
         map.insert("variable".into(), var.into());

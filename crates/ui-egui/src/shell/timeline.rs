@@ -96,11 +96,25 @@ impl Timeline {
         if id == "view.scrub" {
             self.pending.retain(|(queued, _)| *queued != "view.scrub");
         }
-        // Likewise the last value of a joint dragged.
+        // Likewise the last value of a joint dragged; it merges into the
+        // last undo step only when the value it replaces did too (the
+        // first value of a drag starts a step of its own).
         if id == "joint.set" {
+            let mut merge = params.get("merge").and_then(Value::as_bool);
             self.pending.retain(|(queued, earlier)| {
-                *queued != "joint.set" || earlier.get("mate") != params.get("mate")
+                let same = *queued == "joint.set" && earlier.get("mate") == params.get("mate");
+                if same {
+                    let before = earlier
+                        .get("merge")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    merge = merge.map(|m| m && before);
+                }
+                !same
             });
+            if let (Some(merge), Some(map)) = (merge, params.as_object_mut()) {
+                map.insert("merge".into(), merge.into());
+            }
         }
         // One moment of the motion waits at most: a later one takes the
         // place of an earlier one, keeping what the earlier one set and

@@ -307,7 +307,7 @@ impl Sweep {
             .ok_or("the motion is not an assembly's")?;
         if !sweep.grid.contains_key(&0) {
             let doc = at_t(reference, t0)?;
-            let placed = sweep.asm.place_moment(&doc, sweep.path.as_deref(), None);
+            let placed = sweep.asm.solve_moment(&doc, sweep.path.as_deref(), None);
             let carried = placed.carried.clone().ok_or_else(|| {
                 format!(
                     "the assembly does not solve at its own t ({t0}): {}",
@@ -347,7 +347,7 @@ impl Sweep {
                 let placed =
                     sweep
                         .asm
-                        .place_moment(&doc, sweep.path.as_deref(), Some(&from.carried));
+                        .solve_moment(&doc, sweep.path.as_deref(), Some(&from.carried));
                 Arc::new(match placed.carried.clone() {
                     Some(carried) => GridState {
                         carried,
@@ -681,6 +681,10 @@ struct State {
     /// The document state it is a state of (the document, or the state
     /// the view is scrubbed to).
     base: Arc<Document>,
+    /// The generation of the assembly's files it was made with
+    /// (`AsmState::generation`): `assembly.reload` changes what a moment
+    /// places without a new document state.
+    generation: u64,
     t: f64,
     collisions_asked: bool,
     /// What is drawn: the state with its colliding bodies marked.
@@ -699,6 +703,8 @@ struct State {
 #[derive(Clone)]
 pub(crate) struct Trace {
     base: Arc<Document>,
+    /// As [`State::generation`].
+    generation: u64,
     pub(crate) name: String,
     pub(crate) point: String,
     pub(crate) points: Vec<Vec3>,
@@ -712,8 +718,9 @@ pub(crate) struct Motion {
     t: Option<f64>,
     collisions: bool,
     /// The run of states the view goes through, with the document state
-    /// it runs over.
-    sweep: Option<(Arc<Document>, Sweep)>,
+    /// it runs over
+    /// and the generation of the assembly's files it was made with.
+    sweep: Option<(Arc<Document>, u64, Sweep)>,
     state: Option<State>,
     memo: PairMemo,
     traces: Vec<Trace>,
@@ -746,6 +753,7 @@ impl OpenDocument {
         let base = self.scrubbed();
         if let Some(state) = &self.motion.state
             && Arc::ptr_eq(&state.base, &base)
+            && state.generation == self.asm.generation
             && state.t == t
             && state.collisions_asked == self.motion.collisions
         {
@@ -769,18 +777,19 @@ impl OpenDocument {
     fn make_motion_state(&mut self, base: &Arc<Document>, t: f64) -> Result<State, String> {
         timeline(base)?;
         let base_regen = self.scrubbed_regen();
+        let generation = self.asm.generation;
         let reuse = self
             .motion
             .sweep
             .as_ref()
-            .is_some_and(|(of, _)| Arc::ptr_eq(of, base));
+            .is_some_and(|(of, g, _)| Arc::ptr_eq(of, base) && *g == generation);
         if !reuse {
             let sweep = Sweep::of(self, base);
-            self.motion.sweep = Some((Arc::clone(base), sweep));
+            self.motion.sweep = Some((Arc::clone(base), generation, sweep));
             // The answers were about the bodies of another base.
             self.motion.memo = PairMemo::default();
         }
-        let (_, sweep) = self
+        let (_, _, sweep) = self
             .motion
             .sweep
             .as_mut()
@@ -814,6 +823,7 @@ impl OpenDocument {
         };
         Ok(State {
             base: Arc::clone(base),
+            generation,
             t,
             collisions_asked: self.motion.collisions,
             rebuilt,
@@ -863,9 +873,10 @@ impl OpenDocument {
     /// state of it.
     fn traces(&mut self) -> &mut Vec<Trace> {
         let current = Arc::clone(self.history.current());
+        let generation = self.asm.generation;
         self.motion
             .traces
-            .retain(|trace| Arc::ptr_eq(&trace.base, &current));
+            .retain(|trace| Arc::ptr_eq(&trace.base, &current) && trace.generation == generation);
         &mut self.motion.traces
     }
 }
@@ -977,8 +988,12 @@ fn view_motion(session: &mut Session, params: &Value) -> Run {
         // Made now, so the state's errors are this command's.
         let base = open.scrubbed();
         let t = open.motion.t.unwrap_or(0.0);
+        let generation = open.asm.generation;
         let stale = open.motion.state.as_ref().is_none_or(|s| {
-            !Arc::ptr_eq(&s.base, &base) || s.t != t || s.collisions_asked != open.motion.collisions
+            !Arc::ptr_eq(&s.base, &base)
+                || s.generation != generation
+                || s.t != t
+                || s.collisions_asked != open.motion.collisions
         });
         if stale {
             let state = open
@@ -1032,6 +1047,7 @@ fn view_motion(session: &mut Session, params: &Value) -> Run {
         "collisions": collisions,
         "volumeUnit": format!("{}^3", length_unit(doc)),
         "deadPoint": state.stuck.as_ref().map_or(Value::Null, |stuck| json!({"t": stuck.t, "why": stuck.why})),
+        "solveNote": state.placed.as_ref().and_then(|p| p.solve_note.clone()),
     }))
 }
 
@@ -1295,6 +1311,7 @@ fn view_trace(session: &mut Session, params: &Value) -> Run {
         points.push(at);
     }
     let tolerance = base.tolerance.linear;
+    let generation = open.asm.generation;
     let traces = open.traces();
     let name = given_name.unwrap_or_else(|| {
         (1..)
@@ -1310,6 +1327,7 @@ fn view_trace(session: &mut Session, params: &Value) -> Run {
     }
     traces.push(Trace {
         base: Arc::clone(&base),
+        generation,
         name: name.clone(),
         point: point.describe(),
         points: points.clone(),

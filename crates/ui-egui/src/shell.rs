@@ -3688,8 +3688,6 @@ fn named_edge(feature: &str, name: Option<&str>, faces: &[String]) -> Option<Edg
 /// none: what they are for, and how to get one.
 pub const NO_ASSERTIONS_HINT: &str = "No checks yet. Ask an AI agent, e.g. \u{201c}check that the wall is at least 2 mm\u{201d}, or use assert.add.";
 
-/// The "Assertions" heading of the feature panel, always there; with the
-/// hint while there are none.
 /// An assembly's mates under its instances: each with its mark, kind and
 /// value (or why it fails), then the degrees of freedom left.
 fn mates_ui(ui: &mut egui::Ui, tokens: &Tokens, outline: &craft3d_engine::AssemblyOutline) {
@@ -3751,6 +3749,8 @@ fn mates_ui(ui: &mut egui::Ui, tokens: &Tokens, outline: &craft3d_engine::Assemb
         .on_hover_text(outline.free.join("\n"));
 }
 
+/// The "Assertions" heading of the feature panel, always there; with the
+/// hint while there are none.
 fn assertions_heading(ui: &mut egui::Ui, tokens: &Tokens, empty: bool) {
     ui.add_space(tokens.inset * 0.5);
     ui.label(egui::RichText::new("Assertions").strong());

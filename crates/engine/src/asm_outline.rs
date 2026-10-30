@@ -6,7 +6,8 @@
 
 use crate::Session;
 use crate::asm::{Built, InstanceState, Placed};
-use craft3d_doc::{Document, MateKind, Source};
+use craft3d_doc::{Document, MateKind};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 /// Most rows an outline lists: a viewer's list, not a report.
@@ -71,8 +72,12 @@ pub struct OutlineMate {
     pub driven: bool,
     /// The variables that drive its free motions, by free motion.
     pub variables: Vec<String>,
-    /// Its main free motion can be set by hand (`joint.set`): it has one,
-    /// and no formula of other variables (a driver of `t`) drives it.
+    /// Its main free motion can be set by hand (`joint.set`) and the
+    /// assembly stays solved: it has one, no formula of other variables (a
+    /// driver of `t`) drives it, and either a value drives it already or
+    /// the solve leaves it free (driving it takes a degree of freedom and
+    /// contradicts nothing: in a closed loop of one degree of freedom
+    /// that one driven joint, or while none is, every joint of the loop).
     pub settable: bool,
     /// The limits of its main free motion, evaluated.
     pub limits: Option<(f64, f64)>,
@@ -91,9 +96,16 @@ pub struct JointHandle {
     pub axis: [f64; 3],
     /// Radians or model units.
     pub value: f64,
+    /// Which way the value goes for the dragged instance turning (right
+    /// handed about `axis`) or moving along `axis`: 1 on the mate's side
+    /// b, −1 on its side a (the value measures b against a).
+    pub sign: f64,
     pub limits: Option<(f64, f64)>,
     /// The document's length unit.
     pub unit: String,
+    /// The size of the assembly (the diagonal of its placed bodies' box),
+    /// what "near the axis" is measured against.
+    pub size: f64,
 }
 
 impl Session {
@@ -117,7 +129,7 @@ impl Session {
         };
         for st in placed.instances.iter().filter(|i| i.flex_of.is_none()) {
             let visible = assembly.instance(&st.name).is_none_or(|i| i.visible);
-            push_instance(&mut out.instances, &doc, &placed, st, 0, visible, true);
+            push_instance(&mut out.instances, &placed, st, 0, visible, true);
         }
         for mate in &assembly.mates {
             let st = placed.mates.iter().find(|m| m.name == mate.name);
@@ -128,7 +140,7 @@ impl Session {
                 (None, None) => "ok",
             };
             let angle = matches!(mate.kind, MateKind::Revolute | MateKind::Cylindrical);
-            let settable = settable(&doc, mate);
+            let settable = settable(&doc, mate, st);
             out.mates.push(OutlineMate {
                 name: mate.name.clone(),
                 kind: mate.kind.name(),
@@ -151,9 +163,13 @@ impl Session {
 
     /// The free motion a drag on the shown body of `feature` (an instance's
     /// placed body, `F3`) moves along: the first mate in the assembly's
-    /// order that has the instance on a side, a free motion and no
-    /// formula driving it. `None` for a part, or an instance no such mate
-    /// moves.
+    /// order that has the instance on a side and can be set by hand
+    /// ([`OutlineMate::settable`]); `sign` says which way the value goes
+    /// for the instance turning or moving forward about the axis (the
+    /// value measures side b against side a, so −1 on side a). `None` for
+    /// a part, an instance no such mate moves, and an instance held to the
+    /// world (by fixed mates, or held as the first of a floating
+    /// assembly): it does not move.
     pub fn assembly_joint_of(&mut self, feature: &str) -> Option<JointHandle> {
         let open = self.documents.get_mut(self.active)?;
         let doc = Arc::clone(open.history.current());
@@ -166,11 +182,16 @@ impl Session {
         // An instance of a flexible subassembly is named `Sub/Inner` in the
         // solve and its mates are the subassembly's: only the assembly's own.
         let name = instance.name.as_str();
+        if grounded(assembly, &placed).contains(name) {
+            return None;
+        }
         let mate = assembly.mates.iter().find(|m| {
             let on = |r: &craft3d_doc::MateRef| r.instance == name;
-            (on(&m.a) || on(&m.b)) && settable(&doc, m)
+            (on(&m.a) || on(&m.b))
+                && settable(&doc, m, placed.mates.iter().find(|s| s.name == m.name))
         })?;
         let state = placed.mates.iter().find(|m| m.name == mate.name)?;
+        let sign = if mate.b.instance == name { 1.0 } else { -1.0 };
         let frame = crate::asm::frame_of_ref(&placed, &mate.a.to_string()).ok()?;
         let angle = matches!(mate.kind, MateKind::Revolute | MateKind::Cylindrical);
         Some(JointHandle {
@@ -179,31 +200,85 @@ impl Session {
             origin: [frame.origin.x, frame.origin.y, frame.origin.z],
             axis: [frame.z.x, frame.z.y, frame.z.z],
             value: state.free?,
+            sign,
             limits: crate::asm::mate_limits(&doc, mate),
             unit: crate::commands::length_unit(&doc).to_string(),
+            size: crate::asm::model_size(&placed),
         })
     }
 }
 
-/// True when `mate`'s main free motion can be set by hand: it has one, and
-/// its variable, when it has one, refers to no variable of the document
-/// (a value `joint.set` wrote, not a driver).
-fn settable(doc: &Document, mate: &craft3d_doc::Mate) -> bool {
+/// True when `mate`'s main free motion can be set by hand and the
+/// assembly stays solved ([`OutlineMate::settable`]): it has one, and its
+/// variable either holds a value (what `joint.set` wrote: setting another
+/// value keeps the degrees of freedom as they are) or does not exist and
+/// the solve (`state`) leaves the motion free. A variable that refers to
+/// another (a driver of `t`) is the timeline's.
+fn settable(
+    doc: &Document,
+    mate: &craft3d_doc::Mate,
+    state: Option<&crate::asm::MateState>,
+) -> bool {
     let Some(which) = mate.kind.free().first() else {
         return false;
     };
     let var = crate::asm::joint_variable(&mate.name, which);
-    doc.variable(&var).is_none_or(|v| {
-        !doc.variables
+    match doc.variable(&var) {
+        Some(v) => !doc
+            .variables
             .iter()
-            .any(|other| craft3d_expr::refers_to_variable(v.expr.source(), &other.name))
-    })
+            .any(|other| craft3d_expr::refers_to_variable(v.expr.source(), &other.name)),
+        None => state.is_some_and(|s| s.main_free),
+    }
 }
 
-/// `st` and, nested under it, its subassembly's instances.
+/// The instances held to the world: those a chain of mates without a free
+/// motion (fixed mates) joins to it, and the first instance of a floating
+/// assembly, which the solve holds where it is placed. A drag cannot move
+/// them.
+fn grounded(assembly: &craft3d_doc::Assembly, placed: &Placed) -> BTreeSet<String> {
+    let mut held: BTreeSet<String> = BTreeSet::new();
+    if placed.floating
+        && let Some(first) = placed
+            .instances
+            .iter()
+            .find(|i| i.error.is_none() && !i.flexed)
+    {
+        held.insert(first.name.clone());
+    }
+    let rigid: Vec<(&str, &str)> = assembly
+        .mates
+        .iter()
+        .filter(|m| m.kind.free().is_empty())
+        .map(|m| (m.a.instance.as_str(), m.b.instance.as_str()))
+        .collect();
+    let world = |n: &str| n == craft3d_doc::WORLD;
+    // Each pass adds at least one instance or stops: at most one pass per
+    // mate.
+    for _ in 0..=rigid.len() {
+        let mut grew = false;
+        for &(a, b) in &rigid {
+            let a_held = world(a) || held.contains(a);
+            let b_held = world(b) || held.contains(b);
+            if a_held && !b_held {
+                held.insert(b.to_string());
+                grew = true;
+            } else if b_held && !a_held {
+                held.insert(a.to_string());
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    held
+}
+
+/// `st` and, nested under it, its subassembly's instances: all in
+/// `rows`, which holds at most [`MAX_ROWS`] at any depth.
 fn push_instance(
     rows: &mut Vec<OutlineInstance>,
-    doc: &Document,
     placed: &Placed,
     st: &InstanceState,
     depth: usize,
@@ -213,14 +288,7 @@ fn push_instance(
     if rows.len() >= MAX_ROWS || depth > crate::asm::MAX_DEPTH {
         return;
     }
-    let source = doc
-        .assembly
-        .as_ref()
-        .and_then(|a| a.instance(&st.name))
-        .map_or_else(String::new, |i| match &i.source {
-            Source::File { path, .. } => path.clone(),
-            Source::Packed { .. } => "packed".to_string(),
-        });
+    let source = st.source.clone();
     let sub = match st.built.as_deref() {
         Some(Built::Assembly(sub)) => Some(Arc::clone(sub)),
         _ => None,
@@ -248,18 +316,16 @@ fn push_instance(
             .iter()
             .filter(|i| i.flex_of.as_deref() == Some(st.name.as_str()))
         {
-            push_instance(rows, doc, placed, child, depth + 1, visible, false);
+            push_instance(rows, placed, child, depth + 1, visible, false);
         }
     } else if let Some(sub) = sub {
-        let mut inner = Vec::new();
-        let sub_doc = Arc::clone(&sub.doc);
+        let first = rows.len();
         for child in sub.instances.iter().filter(|i| i.flex_of.is_none()) {
-            push_instance(&mut inner, &sub_doc, &sub, child, depth + 1, visible, false);
+            push_instance(rows, &sub, child, depth + 1, visible, false);
         }
         // Their bodies are drawn as the subassembly's.
-        for row in &mut inner {
+        for row in rows.iter_mut().skip(first) {
             row.features.clear();
         }
-        rows.extend(inner);
     }
 }

@@ -138,9 +138,11 @@ offered only for a document with a timeline.
 ### Assemblies (phase 2)
 
 An assembly has a timeline as a part has: its own variable `t`. Its drivers are formulas of `t` for the variables
-that drive its joints (`Drive_angle = 360 deg * t`, the variable `joint.set` writes), and its moments are never
+that drive its joints (`Drive_angle = 360 deg * t`, the variable `joint.set` writes), and its moments are not
 regenerated: each is a **solve** (`craft3d-assembly`), its instances placed by transforms
-(`Sweep::placed_at`, `asm::AsmState::place_moment`).
+(`Sweep::placed_at`, `asm::AsmState::place_moment`). The exception is an instance whose parameters are formulas of
+`t`: its configuration changes with `t`, so each moment builds that configuration (a regeneration of the source,
+cached by its parameters' values like any configuration).
 
 - **The grid, as for sketches.** The assembly at rest (its own `t`, solved from its placements as `assembly.solve`
   solves it) is grid point 0. Grid point `k` is grid point `k ∓ 1` carried to its `t`: the solver starts from that
@@ -148,7 +150,14 @@ regenerated: each is a **solve** (`craft3d-assembly`), its instances placed by t
   `Solver::advance`, which cuts the step while the solution jumps further than the motion predicts. The moment `t`
   is its grid point carried to `t` the same way. So a moment is a function of `t` alone (seek equals play, bit for
   bit), and the assembly stays on the branch it rests on: a four-bar's elbow stays up, whichever way and however far
-  the view jumped. Each grid point keeps only poses and driven values (`asm::Carried`), never bodies.
+  the view jumped. Each grid point keeps only poses and driven values (`asm::Carried`), never bodies, and is
+  solved without placing them (`AsmState::solve_moment`): only the moment shown copies the bodies to their poses.
+  A moment that cannot be carried from the one before it (the instances or the driven values taking part changed
+  in between: an instance failed) is solved from the placements instead, and says so: `solveNote` in
+  `view.motion`, `note` in `assembly.solve`. It may then lie on another branch.
+- **What the view keeps is keyed on the files too.** The moment shown, the sweep (which holds a copy of the files
+  read) and the traces are kept for the document state and for `AsmState::generation`, which `assembly.reload`
+  raises without a new revision: after a reload the moment shown is made again from the files as they are.
 - **Dead points.** Where a step cannot be solved (the mechanism reaches a limit position: a four-bar whose crank
   cannot go round, at `|B − D| = b + c`), the motion stops: that grid point and every one beyond it keep the last
   state reached and say where it stopped and why (`Stuck`). `view.motion` returns it as `deadPoint {t, why}` and

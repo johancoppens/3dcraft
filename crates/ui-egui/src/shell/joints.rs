@@ -3,7 +3,9 @@
 //! be set by hand, on the Parameters tab, and dragging a part in the
 //! viewport along that motion. Both issue `joint.set`, through the queue
 //! the timeline's requests go through (the last value of a joint waits,
-//! earlier ones give their place), so the window never waits for a solve.
+//! earlier ones give their place), so the window never waits for a solve;
+//! every value after a drag's first is sent with `merge`, so one drag is
+//! one undo step.
 
 use super::Shell;
 use crate::camera::Projector;
@@ -51,13 +53,20 @@ pub(crate) struct PartDrag {
     /// Where the drag began: on the joint's plane, from its axis (an
     /// angle), or along its axis (a distance, in `x`).
     pub(crate) start: Vec3,
+    /// The angle swept from `start` at the last frame, unwrapped: a drag
+    /// goes on past half a turn.
+    pub(crate) swept: f64,
+    /// A value of this drag was sent: the next ones merge into its undo
+    /// step.
+    pub(crate) sent: bool,
 }
 
 /// The place the ray (`from`, `direction`) gives on a joint: for an
 /// angle, the point where it meets the plane through the axis' origin
 /// across it, from the axis; for a distance, the point of the axis nearest
 /// the ray, as its distance along the axis (in `x`). `None` where the ray
-/// runs along the plane or the axis.
+/// runs along the plane or the axis, or (an angle) meets the plane on the
+/// axis, within 10⁻⁹ of the assembly's size, where no direction is.
 pub(crate) fn on_joint(joint: &JointHandle, from: Vec3, direction: Vec3) -> Option<Vec3> {
     let origin = Vec3::new(joint.origin[0], joint.origin[1], joint.origin[2]);
     let axis = Vec3::new(joint.axis[0], joint.axis[1], joint.axis[2]).normalized()?;
@@ -71,7 +80,8 @@ pub(crate) fn on_joint(joint: &JointHandle, from: Vec3, direction: Vec3) -> Opti
         let p = from + direction * t;
         let v = p - origin;
         let v = v - axis * v.dot(axis);
-        (v.length() > 1e-12 && v.is_finite()).then_some(v)
+        let near = 1e-9 * joint.size.max(f64::MIN_POSITIVE);
+        (v.length() > near && v.is_finite()).then_some(v)
     } else {
         // The nearest points of two lines.
         let w = from - origin;
@@ -85,25 +95,35 @@ pub(crate) fn on_joint(joint: &JointHandle, from: Vec3, direction: Vec3) -> Opti
     }
 }
 
-/// The joint's value with the drag from `start` to `now`: the angle swept
-/// about the axis (within half a turn either way), or the distance moved
-/// along it, added to the value the drag began at; held within its limits.
-pub(crate) fn dragged_value(drag: &PartDrag, now: Vec3) -> Option<f64> {
+/// The joint's value with the drag from `start` to `now`, and the angle
+/// swept (for the next frame's `swept`): the angle swept about the axis,
+/// taken within half a turn of the last frame's (so a drag goes round as
+/// far as it is dragged), or the distance moved along it, times the
+/// joint's `sign`, added to the value the drag began at; held within its
+/// limits.
+pub(crate) fn dragged_value(drag: &PartDrag, now: Vec3) -> Option<(f64, f64)> {
     let joint = &drag.joint;
     let delta = if joint.angle {
         let axis = Vec3::new(joint.axis[0], joint.axis[1], joint.axis[2]).normalized()?;
         let sin = drag.start.cross(now).dot(axis);
         let cos = drag.start.dot(now);
-        sin.atan2(cos)
+        let within = sin.atan2(cos);
+        // The turn nearest the last frame's.
+        let tau = std::f64::consts::TAU;
+        let turns = ((drag.swept - within) / tau).round();
+        if !turns.is_finite() {
+            return None;
+        }
+        within + turns * tau
     } else {
         now.x - drag.start.x
     };
-    let value = joint.value + delta;
+    let value = joint.value + joint.sign * delta;
     let value = match joint.limits {
         Some((lo, hi)) => value.clamp(lo, hi),
         None => value,
     };
-    value.is_finite().then_some(value)
+    (value.is_finite() && delta.is_finite()).then_some((value, delta))
 }
 
 /// `value` written for `joint.set`: an angle in degrees, a distance in
@@ -199,7 +219,12 @@ impl Shell {
             let Some(start) = ray_at(self, at).and_then(|(o, d)| on_joint(&joint, o, d)) else {
                 return false;
             };
-            self.joints.part = Some(PartDrag { joint, start });
+            self.joints.part = Some(PartDrag {
+                joint,
+                start,
+                swept: 0.0,
+                sent: false,
+            });
             return true;
         }
         let Some(drag) = self.joints.part.clone() else {
@@ -211,13 +236,18 @@ impl Shell {
         }
         if let Some(at) = response.interact_pointer_pos()
             && let Some(now) = ray_at(self, at).and_then(|(o, d)| on_joint(&drag.joint, o, d))
-            && let Some(value) = dragged_value(&drag, now)
+            && let Some((value, swept)) = dragged_value(&drag, now)
         {
             let unit = drag.joint.unit.clone();
             self.timeline.queue(
                 "joint.set",
-                json!({"mate": drag.joint.mate, "value": written(value, drag.joint.angle, &unit)}),
+                json!({"mate": drag.joint.mate, "value": written(value, drag.joint.angle, &unit),
+                       "merge": drag.sent}),
             );
+            if let Some(part) = self.joints.part.as_mut() {
+                part.swept = swept;
+                part.sent = true;
+            }
             ui.ctx().request_repaint();
         }
         true
@@ -327,10 +357,13 @@ impl Shell {
                 } else {
                     on_slider
                 };
+                // A drag's later values merge into its first's undo step.
+                let merge = matches!(&self.joints.dragging, Some((name, _)) if *name == mate.name);
                 self.joints.dragging = Some((mate.name.clone(), shown));
                 self.timeline.queue(
                     "joint.set",
-                    json!({"mate": mate.name, "value": written(shown, angle, &outline.unit)}),
+                    json!({"mate": mate.name, "value": written(shown, angle, &outline.unit),
+                           "merge": merge}),
                 );
                 ui.ctx().request_repaint();
             }
@@ -354,5 +387,79 @@ impl Shell {
             );
         }
         ui.separator();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    fn joint(sign: f64) -> JointHandle {
+        JointHandle {
+            mate: "Drive".into(),
+            angle: true,
+            origin: [0.0; 3],
+            axis: [0.0, 0.0, 1.0],
+            value: 0.0,
+            sign,
+            limits: None,
+            unit: "mm".into(),
+            size: 100.0,
+        }
+    }
+
+    fn at(degrees: f64) -> Vec3 {
+        let a = degrees.to_radians();
+        Vec3::new(a.cos(), a.sin(), 0.0)
+    }
+
+    /// A drag that goes on past half a turn keeps turning: each frame's
+    /// angle is taken within half a turn of the last frame's.
+    #[test]
+    fn a_drag_goes_on_past_half_a_turn() {
+        let mut drag = PartDrag {
+            joint: joint(1.0),
+            start: at(0.0),
+            swept: 0.0,
+            sent: false,
+        };
+        for degrees in [60.0, 120.0, 170.0, 200.0, 260.0, 330.0, 400.0] {
+            let (value, swept) = dragged_value(&drag, at(degrees)).unwrap();
+            assert!(
+                (value.to_degrees() - degrees).abs() < 1e-9,
+                "{degrees}: {}",
+                value.to_degrees()
+            );
+            drag.swept = swept;
+        }
+    }
+
+    /// On side a of its joint the value goes the other way.
+    #[test]
+    fn side_a_turns_the_value_the_other_way() {
+        let drag = PartDrag {
+            joint: joint(-1.0),
+            start: at(0.0),
+            swept: 0.0,
+            sent: false,
+        };
+        let (value, _) = dragged_value(&drag, at(30.0)).unwrap();
+        assert!((value.to_degrees() + 30.0).abs() < 1e-9);
+    }
+
+    /// Near the axis is measured against the model's size: a large model's
+    /// point a micrometre off the axis still has a direction.
+    #[test]
+    fn near_the_axis_is_relative_to_the_model() {
+        let mut big = joint(1.0);
+        big.size = 1e6;
+        let mut small = joint(1.0);
+        small.size = 1e-3;
+        // A ray straight down at (x, 0).
+        let down = Vec3::new(0.0, 0.0, -1.0);
+        assert!(on_joint(&big, Vec3::new(1e-2, 0.0, 5.0), down).is_some());
+        assert!(on_joint(&big, Vec3::new(1e-4, 0.0, 5.0), down).is_none());
+        assert!(on_joint(&small, Vec3::new(1e-9, 0.0, 5.0), down).is_some());
     }
 }

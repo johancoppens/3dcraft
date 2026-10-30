@@ -176,7 +176,8 @@ fn select_set(session: &mut Session, params: &Value) -> Run {
         }
         items.extend(held);
     }
-    let (added, removed) = open.selection.apply(items, mode);
+    let placed = open.history.current().is_assembly().then_some(&*doc);
+    let (added, removed) = open.selection.apply(items, mode, placed);
     let mut result = described_view(&doc, &regen, &open.selection.view());
     if let Some(map) = result.as_object_mut() {
         map.insert("added".into(), added.into());
@@ -1773,7 +1774,8 @@ fn select_query(session: &mut Session, params: &Value) -> Run {
         "summary": line,
     });
     if let Some(mode) = then {
-        open.selection.apply(items, mode);
+        let placed = open.history.current().is_assembly().then_some(&**doc);
+        open.selection.apply(items, mode, placed);
         if let Some(map) = result.as_object_mut() {
             map.insert(
                 "selection".into(),

@@ -181,6 +181,12 @@ struct Entry {
     /// Why it is hidden: its feature is suppressed, rolled back or failed,
     /// so it has no body now but will again.
     hidden: Option<String>,
+    /// For an assembly: the name of the placed part's feature the seed
+    /// was on (its instance, `Crank` or `Crank/Bar`). The placed part
+    /// numbers its features in instance order, so an id means another
+    /// instance once one before it is deleted or fails: the item is found
+    /// again by this name, never by the id (rule 4).
+    anchor: Option<String>,
 }
 
 impl Entry {
@@ -189,6 +195,7 @@ impl Entry {
             seed: item.clone(),
             now: vec![(item, 1)],
             hidden: None,
+            anchor: None,
         }
     }
 
@@ -206,8 +213,17 @@ pub(crate) struct Selection {
     serial: u64,
     /// The names that dropped out at the last check, and why.
     dropped: Vec<String>,
-    /// The revision of the document the items were last checked against.
-    checked: Option<u64>,
+    /// The revision of the document the items were last checked against,
+    /// and the generation of an assembly's files (`AsmState::generation`:
+    /// `assembly.reload` changes what is placed without a new revision).
+    checked: Option<(u64, u64)>,
+}
+
+/// The feature id `F3` as written in an item.
+fn feature_id(text: &str) -> Option<FeatureId> {
+    text.strip_prefix('F')
+        .and_then(|digits| digits.parse::<u64>().ok())
+        .map(FeatureId)
 }
 
 /// An item that is selected but hidden for now ([`SelectionView::hidden`]).
@@ -314,7 +330,16 @@ impl Selection {
     /// Returns how many were added and how many removed. An item that
     /// means an entry already kept (what it is now, or what it was
     /// selected as) is that entry: it keeps its seed.
-    pub(crate) fn apply(&mut self, items: Vec<SelectionItem>, mode: SelectMode) -> (usize, usize) {
+    ///
+    /// `placed` is the placed part of an assembly the items were found in
+    /// (`None` for a part): each new entry is anchored there to its
+    /// feature's name ([`Entry::anchor`]).
+    pub(crate) fn apply(
+        &mut self,
+        items: Vec<SelectionItem>,
+        mode: SelectMode,
+        placed: Option<&Document>,
+    ) -> (usize, usize) {
         let before = self.entries.clone();
         match mode {
             SelectMode::Clear => self.entries.clear(),
@@ -359,6 +384,13 @@ impl Selection {
             .iter()
             .filter(|b| !self.entries.iter().any(|e| e.seed.same(&b.seed)))
             .count();
+        if let Some(placed) = placed {
+            for entry in self.entries.iter_mut().filter(|e| e.anchor.is_none()) {
+                entry.anchor = feature_id(&entry.seed.feature)
+                    .and_then(|id| placed.feature(id))
+                    .map(|f| f.name.clone());
+            }
+        }
         // A new choice: what dropped out of the old one is old news.
         if self.entries != before || !self.dropped.is_empty() {
             self.serial = next_serial();
@@ -388,26 +420,62 @@ impl Selection {
     /// document (an undo that follows clears it). Items are found again
     /// by their feature's id, never by its name, so a selection cannot
     /// move to another feature that took the name (rule 4).
-    pub(crate) fn check(&mut self, doc: &Document, regen: &Regen, revision: u64) {
-        if self.checked == Some(revision) {
+    ///
+    /// For an assembly (`assembly`, with `doc` its placed part), an item
+    /// anchored to an instance's feature ([`Entry::anchor`]) is found by
+    /// that feature's name: an instance that is not placed for now (its
+    /// source fails) hides it, one that is gone drops it.
+    pub(crate) fn check(
+        &mut self,
+        doc: &Document,
+        regen: &Regen,
+        at: (u64, u64),
+        assembly: Option<&craft3d_doc::Assembly>,
+    ) {
+        if self.checked == Some(at) {
             return;
         }
-        self.checked = Some(revision);
+        self.checked = Some(at);
         let mut kept = Vec::with_capacity(self.entries.len());
         let mut dropped = Vec::new();
         if !self.entries.is_empty() {
             let mut resolver = Resolver::new(doc, regen);
             for entry in &self.entries {
-                match resolver.follow(&entry.seed) {
+                let mut seed = entry.seed.clone();
+                let fate = match (&entry.anchor, assembly) {
+                    (Some(anchor), Some(assembly)) => {
+                        match doc.features.iter().find(|f| f.name == *anchor) {
+                            Some(f) => {
+                                seed.feature = f.id.to_string();
+                                resolver.follow(&seed)
+                            }
+                            None => {
+                                let instance = anchor.split('/').next().unwrap_or(anchor);
+                                if assembly.instance(instance).is_some() {
+                                    Fate::Hidden(format!("`{}` is not placed now", cut(anchor)))
+                                } else {
+                                    Fate::Gone(format!(
+                                        "there is no instance `{}` any more",
+                                        cut(instance)
+                                    ))
+                                }
+                            }
+                        }
+                    }
+                    _ => resolver.follow(&seed),
+                };
+                match fate {
                     Fate::Found(now) => kept.push(Entry {
-                        seed: entry.seed.clone(),
+                        seed,
                         now,
                         hidden: None,
+                        anchor: entry.anchor.clone(),
                     }),
                     Fate::Hidden(why) => kept.push(Entry {
-                        seed: entry.seed.clone(),
+                        seed,
                         now: Vec::new(),
                         hidden: Some(why),
+                        anchor: entry.anchor.clone(),
                     }),
                     Fate::Gone(why) => {
                         let shown = entry.now.first().map_or(&entry.seed, |(now, _)| now);
@@ -769,12 +837,7 @@ impl<'a> Resolver<'a> {
     /// is hidden, not gone: it comes back with the feature. Only what no
     /// longer exists anywhere is gone.
     pub(crate) fn follow(&mut self, seed: &SelectionItem) -> Fate {
-        let Some(id) = seed
-            .feature
-            .strip_prefix('F')
-            .and_then(|digits| digits.parse::<u64>().ok())
-            .map(FeatureId)
-            .filter(|id| self.doc.feature(*id).is_some())
+        let Some(id) = feature_id(&seed.feature).filter(|id| self.doc.feature(*id).is_some())
         else {
             return Fate::Gone(format!("there is no feature {}", cut(&seed.feature)));
         };
@@ -1106,11 +1169,13 @@ impl Session {
         let Ok(open) = self.document_mut() else {
             return 0;
         };
-        let revision = open.history.revision();
-        if open.selection.checked != Some(revision) {
+        let at = (open.history.revision(), open.asm.generation);
+        if open.selection.checked != Some(at) {
             let regen = open.regen();
             let doc = open.bodies_doc();
-            open.selection.check(&doc, &regen, revision);
+            let current = Arc::clone(open.history.current());
+            open.selection
+                .check(&doc, &regen, at, current.assembly.as_ref());
         }
         open.selection.serial()
     }
@@ -1149,8 +1214,9 @@ mod tests {
                 feature: "F1".into(),
             }],
             SelectMode::Replace,
+            None,
         );
-        selection.check(&doc, &regen, 7);
+        selection.check(&doc, &regen, (7, 0), None);
         let view = selection.view();
         assert_eq!(view.items[0].feature, "F1");
         assert_eq!(view.items[0].name, "Plate");

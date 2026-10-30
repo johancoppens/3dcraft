@@ -23,6 +23,11 @@ use std::path::Path;
 /// A bar part with a published length, its body `Bar` 4 wide and 2
 /// thick, and datum axes `End1` and `End2` 2 in from its ends.
 fn bar_part(s: &mut Session) {
+    bar_part_of(s, 2.0);
+}
+
+/// [`bar_part`] `thickness` thick.
+fn bar_part_of(s: &mut Session, thickness: f64) {
     run(s, "file.new", json!({}));
     run(s, "variable.set", json!({ "name": "len", "expr": "24 mm" }));
     run(
@@ -33,7 +38,7 @@ fn bar_part(s: &mut Session) {
     run(
         s,
         "feature.block",
-        json!({ "name": "Bar", "size": ["len", 4, 2] }),
+        json!({ "name": "Bar", "size": ["len", 4, thickness] }),
     );
     run(
         s,
@@ -230,6 +235,45 @@ fn seeking_and_playing_show_the_same_state() {
     assert_eq!(boxes[0], boxes[1]);
 }
 
+/// The thickness of the shown body `name` (its box along z).
+fn shown_thickness(s: &mut Session, name: &str) -> f64 {
+    let scene = s.scene(None).unwrap().unwrap();
+    let body = scene
+        .bodies
+        .iter()
+        .find(|b| b.name == name)
+        .unwrap_or_else(|| panic!("no shown body {name}"));
+    let (lo, hi) = body.mesh.bbox().corners().unwrap();
+    hi.z - lo.z
+}
+
+/// The moment the view shows is made again when the sources are read
+/// again (`assembly.reload` changes what is placed without a new document
+/// state): a thicker bar shows thicker at the same t.
+#[test]
+fn the_motion_shown_follows_a_reloaded_source() {
+    let dir = workdir("motion-asm", "reload");
+    let mut s = session(&dir);
+    four_bar(&mut s, [20.0, 50.0, 40.0, 60.0]);
+    run(&mut s, "view.motion", json!({ "t": 0.1 }));
+    assert!((shown_thickness(&mut s, "Crank") - 2.0).abs() < 1e-6);
+    // The source is changed by another session, as an editor would.
+    let mut other = session_in(&dir);
+    bar_part_of(&mut other, 5.0);
+    let reloaded = run(&mut s, "assembly.reload", json!({}));
+    assert!(
+        !reloaded["changed"].as_array().is_some_and(Vec::is_empty),
+        "{reloaded}"
+    );
+    let shown = run(&mut s, "view.motion", json!({}));
+    assert_eq!(shown["t"], 0.1, "{shown}");
+    let thick = shown_thickness(&mut s, "Crank");
+    assert!(
+        (thick - 5.0).abs() < 1e-6,
+        "the moment shown is stale: {thick}"
+    );
+}
+
 /// A four-bar whose crank cannot go round (40 + 60 > 30 + 40) stops at
 /// its dead point, where coupler and rocker lie in one line:
 /// |B − D| = b + c, cos θ = (a² + d² − (b + c)²) / (2ad).
@@ -250,7 +294,7 @@ fn a_dead_point_is_reported_with_its_t() {
     assert!(!dead.is_empty(), "{checked}");
     let at = dead[0]["t"].as_f64().unwrap();
     assert!(
-        at <= t_dead + 1e-9 && at > t_dead - 2.0 / 128.0,
+        at <= t_dead + 1e-9 && at > t_dead - 1.0 / 128.0,
         "the dead point is at t = {t_dead}, reported at {at}: {checked}"
     );
     // view.motion past it shows where the motion stopped, and says so.

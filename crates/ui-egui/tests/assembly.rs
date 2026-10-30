@@ -152,6 +152,12 @@ pub fn window_session(name: &str) -> (Session, PathBuf) {
 /// assembly of four instances of it (two lengths) closed into a four-bar
 /// by a fixed mate and four revolutes, its crank `Drive`.
 pub fn four_bar(s: &mut Session) {
+    four_bar_with(s, ("Ground/End1", "Crank/End1"));
+}
+
+/// [`four_bar`] with the crank's mate `Drive` between `drive` (side a,
+/// side b).
+pub fn four_bar_with(s: &mut Session, drive: (&str, &str)) {
     run(s, "file.new", json!({}));
     run(s, "variable.set", json!({ "name": "len", "expr": "24 mm" }));
     run(
@@ -191,7 +197,7 @@ pub fn four_bar(s: &mut Session) {
     }
     for (name, a, b) in [
         ("Base", "world/z", "Ground/End1"),
-        ("Drive", "Ground/End1", "Crank/End1"),
+        ("Drive", drive.0, drive.1),
         ("Elbow", "Crank/End2", "Coupler/End1"),
         ("Knee", "Coupler/End2", "Rocker/End2"),
         ("Hip", "Ground/End2", "Rocker/End1"),
@@ -352,8 +358,27 @@ fn mate_value(s: &mut Session, name: &str) -> f64 {
         .unwrap_or_else(|| panic!("no value of {name}: {inspected}"))
 }
 
+/// The joints the Parameters tab shows a slider for, after a few frames.
+fn sliders(window: &mut Window, shell: &mut Shell, s: &mut Session) -> Vec<(String, egui::Rect)> {
+    for _ in 0..3 {
+        window.frame(shell, s);
+    }
+    shell.joint_slider_hits().to_vec()
+}
+
+/// Drags the slider at `rect` a little to the right from its middle part
+/// (a few tens of degrees: the four-bar is a parallelogram, which folds
+/// where its bars lie in one line).
+fn drag_slider(window: &mut Window, shell: &mut Shell, s: &mut Session, rect: egui::Rect) {
+    let from = egui::pos2(rect.right() - rect.width() * 0.45, rect.center().y);
+    let to = egui::pos2(rect.right() - rect.width() * 0.38, rect.center().y);
+    window.drag(shell, s, from, to, egui::Modifiers::NONE);
+}
+
 /// A joint that can be set by hand is a slider on the Parameters tab:
-/// dragging it sets the joint (`joint.set`).
+/// dragging it sets the joint (`joint.set`), as one undo step. Only joints
+/// the assembly stays solved with are offered: with the crank driven, the
+/// four-bar's loop has no freedom left, so the crank is its one slider.
 #[test]
 fn a_free_joint_is_a_slider_on_the_parameters_tab() {
     let (mut s, _dir) = window_session("slider");
@@ -378,15 +403,13 @@ fn a_free_joint_is_a_slider_on_the_parameters_tab() {
     }
     let hits = shell.joint_slider_hits().to_vec();
     let names: Vec<&str> = hits.iter().map(|(n, _)| n.as_str()).collect();
-    // Every revolute's angle can be set; the fixed Base has none.
-    assert_eq!(names, ["Drive", "Elbow", "Knee", "Hip"]);
+    // The driven crank; the loop's other revolutes would contradict it,
+    // and the fixed Base has no free motion.
+    assert_eq!(names, ["Drive"]);
     let rect = hits[0].1;
     let before = mate_value(&mut s, "Drive");
     assert!((before.to_degrees() - 60.0).abs() < 1e-6);
-    // From the slider's middle part to its right end.
-    let from = egui::pos2(rect.right() - rect.width() * 0.45, rect.center().y);
-    let to = egui::pos2(rect.right() - 4.0, rect.center().y);
-    window.drag(&mut shell, &mut s, from, to, egui::Modifiers::NONE);
+    drag_slider(&mut window, &mut shell, &mut s, rect);
     let after = mate_value(&mut s, "Drive");
     assert!(
         (after - before).abs() > 1e-3,
@@ -395,6 +418,48 @@ fn a_free_joint_is_a_slider_on_the_parameters_tab() {
     );
     let inspected = run(&mut s, "assembly.inspect", json!({}));
     assert_eq!(inspected["solve"]["ok"], true, "{inspected}");
+    // The drag was one undo step, of many values.
+    run(&mut s, "edit.undo", json!({}));
+    let undone = mate_value(&mut s, "Drive");
+    assert!(
+        (undone.to_degrees() - 60.0).abs() < 1e-6,
+        "one undo after the drag: {} deg",
+        undone.to_degrees()
+    );
+}
+
+/// In a loop of one degree of freedom with no joint driven, every joint of
+/// the loop is offered; dragging any of them drives the loop, which stays
+/// solved, and that joint is then the loop's one slider.
+#[test]
+fn dragging_any_offered_slider_keeps_the_assembly_solved() {
+    for k in 0..4 {
+        let (mut s, _dir) = window_session(&format!("free-sliders-{k}"));
+        let mut shell = Shell::new();
+        let mut window = Window::new();
+        four_bar(&mut s);
+        window.frame(&mut shell, &mut s);
+        call(
+            &mut shell,
+            &mut s,
+            "ui.set",
+            json!({ "parameters": { "open": true } }),
+        );
+        let hits = sliders(&mut window, &mut shell, &mut s);
+        let names: Vec<&str> = hits.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["Drive", "Elbow", "Knee", "Hip"]);
+        let (name, rect) = hits[k].clone();
+        drag_slider(&mut window, &mut shell, &mut s, rect);
+        let inspected = run(&mut s, "assembly.inspect", json!({}));
+        assert_eq!(inspected["solve"]["ok"], true, "{name}: {inspected}");
+        let hits = sliders(&mut window, &mut shell, &mut s);
+        let names: Vec<&str> = hits.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, [name.as_str()], "after dragging {name}");
+        // Dragging it again keeps it solved.
+        drag_slider(&mut window, &mut shell, &mut s, hits[0].1);
+        let inspected = run(&mut s, "assembly.inspect", json!({}));
+        assert_eq!(inspected["solve"]["ok"], true, "{name}: {inspected}");
+    }
 }
 
 /// Alt and a drag on a part of an assembly turn it about its joint toward
@@ -452,6 +517,92 @@ fn alt_drag_turns_a_part_about_its_joint() {
     // The camera did not turn meanwhile.
     assert_eq!(shell.state.camera.yaw, camera.yaw);
     assert_eq!(shell.state.camera.pitch, camera.pitch);
+}
+
+/// The angle of the crank about the world's z, from the centre of its
+/// shown box (the bar's middle lies 10 from its pivot at the origin).
+fn crank_angle(shell: &Shell) -> f64 {
+    let (lo, hi) = crank_box(shell);
+    let (x, y) = ((lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0);
+    y.atan2(x).to_degrees()
+}
+
+/// Alt+drag on a part that is side a of its joint turns it toward the
+/// pointer too (the joint's value goes the other way), one undo step;
+/// the grounded part does not move.
+#[test]
+fn alt_drag_turns_a_part_on_side_a_of_its_joint() {
+    use craft3d_math::Vec3;
+    use craft3d_ui_egui::camera::Projector;
+    let (mut s, _dir) = window_session("drag-side-a");
+    let mut shell = Shell::new();
+    let mut window = Window::new();
+    four_bar_with(&mut s, ("Crank/End1", "Ground/End1"));
+    run(
+        &mut s,
+        "joint.set",
+        json!({ "mate": "Drive", "value": "-60 deg" }),
+    );
+    call(
+        &mut shell,
+        &mut s,
+        "ui.set",
+        json!({ "camera": { "yaw": -90.0, "pitch": 89.0 } }),
+    );
+    for _ in 0..4 {
+        window.frame(&mut shell, &mut s);
+    }
+    let start = crank_angle(&shell);
+    let rect = shell.viewport_rect().expect("a viewport");
+    let [w, h] = shell.viewport_size();
+    let projector =
+        Projector::new(&shell.state.camera.to_render(), f64::from(w), f64::from(h)).unwrap();
+    let at = |x: f64, y: f64| {
+        let p = projector.project(Vec3::new(x, y, 2.0)).unwrap();
+        egui::pos2(
+            rect.left() + (p.x as f32) * rect.width() / w as f32,
+            rect.top() + (p.y as f32) * rect.height() / h as f32,
+        )
+    };
+    let screen = |angle: f64| {
+        let a = angle.to_radians();
+        at(14.0 * a.cos(), 14.0 * a.sin())
+    };
+    let drive = mate_value(&mut s, "Drive");
+    window.drag(
+        &mut shell,
+        &mut s,
+        screen(start),
+        screen(start + 40.0),
+        egui::Modifiers::ALT,
+    );
+    for _ in 0..3 {
+        window.frame(&mut shell, &mut s);
+    }
+    let end = crank_angle(&shell);
+    let turned = (end - start + 540.0).rem_euclid(360.0) - 180.0;
+    assert!(
+        (turned - 40.0).abs() < 3.0,
+        "the crank was dragged 40 deg from {start}, it turned {turned} deg"
+    );
+    run(&mut s, "edit.undo", json!({}));
+    let undone = mate_value(&mut s, "Drive");
+    assert!(
+        (undone - drive).abs() < 1e-6,
+        "one undo after the drag: {undone} against {drive}"
+    );
+    // The ground is held: Alt+drag on it (near its far pivot, where no
+    // other bar lies) moves nothing.
+    let ground = at(50.0, -1.5);
+    let before = mate_value(&mut s, "Drive");
+    window.drag(
+        &mut shell,
+        &mut s,
+        ground,
+        screen(90.0),
+        egui::Modifiers::ALT,
+    );
+    assert_eq!(mate_value(&mut s, "Drive"), before);
 }
 
 /// The four-bar moving over `t` (its crank driven by `360 deg * t`) in
