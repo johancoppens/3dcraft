@@ -33,7 +33,12 @@ impl Session {
         let index = self.add_document(open)?;
         let mut result = json!({ "document": index, "name": name, "features": features });
         if self.document()?.history.current().is_assembly() {
-            self.read_sources(false)?;
+            // The new document is closed again when its sources cannot be
+            // read: nothing half-opened is left.
+            if let Err(e) = self.read_sources(false) {
+                let _ = self.execute("file.close", &json!({ "document": index, "discard": true }));
+                return Err(e);
+            }
             if let Some(map) = result.as_object_mut() {
                 map.insert("assembly".into(), true.into());
             }

@@ -12,15 +12,15 @@
 
 use craft3d_engine::{Access, Session, Workspace};
 use craft3d_ui_egui::shell::{EXAMPLES, ExampleSection, RecentFiles, run_example};
+use craft3d_ui_egui::{FileAction, Shell};
+use egui::{Event, Pos2, vec2};
+use serde_json::{Value, json};
+use std::path::PathBuf;
 
 /// The examples of one section of the start screen.
 fn in_section(section: ExampleSection) -> usize {
     EXAMPLES.iter().filter(|e| e.section == section).count()
 }
-use craft3d_ui_egui::{FileAction, Shell};
-use egui::{Event, Pos2, vec2};
-use serde_json::{Value, json};
-use std::path::PathBuf;
 
 fn run(session: &mut Session, id: &str, params: Value) -> Value {
     session
@@ -520,6 +520,7 @@ const MAY_BE_NOT_PROVEN: &[(&str, &str)] = &[(
 #[test]
 fn every_example_builds_in_a_new_document_and_passes_its_assertions() {
     let mut session = Session::new(Workspace::none());
+    let mut not_proven: Vec<(&str, String)> = Vec::new();
     for example in &EXAMPLES {
         let built =
             run_example(&mut session, example).unwrap_or_else(|e| panic!("{}: {e}", example.id));
@@ -539,6 +540,7 @@ fn every_example_builds_in_a_new_document_and_passes_its_assertions() {
                 a["status"]
             );
             assert_eq!(a["status"], "notProven", "{}: {name}", example.id);
+            not_proven.push((example.id, name.to_string()));
             // Not proven, never failed: the value found lies within the
             // bounds the assertion states (assert.list's `expected`,
             // "<min> mm to <max> mm").
@@ -566,6 +568,14 @@ fn every_example_builds_in_a_new_document_and_passes_its_assertions() {
         assert!(status.path.is_none(), "an example is a new document");
     }
     assert_eq!(session.document_statuses().len(), EXAMPLES.len());
+    // Each exception is still needed: once its assertion is proven, the
+    // entry must go.
+    for (id, name) in MAY_BE_NOT_PROVEN {
+        assert!(
+            not_proven.iter().any(|(i, n)| i == id && n == name),
+            "{id}: `{name}` is proven now: remove it from MAY_BE_NOT_PROVEN"
+        );
+    }
 }
 
 #[test]
