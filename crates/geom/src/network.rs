@@ -1697,8 +1697,8 @@ fn hold_tangent(
     // the fair profile (`fair`: it leaves the second derivative at the
     // edge alone; its second coefficient is `f`, the one-row change's).
     if rows > 2 {
-        let shape = fair::profile(&net.kv, q, fair::reach(next), fair::Order::Tangent)?;
-        spread(net, &delta, &shape, tol, |change, ribbon, u| {
+        let shape = fair::profile(&net.kv, q, next, fair::Order::Tangent)?;
+        spread(net, &delta, &shape, 1, tol, |change, ribbon, u| {
             if change.is_finite() {
                 format!(
                     "{label}: holding it tangent would move the surface's control points across it by {change:.3e} at control point {u}, more than the {ribbon:.3e} between them and the edge: the face's tangent planes are not told apart well enough there to follow"
@@ -2283,6 +2283,12 @@ pub fn gordon(net: &Network<'_>) -> Result<Patch, NetworkError> {
             2 => sum.transposed(),
             _ => sum.transposed().reversed_v(),
         };
+        let far_held = net.edges.get(e ^ 1).and_then(Condition::held).is_some();
+        let next = if g2 {
+            fair::limit(next, far_held)
+        } else {
+            next
+        };
         let spline_face = !carried.is_empty();
         let fields = if carried.is_empty() {
             let c = work.column(0)?;
@@ -2670,6 +2676,9 @@ fn bend(
     };
     let count = crossing.len();
     let mut side: Option<(f64, usize)> = None;
+    // Whether the opposite edge holds rows of its own (then a curvature
+    // change stops half way when no curve lies between).
+    let far_held = net.edges.get(e ^ 1).and_then(Condition::held).is_some();
     // The parameter of the next crossing along each crossing curve.
     let next = if at_start {
         inner.get(1).copied().unwrap_or(1.0)
@@ -2759,16 +2768,17 @@ fn bend(
         while raw.degree < 3 {
             raw.elevate_batched()?;
         }
-        // Only the control point beside the end moves (and the one after
-        // it, in curvature): their basis functions must stop short of the
-        // next crossing.
+        // Only the control point beside the end moves (in curvature, the
+        // change is spread over the reach, `fair`): their basis functions
+        // must stop short of the next crossing.
+        let here = if at_start { next } else { 1.0 - next };
+        let reach = fair::limit(here, far_held);
         localize_rows(
             &mut raw,
-            if at_start { next } else { 1.0 - next },
+            if g2 { reach } else { here },
             if g2 { 3 } else { 2 },
         )?;
         let p_deg = raw.degree;
-        let reach = fair::reach(if at_start { next } else { 1.0 - next });
         if g2 {
             // The tangent turned by a change of least curvature variation
             // that leaves the second derivative at the edge as it was
@@ -3050,19 +3060,23 @@ fn edge_rows(net: &Net, o: Vec3) -> Result<EdgeRows, NetworkError> {
 }
 
 /// Adds `delta(u) · shape_j` to the control point `j` across of every
-/// control point `u` along, refusing a change larger than the ribbon
-/// between that point and the edge (with a margin of the tolerance).
+/// control point `u` along. The size of the change is judged as the
+/// one-row change was (the profile's shape is fixed, its size is
+/// `delta`'s): row `lead` must not move by more than the ribbon between it
+/// and the edge (with a margin of the tolerance); every moved point must
+/// keep a positive weight.
 fn spread(
     net: &mut Net,
     delta: &Raw,
     shape: &[f64],
+    lead: usize,
     tol: f64,
     why: impl Fn(f64, f64, usize) -> String,
 ) -> Result<(), NetworkError> {
     for (u, (row, d)) in net.rows.iter_mut().zip(&delta.points).enumerate() {
         let h0 = row.first().copied().ok_or_else(internal)?;
         let p0 = point(h0).ok_or_else(internal)?;
-        for (slot, c) in row.iter_mut().zip(shape).skip(1) {
+        for (j, (slot, c)) in row.iter_mut().zip(shape).enumerate().skip(1) {
             if *c == 0.0 {
                 continue;
             }
@@ -3070,10 +3084,12 @@ fn spread(
             let (Some(p), Some(q)) = (point(*slot), point(moved)) else {
                 return refuse(why(f64::INFINITY, 0.0, u));
             };
-            let change = p.distance(q);
-            let ribbon = p.distance(p0) + tol;
-            if change.is_nan() || change > ribbon {
-                return refuse(why(change, ribbon, u));
+            if j == lead {
+                let change = p.distance(q);
+                let ribbon = p.distance(p0) + tol;
+                if change.is_nan() || change > ribbon {
+                    return refuse(why(change, ribbon, u));
+                }
             }
             *slot = moved;
         }
@@ -3114,8 +3130,8 @@ fn put_on_third_row(
     // face's, a fraction of the ribbon between the edge and the rows it
     // moves; one larger than that ribbon (with a margin of the tolerance)
     // is a solve that did not follow the face, and refused.
-    let shape = fair::profile(&net.kv, net.pv, fair::reach(next), fair::Order::Curvature)?;
-    spread(net, &delta, &shape, tol, |change, ribbon, u| {
+    let shape = fair::profile(&net.kv, net.pv, next, fair::Order::Curvature)?;
+    spread(net, &delta, &shape, 2, tol, |change, ribbon, u| {
         if change.is_finite() {
             format!(
                 "{label}: holding it in curvature would move the surface's control points across it by {change:.3e} at control point {u}, more than the {ribbon:.3e} between them and the edge: the face's curvature is not followed well enough there"

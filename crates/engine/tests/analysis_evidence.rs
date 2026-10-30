@@ -159,3 +159,81 @@ fn analysis_evidence() {
         pictures(&mut s, &dir, "model", &["iso", "front"]);
     }
 }
+
+/// The guide's fin held to its post (docs/guide/09-features.md,
+/// "Curvature-continuous seams"), held in `kind`.
+fn fin(s: &mut Session, kind: &str) {
+    for (cmd, params) in [
+        (
+            "feature.cylinder",
+            json!({"radius": "20 mm", "height": "30 mm", "name": "Post"}),
+        ),
+        ("sketch.create", json!({"name": "Seam", "plane": "zx"})),
+        (
+            "sketch.line",
+            json!({"sketch": "Seam", "from": [0, 20], "to": [30, 20]}),
+        ),
+        (
+            "sketch.create",
+            json!({"name": "Far", "plane": "yz", "offset": "35 mm"}),
+        ),
+        (
+            "sketch.line",
+            json!({"sketch": "Far", "from": [25, 0], "to": [25, 30]}),
+        ),
+        ("sketch.create", json!({"name": "Bottom"})),
+        (
+            "sketch.spline",
+            json!({"sketch": "Bottom", "through": [[20, 0], [23, 6.5], [27, 13], [35, 25]]}),
+        ),
+        ("sketch.create", json!({"name": "Top", "offset": "30 mm"})),
+        (
+            "sketch.spline",
+            json!({"sketch": "Top", "through": [[20, 0], [23, 6.5], [27, 13], [35, 25]]}),
+        ),
+        (
+            "feature.surface.network",
+            json!({"u": ["Seam", "Far"], "v": ["Bottom", "Top"], "edges": {"uFirst": {"kind": kind, "face": "F1:face(0)"}}, "name": "Fin"}),
+        ),
+    ] {
+        run(s, cmd, params);
+    }
+}
+
+#[test]
+#[ignore = "evidence for the developer: run with --ignored"]
+fn fin_evidence() {
+    for kind in ["curvature", "tangent"] {
+        let dir = workdir("analysis", &format!("fin-{kind}"));
+        let mut s = session_in(&dir);
+        new_document(&mut s, 1.0);
+        fin(&mut s, kind);
+        let face = body(&mut s, "Fin")["faceNames"][0]
+            .as_str()
+            .unwrap()
+            .to_string();
+        for (what, analysis) in [
+            ("zebra", json!({"mode": "zebra", "stripes": 24})),
+            (
+                "curvature",
+                json!({"mode": "curvature", "curvature": "mean"}),
+            ),
+            (
+                "combs",
+                json!({"mode": "curvature", "curvature": "mean",
+                       "combs": {"iso": [{"face": face, "u": 0.2}, {"face": face, "u": 0.5}, {"face": face, "u": 0.8}], "density": 120}}),
+            ),
+        ] {
+            let name = format!("fin-{kind}-{what}.png");
+            let out = run(
+                &mut s,
+                "view.render",
+                json!({"path": name, "width": 1000, "height": 700, "view": "iso", "analysis": analysis}),
+            );
+            println!("{name}: {}", out["analysis"]);
+            let bytes = std::fs::read(dir.join(&name)).unwrap();
+            craft3d_testkit::evidence::print(&name, &bytes);
+            std::fs::write(evidence_dir().join(&name), bytes).unwrap();
+        }
+    }
+}

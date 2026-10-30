@@ -24,6 +24,11 @@
 //! as before. The reach is cut into [`FAIR_SPANS`] equal spans so that
 //! there are coefficients to spread the change over.
 //!
+//! Where the next curve is the sheet's far edge and that edge is free,
+//! the change runs over the whole curve and keeps only its last point
+//! (as a tangent hold's change of the second control point always did):
+//! nothing then asks the curvature to swing back.
+//!
 //! What no such change can do: one that ends with the curve's own position
 //! and tangent has `∫ Δκ ds ≈ 0` and `∫ (L − s) Δκ ds ≈ 0` over its reach
 //! `L` (to first order in the change), so the change of curvature `Δκ`
@@ -41,11 +46,23 @@ use craft3d_math::quadrature::gauss_legendre;
 pub(super) const FAIR_SPANS: usize = 8;
 
 /// How far (in the crossing curve's parameter, from the edge at 0) a
-/// change for a curvature edge may reach: to the next curve crossing it,
-/// or half way where that is the opposite edge (whose own rows take the
-/// other half).
-pub(super) fn reach(next: f64) -> f64 {
-    if next >= 1.0 - SAME_KNOT { 0.5 } else { next }
+/// change for a curvature edge may reach: to the next curve crossing it
+/// (where it ends with every derivative the spline has); where that is
+/// the opposite edge, over the whole curve with only its last point kept
+/// (1: the sheet's far edge is free, its points stay on its curve), or
+/// half way when the opposite edge is held tangent or in curvature itself
+/// (its own rows take the other half).
+pub(super) fn limit(next: f64, far_held: bool) -> f64 {
+    if next >= 1.0 - SAME_KNOT {
+        if far_held { 0.5 } else { 1.0 }
+    } else {
+        next
+    }
+}
+
+/// Whether a reach runs to the curve's far end (only its last point kept).
+fn open(end: f64) -> bool {
+    end >= 1.0 - SAME_KNOT
 }
 
 /// What a profile changes at the edge.
@@ -58,11 +75,11 @@ pub(super) enum Order {
     Curvature,
 }
 
-/// Knots inserted at every `reach(next) · j / FAIR_SPANS` that `raw` does
-/// not have yet, so that its first three basis functions end within the
-/// reach and there are coefficients to spread a change over.
-pub(super) fn localize(raw: &mut Raw, next: f64) -> Result<(), NetworkError> {
-    let end = reach(next);
+/// Knots inserted at every `end · j / FAIR_SPANS` (`end` from [`limit`])
+/// that `raw` does not have yet, so that its first three basis functions
+/// end within the reach and there are coefficients to spread a change
+/// over.
+pub(super) fn localize(raw: &mut Raw, end: f64) -> Result<(), NetworkError> {
     if end <= SAME_KNOT {
         return Ok(());
     }
@@ -82,8 +99,9 @@ pub(super) fn localize(raw: &mut Raw, next: f64) -> Result<(), NetworkError> {
 
 /// The coefficients `c_j` (one per control point) of the scalar spline of
 /// `degree` on `knots` that meets `order` at 0, vanishes from `end` on
-/// (only basis functions that end by then take part) and has the least
-/// `∫ G‴²` among those.
+/// (only basis functions that end by then take part; for an open reach,
+/// `end` = 1, every one but the last) and has the least `∫ G‴²` among
+/// those.
 pub(super) fn profile(
     knots: &[f64],
     degree: usize,
@@ -96,9 +114,13 @@ pub(super) fn profile(
         .checked_sub(q + 1)
         .filter(|c| *c > 0)
         .ok_or_else(internal)?;
-    let inside = (0..count)
-        .take_while(|j| knots.get(j + q + 1).is_some_and(|k| *k <= end + SAME_KNOT))
-        .count();
+    let inside = if open(end) {
+        count - 1
+    } else {
+        (0..count)
+            .take_while(|j| knots.get(j + q + 1).is_some_and(|k| *k <= end + SAME_KNOT))
+            .count()
+    };
     if q < 3 || inside < 3 {
         return Err(internal());
     }
@@ -287,6 +309,27 @@ mod tests {
                     assert!(at(&g, t).abs() < 1e-15, "{q} {order:?} at {t}");
                 }
             }
+        }
+    }
+
+    #[test]
+    fn an_open_profile_keeps_only_the_last_point() {
+        let q = 3;
+        let inner: Vec<f64> = (1..8).map(|j| j as f64 / 8.0).collect();
+        let k = knots(q, &inner);
+        for order in [Order::Tangent, Order::Curvature] {
+            let c = profile(&k, q, 1.0, order).unwrap();
+            assert_eq!(*c.last().unwrap(), 0.0);
+            assert!(
+                c.iter().rev().skip(1).take(3).any(|x| x.abs() > 1e-6),
+                "{c:?}"
+            );
+            let g = scalar(q, &k, &c);
+            let g2 = derivative(&derivative(&g).unwrap()).unwrap();
+            assert!(
+                (eval(&g2, 0.0).unwrap()[0] - f64::from(u8::from(order == Order::Curvature))).abs()
+                    < 1e-9
+            );
         }
     }
 
