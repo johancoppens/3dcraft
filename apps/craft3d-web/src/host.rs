@@ -25,8 +25,8 @@
 
 use craft3d_engine::{Session, Workspace};
 use craft3d_ui_egui::files::{
-    EXPORT_FORMATS, EXTENSION, ExportPlan, JIG_EXTENSION, export_params, extension_of, file_stem,
-    guarded, suggested_jig_name, suggested_name,
+    ASSEMBLY_EXTENSION, EXPORT_FORMATS, EXTENSION, ExportPlan, JIG_EXTENSION, export_params,
+    extension_of, file_stem, guarded, suggested_jig_name, suggested_name,
 };
 use craft3d_ui_egui::shell::ExportRequest;
 use craft3d_ui_egui::{CommandReport, DocAction, FileAction, Shell, Work};
@@ -151,9 +151,9 @@ pub fn open_types(ask: Ask) -> Vec<PickerType> {
     match ask {
         Ask::Open => vec![
             PickerType {
-                description: "3DCraft document or Jig",
+                description: "3DCraft document, Jig or assembly",
                 mime: "application/x-craft3d",
-                extensions: vec![EXTENSION, JIG_EXTENSION],
+                extensions: vec![EXTENSION, JIG_EXTENSION, ASSEMBLY_EXTENSION],
             },
             jig_type(),
         ],
@@ -305,7 +305,7 @@ pub enum Received {
 
 pub fn received_kind(name: &str) -> Option<Received> {
     match extension_of(name)?.as_str() {
-        EXTENSION | JIG_EXTENSION => Some(Received::Document),
+        EXTENSION | JIG_EXTENSION | ASSEMBLY_EXTENSION => Some(Received::Document),
         "step" | "stp" => Some(Received::Step),
         _ => None,
     }
@@ -1599,6 +1599,12 @@ mod tests {
         }
         assert!(memory_name(&"a".repeat(1000)).is_some_and(|n| n.len() <= MAX_NAME));
         assert_eq!(received_kind("A.3DCRAFT"), Some(Received::Document));
+        assert_eq!(received_kind("legs.3DCraftAsm"), Some(Received::Document));
+        assert!(
+            open_types(Ask::Open)[0]
+                .extensions
+                .contains(&ASSEMBLY_EXTENSION)
+        );
         assert_eq!(received_kind("a.STP"), Some(Received::Step));
         assert_eq!(received_kind("a.stl"), None);
         // An export's name follows its format (the shared rule,
@@ -2098,10 +2104,11 @@ mod tests {
         assert_eq!(export_types(None)[0].extensions, ["step", "stp"]);
         assert_eq!(export_types(Some("svg"))[0].description, "SVG");
         assert_eq!(open_types(Ask::Import)[0].extensions, ["step", "stp"]);
-        // Open takes a document or a published Jig (2026-10-23).
+        // Open takes a document, a published Jig (2026-10-23) or an
+        // assembly (2026-10-30).
         assert_eq!(
             open_types(Ask::Open)[0].extensions,
-            [EXTENSION, JIG_EXTENSION]
+            [EXTENSION, JIG_EXTENSION, ASSEMBLY_EXTENSION]
         );
     }
 
@@ -2163,5 +2170,131 @@ mod tests {
         // Nothing is left in memory, and nothing is recent in the browser.
         assert!(host.session.file_names().is_empty());
         assert!(host.shell.recent_files().is_empty());
+    }
+
+    /// An assembly on the page: regeneration elsewhere is refused for it
+    /// (its parts are placed from the files read for it, which a worker
+    /// does not have), so it is solved and placed on the page, a piece per
+    /// frame; `joint.set` and the motion over `t` move what the page shows,
+    /// and its tree lists the instances and mates.
+    #[test]
+    fn an_assembly_is_solved_and_placed_on_the_page() {
+        let mut host = host();
+        host.set_stepwise(true);
+        host.session.set_regen_elsewhere(true);
+        host.session.set_checks_elsewhere(true);
+        let run = |host: &mut WebHost, id: &str, params: Value| {
+            host.session
+                .execute(id, &params)
+                .unwrap_or_else(|e| panic!("{id}: {e}"))
+        };
+        run(&mut host, "file.new", json!({}));
+        run(
+            &mut host,
+            "variable.set",
+            json!({"name": "len", "expr": "24 mm"}),
+        );
+        run(
+            &mut host,
+            "variable.publish",
+            json!({"name": "len", "min": "10 mm", "max": "500 mm"}),
+        );
+        run(
+            &mut host,
+            "feature.block",
+            json!({"name": "Bar", "size": ["len", 4, 2]}),
+        );
+        run(
+            &mut host,
+            "datum.axis",
+            json!({"name": "End1", "through": [[2, 2, 0], [2, 2, 1]]}),
+        );
+        run(
+            &mut host,
+            "datum.axis",
+            json!({"name": "End2", "through": [["len - 2 mm", 2, 0], ["len - 2 mm", 2, 1]]}),
+        );
+        run(&mut host, "file.save", json!({"path": "bar.3dcraft"}));
+        run(&mut host, "assembly.new", json!({}));
+        for (name, len) in [
+            ("Ground", "64 mm"),
+            ("Crank", "24 mm"),
+            ("Coupler", "64 mm"),
+            ("Rocker", "24 mm"),
+        ] {
+            run(
+                &mut host,
+                "instance.add",
+                json!({"source": "bar.3dcraft", "name": name, "body": "Bar", "params": {"len": len}}),
+            );
+        }
+        for (name, a, b) in [
+            ("Base", "world/z", "Ground/End1"),
+            ("Drive", "Ground/End1", "Crank/End1"),
+            ("Elbow", "Crank/End2", "Coupler/End1"),
+            ("Knee", "Coupler/End2", "Rocker/End2"),
+            ("Hip", "Ground/End2", "Rocker/End1"),
+        ] {
+            let kind = if name == "Base" { "fixed" } else { "revolute" };
+            run(
+                &mut host,
+                "mate.add",
+                json!({"kind": kind, "a": a, "b": b, "name": name, "flip": true}),
+            );
+        }
+        assert!(!host.session.regen_elsewhere());
+        let crank_at = |host: &mut WebHost| -> [f64; 2] {
+            for _ in 0..1000 {
+                if !host.prepare(|| false) {
+                    break;
+                }
+            }
+            host.shell.sync(&mut host.session);
+            let scene = host.shell.shown_scene_arc().expect("a scene");
+            let crank = scene
+                .bodies
+                .iter()
+                .find(|b| b.name == "Crank")
+                .expect("Crank shown");
+            let (lo, hi) = crank.mesh.bbox().corners().expect("a box");
+            [(lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0]
+        };
+        for angle in [60.0_f64, 150.0] {
+            run(
+                &mut host,
+                "joint.set",
+                json!({"mate": "Drive", "value": format!("{angle} deg")}),
+            );
+            let mid = crank_at(&mut host);
+            let a = angle.to_radians();
+            assert!(
+                (mid[0] - 10.0 * a.cos()).abs() < 1.0 && (mid[1] - 10.0 * a.sin()).abs() < 1.0,
+                "{angle} deg: the crank is at {mid:?}"
+            );
+        }
+        let names: Vec<String> = host
+            .shell
+            .tree_rows()
+            .iter()
+            .map(|r| r.name.clone())
+            .collect();
+        assert_eq!(names, ["Ground", "Crank", "Coupler", "Rocker"]);
+        assert_eq!(
+            host.shell.assembly_outline().map(|o| o.mates.len()),
+            Some(5)
+        );
+        // The motion over t, solved on the page.
+        run(&mut host, "variable.set", json!({"name": "t", "expr": "0"}));
+        run(
+            &mut host,
+            "variable.set",
+            json!({"name": "Drive_angle", "expr": "360 deg * t"}),
+        );
+        run(&mut host, "view.motion", json!({"t": 0.25}));
+        let mid = crank_at(&mut host);
+        assert!(
+            mid[0].abs() < 1.0 && (mid[1] - 10.0).abs() < 1.0,
+            "t = 0.25: {mid:?}"
+        );
     }
 }

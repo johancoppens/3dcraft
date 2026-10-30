@@ -2319,4 +2319,143 @@ mod tests {
         assert_eq!(report.label, "param.set");
         assert!(report.ok, "{}", report.text);
     }
+
+    /// The window's bug with an assembly (2026-10-30): with the engine
+    /// thread and the refiner, as the window runs, a four-bar made by
+    /// commands over the control channel is drawn where `joint.set` puts
+    /// its crank, at three angles, and `ui.fit` frames it.
+    #[test]
+    fn the_window_follows_joint_set_on_an_assembly() {
+        let dir = std::env::temp_dir().join(format!("craft3d-asm-window-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("demo/asm")).unwrap();
+        let dir = std::fs::canonicalize(&dir).unwrap();
+        let (requests, incoming) = mpsc::channel::<Request>();
+        let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
+        // The window's own session: the user's authority narrowed to the
+        // automation roots (`--automation-read-root`).
+        let options = crate::args::Options {
+            read_root: Some(dir.to_string_lossy().to_string()),
+            write_root: Some(dir.to_string_lossy().to_string()),
+            ..crate::args::Options::default()
+        };
+        let session = super::session(&options).unwrap();
+        let mut desk =
+            Desk::new(Host::new(session), incoming, picker).with_engine_thread(Arc::new(|| {}));
+        let mut id = 0;
+        let mut execute = |desk: &mut Desk, command: &str, params: Value| -> Value {
+            id += 1;
+            let line = json!({"id": id, "method": "engine.execute",
+                              "params": {"command": command, "params": params}});
+            let answer = ask(&requests, &line.to_string());
+            let reply: Value = serde_json::from_str(&turn_until(desk, &answer).unwrap()).unwrap();
+            assert!(reply.get("error").is_none(), "{command}: {reply}");
+            reply
+        };
+        execute(&mut desk, "file.new", json!({}));
+        execute(
+            &mut desk,
+            "variable.set",
+            json!({"name": "len", "expr": "24 mm"}),
+        );
+        execute(
+            &mut desk,
+            "variable.publish",
+            json!({"name": "len", "min": "10 mm", "max": "500 mm"}),
+        );
+        execute(
+            &mut desk,
+            "feature.block",
+            json!({"name": "Bar", "size": ["len", 4, 2]}),
+        );
+        execute(
+            &mut desk,
+            "datum.axis",
+            json!({"name": "End1", "through": [[2, 2, 0], [2, 2, 1]]}),
+        );
+        execute(
+            &mut desk,
+            "datum.axis",
+            json!({"name": "End2", "through": [["len - 2 mm", 2, 0], ["len - 2 mm", 2, 1]]}),
+        );
+        execute(
+            &mut desk,
+            "file.save",
+            json!({"path": "demo/asm/bar.3dcraft"}),
+        );
+        execute(&mut desk, "assembly.new", json!({}));
+        // One source named by its absolute path, as an agent may.
+        let absolute = dir
+            .join("demo/asm/bar.3dcraft")
+            .to_string_lossy()
+            .to_string();
+        for (name, len, source) in [
+            ("Ground", "64 mm", "demo/asm/bar.3dcraft"),
+            ("Crank", "24 mm", absolute.as_str()),
+            ("Coupler", "64 mm", "demo/asm/bar.3dcraft"),
+            ("Rocker", "24 mm", "demo/asm/bar.3dcraft"),
+        ] {
+            execute(
+                &mut desk,
+                "instance.add",
+                json!({"source": source, "name": name, "body": "Bar",
+                       "params": {"len": len}}),
+            );
+        }
+        for (name, a, b) in [
+            ("Base", "world/z", "Ground/End1"),
+            ("Drive", "Ground/End1", "Crank/End1"),
+            ("Elbow", "Crank/End2", "Coupler/End1"),
+            ("Knee", "Coupler/End2", "Rocker/End2"),
+            ("Hip", "Ground/End2", "Rocker/End1"),
+        ] {
+            let kind = if name == "Base" { "fixed" } else { "revolute" };
+            execute(
+                &mut desk,
+                "mate.add",
+                json!({"kind": kind, "a": a, "b": b, "name": name, "flip": true}),
+            );
+        }
+        let mut seen = Vec::new();
+        for angle in [60.0_f64, 150.0, 240.0] {
+            execute(
+                &mut desk,
+                "joint.set",
+                json!({"mate": "Drive", "value": format!("{angle} deg")}),
+            );
+            // Until the work is done and the display scene is refined.
+            for _ in 0..500 {
+                desk.turn();
+                if !desk.away() && !desk.refining() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            desk.host.shell.sync(&mut desk.host.session);
+            let scene = desk.host.shell.shown_scene_arc().expect("a scene shown");
+            let crank = scene
+                .bodies
+                .iter()
+                .find(|b| b.name == "Crank")
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{angle}: no Crank among {:?} (preview {})",
+                        scene.bodies.iter().map(|b| &b.name).collect::<Vec<_>>(),
+                        scene.preview
+                    )
+                });
+            let (lo, hi) = crank.mesh.bbox().corners().expect("a box");
+            let mid = [(lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0];
+            let (c, n) = (angle.to_radians().cos(), angle.to_radians().sin());
+            assert!(
+                (mid[0] - 10.0 * c).abs() < 3.0 && (mid[1] - 10.0 * n).abs() < 3.0,
+                "{angle} deg: the crank is drawn at {mid:?}"
+            );
+            seen.push(mid);
+        }
+        let answer = ask(&requests, r#"{"id":900,"method":"ui.fit"}"#);
+        let reply = turn_until(&mut desk, &answer).unwrap();
+        assert!(!reply.contains("error"), "{reply}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

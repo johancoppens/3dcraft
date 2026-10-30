@@ -101,6 +101,16 @@ pub(crate) struct Solution {
     pub dof: usize,
     /// Each free motion in words ("Bar[3] can still turn about z …").
     pub free: Vec<String>,
+    /// Per mate: its main free motion (its first variable) moves in some
+    /// free motion of the solution, so driving it takes one degree of
+    /// freedom and contradicts nothing ([`main_moves`]).
+    pub main_free: Vec<bool>,
+    /// The driven values solved for, in the order of the driven
+    /// variables of the problem's mates.
+    pub drives: Vec<f64>,
+    /// Why a moment asked to be carried ([`advance`]) was solved plainly
+    /// instead.
+    pub note: Option<String>,
 }
 
 /// Why the solve failed, in words that name the mates and instances.
@@ -123,6 +133,19 @@ fn pose_from_solver(p: &asm::Pose) -> Option<Transform> {
 }
 
 pub(crate) fn solve(p: &Problem) -> Result<Solution, Diagnosis> {
+    solve_from(p, None)
+}
+
+/// Solves `p` as a moment of a motion: from its start poses, which a
+/// solve at the driven values `from` holds, the drives are moved to the
+/// problem's own along the branch ([`asm::Solver::advance`], which cuts
+/// the step while the solution jumps). With `from` of another length
+/// than the problem's drives, a plain solve.
+pub(crate) fn advance(p: &Problem, from: &[f64]) -> Result<Solution, Diagnosis> {
+    solve_from(p, Some(from))
+}
+
+fn solve_from(p: &Problem, from: Option<&[f64]>) -> Result<Solution, Diagnosis> {
     if p.start.len() != p.instances {
         return Err(Diagnosis("a start pose is needed per instance".to_string()));
     }
@@ -173,7 +196,25 @@ pub(crate) fn solve(p: &Problem) -> Result<Solution, Diagnosis> {
         tolerance: p.tolerance,
         scale: p.scale,
     };
-    let solution = asm::solve(&problem).map_err(|d| Diagnosis(d.message(&problem)))?;
+    let slots = problem.driven_slots().len();
+    let note = from.filter(|f| f.len() != slots).map(|f| {
+        format!(
+            "solved from the placements, not carried from the moment before: {} driven values there, {slots} here",
+            f.len()
+        )
+    });
+    let solution = match from {
+        Some(from) if from.len() == slots => {
+            let mut solver =
+                asm::Solver::new(&problem).map_err(|d| Diagnosis(d.message(&problem)))?;
+            let to = solver.problem_drives();
+            solver
+                .solve_at(from)
+                .and_then(|_| solver.advance(&to))
+                .map_err(|d| Diagnosis(d.message(&problem)))?
+        }
+        _ => asm::solve(&problem).map_err(|d| Diagnosis(d.message(&problem)))?,
+    };
     let poses = solution
         .poses
         .iter()
@@ -188,7 +229,49 @@ pub(crate) fn solve(p: &Problem) -> Result<Solution, Diagnosis> {
         values: solution.values.clone(),
         dof: solution.dof,
         free: solution.free.iter().map(|f| f.describe(&problem)).collect(),
+        main_free: main_moves(&problem, &solution.free),
+        drives: solution.drives.clone(),
+        note,
     })
+}
+
+/// Per mate of `problem`: whether its first variable changes in one of
+/// the free motions `free` (a basis of the Jacobian's null space) by at
+/// least 10⁻³ of the fastest variable of that motion, rates of distances
+/// taken at the problem's scale so that turns and shifts compare. A
+/// driver of a variable the null space moves adds one independent
+/// equation (its row is not in the Jacobian's row space), so it takes a
+/// degree of freedom and contradicts nothing; a driver of one it does not
+/// move repeats or contradicts what the mates already decide. Whether the
+/// null space moves a variable does not depend on the basis.
+fn main_moves(problem: &asm::Problem, free: &[asm::FreeMotion]) -> Vec<bool> {
+    let unit = |mate: usize, var: usize| match problem
+        .mates
+        .get(mate)
+        .and_then(|m| m.kind.variables().get(var))
+    {
+        Some(asm::VarKind::Angle) => 1.0,
+        _ => problem.scale.max(f64::MIN_POSITIVE),
+    };
+    let mut out = vec![false; problem.mates.len()];
+    for f in free {
+        let fastest = f
+            .variables
+            .iter()
+            .fold(0.0f64, |m, &(mt, v, r)| m.max((r / unit(mt, v)).abs()));
+        if !(fastest.is_finite() && fastest > 0.0) {
+            continue;
+        }
+        for &(m, v, r) in &f.variables {
+            if v == 0
+                && (r / unit(m, v)).abs() >= 1e-3 * fastest
+                && let Some(slot) = out.get_mut(m)
+            {
+                *slot = true;
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]

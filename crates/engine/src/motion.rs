@@ -28,9 +28,12 @@
 //!
 //! What is rebuilt, honestly: a part's features that depend on `t` are
 //! regenerated at every frame (only those). An assembly's instances are
-//! placed by transforms only (docs/design/assemblies.md); until assemblies
-//! play `t` (track C, phase 2), `t` drives the variables of a part.
+//! placed by transforms only: each moment of an assembly is a solve
+//! carried along the motion from its rest state ([`Sweep::placed_at`]),
+//! and a moment the solve cannot reach is a dead point, reported with
+//! its `t`.
 
+use crate::asm::{AsmState, Carried, Placed};
 use crate::commands::{Run, fail, length_unit, spec, vec3};
 use crate::params::Params;
 use crate::selection::{Resolver, SelectionKind, feature_named};
@@ -49,7 +52,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "view.motion",
         "Show Motion",
         r#"{"t": number from 0 to 1 or null, "collisions": boolean = as before (false)}"#,
-        "Shows the model in the view at a moment t of its motion, without changing the document: not its variables, its undo history or its dirty state (view state, as view.scrub). The timeline is the document's variable t when it is a plain number (no unit): formulas of t drive the motion (a crank angle 360 deg * t). Only the features that depend on t are regenerated, and only their bodies are meshed again; each state is a function of t alone: its sketches are carried from the document's own solution to t in fixed steps of t (1/128), so a linkage solved in a sketch stays on its branch, and a moment reached by a jump is the one a play reaches. collisions: true draws the bodies that overlap at t red (in the scene, so view.render, the window and view.replay show it) and lists the pairs. t null shows the document as it is again. The viewport, view.render, view.pick and screenshots show the state; document.inspect, measures and exports still see the document itself. An edit keeps the motion (the state is made again from the edited document); a document whose t is gone or has a unit lets go of it. Without parameters it changes nothing. Returns t (null when not shown), the timeline (its variable and its value in the document), rebuilt (the features whose bodies differ from the document's at this t) and collisions ([{a, aName, b, bName, volume}], or unknown pairs with a reason) when asked for.",
+        "Shows the model in the view at a moment t of its motion, without changing the document: not its variables, its undo history or its dirty state (view state, as view.scrub). The timeline is the document's variable t when it is a plain number (no unit): formulas of t drive the motion (a crank angle 360 deg * t). Only the features that depend on t are regenerated, and only their bodies are meshed again; each state is a function of t alone: its sketches are carried from the document's own solution to t in fixed steps of t (1/128), so a linkage solved in a sketch stays on its branch, and a moment reached by a jump is the one a play reaches. collisions: true draws the bodies that overlap at t red (in the scene, so view.render, the window and view.replay show it) and lists the pairs. t null shows the document as it is again. The viewport, view.render, view.pick and screenshots show the state; document.inspect, measures and exports still see the document itself. An edit keeps the motion (the state is made again from the edited document); a document whose t is gone or has a unit lets go of it. Without parameters it changes nothing. Returns t (null when not shown), the timeline (its variable and its value in the document), rebuilt (the features whose bodies differ from the document's at this t) and collisions ([{a, aName, b, bName, volume}], or unknown pairs with a reason) when asked for. An assembly plays t too: drivers are formulas of t for its joint variables (Drive_angle = 360 deg * t), each moment is a solve carried along the branch from the assembly at rest (never a regeneration), and where the mechanism cannot go further the result has deadPoint {t, why}: the t it stopped at, the parts shown where they stopped.",
         doc: true,
         view_motion
     ),
@@ -57,7 +60,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "view.trace",
         "Trace Point",
         r#"{"point": vertex name or {sketch, entity}, "feature": id or name = the body that has the vertex, "t": [number, number] = [0, 1], "samples": integer = 65, "name": string = "Trace <n>", "clear": boolean or trace name}"#,
-        "Traces the path of a point over the motion: the point is a vertex by its persistent name (document.edges lists them; feature says which body when several have it) or a point of a sketch ({sketch, entity}); its place is taken at samples values of t evenly from t[0] to t[1] (both included), each state made as view.motion makes it. The trace is view state of the document (not saved, not undone, let go of at the next edit): the viewport draws it as a line, and file.export {path: *.svg or *.dxf, trace: name} writes it in its plane. A trace with the name of one kept replaces it; at most 32 are kept. clear: true removes every trace, clear: name one of them (nothing is traced then). The document needs a timeline (view.motion). A point that is gone at some t fails the trace, naming that t. Returns name, point, t, samples, points ([x, y, z] in the document's unit), length (along the polyline), closed (more than 2 points and it ends where it began, within the tolerance), box and plane ({point, normal} when the path lies in one plane within the tolerance and within a millionth of its size, else null).",
+        "Traces the path of a point over the motion: the point is a vertex by its persistent name (document.edges lists them; feature says which body when several have it) or a point of a sketch ({sketch, entity}); its place is taken at samples values of t evenly from t[0] to t[1] (both included), each state made as view.motion makes it. The trace is view state of the document (not saved, not undone, let go of at the next edit): the viewport draws it as a line, and file.export {path: *.svg or *.dxf, trace: name} writes it in its plane. A trace with the name of one kept replaces it; at most 32 are kept. clear: true removes every trace, clear: name one of them (nothing is traced then). The document needs a timeline (view.motion). A point that is gone at some t fails the trace, naming that t. Returns name, point, t, samples, points ([x, y, z] in the document's unit), length (along the polyline), closed (more than 2 points and it ends where it began, within the tolerance), box and plane ({point, normal} when the path lies in one plane within the tolerance and within a millionth of its size, else null). In an assembly the point is named through an instance as a mate names it (Coupler/End2, Foot/F1:vertex(2)), without feature.",
         doc: true,
         names: ["point"],
         view_trace
@@ -66,7 +69,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "motion.check",
         "Check Over Motion",
         r#"{"assertions": [name, ...] = every assertion (or only measure's), "measure": {the parameters of assert.add without name}, "t": [number, number] = [0, 1], "samples": integer = 33, "details": boolean = false}"#,
-        "Checks assertions at samples of the motion: at samples values of t evenly from t[0] to t[1] (both included) the document is set to that t (as view.motion makes it) and the assertions are measured as document.check measures them, on a copy: the document does not change. What it proves is what held at the samples: a failure between two samples (a collision shorter than their spacing) can be missed, so the result says sampled: true. measure is an assertion written as for assert.add (without its name) and checked only here; assertions names the document's own (default: all of them, or none when measure is given). Any measure works: overlap with is false gives the first sample that collides, clearance with a min the least clearance at the samples and its t. Per assertion: status (failed when any sample fails; else error, notProven, passed, or inactive when it is never on), failed (how many samples), firstFailure ({t, after, measured, message}: the first sample that fails, and after the last sample before it that passed, null when none did, so the failure begins in (after, t]; null when no sample fails), firstError and firstNotProven the same for samples that could not be measured or not proven, min and max ({t, value} of a numeric measure at the samples), unit and expected; with details every sample ({t, status, measured}). ok is true when every assertion passed at every sample. The document needs a timeline (view.motion). At most 1000 samples.",
+        "Checks assertions at samples of the motion: at samples values of t evenly from t[0] to t[1] (both included) the document is set to that t (as view.motion makes it) and the assertions are measured as document.check measures them, on a copy: the document does not change. What it proves is what held at the samples: a failure between two samples (a collision shorter than their spacing) can be missed, so the result says sampled: true. measure is an assertion written as for assert.add (without its name) and checked only here; assertions names the document's own (default: all of them, or none when measure is given). Any measure works: overlap with is false gives the first sample that collides, clearance with a min the least clearance at the samples and its t. Per assertion: status (failed when any sample fails; else error, notProven, passed, or inactive when it is never on), failed (how many samples), firstFailure ({t, after, measured, message}: the first sample that fails, and after the last sample before it that passed, null when none did, so the failure begins in (after, t]; null when no sample fails), firstError and firstNotProven the same for samples that could not be measured or not proven, min and max ({t, value} of a numeric measure at the samples), unit and expected; with details every sample ({t, status, measured}). ok is true when every assertion passed at every sample. The document needs a timeline (view.motion). At most 1000 samples. For an assembly each sample is measured at the moment as view.motion solves it, and deadPoints lists every dead point met ({t, why}).",
         doc: true,
         motion_check
     ),
@@ -98,14 +101,6 @@ const MAX_MEMO: usize = MAX_COLLISION_PAIRS;
 /// The value of the timeline in `doc` (its variable `t` as the document
 /// has it), or why the document has none: a sentence for whoever asked.
 pub(crate) fn timeline(doc: &Document) -> Result<f64, String> {
-    // An assembly shows its placed parts; playing it over `t`, with a
-    // solve per moment, is motion phase 2 (docs/design/motion.md).
-    if doc.is_assembly() {
-        return Err(
-            "an assembly has no motion over `t` yet (motion of assemblies, phase 2, is not built): play the motion in a part"
-                .into(),
-        );
-    }
     let Some(variable) = doc.variable(TIMELINE) else {
         return Err(format!(
             "the document has no timeline: a variable `{TIMELINE}`, a plain number from 0 to 1 that the formulas of the motion use (variable.set {{\"name\": \"{TIMELINE}\", \"expr\": \"0\"}}, then for example a crank angle `360 deg * {TIMELINE}`)"
@@ -207,6 +202,41 @@ pub(crate) struct Sweep {
     /// The sketches at the grid points made so far, by `k`.
     grid: BTreeMap<i64, Arc<Vec<FeatureKind>>>,
     cache: RegenCache,
+    /// For an assembly: its moments, solved rather than regenerated.
+    assembly: Option<AsmSweep>,
+}
+
+/// The motion of an assembly over `t` (docs/design/motion.md ›
+/// *Assemblies*): each moment is a solve, its instances placed by
+/// transforms, never regenerated. The same grid as a part's sketches: the
+/// solved state at grid point `k` is the one at `k ∓ 1` carried to its `t`
+/// by the solver's continuation (`Solver::advance`), and a moment is its
+/// grid point carried to `t`; so a moment is a function of `t` alone and
+/// stays on the branch the assembly rests on.
+#[derive(Clone)]
+struct AsmSweep {
+    /// The assembly's file, which its sources' paths are relative to.
+    path: Option<String>,
+    /// The files read for it and the configurations built: a copy of the
+    /// open document's, so a sweep never changes what it shows.
+    asm: AsmState,
+    grid: BTreeMap<i64, Arc<GridState>>,
+}
+
+/// A solved grid point of an assembly's motion.
+struct GridState {
+    /// The state reached: at the grid point, or where the motion stopped.
+    carried: Carried,
+    /// Where the motion stopped before this grid point, and why.
+    stuck: Option<Stuck>,
+}
+
+/// A dead point: the last `t` the motion reached and why it goes no
+/// further.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Stuck {
+    pub(crate) t: f64,
+    pub(crate) why: String,
 }
 
 impl Sweep {
@@ -231,7 +261,153 @@ impl Sweep {
             sketches,
             grid,
             cache,
+            assembly: None,
         }
+    }
+
+    /// The sweep of `base`, a state of `open`'s document: an assembly's
+    /// moments are solved with the files read for it, a part's
+    /// regenerated with its cache.
+    pub(crate) fn of(open: &mut OpenDocument, base: &Document) -> Self {
+        if base.is_assembly() {
+            let mut sweep = Self::new(base, RegenCache::default());
+            sweep.assembly = Some(AsmSweep {
+                path: open.path.clone(),
+                asm: open.asm.clone(),
+                grid: BTreeMap::new(),
+            });
+            return sweep;
+        }
+        open.regen();
+        Self::new(base, open.cache.clone())
+    }
+
+    /// The grid point `k` of `t`: the one between the reference's `t0`
+    /// and `t` nearest to `t`.
+    fn grid_index(&self, t: f64) -> Result<i64, String> {
+        let steps = ((t - self.t0) / MOTION_STEP).trunc();
+        if !steps.is_finite() || steps.abs() > MAX_STEPS as f64 {
+            return Err(format!(
+                "the document's own t is {}, too far from {t} to carry the motion there in steps of {MOTION_STEP} (at most {MAX_STEPS}); set t in the document nearer to it",
+                self.t0
+            ));
+        }
+        // Within ±MAX_STEPS.
+        Ok(steps as i64)
+    }
+
+    /// An assembly's state at grid point `k`, made from the nearest one
+    /// made toward it from 0.
+    fn asm_grid_point(&mut self, k: i64) -> Result<Arc<GridState>, String> {
+        let reference = &self.reference;
+        let t0 = self.t0;
+        let sweep = self
+            .assembly
+            .as_mut()
+            .ok_or("the motion is not an assembly's")?;
+        if !sweep.grid.contains_key(&0) {
+            let doc = at_t(reference, t0)?;
+            let placed = sweep.asm.solve_moment(&doc, sweep.path.as_deref(), None);
+            let carried = placed.carried.clone().ok_or_else(|| {
+                format!(
+                    "the assembly does not solve at its own t ({t0}): {}",
+                    placed
+                        .solve_error
+                        .as_deref()
+                        .unwrap_or("no instance takes part")
+                )
+            })?;
+            sweep.grid.insert(
+                0,
+                Arc::new(GridState {
+                    carried,
+                    stuck: None,
+                }),
+            );
+        }
+        let step = k.signum();
+        let mut at = k;
+        let mut from = loop {
+            if let Some(found) = sweep.grid.get(&at) {
+                break Arc::clone(found);
+            }
+            if at == 0 {
+                return Err("the motion lost its reference".to_string());
+            }
+            at -= step;
+        };
+        while at != k {
+            at += step;
+            let made = if from.stuck.is_some() {
+                // Past a dead point the motion stays where it stopped.
+                Arc::clone(&from)
+            } else {
+                let t = t0 + at as f64 * MOTION_STEP;
+                let doc = at_t(reference, t)?;
+                let placed =
+                    sweep
+                        .asm
+                        .solve_moment(&doc, sweep.path.as_deref(), Some(&from.carried));
+                Arc::new(match placed.carried.clone() {
+                    Some(carried) => GridState {
+                        carried,
+                        stuck: None,
+                    },
+                    None => GridState {
+                        carried: from.carried.clone(),
+                        stuck: Some(Stuck {
+                            t: t - step as f64 * MOTION_STEP,
+                            why: placed
+                                .solve_error
+                                .clone()
+                                .unwrap_or_else(|| "it does not solve".to_string()),
+                        }),
+                    },
+                })
+            };
+            sweep.grid.insert(at, Arc::clone(&made));
+            from = made;
+        }
+        Ok(from)
+    }
+
+    /// An assembly's moment at `t`: placed from its grid point, with the
+    /// dead point the motion stopped at on the way, if any (then the
+    /// instances stay where it stopped).
+    pub(crate) fn placed_at(&mut self, t: f64) -> Result<(Arc<Placed>, Option<Stuck>), String> {
+        timeline(&self.reference)?;
+        let k = self.grid_index(t)?;
+        let from = self.asm_grid_point(k)?;
+        let doc = at_t(&self.reference, t)?;
+        let sweep = self
+            .assembly
+            .as_mut()
+            .ok_or("the motion is not an assembly's")?;
+        if let Some(stuck) = &from.stuck {
+            let doc = at_t(&self.reference, stuck.t)?;
+            let placed = sweep
+                .asm
+                .place_moment(&doc, sweep.path.as_deref(), Some(&from.carried));
+            return Ok((Arc::new(placed), Some(stuck.clone())));
+        }
+        let placed = sweep
+            .asm
+            .place_moment(&doc, sweep.path.as_deref(), Some(&from.carried));
+        let stuck = match (&placed.carried, &placed.solve_error) {
+            (None, why) => Some(Stuck {
+                t: self.t0 + k as f64 * MOTION_STEP,
+                why: why
+                    .clone()
+                    .unwrap_or_else(|| "it does not solve".to_string()),
+            }),
+            _ => None,
+        };
+        Ok((Arc::new(placed), stuck))
+    }
+
+    /// True when this is the motion of an assembly.
+    pub(crate) fn is_assembly(&self) -> bool {
+        self.assembly.is_some()
     }
 
     /// The reference with `sketches` put in and `t` set.
@@ -284,6 +460,10 @@ impl Sweep {
 
     /// The state at `t`, and its regeneration.
     pub(crate) fn at(&mut self, t: f64) -> Result<(Arc<Document>, Arc<Regen>), String> {
+        if self.assembly.is_some() {
+            let (placed, _) = self.placed_at(t)?;
+            return Ok((Arc::clone(&placed.doc), Arc::clone(&placed.regen)));
+        }
         let doc = self.settled(t)?;
         let regen = craft3d_regen::regenerate_cached(&doc, &mut self.cache);
         Ok((Arc::new(doc), Arc::new(regen)))
@@ -292,24 +472,27 @@ impl Sweep {
     /// The state at `t`, its sketches settled, not regenerated.
     pub(crate) fn settled(&mut self, t: f64) -> Result<Document, String> {
         timeline(&self.reference)?;
+        if self.assembly.is_some() {
+            return at_t(&self.reference, t);
+        }
         let k = if self.sketches.is_empty() {
             0
         } else {
-            let steps = ((t - self.t0) / MOTION_STEP).trunc();
-            if !steps.is_finite() || steps.abs() > MAX_STEPS as f64 {
-                return Err(format!(
-                    "the document's own t is {}, too far from {t} to carry its sketches there in steps of {MOTION_STEP} (at most {MAX_STEPS}); set t in the document nearer to it",
-                    self.t0
-                ));
-            }
-            // Within ±MAX_STEPS.
-            steps as i64
+            self.grid_index(t)?
         };
         let from = self.grid_point(k)?;
         let mut doc = self.with(&from, t)?;
         craft3d_regen::settle_sketches_cached(&mut doc, &mut self.cache);
         Ok(doc)
     }
+}
+
+/// `doc` with its timeline set to `t`.
+fn at_t(doc: &Document, t: f64) -> Result<Document, String> {
+    let mut doc = doc.clone();
+    doc.set_variable(TIMELINE, &literal(t))
+        .map_err(|e| e.to_string())?;
+    Ok(doc)
 }
 
 /// Two bodies that overlap at a `t`, or a pair the kernel could not decide.
@@ -498,6 +681,10 @@ struct State {
     /// The document state it is a state of (the document, or the state
     /// the view is scrubbed to).
     base: Arc<Document>,
+    /// The generation of the assembly's files it was made with
+    /// (`AsmState::generation`): `assembly.reload` changes what a moment
+    /// places without a new document state.
+    generation: u64,
     t: f64,
     collisions_asked: bool,
     /// What is drawn: the state with its colliding bodies marked.
@@ -505,12 +692,19 @@ struct State {
     regen: Arc<Regen>,
     rebuilt: Vec<FeatureId>,
     collisions: Option<Result<Vec<Collision>, String>>,
+    /// An assembly's dead point on the way to `t`: there the motion
+    /// stopped, and the state shown is where it stopped.
+    stuck: Option<Stuck>,
+    /// An assembly's moment as placed: its instances, mates and solve.
+    placed: Option<Arc<Placed>>,
 }
 
 /// A trace of a point over the motion: view state of one document state.
 #[derive(Clone)]
 pub(crate) struct Trace {
     base: Arc<Document>,
+    /// As [`State::generation`].
+    generation: u64,
     pub(crate) name: String,
     pub(crate) point: String,
     pub(crate) points: Vec<Vec3>,
@@ -524,8 +718,9 @@ pub(crate) struct Motion {
     t: Option<f64>,
     collisions: bool,
     /// The run of states the view goes through, with the document state
-    /// it runs over.
-    sweep: Option<(Arc<Document>, Sweep)>,
+    /// it runs over
+    /// and the generation of the assembly's files it was made with.
+    sweep: Option<(Arc<Document>, u64, Sweep)>,
     state: Option<State>,
     memo: PairMemo,
     traces: Vec<Trace>,
@@ -558,6 +753,7 @@ impl OpenDocument {
         let base = self.scrubbed();
         if let Some(state) = &self.motion.state
             && Arc::ptr_eq(&state.base, &base)
+            && state.generation == self.asm.generation
             && state.t == t
             && state.collisions_asked == self.motion.collisions
         {
@@ -581,24 +777,42 @@ impl OpenDocument {
     fn make_motion_state(&mut self, base: &Arc<Document>, t: f64) -> Result<State, String> {
         timeline(base)?;
         let base_regen = self.scrubbed_regen();
+        let generation = self.asm.generation;
         let reuse = self
             .motion
             .sweep
             .as_ref()
-            .is_some_and(|(of, _)| Arc::ptr_eq(of, base));
+            .is_some_and(|(of, g, _)| Arc::ptr_eq(of, base) && *g == generation);
         if !reuse {
-            self.regen();
-            let cache = self.cache.clone();
-            self.motion.sweep = Some((Arc::clone(base), Sweep::new(base, cache)));
+            let sweep = Sweep::of(self, base);
+            self.motion.sweep = Some((Arc::clone(base), generation, sweep));
             // The answers were about the bodies of another base.
             self.motion.memo = PairMemo::default();
         }
-        let (_, sweep) = self
+        let (_, _, sweep) = self
             .motion
             .sweep
             .as_mut()
             .ok_or("the motion lost its states")?;
-        let (plain, regen) = sweep.at(t)?;
+        let (plain, regen, stuck, placed) = if sweep.is_assembly() {
+            let (placed, stuck) = sweep.placed_at(t)?;
+            (
+                Arc::clone(&placed.doc),
+                Arc::clone(&placed.regen),
+                stuck,
+                Some(placed),
+            )
+        } else {
+            let (plain, regen) = sweep.at(t)?;
+            (plain, regen, None, None)
+        };
+        // An assembly's moment places its parts by transforms: nothing is
+        // regenerated.
+        let rebuilt = if sweep.is_assembly() {
+            Vec::new()
+        } else {
+            rebuilt(&base_regen, &regen)
+        };
         let collisions = self
             .motion
             .collisions
@@ -609,12 +823,15 @@ impl OpenDocument {
         };
         Ok(State {
             base: Arc::clone(base),
+            generation,
             t,
             collisions_asked: self.motion.collisions,
-            rebuilt: rebuilt(&base_regen, &regen),
+            rebuilt,
             doc,
             regen,
             collisions,
+            stuck,
+            placed,
         })
     }
 
@@ -622,35 +839,44 @@ impl OpenDocument {
     /// the state it is scrubbed to (`view.scrub`), or that at the `t` of
     /// its motion (`view.motion`).
     pub(crate) fn shown(&mut self) -> Arc<Document> {
-        // An assembly shows its placed bodies, as a part that holds them;
-        // a motion is a part's.
+        if let Some(state) = self.motion_state() {
+            return state.doc;
+        }
+        // An assembly shows its placed bodies, as a part that holds them.
         if let Some(placed) = self.placed() {
             return Arc::clone(&placed.doc);
         }
-        match self.motion_state() {
-            Some(state) => state.doc,
-            None => self.scrubbed(),
+        self.scrubbed()
+    }
+
+    /// For an assembly: its placement as the view shows it, at the moment
+    /// of its motion when one is shown, else at rest.
+    pub(crate) fn shown_placed(&mut self) -> Option<Arc<Placed>> {
+        if let Some(placed) = self.motion_state().and_then(|state| state.placed) {
+            return Some(placed);
         }
+        self.placed()
     }
 
     /// The regeneration of [`Self::shown`].
     pub(crate) fn shown_regen(&mut self) -> Arc<Regen> {
+        if let Some(state) = self.motion_state() {
+            return state.regen;
+        }
         if let Some(placed) = self.placed() {
             return Arc::clone(&placed.regen);
         }
-        match self.motion_state() {
-            Some(state) => state.regen,
-            None => self.scrubbed_regen(),
-        }
+        self.scrubbed_regen()
     }
 
     /// The traces of the document as it is; lets go of those of another
     /// state of it.
     fn traces(&mut self) -> &mut Vec<Trace> {
         let current = Arc::clone(self.history.current());
+        let generation = self.asm.generation;
         self.motion
             .traces
-            .retain(|trace| Arc::ptr_eq(&trace.base, &current));
+            .retain(|trace| Arc::ptr_eq(&trace.base, &current) && trace.generation == generation);
         &mut self.motion.traces
     }
 }
@@ -665,6 +891,9 @@ pub struct MotionView {
     pub collisions: Vec<(String, String)>,
     /// How many features this `t` rebuilt.
     pub rebuilt: usize,
+    /// For an assembly: the `t` of the dead point the motion stopped at on
+    /// the way to `t`, when it did (the state shown is where it stopped).
+    pub dead_point: Option<f64>,
 }
 
 /// A trace as a viewer draws it ([`Session::traces`]).
@@ -698,6 +927,7 @@ impl Session {
             t: state.t,
             collisions,
             rebuilt: state.rebuilt.len(),
+            dead_point: state.stuck.as_ref().map(|stuck| stuck.t),
         })
     }
 
@@ -758,8 +988,12 @@ fn view_motion(session: &mut Session, params: &Value) -> Run {
         // Made now, so the state's errors are this command's.
         let base = open.scrubbed();
         let t = open.motion.t.unwrap_or(0.0);
+        let generation = open.asm.generation;
         let stale = open.motion.state.as_ref().is_none_or(|s| {
-            !Arc::ptr_eq(&s.base, &base) || s.t != t || s.collisions_asked != open.motion.collisions
+            !Arc::ptr_eq(&s.base, &base)
+                || s.generation != generation
+                || s.t != t
+                || s.collisions_asked != open.motion.collisions
         });
         if stale {
             let state = open
@@ -770,16 +1004,19 @@ fn view_motion(session: &mut Session, params: &Value) -> Run {
     }
     let state = open.motion_state();
     let doc = open.history.current();
-    let name = |id: FeatureId| {
-        doc.feature(id)
-            .map_or_else(|| id.to_string(), |f| f.name.clone())
-    };
     let timeline_json = match &rest {
         Ok(value) => json!({"variable": TIMELINE, "value": value}),
         Err(why) => json!({"variable": TIMELINE, "error": why}),
     };
     let Some(state) = state else {
         return Ok(json!({"t": Value::Null, "timeline": timeline_json, "collisions": Value::Null}));
+    };
+    // Named as the state shows them: an assembly's bodies by instance.
+    let name = |id: FeatureId| {
+        state
+            .doc
+            .feature(id)
+            .map_or_else(|| id.to_string(), |f| f.name.clone())
     };
     let collisions = match &state.collisions {
         None => Value::Null,
@@ -809,6 +1046,8 @@ fn view_motion(session: &mut Session, params: &Value) -> Run {
         "rebuilt": state.rebuilt.iter().map(ToString::to_string).collect::<Vec<_>>(),
         "collisions": collisions,
         "volumeUnit": format!("{}^3", length_unit(doc)),
+        "deadPoint": state.stuck.as_ref().map_or(Value::Null, |stuck| json!({"t": stuck.t, "why": stuck.why})),
+        "solveNote": state.placed.as_ref().and_then(|p| p.solve_note.clone()),
     }))
 }
 
@@ -1038,19 +1277,41 @@ fn view_trace(session: &mut Session, params: &Value) -> Run {
     let base = Arc::clone(open.history.current());
     timeline(&base).map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
     let point = PointRef::parse(ID, &base, &p)?;
-    open.regen();
-    let mut sweep = Sweep::new(&base, open.cache.clone());
+    let mut sweep = Sweep::of(open, &base);
     let mut points = Vec::new();
+    let in_assembly = match (&point, sweep.is_assembly()) {
+        (_, false) => None,
+        (
+            PointRef::Vertex {
+                name,
+                feature: None,
+            },
+            true,
+        ) => Some(name.clone()),
+        _ => {
+            return fail(format!(
+                "{ID}: in an assembly the point is named through its instance, as a mate names it (`Coupler/End2`, `Foot/F1:vertex(2)`), without `feature`"
+            ));
+        }
+    };
     for t in samples_of(range, samples) {
-        let (doc, regen) = sweep
-            .at(t)
-            .map_err(|e| CommandError::new(format!("{ID}: at t = {t}: {e}")))?;
-        let at = point.at(&doc, &regen).map_err(|e| {
-            CommandError::new(format!("{ID}: `{}` at t = {t}: {e}", point.describe()))
-        })?;
+        let err =
+            |e: String| CommandError::new(format!("{ID}: `{}` at t = {t}: {e}", point.describe()));
+        let at = if let Some(name) = &in_assembly {
+            let (placed, _) = sweep
+                .placed_at(t)
+                .map_err(|e| CommandError::new(format!("{ID}: at t = {t}: {e}")))?;
+            crate::asm::point_in(&placed, name).map_err(err)?
+        } else {
+            let (doc, regen) = sweep
+                .at(t)
+                .map_err(|e| CommandError::new(format!("{ID}: at t = {t}: {e}")))?;
+            point.at(&doc, &regen).map_err(err)?
+        };
         points.push(at);
     }
     let tolerance = base.tolerance.linear;
+    let generation = open.asm.generation;
     let traces = open.traces();
     let name = given_name.unwrap_or_else(|| {
         (1..)
@@ -1066,6 +1327,7 @@ fn view_trace(session: &mut Session, params: &Value) -> Run {
     }
     traces.push(Trace {
         base: Arc::clone(&base),
+        generation,
         name: name.clone(),
         point: point.describe(),
         points: points.clone(),
@@ -1198,8 +1460,12 @@ fn motion_check(session: &mut Session, params: &Value) -> Run {
     // A session of its own on a copy, so the document and its checks do
     // not change; recovery does not see it.
     let mut scratch = Session::new(Workspace::none());
+    // An assembly's copy places its parts from the files read for it.
+    let (path, asm) = (open.path.clone(), open.asm.clone());
     let mut copy = OpenDocument::new(base, None);
     copy.cache = cache;
+    copy.path = path;
+    copy.asm = asm;
     scratch.add_document(copy)?;
     let mut names: Vec<String> = Vec::new();
     if let Some(measure) = p.get("measure") {
@@ -1281,21 +1547,36 @@ fn motion_check(session: &mut Session, params: &Value) -> Run {
     // t alone), put into the copy as one undo step merged over the run.
     let mut sweep = {
         let open = scratch.document_mut()?;
-        Sweep::new(open.history.current(), open.cache.clone())
+        let base = Arc::clone(open.history.current());
+        Sweep::of(open, &base)
     };
+    let mut dead_points: Vec<Stuck> = Vec::new();
     for t in samples_of(range, samples) {
-        let state = sweep
-            .settled(t)
-            .map_err(|e| CommandError::new(format!("{ID}: at t = {t}: {e}")))?;
-        scratch.document_mut()?.history.apply_merging(
-            "Motion",
-            Some("motion.check.t"),
-            true,
-            |doc| {
+        let at = |e: String| CommandError::new(format!("{ID}: at t = {t}: {e}"));
+        // An assembly's moment is solved along the motion, and the copy
+        // measures that placement, not a solve from its placements.
+        let moment = if sweep.is_assembly() {
+            let (placed, stuck) = sweep.placed_at(t).map_err(at)?;
+            if let Some(stuck) = stuck
+                && !dead_points.contains(&stuck)
+            {
+                dead_points.push(stuck);
+            }
+            Some(placed)
+        } else {
+            None
+        };
+        let state = sweep.settled(t).map_err(at)?;
+        let open = scratch.document_mut()?;
+        open.history
+            .apply_merging("Motion", Some("motion.check.t"), true, |doc| {
                 *doc = state;
                 Ok::<(), CommandError>(())
-            },
-        )?;
+            })?;
+        if let Some(placed) = moment {
+            let revision = open.history.revision();
+            open.asm.hold(revision, placed);
+        }
         let checks = scratch.assertion_checks(crate::assert_check::Wait::All)?;
         for entry in &mut over {
             let Some(checked) = checks.iter().find(|c| c.state.name == entry.name) else {
@@ -1399,6 +1680,7 @@ fn motion_check(session: &mut Session, params: &Value) -> Run {
         "sampled": true,
         "ok": all_passed,
         "assertions": results,
+        "deadPoints": dead_points.iter().map(|d| json!({"t": d.t, "why": d.why})).collect::<Vec<_>>(),
     }))
 }
 

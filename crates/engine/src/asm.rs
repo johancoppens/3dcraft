@@ -76,6 +76,9 @@ pub(crate) enum Built {
 #[derive(Clone)]
 pub(crate) struct InstanceState {
     pub name: String,
+    /// Its source as a viewer lists it: the file's path as the assembly
+    /// holds it, or `packed`.
+    pub source: String,
     /// Why the instance is not placed, when it is not.
     pub error: Option<String>,
     /// Its configuration's key (source hash and parameters).
@@ -108,6 +111,10 @@ pub(crate) struct MateState {
     /// model units), for a mate that has one.
     pub free: Option<f64>,
     pub driven: bool,
+    /// Its main free motion is free in the solve: driving it (`joint.set`)
+    /// takes a degree of freedom and contradicts nothing. False when the
+    /// solve failed.
+    pub main_free: bool,
 }
 
 /// A coupling as solved: why it takes no part, when it does not.
@@ -139,6 +146,26 @@ pub(crate) struct Placed {
     /// its instance (`None`: the world): what a parent that holds it as a
     /// flexible subassembly solves with its own.
     pub specs: Vec<NamedSpec>,
+    /// The state the solve reached, for the next moment of a motion to
+    /// be carried from (`motion.rs`); `None` when it failed.
+    pub carried: Option<Carried>,
+    /// A moment of a motion that could not be carried from the moment
+    /// before it (the instances or the driven values taking part changed
+    /// in between) and was solved from the placements instead: why. It
+    /// may then lie on another branch than the motion's.
+    pub solve_note: Option<String>,
+}
+
+/// A solved state of an assembly's motion: the poses of the instances
+/// that took part in the solve (in their order) and the driven values
+/// they were solved at. The next moment starts from it
+/// ([`AsmState::place_moment`]).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Carried {
+    pub poses: Vec<Transform>,
+    pub drives: Vec<f64>,
+    /// The degrees of freedom left there.
+    pub dof: usize,
 }
 
 /// A mate as the solver takes it, its two sides by instance name (`None`
@@ -463,6 +490,22 @@ pub(crate) fn place(
     state: &mut AsmState,
     chain: &mut Vec<String>,
 ) -> Placed {
+    place_from(doc, base, state, chain, None, true)
+}
+
+/// [`place`], its solve carried from `from` when given: the instances
+/// start where `from` left them and the drives move from `from`'s values
+/// to the document's along the motion's branch (`Solver::advance`).
+/// Without `bodies` the bodies are not placed (a grid point of a motion
+/// needs the solve alone): the placed part is empty.
+fn place_from(
+    doc: &Document,
+    base: &str,
+    state: &mut AsmState,
+    chain: &mut Vec<String>,
+    from: Option<&Carried>,
+    bodies: bool,
+) -> Placed {
     let Some(assembly) = doc.assembly.as_ref() else {
         return empty(doc, Some("the document is not an assembly".to_string()));
     };
@@ -475,6 +518,10 @@ pub(crate) fn place(
     for instance in &assembly.instances {
         let mut st = InstanceState {
             name: instance.name.clone(),
+            source: match &instance.source {
+                Source::File { path, .. } => path.clone(),
+                Source::Packed { .. } => "packed".to_string(),
+            },
             error: None,
             config: None,
             hash: None,
@@ -603,16 +650,24 @@ pub(crate) fn place(
     // A flexible subassembly gives its instances and mates to the solve.
     let extra = flex(assembly, &mut instances);
     // 3. and 4. Frames and the solve.
-    let (mates, couplings, solve_error, floating, dof, specs) =
-        solve_mates(doc, assembly, values.as_ref(), &mut instances, &extra);
+    let (mates, couplings, solve_error, floating, dof, specs, carried, solve_note) =
+        solve_mates(doc, assembly, values.as_ref(), &mut instances, &extra, from);
     // 5. Placed bodies.
-    let mut placed = build_shown(doc, assembly, &mut instances);
+    let mut placed = if bodies {
+        build_shown(doc, assembly, &mut instances)
+    } else {
+        let mut placed = empty(doc, None);
+        placed.instances = instances;
+        placed
+    };
     placed.specs = specs;
     placed.mates = mates;
     placed.couplings = couplings;
     placed.solve_error = solve_error;
     placed.floating = floating;
     placed.dof = dof;
+    placed.carried = carried;
+    placed.solve_note = solve_note;
     // Keep the cache to what this placement used and a few more.
     if state.configs.len() > MAX_KEPT_CONFIGS {
         let used: BTreeSet<String> = placed
@@ -689,6 +744,8 @@ fn empty(doc: &Document, error: Option<String>) -> Placed {
         floating: false,
         dof: None,
         specs: Vec::new(),
+        carried: None,
+        solve_note: None,
     }
 }
 
@@ -877,6 +934,8 @@ fn build_shown(doc: &Document, assembly: &Assembly, instances: &mut [InstanceSta
         floating: false,
         dof: None,
         specs: Vec::new(),
+        carried: None,
+        solve_note: None,
     }
 }
 
@@ -909,6 +968,38 @@ fn frame_of(f: &craft3d_math::Frame) -> solver::Frame {
         y: f.y(),
         z: f.z(),
     }
+}
+
+/// A mate's limits on its main free motion, evaluated (radians, model
+/// units); `None` without limits or when they do not evaluate.
+pub(crate) fn mate_limits(doc: &Document, mate: &craft3d_doc::Mate) -> Option<(f64, f64)> {
+    let (lo, hi) = mate.limits.as_ref()?;
+    let values = evaluation(doc);
+    let convert = |q: Quantity| {
+        if q.dimension == Dimension::LENGTH {
+            in_units(doc, q.value)
+        } else {
+            q.value
+        }
+    };
+    let lo = convert(eval(values.as_ref(), lo.source()).ok()?);
+    let hi = convert(eval(values.as_ref(), hi.source()).ok()?);
+    (lo.is_finite() && hi.is_finite() && lo < hi).then_some((lo, hi))
+}
+
+/// The frame `name` (as a mate names it) means in an assembly placed, in
+/// the world.
+pub(crate) fn frame_of_ref(placed: &Arc<Placed>, name: &str) -> Result<solver::Frame, String> {
+    if let Some(world) = name.strip_prefix("world/") {
+        return world_frame(world);
+    }
+    frame_in(&Built::Assembly(Arc::clone(placed)), None, name)
+}
+
+/// Where the point `name` (`Instance/Feature:name` or `Instance/Datum`,
+/// as a mate names it) is in an assembly placed: the origin of its frame.
+pub(crate) fn point_in(placed: &Arc<Placed>, name: &str) -> Result<Vec3, String> {
+    Ok(frame_in(&Built::Assembly(Arc::clone(placed)), None, name)?.origin)
 }
 
 /// The frame `name` means in a configuration, in its own coordinates:
@@ -1248,6 +1339,9 @@ type Solved = (
     bool,
     Option<(usize, Vec<String>)>,
     Vec<NamedSpec>,
+    Option<Carried>,
+    // Why a moment was not carried from the one before it.
+    Option<String>,
 );
 
 /// The mates' frames and the solve; the poses go into `instances`.
@@ -1257,6 +1351,7 @@ fn solve_mates(
     values: Option<&craft3d_expr::Evaluation>,
     instances: &mut [InstanceState],
     extra: &[NamedSpec],
+    from: Option<&Carried>,
 ) -> Solved {
     let solvable = |i: &InstanceState| i.error.is_none() && !i.flexed;
     let index: BTreeMap<String, usize> = instances
@@ -1282,6 +1377,7 @@ fn solve_mates(
             error: None,
             free: None,
             driven: false,
+            main_free: false,
         };
         let spec = mate_spec(doc, mate, instances, &index, values);
         match spec {
@@ -1380,6 +1476,24 @@ fn solve_mates(
         .iter()
         .any(|s| s.a.0 == solver::WORLD || s.b.0 == solver::WORLD);
     let floating = !touches_world && !solved.is_empty();
+    // A moment of a motion starts where the one before it left the
+    // instances (the same instances take part: else from the placements),
+    // and stays there when it cannot be solved.
+    let mut note = from.filter(|f| f.poses.len() != solved.len()).map(|f| {
+        format!(
+            "solved from the placements, not carried from the moment before: {} instances took part there, {} here",
+            f.poses.len(),
+            solved.len()
+        )
+    });
+    let from = from.filter(|f| f.poses.len() == solved.len());
+    if let Some(from) = from {
+        for (&k, pose) in solved.iter().zip(&from.poses) {
+            if let Some(st) = instances.get_mut(k) {
+                st.pose = *pose;
+            }
+        }
+    }
     let start: Vec<Transform> = solved
         .iter()
         .filter_map(|&k| instances.get(k).map(|i| i.pose))
@@ -1398,8 +1512,20 @@ fn solve_mates(
         tolerance: doc.tolerance.linear,
         scale: size,
     };
-    match solver::solve(&problem) {
+    let solved_by = match from {
+        Some(from) => solver::advance(&problem, &from.drives),
+        None => solver::solve(&problem),
+    };
+    match solved_by {
         Ok(solution) => {
+            if note.is_none() {
+                note.clone_from(&solution.note);
+            }
+            let carried = Carried {
+                poses: solution.poses.clone(),
+                drives: solution.drives.clone(),
+                dof: solution.dof,
+            };
             for (&k, pose) in solved.iter().zip(&solution.poses) {
                 if let Some(st) = instances.get_mut(k) {
                     st.pose = *pose;
@@ -1408,6 +1534,7 @@ fn solve_mates(
             for (s, &m) in spec_mate.iter().enumerate() {
                 if let Some(st) = states.get_mut(m) {
                     st.free = solution.values.get(s).and_then(|v| v.first()).copied();
+                    st.main_free = solution.main_free.get(s).copied().unwrap_or(false);
                 }
             }
             (
@@ -1417,12 +1544,35 @@ fn solve_mates(
                 floating,
                 Some((solution.dof, solution.free)),
                 named,
+                Some(carried),
+                note,
             )
         }
-        Err(solver::Diagnosis(text)) => {
-            (states, coupling_states, Some(text), floating, None, named)
+        Err(solver::Diagnosis(text)) => (
+            states,
+            coupling_states,
+            Some(text),
+            floating,
+            None,
+            named,
+            None,
+            note,
+        ),
+    }
+}
+
+/// The size of a placed assembly: the diagonal of the box around its
+/// placed bodies, one unit without bodies.
+pub(crate) fn model_size(placed: &Placed) -> f64 {
+    let mut extent = craft3d_math::Bbox3::EMPTY;
+    for body in placed.regen.features.iter().filter_map(|f| f.own_body()) {
+        if let Some((lo, hi)) = body.held_bbox().ok().and_then(|b| b.corners()) {
+            extent.add(lo);
+            extent.add(hi);
         }
     }
+    let d = extent.diagonal();
+    if d.is_finite() && d > 0.0 { d } else { 1.0 }
 }
 
 /// The size of the assembly, for the solver's scale: the diagonal of its
@@ -1460,6 +1610,38 @@ impl AsmState {
         let placed = Arc::new(place(doc, &base_of(path), self, &mut chain));
         self.placed = Some((revision, self.generation, Arc::clone(&placed)));
         placed
+    }
+
+    /// A moment of a motion of the assembly `doc` (the assembly with its
+    /// timeline set): placed with the files read for it, its solve
+    /// carried from `from` (the moment before it) when given, from the
+    /// placements otherwise. Not kept: a motion keeps what it needs.
+    pub(crate) fn place_moment(
+        &mut self,
+        doc: &Document,
+        path: Option<&str>,
+        from: Option<&Carried>,
+    ) -> Placed {
+        let mut chain = Vec::new();
+        place_from(doc, &base_of(path), self, &mut chain, from, true)
+    }
+
+    /// [`Self::place_moment`] solved only, its bodies not placed: a grid
+    /// point of a motion, which keeps the solve's state alone.
+    pub(crate) fn solve_moment(
+        &mut self,
+        doc: &Document,
+        path: Option<&str>,
+        from: Option<&Carried>,
+    ) -> Placed {
+        let mut chain = Vec::new();
+        place_from(doc, &base_of(path), self, &mut chain, from, false)
+    }
+
+    /// Takes `placed` as the placement of the document at `revision`
+    /// (a moment of a motion, measured as the document: `motion.check`).
+    pub(crate) fn hold(&mut self, revision: u64, placed: Arc<Placed>) {
+        self.placed = Some((revision, self.generation, placed));
     }
 
     /// Forgets the placement, so the next one is worked out again.

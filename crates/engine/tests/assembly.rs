@@ -660,6 +660,43 @@ fn a_joint_set_turns_a_revolute_mate() {
     let solved = run(&mut s, "assembly.solve", json!({}));
     let hinge = &solved["mates"][1];
     assert_eq!(hinge["driven"], false, "{solved}");
+    // A drag: its first value a step of its own, the later ones merged
+    // into it, so one undo takes the whole drag back.
+    for (k, degrees) in [10, 20, 30, 40].into_iter().enumerate() {
+        run(
+            &mut s,
+            "joint.set",
+            json!({ "mate": "Hinge", "value": format!("{degrees} deg"), "merge": k > 0 }),
+        );
+    }
+    let solved = run(&mut s, "assembly.solve", json!({}));
+    assert!(
+        close(
+            solved["mates"][1]["value"].as_f64().unwrap(),
+            40f64.to_radians(),
+            1.0
+        ),
+        "{solved}"
+    );
+    run(&mut s, "edit.undo", json!({}));
+    let solved = run(&mut s, "assembly.solve", json!({}));
+    assert_eq!(solved["mates"][1]["driven"], false, "{solved}");
+    // merge folds only into a joint.set of the same variable.
+    run(
+        &mut s,
+        "variable.set",
+        json!({ "name": "other", "expr": "1" }),
+    );
+    run(
+        &mut s,
+        "joint.set",
+        json!({ "mate": "Hinge", "value": "5 deg", "merge": true }),
+    );
+    run(&mut s, "edit.undo", json!({}));
+    let solved = run(&mut s, "assembly.solve", json!({}));
+    assert_eq!(solved["mates"][1]["driven"], false, "{solved}");
+    let vars = run(&mut s, "document.inspect", json!({ "measures": false }))["variables"].clone();
+    assert!(vars.to_string().contains("\"other\""), "{vars}");
 }
 
 /// What every command refuses, by name, never a panic.
@@ -1459,12 +1496,11 @@ fn the_shown_scenes_follow_the_joints_after_the_workspace_narrows() {
     }
 }
 
-/// An assembly shows its placed parts; a motion over `t` is a part's
-/// (motion of assemblies is phase 2): `view.motion` is refused by name
-/// even when the assembly has a variable `t`, and what is shown stays
-/// the placed instance.
+/// An assembly shows its placed parts; with a timeline it plays over `t`
+/// (motion of assemblies, docs/design/motion.md › *Assemblies*), and
+/// what `document.inspect` sees stays the placed instance at rest.
 #[test]
-fn an_assembly_shows_its_placed_parts_and_refuses_a_motion() {
+fn an_assembly_shows_its_placed_parts_and_plays_over_t() {
     let dir = workdir("assembly", "no-motion");
     let mut s = session_in(&dir);
     block_part(&mut s, "base.3dcraft", [10.0, 4.0, 2.0], 1e-6);
@@ -1475,9 +1511,9 @@ fn an_assembly_shows_its_placed_parts_and_refuses_a_motion() {
         "instance.add",
         json!({ "source": "base.3dcraft", "name": "B1" }),
     );
-    let refused = error(&mut s, "view.motion", json!({ "t": 0.5 }));
-    assert!(refused.contains("assembly"), "{refused}");
-    assert!(s.timeline().is_err());
+    let shown = run(&mut s, "view.motion", json!({ "t": 0.5 }));
+    assert_eq!(shown["t"], 0.5, "{shown}");
+    assert!(s.timeline().is_ok());
     let shown = run(&mut s, "document.inspect", json!({}));
     let bodies = shown["bodies"].as_array().unwrap();
     assert_eq!(bodies.len(), 1, "{shown}");
@@ -1485,4 +1521,59 @@ fn an_assembly_shows_its_placed_parts_and_refuses_a_motion() {
         close(bodies[0]["volume"].as_f64().unwrap(), 80.0, 1.0),
         "{shown}"
     );
+}
+
+/// A selection on an assembly stays on its instance (rule 4): the placed
+/// part numbers its features in instance order, so deleting an instance
+/// before it gives its feature id to another instance; the item is found
+/// by its instance, and an item of an instance that is gone drops out,
+/// said in dropped, never moving to another instance.
+#[test]
+fn a_selection_on_an_assembly_stays_on_its_instance() {
+    let dir = workdir("assembly", "selection-instance");
+    let mut s = session_in(&dir);
+    block_part(&mut s, "block.3dcraft", [10.0, 4.0, 2.0], 1e-6);
+    run(&mut s, "assembly.new", json!({}));
+    for (name, x) in [("A", 0), ("B", 20), ("C", 40)] {
+        run(
+            &mut s,
+            "instance.add",
+            json!({ "source": "block.3dcraft", "name": name, "position": [x, 0, 0] }),
+        );
+    }
+    let set = run(
+        &mut s,
+        "select.set",
+        json!({ "items": [
+            { "kind": "body", "name": "B" },
+            { "kind": "face", "name": "F1:face(0)", "feature": "C" },
+        ] }),
+    );
+    assert_eq!(set["count"], 2, "{set}");
+    run(&mut s, "instance.delete", json!({ "name": "A" }));
+    let got = run(&mut s, "select.get", json!({ "context": false }));
+    let items = got["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2, "{got}");
+    assert_eq!(items[0]["kind"], "body", "{got}");
+    assert_eq!(items[0]["name"], "B", "{got}");
+    // C's face is on C's placed feature, whatever its id is now.
+    let inspected = inspect(&mut s);
+    let c_features = instance(&inspected, "C")["bodies"].clone();
+    assert!(
+        c_features
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f == &items[1]["feature"]),
+        "{got} {c_features}"
+    );
+    assert_eq!(items[1]["name"], "F1:face(0)", "{got}");
+    // An instance that is gone takes its item with it.
+    run(&mut s, "instance.delete", json!({ "name": "B" }));
+    let got = run(&mut s, "select.get", json!({ "context": false }));
+    let items = got["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{got}");
+    assert_eq!(items[0]["kind"], "face", "{got}");
+    let dropped = got["dropped"].to_string();
+    assert!(dropped.contains("`B`"), "{got}");
 }

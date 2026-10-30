@@ -634,12 +634,29 @@ impl Shell {
         };
         let mut hovered = None;
         let mut chosen = None;
+        let mut mate = None;
         let shift = menu.shift;
+        // Two faces of two instances of an assembly selected: the mates
+        // that join them come first (`mate.add`).
+        let pair = self.mate_pair();
+        let mut mate_hits = Vec::new();
         let response = egui::Area::new(egui::Id::new("craft3d-select-other"))
             .order(egui::Order::Foreground)
             .fixed_pos(menu.at)
             .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    if let Some((a, b)) = &pair {
+                        ui.label(egui::RichText::new("Mate the selected faces").strong())
+                            .on_hover_text(format!("{a} and {b}"));
+                        for (kind, words) in super::joints::MATE_ENTRIES {
+                            let entry = ui.selectable_label(false, words);
+                            mate_hits.push((kind, entry.rect));
+                            if entry.clicked() {
+                                mate = Some(kind);
+                            }
+                        }
+                        ui.separator();
+                    }
                     ui.label(egui::RichText::new("Select other").strong());
                     for (k, hit) in menu.hits.iter().enumerate() {
                         let face = hit.face.as_deref().unwrap_or("face");
@@ -655,6 +672,16 @@ impl Shell {
                 });
             })
             .response;
+        self.joints.mate_hits = mate_hits;
+        if let (Some(kind), Some((a, b))) = (mate, pair) {
+            self.timeline
+                .queue("mate.add", json!({"kind": kind, "a": a, "b": b}));
+            self.select.menu = None;
+            self.select.hover = None;
+            self.select.drawn = self.select.drawn.wrapping_add(1);
+            ui.ctx().request_repaint();
+            return;
+        }
         if self.select.hover != hovered {
             self.select.hover = hovered;
             self.select.drawn = self.select.drawn.wrapping_add(1);

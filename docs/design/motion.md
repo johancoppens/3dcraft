@@ -5,7 +5,8 @@ of a point, collisions drawn red, checks over the motion and the video of it. Th
 `crates/engine/src/motion.rs` (the state and the commands), `crates/engine/src/replay_cmds.rs` (the video),
 `crates/ui-egui/src/shell/player.rs` and `shell/timeline.rs` (the player) and the overlay in
 `crates/ui-egui/src/viewport.rs` and `direct.rs` (the traces). Assemblies, which this is for in the end, are
-`assemblies.md` (track A); this document is track C's first part, which works on any part.
+`assemblies.md` (track A); this document is track C's: phase 1 works on any part, phase 2 plays assemblies
+(*Assemblies* below).
 
 ## Method
 
@@ -134,6 +135,45 @@ moments of the same motion, never other ones. All of it is view state in
 `UiState::timeline` (`motion`, `bounce`, `collisions`), so `ui.set` plays the motion for whoever watches. It is
 offered only for a document with a timeline.
 
+### Assemblies (phase 2)
+
+An assembly has a timeline as a part has: its own variable `t`. Its drivers are formulas of `t` for the variables
+that drive its joints (`Drive_angle = 360 deg * t`, the variable `joint.set` writes), and its moments are not
+regenerated: each is a **solve** (`craft3d-assembly`), its instances placed by transforms
+(`Sweep::placed_at`, `asm::AsmState::place_moment`). The exception is an instance whose parameters are formulas of
+`t`: its configuration changes with `t`, so each moment builds that configuration (a regeneration of the source,
+cached by its parameters' values like any configuration).
+
+- **The grid, as for sketches.** The assembly at rest (its own `t`, solved from its placements as `assembly.solve`
+  solves it) is grid point 0. Grid point `k` is grid point `k ∓ 1` carried to its `t`: the solver starts from that
+  point's poses, solves at its driven values (it is there already) and moves the drives to the new ones by
+  `Solver::advance`, which cuts the step while the solution jumps further than the motion predicts. The moment `t`
+  is its grid point carried to `t` the same way. So a moment is a function of `t` alone (seek equals play, bit for
+  bit), and the assembly stays on the branch it rests on: a four-bar's elbow stays up, whichever way and however far
+  the view jumped. Each grid point keeps only poses and driven values (`asm::Carried`), never bodies, and is
+  solved without placing them (`AsmState::solve_moment`): only the moment shown copies the bodies to their poses.
+  A moment that cannot be carried from the one before it (the instances or the driven values taking part changed
+  in between: an instance failed) is solved from the placements instead, and says so: `solveNote` in
+  `view.motion`, `note` in `assembly.solve`. It may then lie on another branch.
+- **What the view keeps is keyed on the files too.** The moment shown, the sweep (which holds a copy of the files
+  read) and the traces are kept for the document state and for `AsmState::generation`, which `assembly.reload`
+  raises without a new revision: after a reload the moment shown is made again from the files as they are.
+- **Dead points.** Where a step cannot be solved (the mechanism reaches a limit position: a four-bar whose crank
+  cannot go round, at `|B − D| = b + c`), the motion stops: that grid point and every one beyond it keep the last
+  state reached and say where it stopped and why (`Stuck`). `view.motion` returns it as `deadPoint {t, why}` and
+  shows the parts where they stopped; `motion.check` lists every dead point met over its samples (`deadPoints`).
+  A dead point is reported at the last grid point reached, so within one step (1/128) before the true one.
+- **What a moment shows, measures and draws.** The shown part of a moment is built as the assembly's own placement
+  is (`build_shown`), so the scene, `view.render`, collisions (named by instance), `view.replay` and the tree read it
+  as they read a part. `motion.check` measures an assembly's assertions at the moment's placement
+  (`AsmState::hold`), not at a fresh solve from the placements, which could land on the other branch.
+- **Traces through instances.** In an assembly `view.trace` names its point as a mate names geometry, through an
+  instance (`Coupler/End2`, `Foot/F1:vertex(2)`): the origin of that frame, moved by the instance's pose
+  (`asm::point_in`).
+- **Costs.** A moment is one solve per grid point first reached plus one, and placing the bodies (a rigid copy
+  each, which the store of meshes meshes again: a transformed body is a new body). Meshing the source's body once and
+  transforming its mesh would save that; it is not done (open).
+
 ## Tests
 
 `crates/engine/tests/motion.rs`: a crank's corner traced against its closed-form circle (every sample within 1e-9,
@@ -170,3 +210,8 @@ in `shell/player.rs`. `panic_hunt` runs the three commands with adversarial para
   state before any motion or scrub, and every motion command refuses an assembly by name (the timeline check says
   that playing an assembly is phase 2), even when the assembly has a variable `t`; the test
   `an_assembly_shows_its_placed_parts_and_refuses_a_motion` holds both.
+- 2026-10-30: phase 2 (asm-motion-p2). Assemblies play `t` (*Assemblies* above): a solve per grid point carried by
+  `Solver::advance`, dead points with their `t`, traces through instances, `motion.check` at the moment's placement,
+  collisions named by instance. Closed forms: a crank-rocker's coupler point against the intersection of two circles
+  at 33 samples (1e-6, the branch never changes), seek equal to play bit for bit, the dead point of a non-Grashof
+  four-bar at `cos θ = (a² + d² − (b + c)²) / 2ad` within a step (`crates/engine/tests/motion_assembly.rs`).

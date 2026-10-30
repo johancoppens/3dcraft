@@ -82,7 +82,7 @@ impl Dialogs for SystemDialogs {
     fn open(&self) -> Option<PathBuf> {
         rfd::FileDialog::new()
             .set_title("Open")
-            .add_filter("3DCraft document or Jig", &OPEN_EXTENSIONS)
+            .add_filter("3DCraft document, Jig or assembly", &OPEN_EXTENSIONS)
             .add_filter("3DCraft Jig", &[JIG_EXTENSION])
             .add_filter("All files", &["*"])
             .pick_file()

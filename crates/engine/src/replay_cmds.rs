@@ -452,7 +452,7 @@ mod native {
         // camera is framed on, once to draw them a chunk at a time. What is
         // held at once is one chunk's bodies and meshes, whatever the
         // number of frames.
-        let mut sweep = crate::motion::Sweep::new(&base, open.cache.clone());
+        let mut sweep = crate::motion::Sweep::of(open, &base);
         let ts = crate::motion::samples_of(range, count);
         let mut model = Bbox3::EMPTY;
         let mut last = None;

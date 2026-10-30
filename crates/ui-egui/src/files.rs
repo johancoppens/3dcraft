@@ -14,8 +14,12 @@ pub const EXTENSION: &str = "3dcraft";
 /// The extension of a published Jig: the same format, opened to be used.
 pub const JIG_EXTENSION: &str = "3dcraftjig";
 
-/// The extensions Open reads: a document and a published Jig.
-pub const OPEN_EXTENSIONS: [&str; 2] = [EXTENSION, JIG_EXTENSION];
+/// The extension of an assembly.
+pub const ASSEMBLY_EXTENSION: &str = "3dcraftasm";
+
+/// The extensions Open reads: a document, a published Jig and an
+/// assembly.
+pub const OPEN_EXTENSIONS: [&str; 3] = [EXTENSION, JIG_EXTENSION, ASSEMBLY_EXTENSION];
 
 /// The extensions `file.import` reads (STEP), in both cases for the
 /// dialogs that filter by case.
