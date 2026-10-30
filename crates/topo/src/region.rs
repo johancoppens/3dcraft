@@ -416,7 +416,7 @@ impl Chart<'_> {
             }
             _ => {}
         }
-        let (du, dv, _) = self.surface.derivatives(u, v);
+        let (_, du, dv) = self.surface.derivatives(u, v);
         let shortest = du.length().min(dv.length());
         if shortest.is_finite() {
             self.scale = self.scale.min(shortest);
