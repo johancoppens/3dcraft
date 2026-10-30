@@ -47,7 +47,7 @@ Each mapped curve runs on past its segment's ends along the segment's tangents i
 
 ### Loops that bound a region
 
-`topo::check` holds every face to `region::region_fault` (2026-10-30): read in the surface's `(u, v)`, sampled per edge (a line in one step on a plane, four elsewhere, a conic in steps of at most π/16, a spline in sixteen; each step's middle projected too, its distance from the chord the polyline's error), moved by whole periods to the point before, a face's loops must be one loop counter-clockwise about the outward normal enclosing the most area, the others clockwise, each hole wound once by the outer loop and by no other hole at every one of its points clear of the others (planes: `stranded_loops`), which finds a hole across a border even where it crosses through a point of a polyline, and no two steps crossing properly by more than the errors and ten tolerances read in parameters at the surface's smallest scale over the face. Passed without a word: loops that wind around a period, surfaces closed both ways, points near a pole or an apex, freeform surfaces that close or collapse, a loop whose area its error cannot tell from zero, more than `MOST_PER_FACE` points or `MOST_PAIRS` pairs of steps; on a sphere, loops all clockwise (the sphere less some caps). The tessellator refuses such a face ("its loops do not bound a region"); the check now says so for every producer, before the body leaves it.
+The general rule `topo::check` holds every face to since 2026-10-30 is described in [`topology.md`](topology.md) › *Loops that bound a region*; it caught the wrap's inward rims (below) as a defect.
 
 ### Fonts in the document
 
