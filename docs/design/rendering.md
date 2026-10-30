@@ -23,6 +23,15 @@ tolerance. The plain look is untouched, bit for bit. Its second layer (2026-10-3
 the key's specular shadow, a thin lens's depth of field, bloom and the accumulation of jittered frames;
 see *Layer 2* under the findings.
 
+**Headless GPU and animations** (2026-10-30). `view.render` and `view.replay` draw through
+`craft3d_engine::pictures`: the CPU renderer, or a renderer the host gives the session
+(`Session::set_picture_renderer`). The engine does not depend on `craft3d-gpu`; `craft3d-cli` (its
+`render`, `run`, `replay`, `serve` and `mcp`) gives its sessions the wgpu renderer on an offscreen device
+of its own, made at the first picture. `renderer: "auto"` (default) uses it and falls back to the CPU,
+`"cpu"` keeps to the oracle, `"gpu"` insists; results say which drew. `view.replay` is an animation
+renderer: variable tracks, the timeline, a camera path, the look; see *Headless GPU* and *Animations*
+under the findings.
+
 ## Findings and history
 
 > Moved verbatim from `docs/architecture.md` on 2026-10-15. Section numbers (§4.1, §5.3, …) in the text are those of that file before the split; [README.md](README.md) says where each one is now.
@@ -751,3 +760,78 @@ normals before every vertex entry point. A mesh uploaded whole is one part at th
 placed triangles (`drawn_bounds`, what the depth range, the section and the studio light are framed on, as on the
 CPU). Held by `crates/gpu/tests/parts.rs` against the CPU renderer drawing the moved mesh (oracle 7's tolerances),
 near the origin and 1e7 away, after uploading and after moving.
+
+### Headless GPU (2026-10-30)
+
+`craft3d_engine::pictures` holds the seam. `PictureRenderer` has the CPU renderer's three entry points as
+one call with a `Shading` (`Plain`, `Analysed(values)`, `Studio(look, env)`), plus `describe` (the
+adapter, making the device the first time). A `Painter` takes the session's renderer out for one command
+and gives it back: `renderer: "gpu"` fails at once when there is none or it cannot make a device;
+`"auto"` draws on it and, on its first error, draws the rest of the command on the CPU and says why
+(`rendererFallback`). The host's renderer and video encoder sit in the session in a `Hosted` slot that a
+clone of the session does not copy (the device stays with the session the host gave it to), behind a
+mutex so the session stays `Sync`. Thumbnails stay on the CPU: the same bytes on every machine.
+
+`apps/craft3d-cli/src/gpu.rs` is the GPU side: `craft3d_gpu::Offscreen` made on first use (its error
+kept, so it is not asked again), the scene's mesh uploaded once per key (a replay gives every state a key
+unique in the process, so the frames of an orbit reuse one upload) and drawn with `render_uploaded` or
+`render_uploaded_studio`. A panic inside wgpu is caught there, the device is let go of, and `auto`
+continues on the CPU. A cut-open picture is drawn in the plain look by both renderers (as
+`render_studio` does on the CPU). The CPU's limit of 2^26 samples over a still's frames bounds the CPU's
+time, not memory, so it is the CPU's alone: on the GPU a still averages up to 256 frames at any size.
+
+A replay on the GPU draws its frames one at a time on the command's thread and encodes the PNGs a batch
+at a time on every core; on the CPU each frame is drawn and written on its own core as before.
+
+**Parity.** `apps/craft3d-cli/src/gpu/tests.rs` gives a session a renderer that draws each picture on
+the GPU and on the CPU from the same mesh, camera and parameters, and holds the two to the GPU crate's
+own rules: the plain look to `crates/gpu/tests/common` (oracle 7), the studio look to the layer-2 rules of
+`crates/gpu/tests/polish.rs` (outside the band and the pixels in doubt, at most 1/512 over one level,
+none over 8). It runs `view.render` in the plain and studio looks (default layer 2, an environment
+with 4 frames, without reflections) and `view.replay` of the history (orbiting, studio) and of an
+animation. The rendering is the one the GPU crate's tests already hold; what this adds is that the
+commands give the GPU the same inputs as the CPU.
+
+### Animations (2026-10-30)
+
+`view.replay` has three kinds of frames: the history (as before), the motion (`motion`), and an
+animation (`animate`). An animation has `frames` states (or `duration` × `fps`; 2 s by default); state
+`k` is at `s = k / (frames − 1)`. Each variable track gives its variable a value at `s`: from `from` to
+`to`, or through keys `[{t, value}]` with `t` rising from 0 to 1, between two keys moved by its easing
+(`linear`, `in` u², `out` 1 − (1 − u)², `inOut` 3u² − 2u³), the ends held outside the keys. The value is
+written with the track's `unit` and must keep the variable's dimension (checked on the first state, so
+`20` for a length is refused with the advice to give `"unit": "mm"`). Each state is the document with
+the values set, regenerated from a copy of the document's regeneration cache, so only what the variables
+touch is rebuilt; it is a function of its values alone (sketches are solved from the document's own
+solution), so the two passes over the states (one for the box the camera is framed on, one to draw a
+chunk at a time, as for the motion) give the same states, and what is held at once is one chunk. A track
+of the document's timeline `t` goes through `motion::Sweep`, so a linkage stays on its branch and an
+assembly's parts are placed by its solve; an assembly takes that track only (its other variables are
+its drivers' business), and with no track it is shown at its own `t`.
+
+**The camera path.** `camera.keys` give `eye`, `target`, `up` and `fov` at places `t`; a field a key
+leaves out is the framed camera's. Eye and target follow a uniform Catmull-Rom spline through the keys
+(it passes through each key; the end segments repeat their end key), the up and the field of view are
+interpolated linearly (the up normalised). `orbit` turns the camera about the vertical through its
+target by that many degrees over the replay and `dolly` scales its distance to the target (and an
+orthographic camera's height) from 1 to the factor; `easing` paces the keys' segments and both helpers.
+The path runs over every frame, the hold included. With an orbit the base camera is framed so that the
+model stays in the picture all round (`orbit_camera`, as before). A frame whose camera has no direction
+(eye on target, or looking along its up) is an error that names the frame. Without a path that moves, a
+state held for several frames is drawn once and written several times.
+
+**Pacing and settling.** `fps` and `duration` (or `frames`) pace an animation; `framesPerStep` and
+`hold` the history. A studio frame averages `look.accumulate` frames, 16 when not given
+(`look::VIEWPORT_ACCUMULATE`, the window's settled picture), on the CPU at most what its sample limit
+allows at the size. The window's own settling count is the same field: `ui.set {"look": {"accumulate": n}}`
+sets how many frames the viewport averages, which `ui.screenshot {window: true}` waits for.
+
+**Video.** The engine starts no program. `view.replay {video}` (`.mp4`, `.webm`, `.gif`) asks the
+session's `VideoEncoder` (the host's, as the renderer), which `craft3d-cli` implements with an external
+`ffmpeg` (`PATH` or `CRAFT3D_FFMPEG`; H.264 or VP9 when that ffmpeg has them, the captions as a subtitle
+track), the way FreeCAD is used as an optional tool: nothing is linked. It is asked before a frame is
+drawn, and a missing ffmpeg is an error that names the PNG sequence (`dir` alone) as the alternative.
+
+**Measured** (the Strix, 1920 × 1080, the benchmark's engine block): see the dev log entry of 2026-10-30
+and [`../development.md`](../development.md) › *Video recipes*.
+

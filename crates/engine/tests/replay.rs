@@ -529,7 +529,7 @@ fn bad_animations_are_refused_and_change_nothing() {
         message
     };
     let with = |extra: Value| -> Value {
-        let mut p = json!({"dir": "out", "width": 32, "height": 24, "frames": 2});
+        let mut p = json!({"dir": "out", "width": 32, "height": 24, "frames": 2, "animate": []});
         for (k, v) in extra.as_object().unwrap() {
             p[k] = v.clone();
         }

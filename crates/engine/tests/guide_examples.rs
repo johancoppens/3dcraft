@@ -300,6 +300,66 @@ fn the_origami_chapter_folds_as_it_says() {
     assert!(dir.join("waterbomb.svg").exists());
 }
 
+/// The animations of the command-line chapter (`13-command-line.md` ›
+/// *Animations and videos*) run as written: the lid's lift and the width
+/// sweep write their frames and captions and leave the document as it was.
+#[test]
+fn the_animations_of_the_command_line_chapter_render_as_they_say() {
+    let text = read_text(&docs().join("guide/13-command-line.md"));
+    let section = text
+        .split("## Animations and videos")
+        .nth(1)
+        .and_then(|rest| rest.split("\n## ").next())
+        .expect("the section is there");
+    let dir = common::workdir("guide", "animations");
+    let mut s = common::session_in(&dir);
+    let mut replays = Vec::new();
+    for block in json_blocks(section) {
+        let value: Value = serde_json::from_str(&block).unwrap();
+        let Some(steps) = steps(&value) else {
+            continue;
+        };
+        for (id, params) in steps {
+            let before = (id == "view.replay").then(|| run(&mut s, "document.inspect", json!({})));
+            let result = run(&mut s, &id, params.clone());
+            if let Some(before) = before {
+                assert_eq!(
+                    run(&mut s, "document.inspect", json!({})),
+                    before,
+                    "{params}"
+                );
+                replays.push(result);
+            }
+        }
+    }
+    assert_eq!(replays.len(), 2, "{replays:?}");
+    assert_eq!(replays[0]["frames"], 12);
+    assert_eq!(replays[0]["animate"]["tracks"][0]["timeline"], true);
+    assert_eq!(replays[1]["frames"], 18);
+    for (name, frames) in [("explode", 12), ("sweep", 18)] {
+        for k in 0..frames {
+            assert!(
+                dir.join(format!("{name}/frame-{k:05}.png")).is_file(),
+                "{name} {k}"
+            );
+        }
+        let srt = read_text(&dir.join(format!("{name}/captions.srt")));
+        assert!(
+            srt.contains(if name == "sweep" {
+                "width = 60 mm"
+            } else {
+                "t = 1"
+            }),
+            "{srt}"
+        );
+    }
+    // The lid lifts: the first and the last frame differ.
+    assert_ne!(
+        std::fs::read(dir.join("explode/frame-00000.png")).unwrap(),
+        std::fs::read(dir.join("explode/frame-00011.png")).unwrap()
+    );
+}
+
 /// The outputs of the measuring chapter (`10-measure.md` › *Outputs*) run
 /// as written and say what the text says: the box hull's GM is 65 mm, the
 /// assertion on it passes, and with KG at 300 mm GM is -55 mm and it fails.

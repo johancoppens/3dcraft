@@ -274,8 +274,11 @@ ui.set {"show": {"edges": false}}
 
 `view.render` and `craft3d-cli render` draw one frame unless `accumulate` (`--accumulate`) asks for
 more; they refuse a still whose frames together would take too long (all frames' samples over
-2^26, about 34 frames of the default 800 × 600 picture). `ui.screenshot` with `window: true` waits
-until the window has averaged its frames, so the picture is the settled one.
+2^26, about 34 frames of the default 800 × 600 picture; on the graphics card, up to 256 at any size).
+`ui.screenshot` with `window: true` waits until the window has averaged its frames, so the picture is
+the settled one; the count it waits for is `accumulate` too, so `ui.set {"look": {"accumulate": 4}}`
+settles sooner and `"accumulate": 64` smoother. `view.replay` averages the same 16 per frame unless its
+`look` says otherwise.
 
 ```text
 ui.set {"look": {"mode": "studio", "dof": {"fstop": 2, "focus": "picked"}, "bloom": 0.1}}

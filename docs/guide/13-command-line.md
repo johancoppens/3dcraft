@@ -51,7 +51,8 @@ cannot be worked out, and the script stops there.
 craft3d-cli render bracket.3dcraft --out bracket.png --size 800x600 --view iso
 ```
 
-Draws the bodies into a PNG, on the window's light background (`--background dark` for a dark one).
+Draws the bodies into a PNG, on the window's light background (`--background dark` for a dark one), on
+the graphics card when there is one (`--renderer cpu` for the CPU renderer).
 `--view` is `iso`, `front`, `back`, `left`, `right`, `top` or `bottom`; `--mode ids` gives every face its
 own flat colour, to see which face is which.
 
@@ -118,8 +119,54 @@ printed as JSON and the lines per point go to standard error.
 craft3d-cli replay bracket.3dcraft --out build.mp4
 ```
 
-Makes a video (MP4 or GIF) of the design being built, feature by feature. It needs `ffmpeg`; without it,
-PNG frames.
+Makes a video (MP4, WebM or GIF) of the design being built, feature by feature. It needs `ffmpeg`;
+without it, PNG frames.
+
+## Animations and videos
+
+The same command renders animations: an exploded view, a mechanism's stroke, a parameter sweep, a
+camera flying round the model. `view.replay` with `animate` gives variables *tracks*: each frame sets
+them to their value at that moment and rebuilds only what they touch. A track goes `from` a value `to`
+another, or through `keys` (`[{"t": 0, "value": 30}, {"t": 0.5, "value": 50}, ...]`, `t` from 0 at the
+first frame to 1 at the last), with an `easing` (`linear`, `in`, `out`, `inOut`) and the variable's
+`unit`. A track of the timeline `t` plays the document's motion ([chapter 17](17-assemblies.md) for
+assemblies). `camera` moves the camera: `orbit` degrees about the vertical, `dolly` towards the model
+(0.5 ends at half the distance), or `keys` of `eye`, `target`, `up` and `fov` it passes through
+smoothly. `frames` or `duration` (seconds at `fps`) set the length, `hold` lingers on the last frame,
+and `look` and `background` are those of `render`.
+
+A box whose lid lifts off as the camera turns, then the box swept from 30 to 60 mm wide:
+
+```json
+[
+  ["file.new", {}],
+  ["variable.set", {"name": "t", "expr": "0"}],
+  ["variable.set", {"name": "width", "expr": "40 mm"}],
+  ["feature.block", {"name": "Box", "size": ["width", 30, 20]}],
+  ["feature.block", {"name": "Lid", "size": ["width", 30, 3], "position": [0, 0, "20 mm + 25 mm * t"]}],
+  ["view.replay", {"dir": "explode", "width": 320, "height": 240, "frames": 12,
+                   "animate": [{"variable": "t", "from": 0, "to": 1, "easing": "inOut"}],
+                   "camera": {"orbit": 30}}],
+  ["view.replay", {"dir": "sweep", "width": 320, "height": 240, "frames": 12, "hold": 6,
+                   "animate": [{"variable": "width", "from": 30, "to": 60, "unit": "mm"}]}]
+]
+```
+
+Each replay writes `frame-00000.png` and on into its `dir`, with `captions.srt` (each frame's values),
+and leaves the document as it was. `"video": "explode.mp4"` (or `.webm`, `.gif`) makes the video
+straight away when `ffmpeg` is installed; otherwise the command says so before it draws anything, and
+the PNG sequence is the way. From the command line, at full HD in the studio look:
+
+```sh
+craft3d-cli replay box.3dcraft --out explode.mp4 --size 1920x1080 \
+    --params '{"animate": [{"variable": "t", "from": 0, "to": 1, "easing": "inOut"}],
+               "duration": 4, "look": {}, "camera": {"orbit": 40, "dolly": 0.8}}'
+```
+
+Pictures and frames are drawn on the graphics card when the machine has one (`"renderer": "auto"`, the
+default; the result says `"renderer": "gpu"` or `"cpu"`); `"renderer": "cpu"` (`--renderer cpu`) draws
+them with the CPU renderer, the reference the card is checked against, and slower. A studio frame
+averages 16 frames of samples (`look.accumulate`), as the window does before its picture is settled.
 
 ## For programs: `serve` and `mcp`
 
