@@ -5,6 +5,7 @@
 //! and readability over speed, and is deterministic: single-threaded `f64`
 //! arithmetic, triangles drawn in mesh order.
 
+pub mod analysis;
 mod section;
 pub mod studio;
 
@@ -760,6 +761,11 @@ pub struct RenderParams {
     /// `None`, the default, is the whole picture, bit for bit; so is a
     /// plane that is none ([`Cut::new`]).
     pub section: Option<Section>,
+    /// A surface analysis drawn in place of the shading
+    /// ([`analysis::Analysis`]); `None`, the default, is the plain
+    /// picture, bit for bit. The curvature map's values per vertex come
+    /// with the mesh ([`render_analysed`]).
+    pub analysis: Option<analysis::Analysis>,
 }
 
 impl Default for RenderParams {
@@ -773,6 +779,7 @@ impl Default for RenderParams {
             highlight: Highlight::NONE,
             opacity: 1.0,
             section: None,
+            analysis: None,
         }
     }
 }
@@ -1247,6 +1254,20 @@ pub fn render_colored(
     camera: &Camera,
     params: &RenderParams,
 ) -> Result<Frame, RenderError> {
+    render_analysed(mesh, colors, &[], camera, params)
+}
+
+/// [`render_colored`] with a value per vertex of `mesh` for the curvature
+/// map of [`RenderParams::analysis`] (interpolated across a triangle like
+/// the normal; a vertex without one, or a value that is not a number,
+/// counts as none). Without an analysis the values are not read.
+pub fn render_analysed(
+    mesh: &Mesh,
+    colors: &FaceColors,
+    values: &[f32],
+    camera: &Camera,
+    params: &RenderParams,
+) -> Result<Frame, RenderError> {
     let (width, height, ssaa) = (params.width, params.height, params.ssaa);
     if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
         return Err(RenderError::InvalidSize { width, height });
@@ -1268,6 +1289,11 @@ pub fn render_colored(
 
     let projected: Vec<Option<Projected>> =
         mesh.positions.iter().map(|&p| view.project(p)).collect();
+    let analysis = match params.analysis {
+        Some(a) => Some(analysis::Resolved::new(&a, &camera.axes()?, &mesh.bbox())),
+        None => None,
+    };
+    let value_at = |k: u32| values.get(k as usize).map_or(f64::NAN, |&v| f64::from(v));
     let mut color = vec![params.background; w * h];
     let mut ids = vec![NO_FACE; w * h];
     let mut depth_key = vec![f64::INFINITY; w * h];
@@ -1416,7 +1442,15 @@ pub fn render_colored(
                         .unwrap_or((params.color, Finish::default()));
                     (color, (SHADE_AMBIENT, SHADE_DIFFUSE, SHADE_FILL), finish)
                 };
-                let rgb = normal.map_or(base, |n| shade(base, light, finish, n, to_viewer, &view));
+                let rgb = match &analysis {
+                    Some(a) => {
+                        let value = qa * value_at(ia) + qb * value_at(ib) + qc * value_at(ic);
+                        a.color(normal, to_viewer, position - view.eye, value)
+                    }
+                    None => {
+                        normal.map_or(base, |n| shade(base, light, finish, n, to_viewer, &view))
+                    }
+                };
                 if !front {
                     if let Some(slot) = behind.get_mut(i) {
                         *slot = (key, rgb);

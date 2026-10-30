@@ -142,6 +142,8 @@ pub(crate) fn cap_vertices(mesh: &GpuMesh, cut: &Cut) -> Option<Vec<u8>> {
         bytes.extend_from_slice(&0_u32.to_le_bytes());
         // Nor layered.
         bytes.extend_from_slice(&0_u32.to_le_bytes());
+        // No value for the curvature map.
+        bytes.extend(float_bytes(&[0.0; 2]));
     }
     Some(bytes)
 }

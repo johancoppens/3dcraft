@@ -49,6 +49,91 @@ pub enum LineKind {
     Datum,
     /// A point's path over the motion (`view.trace`).
     Trace,
+    /// A curvature comb's spike or its line through the tips
+    /// (`craft3d_engine::analysis::combs`).
+    Comb,
+}
+
+/// The surface analysis the viewport draws (`craft3d_render::analysis`),
+/// made by the shell from its `AnalysisState` and the shown scene: the
+/// renderers' analysis (none for combs alone), the curvature map's values
+/// per vertex of the scene's mesh (empty for the other modes), the
+/// combs, and what the legend says.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ViewAnalysis {
+    pub analysis: Option<craft3d_render::analysis::Analysis>,
+    pub values: std::sync::Arc<Vec<f32>>,
+    pub combs: Vec<Vec<Vec3>>,
+    /// Which curvature the map shows (`gaussian`, `mean`, `max`).
+    pub curvature: String,
+    /// The model's length unit, for the legend.
+    pub unit: String,
+    pub legend: bool,
+}
+
+impl ViewAnalysis {
+    /// What tells uploads apart: the values' identity (0 for none).
+    pub fn values_key(&self) -> usize {
+        if self.values.is_empty() {
+            0
+        } else {
+            std::sync::Arc::as_ptr(&self.values) as usize
+        }
+    }
+}
+
+/// A row of a legend: its colours (side by side) and its words.
+pub type LegendRow = (Vec<[u8; 3]>, String);
+
+/// The legend of an analysis as rows to draw: a title, and per row a
+/// colour (or a ramp's stops for the curvature map) and its words.
+pub fn legend_rows(view: &ViewAnalysis) -> Option<(String, Vec<LegendRow>)> {
+    use craft3d_render::analysis::AnalysisMode;
+    let a = view.analysis.as_ref().filter(|_| view.legend)?;
+    let c = &a.colors;
+    match a.mode {
+        AnalysisMode::Curvature => {
+            let (name, power) = match view.curvature.as_str() {
+                "mean" => ("Mean curvature", "1/"),
+                "max" => ("Largest |curvature|", "1/"),
+                _ => ("Gaussian curvature", "1/²"),
+            };
+            let unit = if power == "1/²" {
+                format!("1/{}²", view.unit)
+            } else {
+                format!("1/{}", view.unit)
+            };
+            let [lo, hi] = a.range;
+            let mid = 0.5 * (lo + hi);
+            Some((
+                format!("{name} ({unit})"),
+                vec![
+                    (vec![c.ramp[4]], format!("{hi:.4}")),
+                    (vec![c.ramp[2]], format!("{mid:.4}")),
+                    (vec![c.ramp[0]], format!("{lo:.4}")),
+                ],
+            ))
+        }
+        AnalysisMode::Draft => {
+            let min = a.min_draft.to_degrees();
+            Some((
+                "Draft".to_string(),
+                vec![
+                    (vec![c.draft_in], format!("≥ {min:.1}° along the pull")),
+                    (vec![c.draft_shallow], format!("below {min:.1}°")),
+                    (vec![c.draft_out], format!("≥ {min:.1}° against it")),
+                ],
+            ))
+        }
+        AnalysisMode::Zebra => Some((
+            format!("Zebra: {} stripes", a.stripes),
+            vec![(vec![c.dark, c.light], "reflected stripes".to_string())],
+        )),
+        AnalysisMode::Highlight => Some((
+            format!("Highlight lines: {}", a.stripes),
+            vec![(vec![c.dark, c.light], "view-independent".to_string())],
+        )),
+    }
 }
 
 /// A line in image pixels (x right, y down, from the top-left corner).
@@ -264,6 +349,7 @@ impl LineKind {
             LineKind::Highlight => tokens.face_highlight,
             LineKind::Datum => tokens.datum,
             LineKind::Trace => tokens.trace,
+            LineKind::Comb => tokens.comb,
         }
     }
 
@@ -277,6 +363,7 @@ impl LineKind {
             LineKind::Highlight => tokens.highlight_width,
             LineKind::Datum => tokens.datum_width,
             LineKind::Trace => tokens.trace_width,
+            LineKind::Comb => tokens.comb_width,
         }
     }
 
@@ -353,6 +440,9 @@ pub struct Marks {
     /// The paths of points over the motion (`view.trace`), as polylines,
     /// tested against the bodies like a sketch.
     pub traces: Vec<Vec<Vec3>>,
+    /// Curvature combs (`craft3d_engine::analysis::combs`), as polylines,
+    /// tested like a trace.
+    pub combs: Vec<Vec<Vec3>>,
 }
 
 impl Marks {
@@ -400,6 +490,7 @@ impl Marks {
         self.hide_edges |= other.hide_edges;
         self.soft_edges |= other.soft_edges;
         self.traces.extend(other.traces);
+        self.combs.extend(other.combs);
         self
     }
 
@@ -1335,6 +1426,13 @@ fn build_overlay(
             }
         }
     }
+    for comb in marks.into_iter().flat_map(|marks| &marks.combs) {
+        for pair in comb.windows(2) {
+            if let [a, b] = *pair {
+                line_of(a, b, LineKind::Comb, true, true, None);
+            }
+        }
+    }
     for sketch in shown_sketches(scene, marks) {
         let chosen = selected == Some(sketch.feature.as_str());
         for polyline in &sketch.polylines {
@@ -1455,6 +1553,7 @@ pub fn render_params(quality: Quality, tokens: &Tokens) -> RenderParams {
         highlight: Highlight::NONE,
         opacity: 1.0,
         section: None,
+        analysis: None,
     }
 }
 
@@ -1647,11 +1746,21 @@ pub fn picture_marked(
     scale: f64,
 ) -> Result<Picture, String> {
     picture_lit(
-        scene, camera, quality, tokens, selected, highlight, marks, opacity, None, scale,
+        scene,
+        camera,
+        quality,
+        tokens,
+        selected,
+        highlight,
+        marks,
+        opacity,
+        (None, None),
+        scale,
     )
 }
 
-/// [`picture_marked`] in the studio look when `studio` is given.
+/// [`picture_marked`] in the studio look when `studio` is given, with a
+/// surface analysis when `analysis` is (drawn in the plain look).
 #[allow(clippy::too_many_arguments)]
 pub fn picture_lit(
     scene: Option<&Scene>,
@@ -1662,7 +1771,10 @@ pub fn picture_lit(
     highlight: Highlight,
     marks: &Marks,
     opacity: f64,
-    studio: Option<craft3d_gpu::Studio>,
+    (studio, analysis): (
+        Option<craft3d_gpu::Studio>,
+        Option<std::sync::Arc<ViewAnalysis>>,
+    ),
     scale: f64,
 ) -> Result<Picture, String> {
     let mut renderer = BodyRenderer::cpu();
@@ -1670,6 +1782,7 @@ pub fn picture_lit(
     renderer.set_marks(marks.clone());
     renderer.set_opacity(opacity);
     renderer.set_studio(studio);
+    renderer.set_analysis(analysis);
     let composed = compose_with(&mut renderer, scene, camera, quality, tokens, selected)?;
     Ok(rasterise(composed, tokens, scale))
 }

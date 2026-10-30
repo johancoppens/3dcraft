@@ -304,6 +304,45 @@ display colour with transparency; a STEP export writes the transmission as the s
 transparency. Subsurface, the anisotropy's direction and the absorption's length are kept only in
 the `.3dcraft` file.
 
+### Surface analysis
+
+**Analysis**, beside Studio, shows the quality of the surfaces instead of their shading. A small
+panel under the view cube chooses what, with its options as number fields, and a legend says what
+the colours mean:
+
+- **zebra**: black and white stripes reflected in the surfaces, as a car body reflects the lights of
+  a tunnel. Where two faces meet with the same tangent plane (G1) but a jump in curvature the
+  stripes kink; where the curvature carries on too (G2) they run on smoothly. The stripes follow
+  the view, as reflections do: turn the model to see a seam from several sides. `stripes` is how
+  many per turn, `direction` turns the tunnel on the screen, `width` is the dark share of each
+  stripe and `offset` slides them along.
+- **highlight**: highlight lines (Beier and Chen), the lines of a light panel above the model drawn
+  where the surface's normal points at them. They stay put when you turn the view, so they show a
+  surface's flow on the part itself.
+- **curvature**: a colour map of the curvature, from blue (most negative) through pale to red (most
+  positive): `gaussian` (saddles negative, domes positive, flat or cylindrical zero), `mean`
+  (positive where the part bulges out) or `max`, the larger of the two principal curvatures. The
+  numbers come from the exact surfaces, not from the triangles on screen. The range is the 95th
+  percentile of the values unless you fix it (`range`).
+- **draft**: for moulded parts. Faces that leave the mould along the pull direction (`pull`) with at
+  least the least draft (`minDraft`, degrees) are green, faces that leave it the other way blue,
+  and faces too steep to leave either way red.
+
+**Combs** draw the curvature of edges (or of iso-curves of a face) as spikes standing off the curve,
+as long as the curvature and joined at their tips: where the comb's outline jumps, the curvature does.
+
+The analysis is a view, like the look: the document does not change, and the picture is drawn in the
+plain look. An agent sets it with `ui.set`, and `view.render` takes the same object:
+
+```text
+ui.set {"analysis": {"mode": "zebra", "stripes": 32, "direction": 30}}
+ui.set {"analysis": {"mode": "curvature", "curvature": "mean", "combs": {"edges": true, "density": 60}}}
+ui.set {"analysis": {"mode": "draft", "pull": [0, 0, 1], "minDraft": 2}}
+ui.set {"analysis": null}
+```
+
+The numbers behind the colours are measures too ([chapter 10](10-measure.md#surface-quality)).
+
 ## Pointing at things
 
 A click selects what is under the pointer: a corner (vertex) when one is within a few points, else an

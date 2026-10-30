@@ -165,6 +165,7 @@ fn time_direct(
         highlight: craft3d_render::Highlight::NONE,
         opacity,
         section: marks.section(),
+        analysis: None,
     };
     let overlay = OverlayParams {
         slack: depth_slack(Backend::Gpu, Some(scene), camera),

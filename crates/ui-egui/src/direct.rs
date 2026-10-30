@@ -78,6 +78,9 @@ struct Uploaded {
     marks: Marks,
     /// Whether the lines are the ones over see-through bodies.
     see_through: bool,
+    /// The curvature map's values uploaded with the mesh
+    /// (`ViewAnalysis::values_key`).
+    values: usize,
     mesh: GpuMesh,
     lines: GpuLines,
     triangles: usize,
@@ -99,6 +102,9 @@ struct Shown {
     opacity: f64,
     /// The studio look: its environment (by address) and options.
     look: Option<(usize, craft3d_render::studio::Look)>,
+    /// The surface analysis and its values (by address).
+    analysis: Option<craft3d_render::analysis::Analysis>,
+    values: usize,
 }
 
 pub struct Direct {
@@ -122,6 +128,8 @@ pub struct Direct {
     opacity: f64,
     /// The studio look, or `None` for the plain one.
     studio: Option<craft3d_gpu::Studio>,
+    /// The surface analysis of the frames, or `None`.
+    analysis: Option<Arc<crate::viewport::ViewAnalysis>>,
 }
 
 fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
@@ -246,6 +254,13 @@ pub fn segments_marked(
         for pair in trace.windows(2) {
             if let [a, b] = *pair {
                 line(a, b, LineKind::Trace, true, true, false);
+            }
+        }
+    }
+    for comb in &marks.combs {
+        for pair in comb.windows(2) {
+            if let [a, b] = *pair {
+                line(a, b, LineKind::Comb, true, true, false);
             }
         }
     }
@@ -461,6 +476,7 @@ impl Direct {
             marks: Marks::default(),
             opacity: 1.0,
             studio: None,
+            analysis: None,
         })
     }
 
@@ -500,6 +516,13 @@ impl Direct {
     /// [`crate::backend::BodyRenderer::set_studio`].
     pub fn set_studio(&mut self, studio: Option<craft3d_gpu::Studio>) {
         self.studio = studio;
+    }
+
+    /// The surface analysis of the frames drawn from now on, as
+    /// [`crate::backend::BodyRenderer::set_analysis`]: drawn in the plain
+    /// look in place of the shading.
+    pub fn set_analysis(&mut self, analysis: Option<Arc<crate::viewport::ViewAnalysis>>) {
+        self.analysis = analysis;
     }
 
     /// As on a device that cannot draw see-through bodies: from now on a
@@ -555,6 +578,8 @@ impl Direct {
                 .studio
                 .as_ref()
                 .map(|s| (Arc::as_ptr(&s.env) as usize, s.look)),
+            analysis: self.analysis.as_ref().and_then(|a| a.analysis),
+            values: self.analysis.as_ref().map_or(0, |a| a.values_key()),
         };
         // The same picture again: nothing to draw, unless the studio look
         // is still accumulating frames (`Onscreen::converging`).
@@ -596,10 +621,11 @@ impl Direct {
 
     /// Uploads what changed and draws. Returns the number of triangles.
     fn draw(&mut self, scene: Option<&Scene>, wanted: &Shown) -> Result<usize, DirectFailure> {
-        let same_mesh = self
-            .uploaded
-            .as_ref()
-            .is_some_and(|u| u.revision == wanted.revision && u.tolerance == wanted.tolerance);
+        let same_mesh = self.uploaded.as_ref().is_some_and(|u| {
+            u.revision == wanted.revision
+                && u.tolerance == wanted.tolerance
+                && u.values == wanted.values
+        });
         // Through see-through bodies the hidden parts of their edges are
         // drawn: other lines, uploaded when the bodies become see-through
         // or opaque again (not while the slider moves in between).
@@ -617,6 +643,7 @@ impl Direct {
                 && u.scale == wanted.scale
                 && u.marks == wanted.marks
                 && u.see_through == see_through
+                && u.values == wanted.values
         });
         if !same_lines {
             let lines = self
@@ -648,9 +675,15 @@ impl Direct {
                 let mesh = scene.map_or(&empty, |s| &s.mesh);
                 let no_colors = craft3d_render::FaceColors::new();
                 let colors = scene.map_or(&no_colors, |s| &s.face_colors);
+                let values = self
+                    .analysis
+                    .as_ref()
+                    .filter(|_| wanted.values != 0)
+                    .map(|a| Arc::clone(&a.values))
+                    .unwrap_or_default();
                 let uploaded = self
                     .onscreen
-                    .upload_colored(mesh, colors)
+                    .upload_analysed(mesh, colors, &values)
                     .map_err(classify)?;
                 self.uploaded = Some(Uploaded {
                     revision: wanted.revision,
@@ -660,6 +693,7 @@ impl Direct {
                     scale: wanted.scale,
                     marks: wanted.marks.clone(),
                     see_through,
+                    values: wanted.values,
                     mesh: uploaded,
                     lines,
                     triangles: mesh.triangles.len(),
@@ -680,6 +714,7 @@ impl Direct {
             highlight: wanted.highlight,
             opacity: wanted.opacity,
             section: wanted.marks.section(),
+            analysis: wanted.analysis,
         };
         let overlay = OverlayParams {
             slack: depth_slack(Backend::Gpu, scene, &wanted.camera),
@@ -690,7 +725,9 @@ impl Direct {
                 ..edge_look(&wanted.tokens, wanted.scale)
             },
         };
-        self.onscreen.set_studio(self.studio.clone());
+        // An analysis is drawn in the plain look.
+        self.onscreen
+            .set_studio(self.studio.clone().filter(|_| wanted.analysis.is_none()));
         self.onscreen
             .draw(
                 &uploaded.mesh,

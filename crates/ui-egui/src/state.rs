@@ -668,6 +668,77 @@ pub struct UiState {
     /// How the bodies are lit: the plain look or the studio look. View
     /// state; the document does not change.
     pub look: LookState,
+    /// A surface analysis drawn in place of the shading (zebra stripes,
+    /// highlight lines, a curvature map, draft) and curvature combs. View
+    /// state; the document does not change.
+    pub analysis: AnalysisState,
+}
+
+/// The surface analysis of the viewport (`craft3d_engine::analysis`, the
+/// same fields as `view.render`'s `analysis`): `mode` none (the default),
+/// zebra, highlight, curvature or draft, with its options, and combs.
+/// `ui.set {"analysis": {"mode": "zebra"}}` and the Analysis toggle of the
+/// display bar switch it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct AnalysisState {
+    pub mode: String,
+    pub stripes: f64,
+    /// Degrees.
+    pub direction: f64,
+    pub width: f64,
+    pub offset: f64,
+    pub pull: [f64; 3],
+    /// Degrees.
+    pub min_draft: f64,
+    pub curvature: String,
+    pub range: Option<[f64; 2]>,
+    /// As `analysis.combs` takes it, or `None` for none.
+    pub combs: Option<serde_json::Value>,
+    pub legend: bool,
+}
+
+impl Default for AnalysisState {
+    fn default() -> Self {
+        AnalysisState::of(&craft3d_engine::analysis::AnalysisSpec::default())
+    }
+}
+
+impl AnalysisState {
+    /// The state of a parsed analysis.
+    pub fn of(spec: &craft3d_engine::analysis::AnalysisSpec) -> AnalysisState {
+        let json = spec.json();
+        AnalysisState {
+            mode: json
+                .get("mode")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("none")
+                .to_string(),
+            stripes: spec.stripes,
+            direction: spec.direction,
+            width: spec.width,
+            offset: spec.offset,
+            pull: [spec.pull.x, spec.pull.y, spec.pull.z],
+            min_draft: spec.min_draft,
+            curvature: spec.curvature.name().to_string(),
+            range: spec.range,
+            combs: json.get("combs").filter(|c| !c.is_null()).cloned(),
+            legend: spec.legend,
+        }
+    }
+
+    /// The analysis this state says, checked.
+    pub fn spec(&self) -> Result<craft3d_engine::analysis::AnalysisSpec, String> {
+        let value = serde_json::to_value(self).map_err(|e| e.to_string())?;
+        craft3d_engine::analysis::AnalysisSpec::patched(
+            &craft3d_engine::analysis::AnalysisSpec::default(),
+            &value,
+        )
+    }
+
+    pub fn is_on(&self) -> bool {
+        self.mode != "none" || self.combs.is_some()
+    }
 }
 
 /// How the viewport lights the bodies (`craft3d_engine::look`, the same
@@ -1303,6 +1374,20 @@ mod tests {
                 // The edges in the studio look (2026-10-30).
                 edges: "off".to_string(),
             },
+            // Added with surface analysis (2026-10-30).
+            analysis: AnalysisState {
+                mode: "zebra".to_string(),
+                stripes: 24.0,
+                direction: 30.0,
+                width: 0.25,
+                offset: 0.5,
+                pull: [0.0, 1.0, 0.0],
+                min_draft: 2.0,
+                curvature: "mean".to_string(),
+                range: Some([-0.5, 0.5]),
+                combs: Some(serde_json::json!({"edges": true, "density": 20})),
+                legend: false,
+            },
         };
         let json = serde_json::to_value(&state).unwrap();
         assert_eq!(
@@ -1344,6 +1429,10 @@ mod tests {
                          "groundReflection": 0.5, "bloom": 0.1,
                          "dof": {"fstop": 4.0, "focus": "picked"}, "accumulate": 8,
                          "edges": "off"},
+                "analysis": {"mode": "zebra", "stripes": 24.0, "direction": 30.0, "width": 0.25,
+                             "offset": 0.5, "pull": [0.0, 1.0, 0.0], "minDraft": 2.0,
+                             "curvature": "mean", "range": [-0.5, 0.5],
+                             "combs": {"edges": true, "density": 20}, "legend": false},
             })
         );
         let back: UiState = serde_json::from_value(json).unwrap();

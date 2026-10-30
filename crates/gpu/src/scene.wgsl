@@ -54,6 +54,19 @@ struct Scene {
     // xyz: unit vector towards the fill light. w: its weight
     // (`SHADE_FILL`), 0 when there is none.
     fill: vec4<f32>,
+    // The surface analysis (craft3d_render::analysis::Resolved): the
+    // mode (0 for none), the stripe count, the dark share and sin of the
+    // least draft; the axis and the light lines' spacing; the first
+    // vector and the map's low end; the second and its high end; the
+    // light plane's point (relative to the eye) and the stripes' offset;
+    // the colours: dark, light, in, out, shallow, none (its w the least
+    // |N·M| of highlight lines), the ramp's five.
+    analysis: vec4<f32>,
+    analysis_axis: vec4<f32>,
+    analysis_first: vec4<f32>,
+    analysis_second: vec4<f32>,
+    analysis_point: vec4<f32>,
+    analysis_colors: array<vec4<f32>, 11>,
 }
 
 @group(0) @binding(0) var<uniform> scene: Scene;
@@ -75,6 +88,7 @@ struct VertexIn {
     // plus one in the low 16 bits (0: none), and bit 16 when it lets
     // light through: `craft3d_gpu::mesh::optics_word`.
     @location(6) optics: u32,
+    @location(7) value: vec2<f32>,
 }
 
 struct VertexOut {
@@ -93,6 +107,7 @@ struct VertexOut {
     @location(5) @interpolate(flat) color: u32,
     @location(6) @interpolate(flat) finish: u32,
     @location(7) @interpolate(flat) optics: u32,
+    @location(8) value: vec2<f32>,
 }
 
 fn vertex(in: VertexIn) -> VertexOut {
@@ -130,6 +145,7 @@ fn vertex(in: VertexIn) -> VertexOut {
     out.color = in.color;
     out.finish = in.finish;
     out.optics = in.optics;
+    out.value = in.value;
     return out;
 }
 
@@ -217,7 +233,116 @@ fn highlighted(face: u32) -> bool {
 }
 
 // The shaded colour of a fragment, as the bytes of the picture over 255.
+const ANALYSIS_AMBIENT: f32 = 0.55;
+const ANALYSIS_DIFFUSE: f32 = 0.45;
+const TAU: f32 = 6.283185307179586;
+
+// craft3d_render::analysis: the lighting of the map and of draft.
+fn analysis_lit(rgb: vec3<f32>, facing: f32) -> vec3<f32> {
+    let k = ANALYSIS_AMBIENT + ANALYSIS_DIFFUSE * min(abs(facing), 1.0);
+    return clamp(round(rgb * k), vec3<f32>(0.0), vec3<f32>(255.0));
+}
+
+// craft3d_render::analysis::ramp.
+fn analysis_ramp(t_in: f32) -> vec3<f32> {
+    let t = clamp(t_in, 0.0, 1.0);
+    let x = t * 4.0;
+    let k = min(u32(floor(x)), 3u);
+    let f = x - f32(k);
+    let a = scene.analysis_colors[6u + k].rgb;
+    let b = scene.analysis_colors[7u + k].rgb;
+    return clamp(round(a + (b - a) * f), vec3<f32>(0.0), vec3<f32>(255.0));
+}
+
+// craft3d_render::analysis::Resolved::color, in place of the shading
+// where the scene has an analysis.
+fn analysis_of(in: VertexOut) -> vec4<f32> {
+    var to_viewer = -scene.forward.xyz;
+    if scene.forward.w > 0.5 {
+        let len = length(in.rel);
+        if len > 0.0 {
+            to_viewer = -in.rel / len;
+        }
+    }
+    var n = vec3<f32>(0.0);
+    var has_normal = false;
+    let len_n = length(in.normal);
+    if len_n > 0.0 {
+        n = in.normal / len_n;
+        has_normal = true;
+    } else {
+        let len_f = length(in.flat_normal);
+        if len_f > 0.0 {
+            n = in.flat_normal / len_f;
+            has_normal = true;
+        }
+    }
+    let mode = u32(scene.analysis.x + 0.5);
+    let dark = scene.analysis_colors[0].rgb;
+    let light = scene.analysis_colors[1].rgb;
+    let none = scene.analysis_colors[5].rgb;
+    var rgb = none;
+    if has_normal {
+        let facing = dot(n, to_viewer);
+        if mode == 1u || mode == 2u {
+            var phase = 0.0;
+            var has_phase = false;
+            if mode == 1u {
+                var m = n;
+                if facing < 0.0 {
+                    m = -n;
+                }
+                let r = m * (2.0 * dot(m, to_viewer)) - to_viewer;
+                let phi = atan2(dot(r, scene.analysis_second.xyz), dot(r, scene.analysis_first.xyz));
+                phase = phi / TAU * scene.analysis.y + scene.analysis_point.w;
+                has_phase = true;
+            } else {
+                let nm = dot(n, scene.analysis_second.xyz);
+                if abs(nm) >= scene.analysis_colors[5].w {
+                    let a = scene.analysis_point.xyz;
+                    let t = dot(a - in.rel, scene.analysis_second.xyz) / nm;
+                    let q = in.rel + n * t;
+                    phase = dot(q - a, scene.analysis_first.xyz) / scene.analysis_axis.w
+                        + scene.analysis_point.w;
+                    has_phase = true;
+                }
+            }
+            if has_phase {
+                if phase - floor(phase) < scene.analysis.z {
+                    rgb = dark;
+                } else {
+                    rgb = light;
+                }
+            }
+        } else if mode == 3u {
+            if in.value.y > 0.999 {
+                let span = scene.analysis_second.w - scene.analysis_first.w;
+                var t = 0.5;
+                if abs(span) > 0.0 {
+                    t = (in.value.x - scene.analysis_first.w) / span;
+                }
+                rgb = analysis_lit(analysis_ramp(t), facing);
+            } else {
+                rgb = analysis_lit(none, facing);
+            }
+        } else {
+            let s = dot(n, scene.analysis_axis.xyz);
+            var c = scene.analysis_colors[4].rgb;
+            if s >= scene.analysis.w {
+                c = scene.analysis_colors[2].rgb;
+            } else if s <= -scene.analysis.w {
+                c = scene.analysis_colors[3].rgb;
+            }
+            rgb = analysis_lit(c, facing);
+        }
+    }
+    return vec4<f32>(rgb / 255.0, 1.0);
+}
+
 fn shade_of(in: VertexOut) -> vec4<f32> {
+    if scene.analysis.x > 0.5 {
+        return analysis_of(in);
+    }
     // render(): a highlighted face is shaded from its own base colour.
     // render_colored(): a face with a colour of its own is shaded from it.
     var base = scene.base.rgb;

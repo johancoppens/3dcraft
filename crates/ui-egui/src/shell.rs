@@ -378,6 +378,8 @@ struct FrameKey {
     edges: EdgesDrawn,
     /// How the bodies are lit.
     look: crate::state::LookState,
+    /// The surface analysis drawn, by when it was made.
+    analysis: u64,
     /// The studio look's environment is prepared (always true for the
     /// plain look): the frame drawn plain while it was not is redrawn.
     look_ready: bool,
@@ -397,6 +399,16 @@ struct SectionCache {
     cut: Option<viewport::SectionCut>,
 }
 
+/// What a surface analysis was made from: the scene's revision and
+/// sampling, the state and the theme's colours.
+#[derive(Clone, Debug, PartialEq)]
+struct AnalysisSource {
+    revision: u64,
+    tolerance: (f64, Option<f64>),
+    state: crate::state::AnalysisState,
+    colors: craft3d_render::analysis::AnalysisColors,
+}
+
 /// One image to make.
 struct RenderJob {
     scene: Option<Arc<Scene>>,
@@ -409,6 +421,8 @@ struct RenderJob {
     opacity: f64,
     /// The studio look, or `None` for the plain one.
     studio: Option<craft3d_gpu::Studio>,
+    /// The surface analysis, or `None`.
+    analysis: Option<Arc<viewport::ViewAnalysis>>,
     /// Asked to repaint when the image is ready.
     #[cfg(not(target_arch = "wasm32"))]
     wake: Option<egui::Context>,
@@ -430,6 +444,7 @@ impl RenderJob {
         renderer.set_marks(self.marks.clone());
         renderer.set_opacity(self.opacity);
         renderer.set_studio(self.studio.clone());
+        renderer.set_analysis(self.analysis.clone());
         let composed = viewport::compose_with(
             renderer,
             self.scene.as_deref(),
@@ -654,6 +669,14 @@ pub struct Shell {
     /// The scene and the document's status as of the last [`Self::sync`]:
     /// what is drawn while the session is away doing work.
     shown_scene: Option<Arc<Scene>>,
+    /// The surface analysis drawn ([`Self::sync_analysis`]), what it was
+    /// made from, how often it was made (for the frame key), why it could
+    /// not be, and the mode the Analysis toggle turns on again.
+    pub(crate) analysis_view: Option<Arc<viewport::ViewAnalysis>>,
+    analysis_made_from: Option<AnalysisSource>,
+    analysis_serial: u64,
+    pub(crate) analysis_problem: Option<String>,
+    pub(crate) analysis_last: String,
     /// Millimetres per length unit of the shown document (the lens of
     /// the studio look's depth of field).
     length_mm: f64,
@@ -1023,6 +1046,11 @@ impl Shell {
             problem: None,
             render_problem: None,
             shown_scene: None,
+            analysis_view: None,
+            analysis_made_from: None,
+            analysis_serial: 0,
+            analysis_problem: None,
+            analysis_last: "zebra".to_string(),
             length_mm: 1.0,
             shown_status: None,
             work: None,
@@ -1440,6 +1468,7 @@ impl Shell {
             traces: self.timeline.traces.clone(),
             ..viewport::Marks::default()
         })
+        .with(self.comb_marks())
     }
 
     /// The plane the viewport's picture is cut open with, as the
@@ -1709,6 +1738,7 @@ impl Shell {
         self.sync_timeline(session);
         self.sync_player(session);
         let scene = self.sync_scene(session);
+        self.sync_analysis(session, scene.as_ref());
         self.mark_scrubbed_rows();
         self.mark_zoomable(scene.as_deref());
         self.assertion_rows = session.assertion_states();
@@ -1720,6 +1750,87 @@ impl Shell {
         self.length_mm = session.length_mm();
         self.sync_report(session);
         scene
+    }
+
+    /// Makes the surface analysis of the shown scene when its state, the
+    /// scene or the theme changed: the curvature map's values from the
+    /// exact surfaces and the combs (`craft3d_engine::analysis`). Off, or
+    /// without a scene, there is none.
+    fn sync_analysis(&mut self, session: &mut Session, scene: Option<&Arc<Scene>>) {
+        let (Some(scene), true) = (scene, self.state.analysis.is_on()) else {
+            if self.analysis_view.take().is_some() {
+                self.analysis_serial = self.analysis_serial.wrapping_add(1);
+            }
+            self.analysis_made_from = None;
+            self.analysis_problem = None;
+            return;
+        };
+        let source = AnalysisSource {
+            revision: scene.revision,
+            tolerance: scene.sampling(),
+            state: self.state.analysis.clone(),
+            colors: self.tokens.analysis_colors(),
+        };
+        if self.analysis_made_from.as_ref() == Some(&source) {
+            return;
+        }
+        self.analysis_made_from = Some(source);
+        self.analysis_serial = self.analysis_serial.wrapping_add(1);
+        match self.make_analysis(session, scene) {
+            Ok(view) => {
+                self.analysis_view = Some(Arc::new(view));
+                self.analysis_problem = None;
+            }
+            Err(why) => {
+                self.analysis_view = None;
+                self.analysis_problem = Some(why);
+            }
+        }
+    }
+
+    fn make_analysis(
+        &self,
+        session: &mut Session,
+        scene: &Scene,
+    ) -> Result<viewport::ViewAnalysis, String> {
+        use craft3d_render::analysis::AnalysisMode;
+        let spec = self.state.analysis.spec()?;
+        let mut values = Vec::new();
+        let mut range = spec.range.unwrap_or([-1.0, 1.0]);
+        if spec.mode == Some(AnalysisMode::Curvature) {
+            values = craft3d_engine::analysis::vertex_values(session, scene, spec.curvature)
+                .map_err(|e| e.to_string())?;
+            range = spec
+                .range
+                .unwrap_or_else(|| craft3d_engine::analysis::auto_range(&values, spec.curvature));
+        }
+        let combs = match &spec.combs {
+            Some(c) => {
+                craft3d_engine::analysis::combs(session, scene, c).map_err(|e| e.to_string())?
+            }
+            None => Vec::new(),
+        };
+        let unit = craft3d_engine::analysis::length_unit(session);
+        Ok(viewport::ViewAnalysis {
+            analysis: spec.analysis(range, self.tokens.analysis_colors()),
+            values: Arc::new(values),
+            combs,
+            curvature: spec.curvature.name().to_string(),
+            unit,
+            legend: spec.legend,
+        })
+    }
+
+    /// The combs of the analysis, as marks over the picture.
+    fn comb_marks(&self) -> viewport::Marks {
+        viewport::Marks {
+            combs: self
+                .analysis_view
+                .as_ref()
+                .map(|a| a.combs.clone())
+                .unwrap_or_default(),
+            ..viewport::Marks::default()
+        }
     }
 
     fn sync_scene(&mut self, session: &mut Session) -> Option<Arc<Scene>> {
@@ -3013,6 +3124,7 @@ impl Shell {
             sketches: self.state.show.sketches,
             edges: self.edges_drawn(),
             look: self.state.look.clone(),
+            analysis: self.analysis_serial,
             look_ready: self.look_ready(),
             tokens,
         };
@@ -3392,12 +3504,14 @@ impl Shell {
         let studio = self.studio();
         let cut = self.section_cut().filter(|_| key.section.is_some());
         let chosen = self.selection_marks().clone();
+        let combs = self.comb_marks();
         let Some(direct) = &mut self.direct else {
             return false;
         };
         direct.set_highlight(key.highlight);
         direct.set_opacity(key.opacity);
         direct.set_studio(studio);
+        direct.set_analysis(self.analysis_view.clone());
         direct.set_marks(
             marks_of(
                 scene,
@@ -3408,7 +3522,8 @@ impl Shell {
                 key.sketches,
                 key.edges,
             )
-            .with_selection(&chosen),
+            .with_selection(&chosen)
+            .with(combs),
         );
         let outcome = direct.frame(
             scene,
@@ -3477,6 +3592,8 @@ impl Shell {
         let cut = self.section_cut().filter(|_| key.section.is_some());
         let chosen = self.selection_marks().clone();
         let studio = self.studio_once();
+        let combs = self.comb_marks();
+        let analysis = self.analysis_view.clone();
         let job = |quality: Quality| RenderJob {
             scene: scene.cloned(),
             camera: key.camera,
@@ -3493,9 +3610,11 @@ impl Shell {
                 key.sketches,
                 key.edges,
             )
-            .with_selection(&chosen),
+            .with_selection(&chosen)
+            .with(combs.clone()),
             opacity: key.opacity,
             studio: studio.clone(),
+            analysis: analysis.clone(),
             #[cfg(not(target_arch = "wasm32"))]
             wake: Some(ctx.clone()),
         };

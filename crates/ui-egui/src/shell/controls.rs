@@ -29,6 +29,9 @@ pub struct ControlsLayout {
     pub edges: Option<Rect>,
     /// The Studio toggle: the studio look or the plain one.
     pub studio: Option<Rect>,
+    /// The Analysis toggle: zebra stripes, highlight lines, a curvature
+    /// map, draft, or none.
+    pub analysis: Option<Rect>,
     pub see_through: Option<Rect>,
     pub section_toggle: Option<Rect>,
     pub axes: Option<Rect>,
@@ -70,6 +73,7 @@ impl ControlsLayout {
             ("datums", self.datums),
             ("edges", self.edges),
             ("studio", self.studio),
+            ("analysis", self.analysis),
             ("see-through", self.see_through),
             ("section", self.section_toggle),
             ("axes", self.axes),

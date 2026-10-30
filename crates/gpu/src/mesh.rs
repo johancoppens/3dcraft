@@ -15,8 +15,9 @@ pub const MAX_TRIANGLES: usize = 1 << 24;
 /// low three bytes, and 1 in the high byte when the face has a colour of
 /// its own, 0 when it is shaded from the base colour) and its finish
 /// (`u32`, [`finish_word`]), and its layers of layer 3 (`u32`,
-/// [`optics_word`]).
-pub(crate) const VERTEX_BYTES: usize = 52;
+/// [`optics_word`]), and the curvature map's value at the vertex with 1
+/// where there is one (2 × `f32`; 0 and 0 where there is none).
+pub(crate) const VERTEX_BYTES: usize = 60;
 /// The texels (`Rgba32Uint`, `f32` bits) of a row of the material table
 /// ([`optics_table`]).
 pub(crate) const OPTICS_TEXELS: usize = 6;
@@ -62,6 +63,7 @@ fn push(bytes: &mut Vec<u8>, v: [f32; 3]) {
 pub(crate) fn pack(
     mesh: &Mesh,
     colors: &FaceColors,
+    values: &[f32],
     chunk_triangles: usize,
 ) -> Result<Packed, GpuError> {
     if mesh.normals.len() != mesh.positions.len() || mesh.face_ids.len() != mesh.triangles.len() {
@@ -138,7 +140,7 @@ pub(crate) fn pack(
         let color = color_word(colors.get(face));
         let finish = finish_word(colors.finish(face));
         let optics = optics_word(colors, face);
-        for (position, (_, normal)) in [a, b, c].into_iter().zip(corners) {
+        for ((position, (_, normal)), k) in [a, b, c].into_iter().zip(corners).zip([ia, ib, ic]) {
             push(&mut current, position);
             // A normal that cannot be narrowed counts as "no normal".
             push(&mut current, narrow(normal).unwrap_or([0.0; 3]));
@@ -147,6 +149,10 @@ pub(crate) fn pack(
             current.extend_from_slice(&color.to_le_bytes());
             current.extend_from_slice(&finish.to_le_bytes());
             current.extend_from_slice(&optics.to_le_bytes());
+            // A value that is not a number is none (the CPU's NaN).
+            let value = values.get(k as usize).copied().filter(|v| v.is_finite());
+            current.extend_from_slice(&value.unwrap_or(0.0).to_le_bytes());
+            current.extend_from_slice(&f32::from(u8::from(value.is_some())).to_le_bytes());
         }
         packed.triangles += 1;
     }
@@ -290,6 +296,7 @@ impl GpuMesh {
         queue: &wgpu::Queue,
         mesh: &Mesh,
         colors: &FaceColors,
+        values: &[f32],
         owner: &Arc<()>,
     ) -> Result<GpuMesh, GpuError> {
         let by_limit = device.limits().max_buffer_size / TRIANGLE_BYTES as u64;
@@ -299,7 +306,7 @@ impl GpuMesh {
                 "the device's buffers are too small for one triangle".to_string(),
             ));
         }
-        let packed = pack(mesh, colors, per_chunk)?;
+        let packed = pack(mesh, colors, values, per_chunk)?;
         let mut chunks = Vec::with_capacity(packed.chunks.len());
         for bytes in &packed.chunks {
             let vertices =
@@ -407,7 +414,7 @@ mod tests {
         );
         let mut colors = FaceColors::new();
         assert!(colors.set(7, Some([1, 2, 3])));
-        let packed = pack(&mesh, &colors, 1000).unwrap();
+        let packed = pack(&mesh, &colors, &[], 1000).unwrap();
         assert_eq!(packed.triangles, 1);
         assert_eq!(packed.origin, far + Vec3::new(1.0, 2.0, 0.0));
         assert_eq!(packed.chunks.len(), 1);
@@ -421,6 +428,8 @@ mod tests {
         // That face has no colour of its own, nor a finish.
         assert_eq!(bytes[40..44], [0, 0, 0, 0]);
         assert_eq!(bytes[44..48], [0, 0, 0, 0]);
+        // No value for the curvature map: 0, and 0 for "none".
+        assert_eq!(floats(&bytes[52..60]), [0.0, 0.0]);
         let second = floats(&bytes[VERTEX_BYTES..VERTEX_BYTES + 12]);
         assert_eq!(second, [1.0, -2.0, 0.0]);
         let (lo, hi) = packed.bounds.corners().unwrap();
@@ -429,7 +438,7 @@ mod tests {
         // corner.
         let mut seven = Mesh::default();
         triangle(&mut seven, [Vec3::ZERO, Vec3::X, Vec3::Y], 7);
-        let bytes = &pack(&seven, &colors, 1000).unwrap().chunks[0];
+        let bytes = &pack(&seven, &colors, &[], 1000).unwrap().chunks[0];
         for corner in 0..3 {
             let at = corner * VERTEX_BYTES + 40;
             assert_eq!(bytes[at..at + 4], [1, 2, 3, 1]);
@@ -443,7 +452,7 @@ mod tests {
         };
         assert_eq!(finish_word(finish), 200 | (1 << 8) | (256 << 20));
         assert!(colors.set_look(7, Some(([1, 2, 3], finish))));
-        let bytes = &pack(&seven, &colors, 1000).unwrap().chunks[0];
+        let bytes = &pack(&seven, &colors, &[], 1000).unwrap().chunks[0];
         for corner in 0..3 {
             let at = corner * VERTEX_BYTES + 44;
             assert_eq!(bytes[at..at + 4], [200, 1, 0, 0x10]);
@@ -488,7 +497,7 @@ mod tests {
         };
         assert!(colors.set_optics(3, Some(brushed)));
         assert!(colors.set_optics(5, Some(glass)));
-        let packed = pack(&mesh, &colors, 1000).unwrap();
+        let packed = pack(&mesh, &colors, &[], 1000).unwrap();
         assert!(packed.transmission);
         let word = |t: usize, corner: usize| {
             let at = (3 * t + corner) * VERTEX_BYTES + 48;
@@ -519,7 +528,7 @@ mod tests {
         assert_eq!(row(1, 2), [0.5, 0.25, 0.125, 1.0]);
         assert_eq!(row(1, 3), [1.0, 2.0, 3.0, 0.0]);
         // Without layers: no table, no bit, every word 0.
-        let plain = pack(&mesh, &FaceColors::new(), 1000).unwrap();
+        let plain = pack(&mesh, &FaceColors::new(), &[], 1000).unwrap();
         assert!(plain.optics.is_empty() && !plain.transmission);
     }
 
@@ -538,7 +547,7 @@ mod tests {
                 i,
             );
         }
-        let packed = pack(&mesh, &FaceColors::new(), 3).unwrap();
+        let packed = pack(&mesh, &FaceColors::new(), &[], 3).unwrap();
         let sizes: Vec<usize> = packed
             .chunks
             .iter()
@@ -555,7 +564,7 @@ mod tests {
         // The same bytes whatever the chunk size.
         assert_eq!(
             packed.chunks.concat(),
-            pack(&mesh, &FaceColors::new(), 1000).unwrap().chunks[0]
+            pack(&mesh, &FaceColors::new(), &[], 1000).unwrap().chunks[0]
         );
     }
 
@@ -567,29 +576,29 @@ mod tests {
         let mut broken = mesh.clone();
         broken.triangles[1] = [0, 1, 99];
         assert_eq!(
-            pack(&broken, &FaceColors::new(), 10),
+            pack(&broken, &FaceColors::new(), &[], 10),
             Err(GpuError::Render(RenderError::InvalidMesh { triangle: 1 }))
         );
         let mut short = mesh.clone();
         short.normals.pop();
         assert_eq!(
-            pack(&short, &FaceColors::new(), 10),
+            pack(&short, &FaceColors::new(), &[], 10),
             Err(GpuError::Render(RenderError::InvalidMesh { triangle: 0 }))
         );
         let mut unlabelled = mesh.clone();
         unlabelled.face_ids.pop();
         assert!(matches!(
-            pack(&unlabelled, &FaceColors::new(), 10),
+            pack(&unlabelled, &FaceColors::new(), &[], 10),
             Err(GpuError::Render(RenderError::InvalidMesh { .. }))
         ));
         assert_eq!(
-            pack(&Mesh::default(), &FaceColors::new(), 10)
+            pack(&Mesh::default(), &FaceColors::new(), &[], 10)
                 .unwrap()
                 .triangles,
             0
         );
         assert!(
-            pack(&Mesh::default(), &FaceColors::new(), 0)
+            pack(&Mesh::default(), &FaceColors::new(), &[], 0)
                 .unwrap()
                 .chunks
                 .is_empty()
@@ -614,7 +623,7 @@ mod tests {
         triangle(&mut mesh, [Vec3::new(1e300, 0.0, 0.0), Vec3::X, Vec3::Y], 3);
         // A normal that overflows counts as no normal.
         mesh.normals[0] = Vec3::new(1e300, 0.0, 0.0);
-        let packed = pack(&mesh, &FaceColors::new(), 10).unwrap();
+        let packed = pack(&mesh, &FaceColors::new(), &[], 10).unwrap();
         // Only the hostile triangles are left out, and the huge corner does
         // not move the centre: every drawn number is finite.
         for bytes in &packed.chunks {
@@ -624,5 +633,21 @@ mod tests {
         }
         assert_eq!(packed.triangles, 1);
         assert_eq!(packed.origin, Vec3::new(0.5, 0.5, 0.0));
+    }
+
+    /// A value per vertex goes with its corner, flagged; one that is not
+    /// a number, or missing, is none.
+    #[test]
+    fn values_go_with_their_corners() {
+        let mut mesh = Mesh::default();
+        triangle(&mut mesh, [Vec3::ZERO, Vec3::X, Vec3::Y], 0);
+        let bytes = &pack(&mesh, &FaceColors::new(), &[2.5, f32::NAN], 1000)
+            .unwrap()
+            .chunks[0];
+        let at =
+            |corner: usize| floats(&bytes[corner * VERTEX_BYTES + 52..corner * VERTEX_BYTES + 60]);
+        assert_eq!(at(0), [2.5, 1.0]);
+        assert_eq!(at(1), [0.0, 0.0]);
+        assert_eq!(at(2), [0.0, 0.0]);
     }
 }

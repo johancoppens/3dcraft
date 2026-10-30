@@ -84,6 +84,24 @@ pub struct Tokens {
     pub trace: Rgb,
     /// Width of a trace, in points.
     pub trace_width: f32,
+    /// Curvature combs (`craft3d_engine::analysis::combs`): magenta,
+    /// apart from the bodies, the sketches and the traces.
+    pub comb: Rgb,
+    /// Width of a comb's lines, in points.
+    pub comb_width: f32,
+    /// Surface analysis (`craft3d_render::analysis`): the stripes of
+    /// zebra and highlight lines, dark and light.
+    pub analysis_dark: Rgb,
+    pub analysis_light: Rgb,
+    /// Draft: along the pull, against it, too shallow.
+    pub draft_in: Rgb,
+    pub draft_out: Rgb,
+    pub draft_shallow: Rgb,
+    /// Where an analysis has no value.
+    pub analysis_none: Rgb,
+    /// The curvature map's ramp, low to high (diverging: blue, white,
+    /// red).
+    pub curvature_ramp: [Rgb; 5],
     /// Opacity of sketch lines and points behind a body, 0 to 255.
     pub hidden_opacity: u8,
     /// The panels (the feature tree, a dialog) and their text.
@@ -353,6 +371,19 @@ impl Default for Tokens {
 }
 
 impl Tokens {
+    /// The colours the renderers draw an analysis in.
+    pub fn analysis_colors(&self) -> craft3d_render::analysis::AnalysisColors {
+        craft3d_render::analysis::AnalysisColors {
+            dark: self.analysis_dark,
+            light: self.analysis_light,
+            draft_in: self.draft_in,
+            draft_out: self.draft_out,
+            draft_shallow: self.draft_shallow,
+            none: self.analysis_none,
+            ramp: self.curvature_ramp,
+        }
+    }
+
     /// The theme, Mission: soft-white panels like a rover's thermal
     /// blankets, black chrome at the top and the bottom and black plates
     /// over the viewport, gold for what is on (black ink on gold), copper
@@ -392,6 +423,21 @@ impl Tokens {
             datum_point_radius: 4.0,
             trace: [128, 32, 140],
             trace_width: 2.0,
+            comb: [204, 51, 153],
+            comb_width: 1.0,
+            analysis_dark: [20, 22, 26],
+            analysis_light: [245, 246, 248],
+            draft_in: [67, 160, 71],
+            draft_out: [30, 136, 229],
+            draft_shallow: [229, 57, 53],
+            analysis_none: [128, 128, 128],
+            curvature_ramp: [
+                [44, 123, 182],
+                [171, 217, 233],
+                [250, 250, 210],
+                [253, 174, 97],
+                [215, 25, 28],
+            ],
             hidden_opacity: 70,
             panel_fill: [247, 246, 243],
             text: [27, 26, 25],

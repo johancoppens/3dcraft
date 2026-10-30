@@ -224,6 +224,20 @@ impl Offscreen {
         self.render_uploaded(&uploaded, camera, params)
     }
 
+    /// The GPU counterpart of [`craft3d_render::render_analysed`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn render_analysed(
+        &mut self,
+        mesh: &Mesh,
+        colors: &craft3d_render::FaceColors,
+        values: &[f32],
+        camera: &Camera,
+        params: &RenderParams,
+    ) -> Result<Frame, GpuError> {
+        let uploaded = self.renderer.upload_analysed(mesh, colors, values)?;
+        self.render_uploaded(&uploaded, camera, params)
+    }
+
     /// [`Offscreen::render`] for a mesh that is on the GPU already
     /// (`self.renderer().upload(..)`): what a viewer does, which uploads a
     /// model once and draws it at every camera. A lost device is reported

@@ -1613,12 +1613,25 @@ impl Onscreen {
         self.upload_colored(mesh, &FaceColors::new())
     }
 
+    /// [`Self::upload_colored`] with a value per vertex for the curvature
+    /// map (`craft3d_render::render_analysed`).
+    pub fn upload_analysed(
+        &self,
+        mesh: &Mesh,
+        colors: &FaceColors,
+        values: &[f32],
+    ) -> Result<GpuMesh, GpuError> {
+        guarded(&self.device, || {
+            GpuMesh::upload(&self.device, &self.queue, mesh, colors, values, &self.token)
+        })?
+    }
+
     /// [`Self::upload`] with faces in colours of their own
     /// (`craft3d_render::render_colored`): the colours go with the mesh, so
     /// a change of colour is a new upload.
     pub fn upload_colored(&self, mesh: &Mesh, colors: &FaceColors) -> Result<GpuMesh, GpuError> {
         guarded(&self.device, || {
-            GpuMesh::upload(&self.device, &self.queue, mesh, colors, &self.token)
+            GpuMesh::upload(&self.device, &self.queue, mesh, colors, &[], &self.token)
         })?
     }
 

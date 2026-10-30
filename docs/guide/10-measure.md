@@ -20,6 +20,8 @@ after every change.
 | `measure.symmetry {"of", "plane"}` | How far the bodies are from symmetric in a plane |
 | `document.interference` | For each pair of bodies: clear, touch or overlap (with the common volume) |
 | `measure.continuity {"edge", "face"}` | How two faces meet along an edge: G0, G1 or G2, with the largest gaps in position, tangent-plane angle, curvature and twist, proven ([continuity](#continuity-across-a-seam)) |
+| `measure.curvature {"of", "at"}` | The curvature of the surface at the point nearest to `at`: Gaussian, mean and the principal curvatures, exact |
+| `measure.draft {"faces", "direction", "minDraft"}` | The least draft angle of faces against a pull direction, and the share of their area below `minDraft` ([surface quality](#surface-quality)) |
 | `measure.below`, `measure.section`, `measure.levelFor`, `measure.floating` | The volume below a plane, a section's area and second moments, the level for a volume, the level and tilt a body floats at ([below](#below-a-plane-sections-and-levels)) |
 
 A subject (`of`, `from`, `to`) is a body by its feature's name, a list of them, or a query as
@@ -29,6 +31,28 @@ A subject (`of`, `from`, `to`) is a body by its feature's name, a list of them, 
 What is searched for (a thickness, a distance) comes with what is **proven**: `atLeast`, a bound nothing
 is below, beside the value found at a real place. On the flange of [chapter 3](03-agent.md#a-full-session): `"thickness": 6.0,
 "atLeast": 5.75`.
+
+## Surface quality
+
+The analyses of the window ([chapter 4](04-window.md#surface-analysis)) have measures behind them.
+`measure.curvature` with `at` gives the curvature of the face nearest to a point, from the exact
+surface: on a torus of radii 10 and 3 the outer equator has a Gaussian curvature of 1/39 and the
+inner one −1/21.
+
+`measure.draft` gives the least draft of faces against a pull direction, in degrees: the angle
+between the face and the pull, positive where the face leaves the mould along it. A plane's is exact.
+On a cylinder, a sphere or a torus the least is found at the vertices of a fine mesh (where the
+normals are the exact surface's) and proven to within what the normal can turn between them; on a
+cone or a freeform face it is sampled, and says so (`proven: false`). `shareBelow` is the share of
+the faces' area below `minDraft`.
+
+As assertions, `draft` takes the same parameters (the least draft is `minDraft`, because `min` is
+the assertion's bound) and `curvature` takes `at`:
+
+```text
+assert.add {"name": "releases", "measure": "draft", "faces": {"kind": "face", "where": {"name": "F2:*"}}, "direction": "z", "minDraft": 1, "min": "1 deg"}
+assert.add {"name": "dome", "measure": "curvature", "at": [0, 0, 40], "max": 0.001}
+```
 
 ## Below a plane, sections and levels
 

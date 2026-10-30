@@ -12,6 +12,8 @@
 //! autosave thread of a session that was given a recovery directory
 //! (`recovery.rs`).
 
+pub mod analysis;
+mod analysis_cmds;
 mod angle_warnings;
 mod appearance;
 mod appearance_cmds;
@@ -560,6 +562,7 @@ impl Session {
                 sweep_cmds::SPECS,
                 loft_cmds::SPECS,
                 develop_cmds::SPECS,
+                analysis_cmds::SPECS,
                 surface_cmds::SPECS,
                 continuity_cmds::SPECS,
                 plate_cmds::SPECS,

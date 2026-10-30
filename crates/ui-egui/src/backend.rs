@@ -128,6 +128,8 @@ pub struct BodyRenderer {
     opacity: f64,
     /// The studio look of the next frames, or `None` for the plain one.
     studio: Option<craft3d_gpu::Studio>,
+    /// The surface analysis of the next frames, or `None`.
+    analysis: Option<std::sync::Arc<crate::viewport::ViewAnalysis>>,
 }
 
 impl BodyRenderer {
@@ -136,6 +138,16 @@ impl BodyRenderer {
     /// for the plain one.
     pub fn set_studio(&mut self, studio: Option<craft3d_gpu::Studio>) {
         self.studio = studio;
+    }
+
+    /// The surface analysis of the frames made from now on
+    /// (`craft3d_render::analysis`), which both renderers draw in the
+    /// plain look in place of the shading, or `None`.
+    pub fn set_analysis(
+        &mut self,
+        analysis: Option<std::sync::Arc<crate::viewport::ViewAnalysis>>,
+    ) {
+        self.analysis = analysis;
     }
 
     /// What `viewport::compose_with` draws over the frames made from now
@@ -237,6 +249,7 @@ impl BodyRenderer {
             marks: crate::viewport::Marks::default(),
             opacity: 1.0,
             studio: None,
+            analysis: None,
         }
     }
 
@@ -275,6 +288,7 @@ impl BodyRenderer {
                 marks: crate::viewport::Marks::default(),
                 opacity: 1.0,
                 studio: None,
+                analysis: None,
             },
             Err(why) => {
                 let mut renderer = Self::cpu();
@@ -309,11 +323,16 @@ impl BodyRenderer {
             // The section travels with the marks: the lines over the
             // picture are cut by the same plane.
             section: self.marks.section(),
+            analysis: self.analysis.as_ref().and_then(|a| a.analysis),
             ..render_params(quality, tokens)
         };
+        // An analysis is drawn in the plain look.
+        let studio = self.studio.as_ref().filter(|_| params.analysis.is_none());
+        let no_values = std::sync::Arc::new(Vec::new());
+        let values = self.analysis.as_ref().map_or(&no_values, |a| &a.values);
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(gpu) = &mut self.gpu {
-            match gpu.render(scene, camera, &params, self.studio.as_ref()) {
+            match gpu.render(scene, camera, &params, studio, values) {
                 Ok(frame) => return Ok((frame, Backend::Gpu)),
                 Err(gpu::Failure::Frame(why)) => return Err(why),
                 // This frame on the CPU; the next one on the GPU again.
@@ -334,7 +353,7 @@ impl BodyRenderer {
         let mesh = scene.map_or(&empty, |scene| &scene.mesh);
         let colors = craft3d_render::FaceColors::new();
         let colors = scene.map_or(&colors, |scene| &scene.face_colors);
-        let frame = match &self.studio {
+        let frame = match studio {
             Some(studio) => craft3d_render::studio::render_studio(
                 mesh,
                 colors,
@@ -343,7 +362,9 @@ impl BodyRenderer {
                 &cpu_look(studio.look),
                 &studio.env,
             ),
-            None => craft3d_render::render_colored(mesh, colors, &camera.to_render(), &params),
+            None => {
+                craft3d_render::render_analysed(mesh, colors, values, &camera.to_render(), &params)
+            }
         }
         .map_err(|e| e.to_string())?;
         Ok((frame, Backend::Cpu))
@@ -385,7 +406,8 @@ mod gpu {
 
     /// Which mesh of which revision: the revision, and the bits of the
     /// tolerance and of the angle it was sampled with.
-    type MeshKey = (u64, u64, Option<u64>);
+    /// The scene's revision and sampling, and the analysis values' identity.
+    type MeshKey = (u64, u64, Option<u64>, usize);
 
     pub(super) struct Gpu {
         offscreen: Offscreen,
@@ -439,17 +461,24 @@ mod gpu {
             camera: &CameraState,
             params: &RenderParams,
             studio: Option<&craft3d_gpu::Studio>,
+            values: &std::sync::Arc<Vec<f32>>,
         ) -> Result<Frame, Failure> {
+            let values_key = if values.is_empty() {
+                0
+            } else {
+                std::sync::Arc::as_ptr(values) as usize
+            };
             let camera = camera.to_render();
             let empty = craft3d_tess::Mesh::default();
             let no_colors = craft3d_render::FaceColors::new();
             let colors = scene.map_or(&no_colors, |s| &s.face_colors);
-            let (revision, mesh) = scene.map_or(((u64::MAX, 0, None), &empty), |s| {
+            let (revision, mesh) = scene.map_or(((u64::MAX, 0, None, 0), &empty), |s| {
                 (
                     (
                         s.revision,
                         s.tolerance.to_bits(),
                         s.max_angle.map(f64::to_bits),
+                        values_key,
                     ),
                     &*s.mesh,
                 )
@@ -461,7 +490,10 @@ mod gpu {
                     // The old copy goes first: twice the model would not
                     // fit a small device.
                     self.uploaded = None;
-                    let mesh = self.offscreen.renderer().upload_colored(mesh, colors)?;
+                    let mesh = self
+                        .offscreen
+                        .renderer()
+                        .upload_analysed(mesh, colors, values)?;
                     self.uploaded = Some((revision, mesh));
                 }
                 let (_, uploaded) = self.uploaded.as_ref().ok_or(GpuError::NothingDrawn)?;

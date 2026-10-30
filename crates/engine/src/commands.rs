@@ -106,7 +106,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Checks every body for validity and lists every problem: failed variables, failed features (with causedBy as in document.inspect), defects of bodies, each body held to the document's cap on any entity's own tolerance, broken assertions, and a sketch line the solver shrank to a point under two directions or more (horizontal and vertical, or a direction and a perpendicular or an angle: a contradiction it reports as holding; with line and constraints). ok is true when there is none. warnings (never part of ok), each with kind: assertion (one not proven either way), collapsedLine (a line with no length under one direction), lostFace (a face colour whose face is gone: it colours nothing, as lostFaces in document.inspect says, with feature and face), underConstrained (one entry for every sketch with degrees of freedom left, listed under sketches with feature, name and dof), plainAngle (a parameter read as an angle, in a document whose angle unit is degrees, whose value is a plain number with a pi in it that has no unit and is not inside sin, cos or tan, itself or in a variable it uses: `2 * pi / n` is a few degrees there; with feature, name, parameter and expr; the value is kept). loose lists the bodies with entities that have a tolerance of their own (edges, vertices, the largest), when there are. With feature only that feature is checked (whether it failed, its own body, and deep its boolean), its status is given under status (ok, failed, suppressed, rolledBack), and a feature that is suppressed or after the rollback marker is a problem (nothing is built to check): what an edit at the end of a long history did, without checking the rest again. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh, and that the shells of a body of several are the outsides of lumps and their cavities, each cavity in the material of one lump, from the exact geometry: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal; and for two shells of a body that touch at a vertex or the middle of an edge (zero thickness). deep also holds the body of every boolean feature to what every exact boolean of its target and tool keeps (volumes within bounds, the target unchanged out of the tool's reach, seeded points; counted under booleansChecked), and meshes every body with loose entities at a thousandth of its size, every point of a face's mesh on its surface or, on its boundary, within the tolerance of the edge or vertex it lies on (counted under looseMeshesChecked).", doc: true, document_check),
     spec!("document.measure", "Measure", r#"{"feature": id or name = all bodies, "bound": boolean = false}"#,
         "Returns volume, area and centroid, per body and in total, in document units. With bound also volumeBound and areaBound, per body and summed: how far the volume and the area can be off by the integrator's own account (every sum refined until two in a row agree; an estimate, not a guarantee). A body with a material (body.material) also has its mass (kg) and its inertia tensor about its centroid (kg times the length unit squared, along the model's axes), and its appearance (body.appearance); the total has the mass when every body has one.", doc: true, document_measure),
-    spec!("view.render", "Render", r#"{"path": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the whole model, "mode": "shaded|ids" = "shaded", "section": {plane, feature, point, normal, offset, flip, cap} = none, "tolerance": number = the picture's, "background": "light|dark" = "light", "look": {mode: "plain|studio" = "studio", environment: "studio|outdoor|workshop" = "studio", exposure: stops = 0, rotation: degrees = 0, ground: boolean = true, ao: boolean = true, shadows: boolean = true, tonemap: "agx|aces|linear" = "agx", light: [azimuth, elevation] = the environment's, background: "environment|plain" = "environment", reflections: boolean = true, contactShadows: boolean = true, specularShadow: boolean = true, groundReflection: 0 to 1 = 0, bloom: 0 to 1 = 0.04, dof: {fstop: number = 2.8, focus: distance or [x, y, z] = the model's centre} = null, accumulate: frames 1 to 256 = 1} = the plain look}"#,
+    spec!("view.render", "Render", r#"{"path": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the whole model, "mode": "shaded|ids" = "shaded", "section": {plane, feature, point, normal, offset, flip, cap} = none, "tolerance": number = the picture's, "background": "light|dark" = "light", "look": {mode: "plain|studio" = "studio", environment: "studio|outdoor|workshop" = "studio", exposure: stops = 0, rotation: degrees = 0, ground: boolean = true, ao: boolean = true, shadows: boolean = true, tonemap: "agx|aces|linear" = "agx", light: [azimuth, elevation] = the environment's, background: "environment|plain" = "environment", reflections: boolean = true, contactShadows: boolean = true, specularShadow: boolean = true, groundReflection: 0 to 1 = 0, bloom: 0 to 1 = 0.04, dof: {fstop: number = 2.8, focus: distance or [x, y, z] = the model's centre} = null, accumulate: frames 1 to 256 = 1} = the plain look, "analysis": {mode: "zebra|highlight|curvature|draft|none" = "none", stripes: 1 to 512 = 16, direction: degrees = 0, width: 0 to 1 = 0.5, offset: periods = 0, pull: [x, y, z] = [0, 0, 1], minDraft: degrees = 1, curvature: "gaussian|mean|max" = "gaussian", range: [low, high] = from the values, combs: {edges: boolean or [edge name, ...], iso: [{face, feature, u or v from 0 to 1}], scale: number = automatic, density: 2 to 400 = 40} = null} = none}"#,
         "Renders the bodies with the CPU renderer, on the window's light viewport background (235, 233, 229; background: dark for the renderer's dark grey). Writes a PNG under the write root when path is given, otherwise returns it as base64. Without tolerance the bodies are meshed for the picture: between a quarter and half a pixel of the picture where it shows the model nearest, never finer than the floor (2e-4 of the diagonal of the box around the bodies), at most 12 degrees per chord, within a total budget of a million triangles (coarser, and coarsened true, when the picture would have more), so a close-up box, a zoom or a larger picture is finer; the same params give the same picture, and the same view, size, zoom and box (or camera, in view.pick) give the same tolerance. With tolerance, at that chordal tolerance alone. A body too fine for the tessellator at it is meshed coarser rather than refused. The result says the tolerance (document units), maxAngle (degrees, or null) and coarsened (true when the tolerance was coarsened for the triangle budget or for a body). orthographic shows lengths across the view to scale. box frames the region between two opposite corners (document units) instead of the whole model, seen from outside the model. zoom magnifies about the centre of the picture (2 shows half as much, twice as large; from 0.01 to 1000). section cuts the picture open with a plane, to look inside a shell, a pocket or a cavity; the document does not change. It is an object: the plane is plane (xy, yz or zx, a datum plane by id or name, or a flat face by its persistent name, with feature to say which body when several have that face) or point and normal ([x, y, z] each), moved by offset (a number, default 0) along its normal; what lies on the side the normal points to is not drawn (a face's normal points out of its body; flip: true keeps the other half). Where the plane passes through the inside of a body the cut is closed with a flat cap in a colour of its own (cap: false leaves it open). The result then has section: {point, normal, range}, the plane as it was used and the offsets between which it passes through the model. look lights the bodies: the studio look (an environment, soft shadows, ambient occlusion, a ground that catches shadows, a tone curve), and its second layer: reflections of the model in its glossy faces and in the ground (the environment where a reflected ray finds nothing on the picture), contact shadows, the key light's shadow on the specular light, bloom, depth of field of a thin lens with fstop focused at focus (a distance along the view or a point; the model's centre by default; a lens of the document's length unit), and accumulate frames averaged into a still, each with its samples moved within the pixel and the lens turned (refused when the frames' samples together, width × height × 4 × frames, pass 2^26). A see-through or cut-open picture is drawn in the plain look.", doc: true, names: ["section"], view_render),
 ];
 
@@ -4444,7 +4444,12 @@ const VIEW_RENDER_PARAMS: &[&str] = &[
     "tolerance",
     "background",
     "look",
+    "analysis",
 ];
+
+/// The colour of curvature combs in `view.render` (the window's theme has
+/// its own, `Tokens::comb`).
+pub const COMB_COLOR: [u8; 3] = [204, 51, 153];
 
 /// The background of `view.render` and of thumbnails by default: the
 /// window's viewport in its theme, Mission (a light warm grey), so a
@@ -4557,6 +4562,7 @@ fn render_picture(session: &mut Session, p: &Params) -> Result<(Value, Vec<u8>),
         }
     };
     let look = crate::look::look_param("view.render", p.get("look"))?;
+    let analysis = crate::analysis::analysis_param("view.render", p.get("analysis"))?;
     let aspect = width as f64 / height as f64;
     let pixel = |model: &craft3d_math::Bbox3| {
         let camera = framing.camera(model, aspect).ok()?;
@@ -4616,7 +4622,39 @@ fn render_picture(session: &mut Session, p: &Params) -> Result<(Value, Vec<u8>),
         .length
         .as_expr_unit()
         .factor();
+    // A surface analysis is drawn in place of the shading, in the plain
+    // look (`craft3d_render::analysis`); its curvature map's values come
+    // from the exact surfaces.
+    let mut analysis_out = None;
+    let mut values: Vec<f32> = Vec::new();
+    let mut combs: Vec<Vec<craft3d_math::Vec3>> = Vec::new();
+    let mut render_params = render_params;
+    if analysis.is_on() && !ids {
+        let mut range = analysis.range.unwrap_or([-1.0, 1.0]);
+        if analysis.mode == Some(craft3d_render::analysis::AnalysisMode::Curvature) {
+            values = crate::analysis::vertex_values(session, &scene, analysis.curvature)
+                .map_err(|e| CommandError::new(format!("view.render: {e}")))?;
+            range = analysis
+                .range
+                .unwrap_or_else(|| crate::analysis::auto_range(&values, analysis.curvature));
+        }
+        if let Some(spec) = &analysis.combs {
+            combs = crate::analysis::combs(session, &scene, spec)
+                .map_err(|e| CommandError::new(format!("view.render: {e}")))?;
+        }
+        render_params.analysis =
+            analysis.analysis(range, craft3d_render::analysis::AnalysisColors::default());
+        let mut out = analysis.json();
+        if let Some(map) = out.as_object_mut() {
+            map.insert("range".into(), json!(range));
+            map.insert("combLines".into(), json!(combs.len()));
+        }
+        analysis_out = Some(out);
+    }
     let frame = match &prepared {
+        _ if render_params.analysis.is_some() => {
+            craft3d_render::render_analysed(all, colors, &values, &camera, &render_params)
+        }
         Some(env) if !ids => craft3d_render::studio::render_studio(
             all,
             colors,
@@ -4628,6 +4666,17 @@ fn render_picture(session: &mut Session, p: &Params) -> Result<(Value, Vec<u8>),
         _ => craft3d_render::render_colored(all, colors, &camera, &render_params),
     }
     .map_err(|e| CommandError::new(format!("view.render: {e}")))?;
+    let mut frame = frame;
+    if !combs.is_empty() {
+        craft3d_render::analysis::draw_lines(
+            &mut frame,
+            &camera,
+            &combs,
+            COMB_COLOR,
+            model.diagonal() * 1e-3,
+        )
+        .map_err(|e| CommandError::new(format!("view.render: {e}")))?;
+    }
     let png = if ids {
         craft3d_render::encode_png(frame.width, frame.height, &frame.false_color())
     } else {
@@ -4647,7 +4696,11 @@ fn render_picture(session: &mut Session, p: &Params) -> Result<(Value, Vec<u8>),
         "maxAngle": scene.max_angle.map(f64::to_degrees),
         "coarsened": scene.coarsened,
     });
+    if let (Some(a), Some(map)) = (analysis_out, result.as_object_mut()) {
+        map.insert("analysis".into(), a);
+    }
     if look.studio
+        && render_params.analysis.is_none()
         && let Some(map) = result.as_object_mut()
     {
         map.insert("look".into(), look.json());

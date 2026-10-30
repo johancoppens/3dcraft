@@ -12,6 +12,8 @@ Pictures: the CPU reference renderer (`craft3d-render`, the display oracle), the
 
 **The viewport.** The window draws on the GPU through `ui_egui::direct::Direct` on its own device, only when something the frame depends on changed; edges, sketches, axes and datums are lines drawn over it and tested against its depth. Where that cannot run, the shell falls back to the GPU on a device of its own read back, or to the CPU renderer (`--renderer cpu`), and says why. `ui.screenshot` always renders on the CPU: it is the oracle. The model's truth is the B-rep, not the picture: geometry is tested geometrically ([`../testing.md`](../testing.md)).
 
+**Surface analysis** (2026-10-30, class-A stage 1; `craft3d_render::analysis`, on the GPU `scene.wgsl` › `analysis_of`). Zebra stripes, highlight lines, a curvature map with values per vertex from the exact surfaces, and draft, drawn in place of the plain shading by both renderers, with combs as overlay lines; view state only. Method, tolerance and tests in [`surfacing.md`](surfacing.md) › *Stage 1: analysis*.
+
 **The studio look** (2026-10-29, layer 1 of `plan/rendering.md`; `craft3d_render::studio`, on the GPU
 `studio.rs` and `studio.wgsl`). A second look beside the plain one, view state only: image-based lighting
 from an environment, soft shadows from its key light, ambient occlusion, a ground that catches the

@@ -48,6 +48,7 @@ pub struct ControlWidths {
     pub datums: f32,
     pub edges: f32,
     pub studio: f32,
+    pub analysis: f32,
     pub section: f32,
     pub flip: f32,
     /// One segment of Persp | Ortho.
@@ -92,6 +93,7 @@ impl ControlWidths {
             datums: with_icon("Datums"),
             edges: with_icon("Edges"),
             studio: with_icon("Studio"),
+            analysis: with_icon("Analysis"),
             section: with_icon("Section"),
             flip: with_icon("Flip side"),
             projection: widest(&["Persp", "Ortho"], &plain),
@@ -114,6 +116,7 @@ impl ControlWidths {
             self.datums,
             self.edges,
             self.studio,
+            self.analysis,
             self.section,
             self.flip,
             self.projection,
@@ -137,6 +140,7 @@ impl ControlWidths {
             datums: icon + chars(6.0),
             edges: icon + chars(5.0),
             studio: icon + chars(6.0),
+            analysis: icon + chars(8.0),
             section: icon + chars(7.0),
             flip: icon + chars(9.0),
             projection: 2.0 * tokens.nav_inset + chars(5.0) + 4.0,
@@ -309,7 +313,7 @@ impl Nav<'_> {
         fit: f32,
         iso: f32,
         projection: f32,
-        studio: f32,
+        (studio, analysis): (f32, f32),
     ) -> f32 {
         let sp = self.tokens.nav_spacing;
         out.fit = Some(self.at(x, y, fit));
@@ -321,7 +325,9 @@ impl Nav<'_> {
         out.projection = Some(self.at(x, y, projection));
         let x = x + projection + self.tokens.nav_gap;
         out.studio = Some(self.at(x, y, studio));
-        x + studio
+        let x = x + studio + self.tokens.nav_spacing;
+        out.analysis = Some(self.at(x, y, analysis));
+        x + analysis
     }
 
     /// The camera plate top right over the cube; the display bar at the
@@ -338,7 +344,8 @@ impl Nav<'_> {
         // on the plate with room to spare (the display bar is full at a
         // window of 1280 × 800 with the section's options open).
         let studio = self.chip(self.w.studio);
-        let camera_w = pad + fit + sp + iso + gap + projection + gap + studio + pad;
+        let analysis = self.chip(self.w.analysis);
+        let camera_w = pad + fit + sp + iso + gap + projection + gap + studio + sp + analysis + pad;
         let side = t.nav_cube_size;
         let middle = area.right() - camera_w.max(side) * 0.5;
         let camera = Rect::from_min_size(
@@ -358,7 +365,7 @@ impl Nav<'_> {
             fit,
             iso,
             projection,
-            studio,
+            (studio, analysis),
         );
         // The display bar, centred on what it is with the section off.
         let triad = self.triad();
@@ -421,6 +428,7 @@ fn complete(layout: &ControlsLayout, area: Rect, section_on: bool) -> bool {
         layout.datums,
         layout.edges,
         layout.studio,
+        layout.analysis,
         layout.see_through,
         layout.section_toggle,
         layout.fit,
@@ -466,6 +474,7 @@ fn prune(layout: &mut ControlsLayout, area: Rect) {
         layout.iso = None;
         layout.projection = None;
         layout.studio = None;
+        layout.analysis = None;
         layout.dividers[0] = None;
     }
     if layout.bar.is_none() {
@@ -491,6 +500,7 @@ fn prune(layout: &mut ControlsLayout, area: Rect) {
         &mut layout.datums,
         &mut layout.edges,
         &mut layout.studio,
+        &mut layout.analysis,
         &mut layout.see_through,
         &mut layout.section_toggle,
         &mut layout.axes,
@@ -773,6 +783,7 @@ impl Shell {
         let named = !layout.compact;
         self.nav_camera(ui, &layout, named, scene);
         self.nav_look(ui, &layout, named);
+        self.nav_analysis(ui, &layout, named);
         self.nav_show(ui, &layout, named);
         self.nav_section(ui, &layout, named, scene);
         match layout.cube {
@@ -863,6 +874,75 @@ impl Shell {
         .clicked()
         {
             self.state.look.mode = if lit { "plain" } else { "studio" }.to_string();
+            ui.ctx().request_repaint();
+        }
+    }
+
+    /// The Analysis toggle beside Studio, and while an analysis is on its
+    /// options as number fields under the cube, with the legend.
+    fn nav_analysis(&mut self, ui: &mut egui::Ui, layout: &ControlsLayout, named: bool) {
+        let Some(place) = layout.analysis else {
+            return;
+        };
+        let on = self.state.analysis.is_on();
+        if toggle(
+            ui,
+            place,
+            Chip {
+                id: "analysis",
+                icon: Icon::Analysis,
+                label: "Analysis",
+                named,
+            },
+            on,
+            &self.tokens,
+        )
+        .on_hover_text(
+            "Analyse the surfaces: zebra stripes, highlight lines, a curvature map or draft, and curvature combs",
+        )
+        .clicked()
+        {
+            if on {
+                if self.state.analysis.mode != "none" {
+                    self.analysis_last.clone_from(&self.state.analysis.mode);
+                }
+                self.state.analysis.mode = "none".to_string();
+                self.state.analysis.combs = None;
+            } else {
+                self.state.analysis.mode.clone_from(&self.analysis_last);
+            }
+            ui.ctx().request_repaint();
+        }
+        if !self.state.analysis.is_on() {
+            return;
+        }
+        let anchor = layout
+            .cube
+            .or(layout.camera_plate)
+            .map_or(place.left_bottom(), |r| r.right_bottom());
+        let before = self.state.analysis.clone();
+        let tokens = self.tokens;
+        let legend = self.analysis_view.clone();
+        let problem = self.analysis_problem.clone();
+        egui::Area::new(egui::Id::new("analysis-options"))
+            .pivot(egui::Align2::RIGHT_TOP)
+            .fixed_pos(anchor + vec2(0.0, tokens.nav_gap))
+            .show(ui.ctx(), |ui| {
+                egui::Frame::new()
+                    .fill(color(tokens.panel_fill))
+                    .stroke(egui::Stroke::new(1.0, color(tokens.plate_rim)))
+                    .inner_margin(tokens.nav_inset)
+                    .show(ui, |ui| {
+                        analysis_options(ui, &mut self.state.analysis);
+                        if let Some(view) = legend.as_deref() {
+                            analysis_legend(ui, view, &tokens);
+                        }
+                        if let Some(problem) = &problem {
+                            ui.colored_label(color(tokens.draft_shallow), problem);
+                        }
+                    });
+            });
+        if self.state.analysis != before {
             ui.ctx().request_repaint();
         }
     }
@@ -1026,6 +1106,167 @@ impl Shell {
     }
 }
 
+/// The options of the analysis that is on, as number fields.
+fn analysis_options(ui: &mut egui::Ui, a: &mut crate::state::AnalysisState) {
+    egui::Grid::new("analysis-grid")
+        .num_columns(2)
+        .spacing([8.0, 4.0])
+        .show(ui, |ui| {
+            ui.label("Analysis");
+            egui::ComboBox::from_id_salt("analysis-mode")
+                .selected_text(a.mode.clone())
+                .show_ui(ui, |ui| {
+                    for mode in ["zebra", "highlight", "curvature", "draft", "none"] {
+                        ui.selectable_value(&mut a.mode, mode.to_string(), mode);
+                    }
+                });
+            ui.end_row();
+            match a.mode.as_str() {
+                "zebra" | "highlight" => {
+                    ui.label("Stripes");
+                    ui.add(
+                        egui::DragValue::new(&mut a.stripes)
+                            .range(1.0..=512.0)
+                            .speed(0.5),
+                    );
+                    ui.end_row();
+                    ui.label("Direction");
+                    ui.add(
+                        egui::DragValue::new(&mut a.direction)
+                            .range(0.0..=360.0)
+                            .suffix("°"),
+                    );
+                    ui.end_row();
+                    ui.label("Width");
+                    ui.add(
+                        egui::DragValue::new(&mut a.width)
+                            .range(0.0..=1.0)
+                            .speed(0.01),
+                    );
+                    ui.end_row();
+                    ui.label("Offset");
+                    ui.add(
+                        egui::DragValue::new(&mut a.offset)
+                            .range(0.0..=1.0)
+                            .speed(0.01),
+                    );
+                    ui.end_row();
+                }
+                "curvature" => {
+                    ui.label("Curvature");
+                    egui::ComboBox::from_id_salt("analysis-curvature")
+                        .selected_text(a.curvature.clone())
+                        .show_ui(ui, |ui| {
+                            for kind in ["gaussian", "mean", "max"] {
+                                ui.selectable_value(&mut a.curvature, kind.to_string(), kind);
+                            }
+                        });
+                    ui.end_row();
+                    let mut fixed = a.range.is_some();
+                    ui.label("Range");
+                    ui.checkbox(&mut fixed, "fixed");
+                    ui.end_row();
+                    if fixed {
+                        let [mut lo, mut hi] = a.range.unwrap_or([-1.0, 1.0]);
+                        ui.label("Low");
+                        ui.add(egui::DragValue::new(&mut lo).speed(0.001));
+                        ui.end_row();
+                        ui.label("High");
+                        ui.add(egui::DragValue::new(&mut hi).speed(0.001));
+                        ui.end_row();
+                        a.range = (lo < hi).then_some([lo, hi]).or(a.range);
+                        if a.range.is_none() {
+                            a.range = Some([-1.0, 1.0]);
+                        }
+                    } else {
+                        a.range = None;
+                    }
+                }
+                "draft" => {
+                    ui.label("Pull");
+                    ui.horizontal(|ui| {
+                        for c in &mut a.pull {
+                            ui.add(egui::DragValue::new(c).speed(0.01));
+                        }
+                    });
+                    ui.end_row();
+                    ui.label("Least draft");
+                    ui.add(
+                        egui::DragValue::new(&mut a.min_draft)
+                            .range(0.0..=90.0)
+                            .speed(0.1)
+                            .suffix("°"),
+                    );
+                    ui.end_row();
+                }
+                _ => {}
+            }
+            let mut combs = a.combs.is_some();
+            ui.label("Combs");
+            ui.checkbox(&mut combs, "on edges");
+            ui.end_row();
+            match (combs, a.combs.is_some()) {
+                (true, false) => a.combs = Some(serde_json::json!({"edges": true})),
+                (false, true) => a.combs = None,
+                _ => {}
+            }
+            if let Some(serde_json::Value::Object(c)) = &mut a.combs {
+                let mut density = c
+                    .get("density")
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(40.0);
+                ui.label("Density");
+                if ui
+                    .add(egui::DragValue::new(&mut density).range(2.0..=400.0))
+                    .changed()
+                {
+                    c.insert("density".into(), serde_json::json!(density.round()));
+                }
+                ui.end_row();
+                let mut scale = c.get("scale").and_then(serde_json::Value::as_f64);
+                let mut fixed = scale.is_some();
+                ui.label("Scale");
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut fixed, "");
+                    if fixed {
+                        let mut v = scale.unwrap_or(1.0);
+                        ui.add(egui::DragValue::new(&mut v).range(1e-9..=1e9).speed(0.01));
+                        scale = Some(v);
+                    } else {
+                        scale = None;
+                    }
+                });
+                c.insert("scale".into(), serde_json::json!(scale));
+                ui.end_row();
+            }
+        });
+}
+
+/// The legend of the analysis shown: its title, and the ramp or the
+/// classes with their colours.
+fn analysis_legend(ui: &mut egui::Ui, view: &crate::viewport::ViewAnalysis, tokens: &Tokens) {
+    let Some((title, rows)) = crate::viewport::legend_rows(view) else {
+        return;
+    };
+    ui.separator();
+    ui.label(egui::RichText::new(title).color(color(tokens.text)));
+    for (swatches, words) in rows {
+        ui.horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(vec2(28.0, 12.0), egui::Sense::hover());
+            let n = swatches.len().max(1) as f32;
+            for (k, rgb) in swatches.iter().enumerate() {
+                let w = rect.width() / n;
+                let part = Rect::from_min_size(
+                    pos2(rect.left() + w * k as f32, rect.top()),
+                    vec2(w, rect.height()),
+                );
+                ui.painter().rect_filled(part, 0.0, color(*rgb));
+            }
+            ui.label(words);
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1067,6 +1308,7 @@ mod tests {
                     "iso",
                     "projection",
                     "studio",
+                    "analysis",
                 ];
                 if on {
                     expected.extend(["axes", "offset", "side"]);

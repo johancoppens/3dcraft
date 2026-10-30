@@ -20,6 +20,8 @@ pub enum Icon {
     Edges,
     /// The studio look: a lamp, a disc with rays.
     Studio,
+    /// Surface analysis: a disc crossed by stripes, as zebra stripes.
+    Analysis,
     /// Section: a body cut by a plane, the half that is cut away hollow.
     Section,
     /// Flip the kept side: an arrow up and one down.
@@ -159,6 +161,14 @@ pub fn paint(painter: &egui::Painter, icon: Icon, place: Rect, ink: Color32, tok
                     [p(0.55 * cos, 0.55 * sin), p(0.9 * cos, 0.9 * sin)],
                     stroke,
                 ));
+            }
+            shapes
+        }
+        Icon::Analysis => {
+            let mut shapes = vec![Shape::circle_stroke(c, half * 0.85, stroke)];
+            for k in [-0.45_f32, 0.0, 0.45] {
+                let w = (0.85_f32 * 0.85 - k * k).max(0.0).sqrt();
+                shapes.push(Shape::line_segment([p(-w, k), p(w, k)], stroke));
             }
             shapes
         }

@@ -32,14 +32,15 @@ pub(crate) const DEPTH_STENCIL_FORMAT: wgpu::TextureFormat =
 /// Number of `f32` in the scene uniform block: eight `vec4` for the view
 /// and the shading, one for the highlight's colour, one for its light,
 /// four for its runs of faces and four for the section.
-pub(crate) const SCENE_FLOATS: usize = 76;
+pub(crate) const SCENE_FLOATS: usize = 140;
 
 /// Face ids are compared as `f32` in the shader: exact below this.
 const MAX_HIGHLIGHT_FACE: u32 = 1 << 24;
 
 /// The vertex layout of [`GpuMesh`]: position, normal, the triangle's own
-/// normal, the face id, its colour, its finish and its layers.
-pub(crate) const MESH_ATTRIBUTES: [wgpu::VertexAttribute; 7] = [
+/// normal, the face id, its colour, its finish, its layers, and the
+/// curvature map's value with whether there is one.
+pub(crate) const MESH_ATTRIBUTES: [wgpu::VertexAttribute; 8] = [
     wgpu::VertexAttribute {
         format: wgpu::VertexFormat::Float32x3,
         offset: 0,
@@ -74,6 +75,11 @@ pub(crate) const MESH_ATTRIBUTES: [wgpu::VertexAttribute; 7] = [
         format: wgpu::VertexFormat::Uint32,
         offset: 48,
         shader_location: 6,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x2,
+        offset: 52,
+        shader_location: 7,
     },
 ];
 
@@ -255,8 +261,10 @@ pub(crate) fn scene_uniforms(
         // the weight is 0 when there is none.
         [f.x, f.y, f.z, if fill.is_some() { SHADE_FILL } else { 0.0 }],
     ];
+    let analysis = analysis_uniforms(params, &axes, &mesh.bounds);
+    let wide = wide.iter().chain(analysis.iter());
     let mut out = [0.0_f32; SCENE_FLOATS];
-    for (slot, value) in out.iter_mut().zip(wide.iter().flatten()) {
+    for (slot, value) in out.iter_mut().zip(wide.flatten()) {
         // Deliberate narrowing at the GPU boundary.
         *slot = *value as f32;
         if !slot.is_finite() {
@@ -268,6 +276,50 @@ pub(crate) fn scene_uniforms(
         return Err(GpuError::OutOfRange("the depth range of the view"));
     }
     Ok(out)
+}
+
+/// The analysis part of `scene.wgsl`'s uniform block (its `analysis…`
+/// fields): [`craft3d_render::analysis::Resolved`] for the view; all
+/// zero (mode 0) without an analysis.
+fn analysis_uniforms(
+    params: &RenderParams,
+    axes: &craft3d_render::ViewAxes,
+    bounds: &craft3d_math::Bbox3,
+) -> [[f64; 4]; 16] {
+    let mut out = [[0.0; 4]; 16];
+    let Some(analysis) = params.analysis else {
+        return out;
+    };
+    let r = craft3d_render::analysis::Resolved::new(&analysis, axes, bounds);
+    let c = r.colors;
+    let rgb = |v: [u8; 3]| {
+        let [r, g, b] = v.map(f64::from);
+        [r, g, b, 0.0]
+    };
+    let [r0, r1, r2, r3, r4] = c.ramp;
+    out = [
+        [f64::from(r.mode.code()), r.count, r.width, r.sin_min],
+        [r.axis.x, r.axis.y, r.axis.z, r.spacing],
+        [r.first.x, r.first.y, r.first.z, r.lo],
+        [r.second.x, r.second.y, r.second.z, r.hi],
+        [r.point.x, r.point.y, r.point.z, r.offset],
+        rgb(c.dark),
+        rgb(c.light),
+        rgb(c.draft_in),
+        rgb(c.draft_out),
+        rgb(c.draft_shallow),
+        // The neutral colour, with the grazing bound of highlight lines.
+        {
+            let [r0, g0, b0] = c.none.map(f64::from);
+            [r0, g0, b0, r.grazing]
+        },
+        rgb(r0),
+        rgb(r1),
+        rgb(r2),
+        rgb(r3),
+        rgb(r4),
+    ];
+    out
 }
 
 pub(crate) fn float_bytes(values: &[f32]) -> Vec<u8> {
@@ -1094,12 +1146,25 @@ impl Renderer {
         self.upload_colored(mesh, &FaceColors::new())
     }
 
+    /// [`Self::upload_colored`] with a value per vertex for the curvature
+    /// map (`craft3d_render::render_analysed`).
+    pub fn upload_analysed(
+        &self,
+        mesh: &Mesh,
+        colors: &FaceColors,
+        values: &[f32],
+    ) -> Result<GpuMesh, GpuError> {
+        guarded(&self.device, || {
+            GpuMesh::upload(&self.device, &self.queue, mesh, colors, values, &self.token)
+        })?
+    }
+
     /// [`Self::upload`] with faces in colours of their own
     /// (`craft3d_render::render_colored`): the colours go with the mesh, so
     /// a change of colour is a new upload.
     pub fn upload_colored(&self, mesh: &Mesh, colors: &FaceColors) -> Result<GpuMesh, GpuError> {
         guarded(&self.device, || {
-            GpuMesh::upload(&self.device, &self.queue, mesh, colors, &self.token)
+            GpuMesh::upload(&self.device, &self.queue, mesh, colors, &[], &self.token)
         })?
     }
 

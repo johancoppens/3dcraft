@@ -296,6 +296,9 @@ fn measure_developability(session: &mut Session, params: &Value) -> Run {
 /// The measures `curvature` (the largest |K| of faces) and `developable`
 /// (whether every face's stretch is within the tolerance).
 pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<Outcome, String> {
+    if name == "curvature" && p.contains_key("at") {
+        return crate::analysis::curvature_at(ctx, p);
+    }
     crate::verify_cmds::only(p, &["of"])?;
     let found = crate::verify_cmds::faces_of_subject(ctx, p.get("of"))?;
     let tol = ctx.tolerance.linear;

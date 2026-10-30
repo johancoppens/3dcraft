@@ -13,7 +13,7 @@
 //! quotient rule for a rational surface (ibid. §4.5). See
 //! docs/design/developable.md.
 
-use crate::{NurbsSurface, Surface};
+use crate::{Curve3, NurbsCurve, NurbsSurface, Surface};
 use craft3d_math::Vec3;
 
 /// Highest degree the basis derivatives are worked out for here: the
@@ -91,6 +91,99 @@ pub fn curvatures(surface: &Surface, u: f64, v: f64) -> Option<(f64, f64)> {
     let k = (l * nn - m * m) / det;
     let h = (e * nn - 2.0 * f * m + g * l) / (2.0 * det);
     (k.is_finite() && h.is_finite()).then_some((k, h))
+}
+
+/// `C''(t)`, the exact second derivative of a curve: closed forms for
+/// lines, circles and ellipses; for a NURBS curve the basis derivatives
+/// to order two (A2.3) over the homogeneous control points and the
+/// quotient rule `C'' = (A'' − 2 W' C' − W'' C) / W`. Zero where the curve
+/// has none (a line; a spline of degree one); `None` for a spline whose
+/// degree is beyond [`MAX_CURVATURE_DEGREE`] or whose value is not finite.
+pub fn curve_second_derivative(curve: &Curve3, t: f64) -> Option<Vec3> {
+    Some(match curve {
+        Curve3::Line(_) => Vec3::ZERO,
+        Curve3::Circle(c) => {
+            let (s, co) = t.sin_cos();
+            let r = c.radius();
+            c.frame().vector(-r * co, -r * s, 0.0)
+        }
+        Curve3::Ellipse(e) => {
+            let (s, co) = t.sin_cos();
+            let (a, b) = e.semi_axes();
+            e.frame().vector(-a * co, -b * s, 0.0)
+        }
+        Curve3::Nurbs(c) => nurbs_curve_second(c, t)?,
+    })
+}
+
+/// The highest degree whose second derivatives are worked out here.
+pub const MAX_CURVATURE_DEGREE: usize = ROOM - 1;
+
+/// Whether [`second_derivatives`] and [`curve_second_derivative`] are
+/// exact for this surface: false for a spline of a degree beyond
+/// [`MAX_CURVATURE_DEGREE`], whose second derivatives come back zero.
+pub fn surface_curvature_supported(surface: &Surface) -> bool {
+    match surface {
+        Surface::Nurbs(s) => {
+            let (pu, pv) = s.degrees();
+            pu <= MAX_CURVATURE_DEGREE && pv <= MAX_CURVATURE_DEGREE
+        }
+        Surface::Bezier(b) => NurbsSurface::from_bezier(b).is_ok_and(|s| {
+            let (pu, pv) = s.degrees();
+            pu <= MAX_CURVATURE_DEGREE && pv <= MAX_CURVATURE_DEGREE
+        }),
+        _ => true,
+    }
+}
+
+/// The curvature vector `κ N = (C' × C'') × C' / |C'|⁴` of a curve at
+/// `t` (pointing to the centre of curvature, of length the curvature),
+/// with the unit tangent. `None` where the curve has no tangent (a
+/// vanishing derivative) or a value is not finite.
+pub fn curve_curvature(curve: &Curve3, t: f64) -> Option<(Vec3, Vec3)> {
+    let (_, d1) = curve.derivatives(t);
+    let d2 = curve_second_derivative(curve, t)?;
+    let speed2 = d1.length_squared();
+    if !(speed2.is_finite() && speed2 > 0.0) {
+        return None;
+    }
+    let k = d1.cross(d2).cross(d1) * (1.0 / (speed2 * speed2));
+    let tangent = d1.normalized()?;
+    k.is_finite().then_some((k, tangent))
+}
+
+fn nurbs_curve_second(c: &NurbsCurve, t: f64) -> Option<Vec3> {
+    let p = c.degree();
+    let (points, weights, knots) = (c.control_points(), c.weights(), c.knots());
+    let n = points.len();
+    if p >= ROOM || n == 0 {
+        return None;
+    }
+    let span = span_of(knots, p, n, t);
+    let b = basis_derivatives(knots, p, span, t);
+    let (mut a, mut w) = ([Vec3::ZERO; 3], [0.0_f64; 3]);
+    for i in 0..=p {
+        let Some(index) = (span + i).checked_sub(p) else {
+            continue;
+        };
+        let (Some(&q), Some(&weight)) = (points.get(index), weights.get(index)) else {
+            continue;
+        };
+        for (k, (ak, wk)) in a.iter_mut().zip(w.iter_mut()).enumerate() {
+            let nb = b.get(k).and_then(|r| r.get(i)).copied().unwrap_or(0.0) * weight;
+            *ak += q * nb;
+            *wk += nb;
+        }
+    }
+    let [a0, a1, a2] = a;
+    let [w0, w1, w2] = w;
+    if !(w0.is_finite() && w0 > 0.0) {
+        return None;
+    }
+    let c0 = a0 * (1.0 / w0);
+    let c1 = (a1 - c0 * w1) * (1.0 / w0);
+    let c2 = (a2 - c1 * (2.0 * w1) - c0 * w2) * (1.0 / w0);
+    c2.is_finite().then_some(c2)
 }
 
 /// The Gaussian curvature at `(u, v)`; see [`curvatures`].
@@ -476,5 +569,46 @@ mod tests {
         let cone = Surface::Cone(Cone::new(Frame::WORLD, 1.0, -0.5).unwrap());
         let apex = cone.domain().1.1;
         assert_eq!(gaussian_curvature(&cone, 0.3, apex), None);
+    }
+
+    /// A circle's curvature is 1/r towards its centre; a NURBS circle
+    /// (rational quadratic) agrees with the closed form, and a polynomial
+    /// spline's second derivative with differences of its first.
+    #[test]
+    fn curve_curvature_of_circles_and_splines() {
+        let frame =
+            Frame::new(Vec3::new(1.0, 2.0, 3.0), Vec3::new(0.2, 0.1, 1.0), Vec3::X).unwrap();
+        let circle = Curve3::Circle(crate::Circle::new(frame, 2.5).unwrap());
+        let nurbs = Curve3::Nurbs(NurbsCurve::circle(&frame, 2.5).unwrap());
+        for curve in [&circle, &nurbs] {
+            let (lo, hi) = curve.domain();
+            for k in 0..9 {
+                let t = lo + (hi - lo) * (f64::from(k) + 0.3) / 9.0;
+                let (kn, _) = curve_curvature(curve, t).unwrap();
+                assert!(close(kn.length(), 0.4, 1e-12), "{}", kn.length());
+                let to_centre = (frame.origin() - curve.eval(t)).normalized().unwrap();
+                assert!(kn.normalized().unwrap().dot(to_centre) > 1.0 - 1e-12);
+            }
+        }
+        let spline = Curve3::Nurbs(
+            NurbsCurve::polynomial(
+                3,
+                vec![0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0],
+                vec![
+                    Vec3::new(0.0, 0.0, 0.0),
+                    Vec3::new(1.0, 2.0, 0.0),
+                    Vec3::new(2.0, -1.0, 1.0),
+                    Vec3::new(3.0, 0.5, 0.0),
+                    Vec3::new(4.0, 0.0, 2.0),
+                ],
+            )
+            .unwrap(),
+        );
+        for t in [0.1, 0.3, 0.7, 0.9] {
+            let h = 1e-5;
+            let fd = (spline.derivatives(t + h).1 - spline.derivatives(t - h).1) * (0.5 / h);
+            let exact = curve_second_derivative(&spline, t).unwrap();
+            assert!((fd - exact).length() <= 1e-6 * (1.0 + exact.length()));
+        }
     }
 }

@@ -158,7 +158,7 @@ impl<'a> Ctx<'a> {
     }
 
     /// The persistent name of face `face` of the body of `id`.
-    fn face_name(&self, id: FeatureId, face: usize) -> Value {
+    pub(crate) fn face_name(&self, id: FeatureId, face: usize) -> Value {
         self.regen
             .feature(id)
             .and_then(|f| f.names.as_ref())
@@ -688,7 +688,7 @@ impl Outcome {
 }
 
 /// The measures, by name: what `assert.add` takes under `measure`.
-pub(crate) const MEASURES: [&str; 40] = [
+pub(crate) const MEASURES: [&str; 41] = [
     "volume",
     "area",
     "mass",
@@ -729,6 +729,7 @@ pub(crate) const MEASURES: [&str; 40] = [
     "floatingStable",
     "bendable",
     "continuity",
+    "draft",
 ];
 
 /// Takes the measure `name` with the parameters `p`.
@@ -755,6 +756,7 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
         }
         "kawasakiFails" | "maekawaFails" | "flatFoldable" => crate::fold_cmds::take(ctx, name, p),
         "bendable" => crate::bendseq_cmds::take(ctx, p),
+        "draft" => crate::analysis::draft_measure(ctx, p),
         "value" => value(ctx, p),
         "continuity" => crate::continuity_cmds::take(ctx, p),
         _ => Err(format!(
