@@ -1283,6 +1283,10 @@ fn fs_shadow(in: ShadowOut) -> @location(0) u32 {
 
 // The interpolated normal, or the triangle's own (shade_of).
 fn normal_of(in: VertexOut) -> vec3<f32> {
+    // The cap's triangle carries no normals: the plane's.
+    if in.face == CAP_FACE {
+        return scene.section.xyz;
+    }
     let len_n = length(in.normal);
     if len_n > 0.0 {
         return in.normal / len_n;
