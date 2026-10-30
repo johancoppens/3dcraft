@@ -335,8 +335,9 @@ pub struct Tokens {
     /// width when nothing set it, its narrowest and widest width, and the
     /// share of the window it may take at most, in points. The width is
     /// the person's (`state.panels.treeWidth`): only a drag on the split
-    /// changes it, never what the panel shows. `tree_split_grip` is how
-    /// wide the split is to grab.
+    /// changes it, never what the panel shows. At `tree_min_width` the
+    /// history player's five buttons still fit on a row.
+    /// `tree_split_grip` is how wide the split is to grab.
     pub tree_width: f32,
     pub tree_min_width: f32,
     pub tree_max_width: f32,

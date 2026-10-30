@@ -185,8 +185,6 @@ impl FileAction {
     }
 }
 
-/// The least width of the feature panel, in points: the history player's
-/// five buttons that move through the history still fit on a row.
 /// Where a caption plate `half` wide on either side is centred in the
 /// viewport `rect`: in its middle, unless it would reach the camera
 /// `plate` beside it, then in the middle of the room left of the plate

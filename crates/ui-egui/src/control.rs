@@ -409,6 +409,17 @@ impl Shell {
         self.state
             .apply_patch(patch)
             .map_err(|e| format!("ui.set: {e}"))?;
+        // The side panel's width is held to the tokens' range here, as it
+        // is when the panel is drawn, so `ui.get` says the width in use.
+        if patch.pointer("/panels/treeWidth").is_some() {
+            let t = &self.tokens;
+            let wanted = self.state.panels.tree_width;
+            self.state.panels.tree_width = if wanted.is_finite() {
+                wanted.clamp(t.tree_min_width, t.tree_max_width)
+            } else {
+                t.tree_width
+            };
+        }
         // The look is checked (an unknown environment or tone curve
         // changes nothing) and kept as parsed: clamped, turned within 0 to
         // 360 degrees.

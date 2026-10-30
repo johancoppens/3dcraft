@@ -244,7 +244,19 @@ fn the_side_panel_keeps_its_width_whatever_it_shows() {
         );
         assert!((width(&shell) - expected).abs() < 1.0, "{}", width(&shell));
     }
-    // `ui.set` sets it too.
+    // `ui.set` sets it too, held to the tokens' range.
+    set(
+        &mut shell,
+        &mut session,
+        json!({"panels": {"treeWidth": 5000.0}}),
+    );
+    assert_eq!(shell.state.panels.tree_width, tokens.tree_max_width);
+    set(
+        &mut shell,
+        &mut session,
+        json!({"panels": {"treeWidth": 1.0}}),
+    );
+    assert_eq!(shell.state.panels.tree_width, tokens.tree_min_width);
     set(
         &mut shell,
         &mut session,

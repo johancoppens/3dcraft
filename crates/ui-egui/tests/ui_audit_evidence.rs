@@ -341,7 +341,10 @@ fn hit(shell: &Shell, name: &str) -> Option<egui::Rect> {
         .map(|(_, r)| *r)
 }
 
+// Pictures only, 48 PNGs in the log: run on demand with
+// `cargo test -p craft3d-ui-egui --test ui_audit_evidence -- --ignored --nocapture`.
 #[test]
+#[ignore = "prints window pictures for a person to look at; run with --ignored"]
 fn the_window_in_pictures_for_a_ux_audit() {
     let state = match headless_render_state() {
         Ok(state) => state,
