@@ -21,7 +21,8 @@ Start an assembly and place a part twice:
 ```
 
 The `source` is read from the folder 3DCraft may read from, and kept as a path relative to the assembly's file, with
-the SHA-256 of its bytes. `position` and `rotation` (a rotation vector in degrees) say where an instance starts; mates
+the SHA-256 of its bytes. A part drawn in another length unit (inches in a millimetre assembly) is rebuilt in the
+assembly's unit at its own size. `position` and `rotation` (a rotation vector in degrees) say where an instance starts; mates
 move it from there.
 
 **Sizes per instance.** A part with public parameters (a Jig's, `variable.publish`) can be placed with other values:
@@ -51,7 +52,16 @@ A mate joins geometry of two instances. It names that geometry through the insta
 ```
 
 Each side gives a **frame**: a flat face gives its plane at the face's centre with its outward normal, a round face
-its axis, a circular edge its centre and axis, a corner a point, a datum of the part its own. The second frame is put
+its axis, a circular edge its centre and axis, a corner a point, a datum of the part its own. The world's frames
+all sit at the origin:
+
+| Reference | Its z (the axis a joint turns about or slides along) | Its x (where an angle of 0 points) |
+|---|---|---|
+| `world/xy`, `world/z`, `world/origin` | the world's z | the world's x |
+| `world/yz`, `world/x` | the world's x | the world's y |
+| `world/zx`, `world/y` | the world's y | the world's z |
+
+Any other `world/...` is refused when the mate is made. The second frame is put
 against the first, facing it (`"flip": true` keeps it the same way round), moved by `offset` and turned by `angle`.
 
 | Kind | What stays free |
@@ -69,7 +79,23 @@ instance can still do. A mate on a face that is gone from the part fails with th
 another face.
 
 Gears, racks and screws couple two mates: `coupling.add {"kind": "gear", "mates": ["A", "B"], "value": 2}`. A
-coupling whose mate fails, or whose value does not evaluate, fails by name and `assembly.solve` is not ok.
+**linear** coupling ties any number of motions, each with a coefficient: the sum of coefficient times motion is the
+value (0 unless given). A planetary stage, the ring held, turns the carrier by Willis' formula:
+
+```json
+[
+  ["coupling.add", {"kind": "linear", "name": "Stage", "terms": [
+    {"mate": "Sun", "coefficient": "12"},
+    {"mate": "Ring", "coefficient": "36"},
+    {"mate": "Carrier", "coefficient": "-48"}]}]
+]
+```
+
+A term's `motion` is the mate's main free motion unless you name it (`angle`, `distance`, `x`, `y`). An angle counts
+in radians, so a rack of 5 mm radius is `[{"mate": "Slide"}, {"mate": "Turn", "coefficient": "-5 mm"}]`, and two
+sliders where one moves twice as far as the other are `[{"mate": "A"}, {"mate": "B", "coefficient": "-2"}]`. A
+coupling whose mate fails, whose mate has no such motion, whose terms differ in kind (a length against an area), or
+whose value does not evaluate, fails by name and `assembly.solve` is not ok.
 
 Closed loops (a four-bar linkage) are solved as a whole, and `assembly.solve` says which mates contradict each other
 and by how much when they cannot all be met.
@@ -110,8 +136,14 @@ through an instance, as a mate does: `view.trace {"point": "Coupler/End2"}`.
 ## Subassemblies
 
 An instance of a `.3dcraftasm` is a **subassembly**. By default it moves as one block (`"mode": "rigid"`);
-`"mode": "flexible"` lets its own joints move in the parent. Mates reach into it through its instances:
-`Leg/Arm/F1:face(1)`. An assembly that would contain itself is refused.
+`"mode": "flexible"` lets its own joints move in the parent, with its own couplings. Mates reach into it through its
+instances: `Leg/Arm/F1:face(1)`. An assembly that would contain itself is refused.
+
+A flexible subassembly's own drives (a joint it sets with `joint.set`, or drives by its own `t`) are **free in the
+parent** unless the parent sets what they depend on: publish the variable in the subassembly (the joint's own
+`Hinge_angle`, or a `swing` it follows) and give it in the instance's `params`. So a leg that plays its own motion
+can also be turned by the machine it is part of; to play the leg's own motion in the parent, publish its `t` and
+pass the parent's on: `"params": {"t": "t"}`.
 
 ## Packing, export and checks
 
@@ -122,4 +154,9 @@ An instance of a `.3dcraftasm` is a **subassembly**. By default it moves as one 
 - Checks name instances: `assert.add {"name": "gap", "measure": "clearance", "from": "Bar[1]", "to": "Bar[2]", "min": "1 mm"}`,
   `overlap` for interference and `mass` work as in a part ([chapter 10](10-measure.md)). Renaming an instance renames
   it in its checks; an instance a check names is not deleted until the check is.
+- What the solve says is measured too: `jointAngle {mate}` and `jointDistance {mate}` are a joint's solved value,
+  driven or free, `position {instance, axis}` (or `{point: "Foot/Toe"}`) and `rotation {instance}` an instance's
+  pose. As assertions they check the motion (`motion.check`); with `variable.measure` they become outputs that
+  formulas use: `{"name": "crank", "measure": "jointAngle", "mate": "Drive"}`, then `2 * crank` in an output or a
+  check. `measure.joint {mate}` and `measure.pose {instance}` answer them at once (angles in degrees).
 - `assembly.inspect` lists the instances, their configurations, the mates and how they stand.

@@ -8,7 +8,7 @@ The full description of any command, with every value it takes and what it refus
 
 ## Commands
 
-3DCraft 0.1.0 has 163 commands. A command's id is its family and its name: `feature.fillet`.
+3DCraft 0.1.0 has 165 commands. A command's id is its family and its name: `feature.fillet`.
 
 ### Documents and files
 
@@ -83,9 +83,10 @@ The full description of any command, with every value it takes and what it refus
 | `assembly.new` | A new, empty assembly ([chapter 17](17-assemblies.md)) |
 | `instance.add`, `instance.edit`, `instance.delete`, `instance.open` | Place a part, a Jig or an assembly; change, remove, open its source |
 | `mate.add`, `mate.edit`, `mate.delete` | Join two instances (fixed, revolute, slider, cylindrical, planar, ball) |
-| `coupling.add`, `coupling.delete` | Gears, racks and screws between two mates |
+| `coupling.add`, `coupling.delete` | Gears, racks and screws between two mates; linear ties of any number of motions |
 | `joint.set` | Set a mate's free motion (the variable `<mate>_angle`) |
 | `assembly.solve`, `assembly.inspect` | How the mates stand; the instances and configurations |
+| `measure.joint`, `measure.pose` | A joint's solved value; where an instance or a point through it is |
 | `assembly.reload`, `assembly.pack`, `assembly.unpack` | Follow changed parts; carry the parts in the file, or write them out |
 
 ### Looking, measuring and checking

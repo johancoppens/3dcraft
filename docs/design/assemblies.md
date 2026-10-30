@@ -299,6 +299,11 @@ What an open assembly shows is derived and may be thrown away (rule 2). `OpenDoc
   `assembly.reload`, `assembly.pack`) goes through the workspace's read root and the platform's file access
   (`resolve_read`, `read_input`: the session's memory in the browser), recursively through subassemblies to
   `MAX_DEPTH` (8) levels with a seen-set, at most `MAX_SOURCE_FILES` (1000) files. Everything after it is pure.
+  An assembly without a file reads its sources from the folder `Session::asm_base` gives (the read root's top, or
+  the current folder with access to every file, as the command line has) and is placed from that same folder
+  (`AsmState::unsaved_base`, set by `read_sources`) until it is saved. Before 2026-10-30 its placement joined the
+  paths to an empty folder, so with access to every file each source was read under its absolute path and looked
+  for under a relative one: `instance.add` on an unsaved assembly in `craft3d-cli` failed.
 - **the documents parsed**, by hash, and **the configurations built**, by key: the source's SHA-256 and each
   overridden parameter's name and the text it was set to; for a subassembly also the folder its own sources are read
   from (two copies of one file in two folders are two configurations). A subassembly's placement depends on the files
@@ -319,8 +324,13 @@ The placement, in order:
    `drop_unused_packed` keeps them), so when its file changes it uses that copy; an older file without it fails naming
    both hashes; an unpinned one
    follows the file and is marked `changed` (its stored hash is the one it was added with until `instance.edit
-   {pinned: false}` takes the new one). A source in another length unit than the assembly is refused by name (a body is
-   moved by rigid transforms only; scaling it is owed). A hash already on the chain of assemblies above is a cycle,
+   {pinned: false}` takes the new one). A part in another length unit than the assembly is regenerated in the assembly's
+   unit as large as it is (2026-10-30): its parameters set first in its own unit (a value given carries its unit),
+   then converted as `document.setUnit {keep: sizes}` converts a document and proven the same way, every feature's
+   status and every body's volume, area, centroid and box (`unit_cmds::in_unit`, two regenerations more per such
+   configuration); what that refuses fails the instance by name. The configuration's key holds the unit it is built
+   in. A subassembly in another unit is refused by name: its own mates' offsets and placements would have to be
+   converted too, which is owed. A body is never scaled: it is moved by rigid transforms only. A hash already on the chain of assemblies above is a cycle,
    refused by name; `instance.add` and `instance.edit` refuse a source that contains the assembly's own file or itself
    before anything is changed (`refuse_cycle`).
 2. the configurations built or taken from the cache;
@@ -336,7 +346,11 @@ The placement, in order:
    and the short names of caps hold, and **a name that is gone fails the mate with that name; it never retargets**
    (rule 4 across files). Through a subassembly the name goes on through its instance (`Sub/Inner/F1:face(0)`) and the
    frame is moved by that instance's pose in it. The world has `world/xy`, `yz`, `zx` (planes), `x`, `y`, `z` (axes)
-   and `origin`.
+   and `origin`, each a frame at the origin: `xy`, `z` and `origin` have z along the world's z and x along its x;
+   `yz` and `x` have z along x and x along y; `zx` and `y` have z along y and x along z (a cyclic turn of the axes,
+   so each is right-handed). A world reference is known without reading anything, so `MateRef::check` refuses any
+   other name when the mate is made or edited (`mate.add {"a": "world/-x"}` is an error naming the seven), never
+   later in the solve.
 5. the **solve** (`asm_solve`, see *Solver* below): the mates as the contract's `MateSpec` (b's frame turned over
    about its x unless `flip`, `offset` along and `angle` about a's z, the main free motion driven by the assembly
    variable `<mate>_<motion>` when it exists), the couplings, a start pose per instance; when no mate reaches the
@@ -356,9 +370,22 @@ An instance whose source is an assembly is a subassembly, placed recursively wit
 
 - **Rigid** (the default): it moves as one block; its bodies are its instances' bodies where it placed them.
 - **Flexible**: its instances join the parent's solve as `Sub/Inner`, starting where the subassembly puts them, with its
-  own mates (by those names) and its world taken as where the subassembly is placed; the subassembly itself is not
-  solved, so its free motions stay free in the parent; it places the same as rigid while nothing in the parent
-  moves its instances.
+  own mates (by those names), its couplings, and its world taken as where the subassembly is placed; the subassembly
+  itself is not solved, so its free motions stay free in the parent; it places the same as rigid while nothing in
+  the parent moves its instances. A flexible subassembly's own flexible subassemblies come along the same way, to
+  any depth.
+- **Its drives** (`asm::flex`, 2026-10-30). A free motion the subassembly drives itself (its `<mate>_angle` variable,
+  a formula of its own `t`) is **free in the parent unless the parent drives it**: the instance sets, in `params`,
+  a public parameter of the subassembly that the drive depends on through its formulas (the drive's variable
+  itself, published, or a `swing` or `t` it follows). So a leg that plays its own motion is also a part of a
+  machine that turns it from outside, and a parent that wants the leg's own motion passes its `t` on
+  (`"params": {"t": "t"}`). The rule is read off the formulas, never the names: each driven motion carries the set
+  of variables its value depends on (`NamedSpec::drive_deps`, followed through the formulas with a seen-set, cut at
+  10 000 names); the parent keeps the drive when it sets one of them, and then the drive depends, for the parent's
+  own parent, on what the parent's values for them depend on. Before, a flexible subassembly brought its drivers
+  with the values of its own file, so a driven leg in a parent that drove its crank was over-constrained. Its
+  couplings were dropped; they now come along with its mates (`Placed::coupling_specs`, mate indices into its
+  specs, moved past the parent's own).
 
 ### Commands (`crates/engine/src/asm_cmds.rs`)
 
@@ -368,7 +395,7 @@ document), `mate.add`, `mate.edit` (a rename takes its variables along), `mate.d
 a coupling names it), `coupling.add`, `coupling.delete`, `joint.set` (sets or removes the assembly variable
 `<mate>_angle`, `_distance`, `_x` or `_y`, which formulas may use and `variable.publish` may publish),
 `assembly.solve`, `assembly.inspect` (`measures`: each instance's volume and box), `assembly.reload`,
-`assembly.pack`, `assembly.unpack`. A mate whose name or geometry fails is kept and reported failed by name, as a
+`assembly.pack`, `assembly.unpack`; `measure.joint` and `measure.pose` (`asm_measure.rs`, *Measures* below). A mate whose name or geometry fails is kept and reported failed by name, as a
 feature is; so is a coupling whose mate takes no part or whose value does not evaluate (`status`, `error`, and in
 `assembly.solve`'s `failed`). A rename of an instance also rewrites the assertions and outputs that name it (`Inst`,
 `Inst/...`), and is refused onto a name a check names already; `instance.delete` is refused while a check names it, so
@@ -377,6 +404,18 @@ session's body budget.
 
 A free motion's variable is written `<mate>_angle`, not `<mate>.angle` as the plan has it: a dot in a name is a table
 lookup in expressions (`scales[scale].maxNotes`).
+
+**Linear couplings** (2026-10-30). `coupling.add {"kind": "linear", "terms": [{"mate", "motion", "coefficient"},
+...], "value"}` ties any number of free motions: `Σ coefficient · <mate>_<motion> = value`, the solver's
+`CouplingKind::Linear` (a planetary stage of three revolutes by Willis, two sliders, a slider and a revolute). The
+document keeps the terms (`Coupling::terms`, `CouplingTerm`; a linear coupling has no `mates`) and the format writes
+them as `terms` without a new version (a field with a default; a build before it refuses the file by the unknown
+field). A term's `motion` is the mate's main free motion unless given, its coefficient 1. Units: each motion is in
+base units (radians, millimetres) and each length motion's coefficient is taken to the assembly's length unit for
+the solver; every term's product must have the value's length power, an angle counting as a pure number as radians
+do (so a rack is `d − 5 mm · θ = 0`), and a value of 0 fits any power (the first term's then sets it). A term
+whose mate lacks the motion, terms that disagree in dimension, or a value that does not evaluate fail the coupling by
+name, as for the other kinds. A mate rename takes its terms along; a mate a term names is not deleted.
 
 ### Pack and unpack
 
@@ -407,6 +446,26 @@ The assertions of an assembly are measured on the shown part, so a subject is an
 (`from`, `to`), `overlap` (interference, with the common volume in its message) and `mass` (from the source bodies'
 fixed materials) work as on a part. Subjects are stored by name, never by the shown part's feature ids, which follow
 the order of the instances.
+
+**What the solve says** (`asm_measure.rs`, 2026-10-30). The measures read the placement the checks are taken on
+(`Ctx::placed`, handed through the assertion jobs; a moment's placement in `motion.check`):
+
+- `jointAngle {mate}` (radians, an angle) and `jointDistance {mate, motion}` (the assembly's length unit; the mate's
+  first length motion unless `motion` names `distance`, `x` or `y`): the solved value of a free motion, driven or
+  not (`MateState::values`, every variable of the mate);
+- `position {instance | point, axis}`: an instance's origin, or the origin of the frame a mate would take from
+  geometry through an instance (`point`, as `view.trace` names it);
+- `rotation {instance, axis}`: a component of the instance's rotation vector (the log of its rotation,
+  `Mat3::log`), or without `axis` the angle it is turned by.
+
+A mate that takes no part, an instance that is not placed or a solve that failed is an error saying why. The key
+of an answer holds the values and poses it reads (`asm_measure::key_text`), so a joint set again measures again.
+`variable.measure` makes them outputs, which formulas of outputs and the assertions' bounds use: this is how the
+solved values of free motions are readable in formulas (the assembly's own variables are evaluated before the
+solve and cannot read it). `measure.joint {mate}` (angles in degrees) and `measure.pose {instance}` (position,
+rotation vector in degrees as `instance.add` takes it, angle, axis and the three axes) or `{point}` answer the same
+as commands. A rename of a mate or an instance takes the checks that name it along; a mate a check names is not
+deleted.
 
 ### The solver in the engine (`crates/engine/src/asm_solve.rs`)
 
@@ -490,6 +549,14 @@ back with its sources, `crates/io/tests/step_freecad.rs` FreeCAD reading an asse
 - `.3dcraftasm` is among the extensions Open offers, on the desktop and the page.
 
 ### Findings and history (track A)
+
+- 2026-10-30 (asm-gaps, the gaps the assemblies of three Jigs found): world references checked when a mate is
+  made; linear couplings; the measures `jointAngle`, `jointDistance`, `position`, `rotation` and the commands
+  `measure.joint`, `measure.pose`; a flexible subassembly's drives free in the parent unless it sets what they
+  depend on, and its couplings carried; an unsaved assembly placed from where its sources were read; a part in
+  another length unit regenerated in the assembly's; `overlap`
+  checks only the pairs whose boxes meet (a sweep along x, `verify_cmds::meeting_pairs`), at most 2000 of them, an
+  error beyond that instead of 500 pairs of any kind; `motion.check`'s memory (`motion.md`).
 
 - 2026-10-29: first version (track A): the document kind, format 52, instances with configurations, picked
   bodies, pins and subassemblies, cross-file names and frames, a stand-in solver, placement into the scene, pack and

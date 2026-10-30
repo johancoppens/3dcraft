@@ -119,6 +119,12 @@ when none did), so the change begins in `(after, t]`; and the least and greatest
 more: a collision shorter than the spacing of the samples can be missed, so the result says `sampled: true` and
 the samples it took; the summary and the guide say "at the samples", never "everywhere".
 
+**Memory streams.** A sample keeps only what the next one needs: the copy's document state replaces the one before
+(one merged undo step), its placement is held in place of the one before, and the answers the checks remember are
+keyed on the bodies they measured by a `Weak` reference (`assert_check::Key`), which keeps the body's address from
+being reused but not the body; an answer whose bodies are gone is dropped, since a new body has another address.
+So a sample's bodies are freed once the next sample is placed, and the samples taken so far cost only their numbers.
+
 ### Video (`view.replay {motion}`)
 
 `view.replay` with `motion` renders a frame per sample of `t` instead of a step per feature (with `collisions`, red
@@ -255,3 +261,12 @@ moment of an assembly.
   `view.motion` itself (the solve and the rigid copies) 23 ms both times, now nearly all of it. The GPU gets 88
   poses of 48 bytes a moment instead of the 24 192 triangles (3.5 MB of vertices). Opening and the first display
   scene 1968 → 44 ms (the walker's 88 bodies are copies of a few sources).
+- 2026-10-30 (asm-gaps): `motion.check` held memory for every moment it measured (the Jigs' gearboxes: about 25 MB
+  a moment with `MALLOC_ARENA_MAX=2`, 300 MB without; `scripts/asm.py` ran it 17 moments at a time). The cause: the
+  checks' memory of answers kept the bodies its keys named alive (an `Arc` per body, to keep the address from being
+  reused), and every moment places fresh copies, so up to 256 answers' worth of moments stayed alive. The keys now
+  hold the bodies weakly and drop answers whose bodies are gone (*Memory streams* above), which holds for every
+  check, not only over a motion. Measured (`crates/engine/tests/motion_check_memory.rs`, two wheels of 258 faces,
+  an overlap and a volume, peak resident memory after 9 and after 129 more moments, debug build on the Strix):
+  before +60 MiB (35 → 95 MiB, about half a megabyte a moment, growing until 256 answers are kept), after: see the
+  dev log of 2026-10-30.

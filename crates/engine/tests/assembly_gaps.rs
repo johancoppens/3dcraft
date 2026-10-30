@@ -697,3 +697,87 @@ fn a_flexible_subassembly_brings_its_couplings_and_leaves_its_drives_to_the_pare
     let p = run(&mut s, "measure.pose", json!({ "instance": "Leg/Arm" }));
     assert!(same(&p, &at30), "{p} {at30}");
 }
+
+/// A part in inches placed in an assembly in millimetres is regenerated
+/// there as large as it is (as `document.setUnit {keep: sizes}` converts
+/// it), with its parameters given in either unit; a subassembly in
+/// another unit is refused by name.
+#[test]
+fn a_part_in_another_length_unit_keeps_its_size() {
+    let dir = workdir("asm-gaps", "units");
+    let mut s = session_in(&dir);
+    run(&mut s, "file.new", json!({ "units": "in" }));
+    run(
+        &mut s,
+        "variable.set",
+        json!({ "name": "w", "expr": "1 in" }),
+    );
+    run(&mut s, "variable.publish", json!({ "name": "w" }));
+    run(
+        &mut s,
+        "feature.block",
+        json!({ "name": "Cube", "size": ["w", 1, 1] }),
+    );
+    run(
+        &mut s,
+        "datum.axis",
+        json!({ "name": "Axis", "through": [[0, 0, 0], [0, 0, 1]] }),
+    );
+    run(&mut s, "file.save", json!({ "path": "inch.3dcraft" }));
+    run(&mut s, "file.close", json!({}));
+    run(&mut s, "assembly.new", json!({ "units": "mm" }));
+    let a = run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "inch.3dcraft", "name": "A" }),
+    );
+    assert_eq!(a["status"], "ok", "{a}");
+    let b = run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "inch.3dcraft", "name": "B", "params": { "w": "50.8 mm" }, "position": [100, 0, 0] }),
+    );
+    assert_eq!(b["status"], "ok", "{b}");
+    run(
+        &mut s,
+        "mate.add",
+        json!({ "kind": "fixed", "a": "world/z", "b": "A/Axis", "flip": true }),
+    );
+    let i = run(&mut s, "assembly.inspect", json!({ "measures": true }));
+    let inch = 25.4_f64;
+    let volume = |name: &str| {
+        number(
+            &i["instances"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|x| x["name"] == name)
+                .unwrap()["measured"]["volume"],
+        )
+    };
+    assert!(close(volume("A"), inch.powi(3), 1e-6 * inch.powi(3)), "{i}");
+    assert!(
+        close(volume("B"), 2.0 * inch.powi(3), 1e-6 * inch.powi(3)),
+        "{i}"
+    );
+    // A frame of the converted part: its axis datum at the origin, so A's
+    // far corner is an inch out along x.
+    let p = run(&mut s, "measure.pose", json!({ "instance": "A" }));
+    assert!(close(number(&p["position"][0]), 0.0, 1e-9), "{p}");
+    // A subassembly in inches is refused by name.
+    run(&mut s, "file.save", json!({ "path": "mm.3dcraftasm" }));
+    run(&mut s, "assembly.new", json!({ "units": "in" }));
+    let sub = run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "mm.3dcraftasm", "name": "Sub" }),
+    );
+    assert_eq!(sub["status"], "failed", "{sub}");
+    assert!(
+        sub["error"]
+            .as_str()
+            .unwrap()
+            .contains("subassembly in another length unit"),
+        "{sub}"
+    );
+}

@@ -112,6 +112,28 @@ fn set_unit(session: &mut Session, params: &Value) -> Run {
     Ok(json!({"units": to.symbol(), "was": from.symbol(), "keep": keep, "rewritten": rewritten}))
 }
 
+/// `doc` in the length unit `to`, as large as it was: what
+/// `document.setUnit {keep: sizes}` makes of it, proven the same way
+/// (every feature's status, every body's volume, area, centroid and box,
+/// the named sets), without measuring its assertions. What an assembly in
+/// another unit regenerates a part source in (docs/design/assemblies.md).
+pub(crate) fn in_unit(doc: Document, to: LengthUnit) -> Result<Document, String> {
+    let from = doc.units.length;
+    if from == to {
+        return Ok(doc);
+    }
+    let mut changed = doc.clone();
+    changed.units.length = to;
+    keep_the_sizes(&mut changed, from, to, None)?;
+    let (all_before, all_after) = (everything(&doc), everything(&changed));
+    let before = craft3d_regen::regenerate(&all_before);
+    let after = craft3d_regen::regenerate(&all_after);
+    same_sizes(&before, &after, &changed, factor(from, to))
+        .and_then(|()| same_sets(&all_before, &before, &all_after, &after))
+        .map_err(|e| format!("not proven the same size in {}: {e}", to.symbol()))?;
+    Ok(changed)
+}
+
 /// The number in `to` of one `from`: what a length's number is multiplied
 /// by when its size is kept.
 fn factor(from: LengthUnit, to: LengthUnit) -> f64 {

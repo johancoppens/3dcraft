@@ -83,7 +83,7 @@ An assertion may carry a condition, `when` (`craft3d_doc::Assertion::when`, form
 
 ### Bounds
 
-At most 10 000 items per subject, 200 bodies per geometric measure (10 000 for volume, area and mass), 500 pairs of bodies per clearance or overlap, 4 million pairs of faces and 60 million pairs of triangles per distance, 6000 samples per body for a thickness and per symmetry, 200 000 pairs of faces and 20 million pairs of triangles for a thickness's bound, 16 places settled exactly, 400 steps per settling, 1000 ray hits listed, 1000 assertions per document, 16 KiB per stored measure. Past a bound the answer is an error that says what to narrow.
+At most 10 000 items per subject, 200 bodies per geometric measure (10 000 for volume, area and mass), 500 pairs of bodies per clearance, 2000 pairs of bodies whose boxes meet per overlap (pairs whose boxes, grown by twice the tolerance, do not meet are found by a sweep along x and cost nothing), 4 million pairs of faces and 60 million pairs of triangles per distance, 6000 samples per body for a thickness and per symmetry, 200 000 pairs of faces and 20 million pairs of triangles for a thickness's bound, 16 places settled exactly, 400 steps per settling, 1000 ray hits listed, 1000 assertions per document, 16 KiB per stored measure. Past a bound the answer is an error that says what to narrow.
 
 ### Proof over the range
 

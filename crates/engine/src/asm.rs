@@ -422,22 +422,35 @@ fn override_values(
     Ok(out)
 }
 
-/// The source with its public parameters set.
-fn configured(source: &Document, params: &BTreeMap<String, String>) -> Result<Document, String> {
+/// The source with its public parameters set, then in the length unit
+/// `unit` (as large as it is: a part in another unit is converted as
+/// `document.setUnit {keep: sizes}` converts it, proven). The parameters
+/// are set first, in the source's own unit: a value given is written with
+/// its unit, so the conversion keeps it.
+fn configured(
+    source: &Document,
+    params: &BTreeMap<String, String>,
+    unit: craft3d_doc::LengthUnit,
+) -> Result<Document, String> {
     let mut doc = source.clone();
-    if params.is_empty() {
-        return Ok(doc);
+    if !params.is_empty() {
+        let given: Map<String, Value> = params
+            .iter()
+            .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+            .collect();
+        let (sources, _) = crate::param_cmds::prepare_set("instance", source, &given, false)
+            .map_err(|e| e.message().trim_start_matches("instance: ").to_string())?;
+        for (name, text) in &sources {
+            doc.set_variable(name, text).map_err(|e| e.to_string())?;
+        }
     }
-    let given: Map<String, Value> = params
-        .iter()
-        .map(|(k, v)| (k.clone(), Value::String(v.clone())))
-        .collect();
-    let (sources, _) = crate::param_cmds::prepare_set("instance", source, &given, false)
-        .map_err(|e| e.message().trim_start_matches("instance: ").to_string())?;
-    for (name, text) in &sources {
-        doc.set_variable(name, text).map_err(|e| e.to_string())?;
-    }
-    Ok(doc)
+    crate::unit_cmds::in_unit(doc, unit).map_err(|e| {
+        format!(
+            "its source is in {} and cannot be taken to the assembly's {}: {e}",
+            source.units.length.symbol(),
+            unit.symbol()
+        )
+    })
 }
 
 /// An instance's source document and the parameters it gives it, and
@@ -464,9 +477,12 @@ fn prepare(
     if source.is_assembly() && chain.len() >= MAX_DEPTH {
         return Err(format!("subassemblies nest deeper than {MAX_DEPTH} levels"));
     }
-    if source.units.length != doc.units.length {
+    // A part in another length unit is regenerated in the assembly's
+    // (`configured`); a subassembly's own mates and placements would have
+    // to be converted too, which is owed.
+    if source.units.length != doc.units.length && source.is_assembly() {
         return Err(format!(
-            "its source is in {} and the assembly in {}: a source in another length unit is not supported yet",
+            "its source is an assembly in {} and this one is in {}: a subassembly in another length unit is not supported yet; set its unit with document.setUnit",
             source.units.length.symbol(),
             doc.units.length.symbol()
         ));
@@ -571,6 +587,9 @@ fn place_from(
                     Source::Packed { .. } => base.to_string(),
                 };
                 let mut key = config_key(&hash, &params);
+                // Built in the assembly's length unit.
+                key.push('#');
+                key.push_str(doc.units.length.symbol());
                 if source.is_assembly() {
                     // A subassembly's placement also depends on the folder
                     // its own sources are read from: two copies of one file
@@ -583,7 +602,7 @@ fn place_from(
                 if !state.configs.contains_key(&key) && wanted.insert(key.clone()) {
                     jobs.push(Job {
                         key,
-                        doc: configured(&source, &params),
+                        doc: configured(&source, &params, doc.units.length),
                         base: sub_base,
                     });
                 }
