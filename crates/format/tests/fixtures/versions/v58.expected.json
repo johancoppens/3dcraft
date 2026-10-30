@@ -1,0 +1,66 @@
+{
+  "format_version": 58,
+  "written_by": "6b4e4039fdbb7ce170fe6a37fe1d75a95689135e",
+  "how": "the engine of that commit (on the Strix, Check run 41137568932, by a temporary test, crates/engine/tests/zz_write_fixture_v58.rs, that ran v58.steps.json in a session as craft3d-cli run --new '{\"units\": \"mm\"}' --script does, saved v58.3dcraftasm and printed it), then document.inspect of the file opened again with its source files deleted; a packed assembly (format 58): the flexible subassembly Leg (Base on the world, Arm on the revolute Hinge it drives at a constant 45 deg, free in the parent: assembly.solve ok, dof 1, Leg/Arm can still turn about z), A and B on sliders SA and SB tied by the linear coupling Twice (SA - 2 SB = 0), SB driven 5 mm",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "A",
+      "status": "ok"
+    },
+    {
+      "id": "F2",
+      "name": "B",
+      "status": "ok"
+    },
+    {
+      "id": "F3",
+      "name": "Leg/Base",
+      "status": "ok"
+    },
+    {
+      "id": "F4",
+      "name": "Leg/Arm",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F1",
+      "kind": "solid",
+      "faces": 6,
+      "edges": 12,
+      "vertices": 8,
+      "volume": 240.0000000000001,
+      "area": 376.00000000000017
+    },
+    {
+      "feature": "F2",
+      "kind": "solid",
+      "faces": 6,
+      "edges": 12,
+      "vertices": 8,
+      "volume": 400.00000000000017,
+      "area": 616.0000000000003
+    },
+    {
+      "feature": "F3",
+      "kind": "solid",
+      "faces": 6,
+      "edges": 12,
+      "vertices": 8,
+      "volume": 240.00000000000017,
+      "area": 376.00000000000017
+    },
+    {
+      "feature": "F4",
+      "kind": "solid",
+      "faces": 6,
+      "edges": 12,
+      "vertices": 8,
+      "volume": 240.00000000000017,
+      "area": 376.00000000000017
+    }
+  ]
+}
