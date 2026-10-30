@@ -189,6 +189,31 @@ fn commands_that_need_the_bodies_run_where_they_are_with_the_same_answers() {
     }
 }
 
+/// Clicks that add, in quick succession: the second is handed over
+/// before the first is answered, and runs on what the first left, as it
+/// does on the desktop.
+#[test]
+fn clicks_in_quick_succession_add_up() {
+    let mut page = page(1.0);
+    let mut desktop = desktop(1.0);
+    let clicks = [
+        json!({"names": ["A"]}),
+        json!({"names": ["B"], "mode": "add"}),
+        json!({"names": ["Ball"], "mode": "add"}),
+    ];
+    for click in &clicks {
+        desktop.execute("select.set", click).unwrap();
+        let now = page.execute("select.set", click).unwrap();
+        assert_eq!(now["deferred"], true);
+    }
+    let answered = answer_commands(&mut page);
+    assert_eq!(answered.len(), 3);
+    assert!(answered.iter().all(|a| a.result.is_ok()), "{answered:?}");
+    assert_eq!(page.selection().items, desktop.selection().items);
+    assert_eq!(page.selection().items.len(), 3);
+    assert!(!page.regenerated_here());
+}
+
 /// A section on a datum plane while the view is scrubbed lies on the
 /// plane of the document as it is, found without regenerating on the
 /// page: from the scene of that state, kept while the view is scrubbed,

@@ -461,6 +461,11 @@ struct Builder {
     /// ([`run_command`]) puts the latter back.
     loaded: Option<Vec<u8>>,
     scenes_of: Option<Vec<u8>>,
+    /// The selection the last command run here read, as written out, and
+    /// the one it left: a command that comes with the same selection was
+    /// handed over before that answer reached the host, so it runs on
+    /// what the last one left, as it would have there.
+    selected: Option<(Value, Value)>,
 }
 
 thread_local! {
@@ -641,11 +646,17 @@ pub fn run_command(document: &[u8], work: &str) -> crate::CommandAnswer {
             .ok_or("the work names no command")?
             .to_string();
         let params = work.get("params").cloned().unwrap_or(Value::Null);
-        let selection = work
-            .get("selection")
-            .and_then(|s| crate::selection::Selection::from_wire(s, None))
-            .unwrap_or_default();
         let builder = &mut *builder;
+        let read = work.get("selection").cloned().unwrap_or(Value::Null);
+        let wire = match &builder.selected {
+            Some((input, output))
+                if *input == read && builder.loaded.as_deref() == Some(document) =>
+            {
+                output.clone()
+            }
+            _ => read.clone(),
+        };
+        let selection = crate::selection::Selection::from_wire(&wire, None).unwrap_or_default();
         let session = builder.session.get_or_insert_with(builder_session);
         if builder.loaded.as_deref() != Some(document) {
             let doc = craft3d_format::from_bytes(document)
@@ -669,6 +680,11 @@ pub fn run_command(document: &[u8], work: &str) -> crate::CommandAnswer {
                 .is_none_or(|open| open.history.revision() != revision);
         let after = session.documents.first().map(|o| o.selection.to_wire());
         let selection = (!edited && after != before).then_some(after).flatten();
+        builder.selected = match &selection {
+            Some(left) => Some((read, left.clone())),
+            None if !edited && wire != read => builder.selected.clone(),
+            None => None,
+        };
         let mut files = Vec::new();
         for name in session.file_names() {
             if let Some(bytes) = session.take_file(&name) {

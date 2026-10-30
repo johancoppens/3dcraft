@@ -1598,6 +1598,9 @@ mod tests {
                 "body.appearance",
                 json!({"body": "Plate", "color": "#2060c0"}),
             ),
+            // A state not regenerated on the page (the colour, an edit
+            // that follows the body, regenerated it there).
+            ("variable.set", json!({"name": "k", "expr": "1"})),
         ] {
             host.session.execute(id, &params).unwrap();
         }

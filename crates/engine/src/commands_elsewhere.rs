@@ -95,6 +95,12 @@ pub(crate) struct Commands {
     /// A command is being tried, or run here after all: no other is
     /// tried within it.
     busy: bool,
+    /// The selection serial a command read and the serial of the
+    /// selection its answer left: the next command handed over before
+    /// that answer came read the same selection, and the worker ran it on
+    /// what the first left (`run_command`), so its answer is taken too
+    /// (two clicks that add, in quick succession).
+    adopted: Option<(u64, u64)>,
 }
 
 /// Most commands waiting for their answers at once; past that a command
@@ -307,13 +313,17 @@ impl Session {
                 .map(|value| (value, Vec::new()))
                 .map_err(|e| e.message().to_string());
         }
+        let adopted = self.commands.adopted;
         let open = self.documents.get_mut(at).ok_or("no document")?;
-        if open.selection.serial() == job.serial
+        let serial = open.selection.serial();
+        if (serial == job.serial || adopted == Some((job.serial, serial)))
             && let Some(wire) = reply.get("selection").filter(|s| !s.is_null())
         {
             let checked = (open.history.revision(), open.asm.generation);
             if let Some(selection) = Selection::from_wire(wire, Some(checked)) {
+                let now = selection.serial();
                 open.selection = selection;
+                self.commands.adopted = Some((job.serial, now));
             }
         }
         if let Some(error) = reply.get("error") {
