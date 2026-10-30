@@ -9,7 +9,7 @@
 //! loop, enclosing the most area) and every other one clockwise (holes),
 //! and no loop crosses itself or another. Holes inside the outer loop are
 //! held on planes by [`crate::stranded_loops`]; here, on every other
-//! surface, a point of each hole clear of the other loops must be wound
+//! surface, every point of each hole clear of the other loops must be wound
 //! once by the outer loop and by no other hole.
 //!
 //! **What is not held.** Faces this test cannot chart without doubt are
@@ -192,53 +192,65 @@ pub fn region_fault(body: &Body, face: &Face, tol: &Tolerance) -> Option<String>
             }
         }
         // Each hole wound once by the outer loop, by no other hole.
+        let mut work = 0_usize;
         if !matches!(surface, Surface::Plane(_)) {
             for (k, ring) in rings.iter().enumerate() {
                 if k == o {
                     continue;
                 }
-                let clear = ring.points.iter().find(|p| {
-                    rings.iter().enumerate().all(|(j, other)| {
-                        j == k
-                            || other.box_distance(**p) > margin_of(j, k)
-                            || distance(**p, &other.points) > margin_of(j, k)
-                    })
-                });
-                let Some(point) = clear else { continue };
-                let wound: i64 = rings
-                    .iter()
-                    .enumerate()
-                    .filter(|(j, _)| *j != k)
-                    .map(|(_, other)| {
-                        if other.box_distance(*point) > 0.0 {
-                            0
-                        } else {
-                            winding(*point, &other.points)
+                // Every point of the hole clear of the other loops: a hole
+                // that runs across a loop's border has points on both
+                // sides of it, found here even where it crosses through a
+                // point of a polyline (which the crossing test of steps,
+                // with its margin, does not see).
+                for point in ring.points.iter() {
+                    let clear = rings.iter().enumerate().all(|(j, other)| {
+                        j == k || other.box_distance(*point) > margin_of(j, k) || {
+                            work = work.saturating_add(other.points.len());
+                            distance(*point, &other.points) > margin_of(j, k)
                         }
-                    })
-                    .sum::<i64>()
-                    * if face.reversed { -1 } else { 1 };
-                if wound != 1 {
-                    let each: Vec<String> = rings
+                    });
+                    if work > MOST_PAIRS {
+                        return None;
+                    }
+                    if !clear {
+                        continue;
+                    }
+                    let wound: i64 = rings
                         .iter()
-                        .map(|other| winding(*point, &other.points).to_string())
-                        .collect();
-                    return Some(format!(
-                        "its hole, loop {k}, lies outside its outer loop {o} or inside another hole (wound {wound} times at ({:.6}, {:.6}) of the {}; by each loop {}; areas {}; boxes {})",
-                        point[0],
-                        point[1],
-                        surface.kind(),
-                        each.join(", "),
-                        list(&areas),
-                        rings
+                        .enumerate()
+                        .filter(|(j, _)| *j != k)
+                        .map(|(_, other)| {
+                            if other.box_distance(*point) > 0.0 {
+                                0
+                            } else {
+                                winding(*point, &other.points)
+                            }
+                        })
+                        .sum::<i64>()
+                        * if face.reversed { -1 } else { 1 };
+                    if wound != 1 {
+                        let each: Vec<String> = rings
                             .iter()
-                            .map(|r| format!(
-                                "[{:.4}, {:.4}]x[{:.4}, {:.4}]",
-                                r.low[0], r.high[0], r.low[1], r.high[1]
-                            ))
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    ));
+                            .map(|other| winding(*point, &other.points).to_string())
+                            .collect();
+                        return Some(format!(
+                            "its hole, loop {k}, lies outside its outer loop {o} or inside another hole (wound {wound} times at ({:.6}, {:.6}) of the {}; by each loop {}; areas {}; boxes {})",
+                            point[0],
+                            point[1],
+                            surface.kind(),
+                            each.join(", "),
+                            list(&areas),
+                            rings
+                                .iter()
+                                .map(|r| format!(
+                                    "[{:.4}, {:.4}]x[{:.4}, {:.4}]",
+                                    r.low[0], r.high[0], r.low[1], r.high[1]
+                                ))
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        ));
+                    }
                 }
             }
         }
