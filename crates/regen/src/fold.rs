@@ -3,7 +3,6 @@
 //! a sheet of planar facets (`craft3d_kernel::origami`,
 //! docs/design/origami.md).
 
-use crate::extrude::drawn;
 use crate::sketch_pattern::CurveIds;
 use crate::{FeatureResult, Names, angle, length};
 use craft3d_doc::{Document, FeatureId, Fold, Geometry};
@@ -495,7 +494,7 @@ fn pattern(doc: &Document, fold: &Fold, earlier: &[FeatureResult]) -> Result<Fol
             source.kind.type_name()
         ));
     }
-    let drawn = drawn(doc, earlier, fold.sketch)?;
+    let drawn = crate::extrude::drawn_plain(doc, earlier, fold.sketch, "a fold's creases")?;
     let name = drawn.name;
     let tol = drawn.tolerance;
 

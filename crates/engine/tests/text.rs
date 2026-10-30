@@ -386,7 +386,7 @@ fn text_on_a_circle_keeps_each_glyph_baseline_tangent() {
 #[test]
 fn text_scales_from_a_thousandth_to_a_thousand() {
     let base = text_area("NotoSans-Regular.otf", "Ag8", 10.0) * 2.0;
-    for k in [1e-3, 1.0, 1e3] {
+    for k in [1e-3, 1.0, 1e3, 1e6] {
         let mut s = session();
         new_document(&mut s, k);
         run(&mut s, "sketch.create", json!({"name": "S"}));
@@ -596,4 +596,39 @@ fn points_after_a_text_are_solved() {
         json!({"sketch": "S", "from": [0, 10], "to": [10, 10]}),
     );
     assert_eq!(line["status"], "ok", "{line}");
+}
+
+/// A text in a sketch a feature names by plain curve numbers (a sweep's
+/// path) is refused by name, never named wrongly (review of 2026-10-30).
+#[test]
+fn a_text_in_a_sweep_path_is_refused() {
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"name": "Path", "plane": "xz"}),
+    );
+    run(
+        &mut s,
+        "sketch.line",
+        json!({"sketch": "Path", "from": [0, 0], "to": [0, 30]}),
+    );
+    run(
+        &mut s,
+        "sketch.text",
+        json!({"sketch": "Path", "text": "I", "font": "stroke", "size": 5, "at": [10, 0]}),
+    );
+    run(&mut s, "sketch.create", json!({"name": "Profile"}));
+    run(
+        &mut s,
+        "sketch.circle",
+        json!({"sketch": "Profile", "center": [0, 0], "radius": 2}),
+    );
+    let why = failed(
+        &mut s,
+        "feature.sweep",
+        json!({"sketch": "Profile", "path": "Path"}),
+    );
+    assert!(why.contains("a sweep's path"), "{why}");
 }

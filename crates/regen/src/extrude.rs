@@ -276,6 +276,32 @@ pub(crate) fn drawn<'a>(
     })
 }
 
+/// [`drawn`] for a feature that names what it makes after the sketch's
+/// curves by their plain numbers (a sweep's path, a loft's section, a
+/// fold, a developable's rail, a sheet-metal part): a text's curves have
+/// numbers of their own there would be no name for, so a sketch with a
+/// text (not construction) is refused for `role`.
+pub(crate) fn drawn_plain<'a>(
+    doc: &'a Document,
+    earlier: &'a [FeatureResult],
+    id: FeatureId,
+    role: &str,
+) -> Result<Drawn<'a>, String> {
+    let made = drawn(doc, earlier, id)?;
+    if made
+        .solved
+        .texts
+        .iter()
+        .any(|t| !t.construction && !t.curves.is_empty())
+    {
+        return Err(format!(
+            "sketch: `{}` holds a text; a text as {role} is not supported yet (put the text in a sketch of its own, or make it construction geometry)",
+            made.name
+        ));
+    }
+    Ok(made)
+}
+
 /// What an offset of the profiles of a sketch gives a feature made from
 /// its curves: the offset outline (the kernel's curves are numbered from 0;
 /// `offset_profile::rename` names what is made of them), and the plane

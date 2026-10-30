@@ -310,17 +310,43 @@ fn sketch(session: &mut Session, p: &Params) -> Result<Source, CommandError> {
             continue;
         }
         for curve in &text.curves {
+            // Each Bézier piece a spline of its own (one span, no inner
+            // knots): readers that mishandle knots of full multiplicity
+            // (FreeCAD's DXF reader, 2026-10-30) read them as they are.
             let (degree, knots, control) = cubic(&curve.spline);
             let Some(&start) = control.first() else {
                 continue;
             };
-            let spline =
-                craft3d_drawing::Spline::new(degree, knots, control, None).map_err(|e| {
-                    CommandError::new(format!("{ID}: the sketch `{name}`: {}: {e}", curve.name))
-                })?;
+            let mut segments = Vec::new();
+            let pieces = if degree == 3 && knots.len() == control.len() + 4 {
+                control.len().saturating_sub(1) / 3
+            } else {
+                0
+            };
+            let wrong = |e: craft3d_drawing::DrawingError| {
+                CommandError::new(format!("{ID}: the sketch `{name}`: {}: {e}", curve.name))
+            };
+            if pieces > 0 && (control.len() - 1) == 3 * pieces {
+                for k in 0..pieces {
+                    let bez = control.get(3 * k..=3 * k + 3).unwrap_or_default().to_vec();
+                    segments.push(craft3d_drawing::Segment::Spline(
+                        craft3d_drawing::Spline::new(
+                            3,
+                            vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                            bez,
+                            None,
+                        )
+                        .map_err(wrong)?,
+                    ));
+                }
+            } else {
+                segments.push(craft3d_drawing::Segment::Spline(
+                    craft3d_drawing::Spline::new(degree, knots, control, None).map_err(wrong)?,
+                ));
+            }
             let path = craft3d_drawing::Path::Chain {
                 start,
-                segments: vec![craft3d_drawing::Segment::Spline(spline)],
+                segments,
                 closed: curve.closed,
             };
             if text.construction {

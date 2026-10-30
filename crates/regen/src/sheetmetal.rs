@@ -11,7 +11,7 @@
 //! named by what it is (`sheetmetal::edge_numbers`), so a flange added
 //! later renames only the rim along the edge it is bent from.
 
-use crate::extrude::{drawn, profile_error};
+use crate::extrude::profile_error;
 use crate::{FeatureResult, Names, angle, face_ops, length, number};
 use craft3d_doc::{
     BendDirection, CornerKind, Document, FeatureId, FeatureKind, FlangeFrom, FlangeOn, FlangeSide,
@@ -80,7 +80,7 @@ pub(crate) fn analyse(
     made: &SheetMetal,
     earlier: &[FeatureResult],
 ) -> Result<SheetMetalPart, String> {
-    let drawn = drawn(doc, earlier, made.sketch)?;
+    let drawn = crate::extrude::drawn_plain(doc, earlier, made.sketch, "a sheet-metal outline")?;
     let name = drawn.name.to_string();
     let tol = drawn.tolerance;
     if drawn.curves.is_empty() {
@@ -150,8 +150,8 @@ pub(crate) fn analyse(
         if off {
             continue;
         }
-        let holes =
-            crate::extrude::drawn(doc, earlier, other).map_err(|e| format!("cutouts.{i}: {e}"))?;
+        let holes = crate::extrude::drawn_plain(doc, earlier, other, "a cutout")
+            .map_err(|e| format!("cutouts.{i}: {e}"))?;
         let hname = holes.name.to_string();
         let curves = carried(&holes.curves, &holes.plane, &drawn.plane, &tol)
             .map_err(|e| format!("cutouts.{i}: sketch `{hname}` {e}"))?;
@@ -344,7 +344,7 @@ fn own_outline(
     to: &Frame,
     tol: &Tolerance,
 ) -> Result<craft3d_kernel::profile::Profile, String> {
-    let drawn = drawn(doc, earlier, sketch)?;
+    let drawn = crate::extrude::drawn_plain(doc, earlier, sketch, "a sheet-metal outline")?;
     let name = drawn.name.to_string();
     let curves = carried(&drawn.curves, &drawn.plane, to, tol)
         .map_err(|e| format!("sketch `{name}` {e}"))?;

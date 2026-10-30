@@ -35,6 +35,10 @@ A glyph may overlap itself (contours of a variable font, a stem drawn through a 
 
 The Hershey data's terms (use by anyone, "providing that" an acknowledgement is distributed and the data is not converted to the format NTIS distributes) are conditions on a dataset of unclear provenance; the conservative choice (2026-10-30) is our own glyphs, drawn for 3DCraft as data in `crates/font/src/stroke.rs`: a grid of 30 units to the em (capitals 21, x-height 14, descender −7), each glyph a path of `M` (start a stroke), `L` (line), `A` (elliptic arc from angle to angle, either way, as cubic Béziers of at most a quarter turn each, `k = 4/3 tan(θ/4)`) and `E` (a closed ellipse). Letters A–Z, a–z, digits, common punctuation and signs, and accented Latin (grave, acute, circumflex, diaeresis, tilde, ring, caron, cedilla, slash on 66 base letters). A stroke text gives open curves (a ring, closed ones): for DXF and SVG export and engraving paths, not for extruding (an extrusion names the open curve).
 
+### DXF and SVG of text
+
+Each contour is written as cubic Béziers, each piece a SPLINE of its own (one span, knots 0 0 0 0 1 1 1 1; a quadratic piece raised to cubic exactly). Written as one spline with inner knots of full multiplicity, FreeCAD's DXF reader measured a glyph 2.7 % (quadratic) and 3.5 % (raised) off the area the font's outline and the kernel's extrusion agree on, while our SPLINE entities follow the DXF reference (review of 2026-10-30); `freecad_reads_the_outline_of_text` holds DXF and SVG areas to 1e-3.
+
 ### Fonts in the document
 
 `font.add` keeps a font's bytes in the document (`DocFont { name, family, style, sha256, embedding, blob }`), so a document opens the same everywhere. The OpenType embedding bits are respected (`OS/2 fsType`): installable and editable fonts are kept; restricted, preview-and-print (the document is edited, so it is not a preview) and bitmap-only (bit 9: outlines must not be embedded) fonts are not: the document records the font by name and hash, the bytes are used for this session only (`DocFont::session`, never saved), and after a reopen a text in it fails with "the document needs font …: add it again on this machine". A built-in font a text names is added to the document when first used. The sketch solve's cache key holds every font's name, hash and whether its bytes are there.
@@ -53,7 +57,7 @@ The curve by arc length: exact for lines, arcs and circles (a circle starts at a
 
 ### Caps and hostile input
 
-Font bytes are hostile: at most 32 MiB, 2 000 contours and 20 000 segments a glyph, 10 000 characters a text, 64 formulas a template, 20 000 curves the texts of a sketch, the subdivision of the fill rule 4 000 000 steps and 50 000 hits a glyph, 4 096 control points a contour (the kernel's spline cap), 64 fonts a document. Nothing panics: `hostile_font_bytes_never_panic` runs seeded truncations and byte flips of both built-in fonts through parsing, metrics, layout, outlines and the fill rule.
+Font bytes are hostile: the fill of one glyph is held to 400 000 000 steps of classifying and joining its pieces (`MAX_WORK`, then TooComplex); at most 32 MiB, 2 000 contours and 20 000 segments a glyph, 10 000 characters a text, 64 formulas a template, 20 000 curves the texts of a sketch, the subdivision of the fill rule 4 000 000 steps and 50 000 hits a glyph, 4 096 control points a contour (the kernel's spline cap), 64 fonts a document. Nothing panics: `hostile_font_bytes_never_panic` runs seeded truncations and byte flips of both built-in fonts through parsing, metrics, layout, outlines and the fill rule.
 
 ## Tests (oracles)
 
@@ -72,6 +76,9 @@ Font bytes are hostile: at most 32 MiB, 2 000 contours and 20 000 segments a gly
 ## Owed
 
 - Text wrapped onto a cylinder, a cone or another developable surface, embossed or engraved (`feature.wrap`): the method is the development's map (`docs/design/developable.md`: an isometry, exact in closed form on a cylinder, `(s, z) → (r cos(s/r), r sin(s/r), z)`, and a cone, polar about the apex's image) applied to the profile's curves (fitted within the tolerance), a sheet of the glyph regions on the surface, `kernel::plate` to give it a thickness out (emboss) or in (engrave) with square rims, and a boolean with the body; not built.
-- FreeCAD's DXF reader measures a glyph's area 2.7 % (quadratic) to 3.5 % (raised to cubic) off our exact one, which the kernel's extrusion and the font's own outline agree on; its SVG reader holds it. Whether writing each Bézier piece as a SPLINE of its own reads exactly is owed (`freecad_reads_the_outline_of_text` holds the DXF to its wires only).
 - Shaping (ligatures, marks, right to left, complex scripts): R2, with rustybuzz.
-- A pattern of a text (refused: one text per place), a text as a sweep's path.
+- A pattern of a text (refused: one text per place). A text in a sketch whose curves a feature names by their plain numbers (a sweep's path, a loft's section, a fold, a developable's rail, a sheet-metal outline or cutout) is refused (`extrude::drawn_plain`, review of 2026-10-30): those features would name the text's curves wrongly. Carrying the texts' numbers through them is owed.
+- The fill rule works per glyph: neighbouring glyphs that touch or overlap (script fonts, tight kerning) are refused by the profile detection, and two contours that run along each other (flush collinear overlaps) are refused by the fill. Uniting the whole text in one fill is owed.
+- `contour(j)` is the contour's place in the font's outline (after the fill), so another font may number a glyph's contours differently: a font change is to be read as a text change for references to contours (a canonical order, outer loops by area then holes, is owed).
+- A text in `sans` or `mono` stores the whole font in the document (about 330 KB and 270 KB, uncompressed in the stored ZIP) in every save; subsetting is owed.
+- The fixture of format 55 holds no embedded font (font files are never committed); a small test font generated in code would let it cover one (owed).

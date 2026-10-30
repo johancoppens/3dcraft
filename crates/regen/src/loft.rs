@@ -4,7 +4,7 @@
 //! sections is a sheet); the body it makes is searched for places where it
 //! passes through itself before it is handed on.
 
-use crate::extrude::{drawn, swept};
+use crate::extrude::swept;
 use crate::selfcheck::{Crossing, crossing};
 use crate::{FeatureResult, Names};
 use craft3d_doc::{Document, FeatureId, Loft, MAX_LOFT_SECTIONS, NameRole, PersistentName};
@@ -135,8 +135,9 @@ pub(crate) fn build(
             Ok(made) => made,
             Err(reason) => {
                 let reason = reason.strip_prefix("sketch: ").unwrap_or(&reason);
-                let chain = drawn(doc, earlier, section.sketch)
-                    .map(|drawn| (open_chain(&drawn.curves, &drawn.tolerance), drawn));
+                let chain =
+                    crate::extrude::drawn_plain(doc, earlier, section.sketch, "a loft's section")
+                        .map(|drawn| (open_chain(&drawn.curves, &drawn.tolerance), drawn));
                 let Ok((Ok(outline), drawn)) = chain else {
                     return Err(format!("sections: section {number}: {reason}"));
                 };

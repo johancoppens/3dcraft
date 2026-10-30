@@ -5,7 +5,7 @@
 //! point it is anchored at. It has no unknowns of its own: regeneration
 //! evaluates the template, lays it out and puts the glyphs' outlines in
 //! the sketch as closed profiles (or, in the single-stroke font, open
-//! strokes), named `e7.glyph(3:U+0041).contour(1)` (docs/design/text.md).
+//! strokes), named `e7.glyph(3,U+0041).contour(1)` (docs/design/text.md).
 //!
 //! A document keeps the bytes of every font its texts use
 //! ([`DocFont`]), so it opens the same everywhere; a font whose

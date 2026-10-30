@@ -4,7 +4,7 @@
 //! handed on.
 
 use crate::datum::datum_helix;
-use crate::extrude::{drawn, name_of, profile_error, swept};
+use crate::extrude::{name_of, profile_error, swept};
 use crate::selfcheck::{Crossing, crossing};
 use crate::sketch_pattern::CurveIds;
 use crate::{FeatureResult, Names, SweepReport};
@@ -76,10 +76,11 @@ pub(crate) fn build(
         })?
     } else {
         // What `drawn` says of a sketch, as what it says of the path.
-        let path = drawn(doc, earlier, feature.path).map_err(|reason| {
-            let reason = reason.strip_prefix("sketch: ").unwrap_or(&reason);
-            format!("path: {reason}")
-        })?;
+        let path = crate::extrude::drawn_plain(doc, earlier, feature.path, "a sweep's path")
+            .map_err(|reason| {
+                let reason = reason.strip_prefix("sketch: ").unwrap_or(&reason);
+                format!("path: {reason}")
+            })?;
         let along = path.name;
         // The kernel takes the numbers of both sketches' curves; those of
         // nested patterns are sketch-local, so the path's are moved past

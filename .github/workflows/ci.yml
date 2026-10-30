@@ -26,6 +26,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # The built-in fonts (never committed), pinned by URL and SHA-256,
+      # into assets/fonts where the text tests find them.
+      - run: cargo xtask fonts
       - run: cargo xtask ci
 
   # Tests on the other platforms.
@@ -38,4 +41,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      # The built-in fonts (never committed), pinned by URL and SHA-256,
+      # into assets/fonts where the text tests find them.
+      - run: cargo xtask fonts
       - run: cargo test --workspace

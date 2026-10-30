@@ -636,12 +636,8 @@ fn freecad_reads_the_outline_of_text() {
             .unwrap_or_else(|| panic!("FreeCAD did not read {file}"));
         let got_wires: usize = got["wires"].parse().unwrap();
         assert_eq!(got_wires, *wires, "{file}: {got:?}");
-        // The area is held on the SVG, whose cubic Béziers FreeCAD reads
-        // as they are; its DXF reader measured these splines (Bézier
-        // pieces joined at knots of full multiplicity) 2.7 to 3.5 % off
-        // (2026-10-30, docs/design/text.md › Owed), so the DXF is held to
-        // its wires.
-        if *area > 0.0 && file.ends_with(".svg") {
+        // Each Bézier piece is a SPLINE of its own in the DXF.
+        if *area > 0.0 {
             let got_area: f64 = got["area"].parse().unwrap();
             assert!(
                 near(got_area, *area, 1e-3),

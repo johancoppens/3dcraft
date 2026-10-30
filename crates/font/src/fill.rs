@@ -33,6 +33,8 @@ use crate::bezier::{Contour, P2, Seg, cross, dist, sub};
 pub const MAX_FILL_SEGMENTS: usize = 20_000;
 /// Most points where two segments meet in one glyph.
 const MAX_HITS: usize = 50_000;
+/// Most steps of classifying and joining the pieces of one glyph.
+const MAX_WORK: usize = 400_000_000;
 /// Deepest subdivision of a pair of segments.
 const MAX_DEPTH: u32 = 60;
 /// Most subdivision steps for one glyph.
@@ -308,6 +310,11 @@ pub fn fill_nonzero(contours: &[Contour], eps: f64) -> Result<Vec<Contour>, Font
     let mut cuts: Vec<Vec<(f64, usize)>> = vec![Vec::new(); items.len()];
     let mut nodes: Vec<Node> = Vec::new();
     let mut search = Search { steps: 0, eps };
+    // The contours some other segment meets: decided piece by piece. Set
+    // for every meeting, also one at a segment's own end (where no cut is
+    // made), so a contour whose crossings fall on its vertices is not
+    // kept or dropped whole.
+    let mut touched = vec![false; cleaned.len()];
     // The index of the segment after `i` in its contour.
     let mut next_of = vec![0usize; items.len()];
     {
@@ -440,6 +447,11 @@ pub fn fill_nonzero(contours: &[Contour], eps: f64) -> Result<Vec<Contour>, Font
                     });
                 let node = nodes.len();
                 nodes.push(Node { at });
+                for c in [a.contour, b.contour] {
+                    if let Some(slot) = touched.get_mut(c) {
+                        *slot = true;
+                    }
+                }
                 for (k, s, t) in [(i, a.seg, ta), (j, b.seg, tb)] {
                     if dist(s.start(), at) <= 16.0 * eps || dist(s.end(), at) <= 16.0 * eps {
                         continue;
@@ -459,14 +471,8 @@ pub fn fill_nonzero(contours: &[Contour], eps: f64) -> Result<Vec<Contour>, Font
         seg: Seg,
     }
     let mut pieces: Vec<Piece> = Vec::new();
-    let mut touched = vec![false; cleaned.len()];
     for (k, item) in items.iter().enumerate() {
         let mut list = cuts.get(k).cloned().unwrap_or_default();
-        if !list.is_empty()
-            && let Some(slot) = touched.get_mut(item.contour)
-        {
-            *slot = true;
-        }
         list.sort_by(|x, y| x.0.total_cmp(&y.0));
         let mut t_prev = 0.0;
         let mut p_prev = item.seg.start();
@@ -495,6 +501,18 @@ pub fn fill_nonzero(contours: &[Contour], eps: f64) -> Result<Vec<Contour>, Font
             t_prev = t;
             p_prev = at;
         }
+    }
+    // The work left is the winding of every piece (against every monotone
+    // part) and the joining (pieces against pieces): bounded, so a hostile
+    // glyph ends in an error rather than a hang.
+    let work = pieces
+        .len()
+        .saturating_mul(monos.len().max(1))
+        .saturating_add(pieces.len().saturating_mul(pieces.len()));
+    if work > MAX_WORK {
+        return Err(FontError::TooComplex(format!(
+            "resolving its fill rule would take more than {MAX_WORK} steps"
+        )));
     }
     // Classify: a contour no other meets is decided by its first piece.
     let probe = eps * 32.0;
@@ -837,6 +855,174 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert!((area(&out) - 2.0).abs() < 1e-9);
         assert!(out.iter().all(|c| c.signed_area() > 0.0));
+    }
+
+    /// A square with the points where another crosses it as vertices of
+    /// its own: the crossings fall on segment ends, and both must still be
+    /// cut there (review of 2026-10-30: area 4 instead of 7).
+    fn square_through(x0: f64, y0: f64, extra: &[P2]) -> Contour {
+        let corners = [
+            [x0, y0],
+            [x0 + 2.0, y0],
+            [x0 + 2.0, y0 + 2.0],
+            [x0, y0 + 2.0],
+        ];
+        let mut pts: Vec<P2> = Vec::new();
+        for k in 0..4 {
+            let (a, b) = (corners[k], corners[(k + 1) % 4]);
+            pts.push(a);
+            let mut on: Vec<P2> = extra
+                .iter()
+                .copied()
+                .filter(|p| {
+                    let d = sub(b, a);
+                    let v = sub(*p, a);
+                    cross(d, v).abs() < 1e-12
+                        && (v[0] * d[0] + v[1] * d[1]) > 0.0
+                        && (v[0] * d[0] + v[1] * d[1]) < d[0] * d[0] + d[1] * d[1]
+                })
+                .collect();
+            on.sort_by(|p, q| dist(*p, a).total_cmp(&dist(*q, a)));
+            pts.extend(on);
+        }
+        let n = pts.len();
+        Contour {
+            segs: (0..n)
+                .map(|k| Seg::line(pts[k], pts[(k + 1) % n]))
+                .collect(),
+            closed: true,
+        }
+    }
+
+    /// The share of a grid of points inside, by the nonzero rule of the
+    /// input itself: an oracle for the area that does not cut anything.
+    fn raster_area(cs: &[Contour], box_: [f64; 4], n: usize) -> f64 {
+        let items: Vec<Item> = cs
+            .iter()
+            .enumerate()
+            .flat_map(|(i, c)| {
+                c.segs.iter().map(move |s| Item {
+                    contour: i,
+                    seg: *s,
+                    bbox: s.bbox(),
+                })
+            })
+            .collect();
+        let monos = monotone_parts(&items);
+        let (w, h) = (box_[2] - box_[0], box_[3] - box_[1]);
+        let mut inside = 0usize;
+        for i in 0..n {
+            for j in 0..n {
+                let p = [
+                    box_[0] + (i as f64 + 0.5) / n as f64 * w,
+                    box_[1] + (j as f64 + 0.517) / n as f64 * h,
+                ];
+                if winding(&monos, p) != 0 {
+                    inside += 1;
+                }
+            }
+        }
+        inside as f64 / (n * n) as f64 * w * h
+    }
+
+    #[test]
+    fn crossings_at_vertices_cut_both_contours() {
+        let hits = [[2.0, 1.0], [1.0, 2.0]];
+        for (a, b) in [
+            (
+                square_through(0.0, 0.0, &hits),
+                square_through(1.0, 1.0, &hits),
+            ),
+            (
+                square_through(0.0, 0.0, &hits),
+                square_through(1.0, 1.0, &[]),
+            ),
+            (
+                square_through(0.0, 0.0, &[]),
+                square_through(1.0, 1.0, &hits),
+            ),
+        ] {
+            let input = [a, b];
+            let out = fill_nonzero(&input, 1e-9).unwrap();
+            assert!((area(&out) - 7.0).abs() < 1e-9, "{}", area(&out));
+            assert_eq!(out.len(), 1);
+            assert!((raster_area(&input, [0.0, 0.0, 3.0, 3.0], 300) - 7.0).abs() < 0.05);
+        }
+    }
+
+    #[test]
+    fn overlapping_inputs_fill_what_their_winding_says() {
+        // Overlaps of every kind against the raster of the input's own
+        // winding: crossing bars, a star of five lines, nested same-way
+        // squares, a square through a disc, and three discs.
+        let k = 0.552_284_749_830_793_4;
+        let disc = |cx: f64, cy: f64, r: f64| Contour {
+            segs: vec![
+                Seg::cubic(
+                    [cx + r, cy],
+                    [cx + r, cy + k * r],
+                    [cx + k * r, cy + r],
+                    [cx, cy + r],
+                ),
+                Seg::cubic(
+                    [cx, cy + r],
+                    [cx - k * r, cy + r],
+                    [cx - r, cy + k * r],
+                    [cx - r, cy],
+                ),
+                Seg::cubic(
+                    [cx - r, cy],
+                    [cx - r, cy - k * r],
+                    [cx - k * r, cy - r],
+                    [cx, cy - r],
+                ),
+                Seg::cubic(
+                    [cx, cy - r],
+                    [cx + k * r, cy - r],
+                    [cx + r, cy - k * r],
+                    [cx + r, cy],
+                ),
+            ],
+            closed: true,
+        };
+        let star = {
+            let p: Vec<P2> = (0..5)
+                .map(|i| {
+                    let a =
+                        std::f64::consts::FRAC_PI_2 + i as f64 * 4.0 * std::f64::consts::PI / 5.0;
+                    [1.5 + 1.4 * a.cos(), 1.5 + 1.4 * a.sin()]
+                })
+                .collect();
+            Contour {
+                segs: (0..5).map(|i| Seg::line(p[i], p[(i + 1) % 5])).collect(),
+                closed: true,
+            }
+        };
+        let cases: Vec<Vec<Contour>> = vec![
+            vec![rect(0.0, 1.0, 3.0, 2.0), rect(1.0, 0.0, 2.0, 3.0)],
+            vec![star],
+            vec![
+                rect(0.0, 0.0, 3.0, 3.0),
+                rect(0.5, 0.5, 2.5, 2.5),
+                rect(1.0, 1.0, 2.0, 2.0).reversed(),
+            ],
+            vec![disc(1.5, 1.5, 1.2), rect(0.2, 1.0, 2.8, 2.0)],
+            vec![
+                disc(1.0, 1.0, 0.9),
+                disc(2.0, 1.0, 0.9),
+                disc(1.5, 1.9, 0.9),
+            ],
+        ];
+        for input in cases {
+            let out = fill_nonzero(&input, 1e-9).unwrap();
+            let raster = raster_area(&input, [0.0, 0.0, 3.0, 3.0], 400);
+            assert!(
+                (area(&out) - raster).abs() < 0.02,
+                "{} vs {raster}",
+                area(&out)
+            );
+            assert!(raster_area(&out, [0.0, 0.0, 3.0, 3.0], 200) > 0.0);
+        }
     }
 
     #[test]

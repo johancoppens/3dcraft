@@ -6,7 +6,6 @@
 //! document.
 
 use crate::datum::named_body_of;
-use crate::extrude::drawn;
 use crate::{FeatureResult, Names};
 use craft3d_doc::{
     Developable, Document, FeatureId, NameRole, PersistentName, Rail as DocRail, Unfold,
@@ -33,7 +32,8 @@ fn sketch_rail(
     sketch: FeatureId,
     role: &str,
 ) -> Result<Rail, String> {
-    let made = drawn(doc, earlier, sketch).map_err(|e| format!("{role}: {e}"))?;
+    let made = crate::extrude::drawn_plain(doc, earlier, sketch, "a rail")
+        .map_err(|e| format!("{role}: {e}"))?;
     let name = made.name;
     let chain = match open_chain(&made.curves, &made.tolerance) {
         Ok(chain) => chain,

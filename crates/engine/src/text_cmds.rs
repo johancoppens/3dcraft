@@ -197,7 +197,10 @@ fn font_list(session: &mut Session, params: &Value) -> Run {
     let mut builtin: Vec<Value> = craft3d_font::BUILTIN
         .iter()
         .map(|f| {
-            let installed = crate::fonts::ready(f.name) || crate::fonts::bytes(f.name).is_ok();
+            // In the browser a font is installed once the page fetched it:
+            // listing must not start a fetch.
+            let installed = crate::fonts::ready(f.name)
+                || (cfg!(not(target_arch = "wasm32")) && crate::fonts::bytes(f.name).is_ok());
             json!({
                 "name": f.name,
                 "file": f.file,
