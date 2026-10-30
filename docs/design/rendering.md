@@ -675,3 +675,40 @@ layered scene is the same twice and marking doubt does not change it. `layers.rs
 bands against quadrature, Snell, the fields, sanitising. Engine: `tests/materials.rs` (the presets,
 the parameters said back, saving and opening, bad values refused, the exports' keys), the scene's
 wire form carries the layers, a format round trip and the v54 fixture.
+
+**On the GPU** (`crates/gpu`: `studio.wgsl`, `mesh.rs`, `studio.rs`). Each vertex carries one more
+word (52 bytes a vertex): its face's slot in the low 16 bits (`FaceColors::optics_slot`, 0 for none)
+and bit 16 when the face is transmissive (`mesh::optics_word`). The distinct layers go into a material
+table uploaded with the mesh (`mesh::optics_table`, an `Rgba32Uint` texture of six texels a row, `f32`
+bits: the numbers, the field's axis, the origin of a field around an axis relative to the mesh's
+origin), bound in the studio's main group and read with `textureLoad` only. `studio_shade` is
+`shade_layered` term for term (the frame from the field at the fragment's point, the bent reflection
+and the key's share at the bent normal, the wrapped harmonics by band, the coat, `Shaded::transmit`);
+a fragment of slot 0 takes the same arithmetic as before. The shadow pass discards transmissive
+fragments. With transmission (`Passes::transmit`, which turns `post` on, and the viewport's deferred
+path) the readback renderer and the viewport draw, before the frame, the picture without the
+transmissive faces (`fs_geometry_opaque`, its own occlusion, the background and `fs_studio_behind`
+into a light target) and the nearest back faces of the transmissive faces (`fs_backs`: transmissive
+and `flat · rel > 0` in perspective, `flat · forward` in orthographic, which on a triangle's plane is
+the sign of the CPU's `flat · (corner − eye)`; their view distance, infinity for none). The frame's
+`fs_studio_post` then adds `transmit · exp(−σL) · behind(exit)` as `refract::pass_through` does,
+before the reflections. WebGL2 keeps transmission (the passes use no loop over texels and translate
+to GLSL ES 3.00; `studio_as_drawn` leaves the layers alone), so the CPU reference of a WebGL2 frame
+is the one of `studio_as_drawn`'s look, as before.
+
+*Tolerance* (`crates/gpu/tests/layers.rs`, run 41022429587 and 41023163195, the Radeon 8060S on RADV
+and on radeonsi, llvmpipe; two scenes, each layer alone and all together, readback and viewport):
+layer 2's comparison (the band, the pixels in doubt at `TRACE_DOUBT` left out), with the band of what
+transmissive faces show added: where a sample sees the picture behind straight, that picture's band;
+where it refracts, the samples whose ray leaves within one sample of a border between two faces
+behind (`render_studio_doubt` with a margin of one sample). Measured: ids equal; at most 3.4 · 10⁻⁵ of
+the pixels over one level; at most 6 levels (RADV's orthographic scene, terms without layers alike;
+1 on the others); the transmissive faces' pixels at most 3; at most 0.73 % in doubt. Bounds: 1/4096,
+8 levels, 5 for the transmissive pixels, 1/64 in doubt. On the viewport (one step) a pixel that
+differs between two draws of the same picture is a lost write, left out and counted (none measured,
+at most 4). One reflection is decided otherwise on RADV outside the marked samples (the plate
+reflecting the anisotropic post, 13 levels at one pixel; 1 untraced): a layer-2 doubt case, so the
+viewport holds the layers alone to the polished look without the traced effects and all together
+with them. Cost (1 002 faces, 1020×777, readback with the readback itself, every seventh part solid
+glass): RADV 22.5 → 23.5 ms layer 1, 18.5 → 27.5 ms polished; radeonsi 18.8 → 24.8 and 24.7 → 28.1 ms;
+the CPU 2.0 s.
