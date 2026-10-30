@@ -2301,6 +2301,7 @@ fn feature_extrude(session: &mut Session, params: &Value) -> Run {
             "distance",
             "throughAll",
             "upTo",
+            "wrap",
             "symmetric",
             "reversed",
             "cut",
@@ -2344,6 +2345,26 @@ fn extrude_end(p: &Params, command: &str) -> Result<Option<ExtrudeEnd>, CommandE
                 .map_err(|reason| CommandError::new(format!("{command}: `upTo`: {reason}")))?,
         ),
     };
+    let wrap = match p.str("wrap")? {
+        None => None,
+        Some(text) => Some(
+            text.parse::<PersistentName>()
+                .map_err(|reason| CommandError::new(format!("{command}: `wrap`: {reason}")))?,
+        ),
+    };
+    if let Some(face) = wrap {
+        if !face.is_face() {
+            return fail(format!(
+                "{command}: `wrap` must name a face, a cylinder's or a cone's (see faceNames in document.inspect)"
+            ));
+        }
+        if !distance || through.is_some() || up_to.is_some() {
+            return fail(format!(
+                "{command}: `wrap` takes a `distance` (the depth: out when positive, in when negative) and neither `throughAll` nor `upTo`"
+            ));
+        }
+        return Ok(Some(ExtrudeEnd::Wrap { face }));
+    }
     if up_to.as_ref().is_some_and(|name| !name.is_face()) {
         return fail(format!(
             "{command}: `upTo` must name a face (see faceNames in document.inspect)"
@@ -2367,6 +2388,11 @@ fn extrude_end(p: &Params, command: &str) -> Result<Option<ExtrudeEnd>, CommandE
 
 /// An extrusion up to a face has one end: it cannot be symmetric.
 fn symmetric_fits(end: &ExtrudeEnd, symmetric: bool, command: &str) -> Result<(), CommandError> {
+    if symmetric && matches!(end, ExtrudeEnd::Wrap { .. }) {
+        return fail(format!(
+            "{command}: `symmetric` does not go with `wrap`: a wrapped profile goes out or in"
+        ));
+    }
     if symmetric && matches!(end, ExtrudeEnd::UpToFace { .. }) {
         return fail(format!(
             "{command}: `symmetric` does not go with `upTo`: an extrusion up to a face goes one way"

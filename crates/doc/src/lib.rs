@@ -360,6 +360,11 @@ pub enum ExtrudeEnd {
     /// On the surface of a face of an earlier feature, by its persistent
     /// name: the end follows the face, flat or not.
     UpToFace { face: PersistentName },
+    /// The profile wrapped onto the face (a cylinder's or a cone's) by the
+    /// surface's development, its depth `distance` along the face's
+    /// outward normal: out (embossed) when positive, in (engraved) when
+    /// negative (docs/design/text.md).
+    Wrap { face: PersistentName },
 }
 
 impl ExtrudeEnd {
@@ -369,6 +374,7 @@ impl ExtrudeEnd {
             ExtrudeEnd::Distance => "distance",
             ExtrudeEnd::ThroughAll => "throughAll",
             ExtrudeEnd::UpToFace { .. } => "upToFace",
+            ExtrudeEnd::Wrap { .. } => "wrap",
         }
     }
 }
@@ -1496,7 +1502,9 @@ impl FeatureKind {
     pub fn inputs(&self) -> Vec<FeatureId> {
         match self {
             FeatureKind::Extrude(e) => match &e.end {
-                ExtrudeEnd::UpToFace { face } => vec![e.sketch, face.feature],
+                ExtrudeEnd::UpToFace { face } | ExtrudeEnd::Wrap { face } => {
+                    vec![e.sketch, face.feature]
+                }
                 ExtrudeEnd::Distance | ExtrudeEnd::ThroughAll => vec![e.sketch],
             },
             FeatureKind::Revolve(r) => match r.axis {
@@ -2199,7 +2207,7 @@ impl Document {
                 )));
             }
             if let FeatureKind::Extrude(Extrude {
-                end: ExtrudeEnd::UpToFace { face },
+                end: ExtrudeEnd::UpToFace { face } | ExtrudeEnd::Wrap { face },
                 ..
             }) = &feature.kind
             {

@@ -646,6 +646,19 @@ pub(crate) fn build(
             .map_err(|e| format!("upTo: the face {face}: {e}"))?;
             return Ok((made.body, made.origins));
         }
+        ExtrudeEnd::Wrap { face } => {
+            let depth = length(doc, variables, "distance", &feature.distance)?;
+            let depth = if feature.reversed { -depth } else { depth };
+            let (body, faces) = target(doc, earlier, face)?;
+            let on = faces
+                .first()
+                .and_then(|f| body.face(*f))
+                .ok_or_else(|| format!("wrap: the face {face} is not there"))?;
+            let made =
+                craft3d_kernel::wrap::wrap(&profiles, &on.surface, on.reversed, depth, &tolerance)
+                    .map_err(|e| format!("wrap: onto the face {face}: {e}"))?;
+            return Ok((made.body, made.origins));
+        }
     };
     let mut result = extrude(&profiles, &plane, from, to, &tolerance).map_err(|e| e.to_string())?;
     if against {

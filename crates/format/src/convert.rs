@@ -1199,6 +1199,9 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                     doc::ExtrudeEnd::UpToFace { face } => manifest::ExtrudeEnd::UpToFace {
                         face: name_to_manifest(face),
                     },
+                    doc::ExtrudeEnd::Wrap { face } => manifest::ExtrudeEnd::Wrap {
+                        face: name_to_manifest(face),
+                    },
                 },
                 reversed: *reversed,
             },
@@ -3101,6 +3104,9 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
                     manifest::ExtrudeEnd::Distance {} => doc::ExtrudeEnd::Distance,
                     manifest::ExtrudeEnd::ThroughAll {} => doc::ExtrudeEnd::ThroughAll,
                     manifest::ExtrudeEnd::UpToFace { face } => doc::ExtrudeEnd::UpToFace {
+                        face: name_to_doc(face),
+                    },
+                    manifest::ExtrudeEnd::Wrap { face } => doc::ExtrudeEnd::Wrap {
                         face: name_to_doc(face),
                     },
                 },

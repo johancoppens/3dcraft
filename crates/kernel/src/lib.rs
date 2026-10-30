@@ -46,6 +46,7 @@ pub mod thread;
 mod tweak;
 pub mod unfold;
 pub mod work;
+pub mod wrap;
 
 use craft3d_geom::GeomError;
 use craft3d_topo::Defect;

@@ -1655,7 +1655,13 @@ pub enum ExtrudeEnd {
     // With braces: serde lets a variant without them take any field.
     Distance {},
     ThroughAll {},
-    UpToFace { face: Name },
+    UpToFace {
+        face: Name,
+    },
+    /// Wrapped onto a cylinder's or a cone's face (format version 55).
+    Wrap {
+        face: Name,
+    },
 }
 
 impl Default for ExtrudeEnd {
