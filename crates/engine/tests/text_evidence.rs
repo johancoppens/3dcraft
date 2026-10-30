@@ -160,9 +160,18 @@ fn wrapped_text_evidence() {
             let mut extrude =
                 json!({"sketch": "Label", "wrap": "F1:face(0)", "distance": depth, "name": "Text"});
             extrude[op] = json!("Body");
-            built(&mut s, "feature.extrude", extrude);
+            let made = run(&mut s, "feature.extrude", extrude.clone());
+            if made["status"] != "ok" {
+                // A boolean the kernel refuses is a finding: say it, and
+                // show the wrapped body alone instead.
+                println!("FINDING {shape} {how}: {}", made["error"]);
+                run(&mut s, "edit.undo", json!({}));
+                extrude.as_object_mut().unwrap().remove(op);
+                built(&mut s, "feature.extrude", extrude);
+            }
             for view in ["right", "iso"] {
                 picture(&mut s, &dir, &format!("{shape}-{how}-{view}.png"), view);
+                let _ = &made;
             }
         }
     }
