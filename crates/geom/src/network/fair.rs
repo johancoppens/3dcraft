@@ -49,7 +49,7 @@ use crate::refine::SAME_KNOT;
 use craft3d_math::quadrature::gauss_legendre;
 
 /// Equal spans the reach of a curvature edge is cut into.
-pub(super) const FAIR_SPANS: usize = 8;
+pub(super) const FAIR_SPANS: usize = 16;
 
 /// How far (in the crossing curve's parameter, from the edge at 0) a
 /// change for a curvature edge may reach: to the next curve crossing it
