@@ -587,16 +587,42 @@ fn default_instance_name(assembly: &Assembly, path: &str) -> String {
 }
 
 /// The path of the source `full` relative to the assembly's folder
-/// `base`: refused, never turned into another path, when one of the two is
-/// absolute and the other is not.
-fn source_relative(id: &str, base: &str, full: &str) -> Result<String, CommandError> {
+/// `base`. Beneath a read root a source from a request is relative to the
+/// root, while an assembly the person opened or saved through a dialog
+/// keeps its absolute path: when one of the two is absolute, both are
+/// written absolute (the relative one beneath the root) with their links
+/// resolved, so they compare as text whatever spelling the root and the
+/// assembly's path were given in. Refused, never turned into another
+/// path, when one is absolute and the other is not and there is no root
+/// to place the relative one in.
+fn source_relative(
+    id: &str,
+    read: &crate::Access,
+    base: &str,
+    full: &str,
+) -> Result<String, CommandError> {
     let absolute = |p: &str| p.starts_with('/') || p.starts_with('\\') || p.get(1..2) == Some(":");
-    if absolute(full) != absolute(base) {
-        return fail(format!(
-            "{id}: the source `{full}` cannot be kept relative to the assembly's folder `{base}`; give its path relative to the read root"
-        ));
+    if !absolute(full) && !absolute(base) {
+        return Ok(asm::relative_to(base, full));
     }
-    Ok(asm::relative_to(base, full))
+    let spelled = |p: &str| -> Option<String> {
+        let path = if absolute(p) {
+            std::path::PathBuf::from(p)
+        } else {
+            match read {
+                crate::Access::Root(root) => crate::workspace::spelled_root(root).join(p),
+                _ => return None,
+            }
+        };
+        let path = std::fs::canonicalize(&path).unwrap_or(path);
+        path.to_str().map(str::to_string)
+    };
+    match (spelled(base), spelled(full)) {
+        (Some(base), Some(full)) => Ok(asm::relative_to(&base, &full)),
+        _ => fail(format!(
+            "{id}: the source `{full}` cannot be kept relative to the assembly's folder `{base}`; give its path relative to the read root"
+        )),
+    }
 }
 
 fn instance_add(session: &mut Session, params: &Value) -> Run {
@@ -619,7 +645,7 @@ fn instance_add(session: &mut Session, params: &Value) -> Run {
     // Something a document reads as, or nothing is added.
     let source_doc = craft3d_format::from_bytes(blob.bytes())
         .map_err(|e| CommandError::new(format!("{ID}: `{path}` is not a 3DCraft document: {e}")))?;
-    let relative = source_relative(ID, &base, &full)?;
+    let relative = source_relative(ID, &session.workspace.read, &base, &full)?;
     craft3d_doc::assembly::check_source_path(&relative)
         .map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
     session
@@ -717,7 +743,7 @@ fn instance_edit(session: &mut Session, params: &Value) -> Run {
         craft3d_format::from_bytes(blob.bytes()).map_err(|e| {
             CommandError::new(format!("{ID}: `{path}` is not a 3DCraft document: {e}"))
         })?;
-        let relative = source_relative(ID, &base, &full)?;
+        let relative = source_relative(ID, &session.workspace.read, &base, &full)?;
         session
             .refuse_cycle(&full, &blob)
             .map_err(|e| CommandError::new(format!("{ID}: {e}")))?;

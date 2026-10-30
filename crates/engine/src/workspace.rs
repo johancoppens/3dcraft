@@ -80,6 +80,15 @@ pub(crate) fn kept_path(access: &Access, path: &str, resolved: &Path) -> String 
         .unwrap_or_else(|| path.to_string())
 }
 
+/// `root` written absolute with its links resolved, as the hosts spell
+/// the roots they make (`std::fs::canonicalize`); as given where it
+/// cannot be (it does not exist, or there is no file system).
+pub(crate) fn spelled_root(root: &Path) -> PathBuf {
+    std::fs::canonicalize(root)
+        .or_else(|_| std::path::absolute(root))
+        .unwrap_or_else(|_| root.to_path_buf())
+}
+
 /// Maps a path from a request to a path on disk, or refuses it. Beneath a
 /// root, a path is relative, or absolute and textually under the root; it
 /// has no `..`, and nothing is resolved on the file system, so the check
@@ -110,12 +119,17 @@ fn resolve(access: &Access, path: &str, direction: &str) -> Result<PathBuf, Comm
     };
     let requested = Path::new(path);
     let relative = if requested.is_absolute() {
-        requested.strip_prefix(root).map_err(|_| {
-            CommandError::new(format!(
-                "`{path}` is outside the {direction} root `{}`",
-                root.display()
-            ))
-        })?
+        // A root given relative (or through a link) is compared in its
+        // absolute spelling too: an absolute path inside it is inside it.
+        requested
+            .strip_prefix(root)
+            .or_else(|_| requested.strip_prefix(spelled_root(root)))
+            .map_err(|_| {
+                CommandError::new(format!(
+                    "`{path}` is outside the {direction} root `{}`",
+                    root.display()
+                ))
+            })?
     } else {
         requested
     };

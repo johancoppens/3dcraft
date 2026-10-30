@@ -1577,3 +1577,65 @@ fn a_selection_on_an_assembly_stays_on_its_instance() {
     let dropped = got["dropped"].to_string();
     assert!(dropped.contains("`B`"), "{got}");
 }
+
+/// The path of `to` relative to the directory `from` (both absolute).
+fn relative_path(from: &std::path::Path, to: &std::path::Path) -> std::path::PathBuf {
+    let a: Vec<_> = from.components().collect();
+    let b: Vec<_> = to.components().collect();
+    let common = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let mut out = std::path::PathBuf::new();
+    for _ in common..a.len() {
+        out.push("..");
+    }
+    for part in &b[common..] {
+        out.push(part);
+    }
+    out
+}
+
+/// The window found on 2026-10-30: roots given relative
+/// (`--automation-read-root target/work`) and an assembly kept by its
+/// absolute path (opened or saved by the person) take a source named
+/// relative to the root, as an instance's path relative to the
+/// assembly's folder; the assembly then reads it by its absolute path
+/// beneath the relative root.
+#[test]
+fn a_source_beneath_a_relative_root_joins_an_assembly_kept_by_its_absolute_path() {
+    let dir = workdir("assembly", "relative-root");
+    std::fs::create_dir_all(dir.join("demo")).unwrap();
+    let cwd = std::env::current_dir().unwrap();
+    let relative_root = relative_path(&cwd, &dir);
+    assert!(relative_root.is_relative(), "{}", relative_root.display());
+    let mut s = Session::new(craft3d_engine::Workspace {
+        read: craft3d_engine::Access::Root(relative_root.clone()),
+        write: craft3d_engine::Access::Root(relative_root),
+    });
+    block_part(&mut s, "demo/parts.3dcraft", [10.0, 10.0, 10.0], 1e-6);
+    block_part(&mut s, "demo/other.3dcraft", [20.0, 10.0, 10.0], 1e-6);
+    run(&mut s, "assembly.new", json!({}));
+    let absolute = std::fs::canonicalize(dir.join("demo"))
+        .unwrap()
+        .join("planetary.3dcraftasm");
+    run(
+        &mut s,
+        "file.save",
+        json!({ "path": absolute.to_str().unwrap() }),
+    );
+    let added = run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "demo/parts.3dcraft", "name": "Ring", "body": "Base" }),
+    );
+    assert_eq!(added["name"], "Ring", "{added}");
+    run(
+        &mut s,
+        "instance.edit",
+        json!({ "name": "Ring", "source": "demo/other.3dcraft" }),
+    );
+    let i = inspect(&mut s);
+    let ring = instance(&i, "Ring");
+    assert_eq!(ring["status"], "ok", "{ring}");
+    // Kept relative to the assembly's folder, beside it.
+    assert_eq!(ring["source"]["path"], "other.3dcraft", "{ring}");
+    assert!(close(volume(&i, "Ring"), 2000.0, 2000.0), "{ring}");
+}
