@@ -701,7 +701,7 @@ fn freecad_reads_an_assembly_as_its_placed_parts() {
             let m = mass_properties(body).unwrap();
             volume += m.volume;
             area += m.area;
-            moment = moment + m.centroid.unwrap() * m.volume;
+            moment += m.centroid.unwrap() * m.volume;
             let (a, b) = body.bbox().unwrap().corners().unwrap();
             for (i, (a, b)) in [(a.x, b.x), (a.y, b.y), (a.z, b.z)].into_iter().enumerate() {
                 lo[i] = lo[i].min(a);
