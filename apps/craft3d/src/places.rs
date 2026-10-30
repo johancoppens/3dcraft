@@ -343,7 +343,9 @@ mod tests {
     fn the_recent_files_go_beside_the_recovery_directory() {
         let env = |name: &str| match name {
             "HOME" => Some("/home/me".to_string()),
-            "XDG_STATE_HOME" | "LOCALAPPDATA" => Some("/state".to_string()),
+            "XDG_STATE_HOME" => Some("/state".to_string()),
+            // Absolute on Windows needs a drive.
+            "LOCALAPPDATA" => Some("C:\\state".to_string()),
             _ => None,
         };
         let recovery = craft3d_engine::default_recovery_directory(&env).unwrap();
@@ -439,7 +441,9 @@ mod tests {
     fn the_data_folder_is_the_apps_own_folder_only() {
         let env = |name: &str| match name {
             "HOME" => Some("/home/me".to_string()),
-            "XDG_STATE_HOME" | "LOCALAPPDATA" => Some("/state".to_string()),
+            "XDG_STATE_HOME" => Some("/state".to_string()),
+            // Absolute on Windows needs a drive.
+            "LOCALAPPDATA" => Some("C:\\state".to_string()),
             _ => None,
         };
         let recovery = craft3d_engine::default_recovery_directory(&env).unwrap();

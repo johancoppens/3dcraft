@@ -20,6 +20,10 @@ wgpu.workspace = true
 pollster.workspace = true
 
 [dev-dependencies]
+# The GLSL ES 3.00 translation of every shader (renderer.rs template_tests)
+# on every platform: wgpu turns naga's glsl-out on only with its OpenGL
+# backend, which macOS builds without.
+naga = { workspace = true, features = ["wgsl-in", "glsl-out"] }
 craft3d-testkit.workspace = true
 # The hollow body of the section tests is made by a boolean.
 craft3d-kernel.workspace = true

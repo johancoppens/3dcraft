@@ -48,6 +48,10 @@ winit = { version = "0.30", default-features = false }
 log = "0.4"
 # One wgpu for the renderer and the shell: the version eframe 0.36 uses.
 wgpu = "30.0.1"
+# wgpu's own naga (the same version, so one crate): only the gpu tests name
+# it, for the GLSL ES translation, which wgpu enables only with its OpenGL
+# backend (not on macOS).
+naga = { version = "30.0.1", default-features = false }
 # The shell draws the viewport on eframe's own device through egui-wgpu
 # (a paint target registered as an egui texture); no window of its own.
 egui-wgpu = { version = "0.36", default-features = false }

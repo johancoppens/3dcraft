@@ -481,7 +481,11 @@ mod tests {
 
     #[test]
     fn the_recent_files_are_kept_beside_the_recovery_directory_unless_told() {
-        let home = |name: &str| (name == "HOME").then(|| "/home/ann".to_string());
+        let home = |name: &str| match name {
+            "HOME" => Some("/home/ann".to_string()),
+            "LOCALAPPDATA" => Some("C:\\Users\\ann\\AppData\\Local".to_string()),
+            _ => None,
+        };
         let with = |env: &dyn Fn(&str) -> Option<String>, list: &[&str]| match parse(
             list.iter().map(|s| (*s).to_string()),
             env,

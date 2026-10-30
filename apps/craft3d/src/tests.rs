@@ -181,8 +181,17 @@ impl Client {
         match self.reader.read_line(&mut line) {
             Ok(0) => None,
             Ok(_) => Some(serde_json::from_str(&line).expect("a reply is one line of JSON")),
-            // A reset is a closed connection too.
-            Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => None,
+            // A reset is a closed connection too, and so is an abort
+            // (what Windows reports, os error 10053, when the server
+            // closed the connection with the client's bytes unread).
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                ) =>
+            {
+                None
+            }
             Err(e) => panic!("no reply: {e}"),
         }
     }
@@ -924,7 +933,10 @@ fn the_recovery_options_start_autosave_that_wakes_the_window() {
     let overview = session.recovery_overview();
     assert!(overview.enabled);
     assert_eq!(overview.interval_seconds, 0.02);
-    assert_eq!(overview.directory.as_deref(), dir.join("recovery").to_str());
+    // Made absolute as `app::recovery` makes it (on Windows that also
+    // takes out the `..` of the test's directory).
+    let absolute = std::path::absolute(dir.join("recovery")).unwrap();
+    assert_eq!(overview.directory.as_deref(), absolute.to_str());
     session.execute("file.new", &json!({})).unwrap();
     session
         .execute("feature.block", &json!({"size": [1, 2, 3]}))

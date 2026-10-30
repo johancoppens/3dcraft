@@ -25,6 +25,11 @@ jobs:
     name: gate (linux)
     runs-on: ubuntu-latest
     steps:
+      # Room for the build: the hosted runner has about 14 GB free, and
+      # the workspace's tests outgrew it (2026-10-26 "No space left on
+      # device"; 2026-10-30 the linker killed by SIGBUS writing to a full
+      # disk). The preinstalled SDKs we never use make room.
+      - run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL && df -h /
       - uses: actions/checkout@v4
       # The built-in fonts (never committed), pinned by URL and SHA-256,
       # into assets/fonts where the text tests find them.

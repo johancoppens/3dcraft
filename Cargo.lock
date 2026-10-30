@@ -538,6 +538,7 @@ dependencies = [
  "craft3d-render",
  "craft3d-tess",
  "craft3d-testkit",
+ "naga",
  "pollster 1.0.1",
  "wgpu",
 ]
