@@ -91,7 +91,7 @@
 //! a gap of `Δκ d² / 2` over a distance `d` from the seam, so over the
 //! seam's own length it is held to `min(angular / L, 2 tol / L²)`.
 
-use super::{H, NetworkError, Raw, Track, derivative, internal, iso_track, point, refuse};
+use super::{H, NetworkError, Raw, Track, derivative, internal, iso_track_along, point, refuse};
 use crate::refine::SAME_KNOT;
 use crate::{NurbsCurve, NurbsSurface, Surface};
 use craft3d_math::Vec3;
@@ -755,24 +755,29 @@ fn magnitude(raw: &Raw) -> [f64; 2] {
 }
 
 /// The derivative of a row along the edge, with its allowance: each
-/// coefficient is `f (b − a)`, `f = p / span` (the shortest span over the
-/// `p` knots it spans is at least the shortest of the row's), so it
-/// carries `2 f` times what its source carried, and the difference's and
-/// the product's rounding, `4 ε f` times the source's magnitude (doubled
-/// for the rounding of `f` itself).
+/// coefficient is `fᵢ (b − a)`, `fᵢ = p / (t_{i+p+1} − t_{i+1})` (at most
+/// `f`, the largest), so it carries `2 f` times what its source carried,
+/// and the rounding of the two products and their sum, `4 ε f` times the
+/// source's magnitude, doubled for the rounding of `fᵢ` itself.
 fn derived(row: &Row) -> Result<Row, NetworkError> {
     let (source, allow) = row;
     let d = derivative(source)?;
-    let p = source.degree as f64;
-    let mut span = f64::INFINITY;
-    for w in source.knots.windows(2) {
-        if let [a, b] = w
-            && b > a
-        {
-            span = span.min(b - a);
-        }
-    }
-    let f = if span.is_finite() { p / span } else { 0.0 };
+    let p = source.degree;
+    let span = source
+        .knots
+        .iter()
+        .skip(1)
+        .zip(source.knots.iter().skip(p + 1))
+        .map(|(a, b)| b - a)
+        .filter(|d| *d > 0.0)
+        .fold(f64::INFINITY, f64::min);
+    let f = if p == 0 {
+        0.0
+    } else if span.is_finite() {
+        p as f64 / span
+    } else {
+        f64::INFINITY
+    };
     let mag = magnitude(source);
     let a = |k: usize| {
         2.0 * f * allow.get(k).copied().unwrap_or(f64::INFINITY)
@@ -1118,11 +1123,24 @@ pub fn continuity(
     if track.point {
         return refuse("the edge is a point: there is no seam to measure".to_string());
     }
-    let origin = edge
-        .control_points()
-        .first()
-        .copied()
-        .ok_or_else(internal)?;
+    // The middle of the edge's control points' box: no point of the edge
+    // is farther from it than half the box's diagonal.
+    let (lo, hi) = edge.control_points().iter().fold(
+        (
+            Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY),
+            Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY),
+        ),
+        |(lo, hi), p| {
+            (
+                Vec3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z)),
+                Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z)),
+            )
+        },
+    );
+    let origin = (lo + hi) * 0.5;
+    if !origin.is_finite() {
+        return Err(internal());
+    }
     let Some(xs) = spline_rows(&sa, edge, tolerance, origin)? else {
         return refuse(
             "the edge does not run along a parameter line of its spline face, so the face cannot be written along it exactly (owed: a measure at the feet with a Lipschitz bound)".to_string(),
@@ -1167,14 +1185,15 @@ pub fn continuity(
 /// line, at most `p + 1` of them nonzero; `Σ |cᵢ|` is 1, at most
 /// `S₁ = 2p / D_p` and at most `S₂ = S₁ · 2(p − 1) / D_{p−1}`
 /// (`N′ᵢ = p (N_{i,p−1} / Δᵢ − N_{i+1,p−1} / Δᵢ₊₁)` and the partition of
-/// unity; `D_k` the shortest positive `t_{i+k} − t_i`). So each
-/// coefficient is within `γ S M` of the exact one, `M` the net's largest
-/// local coordinate (or weight) and `γ = 16 (p + q + 4) ε` with `p` the
-/// degree along and `q` across: the net's rounding (`2 ε`), the `cᵢ`'s
-/// (Cox–de Boor and the divided differences, `≤ 4 q ε` relative), the
-/// sum (`q + 1` terms) and the cut to the edge (convex combinations,
-/// `≤ 4 p ε`), with room. The direction across is not known before the
-/// line is found, so `S₁`, `S₂` are the larger of the two directions'.
+/// unity; `D_k` the shortest positive `t_{i+k} − t_i`, in the direction
+/// across). So each coefficient is within `γ S M` of the exact one, `M`
+/// the net's largest local coordinate (or weight) and `γ = (4p + 6q +
+/// 24) ε` with `p` the degree along and `q` across: the net's rounding
+/// (`2 ε`), the `cᵢ`'s (Cox–de Boor, `3 ε` a level, so `3q ε`; the
+/// divided differences of the second row, `8 ε` each, and its de Boor
+/// evaluation, `3q ε`), the sum (`q` more) and the cut to the edge (up to
+/// `p` knot insertions a coefficient, convex combinations of two, `3 ε`
+/// each, and the reparametrisation, `p ε`), with room.
 fn spline_rows(
     surface: &NurbsSurface,
     edge: &NurbsCurve,
@@ -1202,7 +1221,7 @@ fn spline_rows(
         edge.weights().to_vec(),
     )?;
     let track = Track::new(&local_edge, tolerance)?;
-    let Some(rows) = iso_track(&local, &track, tolerance)? else {
+    let Some((rows, along_v)) = iso_track_along(&local, &track, tolerance)? else {
         return Ok(None);
     };
     let m =
@@ -1217,16 +1236,18 @@ fn spline_rows(
                     mw.max(w),
                 ]
             });
+    // Along v the rows across are derivatives in u.
     let (pu, pv) = local.degrees();
-    let (su, sv) = (
-        across_sums(local.knots_u(), pu),
-        across_sums(local.knots_v(), pv),
-    );
-    let sums = [1.0, su[0].max(sv[0]), su[1].max(sv[1])];
-    let q = pu.max(pv);
+    let (knots, q) = if along_v {
+        (local.knots_u(), pu)
+    } else {
+        (local.knots_v(), pv)
+    };
+    let s = across_sums(knots, q);
+    let sums = [1.0, s[0], s[1]];
     let mut out = Vec::with_capacity(3);
     for (raw, sum) in rows.into_iter().zip(sums) {
-        let gamma = 16.0 * (raw.degree + q + 4) as f64 * EPS;
+        let gamma = (4 * raw.degree + 6 * q + 24) as f64 * EPS;
         out.push((raw, [gamma * sum * m[0], gamma * sum * m[1]]));
     }
     let [x0, x1, x2]: [Row; 3] = out.try_into().map_err(|_| internal())?;

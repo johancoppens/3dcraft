@@ -1225,6 +1225,16 @@ fn iso_track(
     curve: &Track,
     tol: f64,
 ) -> Result<Option<[Raw; 3]>, NetworkError> {
+    Ok(iso_track_along(surface, curve, tol)?.map(|(rows, _)| rows))
+}
+
+/// As [`iso_track`], with whether the line runs along v (u fixed, so the
+/// rows across are derivatives in u).
+fn iso_track_along(
+    surface: &NurbsSurface,
+    curve: &Track,
+    tol: f64,
+) -> Result<Option<([Raw; 3], bool)>, NetworkError> {
     let wrapped = Surface::Nurbs(surface.clone());
     let mut ts = samples(&curve.raw, 4, 33);
     if ts.len() > 1025 {
@@ -1366,7 +1376,7 @@ fn iso_track(
             field = reverse(&field);
             second = reverse(&second);
         }
-        return Ok(Some([iso, field, second]));
+        return Ok(Some(([iso, field, second], along_v)));
     }
     Ok(None)
 }
