@@ -36,15 +36,22 @@ use craft3d_tess::{TessParams, tessellate_body};
 use craft3d_testkit::solids;
 use std::sync::Arc;
 
-/// Layer 2's bounds (`polish.rs`), provisional for these pictures until
-/// measured: the share of the pixels compared more than one level apart,
-/// the largest difference, the share of a pixel's light in doubt above
-/// which it is left out, the most pixels in doubt and the largest mean
-/// share in doubt.
-const SHARE_OVER_ONE: f64 = 1.0 / 512.0;
+/// The bounds, measured (Strix run 41125607083, 2026-10-30: the readback
+/// renderer on RADV, radeonsi and llvmpipe, the viewport on RADV, radeonsi
+/// and llvmpipe; two scenes, three kinds, two looks): at most 2 of 56 840
+/// pixels compared more than one level apart (the housing cut open, 2
+/// levels), the largest difference 7 levels at one pixel (RADV's
+/// orthographic scene seen through, as its plain studio picture has), at
+/// most 24 of 56 850 pixels in doubt (0.042 %: reflections traced in the
+/// cut-open housing), the mean share in doubt at most 1.4 · 10⁻⁴. The
+/// bounds: the share 1/4096 (a margin of 7), 8 levels (layer 2's bound,
+/// 1 over the measured), a share in doubt of 1/256 (a margin of 9), layer
+/// 2's mean share in doubt (1/512) and its threshold for a pixel in doubt
+/// (1/64).
+const SHARE_OVER_ONE: f64 = 1.0 / 4096.0;
 const MOST_LEVELS: u8 = 8;
 const DOUBT_SHARE: f32 = 1.0 / 64.0;
-const MOST_DOUBT: f64 = 1.0 / 32.0;
+const MOST_DOUBT: f64 = 1.0 / 256.0;
 const MOST_MEAN_DOUBT: f64 = 1.0 / 512.0;
 
 struct Scene {

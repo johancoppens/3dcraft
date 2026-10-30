@@ -987,6 +987,26 @@ uniform block: the opacity, the pass, the flags). The GPU does not apply the CPU
 exactly on an edge the front lies on (the neighbouring triangle's distance there can differ in `f32`
 and come out "behind"); such samples lie in the band of the changes of the face behind.
 
+*Tolerance* (`crates/gpu/tests/studio_cut.rs`): layer 2's comparison with the plain look's band of a
+cut-open, see-through picture (`common::band_of`: silhouettes, the section's outline, the changes of
+the face behind). Measured (run 41125607083; readback and viewport on RADV, radeonsi and llvmpipe; a
+housing over parts in perspective and a plate, globe and cone in orthographic; seen through, cut open,
+both; layer 1 and polished): ids equal; at most 2 of 56 840 pixels over one level; at most 7 levels
+(one pixel, RADV's orthographic see-through, as its plain studio picture has); at most 0.042 % of the
+pixels in doubt (traced reflections), mean share 1.4 · 10⁻⁴. Bounds: 1/4096, 8 levels, 1/256 in doubt,
+mean 1/512. A first run found the cap's light 7 to 36 levels off on every adapter: the cap's triangle
+carries no normals, so the GPU shaded it with the view direction; `normal_of` now gives the cap the
+plane's normal.
+
+**Looked at** (2026-10-30, `target/evidence/studio-cut/`, the CPU renderer, polished, 8 frames;
+`crates/engine/tests/studio_cut_evidence.rs`, ignored, run on the Strix): `turbofan-cut.png` and
+`turbofan-cut-studio.png` (the turbofan of the benchmark cut through its axis, the upper half away:
+caps lit, the casing's shadow on the ground has the cut's outline), `turbofan-see-through.png`,
+`gears-see-through.png` (a housing at opacity 0.4 over two gears: the gears lit and shadowed through
+it, the housing's shadow on the ground lighter), `gears-cut.png`, `gears-cut-see-through.png`. A finding
+that is the method's, not a fault: where a body lies inside another (gears modelled inside a solid
+housing block) the count is even and the cap is left open there, as in the plain look.
+
 The viewport draws the bodies' depth for the lines without what the section cuts away (the plain cut's
 `depth_only` pipelines), and the plain see-through passes are not drawn under a studio picture. The
 edges follow the lens in these pictures too (`Backend::edge_blur` no longer leaves them out).
