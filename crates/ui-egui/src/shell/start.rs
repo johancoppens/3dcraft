@@ -72,6 +72,18 @@ pub enum Source {
     },
 }
 
+impl Example {
+    /// A published file that is not built into this program (the web
+    /// page's): its file name, for the host to fetch from `examples/` beside
+    /// the page and open there. `None` for a script or a built-in file.
+    pub fn to_fetch(&self) -> Option<&'static str> {
+        match self.source {
+            Source::File { name, bytes } if bytes.is_empty() => Some(name),
+            _ => None,
+        }
+    }
+}
+
 /// One of the start screen's examples: a part of the user guide
 /// (`docs/examples`), or a published Jig or assembly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -113,7 +125,13 @@ macro_rules! published {
             section: $section,
             source: Source::File {
                 name: $file,
+                // Built into the desktop programs; the web page fetches
+                // the file beside it when its card is clicked
+                // (`examples/<file>`), so the module stays small.
+                #[cfg(not(target_arch = "wasm32"))]
                 bytes: include_bytes!(concat!("../../../../docs/examples/published/", $file)),
+                #[cfg(target_arch = "wasm32")]
+                bytes: &[],
             },
             thumb: include_bytes!(concat!("../../../../docs/examples/thumbs/", $id, ".png")),
         }
@@ -495,6 +513,11 @@ impl Shell {
     /// with [`run_example`].
     pub fn take_example(&mut self) -> Option<&'static Example> {
         self.start.chosen.take()
+    }
+
+    /// The example chosen, without taking it.
+    pub fn peek_example(&self) -> Option<&'static Example> {
+        self.start.chosen
     }
 
     /// Chooses an example as a click on the start screen does.

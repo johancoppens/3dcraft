@@ -11,8 +11,13 @@ collection, [johancoppens/3dcraft-jigs](https://github.com/johancoppens/3dcraft-
 | `gear-reducer.3dcraftjig`, `gear-reducer.3dcraftasm` | Two-stage spur gear reducer | 3DCraft Jigs | [jigs/gear-reducer](https://github.com/johancoppens/3dcraft-jigs/tree/main/jigs/gear-reducer) |
 | `strandbeest-leg.3dcraftjig`, `strandbeest-walker.3dcraftasm` | Strandbeest leg and walker (after Theo Jansen's linkage) | 3DCraft Jigs | [jigs/strandbeest-leg](https://github.com/johancoppens/3dcraft-jigs/tree/main/jigs/strandbeest-leg) |
 
-Each is licensed under the **Creative Commons Attribution 4.0 International** licence (CC BY 4.0), as its
-own document information says: <https://creativecommons.org/licenses/by/4.0/>, legal code at
+The Jigs repository has two licences, as its README's *Licences* section says: its scripts and build
+sources are MIT (its `LICENSE` file, © 2026 Johan Coppens), and each Jig carries its own licence in its
+document information (`document.info.licence`), by default CC-BY-4.0. These six files are Jigs and
+assemblies, not scripts: each file's own document information says `CC-BY-4.0` (checked for all six).
+None of them is the one Jig shared under CC-BY-SA-4.0 (`gt2-pulley`).
+
+Each is therefore licensed under the **Creative Commons Attribution 4.0 International** licence (CC BY 4.0): <https://creativecommons.org/licenses/by/4.0/>, legal code at
 <https://creativecommons.org/licenses/by/4.0/legalcode>. You may share and adapt them for any purpose,
 also commercially, provided you give appropriate credit (the title, the author and a link to the source
 above), link to the licence, and indicate if changes were made. No changes were made to these copies.

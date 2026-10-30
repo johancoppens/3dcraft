@@ -320,6 +320,22 @@ pub fn package(
     // The built-in fonts, fetched by the page when a text first uses one
     // (not in the module: the web budget, docs/design/text.md).
     crate::package::copy_fonts(&site.join("fonts"))?;
+    // The start screen's published Jigs and assemblies, fetched by the
+    // page when a card is clicked (not built into the module), with
+    // their licence (docs/decisions.md, 2026-10-30).
+    let published = repo.join("docs/examples/published");
+    for (_, file) in crate::thumbs::PUBLISHED {
+        crate::package::copy(
+            &published.join(file),
+            &site.join("examples").join(file),
+            false,
+        )?;
+    }
+    crate::package::copy(
+        &published.join("LICENSE.md"),
+        &site.join("examples").join("LICENSE.md"),
+        false,
+    )?;
     let environments = repo.join("assets").join("environments");
     for name in ["studio.hdr", "outdoor.hdr", "workshop.hdr", "LICENSE.md"] {
         let bytes = crate::package::read(&environments.join(name))?;

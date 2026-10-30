@@ -282,7 +282,7 @@ fn mkdir(dir: &Path) -> Result<(), String> {
 
 /// Copies `from` to `to`, creating `to`'s directory, and sets the mode
 /// (on Unix): 0o755 for programs and scripts, 0o644 for data.
-fn copy(from: &Path, to: &Path, executable: bool) -> Result<(), String> {
+pub(crate) fn copy(from: &Path, to: &Path, executable: bool) -> Result<(), String> {
     if let Some(dir) = to.parent() {
         mkdir(dir)?;
     }

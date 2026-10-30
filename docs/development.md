@@ -462,7 +462,7 @@ Headless, as the build was checked: `google-chrome --headless=new --enable-unsaf
 
 ## Example thumbnails
 
-The start screen shows its examples in sections (Parts: ten of the guide's example models; Jigs and Assemblies: the published files in `docs/examples/published`, docs/decisions.md 2026-10-30, opened by `Session::open_bytes` without a file of their own) as cards with a picture each. The pictures are
+The start screen shows its examples in sections (Parts: ten of the guide's example models; Jigs and Assemblies: the published files in `docs/examples/published`, docs/decisions.md 2026-10-30, opened by `Session::open_bytes` without a file of their own; built into the desktop programs with `include_bytes!`, about 1 MB, while the web page fetches them from `examples/` beside it when a card is clicked, so the module stays within its size rule; `cargo xtask package --formats web` puts them there with their `LICENSE.md`) as cards with a picture each. The pictures are
 PNGs in `docs/examples/thumbs/`, built into the program (`include_bytes!` in `crates/ui-egui/src/shell/start.rs`,
 with the logo from `packaging/icons/craft3d-128.png`), so the window and the web build show them without
 rendering anything at the start.

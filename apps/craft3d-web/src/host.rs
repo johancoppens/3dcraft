@@ -339,6 +339,8 @@ pub struct WebHost {
     about: Option<(String, Option<String>)>,
     /// A file named in the page's address is being fetched.
     fetching: Option<String>,
+    /// The address of a published example to fetch, for the page.
+    example_fetch: Option<String>,
     /// The scene to show is not there yet: the window is drawn as it was
     /// (`Shell::ui_away`), with the work over it.
     away: bool,
@@ -379,6 +381,7 @@ impl WebHost {
             stepwise: false,
             about: None,
             fetching: None,
+            example_fetch: None,
             away: false,
             last_answer: None,
         }
@@ -403,6 +406,12 @@ impl WebHost {
         self.about = Some(("file.open".to_string(), stem));
         self.show_work(None);
         self.away = true;
+    }
+
+    /// The address of a published example the page should fetch now
+    /// (`examples/<file>`, beside the page), once.
+    pub fn take_example_fetch(&mut self) -> Option<String> {
+        self.example_fetch.take()
     }
 
     /// The name of the file being fetched, while it is.
@@ -807,8 +816,14 @@ impl WebHost {
             });
             self.finish(command, &done);
         }
-        // An example from the start screen, built in a new document.
-        if let Some(example) = self.shell.take_example() {
+        // An example from the start screen, built in a new document; a
+        // published Jig or assembly is fetched from beside the page first
+        // (the page reads `take_example_fetch`) and opened as a file is.
+        if let Some(name) = self.shell.peek_example().and_then(|e| e.to_fetch()) {
+            let _ = self.shell.take_example();
+            self.fetching(name);
+            self.example_fetch = Some(format!("examples/{name}"));
+        } else if let Some(example) = self.shell.take_example() {
             let session = &mut self.session;
             let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 craft3d_ui_egui::shell::run_example(session, example)
