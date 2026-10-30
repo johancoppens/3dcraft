@@ -252,16 +252,23 @@ pub fn module(
 /// `out/SHA256SUMS.txt`. `target` is cargo's target directory, `stage` a
 /// directory of its own to work in, `notices` the written
 /// `THIRD-PARTY-NOTICES.txt`.
+/// What a release's site is made of besides the module: its version and
+/// the third-party notices written for it.
+pub struct Release<'a> {
+    pub version: &'a str,
+    pub notices: &'a Path,
+}
+
 pub fn package(
     repo: &Path,
     target: &Path,
     stage: &Path,
     out: &Path,
-    version: &str,
-    notices: &Path,
+    release: &Release,
     tools: &Tools,
     build: Option<&[&str]>,
 ) -> Result<PathBuf, String> {
+    let (version, notices) = (release.version, release.notices);
     let (wasm, js) = module(repo, target, stage, tools, build, false)?;
     let hash = content_hash(&wasm, &js);
     let (js_name, wasm_name) = (

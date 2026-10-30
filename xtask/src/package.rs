@@ -244,8 +244,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     &target,
                     &p.stage.join("web"),
                     &p.out,
-                    &p.version,
-                    &p.notices,
+                    &crate::web::Release {
+                        version: &p.version,
+                        notices: &p.notices,
+                    },
                     &crate::web::Tools {
                         wasm_bindgen: options.wasm_bindgen.clone(),
                         wasm_opt: options.wasm_opt.clone(),
