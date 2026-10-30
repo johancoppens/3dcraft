@@ -155,6 +155,7 @@ pub fn region_fault(body: &Body, face: &Face, tol: &Tolerance) -> Option<String>
     if let [o] = outer.as_slice() {
         let o = *o;
         let (lo, hi) = rings.get(o).map(|r| (r.low, r.high))?;
+        let outer_points = rings.get(o).map(|r| r.points.clone())?;
         for (k, ring) in rings.iter_mut().enumerate() {
             if k == o {
                 continue;
@@ -166,9 +167,27 @@ pub fn region_fault(body: &Body, face: &Face, tol: &Tolerance) -> Option<String>
                 else {
                     continue;
                 };
-                let shift = ((0.5 * (l + h) - 0.5 * (rl + rh)) / p).round() * p;
-                if shift != 0.0 {
-                    ring.shift(d, shift);
+                // The whole periods that bring its middle nearest the
+                // outer loop's, or one either side of that when the outer
+                // loop winds around its point only there (an outer loop
+                // that spans nearly a period).
+                let nearest = ((0.5 * (l + h) - 0.5 * (rl + rh)) / p).round();
+                let point = ring.points.first().copied();
+                let wound_at = |turns: f64| {
+                    point.map_or(0, |q| {
+                        let mut q = q;
+                        if let Some(x) = q.get_mut(d) {
+                            *x += turns * p;
+                        }
+                        winding(q, &outer_points)
+                    })
+                };
+                let turns = [nearest, nearest - 1.0, nearest + 1.0]
+                    .into_iter()
+                    .find(|t| wound_at(*t) != 0)
+                    .unwrap_or(nearest);
+                if turns != 0.0 {
+                    ring.shift(d, turns * p);
                 }
             }
         }
@@ -199,8 +218,25 @@ pub fn region_fault(body: &Body, face: &Face, tol: &Tolerance) -> Option<String>
                     })
                     .sum();
                 if wound != 1 {
+                    let each: Vec<String> = rings
+                        .iter()
+                        .map(|other| winding(*point, &other.points).to_string())
+                        .collect();
                     return Some(format!(
-                        "its hole, loop {k}, lies outside its outer loop {o} or inside another hole (wound {wound} times)"
+                        "its hole, loop {k}, lies outside its outer loop {o} or inside another hole (wound {wound} times at ({:.6}, {:.6}) of the {}; by each loop {}; areas {}; boxes {})",
+                        point[0],
+                        point[1],
+                        surface.kind(),
+                        each.join(", "),
+                        list(&areas),
+                        rings
+                            .iter()
+                            .map(|r| format!(
+                                "[{:.4}, {:.4}]x[{:.4}, {:.4}]",
+                                r.low[0], r.high[0], r.low[1], r.high[1]
+                            ))
+                            .collect::<Vec<_>>()
+                            .join(" ")
                     ));
                 }
             }
