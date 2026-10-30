@@ -70,12 +70,11 @@ fn motion_value(
     };
     let Some(at) = at else {
         let wanted = match (angle, which) {
-            (true, _) => "an angle".to_string(),
-            (false, Some(w)) => format!(
-                "a length motion `{}`",
-                w.chars().take(40).collect::<String>()
-            ),
-            (false, None) => "a length motion".to_string(),
+            (true, _) => "angle".to_string(),
+            (false, Some(w)) => {
+                format!("length motion `{}`", w.chars().take(40).collect::<String>())
+            }
+            (false, None) => "length motion".to_string(),
         };
         return Err(format!(
             "mate `{name}` ({}) has no {wanted}; its free motions: {}",

@@ -1974,6 +1974,80 @@ mod tests {
     use super::*;
     use crate::Workspace;
 
+    /// The sweep finds exactly the pairs a test of every pair finds, in
+    /// the same order, for one set and for two, with boxes that touch,
+    /// nest, are missing and are far apart; past the cap it says so.
+    #[test]
+    fn the_box_sweep_finds_the_pairs_every_pair_finds() {
+        let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut boxes = |n: usize| -> Vec<Option<Bbox3>> {
+            (0..n)
+                .map(|k| {
+                    if k % 17 == 5 {
+                        return None;
+                    }
+                    let c = Vec3::new(next() * 50.0, next() * 50.0, next() * 5.0);
+                    let h = Vec3::new(next() * 4.0, next() * 4.0, next() * 4.0);
+                    Some(Bbox3::from_points([c - h, c + h]))
+                })
+                .collect()
+        };
+        let (a, b) = (boxes(120), boxes(45));
+        let margin = 1e-6;
+        let meet = |x: &Option<Bbox3>, y: &Option<Bbox3>| {
+            crate::interference_cmds::boxes_meet(x.as_ref(), y.as_ref(), margin)
+        };
+        let mut one = Vec::new();
+        for i in 0..a.len() {
+            for j in i + 1..a.len() {
+                if meet(&a[i], &a[j]) {
+                    one.push((i, j, false));
+                }
+            }
+        }
+        let mut two = Vec::new();
+        for i in 0..a.len() {
+            for j in 0..b.len() {
+                if meet(&a[i], &b[j]) {
+                    two.push((i, j, true));
+                }
+            }
+        }
+        assert!(
+            one.len() > 100 && two.len() > 50,
+            "{} {}",
+            one.len(),
+            two.len()
+        );
+        assert_eq!(
+            meeting_pairs(&a, None, margin, usize::MAX),
+            Some(one.clone())
+        );
+        assert_eq!(meeting_pairs(&a, Some(&b), margin, usize::MAX), Some(two));
+        assert_eq!(
+            meeting_pairs(&a, None, margin, one.len()),
+            Some(one.clone())
+        );
+        assert_eq!(meeting_pairs(&a, None, margin, one.len() - 1), None);
+        // Two boxes that only touch, along each axis.
+        let unit = |o: Vec3| Some(Bbox3::from_points([o, o + Vec3::new(1.0, 1.0, 1.0)]));
+        for d in [Vec3::X, Vec3::Y, Vec3::Z] {
+            let pair = [unit(Vec3::ZERO), unit(d)];
+            assert_eq!(
+                meeting_pairs(&pair, None, 0.0, 10),
+                Some(vec![(0, 1, false)])
+            );
+            let apart = [unit(Vec3::ZERO), unit(d * 1.5)];
+            assert_eq!(meeting_pairs(&apart, None, 0.0, 10), Some(vec![]));
+        }
+    }
+
     /// A parabolic segment (a NURBS face from `sketch.curve`) extruded:
     /// its body.
     fn segment() -> Arc<Body> {

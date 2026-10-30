@@ -123,10 +123,11 @@ fn more_moments_of_a_motion_check_hold_no_more_bodies() {
         many / 1024,
         grown / 1024
     );
-    // A moment's two placed wheels are about a megabyte; kept for every
-    // moment they were over a hundred.
+    // Before the answers' keys held their bodies weakly (2026-10-30) the
+    // checks kept every moment's two wheels alive, about half a megabyte a
+    // moment: 129 moments raised the peak by 60 MiB.
     assert!(
-        grown < 48 * 1024,
+        grown < 24 * 1024,
         "129 moments raised the peak by {} MiB over 9",
         grown / 1024
     );
