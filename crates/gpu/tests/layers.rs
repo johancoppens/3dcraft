@@ -69,6 +69,22 @@ const MOST_DOUBT: f64 = 1.0 / 64.0;
 /// draws of it (one step's lost writes, `tests/parity.rs`).
 const MOST_UNSTEADY: usize = 4;
 
+/// A wider margin of doubt for the viewport's reflected rays, in `f32`
+/// epsilons, and the most pixels per picture over [`MOST_LEVELS`] that
+/// it may leave out. On the Radeon's RADV one reflected ray of the plate
+/// (perspective bench, the post with anisotropy around its axis, pixel
+/// (244, 196), 13 levels) is decided otherwise than on the CPU, with the
+/// traced effects and a single frame: the CPU marks it at 1024 epsilons of
+/// its boundary and not at 256 (Check run 41029229083), beyond
+/// `polish::TRACE_DOUBT` (128), measured on the readback renderer. The
+/// ray leaves the plate, which has no layer, and lands at the post's
+/// silhouette (the plate behind it or the post): layer 2's decision, not
+/// layer 3's shading; llvmpipe and radeonsi agree within one level there.
+/// One such pixel per picture, and only one the CPU's own doubt at eight
+/// times the margin marks, is left out; any other is held to the bounds.
+const WIDE_DOUBT: f64 = 8.0 * TRACE_DOUBT;
+const MOST_WIDE: usize = 1;
+
 /// The parts of a scene by name.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Part {
@@ -422,6 +438,9 @@ struct Stats {
     /// there (the viewport, which draws in one step: the Radeon's lost
     /// writes, `tests/parity.rs`), and the most such.
     unsteady: usize,
+    /// Pixels over [`MOST_LEVELS`] left out because the CPU marks them in
+    /// doubt at [`WIDE_DOUBT`] (the viewport only).
+    wide: usize,
 }
 
 impl Stats {
@@ -492,6 +511,7 @@ fn check(failures: &mut Vec<String>, label: &str, stats: &Stats) {
         || stats.doubt_share() > MOST_DOUBT
         || stats.unsteady > MOST_UNSTEADY
         || stats.most_through > MOST_THROUGH
+        || stats.wide > MOST_WIDE
     {
         failures.push(format!(
             "{label}: {stats:?}, share {}, in doubt {}",
@@ -499,6 +519,27 @@ fn check(failures: &mut Vec<String>, label: &str, stats: &Stats) {
             stats.doubt_share()
         ));
     }
+}
+
+/// Marks in doubt the compared pixels over [`MOST_LEVELS`] that `wide`
+/// (the CPU's doubt at [`WIDE_DOUBT`]) marks, and counts them.
+fn excuse_wide(cpu: &mut Cpu, gpu: &Frame, wide: &[f32]) -> usize {
+    let f = &cpu.frame;
+    let mut count = 0;
+    for i in 0..f.ids.len() {
+        if cpu.band[i] || cpu.doubt[i] > DOUBT_SHARE {
+            continue;
+        }
+        let d = (0..3)
+            .map(|k| f.rgb[3 * i + k].abs_diff(gpu.rgb[3 * i + k]))
+            .max()
+            .unwrap();
+        if d > MOST_LEVELS && wide.get(i).is_some_and(|&w| w > DOUBT_SHARE) {
+            cpu.doubt[i] = 1.0;
+            count += 1;
+        }
+    }
+    count
 }
 
 /// Prints every compared pixel over [`MOST_LEVELS`], for the dev log.
@@ -629,6 +670,123 @@ fn layer_three_is_deterministic() {
     }
 }
 
+/// A box with flat faces, face ids 0 to 5, its centre at `c` and its half
+/// sizes along the unit axes `u`, `v`, `w` (right-handed).
+fn slab(c: Vec3, (u, hu): (Vec3, f64), (v, hv): (Vec3, f64), (w, hw): (Vec3, f64)) -> Mesh {
+    let mut mesh = Mesh::default();
+    let sides = [
+        (u, hu, v, hv, w, hw),
+        (-u, hu, w, hw, v, hv),
+        (v, hv, w, hw, u, hu),
+        (-v, hv, u, hu, w, hw),
+        (w, hw, u, hu, v, hv),
+        (-w, hw, v, hv, u, hu),
+    ];
+    for (k, (n, hn, a, ha, b, hb)) in sides.into_iter().enumerate() {
+        let base = mesh.positions.len() as u32;
+        let centre = c + n * hn;
+        for (sa, sb) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+            mesh.positions.push(centre + a * (sa * ha) + b * (sb * hb));
+            mesh.normals.push(n);
+        }
+        mesh.triangles.push([base, base + 1, base + 2]);
+        mesh.triangles.push([base, base + 2, base + 3]);
+        mesh.face_ids.push(k as u32);
+        mesh.face_ids.push(k as u32);
+    }
+    mesh
+}
+
+/// Clear glass larger than the picture on a plain white background stays
+/// white on the GPU as on the CPU (`crates/render/tests/layers.rs`,
+/// `clear_glass_on_a_plain_white_background_stays_white`): the plain
+/// colour seen through it, on the picture and off it, is not toned a
+/// second time.
+#[test]
+fn clear_glass_on_a_plain_white_background_stays_white() {
+    use craft3d_render::studio::Tonemap;
+    let env = Arc::new(
+        Prepared::new(&craft3d_render::studio::HdrImage {
+            width: 64,
+            height: 32,
+            pixels: vec![[1.0; 3]; 64 * 32],
+        })
+        .unwrap(),
+    );
+    let params = RenderParams {
+        width: 200,
+        height: 200,
+        ssaa: 1,
+        background: [255; 3],
+        ..RenderParams::default()
+    };
+    let camera = Camera {
+        eye: Vec3::new(0.0, -10.0, 0.0),
+        target: Vec3::ZERO,
+        up: Vec3::Z,
+        projection: craft3d_render::Projection::Orthographic { half_height: 2.0 },
+    };
+    let mut failures = Vec::new();
+    for mut offscreen in offscreens() {
+        let adapter = offscreen.adapter().to_string();
+        for tonemap in [Tonemap::Agx, Tonemap::Aces, Tonemap::Linear] {
+            for (theta, thin) in [(0.0_f64, false), (0.7, false), (0.7, true)] {
+                let u = Vec3::new(theta.cos(), theta.sin(), 0.0);
+                let normal = Vec3::new(-theta.sin(), theta.cos(), 0.0);
+                let mesh = slab(Vec3::ZERO, (u, 5.0), (normal, 0.3), (Vec3::Z, 5.0));
+                let mut colors = FaceColors::new();
+                for face in 0..6 {
+                    colors.set_look(
+                        face,
+                        Some(([255; 3], Finish::from_factors(Some(0.0), Some(0.0)))),
+                    );
+                    assert!(colors.set_optics(
+                        face,
+                        Some(Optics {
+                            transmission: 1.0,
+                            ior: 1.5,
+                            thin_walled: thin,
+                            ..Optics::default()
+                        })
+                    ));
+                }
+                let look = Look {
+                    plain_background: true,
+                    tonemap,
+                    ao: false,
+                    shadows: false,
+                    ground: false,
+                    ..Look::default()
+                };
+                let cpu = render_studio(&mesh, &colors, &camera, &params, &look, &env).unwrap();
+                let gpu = offscreen
+                    .render_studio(
+                        &mesh,
+                        &colors,
+                        &camera,
+                        &params,
+                        &Studio {
+                            env: env.clone(),
+                            look,
+                        },
+                    )
+                    .unwrap();
+                let darkest = |rgb: &[u8]| rgb.iter().copied().min().unwrap_or(0);
+                let label = format!("{adapter} {tonemap:?} θ {theta} thin {thin}");
+                eprintln!(
+                    "PLAIN GLASS {label}: darkest CPU {} GPU {}",
+                    darkest(&cpu.rgb),
+                    darkest(&gpu.rgb)
+                );
+                if darkest(&cpu.rgb) < 250 || darkest(&gpu.rgb) < 250 {
+                    failures.push(label);
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "not white: {failures:#?}");
+}
+
 fn overlay() -> OverlayParams {
     OverlayParams {
         slack: 0.0,
@@ -638,34 +796,9 @@ fn overlay() -> OverlayParams {
     }
 }
 
-/// The look of a term on the viewport: layer 2's polish without the
-/// traced effects for a layer alone, and with them (the polished look,
-/// four frames) with everything together. A layer alone is held to the
-/// CPU without a reflection's decision in the way: on the Radeon's RADV
-/// one reflected ray of the plate (perspective bench, the anisotropic
-/// post and ring) is decided otherwise than on the CPU outside the
-/// samples `polish::TRACE_DOUBT` marks (13 levels at one pixel; 1 without
-/// the traced effects, and llvmpipe and radeonsi 1 with them): layer 2's
-/// doubt, not layer 3's shading (docs/design/rendering.md, *Layer 3*).
-fn viewport_look(term: &str, frames: u32) -> Look {
-    let polished = Look {
-        accumulate: frames,
-        ..Look::polished()
-    };
-    if term == "all" {
-        polished
-    } else {
-        Look {
-            ssr: false,
-            ground_reflection: 0.0,
-            ..polished
-        }
-    }
-}
-
 /// The viewport's renderer (its deferred path, one sample per pixel)
-/// against the CPU at `ssaa` 1, every term in [`viewport_look`]: one
-/// frame, then the mean of four.
+/// against the CPU at `ssaa` 1, every term in the polished look (with
+/// its traced reflections): one frame, then the mean of four.
 #[test]
 fn the_viewport_draws_layer_three_as_the_cpu_renderer() {
     let mut failures = Vec::new();
@@ -684,7 +817,10 @@ fn the_viewport_draws_layer_three_as_the_cpu_renderer() {
                 let frames = if *term == "all" { 4 } else { 1 };
                 let studio = onscreen.studio_as_drawn(&Studio {
                     env: scene.env.clone(),
-                    look: viewport_look(term, frames),
+                    look: Look {
+                        accumulate: frames,
+                        ..Look::polished()
+                    },
                 });
                 let uploaded = onscreen.upload_colored(&scene.mesh, &colors).unwrap();
                 onscreen.set_studio(Some(studio.clone()));
@@ -725,7 +861,7 @@ fn the_viewport_draws_layer_three_as_the_cpu_renderer() {
                     )
                     .unwrap();
                 let again = picture(&mut onscreen);
-                let cpu = cpu_render(&scene, &colors, &params, &studio.look);
+                let mut cpu = cpu_render(&scene, &colors, &params, &studio.look);
                 let stats = compare_steady(&scene, &colors, &cpu, &gpu, Some(&again));
                 let label = format!("viewport {name} | {} | {term}", scene.name);
                 eprintln!(
@@ -734,6 +870,26 @@ fn the_viewport_draws_layer_three_as_the_cpu_renderer() {
                     stats.doubt_share()
                 );
                 report(&label, &cpu, &gpu);
+                let mut stats = stats;
+                if stats.most > MOST_LEVELS {
+                    // The pixels over the bound that the CPU marks in doubt
+                    // at the wider margin, at most MOST_WIDE of them.
+                    let (_, wide) = render_studio_doubt(
+                        &scene.mesh,
+                        &colors,
+                        &scene.camera,
+                        &params,
+                        &studio.look,
+                        &scene.env,
+                        WIDE_DOUBT,
+                    )
+                    .unwrap();
+                    stats.wide = excuse_wide(&mut cpu, &gpu, &wide);
+                    let wide_count = stats.wide;
+                    stats = compare_steady(&scene, &colors, &cpu, &gpu, Some(&again));
+                    stats.wide = wide_count;
+                    eprintln!("MEASURE {label} | wide doubt: {stats:?}");
+                }
                 check(&mut failures, &label, &stats);
             }
         }
