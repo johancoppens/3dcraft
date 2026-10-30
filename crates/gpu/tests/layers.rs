@@ -54,6 +54,10 @@ const MOST_LEVELS: u8 = 8;
 /// left out, and the most pixels left out so.
 const DOUBT_SHARE: f32 = 1.0 / 64.0;
 const MOST_DOUBT: f64 = 1.0 / 32.0;
+/// The most pixels of a viewport picture that may differ between two
+/// draws of it (one step's lost writes, rare: one in a frame at most has
+/// been seen, `tests/parity.rs`).
+const MOST_UNSTEADY: usize = 8;
 
 /// The parts of a scene by name.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -404,6 +408,10 @@ struct Stats {
     /// among them.
     through: usize,
     most_through: u8,
+    /// Pixels left out because two draws of the same picture differ
+    /// there (the viewport, which draws in one step: the Radeon's lost
+    /// writes, `tests/parity.rs`), and the most such.
+    unsteady: usize,
 }
 
 impl Stats {
@@ -417,10 +425,26 @@ impl Stats {
 }
 
 fn compare(scene: &Scene, colors: &FaceColors, cpu: &Cpu, gpu: &Frame) -> Stats {
+    compare_steady(scene, colors, cpu, gpu, None)
+}
+
+/// [`compare`] leaving out the pixels where `again`, another draw of the
+/// same picture, differs from `gpu`.
+fn compare_steady(
+    scene: &Scene,
+    colors: &FaceColors,
+    cpu: &Cpu,
+    gpu: &Frame,
+    again: Option<&Frame>,
+) -> Stats {
     let plain_band = band(&scene.mesh, &scene.camera, &cpu.frame);
     let f = &cpu.frame;
     let mut stats = Stats::default();
     for i in 0..f.ids.len() {
+        if again.is_some_and(|a| a.rgb[3 * i..3 * i + 3] != gpu.rgb[3 * i..3 * i + 3]) {
+            stats.unsteady += 1;
+            continue;
+        }
         if cpu.band[i] {
             if !plain_band[i] {
                 stats.refraction_band += 1;
@@ -456,6 +480,7 @@ fn check(failures: &mut Vec<String>, label: &str, stats: &Stats) {
         || stats.share() > SHARE_OVER_ONE
         || stats.most > MOST_LEVELS
         || stats.doubt_share() > MOST_DOUBT
+        || stats.unsteady > MOST_UNSTEADY
     {
         failures.push(format!(
             "{label}: {stats:?}, share {}, in doubt {}",
@@ -630,27 +655,45 @@ fn the_viewport_draws_layer_three_as_the_cpu_renderer() {
                 });
                 let uploaded = onscreen.upload_colored(&scene.mesh, &colors).unwrap();
                 onscreen.set_studio(Some(studio.clone()));
-                let mut gpu = None;
-                for _ in 0..frames {
-                    onscreen
-                        .draw(
-                            &uploaded,
-                            &lines,
-                            &scene.camera,
-                            &params,
-                            &overlay(),
-                            DrawOptions {
-                                bodies: true,
-                                capture: true,
-                            },
-                        )
-                        .unwrap();
-                    gpu = Some(onscreen.read_frame().unwrap());
-                }
-                let gpu = gpu.unwrap();
-                assert!(!onscreen.converging(), "{name} {} {term}", scene.name);
+                let picture = |onscreen: &mut Onscreen| {
+                    let mut gpu = None;
+                    for _ in 0..frames {
+                        onscreen
+                            .draw(
+                                &uploaded,
+                                &lines,
+                                &scene.camera,
+                                &params,
+                                &overlay(),
+                                DrawOptions {
+                                    bodies: true,
+                                    capture: true,
+                                },
+                            )
+                            .unwrap();
+                        gpu = Some(onscreen.read_frame().unwrap());
+                    }
+                    assert!(!onscreen.converging(), "{name} {} {term}", scene.name);
+                    gpu.unwrap()
+                };
+                let gpu = picture(&mut onscreen);
+                // The same picture again, from frame 0: a camera elsewhere
+                // between restarts it.
+                let mut moved = scene.camera;
+                moved.eye = moved.eye + (moved.target - moved.eye) * 0.05;
+                onscreen
+                    .draw(
+                        &uploaded,
+                        &lines,
+                        &moved,
+                        &params,
+                        &overlay(),
+                        DrawOptions::default(),
+                    )
+                    .unwrap();
+                let again = picture(&mut onscreen);
                 let cpu = cpu_render(&scene, &colors, &params, &studio.look);
-                let stats = compare(&scene, &colors, &cpu, &gpu);
+                let stats = compare_steady(&scene, &colors, &cpu, &gpu, Some(&again));
                 let label = format!("viewport {name} | {} | {term}", scene.name);
                 eprintln!(
                     "MEASURE {label}: {stats:?} share {:.6} in doubt {:.6}",
