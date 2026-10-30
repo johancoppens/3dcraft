@@ -608,9 +608,14 @@ const REFINE_STEP: f64 = 0.02;
 /// range, the edge is split at its midpoint, the new vertex put on the
 /// face's exact surface with the surface's normal and its exact value;
 /// a triangle with one, two or three split edges becomes two, three or
-/// four, so the mesh stays conforming (both triangles of an edge split
-/// it). Edges on a face's border (one triangle) are not split, so faces
-/// do not crack apart; nor are edges shorter than the scene's tolerance.
+/// four, so the mesh stays conforming within a face (both triangles of
+/// an edge split it). An edge on a face's border is split too (its new
+/// point lies on the exact surface, within the tolerance of the face's
+/// edge, as the border's own points are; the neighbouring face keeps its
+/// chord, so the two meet within the chordal tolerance, as any two faces'
+/// meshes do: left unsplit, the border's triangles kept the coarse
+/// values, a fifth of the range off on the fin). Edges shorter than the
+/// scene's tolerance are not split.
 /// At most [`REFINE_ROUNDS`] rounds and [`MAX_MAP_VERTICES`] vertices.
 /// For the analysis views only: the scene's own mesh is not changed.
 pub fn refined_map(
@@ -667,7 +672,11 @@ pub fn refined_map(
                     (Some(p), Some(q)) => p.distance(q) > floor,
                     _ => false,
                 };
-                n == 2 && long && va.is_finite() && vb.is_finite() && (va - vb).abs() > step
+                (1..=2).contains(&n)
+                    && long
+                    && va.is_finite()
+                    && vb.is_finite()
+                    && (va - vb).abs() > step
             })
             .map(|(k, &(_, face))| (*k, face))
             .collect();
