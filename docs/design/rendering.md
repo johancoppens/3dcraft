@@ -706,9 +706,31 @@ the pixels over one level; at most 6 levels (RADV's orthographic scene, terms wi
 1 on the others); the transmissive faces' pixels at most 3; at most 0.73 % in doubt. Bounds: 1/4096,
 8 levels, 5 for the transmissive pixels, 1/64 in doubt. On the viewport (one step) a pixel that
 differs between two draws of the same picture is a lost write, left out and counted (none measured,
-at most 4). One reflection is decided otherwise on RADV outside the marked samples (the plate
-reflecting the anisotropic post, 13 levels at one pixel; 1 untraced): a layer-2 doubt case, so the
-viewport holds the layers alone to the polished look without the traced effects and all together
-with them. Cost (1 002 faces, 1020×777, readback with the readback itself, every seventh part solid
+at most 4). Every term is compared on the viewport in the polished look with its traced effects, a
+single frame for a layer alone (so the way layer 3 feeds the reflections, the coat's weight `fc · so`
+and roughness `rc`, the anisotropy's weight 0, is held on one frame) and four for all together. One
+reflection is decided otherwise on RADV's viewport outside the marked samples (the plate, which has no
+layer, reflecting the post with anisotropy around its axis at its silhouette, 13 levels at one pixel;
+1 untraced, 1 on llvmpipe and radeonsi): the CPU marks that ray at 1024 epsilons of its boundary and
+not at 256 (run 41029229083), so RADV's viewport arithmetic errs there by more than `TRACE_DOUBT`'s
+128, which was measured on the readback renderer. The viewport comparison leaves out at most one pixel
+over the bound per picture, and only one the CPU's doubt at `8 · TRACE_DOUBT` marks (`WIDE_DOUBT`,
+`MOST_WIDE`); raising `TRACE_DOUBT` itself for one ray would widen every comparison of layer 2 and 3.
+A light-based doubt (a hit whose neighbour on the same face reads light more than a level apart) was
+tried first and dropped: it did not mark this ray (its decision is not near a sample's border) and
+raised layer 2's doubt to 3.5 %, past its bound.
+
+*The plain background through glass* (2026-10-30). The plain background is shown as it is, without
+the tone curve (`PLAIN_BACKDROP`); seen through a transmissive face it used to enter that face's light
+as its colour over the exposure and went through the tone curve with it, so clear glass on white came
+out grey under AgX, and a refracted ray that left the picture showed the environment instead of the
+plain colour. Now both renderers give the plain colour (times `ground_factor`, on the picture and off
+it) as the light the tone curve shows as that colour, `FrameLight::untoned` = `tonemap::undisplay` of
+its display value over the exposure (`untoned` in `studio.wgsl`; the GPU marks the plain background
+in the light's `w` of the picture behind). `undisplay` inverts each curve: Linear by sRGB, ACES by its
+quadratic, AgX by its inset matrix (the inverse of the outset one), halvings of its monotonic sigmoid
+and the outset matrix; AgX does not reach a bright saturated colour (it turns them towards white by
+design) and gives a paler one. Held by `undisplay_gives_back_every_byte_the_curve_reaches` and
+`clear_glass_on_a_plain_white_background_stays_white` (CPU, and GPU against 250 on every adapter). Cost (1 002 faces, 1020×777, readback with the readback itself, every seventh part solid
 glass): RADV 22.5 → 23.5 ms layer 1, 18.5 → 27.5 ms polished; radeonsi 18.8 → 24.8 and 24.7 → 28.1 ms;
 the CPU 2.0 s.
