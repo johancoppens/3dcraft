@@ -722,6 +722,8 @@ pub struct Shell {
     touch_sized: bool,
     touch_seen: bool,
     last_touch: f64,
+    /// When and where the last tap was: the first of a double tap.
+    last_tap: Option<(f64, egui::Pos2)>,
     /// Where the drawer's button was drawn, in the narrow layout.
     drawer_button: Option<egui::Rect>,
     /// Two fingers were on the viewport: the finger left on it does not
@@ -1143,6 +1145,7 @@ impl Shell {
             touch_sized: false,
             touch_seen: false,
             last_touch: f64::NEG_INFINITY,
+            last_tap: None,
             drawer_button: None,
             touch_gesture: false,
             player_shown: false,
@@ -3600,8 +3603,17 @@ impl Shell {
             let double = response.double_clicked();
             // A double tap does what F does: flies to what the first tap
             // selected, or frames everything when it selected nothing.
-            let touch = ui.input(|i| i.time) - self.last_touch < 1.0;
-            if double && touch {
+            // Known by its own time and place (a touch in the last second:
+            // the release frame of a tap has no touch any more).
+            let now = ui.input(|i| i.time);
+            let touch = now - self.last_touch < 1.0;
+            let double_tap = touch
+                && self.last_tap.is_some_and(|(then, there)| {
+                    now - then < f64::from(tokens.double_tap_seconds)
+                        && there.distance(at) < tokens.double_tap_distance
+                });
+            self.last_tap = (touch && !double_tap).then_some((now, at));
+            if double_tap {
                 self.fit_key(scene, ui.input(|i| i.time));
             // A picture that cannot be made has nothing to point at; the
             // viewport says why already.

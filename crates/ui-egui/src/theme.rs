@@ -379,6 +379,10 @@ pub struct Tokens {
     /// Below this card width the start screen's Recent files and agent
     /// block stand one under the other.
     pub start_stacked_width: f32,
+    /// Two taps at most `double_tap_seconds` apart and
+    /// `double_tap_distance` points apart are a double tap.
+    pub double_tap_seconds: f32,
+    pub double_tap_distance: f32,
     /// The controls over the viewport (`shell/layout.rs`) share one size
     /// system: every control is `nav_height` high on a plate
     /// `nav_padding` larger on each side, `nav_margin` from the viewport's
@@ -629,6 +633,8 @@ impl Tokens {
             tab_overflow_width: 56.0,
             tab_narrow_min_width: 120.0,
             start_stacked_width: 600.0,
+            double_tap_seconds: 0.35,
+            double_tap_distance: 24.0,
             nav_height: 28.0,
             nav_padding: 4.0,
             nav_margin: 12.0,
