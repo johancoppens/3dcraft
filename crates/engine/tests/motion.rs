@@ -557,6 +557,12 @@ fn bad_parameters_are_errors() {
     refused(
         &mut s,
         "view.trace",
+        json!({"point": "x", "grow": "yes"}),
+        &["grow"],
+    );
+    refused(
+        &mut s,
+        "view.trace",
         json!({"point": "F9:nothing"}),
         &["t = 0"],
     );
@@ -963,4 +969,66 @@ fn a_long_motion_replays_in_chunks_with_every_frame() {
         );
         assert!(dir.join(format!("frames/frame-{k:05}.png")).exists());
     }
+}
+
+/// A trace with `grow` is drawn as far as the motion has gone: the points
+/// sampled at or before `t` and the point between two samples where `t`
+/// lies, nothing before the range, all of it after; a range that runs
+/// backwards grows from its own start. (Values of `t` that are exact in
+/// binary, so the samples fall on them exactly.)
+#[test]
+fn a_growing_trace_is_drawn_up_to_the_t_shown() {
+    let mut s = session();
+    crank(&mut s);
+    let edges = run(&mut s, "document.edges", json!({"feature": "Crank"}));
+    let name = edges["vertices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|v| v["name"].as_str())
+        .unwrap()
+        .to_string();
+    let out = run(
+        &mut s,
+        "view.trace",
+        json!({"point": name, "samples": 5, "grow": true, "t": [0.25, 0.75]}),
+    );
+    assert_eq!(out["grow"], true);
+    let traces = s.traces();
+    let trace = &traces[0];
+    assert!(trace.grow);
+    assert_eq!(trace.t, [0.25, 0.75]);
+    let p = &trace.points;
+    assert_eq!(p.len(), 5);
+    assert!(trace.up_to(0.1).is_empty());
+    assert_eq!(trace.up_to(0.25), vec![p[0]]);
+    assert_eq!(trace.up_to(0.5), p[..3].to_vec());
+    assert_eq!(trace.up_to(0.75), *p);
+    assert_eq!(trace.up_to(0.9), *p);
+    assert_eq!(trace.up_to(f64::NAN), *p);
+    // Halfway between the second and the third sample: those two and the
+    // middle of their segment.
+    let half = trace.up_to(0.4375);
+    assert_eq!(half.len(), 3);
+    assert_eq!(&half[..2], &p[..2]);
+    let mid = (p[1] + p[2]) * 0.5;
+    assert!((half[2] - mid).length() < 1e-12, "{:?} {mid:?}", half[2]);
+    // Backwards: from t = 0.75 down to 0.25.
+    run(
+        &mut s,
+        "view.trace",
+        json!({"point": name, "samples": 5, "grow": true, "t": [0.75, 0.25], "name": "Back"}),
+    );
+    let traces = s.traces();
+    let back = traces.iter().find(|t| t.name == "Back").unwrap();
+    assert!(back.up_to(0.8).is_empty());
+    assert_eq!(back.up_to(0.625), back.points[..2].to_vec());
+    // Without grow the trace is whole whatever is shown.
+    run(
+        &mut s,
+        "view.trace",
+        json!({"point": name, "name": "Whole"}),
+    );
+    let traces = s.traces();
+    assert!(!traces.iter().find(|t| t.name == "Whole").unwrap().grow);
 }

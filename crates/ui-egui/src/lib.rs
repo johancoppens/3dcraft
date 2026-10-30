@@ -29,6 +29,7 @@
 //! `ui.screenshot` always renders on the CPU: it is the oracle the GPU
 //! viewport is checked against (docs/design/rendering.md).
 
+pub mod answer;
 pub mod backend;
 pub mod camera;
 pub mod control;

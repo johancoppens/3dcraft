@@ -79,8 +79,11 @@ pub struct Tokens {
     pub datum_width: f32,
     /// Radius of a datum point's dot, in points.
     pub datum_point_radius: f32,
-    /// A point's path over the motion (`view.trace`): purple, apart from
-    /// the sketches' blue, the datums' petrol and the selection's copper.
+    /// A point's path over the motion (`view.trace`): a deep violet,
+    /// apart from the sketches' blue, the datums' petrol and the
+    /// selection's copper, that stands out on the plain look's light
+    /// background and on the studio look's greys (3:1 on both,
+    /// `a_trace_stands_out_on_both_looks`).
     pub trace: Rgb,
     /// Width of a trace, in points.
     pub trace_width: f32,
@@ -427,8 +430,8 @@ impl Tokens {
             datum_fill_opacity: 48,
             datum_width: 1.25,
             datum_point_radius: 4.0,
-            trace: [128, 32, 140],
-            trace_width: 2.0,
+            trace: [80, 0, 140],
+            trace_width: 3.0,
             comb: [204, 51, 153],
             comb_width: 1.0,
             analysis_dark: [20, 22, 26],
@@ -973,6 +976,32 @@ mod tests {
         assert!(b > r);
         let [r, _, b] = tokens.accent;
         assert!(r > b);
+    }
+
+    /// A trace is the line a person follows over the whole picture while
+    /// the motion plays: 3:1 against the plain look's background and
+    /// against the studio look's backdrop, whose greys run from about
+    /// [130, 130, 128] to [180, 177, 175] (measured on the default studio
+    /// environment's picture of the strandbeest leg, 2026-10-30, corners
+    /// and middle), and wider than a sketch's line.
+    #[test]
+    fn a_trace_stands_out_on_both_looks() {
+        let tokens = Tokens::default();
+        for bg in [
+            tokens.viewport_background,
+            [130, 130, 128],
+            [150, 148, 148],
+            [180, 177, 175],
+            tokens.body,
+        ] {
+            let ratio = contrast(tokens.trace, bg);
+            assert!(ratio >= 3.0, "trace on {bg:?}: {ratio:.2}");
+        }
+        assert!(
+            tokens.trace_width > tokens.sketch_width,
+            "{}",
+            tokens.trace_width
+        );
     }
 
     /// Sketches and datums are lines and dots over the viewport and over a

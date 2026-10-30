@@ -53,7 +53,7 @@ pub(crate) struct Timeline {
     /// plain number), so the motion can be played.
     pub(super) has_timeline: bool,
     /// The paths of points over the motion (`view.trace`).
-    pub(super) traces: Vec<Vec<craft3d_math::Vec3>>,
+    pub(super) traces: Vec<craft3d_engine::TraceView>,
 }
 
 impl Timeline {
@@ -172,7 +172,22 @@ impl Shell {
         self.timeline.rollback = rollback;
         self.timeline.motion = session.motion();
         self.timeline.has_timeline = session.timeline().is_ok();
-        self.timeline.traces = session.traces().into_iter().map(|t| t.points).collect();
+        self.timeline.traces = session.traces();
+    }
+
+    /// The traces as the viewport draws them: a growing one
+    /// (`view.trace {grow: true}`) only as far as the moment of the motion
+    /// the view shows, whole while it shows none.
+    pub(crate) fn drawn_traces(&self) -> Vec<Vec<craft3d_math::Vec3>> {
+        let shown = self.timeline.motion.as_ref().map(|m| m.t);
+        self.timeline
+            .traces
+            .iter()
+            .map(|trace| match shown {
+                Some(t) if trace.grow => trace.up_to(t),
+                _ => trace.points.clone(),
+            })
+            .collect()
     }
 
     /// Marks the rows after the step the scrubbed view shows: greyed (the

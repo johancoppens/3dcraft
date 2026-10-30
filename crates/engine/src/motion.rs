@@ -59,8 +59,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!(
         "view.trace",
         "Trace Point",
-        r#"{"point": vertex name or {sketch, entity}, "feature": id or name = the body that has the vertex, "t": [number, number] = [0, 1], "samples": integer = 65, "name": string = "Trace <n>", "clear": boolean or trace name}"#,
-        "Traces the path of a point over the motion: the point is a vertex by its persistent name (document.edges lists them; feature says which body when several have it) or a point of a sketch ({sketch, entity}); its place is taken at samples values of t evenly from t[0] to t[1] (both included), each state made as view.motion makes it. The trace is view state of the document (not saved, not undone, let go of at the next edit): the viewport draws it as a line, and file.export {path: *.svg or *.dxf, trace: name} writes it in its plane. A trace with the name of one kept replaces it; at most 32 are kept. clear: true removes every trace, clear: name one of them (nothing is traced then). The document needs a timeline (view.motion). A point that is gone at some t fails the trace, naming that t. Returns name, point, t, samples, points ([x, y, z] in the document's unit), length (along the polyline), closed (more than 2 points and it ends where it began, within the tolerance), box and plane ({point, normal} when the path lies in one plane within the tolerance and within a millionth of its size, else null). In an assembly the point is named through an instance as a mate names it (Coupler/End2, Foot/F1:vertex(2)), without feature.",
+        r#"{"point": vertex name or {sketch, entity}, "feature": id or name = the body that has the vertex, "t": [number, number] = [0, 1], "samples": integer = 65, "name": string = "Trace <n>", "grow": boolean = false, "clear": boolean or trace name}"#,
+        "Traces the path of a point over the motion: the point is a vertex by its persistent name (document.edges lists them; feature says which body when several have it) or a point of a sketch ({sketch, entity}); its place is taken at samples values of t evenly from t[0] to t[1] (both included), each state made as view.motion makes it. The trace is view state of the document (not saved, not undone, let go of at the next edit): the viewport draws it as a line, and file.export {path: *.svg or *.dxf, trace: name} writes it in its plane. With grow: true the viewport draws the trace only up to the t it shows while it shows a moment of the motion (the player draws it as it goes), whole otherwise. A trace with the name of one kept replaces it; at most 32 are kept. clear: true removes every trace, clear: name one of them (nothing is traced then). The document needs a timeline (view.motion). A point that is gone at some t fails the trace, naming that t. Returns name, point, t, samples, grow, points ([x, y, z] in the document's unit), length (along the polyline), closed (more than 2 points and it ends where it began, within the tolerance), box and plane ({point, normal} when the path lies in one plane within the tolerance and within a millionth of its size, else null). In an assembly the point is named through an instance as a mate names it (Coupler/End2, Foot/F1:vertex(2)), without feature.",
         doc: true,
         names: ["point"],
         view_trace
@@ -708,6 +708,10 @@ pub(crate) struct Trace {
     pub(crate) name: String,
     pub(crate) point: String,
     pub(crate) points: Vec<Vec3>,
+    /// The `t` of the first and of the last point.
+    pub(crate) t: (f64, f64),
+    /// Drawn only up to the `t` the view shows.
+    pub(crate) grow: bool,
 }
 
 /// Where the motion of an open document is: view state, not saved and
@@ -900,7 +904,48 @@ pub struct MotionView {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TraceView {
     pub name: String,
+    /// At `samples` values of `t` evenly from `t[0]` to `t[1]`, both
+    /// included.
     pub points: Vec<Vec3>,
+    pub t: [f64; 2],
+    /// Drawn only up to the `t` the view shows ([`TraceView::up_to`]).
+    pub grow: bool,
+}
+
+impl TraceView {
+    /// The polyline as far as the motion has gone at `t`: the points
+    /// sampled at or before it (in the trace's own direction, so a range
+    /// that runs backwards grows backwards too), and the point between
+    /// the last of those and the next one where `t` lies, along their
+    /// segment. Nothing before the first `t`, the whole trace from the
+    /// last one on; the whole trace when `t` is not a number or the range
+    /// has no length.
+    pub fn up_to(&self, t: f64) -> Vec<Vec3> {
+        let [a, b] = self.t;
+        let span = b - a;
+        let last = self.points.len().saturating_sub(1);
+        if !t.is_finite() || !span.is_finite() || span == 0.0 || last == 0 {
+            return self.points.clone();
+        }
+        let at = (t - a) / span * last as f64;
+        if !at.is_finite() || at >= last as f64 {
+            return self.points.clone();
+        }
+        if at < 0.0 {
+            return Vec::new();
+        }
+        let whole = at.floor();
+        // `whole` lies in [0, last): a valid index.
+        let index = whole as usize;
+        let mut out: Vec<Vec3> = self.points.iter().take(index + 1).copied().collect();
+        if let (Some(p), Some(q)) = (self.points.get(index), self.points.get(index + 1)) {
+            let u = at - whole;
+            if u > 0.0 {
+                out.push(*p + (*q - *p) * u);
+            }
+        }
+        out
+    }
 }
 
 impl Session {
@@ -952,6 +997,8 @@ impl Session {
             .map(|trace| TraceView {
                 name: trace.name.clone(),
                 points: trace.points.clone(),
+                t: [trace.t.0, trace.t.1],
+                grow: trace.grow,
             })
             .collect()
     }
@@ -1230,10 +1277,10 @@ fn view_trace(session: &mut Session, params: &Value) -> Run {
     let p = Params::new(
         ID,
         params,
-        &["point", "feature", "t", "samples", "name", "clear"],
+        &["point", "feature", "t", "samples", "name", "grow", "clear"],
     )?;
     if let Some(clear) = p.get("clear") {
-        let others: Vec<&str> = ["point", "feature", "t", "samples", "name"]
+        let others: Vec<&str> = ["point", "feature", "t", "samples", "name", "grow"]
             .into_iter()
             .filter(|k| p.has(k))
             .collect();
@@ -1266,6 +1313,7 @@ fn view_trace(session: &mut Session, params: &Value) -> Run {
     }
     let range = t_range(ID, &p)?;
     let samples = p.integer("samples", 2, MAX_SAMPLES)?.unwrap_or(65);
+    let grow = p.bool("grow")?.unwrap_or(false);
     let given_name = p.str("name")?.map(str::to_string);
     if given_name
         .as_deref()
@@ -1331,6 +1379,8 @@ fn view_trace(session: &mut Session, params: &Value) -> Run {
         name: name.clone(),
         point: point.describe(),
         points: points.clone(),
+        t: range,
+        grow,
     });
     let closed = ends_where_it_began(&points, tolerance);
     let bbox = craft3d_math::Bbox3::from_points(points.iter().copied());
@@ -1343,6 +1393,7 @@ fn view_trace(session: &mut Session, params: &Value) -> Run {
         "point": point.describe(),
         "t": [range.0, range.1],
         "samples": samples,
+        "grow": grow,
         "points": points.iter().map(|p| vec3(*p)).collect::<Vec<_>>(),
         "length": polyline_length(&points),
         "closed": closed,

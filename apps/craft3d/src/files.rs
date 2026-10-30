@@ -512,7 +512,7 @@ impl Host {
                 result.get("path").and_then(Value::as_str),
             ) {
                 (Some(why), Some(path)) => (true, format!("no thumbnail ({why}); saved {path}")),
-                _ => (true, result.to_string()),
+                _ => (true, craft3d_ui_egui::answer::summary(label, result)),
             },
             Err(error) => {
                 self.shell.show_error(label, error);

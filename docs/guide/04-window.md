@@ -172,7 +172,8 @@ assembly has no history of its own, so it shows only **Motion**: its parts are m
 ([Assemblies](17-assemblies.md#motion)).
 
 An agent does the same with `view.motion {"t": 0.5, "collisions": true}`, draws a point's path with
-`view.trace` (exported with `file.export {"path": "path.svg", "trace": "Trace 1"}`), checks assertions over the
+`view.trace` (`"grow": true` draws it only as far as the moment shown, so it grows while the motion plays;
+exported with `file.export {"path": "path.svg", "trace": "Trace 1"}`), checks assertions over the
 motion with `motion.check` ([Measure and check](10-measure.md#over-a-motion)), and makes a video of it with
 `view.replay {"dir": "frames", "motion": {"frames": 120}}`.
 
@@ -211,6 +212,11 @@ from the environment's brightest direction and casts soft shadows on the model a
 it; corners and grooves darken where little light reaches. A see-through or cut-open view is drawn in
 the plain look.
 
+While the studio look is on, a small panel under the view cube holds its options: the environment and how far it
+is turned, the exposure, the background, the ground and how much it reflects, the tone curve (AgX, ACES or
+Linear), shadows, ambient occlusion and reflections, bloom, and a lens that blurs what is out of focus. A change
+shows at once.
+
 An agent sets the same look with `ui.set`, and pictures from the command line take it too:
 
 ```text
@@ -221,7 +227,7 @@ craft3d-cli render part.3dcraft --out part.png --look studio --environment works
 `exposure` makes the picture brighter in stops (negative darker), `rotation` turns the environment
 about the vertical axis, `ground`, `ao` and `shadows` switch the ground, the darkening in corners and
 the shadows off, `tonemap` chooses how bright light is fitted into the picture (`agx`, the
-default, or `aces`), and `background` `plain` keeps the window's own background colour behind the
+default, `aces` or `linear`), and `background` `plain` keeps the window's own background colour behind the
 model while the environment still lights it (`environment`, the default, shows the environment). The look is a view: the document does not change. In the browser on older
 graphics (WebGL2) the studio look has no shadows and no darkening in corners.
 

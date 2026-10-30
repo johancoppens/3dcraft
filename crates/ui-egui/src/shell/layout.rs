@@ -876,6 +876,11 @@ impl Shell {
             self.state.look.mode = if lit { "plain" } else { "studio" }.to_string();
             ui.ctx().request_repaint();
         }
+        let anchor = layout
+            .cube
+            .or(layout.camera_plate)
+            .map_or(studio.left_bottom(), |r| r.right_bottom());
+        self.look_panel(ui, anchor);
     }
 
     /// The Analysis toggle beside Studio, and while an analysis is on its

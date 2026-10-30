@@ -646,7 +646,7 @@ impl WebHost {
 
     fn report(&mut self, label: &str, outcome: &Result<Value, String>) {
         let (ok, text) = match outcome {
-            Ok(result) => (true, result.to_string()),
+            Ok(result) => (true, craft3d_ui_egui::answer::summary(label, result)),
             Err(error) => {
                 self.shell.show_error(label, error);
                 (false, error.clone())

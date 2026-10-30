@@ -31,6 +31,7 @@ pub mod help;
 mod icons;
 mod joints;
 mod layout;
+pub mod look_panel;
 pub mod number_field;
 mod params;
 mod player;
@@ -400,6 +401,9 @@ struct FrameKey {
     sketches: bool,
     /// How the bodies' edges are drawn ([`Shell::edges_drawn`]).
     edges: EdgesDrawn,
+    /// The traces drawn ([`Shell::drawn_traces`]): a trace made, cleared
+    /// or grown is another picture.
+    traces: Vec<Vec<craft3d_math::Vec3>>,
     /// How the bodies are lit.
     look: crate::state::LookState,
     /// The surface analysis drawn, by when it was made.
@@ -638,6 +642,8 @@ pub struct Shell {
     section_hits: Vec<(&'static str, egui::Rect)>,
     /// Where the Sketches and Datums toggles were drawn.
     show_hits: Vec<(&'static str, egui::Rect)>,
+    /// Where the studio look's options were drawn ([`look_panel::LookHits`]).
+    look_hits: look_panel::LookHits,
     /// Where Fit, iso and the projection's two halves were drawn.
     camera_hits: Vec<(&'static str, egui::Rect)>,
     /// Where the controls over the viewport were laid out in the last
@@ -1048,6 +1054,7 @@ impl Shell {
             length_unit: "",
             section_hits: Vec::new(),
             show_hits: Vec::new(),
+            look_hits: Vec::new(),
             camera_hits: Vec::new(),
             controls_layout: None,
             status_hits: Vec::new(),
@@ -1493,7 +1500,29 @@ impl Shell {
         )
         .with_selection(self.selection_marks())
         .with(viewport::Marks {
-            traces: self.timeline.traces.clone(),
+            traces: self.drawn_traces(),
+            ..viewport::Marks::default()
+        })
+        .with(self.comb_marks())
+    }
+
+    /// What the viewport draws over the picture of `key`: the marks of
+    /// [`Self::marks`] as the key has them. The one list every path that
+    /// draws the window's picture takes (the direct path and the
+    /// renderer's images), so none of them leaves a kind of mark out.
+    fn frame_marks(&self, scene: Option<&Scene>, key: &FrameKey) -> viewport::Marks {
+        marks_of(
+            scene,
+            key.highlight_edge.as_ref(),
+            key.highlight_vertex.as_ref(),
+            self.section_cut().filter(|_| key.section.is_some()),
+            key.datums,
+            key.sketches,
+            key.edges,
+        )
+        .with_selection(self.selection_marks())
+        .with(viewport::Marks {
+            traces: key.traces.clone(),
             ..viewport::Marks::default()
         })
         .with(self.comb_marks())
@@ -2286,7 +2315,7 @@ impl Shell {
         self.discard_armed = None;
         let outcome = session.execute(command, &params);
         let (ok, text) = match &outcome {
-            Ok(result) => (true, result.to_string()),
+            Ok(result) => (true, crate::answer::summary(command, result)),
             Err(error) => (false, error.message().to_string()),
         };
         self.last_command = Some(CommandReport {
@@ -2459,6 +2488,10 @@ impl Shell {
             self.last_command.as_ref().map(|report| {
                 let answer = match shown_t {
                     Some(t) if report.ok && report.label == "view.motion" => format!("t = {t:.3}"),
+                    // An answer is said in words where it is made
+                    // (`answer::summary`); raw JSON that still gets here
+                    // is not shown.
+                    _ if crate::answer::looks_like_json(&report.text) => String::new(),
                     _ => report.text.clone(),
                 };
                 (report.label.clone(), answer, report.ok)
@@ -3242,6 +3275,7 @@ impl Shell {
             datums: self.state.show.datums,
             sketches: self.state.show.sketches,
             edges: self.edges_drawn(),
+            traces: self.drawn_traces(),
             look: self.state.look.clone(),
             analysis: self.analysis_serial,
             look_ready: self.look_ready(),
@@ -3621,9 +3655,7 @@ impl Shell {
     /// there is no direct path, or this frame has to be made another way.
     fn direct_frame(&mut self, scene: Option<&Scene>, key: &FrameKey) -> bool {
         let studio = self.studio();
-        let cut = self.section_cut().filter(|_| key.section.is_some());
-        let chosen = self.selection_marks().clone();
-        let combs = self.comb_marks();
+        let marks = self.frame_marks(scene, key);
         let Some(direct) = &mut self.direct else {
             return false;
         };
@@ -3631,19 +3663,7 @@ impl Shell {
         direct.set_opacity(key.opacity);
         direct.set_studio(studio);
         direct.set_analysis(self.analysis_view.clone());
-        direct.set_marks(
-            marks_of(
-                scene,
-                key.highlight_edge.as_ref(),
-                key.highlight_vertex.as_ref(),
-                cut,
-                key.datums,
-                key.sketches,
-                key.edges,
-            )
-            .with_selection(&chosen)
-            .with(combs),
-        );
+        direct.set_marks(marks);
         let outcome = direct.frame(
             scene,
             &key.camera,
@@ -3708,10 +3728,8 @@ impl Shell {
             // image can be made would ask for the sharp one every frame.)
             self.scheduler.forget();
         }
-        let cut = self.section_cut().filter(|_| key.section.is_some());
-        let chosen = self.selection_marks().clone();
+        let marks = self.frame_marks(scene.map(Arc::as_ref), key);
         let studio = self.studio_once();
-        let combs = self.comb_marks();
         let analysis = self.analysis_view.clone();
         let job = |quality: Quality| RenderJob {
             scene: scene.cloned(),
@@ -3720,17 +3738,7 @@ impl Shell {
             tokens: key.tokens,
             selected: key.selected.clone(),
             highlight: key.highlight,
-            marks: marks_of(
-                scene.map(Arc::as_ref),
-                key.highlight_edge.as_ref(),
-                key.highlight_vertex.as_ref(),
-                cut.clone(),
-                key.datums,
-                key.sketches,
-                key.edges,
-            )
-            .with_selection(&chosen)
-            .with(combs.clone()),
+            marks: marks.clone(),
             opacity: key.opacity,
             studio: studio.clone(),
             analysis: analysis.clone(),

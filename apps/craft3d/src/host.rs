@@ -204,17 +204,18 @@ pub(crate) fn report(line: &str, reply: &str) -> Option<CommandReport> {
     let reply: Value = serde_json::from_str(reply).ok()?;
     if over_mcp {
         let (ok, text) = mcp_outcome(&reply)?;
-        return Some(CommandReport {
-            label,
-            ok,
-            text: shorten(&text),
-        });
+        let text = if ok {
+            craft3d_ui_egui::answer::summary_of_text(&label, &text)
+        } else {
+            shorten(&text)
+        };
+        return Some(CommandReport { label, ok, text });
     }
     let ok = reply.get("ok")?.as_bool()?;
     let text = if ok {
         reply
             .get("result")
-            .map(Value::to_string)
+            .map(|result| craft3d_ui_egui::answer::summary(&label, result))
             .unwrap_or_default()
     } else {
         reply.get("error")?.as_str()?.to_string()

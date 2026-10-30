@@ -86,7 +86,14 @@ state, at most 32 per document, let go of at the next edit.
 
 The window draws a trace as a polyline over the picture, tested against the depth buffer like a sketch (dimmed
 behind a body), in the theme's `trace` colour, in both overlay paths (`viewport.rs` for the CPU raster and the
-screenshot, `direct.rs` for the GPU drawing of the web build). `file.export {trace}` writes it to SVG or DXF in its
+screenshot, `direct.rs` for the GPU drawing on the window's device). Every path that draws the window's picture
+takes its marks from one function, `Shell::frame_marks`, and the traces drawn are part of the picture's key
+(`FrameKey::traces`): until 2026-10-30 the two window paths each built their own list without the traces, so the
+window showed none while `ui.screenshot` (which takes `Shell::marks`) did. With `grow: true` a trace is drawn only
+as far as the moment the view shows (`TraceView::up_to`: the samples at or before `t` in the trace's own direction,
+and the point between two samples where `t` lies), whole while no moment is shown, so the player draws it as it
+goes. The trace's colour (a deep violet) and width (3 points) keep 3:1 against the plain background, the studio
+look's greys and a lit body (`theme.rs`, `a_trace_stands_out_on_both_looks`). `file.export {trace}` writes it to SVG or DXF in its
 plane: the plane through it within the document's tolerance (spanned by the point farthest from the centroid and
 the point farthest from that line; every point checked against it), its normal turned to point along the world axis
 it is most along, x the world axis least along the normal laid into the plane, y the normal crossed with x. A trace

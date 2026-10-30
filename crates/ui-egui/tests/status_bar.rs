@@ -470,3 +470,60 @@ fn short_jobs_never_show_the_indicator_and_the_texts_change_calmly() {
     assert_eq!(got["work"]["label"], "view.motion");
     assert_eq!(got["workShown"], Value::Null);
 }
+
+/// A command's answer is said in words, never as its raw JSON: a report
+/// whose text is JSON (from a host that did not summarise it) leaves the
+/// answer blank, and the summary of a document listing names the active
+/// document.
+#[test]
+fn the_status_bar_never_shows_raw_json() {
+    let mut session = Session::new(Workspace::none());
+    run(&mut session, "file.new", json!({}));
+    let mut shell = Shell::new();
+    let ctx = egui::Context::default();
+    let mut clock = 0_u32;
+    let mut frame = |shell: &mut Shell| {
+        clock += 1;
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 800.0))),
+            time: Some(f64::from(clock) * 0.2),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| shell.ui(ui, &mut session));
+        output.textures_delta.clear();
+    };
+    let raw = r#"{"active":5,"documents":[{"active":false,"dirty":false,"document":0}]}"#;
+    shell.last_command = Some(CommandReport {
+        label: "file.activate".to_string(),
+        ok: true,
+        text: raw.to_string(),
+    });
+    for _ in 0..30 {
+        frame(&mut shell);
+    }
+    assert_eq!(
+        shell.status_shown(StatusSlot::Command),
+        Some("file.activate")
+    );
+    let answer = shell.status_shown(StatusSlot::Answer).unwrap_or_default();
+    assert!(!answer.contains('{'), "{answer}");
+    let said = craft3d_ui_egui::answer::summary(
+        "file.activate",
+        &json!({"active": 1, "documents": [
+            {"active": false, "path": "/w/strandbeest-walker.3dcraftasm"},
+            {"active": true, "path": "/w/strandbeest-leg.3dcraftasm"},
+        ]}),
+    );
+    shell.last_command = Some(CommandReport {
+        label: "file.activate".to_string(),
+        ok: true,
+        text: said,
+    });
+    for _ in 0..30 {
+        frame(&mut shell);
+    }
+    assert_eq!(
+        shell.status_shown(StatusSlot::Answer),
+        Some("Activated strandbeest-leg")
+    );
+}
