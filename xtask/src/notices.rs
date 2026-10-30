@@ -320,12 +320,15 @@ impl Parser {
     }
 
     fn with(&mut self, depth: usize) -> Result<Expr, String> {
+        // SPDX: `WITH` follows a simple expression (a licence id), never a
+        // parenthesised compound one, even when the parentheses hold one id.
+        let grouped = self.is("(");
         let atom = self.atom(depth)?;
         if !self.is("WITH") {
             return Ok(atom);
         }
         self.next();
-        let Expr::Leaf { id, with: None } = atom else {
+        let (false, Expr::Leaf { id, with: None }) = (grouped, atom) else {
             return Err("WITH follows something other than a licence".to_string());
         };
         let exception = self.word()?;
