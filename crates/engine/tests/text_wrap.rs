@@ -275,10 +275,10 @@ fn diagnose_three_d_craft() {
             "feature.extrude",
             json!({"sketch": "Label", "wrap": "F1:face(0)", "distance": 1, "name": "Alone"}),
         );
-        let shown = run(
+        let shown = common::plain::run(
             &mut s,
             "view.render",
-            json!({"path": "/tmp/x.png", "width": 100, "height": 80}),
+            json!({"path": "x.png", "width": 100, "height": 80}),
         );
         let joined = common::plain::run(
             &mut s,
