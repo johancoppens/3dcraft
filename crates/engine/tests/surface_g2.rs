@@ -67,7 +67,7 @@ fn fin_curves(s: &mut Session, k: f64) -> String {
 fn seam_edge(s: &mut Session, fin: &str) -> String {
     let all = edges_of(s, fin);
     all.iter()
-        .find(|n| n.replace(' ', "").contains("startEdge(0,"))
+        .find(|n| n.replace(' ', "").contains("startEdge(e0,"))
         .cloned()
         .unwrap_or_else(|| panic!("no edge along the first u curve in {all:?}"))
 }
