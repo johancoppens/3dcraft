@@ -2172,10 +2172,12 @@ fn the_direct_path_fades_edges_with_the_lens_as_the_oracle_does() {
             json!({"size": [10, 10, 6], "position": [at, at, 0]}),
         );
     }
-    craft3d_engine::look::LookSpec::default()
+    let studio = json!({"mode": "studio"});
+    craft3d_engine::look::LookSpec::patched(&craft3d_engine::look::LookSpec::default(), &studio)
+        .unwrap()
         .prepared()
         .unwrap()
-        .unwrap();
+        .expect("the studio look's environment");
     let state = headless_render_state()
         .unwrap_or_else(|e| panic!("the direct path cannot be tested: {e}; {ADAPTER_HINT}"));
     let mut shell = Shell::with_renderer(RendererChoice::Cpu);
@@ -2335,10 +2337,12 @@ fn edges_evidence_on_a_model_in_the_studio_look_with_a_lens() {
     };
     let mut session = Session::new(Workspace::none());
     run(&mut session, "file.open", json!({"path": path}));
-    craft3d_engine::look::LookSpec::default()
+    let studio = json!({"mode": "studio"});
+    craft3d_engine::look::LookSpec::patched(&craft3d_engine::look::LookSpec::default(), &studio)
+        .unwrap()
         .prepared()
         .unwrap()
-        .unwrap();
+        .expect("the studio look's environment");
     let state = headless_render_state()
         .unwrap_or_else(|e| panic!("the direct path cannot be tested: {e}; {ADAPTER_HINT}"));
     let mut shell = Shell::with_renderer(RendererChoice::Cpu);
