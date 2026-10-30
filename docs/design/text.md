@@ -67,6 +67,7 @@ Font bytes are hostile: at most 32 MiB, 2 000 contours and 20 000 segments a gly
 ## Findings and history
 
 - 2026-10-30: built (agent `text`). Phase 4, text wrapped onto a cylinder or developable surface: see *Owed*.
+- 2026-10-30: a sketch on an end cap of an extruded text follows the cap's plane, not the glyph (`regen::sketch::same_plane`: every cap of an extrusion's end lies in one plane, which is all a sketch takes), so it does not fail when the glyph moves; a strict reference (a face colour, a fillet's edge, a face operation) does, by its name.
 
 ## Owed
 

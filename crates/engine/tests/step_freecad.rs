@@ -1499,3 +1499,48 @@ fn freecad_reads_revolved_and_closed_splines() {
         bad.join("\n")
     );
 }
+
+/// Text extruded in both built-in fonts (cubic CFF and quadratic TrueType
+/// outlines, holes in the "O", "B", "8" and "&"), at three scales: FreeCAD
+/// reads the STEP and measures what the kernel measures.
+#[test]
+#[ignore = "needs FreeCAD: set CRAFT3D_FREECAD"]
+fn freecad_reads_extruded_text() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("step-text");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut set = Set {
+        dir,
+        cases: Vec::new(),
+        refused: Vec::new(),
+        unmeasured: Vec::new(),
+        per_body: false,
+        meshes: None,
+    };
+    for (k, tag) in [(1e-3, "milli"), (1.0, "one"), (1e3, "kilo")] {
+        for font in ["sans", "mono"] {
+            set.add(&format!("{tag}-text-{font}"), "mm", k, SPLINE, |s, k| {
+                run(s, "sketch.create", json!({"name": "Text"}));
+                run(
+                    s,
+                    "sketch.text",
+                    json!({"sketch": "Text", "text": "OB8&g", "font": font, "size": 10.0 * k}),
+                );
+                run(
+                    s,
+                    "feature.extrude",
+                    json!({"sketch": "Text", "distance": 2.0 * k, "name": "Letters"}),
+                );
+                Ok(())
+            });
+        }
+    }
+    assert!(set.refused.is_empty(), "{:?}", set.refused);
+    assert!(set.unmeasured.is_empty(), "{:?}", set.unmeasured);
+    let rows = harness::check(
+        "step-text-files",
+        "STEP: extruded text in both built-in fonts, read by FreeCAD",
+        &set.cases,
+    );
+    assert_eq!(rows.len(), 6, "two fonts at three scales");
+}

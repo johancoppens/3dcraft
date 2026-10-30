@@ -399,6 +399,11 @@ pub(crate) fn lay_out(
         ));
     }
     let rotation = crate::angle(doc, variables, &format!("{id}.rotation"), &text.rotation)?;
+    if !rotation.is_finite() {
+        return Err(format!(
+            "{id}.rotation: the turn of a text is a finite angle"
+        ));
+    }
     let spacing = variables
         .evaluate(text.line_spacing.source())
         .map_err(|e| format!("{id}.lineSpacing: `{}`: {e}", text.line_spacing.source()))?;
@@ -445,8 +450,9 @@ pub(crate) fn lay_out(
         TextAnchor::Bottom => -last_baseline,
         TextAnchor::Middle => -(cap + last_baseline) / 2.0,
     };
-    let at =
-        (solved.point)(text.at).ok_or_else(|| format!("{} has no solved position", text.at))?;
+    let at = (solved.point)(text.at)
+        .filter(|p| p.iter().all(|v| v.is_finite()))
+        .ok_or_else(|| format!("{} has no solved position", text.at))?;
     let (sin, cos) = rotation.sin_cos();
     let tol = doc.tolerance.linear;
     // Along a curve: the curve by arc length, where the text starts on it,
@@ -456,6 +462,11 @@ pub(crate) fn lay_out(
             let track = track(sketch, path.curve, solved, tol * 1e-2)?;
             let start = length_of(doc, variables, &format!("{id}.path.start"), &path.start)?;
             let offset = length_of(doc, variables, &format!("{id}.path.offset"), &path.offset)?;
+            if !(start.is_finite() && offset.is_finite()) {
+                return Err(format!(
+                    "{id}.path: the start and the offset along the curve are finite lengths"
+                ));
+            }
             Some((track, start, offset, path.side, path.reversed))
         }
         None => None,

@@ -188,37 +188,46 @@ fn a_reference_to_a_vanished_glyph_fails_by_name_and_never_retargets() {
         "feature.extrude",
         json!({"sketch": "S", "distance": 2, "name": "Letters"}),
     );
-    // The top of the B, a flat face named after the B's contours.
+    // The wall of the B, a face named after the B's outer contour. (A
+    // sketch on a cap would not do: every end cap of an extrusion lies in
+    // one plane, which is all a sketch takes from it.)
     let names: Vec<String> = inspect(&mut s)["bodies"]
         .as_array()
         .unwrap()
         .iter()
         .flat_map(common::names_of)
         .collect();
-    let top = names
-        .iter()
-        .find(|n| n.contains("endCap") && n.contains("glyph(1,U+0042)"))
-        .unwrap_or_else(|| panic!("no top of the B in {names:?}"))
-        .clone();
-    built(&mut s, "sketch.create", json!({"name": "OnB", "face": top}));
+    let wall = "F2:side(e2.glyph(1,U+0042).contour(0))".to_string();
+    assert!(names.contains(&wall), "no wall of the B in {names:?}");
+    run(
+        &mut s,
+        "face.appearance",
+        json!({"faces": [wall], "color": "#c03020"}),
+    );
+    assert!(inspect(&mut s).get("lostFaces").is_none());
     // "AB" to "BA": a B is still there, at another place; the reference is
-    // to the B at place 1, which is now an A: it fails, by its name.
+    // to the B at place 1, which is now an A: it is lost, by its name, and
+    // colours nothing (not the A's wall, nor the B's at place 0).
     run(
         &mut s,
         "sketch.textEdit",
         json!({"sketch": "S", "entity": "e2", "text": "BA"}),
     );
-    let state = common::checked::feature(&mut s, "OnB");
-    assert_eq!(state["status"], "failed", "{state}");
-    let why = state["error"].as_str().unwrap();
-    assert!(why.contains("glyph(1,U+0042)"), "{why}");
+    let doc = inspect(&mut s);
+    let lost = doc["lostFaces"].to_string();
+    assert!(lost.contains("glyph(1,U+0042)"), "{doc}");
+    let coloured = doc["faceAppearances"].to_string();
+    assert!(
+        !coloured.contains("U+0041") && !coloured.contains("glyph(0,U+0042)"),
+        "{coloured}"
+    );
     // Back to "AB": the same face, found again.
     run(
         &mut s,
         "sketch.textEdit",
         json!({"sketch": "S", "entity": "e2", "text": "AB"}),
     );
-    assert_eq!(common::checked::feature(&mut s, "OnB")["status"], "ok");
+    assert!(inspect(&mut s).get("lostFaces").is_none());
 }
 
 /// The font with `OS/2 fsType` set to `value`.

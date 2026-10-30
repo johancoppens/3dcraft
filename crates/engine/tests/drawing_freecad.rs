@@ -567,3 +567,81 @@ fn freecad_reads_a_flat_pattern() {
         }
     }
 }
+
+/// The outline of a glyph with holes, from a text in each built-in font
+/// and in the single-stroke font: FreeCAD reads the DXF and SVG of the
+/// sketch, its wires the glyph's contours, its area the glyph's (outer
+/// less holes) as the kernel measures the extruded glyph.
+#[test]
+#[ignore = "needs FreeCAD: set CRAFT3D_FREECAD and run with --ignored"]
+fn freecad_reads_the_outline_of_text() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("drawing-freecad-text");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let workspace = || Workspace {
+        read: Access::Root(dir.clone()),
+        write: Access::Root(dir.clone()),
+    };
+    let mut expected: BTreeMap<String, (f64, usize)> = BTreeMap::new();
+    for (font, glyph, contours) in [("sans", "B", 3), ("mono", "B", 3), ("sans", "O", 2)] {
+        let mut s = Session::new(workspace());
+        run(&mut s, "file.new", json!({}));
+        run(&mut s, "sketch.create", json!({"name": "Glyph"}));
+        run(
+            &mut s,
+            "sketch.text",
+            json!({"sketch": "Glyph", "text": glyph, "font": font, "size": 20}),
+        );
+        run(
+            &mut s,
+            "feature.extrude",
+            json!({"sketch": "Glyph", "distance": 1, "name": "G"}),
+        );
+        let area = run(&mut s, "document.measure", json!({}))["volume"]
+            .as_f64()
+            .unwrap();
+        for format in ["dxf", "svg"] {
+            let file = format!("{font}-{glyph}.{format}");
+            run(
+                &mut s,
+                "file.export",
+                json!({"path": file, "sketch": "Glyph"}),
+            );
+            expected.insert(file, (area, contours));
+        }
+    }
+    // The stroke font: open strokes, as many wires as strokes (an I and
+    // an L: one stroke each).
+    let mut s = Session::new(workspace());
+    run(&mut s, "file.new", json!({}));
+    run(&mut s, "sketch.create", json!({"name": "Strokes"}));
+    run(
+        &mut s,
+        "sketch.text",
+        json!({"sketch": "Strokes", "text": "IL", "font": "stroke", "size": 20}),
+    );
+    for format in ["dxf", "svg"] {
+        let file = format!("stroke-IL.{format}");
+        run(
+            &mut s,
+            "file.export",
+            json!({"path": file, "sketch": "Strokes"}),
+        );
+        expected.insert(file, (0.0, 2));
+    }
+    let report = freecad_reads(&dir);
+    for (file, (area, wires)) in &expected {
+        let got = report
+            .get(file)
+            .unwrap_or_else(|| panic!("FreeCAD did not read {file}"));
+        let got_wires: usize = got["wires"].parse().unwrap();
+        assert_eq!(got_wires, *wires, "{file}: {got:?}");
+        if *area > 0.0 {
+            let got_area: f64 = got["area"].parse().unwrap();
+            assert!(
+                near(got_area, *area, 1e-3),
+                "{file}: area {got_area}, ours {area}"
+            );
+        }
+    }
+}
