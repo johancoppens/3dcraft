@@ -492,6 +492,13 @@ name = "craft3d-expr"
 version = "0.1.0"
 
 [[package]]
+name = "craft3d-font"
+version = "0.1.0"
+dependencies = [
+ "ttf-parser",
+]
+
+[[package]]
 name = "craft3d-format"
 version = "0.1.0"
 dependencies = [
@@ -3705,6 +3712,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "craft3d-doc",
+ "craft3d-font",
  "flate2",
  "png 0.17.16",
  "serde_json",

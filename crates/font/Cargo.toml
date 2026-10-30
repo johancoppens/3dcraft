@@ -1,0 +1,13 @@
+[package]
+name = "craft3d-font"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Font files read into exact outlines (TrueType quadratic and CFF cubic Béziers), advances, kerning and layout, the nonzero fill rule resolved, and a single-stroke font as data."
+
+[lints]
+workspace = true
+
+[dependencies]
+ttf-parser.workspace = true

@@ -3,6 +3,7 @@
 mod actions;
 mod boolean_corpus;
 mod ci;
+mod fonts;
 mod fuzz;
 mod health;
 mod layers;
@@ -95,6 +96,7 @@ fn main() -> ExitCode {
         "stats" => stats::run(),
         "health" => health::run(),
         "freecad" => freecad(),
+        "fonts" => fonts::run(),
         "boolean-corpus" => {
             let args: Vec<String> = std::env::args().skip(2).collect();
             boolean_corpus::run(&args)
@@ -120,7 +122,7 @@ fn main() -> ExitCode {
             thumbs::run(&args)
         }
         other => Err(format!(
-            "unknown task `{other}`; tasks: layers, wasm, ci, stats, health, freecad, boolean-corpus, fuzz, actions, package, web-size, example-thumbs"
+            "unknown task `{other}`; tasks: layers, wasm, ci, stats, health, freecad, fonts, boolean-corpus, fuzz, actions, package, web-size, example-thumbs"
         )),
     };
     match result {

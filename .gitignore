@@ -2,6 +2,8 @@
 /log/
 /plan/
 /corpus/
+# The built-in fonts, fetched by `cargo xtask fonts`; never committed.
+/assets/fonts/
 /.private/
 # Reference copy of another project's docs; local only (docs/README.md).
 /docs_photocraft/

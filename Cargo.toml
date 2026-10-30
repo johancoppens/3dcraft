@@ -34,6 +34,7 @@ craft3d-stepread = { path = "crates/stepread" }
 craft3d-zipstore = { path = "crates/zipstore" }
 craft3d-buildinfo = { path = "crates/buildinfo" }
 craft3d-io = { path = "crates/io" }
+craft3d-font = { path = "crates/font" }
 # Not modelling code: image encoding only (decisions.md, D10).
 png = "0.17"
 # The shell: native egui/eframe on wgpu (AGENTS.md). Default features are
@@ -67,6 +68,10 @@ js-sys = "0.3.106"
 web-sys = "0.3.106"
 web-time = "1.1.0"
 serde = { version = "1", features = ["derive"] }
+# Reading font files (OpenType, TrueType and CFF outlines; kern and GPOS
+# pair kerning), MIT/Apache-2.0, pure Rust, no_std: `craft3d-font`
+# (docs/design/text.md).
+ttf-parser = { version = "0.25.1", default-features = false, features = ["std", "opentype-layout"] }
 # float_roundtrip: a number read back from a file is the number that was
 # written, bit for bit; the default parser may be one unit in the last place
 # off, and a reopened document would regenerate to slightly different bodies.
