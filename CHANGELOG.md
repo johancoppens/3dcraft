@@ -8,7 +8,7 @@ All notable changes to 3DCraft are listed here. The format follows [Keep a Chang
 
 The first release for people outside the project. 3DCraft is a parametric 3D CAD modeller built for AI: you describe a part, an AI agent builds it through 3DCraft's commands, and you watch it appear in the window, point at faces and check the result. Ready-made designs called Jigs need no AI at all: set their sizes in a form and export. Everything can also be done from the command line or a script, and 3DCraft runs in the browser too.
 
-Every item below is in `main` as of 2026-10-30. Branches still merging for this release add their lines here when they land (the release checklist in `docs/development.md`).
+Every item below is in `main` as of 2026-10-31. Branches still merging for this release add their lines here when they land (the release checklist in `docs/development.md`).
 
 ### Modelling
 
@@ -16,7 +16,7 @@ Every item below is in `main` as of 2026-10-30. Branches still merging for this 
 - **Features.** Blocks, cylinders, cones, spheres and tori; extrude, revolve, sweep (along a path or a helix) and loft from sketches; patterns, mirror and move; shell, draft, offset, move and delete faces, thicken; ISO metric threads (cosmetic or modelled); datum planes, axes, points and helices; sheet bodies; several bodies in one document.
 - **Fillets and chamfers** on edges, chosen by name, by description or by pointing at them.
 - **Names that stay put.** Faces and edges are named by how they were made, so a fillet does not jump to another edge when an earlier feature changes, and a face that is gone is reported instead of silently replaced.
-- **Units.** Millimetres, inches and the other length units per document, angles in degrees or radians; the length unit can be changed later while keeping the sizes. Mass, time, force, pressure and stress, moment and energy in expressions (`1000 N / (100 * (1 mm)^2)` is 10 MPa), so a design rule can say `"max": "235 MPa"`; an output can carry a label and the unit it is shown in. Named sets can pick flat faces by their plate thickness (`thickness`).
+- **Units.** Millimetres, inches and the other length units per document, angles in degrees or radians; the length unit can be changed later while keeping the sizes. Mass, time, force, pressure and stress, moment and energy in expressions (`1000 N / (100 * (1 mm)^2)` is 10 MPa), so a design rule can say `"max": "235 MPa"`; an output can carry a label and the unit it is shown in. Named sets can pick flat faces by their plate thickness (`thickness`). Litres (`L`, `mL`) for volumes. A document's tolerance can be set (`document.setTolerance`).
 - **Colours and materials** per body and per face, with metallic and roughness, following the face through later edits and kept in 3MF, OBJ and STEP exports.
 
 ### Sketches
@@ -28,19 +28,20 @@ Every item below is in `main` as of 2026-10-30. Branches still merging for this 
 
 ### Text
 
-- **Text in sketches** (`sketch.text`), straight or along a curve (`sketch.textOnCurve`): a template that can hold formulas, cap height or em size, anchor, alignment, rotation, line spacing and wrapping to a width, as closed profiles of exact curves with kerning, ready to extrude, emboss or engrave. Letters are named by glyph, so a feature on one fails by name instead of jumping to another.
+- **Text in sketches** (`sketch.text`), straight or along a curve (`sketch.textOnCurve`): a template that can hold formulas, cap height or em size, anchor, alignment, rotation, line spacing and wrapping to a width, as closed profiles of exact curves with kerning, ready to extrude, emboss or engrave. Text and any sketch wrap onto a cylinder or a cone (`feature.extrude` with `wrap`), embossed or engraved along the surface at true size. Letters are named by glyph, so a feature on one fails by name instead of jumping to another.
 - **Fonts.** Noto Sans, JetBrains Mono and a single-stroke font drawn for 3DCraft are built in and carried by the installers (fetched when first needed on the web); `font.add` keeps another font in the document when its licence allows it. The measure `textExtent` gives a text's size.
 
 ### Booleans
 
 - **Union, subtract and intersect** between bodies of any shape, including curved and freeform faces, and cuts by sheets and between sheets.
+- **Sew** (`feature.boolean` with `op: sew`): sheets that meet along their edges, even tangent or in curvature, joined into one sheet or a closed solid without cutting them.
 - When an operation cannot be done exactly it refuses with a clear message instead of producing a broken solid.
 
 ### Sheets, plates, sheet metal and origami
 
 - **Plates.** Give faces (flat, developable or freeform) a thickness, inside, outside or in the middle, with square, bevel, mitre, touch and over/under joints between neighbouring plates.
 - **Developable surfaces and unfolding.** A developable surface between two curves, unfolded flat at true size with a map between the pattern and the part, and a measure of how developable a face is. Rails with corners (a fan from the corner, a crease where both rails turn) and closed rails (a tube), such as a sea kayak's sheer panels.
-- **Sheet metal.** A base with flanges, bent by inner radius and K-factor, with rectangular, round and tear corner reliefs; corners closed by overlap, butt or mitre; holes and cut-outs on any flat; a bend table; checks for bend radius, flange length, hole-to-bend distance and relief; the flat pattern exported with its bend lines. Holes across a bend, and a later through cut carried back onto the flat pattern. Flanges inset on an edge (several tabs), on a flange's side, on a hole's edge or with an outline of their own, with bend reliefs at their ends. A press-brake check (`sheetMetal.bendSequence`) that searches an order of bends and proves the punch and die clear the part.
+- **Sheet metal.** A base with flanges, bent by inner radius and K-factor, with rectangular, round and tear corner reliefs; corners closed by overlap, butt or mitre; holes and cut-outs on any flat; a bend table; checks for bend radius, flange length, hole-to-bend distance and relief; the flat pattern exported with its bend lines. Holes across a bend, and a later through cut carried back onto the flat pattern. Flanges inset on an edge (several tabs), on a flange's side, on a hole's edge or with an outline of their own, with bend reliefs at their ends. A press-brake check (`sheetMetal.bendSequence`) that searches an order of bends and proves the punch and die clear the part, or checks an order you give, also for parts with holes across their bends. Louvres and tabs: a flange on the edge of a cut-out in any flat. The measures `flatExtent` and `flatArea` for a flat pattern's size.
 - **Origami.** A crease pattern of mountains, valleys and cuts folded by angles that follow variables, or folded flat with the order of the layers worked out; Kawasaki and Maekawa checks; the crease pattern exported to SVG and DXF. Thick panels on a membrane, slits and slots, a flat-folded stack folded on, and patterns of thousands of creases.
 
 ### Freeform surfacing
@@ -48,6 +49,7 @@ Every item below is in `main` as of 2026-10-30. Branches still merging for this 
 - **Analysis.** Zebra stripes, highlight lines, a curvature map and a draft check drawn on the exact surfaces, curvature combs on edges and iso-curves, and the measures `draft` and `curvature` at a point (the Analysis toggle in the window).
 - **Surfaces from curve networks.** Gordon surfaces through crossing u and v curves (`feature.surface.network`), Coons patches (`feature.surface.coons`) and lofts with guide curves, as exact B-splines.
 - **Continuity across seams.** An edge held in position, tangent (G1) or in curvature (G2) to a plane, cylinder, cone, sphere or a spline face, and `measure.continuity`, which proves G0, G1 or G2 with bounded gaps (also as an assertion). A curvature seam spreads its change over the sheet with the least variation of curvature, so the surface stays fair beside the seam.
+- Zebra stripes and highlight lines stay clean where they are finer than a pixel: they fade to grey instead of breaking into moiré.
 
 ### Assemblies and motion
 
@@ -77,6 +79,7 @@ Every item below is in `main` as of 2026-10-30. Branches still merging for this 
 ### The window and installing
 
 - **The window.** A start screen with the example models as cards, recent files and how to connect an agent; a tab per document with its own view; a feature list with an eye per feature and a double click (or F) that flies the camera to it; a history player like a video player; a view cube, see-through bodies and a section plane; File, Edit (Undo, Redo) and Help menus with keyboard shortcuts (F1). It draws with your graphics card, or on the processor when there is none. The interface is set in Inter, with JetBrains Mono for code.
+- **Showcase examples** on the start screen: a class-A motorcycle fuel tank and computer mouse whose seams are proven curvature-continuous, and a sheet-metal mini-PC chassis with louvres, a hem and a jog, its flat patterns on one sheet.
 - **Autosave and crash recovery.** Unsaved work is saved in the background; after a crash the window offers to recover it. Closing the window or a tab asks before unsaved changes are lost.
 - **Clear errors and bug reports.** A failed file action shows a dialog with what went wrong; after any failed command the status bar offers *Copy details*, a short report to paste into a bug report.
 - **Installers** for Linux (AppImage, and a tarball with an install script), macOS (a `.dmg` for Apple Silicon) and Windows (a `.msi` installer, and a zip), with the `.3dcraft` and `.3dcraftjig` file types.
@@ -87,7 +90,8 @@ Every item below is in `main` as of 2026-10-30. Branches still merging for this 
 - **A studio look**: image-based lighting from three bundled environments, soft shadows, ambient occlusion, a ground that catches shadows and reflections, contact shadows, depth of field and bloom, refined while the camera stands still; a view setting that never changes the document.
 - **Materials** kept in the document: anisotropic metal, clear coat paint, glass with refraction and subsurface wrap, with six presets (`material.presets`); exports carry what their formats hold.
 - Both looks are drawn by the graphics card and by the processor alike, the processor's picture being the reference the graphics card is tested against. Pictures without a window (`view.render`, `view.replay`, `craft3d-cli render`) use the graphics card when there is one (`renderer: auto|cpu|gpu`).
-- **Animations** (`view.replay`): variables moved along tracks with easing, the motion timeline, a camera path with orbit and dolly, the look, frames per second and duration, written as PNG frames or, through an installed ffmpeg, as MP4, WebM or GIF.
+- **Animations** (`view.replay`): variables moved along tracks with easing, the motion timeline, a camera path with orbit and dolly, the look, frames per second and duration, written as PNG frames or, through an installed ffmpeg, as MP4, WebM or GIF. The window records itself too (`ui.record`), choosing an encoder your ffmpeg actually has.
+- **The same model on every computer.** 3DCraft computes its sines, cosines and other functions itself instead of using the system's maths library, so a document rebuilds to the same bodies whatever the platform.
 
 ### Web
 
@@ -103,7 +107,7 @@ Every item below is in `main` as of 2026-10-30. Branches still merging for this 
 
 - The installers are not signed, so Windows and macOS warn the first time (the guide shows how to open them). macOS is Apple Silicon only, and double-clicking a `.3dcraft` file there starts 3DCraft without opening the file (use File › Open).
 - An AI agent cannot drive the web version yet. The web version rebuilds the model beside the page, but a click that selects, measures and exports still compute on the page, so they can take a moment on a big model.
-- Some modelling cases are refused rather than built (the message says which): among them some booleans and freeform fillets, curved and sharp sheet-metal bends, curved origami creases, a sweep along two rails, and text wrapped onto a curved surface. Text is laid out glyph by glyph with kerning; shaping for complex scripts (such as Arabic or the Indic scripts) is for a later version. Every refusal reported helps.
+- Some modelling cases are refused rather than built (the message says which): among them some booleans and freeform fillets, curved and sharp sheet-metal bends, curved origami creases, a sweep along two rails, and text wrapped onto a surface other than a cylinder or a cone. Text is laid out glyph by glyph with kerning; shaping for complex scripts (such as Arabic or the Indic scripts) is for a later version. Every refusal reported helps.
 
 [Unreleased]: https://github.com/johancoppens/3dcraft/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/johancoppens/3dcraft/releases/tag/v0.1.0
