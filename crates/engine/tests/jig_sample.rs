@@ -779,7 +779,12 @@ fn a_sink_that_says_stop_stops_the_run_as_a_time_limit_does() {
             count.set(count.get() + 1);
             count.get() < 2
         },
-        || sample(&mut s, json!({"samples": 4, "seed": 1})),
+        || {
+            sample(
+                &mut s,
+                json!({"samples": 4, "seed": 1, "timeLimitMs": null}),
+            )
+        },
     );
     // Stopped after the second point, before the third.
     assert_eq!(seen.get(), 2);
