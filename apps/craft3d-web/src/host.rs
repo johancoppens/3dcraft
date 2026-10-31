@@ -1645,14 +1645,17 @@ mod tests {
             host.session.scene_done(token);
         }
         assert!(!host.session.regenerated_here());
-        assert!(host.export_as("plate.obj").is_empty());
+        // Written now (the export dialog's own reads, which answer at
+        // once, needed the bodies on the page) or by the worker.
+        let now = host.export_as("plate.obj");
         let mut answered = Vec::new();
         for token in host.session.command_jobs() {
             let request = host.session.command_request(token).unwrap();
             let answer = craft3d_engine::run_command(&request.document, &request.work);
             answered.extend(host.session.command_answered(token, Ok(answer)));
         }
-        let outcome = host.answered(answered);
+        let mut outcome = host.answered(answered);
+        outcome.downloads.splice(0..0, now);
         let files = |d: &[Download]| -> Vec<(String, Vec<u8>)> {
             d.iter()
                 .map(|d| (d.name.clone(), d.bytes.clone()))
@@ -1660,7 +1663,6 @@ mod tests {
         };
         assert_eq!(files(&outcome.downloads), files(&want));
         assert!(host.shell.last_command.as_ref().is_some_and(|r| r.ok));
-        assert!(!host.session.regenerated_here());
     }
 
     /// Bodies selected, a slider moved, then Export: only the selected
@@ -1722,7 +1724,11 @@ mod tests {
             }
             answered
         };
+        // A state not regenerated on the page (adding the blocks
+        // regenerated the one before on the page).
+        host.session.execute("param.set", &json!({"values": {"k": "11 mm"}})).unwrap();
         settle(&mut host);
+        assert!(!host.session.regenerated_here());
         let click = host
             .session
             .execute_deferrable("select.set", &json!({"names": ["Plate"]}))
