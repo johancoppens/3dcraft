@@ -94,6 +94,7 @@ const FROZEN: &[(u32, usize, u64)] = &[
     // An assembly with a flexible subassembly and a linear coupling,
     // v58.3dcraftasm.
     (58, 27613, 0x742d_f7f7_9f5f_7b75),
+    (59, 7395, 0x31e0_0443_3478_64ab),
 ];
 
 fn dir() -> PathBuf {

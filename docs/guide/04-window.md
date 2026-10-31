@@ -37,9 +37,10 @@ moment's `t`. An error shows at once and stays.
 Without a document, the window shows the **start screen** (picture in [chapter 2](02-first-steps.md)):
 
 - **New document** and **Open…**;
-- **Examples**, in three sections you pick above the cards: **Parts**, ten of the [example
+- **Examples**, in four sections you pick above the cards: **Parts**, ten of the [example
   models](../examples/README.md), each built in a new tab by a click from the same command script an agent
-  would send; **Jigs**, three published Jigs (a planetary gearbox, a gear reducer, a Jansen linkage leg, after the mechanism of Theo Jansen's Strandbeests) that
+  would send; **Showcase**, parts that show what the surfacing can do (a class-A fuel tank whose seams are
+  proven G2), built the same way; **Jigs**, three published Jigs (a planetary gearbox, a gear reducer, a Jansen linkage leg, after the mechanism of Theo Jansen's Strandbeests) that
   open on their **Parameters** tab ([chapter 5](05-jigs.md)); and **Assemblies**, three assemblies (the
   same gearbox and reducer, and a Jansen linkage walker of four legs) that open ready to play their motion
   ([chapter 17](17-assemblies.md#motion)). These six come from the [3DCraft Jigs

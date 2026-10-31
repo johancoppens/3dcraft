@@ -1,0 +1,12 @@
+[
+ ["document.setTolerance", {"linear": 0.0001, "angular": 1e-7}],
+ ["sketch.create", {"name": "Floor", "plane": "xy"}],
+ ["sketch.rect", {"sketch": "Floor", "from": [0, 0], "to": [40, 30]}],
+ ["feature.fill", {"sketch": "Floor", "name": "Plate"}],
+ ["sketch.create", {"name": "Back", "plane": "zx"}],
+ ["sketch.rect", {"sketch": "Back", "from": [0, 0], "to": [20, 40]}],
+ ["feature.fill", {"sketch": "Back", "name": "Wall"}],
+ ["feature.boolean", {"op": "sew", "target": "Plate", "tool": "Wall", "name": "Folded"}],
+ ["feature.block", {"size": [100, 100, 100], "position": [100, 0, 0], "name": "Litre"}],
+ ["variable.measure", {"name": "capacity", "measure": "volume", "of": "Litre", "unit": "L", "label": "Capacity"}]
+]

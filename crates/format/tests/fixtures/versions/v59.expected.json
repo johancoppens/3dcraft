@@ -1,0 +1,406 @@
+{
+  "format_version": 59,
+  "written_by": "841bcf8d3cdd17da07fd630713443c4c35d2274d",
+  "how": "craft3d-cli (release) built from that commit: craft3d-cli run --new '{\"units\": \"mm\"}' --script v59.steps.json --out v59.3dcraft, then craft3d-cli info and output.list of the file; a plate and a wall sewn along their common edge (feature.boolean op sew, format 59) in a document whose tolerances were set by document.setTolerance (1e-4 mm, 1e-7 rad), and a 100 mm cube whose volume is the output capacity in litres (1 L)",
+  "rollback": null,
+  "features": [
+    {
+      "dof": 4,
+      "id": "F1",
+      "name": "Floor",
+      "params": {
+        "constraints": [
+          {
+            "id": 1,
+            "kind": {
+              "a": 5,
+              "b": null,
+              "type": "horizontal"
+            }
+          },
+          {
+            "id": 2,
+            "kind": {
+              "a": 6,
+              "b": null,
+              "type": "vertical"
+            }
+          },
+          {
+            "id": 3,
+            "kind": {
+              "a": 7,
+              "b": null,
+              "type": "horizontal"
+            }
+          },
+          {
+            "id": 4,
+            "kind": {
+              "a": 8,
+              "b": null,
+              "type": "vertical"
+            }
+          }
+        ],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 0.0,
+              "y": 0.0
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 40.0,
+              "y": 30.0
+            },
+            "id": 2
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 40.0,
+              "y": 0.0
+            },
+            "id": 3
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 0.0,
+              "y": 30.0
+            },
+            "id": 4
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 3,
+              "start": 1,
+              "type": "line"
+            },
+            "id": 5
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 2,
+              "start": 3,
+              "type": "line"
+            },
+            "id": 6
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 4,
+              "start": 2,
+              "type": "line"
+            },
+            "id": 7
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 1,
+              "start": 4,
+              "type": "line"
+            },
+            "id": 8
+          }
+        ],
+        "next_constraint_id": 5,
+        "next_entity_id": 9,
+        "plane": {
+          "offset": "0",
+          "plane": "xy",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "bodyUsedBy": "F5",
+      "id": "F2",
+      "name": "Plate",
+      "params": {
+        "sketch": 1,
+        "type": "fill"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "dof": 4,
+      "id": "F3",
+      "name": "Back",
+      "params": {
+        "constraints": [
+          {
+            "id": 1,
+            "kind": {
+              "a": 5,
+              "b": null,
+              "type": "horizontal"
+            }
+          },
+          {
+            "id": 2,
+            "kind": {
+              "a": 6,
+              "b": null,
+              "type": "vertical"
+            }
+          },
+          {
+            "id": 3,
+            "kind": {
+              "a": 7,
+              "b": null,
+              "type": "horizontal"
+            }
+          },
+          {
+            "id": 4,
+            "kind": {
+              "a": 8,
+              "b": null,
+              "type": "vertical"
+            }
+          }
+        ],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 0.0,
+              "y": 0.0
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 20.0,
+              "y": 40.0
+            },
+            "id": 2
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 20.0,
+              "y": 0.0
+            },
+            "id": 3
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 0.0,
+              "y": 40.0
+            },
+            "id": 4
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 3,
+              "start": 1,
+              "type": "line"
+            },
+            "id": 5
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 2,
+              "start": 3,
+              "type": "line"
+            },
+            "id": 6
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 4,
+              "start": 2,
+              "type": "line"
+            },
+            "id": 7
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 1,
+              "start": 4,
+              "type": "line"
+            },
+            "id": 8
+          }
+        ],
+        "next_constraint_id": 5,
+        "next_entity_id": 9,
+        "plane": {
+          "offset": "0",
+          "plane": "zx",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "bodyUsedBy": "F5",
+      "id": "F4",
+      "name": "Wall",
+      "params": {
+        "sketch": 3,
+        "type": "fill"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "id": "F5",
+      "name": "Folded",
+      "params": {
+        "keep_tool": false,
+        "op": "sew",
+        "target": 2,
+        "tool": 4,
+        "type": "boolean"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "id": "F6",
+      "name": "Litre",
+      "params": {
+        "orientation": {
+          "angle": "0 deg",
+          "axis": [
+            "0",
+            "0",
+            "1"
+          ]
+        },
+        "position": [
+          "100",
+          "0",
+          "0"
+        ],
+        "size": [
+          "100",
+          "100",
+          "100"
+        ],
+        "type": "block"
+      },
+      "status": "ok",
+      "suppressed": false
+    }
+  ],
+  "bodies": [
+    {
+      "area": 2000.0000000000014,
+      "bbox": [
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          40.0,
+          30.0,
+          20.0
+        ]
+      ],
+      "bboxTolerance": 0.24899799195977468,
+      "centroid": null,
+      "edges": 7,
+      "faceNames": [
+        "F5:copy(0)/F2:startCap(e5,e6,e7,e8)",
+        "F5:copy(1)/F4:startCap(e5,e6,e7,e8)"
+      ],
+      "faces": 2,
+      "feature": "F5",
+      "kind": "sheet",
+      "name": "Folded",
+      "shells": 1,
+      "valid": true,
+      "vertices": 6,
+      "volume": 0.0
+    },
+    {
+      "area": 60000.000000000015,
+      "bbox": [
+        [
+          100.0,
+          0.0,
+          0.0
+        ],
+        [
+          200.0,
+          100.0,
+          100.0
+        ]
+      ],
+      "bboxTolerance": 0.24899799195977468,
+      "centroid": [
+        150.0,
+        50.0,
+        50.0
+      ],
+      "edges": 12,
+      "faceNames": [
+        "F6:face(0)",
+        "F6:face(1)",
+        "F6:face(2)",
+        "F6:face(3)",
+        "F6:face(4)",
+        "F6:face(5)"
+      ],
+      "faces": 6,
+      "feature": "F6",
+      "kind": "solid",
+      "name": "Litre",
+      "shells": 1,
+      "valid": true,
+      "vertices": 8,
+      "volume": 1000000.0000000003
+    }
+  ],
+  "outputs": [
+    {
+      "dimension": "length^3",
+      "label": "Capacity",
+      "measure": {
+        "measure": "volume",
+        "of": "F6"
+      },
+      "message": "1 L",
+      "name": "capacity",
+      "status": "known",
+      "text": "Capacity 1 L",
+      "unit": "L",
+      "value": 1.0000000000000004
+    }
+  ]
+}
