@@ -711,3 +711,117 @@ fn a_plane_seam_with_its_second_row_lifted_is_g1_by_its_curvature() {
         }
     }
 }
+
+/// Two sheets meeting along a long straight seam of `l`, of degree 5 and
+/// 48 knot spans along it, the spans alternately long and ten times
+/// shorter (as a Gordon surface's knots crowd where its curves are
+/// re-parametrised, the tank's side: spans of 0.022 among 0.2) and the
+/// control points along it spaced unevenly, so that the speed along the
+/// seam changes and the second derivatives along it are large; across,
+/// one quadratic span. `b` leaves the seam towards +y, `a` towards −y as
+/// the same polynomial continued (its rows the blossoms `b₀`, `2b₀ − b₁`,
+/// `4b₀ − 4b₁ + b₂`), so the two are one surface, G2 exactly; then `a`'s
+/// third row is lifted by `delta` along the seam's unit normal, which
+/// changes its normal curvature across by `2 delta / |S_v|²` and nothing
+/// of its position and tangent plane along the seam.
+fn long_seam(l: f64, delta: f64) -> (NurbsSurface, NurbsSurface, NurbsCurve, f64) {
+    let (p, spans) = (5, 48);
+    let mut lengths = Vec::new();
+    for k in 0..spans {
+        lengths.push(if k % 2 == 0 { 1.0 } else { 0.1 });
+    }
+    let total: f64 = lengths.iter().sum();
+    let mut knots = vec![0.0; p + 1];
+    let mut run = 0.0;
+    for d in lengths.iter().take(spans - 1) {
+        run += d;
+        knots.push(run / total);
+    }
+    knots.extend([1.0; 6]);
+    let nu = spans + p;
+    let (w, h) = (0.25 * l, 0.1 * l);
+    // Along: the Greville abscissae bent, so the speed is not even.
+    let xs: Vec<f64> = (0..nu)
+        .map(|i| {
+            let g = knots[i + 1..=i + p].iter().sum::<f64>() / p as f64;
+            l * (g + 0.15 * g * (1.0 - g) * (3.0 * g).psin())
+        })
+        .collect();
+    let rows_b = [v(0.0, 0.0, 0.0), v(0.0, 0.5 * w, h), v(0.0, w, 0.0)];
+    let rows_a = [
+        rows_b[0],
+        rows_b[0] * 2.0 - rows_b[1],
+        rows_b[0] * 4.0 - rows_b[1] * 4.0 + rows_b[2],
+    ];
+    // The seam's normal: along x, S_v of `a` there is 2 (a₁ − a₀).
+    let n = v(1.0, 0.0, 0.0)
+        .cross(rows_a[1] - rows_a[0])
+        .normalized()
+        .unwrap();
+    let sheet = |rows: [Vec3; 3], lift: Vec3| {
+        let mut points = Vec::new();
+        for x in &xs {
+            for (j, r) in rows.iter().enumerate() {
+                let lifted = if j == 2 { lift } else { v(0.0, 0.0, 0.0) };
+                points.push(v(*x, 0.0, 0.0) + *r + lifted);
+            }
+        }
+        NurbsSurface::new(
+            p,
+            2,
+            knots.clone(),
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            nu,
+            3,
+            points,
+            vec![1.0; nu * 3],
+        )
+        .unwrap()
+    };
+    let b = sheet(rows_b, v(0.0, 0.0, 0.0));
+    let a = sheet(rows_a, n * delta);
+    let edge = craft3d_geom::network::iso_curve(&b, true, 0.0).unwrap();
+    let sv = (rows_a[1] - rows_a[0]) * 2.0;
+    (a, b, edge, sv.length().ppowi(2))
+}
+
+/// The rows formed from the stored net by differences (2026-10-31, the
+/// tank's long seams) bound a long seam of many uneven spans at the
+/// default tolerances, and still refuse one that is not G2: lifted to
+/// 1.5 curvature thresholds it is G1 by its curvature (seen beyond the
+/// threshold, the bound covering the closed form), lifted to half a
+/// threshold it is proven G2. Before, the rows along were the cut row
+/// differentiated, which multiplied the positions' rounding by `2p / Δ`
+/// each time, and the G2 seam stayed unproven at every scale.
+#[test]
+fn a_long_seam_of_many_spans_lifted_just_past_the_threshold_is_g1() {
+    for scale in SCALES {
+        let (tol, ang) = (1e-6 * scale, 1e-9);
+        for (times, order) in [(1.5, Order::G1), (0.5, Order::G2)] {
+            let (_, _, probe, sv2) = long_seam(scale, 0.0);
+            let length = probe
+                .control_points()
+                .windows(2)
+                .map(|w| w[0].distance(w[1]))
+                .sum::<f64>();
+            let threshold = (ang / length).min(2.0 * tol / (length * length));
+            let delta = 0.5 * times * threshold * sv2;
+            let (a, b, edge, _) = long_seam(scale, delta);
+            let c = continuity(&Surface::Nurbs(a), &Surface::Nurbs(b), &edge, tol, ang).unwrap();
+            assert_eq!(c.order, order, "scale {scale}, {times} thresholds: {c:?}");
+            let exact = times * threshold;
+            assert!(
+                c.curvature.bound >= exact * (1.0 - 1e-6),
+                "scale {scale}: the bound {:e} is below the curvature {exact:e}",
+                c.curvature.bound
+            );
+            if order == Order::G1 {
+                assert!(c.curvature.beyond(), "scale {scale}: {c:?}");
+                assert!(
+                    c.angle.within() && c.twist.within() && c.along.within(),
+                    "{c:?}"
+                );
+            }
+        }
+    }
+}

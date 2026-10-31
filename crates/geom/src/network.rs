@@ -1271,6 +1271,55 @@ fn iso_track_along(
     curve: &Track,
     tol: f64,
 ) -> Result<Option<([Raw; 3], bool, f64)>, NetworkError> {
+    let Some(line) = iso_line(surface, curve, tol)? else {
+        return Ok(None);
+    };
+    let IsoLine {
+        along_v,
+        at,
+        from,
+        to,
+        reversed,
+    } = line;
+    let (iso, field) = iso_rows(surface, along_v, at)?;
+    let second = iso_second(surface, along_v, at)?;
+    let (mut iso, mut field, mut second) = (
+        piece_raw(iso, from, to)?,
+        piece_raw(field, from, to)?,
+        piece_raw(second, from, to)?,
+    );
+    if reversed {
+        iso = reverse(&iso);
+        field = reverse(&field);
+        second = reverse(&second);
+    }
+    Ok(Some(([iso, field, second], along_v, at)))
+}
+
+/// The parameter line of a spline face that an edge runs along
+/// ([`iso_line`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct IsoLine {
+    /// The line runs along v (u is fixed).
+    along_v: bool,
+    /// The fixed parameter (the first or the last of its range exactly
+    /// when the line was found within rounding of the face's border).
+    at: f64,
+    /// Where the edge begins and ends on the line, in the running
+    /// parameter, `from < to`.
+    from: f64,
+    to: f64,
+    /// The edge runs from `to` to `from`.
+    reversed: bool,
+}
+
+/// The parameter line of `surface` that `curve` lies on, as
+/// [`iso_track_along`] finds it, without forming its rows.
+fn iso_line(
+    surface: &NurbsSurface,
+    curve: &Track,
+    tol: f64,
+) -> Result<Option<IsoLine>, NetworkError> {
     let wrapped = Surface::Nurbs(surface.clone());
     let mut ts = samples(&curve.raw, 4, 33);
     if ts.len() > 1025 {
@@ -1450,19 +1499,13 @@ fn iso_track_along(
         if b - a <= SAME_KNOT * (hi - lo) {
             continue;
         }
-        let (iso, field) = iso_rows(surface, along_v, at)?;
-        let second = iso_second(surface, along_v, at)?;
-        let (mut iso, mut field, mut second) = (
-            piece_raw(iso, a, b)?,
-            piece_raw(field, a, b)?,
-            piece_raw(second, a, b)?,
-        );
-        if s > e {
-            iso = reverse(&iso);
-            field = reverse(&field);
-            second = reverse(&second);
-        }
-        return Ok(Some(([iso, field, second], along_v, at)));
+        return Ok(Some(IsoLine {
+            along_v,
+            at,
+            from: a,
+            to: b,
+            reversed: s > e,
+        }));
     }
     Ok(None)
 }

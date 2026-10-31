@@ -1,5 +1,4 @@
 [
- ["document.setTolerance", {"linear": 0.001, "angular": 1e-06}],
  ["variable.set", {"name": "L", "expr": "600 mm"}],
  ["variable.set", {"name": "W", "expr": "340 mm"}],
  ["variable.set", {"name": "H", "expr": "220 mm"}],

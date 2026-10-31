@@ -74,16 +74,19 @@
 //!
 //! **Rounding.** Every coefficient carries a bound on its rounding error,
 //! carried through each sum and product (running error analysis, Higham
-//! ch. 3). The faces and the edge are first written about a point of the
-//! edge, so the rows are formed from local points and nothing cancels far
-//! from the origin; a row across, `Σ cᵢ Pᵢ`, enters with `(4p + 6q + 24) ε`
-//! times `Σ |cᵢ|` (bounded from the knots) times, per homogeneous
-//! coordinate, the largest local value of that coordinate over the net's
-//! rows the row is made from (`spline_rows`: on a clamped border the
-//! first `j + 1` rows for the row `j`, every other basis function and its
-//! first two derivatives being exactly zero there; on an inner line the
-//! `q + 1` rows whose basis functions reach it); derivatives along the edge and the cut into
-//! pieces add their own; each product of degrees `m` and `n` adds `γ_k`,
+//! ch. 3). The rows are formed from the stored net by differences first
+//! (`spline_rows`): the net differentiated across and along as B-spline
+//! derivative nets, the first difference each way taken of the points as
+//! stored (one rounding relative to the difference, not to the points'
+//! distance from anything), then combined at the line with basis values
+//! that are nonnegative and sum to 1 (on a clamped border, one of them 1
+//! and the others 0, exactly). So every row, including the derivatives
+//! along the edge, carries the rounding of its own size, coefficient by
+//! coefficient and coordinate by coordinate. The rows are cut into Bézier
+//! pieces by blossoming each piece from the knot span it lies in
+//! (`row_pieces`, at most `γ_{11p}` of the span's coordinates), in each
+//! face's own parameter: no knot is rounded by a reparametrisation. Each
+//! product of degrees `m` and `n` adds `γ_k`,
 //! `k = 4 (m + n) + min(m, n) + 8`, times the product of the magnitudes
 //! (`Poly::mul_gamma`). A NaN anywhere makes a bound infinite. Bounds take
 //! the errors in.
@@ -95,7 +98,7 @@
 //! a gap of `Δκ d² / 2` over a distance `d` from the seam, so over the
 //! seam's own length it is held to `min(angular / L, 2 tol / L²)`.
 
-use super::{H, NetworkError, Raw, Track, derivative, internal, iso_track_along, point, refuse};
+use super::{H, NetworkError, Raw, Track, internal, point, refuse};
 use crate::refine::SAME_KNOT;
 use crate::{NurbsCurve, NurbsSurface, Surface};
 use craft3d_math::Portable;
@@ -699,103 +702,442 @@ impl ImplicitForm {
     }
 }
 
-/// A row as it enters the measure, with the bound on its coefficients'
-/// rounding, coordinate by coordinate (`x w`, `y w`, `z w`, `w`): each is
-/// formed from that coordinate alone, so its rounding is of that
-/// coordinate's size (an edge along a plane has its coordinate across the
-/// plane at zero, and its rounding there with it: 2026-10-31, the
-/// class-A mouse's seams).
-type Row = (Raw, [f64; 4]);
+/// `γ_k = k ε / (1 − k ε)` (Higham, lemma 3.1): `k` roundings, each
+/// within `ε` relative, compound to within `γ_k` relative.
+fn gamma(k: usize) -> f64 {
+    let ke = k as f64 * EPS;
+    ke / (1.0 - ke).max(0.5)
+}
 
-/// A row cut into pieces at `breaks`: its coefficients carry what it came
-/// in with (`allow`) and the cutting's own rounding (convex combinations,
-/// `16 (p + 2) ε` of its magnitude).
-fn row_pieces(raw: &Raw, breaks: &[f64], allow: [f64; 4]) -> Result<Vec<P4>, NetworkError> {
-    let own = self::magnitude(raw);
-    // Each coordinate and the weight by their own magnitudes.
-    let allowance = |factor: f64| -> [f64; 4] {
-        let mut out = allow;
-        for (a, m) in out.iter_mut().zip(own) {
-            *a += factor * EPS * m;
+/// A homogeneous coefficient (`x w`, `y w`, `z w`, `w`) with a bound on
+/// each coordinate's rounding: the exact value is within `e[c]` of `v[c]`.
+#[derive(Clone, Copy, Debug)]
+struct Ep {
+    v: H,
+    e: [f64; 4],
+}
+
+const EP_ZERO: Ep = Ep {
+    v: [0.0; 4],
+    e: [0.0; 4],
+};
+
+impl Ep {
+    /// A coefficient made coordinate by coordinate: `f` gives each
+    /// coordinate's value and bound from its index.
+    fn from_fn(f: impl Fn(usize) -> (f64, f64)) -> Ep {
+        let mut out = EP_ZERO;
+        for (c, (v, e)) in out.v.iter_mut().zip(out.e.iter_mut()).enumerate() {
+            (*v, *e) = f(c);
         }
         out
-    };
-    let mut raw = raw.clone();
-    let mut have = raw.knots.clone();
-    have.dedup();
-    let mut missing = Vec::new();
-    let mut h = 0;
-    for &k in breaks {
-        while have.get(h).is_some_and(|x| *x < k - SAME_KNOT) {
-            h += 1;
+    }
+
+    /// Coordinate `c`'s value and bound.
+    fn at(&self, c: usize) -> (f64, f64) {
+        (
+            self.v.get(c).copied().unwrap_or(f64::NAN),
+            self.e.get(c).copied().unwrap_or(f64::INFINITY),
+        )
+    }
+
+    /// `self − o`: `fl(a − b) = (a − b)(1 + δ)`, so what the two carried
+    /// and `γ₁` of the result.
+    fn minus(self, o: Ep) -> Ep {
+        Ep::from_fn(|c| {
+            let ((a, ea), (b, eb)) = (self.at(c), o.at(c));
+            let v = a - b;
+            (v, ea + eb + gamma(1) * v.abs())
+        })
+    }
+
+    /// `g · self`, the factor within `γ_r` (relative to itself) of the
+    /// exact one: `|g* x* − fl(g x)| ≤ (1 + γ_r)|g| e + γ_{r+1} |fl(g x)|`.
+    fn times(self, g: f64, r: usize) -> Ep {
+        Ep::from_fn(|c| {
+            let (a, ea) = self.at(c);
+            let v = g * a;
+            (v, (1.0 + gamma(r)) * g.abs() * ea + gamma(r + 1) * v.abs())
+        })
+    }
+}
+
+/// The homogeneous point `((P − o) w, w)` of a control point `P` with
+/// weight `w`, about `o`: two roundings a coordinate, the weight exact.
+fn local_point(p: Vec3, w: f64, o: Vec3) -> Ep {
+    let (pc, oc) = ([p.x, p.y, p.z], [o.x, o.y, o.z]);
+    Ep::from_fn(|c| match (pc.get(c), oc.get(c)) {
+        (Some(x), Some(y)) => {
+            let v = (x - y) * w;
+            (v, gamma(3) * v.abs())
         }
-        if !have.get(h).is_some_and(|x| (*x - k).abs() <= SAME_KNOT) {
-            missing.push(k);
+        _ => (w, 0.0),
+    })
+}
+
+/// `h(b) − h(a)` of two control points in the homogeneous coordinates about
+/// `o`, formed from the points as stored, not from their local
+/// coordinates: `(P_b − P_a) w_b + (P_a − o)(w_b − w_a)`, each difference of
+/// stored numbers one rounding relative to itself. So its rounding is of
+/// the difference's size, not of the points' distance from `o`: a
+/// derivative formed from these carries the rounding of the derivative,
+/// where one formed from rounded local points would carry the rounding of
+/// the positions divided by the knot span. Equal weights (every
+/// polynomial face) make the second term vanish exactly.
+fn stored_difference(pa: Vec3, wa: f64, pb: Vec3, wb: f64, o: Vec3) -> Ep {
+    let (a, b, oc) = ([pa.x, pa.y, pa.z], [pb.x, pb.y, pb.z], [o.x, o.y, o.z]);
+    let dw = wb - wa;
+    Ep::from_fn(|c| match (a.get(c), b.get(c), oc.get(c)) {
+        (Some(a), Some(b), Some(o)) => {
+            let t1 = (b - a) * wb;
+            if dw == 0.0 {
+                (t1, gamma(3) * t1.abs())
+            } else {
+                let t2 = (a - o) * dw;
+                let v = t1 + t2;
+                (
+                    v,
+                    gamma(3) * t1.abs() + gamma(4) * t2.abs() + gamma(1) * v.abs(),
+                )
+            }
+        }
+        _ => (dw, gamma(1) * dw.abs()),
+    })
+}
+
+/// A face's control net as homogeneous coefficients with their rounding,
+/// `pts[i][k]`, `i` across the line and `k` along it, with the knots and
+/// degree each way: the net itself, or one of its derivative nets.
+#[derive(Clone, Debug)]
+struct Net {
+    pts: Vec<Vec<Ep>>,
+    across: (Vec<f64>, usize),
+    along: (Vec<f64>, usize),
+}
+
+/// The derivative of a B-spline's control points in one direction, as
+/// [`derivative`] forms it (`p (P_{k+1} − P_k) / (t_{k+p+1} − t_{k+1})` on
+/// the knots without their first and last; a constant zero for degree 0),
+/// with the differences given by `delta` (the two indices `(i, k)`).
+fn net_derivative(
+    net: &Net,
+    along: bool,
+    delta: impl Fn((usize, usize), (usize, usize)) -> Ep,
+) -> Result<Net, NetworkError> {
+    let (knots, p) = if along { &net.along } else { &net.across };
+    let (ni, nk) = (net.pts.len(), net.pts.first().map_or(0, Vec::len));
+    if *p == 0 {
+        return Ok(Net {
+            pts: vec![vec![EP_ZERO; nk]; ni],
+            across: net.across.clone(),
+            along: net.along.clone(),
+        });
+    }
+    let factor = |k: usize| -> Result<f64, NetworkError> {
+        let (Some(&lo), Some(&hi)) = (knots.get(k + 1), knots.get(k + p + 1)) else {
+            return Err(internal());
+        };
+        Ok(if hi > lo { *p as f64 / (hi - lo) } else { 0.0 })
+    };
+    let (mi, mk) = if along {
+        (ni, nk.saturating_sub(1))
+    } else {
+        (ni.saturating_sub(1), nk)
+    };
+    let mut pts = Vec::with_capacity(mi);
+    for i in 0..mi {
+        let mut row = Vec::with_capacity(mk);
+        for k in 0..mk {
+            let (a, b, f) = if along {
+                ((i, k), (i, k + 1), factor(k)?)
+            } else {
+                ((i, k), (i + 1, k), factor(i)?)
+            };
+            // The factor: the knots' difference and the division, two
+            // roundings, within `γ₂` of the exact factor and so within `γ₃`
+            // relative to itself. A zero factor belongs to a basis function
+            // that is zero everywhere: exactly nothing.
+            row.push(if f == 0.0 {
+                EP_ZERO
+            } else {
+                delta(a, b).times(f, 3)
+            });
+        }
+        pts.push(row);
+    }
+    let trimmed = knots
+        .get(1..knots.len().saturating_sub(1))
+        .ok_or_else(internal)?
+        .to_vec();
+    let lowered = (trimmed, p - 1);
+    Ok(if along {
+        Net {
+            pts,
+            across: net.across.clone(),
+            along: lowered,
+        }
+    } else {
+        Net {
+            pts,
+            across: lowered,
+            along: net.along.clone(),
+        }
+    })
+}
+
+/// The difference of two coefficients of a net already formed.
+fn net_delta(net: &Net) -> impl Fn((usize, usize), (usize, usize)) -> Ep + '_ {
+    move |(i, k), (j, l)| {
+        let at = |i: usize, k: usize| net.pts.get(i).and_then(|r| r.get(k)).copied();
+        match (at(i, k), at(j, l)) {
+            (Some(a), Some(b)) => b.minus(a),
+            _ => Ep {
+                v: [f64::NAN; 4],
+                e: [f64::INFINITY; 4],
+            },
         }
     }
-    raw.insert_all(&missing)?;
+}
+
+/// The net's line at `at` across: the spline along whose coefficients are
+/// `Σᵢ Nᵢ(at) Pᵢₖ`, each with its rounding.
+///
+/// On a clamped border (`at` exactly the first or the last knot across)
+/// one basis function is 1 and every other 0, exactly, so the line's
+/// coefficients are the border row's own. Elsewhere the computed basis
+/// values `N̂ᵢ` (Cox–de Boor: every quantity nonnegative inside the span,
+/// at most six roundings a level, so `N̂ᵢ = Nᵢ (1 + θ)`, `|θ| ≤ γ_{6q}`) sum
+/// with `m ≤ q + 1` terms: `|Σ Nᵢ P*ᵢ − fl(Σ N̂ᵢ P̂ᵢ)| ≤ (1 + γ_{6q}) Σ N̂ᵢ eᵢ +
+/// (γ_{6q} + γ_m)(1 + γ_{6q}) Σ N̂ᵢ |P̂ᵢ|`, here taken with `γ_{7q+8}`.
+fn net_line(net: &Net, at: f64) -> Result<(Raw, Vec<[f64; 4]>), NetworkError> {
+    let (knots, q) = (&net.across.0, net.across.1);
+    let n = net.pts.len();
+    let nk = net.pts.first().map_or(0, Vec::len);
+    // A border is clamped where its knot is there `q + 1` times.
+    let clamped_at =
+        |ks: &mut dyn Iterator<Item = &f64>| ks.take(q + 1).filter(|k| **k == at).count() == q + 1;
+    let weights: Vec<(usize, f64)> = if clamped_at(&mut knots.iter()) {
+        vec![(0, 1.0)]
+    } else if clamped_at(&mut knots.iter().rev()) {
+        vec![(n.checked_sub(1).ok_or_else(internal)?, 1.0)]
+    } else {
+        super::basis(knots, q, n, at)?
+            .into_iter()
+            .enumerate()
+            .filter(|(_, b)| *b != 0.0)
+            .collect()
+    };
+    let exact = weights.len() == 1 && weights.first().is_some_and(|(_, b)| *b == 1.0);
+    let g = gamma(7 * q + 8);
+    let mut points = Vec::with_capacity(nk);
+    let mut errors = Vec::with_capacity(nk);
+    for k in 0..nk {
+        let mut v = [0.0; 4];
+        let mut carried = [0.0; 4];
+        let mut size = [0.0; 4];
+        for &(i, b) in &weights {
+            let c = net
+                .pts
+                .get(i)
+                .and_then(|r| r.get(k))
+                .copied()
+                .ok_or_else(internal)?;
+            for (((v, carried), size), (x, e)) in v
+                .iter_mut()
+                .zip(carried.iter_mut())
+                .zip(size.iter_mut())
+                .zip(c.v.iter().zip(&c.e))
+            {
+                *v += b * x;
+                *carried += b * e;
+                *size += b * x.abs();
+            }
+        }
+        let mut e = carried;
+        if !exact {
+            for (e, size) in e.iter_mut().zip(size) {
+                *e = (1.0 + g) * *e + g * size;
+            }
+        }
+        points.push(v);
+        errors.push(e);
+    }
+    Ok((
+        Raw {
+            degree: net.along.1,
+            knots: net.along.0.clone(),
+            points,
+        },
+        errors,
+    ))
+}
+
+/// A row as it enters the measure: a spline along the face's own line (in
+/// the face's own parameter, not cut), with the bound on each control
+/// point's rounding coordinate by coordinate (`x w`, `y w`, `z w`, `w`).
+type Row = (Raw, Vec<[f64; 4]>);
+
+/// The six rows of a spline face along an edge, `X₀, X₀′, X₀″, X₁, X₁′,
+/// X₂` (′ along the line, the index the order across), in the face's own
+/// parameter along the line, and where on the line the edge lies.
+struct Line {
+    rows: [Row; 6],
+    from: f64,
+    to: f64,
+    reversed: bool,
+}
+
+impl Line {
+    /// The measure's parameter (0 to 1 along the edge) of a parameter of
+    /// the line.
+    fn to_edge(&self, u: f64) -> f64 {
+        let width = self.to - self.from;
+        if self.reversed {
+            (self.to - u) / width
+        } else {
+            (u - self.from) / width
+        }
+    }
+
+    /// The line's parameter of a parameter of the edge.
+    fn of_edge(&self, s: f64) -> f64 {
+        let width = self.to - self.from;
+        if self.reversed {
+            self.to - s * width
+        } else {
+            self.from + s * width
+        }
+    }
+}
+
+/// The sub-piece of a spline over `[x, y]`, inside its knot span `s`
+/// (`t_s ≤ x < y ≤ t_{s+1}`), as Bézier coefficients: the blossom of the
+/// span's `p + 1` control points at `(x, …, x, y, …, y)` (de Boor's
+/// algorithm, `p` levels; Ramshaw). Every level is a combination
+/// `(1 − α) a + α b` with the exact `α` in `[0, 1]` (the arguments lie in
+/// the span, the knots around them), so what the points carried passes on
+/// unchanged at most (a convex combination of it), and a level adds at
+/// most `γ₁₀` of the largest coordinate: `α` is within `γ₃` (three
+/// roundings), `1 − α` within `γ₃ + ε`, and the two products and their sum
+/// add `γ₂`. Over `p` levels, with the coordinates growing by at most
+/// `1 + γ₁₀` a level, that is `γ_{11p}` of the span's largest coordinate.
+fn blossom_piece(
+    raw: &Raw,
+    err: &[[f64; 4]],
+    s: usize,
+    x: f64,
+    y: f64,
+) -> Result<(Vec<H>, [f64; 4]), NetworkError> {
     let p = raw.degree;
-    let es = allowance(16.0 * (p + 2) as f64);
-    let (_, pieces) = super::pieces_any(&raw)?;
-    if pieces.len() != breaks.len() + 1 {
-        return Err(internal());
+    let first = s.checked_sub(p).ok_or_else(internal)?;
+    let span = raw.points.get(first..=s).ok_or_else(internal)?;
+    let span_err = err.get(first..=s).ok_or_else(internal)?;
+    let mut carried = [0.0_f64; 4];
+    let mut size = [0.0_f64; 4];
+    for (h, e) in span.iter().zip(span_err) {
+        for (((carried, size), x), e) in carried.iter_mut().zip(size.iter_mut()).zip(h).zip(e) {
+            *carried = carried.max(*e);
+            *size = size.max(x.abs());
+        }
+    }
+    let mut out = Vec::with_capacity(p + 1);
+    for k in 0..=p {
+        let mut d = span.to_vec();
+        for level in 1..=p {
+            let u = if level <= p - k { x } else { y };
+            for j in (level..=p).rev() {
+                let i = first + j;
+                let (Some(&ti), Some(&th)) = (raw.knots.get(i), raw.knots.get(i + p + 1 - level))
+                else {
+                    return Err(internal());
+                };
+                let alpha = if th > ti { (u - ti) / (th - ti) } else { 0.0 };
+                let (Some(&a), Some(&b)) = (d.get(j - 1), d.get(j)) else {
+                    return Err(internal());
+                };
+                if let Some(slot) = d.get_mut(j) {
+                    *slot = super::h_add(a, b, 1.0 - alpha, alpha);
+                }
+            }
+        }
+        out.push(d.get(p).copied().ok_or_else(internal)?);
+    }
+    let mut e = carried;
+    for (e, size) in e.iter_mut().zip(size) {
+        *e += gamma(11 * p) * size;
+    }
+    Ok((out, e))
+}
+
+/// A row cut into Bézier pieces between the edge's breaks (parameters of
+/// the edge, 0 to 1, ascending), run the edge's way: each piece formed
+/// straight from the knot span of the row it lies in ([`blossom_piece`]),
+/// so its rounding is that of one blossom, however many breaks the span
+/// holds. Running the edge's way reverses the pieces and their
+/// coefficients, exactly; the parameter along each face is its own (the
+/// gaps do not depend on it: each is a ratio of the same order in the
+/// derivatives along on both sides, and the second fundamental form is
+/// taken on the face's own derivatives), so the rows are not
+/// reparametrised and no knot is rounded.
+fn row_pieces(row: &Row, line: &Line, breaks: &[f64]) -> Result<Vec<P4>, NetworkError> {
+    let (raw, err) = row;
+    let (lo, hi) = raw.domain()?;
+    let snap = 2.0 * SAME_KNOT * (hi - lo);
+    let mut distinct = raw.knots.clone();
+    distinct.dedup();
+    let near_knot = |u: f64| {
+        distinct
+            .iter()
+            .copied()
+            .find(|k| (k - u).abs() <= snap)
+            .unwrap_or(u)
+    };
+    let mut cuts: Vec<f64> = breaks.iter().map(|s| near_knot(line.of_edge(*s))).collect();
+    if line.reversed {
+        cuts.reverse();
+    }
+    let mut at = vec![near_knot(line.from)];
+    at.extend(cuts);
+    at.push(near_knot(line.to));
+    let mut pieces = Vec::with_capacity(at.len().saturating_sub(1));
+    for w in at.windows(2) {
+        let [x, y] = w else { return Err(internal()) };
+        if x.partial_cmp(y) != Some(std::cmp::Ordering::Less) {
+            return Err(internal());
+        }
+        // The knot span `[t_s, t_{s+1})` holding `x`; it must hold `y` too.
+        let s = raw
+            .knots
+            .iter()
+            .rposition(|k| k <= x)
+            .ok_or_else(internal)?
+            .min(raw.points.len().saturating_sub(1));
+        let end = raw.knots.get(s + 1).copied().ok_or_else(internal)?;
+        if *y > end + snap {
+            return Err(internal());
+        }
+        let (h, e) = blossom_piece(raw, err, s, *x, y.min(end))?;
+        pieces.push((h, e));
+    }
+    if line.reversed {
+        pieces.reverse();
+        for (h, _) in &mut pieces {
+            h.reverse();
+        }
     }
     Ok(pieces
         .into_iter()
-        .map(|piece| {
+        .map(|(piece, e)| {
             let comp = |k: usize| Poly {
                 c: piece
                     .iter()
                     .map(|h| h.get(k).copied().unwrap_or(0.0))
                     .collect(),
-                e: es.get(k).copied().unwrap_or(0.0),
+                e: e.get(k).copied().unwrap_or(f64::INFINITY),
             };
             [comp(0), comp(1), comp(2), comp(3)]
         })
         .collect())
-}
-
-/// The largest of each homogeneous coordinate of a row (`x w`, `y w`,
-/// `z w`, `w`).
-fn magnitude(raw: &Raw) -> [f64; 4] {
-    raw.points.iter().fold([0.0_f64; 4], |mut m, h| {
-        for (m, x) in m.iter_mut().zip(h) {
-            *m = m.max(x.abs());
-        }
-        m
-    })
-}
-
-/// The derivative of a row along the edge, with its allowance: each
-/// coefficient is `fᵢ (b − a)`, `fᵢ = p / (t_{i+p+1} − t_{i+1})` (at most
-/// `f`, the largest), so it carries `2 f` times what its source carried,
-/// and the rounding of the two products and their sum, `4 ε f` times the
-/// source's magnitude, doubled for the rounding of `fᵢ` itself.
-fn derived(row: &Row) -> Result<Row, NetworkError> {
-    let (source, allow) = row;
-    let d = derivative(source)?;
-    let p = source.degree;
-    let span = source
-        .knots
-        .iter()
-        .skip(1)
-        .zip(source.knots.iter().skip(p + 1))
-        .map(|(a, b)| b - a)
-        .filter(|d| *d > 0.0)
-        .fold(f64::INFINITY, f64::min);
-    let f = if p == 0 {
-        0.0
-    } else if span.is_finite() {
-        p as f64 / span
-    } else {
-        f64::INFINITY
-    };
-    let mag = magnitude(source);
-    let a = |k: usize| {
-        2.0 * f * allow.get(k).copied().unwrap_or(f64::INFINITY)
-            + 8.0 * EPS * f * mag.get(k).copied().unwrap_or(f64::INFINITY)
-    };
-    Ok((d, [a(0), a(1), a(2), a(3)]))
 }
 
 /// One piece of the edge with every row on it.
@@ -1182,58 +1524,47 @@ pub fn continuity(
     measure(xs, ys, other, origin, tolerance, angular)
 }
 
-/// The rows `X₀, X₁, X₂` of a spline face along `edge` (its iso-curve
-/// there and its first and second homogeneous derivatives across), about
-/// `origin`, each with the bound on its coefficients' rounding; `None`
-/// where the edge is not a parameter line of the face.
+/// The rows of a spline face along `edge` ([`Line`]): its iso-curve there
+/// `X₀`, its first and second homogeneous derivatives across `X₁`, `X₂`,
+/// and the derivatives along `X₀′`, `X₀″`, `X₁′`, about `origin`, each
+/// control point with the bound on its rounding; `None` where the edge is
+/// not a parameter line of the face.
 ///
-/// The face and the edge are first written about `origin` (a point of the
-/// edge), so the rows are formed from local points and nothing cancels
-/// far from the origin: `x − o` is exact where the two are within a factor
-/// two of each other (Sterbenz) and otherwise off by `ε` of the local
-/// value, as is `(x − o) w`, so the local net is the face to within `2 ε`
-/// of each local coefficient. A row across is `Σ cᵢ Pᵢ`, the `cᵢ` the
-/// basis functions' values, first or second derivatives across at the
-/// line, at most `p + 1` of them nonzero; `Σ |cᵢ|` is 1, at most
-/// `S₁ = 2p / D_p` and at most `S₂ = S₁ · 2(p − 1) / D_{p−1}`
-/// (`N′ᵢ = p (N_{i,p−1} / Δᵢ − N_{i+1,p−1} / Δᵢ₊₁)` and the partition of
-/// unity; `D_k` the shortest positive `t_{i+k} − t_i`, in the direction
-/// across). So each coefficient is within `γ S M_c` of the exact one,
-/// `γ = (4p + 6q + 24) ε` with `p` the degree along and `q` across, and
-/// `M_c` for each homogeneous coordinate `c` on its own (x, y, z times the
-/// weight, and the weight): the largest local value of that coordinate
-/// over the net's rows the row is a combination of. A coordinate of the
-/// row is a sum of that coordinate of those points only, so its rounding
-/// is of their size, not of the largest coordinate of the whole net (on a
-/// long seam far longer than the patch is wide, the rows along the far
-/// side and the other coordinates no longer set the allowance). Which
-/// rows: on a clamped border (`at` exactly the first or the last knot)
-/// the row `j` (`j` = 0 the line, 1 and 2 its derivatives across) is made
-/// of the first `j + 1` rows of the net from that border, every other
-/// basis function and its first and second derivatives being exactly zero
-/// there (the clamped knot's multiplicity `q + 1`: `Nᵢ` with `i > j`
-/// vanishes to order `i` at the border, so its derivatives up to `j < i`
-/// are zero, exactly, in the recursions as computed: they are sums of
-/// products with a factor that is exactly 0); on an inner line, the
-/// `q + 1` rows whose basis functions reach the knot span of `at` (both
-/// spans where `at` is a knot). The line is the face's parameter line at
-/// `at` (`iso_track_along` puts `at` onto the border where the edge's
-/// projections lie within `SAME_KNOT` of it): what is bounded here is
-/// that line's rounding, and how far the edge lies from that line is the
-/// position gap, which the measure bounds and holds to the tolerance in
-/// its own right; the snap moves nothing the claim depends on. The
-/// factor `γ` is the sum of: the net's rounding
-/// (`2 ε`), the `cᵢ`'s (Cox–de Boor, `3 ε` a level, so `3q ε`; the
-/// divided differences of the second row, `8 ε` each, and its de Boor
-/// evaluation, `3q ε`), the sum (`q` more) and the cut to the edge (up to
-/// `p` knot insertions a coefficient, convex combinations of two, `3 ε`
-/// each, and the reparametrisation, `p ε`), with room.
+/// The line is found on the face written about `origin` (the projections
+/// of the edge; `iso_line` puts it onto the border where it lies within
+/// `SAME_KNOT` of it). What is bounded here is the rounding of that line's
+/// rows; how far the edge lies from the line is the position gap, which
+/// the measure bounds and holds to the tolerance in its own right.
+///
+/// **Each row is formed from the stored net, by differences first**
+/// (2026-10-31, the tank's long seams). A row is `Σᵢ Nᵢ⁽ʲ⁾(at) Pᵢₖ⁽ᵈ⁾`:
+/// the net differentiated `j` times across and `d` times along (the
+/// B-spline derivative nets, `p (P_{k+1} − P_k) / Δ`), then combined at the
+/// line with the basis of degree `q − j` on the knots across trimmed `j`
+/// times, whose values are nonnegative and sum to 1 ([`net_line`]). The
+/// first difference each way is taken of the points as stored
+/// ([`stored_difference`]): one rounding of a difference of two stored
+/// numbers is relative to the difference, so a derivative carries the
+/// rounding of the derivative's own size. Formed the other way round (the
+/// row first, of points rounded about `origin`, then differentiated
+/// along) every derivative multiplied the rounding of the positions by
+/// `2p / Δ` (`Δ` the shortest knot span along): on the tank's 0.69 m seam,
+/// whose side has spans of 0.022 at degree 10 and points 330 mm from the
+/// middle of the edge, `X₀″` carried 4.6e-6 against a size of 1.4e4 (a
+/// relative 3e-10), and the curvature along was bounded at 1.57e-11 per
+/// mm against a threshold of 1.19e-12. Every step's rounding is carried
+/// coefficient by coefficient ([`Ep`]): a difference adds `γ₁` of its
+/// result, a factor `p / Δ` (two roundings) `γ₃`, the combination at the
+/// line `γ_{7q+8}` of `Σ N̂ᵢ |Pᵢ|` (none on a clamped border, where one basis
+/// function is 1 and the others 0 exactly), and the cut into pieces its
+/// own ([`row_pieces`]). Equal weights make every difference of weights
+/// exactly zero, with no rounding.
 fn spline_rows(
     surface: &NurbsSurface,
     edge: &NurbsCurve,
     tolerance: f64,
     origin: Vec3,
-) -> Result<Option<[Row; 3]>, NetworkError> {
+) -> Result<Option<Line>, NetworkError> {
     let local = NurbsSurface::new(
         surface.degrees().0,
         surface.degrees().1,
@@ -1255,124 +1586,86 @@ fn spline_rows(
         edge.weights().to_vec(),
     )?;
     let track = Track::new(&local_edge, tolerance)?;
-    let Some((rows, along_v, at)) = iso_track_along(&local, &track, tolerance)? else {
+    let Some(line) = super::iso_line(&local, &track, tolerance)? else {
         return Ok(None);
     };
     // Along v the rows across are derivatives in u.
-    let (pu, pv) = local.degrees();
-    let (nu, nv) = local.counts();
-    let (knots, q, n) = if along_v {
-        (local.knots_u(), pu, nu)
+    let along_v = line.along_v;
+    let (pu, pv) = surface.degrees();
+    let (nu, nv) = surface.counts();
+    let (ku, kv) = (surface.knots_u().to_vec(), surface.knots_v().to_vec());
+    let (ni, nk, across, along) = if along_v {
+        (nu, nv, (ku, pu), (kv, pv))
     } else {
-        (local.knots_v(), pv, nv)
+        (nv, nu, (kv, pv), (ku, pu))
     };
-    // The net's rows across that row `j` (0 the line, 1 and 2 the
-    // derivatives across) is made from: on a clamped border only the first
-    // `j + 1` from it (every other basis function and its first two
-    // derivatives are exactly zero there, so the other rows add exactly
-    // nothing); elsewhere the `q + 1` whose basis functions reach the line.
-    let (first, last) = (knots.first().copied(), knots.last().copied());
-    let span_rows = || {
-        let s = knots
-            .iter()
-            .rposition(|k| *k <= at)
-            .unwrap_or(0)
-            .min(n.saturating_sub(1).max(q));
-        (s.saturating_sub(q), s.min(n.saturating_sub(1)))
+    let (points, weights) = (surface.control_points(), surface.weights());
+    let stored = |i: usize, k: usize| -> Option<(Vec3, f64)> {
+        let index = if along_v { i * nv + k } else { k * nv + i };
+        Some((*points.get(index)?, *weights.get(index)?))
     };
-    let touched = |j: usize| -> (usize, usize) {
-        if Some(at) == first {
-            (0, j.min(n.saturating_sub(1)))
-        } else if Some(at) == last {
-            (n.saturating_sub(1 + j), n.saturating_sub(1))
-        } else {
-            span_rows()
+    let mut pts = Vec::with_capacity(ni);
+    for i in 0..ni {
+        let mut row = Vec::with_capacity(nk);
+        for k in 0..nk {
+            let (p, w) = stored(i, k).ok_or_else(internal)?;
+            row.push(local_point(p, w, origin));
         }
-    };
-    // Each homogeneous coordinate's largest local value over those rows: a
-    // row's coordinate is a sum of that coordinate of the net's points.
-    let magnitude_of = |(lo, hi): (usize, usize)| -> [f64; 4] {
-        let points = local.control_points();
-        let weights = local.weights();
-        let count_along = if along_v { nv } else { nu };
-        let mut m = [0.0_f64; 4];
-        for i in lo..=hi {
-            for k in 0..count_along {
-                let index = if along_v { i * nv + k } else { k * nv + i };
-                let (Some(p), Some(w)) = (points.get(index), weights.get(index)) else {
-                    continue;
-                };
-                let w = w.abs();
-                m = [
-                    m[0].max(p.x.abs() * w),
-                    m[1].max(p.y.abs() * w),
-                    m[2].max(p.z.abs() * w),
-                    m[3].max(w),
-                ];
-            }
-        }
-        m
-    };
-    let s = across_sums(knots, q);
-    let sums = [1.0, s[0], s[1]];
-    let mut out = Vec::with_capacity(3);
-    for (j, (raw, sum)) in rows.into_iter().zip(sums).enumerate() {
-        let gamma = (4 * raw.degree + 6 * q + 24) as f64 * EPS;
-        let m = magnitude_of(touched(j));
-        out.push((raw, m.map(|m| gamma * sum * m)));
+        pts.push(row);
     }
-    let [x0, x1, x2]: [Row; 3] = out.try_into().map_err(|_| internal())?;
-    Ok(Some([x0, x1, x2]))
-}
-
-/// `[S₁, S₂]`: bounds on `Σ |N′ᵢ|` and `Σ |N″ᵢ|` of the basis of degree `p`
-/// on `knots` anywhere (see [`spline_rows`]); infinite where a span the
-/// bound divides by is missing.
-fn across_sums(knots: &[f64], p: usize) -> [f64; 2] {
-    let shortest = |k: usize| {
-        knots
-            .iter()
-            .zip(knots.iter().skip(k))
-            .map(|(a, b)| b - a)
-            .filter(|d| *d > 0.0)
-            .fold(f64::INFINITY, f64::min)
-    };
-    if p == 0 {
-        return [0.0, 0.0];
-    }
-    // With no positive span there is no bound.
-    let over = |x: f64, d: f64| if d.is_finite() { x / d } else { f64::INFINITY };
-    let s1 = over(2.0 * p as f64, shortest(p));
-    let s2 = if p == 1 {
-        0.0
-    } else {
-        s1 * over(2.0 * (p - 1) as f64, shortest(p - 1))
-    };
-    [s1, s2]
+    let base = Net { pts, across, along };
+    let from_stored =
+        |(i, k): (usize, usize), (j, l): (usize, usize)| match (stored(i, k), stored(j, l)) {
+            (Some((pa, wa)), Some((pb, wb))) => stored_difference(pa, wa, pb, wb, origin),
+            _ => Ep {
+                v: [f64::NAN; 4],
+                e: [f64::INFINITY; 4],
+            },
+        };
+    let d_along = net_derivative(&base, true, from_stored)?;
+    let d_across = net_derivative(&base, false, from_stored)?;
+    let d_along2 = net_derivative(&d_along, true, net_delta(&d_along))?;
+    let d_mixed = net_derivative(&d_across, true, net_delta(&d_across))?;
+    let d_across2 = net_derivative(&d_across, false, net_delta(&d_across))?;
+    let at = line.at;
+    Ok(Some(Line {
+        rows: [
+            net_line(&base, at)?,
+            net_line(&d_along, at)?,
+            net_line(&d_along2, at)?,
+            net_line(&d_across, at)?,
+            net_line(&d_mixed, at)?,
+            net_line(&d_across2, at)?,
+        ],
+        from: line.from,
+        to: line.to,
+        reversed: line.reversed,
+    }))
 }
 
 /// Rows written about `origin` with their allowances: the face `a`'s, and
 /// a spline face `b`'s where `other` is one.
 fn measure(
-    xs: [Row; 3],
-    ys: Option<[Row; 3]>,
+    xs: Line,
+    ys: Option<Line>,
     other: Other,
     origin: Vec3,
     tolerance: f64,
     angular: f64,
 ) -> Result<Continuity, NetworkError> {
-    let [x0, x1, x2] = xs;
-    let length =
-        x0.0.points
-            .windows(2)
-            .map(|w| match w {
-                [p, q] => match (point(*p), point(*q)) {
-                    (Some(p), Some(q)) => p.distance(q),
-                    _ => f64::INFINITY,
-                },
-                _ => 0.0,
-            })
-            .sum::<f64>();
+    // The length of the control polygon of the line cut to the edge.
+    let cut = super::piece_raw(xs.rows[0].0.clone(), xs.from, xs.to)?;
+    let length = cut
+        .points
+        .windows(2)
+        .map(|w| match w {
+            [p, q] => match (point(*p), point(*q)) {
+                (Some(p), Some(q)) => p.distance(q),
+                _ => f64::INFINITY,
+            },
+            _ => 0.0,
+        })
+        .sum::<f64>();
     if !(length.is_finite() && length > 0.0) {
         return refuse(
             "the edge's face has no length along it, or its weights do not stay positive"
@@ -1387,27 +1680,10 @@ fn measure(
         thr[2],
         thr[2],
     ];
-    let x0d = derived(&x0)?;
-    let x0dd = derived(&x0d)?;
-    let x1d = derived(&x1)?;
-    let mut rows: Vec<Row> = vec![x0, x0d, x0dd, x1, x1d, x2];
-    let spline_degree = match ys {
-        Some([y0, y1, y2]) => {
-            let q = y0.0.degree.max(y1.0.degree).max(y2.0.degree);
-            let y0d = derived(&y0)?;
-            let y0dd = derived(&y0d)?;
-            let y1d = derived(&y1)?;
-            rows.extend([y0, y0d, y0dd, y1, y1d, y2]);
-            Some(q)
-        }
-        None => None,
-    };
-    let p = rows
-        .iter()
-        .take(6)
-        .map(|(r, _)| r.degree)
-        .max()
-        .unwrap_or(0);
+    let p = xs.rows.iter().map(|(r, _)| r.degree).max().unwrap_or(0);
+    let spline_degree = ys
+        .as_ref()
+        .map(|y| y.rows.iter().map(|(r, _)| r.degree).max().unwrap_or(0));
     let degree = match spline_degree {
         Some(q) => 4 * p + 20 * q,
         None => 5 * p,
@@ -1417,13 +1693,23 @@ fn measure(
             "the faces are of too high a degree along the edge to bound how they meet (the bounds would be polynomials of degree {degree}, the most is {MAX_SEAM_DEGREE})"
         ));
     }
-    // The pieces between every row's knots.
-    let mut breaks: Vec<f64> = rows.iter().flat_map(|(r, _)| r.interior()).collect();
+    // The pieces between every row's knots inside the edge, as parameters
+    // of the edge (0 to 1).
+    let lines: Vec<&Line> = std::iter::once(&xs).chain(ys.as_ref()).collect();
+    let mut breaks: Vec<f64> = Vec::new();
+    for line in &lines {
+        for (raw, _) in &line.rows {
+            breaks.extend(raw.interior().into_iter().map(|u| line.to_edge(u)));
+        }
+    }
+    breaks.retain(|s| *s > SAME_KNOT && *s < 1.0 - SAME_KNOT);
     breaks.sort_by(f64::total_cmp);
     breaks.dedup_by(|x, y| (*x - *y).abs() <= SAME_KNOT);
-    let mut per_row: Vec<Vec<P4>> = Vec::with_capacity(rows.len());
-    for (raw, allow) in &rows {
-        per_row.push(row_pieces(raw, &breaks, *allow)?);
+    let mut per_row: Vec<Vec<P4>> = Vec::with_capacity(12);
+    for line in &lines {
+        for row in &line.rows {
+            per_row.push(row_pieces(row, line, &breaks)?);
+        }
     }
     let mut bounds = vec![0.0];
     bounds.extend(breaks.iter().copied());
@@ -1686,42 +1972,92 @@ mod tests {
     /// Every coefficient of the rows a far patch enters the measure with
     /// is within its allowance of the exact one: the rows across are
     /// differences of points a million from the origin, so their rounding
-    /// is of the points' size, not of the rows' own.
+    /// is of the points' size, not of the rows' own; and the rows along
+    /// (`X₀′`, `X₀″`, `X₁′`), formed from the stored points' differences,
+    /// are within theirs, which are of the derivatives' size.
     #[test]
     fn the_rows_rounding_is_within_its_allowance_far_from_the_origin() {
         let (s, _) = far_patch();
         let edge = iso_curve(&s, true, 0.0).unwrap();
         let origin = edge.control_points()[0];
-        let [x0, x1, x2] = spline_rows(&s, &edge, 1e-6, origin).unwrap().unwrap();
+        let line = spline_rows(&s, &edge, 1e-6, origin).unwrap().unwrap();
+        assert!(!line.reversed && line.from == 0.0 && line.to == 1.0);
+        let [x0, x0d, x0dd, x1, x1d, x2] = &line.rows;
         let t = s.knots_v()[4];
         let p = s.control_points();
-        for k in 0..3 {
-            let at = |j: usize| p[k * 5 + j];
-            for c in 0..3 {
-                let get = |q: Vec3| [q.x, q.y, q.z][c];
-                // Differences of nearby doubles are exact (Sterbenz).
-                let d0 = get(at(0)) - get(origin);
-                let d10 = get(at(1)) - get(at(0));
-                let d21 = get(at(2)) - get(at(1));
-                // X₁ = 3 (P₁ − P₀) / t; X₂ = 2 / t (3 (P₂ − P₁) − 3 (P₁ − P₀) / t).
-                let r1 = mul(div((3.0, 0.0), t), d10);
-                let inner = add(mul((3.0, 0.0), d21), neg(div(mul((3.0, 0.0), d10), t)));
+        let check = |row: &Row, k: usize, c: usize, exact: Dd, what: &str| {
+            let exact = exact.0 + exact.1;
+            let got = row.0.points[k][c];
+            assert!(
+                (got - exact).abs() <= row.1[k][c],
+                "{what}, control point {k}, coordinate {c}: {got:e} is {:e} off {exact:e}, the allowance is {:e}",
+                (got - exact).abs(),
+                row.1[k][c]
+            );
+        };
+        for c in 0..3 {
+            let get = |q: Vec3| [q.x, q.y, q.z][c];
+            // Differences of nearby doubles are exact (Sterbenz).
+            let d = |k: usize, j1: usize, j0: usize| get(p[k * 5 + j1]) - get(p[k * 5 + j0]);
+            let along = |k1: usize, k0: usize, j: usize| get(p[k1 * 5 + j]) - get(p[k0 * 5 + j]);
+            // X₁ₖ = 3 (P₁ − P₀) / t; X₂ₖ = 2 / t (3 (P₂ − P₁) − 3 (P₁ − P₀) / t).
+            let r1 = |k: usize| mul(div((3.0, 0.0), t), d(k, 1, 0));
+            for k in 0..3 {
+                let d0 = get(p[k * 5]) - get(origin);
+                let inner = add(
+                    mul((3.0, 0.0), d(k, 2, 1)),
+                    neg(div(mul((3.0, 0.0), d(k, 1, 0)), t)),
+                );
                 let c2 = div((2.0, 0.0), t);
                 let r2 = add(mul(c2, inner.0), mul(c2, inner.1));
-                for (row, exact) in [(&x0, d0), (&x1, r1.0 + r1.1), (&x2, r2.0 + r2.1)] {
-                    let got = row.0.points[k][c];
-                    assert!(
-                        (got - exact).abs() <= row.1[c],
-                        "control point {k}, coordinate {c}: {got:e} is {:e} off {exact:e}, the allowance is {:e}",
-                        (got - exact).abs(),
-                        row.1[c]
-                    );
-                }
+                check(x0, k, c, (d0, 0.0), "X0");
+                check(x1, k, c, r1(k), "X1");
+                check(x2, k, c, r2, "X2");
             }
-            for (row, exact) in [(&x0, 1.0), (&x1, 0.0), (&x2, 0.0)] {
-                assert!((row.0.points[k][3] - exact).abs() <= row.1[3]);
+            // Along: degree 2 on [0, 0, 0, 1, 1, 1], so `X′ₖ = 2 (Xₖ₊₁ − Xₖ)`
+            // and `X″ = 2 ((X₂ − X₁) − (X₁ − X₀))`.
+            for k in 0..2 {
+                check(x0d, k, c, mul((along(k + 1, k, 0), 0.0), 2.0), "X0'");
+                let r = add(r1(k + 1), neg(r1(k)));
+                check(
+                    x1d,
+                    k,
+                    c,
+                    add(mul((r.0, 0.0), 2.0), mul((r.1, 0.0), 2.0)),
+                    "X1'",
+                );
+            }
+            let second = add((along(2, 1, 0), 0.0), neg((along(1, 0, 0), 0.0)));
+            check(
+                x0dd,
+                0,
+                c,
+                add(mul((second.0, 0.0), 2.0), mul((second.1, 0.0), 2.0)),
+                "X0''",
+            );
+        }
+        for (row, exact) in [
+            (x0, 1.0),
+            (x1, 0.0),
+            (x2, 0.0),
+            (x0d, 0.0),
+            (x0dd, 0.0),
+            (x1d, 0.0),
+        ] {
+            for (h, e) in row.0.points.iter().zip(&row.1) {
+                assert!((h[3] - exact).abs() <= e[3]);
             }
         }
+        // The rows along carry the rounding of their own size: the
+        // allowance of `X₀″` is a few ulps of `X₀′`'s differences, not of
+        // the positions a unit from the origin (before: `(2p / Δ)²` times
+        // theirs).
+        let size = x0d.0.points.iter().map(|h| h[0].abs()).fold(0.0, f64::max);
+        assert!(
+            x0dd.1[0][0] <= 64.0 * f64::EPSILON * size,
+            "{:e}",
+            x0dd.1[0][0]
+        );
     }
     /// The B-spline basis function `i` of degree `p` on `knots` at `v`, and
     /// its first and second derivatives (`order` 0, 1, 2), by the
@@ -1774,7 +2110,8 @@ mod tests {
         .unwrap();
         let edge = iso_curve(&s, true, 0.25).unwrap();
         let origin = edge.control_points()[0];
-        let [x0, x1, x2] = spline_rows(&s, &edge, 1e-6, origin).unwrap().unwrap();
+        let line = spline_rows(&s, &edge, 1e-6, origin).unwrap().unwrap();
+        let [x0, _, _, x1, _, x2] = &line.rows;
         // The line the rows are of: the parameter `iso_track_along` found
         // from the edge's projections, a rounding off 0.25 (how far the
         // edge lies from that line is the position gap, measured apart).
@@ -1797,7 +2134,10 @@ mod tests {
         )
         .unwrap();
         let track = Track::new(&local_edge, 1e-6).unwrap();
-        let (_, _, at) = iso_track_along(&local, &track, 1e-6).unwrap().unwrap();
+        let at = crate::network::iso_line(&local, &track, 1e-6)
+            .unwrap()
+            .unwrap()
+            .at;
         // The line's parameter is the mean of the edge's projections: at a
         // million from the origin they round to a few 1e-11 (5.5e-11
         // found), so the line is within that of 0.25, not exactly on it.
@@ -1806,7 +2146,7 @@ mod tests {
         for k in 0..3 {
             for c in 0..3 {
                 let get = |q: Vec3| [q.x, q.y, q.z][c];
-                for (order, row) in [(0, &x0), (1, &x1), (2, &x2)] {
+                for (order, row) in [(0, x0), (1, x1), (2, x2)] {
                     // Σ N⁽ᵒʳᵈᵉʳ⁾ⱼ (Pⱼ − o): the differences of nearby
                     // doubles exact, the multiples exact, the sum in
                     // double-double.
@@ -1819,12 +2159,12 @@ mod tests {
                     let exact = sum.0 + sum.1;
                     let got = row.0.points[k][c];
                     assert!(
-                        (got - exact).abs() <= row.1[c],
+                        (got - exact).abs() <= row.1[k][c],
                         "order {order}, control point {k}, coordinate {c}: {got:e} is {:e} off {exact:e}, the allowance is {:e}",
                         (got - exact).abs(),
-                        row.1[c]
+                        row.1[k][c]
                     );
-                    assert!(row.1[c] > 0.0, "an inner row has rounding to allow for");
+                    assert!(row.1[k][c] > 0.0, "an inner row has rounding to allow for");
                 }
             }
         }

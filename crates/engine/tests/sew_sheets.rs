@@ -5,7 +5,7 @@
 //! two first and refuses (their surfaces touch along the whole edge); the
 //! sewing joins them along the edge, the seam is proven G2 on the sewn
 //! body, and the document saves and reopens with the operation (format
-//! 59). `document.setTolerance` sets the tolerances the seam is proven to.
+//! 59). The seams are proven G2 at the default tolerances.
 
 #![allow(
     clippy::unwrap_used,
@@ -146,26 +146,35 @@ fn sewing_what_is_not_two_sheets_sharing_an_edge_fails_with_the_reason() {
     assert!(err.contains("sew"), "{err}");
 }
 
-/// The tolerances a seam is proven to: at the default angular tolerance
-/// of 1e-9 rad the 0.69 m seam of the tank cannot be proven G2 (the
-/// curvature threshold `min(angular / L, 2 tol / L²)` is below what the
-/// measure can bound in double precision there), so the side is refused;
-/// the example sets 1e-3 mm and 1e-6 rad first.
+/// The tank's seams are proven G2 at the default tolerances (1e-6 mm,
+/// 1e-9 rad), which it no longer changes: each side is held in curvature
+/// to the crown along a 0.69 m seam of many knot spans, and the network
+/// refuses a side unless `continuity` proves its seam G2 (curvature
+/// threshold `min(angular / L, 2 tol / L²)`, 1.19e-12 per mm). Until
+/// 2026-11-01 the measure's rounding allowance on such a seam was 10 to 13
+/// times that threshold (the rows along differentiated after the
+/// positions were rounded), so the side was refused and the example set
+/// 1 µm and 1e-6 rad first; with the rows formed from the stored net's
+/// differences the bounds are 6.4e-13 across, 2.7e-13 twist and 1.3e-13
+/// along (`docs/design/surfacing.md`, the tank's finding 1). The
+/// expectation is pinned apart from this test by the closed-form long
+/// seam of `geom/tests/network_g2.rs` (G2 proven at half a threshold, G1
+/// at 1.5), at three scales.
 #[test]
-fn the_tank_states_the_tolerances_its_seams_are_proven_to() {
+fn the_tank_is_proven_g2_at_the_default_tolerances() {
     let steps = tank_until("Crown and side");
-    let (first, rest) = steps.split_first().unwrap();
-    assert_eq!(first.0, "document.setTolerance");
+    assert!(
+        steps.iter().all(|(id, _)| id != "document.setTolerance"),
+        "the tank keeps the default tolerances"
+    );
     let mut s = common::session();
     run(&mut s, "file.new", json!({"units": "mm"}));
-    for (id, params) in rest {
-        run(&mut s, id, params.clone());
+    for (id, params) in steps {
+        run(&mut s, &id, params);
     }
-    let why = failure(&mut s, "Side L");
-    assert!(why.contains("curvature (G2)"), "{why}");
-    let out = run(&mut s, "document.setTolerance", first.1.clone());
-    assert_eq!(out["was"]["angular"], 1e-9);
     let doc = inspect(&mut s);
+    assert_eq!(doc["tolerance"]["linear"], 1e-6, "{}", doc["tolerance"]);
+    assert_eq!(doc["tolerance"]["angular"], 1e-9, "{}", doc["tolerance"]);
     for feature in doc["features"].as_array().unwrap() {
         assert_eq!(feature["status"], "ok", "{feature}");
     }
