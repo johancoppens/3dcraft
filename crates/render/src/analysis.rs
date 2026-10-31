@@ -520,7 +520,7 @@ impl Resolved {
                     let (x, y) = (r.dot(self.first), r.dot(self.second));
                     let (dx, dy) = (dr.dot(self.first), dr.dot(self.second));
                     let q = x * x + y * y;
-                    if !(q > 0.0) {
+                    if q.is_nan() || q <= 0.0 {
                         return f64::INFINITY;
                     }
                     (x * dy - y * dx) / q / std::f64::consts::TAU * self.count
@@ -528,7 +528,7 @@ impl Resolved {
                 AnalysisMode::Highlight => {
                     let m = self.second;
                     let nm = n.dot(m);
-                    if !(nm.abs() > 0.0) {
+                    if nm.is_nan() || nm == 0.0 {
                         return f64::INFINITY;
                     }
                     let t = (self.point - rel).dot(m) / nm;

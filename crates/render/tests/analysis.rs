@@ -253,10 +253,9 @@ fn stripes_finer_than_a_pixel_fade_to_their_mean() {
         }
         if footprint >= 1.0 {
             assert!((mean - width).abs() < 0.01, "{stripes}: mean {mean}");
-            assert!(
-                var < (full / footprint).powi(2),
-                "{stripes}: variance {var}"
-            );
+            // Every share within `full / f²` of the mean (the tent).
+            let bound = full / (footprint * footprint);
+            assert!(var < bound * bound, "{stripes}: variance {var}");
         }
         assert!(
             var <= last_var,
