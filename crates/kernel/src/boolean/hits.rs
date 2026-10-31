@@ -31,9 +31,10 @@ const MAX_EVALUATIONS: usize = 200_000;
 /// stretch's middle is kept, for the rounding of the distance and of the
 /// parameters (relative).
 const WINDOW_MARGIN: f64 = 1e-9;
-/// A window narrower than this part of half its stretch is not cut out:
-/// the stretch is halved, as without one (three pieces where two do).
-const WINDOW_LEAST: f64 = 0.125;
+/// A stretch of a curve about a middle, clear of the surface on the side
+/// given (positive: the side its normal points to): the pieces halved
+/// into it need no look ([`numeric`]).
+type Window = (f64, f64, bool);
 /// What part of the distance in the middle a bound below it is asked to
 /// reach for a window (the bound is refined no further than that).
 const WINDOW_ASKED: f64 = 0.9;
@@ -408,10 +409,13 @@ fn numeric(
     let mut runs: Vec<(f64, f64, Kind)> = Vec::new();
     // Stretches still to judge, and stretches already judged clear on the
     // way (see the window below), taken from the left.
-    let mut stack: Vec<(f64, f64, Option<Kind>)> = vec![(start, end, None)];
+    let mut stack: Vec<(f64, f64, Vec<Window>)> = vec![(start, end, Vec::new())];
     let mut evaluations = 0_usize;
-    while let Some((a, b, judged)) = stack.pop() {
-        if let Some(kind) = judged {
+    while let Some((a, b, windows)) = stack.pop() {
+        // Within a window cleared about the middle of a stretch it was
+        // halved from: clear, on that middle's side, unevaluated.
+        if let Some(&(_, _, positive)) = windows.iter().find(|w| w.0 <= a && b <= w.1) {
+            let kind = Kind::Clear { positive };
             match runs.last_mut() {
                 Some(last) if last.2 == kind => last.1 = b,
                 _ => runs.push((a, b, kind)),
@@ -514,50 +518,29 @@ fn numeric(
         } else if near {
             Kind::Near
         } else {
-            // Not clear as a whole: against a surface with an index (a
-            // freeform one, whose distance is a search and dear), the
-            // window about the middle is cut out and only what lies
-            // beside it is divided further. Where the curve crosses the
-            // surface at an angle this closes in on the crossing in a few
-            // steps, where halving takes one per bit of the stretch's
-            // length over the tolerance (docs/design/booleans.md › *A
-            // crossing closed in on*). Not for the analytic kinds, whose
-            // distance is cheap: there the runs halving makes decide a
-            // torus's near-tangent passages, and moving their ends turned
-            // a corpus case at the edge of tolerance into a refusal.
+            // Not clear as a whole: halved. Against a surface with an
+            // index (a freeform one, whose distance is a search and dear)
+            // the window about the middle is kept with the halves, so
+            // that the pieces they are halved into that lie within it are
+            // clear without a look: where the curve crosses the surface,
+            // the stretches beside the crossing cost nothing, where each
+            // took a distance and often a bound below the whole stretch
+            // that failed (docs/design/booleans.md › *A crossing closed
+            // in on*). The halving itself is as before, so the runs near
+            // the surface are the ones it always made: a first version
+            // cut the window out, which moved their ends and turned
+            // near-tangent passages at the edge of tolerance (a corpus
+            // case, a fillet's tool) into refusals.
             let reach = reach();
-            if lower.is_some() && reach.is_finite() && reach > WINDOW_LEAST * half {
-                let (mut lo, mut hi) = ((mid - reach).max(a), (mid + reach).min(b));
-                // No piece left beside it so short that it is called near
-                // for its length alone.
-                if lo > a && lo - a < 2.0 * finest {
-                    lo = a + 2.0 * finest;
-                }
-                if hi < b && b - hi < 2.0 * finest {
-                    hi = b - 2.0 * finest;
-                }
-                if lo >= hi {
-                    stack.push((mid, b, None));
-                    stack.push((a, mid, None));
-                    continue;
-                }
-                if hi < b {
-                    stack.push((hi, b, None));
-                }
-                stack.push((
-                    lo,
-                    hi,
-                    Some(Kind::Clear {
-                        positive: value > 0.0,
-                    }),
-                ));
-                if lo > a {
-                    stack.push((a, lo, None));
-                }
-            } else {
-                stack.push((mid, b, None));
-                stack.push((a, mid, None));
+            // The halves keep the windows of the stretches they come from
+            // that reach into them, and this one's.
+            let mut kept: Vec<Window> =
+                windows.into_iter().filter(|w| w.0 < b && a < w.1).collect();
+            if lower.is_some() && reach.is_finite() && reach > 0.0 {
+                kept.push((mid - reach, mid + reach, value > 0.0));
             }
+            stack.push((mid, b, kept.clone()));
+            stack.push((a, mid, kept));
             continue;
         };
         match runs.last_mut() {
@@ -575,8 +558,7 @@ fn numeric(
     // halving takes one per bit, down to the rounding), halving where it
     // finds no sign change.
     let solve = |level: f64, lo: f64, hi: f64| false_position(&|t| f(t) - level, lo, hi);
-    let _ = &solve;
-    let hits = hits_of_runs(curve, &runs, &f, bounded, tol, None);
+    let hits = hits_of_runs(curve, &runs, &f, bounded, tol, Some(&solve));
     if failed.get() {
         return Err(GeomError::Unsupported(FREEFORM));
     }
@@ -1942,9 +1924,9 @@ mod tests {
     /// distance and the bound. Halving took one evaluation per bit of the
     /// stretch's length over the tolerance and each root then one per bit
     /// down to the rounding (198 distances and 51 bounds here); the window
-    /// about each middle that the bound clears, and false position for
-    /// the root, take 141 and 51 (docs/design/booleans.md › *A crossing
-    /// closed in on*).
+    /// about each middle that the bound clears (the pieces halved into it
+    /// need no look), and false position for the root, take 99 and 62
+    /// (docs/design/booleans.md › *A crossing closed in on*).
     #[test]
     fn a_line_through_a_ball_is_settled_in_fewer_evaluations() {
         for k in [1e-3, 1.0, 1e6] {
@@ -1989,7 +1971,7 @@ mod tests {
             }
             // 198 distances and 51 bounds before.
             let (count, bounds) = (count.get(), bounds.get());
-            assert!(count <= 150 && bounds <= 60, "{k}: {count} and {bounds}");
+            assert!(count <= 110 && bounds <= 70, "{k}: {count} and {bounds}");
         }
     }
 
