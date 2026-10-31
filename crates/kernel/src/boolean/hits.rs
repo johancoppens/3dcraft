@@ -514,15 +514,33 @@ fn numeric(
         } else if near {
             Kind::Near
         } else {
-            // Not clear as a whole: the window about the middle is cut
-            // out and only what lies beside it is divided further. Where
-            // the curve crosses the surface at an angle this closes in on
-            // the crossing in a few steps, where halving takes one per bit
-            // of the stretch's length over the tolerance
-            // (docs/design/booleans.md › *A crossing closed in on*).
+            // Not clear as a whole: against a surface with an index (a
+            // freeform one, whose distance is a search and dear), the
+            // window about the middle is cut out and only what lies
+            // beside it is divided further. Where the curve crosses the
+            // surface at an angle this closes in on the crossing in a few
+            // steps, where halving takes one per bit of the stretch's
+            // length over the tolerance (docs/design/booleans.md › *A
+            // crossing closed in on*). Not for the analytic kinds, whose
+            // distance is cheap: there the runs halving makes decide a
+            // torus's near-tangent passages, and moving their ends turned
+            // a corpus case at the edge of tolerance into a refusal.
             let reach = reach();
-            if reach.is_finite() && reach > WINDOW_LEAST * half {
-                let (lo, hi) = ((mid - reach).max(a), (mid + reach).min(b));
+            if lower.is_some() && reach.is_finite() && reach > WINDOW_LEAST * half {
+                let (mut lo, mut hi) = ((mid - reach).max(a), (mid + reach).min(b));
+                // No piece left beside it so short that it is called near
+                // for its length alone.
+                if lo > a && lo - a < 2.0 * finest {
+                    lo = a + 2.0 * finest;
+                }
+                if hi < b && b - hi < 2.0 * finest {
+                    hi = b - 2.0 * finest;
+                }
+                if lo >= hi {
+                    stack.push((mid, b, None));
+                    stack.push((a, mid, None));
+                    continue;
+                }
                 if hi < b {
                     stack.push((hi, b, None));
                 }
@@ -557,7 +575,8 @@ fn numeric(
     // halving takes one per bit, down to the rounding), halving where it
     // finds no sign change.
     let solve = |level: f64, lo: f64, hi: f64| false_position(&|t| f(t) - level, lo, hi);
-    let hits = hits_of_runs(curve, &runs, &f, bounded, tol, Some(&solve));
+    let _ = &solve;
+    let hits = hits_of_runs(curve, &runs, &f, bounded, tol, None);
     if failed.get() {
         return Err(GeomError::Unsupported(FREEFORM));
     }
@@ -1917,15 +1936,17 @@ mod tests {
     }
 
     /// A line through a ball at a slant, by the root isolation alone at
-    /// three scales: both crossings at their closed-form places, and in
-    /// few evaluations of the distance. Halving down to the tolerance took
-    /// one evaluation per bit of the stretch over it and the root then
-    /// eighty more (some 370 here); the window about each middle the
-    /// distance clears, and false position for the root, close in on each
-    /// crossing in a few (docs/design/booleans.md › *A crossing closed in
-    /// on*).
+    /// three scales, with a bound below the distance as a freeform
+    /// surface's index gives one (here the distance itself): both
+    /// crossings at their closed-form places, in fewer evaluations of the
+    /// distance and the bound. Halving took one evaluation per bit of the
+    /// stretch's length over the tolerance and each root then one per bit
+    /// down to the rounding (198 distances and 51 bounds here); the window
+    /// about each middle that the bound clears, and false position for
+    /// the root, take 141 and 51 (docs/design/booleans.md › *A crossing
+    /// closed in on*).
     #[test]
-    fn a_line_through_a_ball_is_settled_in_few_evaluations() {
+    fn a_line_through_a_ball_is_settled_in_fewer_evaluations() {
         for k in [1e-3, 1.0, 1e6] {
             let tol = 1e-6 * k;
             let ball = Surface::Sphere(Sphere::new(tilted(k), 3.0 * k).unwrap());
@@ -1935,7 +1956,7 @@ mod tests {
             // 1.2 from the centre, so the chord is 2·sqrt(9 − 1.44).
             let off = way.cross(Vec3::new(0.0, 0.0, 1.0)).normalized().unwrap();
             let line = Curve3::Line(Line::new(centre + off * (1.2 * k), way).unwrap());
-            let count = std::cell::Cell::new(0_usize);
+            let (count, bounds) = (std::cell::Cell::new(0_usize), std::cell::Cell::new(0_usize));
             let found = numeric(
                 &line,
                 (-10.0 * k, 12.0 * k),
@@ -1944,7 +1965,11 @@ mod tests {
                         count.set(count.get() + 1);
                         signed_distance(sheet, p)
                     },
-                    lower: None,
+                    // As an index gives one: here the exact distance.
+                    lower: Some(&|p, _| {
+                        bounds.set(bounds.get() + 1);
+                        signed_distance(sheet, p).map_or(0.0, f64::abs)
+                    }),
                     lower_stretch: None,
                     bend: None,
                     within: None,
@@ -1962,7 +1987,9 @@ mod tests {
                 assert!((hit.t - t).abs() <= 1e-9 * k, "{k}: {} for {t}", hit.t);
                 assert!(!hit.tangent);
             }
-            assert!(count.get() <= 120, "{k}: {} evaluations", count.get());
+            // 198 distances and 51 bounds before.
+            let (count, bounds) = (count.get(), bounds.get());
+            assert!(count <= 150 && bounds <= 60, "{k}: {count} and {bounds}");
         }
     }
 
