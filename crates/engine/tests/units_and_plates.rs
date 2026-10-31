@@ -677,6 +677,55 @@ fn a_groove_whose_ends_lie_outside_the_face_is_found_from_its_edges() {
     }
 }
 
+/// The same groove under a base 2000 long, across it, behind a boss of
+/// 10: the groove's edges are 200 times longer than the boss, and points
+/// spread evenly over them would fall far apart and miss its box (review
+/// of 2026-10-31); points are taken along the stretch behind the face.
+/// Three scales.
+#[test]
+fn a_groove_along_a_long_base_under_a_small_boss_is_found() {
+    for scale in [0.01, 1.0, 1000.0] {
+        let mut s = new_session();
+        let mm = |v: f64| format!("{} mm", v * scale);
+        run(
+            &mut s,
+            "feature.block",
+            json!({"name": "Base", "size": [mm(100.0), mm(2000.0), mm(10.0)]}),
+        );
+        run(
+            &mut s,
+            "feature.block",
+            json!({"name": "Boss", "size": [mm(10.0), mm(10.0), mm(2.0)], "position": [mm(40.0), mm(1237.0), mm(10.0)]}),
+        );
+        run(
+            &mut s,
+            "feature.boolean",
+            json!({"op": "union", "target": "Base", "tool": "Boss", "name": "Bossed"}),
+        );
+        let top = |s: &mut Session, body: &str| {
+            run(
+                s,
+                "select.query",
+                json!({"kind": "face", "where": {"in": body, "normal": {"along": "z"}, "inside": [[mm(39.0), mm(1236.0), mm(11.0)], [mm(51.0), mm(1248.0), mm(13.0)]], "thickness": {"min": "0 mm"}}}),
+            )
+        };
+        let plain = top(&mut s, "Bossed");
+        assert_eq!(plain["count"], 1, "scale {scale}: {plain}");
+        run(
+            &mut s,
+            "feature.block",
+            json!({"name": "Cutter", "size": [mm(0.5), mm(2000.0), mm(1.0)], "position": [mm(46.4), mm(0.0), mm(0.0)]}),
+        );
+        run(
+            &mut s,
+            "feature.boolean",
+            json!({"op": "subtract", "target": "Bossed", "tool": "Cutter", "name": "Grooved"}),
+        );
+        let grooved = top(&mut s, "Grooved");
+        assert_eq!(grooved["count"], 0, "scale {scale}: {grooved}");
+    }
+}
+
 /// The thickness filter's cost on a body of about a thousand faces and
 /// four thousand vertices (a plate with 500 bosses under it: some 2500 faces, 4000 vertices): one query
 /// over its flat faces, timed (docs/design/selection.md). It must answer

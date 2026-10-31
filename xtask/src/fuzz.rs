@@ -81,7 +81,15 @@ fn parse(args: &[String]) -> Result<Config, String> {
                 c.jobs = usize::try_from(number()?).unwrap_or(1).clamp(1, MAX_JOBS);
             }
             "--timeout" => c.timeout = number()?.max(1),
-            "--memory" => c.memory = value.clone(),
+            "--memory" => {
+                // A cap that does not read is an error, never no cap.
+                if bytes(value).is_none() {
+                    return Err(format!(
+                        "--memory: `{value}` is not a size (such as 2G or 512M)"
+                    ));
+                }
+                c.memory = value.clone();
+            }
             "--minutes" => c.minutes = Some(number()?),
             "--shrink-runs" => c.shrink_runs = usize::try_from(number()?).unwrap_or(0),
             "--shrink-minutes" => c.shrink_minutes = number()?,
@@ -565,6 +573,13 @@ fn one_seed(launcher: &Launcher, seed: u64, out: &Path, tally: &Mutex<Tally>, st
     if sig.0 == "ok" {
         let _ = std::fs::remove_file(&design);
     } else {
+        // At once, with its design, so a run cut short before the
+        // shrinking still hands over what it found.
+        println!("found: {report}");
+        println!(
+            "found design {seed}: {}",
+            read_design(&design).unwrap_or(Value::Null)
+        );
         t.findings.push((seed, design, sig, report));
     }
 }
@@ -894,6 +909,8 @@ mod tests {
         assert_eq!(both.seeds, 500);
         let plain = parse(&args(&[])).expect("valid flags");
         assert_eq!(plain.seeds, 100);
+        assert!(parse(&args(&["--memory", "lots"])).is_err());
+        assert!(parse(&args(&["--memory", "512M"])).is_ok());
     }
 
     #[test]

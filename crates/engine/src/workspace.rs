@@ -91,24 +91,67 @@ pub fn canonical(path: &Path) -> std::io::Result<PathBuf> {
 }
 
 /// A verbatim Windows path written plainly ([`canonical`]); any other
-/// path as it is.
+/// path as it is. It stays verbatim where the plain spelling would mean
+/// another file to Windows (the rules of the `dunce` crate): a part that
+/// is a device name (`NUL`, `COM1`, `CON.txt`) or ends in a dot or a
+/// space (which Windows strips), or a path longer than 260 characters.
 pub fn plain(path: PathBuf) -> PathBuf {
     let Some(text) = path.to_str() else {
         return path;
     };
-    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
-        return PathBuf::from(format!(r"\\{rest}"));
-    }
-    if let Some(rest) = text.strip_prefix(r"\\?\") {
+    let (rest, unc) = if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        (rest, true)
+    } else if let Some(rest) = text.strip_prefix(r"\\?\") {
         // Only a drive path: `\\?\C:\...`.
         let mut chars = rest.chars();
-        if let (Some(drive), Some(':')) = (chars.next(), chars.next())
-            && drive.is_ascii_alphabetic()
-        {
-            return PathBuf::from(rest);
+        match (chars.next(), chars.next()) {
+            (Some(drive), Some(':')) if drive.is_ascii_alphabetic() => (rest, false),
+            _ => return path,
         }
+    } else {
+        return path;
+    };
+    let plain = if unc {
+        format!(r"\\{rest}")
+    } else {
+        rest.to_string()
+    };
+    // The drive (`C:`) or the server and share are not parts to check.
+    let skip = if unc { 2 } else { 1 };
+    let unsafe_part = rest
+        .split('\\')
+        .skip(skip)
+        .any(|part| !part.is_empty() && windows_unsafe_part(part));
+    if plain.chars().count() > 260 || unsafe_part {
+        return path;
     }
-    path
+    PathBuf::from(plain)
+}
+
+/// Whether Windows reads a path part as something else than the file it
+/// names: a device (`CON`, `PRN`, `AUX`, `NUL`, `COM0`–`COM9`, `LPT0`–`LPT9`,
+/// `CONIN$`, `CONOUT$`, in any case, with any extension and trailing
+/// spaces: `con .txt`), a name ending in a dot or a space (stripped, so
+/// `a.` is `a`), or one with a `:` (an alternate data stream). Pure text,
+/// so it is tested on every platform.
+pub fn windows_unsafe_part(part: &str) -> bool {
+    if part.ends_with('.') || part.ends_with(' ') || part.contains(':') {
+        return part != "." && part != "..";
+    }
+    let stem = part.split('.').next().unwrap_or(part).trim_end_matches(' ');
+    let upper = stem.to_ascii_uppercase();
+    if matches!(
+        upper.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) {
+        return true;
+    }
+    let mut chars = upper.chars();
+    let prefix: String = chars.by_ref().take(3).collect();
+    let digit: String = chars.collect();
+    (prefix == "COM" || prefix == "LPT")
+        && (digit.len() == 1 && digit.chars().all(|c| c.is_ascii_digit())
+            || matches!(digit.as_str(), "\u{b9}" | "\u{b2}" | "\u{b3}"))
 }
 
 /// `root` written absolute with its links resolved, as the hosts spell
@@ -172,6 +215,16 @@ fn resolve(access: &Access, path: &str, direction: &str) -> Result<PathBuf, Comm
     for component in relative.components() {
         match component {
             Component::Normal(part) => {
+                // Beneath a root, a part Windows would read as a device or
+                // as another name is refused there: the root is written
+                // plainly ([`plain`]), so Windows normalises what is
+                // joined to it.
+                if cfg!(windows) && part.to_str().is_none_or(windows_unsafe_part) {
+                    return Err(CommandError::new(format!(
+                        "`{path}`: `{}` is a device name or a name Windows changes (a trailing dot or space, a `:`); not allowed beneath the {direction} root",
+                        part.to_string_lossy()
+                    )));
+                }
                 resolved.push(part);
                 depth += 1;
             }
@@ -279,8 +332,56 @@ mod tests {
         assert_eq!(p(r"\\?\UNC\srv\share\x"), PathBuf::from(r"\\srv\share\x"));
         // Not a drive: as it is.
         assert_eq!(p(r"\\?\Volume{1}\x"), PathBuf::from(r"\\?\Volume{1}\x"));
+        // Verbatim where the plain spelling means another file.
+        for keep in [
+            r"\\?\C:\a\NUL",
+            r"\\?\C:\a\con.txt",
+            r"\\?\C:\a\COM1\b",
+            r"\\?\C:\a\b.",
+            r"\\?\C:\a\b ",
+            r"\\?\UNC\srv\share\lpt9",
+        ] {
+            assert_eq!(p(keep), PathBuf::from(keep), "{keep}");
+        }
+        let long = format!(r"\\?\C:\{}", "a".repeat(300));
+        assert_eq!(p(&long), PathBuf::from(&long));
         assert_eq!(p("/home/a"), PathBuf::from("/home/a"));
         assert_eq!(p(r"D:\a"), PathBuf::from(r"D:\a"));
+    }
+
+    #[test]
+    fn parts_windows_reads_as_other_files_are_told() {
+        for bad in [
+            "NUL",
+            "nul",
+            "Con",
+            "CON.txt",
+            "con .txt",
+            "aux.tar.gz",
+            "COM1",
+            "lpt9.x",
+            "COM\u{b9}",
+            "CONIN$",
+            "a.",
+            "a ",
+            "a.txt:stream",
+        ] {
+            assert!(windows_unsafe_part(bad), "{bad}");
+        }
+        for good in [
+            "a",
+            "console",
+            "COM",
+            "COM10",
+            "LPT",
+            "nul2",
+            "a.b",
+            ".",
+            "..",
+            "x.3dcraft",
+        ] {
+            assert!(!windows_unsafe_part(good), "{good}");
+        }
     }
 
     #[test]

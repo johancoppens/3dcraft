@@ -1631,9 +1631,14 @@ pub(crate) fn thickness(part: &Part<'_>, tol: f64) -> Answer<Option<Thin>> {
 /// Most points of a face a plate thickness casts a line from, spread over
 /// its triangles.
 const PLATE_SAMPLES: usize = 32;
-/// Most vertices behind a face, projecting within its box, a plate
-/// thickness samples around; a face with more has no thickness (no
-/// answer rather than one that may have missed a step).
+/// Most points along edges a plate thickness samples for one face; a face
+/// that needs more has no thickness.
+const PLATE_EDGE_POINTS: u32 = 1 << 14;
+/// Most distinct points behind a face, projected onto it within its box
+/// (vertices and points along edges, those within the tolerance of one
+/// another counted once), a plate thickness samples around; a face with
+/// more has no thickness (no answer rather than one that may have missed
+/// a step).
 const PLATE_VERTICES: usize = 4096;
 
 /// The plate thickness of face `face`: the distance through the body
@@ -1799,6 +1804,31 @@ pub(crate) fn plate_thickness(
             let d = normal * -deepest;
             Bbox3::from_points([lo, hi, lo + d, hi + d])
         });
+    // Whether a box may hold points behind the face, no deeper than the
+    // deepest line, that project within its box.
+    let behind = |b: &Bbox3| -> bool {
+        let Some((lo, hi)) = b.corners() else {
+            return false;
+        };
+        let (mut shallow, mut deep) = (f64::INFINITY, f64::NEG_INFINITY);
+        let mut shadow = Bbox3::EMPTY;
+        for k in 0..8 {
+            let c = Vec3::new(
+                if k & 1 == 0 { lo.x } else { hi.x },
+                if k & 2 == 0 { lo.y } else { hi.y },
+                if k & 4 == 0 { lo.z } else { hi.z },
+            );
+            let depth = normal.dot(centre - c);
+            shallow = shallow.min(depth);
+            deep = deep.max(depth);
+            shadow.add(c + normal * depth);
+        }
+        deep > tol && shallow <= deepest && overlaps(&shadow, &reach)
+    };
+    // Points along edges: the face's size over the grid's points apart,
+    // at most PLATE_EDGE_POINTS of them for the face.
+    let spacing = (face_box.diagonal() / PLATE_SAMPLES as f64).max(nudge);
+    let mut budget: u32 = PLATE_EDGE_POINTS;
     for (edge, edge_box) in body.edges.iter().zip(part.edge_boxes()) {
         if swept.as_ref().is_some_and(|w| !overlaps(w, edge_box)) {
             continue;
@@ -1809,32 +1839,48 @@ pub(crate) fn plate_thickness(
         {
             continue;
         }
-        let Some((lo, hi)) = edge_box.corners() else {
-            continue;
-        };
-        let corners = (0..8).map(|k| {
-            Vec3::new(
-                if k & 1 == 0 { lo.x } else { hi.x },
-                if k & 2 == 0 { lo.y } else { hi.y },
-                if k & 4 == 0 { lo.z } else { hi.z },
-            )
-        });
-        let (mut shallow, mut deep) = (f64::INFINITY, f64::NEG_INFINITY);
-        let mut shadow = Bbox3::EMPTY;
-        for c in corners {
-            let depth = normal.dot(centre - c);
-            shallow = shallow.min(depth);
-            deep = deep.max(depth);
-            shadow.add(c + normal * depth);
-        }
-        if !(deep > tol && shallow <= deepest) || !overlaps(&shadow, &reach) {
+        if !behind(edge_box) {
             continue;
         }
-        for point in edge_points(edge, EDGE_SAMPLES) {
-            if let Some(q) = onto(point)
-                && !take(q, &mut points)
-            {
+        // Coarse pieces first; a piece that may come behind the face is
+        // sampled at a spacing of the face's size over the grid's points
+        // (so a step narrower than that spacing the grid can miss is not
+        // missed along a long edge either). Past the budget there is no
+        // answer rather than one that may have missed a step.
+        let (t0, t1) = edge.range;
+        let at = |k: u32, n: u32| t0 + (t1 - t0) * (f64::from(k) / f64::from(n.max(1)));
+        let mut before = edge.curve.eval(at(0, EDGE_SAMPLES));
+        for k in 1..=EDGE_SAMPLES {
+            let (ta, tb) = (at(k - 1, EDGE_SAMPLES), at(k, EDGE_SAMPLES));
+            let after = edge.curve.eval(tb);
+            let (pa, pb) = (before, after);
+            before = after;
+            let length = pa.distance(pb);
+            if !length.is_finite() {
+                continue;
+            }
+            // Half the chord and the chordal tolerance for what the curve
+            // may bulge between the two points.
+            let piece = grown(&Bbox3::from_points([pa, pb]), 0.5 * length + part.chord);
+            if !behind(&piece) {
+                continue;
+            }
+            let wanted = (length / spacing).ceil();
+            if !(wanted.is_finite() && wanted <= f64::from(budget)) {
                 return Ok(None);
+            }
+            // At least 1, at most the budget left (checked above).
+            let n = (wanted as u32).max(1);
+            budget -= n;
+            for i in 0..=n {
+                let point = edge
+                    .curve
+                    .eval(ta + (tb - ta) * (f64::from(i) / f64::from(n)));
+                if let Some(q) = onto(point)
+                    && !take(q, &mut points)
+                {
+                    return Ok(None);
+                }
             }
         }
     }
