@@ -45,19 +45,27 @@ mod tests {
 
     #[test]
     fn a_font_is_fetched_once_and_only_when_a_text_wants_it() {
+        // The engine's wanted fonts are process-wide, and other tests in
+        // this binary want fonts of their own at the same time: only the
+        // mono entries are this test's to count.
+        let mono = |due: Vec<(&'static str, String)>| -> Vec<(&'static str, String)> {
+            due.into_iter()
+                .filter(|(name, _)| *name == "mono")
+                .collect()
+        };
         let mut fetches = FontFetches::default();
         // Nothing is fetched until a text asks for a font.
-        assert!(fetches.due().iter().all(|(name, _)| *name != "mono"));
+        assert!(mono(fetches.due()).is_empty());
         craft3d_engine::fonts::want("mono").unwrap();
         assert_eq!(
-            fetches.due(),
+            mono(fetches.due()),
             vec![("mono", "fonts/JetBrainsMono-Regular.ttf".to_string())]
         );
         // Once: asking again does not fetch it again.
-        assert!(fetches.due().is_empty());
+        assert!(mono(fetches.due()).is_empty());
         // After a failure the next text tries again.
         fetches.failed("mono");
-        assert_eq!(fetches.due().len(), 1);
+        assert_eq!(mono(fetches.due()).len(), 1);
         // Bytes that are not the pinned file are refused.
         assert!(craft3d_engine::fonts::register("mono", b"not a font").is_err());
         assert!(craft3d_engine::fonts::want("nope").is_err());
