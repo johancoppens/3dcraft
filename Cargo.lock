@@ -406,6 +406,7 @@ dependencies = [
  "craft3d-automation",
  "craft3d-buildinfo",
  "craft3d-engine",
+ "craft3d-math",
  "craft3d-regen",
  "craft3d-ui-egui",
  "eframe",
@@ -462,6 +463,9 @@ dependencies = [
 [[package]]
 name = "craft3d-drawing"
 version = "0.1.0"
+dependencies = [
+ "libm",
+]
 
 [[package]]
 name = "craft3d-engine"
@@ -494,11 +498,15 @@ dependencies = [
 [[package]]
 name = "craft3d-expr"
 version = "0.1.0"
+dependencies = [
+ "craft3d-math",
+]
 
 [[package]]
 name = "craft3d-font"
 version = "0.1.0"
 dependencies = [
+ "libm",
  "ttf-parser",
 ]
 
@@ -507,6 +515,7 @@ name = "craft3d-format"
 version = "0.1.0"
 dependencies = [
  "craft3d-doc",
+ "craft3d-math",
  "craft3d-testkit",
  "craft3d-zipstore",
  "serde",
@@ -576,6 +585,9 @@ dependencies = [
 [[package]]
 name = "craft3d-math"
 version = "0.1.0"
+dependencies = [
+ "libm",
+]
 
 [[package]]
 name = "craft3d-meshio"
@@ -3719,6 +3731,7 @@ version = "0.1.0"
 dependencies = [
  "craft3d-doc",
  "craft3d-font",
+ "craft3d-math",
  "flate2",
  "png 0.17.16",
  "serde_json",

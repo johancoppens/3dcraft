@@ -6,6 +6,7 @@
 
 mod bits;
 mod frame;
+mod portable;
 pub mod quadrature;
 mod threads;
 mod tolerance;
@@ -13,6 +14,7 @@ mod transform;
 
 pub use bits::{Bits, bits_of};
 pub use frame::Frame;
+pub use portable::Portable;
 pub use threads::available_threads;
 pub use tolerance::{DEFAULT_LOOSEST, Tolerance};
 pub use transform::Transform;

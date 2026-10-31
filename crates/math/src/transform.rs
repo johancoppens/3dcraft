@@ -1,5 +1,6 @@
 //! Affine transforms of model space.
 
+use crate::portable::Portable;
 use crate::{Frame, Vec3};
 
 /// `p ↦ M p + t`, with `M` stored as its three rows.
@@ -38,7 +39,7 @@ impl Transform {
         if !angle.is_finite() {
             return None;
         }
-        let (s, c) = angle.sin_cos();
+        let (s, c) = angle.psin_cos();
         let v = 1.0 - c;
         Some(Transform {
             rows: [
@@ -221,6 +222,7 @@ impl Transform {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::portable::Portable;
     use std::f64::consts::FRAC_PI_2;
 
     fn close(a: Vec3, b: Vec3) -> bool {
@@ -268,7 +270,7 @@ mod tests {
         // Angle between v's and its image's components perpendicular to the axis.
         let k = axis.normalized().unwrap();
         let perp = |w: Vec3| (w - k * w.dot(k)).normalized().unwrap();
-        assert!((perp(v).dot(perp(r.vector(v))).acos() - 1.234).abs() < 1e-13);
+        assert!((perp(v).dot(perp(r.vector(v))).pacos() - 1.234).abs() < 1e-13);
     }
 
     #[test]
@@ -297,7 +299,7 @@ mod tests {
         let p = Vec3::new(1.5, 2.5, -3.5);
         assert!(close(inv.point(m.point(p)), p));
         assert!(close(m.point(inv.point(p)), p));
-        assert!((m.determinant() - 0.25_f64.powi(3)).abs() < 1e-15);
+        assert!((m.determinant() - 0.25_f64.ppowi(3)).abs() < 1e-15);
         assert_eq!(Transform::IDENTITY.inverse(), Some(Transform::IDENTITY));
     }
 

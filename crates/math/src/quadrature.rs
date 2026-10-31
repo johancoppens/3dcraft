@@ -1,6 +1,7 @@
 //! Gauss–Legendre quadrature, used to integrate over curves and surfaces
 //! (mass properties).
 
+use crate::portable::Portable;
 /// Largest supported number of nodes.
 pub const MAX_NODES: usize = 64;
 
@@ -16,7 +17,7 @@ pub fn gauss_legendre(n: usize) -> Vec<(f64, f64)> {
     let nf = n as f64;
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
-        let mut x = -(std::f64::consts::PI * (i as f64 + 0.75) / (nf + 0.5)).cos();
+        let mut x = -(std::f64::consts::PI * (i as f64 + 0.75) / (nf + 0.5)).pcos();
         let mut derivative = 1.0;
         // Converges quadratically from this guess; the cap is a guard.
         for _ in 0..100 {
@@ -79,6 +80,7 @@ impl Rule {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::portable::Portable;
 
     #[test]
     fn two_and_three_point_rules_match_the_textbook() {
@@ -123,8 +125,8 @@ mod tests {
             let rule = Rule::new(n);
             for degree in 0..2 * n {
                 // ∫_0^2 x^d dx = 2^(d+1) / (d+1)
-                let exact = 2.0_f64.powi(degree as i32 + 1) / (degree as f64 + 1.0);
-                let got = rule.integrate(0.0, 2.0, 1, |x| x.powi(degree as i32));
+                let exact = 2.0_f64.ppowi(degree as i32 + 1) / (degree as f64 + 1.0);
+                let got = rule.integrate(0.0, 2.0, 1, |x| x.ppowi(degree as i32));
                 assert!(
                     (got - exact).abs() <= 1e-12 * exact,
                     "n = {n}, degree {degree}: {got} vs {exact}"
@@ -136,15 +138,15 @@ mod tests {
     #[test]
     fn smooth_functions_converge_fast_and_panels_add_up() {
         let rule = Rule::new(16);
-        assert!((rule.integrate(0.0, std::f64::consts::PI, 1, f64::sin) - 2.0).abs() < 1e-14);
+        assert!((rule.integrate(0.0, std::f64::consts::PI, 1, f64::psin) - 2.0).abs() < 1e-14);
         assert!(
-            (rule.integrate(0.0, 1.0, 1, f64::exp) - (std::f64::consts::E - 1.0)).abs() < 1e-15
+            (rule.integrate(0.0, 1.0, 1, f64::pexp) - (std::f64::consts::E - 1.0)).abs() < 1e-15
         );
-        let whole = rule.integrate(-1.0, 3.0, 1, |x| (3.0 * x).cos());
-        let split = rule.integrate(-1.0, 3.0, 7, |x| (3.0 * x).cos());
-        let exact = (9.0_f64.sin() + 3.0_f64.sin()) / 3.0;
+        let whole = rule.integrate(-1.0, 3.0, 1, |x| (3.0 * x).pcos());
+        let split = rule.integrate(-1.0, 3.0, 7, |x| (3.0 * x).pcos());
+        let exact = (9.0_f64.psin() + 3.0_f64.psin()) / 3.0;
         assert!((whole - exact).abs() < 1e-12 && (split - exact).abs() < 1e-14);
         // A reversed interval gives the negated integral.
-        assert!((rule.integrate(3.0, -1.0, 2, |x| (3.0 * x).cos()) + exact).abs() < 1e-13);
+        assert!((rule.integrate(3.0, -1.0, 2, |x| (3.0 * x).pcos()) + exact).abs() < 1e-13);
     }
 }
