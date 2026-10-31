@@ -980,7 +980,13 @@ fn spawn_writer(
                     use std::io::Write;
                     while let Ok(rgb) = frames.recv() {
                         let rgb = if even {
-                            crate::encoder::pad_even(rgb, width, height)
+                            match crate::encoder::pad_even(rgb, width, height) {
+                                Ok(rgb) => rgb,
+                                Err(e) => {
+                                    fail(format!("ui.record: {e}"));
+                                    return;
+                                }
+                            }
                         } else {
                             rgb
                         };

@@ -57,9 +57,11 @@ use std::time::{Duration, Instant};
 use crate::record::VideoQuality;
 
 /// How long listing the encoders may take.
-const PROBE_PATIENCE: Duration = Duration::from_secs(10);
+const PROBE_PATIENCE: Duration = Duration::from_secs(5);
 /// How long the trial of one encoder may take.
-const TRIAL_PATIENCE: Duration = Duration::from_secs(15);
+const TRIAL_PATIENCE: Duration = Duration::from_secs(10);
+/// How long choosing may take in all (it freezes the window meanwhile).
+const TOTAL_PATIENCE: Duration = Duration::from_secs(20);
 /// The trial's frames: two of this many pixels a side, mid grey.
 const TRIAL_SIDE: u32 = 64;
 /// The most of what ffmpeg says that an error repeats: its last lines.
@@ -323,7 +325,11 @@ fn run_bounded(
             .spawn(move || {
                 let mut text = Vec::new();
                 if let Some(mut pipe) = pipe {
-                    // Bounded: what a listing says is a few tens of kB.
+                    // At most 1 MiB is kept: an encoder listing is a few
+                    // tens of kB and a trial's errors a few lines, so this
+                    // only bounds the memory a runaway program can take;
+                    // the rest is left unread (the pipe closes when the
+                    // program ends or is killed).
                     let _ = pipe.by_ref().take(1 << 20).read_to_end(&mut text);
                 }
                 String::from_utf8_lossy(&text).into_owned()
@@ -360,7 +366,10 @@ fn run_bounded(
             Ok(None) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!("it did not answer within {} s", patience.as_secs()));
+                return Err(format!(
+                    "it did not answer within {:.1} s",
+                    patience.as_secs_f64()
+                ));
             }
             Err(e) => return Err(e.to_string()),
         }
@@ -396,12 +405,49 @@ pub fn last_lines(said: &str) -> String {
     lines.get(from..).unwrap_or_default().join(" | ")
 }
 
+/// How long choosing an encoder may take: listing, each trial, and all of
+/// it together. The choice runs on the window's thread when `ui.record`
+/// starts, so the total is capped: at most [`Patience::total`] of a frozen
+/// window, once per ffmpeg (what it learns is remembered), and in practice
+/// well under a second.
+#[derive(Clone, Copy, Debug)]
+pub struct Patience {
+    pub listing: Duration,
+    pub trial: Duration,
+    pub total: Duration,
+}
+
+impl Default for Patience {
+    fn default() -> Self {
+        Self {
+            listing: PROBE_PATIENCE,
+            trial: TRIAL_PATIENCE,
+            total: TOTAL_PATIENCE,
+        }
+    }
+}
+
+/// Which ffmpeg: its path, and its file's length and modification time, so
+/// an ffmpeg upgraded in place is asked again.
+type Which = (PathBuf, Option<u64>, Option<std::time::SystemTime>);
+
+fn which(ffmpeg: &Path) -> Which {
+    let meta = std::fs::metadata(ffmpeg).ok();
+    (
+        ffmpeg.to_path_buf(),
+        meta.as_ref().map(std::fs::Metadata::len),
+        meta.and_then(|m| m.modified().ok()),
+    )
+}
+
 /// What has been learned about each ffmpeg: its listing, and per encoder
-/// and quality whether the trial worked (`Err` says why not).
+/// and quality whether the trial worked (`Err` says why not). Only what
+/// ffmpeg answered by ending is kept: a trial that timed out or could not
+/// start is asked again next time.
 #[derive(Default)]
 struct Known {
-    listings: BTreeMap<PathBuf, String>,
-    trials: BTreeMap<(PathBuf, &'static str, bool), Result<(), String>>,
+    listings: BTreeMap<Which, String>,
+    trials: BTreeMap<(Which, &'static str, bool), Result<(), String>>,
 }
 
 fn known() -> &'static Mutex<Known> {
@@ -410,18 +456,19 @@ fn known() -> &'static Mutex<Known> {
 }
 
 /// What `ffmpeg -hide_banner -encoders` lists, asked once per ffmpeg.
-fn listing(ffmpeg: &Path) -> Result<String, String> {
+fn listing(ffmpeg: &Path, patience: Duration) -> Result<String, String> {
+    let key = which(ffmpeg);
     if let Some(listing) = known()
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .listings
-        .get(ffmpeg)
+        .get(&key)
     {
         return Ok(listing.clone());
     }
     let mut command = std::process::Command::new(ffmpeg);
     command.args(["-hide_banner", "-encoders"]);
-    let ran = run_bounded(command, Vec::new(), PROBE_PATIENCE)
+    let ran = run_bounded(command, Vec::new(), patience)
         .map_err(|e| format!("cannot start `{}`: {e}", ffmpeg.display()))?;
     if !ran.success {
         return Err(format!(
@@ -434,18 +481,19 @@ fn listing(ffmpeg: &Path) -> Result<String, String> {
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .listings
-        .insert(ffmpeg.to_path_buf(), ran.stdout.clone());
+        .insert(key, ran.stdout.clone());
     Ok(ran.stdout)
 }
 
 /// Encodes two small frames with `encoder` to nothing: whether it works on
 /// this machine (a listed hardware encoder may have no device).
-fn trial(ffmpeg: &Path, encoder: &Encoder, quality: VideoQuality) -> Result<(), String> {
-    let key = (
-        ffmpeg.to_path_buf(),
-        encoder.name,
-        quality == VideoQuality::Screen,
-    );
+fn trial(
+    ffmpeg: &Path,
+    encoder: &Encoder,
+    quality: VideoQuality,
+    patience: Duration,
+) -> Result<(), String> {
+    let key = (which(ffmpeg), encoder.name, quality == VideoQuality::Screen);
     if let Some(known) = known()
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -471,10 +519,13 @@ fn trial(ffmpeg: &Path, encoder: &Encoder, quality: VideoQuality) -> Result<(), 
         )
         .args(["-f", "null", "-"]);
     let frames = vec![128u8; (side * side * 3 * 2) as usize];
-    let result = match run_bounded(command, frames, TRIAL_PATIENCE) {
-        Ok(ran) if ran.success => Ok(()),
-        Ok(ran) => Err(last_lines(&ran.stderr)),
-        Err(e) => Err(e),
+    // Only an answer ffmpeg gave by ending is remembered; a timeout or a
+    // failure to start it (busy, out of processes) may pass.
+    let ran = run_bounded(command, frames, patience)?;
+    let result = if ran.success {
+        Ok(())
+    } else {
+        Err(last_lines(&ran.stderr))
     };
     known()
         .lock()
@@ -494,17 +545,40 @@ pub fn choose(
     size: [u32; 2],
     fps: f64,
 ) -> Result<Encoder, String> {
+    choose_within(ffmpeg, ext, quality, size, fps, Patience::default())
+}
+
+/// [`choose`], within `patience`.
+pub fn choose_within(
+    ffmpeg: &Path,
+    ext: &str,
+    quality: VideoQuality,
+    size: [u32; 2],
+    fps: f64,
+    patience: Patience,
+) -> Result<Encoder, String> {
     let all = candidates(ext, quality, size, fps);
     if all.is_empty() {
         return Err(format!("no video encoder is known for `.{ext}`"));
     }
-    let listing = listing(ffmpeg)?;
+    let began = Instant::now();
+    let left = || patience.total.saturating_sub(began.elapsed());
+    let listing = listing(ffmpeg, patience.listing.min(left()))?;
     let mut tried = Vec::new();
     for encoder in all.iter() {
         if !lists(&listing, encoder.name) {
             continue;
         }
-        match trial(ffmpeg, encoder, quality) {
+        let time = patience.trial.min(left());
+        if time.is_zero() {
+            tried.push(format!(
+                "{} (not tried: choosing took its {:.1} s already)",
+                encoder.name,
+                patience.total.as_secs_f64()
+            ));
+            continue;
+        }
+        match trial(ffmpeg, encoder, quality, time) {
             Ok(()) => return Ok(encoder.clone()),
             Err(why) => tried.push(format!("{} ({why})", encoder.name)),
         }
@@ -523,34 +597,47 @@ pub fn choose(
 }
 
 /// `rgb` (`width × height`) padded to even sides by repeating its last
-/// column and row; as it is when they are even.
-pub fn pad_even(rgb: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
+/// column and row; as it is when they are even. An error when `rgb` is not
+/// `width × height` pixels.
+pub fn pad_even(rgb: Vec<u8>, width: u32, height: u32) -> Result<Vec<u8>, String> {
     let (w, h) = (width as usize, height as usize);
-    let (ew, eh) = (w + (w & 1), h + (h & 1));
-    if (ew, eh) == (w, h) || w == 0 || h == 0 {
-        return rgb;
+    let row_bytes = w.checked_mul(3);
+    let expected = row_bytes.and_then(|r| r.checked_mul(h));
+    let (Some(row_bytes), Some(expected)) = (row_bytes, expected) else {
+        return Err(format!("a frame of {width} × {height} pixels is too large"));
+    };
+    if expected != rgb.len() {
+        return Err(format!(
+            "a frame of {width} × {height} pixels has {} bytes, not {expected}",
+            rgb.len()
+        ));
     }
+    if w == 0 || h == 0 || (w % 2 == 0 && h % 2 == 0) {
+        return Ok(rgb);
+    }
+    let (ew, eh) = (w.saturating_add(w & 1), h.saturating_add(h & 1));
     let mut out = Vec::with_capacity(ew.saturating_mul(eh).saturating_mul(3));
-    for y in 0..h {
-        let row = rgb.get(y * w * 3..(y + 1) * w * 3).unwrap_or_default();
+    let mut last_row: &[u8] = &[];
+    for row in rgb.chunks_exact(row_bytes) {
         out.extend_from_slice(row);
         if ew > w {
-            let last = row.get(row.len().saturating_sub(3)..).unwrap_or_default();
-            out.extend_from_slice(last);
+            out.extend_from_slice(row.get(row_bytes - 3..).unwrap_or_default());
         }
+        last_row = row;
     }
     if eh > h {
-        let from = (h - 1) * ew * 3;
-        let last: Vec<u8> = out.get(from..from + ew * 3).unwrap_or_default().to_vec();
-        out.extend_from_slice(&last);
+        out.extend_from_slice(last_row);
+        if ew > w {
+            out.extend_from_slice(last_row.get(row_bytes - 3..).unwrap_or_default());
+        }
     }
-    out
+    Ok(out)
 }
 
 /// The size a frame of `size` is encoded at by `encoder`.
 pub fn encoded_size(encoder: &Encoder, size: [u32; 2]) -> [u32; 2] {
     if encoder.even {
-        [size[0] + (size[0] & 1), size[1] + (size[1] & 1)]
+        size.map(|side| side.saturating_add(side & 1).min(u32::MAX - 1))
     } else {
         size
     }
@@ -565,14 +652,19 @@ mod tests {
     fn odd_sides_are_padded_by_repeating_the_last_column_and_row() {
         // 3 × 1: red, green, blue.
         let rgb = vec![255, 0, 0, 0, 255, 0, 0, 0, 255];
-        let padded = pad_even(rgb, 3, 1);
+        let padded = pad_even(rgb, 3, 1).unwrap();
         assert_eq!(padded.len(), 4 * 2 * 3);
         let row = [255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 255];
         assert_eq!(&padded[..12], &row);
         assert_eq!(&padded[12..], &row);
         // Even sides are left alone.
         let even = vec![7u8; 2 * 2 * 3];
-        assert_eq!(pad_even(even.clone(), 2, 2), even);
+        assert_eq!(pad_even(even.clone(), 2, 2).unwrap(), even);
+        // 1 × 1 becomes 2 × 2 of its one colour.
+        assert_eq!(pad_even(vec![1, 2, 3], 1, 1).unwrap(), [1, 2, 3].repeat(4));
+        // A frame that is not its size is refused, never passed on.
+        assert!(pad_even(vec![0; 10], 3, 1).is_err());
+        assert!(pad_even(vec![0; 9], u32::MAX, u32::MAX).is_err());
     }
 
     #[test]
@@ -604,5 +696,91 @@ mod tests {
         assert!(lists(listing, "libopenh264"));
         assert!(!lists(listing, "libx264"));
         assert!(!lists(listing, "aac"));
+    }
+
+    /// A stand-in ffmpeg in a directory of its own: lists x264 and
+    /// OpenH264; a trial of x264 hangs, of OpenH264 passes when `ok`.
+    #[cfg(unix)]
+    fn hanging_ffmpeg(name: &str, openh264_ok: bool) -> (PathBuf, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir =
+            std::env::temp_dir().join(format!("craft3d-encoder-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ffmpeg");
+        let open = if openh264_ok {
+            "cat > /dev/null; exit 0"
+        } else {
+            "exec sleep 30"
+        };
+        let script = format!(
+            "#!/bin/sh\necho \"$*\" >> \"$0.args\"\ncase \"$*\" in\n-version) exit 0;;\n*-encoders*) printf ' V....D libx264 x\\n V....D libopenh264 o\\n'; exit 0;;\n*libx264*'-f null -'*) exec sleep 30;;\n*libopenh264*'-f null -'*) {open};;\nesac\n"
+        );
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for _ in 0..500 {
+            match std::process::Command::new(&path).arg("-version").output() {
+                Err(e) if e.raw_os_error() == Some(26) => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                _ => break,
+            }
+        }
+        let args = dir.join("ffmpeg.args");
+        let _ = std::fs::remove_file(&args);
+        (path, args)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_hanging_trial_is_cut_off_and_asked_again_next_time() {
+        let (ffmpeg, args) = hanging_ffmpeg("hang", true);
+        let patience = Patience {
+            listing: Duration::from_secs(5),
+            trial: Duration::from_millis(400),
+            total: Duration::from_secs(10),
+        };
+        let began = Instant::now();
+        let chosen =
+            choose_within(&ffmpeg, "mp4", VideoQuality::Web, [32, 32], 30.0, patience).unwrap();
+        assert_eq!(chosen.name, "libopenh264");
+        assert!(
+            began.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            began.elapsed()
+        );
+        // The timeout was not remembered: x264 is tried again (OpenH264's
+        // pass was).
+        choose_within(&ffmpeg, "mp4", VideoQuality::Web, [32, 32], 30.0, patience).unwrap();
+        let calls = std::fs::read_to_string(&args).unwrap();
+        let x264 = calls.lines().filter(|l| l.contains("libx264")).count();
+        let openh264 = calls.lines().filter(|l| l.contains("libopenh264")).count();
+        assert_eq!((x264, openh264), (2, 1), "{calls}");
+        let _ = std::fs::remove_dir_all(ffmpeg.parent().unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn choosing_stops_at_its_total_patience() {
+        let (ffmpeg, _) = hanging_ffmpeg("total", false);
+        let patience = Patience {
+            listing: Duration::from_secs(5),
+            trial: Duration::from_secs(5),
+            total: Duration::from_millis(900),
+        };
+        let began = Instant::now();
+        let error = choose_within(&ffmpeg, "mp4", VideoQuality::Web, [32, 32], 30.0, patience)
+            .err()
+            .unwrap();
+        assert!(
+            began.elapsed() < Duration::from_secs(4),
+            "{:?}",
+            began.elapsed()
+        );
+        assert!(
+            error.contains("did not answer") || error.contains("not tried"),
+            "{error}"
+        );
+        let _ = std::fs::remove_dir_all(ffmpeg.parent().unwrap());
     }
 }
