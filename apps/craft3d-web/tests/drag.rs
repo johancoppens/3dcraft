@@ -253,7 +253,8 @@ fn drag(name: &str, values: &[String], interval: Duration, before: bool) -> Drag
             // built from what the one before left, as the desktop's
             // engine thread does); and whether that is what a session
             // that builds the last value from nothing shows.
-            let shown = craft3d_engine::scene_bytes(&page.scene_with(quality()).unwrap().unwrap());
+            let shown_scene = page.scene_with(quality()).unwrap().unwrap();
+            let shown = craft3d_engine::scene_bytes(&shown_scene);
             let mut stepped = Session::new(Workspace::memory());
             for (id, params) in turbofan() {
                 stepped.execute(&id, &params).unwrap();
@@ -275,8 +276,9 @@ fn drag(name: &str, values: &[String], interval: Duration, before: bool) -> Drag
                     &json!({"name": name, "expr": values.last().unwrap()}),
                 )
                 .unwrap();
-            let stepped =
-                craft3d_engine::scene_bytes(&stepped.scene_with(quality()).unwrap().unwrap());
+            let stepped_scene = stepped.scene_with(quality()).unwrap().unwrap();
+            println!("drag {name}: {}", difference(&shown_scene, &stepped_scene));
+            let stepped = craft3d_engine::scene_bytes(&stepped_scene);
             let fresh = craft3d_engine::scene_bytes(&fresh.scene_with(quality()).unwrap().unwrap());
             println!(
                 "drag {name}: the page's last scene {} the stepped session's, {} the fresh session's; stepped {} fresh",
@@ -547,5 +549,88 @@ fn pieces_that_stop_anywhere_build_the_scene_of_one_go() {
                 "DIFFERS"
             },
         );
+    }
+}
+
+/// What differs between two scenes, field by field and body by body.
+fn difference(a: &craft3d_engine::Scene, b: &craft3d_engine::Scene) -> String {
+    let mut out = Vec::new();
+    if a.tolerance.to_bits() != b.tolerance.to_bits() {
+        out.push(format!("tolerance {} vs {}", a.tolerance, b.tolerance));
+    }
+    if a.max_angle.map(f64::to_bits) != b.max_angle.map(f64::to_bits) {
+        out.push(format!("max_angle {:?} vs {:?}", a.max_angle, b.max_angle));
+    }
+    if a.coarsened != b.coarsened || a.preview != b.preview {
+        out.push(format!(
+            "coarsened/preview {}/{} vs {}/{}",
+            a.coarsened, a.preview, b.coarsened, b.preview
+        ));
+    }
+    if a.features != b.features {
+        out.push("features".into());
+    }
+    if a.problems != b.problems || a.notices != b.notices {
+        out.push(format!("problems {:?} vs {:?}", a.problems, b.problems));
+    }
+    if a.bodies.len() != b.bodies.len() {
+        out.push(format!("bodies {} vs {}", a.bodies.len(), b.bodies.len()));
+    }
+    let mut differing = 0;
+    for (x, y) in a.bodies.iter().zip(b.bodies.iter()) {
+        let mut what = Vec::new();
+        if x.name != y.name || x.feature != y.feature {
+            what.push(format!("name {}/{}", x.name, y.name));
+        }
+        if x.mesh != y.mesh {
+            let far = if x.mesh.positions.len() == y.mesh.positions.len() {
+                x.mesh
+                    .positions
+                    .iter()
+                    .zip(&y.mesh.positions)
+                    .map(|(p, q)| (*p - *q).length())
+                    .fold(0.0_f64, f64::max)
+            } else {
+                f64::NAN
+            };
+            what.push(format!(
+                "mesh {}v {}t vs {}v {}t, positions apart up to {far:e}",
+                x.mesh.positions.len(),
+                x.mesh.triangles.len(),
+                y.mesh.positions.len(),
+                y.mesh.triangles.len(),
+            ));
+        }
+        if x.edges != y.edges {
+            what.push("edges".into());
+        }
+        if x.facts != y.facts {
+            what.push(
+                format!("facts {:?} vs {:?}", x.facts, y.facts)
+                    .chars()
+                    .take(400)
+                    .collect(),
+            );
+        }
+        if x.first_face_id != y.first_face_id {
+            what.push("face ids".into());
+        }
+        if !what.is_empty() {
+            differing += 1;
+            if differing <= 6 {
+                out.push(format!("body {}: {}", x.name, what.join(", ")));
+            }
+        }
+    }
+    if differing > 6 {
+        out.push(format!("... {differing} bodies differ"));
+    }
+    if a.mesh != b.mesh {
+        out.push("scene mesh".into());
+    }
+    if out.is_empty() {
+        "no field compared here differs".into()
+    } else {
+        out.join("; ")
     }
 }
