@@ -1726,7 +1726,9 @@ mod tests {
         };
         // A state not regenerated on the page (adding the blocks
         // regenerated the one before on the page).
-        host.session.execute("param.set", &json!({"values": {"k": "11 mm"}})).unwrap();
+        host.session
+            .execute("param.set", &json!({"values": {"k": "11 mm"}}))
+            .unwrap();
         settle(&mut host);
         assert!(!host.session.regenerated_here());
         let click = host
