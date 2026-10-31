@@ -694,6 +694,7 @@ dependencies = [
  "craft3d-tess",
  "egui",
  "egui-wgpu",
+ "log",
  "png 0.17.16",
  "pollster 1.0.1",
  "serde",

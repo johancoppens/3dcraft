@@ -58,7 +58,7 @@ pub fn disturb(p: &mut Problem, fraction: f64) {
 }
 
 /// The intersection of circle (P, r) and (Q, s) on branch `sg` (+1 left of
-/// P→Q), as the strandbeest Jig's generator computes it.
+/// P→Q), as the `strandbeest-leg` Jig's generator computes it.
 pub fn circ(p: Vec3, r: f64, q: Vec3, s: f64, sg: f64) -> Option<Vec3> {
     let (dx, dy) = (q.x - p.x, q.y - p.y);
     let d = dx.phypot(dy);
@@ -119,7 +119,7 @@ pub struct Holy {
 }
 
 /// The joints O, A, B, C, D, E, F, G of Jansen's leg at crank angle `th`,
-/// scaled by `s`, by circle intersections on the strandbeest Jig's
+/// scaled by `s`, by circle intersections on the `strandbeest-leg` Jig's
 /// branches (C −1, D +1, E +1, F −1, G −1), in the plane z = `z`.
 pub fn jansen_joints(th: f64, s: f64, z: f64) -> Option<[Vec3; 8]> {
     let n = HOLY;

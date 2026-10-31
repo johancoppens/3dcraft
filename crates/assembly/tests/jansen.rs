@@ -1,4 +1,4 @@
-//! Jansen's linkage (the Strandbeest leg): the foot point over a crank
+//! Jansen's linkage (the leg of Theo Jansen's Strandbeests): the foot point over a crank
 //! turn against circle intersections computed independently, as the
 //! strandbeest-leg Jig's generator does, at three scales; and twelve legs
 //! on one crankshaft per frame as a benchmark.

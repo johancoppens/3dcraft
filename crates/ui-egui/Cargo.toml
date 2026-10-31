@@ -16,6 +16,8 @@ craft3d-engine.workspace = true
 egui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# Says once when the interface keeps egui's font (`fonts.rs`).
+log.workspace = true
 # The viewport's GPU renderer, and egui-wgpu to draw it on the window's own
 # device (in the browser too: WebGPU or WebGL2, `crate::direct`).
 craft3d-gpu.workspace = true

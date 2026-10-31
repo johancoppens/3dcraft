@@ -44,9 +44,16 @@ impl UiFonts {
             // On the desktop this reads the files; in the browser it lists
             // Inter for the page to fetch. Monospace is fetched there only
             // when a text wants it: the interface uses it when it is here.
-            let _ = craft3d_engine::fonts::load(TEXT);
+            // A font that is not here leaves egui's own in place; on the
+            // desktop that is said once (the page says it for the web).
             #[cfg(not(target_arch = "wasm32"))]
-            let _ = craft3d_engine::fonts::load(MONO);
+            for name in [TEXT, MONO] {
+                if let Err(why) = craft3d_engine::fonts::load(name) {
+                    log::warn!("the interface keeps egui's font: {why}");
+                }
+            }
+            #[cfg(target_arch = "wasm32")]
+            let _ = craft3d_engine::fonts::load(TEXT);
         }
         // Headings use the family [`MEDIUM`] only while the fonts in force
         // have it: new definitions take effect at the next pass, and a
@@ -87,11 +94,6 @@ impl UiFonts {
         // are after one frame) sees the old fonts' layout once the new ones
         // are here.
         ctx.request_discard("the interface's fonts arrived");
-    }
-
-    /// Whether Inter is the interface's text font now.
-    pub fn has_text_font(&self) -> bool {
-        self.installed[0]
     }
 }
 
@@ -191,9 +193,9 @@ mod tests {
         for _ in 0..3 {
             frame(&ctx, &mut fonts);
         }
-        // Inter put in (any bytes do for the families), then egui's own
-        // fonts put back by someone else: no pass names a family that is
-        // not bound.
+        // Definitions with the family `medium` (here without Inter's
+        // bytes: the families are what matters), then egui's own fonts put
+        // back by someone else: no pass names a family that is not bound.
         ctx.set_fonts(definitions(None, None));
         frame(&ctx, &mut fonts);
         frame(&ctx, &mut fonts);

@@ -3,7 +3,8 @@
 //! Font files are not in the program: the desktop app and the CLI find
 //! them where the installers put them, and the web page fetches them over
 //! HTTP when a text first asks for one. A built-in font's bytes must have
-//! the SHA-256 `craft3d_font::BUILTIN` pins.
+//! the SHA-256 `craft3d_font::shipped` pins (the built-in fonts and the
+//! interface's).
 //!
 //! Where the desktop and the CLI look, in order: `$CRAFT3D_FONTS`; the
 //! directory `fonts` beside the program; `../share/craft3d/fonts` from it
@@ -33,18 +34,18 @@ fn checked(font: &'static craft3d_font::BuiltinFont, bytes: &[u8]) -> Result<Arc
     let sum = hex(&craft3d_doc::sha256(bytes));
     if sum != font.sha256 {
         return Err(format!(
-            "the built-in font `{}` ({}) has the SHA-256 {sum}, not the pinned {}",
+            "the font `{}` ({}) has the SHA-256 {sum}, not the pinned {}",
             font.name, font.file, font.sha256
         ));
     }
     Ok(Arc::from(bytes))
 }
 
-/// Hands the bytes of built-in font `name` over (the web page, once it
+/// Hands the bytes of shipped font `name` over (the web page, once it
 /// fetched them); checked against the pinned SHA-256.
 pub fn register(name: &str, bytes: &[u8]) -> Result<(), String> {
     let font =
-        craft3d_font::shipped_font(name).ok_or_else(|| format!("no built-in font `{name}`"))?;
+        craft3d_font::shipped_font(name).ok_or_else(|| format!("no shipped font `{name}`"))?;
     let bytes = checked(font, bytes)?;
     LOADED
         .lock()
@@ -57,7 +58,7 @@ pub fn register(name: &str, bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// The built-in fonts a text asked for that are not here: name and file
+/// The shipped fonts asked for that are not here: name and file
 /// (for the web page to fetch `fonts/<file>`).
 pub fn wanted() -> Vec<(&'static str, &'static str)> {
     let wanted = WANTED.lock().unwrap_or_else(PoisonError::into_inner);
@@ -67,7 +68,7 @@ pub fn wanted() -> Vec<(&'static str, &'static str)> {
         .collect()
 }
 
-/// Whether built-in font `name` is here (loaded, or registered by the
+/// Whether shipped font `name` is here (loaded, or registered by the
 /// page).
 pub fn ready(name: &str) -> bool {
     LOADED
@@ -109,7 +110,7 @@ pub fn load(name: &str) -> Result<Arc<[u8]>, String> {
 /// The bytes of shipped font `name`.
 pub(crate) fn bytes(name: &str) -> Result<Arc<[u8]>, String> {
     let font =
-        craft3d_font::shipped_font(name).ok_or_else(|| format!("no built-in font `{name}`"))?;
+        craft3d_font::shipped_font(name).ok_or_else(|| format!("no shipped font `{name}`"))?;
     if let Some(found) = LOADED
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -142,7 +143,7 @@ pub(crate) fn bytes(name: &str) -> Result<Arc<[u8]>, String> {
             return Ok(bytes);
         }
         Err(format!(
-            "the built-in font `{name}` ({}) is not installed: it was looked for in {}; set CRAFT3D_FONTS to the directory that holds it (a source checkout gets it with `cargo xtask fonts`)",
+            "the font `{name}` ({}) is not installed: it was looked for in {}; set CRAFT3D_FONTS to the directory that holds it (a source checkout gets it with `cargo xtask fonts`)",
             font.file,
             tried.join(", ")
         ))
@@ -154,7 +155,7 @@ pub(crate) fn bytes(name: &str) -> Result<Arc<[u8]>, String> {
             .unwrap_or_else(PoisonError::into_inner)
             .insert(font.name);
         Err(format!(
-            "the built-in font `{name}` is being fetched; run the command again in a moment"
+            "the font `{name}` is being fetched; run the command again in a moment"
         ))
     }
 }
