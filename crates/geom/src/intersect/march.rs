@@ -1292,7 +1292,9 @@ impl Marcher {
             };
             let reach = speed * half;
             let monotonic = match self.eval(u, v) {
-                Some(e) if e.dist > reach => continue,
+                // (Clear of zero by more than rounding, as a cell in
+                // `seeds`.)
+                Some(e) if e.dist > reach + self.on => continue,
                 Some(e) => self.field.bend_at(e.p, reach, e.dist).is_some_and(|k| {
                     let slope = if along_u { e.gu } else { e.gv };
                     slope.abs() > 1.01 * (k * speed * speed + bend) * half
@@ -1525,7 +1527,17 @@ impl Marcher {
                 continue;
             }
             let simple = match here {
-                Some(e) if e.dist > reach => continue,
+                // Clear of zero only when the distance at the centre
+                // exceeds the reach by more than rounding (`on`). A zero
+                // exactly on a node, where the reach is tight (a surface
+                // linear across the cell, a plane square to it), lies at
+                // the distance of the reach: a centre rounded a hair
+                // further off left the cell (or a border's edge) out as
+                // clear, the cell beyond counted the node's zero with its
+                // own sign and showed no change, and the curve was lost
+                // (docs/design/booleans.md › *A plane through a node of
+                // the marcher's grid*).
+                Some(e) if e.dist > reach + self.on => continue,
                 Some(e) => self.field.bend_at(e.p, reach, e.dist).is_some_and(|k| {
                     let (muu, muv, mvv) = (
                         k * b.lu * b.lu + b.muu,
