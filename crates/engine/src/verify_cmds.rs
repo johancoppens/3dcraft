@@ -80,6 +80,10 @@ pub(crate) struct Ctx<'a> {
     /// The assembly `doc` is the placed part of, when it is one: what
     /// its joints and poses are measured on (`asm_measure.rs`).
     pub placed: Option<&'a Arc<crate::asm::Placed>>,
+    /// What an assertion asks of a least searched for (its `min`): a
+    /// proof of a thickness or a distance need go no higher (infinite for
+    /// a measure command: proven as close to the value found as it can).
+    pub stop: f64,
 }
 
 impl<'a> Ctx<'a> {
@@ -95,6 +99,7 @@ impl<'a> Ctx<'a> {
             outputs: None,
             unknown_used: std::sync::Mutex::new(Vec::new()),
             placed: None,
+            stop: f64::INFINITY,
         })
     }
 
@@ -1207,7 +1212,7 @@ fn distance(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
     let b = nonempty(subject(ctx, required(p, "to")?, &["face"])?, "to")?;
     let (ba, bb) = (bodies_of(ctx, &a)?, bodies_of(ctx, &b)?);
     let (pa, pb) = (parts(ctx, &ba)?, parts(ctx, &bb)?);
-    let near = verify::distance(&pa, &pb)?;
+    let near = verify::distance_to(&pa, &pb, ctx.stop)?;
     let mut out = Outcome::number(Dim::Length(1), near.distance);
     out.lower = Some(near.lower);
     out.detail.insert("atLeast".into(), near.lower.into());
@@ -1260,7 +1265,11 @@ fn clearance_pair<'b>(
     let (idb, body_b, _) = bb.get(j).ok_or(NONE)?;
     let part_a = part_in(ctx, ba, pa, i)?;
     let part_b = part_in(ctx, bb, pb, j)?;
-    let near = verify::distance(std::slice::from_ref(part_a), std::slice::from_ref(part_b))?;
+    let near = verify::distance_to(
+        std::slice::from_ref(part_a),
+        std::slice::from_ref(part_b),
+        ctx.stop,
+    )?;
     let mut status = "clear";
     if near.distance <= 2.0 * tol {
         match interference(body_a, body_b, &ctx.tolerance) {
@@ -1386,7 +1395,7 @@ fn thickness(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
     let mut samples = 0;
     let mut lower = f64::INFINITY;
     for (i, part) in parts.iter().enumerate() {
-        if let Some(thin) = verify::thickness(part, ctx.tolerance.linear)? {
+        if let Some(thin) = verify::thickness_to(part, ctx.tolerance.linear, ctx.stop)? {
             samples += thin.samples;
             lower = lower.min(thin.lower);
             if best

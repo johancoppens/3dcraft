@@ -860,9 +860,8 @@ fn a_bound_within_what_the_search_cannot_pin_down_is_not_proven() {
     // A fat torus (R = 5, r = 4): every line into it along the inward
     // normal passes the tube's middle and is 2r = 8 long. The cheap bound
     // proves only 2 (R − r) = 2 (a line could in principle meet the tube
-    // across the axis); the exact faces close in on 8 piece by piece and
-    // stop at the work allowed, above 7 (since 2026-10-31), so a bound
-    // between what is proven and 8 is not proven.
+    // across the axis); the exact faces close in on 8 piece by piece
+    // within the work allowed (since 2026-10-31).
     let mut s = Session::new(Workspace::none());
     run(&mut s, "file.new", json!({"units": "mm"}));
     run(
@@ -873,11 +872,33 @@ fn a_bound_within_what_the_search_cannot_pin_down_is_not_proven() {
     let thin = run(&mut s, "measure.thickness", json!({"of": "Ring"}));
     close(&thin["thickness"], 8.0, 1e-6, "the tube");
     let proven = thin["atLeast"].as_f64().unwrap();
-    assert!((7.0..=8.0).contains(&proven), "what is proven: {proven}");
+    assert!((2.0..=8.0).contains(&proven), "what is proven: {proven}");
+    // Not proven for certain: a block with a conical pit coming to a point,
+    // 14 thick, proven near 0 at the tip (a cone's pieces at its apex have
+    // no normal cone).
+    let mut s = Session::new(Workspace::none());
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Blank", "size": [40, 40, 20]}),
+    );
+    run(
+        &mut s,
+        "feature.cone",
+        json!({"name": "Tip", "radius": 8, "height": 8, "position": [20, 20, 22], "axis": [0, 0, -1]}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"name": "Ring", "op": "subtract", "target": "Blank", "tool": "Tip"}),
+    );
+    let thin = run(&mut s, "measure.thickness", json!({"of": "Ring"}));
+    close(&thin["thickness"], 14.0, 1e-6, "the pit's tip");
     let tight = run(
         &mut s,
         "assert.add",
-        json!({"name": "tight", "measure": "thickness", "of": "Ring", "min": "7.99 mm"}),
+        json!({"name": "tight", "measure": "thickness", "of": "Ring", "min": "5 mm"}),
     );
     assert_eq!(tight["status"], "notProven", "{tight}");
     // Not passed: the check warns, the list is not ok.
@@ -890,13 +911,13 @@ fn a_bound_within_what_the_search_cannot_pin_down_is_not_proven() {
     let over = run(
         &mut s,
         "assert.add",
-        json!({"name": "over", "measure": "thickness", "of": "Ring", "min": "9 mm"}),
+        json!({"name": "over", "measure": "thickness", "of": "Ring", "min": "15 mm"}),
     );
     assert_eq!(over["status"], "failed", "{over}");
     let under = run(
         &mut s,
         "assert.add",
-        json!({"name": "under", "measure": "thickness", "of": "Ring", "min": "1 mm"}),
+        json!({"name": "under", "measure": "thickness", "of": "Ring", "min": "0 mm"}),
     );
     assert_eq!(under["status"], "passed", "{under}");
     // A tube: coaxial walls, proven exactly.

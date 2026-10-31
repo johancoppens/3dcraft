@@ -1129,6 +1129,10 @@ fn check(
     // again on a finer mesh, a few times, while one can be made finer.
     let refinable = matches!(measure.as_str(), "extent" | "boxMin" | "boxMax");
     let mut ctx = ctx;
+    // A least searched for need be proven only up to the bound asked.
+    if let Some(lo) = lo.filter(|l| l.is_finite()) {
+        ctx.stop = lo;
+    }
     let (outcome, verdict) = loop {
         let outcome: Result<Outcome, String> = take(&ctx, &measure, &params);
         let outcome = match outcome {

@@ -924,25 +924,28 @@ where
                 return None;
             }
             let across = least_abs(range(e1)).hypot(least_abs(range(e2)));
-            let tan = ca.half_angle.tan();
+            // The half-angle widened by the margin of rounding: the axis
+            // and the frame across it are computed, so even a plane's
+            // exact normal is held to within that, never to 0.
+            let tan = (ca.half_angle + ANGLE_MARGIN).tan();
             if across > tan * hi {
                 return None;
             }
-            let mut along = lo.max(0.0);
-            if tan > 0.0 {
-                along = along.max(across / tan);
-            }
+            let along = lo.max(0.0).max(across / tan);
             lb = lb.max(along.hypot(across));
         }
         // A surface extruded along `z` (a cylinder, a spline extrusion)
         // has its normals square to `z`: so has `w`.
         if pa.kind == Kind::Face
-            && let Some(z) = self
+            && let Some((z, tilt)) = self
                 .part(pa.side, pa.part)
                 .and_then(|part| crate::verify::extruded(part.body(), pa.index))
         {
+            // `|w · z| ≤ tilt |w|`, and `|w|` is at most the farthest
+            // corners' distance.
+            let most = tilt * farthest(&a.bbox, &b.bbox);
             let (lo, hi) = range(z);
-            if lo > 0.0 || hi < 0.0 {
+            if lo > most || hi < -most {
                 return None;
             }
         }
@@ -1110,8 +1113,13 @@ where
         let bits = |v: Vec3| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
         let (bo, bz) = (bits(o), bits(z));
         let key = (prim_id, [bo[0], bo[1], bo[2], bz[0], bz[1], bz[2]]);
-        if let Some(known) = self.floors.borrow().get(&key) {
-            return *known;
+        if let Some(known) = self
+            .floors
+            .try_borrow()
+            .ok()
+            .and_then(|floors| floors.get(&key).copied())
+        {
+            return known;
         }
         let foot = o + z * (o2 - o).dot(z);
         let out = self
@@ -1130,7 +1138,9 @@ where
         } else {
             0.0
         };
-        self.floors.borrow_mut().insert(key, floor);
+        if let Ok(mut floors) = self.floors.try_borrow_mut() {
+            floors.insert(key, floor);
+        }
         floor
     }
 
@@ -1148,6 +1158,20 @@ where
 /// What the angle between two cones' axes may be off by in rounding
 /// (`acos` near 1 turns an error of 1e-16 in the cosine into 1.5e-8).
 const ANGLE_MARGIN: f64 = 1e-7;
+
+/// The most distance between a point of one box and one of the other.
+fn farthest(a: &Bbox3, b: &Bbox3) -> f64 {
+    let (Some((alo, ahi)), Some((blo, bhi))) = (a.corners(), b.corners()) else {
+        return f64::INFINITY;
+    };
+    let d = |al: f64, ah: f64, bl: f64, bh: f64| (bh - al).abs().max((ah - bl).abs());
+    Vec3::new(
+        d(alo.x, ahi.x, blo.x, bhi.x),
+        d(alo.y, ahi.y, blo.y, bhi.y),
+        d(alo.z, ahi.z, blo.z, bhi.z),
+    )
+    .length()
+}
 
 /// The least `|x|` over `[lo, hi]`.
 fn least_abs((lo, hi): (f64, f64)) -> f64 {
@@ -1168,7 +1192,7 @@ fn least_abs((lo, hi): (f64, f64)) -> f64 {
 fn oriented(cone: Option<Cone>, normal: Option<Vec3>) -> Option<Cone> {
     let (cone, normal) = (cone?, normal?);
     let dot = cone.axis.dot(normal.normalized()?);
-    if dot.abs() < 0.5 * cone.half_angle.cos() {
+    if dot.is_nan() || dot.abs() < 0.5 * cone.half_angle.cos() {
         return None;
     }
     Some(Cone {
@@ -1214,8 +1238,9 @@ fn focal(
 }
 
 /// No more than the least distance from `p` of the edge's points: a
-/// line's segment and a circle (its whole circle) in closed form, the
-/// others by the boxes of their kept pieces (0 where those are not made).
+/// line's segment and a circle (its whole circle) in closed form less the
+/// rounding of the magnitudes they are computed from, the others by the
+/// boxes of their kept pieces (0 where those are not made).
 fn edge_from(edge: &Bound<'_>, p: Vec3) -> f64 {
     match edge.curve {
         Curve3::Line(_) => {
@@ -1227,14 +1252,16 @@ fn edge_from(edge: &Bound<'_>, p: Vec3) -> f64 {
             } else {
                 0.0
             };
-            (p - (a + d * t)).length()
+            let rounding = 4e-15 * (a.length() + b.length() + p.length());
+            (p - (a + d * t)).length() - rounding
         }
         Curve3::Circle(c) => {
-            let (m, r) = (c.frame().z(), c.radius());
-            let w = p - c.frame().origin();
+            let (m, r, o) = (c.frame().z(), c.radius(), c.frame().origin());
+            let w = p - o;
             let along = w.dot(m);
             let across = (w - m * along).length();
-            along.hypot(across - r)
+            let rounding = 4e-15 * (r + o.length() + p.length());
+            along.hypot(across - r) - rounding
         }
         _ => {
             let leaves = edge.leaves.get_or_init(|| leaves_of(edge));
@@ -1559,14 +1586,15 @@ fn strata(part: &Part<'_>, side: u8, part_index: usize, face: usize) -> Vec<Key>
 }
 
 /// Proves the least distance of each pair of faces `pairs` (each `(part,
-/// face)` of `a`, then of `b`) as close to `found` as `close` (or as the
-/// work allows).
+/// face)` of `a`, then of `b`) as close to `found` as `close`, or up to
+/// `stop` when that is less (or as the work allows).
 pub(crate) fn prove(
     a: &[Part<'_>],
     b: &[Part<'_>],
     pairs: &[FacePair],
     found: f64,
     close: f64,
+    stop: f64,
     tol: f64,
 ) -> Proof {
     let mut search = Search {
@@ -1632,7 +1660,8 @@ pub(crate) fn prove(
     let mut heap = BinaryHeap::new();
     let mut seq = 0_u64;
     let mut work = 0_usize;
-    let enough = |best: f64| best - close;
+    // No more is proven than `stop` (what an assertion asks).
+    let enough = |best: f64| (best - close).min(stop);
     for (&(pa, pb), &id) in &stratum_pairs {
         let (Some(&ra), Some(&rb)) = (first.get(&pa), first.get(&pb)) else {
             continue;
@@ -1765,35 +1794,64 @@ pub(crate) fn prove(
     Proof { lower, nearer }
 }
 
-/// Proves, for each pair of faces `(a, b)` of `part` in `pairs`, a bound
+/// Proves, for each pair of faces `(a, b)` of a part in `pairs`, a bound
 /// below the length of every line that leaves face `a` into the material
 /// along its inward normal and comes out of the body through face `b`
-/// (docs/design/verification.md › *The proven thickness*), as close to
-/// `found` as `close` or as the work in `budget` (pairs of pieces, spent
-/// from it) allows: then the least bound left, honestly short. `None`
+/// (docs/design/verification.md › *The proven thickness*), up to `target`
+/// or as far as the work in `budget` (pairs of pieces, spent from it)
+/// allows: then the least bound left, honestly short. `None`
 /// for a pair whose faces could not be cut into pieces. The same search
 /// as [`prove`] over the faces alone (a line's ends need not be critical
 /// for a distance, so no strata), with [`Search::ray_bound`] for the
 /// bound of a pair of pieces.
-pub(crate) fn prove_rays(
-    part: &Part<'_>,
+pub(crate) struct Rays<'p, 'a> {
+    search: Search<'p, 'a>,
+}
+
+impl<'p, 'a> Rays<'p, 'a>
+where
+    'a: 'p,
+{
+    /// The search over the faces of `part`, kept across the rounds of a
+    /// thickness (its pieces made once).
+    pub(crate) fn new(part: &'p Part<'a>) -> Self {
+        let parts = std::slice::from_ref(part);
+        Rays {
+            search: Search {
+                parts: [parts, parts],
+                prims: Vec::new(),
+                keys: BTreeMap::new(),
+                recs: Vec::new(),
+                tol: part.linear,
+                failed: std::collections::BTreeSet::new(),
+                rays: true,
+                floors: Default::default(),
+            },
+        }
+    }
+
+    /// See [`prove_rays`]: each pair proven up to `target` (no more is
+    /// asked: the least found less what is close enough, or what an
+    /// assertion needs when that is less).
+    pub(crate) fn prove(
+        &mut self,
+        pairs: &[(usize, usize)],
+        found: f64,
+        target: f64,
+        budget: &mut usize,
+    ) -> Vec<Option<f64>> {
+        prove_rays(&mut self.search, pairs, found, target, budget)
+    }
+}
+
+fn prove_rays(
+    search: &mut Search<'_, '_>,
     pairs: &[(usize, usize)],
     found: f64,
-    close: f64,
+    target: f64,
     budget: &mut usize,
 ) -> Vec<Option<f64>> {
-    let parts = std::slice::from_ref(part);
-    let mut search = Search {
-        parts: [parts, parts],
-        prims: Vec::new(),
-        keys: BTreeMap::new(),
-        recs: Vec::new(),
-        tol: part.linear,
-        failed: std::collections::BTreeSet::new(),
-        rays: true,
-        floors: Default::default(),
-    };
-    let enough = |_: f64| found - close;
+    let enough = |_: f64| target;
     let mut best = found;
     let mut nearer = None;
     let mut least = vec![f64::INFINITY; pairs.len()];
@@ -2099,6 +2157,65 @@ mod tests {
         // Ten tolerances in, and out.
         assert_eq!(told(&search, 10.0 - 10.0 * tolerant, 10.0), Some(true));
         assert_eq!(told(&search, 10.0 + 10.0 * tolerant, 10.0), Some(false));
+    }
+
+    /// A spline extruded along z is known as an extrusion; the same
+    /// surface with one control point moved by a millionth of the move
+    /// (not a translate any more) is not.
+    #[test]
+    fn an_extrusion_is_known_and_a_nearly_one_is_refused() {
+        let run = |s: &mut Session, id: &str, params: serde_json::Value| {
+            s.execute(id, &params)
+                .unwrap_or_else(|e| panic!("{id}: {e}"))
+        };
+        let mut s = Session::new(Workspace::none());
+        run(&mut s, "file.new", json!({"units": "mm"}));
+        run(&mut s, "sketch.create", json!({"name": "P", "plane": "xy"}));
+        run(
+            &mut s,
+            "sketch.curve",
+            json!({"sketch": "P", "x": "20 mm * (1 - 2 * t)", "y": "18 mm - 8 mm * (1 - 2 * t)^2", "t": [0, 1]}),
+        );
+        run(
+            &mut s,
+            "sketch.path",
+            json!({"sketch": "P", "start": "e2", "segments": [{"line": ["-20 mm", "0 mm"]}, {"line": ["20 mm", "0 mm"]}, {"line": "e1"}]}),
+        );
+        run(
+            &mut s,
+            "feature.extrude",
+            json!({"sketch": "P", "distance": "30 mm", "name": "Hump"}),
+        );
+        let regen = s.document_mut().unwrap().regen();
+        let (_, body) = regen.bodies().next().unwrap();
+        let face = body
+            .faces
+            .iter()
+            .position(|f| matches!(f.surface, Surface::Nurbs(_)))
+            .expect("the hump is a spline");
+        let (dir, tilt) = crate::verify::extruded(body, face).expect("an extrusion");
+        assert!(dir.cross(Vec3::Z).length() < 1e-12, "{dir:?}");
+        assert!(tilt < 1e-12, "{tilt}");
+        let mut moved = (**body).clone();
+        let Some(Surface::Nurbs(n)) = moved.faces.get(face).map(|f| f.surface.clone()) else {
+            panic!("a spline")
+        };
+        let ((du, dv), (cu, cv)) = (n.degrees(), n.counts());
+        let mut points = n.control_points().to_vec();
+        points[1] = points[1] + Vec3::new(30e-6, 0.0, 0.0);
+        let perturbed = craft3d_geom::NurbsSurface::new(
+            du,
+            dv,
+            n.knots_u().to_vec(),
+            n.knots_v().to_vec(),
+            cu,
+            cv,
+            points,
+            n.weights().to_vec(),
+        )
+        .unwrap();
+        moved.faces[face].surface = Surface::Nurbs(perturbed);
+        assert!(crate::verify::extruded(&moved, face).is_none());
     }
 
     #[test]

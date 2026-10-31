@@ -483,6 +483,11 @@ pub(crate) struct Nearest {
 /// The least distance between the faces of the parts `a` and those of
 /// `b`.
 pub(crate) fn distance(a: &[Part<'_>], b: &[Part<'_>]) -> Answer<Nearest> {
+    distance_to(a, b, f64::INFINITY)
+}
+
+/// [`distance`], proving no more than `stop` (what an assertion asks).
+pub(crate) fn distance_to(a: &[Part<'_>], b: &[Part<'_>], stop: f64) -> Answer<Nearest> {
     type Key = ((usize, usize), (usize, usize));
     let mut faces_a: Vec<((usize, usize), &Bbox3)> = Vec::new();
     for (i, part) in a.iter().enumerate() {
@@ -656,12 +661,12 @@ pub(crate) fn distance(a: &[Part<'_>], b: &[Part<'_>]) -> Answer<Nearest> {
     let close = (0.25 * linear).max(1e-12 * answer.distance);
     let short: Vec<Key> = meshed
         .iter()
-        .filter(|(_, l)| *l < answer.distance - close)
+        .filter(|(_, l)| *l < (answer.distance - close).min(stop))
         .map(|(k, _)| *k)
         .collect();
     let mut proven: BTreeMap<Key, f64> = BTreeMap::new();
     if !short.is_empty() && answer.distance > close {
-        let proof = crate::verify_bound::prove(a, b, &short, answer.distance, close, linear);
+        let proof = crate::verify_bound::prove(a, b, &short, answer.distance, close, stop, linear);
         for (key, lower) in short.iter().zip(proof.lower) {
             // No pair of strata bounded (all ruled out) is not taken as
             // a proof of anything.
@@ -1135,13 +1140,22 @@ fn shape(body: &Body, face: usize) -> Shape {
     }
 }
 
+/// Most tilt (the sine of the angle) an extrusion is recognised with.
+const MAX_TILT: f64 = 1e-9;
+
 /// The direction along which face `face`'s surface is a cylinder over a
-/// curve, where it is known exactly: a cylinder's axis, or a spline of
-/// degree 1 with two rows of control points one the other moved by one
-/// vector (with the same weights) — an extrusion, whatever its curve.
-pub(crate) fn extruded(body: &Body, face: usize) -> Option<Vec3> {
+/// curve, and how far from it its rulings may tilt (the sine of the
+/// angle): a cylinder's axis (0), or a spline of degree 1 with two rows of
+/// control points, each the other moved by nearly one vector, with the
+/// same weights — an extrusion, whatever its curve. Its rulings
+/// `C1(u) − C0(u)` are weighted means of the rows' moves, so within the
+/// largest move's distance from their first of it; the tilt is that over
+/// the move's length, plus the rounding of the points' differences
+/// (relative to the move, never to the coordinates). `None` past
+/// [`MAX_TILT`].
+pub(crate) fn extruded(body: &Body, face: usize) -> Option<(Vec3, f64)> {
     match &body.faces.get(face)?.surface {
-        Surface::Cylinder(c) => Some(c.frame().z()),
+        Surface::Cylinder(c) => Some((c.frame().z(), 0.0)),
         Surface::Nurbs(n) => {
             let ((du, dv), (cu, cv)) = (n.degrees(), n.counts());
             let (points, weights) = (n.control_points(), n.weights());
@@ -1155,17 +1169,23 @@ pub(crate) fn extruded(body: &Body, face: usize) -> Option<Vec3> {
             };
             let (&(a0, b0), _) = pairs.split_first()?;
             let shift = *points.get(b0)? - *points.get(a0)?;
-            let scale = points
-                .iter()
-                .map(|p| p.length())
-                .fold(shift.length(), f64::max);
+            let length = shift.length();
+            let scale = points.iter().map(|p| p.length()).fold(length, f64::max);
+            let mut off = 0.0_f64;
             for &(a, b) in &pairs {
                 let d = *points.get(b)? - *points.get(a)?;
-                if (d - shift).length() > 1e-12 * scale || weights.get(a)? != weights.get(b)? {
+                if weights.get(a)? != weights.get(b)? {
                     return None;
                 }
+                off = off.max((d - shift).length());
             }
-            shift.normalized()
+            // Each difference rounds by a few units in the last place of
+            // the coordinates it is taken from.
+            let tilt = (off + 8e-16 * scale) / length;
+            if tilt.is_nan() || tilt > MAX_TILT {
+                return None;
+            }
+            Some((shift.normalized()?, tilt))
         }
         _ => None,
     }
@@ -1336,9 +1356,12 @@ fn pair_bound(part: &Part<'_>, a: usize, b: usize, tol: f64) -> (Option<f64>, Ve
     // the cylinder: they only graze. The same for a spline extruded along
     // a direction (its normals square to it, and it holds every line
     // along it through one of its points).
+    // (The same 1e-12 of an angle as two planes square to each other:
+    // the probe calls a line that close to a face's surface `along` it.)
     match (sa, sb, extruded(body, a), extruded(body, b)) {
-        (Shape::Flat(_, na), _, _, Some(z)) | (_, Shape::Flat(_, na), Some(z), _)
-            if na.cross(z).length() < 1e-12 =>
+        (Shape::Flat(_, na), _, _, Some((z, tilt)))
+        | (_, Shape::Flat(_, na), Some((z, tilt)), _)
+            if na.cross(z).length() + tilt < 1e-12 =>
         {
             return (None, seeds);
         }
@@ -1496,7 +1519,7 @@ const MAX_SEEDS: usize = 256;
 /// is below the bound so far; each round's short pairs are proven before
 /// the next round looks further. With the places where it was least, to
 /// search from.
-fn thickness_bound(part: &Part<'_>, tol: f64, below: f64) -> (f64, Vec<(usize, Vec3)>) {
+fn thickness_bound(part: &Part<'_>, tol: f64, below: f64, stop: f64) -> (f64, Vec<(usize, Vec3)>) {
     // Only pairs whose boxes are nearer than `below` (the least found):
     // the others cannot bring the bound under it, and the bound is never
     // given above what was found.
@@ -1521,6 +1544,9 @@ fn thickness_bound(part: &Part<'_>, tol: f64, below: f64) -> (f64, Vec<(usize, V
         pairs.truncate(MAX_BOUND_PAIRS);
     }
     let close = (0.25 * part.linear).max(1e-12 * below);
+    // What is proven need go no higher than this.
+    let target = (below - close).min(stop);
+    let mut rays = crate::verify_bound::Rays::new(part);
     let mut seeds: Vec<(usize, Vec3)> = Vec::new();
     let mut budget = BOUND_WORK;
     let mut nodes = crate::verify_bound::MAX_NODES;
@@ -1577,12 +1603,12 @@ fn thickness_bound(part: &Part<'_>, tol: f64, below: f64) -> (f64, Vec<(usize, V
             .iter()
             .enumerate()
             .skip(round)
-            .filter(|(_, b)| **b < below - close)
+            .filter(|(_, b)| **b < target)
             .filter_map(|(i, _)| pairs.get(i).map(|&(_, a, b)| (i, (a, b))))
             .collect();
         if !short.is_empty() && nodes > 0 {
             let list: Vec<(usize, usize)> = short.iter().map(|(_, p)| *p).collect();
-            let proven = crate::verify_bound::prove_rays(part, &list, below, close, &mut nodes);
+            let proven = rays.prove(&list, below, target, &mut nodes);
             for ((i, _), proof) in short.iter().zip(proven) {
                 if let (Some(slot), Some(p)) = (bounds.get_mut(*i), proof) {
                     *slot = slot.max(p);
@@ -1604,7 +1630,9 @@ const MAX_BOUND_PAIRS: usize = 200_000;
 /// (at sampled points of every face, at the places the bound points to,
 /// each of the least few moved along its face to where it is least), and
 /// a bound, proven, below which no thickness lies.
-pub(crate) fn thickness(part: &Part<'_>, tol: f64) -> Answer<Option<Thin>> {
+/// No more than `stop` is proven (what an assertion asks: the work of
+/// proving beyond it is not spent; infinite for as close as it can).
+pub(crate) fn thickness_to(part: &Part<'_>, tol: f64, stop: f64) -> Answer<Option<Thin>> {
     let faces: Vec<usize> = part.triangles.keys().copied().collect();
     if faces.is_empty() {
         return Ok(None);
@@ -1640,7 +1668,7 @@ pub(crate) fn thickness(part: &Part<'_>, tol: f64) -> Answer<Option<Thin>> {
         }
     }
     let found = samples.iter().map(|s| s.0).fold(f64::INFINITY, f64::min);
-    let (lower, seeds) = thickness_bound(part, tol, found);
+    let (lower, seeds) = thickness_bound(part, tol, found, stop);
     // The places the bound points to, nudged off the face's edges.
     for &(face, p) in seeds.iter().take(MAX_SEEDS) {
         if !part.triangles.contains_key(&face) {

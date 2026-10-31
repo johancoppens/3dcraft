@@ -414,3 +414,101 @@ fn gaps_inside_the_mesh_error_are_proven_at_three_scales() {
         }
     }
 }
+
+/// A solid ball of radius 5: every line along the inward normal passes
+/// the centre and is 10 long (a sphere with itself: the focal bound and
+/// the cones).
+#[test]
+fn a_solid_ball_is_proven_to_its_diameter_at_three_scales() {
+    for k in [1e-3, 1.0, 1e3] {
+        let mut s = new_at(k);
+        run(
+            &mut s,
+            "feature.sphere",
+            json!({"name": "Ball", "radius": format!("{} mm", 5.0 * k)}),
+        );
+        thickness_is(&mut s, "Ball", 10.0 * k, &format!("solid ball at {k}"));
+    }
+}
+
+/// A solid cylinder of radius 5 and height 30: its diameter, 10, is the
+/// thinnest (the round with itself, with the flat ends square to it).
+#[test]
+fn a_solid_cylinder_is_proven_to_its_diameter_at_three_scales() {
+    for k in [1e-3, 1.0, 1e3] {
+        let mm = |x: f64| format!("{} mm", x * k);
+        let mut s = new_at(k);
+        run(
+            &mut s,
+            "feature.cylinder",
+            json!({"name": "Rod", "radius": mm(5.0), "height": mm(30.0)}),
+        );
+        thickness_is(&mut s, "Rod", 10.0 * k, &format!("solid cylinder at {k}"));
+    }
+}
+
+/// Cost (AGENTS.md rule 12): a fat torus, whose proof spends the whole
+/// work allowed, and a plate 300 × 300 × 10 with 841 holes of radius 3 on
+/// a pitch of 10 (about 1700 faces; the thinnest place the 4 between two
+/// holes, 7 to the edges), timed in release; the numbers are in verification.md.
+#[test]
+fn the_cost_of_a_proof_that_spends_its_work_and_of_a_model_of_many_faces() {
+    let mut s = new();
+    run(
+        &mut s,
+        "feature.torus",
+        json!({"name": "Ring", "major": 5, "minor": 4}),
+    );
+    let (_, proven) = timed(
+        &mut s,
+        "measure.thickness",
+        json!({"of": "Ring"}),
+        "thickness",
+        "fat torus (the whole work)",
+    );
+    assert!((7.0..=8.0).contains(&proven), "{proven}");
+    let mut s = new();
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Plate", "size": [300, 300, 10]}),
+    );
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"name": "Holes", "plane": "xy", "offset": 10}),
+    );
+    for i in 0..29 {
+        for j in 0..29 {
+            run(
+                &mut s,
+                "sketch.circle",
+                json!({"sketch": "Holes", "center": [10 + 10 * i, 10 + 10 * j], "radius": 3}),
+            );
+        }
+    }
+    run(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "Holes", "distance": -10, "cut": "Plate", "name": "Sieve"}),
+    );
+    let (found, proven) = timed(
+        &mut s,
+        "measure.thickness",
+        json!({"of": "Sieve"}),
+        "thickness",
+        "sieve of 841 holes",
+    );
+    assert!((found - 4.0).abs() < 1e-6, "{found}");
+    assert!(proven >= 3.99, "{proven}");
+    let started = Instant::now();
+    let got = status(
+        &mut s,
+        json!({"name": "web", "measure": "thickness", "of": "Sieve", "min": "3 mm"}),
+    );
+    eprintln!(
+        "sieve, assertion min 3 mm: {got} in {:.3} s",
+        started.elapsed().as_secs_f64()
+    );
+    assert_eq!(got, "passed");
+}

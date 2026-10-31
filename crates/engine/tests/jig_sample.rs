@@ -644,17 +644,29 @@ fn a_boolean_whose_max_is_another_parameter_stays_off_while_that_is_off() {
     );
 }
 
-/// A fat torus (R = 5, r = 4) whose thickness is 8 but proven only to be
-/// at least about 7.3 within the work allowed (verification.rs), and an
-/// assertion that it is at least `lim`, published from 1 to 7.95 mm:
-/// passed at 1 mm, not proven at 7.9 (the default) and 7.95 mm.
+/// A block 40 × 40 × 20 with a conical pit coming to a point 6 deep: its
+/// thickness is 14 (from the bottom to the pit's tip), but a cone's pieces
+/// at its apex have no normal cone, so the proof there is held to their
+/// boxes (verification.md › *The proven thickness*, limits): proven near
+/// 0. An assertion that it is at least `lim`, published from 0 to 10 mm:
+/// passed at 0 mm, not proven at 5 (the default) and 10 mm.
 fn unproven_jig(s: &mut Session) {
     run(s, "file.new", json!({"units": "mm"}));
-    run(s, "variable.set", json!({"name": "lim", "expr": "7.9 mm"}));
+    run(s, "variable.set", json!({"name": "lim", "expr": "5 mm"}));
     run(
         s,
-        "feature.torus",
-        json!({"name": "Ring", "major": 5, "minor": 4}),
+        "feature.block",
+        json!({"name": "Blank", "size": [40, 40, 20]}),
+    );
+    run(
+        s,
+        "feature.cone",
+        json!({"name": "Tip", "radius": 8, "height": 8, "position": [20, 20, 22], "axis": [0, 0, -1]}),
+    );
+    run(
+        s,
+        "feature.boolean",
+        json!({"name": "Ring", "op": "subtract", "target": "Blank", "tool": "Tip"}),
     );
     run(
         s,
@@ -664,7 +676,7 @@ fn unproven_jig(s: &mut Session) {
     run(
         s,
         "variable.publish",
-        json!({"name": "lim", "min": "1 mm", "max": "7.95 mm"}),
+        json!({"name": "lim", "min": "0 mm", "max": "10 mm"}),
     );
 }
 
@@ -673,7 +685,7 @@ fn an_assertion_not_proven_is_counted_apart_and_fails_the_point_when_strict() {
     let mut s = session();
     unproven_jig(&mut s);
     let result = sample(&mut s, json!({"samples": 0, "values": true}));
-    // The defaults (7.9 mm) and the corners 1 mm and 7.95 mm.
+    // The defaults (5 mm) and the corners 0 mm and 10 mm.
     assert_eq!(result["counts"]["points"], 3, "{result}");
     assert_eq!(result["passed"], 1, "{result}");
     assert_eq!(result["unproven"], 2, "{result}");
@@ -685,7 +697,7 @@ fn an_assertion_not_proven_is_counted_apart_and_fails_the_point_when_strict() {
     let listed = result["unprovenPoints"].as_array().unwrap();
     assert_eq!(listed.len(), 2, "{result}");
     assert_eq!(listed[0]["assertions"][0]["assertion"], "wall", "{result}");
-    assert_eq!(listed[0]["values"]["lim"], "7.9 mm", "{result}");
+    assert_eq!(listed[0]["values"]["lim"], "5 mm", "{result}");
 
     let strict = sample(&mut s, json!({"samples": 0, "strict": true}));
     assert_eq!(strict["ok"], false, "{strict}");
