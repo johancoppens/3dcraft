@@ -858,9 +858,11 @@ fn a_wall_thinner_than_the_bound_fails_and_never_passes_on_a_sample() {
 #[test]
 fn a_bound_within_what_the_search_cannot_pin_down_is_not_proven() {
     // A fat torus (R = 5, r = 4): every line into it along the inward
-    // normal passes the tube's middle and is 2r = 8 long, but a line could
-    // in principle meet the tube across the axis after 2 (R − r) = 2, and
-    // that is all the bound proves.
+    // normal passes the tube's middle and is 2r = 8 long. The cheap bound
+    // proves only 2 (R − r) = 2 (a line could in principle meet the tube
+    // across the axis); the exact faces close in on 8 piece by piece and
+    // stop at the work allowed, above 7 (since 2026-10-31), so a bound
+    // between what is proven and 8 is not proven.
     let mut s = Session::new(Workspace::none());
     run(&mut s, "file.new", json!({"units": "mm"}));
     run(
@@ -870,11 +872,12 @@ fn a_bound_within_what_the_search_cannot_pin_down_is_not_proven() {
     );
     let thin = run(&mut s, "measure.thickness", json!({"of": "Ring"}));
     close(&thin["thickness"], 8.0, 1e-6, "the tube");
-    close(&thin["atLeast"], 2.0, 1e-9, "what is proven");
+    let proven = thin["atLeast"].as_f64().unwrap();
+    assert!((7.0..=8.0).contains(&proven), "what is proven: {proven}");
     let tight = run(
         &mut s,
         "assert.add",
-        json!({"name": "tight", "measure": "thickness", "of": "Ring", "min": "5 mm"}),
+        json!({"name": "tight", "measure": "thickness", "of": "Ring", "min": "7.99 mm"}),
     );
     assert_eq!(tight["status"], "notProven", "{tight}");
     // Not passed: the check warns, the list is not ok.
