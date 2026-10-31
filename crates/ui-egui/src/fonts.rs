@@ -82,6 +82,11 @@ impl UiFonts {
             .then(|| craft3d_engine::fonts::load(MONO).ok())
             .flatten();
         ctx.set_fonts(definitions(text.as_deref(), mono.as_deref()));
+        // New fonts take effect at the next pass: this one is laid out
+        // again at once, so no frame (and no test that reads where things
+        // are after one frame) sees the old fonts' layout once the new ones
+        // are here.
+        ctx.request_discard("the interface's fonts arrived");
     }
 
     /// Whether Inter is the interface's text font now.
