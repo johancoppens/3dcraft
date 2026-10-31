@@ -17,9 +17,9 @@ shade 0bd52a1f7f9be59e
 tank 456b0acce8ab7690
 mouse 21ab4f6f8bf9d514
 chassis d8ec451f0abab39e
-jig-planetary d6cec051cf8c3774
-jig-reducer fb660abad243a06d
-jig-strandbeest b03be45a71ccd38d
-asm-planetary 99a09b6ada7560ed
-asm-reducer 57e6274cbdd6756f
-asm-walker 2a41c69d02978788
+jig-planetary fd97829a2a15ce4b
+jig-reducer 8a661285f364e28a
+jig-strandbeest 686e20e6e532e86f
+asm-planetary e6fe8f3622efe371
+asm-reducer fa070c639b22641e
+asm-walker 3156824eba120191
