@@ -1153,3 +1153,107 @@ fn an_aerofoil_loft_is_tangent_at_its_leading_edge() {
         }
     }
 }
+
+/// A wavy ring of `lobes` waves, `depth` of the radius `radius` deep, as
+/// two cubic splines (ids 1 and 2) through points of
+/// `r(θ) = radius (1 + depth cos(lobes θ))`, eight a wave, turned by
+/// `turn`.
+fn lobed(radius: f64, depth: f64, lobes: usize, turn: f64) -> Vec<SketchCurve> {
+    let per_half = 4 * lobes;
+    let half = |from: f64| -> Vec<P> {
+        (0..=per_half)
+            .map(|i| {
+                let theta = from + PI * i as f64 / per_half as f64;
+                let r = radius * (1.0 + depth * (lobes as f64 * theta).pcos());
+                let (s, c) = (theta + turn).psin_cos();
+                [r * c, r * s]
+            })
+            .collect()
+    };
+    vec![spline(1, 3, &half(0.0)), spline(2, 3, &half(PI))]
+}
+
+/// The segments of the longest edge of `body` meshed at `chord`.
+fn longest_edge(body: &Body, chord: f64) -> usize {
+    craft3d_tess::tessellate_edges(
+        body,
+        &TessParams {
+            chordal_tolerance: chord,
+            ..TessParams::default()
+        },
+    )
+    .unwrap()
+    .iter()
+    .map(|points| points.len().saturating_sub(1))
+    .max()
+    .unwrap_or(0)
+}
+
+/// The self-intersection check of a loft whose wall waves round many
+/// times: its mesh needs more than 1024 segments along the sections at
+/// the check's chord (the limit on grid segments per side of a face
+/// until 2026-10-31, which refused it), and a few across. The limit is
+/// now on the cells of a face (as many as a square grid at the limit),
+/// so the check meshes it and proves it clean, at three scales; the
+/// same wall wound into a bend that runs into its own beginning is still
+/// found passing through itself; and a mesh beyond the limit on cells is
+/// refused at once, as too fine, rather than made.
+#[test]
+fn a_loft_with_a_wall_of_many_waves_is_checked_and_proven() {
+    let lobes = 160;
+    for k in SCALES {
+        let sections = [
+            section(&lobed(k, 0.03, lobes, 0.0), level(0.0)),
+            section(&lobed(1.05 * k, 0.03, lobes, 0.01), level(0.5 * k)),
+            section(&lobed(1.1 * k, 0.03, lobes, 0.02), level(k)),
+        ];
+        let made = loft(&sections, &SMOOTH, &tol()).unwrap();
+        let body = &made.body;
+        assert_eq!(check(body, &tol()), vec![]);
+        let params = SelfCheckParams::new(tol().linear);
+        let found = body_self_intersections(body, &params).unwrap();
+        assert!(found.is_clean(), "at scale {k}: {found}");
+        // The first mesh of the check is the one that needs it.
+        let size = body.bbox().unwrap().diagonal();
+        let first = (params.relative_chord * size).max(4.0 * params.tolerance);
+        let along = longest_edge(body, first);
+        assert!(along > 1024, "{along} segments at scale {k}");
+        // Beyond the cells of a square grid at the limit: refused, and
+        // quickly, as too fine.
+        let started = std::time::Instant::now();
+        let fine = tessellate_body(
+            body,
+            &TessParams {
+                chordal_tolerance: 1e-9 * size,
+                max_segments: 256,
+                ..TessParams::default()
+            },
+        );
+        assert!(
+            matches!(fine, Err(craft3d_tess::TessError::TooFine { .. })),
+            "{fine:?}"
+        );
+        assert!(started.elapsed().as_secs() < 30);
+    }
+    // A bend of four sections on spokes, each the wavy ring off the axis,
+    // that turns on into its own beginning: it passes through itself.
+    let ring: Vec<SketchCurve> = lobed(1.0, 0.03, lobes, 0.0)
+        .into_iter()
+        .map(|mut c| {
+            if let Curve2::Spline(s) = &mut c.curve {
+                for p in &mut s.control {
+                    p[0] += 4.0;
+                }
+            }
+            c
+        })
+        .collect();
+    let spiral: Vec<Section> = [0.0, 2.9, 5.8, 8.7]
+        .iter()
+        .map(|a| section(&ring, spoke(*a)))
+        .collect();
+    let crossed = loft(&spiral, &RULED, &tol()).unwrap();
+    let found =
+        body_self_intersections(&crossed.body, &SelfCheckParams::new(tol().linear)).unwrap();
+    assert!(found.certain_crossings > 0, "{found}");
+}

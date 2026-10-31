@@ -2939,15 +2939,17 @@ fn seed_cells(
         // `(Muu + 2 Muv + Mvv) h² / 8`.
         let per_unit = ((muu + 2.0 * muv + mvv) / (8.0 * tolerance)).sqrt();
         let (nu, nv) = ((per_unit * span_u).ceil(), (per_unit * span_v).ceil());
-        let limit = f64::from(params.max_segments);
-        if !(nu <= limit && nv <= limit) {
-            return Err(TessError::TooFine {
-                patch: face,
-                needed_segments: nu.max(nv),
-                max_segments: params.max_segments,
-            });
-        }
-        // In range by the check above.
+        // At most as many cells as a square grid at the limit has
+        // (`grid_within`), however they are shared out between the sides.
+        let (nu, nv) =
+            grid_within(nu, nv, f64::from(params.max_segments)).map_err(|needed_segments| {
+                TessError::TooFine {
+                    patch: face,
+                    needed_segments,
+                    max_segments: params.max_segments,
+                }
+            })?;
+        // In range by the check above: below `max_segments²`.
         Ok(((nu as u32).max(1), (nv as u32).max(1)))
     };
     match surface {
@@ -2989,27 +2991,30 @@ fn seed_cells(
             from_second_derivatives(muu, muv, mvv)
         }
         Surface::Nurbs(spline) => {
-            let (muu, muv, mvv) = spline_second_bounds(spline, closure, low, high);
-            let (nu, nv) = spline_cells(
-                (muu + muv, mvv + muv),
+            let parts = spline_parts(spline, closure, low, high).unwrap_or_default();
+            let periods = closure.wrap.map(|w| w.map(|(from, to)| to - from));
+            let (nu, nv) = spline_grid(
+                &parts,
                 (span_u, span_v),
                 tolerance,
-                f64::from(params.max_segments),
+                (periods[0], periods[1]),
             )
+            .and_then(|(nu, nv)| grid_within(nu, nv, f64::from(params.max_segments)))
             .map_err(|needed_segments| TessError::TooFine {
                 patch: face,
                 needed_segments,
                 max_segments: params.max_segments,
             })?;
-            // In range: `spline_cells` keeps within the limit.
+            // In range: `grid_within` keeps below `max_segments²`.
             Ok(((nu as u32).max(1), (nv as u32).max(1)))
         }
     }
 }
 
 /// The cells of the grid over a face on a spline surface, in u and in v:
-/// whole numbers, at most `limit` each, or as an error the number that
-/// would be needed.
+/// whole numbers whose product is at most `limit²` (as many as a square
+/// grid of `limit` by `limit`), or as an error the side of the square
+/// grid of as many cells as would be needed.
 ///
 /// `(a, b)` are `(Muu + Muv, Mvv + Muv)` from bounds on the second
 /// derivatives over the face's box, which is `span` wide. Over a right
@@ -3025,43 +3030,95 @@ fn seed_cells(
 /// both ways as its tighter direction asks (the wall an extruded spline
 /// sweeps is straight along the sweep: one cell), and the cells are
 /// never more than with one step for both, the geometric mean against
-/// the arithmetic one. Where one parameter would need more cells than
-/// the limit and the other has room, it gets the limit and the other
-/// what is then left of the sum: finer there, up to a factor √2 in
-/// reach.
+/// the arithmetic one.
+///
+/// The limit is on the cells, not on either side (since 2026-10-31): a
+/// face long one way and narrow the other (a loft through sections of a
+/// thousand waves, a few sections high) needs thousands of cells along
+/// it and a few across, far fewer than a square grid at the limit. Until
+/// then each side was held to `limit`, and such a face was refused
+/// although its mesh was small.
+#[cfg(test)]
 fn spline_cells(
     (a, b): (f64, f64),
     (span_u, span_v): (f64, f64),
     tolerance: f64,
     limit: f64,
 ) -> Result<(f64, f64), f64> {
+    let (nu, nv) = spline_counts((a, b), (span_u, span_v), tolerance);
+    grid_within(nu, nv, limit)
+}
+
+/// The cells of [`spline_cells`] before the limit.
+fn spline_counts((a, b): (f64, f64), (span_u, span_v): (f64, f64), tolerance: f64) -> (f64, f64) {
     let cells = |bound: f64, span: f64, share: f64| (bound / share).sqrt() * span;
     let even = 4.0 * tolerance;
-    let (nu, nv) = (cells(a, span_u, even).ceil(), cells(b, span_v, even).ceil());
-    let needed = nu.max(nv);
-    // (Negated comparisons: a number that is not one is over the limit.)
-    match (nu <= limit, nv <= limit) {
-        (true, true) => Ok((nu, nv)),
-        (false, true) => {
-            let left = 8.0 * tolerance - a * (span_u / limit) * (span_u / limit);
-            let nv = cells(b, span_v, left).ceil();
-            if left > 0.0 && nv <= limit {
-                Ok((limit, nv))
-            } else {
-                Err(needed)
-            }
-        }
-        (true, false) => {
-            let left = 8.0 * tolerance - b * (span_v / limit) * (span_v / limit);
-            let nu = cells(a, span_u, left).ceil();
-            if left > 0.0 && nu <= limit {
-                Ok((nu, limit))
-            } else {
-                Err(needed)
-            }
-        }
-        (false, false) => Err(needed),
+    (cells(a, span_u, even).ceil(), cells(b, span_v, even).ceil())
+}
+
+/// The cells of the grid over a spline face whose box is `span` wide,
+/// from the bounds of its parts (`spline_parts`; none: no bound), before
+/// the limit: those of the largest bounds, or fewer where the parts
+/// narrower than the cells allow it ([`bounds_for_step`]). A grid is
+/// taken only when the bounds for its own step ask for no more cells
+/// than it has; a few rounds look for the coarsest, the first being the
+/// grid of the largest bounds, which always holds. Infinite counts when
+/// there is no bound, which ends as too fine.
+fn spline_grid(
+    parts: &[PartBound],
+    span: (f64, f64),
+    tolerance: f64,
+    periods: (Option<f64>, Option<f64>),
+) -> Result<(f64, f64), f64> {
+    if parts.is_empty() {
+        return Err(f64::INFINITY);
     }
+    let counts = |step: (f64, f64)| {
+        let (muu, muv, mvv) = bounds_for_step(parts, step, periods);
+        spline_counts((muu + muv, mvv + muv), span, tolerance)
+    };
+    let step_of = |(nu, nv): (f64, f64)| (span.0 / nu.max(1.0), span.1 / nv.max(1.0));
+    // The bounds of a step that no part is narrower than are the largest.
+    let mut held = counts((0.0, 0.0));
+    if !(held.0.is_finite() && held.1.is_finite()) {
+        return Ok(held);
+    }
+    let mut trial = counts(step_of(held));
+    for _ in 0..8 {
+        let finer = |a: (f64, f64), b: (f64, f64)| a.0 <= b.0 && a.1 <= b.1;
+        if !(trial.0.is_finite() && trial.1.is_finite()) || finer(held, trial) {
+            break;
+        }
+        let needed = counts(step_of(trial));
+        if finer(needed, trial) {
+            held = trial;
+            trial = needed;
+        } else {
+            // Between the two: no coarser than what it asks, no finer
+            // than what holds.
+            trial = (
+                trial.0.max(needed.0).min(held.0),
+                trial.1.max(needed.1).min(held.1),
+            );
+        }
+    }
+    Ok(held)
+}
+
+/// `(nu, nv)` when the grid of `nu` by `nv` cells (each at least one) has
+/// at most `limit²` cells, else the side of a square grid of as many
+/// (`√(nu nv)`), infinite for counts that are not numbers. The counts
+/// within it are below `limit²`, so they fit a `u32` for any `limit`
+/// that is one.
+fn grid_within(nu: f64, nv: f64, limit: f64) -> Result<(f64, f64), f64> {
+    let most = limit * limit;
+    let all = nu.max(1.0) * nv.max(1.0);
+    // (Negated comparison: a count that is not a number is over the limit.)
+    if !(nu >= 0.0 && nv >= 0.0 && all <= most) {
+        let side = all.sqrt();
+        return Err(if side.is_nan() { f64::INFINITY } else { side });
+    }
+    Ok((nu, nv))
 }
 
 /// The least part of a knot span a patch is cut down to before its
@@ -3201,15 +3258,52 @@ fn stretches(
 /// part bounds a narrower one. Each part is bounded in [`HALVINGS`]
 /// rounds of halves, which brings the bound nearer to the surface. Infinite when no bound is found (a span
 /// that cannot be split out), which ends as `TessError::TooFine`.
+#[cfg(test)]
 fn spline_second_bounds(
     surface: &craft3d_geom::NurbsSurface,
     closure: &Closure,
     low: (f64, f64),
     high: (f64, f64),
 ) -> (f64, f64, f64) {
-    let unbounded = (f64::INFINITY, f64::INFINITY, f64::INFINITY);
+    let Some(parts) = spline_parts(surface, closure, low, high) else {
+        return (f64::INFINITY, f64::INFINITY, f64::INFINITY);
+    };
+    parts.iter().fold((0.0, 0.0, 0.0), |(uu, uv, vv), part| {
+        (uu.max(part.uu), uv.max(part.uv), vv.max(part.vv))
+    })
+}
+
+/// What [`spline_parts`] bounds over one part of a face's box: a knot
+/// span of the surface, or the part of one the box covers.
+#[derive(Clone, Copy, Debug)]
+struct PartBound {
+    /// Bounds on the lengths of the second partial derivatives.
+    uu: f64,
+    uv: f64,
+    vv: f64,
+    /// Where the part starts and how wide it is, in the surface's `u`
+    /// and `v`.
+    start: (f64, f64),
+    width: (f64, f64),
+    /// Bounds on how far `∂/∂u` travels along `u` over the part (its total
+    /// variation along any line of constant `v`), and `∂/∂v` along `v`:
+    /// the longest row of the Bézier net of that derivative (a Bézier
+    /// curve is no longer than its control polygon, and a row of the
+    /// surface's derivative is a blend of the rows of the net with
+    /// weights that sum to one). Infinite for a rational patch.
+    travel: (f64, f64),
+}
+
+/// The bounds of [`spline_second_bounds`] part by part; `None` when no
+/// bound is found.
+fn spline_parts(
+    surface: &craft3d_geom::NurbsSurface,
+    closure: &Closure,
+    low: (f64, f64),
+    high: (f64, f64),
+) -> Option<Vec<PartBound>> {
     let Ok(spans) = surface.bezier_spans() else {
-        return unbounded;
+        return None;
     };
     let (domain_u, domain_v) = surface.domain();
     let [wrap_u, wrap_v] = closure.wrap;
@@ -3234,8 +3328,7 @@ fn spline_second_bounds(
             if s1 > 1.0 - ALL_BUT { 1.0 } else { s1 },
         ))
     };
-    let (mut muu, mut muv, mut mvv) = (0.0_f64, 0.0_f64, 0.0_f64);
-    let mut found = false;
+    let mut parts = Vec::new();
     for span in &spans {
         for &stretch_u in &across_u {
             let Some((s0, s1)) = part(span.u, stretch_u) else {
@@ -3263,17 +3356,263 @@ fn spline_second_bounds(
                     (span.u.1 - span.u.0) * (s1 - s0),
                     (span.v.1 - span.v.0) * (t1 - t0),
                 );
-                let Some((uu, uv, vv)) = patch_second_bounds(patch, width) else {
-                    return unbounded;
+                let travel = patch_travel(&patch, width);
+                let Some((mut uu, mut uv, mut vv)) = patch_second_bounds(patch, width) else {
+                    return None;
                 };
-                muu = muu.max(uu);
-                muv = muv.max(uv);
-                mvv = mvv.max(vv);
-                found = true;
+                // The bound of the B-spline's own derivative nets over the
+                // whole span, where it is lower: on a span far narrower
+                // than its neighbours the Bézier net's differences are
+                // rounding (`net_second_bounds`).
+                if let Some((nu, nuv, nv)) = net_second_bounds(
+                    surface,
+                    0.5 * (span.u.0 + span.u.1),
+                    0.5 * (span.v.0 + span.v.1),
+                ) {
+                    (uu, uv, vv) = (uu.min(nu), uv.min(nuv), vv.min(nv));
+                }
+                parts.push(PartBound {
+                    uu,
+                    uv,
+                    vv,
+                    start: (
+                        span.u.0 + (span.u.1 - span.u.0) * s0,
+                        span.v.0 + (span.v.1 - span.v.0) * t0,
+                    ),
+                    width,
+                    travel,
+                });
             }
         }
     }
-    if found { (muu, muv, mvv) } else { unbounded }
+    (!parts.is_empty()).then_some(parts)
+}
+
+/// [`PartBound::travel`] of a part `width` wide.
+fn patch_travel(patch: &craft3d_geom::RationalBezierPatch, width: (f64, f64)) -> (f64, f64) {
+    let unknown = (f64::INFINITY, f64::INFINITY);
+    let Some((along_u, along_v)) = patch.derivative_nets() else {
+        return unknown;
+    };
+    let (m, n) = patch.degrees();
+    // The net of ∂/∂u has `m` rows of `n + 1`, indexed `i (n + 1) + j`;
+    // the derivative's travel along u is that of each column `j`.
+    let longest = |net: &[Vec3], count: usize, step: usize, lines: usize, line: usize| {
+        let mut most = 0.0_f64;
+        for l in 0..lines {
+            let mut length = 0.0;
+            for k in 1..count {
+                let (Some(&a), Some(&b)) = (
+                    net.get((k - 1) * step + l * line),
+                    net.get(k * step + l * line),
+                ) else {
+                    return f64::INFINITY;
+                };
+                length += a.distance(b);
+            }
+            most = most.max(length);
+        }
+        most
+    };
+    // Local parameters run over 0..1: a derivative in them is `width`
+    // times the surface's.
+    let in_u = longest(&along_u, m, n + 1, n + 1, 1) / width.0;
+    let in_v = longest(&along_v, n, 1, m + 1, n) / width.1;
+    let known = |t: f64| if t.is_finite() { t } else { f64::INFINITY };
+    (known(in_u), known(in_v))
+}
+
+/// Bounds on the second derivatives that a grid of cells `step` wide
+/// may go by, from the bounds of the parts (`spline_parts`); `periods`
+/// are those of the parameters the surface closes in.
+///
+/// Along a line of the grid in `u`, the distance of the surface from the
+/// chord of a cell `h` wide is at most `h/4` times how far `∂/∂u` travels
+/// across the cell (the interpolation error `e` vanishes at both ends,
+/// and `|e(x)| ≤ ∫ G(x, t) |e''(t)| dt` with Green's function `G ≤ h/4`).
+/// Across the parts as wide as the cell or wider that is at most
+/// `Muu h`, which is what the second derivatives give (`h² Muu / 8`, a
+/// factor two better); across a part narrower than the cell it is at
+/// most the part's travel, however large its second derivative. So the
+/// cell holds when
+///
+/// `h²/8 × (2 Muu(wide) + 2 Σ travel(narrow parts in the cell) / h)`
+///
+/// is within its share of the tolerance. A narrow part that meets a cell
+/// starts less than `h` before it, so the sum is at most the largest sum
+/// over the narrow parts that start within `2h` of each other (the parts
+/// of every row of `v` together, wherever the cell lies), which is what
+/// is used here when it gives a lower bound on `uu` than the largest of
+/// all; the same for `vv`. A span far narrower than its neighbours has
+/// control points within rounding of each other and a second derivative
+/// bounded a thousand times above the surface's (the joints of the
+/// pieces of a loft's sections, reparametrised to degree twelve, that
+/// nearly meet: the wavy-vase Jig, 2026-10-31), while how far its
+/// derivative travels is a difference of first differences, which keeps
+/// its digits. When no part is narrower than the step the bounds are the
+/// largest, as before.
+fn bounds_for_step(
+    parts: &[PartBound],
+    step: (f64, f64),
+    periods: (Option<f64>, Option<f64>),
+) -> (f64, f64, f64) {
+    let along = |second: fn(&PartBound) -> f64,
+                 start: fn(&PartBound) -> f64,
+                 width: fn(&PartBound) -> f64,
+                 travel: fn(&PartBound) -> f64,
+                 h: f64,
+                 period: Option<f64>| {
+        let (mut all, mut wide) = (0.0_f64, 0.0_f64);
+        let mut narrow: Vec<(f64, f64)> = Vec::new();
+        for part in parts {
+            all = all.max(second(part));
+            if width(part) < h {
+                narrow.push((start(part), travel(part)));
+            } else {
+                wide = wide.max(second(part));
+            }
+        }
+        if narrow.is_empty() || !(h > 0.0) {
+            return all;
+        }
+        // Across the seam of a closed parameter, the parts of the start
+        // of the range follow those of its end.
+        if let Some(period) = period.filter(|p| p.is_finite() && *p > 0.0) {
+            let again: Vec<(f64, f64)> = narrow.iter().map(|&(a, t)| (a + period, t)).collect();
+            narrow.extend(again);
+        }
+        narrow.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+        // The largest sum of travels over starts within 2h: two pointers.
+        let (mut most, mut sum, mut first) = (0.0_f64, 0.0_f64, 0_usize);
+        for (last, &(at, travel)) in narrow.iter().enumerate() {
+            sum += travel;
+            while let Some(&(early, gone)) = narrow.get(first) {
+                if first < last && early < at - 2.0 * h {
+                    sum -= gone;
+                    first += 1;
+                } else {
+                    break;
+                }
+            }
+            most = most.max(sum);
+        }
+        let by_travel = 2.0 * wide + 2.0 * most / h;
+        // (A bound that is not a number is not lower.)
+        if by_travel < all { by_travel } else { all }
+    };
+    let uu = along(
+        |p| p.uu,
+        |p| p.start.0,
+        |p| p.width.0,
+        |p| p.travel.0,
+        step.0,
+        periods.0,
+    );
+    let vv = along(
+        |p| p.vv,
+        |p| p.start.1,
+        |p| p.width.1,
+        |p| p.travel.1,
+        step.1,
+        periods.1,
+    );
+    let uv = parts.iter().fold(0.0_f64, |m, p| m.max(p.uv));
+    (uu, uv, vv)
+}
+
+/// The knot span `k` (`knots[k] <= t < knots[k + 1]`, with
+/// `degree <= k < count`) that holds `t`, the last one for its end.
+fn knot_span(knots: &[f64], degree: usize, count: usize, t: f64) -> Option<usize> {
+    if !t.is_finite() || count <= degree {
+        return None;
+    }
+    let inner = knots.get(degree..=count)?;
+    // The first knot of the range above `t`, less one: a span that holds
+    // it (a knot repeated gives one span of no width, never found here).
+    let above = inner.partition_point(|&k| k <= t);
+    let k = degree + above.checked_sub(1)?;
+    Some(k.min(count - 1))
+}
+
+/// Bounds `(Muu, Muv, Mvv)` on the second partial derivatives of a
+/// polynomial spline surface over the knot span that holds `(u, v)`, from
+/// the B-spline's own derivative nets (*The NURBS Book* §3.3, eq. 3.17):
+/// the second derivative in `u` is the spline of degree `p − 2` over the
+/// net `R_ij = (p − 1)(Q_{i+1,j} − Q_ij) / (u_{i+p+1} − u_{i+2})` with
+/// `Q_ij = p (P_{i+1,j} − P_ij) / (u_{i+p+1} − u_{i+1})`, whose basis
+/// functions are not negative and sum to one, so its largest point over
+/// the span is at most the longest of the `R_ij` that act there; the same
+/// in `v`, and for the mixed one the net of differences in both. `None`
+/// for a rational surface (weights that differ), or where the span is not
+/// found.
+///
+/// The Bézier patch of a span (`bezier_spans`) bounds the same
+/// derivatives more closely where the span is as wide as its neighbours,
+/// but not where it is far narrower: its control points then lie within
+/// rounding of each other, their differences are rounding, and divided
+/// by the square of the span's width they made bounds a thousand times
+/// the surface's (a loft through sections whose knots nearly meet, with
+/// spans 1e-10 wide: the wavy-vase Jig, 2026-10-31). The nets here divide
+/// by knot differences that reach over `p − 1` spans, so a narrow span
+/// between wide ones is bounded as its neighbours are.
+fn net_second_bounds(
+    surface: &craft3d_geom::NurbsSurface,
+    u: f64,
+    v: f64,
+) -> Option<(f64, f64, f64)> {
+    let weights = surface.weights();
+    let first = *weights.first()?;
+    if weights.iter().any(|&w| w != first) {
+        return None;
+    }
+    let (p, q) = surface.degrees();
+    let (count_u, count_v) = surface.counts();
+    let (knots_u, knots_v) = (surface.knots_u(), surface.knots_v());
+    let k = knot_span(knots_u, p, count_u, u)?;
+    let l = knot_span(knots_v, q, count_v, v)?;
+    let ctrl = surface.control_points();
+    let at = |i: usize, j: usize| ctrl.get(i.checked_mul(count_v)?.checked_add(j)?).copied();
+    // `scale / (knots[b] − knots[a])`, zero for a basis function that is
+    // nowhere (a knot difference of nothing, the convention 0/0 = 0).
+    let ratio = |knots: &[f64], a: usize, b: usize, scale: f64| -> Option<f64> {
+        let width = knots.get(b)? - knots.get(a)?;
+        Some(if width > 0.0 { scale / width } else { 0.0 })
+    };
+    let pf = p as f64;
+    let qf = q as f64;
+    // First differences along u, Q_ij, and along v.
+    let q_u = |i: usize, j: usize| -> Option<Vec3> {
+        Some((at(i + 1, j)? - at(i, j)?) * ratio(knots_u, i + 1, i + p + 1, pf)?)
+    };
+    let q_v = |i: usize, j: usize| -> Option<Vec3> {
+        Some((at(i, j + 1)? - at(i, j)?) * ratio(knots_v, j + 1, j + q + 1, qf)?)
+    };
+    let mut uu = 0.0_f64;
+    if p >= 2 {
+        for j in l.checked_sub(q)?..=l {
+            for i in k.checked_sub(p)?..=k - 2 {
+                let r = (q_u(i + 1, j)? - q_u(i, j)?) * ratio(knots_u, i + 2, i + p + 1, pf - 1.0)?;
+                uu = uu.max(r.length());
+            }
+        }
+    }
+    let mut vv = 0.0_f64;
+    if q >= 2 {
+        for i in k.checked_sub(p)?..=k {
+            for j in l.checked_sub(q)?..=l - 2 {
+                let r = (q_v(i, j + 1)? - q_v(i, j)?) * ratio(knots_v, j + 2, j + q + 1, qf - 1.0)?;
+                vv = vv.max(r.length());
+            }
+        }
+    }
+    let mut uv = 0.0_f64;
+    for i in k.checked_sub(p)?..k {
+        for j in l.checked_sub(q)?..l {
+            let r = (q_v(i + 1, j)? - q_v(i, j)?) * ratio(knots_u, i + 1, i + p + 1, pf)?;
+            uv = uv.max(r.length());
+        }
+    }
+    (uu.is_finite() && uv.is_finite() && vv.is_finite()).then_some((uu, uv, vv))
 }
 
 /// How far `target` is from the surface, starting the search at `uv`.
@@ -5651,12 +5990,14 @@ mod tests {
     }
 
     /// The cells keep the deviation `(a hu² + b hv²) / 8` within the
-    /// tolerance, also where one parameter is held at the limit.
+    /// tolerance, and their number within that of a square grid at the
+    /// limit, however they are shared out between the sides.
     #[test]
     fn the_cells_of_a_spline_face_keep_the_bound_within_the_tolerance() {
         let within = |(a, b): (f64, f64), span: (f64, f64), tolerance: f64, limit: f64| {
             let (nu, nv) = spline_cells((a, b), span, tolerance, limit)?;
-            assert!(nu <= limit && nv <= limit && nu == nu.floor() && nv == nv.floor());
+            assert!(nu.max(1.0) * nv.max(1.0) <= limit * limit);
+            assert!(nu == nu.floor() && nv == nv.floor());
             let (hu, hv) = (span.0 / nu.max(1.0), span.1 / nv.max(1.0));
             let deviation = (a * hu * hu + b * hv * hv) / 8.0;
             assert!(
@@ -5680,19 +6021,29 @@ mod tests {
             within((100.0, 1.0), (0.5, 2.0), 1e-3, 1024.0),
             Ok((80.0, 32.0))
         );
-        // Over the limit along u by less than √2, with room along v: u is
-        // held at the limit and v made finer for it.
+        // Over the limit along u, with few cells along v: what the
+        // tolerance asks for, whatever the limit, while the cells are no
+        // more than a square grid at the limit has (until 2026-10-31 u was
+        // held at the limit, and beyond √2 of it refused).
         let even = within((100.0, 1.0), (1.0, 1.0), 2e-5, 1e6).unwrap();
         assert_eq!(even, (1119.0, 112.0));
-        let held = within((100.0, 1.0), (1.0, 1.0), 2e-5, 1024.0).unwrap();
-        assert_eq!(held.0, 1024.0);
-        assert!(held.1 > even.1 && held.1 < 1024.0, "{held:?}");
-        let other = within((1.0, 100.0), (1.0, 1.0), 2e-5, 1024.0).unwrap();
-        assert_eq!(other, (held.1, held.0));
-        // Beyond that, or with no room in the other, it is too fine, and
-        // says how fine.
-        assert_eq!(within((100.0, 1.0), (1.0, 1.0), 1e-5, 1024.0), Err(1582.0));
-        assert_eq!(within((100.0, 99.0), (1.0, 1.0), 2e-5, 1024.0), Err(1119.0));
+        assert_eq!(within((100.0, 1.0), (1.0, 1.0), 2e-5, 1024.0), Ok(even));
+        assert_eq!(
+            within((1.0, 100.0), (1.0, 1.0), 2e-5, 1024.0),
+            Ok((112.0, 1119.0))
+        );
+        assert_eq!(
+            within((100.0, 1.0), (1.0, 1.0), 1e-5, 1024.0),
+            Ok((1582.0, 159.0))
+        );
+        // 50000 by 500 cells is far more than 1024 by 1024.
+        assert_eq!(within((1e4, 1.0), (1.0, 1.0), 1e-6, 1024.0), Err(5000.0));
+        // More cells than a square grid at the limit: too fine, and says
+        // how fine as the side of a square grid of as many.
+        assert_eq!(
+            within((100.0, 99.0), (1.0, 1.0), 2e-5, 1024.0),
+            Err((1119.0_f64 * 1113.0).sqrt())
+        );
         assert_eq!(
             within((100.0, 100.0), (1.0, 1.0), 2e-5, 1024.0),
             Err(1119.0)
