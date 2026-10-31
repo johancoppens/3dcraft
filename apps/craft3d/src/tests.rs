@@ -1957,7 +1957,7 @@ fn a_missing_root_is_made_when_its_parent_exists() {
     assert!(wanted.is_dir());
     assert_eq!(
         access,
-        Access::Root(std::fs::canonicalize(&wanted).unwrap())
+        Access::Root(craft3d_engine::canonical(&wanted).unwrap())
     );
     // Again: it is there now and is taken as it is.
     assert!(app::root("--automation-read-root", wanted.to_str()).is_ok());
