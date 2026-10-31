@@ -61,6 +61,15 @@ fn count(rgb: &[u8], color: [u8; 3]) -> usize {
     rgb.chunks(3).filter(|p| *p == color).count()
 }
 
+/// The pixels within `levels` of `color` in every channel: a stripe's
+/// edges are greys between its colours, the stripes being filtered over
+/// each sample's footprint (docs/design/surfacing.md › Band limit).
+fn count_near(rgb: &[u8], color: [u8; 3], levels: u8) -> usize {
+    rgb.chunks(3)
+        .filter(|p| p.iter().zip(color).all(|(&a, b)| a.abs_diff(b) <= levels))
+        .count()
+}
+
 fn torus(session: &mut Session) {
     run(session, "file.new", json!({"units": "mm"}));
     run(
@@ -102,8 +111,8 @@ fn the_window_draws_an_analysis_and_its_combs() {
         size.clone(),
     ));
     let (dark, light) = (
-        count(&zebra, tokens.analysis_dark),
-        count(&zebra, tokens.analysis_light),
+        count_near(&zebra, tokens.analysis_dark, 32),
+        count_near(&zebra, tokens.analysis_light, 32),
     );
     assert!(dark > 500 && light > 500, "{dark} dark, {light} light");
 

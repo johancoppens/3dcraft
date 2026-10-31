@@ -5,15 +5,21 @@
 //! Tolerance: outside the band of one pixel around silhouettes and face
 //! edges (`common::band`) and around where a face hides part of itself
 //! (the CPU frame's distance jumps by more than 2 %), and outside the
-//! pixels *in doubt*, every channel
-//! within 2 levels and at most 1/1024 of the pixels compared more than 1
-//! level apart. A pixel is in doubt where one of its samples lies on a
-//! decision of the analysis within what `f32` can tell: the CPU picture
-//! drawn with the stripes shifted by ±[`STRIPE_DOUBT`] of a period (zebra),
-//! by ±[`HIGHLIGHT_DOUBT`] with the grazing bound by ±[`GRAZING_DOUBT`]
-//! (highlight lines) or the least draft by ±[`DRAFT_DOUBT`], or the normals
-//! turned by ±[`NORMAL_DOUBT`] about two axes, differs there.
-//! The doubt may hold at most [`DOUBT_SHARE`] of the model's pixels, so a
+//! pixels *in doubt*, every channel within 2 levels and at most 1/1024 of
+//! the pixels compared more than 1 level apart. A pixel is in doubt where
+//! one of its samples lies within what `f32` can tell of a place where the
+//! colour changes faster than the tolerance: where the CPU picture drawn
+//! with the stripes shifted by ±[`STRIPE_DOUBT`] (zebra) or
+//! ±[`HIGHLIGHT_DOUBT`] (highlight lines) of a period per stripe, with the
+//! grazing bound by ±[`GRAZING_DOUBT`], the least draft by
+//! ±[`DRAFT_DOUBT`], the normals turned by ±[`NORMAL_DOUBT`] about two
+//! axes, or the camera moved by ±[`PAN_DOUBT`] of a sample across and up,
+//! is more than 2 levels off the plain one there. The stripes are filtered
+//! over each sample's footprint (docs/design/surfacing.md › *Band limit*),
+//! so they are a continuous grey and a doubt is a real decision: the
+//! point-sampled footprint of zero, the face's own normal, an edge between
+//! two triangles where the footprint (each triangle's derivatives) jumps.
+//! The doubt may hold at most a share of the model's pixels per scene, so a
 //! picture of nothing but edges cannot pass.
 
 #![allow(
@@ -32,34 +38,54 @@ use craft3d_math::Vec3;
 use craft3d_render::analysis::{Analysis, AnalysisMode};
 use craft3d_tess::{TessParams, tessellate_body};
 
-/// The stripes' shift that marks a pixel in doubt, in periods: the phase
-/// in `f32` carries a relative error of a few `2^-24` times the stripe
-/// count over a turn (at most 512), far below this.
-const STRIPE_DOUBT: f64 = 1e-3;
-/// The highlight lines' shift, in periods: their phase moves by about
-/// `stripes / |N·M|²` periods per radian of the normal (the normal line
-/// meets the light plane further out as it tilts), up to 20 / 0.05² =
-/// 8000 at the grazing bound with the most lines tested here (20), and an
-/// interpolated normal in `f32` is off by about 2·10⁻⁷ rad: 1.6·10⁻³,
-/// taken six times.
-const HIGHLIGHT_DOUBT: f64 = 1e-2;
+/// The zebra stripes' shift that marks a pixel in doubt, in periods per
+/// stripe of the count: the phase `φ / τ · count` in `f32` carries a
+/// relative error of a few `2^-24` of its largest value, `count / 2`;
+/// sixty-four of them. Since the band limit (2026-10-31) the stripes are a
+/// continuous grey, which a shift moves by its slope times the shift (at
+/// most `225 / footprint` levels per period), so the shift is what `f32`
+/// can be off by, not 10⁻³ of a period, which moved every ramp more than
+/// the tolerance (half the pixels in doubt).
+const STRIPE_DOUBT: f64 = 4e-6;
+/// The highlight lines' shift, in periods per line of the count: their
+/// phase is at most about `count / GRAZING · 1.3` periods (the light plane
+/// a quarter of the diagonal above the box) and carries a relative error
+/// of a few `2^-24` of it: `count · 3·10⁻⁶`, taken six times. How fast it
+/// moves with the normal (`stripes / |N·M|²` periods per radian, up to
+/// 8000 at the grazing bound with 20 lines) is the normals' turn's
+/// ([`NORMAL_DOUBT`]), which holds it where it is that fast and not over
+/// the whole picture, as the shift of 10⁻² of a period before the band
+/// limit did.
+const HIGHLIGHT_DOUBT: f64 = 2e-5;
 /// The grazing bound's relative shift: `|N·M|` in `f32` is off by a few
 /// `2^-24` of 1, against a bound of 0.05.
 const GRAZING_DOUBT: f64 = 1e-4;
 /// The normals' turn that marks a pixel in doubt, radians: an interpolated
 /// normal in `f32` is off by about 2·10⁻⁷ rad; fifty times that.
 const NORMAL_DOUBT: f64 = 1e-5;
+/// The camera's move that marks a pixel in doubt, in samples: GPUs snap
+/// vertices to a grid of 1/256 of a sample (8 bits of subpixel
+/// precision); twice that.
+const PAN_DOUBT: f64 = 1.0 / 128.0;
 /// The least draft's shift that marks a pixel in doubt, radians: a unit
 /// normal in `f32` is off by a few `2^-24`.
 const DRAFT_DOUBT: f64 = 1e-4;
 /// The shares in doubt measured on 2026-10-30 (the same on every adapter
-/// of the Strix: RADV, radeonsi, llvmpipe), each cap a quarter above:
-/// zebra on the sphere 0.0124, on the cylinder 0.0116; highlight lines on
-/// the torus 0.118 (their phase moves fastest with the normal); the
-/// curvature map 0.0013; draft on the sphere 0.0014, on the cylinder 0.0017.
-const CAP_ZEBRA_SPHERE: f64 = 0.016;
-const CAP_ZEBRA_CYLINDER: f64 = 0.015;
-const CAP_HIGHLIGHT: f64 = 0.15;
+/// of the Strix: RADV, radeonsi, llvmpipe; the doubt is the CPU's alone),
+/// each cap a quarter above: the curvature map 0.0013; draft on the sphere
+/// 0.0014, on the cylinder 0.0017. Since the band limit (2026-10-31, a
+/// pixel in doubt where a variant is more than 2 levels off, the stripes'
+/// shifts what `f32` can be off by, and the camera's move): zebra on the
+/// sphere 0.0011 (was 0.0124), on the cylinder 0.0011 (was 0.0116), at
+/// 512 stripes 0; highlight lines on the torus 0.0023 (was 0.118), with 20
+/// lines 0.0028 (did not hold before); the curvature map 0, draft 0.0008
+/// and 0.0009. The caps of the stripes are a quarter above, at least
+/// 0.001.
+const CAP_ZEBRA_SPHERE: f64 = 0.0015;
+const CAP_ZEBRA_CYLINDER: f64 = 0.0015;
+const CAP_FINE_ZEBRA: f64 = 0.001;
+const CAP_HIGHLIGHT: f64 = 0.003;
+const CAP_FINE_HIGHLIGHT: f64 = 0.0035;
 const CAP_CURVATURE: f64 = 0.002;
 const CAP_DRAFT: f64 = 0.0025;
 
@@ -102,6 +128,12 @@ fn with(mode: AnalysisMode, edit: impl Fn(&mut Analysis)) -> RenderParams {
     }
 }
 
+/// Whether two pixels are more than the tolerance (2 levels) apart in a
+/// channel.
+fn apart(x: &[u8], y: &[u8]) -> bool {
+    x.iter().zip(y).any(|(a, b)| a.abs_diff(*b) > 2)
+}
+
 /// The pixels in doubt (see the module docs).
 fn doubt(
     mesh: &Mesh,
@@ -113,9 +145,9 @@ fn doubt(
     let shifted = |sign: f64| {
         let mut b = a;
         match a.mode {
-            AnalysisMode::Zebra => b.offset += sign * STRIPE_DOUBT,
+            AnalysisMode::Zebra => b.offset += sign * STRIPE_DOUBT * a.stripes.round(),
             AnalysisMode::Highlight => {
-                b.offset += sign * HIGHLIGHT_DOUBT;
+                b.offset += sign * HIGHLIGHT_DOUBT * a.stripes;
                 b.grazing *= 1.0 + sign * GRAZING_DOUBT;
             }
             AnalysisMode::Draft => b.min_draft += sign * DRAFT_DOUBT,
@@ -132,7 +164,7 @@ fn doubt(
         .rgb
         .chunks(3)
         .zip(hi.rgb.chunks(3))
-        .map(|(x, y)| x != y)
+        .map(|(x, y)| apart(x, y))
         .collect();
     let mut variants = vec![lo, hi];
     // The normals turned by ±NORMAL_DOUBT about two axes: where a
@@ -157,7 +189,38 @@ fn doubt(
             .zip(frame.rgb.chunks(3))
             .zip(plain.rgb.chunks(3))
         {
-            *slot |= x != y;
+            *slot |= apart(x, y);
+        }
+        variants.push(frame);
+    }
+    // The camera moved by ±PAN_DOUBT of a sample across and up: a sample
+    // that close to an edge between two triangles of a face may fall in
+    // either (the GPU's rasteriser snaps to a subpixel grid), and the
+    // stripes' footprint, from each triangle's own derivatives, jumps
+    // there.
+    let axes = camera.axes().unwrap();
+    let samples = f64::from(p.height * p.ssaa);
+    let size = match camera.projection {
+        craft3d_render::Projection::Perspective { .. } => {
+            2.0 * axes.half * (camera.target - camera.eye).length() / samples
+        }
+        craft3d_render::Projection::Orthographic { .. } => 2.0 * axes.half / samples,
+    };
+    for along in [axes.right, axes.right * -1.0, axes.up, axes.up * -1.0] {
+        let step = along * (PAN_DOUBT * size);
+        let moved = Camera {
+            eye: camera.eye + step,
+            target: camera.target + step,
+            ..*camera
+        };
+        let frame =
+            craft3d_render::render_analysed(mesh, &FaceColors::new(), values, &moved, p).unwrap();
+        for ((slot, x), y) in out
+            .iter_mut()
+            .zip(frame.rgb.chunks(3))
+            .zip(plain.rgb.chunks(3))
+        {
+            *slot |= apart(x, y);
         }
         variants.push(frame);
     }
@@ -338,13 +401,41 @@ fn zebra_on_a_cylinder_in_perspective_matches_the_cpu() {
 #[test]
 fn highlight_lines_on_a_torus_match_the_cpu() {
     let mesh = torus();
-    // Few lines, so that they are resolved: with 20 the far side of the
-    // torus is a moiré of lines finer than a sample, where the two
-    // renderers differ by single samples (seen 2026-10-30, also at
-    // 640 × 480 seen closer: 57 pixels more than a level apart).
+    // Few lines, so that they are resolved; 20, finer than a sample on the
+    // far side, are `stripes_finer_than_a_sample_match_the_cpu`.
     let p = with(AnalysisMode::Highlight, |a| a.stripes = 5.0);
     let camera = perspective(&mesh, Vec3::new(1.0, -1.5, 1.2), 35.0, &p);
     check("highlight-torus", &mesh, &[], &camera, &p, CAP_HIGHLIGHT);
+}
+
+/// Stripes finer than a sample (Finding 6): before the band limit the
+/// two renderers differed by single samples in a moiré that no shift
+/// explained (20 highlight lines on this torus: 57 pixels more than a
+/// level apart); filtered, the moiré is the stripes' mean on both.
+#[test]
+fn stripes_finer_than_a_sample_match_the_cpu() {
+    let torus = torus();
+    let p = with(AnalysisMode::Highlight, |a| a.stripes = 20.0);
+    let camera = perspective(&torus, Vec3::new(1.0, -1.5, 1.2), 35.0, &p);
+    check(
+        "highlight-torus-20",
+        &torus,
+        &[],
+        &camera,
+        &p,
+        CAP_FINE_HIGHLIGHT,
+    );
+    let sphere = sphere();
+    let p = with(AnalysisMode::Zebra, |a| a.stripes = 512.0);
+    let camera = orthographic(&sphere, Vec3::new(1.0, -2.0, 1.0), &p);
+    check(
+        "zebra-sphere-512",
+        &sphere,
+        &[],
+        &camera,
+        &p,
+        CAP_FINE_ZEBRA,
+    );
 }
 
 #[test]
