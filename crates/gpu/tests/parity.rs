@@ -247,6 +247,16 @@ fn close_scenes() -> Vec<Scene> {
             Vec3::new(1.0, 0.3, 0.2),
             70.0,
         ),
+        // 0.025 above the pole, looking down past it: a large triangle
+        // there has a corner behind the eye (where this was found, the
+        // CPU renderer showed the sphere's far side through it).
+        (
+            "pole",
+            &sphere,
+            Vec3::new(0.006, -0.008, 1.025),
+            Vec3::new(0.0, 0.0, 1.0),
+            35.0,
+        ),
         // Inside a block, near a corner.
         (
             "corner",
@@ -260,14 +270,19 @@ fn close_scenes() -> Vec<Scene> {
         .into_iter()
         .enumerate()
         .map(|(k, (name, mesh, eye, target, fov))| {
-            let params = params([240, 201, 160][k], [180, 151, 200][k], [1, 2, 3][k]);
+            let params = params(
+                [240, 201, 240, 160][k],
+                [180, 151, 180, 200][k],
+                [1, 2, 2, 3][k],
+            );
             Scene {
                 name: format!("close-{name}"),
                 mesh: mesh.clone(),
                 camera: Camera {
                     eye,
                     target,
-                    up: Vec3::Z,
+                    // Looking down at the pole, the picture's up is +y.
+                    up: if name == "pole" { Vec3::Y } else { Vec3::Z },
                     projection: Projection::Perspective { fov_y_deg: fov },
                 },
                 params,
