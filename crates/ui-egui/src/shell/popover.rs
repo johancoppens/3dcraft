@@ -172,19 +172,19 @@ impl Shell {
     /// Escape closes the narrow layout's open drawer, else an open
     /// popover (the analysis', else the studio look's); `false` when
     /// none was open. The look or the analysis stays on.
-    pub(super) fn fold_popover(&mut self) -> bool {
+    pub(super) fn close_popover(&mut self) -> bool {
         if self.narrow() && self.state.panels.drawer {
             // The narrow layout's drawer first.
             self.state.panels.drawer = false;
             true
-        } else if self.state.analysis.is_on() && self.analysis_panel_open {
-            self.analysis_panel_open = false;
+        } else if self.state.analysis.is_on() && self.state.panels.analysis_options {
+            self.state.panels.analysis_options = false;
             true
         } else if self.state.look.is_studio()
             && !self.state.analysis.is_on()
-            && self.look_panel_open
+            && self.state.panels.look_options
         {
-            self.look_panel_open = false;
+            self.state.panels.look_options = false;
             true
         } else {
             false

@@ -326,9 +326,9 @@ fn dragging_a_slider_keeps_the_popover_open() {
 }
 
 /// Escape with no popover open still clears the selection over the
-/// viewport; with one open it folds that first and keeps the selection.
+/// viewport; with one open it closes that first and keeps the selection.
 #[test]
-fn escape_folds_an_open_popover_before_it_clears_the_selection() {
+fn escape_closes_an_open_popover_before_it_clears_the_selection() {
     let mut session = part();
     let mut shell = Shell::with_renderer(RendererChoice::Cpu);
     let mut window = Window {
@@ -358,4 +358,145 @@ fn escape_folds_an_open_popover_before_it_clears_the_selection() {
     window.frame(&mut shell, &mut session, vec![Event::PointerMoved(middle)]);
     window.escape(&mut shell, &mut session);
     assert_eq!(shell.state.selected_feature, None);
+}
+
+/// The popovers are in the state: `ui.get` reports `panels.lookOptions`
+/// and `panels.analysisOptions`, `ui.set` opens and closes them, and
+/// switching the look or an analysis on with `ui.set` opens its options
+/// as the chip does (unless the same patch says otherwise).
+#[test]
+fn the_popovers_are_read_and_set_through_the_control_channel() {
+    let mut session = part();
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window {
+        ctx: egui::Context::default(),
+        size: vec2(1024.0, 700.0),
+        time: 0.0,
+    };
+    window.frames(&mut shell, &mut session, 4);
+    let call = |shell: &mut Shell, session: &mut Session, method: &str, params: Option<Value>| {
+        shell
+            .handle_method(session, method, params.as_ref())
+            .unwrap()
+            .unwrap()
+    };
+    let panels = |shell: &mut Shell, session: &mut Session| {
+        let got = call(shell, session, "ui.get", None);
+        (
+            got["panels"]["lookOptions"].as_bool().unwrap(),
+            got["panels"]["analysisOptions"].as_bool().unwrap(),
+        )
+    };
+    // Closed by hand, then the look switched on: its options open.
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        Some(json!({"panels": {"lookOptions": false}})),
+    );
+    assert!(!panels(&mut shell, &mut session).0);
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        Some(json!({"look": {"mode": "studio"}})),
+    );
+    window.frames(&mut shell, &mut session, 4);
+    assert!(panels(&mut shell, &mut session).0);
+    assert!(hit(&shell, Which::Studio, "panel").is_some());
+    // Closed through the channel: gone, the look on, the cube back.
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        Some(json!({"panels": {"lookOptions": false}})),
+    );
+    window.frames(&mut shell, &mut session, 4);
+    assert!(hits(&shell, Which::Studio).is_empty());
+    assert!(shell.state.look.is_studio());
+    assert!(!shell.look_panel_open());
+    // Opened again through the channel.
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        Some(json!({"panels": {"lookOptions": true}})),
+    );
+    window.frames(&mut shell, &mut session, 4);
+    assert!(hit(&shell, Which::Studio, "panel").is_some());
+    // The look switched on with its options asked closed in one patch.
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        Some(json!({"look": {"mode": "plain"}})),
+    );
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        Some(json!({"look": {"mode": "studio"}, "panels": {"lookOptions": false}})),
+    );
+    window.frames(&mut shell, &mut session, 4);
+    assert!(hits(&shell, Which::Studio).is_empty());
+    // An analysis switched on opens its options; closed, it stays on.
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        Some(json!({"panels": {"analysisOptions": false}})),
+    );
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        Some(json!({"analysis": {"mode": "zebra"}})),
+    );
+    window.frames(&mut shell, &mut session, 4);
+    assert!(panels(&mut shell, &mut session).1);
+    assert!(hit(&shell, Which::Analysis, "panel").is_some());
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        Some(json!({"panels": {"analysisOptions": false}})),
+    );
+    window.frames(&mut shell, &mut session, 4);
+    assert!(hits(&shell, Which::Analysis).is_empty());
+    assert!(shell.state.analysis.is_on());
+    // A value that is no boolean is refused.
+    assert!(
+        shell
+            .handle_method(
+                &mut session,
+                "ui.set",
+                Some(&json!({"panels": {"lookOptions": "yes"}}))
+            )
+            .unwrap()
+            .is_err()
+    );
+}
+
+/// While an analysis is on the Studio caret is greyed out: a click on it
+/// changes nothing (the analysis stays, no studio options open).
+#[test]
+fn the_studio_caret_waits_while_an_analysis_is_on() {
+    let mut session = part();
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window {
+        ctx: egui::Context::default(),
+        size: vec2(1024.0, 700.0),
+        time: 0.0,
+    };
+    window.frames(&mut shell, &mut session, 4);
+    let at = chip(&shell, Which::Analysis);
+    window.click(&mut shell, &mut session, at);
+    assert!(shell.state.analysis.is_on());
+    let before = shell.state.clone();
+    let at = caret(&shell, Which::Studio);
+    window.click(&mut shell, &mut session, at);
+    assert_eq!(shell.state.look, before.look);
+    assert!(shell.state.analysis.is_on());
+    assert!(hits(&shell, Which::Studio).is_empty());
+    assert!(hit(&shell, Which::Analysis, "panel").is_some());
 }

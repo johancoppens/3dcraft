@@ -51,12 +51,14 @@ pub const PUBLISHED: [(&str, &str); 6] = [
 /// path), part of the stamp: the studio look in the Workshop environment
 /// with the ACES tone curve (the developer's choice, 2026-10-31: more
 /// colourful), on a plain background, for every thumbnail, so an example
-/// added later gets the same look from here. On the CPU renderer (`craft3d-cli`'s sessions
-/// draw on the GPU when there is one): the same pictures on every machine.
+/// added later gets the same look from here. On the CPU renderer
+/// (`craft3d-cli`'s sessions draw on the GPU when there is one): the same
+/// pictures on every machine.
 pub const RENDER: &str = r#"{"width": 160, "height": 120, "view": "iso", "projection": "perspective", "zoom": 1.2, "renderer": "cpu", "look": {"mode": "studio", "environment": "workshop", "tonemap": "aces", "background": "plain", "accumulate": 4}}"#;
 /// The params of `view.render` for the picture of a script example in
-/// the examples' README (`docs/examples/<id>.png`), part of the stamp.
-pub const PICTURE: &str = r#"{"width": 640, "height": 480, "view": "iso", "projection": "perspective", "zoom": 1, "renderer": "cpu", "look": {"mode": "studio", "background": "plain", "accumulate": 8}}"#;
+/// the examples' README (`docs/examples/<id>.png`), part of the stamp: the
+/// thumbnails' look ([`RENDER`]), larger and smoother.
+pub const PICTURE: &str = r#"{"width": 640, "height": 480, "view": "iso", "projection": "perspective", "zoom": 1, "renderer": "cpu", "look": {"mode": "studio", "environment": "workshop", "tonemap": "aces", "background": "plain", "accumulate": 8}}"#;
 /// Thumbnails drawn at another zoom than [`RENDER`]'s, as (id, zoom): a
 /// long, flat part that the closer framing would cut at its ends. Part of
 /// every stamp.
@@ -83,7 +85,7 @@ pub const PICTURE_PALETTE: usize = 256;
 pub const MAX_PICTURE_BYTES: u64 = 190 * 1024;
 /// What else the stamp covers: bump it when the way the pictures are
 /// made changes in a way the settings above do not show.
-const METHOD: &str = "thumbs v4: units mm, studio look (workshop, ACES) on a plain background, popularity palette on 5-bit buckets, nearest colour; README pictures of the scripts; published files opened as they are";
+const METHOD: &str = "thumbs v5: units mm, studio look (workshop, ACES) on a plain background, popularity palette on 5-bit buckets, nearest colour; README pictures of the scripts; published files opened as they are";
 /// Largest thumbnail file accepted, in bytes.
 pub const MAX_BYTES: u64 = 24 * 1024;
 

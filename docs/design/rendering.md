@@ -1170,7 +1170,12 @@ not grow (the file is fetched, 880 KB, 460 KB gzip).
 
 Inter is wider than Ubuntu-Light, so two places that assumed the old widths now measure: the start screen's card
 titles are one row cut with an ellipsis at the card's width (`shell/start.rs`, the whole title in the tooltip), and
-the studio popover's *Ground* slider takes the room its value text leaves (`shell/look_panel.rs`), which on a phone
+the studio popover's *Ground* slider takes the room its value text leaves (`shell/look_panel.rs`; superseded 2026-10-31, below), which on a phone
 had pushed `reflection 0.00` past the popover's edge. Evidence: `tests/ui_audit_evidence.rs` with `--ignored`
 before and after, every picture looked at (start screen, part, assembly, studio and analysis popovers, section,
 drawer, Parameters, error; 1600 × 1000, 1024 × 700, 390 × 844, 820 × 1180).
+
+- 2026-10-31 (r1-studio-panel): the studio popover's ground reflection is a row of its own (*Reflection*), and every
+  slider in a popover has one width (`Tokens::popover_slider_width`), so no slider takes "the room its value text
+  leaves" any more. The popovers are drawn on the plates' surface (`Tokens::plate_visuals`) and hang from the camera
+  plate (`docs/development.md` › the controls over the viewport).

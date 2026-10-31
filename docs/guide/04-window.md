@@ -202,7 +202,8 @@ motion with `motion.check` ([Measure and check](10-measure.md#over-a-motion)), a
 | **Fit** | Frame the whole model |
 | **Iso**, or a click on the view cube | A standard view (Iso looks from the front-right corner) |
 | **Persp** / **Ortho** | Perspective, or orthographic (to scale, no vanishing point) |
-| **Studio** | The studio look on or off (see *The studio look* below) |
+| **Studio** | The studio look on or off; the **▾** caret on its right opens or closes its options (see *The studio look* below) |
+| **Analysis** | A surface analysis on or off; its **▾** caret opens or closes its options and legend (see *Surface analysis* below) |
 
 The **display bar** at the bottom of the view:
 
@@ -245,12 +246,15 @@ it; corners and grooves darken where little light reaches. A see-through or cut-
 same way: what lies behind a see-through face is lit as the face is and shows through it, and the
 flat cap of a section is lit like a face in its own colour.
 
-Switching the studio look on opens its options in a panel that hangs under the button row, beside the
-view cube: the environment and how far it is turned, the exposure, the background, the ground and how much
-it reflects, the tone curve (AgX, ACES or Linear), shadows, ambient occlusion and reflections, bloom, and a
-lens that blurs what is out of focus. A change shows at once. Click the panel's title, or press Escape, to
-fold it to one line while you keep the look; click the title again to unfold it. Clicking **Studio** again
-switches the look off and closes the panel. In a short window the options scroll inside the panel.
+**Studio** is a split button. The chip switches the look on and off; the small **▾** caret on its
+right opens and closes the look's options. Switching the look on opens them in a popover that hangs
+under the button row, with a small pointer toward the button and its right edge in line with the row's:
+the environment and how far it is turned, the exposure, the background, the ground and how much it
+reflects, the tone curve (AgX, ACES or Linear), shadows, ambient occlusion and reflections, bloom, and a
+lens that blurs what is out of focus. A change shows at once. While the popover is open the view cube
+moves down under it, or hides where there is no room (on a phone), and comes back when it closes. Click
+the caret again, or press Escape, to close the options: the look stays on. Clicking the chip switches
+the look off. In a short window the options scroll inside the popover.
 
 An agent sets the same look with `ui.set`, and pictures from the command line take it too:
 
@@ -388,9 +392,11 @@ are kept only in the `.3dcraft` file (a texture exports its mean colour).
 
 ### Surface analysis
 
-**Analysis**, beside Studio, shows the quality of the surfaces instead of their shading. It opens a
-panel in the same place as the studio look's, which chooses what, with its options as number fields,
-and a legend says what the colours mean; its title (or Escape) folds it away, as for the studio look:
+**Analysis**, beside Studio, shows the quality of the surfaces instead of their shading. It is a split
+button as Studio is, and opens a popover in the same place, which chooses what, with its options as
+number fields, and a legend says what the colours mean; its **▾** caret (or Escape) closes the popover
+and keeps the analysis on, as for the studio look. While an analysis is on the view is drawn plainly,
+so the studio look's caret is greyed out until the analysis is off:
 
 - **zebra**: black and white stripes reflected in the surfaces, as a car body reflects the lights of
   a tunnel. Where two faces meet with the same tangent plane (G1) but a jump in curvature the

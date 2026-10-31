@@ -42,7 +42,10 @@ impl Shell {
             self.look_hits.clear();
             return;
         };
-        if !self.state.look.is_studio() || self.state.analysis.is_on() || !self.look_panel_open {
+        if !self.state.look.is_studio()
+            || self.state.analysis.is_on()
+            || !self.state.panels.look_options
+        {
             self.look_hits.clear();
             return;
         }
@@ -62,7 +65,7 @@ impl Shell {
     /// Whether the studio look's popover is open (the Studio caret opens
     /// and closes it; it shows while the look is on).
     pub fn look_panel_open(&self) -> bool {
-        self.look_panel_open
+        self.state.panels.look_options
     }
 
     /// Where the caret of the Studio split button was drawn.
@@ -84,7 +87,7 @@ impl Shell {
     /// Whether the Analysis popover is open (it shows while an analysis
     /// is on).
     pub fn analysis_panel_open(&self) -> bool {
-        self.analysis_panel_open
+        self.state.panels.analysis_options
     }
 
     /// Where the Analysis popover's panel (`panel`) was drawn, in points;

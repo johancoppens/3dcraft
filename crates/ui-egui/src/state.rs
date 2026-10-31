@@ -176,6 +176,15 @@ pub struct Panels {
     /// side panel is a drawer over the viewport: open or not. Its button
     /// is at the left of the menu bar.
     pub drawer: bool,
+    /// The studio look's options are open: its popover shows while the
+    /// look is on (and no analysis). The Studio caret opens and closes
+    /// it; switching the look on (the chip, or `ui.set` of `look.mode`)
+    /// opens it; closed, the look stays as it is.
+    pub look_options: bool,
+    /// The analysis' options and legend are open: its popover shows while
+    /// an analysis is on. The Analysis caret opens and closes it;
+    /// switching an analysis on opens it.
+    pub analysis_options: bool,
 }
 
 /// Work the window is doing on its engine thread while it keeps drawing:
@@ -430,6 +439,8 @@ impl Default for Panels {
             recovery: true,
             tree_width: crate::theme::Tokens::default().tree_width,
             drawer: false,
+            look_options: true,
+            analysis_options: true,
         }
     }
 }
@@ -1213,6 +1224,20 @@ impl UiState {
             }
         }
         let mut next: UiState = serde_json::from_value(merged).map_err(|e| e.to_string())?;
+        // Switching the look or an analysis on opens its options, as its
+        // chip does, unless the patch says otherwise.
+        let given = |key: &str| {
+            patch
+                .get("panels")
+                .and_then(Value::as_object)
+                .is_some_and(|p| p.contains_key(key))
+        };
+        if !self.look.is_studio() && next.look.is_studio() && !given("lookOptions") {
+            next.panels.look_options = true;
+        }
+        if !self.analysis.is_on() && next.analysis.is_on() && !given("analysisOptions") {
+            next.panels.analysis_options = true;
+        }
         if moved_by_hand {
             // Placing the camera by hand and having it refit at the next
             // edit would undo the request.
@@ -1266,6 +1291,9 @@ mod tests {
                 recovery: false,
                 tree_width: 320.0,
                 drawer: true,
+                // The popovers' options (2026-10-31).
+                look_options: false,
+                analysis_options: true,
             },
             selected_feature: Some("F3".to_string()),
             notice: "Step 2: the post".to_string(),
@@ -1411,7 +1439,7 @@ mod tests {
                            "pitch": -20.0, "projection": "orthographic", "fovY": 45.0,
                            "autoFit": false},
                 "panels": {"tree": false, "status": true, "recovery": false, "treeWidth": 320.0,
-                           "drawer": true},
+                           "drawer": true, "lookOptions": false, "analysisOptions": true},
                 "selectedFeature": "F3",
                 "notice": "Step 2: the post",
                 "quality": {"chordal": 1e-4, "maxTriangles": 500_000, "angle": 20.0},

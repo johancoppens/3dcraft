@@ -706,18 +706,33 @@ fn toggle(
     }
 }
 
+/// How the caret of a split button is: on the accent with the chip,
+/// its popover open, and whether it can be clicked.
+#[derive(Clone, Copy)]
+struct CaretState {
+    on: bool,
+    open: bool,
+    enabled: bool,
+}
+
 /// The caret of a split button: on the accent with the chip while it is
-/// `on`, a divider on its left; a chevron that points down while the
-/// popover is closed and up while it is `open`.
+/// on, a divider on its left; a chevron that points down while the
+/// popover is closed and up while it is open; greyed out and not
+/// clickable while it is not enabled.
 fn caret(
     ui: &mut egui::Ui,
     rect: Rect,
     id: &str,
-    on: bool,
-    open: bool,
+    state: CaretState,
     tokens: &Tokens,
 ) -> egui::Response {
-    let response = ui.interact(rect, ui.id().with(("nav-caret", id)), egui::Sense::click());
+    let CaretState { on, open, enabled } = state;
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let response = ui.interact(rect, ui.id().with(("nav-caret", id)), sense);
     let painter = ui.painter();
     let radius = egui::CornerRadius::same(tokens.nav_control_radius);
     if on {
@@ -737,14 +752,18 @@ fn caret(
             egui::StrokeKind::Inside,
         );
     }
-    if response.hovered() || open {
+    if enabled && (response.hovered() || open) {
         painter.rect_filled(
             rect,
             radius,
             color_alpha(tokens.glass, tokens.control_opacity),
         );
     }
-    let ink = color(if on { tokens.knob } else { tokens.nav_off_text });
+    let ink = color(match (on, enabled) {
+        (_, false) => tokens.plate_text_dim,
+        (true, true) => tokens.knob,
+        (false, true) => tokens.nav_off_text,
+    });
     // The divider between the chip and its caret.
     let inset = rect.height() * tokens.divider_inset;
     painter.line_segment(
@@ -752,9 +771,15 @@ fn caret(
             pos2(rect.left(), rect.top() + inset),
             pos2(rect.left(), rect.bottom() - inset),
         ],
-        egui::Stroke::new(tokens.divider_width, ink.gamma_multiply(0.45)),
+        egui::Stroke::new(
+            tokens.divider_width,
+            color_alpha(
+                if on { tokens.knob } else { tokens.plate_rim },
+                tokens.divider_opacity,
+            ),
+        ),
     );
-    let r = tokens.nav_icon_size * 0.2;
+    let r = tokens.nav_icon_size * tokens.nav_caret_chevron;
     let c = rect.center();
     let dy = if open { -r * 0.5 } else { r * 0.5 };
     let stroke = egui::Stroke::new(tokens.nav_icon_width, ink);
@@ -1068,7 +1093,10 @@ impl Shell {
         };
         let (main, caret_rect) = super::split_chip(studio, &self.tokens);
         let lit = self.state.look.is_studio();
-        let open = lit && self.look_panel_open && !self.state.analysis.is_on();
+        // While an analysis is on the view is drawn plainly: the look's
+        // options wait until it is off.
+        let blocked = self.state.analysis.is_on();
+        let open = lit && self.state.panels.look_options && !blocked;
         if toggle(
             ui,
             main,
@@ -1088,24 +1116,32 @@ impl Shell {
         {
             self.state.look.mode = if lit { "plain" } else { "studio" }.to_string();
             // Switched on, its options open.
-            self.look_panel_open = !lit;
+            self.state.panels.look_options = !lit;
             ui.ctx().request_repaint();
         }
         self.look_caret = Some(caret_rect);
-        if caret(ui, caret_rect, "studio", lit, open, &self.tokens)
-            .on_hover_text(if open {
+        let state = CaretState {
+            on: lit,
+            open,
+            enabled: !blocked,
+        };
+        if caret(ui, caret_rect, "studio", state, &self.tokens)
+            .on_hover_text(if blocked {
+                "The studio look's options: switch the analysis off first (the analysis is drawn plainly)"
+            } else if open {
                 "Close the studio look's options (Esc)"
             } else {
                 "The studio look's options"
             })
             .clicked()
+            && !blocked
         {
             if open {
-                self.look_panel_open = false;
+                self.state.panels.look_options = false;
             } else {
                 // The options are the look's: asking for them switches it on.
                 self.state.look.mode = "studio".to_string();
-                self.look_panel_open = true;
+                self.state.panels.look_options = true;
             }
             ui.ctx().request_repaint();
         }
@@ -1154,9 +1190,14 @@ impl Shell {
             ui.ctx().request_repaint();
         }
         let on = self.state.analysis.is_on();
-        let open = on && self.analysis_panel_open;
+        let open = on && self.state.panels.analysis_options;
         self.analysis_caret = Some(caret_rect);
-        if caret(ui, caret_rect, "analysis", on, open, &self.tokens)
+        let state = CaretState {
+            on,
+            open,
+            enabled: true,
+        };
+        if caret(ui, caret_rect, "analysis", state, &self.tokens)
             .on_hover_text(if open {
                 "Close the analysis' options (Esc)"
             } else {
@@ -1165,17 +1206,17 @@ impl Shell {
             .clicked()
         {
             if open {
-                self.analysis_panel_open = false;
+                self.state.panels.analysis_options = false;
             } else {
                 if !on {
                     self.analysis_on();
                 }
-                self.analysis_panel_open = true;
+                self.state.panels.analysis_options = true;
             }
             ui.ctx().request_repaint();
         }
         let (true, Some(popover)) = (
-            self.state.analysis.is_on() && self.analysis_panel_open,
+            self.state.analysis.is_on() && self.state.panels.analysis_options,
             popover,
         ) else {
             self.analysis_hits.clear();
@@ -1208,7 +1249,7 @@ impl Shell {
     /// Switches the last analysis on, its options open.
     fn analysis_on(&mut self) {
         self.state.analysis.mode.clone_from(&self.analysis_last);
-        self.analysis_panel_open = true;
+        self.state.panels.analysis_options = true;
     }
 
     /// Switches the analysis off, remembering which it was.

@@ -690,11 +690,7 @@ pub struct Shell {
     show_hits: Vec<(&'static str, egui::Rect)>,
     /// Where the studio look's options were drawn ([`look_panel::LookHits`]).
     look_hits: look_panel::LookHits,
-    /// The studio look's popover is open (view state of the window).
-    look_panel_open: bool,
-    /// The Analysis popover is open, and where its panel was drawn
-    /// (`panel`).
-    analysis_panel_open: bool,
+    /// Where the Analysis popover's panel was drawn (`panel`).
     /// Where the carets of the Studio and Analysis split buttons were
     /// drawn (they open and close the popovers).
     look_caret: Option<egui::Rect>,
@@ -1136,8 +1132,6 @@ impl Shell {
             section_hits: Vec::new(),
             show_hits: Vec::new(),
             look_hits: Vec::new(),
-            look_panel_open: true,
-            analysis_panel_open: true,
             look_caret: None,
             analysis_caret: None,
             analysis_hits: Vec::new(),
@@ -3652,11 +3646,11 @@ impl Shell {
             self.open_other_menu(scene, x, y, at, shift);
             ui.ctx().request_repaint();
         }
-        // Esc folds an open popover of the Studio or Analysis chip first,
+        // Esc closes an open popover of the Studio or Analysis chip first,
         // wherever the pointer is; then it clears the selection over the
         // viewport.
         if !ui.ctx().egui_wants_keyboard_input() && ui.input(|i| i.key_pressed(help::CLEAR_KEY)) {
-            if self.fold_popover() {
+            if self.close_popover() {
                 ui.ctx().request_repaint();
             } else if response.contains_pointer() {
                 self.escape_selection();

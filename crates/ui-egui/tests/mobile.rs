@@ -198,6 +198,42 @@ fn every_control_reachable(shell: &Shell, names: &[&str], least: f32, what: &str
     }
 }
 
+/// The carets of the Studio and Analysis split buttons: inside the
+/// viewport, at least `wide` wide and `high` high (on a phone a finger
+/// hits them), on their chip's right end and clear of every other control.
+fn carets_reachable(shell: &Shell, wide: f32, high: f32, what: &str) {
+    let viewport = shell.viewport_rect().unwrap();
+    let layout = shell.controls_layout().unwrap();
+    for (name, caret, chip) in [
+        ("studio", shell.look_caret(), layout.studio),
+        ("analysis", shell.analysis_caret(), layout.analysis),
+    ] {
+        let caret = caret.unwrap_or_else(|| panic!("{what}: no {name} caret"));
+        let chip = chip.unwrap();
+        assert!(
+            viewport.contains_rect(caret),
+            "{what}: {name} caret {caret:?}"
+        );
+        assert!(
+            caret.width() >= wide - 0.01,
+            "{what}: {name} caret {caret:?}"
+        );
+        assert!(
+            caret.height() >= high - 0.01,
+            "{what}: {name} caret {caret:?}"
+        );
+        assert_eq!(caret.right(), chip.right(), "{what}: {name}");
+        for (other, r) in layout.controls() {
+            if other != name {
+                assert!(
+                    !caret.shrink(0.01).intersects(r),
+                    "{what}: {name} caret over {other}"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn a_phone_gets_a_drawer_and_controls_a_finger_hits() {
     let (mut session, mut shell, mut window) = opened(390.0, 844.0);
@@ -209,6 +245,7 @@ fn a_phone_gets_a_drawer_and_controls_a_finger_hits() {
     let viewport = shell.viewport_rect().unwrap();
     assert!(viewport.width() >= 389.0, "{viewport:?}");
     every_control_reachable(&shell, &NAMES, tokens.touch_target, "phone");
+    carets_reachable(&shell, tokens.touch_target, tokens.touch_target, "phone");
     // The section's options, on a plate of their own when the bar has no
     // room for them.
     set(&mut shell, &mut session, json!({"section": {"on": true}}));
@@ -222,6 +259,7 @@ fn a_phone_gets_a_drawer_and_controls_a_finger_hits() {
     assert!(!shell.state.section.on);
     // The Studio popover fits the screen and keeps clear of the controls.
     let chip = shell.controls_layout().unwrap().studio.unwrap();
+    let chip = craft3d_ui_egui::shell::split_chip(chip, &tokens).0;
     window.click(&mut shell, &mut session, chip.center());
     let panel = shell
         .look_hits()
@@ -267,6 +305,8 @@ fn a_tablet_keeps_the_side_panel_and_a_wide_window_the_desktop_layout() {
     assert!(shell.tree_panel_rect().is_some());
     assert_eq!(shell.drawer_button_rect(), None);
     every_control_reachable(&shell, &NAMES, shell.tokens.nav_height, "tablet");
+    let tokens = shell.tokens;
+    carets_reachable(&shell, tokens.nav_caret_width, tokens.nav_height, "tablet");
     // A window made narrow gets the narrow layout, and back.
     let (mut session, mut shell, mut window) = opened(1280.0, 800.0);
     let wide = shell.tokens;

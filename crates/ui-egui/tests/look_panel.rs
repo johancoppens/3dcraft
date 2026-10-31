@@ -195,7 +195,8 @@ fn every_control_of_the_studio_panel_drives_the_look_state() {
 }
 
 /// In a narrow, short window the panel stays inside it (its options
-/// scroll), and its header folds it to one line and unfolds it again.
+/// scroll), and the Studio caret closes it (the look stays on) and opens
+/// it again at the same rect.
 #[test]
 fn the_studio_panel_fits_a_small_window_and_closes_from_its_caret() {
     let mut session = Session::new(Workspace::none());
