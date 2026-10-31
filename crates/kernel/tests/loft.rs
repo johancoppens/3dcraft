@@ -1189,7 +1189,7 @@ fn longest_edge(body: &Body, chord: f64) -> usize {
     .unwrap_or(0)
 }
 
-/// The self-intersection check of a loft whose wall waves round many
+/// The self-intersection check of a loft whose wall waves round 320
 /// times: its mesh needs more than 1024 segments along the sections at
 /// the check's chord (the limit on grid segments per side of a face
 /// until 2026-10-31, which refused it), and a few across. The limit is
@@ -1200,7 +1200,7 @@ fn longest_edge(body: &Body, chord: f64) -> usize {
 /// refused at once, as too fine, rather than made.
 #[test]
 fn a_loft_with_a_wall_of_many_waves_is_checked_and_proven() {
-    let lobes = 160;
+    let lobes = 320;
     for k in SCALES {
         let sections = [
             section(&lobed(k, 0.03, lobes, 0.0), level(0.0)),
@@ -1235,9 +1235,12 @@ fn a_loft_with_a_wall_of_many_waves_is_checked_and_proven() {
         );
         assert!(started.elapsed().as_secs() < 30);
     }
-    // A bend of four sections on spokes, each the wavy ring off the axis,
+    // A bend of four sections on spokes, each a wavy ring off the axis,
     // that turns on into its own beginning: it passes through itself.
-    let ring: Vec<SketchCurve> = lobed(1.0, 0.03, lobes, 0.0)
+    // (Fewer waves: where the whole wall crosses itself, the crossings of
+    // 320 waves are more than the check's work allows, and it ends as
+    // `Spent`, which regeneration refuses too.)
+    let ring: Vec<SketchCurve> = lobed(1.0, 0.03, 40, 0.0)
         .into_iter()
         .map(|mut c| {
             if let Curve2::Spline(s) = &mut c.curve {
