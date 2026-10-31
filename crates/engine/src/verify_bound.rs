@@ -910,7 +910,7 @@ where
         };
         // Coming out: some n_a and n_b more than a right angle apart.
         if let (Some(ca), Some(cb)) = (a.out, b.out) {
-            let apart = ca.axis.dot(cb.axis).clamp(-1.0, 1.0).acos();
+            let apart = ca.axis.dot(cb.axis).clamp(-1.0, 1.0).pacos();
             if apart + ca.half_angle + cb.half_angle < FRAC_PI_2 - ANGLE_MARGIN {
                 return None;
             }
@@ -924,16 +924,16 @@ where
             if hi < 0.0 {
                 return None;
             }
-            let across = least_abs(range(e1)).hypot(least_abs(range(e2)));
+            let across = least_abs(range(e1)).phypot(least_abs(range(e2)));
             // The half-angle widened by the margin of rounding: the axis
             // and the frame across it are computed, so even a plane's
             // exact normal is held to within that, never to 0.
-            let tan = (ca.half_angle + ANGLE_MARGIN).tan();
+            let tan = (ca.half_angle + ANGLE_MARGIN).ptan();
             if across > tan * hi {
                 return None;
             }
             let along = lo.max(0.0).max(across / tan);
-            lb = lb.max(along.hypot(across));
+            lb = lb.max(along.phypot(across));
         }
         // A surface extruded along `z` (a cylinder, a spline extrusion)
         // has its normals square to `z`: so has `w`.
@@ -1079,7 +1079,7 @@ where
             return false;
         }
         // The angle between the lines of `n` and of the cone's axis.
-        let between = cone.axis.dot(n).abs().clamp(0.0, 1.0).acos();
+        let between = cone.axis.dot(n).abs().clamp(0.0, 1.0).pacos();
         match kind {
             ConeKind::Normal => between > cone.half_angle + ANGLE_MARGIN,
             ConeKind::Tangent => between + cone.half_angle < FRAC_PI_2 - ANGLE_MARGIN,
@@ -1193,7 +1193,7 @@ fn least_abs((lo, hi): (f64, f64)) -> f64 {
 fn oriented(cone: Option<Cone>, normal: Option<Vec3>) -> Option<Cone> {
     let (cone, normal) = (cone?, normal?);
     let dot = cone.axis.dot(normal.normalized()?);
-    if dot.is_nan() || dot.abs() < 0.5 * cone.half_angle.cos() {
+    if dot.is_nan() || dot.abs() < 0.5 * cone.half_angle.pcos() {
         return None;
     }
     Some(Cone {
@@ -1262,7 +1262,7 @@ fn edge_from(edge: &Bound<'_>, p: Vec3) -> f64 {
             let along = w.dot(m);
             let across = (w - m * along).length();
             let rounding = 4e-15 * (r + o.length() + p.length());
-            along.hypot(across - r) - rounding
+            along.phypot(across - r) - rounding
         }
         _ => {
             let leaves = edge.leaves.get_or_init(|| leaves_of(edge));

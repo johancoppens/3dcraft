@@ -1014,7 +1014,7 @@ mod tests {
                 let a = u.0 + (u.1 - u.0) * i as f64 / 10.0;
                 let b = v.0 + (v.1 - v.0) * j as f64 / 10.0;
                 let n = s.normal(a, b).unwrap();
-                let angle = n.dot(cone.axis).abs().min(1.0).acos();
+                let angle = n.dot(cone.axis).abs().min(1.0).pacos();
                 assert!(angle <= cone.half_angle, "normal outside the cone");
             }
         }
