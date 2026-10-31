@@ -373,13 +373,43 @@ fn recording_refuses_what_it_cannot_do() {
     assert_eq!(recorder.status(), json!({"recording": false}));
 }
 
-/// A stand-in for ffmpeg: a shell script that does `body`.
+/// A stand-in for ffmpeg: a shell script that lists x264 and OpenH264
+/// and passes their trials, then does `body`.
 #[cfg(unix)]
 fn fake_ffmpeg(dir: &Path, name: &str, body: &str) -> PathBuf {
+    fake_ffmpeg_with(
+        dir,
+        name,
+        " V....D libx264  x264\n V....D libopenh264  OpenH264\n",
+        "cat > /dev/null; exit 0",
+        body,
+    )
+}
+
+/// A stand-in for ffmpeg that answers `-encoders` with `listing`, a
+/// trial (`-f null -`) with `trial`, and otherwise does `body`; it writes
+/// the arguments of each call to `<name>.args`.
+#[cfg(unix)]
+fn fake_ffmpeg_with(dir: &Path, name: &str, listing: &str, trial: &str, body: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let path = dir.join(name);
-    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    let script = format!(
+        "#!/bin/sh\necho \"$*\" >> \"$0.args\"\ncase \"$*\" in\n-version) exit 0;;\n*-encoders*) printf '{listing}'; exit 0;;\n*'-f null -'*) {trial};;\nesac\n{body}\n"
+    );
+    std::fs::write(&path, script).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // Another test's fork may hold the file open for writing a moment
+    // ("Text file busy"): wait until it runs.
+    for _ in 0..500 {
+        match std::process::Command::new(&path).arg("-version").output() {
+            Err(e) if e.raw_os_error() == Some(26) => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            _ => break,
+        }
+    }
+    let _ = std::fs::remove_file(dir.join(format!("{name}.args")));
+    let _ = std::fs::remove_file(dir.join(format!("{name}.bytes")));
     path
 }
 
@@ -423,9 +453,12 @@ fn an_ffmpeg_that_fails_is_an_error_never_a_hang() {
         pushed.is_err() || stopped.is_err(),
         "{pushed:?} {stopped:?}"
     );
-    if let Err(error) = stopped {
-        assert!(error.contains("ffmpeg"), "{error}");
-    }
+    // Either way the error carries what ffmpeg said.
+    let error = stopped.err().or(pushed.err()).unwrap();
+    assert!(
+        error.contains("ffmpeg") && error.contains("no codec here"),
+        "{error}"
+    );
     // One that says a great deal (more than a pipe holds) and then takes
     // the frames: all is well.
     let talks = fake_ffmpeg(
@@ -458,4 +491,189 @@ fn an_ffmpeg_that_fails_is_an_error_never_a_hang() {
         "{:?}",
         began.elapsed()
     );
+}
+
+#[cfg(unix)]
+fn video_options(ffmpeg: PathBuf, path: &str, quality: VideoQuality) -> RecordOptions {
+    RecordOptions {
+        path: path.to_string(),
+        fps: 30.0,
+        step: true,
+        include_ui: true,
+        ffmpeg: Some(ffmpeg),
+        accumulate: 1,
+        quality,
+    }
+}
+
+/// Fedora's ffmpeg has no x264: the next H.264 encoder that works is
+/// used, and a window of odd height is padded to even for its 4:2:0.
+#[cfg(unix)]
+#[test]
+fn without_x264_the_next_encoder_is_used_and_odd_sides_are_padded() {
+    use craft3d_ui_egui::record::{Frame, Recording};
+    let root = dir("record-encoder-fallback");
+    let s = session(&root);
+    // Lists x264 and VAAPI but neither works here (no x264 library, no
+    // H.264 profile on the device); OpenH264 does.
+    let ffmpeg = fake_ffmpeg_with(
+        &root,
+        "fedora",
+        " V....D libopenh264  OpenH264\n V....D h264_vaapi  VAAPI\n V....D libx264  x264\n",
+        "case \"$*\" in *libopenh264*) cat > /dev/null; exit 0;; *) echo 'No usable encoding profile found.' >&2; exit 1;; esac",
+        "cat > \"$0.bytes\"",
+    );
+    let (w, h) = (33u32, 31u32);
+    let mut recording = Recording::start(
+        &s,
+        video_options(ffmpeg.clone(), "videos/odd.mp4", VideoQuality::Screen),
+        [w, h],
+        None,
+        0.0,
+    )
+    .unwrap();
+    let status = recording.status();
+    assert_eq!(status["encoder"], "libopenh264", "{status}");
+    assert_eq!(status["encoded"], json!([34, 32]), "{status}");
+    assert_eq!(status["width"], 33);
+    // ffmpeg makes no directory; the recording makes the file's.
+    assert!(root.join("videos").is_dir());
+    // A frame whose last column and row are a colour of their own.
+    let mut rgb = vec![10u8; (w * h * 3) as usize];
+    for y in 0..h {
+        for x in 0..w {
+            if x == w - 1 || y == h - 1 {
+                let i = ((y * w + x) * 3) as usize;
+                rgb[i..i + 3].copy_from_slice(&[200, 100, 50]);
+            }
+        }
+    }
+    let frame = Frame {
+        width: w,
+        height: h,
+        rgb,
+    };
+    for _ in 0..3 {
+        recording.push(&frame).unwrap();
+    }
+    assert_eq!(recording.stop().unwrap()["frames"], 3);
+    let bytes = std::fs::read(root.join("fedora.bytes")).unwrap();
+    assert_eq!(bytes.len(), 34 * 32 * 3 * 3);
+    // Padded by repeating the last column and row, never black.
+    let px = |x: usize, y: usize| &bytes[(y * 34 + x) * 3..(y * 34 + x) * 3 + 3];
+    assert_eq!(px(33, 0), &[200, 100, 50]);
+    assert_eq!(px(0, 31), &[200, 100, 50]);
+    assert_eq!(px(5, 5), &[10, 10, 10]);
+    let args = std::fs::read_to_string(root.join("fedora.args")).unwrap();
+    let record = args.lines().last().unwrap();
+    assert!(
+        record.contains("-s 34x32")
+            && record.contains("libopenh264")
+            && !record.contains("libx264"),
+        "{args}"
+    );
+    // The listing and each trial are asked once per ffmpeg, not per
+    // recording.
+    let calls = args.lines().count();
+    let again = Recording::start(
+        &s,
+        video_options(ffmpeg, "again.mp4", VideoQuality::Screen),
+        [w, h],
+        None,
+        0.0,
+    )
+    .unwrap();
+    drop(again);
+    let args = std::fs::read_to_string(root.join("fedora.args")).unwrap();
+    assert_eq!(args.lines().count(), calls + 1, "{args}");
+}
+
+/// An ffmpeg with no encoder for the container is refused by `ui.record`
+/// itself, before a frame, saying what it looked for.
+#[cfg(unix)]
+#[test]
+fn an_ffmpeg_without_an_encoder_for_the_container_is_refused_at_the_start() {
+    use craft3d_ui_egui::record::Recording;
+    let root = dir("record-no-encoder");
+    let s = session(&root);
+    let ffmpeg = fake_ffmpeg_with(
+        &root,
+        "bare",
+        " V....D libvpx-vp9  VP9\n A....D aac  AAC\n",
+        "echo 'Unknown encoder' >&2; exit 1",
+        "cat > /dev/null",
+    );
+    let error = Recording::start(
+        &s,
+        video_options(ffmpeg.clone(), "x.mp4", VideoQuality::Web),
+        [32, 32],
+        None,
+        0.0,
+    )
+    .err()
+    .unwrap();
+    assert!(
+        error.starts_with("ui.record:") && error.contains("no encoder for `.mp4`"),
+        "{error}"
+    );
+    assert!(
+        error.contains("libx264") && error.contains("libopenh264"),
+        "{error}"
+    );
+    // Listed but failing its trial: said, with what ffmpeg said.
+    let error = Recording::start(
+        &s,
+        video_options(ffmpeg, "x.webm", VideoQuality::Web),
+        [32, 32],
+        None,
+        0.0,
+    )
+    .err()
+    .unwrap();
+    assert!(error.contains("libvpx-vp9 (Unknown encoder)"), "{error}");
+    // Nothing was recorded.
+    let args = std::fs::read_to_string(root.join("bare.args")).unwrap();
+    assert!(
+        args.lines()
+            .all(|l| l.contains("-encoders") || l.contains("-f null -")),
+        "{args}"
+    );
+}
+
+/// When ffmpeg stops taking frames (the broken pipe of an encoder that
+/// cannot open), the error carries the last lines it said.
+#[cfg(unix)]
+#[test]
+fn a_broken_pipe_says_what_ffmpeg_said() {
+    use craft3d_ui_egui::record::{Frame, Recording};
+    let root = dir("record-broken-pipe");
+    let s = session(&root);
+    let ffmpeg = fake_ffmpeg(
+        &root,
+        "breaks",
+        "echo 'line one' >&2; echo '[libx264] height not divisible by 2 (64x31)' >&2; exit 1",
+    );
+    let mut recording = Recording::start(
+        &s,
+        video_options(ffmpeg, "x.mp4", VideoQuality::Screen),
+        [64, 64],
+        None,
+        0.0,
+    )
+    .unwrap();
+    // Frames big enough that the pipe fills and breaks.
+    let frame = Frame {
+        width: 64,
+        height: 64,
+        rgb: vec![1; 64 * 64 * 3],
+    };
+    let mut error = None;
+    for _ in 0..200 {
+        if let Err(e) = recording.push(&frame) {
+            error = Some(e);
+            break;
+        }
+    }
+    let error = error.or(recording.stop().err()).unwrap();
+    assert!(error.contains("height not divisible by 2"), "{error}");
 }

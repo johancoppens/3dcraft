@@ -355,59 +355,16 @@ pub struct RecordOptions {
     pub quality: VideoQuality,
 }
 
-/// How `ui.record` encodes a video.
+/// How `ui.record` encodes a video (the encoder and its settings per
+/// container: [`crate::encoder`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VideoQuality {
     /// For a screen recording: text and edges crisp, colours not
-    /// subsampled (H.264 4:4:4 at CRF 12); some players (browsers,
-    /// QuickTime) do not play 4:4:4.
+    /// subsampled where the encoder allows it (x264 4:4:4 at CRF 12);
+    /// some players (browsers, QuickTime) do not play 4:4:4.
     Screen,
-    /// For the web: 4:2:0 at CRF 18, playable everywhere.
+    /// For the web: 4:2:0, playable everywhere.
     Web,
-}
-
-impl VideoQuality {
-    /// The encoder's arguments for a file with extension `ext`.
-    fn args(self, ext: &str) -> Vec<&'static str> {
-        let screen = self == VideoQuality::Screen;
-        match ext {
-            "mp4" | "m4v" | "mov" | "mkv" => {
-                let mut args = vec!["-c:v", "libx264", "-preset", "medium"];
-                if screen {
-                    args.extend(["-crf", "12", "-pix_fmt", "yuv444p"]);
-                } else {
-                    // 4:2:0 wants even sides.
-                    args.extend([
-                        "-crf",
-                        "18",
-                        "-vf",
-                        "pad=ceil(iw/2)*2:ceil(ih/2)*2",
-                        "-pix_fmt",
-                        "yuv420p",
-                    ]);
-                }
-                if ext != "mkv" {
-                    args.extend(["-movflags", "+faststart"]);
-                }
-                args
-            }
-            "webm" => {
-                let mut args = vec!["-c:v", "libvpx-vp9", "-b:v", "0", "-row-mt", "1"];
-                if screen {
-                    args.extend(["-crf", "16", "-pix_fmt", "yuv444p"]);
-                } else {
-                    args.extend(["-crf", "30", "-pix_fmt", "yuv420p"]);
-                }
-                args
-            }
-            // A palette made from the frames themselves.
-            "gif" => vec![
-                "-filter_complex",
-                "split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=sierra2_4a",
-            ],
-            _ => Vec::new(),
-        }
-    }
 }
 
 fn object<'a>(
@@ -578,7 +535,11 @@ pub const MAX_ACCUMULATE: u32 = 256;
 /// Where the frames go.
 enum Sink {
     Png(PathBuf),
-    Ffmpeg(std::process::ChildStdin),
+    /// ffmpeg's input; `even`: frames padded to even sides first.
+    Ffmpeg {
+        stdin: std::process::ChildStdin,
+        even: bool,
+    },
 }
 
 /// How long a frame waits for room in the writer's queue, and how long
@@ -636,8 +597,32 @@ pub struct Recording {
     /// ffmpeg, while it runs, and the end of what it said (drained on a
     /// thread of its own, so a talkative ffmpeg never blocks on its pipe).
     child: Option<std::process::Child>,
-    said: Arc<Mutex<String>>,
+    said: Arc<Said>,
     format: &'static str,
+    /// The encoder of a video and the size it encodes (even sides for
+    /// one that subsamples colour: [`crate::encoder`]).
+    encoder: Option<(&'static str, [u32; 2])>,
+}
+
+/// What ffmpeg said (its end), and whether it has stopped saying it.
+#[derive(Default)]
+struct Said {
+    text: Mutex<String>,
+    done: std::sync::atomic::AtomicBool,
+}
+
+impl Said {
+    /// The last lines, once ffmpeg has ended (waiting at most `patience`
+    /// for that).
+    fn last_lines(&self, patience: std::time::Duration) -> String {
+        let end = std::time::Instant::now() + patience;
+        while !self.done.load(std::sync::atomic::Ordering::Acquire)
+            && std::time::Instant::now() < end
+        {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        crate::encoder::last_lines(&self.text.lock().unwrap_or_else(PoisonError::into_inner))
+    }
 }
 
 impl Recording {
@@ -671,21 +656,36 @@ impl Recording {
                     "{method}: a video needs ffmpeg, which is not on PATH (set CRAFT3D_FFMPEG to it), or record PNG frames into a directory"
                 )
             })?;
-            let mut command = std::process::Command::new(&ffmpeg);
-            command
-                .args(["-hide_banner", "-loglevel", "error", "-y"])
-                .args(["-f", "rawvideo", "-pix_fmt", "rgb24"])
-                .arg("-s")
-                .arg(format!("{}x{}", size[0], size[1]))
-                .arg("-framerate")
-                .arg(format!("{}", options.fps))
-                .args(["-i", "-"]);
             let ext = Path::new(&options.path)
                 .extension()
                 .and_then(|e| e.to_str())
                 .unwrap_or_default()
                 .to_ascii_lowercase();
-            command.args(options.quality.args(&ext));
+            // Before a frame is drawn: an ffmpeg without a working encoder
+            // for the container is refused here, saying what it lacks.
+            let encoder = crate::encoder::choose(&ffmpeg, &ext, options.quality, size, options.fps)
+                .map_err(|e| format!("{method}: {e}"))?;
+            let encoded = crate::encoder::encoded_size(&encoder, size);
+            // ffmpeg makes no directory: the file's own is made here.
+            if let Some(parent) = resolved.parent().filter(|p| !p.as_os_str().is_empty()) {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    format!(
+                        "{method}: cannot make the directory of `{}`: {e}",
+                        options.path
+                    )
+                })?;
+            }
+            let mut command = std::process::Command::new(&ffmpeg);
+            command
+                .args(["-hide_banner", "-loglevel", "error", "-y"])
+                .args(&encoder.before_input)
+                .args(["-f", "rawvideo", "-pix_fmt", "rgb24"])
+                .arg("-s")
+                .arg(format!("{}x{}", encoded[0], encoded[1]))
+                .arg("-framerate")
+                .arg(format!("{}", options.fps))
+                .args(["-i", "-"])
+                .args(&encoder.args);
             command
                 .arg(&resolved)
                 .stdin(std::process::Stdio::piped())
@@ -698,7 +698,15 @@ impl Recording {
                 end_child(&mut child);
                 return Err(format!("{method}: ffmpeg took no input"));
             };
-            (Sink::Ffmpeg(stdin), "ffmpeg", Some(child))
+            (
+                Sink::Ffmpeg {
+                    stdin,
+                    even: encoder.even,
+                },
+                "ffmpeg",
+                Some(child),
+                Some((encoder.name, encoded)),
+            )
         } else {
             std::fs::create_dir_all(&resolved).map_err(|e| {
                 format!(
@@ -706,10 +714,10 @@ impl Recording {
                     options.path
                 )
             })?;
-            (Sink::Png(resolved), "png", None)
+            (Sink::Png(resolved), "png", None, None)
         };
-        let (sink, format, mut child) = (sink.0, sink.1, sink.2);
-        let said = Arc::new(Mutex::new(String::new()));
+        let (sink, format, mut child, encoder) = sink;
+        let said = Arc::new(Said::default());
         if let Some(stderr) = child.as_mut().and_then(|c| c.stderr.take()) {
             let keep = Arc::clone(&said);
             let drained = std::thread::Builder::new()
@@ -724,7 +732,8 @@ impl Recording {
         }
         let failed = Arc::new(Mutex::new(None));
         let (send, receive) = sync_channel::<Vec<u8>>(QUEUED_FRAMES);
-        let writer = match spawn_writer(sink, receive, size, Arc::clone(&failed)) {
+        let writer = match spawn_writer(sink, receive, size, Arc::clone(&failed), Arc::clone(&said))
+        {
             Ok(writer) => writer,
             Err(e) => {
                 if let Some(child) = child.as_mut() {
@@ -746,6 +755,7 @@ impl Recording {
             child,
             said,
             format,
+            encoder,
         })
     }
 
@@ -823,6 +833,8 @@ impl Recording {
             },
             "width": self.size[0],
             "height": self.size[1],
+            "encoder": self.encoder.map(|(name, _)| name),
+            "encoded": self.encoder.map(|(_, [w, h])| json!([w, h])),
             "frames": self.frames,
             "skipped": self.skipped,
             "time": self.time,
@@ -886,15 +898,8 @@ impl Recording {
         match status {
             Some(status) if status.success() => {}
             Some(status) => {
-                let said = self
-                    .said
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .clone();
-                self.fail(format!(
-                    "ui.record: ffmpeg failed ({status}): {}",
-                    said.trim()
-                ));
+                let said = self.said.last_lines(std::time::Duration::from_secs(1));
+                self.fail(format!("ui.record: ffmpeg failed ({status}): {said}"));
             }
             None => {
                 self.fail("ui.record: ffmpeg did not finish in time and was stopped".to_string())
@@ -942,6 +947,7 @@ fn spawn_writer(
     frames: Receiver<Vec<u8>>,
     [width, height]: [u32; 2],
     failed: Arc<Mutex<Option<String>>>,
+    said: Arc<Said>,
 ) -> std::io::Result<JoinHandle<()>> {
     std::thread::Builder::new()
         .name("craft3d-record".to_string())
@@ -970,11 +976,25 @@ fn spawn_writer(
                         }
                     }
                 }
-                Sink::Ffmpeg(mut stdin) => {
+                Sink::Ffmpeg { mut stdin, even } => {
                     use std::io::Write;
                     while let Ok(rgb) = frames.recv() {
+                        let rgb = if even {
+                            crate::encoder::pad_even(rgb, width, height)
+                        } else {
+                            rgb
+                        };
                         if let Err(e) = stdin.write_all(&rgb) {
-                            fail(format!("ui.record: ffmpeg stopped taking frames: {e}"));
+                            // Why it stopped is in what it said as it ended.
+                            let said = said.last_lines(std::time::Duration::from_secs(2));
+                            fail(format!(
+                                "ui.record: ffmpeg stopped taking frames: {e}{}",
+                                if said.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!("; ffmpeg said: {said}")
+                                }
+                            ));
                             return;
                         }
                     }
@@ -993,14 +1013,14 @@ fn end_child(child: &mut std::process::Child) {
 
 /// Reads what ffmpeg says until it ends, keeping the last
 /// [`STDERR_TAIL`] bytes.
-fn drain(mut stderr: std::process::ChildStderr, keep: &Mutex<String>) {
+fn drain(mut stderr: std::process::ChildStderr, keep: &Said) {
     use std::io::Read;
     let mut buffer = [0u8; 4096];
     while let Ok(n) = stderr.read(&mut buffer) {
         if n == 0 {
             break;
         }
-        let mut said = keep.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut said = keep.text.lock().unwrap_or_else(PoisonError::into_inner);
         said.push_str(&String::from_utf8_lossy(
             buffer.get(..n).unwrap_or_default(),
         ));
@@ -1012,6 +1032,7 @@ fn drain(mut stderr: std::process::ChildStderr, keep: &Mutex<String>) {
             said.drain(..cut);
         }
     }
+    keep.done.store(true, std::sync::atomic::Ordering::Release);
 }
 
 /// What records a window: its [`Offscreen`] texture, and the recording

@@ -27,6 +27,7 @@
 //! - [`view_cube`]: the view cube's geometry.
 //! - [`shell`]: the panels, the tabs of the open documents and the mouse.
 //! - [`control`]: the `ui.*` methods of the control protocol.
+//! - [`encoder`]: which video encoder a recording asks ffmpeg for.
 //! - [`record`]: the window's own frames painted offscreen and read back:
 //!   `ui.record`, `ui.advance`, and `ui.screenshot {window: true}` of a
 //!   window that is not on screen.
@@ -39,6 +40,7 @@ pub mod backend;
 pub mod camera;
 pub mod control;
 pub mod direct;
+pub mod encoder;
 pub mod files;
 pub mod fonts;
 pub mod frames;
