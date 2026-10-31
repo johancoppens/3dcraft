@@ -30,6 +30,17 @@
 //!   `width` as for zebra. Where `|N·M|` is below [`GRAZING`] (0.05) the normal
 //!   line runs along the plane and the sample has no phase (the neutral
 //!   colour).
+//! - **Band limit** (zebra and highlight lines): the square wave of the
+//!   stripes is box-filtered over the sample's footprint in phase, the
+//!   phase's change from one sample to the next, `|∂p/∂x| + |∂p/∂y|`
+//!   ([`Resolved::footprint`]). The antiderivative of the square wave is a
+//!   ramp per period (a triangle wave less its mean slope), so the filter
+//!   is closed form ([`dark_share`]): a stripe edge is a ramp one footprint
+//!   wide, centred where the edge was, and stripes finer than a sample fade
+//!   to their mean, `width` dark. The derivatives are exact: the
+//!   perspective-correct interpolation's of the normal and the point,
+//!   chained through the phase (the GPU takes the interpolants' from
+//!   `dpdxFine`/`dpdyFine` and chains them the same way).
 //! - **Curvature map**: the value at the sample (interpolated
 //!   perspective-correctly from the vertices, like the normal) placed in
 //!   `lo..hi` and coloured by a ramp of five stops ([`ramp`]), lit by
@@ -53,6 +64,9 @@ use craft3d_math::{Bbox3, Vec3};
 /// stripes below this are some twenty times finer than over the model's
 /// top, finer than a pixel on any view that shows them whole.
 pub const GRAZING: f64 = 0.05;
+/// A footprint above this many periods is the mean, `width`, outright: the
+/// box over it is the mean within `1 / footprint` (`dark_share`).
+pub const FLAT_FOOTPRINT: f64 = 1e6;
 /// The lighting of the curvature map and of draft: ambient share.
 pub const ANALYSIS_AMBIENT: f64 = 0.55;
 /// The lighting of the curvature map and of draft: share by `|n·v|`.
@@ -203,7 +217,54 @@ pub struct Resolved {
     pub lo: f64,
     pub hi: f64,
     pub grazing: f64,
+    /// Whether the view is in perspective: the direction to the viewer
+    /// then changes with the point (zebra's footprint).
+    pub perspective: bool,
     pub colors: AnalysisColors,
+}
+
+/// How a sample's interpolated attributes change towards the next sample
+/// to the right (`[0]`) and the next one down (`[1]`): their exact
+/// derivatives in the samples' grid, for the stripes' footprint.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Slopes {
+    /// The interpolated normal before it is made unit (zero where there is
+    /// none: the footprint is then zero, the triangle's own normal being
+    /// constant).
+    pub normal: Vec3,
+    /// The derivatives of [`Slopes::normal`].
+    pub d_normal: [Vec3; 2],
+    /// The derivatives of the point (relative to the eye).
+    pub d_rel: [Vec3; 2],
+}
+
+/// The share of a sample that is dark: the square wave dark where the
+/// phase's fraction is below `width`, averaged over a box `footprint`
+/// periods wide centred on `phase`. Closed form: the wave's antiderivative
+/// is `D(t) = ⌊t⌋·width + min(t − ⌊t⌋, width)`. A footprint of zero is the
+/// point sample (`0` or `1`); one that is not a number, infinite or above
+/// [`FLAT_FOOTPRINT`] is the mean, `width`.
+pub fn dark_share(phase: f64, footprint: f64, width: f64) -> f64 {
+    let point = if phase - phase.floor() < width {
+        1.0
+    } else {
+        0.0
+    };
+    if footprint == 0.0 {
+        return point;
+    }
+    if !(footprint > 0.0 && footprint <= FLAT_FOOTPRINT) || !phase.is_finite() {
+        return width;
+    }
+    // Relative to the period the sample is in, so that a phase of many
+    // periods loses nothing to the subtraction.
+    let x = phase - phase.floor();
+    let antiderivative = |t: f64| {
+        let whole = t.floor();
+        whole * width + (t - whole).min(width)
+    };
+    let half = 0.5 * footprint;
+    ((antiderivative(x + half) - antiderivative(x - half)) / footprint).clamp(0.0, 1.0)
 }
 
 fn finite_or(v: f64, fallback: f64) -> f64 {
@@ -242,6 +303,7 @@ impl Resolved {
             lo,
             hi,
             grazing: finite_or(analysis.grazing, GRAZING).clamp(1e-3, 0.5),
+            perspective: matches!(axes.projection, crate::Projection::Perspective { .. }),
             colors: analysis.colors,
         };
         match analysis.mode {
@@ -286,7 +348,21 @@ impl Resolved {
     /// to the viewer; `None` where there is none), `to_viewer` the unit
     /// vector from the point to the eye, `rel` the point relative to the
     /// eye, `value` the interpolated value per vertex.
+    /// Stripes are point sampled; [`Resolved::color_at`] filters them.
     pub fn color(&self, normal: Option<Vec3>, to_viewer: Vec3, rel: Vec3, value: f64) -> [u8; 3] {
+        self.color_at(normal, to_viewer, rel, value, None)
+    }
+
+    /// [`Resolved::color`] with the stripes box-filtered over the sample's
+    /// footprint (`slopes`, see the module); `None` point samples them.
+    pub fn color_at(
+        &self,
+        normal: Option<Vec3>,
+        to_viewer: Vec3,
+        rel: Vec3,
+        value: f64,
+        slopes: Option<&Slopes>,
+    ) -> [u8; 3] {
         let c = &self.colors;
         let Some(n) = normal else {
             return c.none;
@@ -299,10 +375,19 @@ impl Resolved {
         match self.mode {
             AnalysisMode::Zebra | AnalysisMode::Highlight => match self.phase(n, to_viewer, rel) {
                 Some(phase) => {
-                    if phase - phase.floor() < self.width {
+                    let footprint = slopes.map_or(0.0, |s| self.footprint(n, to_viewer, rel, s));
+                    let dark = dark_share(phase, footprint, self.width);
+                    if dark >= 1.0 {
                         c.dark
-                    } else {
+                    } else if dark <= 0.0 {
                         c.light
+                    } else {
+                        let mut out = [0u8; 3];
+                        for (o, (&d, &l)) in out.iter_mut().zip(c.dark.iter().zip(c.light.iter())) {
+                            let (d, l) = (f64::from(d), f64::from(l));
+                            *o = (l + (d - l) * dark).round().clamp(0.0, 255.0) as u8;
+                        }
+                        out
                     }
                 }
                 None => c.none,
@@ -332,6 +417,12 @@ impl Resolved {
         }
     }
 
+    /// Whether the mode draws stripes (zebra, highlight lines), which
+    /// [`Resolved::color_at`] filters over a footprint.
+    pub fn has_stripes(&self) -> bool {
+        matches!(self.mode, AnalysisMode::Zebra | AnalysisMode::Highlight)
+    }
+
     /// The stripe phase of zebra or highlight lines at a sample (see the
     /// module), in periods; `None` where it has none.
     pub fn phase(&self, n: Vec3, to_viewer: Vec3, rel: Vec3) -> Option<f64> {
@@ -354,6 +445,75 @@ impl Resolved {
             }
             AnalysisMode::Curvature | AnalysisMode::Draft => None,
         }
+    }
+
+    /// The footprint of a sample in phase, periods: `|∂p/∂x| + |∂p/∂y|`
+    /// over the samples' grid, from the attributes' `slopes` chained
+    /// through [`Resolved::phase`] (`n` the unit normal, `to_viewer` and
+    /// `rel` as there). Infinite where the phase turns faster than can be
+    /// told (zebra's reflected ray along the tubes' axis); zero for the
+    /// modes without stripes.
+    pub fn footprint(&self, n: Vec3, to_viewer: Vec3, rel: Vec3, slopes: &Slopes) -> f64 {
+        // The unit normal's derivative: the raw one's, less its part along
+        // the normal, over the raw length.
+        let len = slopes.normal.length();
+        let unit = |d: Vec3| {
+            if len > 0.0 && len.is_finite() {
+                (d - n * n.dot(d)) * (1.0 / len)
+            } else {
+                Vec3::ZERO
+            }
+        };
+        let mut sum = 0.0;
+        for (&dn, &drel) in slopes.d_normal.iter().zip(slopes.d_rel.iter()) {
+            let dn = unit(dn);
+            let d = match self.mode {
+                AnalysisMode::Zebra => {
+                    let (m, dm) = if n.dot(to_viewer) < 0.0 {
+                        (-n, -dn)
+                    } else {
+                        (n, dn)
+                    };
+                    let v = to_viewer;
+                    // v = −rel / |rel| in perspective, constant otherwise.
+                    let dv = if self.perspective {
+                        let l = rel.length();
+                        if l > 0.0 && l.is_finite() {
+                            (drel - v * v.dot(drel)) * (-1.0 / l)
+                        } else {
+                            Vec3::ZERO
+                        }
+                    } else {
+                        Vec3::ZERO
+                    };
+                    let s = m.dot(v);
+                    let ds = dm.dot(v) + m.dot(dv);
+                    let r = m * (2.0 * s) - v;
+                    let dr = m * (2.0 * ds) + dm * (2.0 * s) - dv;
+                    let (x, y) = (r.dot(self.first), r.dot(self.second));
+                    let (dx, dy) = (dr.dot(self.first), dr.dot(self.second));
+                    let q = x * x + y * y;
+                    if !(q > 0.0) {
+                        return f64::INFINITY;
+                    }
+                    (x * dy - y * dx) / q / std::f64::consts::TAU * self.count
+                }
+                AnalysisMode::Highlight => {
+                    let m = self.second;
+                    let nm = n.dot(m);
+                    if !(nm.abs() > 0.0) {
+                        return f64::INFINITY;
+                    }
+                    let t = (self.point - rel).dot(m) / nm;
+                    let dt = (-drel.dot(m) - t * dn.dot(m)) / nm;
+                    let dq = drel + dn * t + n * dt;
+                    dq.dot(self.first) / self.spacing
+                }
+                AnalysisMode::Curvature | AnalysisMode::Draft => 0.0,
+            };
+            sum += d.abs();
+        }
+        if sum.is_nan() { f64::INFINITY } else { sum }
     }
 }
 
@@ -468,6 +628,103 @@ mod tests {
             let phase = r.phase(n, v, Vec3::ZERO).unwrap();
             let expect = 2.0 * theta / std::f64::consts::TAU * 16.0;
             assert!((phase.abs() - expect).abs() < 1e-12, "{phase} {expect}");
+        }
+    }
+
+    #[test]
+    fn dark_share_is_the_box_filtered_square_wave() {
+        // A point sample without a footprint.
+        assert_eq!(dark_share(3.2, 0.0, 0.3), 1.0);
+        assert_eq!(dark_share(3.4, 0.0, 0.3), 0.0);
+        // A whole number of periods is the mean wherever it starts.
+        for p in [0.0, 0.17, 0.3, 0.71, 1234.5] {
+            for f in [1.0, 2.0, 7.0] {
+                assert!((dark_share(p, f, 0.3) - 0.3).abs() < 1e-9, "{p} {f}");
+            }
+        }
+        // Not a number, infinite, beyond FLAT_FOOTPRINT: the mean.
+        for f in [f64::NAN, f64::INFINITY, -1.0, 2.0 * FLAT_FOOTPRINT] {
+            assert_eq!(dark_share(0.1, f, 0.3), 0.3);
+        }
+        // Against the wave averaged by brute force.
+        for &(p, f, w) in &[
+            (0.05, 0.2, 0.3),
+            (0.29, 0.1, 0.3),
+            (0.9, 0.5, 0.5),
+            (2.6, 1.7, 0.25),
+        ] {
+            let n = 100_000;
+            let brute = (0..n)
+                .filter(|k| {
+                    let t = p - 0.5 * f + f * (f64::from(*k) + 0.5) / f64::from(n);
+                    t - t.floor() < w
+                })
+                .count() as f64
+                / f64::from(n);
+            assert!((dark_share(p, f, w) - brute).abs() < 1e-4, "{p} {f} {w}");
+        }
+        // Far from an edge the box sees one colour: the edge does not move.
+        assert_eq!(dark_share(0.15, 0.2, 0.3), 1.0);
+        assert_eq!(dark_share(0.65, 0.2, 0.3), 0.0);
+        // At an edge, half.
+        assert!((dark_share(0.3, 0.2, 0.3) - 0.5).abs() < 1e-12);
+    }
+
+    /// The footprint's chain rule against a central difference of the
+    /// phase, along a path of the interpolants (the raw normal and the
+    /// point; the direction to the viewer follows the point in
+    /// perspective).
+    #[test]
+    fn the_footprint_is_the_phase_derivative() {
+        let bounds = Bbox3::from_points([Vec3::new(-1.0, -1.0, -1.0), Vec3::new(1.0, 1.0, 1.0)]);
+        let perspective = Camera {
+            eye: Vec3::new(2.0, -6.0, 4.0),
+            target: Vec3::ZERO,
+            up: Vec3::new(0.0, 0.0, 1.0),
+            projection: Projection::Perspective { fov_y_deg: 35.0 },
+        }
+        .axes()
+        .unwrap();
+        let raw0 = Vec3::new(0.3, -0.8, 0.45);
+        let d_raw = Vec3::new(0.02, 0.013, -0.031);
+        let p0 = Vec3::new(0.2, -0.5, 0.6);
+        let d_p = Vec3::new(0.004, -0.002, 0.003);
+        for (mode, axes) in [
+            (AnalysisMode::Zebra, axes()),
+            (AnalysisMode::Zebra, perspective),
+            (AnalysisMode::Highlight, perspective),
+        ] {
+            let mut a = Analysis::new(mode);
+            a.direction = 0.4;
+            let r = Resolved::new(&a, &axes, &bounds);
+            let at = |s: f64| {
+                let n = (raw0 + d_raw * s).normalized().unwrap();
+                let p = p0 + d_p * s;
+                let v = if r.perspective {
+                    (axes.eye - p).normalized().unwrap()
+                } else {
+                    -axes.forward
+                };
+                (n, v, p - axes.eye)
+            };
+            let h = 1e-5;
+            let phase = |s: f64| {
+                let (n, v, rel) = at(s);
+                r.phase(n, v, rel).unwrap()
+            };
+            let numeric = (phase(h) - phase(-h)) / (2.0 * h);
+            let (n, v, rel) = at(0.0);
+            let slopes = Slopes {
+                normal: raw0,
+                d_normal: [d_raw, Vec3::ZERO],
+                d_rel: [d_p, Vec3::ZERO],
+            };
+            let analytic = r.footprint(n, v, rel, &slopes);
+            assert!(
+                (analytic - numeric.abs()).abs() < 1e-6 * (1.0 + numeric.abs()),
+                "{mode:?}: {analytic} against {numeric}"
+            );
+            assert!(analytic > 1e-3, "{mode:?}: {analytic}");
         }
     }
 

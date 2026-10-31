@@ -1024,6 +1024,51 @@ impl View {
     }
 }
 
+/// The exact derivatives along the samples' x and y of a triangle's
+/// perspective-correct normal (before it is made unit) and point at one
+/// sample: `corners` the triangle's points and normals, `weights` the
+/// sample's perspective-correct weights (summing to 1), `inv_w` the
+/// corners' `1 / w` (`ιᵢ`), `q = Σ bᵢ ιᵢ` over the screen weights `bᵢ`,
+/// `d_weights` the screen weights' derivatives (constant on the triangle).
+/// An attribute `A = Σ bᵢ ιᵢ Aᵢ / q` has `∂A = Σ ∂bᵢ ιᵢ (Aᵢ − A) / q`: the
+/// derivative the GPU's `dpdxFine` and `dpdyFine` approximate by a
+/// difference over one sample.
+fn stripe_slopes(
+    corners: [(Vec3, Vec3); 3],
+    weights: [f64; 3],
+    q: f64,
+    inv_w: [f64; 3],
+    d_weights: &[[f64; 2]; 3],
+) -> analysis::Slopes {
+    let mut normal = Vec3::ZERO;
+    let mut point = Vec3::ZERO;
+    for (&(p, n), &k) in corners.iter().zip(weights.iter()) {
+        normal += n * k;
+        point += p * k;
+    }
+    let mut out = analysis::Slopes {
+        normal,
+        ..analysis::Slopes::default()
+    };
+    if !(q != 0.0 && q.is_finite()) {
+        return out;
+    }
+    for axis in 0..2 {
+        let (mut dn, mut dp) = (Vec3::ZERO, Vec3::ZERO);
+        for ((&(p, n), &iw), dw) in corners.iter().zip(inv_w.iter()).zip(d_weights.iter()) {
+            let g = dw.get(axis).copied().unwrap_or(0.0) * iw / q;
+            dn += (n - normal) * g;
+            dp += (p - point) * g;
+        }
+        if let (Some(n_slot), Some(p_slot)) = (out.d_normal.get_mut(axis), out.d_rel.get_mut(axis))
+        {
+            *n_slot = dn;
+            *p_slot = dp;
+        }
+    }
+    out
+}
+
 /// Twice the signed area of triangle (a, b, p) in sample space.
 fn edge(ax: f64, ay: f64, bx: f64, by: f64, px: f64, py: f64) -> f64 {
     (bx - ax) * (py - ay) - (by - ay) * (px - ax)
@@ -1356,6 +1401,14 @@ pub fn render_analysed(
             continue;
         };
         let flat_normal = (pb - pa).cross(pc - pa).normalized();
+        // The screen-space barycentric weights' derivatives along x and y
+        // (constant over the triangle): for the stripes' footprint.
+        let d_weights = [
+            [-(c.sy - b.sy) / area, (c.sx - b.sx) / area],
+            [-(a.sy - c.sy) / area, (a.sx - c.sx) / area],
+            [-(b.sy - a.sy) / area, (b.sx - a.sx) / area],
+        ];
+        let inv_w = [a.inv_w, b.inv_w, c.inv_w];
         // The section: the corners' distances from the plane, and which
         // way the triangle faces.
         let cut_triangle = cut.map(|cut| {
@@ -1446,7 +1499,22 @@ pub fn render_analysed(
                 let rgb = match &analysis {
                     Some(a) => {
                         let value = qa * value_at(ia) + qb * value_at(ib) + qc * value_at(ic);
-                        a.color(normal, to_viewer, position - view.eye, value)
+                        let slopes = a.has_stripes().then(|| {
+                            stripe_slopes(
+                                [(pa, na), (pb, nb), (pc, nc)],
+                                [qa, qb, qc],
+                                q,
+                                inv_w,
+                                &d_weights,
+                            )
+                        });
+                        a.color_at(
+                            normal,
+                            to_viewer,
+                            position - view.eye,
+                            value,
+                            slopes.as_ref(),
+                        )
                     }
                     None => {
                         normal.map_or(base, |n| shade(base, light, finish, n, to_viewer, &view))

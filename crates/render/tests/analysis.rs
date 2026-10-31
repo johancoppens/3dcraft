@@ -58,7 +58,14 @@ fn pixel(frame: &craft3d_render::Frame, x: usize, y: usize) -> [u8; 3] {
 /// agrees with that closed form except within 0.02 of a period of a
 /// stripe's edge (the interpolated normal of a mesh within 1e-3 of the
 /// sphere is within about 1e-3 rad of the true one, 0.005 of a period at
-/// 16 stripes). The picture is mirror symmetric about that vertical.
+/// 16 stripes) widened by half the pixel's footprint in phase: the stripes
+/// are box-filtered over it, so an edge is a ramp that wide centred where
+/// the edge is (`analysis::dark_share`). The footprint is the closed form's,
+/// `dφ/dy = 2 / cos θ` per unit of height (none across, by the symmetry),
+/// and on a ramp the grey is the closed form's phase averaged over the
+/// pixel's height (sampled finely), within 0.12 (the normal's 0.005 of a
+/// period over the least footprint, 0.05). An edge is where the grey
+/// crosses the middle. The picture is mirror symmetric about that vertical.
 #[test]
 fn zebra_stripes_on_a_sphere_are_evenly_spaced_and_symmetric() {
     let mesh = mesh_of(
@@ -78,7 +85,7 @@ fn zebra_stripes_on_a_sphere_are_evenly_spaced_and_symmetric() {
     .unwrap();
     let colors = AnalysisColors::default();
     let x = (w / 2) as usize;
-    let (mut checked, mut transitions, mut last) = (0, 0, None);
+    let (mut checked, mut ramps, mut transitions, mut last) = (0, 0, 0, None);
     for y in 0..h as usize {
         if frame.ids[y * w as usize + x] == NO_FACE {
             continue;
@@ -87,8 +94,8 @@ fn zebra_stripes_on_a_sphere_are_evenly_spaced_and_symmetric() {
         if wy.abs() > 0.95 {
             continue;
         }
-        let theta = wy.pasin();
-        let phase = -2.0 * theta / std::f64::consts::TAU * analysis.stripes;
+        let phase_at = |wy: f64| -2.0 * wy.pasin() / std::f64::consts::TAU * analysis.stripes;
+        let phase = phase_at(wy);
         let f = phase - phase.floor();
         let expect = if f < analysis.width {
             colors.dark
@@ -96,17 +103,41 @@ fn zebra_stripes_on_a_sphere_are_evenly_spaced_and_symmetric() {
             colors.light
         };
         let got = pixel(&frame, x, y);
-        if last.is_some_and(|l| l != got) {
+        let is_dark = got[0] < 128;
+        if last.is_some_and(|l| l != is_dark) {
             transitions += 1;
         }
-        last = Some(got);
-        let near_edge = f.min(1.0 - f).min((f - analysis.width).abs()) < 0.02;
-        if !near_edge {
+        last = Some(is_dark);
+        // The pixel's height in model units, and its footprint in phase.
+        let size = 2.0 * half / f64::from(h);
+        let footprint =
+            2.0 / (1.0 - wy * wy).sqrt() * size / std::f64::consts::TAU * analysis.stripes;
+        let near_edge = f.min(1.0 - f).min((f - analysis.width).abs()) < 0.02 + 0.5 * footprint;
+        if near_edge {
+            // The closed form's square wave averaged over the pixel.
+            let n = 400;
+            let dark = (0..n)
+                .filter(|k| {
+                    let t = (f64::from(*k) + 0.5) / f64::from(n) - 0.5;
+                    let p = phase_at(wy + t * size);
+                    p - p.floor() < analysis.width
+                })
+                .count() as f64
+                / f64::from(n);
+            let share = (f64::from(colors.light[0]) - f64::from(got[0]))
+                / (f64::from(colors.light[0]) - f64::from(colors.dark[0]));
+            assert!(
+                (share - dark).abs() < 0.12,
+                "row {y}: dark share {share}, {dark} expected (phase {phase})"
+            );
+            ramps += 1;
+        } else {
             assert_eq!(got, expect, "row {y}: phase {phase}");
             checked += 1;
         }
     }
-    assert!(checked > 150, "{checked}");
+    assert!(ramps > 20, "{ramps}");
+    assert!(checked > 100 && checked + ramps > 150, "{checked} {ramps}");
     // asin 0.95 is 1.25 rad each way: 2 · 2.5 rad / τ · 16 periods, two
     // edges each.
     let expected = (2.0 * 2.0 * 0.95_f64.pasin() / std::f64::consts::TAU * 16.0 * 2.0).floor();
@@ -114,7 +145,10 @@ fn zebra_stripes_on_a_sphere_are_evenly_spaced_and_symmetric() {
         (f64::from(transitions) - expected).abs() <= 2.0,
         "{transitions} edges, {expected} expected"
     );
-    // Mirror symmetric about the vertical through the middle.
+    // Mirror symmetric about the vertical through the middle: within 2
+    // levels, since a ramp's grey follows the interpolated normal, which
+    // is mirror symmetric only as far as the mesh is (one level apart on
+    // about 6 % of the pairs); a stripe on one side only is 225 apart.
     let mut differ = 0;
     let mut total = 0;
     for y in 0..h as usize {
@@ -125,12 +159,134 @@ fn zebra_stripes_on_a_sphere_are_evenly_spaced_and_symmetric() {
                 continue;
             }
             total += 1;
-            if pixel(&frame, l, y) != pixel(&frame, r, y) {
+            let (a, b) = (pixel(&frame, l, y), pixel(&frame, r, y));
+            if (0..3).any(|c| a[c].abs_diff(b[c]) > 2) {
                 differ += 1;
             }
         }
     }
     assert!(differ * 100 <= total, "{differ} of {total} differ");
+}
+
+/// The dark share of a pixel: where its red channel lies between the
+/// light and the dark colour.
+fn dark_share_of(rgb: [u8; 3]) -> f64 {
+    let c = AnalysisColors::default();
+    (f64::from(c.light[0]) - f64::from(rgb[0])) / (f64::from(c.light[0]) - f64::from(c.dark[0]))
+}
+
+/// The mean and the variance of the dark share over the pixels `keep`
+/// picks (by their model coordinates across and up, seen orthographically
+/// from `eye` with `up`, a half height of 1.1).
+fn share_stats(
+    mesh: &Mesh,
+    analysis: Analysis,
+    eye: Vec3,
+    up: Vec3,
+    side: u32,
+    keep: impl Fn(f64, f64) -> bool,
+) -> (f64, f64, usize) {
+    let half = 1.1;
+    let frame = render_analysed(
+        mesh,
+        &FaceColors::new(),
+        &[],
+        &ortho(eye, up, half),
+        &params(side, side, analysis),
+    )
+    .unwrap();
+    let mut shares = Vec::new();
+    for y in 0..side as usize {
+        for x in 0..side as usize {
+            if frame.ids[y * side as usize + x] == NO_FACE {
+                continue;
+            }
+            let across = ((x as f64 + 0.5) / f64::from(side) * 2.0 - 1.0) * half;
+            let upward = (1.0 - (y as f64 + 0.5) / f64::from(side) * 2.0) * half;
+            if keep(across, upward) {
+                shares.push(dark_share_of(pixel(&frame, x, y)));
+            }
+        }
+    }
+    let n = shares.len() as f64;
+    let mean = shares.iter().sum::<f64>() / n;
+    let var = shares.iter().map(|s| (s - mean) * (s - mean)).sum::<f64>() / n;
+    (mean, var, shares.len())
+}
+
+/// Stripes finer than a pixel fade to their mean instead of aliasing
+/// (docs/design/surfacing.md › Finding 6): zebra on a sphere seen square
+/// on, one sample per pixel, its middle (within 0.6 of the centre), the
+/// stripes swept from resolved to finer than a pixel. The phase changes by
+/// `2 / cos θ · count / τ` per unit, so a pixel of 2.2 / 121 units spans
+/// at least 0.006 of a period per stripe of `count`: about 0.02 at 4, 1.5
+/// at 256 and 3 at 512. Resolved, the shares are dark or light (variance
+/// near `w (1 − w)`); finer than a pixel their mean is `width` and their
+/// variance falls (a box over `f` periods is within `w (1 − w) / f` of the
+/// mean). Point sampled, the variance stays near `w (1 − w)` at any count.
+#[test]
+fn stripes_finer_than_a_pixel_fade_to_their_mean() {
+    let mesh = mesh_of(
+        craft3d_testkit::solids::sphere(&world(), 1.0).unwrap(),
+        1e-4,
+    );
+    let width = 0.3;
+    let full = width * (1.0 - width);
+    let mut last_var = f64::INFINITY;
+    for (stripes, footprint) in [(4.0, 0.024), (64.0, 0.38), (256.0, 1.5), (512.0, 3.0)] {
+        let mut a = Analysis::new(AnalysisMode::Zebra);
+        a.stripes = stripes;
+        a.width = width;
+        let (mean, var, n) =
+            share_stats(&mesh, a, Vec3::new(0.0, 0.0, 10.0), Vec3::Y, 121, |x, y| {
+                x * x + y * y < 0.36
+            });
+        println!("zebra {stripes}: mean {mean:.4} variance {var:.5} over {n}");
+        assert!(n > 3000, "{n}");
+        if footprint < 0.1 {
+            assert!(var > 0.7 * full, "{stripes}: variance {var} resolved");
+        }
+        if footprint >= 1.0 {
+            assert!((mean - width).abs() < 0.01, "{stripes}: mean {mean}");
+            assert!(
+                var < (full / footprint).powi(2),
+                "{stripes}: variance {var}"
+            );
+        }
+        assert!(
+            var <= last_var,
+            "{stripes}: variance {var} after {last_var}"
+        );
+        last_var = var;
+    }
+}
+
+/// Highlight lines toward a vertical face (Finding 6): their spacing
+/// shrinks as `|N·M|²` (the normal line meets the light plane further
+/// out), so on a sphere seen from the side, where `0.06 < |n_z| < 0.1`
+/// (above the grazing bound of 0.05), 24 lines are tens of periods per
+/// pixel: the band is their mean, `width` dark, without moiré.
+#[test]
+fn highlight_lines_toward_a_vertical_face_fade_to_their_mean() {
+    let mesh = mesh_of(
+        craft3d_testkit::solids::sphere(&world(), 1.0).unwrap(),
+        1e-4,
+    );
+    let mut a = Analysis::new(AnalysisMode::Highlight);
+    a.stripes = 24.0;
+    a.width = 0.3;
+    let (mean, var, n) = share_stats(
+        &mesh,
+        a,
+        Vec3::new(0.0, -10.0, 0.0),
+        Vec3::Z,
+        241,
+        |x, z| x.abs() < 0.5 && (0.06..0.1).contains(&z.abs()),
+    );
+    println!("highlight near vertical: mean {mean:.4} variance {var:.5} over {n}");
+    assert!(n > 400, "{n}");
+    assert!((mean - 0.3).abs() < 0.01, "mean {mean}");
+    assert!(var < 1e-3, "variance {var}");
 }
 
 /// Zebra stripes on a cylinder seen square to its axis run straight along
@@ -180,7 +336,13 @@ fn zebra_stripes_on_a_cylinder_run_straight_along_the_axis() {
         stripes.insert(colors[0]);
     }
     assert!(columns > 80, "{columns}");
-    assert_eq!(stripes.len(), 2, "both stripe colours appear");
+    // Both stripe colours appear; the other columns are the greys of the
+    // edges' ramps (`analysis::dark_share`).
+    let c = AnalysisColors::default();
+    assert!(
+        stripes.contains(&c.dark) && stripes.contains(&c.light),
+        "both stripe colours appear"
+    );
 }
 
 /// Draft on a cylinder whose axis is the pull: the side is square to the

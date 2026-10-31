@@ -271,6 +271,10 @@ fn highlighted(face: u32) -> bool {
 const ANALYSIS_AMBIENT: f32 = 0.55;
 const ANALYSIS_DIFFUSE: f32 = 0.45;
 const TAU: f32 = 6.283185307179586;
+// craft3d_render::analysis::FLAT_FOOTPRINT.
+const ANALYSIS_FLAT_FOOTPRINT: f32 = 1e6;
+// A footprint that cannot be told: above ANALYSIS_FLAT_FOOTPRINT, the mean.
+const ANALYSIS_STEEP: f32 = 1e30;
 
 // craft3d_render::analysis: the lighting of the map and of draft.
 fn analysis_lit(rgb: vec3<f32>, facing: f32) -> vec3<f32> {
@@ -289,9 +293,89 @@ fn analysis_ramp(t_in: f32) -> vec3<f32> {
     return clamp(round(a + (b - a) * f), vec3<f32>(0.0), vec3<f32>(255.0));
 }
 
-// craft3d_render::analysis::Resolved::color, in place of the shading
+// craft3d_render::analysis::dark_share: the dark share of the stripes'
+// square wave averaged over a box `footprint` periods wide.
+fn analysis_dark_share(phase: f32, footprint: f32, width: f32) -> f32 {
+    let x = phase - floor(phase);
+    if footprint == 0.0 {
+        return select(0.0, 1.0, x < width);
+    }
+    if !(footprint > 0.0 && footprint <= ANALYSIS_FLAT_FOOTPRINT) {
+        return width;
+    }
+    let half = 0.5 * footprint;
+    let a = x - half;
+    let b = x + half;
+    let da = floor(a) * width + min(a - floor(a), width);
+    let db = floor(b) * width + min(b - floor(b), width);
+    return clamp((db - da) / footprint, 0.0, 1.0);
+}
+
+// craft3d_render::analysis::Resolved::footprint, along one of the
+// samples' axes: the phase's change from the attributes' (the raw
+// normal's `d_raw`, the point's `d_rel`). ANALYSIS_STEEP where it cannot be
+// told.
+fn analysis_slope(
+    mode: u32,
+    n: vec3<f32>,
+    len_n: f32,
+    d_raw: vec3<f32>,
+    v: vec3<f32>,
+    rel: vec3<f32>,
+    d_rel: vec3<f32>,
+) -> f32 {
+    var dn = vec3<f32>(0.0);
+    if len_n > 0.0 {
+        dn = (d_raw - n * dot(n, d_raw)) / len_n;
+    }
+    if mode == 1u {
+        var m = n;
+        var dm = dn;
+        if dot(n, v) < 0.0 {
+            m = -n;
+            dm = -dn;
+        }
+        var dv = vec3<f32>(0.0);
+        if scene.forward.w > 0.5 {
+            let l = length(rel);
+            if l > 0.0 {
+                dv = -(d_rel - v * dot(v, d_rel)) / l;
+            }
+        }
+        let s = dot(m, v);
+        let ds = dot(dm, v) + dot(m, dv);
+        let r = m * (2.0 * s) - v;
+        let dr = m * (2.0 * ds) + dm * (2.0 * s) - dv;
+        let x = dot(r, scene.analysis_first.xyz);
+        let y = dot(r, scene.analysis_second.xyz);
+        let dx = dot(dr, scene.analysis_first.xyz);
+        let dy = dot(dr, scene.analysis_second.xyz);
+        let q = x * x + y * y;
+        if !(q > 0.0) {
+            return ANALYSIS_STEEP;
+        }
+        return abs((x * dy - y * dx) / q / TAU * scene.analysis.y);
+    }
+    let mv = scene.analysis_second.xyz;
+    let nm = dot(n, mv);
+    if !(abs(nm) > 0.0) {
+        return ANALYSIS_STEEP;
+    }
+    let t = dot(scene.analysis_point.xyz - rel, mv) / nm;
+    let dt = (-dot(d_rel, mv) - t * dot(dn, mv)) / nm;
+    let dq = d_rel + dn * t + n * dt;
+    return abs(dot(dq, scene.analysis_first.xyz) / scene.analysis_axis.w);
+}
+
+// craft3d_render::analysis::Resolved::color_at, in place of the shading
 // where the scene has an analysis.
 fn analysis_of(in: VertexOut) -> vec4<f32> {
+    // The interpolants' change to the next sample, taken here, where the
+    // control flow is still uniform (the analysis is the scene's).
+    let d_normal_x = dpdxFine(in.normal);
+    let d_normal_y = dpdyFine(in.normal);
+    let d_rel_x = dpdxFine(in.rel);
+    let d_rel_y = dpdyFine(in.rel);
     var to_viewer = -scene.forward.xyz;
     if scene.forward.w > 0.5 {
         let len = length(in.rel);
@@ -343,10 +427,17 @@ fn analysis_of(in: VertexOut) -> vec4<f32> {
                 }
             }
             if has_phase {
-                if phase - floor(phase) < scene.analysis.z {
+                // Without an interpolated normal (the triangle's own) the
+                // normal's slope is zero (len_n is 0).
+                let footprint = analysis_slope(mode, n, len_n, d_normal_x, to_viewer, in.rel, d_rel_x)
+                    + analysis_slope(mode, n, len_n, d_normal_y, to_viewer, in.rel, d_rel_y);
+                let share = analysis_dark_share(phase, footprint, scene.analysis.z);
+                if share >= 1.0 {
                     rgb = dark;
-                } else {
+                } else if share <= 0.0 {
                     rgb = light;
+                } else {
+                    rgb = clamp(round(light + (dark - light) * share), vec3<f32>(0.0), vec3<f32>(255.0));
                 }
             }
         } else if mode == 3u {
