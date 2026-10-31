@@ -1782,7 +1782,7 @@ pub(crate) fn plate_thickness(
         face,
         normal,
         tol,
-        cos_parallel: tolerance.angular.cos(),
+        cos_parallel: tolerance.angular.pcos(),
     };
     let mut range: Option<(f64, f64)> = None;
     // A grid of `level`² small triangles in each triangle, at their
