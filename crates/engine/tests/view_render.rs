@@ -894,7 +894,7 @@ fn a_given_camera_is_the_one_the_picture_is_seen_from() {
     assert!((w as f64 - 200.0 * 40.0 / 60.0).abs() <= 2.0, "{w} x {h}");
     let away = shoot(
         &mut s,
-        json!({"width": 64, "height": 64, "camera": {"eye": [30, 20, 100], "target": [30, 20, 200]}}),
+        json!({"width": 64, "height": 64, "camera": {"eye": [30, 20, 100], "target": [30, 20, 200], "up": [1, 0, 0]}}),
     );
     assert_eq!(away.extent(), (0, 0));
     for (params, reason) in [
