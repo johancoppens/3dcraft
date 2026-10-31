@@ -206,7 +206,7 @@ pub struct Solver;  // new(p), solve(), solve_at(drives), advance(drives), seque
   - a planetary stage through two linear couplings against Willis' formula (scale 1);
   - couplings naming a variable the mate does not have are refused.
 - **`jansen.rs`:**
-  - Jansen's leg (a = 38 … m = 15): the foot point against independent circle intersections (the strandbeest Jig's
+  - Jansen's leg (a = 38 … m = 15): the foot point against independent circle intersections (the Jansen linkage leg Jig's (`strandbeest-leg`)
     branches) at 72 crank angles over a turn, with rank 52 and no DOF left;
   - two legs half a turn apart on one crankshaft;
   - the benchmark (ignored; run in release).

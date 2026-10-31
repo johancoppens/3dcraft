@@ -135,6 +135,21 @@ fn look_options(ui: &mut egui::Ui, look: &mut LookState, tokens: &Tokens, hits: 
             ui.label("Ground");
             ui.horizontal(|ui| {
                 toggle(ui, "ground", "On", &mut look.ground, hits);
+                // The slider takes the room the value's text leaves, so the
+                // row stays inside the popover whatever the font.
+                let text = format!("reflection {:.2}", look.ground_reflection);
+                let text_width = egui::WidgetText::from(text.as_str())
+                    .into_galley(
+                        ui,
+                        Some(egui::TextWrapMode::Extend),
+                        f32::INFINITY,
+                        egui::TextStyle::Body,
+                    )
+                    .size()
+                    .x;
+                let room = ui.available_width() - text_width - 2.0 * ui.spacing().item_spacing.x;
+                let widest = ui.spacing().slider_width;
+                ui.spacing_mut().slider_width = room.max(24.0).min(widest);
                 let response = ui.add_enabled(
                     look.ground,
                     egui::Slider::new(&mut look.ground_reflection, 0.0..=1.0)
@@ -142,7 +157,7 @@ fn look_options(ui: &mut egui::Ui, look: &mut LookState, tokens: &Tokens, hits: 
                         .show_value(false),
                 );
                 hits.push(("groundReflection".to_string(), response.rect));
-                ui.label(format!("reflection {:.2}", look.ground_reflection));
+                ui.label(text);
             });
             ui.end_row();
             choice_row(

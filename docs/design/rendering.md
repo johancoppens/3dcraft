@@ -1148,3 +1148,29 @@ plain 0.045 s a frame on the GPU against 1.05 s on the CPU (22 fps against 0.96)
 refuses 16 at this size). A replay of the history orbiting, PNG files written: 199 frames in 7.7 s plain
 (26 fps) and 36.8 s in the studio look with 16 frames each (5.4 fps).
 
+
+### The interface's font (2026-10-31)
+
+The developer chose Inter (SIL OFL 1.1) for the interface, in place of egui's Ubuntu-Light. Like the built-in fonts
+(`docs/design/text.md` › *Built-in fonts*) it is never committed and never in the program or the web module:
+`craft3d_font::UI_FONTS` pins `InterVariable.ttf` of Inter 4.1 and its licence (`Inter-OFL.txt`) by URL and SHA-256,
+`cargo xtask fonts` fetches it with the others, and `cargo xtask package` copies it into every package's `fonts`
+folder and the web site's `fonts/`. A text in a model cannot name it (`craft3d_font::builtin` does not know it;
+`shipped_font` does). The shell asks for it on its first frame (`crate::fonts::UiFonts`, through
+`craft3d_engine::fonts::load`): the desktop reads it where it finds the built-in fonts and checks the sum; the browser
+lists it for the page, which fetches `fonts/InterVariable.ttf` as it fetches a text's font and registers it, and the
+shell swaps it in on the frame it arrives (a failure is logged and not said in the status bar). One variable file
+gives two faces through egui's variation coordinates: weight 400 for running text and weight 500 as the family
+`medium`, which `TextStyle::Heading` uses. Monospace text (`TextStyle::Monospace`, the command lines on the start
+screen) is JetBrains Mono, the built-in `mono`, when it is here: read at start on the desktop, used in the browser
+once a text fetched it. egui's own fonts (`default_fonts` stays on) are what the interface has until then, on a
+checkout without `cargo xtask fonts`, and behind Inter in every family: Inter lacks ✔ ⏸ ⌖ (the tree's marks and the
+zoom tooltip), which egui's emoji fonts draw; ☰ and the fold arrows are painted, not glyphs. The web module does
+not grow (the file is fetched, 880 KB, 460 KB gzip).
+
+Inter is wider than Ubuntu-Light, so two places that assumed the old widths now measure: the start screen's card
+titles are one row cut with an ellipsis at the card's width (`shell/start.rs`, the whole title in the tooltip), and
+the studio popover's *Ground* slider takes the room its value text leaves (`shell/look_panel.rs`), which on a phone
+had pushed `reflection 0.00` past the popover's edge. Evidence: `tests/ui_audit_evidence.rs` with `--ignored`
+before and after, every picture looked at (start screen, part, assembly, studio and analysis popovers, section,
+drawer, Parameters, error; 1600 × 1000, 1024 × 700, 390 × 844, 820 × 1180).

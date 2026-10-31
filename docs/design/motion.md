@@ -15,7 +15,7 @@ of a point, collisions drawn red, checks over the motion and the video of it. Th
 The **timeline** of a document is its variable `t` when that evaluates to a plain number (no unit). Formulas of `t`
 are the drivers of the motion (a crank angle `360 deg * t`, per leg `crank + 90 deg`); `t` runs from 0 to 1. Nothing
 is reserved: a document whose `t` is a length (a board's or a bar's thickness, as several Jigs have it, the
-strandbeest leg among them) has no timeline, and every motion command says so with the way out (rename it with
+Jansen linkage leg among them) has no timeline, and every motion command says so with the way out (rename it with
 `variable.rename`, then `variable.set {name: t, expr: 0}`). The rule is general: whether a document has a timeline
 is read off its own variable's dimension, never off its name alone. The value the document stores is its rest
 state, what everything that is not the motion sees.
@@ -251,7 +251,7 @@ moment of an assembly.
   collisions named by instance. Closed forms: a crank-rocker's coupler point against the intersection of two circles
   at 33 samples (1e-6, the branch never changes), seek equal to play bit for bit, the dead point of a non-Grashof
   four-bar at `cos θ = (a² + d² − (b + c)²) / 2ad` within a step (`crates/engine/tests/motion_assembly.rs`).
-- 2026-10-30: motion-ux, after the developer watched the strandbeest walker played by a script ("a little
+- 2026-10-30: motion-ux, after the developer watched the Jansen linkage walker played by a script ("a little
   stuttering"; the bar at the top flickered, the status bar too). The player plays an assembly (its Motion mode; an
   assembly has no History, `ui.set {timeline: {motion, playing}}` was refused for "no features to play"); moments
   move meshes instead of meshing (*Costs* above); the work indicator and the status bar are calm

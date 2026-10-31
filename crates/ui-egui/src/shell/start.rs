@@ -206,8 +206,8 @@ pub const EXAMPLES: [Example; 16] = [
         ExampleSection::Jigs,
         "jig-strandbeest",
         "strandbeest-leg.3dcraftjig",
-        "Strandbeest leg",
-        "a Jig: Jansen's linkage"
+        "Jansen linkage leg",
+        "a Jig after the mechanism of Theo Jansen's Strandbeests"
     ),
     published!(
         ExampleSection::Assemblies,
@@ -227,8 +227,8 @@ pub const EXAMPLES: [Example; 16] = [
         ExampleSection::Assemblies,
         "asm-walker",
         "strandbeest-walker.3dcraftasm",
-        "Strandbeest walker",
-        "an assembly: four legs walk"
+        "Jansen linkage walker",
+        "an assembly of four legs, after the mechanism of Theo Jansen's Strandbeests"
     ),
 ];
 
@@ -883,16 +883,25 @@ impl Shell {
                             egui::StrokeKind::Outside,
                         );
                     }
-                    painter.text(
+                    // One row, cut with an ellipsis at the card's width
+                    // (the whole title is in the tooltip).
+                    let mut job = egui::text::LayoutJob::single_section(
+                        example.title.to_string(),
+                        egui::TextFormat::simple(
+                            egui::FontId::proportional(if thumb.x < 110.0 { 12.0 } else { 13.0 }),
+                            color(if response.hovered() {
+                                tokens.text
+                            } else {
+                                tokens.text_dim
+                            }),
+                        ),
+                    );
+                    job.wrap =
+                        egui::text::TextWrapping::truncate_at_width((rect.width() - 2.0).max(1.0));
+                    painter.galley(
                         egui::pos2(rect.min.x + 2.0, image.max.y + 3.0),
-                        egui::Align2::LEFT_TOP,
-                        example.title,
-                        egui::FontId::proportional(if thumb.x < 110.0 { 12.0 } else { 13.0 }),
-                        color(if response.hovered() {
-                            tokens.text
-                        } else {
-                            tokens.text_dim
-                        }),
+                        painter.layout_job(job),
+                        egui::Color32::PLACEHOLDER,
                     );
                     self.start
                         .hits

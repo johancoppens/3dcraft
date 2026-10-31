@@ -76,7 +76,7 @@ Every item below is in `main` as of 2026-10-30. Branches still merging for this 
 
 ### The window and installing
 
-- **The window.** A start screen with the example models as cards, recent files and how to connect an agent; a tab per document with its own view; a feature list with an eye per feature and a double click (or F) that flies the camera to it; a history player like a video player; a view cube, see-through bodies and a section plane; File, Edit (Undo, Redo) and Help menus with keyboard shortcuts (F1). It draws with your graphics card, or on the processor when there is none.
+- **The window.** A start screen with the example models as cards, recent files and how to connect an agent; a tab per document with its own view; a feature list with an eye per feature and a double click (or F) that flies the camera to it; a history player like a video player; a view cube, see-through bodies and a section plane; File, Edit (Undo, Redo) and Help menus with keyboard shortcuts (F1). It draws with your graphics card, or on the processor when there is none. The interface is set in Inter, with JetBrains Mono for code.
 - **Autosave and crash recovery.** Unsaved work is saved in the background; after a crash the window offers to recover it. Closing the window or a tab asks before unsaved changes are lost.
 - **Clear errors and bug reports.** A failed file action shows a dialog with what went wrong; after any failed command the status bar offers *Copy details*, a short report to paste into a bug report.
 - **Installers** for Linux (AppImage, and a tarball with an install script), macOS (a `.dmg` for Apple Silicon) and Windows (a `.msi` installer, and a zip), with the `.3dcraft` and `.3dcraftjig` file types.
