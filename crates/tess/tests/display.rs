@@ -17,6 +17,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
 use craft3d_tess::{
     ANGLE_FLOOR, Mesh, TessError, TessParams, tessellate_body, tessellate_body_and_edges,
@@ -44,7 +45,7 @@ fn fixtures(scale: f64) -> Vec<Reference> {
 }
 
 fn turn(a: Vec3, b: Vec3) -> f64 {
-    a.cross(b).length().atan2(a.dot(b))
+    a.cross(b).length().patan2(a.dot(b))
 }
 
 fn closed(mesh: &Mesh) -> bool {

@@ -10,6 +10,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::plain::{body, built, run, session};
@@ -125,7 +126,7 @@ fn the_tip_of_a_lofted_blade() {
     {
         let name = format!("Sec{i}");
         let at = |p: [f64; 2]| {
-            let (sin, cos) = angle.sin_cos();
+            let (sin, cos) = angle.psin_cos();
             let (x, y) = (p[0] * scale, p[1] * scale);
             json!([x * cos - y * sin, x * sin + y * cos])
         };

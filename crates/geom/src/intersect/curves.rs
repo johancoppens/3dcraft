@@ -28,6 +28,7 @@
 use super::field::{Field, cone_apex_axis};
 use super::{CurveHit, CurveIntersection, wrap};
 use crate::{Circle, Cone, Curve3, GeomError, Line, Sphere, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Tolerance, Vec3};
 use std::f64::consts::TAU;
 
@@ -84,7 +85,7 @@ pub(super) fn line_cone(
     tol: &Tolerance,
 ) -> Result<CurveIntersection, GeomError> {
     let (apex, axis) = cone_apex_axis(cone);
-    let cos = cone.half_angle().cos();
+    let cos = cone.half_angle().pcos();
     let (o, d) = (line.origin() - apex, line.direction());
     let (da, oa) = (d.dot(axis), o.dot(axis));
     let cos2 = cos * cos;
@@ -156,10 +157,10 @@ pub(super) fn circle_sphere(
     let h = w.length_squared() + r * r - big * big;
     // A change of the squared distance by 2 R tol is a move by tol.
     let slack = 2.0 * big * tol.linear;
-    let amplitude = a.hypot(b);
+    let amplitude = a.phypot(b);
     let at = |angle: f64, tangent: bool| {
         let t = wrap(angle);
-        let (s, c) = t.sin_cos();
+        let (s, c) = t.psin_cos();
         CurveHit {
             t,
             point: f.point(r * c, r * s, 0.0),
@@ -176,7 +177,7 @@ pub(super) fn circle_sphere(
     if h.abs() > amplitude + slack {
         return hits(Vec::new());
     }
-    let phase = b.atan2(a);
+    let phase = b.patan2(a);
     if (h.abs() - amplitude).abs() <= slack {
         let angle = if h > 0.0 {
             phase + std::f64::consts::PI
@@ -185,7 +186,7 @@ pub(super) fn circle_sphere(
         };
         return hits(vec![at(angle, true)]);
     }
-    let spread = (-h / amplitude).clamp(-1.0, 1.0).acos();
+    let spread = (-h / amplitude).clamp(-1.0, 1.0).pacos();
     hits(vec![at(phase - spread, false), at(phase + spread, false)])
 }
 

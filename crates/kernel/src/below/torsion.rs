@@ -60,6 +60,7 @@
 
 use super::{BelowPlane, CutError, CutPlane, Part, below_parts, prepare};
 use craft3d_geom::Curve3;
+use craft3d_math::Portable;
 use craft3d_math::{Tolerance, Vec3};
 use craft3d_topo::Body;
 use std::collections::{BTreeMap, BTreeSet};
@@ -251,7 +252,7 @@ struct Boundary<'a> {
 }
 
 fn dist(a: P2, b: P2) -> f64 {
-    (a.0 - b.0).hypot(a.1 - b.1)
+    (a.0 - b.0).phypot(a.1 - b.1)
 }
 
 fn mid(a: P2, b: P2) -> P2 {
@@ -1432,7 +1433,7 @@ fn edge_gradient(e: &Element, psi: &[f64], k: usize, s: f64) -> (P2, P2, P2, f64
         q.dxi.0 * dxi + q.deta.0 * deta,
         q.dxi.1 * dxi + q.deta.1 * deta,
     );
-    let length = t.0.hypot(t.1);
+    let length = t.0.phypot(t.1);
     let normal = if length > 0.0 {
         (t.1 / length, -t.0 / length)
     } else {

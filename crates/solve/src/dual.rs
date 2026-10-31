@@ -6,6 +6,7 @@
 //! enough to get an exact Jacobian row from the same expression that
 //! computes the residual.
 
+use craft3d_math::Portable;
 use std::ops::{Add, Div, Mul, Neg, Sub};
 
 /// The most unknowns one scalar equation can depend on: a point and the
@@ -54,7 +55,7 @@ impl Dual {
 
     /// The sine and the cosine.
     pub(crate) fn sin_cos(self) -> (Dual, Dual) {
-        let (sin, cos) = self.v.sin_cos();
+        let (sin, cos) = self.v.psin_cos();
         (
             Dual {
                 v: sin,
@@ -156,7 +157,7 @@ impl Sub<f64> for Dual {
 /// there so that a constraint between two coincident points still has a
 /// deterministic, non-zero gradient to move along.
 pub(crate) fn length(x: Dual, y: Dual) -> Dual {
-    let len = x.v.hypot(y.v);
+    let len = x.v.phypot(y.v);
     if len > 0.0 {
         let (cx, cy) = (x.v / len, y.v / len);
         Dual {
@@ -175,7 +176,7 @@ pub(crate) fn angle_of(x: Dual, y: Dual) -> Option<Dual> {
         return None;
     }
     Some(Dual {
-        v: y.v.atan2(x.v),
+        v: y.v.patan2(x.v),
         d: zip(&x.d, &y.d, |a, b| (x.v * b - y.v * a) / sq),
     })
 }
@@ -232,8 +233,13 @@ mod tests {
             -2.0,
         );
         check(|a, b| a * b - 4.0, |a, b| a * b - 4.0, 1.5, -2.0);
-        check(length, f64::hypot, 3.0, -4.0);
-        check(|a, b| angle_of(a, b).unwrap(), |a, b| b.atan2(a), -3.0, 4.0);
+        check(length, f64::phypot, 3.0, -4.0);
+        check(
+            |a, b| angle_of(a, b).unwrap(),
+            |a, b| b.patan2(a),
+            -3.0,
+            4.0,
+        );
     }
 
     #[test]

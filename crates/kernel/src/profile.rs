@@ -57,6 +57,7 @@ use crate::spline2::{self, Part};
 pub use crate::spline2::{MAX_SPLINE_DEGREE, MAX_SPLINE_POINTS, Spline2};
 use crate::{KernelError, MAX_REPORTED};
 use craft3d_geom::GeomError;
+use craft3d_math::Portable;
 use craft3d_math::Tolerance;
 use std::collections::BTreeSet;
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
@@ -108,7 +109,7 @@ pub(crate) fn cross(a: P2, b: P2) -> f64 {
 }
 
 fn length(a: P2) -> f64 {
-    a[0].hypot(a[1])
+    a[0].phypot(a[1])
 }
 
 pub(crate) fn distance(a: P2, b: P2) -> f64 {
@@ -116,7 +117,7 @@ pub(crate) fn distance(a: P2, b: P2) -> f64 {
 }
 
 fn angle_of(v: P2) -> f64 {
-    v[1].atan2(v[0])
+    v[1].patan2(v[0])
 }
 
 /// An angle wrapped to `[0, 2π)`.
@@ -264,7 +265,7 @@ impl Segment {
             }
             Shape::Arc { center, radius } | Shape::Circle { center, radius } => {
                 let (begin, sweep) = self.angles().unwrap_or((0.0, TAU));
-                let (s, c) = (begin + t * sweep).sin_cos();
+                let (s, c) = (begin + t * sweep).psin_cos();
                 add(center, [radius * c, radius * s])
             }
         }
@@ -332,7 +333,7 @@ impl Segment {
             for quarter in 0..4_u8 {
                 let angle = f64::from(quarter) * FRAC_PI_2;
                 if wrap(angle - begin) <= sweep {
-                    let (s, c) = angle.sin_cos();
+                    let (s, c) = angle.psin_cos();
                     let p = add(center, [radius * c, radius * s]);
                     b = [
                         b[0].min(p[0]),
@@ -376,11 +377,11 @@ impl Segment {
         let mut sum = (w / 2.0, (a[0] + b[0]) * w / 6.0, (a[1] + b[1]) * w / 6.0);
         if let (&Shape::Arc { center, radius }, Some((begin, sweep))) = (&self.shape, self.angles())
         {
-            let area = sign * radius * radius * (sweep - sweep.sin()) / 2.0;
+            let area = sign * radius * radius * (sweep - sweep.psin()) / 2.0;
             let c = sub(center, origin);
-            let half = (sweep / 2.0).sin();
+            let half = (sweep / 2.0).psin();
             let lever = sign * 2.0 / 3.0 * radius * radius * radius * half * half * half;
-            let (s, co) = (begin + sweep / 2.0).sin_cos();
+            let (s, co) = (begin + sweep / 2.0).psin_cos();
             sum.0 += area;
             sum.1 += area * c[0] + lever * co;
             sum.2 += area * c[1] + lever * s;
@@ -395,7 +396,7 @@ impl Segment {
         let (from, to) = self.own_ends();
         let (a, b) = (sub(from, p), sub(to, p));
         match self.shape {
-            Shape::Line => cross(a, b).atan2(dot(a, b)) * sign,
+            Shape::Line => cross(a, b).patan2(dot(a, b)) * sign,
             Shape::Spline(_) => spline2::turn_about(&self.parts(), p) * sign,
             Shape::Circle { center, radius } => {
                 if distance(p, center) < radius {
@@ -416,7 +417,7 @@ impl Segment {
                 // false gave −π and no turn: a circle centred level with
                 // an arc's ends was not inside it, 2026-10-28).
                 let s = cross(a, b);
-                let chord = s.atan2(dot(a, b));
+                let chord = s.patan2(dot(a, b));
                 let behind = distance(p, center) < radius && s.is_sign_negative();
                 sign * (chord + if behind { TAU } else { 0.0 })
             }
@@ -579,7 +580,7 @@ pub(crate) fn validate(curve: &SketchCurve, tol: f64) -> Result<(), KernelError>
                 return Err(degenerate(id, fault));
             }
             let b = spline.bbox();
-            if (b[2] - b[0]).hypot(b[3] - b[1]) <= tol {
+            if (b[2] - b[0]).phypot(b[3] - b[1]) <= tol {
                 return Err(degenerate(id, "the spline has no length"));
             }
         }
@@ -1256,7 +1257,7 @@ impl Turns {
                 let last = node.end.checked_sub(1).and_then(|l| path.segments.get(l));
                 if let (Some(first), Some(last)) = (first, last) {
                     let (u, v) = (sub(first.start, p), sub(last.end, p));
-                    turn += cross(u, v).atan2(dot(u, v));
+                    turn += cross(u, v).patan2(dot(u, v));
                 }
                 continue;
             }

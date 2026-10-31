@@ -47,6 +47,7 @@
 //! fails or is not finite at a sample.
 
 pub use craft3d_kernel::profile::Spline2;
+use craft3d_math::Portable;
 
 /// The degree of a fitted formula curve.
 pub const FIT_DEGREE: usize = 3;
@@ -94,7 +95,7 @@ pub const MAX_DRAWN_POINTS: usize = 4096;
 type P2 = [f64; 2];
 
 fn distance(a: P2, b: P2) -> f64 {
-    (a[0] - b[0]).hypot(a[1] - b[1])
+    (a[0] - b[0]).phypot(a[1] - b[1])
 }
 
 /// The span of `knots` that holds `u` (the index `k` with
@@ -185,7 +186,7 @@ pub fn polyline(spline: &Spline2, tolerance: f64) -> Vec<P2> {
     };
     let off = |q: P2, a: P2, b: P2| {
         let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
-        let length = dx.hypot(dy);
+        let length = dx.phypot(dy);
         if length > 0.0 {
             ((q[0] - a[0]) * dy - (q[1] - a[1]) * dx).abs() / length
         } else {
@@ -553,7 +554,7 @@ fn end_direction(
         (4.0 * fine[0] - coarse[0]) / 3.0,
         (4.0 * fine[1] - coarse[1]) / 3.0,
     ];
-    let speed = d[0].hypot(d[1]);
+    let speed = d[0].phypot(d[1]);
     let secant = distance(far, f0) / (2.0 * h);
     if !(speed.is_finite() && secant.is_finite() && speed > 0.0 && speed >= 0.5 * secant) {
         return Ok(None);
@@ -563,7 +564,7 @@ fn end_direction(
     // not, the formula changes faster near the end than the step sees (a
     // power of `t` below one near zero), and a direction fixed there would
     // be the step's, not the formula's.
-    let (c, f) = (coarse[0].hypot(coarse[1]), fine[0].hypot(fine[1]));
+    let (c, f) = (coarse[0].phypot(coarse[1]), fine[0].phypot(fine[1]));
     let sine = (coarse[0] * fine[1] - coarse[1] * fine[0]) / (c * f);
     let along = coarse[0] * fine[0] + coarse[1] * fine[1];
     if !(c > 0.0 && f > 0.0 && along > 0.0 && sine.abs() <= 1e-5 && (c - f).abs() <= 0.01 * f) {
@@ -871,7 +872,7 @@ pub fn fit_formula(
                 // with the fourth power of the span), two to eight.
                 let ratio = off / target;
                 let pieces = if ratio > 1.0 && ratio.is_finite() {
-                    (ratio.powf(0.25) * 1.2).ceil().clamp(2.0, 8.0) as usize
+                    (ratio.ppowf(0.25) * 1.2).ceil().clamp(2.0, 8.0) as usize
                 } else {
                     2
                 };
@@ -953,6 +954,7 @@ pub fn fit_formula(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use craft3d_math::Portable;
 
     #[test]
     fn a_circle_is_fitted_within_the_tolerance() {
@@ -964,7 +966,7 @@ mod tests {
             (1e6, 1e-6),
         ] {
             let fit = fit_formula(
-                |t: f64| Ok([radius * t.cos(), radius * t.sin()]),
+                |t: f64| Ok([radius * t.pcos(), radius * t.psin()]),
                 0.0,
                 3.0,
                 tolerance,
@@ -974,13 +976,13 @@ mod tests {
             assert_eq!(fit.spline.control[0], [radius, 0.0]);
             assert_eq!(
                 *fit.spline.control.last().unwrap(),
-                [radius * 3f64.cos(), radius * 3f64.sin()]
+                [radius * 3f64.pcos(), radius * 3f64.psin()]
             );
             // Densely, well between the checks, the spline stays on the
             // circle: its distance from it is how far it is off the radius.
             for k in 0..=20000 {
                 let p = point(&fit.spline, f64::from(k) / 20000.0).unwrap();
-                let d = (p[0].hypot(p[1]) - radius).abs();
+                let d = (p[0].phypot(p[1]) - radius).abs();
                 assert!(d <= tolerance, "r {radius}: {d:e} at {k}");
             }
             println!(
@@ -997,7 +999,12 @@ mod tests {
     fn an_involute_is_fitted_without_a_cusp() {
         let rb = 20.0;
         let fit = fit_formula(
-            |t: f64| Ok([rb * (t.cos() + t * t.sin()), rb * (t.sin() - t * t.cos())]),
+            |t: f64| {
+                Ok([
+                    rb * (t.pcos() + t * t.psin()),
+                    rb * (t.psin() - t * t.pcos()),
+                ])
+            },
             0.0,
             0.6,
             1e-6,
@@ -1052,12 +1059,12 @@ mod tests {
 
     #[test]
     fn a_fit_runs_backwards_and_is_deterministic() {
-        let f = |t: f64| Ok([t, (3.0 * t).sin()]);
+        let f = |t: f64| Ok([t, (3.0 * t).psin()]);
         let a = fit_formula(f, 2.0, -1.0, 1e-6).unwrap();
         let b = fit_formula(f, 2.0, -1.0, 1e-6).unwrap();
         assert_eq!(a, b);
-        assert_eq!(a.spline.control[0], [2.0, 6f64.sin()]);
-        assert_eq!(*a.spline.control.last().unwrap(), [-1.0, (-3f64).sin()]);
+        assert_eq!(a.spline.control[0], [2.0, 6f64.psin()]);
+        assert_eq!(*a.spline.control.last().unwrap(), [-1.0, (-3f64).psin()]);
     }
 
     #[test]
@@ -1133,8 +1140,8 @@ mod tests {
     #[test]
     fn a_periodic_formula_in_step_with_an_even_grid_is_seen() {
         let ring = |t: f64| {
-            let r = 20.0 + (64.0 * t).sin();
-            [r * t.cos(), r * t.sin()]
+            let r = 20.0 + (64.0 * t).psin();
+            [r * t.pcos(), r * t.psin()]
         };
         let fit = fit_formula(|t| Ok(ring(t)), 0.0, std::f64::consts::TAU, 1e-4).unwrap();
         let off = densely_off(&fit, ring, 0.0, std::f64::consts::TAU, 6007);
@@ -1144,7 +1151,7 @@ mod tests {
             fit.spline.control.len()
         );
         assert!(fit.spline.control.len() > 64 * 4);
-        let wave = |t: f64| [t, t.sin()];
+        let wave = |t: f64| [t, t.psin()];
         let end = 256.0 * std::f64::consts::PI;
         // 128 periods of a sine: fitted within a coarse tolerance, and
         // refused (never a flat line) where it would take too many points.
@@ -1186,38 +1193,38 @@ mod tests {
                 (c[c.len() - 2], c[c.len() - 1])
             };
             let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
-            let n = dx.hypot(dy);
+            let n = dx.phypot(dy);
             [dx / n, dy / n]
         };
         let off = |d: [f64; 2], want: [f64; 2]| {
-            let n = want[0].hypot(want[1]);
+            let n = want[0].phypot(want[1]);
             (d[0] * want[1] / n - d[1] * want[0] / n).abs()
         };
         for k in [1e-3, 1.0, 1e3, 1e6] {
             let fit = fit_formula(|t| Ok([k * t, k * t * t]), 0.0, 1.0, 1e-6 * k).unwrap();
             assert!(off(direction(&fit, true), [1.0, 0.0]) < 1e-12, "x{k}");
             assert!(off(direction(&fit, false), [1.0, 2.0]) < 1e-12, "x{k}");
-            let circle = |t: f64| Ok([10.0 * k * t.cos(), 10.0 * k * t.sin()]);
+            let circle = |t: f64| Ok([10.0 * k * t.pcos(), 10.0 * k * t.psin()]);
             let fit = fit_formula(circle, 0.3, 2.0, 1e-6 * k).unwrap();
             assert!(
-                off(direction(&fit, true), [-(0.3f64).sin(), 0.3f64.cos()]) < 1e-8,
+                off(direction(&fit, true), [-(0.3f64).psin(), 0.3f64.pcos()]) < 1e-8,
                 "x{k}"
             );
             assert!(
-                off(direction(&fit, false), [-(2.0f64).sin(), 2.0f64.cos()]) < 1e-8,
+                off(direction(&fit, false), [-(2.0f64).psin(), 2.0f64.pcos()]) < 1e-8,
                 "x{k}"
             );
         }
-        let involute = |t: f64| Ok([t.cos() + t * t.sin(), t.sin() - t * t.cos()]);
+        let involute = |t: f64| Ok([t.pcos() + t * t.psin(), t.psin() - t * t.pcos()]);
         let fit = fit_formula(involute, 0.0, 1.0, 1e-6).unwrap();
         // Free at the base circle: the fit's own interpolation there.
         assert!(fit.deviation <= 0.5e-6);
         // At t = 1 it runs along (t cos t, t sin t).
-        assert!(off(direction(&fit, false), [1.0f64.cos(), 1.0f64.sin()]) < 1e-8);
+        assert!(off(direction(&fit, false), [1.0f64.pcos(), 1.0f64.psin()]) < 1e-8);
         let mut at = |u: f64| involute(u);
         assert_eq!(end_direction(&mut at, 0.0, 1.0).unwrap(), None);
         // A power below one near zero changes faster than the step: free.
-        let mut steep = |u: f64| Ok([u, (u + 1e-3).powf(0.5)]);
+        let mut steep = |u: f64| Ok([u, (u + 1e-3).ppowf(0.5)]);
         assert_eq!(end_direction(&mut steep, 0.0, 1.0).unwrap(), None);
     }
 }

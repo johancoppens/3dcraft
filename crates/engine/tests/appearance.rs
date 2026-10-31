@@ -10,6 +10,7 @@
     clippy::needless_range_loop
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::run;
@@ -434,7 +435,7 @@ fn a_density_gives_the_mass_and_the_inertia_tensor_in_closed_form() {
             );
         }
         // Mass in kg: the volume in m³ times the density.
-        let kg = |volume: f64| volume / per_metre.powi(3) * density;
+        let kg = |volume: f64| volume / per_metre.ppowi(3) * density;
         let measure = run(&mut s, "document.measure", json!({}));
         let entry = |name: &str| {
             measure["bodies"]
@@ -466,7 +467,7 @@ fn a_density_gives_the_mass_and_the_inertia_tensor_in_closed_form() {
         assert!(close(t[2][2], m * r * r / 2.0), "{unit}: {t:?}");
 
         let ball = entry("Ball");
-        let m = kg(4.0 / 3.0 * PI * 2.5_f64.powi(3));
+        let m = kg(4.0 / 3.0 * PI * 2.5_f64.ppowi(3));
         assert!(close(ball["mass"].as_f64().unwrap(), m), "{unit}: {ball}");
         let t = tensor(&ball);
         for k in 0..3 {

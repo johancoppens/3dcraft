@@ -12,6 +12,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 mod face_ops_common;
 
@@ -36,7 +37,7 @@ fn cone(r1: f64, r2: f64, h: f64) -> f64 {
 fn a_block_drafted_from_its_bottom_its_top_or_a_world_plane() {
     for k in SCALES {
         let degrees = 7.0_f64;
-        let tan = degrees.to_radians().tan();
+        let tan = degrees.to_radians().ptan();
         for (neutral, reversed, volume) in [
             // Narrower toward the top.
             (BOTTOM, false, frustum(10.0, 10.0 - 10.0 * tan, 5.0)),
@@ -68,7 +69,7 @@ fn a_block_drafted_from_its_bottom_its_top_or_a_world_plane() {
 #[test]
 fn a_rod_a_hole_and_a_rounded_box_drafted() {
     for k in SCALES {
-        let tan = 5.0_f64.to_radians().tan();
+        let tan = 5.0_f64.to_radians().ptan();
         let mut s = session();
         new_document(&mut s, k);
         built(
@@ -125,7 +126,7 @@ fn a_rod_a_hole_and_a_rounded_box_drafted() {
             "feature.draft",
             json!({"faces": walls, "neutral": "xy", "angle": "8 deg", "name": "Moulded"}),
         );
-        let t = 8.0_f64.to_radians().tan();
+        let t = 8.0_f64.to_radians().ptan();
         let volume = a * b * h - (a + b) * t * h * h + 4.0 / 3.0 * t * t * h * h * h
             - (4.0 - PI) * (r * r * h - r * t * h * h + t * t * h * h * h / 3.0);
         assert_solid(&mut s, "Moulded", volume, None, k);
@@ -196,7 +197,7 @@ fn a_draft_follows_its_datum_and_carries_a_fillet_and_a_sketch() {
             }
             // The square at the parting level is 10; the faces lean in
             // above it and out below it.
-            let tan = slope.to_radians().tan();
+            let tan = slope.to_radians().ptan();
             let (below, above) = (level, 5.0 - level);
             let volume = frustum(10.0 + 2.0 * below * tan, 10.0, below)
                 + frustum(10.0, 10.0 - 2.0 * above * tan, above);
@@ -212,7 +213,7 @@ fn a_draft_follows_its_datum_and_carries_a_fillet_and_a_sketch() {
             let round = body(&mut s, "Round");
             let v = round["volume"].as_f64().unwrap() / (k * k * k);
             let turn = (90.0 - slope).to_radians();
-            let section = 0.25 * ((turn / 2.0).tan() - turn / 2.0);
+            let section = 0.25 * ((turn / 2.0).ptan() - turn / 2.0);
             let cut = section * (10.0 - 2.0 * above * tan);
             assert!(
                 ((volume - v) / cut - 1.0).abs() < 0.05,
@@ -224,7 +225,7 @@ fn a_draft_follows_its_datum_and_carries_a_fillet_and_a_sketch() {
             let slack = peg["bboxTolerance"].as_f64().unwrap();
             let rise =
                 (peg["bbox"][1][2].as_f64().unwrap() - peg["bbox"][0][2].as_f64().unwrap()) / k;
-            let (sin, cos) = slope.to_radians().abs().sin_cos();
+            let (sin, cos) = slope.to_radians().abs().psin_cos();
             let expected = 2.0 * sin + 1.0 * cos;
             assert!(
                 rise <= expected + 1e-9 && rise >= expected - 2.0 * slack / k,
@@ -348,7 +349,7 @@ fn drafts_are_edited_saved_reopened_undone_and_redone() {
         "feature.draft",
         json!({"faces": SIDES, "neutral": BOTTOM, "angle": "4 deg", "name": "Tapered"}),
     );
-    let tan = |deg: f64| deg.to_radians().tan();
+    let tan = |deg: f64| deg.to_radians().ptan();
     assert_solid(
         &mut s,
         "Tapered",

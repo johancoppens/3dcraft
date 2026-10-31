@@ -13,6 +13,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::{arc, circle, line, rectangle};
@@ -71,10 +72,10 @@ fn column(n: usize) -> (Vec<SketchCurve>, f64) {
 fn ngon(n: usize) -> (Vec<SketchCurve>, f64) {
     let p = |i: usize| {
         let a = 2.0 * PI * (i % n) as f64 / n as f64;
-        [1000.0 * a.cos(), 1000.0 * a.sin()]
+        [1000.0 * a.pcos(), 1000.0 * a.psin()]
     };
     let curves = (0..n).map(|i| line(i as u64, p(i), p(i + 1))).collect();
-    let area = n as f64 * 1e6 * (2.0 * PI / n as f64).sin() / 2.0;
+    let area = n as f64 * 1e6 * (2.0 * PI / n as f64).psin() / 2.0;
     (curves, area)
 }
 
@@ -228,7 +229,7 @@ fn wavy_spline(id: u64, c: [f64; 2], r: f64, m: usize) -> SketchCurve {
         .map(|i| {
             let a = 2.0 * PI * i as f64 / m as f64;
             let s = if i % 2 == 0 { r } else { 0.9 * r };
-            [c[0] + s * a.cos(), c[1] + s * a.sin()]
+            [c[0] + s * a.pcos(), c[1] + s * a.psin()]
         })
         .collect();
     control.push(control[0]);

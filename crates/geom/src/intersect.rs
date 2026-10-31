@@ -20,6 +20,7 @@
 //! intersection whose position amplifies rounding by a million or more and
 //! is refused.
 
+use craft3d_math::Portable;
 mod clip;
 mod curves;
 mod exact;
@@ -393,7 +394,7 @@ fn conic_hits(center: Vec3, x: Vec3, y: Vec3, angles: &[f64], tangent: bool) -> 
         .iter()
         .map(|&angle| {
             let t = wrap(angle);
-            let (s, c) = t.sin_cos();
+            let (s, c) = t.psin_cos();
             CurveHit {
                 t,
                 point: center + x * c + y * s,
@@ -417,7 +418,7 @@ fn conic_plane(
     let n = plane.z();
     let h = (center - plane.origin()).dot(n);
     let (a, b) = (x.dot(n), y.dot(n));
-    let r = a.hypot(b);
+    let r = a.phypot(b);
     if r <= tol.linear {
         return if h.abs() <= tol.linear {
             CurveIntersection::OnSurface
@@ -428,7 +429,7 @@ fn conic_plane(
     if h.abs() > r + tol.linear {
         return CurveIntersection::Hits(Vec::new());
     }
-    let phase = b.atan2(a);
+    let phase = b.patan2(a);
     if (h.abs() - r).abs() <= tol.linear {
         // The lowest point touches when the centre is above, the highest
         // when it is below.
@@ -439,7 +440,7 @@ fn conic_plane(
         };
         return CurveIntersection::Hits(conic_hits(center, x, y, &[angle], true));
     }
-    let spread = (-h / r).clamp(-1.0, 1.0).acos();
+    let spread = (-h / r).clamp(-1.0, 1.0).pacos();
     CurveIntersection::Hits(conic_hits(
         center,
         x,
@@ -490,7 +491,7 @@ fn conic_cylinder(
     };
     let toward = delta * (-1.0 / distance); // from the curve's centre to the axis
     let side = axis.cross(toward);
-    let angle_of = |q: Vec3| q.dot(py).atan2(q.dot(px));
+    let angle_of = |q: Vec3| q.dot(py).patan2(q.dot(px));
     let q1 = toward * along - side * half;
     let q2 = toward * along + side * half;
     Ok(CurveIntersection::Hits(if touching {

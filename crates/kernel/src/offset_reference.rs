@@ -148,7 +148,7 @@ mod tests {
             .map(|k| {
                 let a = turn + PI * k as f64 / n as f64;
                 let r = if k.is_multiple_of(2) { r1 } else { r0 };
-                [c[0] + r * a.cos(), c[1] + r * a.sin()]
+                [c[0] + r * a.pcos(), c[1] + r * a.psin()]
             })
             .collect();
         polygon(&points)
@@ -241,7 +241,7 @@ mod tests {
                     let n = 1 + rng.below(6);
                     for k in 0..n {
                         let a = TAU * k as f64 / n as f64;
-                        let at = [c[0] + 0.55 * r * a.cos(), c[1] + 0.55 * r * a.sin()];
+                        let at = [c[0] + 0.55 * r * a.pcos(), c[1] + 0.55 * r * a.psin()];
                         curves.push(circle(at, 0.2 * r));
                     }
                 }

@@ -10,6 +10,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::{circle, frames, line, rectangle};
@@ -91,7 +92,7 @@ fn a_round_profile_up_to_an_inclined_plane_has_the_mean_height() {
             let floor = within(
                 &base,
                 [0.0, 0.0, h],
-                [tilt.sin(), 0.0, tilt.cos()],
+                [tilt.psin(), 0.0, tilt.pcos()],
                 [0.0, 1.0, 0.0],
             );
             let target = primitives::cylinder(&floor, 20.0 * k, 3.0 * k).unwrap();
@@ -116,7 +117,7 @@ fn a_round_profile_up_to_an_inclined_plane_has_the_mean_height() {
             assert_close(volume, PI * a * a * h, 1e-9, "volume");
             assert_close(
                 area,
-                PI * a * a + 2.0 * PI * a * h + PI * a * a / tilt.cos(),
+                PI * a * a + 2.0 * PI * a * h + PI * a * a / tilt.pcos(),
                 1e-9,
                 "area",
             );
@@ -229,12 +230,12 @@ fn a_rectangle_up_to_a_cylinder_ends_on_its_arch() {
             .unwrap();
             let (volume, area) = measured(&made, k);
             let drop = (r * r - a * a).sqrt();
-            let segment = a * drop + r * r * (a / r).asin();
+            let segment = a * drop + r * r * (a / r).pasin();
             let front = 2.0 * a * h - segment;
             assert_close(volume, l * front, 1e-9, "volume");
             assert_close(
                 area,
-                2.0 * a * l + 2.0 * front + 2.0 * l * (h - drop) + 2.0 * r * (a / r).asin() * l,
+                2.0 * a * l + 2.0 * front + 2.0 * l * (h - drop) + 2.0 * r * (a / r).pasin() * l,
                 1e-9,
                 "area",
             );
@@ -284,7 +285,7 @@ fn a_round_profile_up_to_a_sphere_from_outside_and_from_inside() {
         for base in frames(k) {
             let (a, r) = (1.5 * k, 4.0 * k);
             let drop = (r * r - a * a).sqrt();
-            let cap_volume = 2.0 * PI / 3.0 * (r.powi(3) - drop.powi(3));
+            let cap_volume = 2.0 * PI / 3.0 * (r.ppowi(3) - drop.ppowi(3));
             let cap_area = 2.0 * PI * r * (r - drop);
             for (h, inside) in [(9.0 * k, false), (1.0 * k, true)] {
                 let centre = within(&base, [0.0, 0.0, h], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]);
@@ -464,14 +465,14 @@ fn a_rectangle_up_to_a_parabolic_wall_has_the_area_under_the_parabola() {
             let t = |x: f64| (x + 6.0) / 12.0;
             let y = |x: f64| 4.0 + 8.0 * t(x) * (1.0 - t(x));
             let primitive =
-                |x: f64| 12.0 * (4.0 * t(x) + 4.0 * t(x).powi(2) - 8.0 / 3.0 * t(x).powi(3));
+                |x: f64| 12.0 * (4.0 * t(x) + 4.0 * t(x).ppowi(2) - 8.0 / 3.0 * t(x).ppowi(3));
             let under = primitive(x1) - primitive(x0);
             // The slope is s = (2 - 4t) / 3, and dx = -9 ds.
             let slope = |x: f64| (2.0 - 4.0 * t(x)) / 3.0;
-            let arc = |s: f64| (s * (1.0 + s * s).sqrt() + s.asinh()) / 2.0;
+            let arc = |s: f64| (s * (1.0 + s * s).sqrt() + s.pasinh()) / 2.0;
             let length = 9.0 * (arc(slope(x0)) - arc(slope(x1)));
             let height = z1 - z0;
-            assert_close(volume, height * under * k.powi(3), 1e-7, "volume");
+            assert_close(volume, height * under * k.ppowi(3), 1e-7, "volume");
             assert_close(
                 area,
                 ((x1 - x0) * height + height * length + 2.0 * under + height * (y(x0) + y(x1)))
@@ -522,14 +523,14 @@ fn a_round_profile_up_to_a_cubic_wall_follows_it() {
         let steps = 20_000;
         let f = |i: usize| {
             let phi = -PI / 2.0 + PI * i as f64 / steps as f64;
-            y(cx + a * phi.sin()) * 2.0 * a * a * phi.cos().powi(2)
+            y(cx + a * phi.psin()) * 2.0 * a * a * phi.pcos().ppowi(2)
         };
         let mut sum = f(0) + f(steps);
         for i in 1..steps {
             sum += f(i) * if i % 2 == 1 { 4.0 } else { 2.0 };
         }
         let expected = sum * (PI / steps as f64) / 3.0;
-        assert_close(volume, expected * k.powi(3), 1e-6, "volume");
+        assert_close(volume, expected * k.ppowi(3), 1e-6, "volume");
     }
 }
 
@@ -757,7 +758,7 @@ fn over_disc(a: f64, cx: f64, f: impl Fn(f64) -> f64) -> f64 {
     let steps = 20_000;
     let g = |i: usize| {
         let phi = -PI / 2.0 + PI * i as f64 / steps as f64;
-        f(cx + a * phi.sin()) * 2.0 * a * a * phi.cos().powi(2)
+        f(cx + a * phi.psin()) * 2.0 * a * a * phi.pcos().ppowi(2)
     };
     let mut sum = g(0) + g(steps);
     for i in 1..steps {
@@ -890,7 +891,7 @@ fn walls_tangent_to_the_surface_give_the_right_body_or_an_error() {
     let lying = within(&base, [0.0, -8.0, h], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]);
     let target = primitives::cylinder(&lying, r, 16.0).unwrap();
     let wall = face_on(&target, |s| matches!(s, Surface::Cylinder(_)));
-    let under = |x: f64| x / 2.0 * (r * r - x * x).sqrt() + r * r / 2.0 * (x / r).asin();
+    let under = |x: f64| x / 2.0 * (r * r - x * x).sqrt() + r * r / 2.0 * (x / r).pasin();
     for (curves, expected) in [
         (
             rectangle(1, 1, (-r, r), (0.0, 3.0)),
@@ -898,7 +899,7 @@ fn walls_tangent_to_the_surface_give_the_right_body_or_an_error() {
         ),
         (
             vec![circle(1, [0.0, 0.0], r)],
-            PI * r * r * h - 8.0 * r.powi(3) / 3.0,
+            PI * r * r * h - 8.0 * r.ppowi(3) / 3.0,
         ),
         (
             rectangle(1, 1, (-1.0, r), (0.0, 3.0)),

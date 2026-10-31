@@ -15,6 +15,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::{resolved, statuses};
@@ -43,7 +44,7 @@ fn parabola(sketch: &mut Sketch, k: f64) -> usize {
 }
 
 fn close(a: P, b: P, k: f64, what: &str) {
-    let gap = (a[0] - b[0]).hypot(a[1] - b[1]);
+    let gap = (a[0] - b[0]).phypot(a[1] - b[1]);
     assert!(
         gap <= 1e-7 * k,
         "{what}: {a:?} against {b:?}, {gap:e} apart"
@@ -383,7 +384,7 @@ fn a_point_and_a_line_on_a_spline_through_points() {
         let [px, py] = solution.point(p).unwrap();
         for i in 0..=1_000_000 {
             let q = de_boor(3, &KNOTS, &control, f64::from(i) / 1e6);
-            nearest = nearest.min((q[0] - px).hypot(q[1] - py));
+            nearest = nearest.min((q[0] - px).phypot(q[1] - py));
             if q[0] >= 2.8 * k && q[0] <= 5.0 * k {
                 top = top.max(q[1]);
             }

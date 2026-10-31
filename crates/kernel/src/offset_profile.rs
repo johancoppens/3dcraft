@@ -59,6 +59,7 @@ use crate::KernelError;
 use crate::MAX_REPORTED;
 use crate::boxtree::{Box2, BoxTree};
 use crate::profile::{Curve2, Profile, Segment, Shape, SketchCurve, detect_profiles};
+use craft3d_math::Portable;
 use craft3d_math::Tolerance;
 use std::f64::consts::{PI, TAU};
 
@@ -85,7 +86,7 @@ fn cross(a: P2, b: P2) -> f64 {
 }
 
 fn length(a: P2) -> f64 {
-    a[0].hypot(a[1])
+    a[0].phypot(a[1])
 }
 
 fn distance(a: P2, b: P2) -> f64 {
@@ -93,7 +94,7 @@ fn distance(a: P2, b: P2) -> f64 {
 }
 
 fn angle_of(v: P2) -> f64 {
-    v[1].atan2(v[0])
+    v[1].patan2(v[0])
 }
 
 /// An angle wrapped to `[0, 2π)`.
@@ -103,7 +104,7 @@ fn wrap(a: f64) -> f64 {
 }
 
 fn polar(c: P2, r: f64, angle: f64) -> P2 {
-    let (s, co) = angle.sin_cos();
+    let (s, co) = angle.psin_cos();
     [c[0] + r * co, c[1] + r * s]
 }
 
@@ -621,7 +622,7 @@ fn raw_loop(
             }
             continue;
         }
-        let turn = cross(t1, t2).atan2(dot(t1, t2));
+        let turn = cross(t1, t2).patan2(dot(t1, t2));
         if turn * d <= 0.0 {
             // They overlap: cutting trims them.
             continue;
@@ -1637,7 +1638,7 @@ fn offset_with(
         lo = [lo[0].min(b[0]), lo[1].min(b[1])];
         hi = [hi[0].max(b[2]), hi[1].max(b[3])];
     }
-    let reach = 0.5 * (hi[0] - lo[0]).hypot(hi[1] - lo[1]);
+    let reach = 0.5 * (hi[0] - lo[0]).phypot(hi[1] - lo[1]);
     if !reach.is_finite() {
         return Err(KernelError::InvalidSize {
             name: "outline",

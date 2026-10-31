@@ -1738,6 +1738,7 @@ fn motion_check(session: &mut Session, params: &Value) -> Run {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use craft3d_math::Portable;
 
     /// Every pair of three bodies in one place collides, however few
     /// answers are kept between states: an answer kept or not is asked
@@ -1801,7 +1802,7 @@ mod tests {
         let circle: Vec<Vec3> = (0..16)
             .map(|k| {
                 let a = f64::from(k) * std::f64::consts::TAU / 16.0;
-                Vec3::new(3.0 + a.cos(), 5.0, a.sin())
+                Vec3::new(3.0 + a.pcos(), 5.0, a.psin())
             })
             .collect();
         let (_, n) = plane_of(&circle, 1e-9).unwrap();

@@ -45,6 +45,7 @@
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
 use super::{Eval, Marcher, Pt, Stationary};
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 
 /// A point of contact with arms, and what makes its arms.
@@ -94,12 +95,12 @@ fn strong(a: f64, b: f64, c: f64) -> Option<(f64, (f64, f64))> {
     // conditioned.
     let (x1, y1) = (lambda - c, b);
     let (x2, y2) = (b, lambda - a);
-    let (x, y) = if x1.hypot(y1) >= x2.hypot(y2) {
+    let (x, y) = if x1.phypot(y1) >= x2.phypot(y2) {
         (x1, y1)
     } else {
         (x2, y2)
     };
-    let len = x.hypot(y);
+    let len = x.phypot(y);
     (lambda.is_finite() && lambda != 0.0 && len > 0.0 && len.is_finite())
         .then_some((lambda, (x / len, y / len)))
 }
@@ -131,8 +132,8 @@ impl Marcher {
         if !(x.abs() < 1.0) || k.lift == 0.0 {
             return (0.0, 0.0);
         }
-        let q = 1.0 - x.powi(4);
-        (q * q, -8.0 * q * x.powi(3) / k.radius)
+        let q = 1.0 - x.ppowi(4);
+        (q * q, -8.0 * q * x.ppowi(3) / k.radius)
     }
 
     /// The modified distance at `(t, s)`, its derivative across, and the

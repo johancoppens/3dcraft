@@ -16,6 +16,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_tess::{Mesh, TessParams, tessellate_body};
 use craft3d_testkit::solids;
@@ -47,7 +48,7 @@ fn assert_solid(body: &Body, mesh: &Mesh, tolerance: f64, expected: f64, area: f
         };
         for p in [a, b, c] {
             assert!(
-                measure(p).0 <= 1e-9 * expected.cbrt(),
+                measure(p).0 <= 1e-9 * expected.pcbrt(),
                 "{what}: vertex off its surface"
             );
         }

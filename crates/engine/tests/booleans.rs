@@ -9,6 +9,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{feature_brief as feature, run};
@@ -523,7 +524,7 @@ fn an_edge_is_referred_to_by_the_faces_it_lies_between() {
             edge["start"][0].as_f64().unwrap() - 30.0,
             edge["start"][1].as_f64().unwrap() - 20.0,
         );
-        assert!((x.hypot(y) - 5.0).abs() < 1e-9, "{edge}");
+        assert!((x.phypot(y) - 5.0).abs() < 1e-9, "{edge}");
     }
     // The order of the two names does not matter.
     assert_eq!(between(&mut s, wall, top)["edges"], rim["edges"]);
@@ -615,7 +616,7 @@ fn curved_boolean_results_are_meshed_at_every_scale() {
         // depends on its height alone: pi h^3 / 6 with h = 2 sqrt(100 - 36).
         boolean(&mut s, "subtract", "Ball", "Rod", "Ring");
         let ring = volume(&mut s, "Ring");
-        let expected = PI * (16.0 * k).powi(3) / 6.0;
+        let expected = PI * (16.0 * k).ppowi(3) / 6.0;
         assert!(
             (ring - expected).abs() <= 1e-9 * expected,
             "{ring} vs {expected}"
@@ -637,7 +638,7 @@ fn curved_boolean_results_are_meshed_at_every_scale() {
         let made = boolean(&mut s, "union", "Block", "Ball", "Part");
         assert_eq!(made["status"], "ok", "at {k}: {made}");
         // Seven eighths of the ball stick out of the corner.
-        let expected = 24000.0 * k.powi(3) + 7.0 / 8.0 * 4.0 / 3.0 * PI * (9.0 * k).powi(3);
+        let expected = 24000.0 * k.ppowi(3) + 7.0 / 8.0 * 4.0 / 3.0 * PI * (9.0 * k).ppowi(3);
         let part = volume(&mut s, "Part");
         assert!(
             (part - expected).abs() <= 1e-9 * expected,

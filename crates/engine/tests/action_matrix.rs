@@ -11,6 +11,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 #[allow(dead_code)]
 #[path = "action_matrix/plan.rs"]
 mod plan;
@@ -643,7 +644,7 @@ fn a_blend_runs_on_past_slanted_ends() {
         let n = 4096;
         for i in (0..=n).rev() {
             let a = t * f64::from(i) / f64::from(n);
-            poly.push((-rho * a.sin(), rho * a.cos()));
+            poly.push((-rho * a.psin(), rho * a.pcos()));
         }
         let (mut area, mut moment) = (0.0, 0.0);
         for (i, &(x0, z0)) in poly.iter().enumerate() {
@@ -958,14 +959,14 @@ fn a_copied_name_merges_a_run_of_instance_zero() {
 fn ends_are_vertices_of_one_edge_and_arcs_turn_as_drawn() {
     let arc = |from: f64, to: f64| {
         let r = 2.0;
-        let point = |t: f64| [r * t.cos(), r * t.sin(), 0.0];
+        let point = |t: f64| [r * t.pcos(), r * t.psin(), 0.0];
         // The length document.edges gives: the polygon through 64 points.
         let length: f64 = (0..64)
             .map(|i| {
                 let a = from + (to - from) * f64::from(i) / 64.0;
                 let b = from + (to - from) * f64::from(i + 1) / 64.0;
                 let (p, q) = (point(a), point(b));
-                ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2)).sqrt()
+                ((p[0] - q[0]).ppowi(2) + (p[1] - q[1]).ppowi(2)).sqrt()
             })
             .sum();
         plan::Edge {

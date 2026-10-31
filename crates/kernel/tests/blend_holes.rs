@@ -15,6 +15,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod boolean_common;
 
 use boolean_common::{SCALES, boxed, mass, tolerance};
@@ -215,7 +216,7 @@ fn a_hole_in_the_cone_beside_a_freeform_edge_inside_the_strip() {
         let on_edge = Vec3::new(5.0 / 6.0, 0.0, 0.5);
         for along in [0.06, 0.1, 0.14] {
             let turn: f64 = along / (5.0 / 6.0);
-            let out = Vec3::new(turn.cos(), turn.sin(), 0.0);
+            let out = Vec3::new(turn.pcos(), turn.psin(), 0.0);
             let p = out * (5.0 / 6.0) + Vec3::Z * 0.5;
             let holed = drill(&body, k, p + out * 0.5, -out, 0.03, 0.52);
             for how in [Blend::Fillet(0.3), Blend::Chamfer(0.3)] {
@@ -322,7 +323,7 @@ fn holes_beside_a_sharp_edge() {
             let rho = 1.0 - z / 3.0;
             let x = (rho * rho - y0 * y0).sqrt();
             let on_edge = Vec3::new(x, y0, z);
-            let phi = y0.atan2(x);
+            let phi = y0.patan2(x);
             let r = 0.04;
             for how in [Blend::Fillet(r), Blend::Chamfer(r)] {
                 let Ok(blended) = blend(&body, edge_near(&body, on_edge * k), how, k) else {
@@ -331,7 +332,7 @@ fn holes_beside_a_sharp_edge() {
                 for off in [0.15, 0.3, 0.6, 1.0, 1.5, 2.5] {
                     let hr = 0.1 * r;
                     let turn = phi + off * r / rho;
-                    let out = Vec3::new(turn.cos(), turn.sin(), 0.0);
+                    let out = Vec3::new(turn.pcos(), turn.psin(), 0.0);
                     let c = out * rho + Vec3::Z * z;
                     let hole = |b: &Body| drill(b, k, c + out * 0.1, -out, hr, 0.1 + 0.05 * r);
                     let holed = hole(&body);

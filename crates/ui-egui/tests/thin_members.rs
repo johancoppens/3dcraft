@@ -14,6 +14,7 @@
 )]
 
 use craft3d_engine::{Session, Workspace};
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use craft3d_render::NO_FACE;
 use craft3d_ui_egui::Shell;
@@ -233,7 +234,7 @@ fn measure(
         let Some((pa, pb)) = projector.segment(*a, *b) else {
             continue;
         };
-        let len = ((pb.x - pa.x).powi(2) + (pb.y - pa.y).powi(2)).sqrt();
+        let len = ((pb.x - pa.x).ppowi(2) + (pb.y - pa.y).ppowi(2)).sqrt();
         let steps = (len / 2.0).ceil().max(2.0) as usize;
         for k in 1..steps {
             let t = k as f64 / steps as f64;
@@ -304,7 +305,7 @@ fn moved_along_the_view(camera: CameraState, along: f64) -> CameraState {
 /// `px_mm` model millimetres per pixel at the target.
 fn camera(target: [f64; 3], projection: ProjectionKind, px_mm: f64) -> CameraState {
     let fov: f64 = 30.0;
-    let half_tan = (fov.to_radians() * 0.5).tan();
+    let half_tan = (fov.to_radians() * 0.5).ptan();
     let distance = px_mm * 350.0 / half_tan;
     CameraState {
         target,

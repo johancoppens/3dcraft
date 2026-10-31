@@ -15,6 +15,7 @@
 
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
+use craft3d_math::Portable;
 mod boolean_common;
 
 use boolean_common::*;
@@ -61,7 +62,7 @@ fn over_disc(center: (f64, f64), radius: f64) -> f64 {
         let r = (i as f64 + 0.5) * dr;
         for j in 0..N {
             let a = (j as f64 + 0.5) * da;
-            sum += roof_height(center.0 + r * a.cos(), center.1 + r * a.sin()) * r;
+            sum += roof_height(center.0 + r * a.pcos(), center.1 + r * a.psin()) * r;
         }
     }
     sum * dr * da

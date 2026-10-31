@@ -12,6 +12,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::plain::run;
@@ -126,7 +127,7 @@ fn a_stack_of_two_instances_is_placed_by_its_mates_at_three_scales() {
                 "B not centred: {blo:?} {bhi:?}"
             );
         }
-        let block = 20.0 * 10.0 * 6.0 * scale.powi(3);
+        let block = 20.0 * 10.0 * 6.0 * scale.ppowi(3);
         assert!((volume(&i, "A") - block).abs() <= 1e-9 * block);
         let solved = run(&mut s, "assembly.solve", json!({}));
         assert_eq!(solved["ok"], true, "{solved}");
@@ -947,7 +948,7 @@ fn a_four_bar_linkage_of_one_bar_part_follows_its_crank() {
     let (a, d) = (20.0_f64, 60.0_f64);
     for theta in [60.0_f64, 135.0, 250.0] {
         let t = theta.to_radians();
-        let (c, n) = (t.cos(), t.sin());
+        let (c, n) = (t.pcos(), t.psin());
         let tip = [a * c, a * n];
         // Starts near the parallelogram, off by a little.
         let crank = [-(2.0 * c - 2.0 * n) + 0.3, -(2.0 * n + 2.0 * c) - 0.2, 0.0];

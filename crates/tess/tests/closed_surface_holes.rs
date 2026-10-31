@@ -16,6 +16,7 @@
 )]
 
 use craft3d_geom::{Circle, Curve3, Cylinder, Plane, Sphere, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_tess::{
     Mesh, TessParams, tessellate_body, tessellate_body_with_threads, tessellate_edges,
@@ -42,9 +43,9 @@ struct Solid {
 /// A direction `angle` away from `z`, turned by `turn` about it.
 fn off_axis(frame: &Frame, angle: f64, turn: f64) -> Vec3 {
     frame.vector(
-        angle.sin() * turn.cos(),
-        angle.sin() * turn.sin(),
-        angle.cos(),
+        angle.psin() * turn.pcos(),
+        angle.psin() * turn.psin(),
+        angle.pcos(),
     )
 }
 
@@ -79,7 +80,7 @@ fn napkin_ring(frame: &Frame, r: f64, a: f64, axis: Vec3, towards: Vec3, name: &
     Solid {
         name: format!("a ball with a hole, {name}"),
         body,
-        volume: 4.0 / 3.0 * PI * half.powi(3),
+        volume: 4.0 / 3.0 * PI * half.ppowi(3),
         face_areas: vec![TAU * r * 2.0 * half, TAU * a * 2.0 * half],
     }
 }
@@ -110,7 +111,7 @@ fn ball_with_a_flat(frame: &Frame, r: f64, c: f64, axis: Vec3, towards: Vec3, na
     Solid {
         name: format!("a ball with a flat, {name}"),
         body,
-        volume: 4.0 / 3.0 * PI * r.powi(3) - cap,
+        volume: 4.0 / 3.0 * PI * r.ppowi(3) - cap,
         face_areas: vec![
             4.0 * PI * r * r - TAU * r * height,
             PI * rim_radius * rim_radius,
@@ -382,14 +383,14 @@ fn a_rim_around_a_pole_is_sampled_finer_next_to_the_pole_on_both_sides() {
     let plain = ball_with_a_flat(&frame, 2.0, 0.75, Vec3::Z, Vec3::X, "plain");
     for tolerance in [0.2, 0.1, 0.05] {
         let plain = tessellate_edges(&plain.body, &params(tolerance)).unwrap();
-        let before: Vec<f64> = plain[0].iter().map(|p| p.y.atan2(-p.x)).collect();
+        let before: Vec<f64> = plain[0].iter().map(|p| p.y.patan2(-p.x)).collect();
         for towards in [Vec3::Y, -Vec3::Y, Vec3::Z] {
             let solid = near(towards);
             let edges = tessellate_edges(&solid.body, &params(tolerance)).unwrap();
             // The angle of a rim point from the direction of the pole.
             let added: Vec<f64> = edges[0]
                 .iter()
-                .map(|p| p.y.atan2(-p.x))
+                .map(|p| p.y.patan2(-p.x))
                 .filter(|angle| !before.iter().any(|old| (old - angle).abs() < 1e-9))
                 .collect();
             let what = format!("at {tolerance}, the seam towards {towards:?}: {added:?}");
@@ -424,10 +425,10 @@ fn a_sphere_with_holes_on_every_meridian_is_cut_through_a_hole() {
     let r = 2.0;
     let mut body = Body::new(BodyKind::Sheet);
     let mut loops = Vec::new();
-    let rim = (r * (TAU / 40.0).sin()) * 0.95;
+    let rim = (r * (TAU / 40.0).psin()) * 0.95;
     for k in 0..20 {
         let angle = TAU * f64::from(k) / 20.0 + 0.05;
-        let out = Vec3::new(angle.cos(), angle.sin(), 0.0);
+        let out = Vec3::new(angle.pcos(), angle.psin(), 0.0);
         let centre = out * (r * r - rim * rim).sqrt();
         let circle =
             Curve3::Circle(Circle::new(Frame::new(centre, out, Vec3::Z).unwrap(), rim).unwrap());

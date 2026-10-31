@@ -48,6 +48,7 @@
 
 use super::{FOLLOW_DEPTH, Section, Shape, Side, Solver, Spine, bend, border, refine};
 use craft3d_geom::{Curve3, NurbsSurface, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Tolerance, Vec3};
 
 /// A face's surface and which way is out of the material.
@@ -298,7 +299,7 @@ fn iso_v(surface: &NurbsSurface, v: f64) -> Option<craft3d_geom::NurbsCurve> {
         if j > 0 {
             choose = choose * (n + 1 - j) as f64 / j as f64;
         }
-        *slot = choose * v.powi(j as i32) * (1.0 - v).powi((n - j) as i32);
+        *slot = choose * v.ppowi(j as i32) * (1.0 - v).ppowi((n - j) as i32);
     }
     let mut ctrl = Vec::with_capacity(count_u);
     let mut weights = Vec::with_capacity(count_u);

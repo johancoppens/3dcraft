@@ -15,6 +15,7 @@
 // Test code: a failure in a helper is a failed test.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
+use craft3d_math::Portable;
 mod boolean_common;
 
 use boolean_common::*;
@@ -191,7 +192,7 @@ fn the_lune_patch_has_a_pole_on_two_adjacent_borders() {
         assert_eq!(check(&twin, &tolerance(k)), []);
         let (want, got) = (mass(&quarter(k)), mass(&twin));
         let r = 2.0 * k;
-        assert!((want.volume - PI * r.powi(3) / 3.0).abs() <= 1e-9 * want.volume);
+        assert!((want.volume - PI * r.ppowi(3) / 3.0).abs() <= 1e-9 * want.volume);
         assert!(
             (got.volume - want.volume).abs() <= 1e-9 * want.volume,
             "{got:?}"

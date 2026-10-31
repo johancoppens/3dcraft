@@ -8,6 +8,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{feature_brief as feature, run};
@@ -62,7 +63,7 @@ fn assert_turned(session: &mut Session, volume: f64, centroid: [f64; 3]) {
     for axis in 0..3 {
         let c = found["centroid"][axis].as_f64().unwrap();
         assert!(
-            (c - centroid[axis]).abs() <= 1e-8 * (1.0 + volume.cbrt()),
+            (c - centroid[axis]).abs() <= 1e-8 * (1.0 + volume.pcbrt()),
             "centroid {}, expected {centroid:?}",
             found["centroid"]
         );
@@ -83,8 +84,8 @@ fn assert_failed(session: &mut Session, words: &[&str]) {
 /// The distance from the axis to the centroid of a ring sector between
 /// radii `inner` and `outer` that spans `angle`.
 fn sector_centroid(inner: f64, outer: f64, angle: f64) -> f64 {
-    let radial = 2.0 / 3.0 * (outer.powi(3) - inner.powi(3)) / (outer.powi(2) - inner.powi(2));
-    radial * (angle / 2.0).sin() / (angle / 2.0)
+    let radial = 2.0 / 3.0 * (outer.ppowi(3) - inner.ppowi(3)) / (outer.ppowi(2) - inner.ppowi(2));
+    radial * (angle / 2.0).psin() / (angle / 2.0)
 }
 
 #[test]
@@ -120,7 +121,7 @@ fn a_part_turn_goes_counter_clockwise_about_the_axis() {
     // Seen from the tip of +Y, counter-clockwise takes +X towards -Z: the
     // quarter ring lies in x > 0, z < 0, its centroid on the bisector.
     let r = sector_centroid(10.0, 20.0, PI / 2.0);
-    let d = r * (PI / 4.0).cos();
+    let d = r * (PI / 4.0).pcos();
     assert_turned(&mut s, 375.0 * PI, [d, 2.5, -d]);
     // The other way.
     run(
@@ -152,7 +153,7 @@ fn a_part_turn_goes_counter_clockwise_about_the_axis() {
     assert_turned(
         &mut s,
         1125.0 * PI,
-        [r * bisector.cos(), 2.5, -r * bisector.sin()],
+        [r * bisector.pcos(), 2.5, -r * bisector.psin()],
     );
     // A part turn has two caps, named like those of an extrusion: the
     // start cap lies in the sketch plane.
@@ -186,7 +187,7 @@ fn a_line_of_the_sketch_is_an_axis_with_a_direction() {
     );
     revolve(&mut s, json!({"axis": "e11", "angle": "90 deg"}));
     let r = sector_centroid(6.0, 16.0, PI / 2.0);
-    let d = r * (PI / 4.0).cos();
+    let d = r * (PI / 4.0).pcos();
     assert_turned(&mut s, 50.0 * 2.0 * PI * 11.0 / 4.0, [4.0 + d, 2.5, -d]);
     // The same line drawn downwards turns the other way.
     run(&mut s, "feature.delete", json!({"feature": "Turned"}));
@@ -215,7 +216,7 @@ fn a_line_of_the_sketch_is_an_axis_with_a_direction() {
         json!({"sketch": "Profile", "entity": "e13", "at": [0, -3]}),
     );
     let r = sector_centroid(10.0, 20.0, PI / 2.0);
-    let d = r * (PI / 4.0).cos();
+    let d = r * (PI / 4.0).pcos();
     assert_turned(&mut s, 375.0 * PI, [d, 2.5, d]);
 }
 
@@ -477,7 +478,7 @@ fn a_revolved_spline_dome_is_shaded_with_the_axis_at_its_pole() {
                 }
                 at_pole += 1;
                 let outward = (p.z - middle.z).signum();
-                let angle = n.x.hypot(n.y).atan2(n.z * outward);
+                let angle = n.x.phypot(n.y).patan2(n.z * outward);
                 assert!(
                     (n.length() - 1.0).abs() < 1e-9 && angle < 1e-4,
                     "size {k}, tolerance {tolerance:?}: normal {n:?} at the pole {p:?}"
@@ -499,8 +500,8 @@ fn arc_moments(centre: [f64; 2], radius: f64, from: f64, to: f64) -> (f64, f64) 
     let (mut first, mut second) = (0.0, 0.0);
     for i in 0..=steps {
         let t = from + h * f64::from(i);
-        let (x, y) = (centre[0] + radius * t.cos(), centre[1] + radius * t.sin());
-        let dy = radius * t.cos();
+        let (x, y) = (centre[0] + radius * t.pcos(), centre[1] + radius * t.psin());
+        let dy = radius * t.pcos();
         let weight = if i == 0 || i == steps {
             1.0
         } else if i % 2 == 1 {
@@ -562,8 +563,8 @@ fn an_ogive_whose_arc_lies_on_a_spindle_torus_is_revolved() {
             params["angle"] = angle.into();
         }
         revolve(&mut s, params);
-        let (a1, b1) = arc_moments([0.0, 5.0], 5.0, -PI / 2.0, (-4.0f64).atan2(3.0));
-        let (a2, b2) = arc_moments([-17.0, 22.0], 29.0, (-21.0f64).atan2(20.0), 0.0);
+        let (a1, b1) = arc_moments([0.0, 5.0], 5.0, -PI / 2.0, (-4.0f64).patan2(3.0));
+        let (a2, b2) = arc_moments([-17.0, 22.0], 29.0, (-21.0f64).patan2(20.0), 0.0);
         let (moment, cross) = (a1 + a2, b1 + b2);
         if angle.is_none() {
             assert_turned(&mut s, sweep * moment, [0.0, cross / moment, 0.0]);

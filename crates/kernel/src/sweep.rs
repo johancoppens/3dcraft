@@ -116,6 +116,7 @@ use craft3d_geom::refine::interpolation;
 use craft3d_geom::{
     Circle, Cone, Curve3, Cylinder, Ellipse, Line, NurbsCurve, NurbsSurface, Plane, Surface, Torus,
 };
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, FaceId, VertexId};
 use std::collections::BTreeMap;
@@ -176,7 +177,7 @@ fn cross(a: P2, b: P2) -> f64 {
 }
 
 fn length(a: P2) -> f64 {
-    a[0].hypot(a[1])
+    a[0].phypot(a[1])
 }
 
 fn distance(a: P2, b: P2) -> f64 {
@@ -194,7 +195,7 @@ fn unit(v: P2) -> Option<P2> {
 }
 
 fn angle_of(v: P2) -> f64 {
-    v[1].atan2(v[0])
+    v[1].patan2(v[0])
 }
 
 /// An angle wrapped to `[0, 2π)`.
@@ -633,11 +634,11 @@ fn start(
         if !(level.is_finite() && level.abs() <= 1.0) {
             return Vec::new();
         }
-        let (middle, half) = (angle_of(slope), level.acos());
+        let (middle, half) = (angle_of(slope), level.pacos());
         vec![middle + half, middle - half]
     };
     let rim = |center: P2, radius: f64, angle: f64| {
-        add(center, [radius * angle.cos(), radius * angle.sin()])
+        add(center, [radius * angle.pcos(), radius * angle.psin()])
     };
     if let Some((id, center, radius)) = chain.circle {
         let best = on_circle(center, radius)
@@ -898,7 +899,7 @@ impl Element {
     /// direction the loop runs in there.
     pub(crate) fn middle(&self) -> (P2, P2) {
         let on_circle = |center: P2, radius: f64, angle: f64, forward: bool| {
-            let (s, c) = angle.sin_cos();
+            let (s, c) = angle.psin_cos();
             let along = if forward { [-s, c] } else { [s, -c] };
             (add(center, [radius * c, radius * s]), along)
         };
@@ -1093,7 +1094,7 @@ pub(crate) fn quarters(element: &Element) -> Vec<Element> {
         if k == 0 || k == 4 {
             element.start
         } else {
-            let (s, c) = (from + step * f64::from(k)).sin_cos();
+            let (s, c) = (from + step * f64::from(k)).psin_cos();
             add(center, [radius * c, radius * s])
         }
     };
@@ -1152,9 +1153,9 @@ fn arc_net(center: P2, radius: f64, begin: f64, span: f64) -> (Vec<P2>, Vec<f64>
     let pieces = ((span / FRAC_PI_2) - 1e-9).ceil().clamp(1.0, 4.0);
     let step = span / pieces;
     let pieces = pieces as usize;
-    let weight = (step / 2.0).cos();
+    let weight = (step / 2.0).pcos();
     let at = |angle: f64, reach: f64| {
-        let (s, c) = angle.sin_cos();
+        let (s, c) = angle.psin_cos();
         add(center, [reach * c, reach * s])
     };
     let mut control = vec![at(begin, radius)];
@@ -1224,7 +1225,7 @@ pub(crate) enum Motion {
 /// `v` turned about the z axis of `frame` through `angle`.
 fn turned(frame: &Frame, v: Vec3, angle: f64) -> Vec3 {
     let (x, y, z) = (v.dot(frame.x()), v.dot(frame.y()), v.dot(frame.z()));
-    let (s, c) = angle.sin_cos();
+    let (s, c) = angle.psin_cos();
     frame.vector(x * c - y * s, x * s + y * c, z)
 }
 
@@ -1328,7 +1329,7 @@ pub(crate) fn stations_of(degree: usize) -> Vec<f64> {
             } else if j == degree {
                 1.0
             } else {
-                0.5 * (1.0 - (PI * j as f64 / degree as f64).cos())
+                0.5 * (1.0 - (PI * j as f64 / degree as f64).pcos())
             }
         })
         .collect()
@@ -1726,7 +1727,7 @@ impl Builder {
                 // The circle starts at the vertex, which is off the
                 // frame's x axis when the profile arrives turned.
                 let (x, y, z) = frame.local(p);
-                let rho = x.hypot(y);
+                let rho = x.phypot(y);
                 let level = if y == 0.0 {
                     frame.at(frame.point(0.0, 0.0, z))
                 } else {
@@ -1803,7 +1804,7 @@ impl Builder {
             Motion::Turn { frame, angle } => {
                 let place = |p: P2| {
                     let (x, y, z) = frame.local(station.at(p));
-                    (x.hypot(y), z)
+                    (x.phypot(y), z)
                 };
                 let level = |z: f64| frame.at(frame.point(0.0, 0.0, z)).ok_or_else(internal);
                 let analytic = match &element.form {
@@ -1815,7 +1816,7 @@ impl Builder {
                             Surface::Cone(Cone::new(
                                 level(z0)?,
                                 r0,
-                                ((r1 - r0) / (z1 - z0)).atan(),
+                                ((r1 - r0) / (z1 - z0)).patan(),
                             )?)
                         })
                     }
@@ -2019,7 +2020,7 @@ pub fn sweep(
     let lean = profile_plane.z().cross(along).length();
     let facing = profile_plane.z().dot(along);
     let leans = |moved: Option<f64>| {
-        let degrees = lean.clamp(0.0, 1.0).asin().to_degrees();
+        let degrees = lean.clamp(0.0, 1.0).pasin().to_degrees();
         let moved = moved.map_or(String::new(), |moved| {
             format!(
                 ", and laying the profile square to it would move it by up to {moved}, more than the tolerance {tol}"
@@ -2137,7 +2138,7 @@ pub fn sweep(
                 &pair,
                 format!(
                     "the path has a corner of {}° where e{} meets e{}, and they are not two straight lines: only a corner between two lines is mitred; make the curves tangent there",
-                    turn.atan2(same).abs().to_degrees(),
+                    turn.patan2(same).abs().to_degrees(),
                     pair[0],
                     pair[1]
                 ),
@@ -2337,7 +2338,7 @@ pub fn sweep(
                         &pair,
                         format!(
                             "the path has a corner of {}° where e{} meets e{}: carried round e{} with the profile square to the curve before it, the sweep would be up to {off} off, more than half the tolerance ({}); make the curves tangent there",
-                            sin.atan2(cos).to_degrees(),
+                            sin.patan2(cos).to_degrees(),
                             pair[0],
                             pair[1],
                             leg.source,
@@ -2354,7 +2355,7 @@ pub fn sweep(
                             format!(
                                 "the path ends on e{} turned {}° from square to it, by the corners before it: its end would be up to {skew} off square, more than half the tolerance ({}); make the curves tangent there",
                                 leg.source,
-                                sin.atan2(cos).to_degrees(),
+                                sin.patan2(cos).to_degrees(),
                                 tol / 2.0
                             ),
                         ));

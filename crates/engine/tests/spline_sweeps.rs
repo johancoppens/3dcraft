@@ -18,6 +18,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{body, error, run, session_in};
@@ -124,8 +125,8 @@ fn along(degree: usize, control: &[P]) -> [f64; 4] {
                 / 3.0;
             sum[0] += p[0] * d[1] * weight;
             sum[1] += p[0] * p[0] / 2.0 * d[1] * weight;
-            sum[2] += p[0] * d[0].hypot(d[1]) * weight;
-            sum[3] += d[0].hypot(d[1]) * weight;
+            sum[2] += p[0] * d[0].phypot(d[1]) * weight;
+            sum[3] += d[0].phypot(d[1]) * weight;
         }
     }
     sum

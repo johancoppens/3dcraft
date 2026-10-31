@@ -16,6 +16,7 @@
 )]
 
 use craft3d_geom::{Circle, Curve3, Cylinder, Line, Plane, Sphere, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_tess::{
     Mesh, TessError, TessParams, tessellate_body, tessellate_body_and_edges,
@@ -88,7 +89,7 @@ fn notched_disc(frame: &Frame, k: f64, gap: f64, tip_at: f64) -> Solid {
         let centre = frame.at(frame.point(0.0, 0.0, z)).unwrap();
         let circle = Curve3::Circle(Circle::new(centre, r).unwrap());
         let tip_radius = r * (1.0 - gap);
-        let tip = frame.point(tip_radius * tip_at.cos(), tip_radius * tip_at.sin(), z);
+        let tip = frame.point(tip_radius * tip_at.pcos(), tip_radius * tip_at.psin(), z);
         let low = body.add_vertex(circle.eval(-sweep));
         let high = body.add_vertex(circle.eval(sweep));
         let tip = body.add_vertex(tip);
@@ -163,7 +164,7 @@ fn notched_disc(frame: &Frame, k: f64, gap: f64, tip_at: f64) -> Solid {
 
     // The outline's area by Green's theorem, ½ ∮ x dy − y dx: the arc
     // gives ½ r² times its angle, a line from p to q gives ½ p × q.
-    let flat = |angle: f64, radius: f64| (radius * angle.cos(), radius * angle.sin());
+    let flat = |angle: f64, radius: f64| (radius * angle.pcos(), radius * angle.psin());
     let (low, high, tip) = (
         flat(-sweep, r),
         flat(sweep, r),
@@ -171,7 +172,7 @@ fn notched_disc(frame: &Frame, k: f64, gap: f64, tip_at: f64) -> Solid {
     );
     let cross = |p: (f64, f64), q: (f64, f64)| p.0 * q.1 - p.1 * q.0;
     let outline = 0.5 * r * r * 2.0 * sweep + 0.5 * cross(high, tip) + 0.5 * cross(tip, low);
-    let length = |p: (f64, f64), q: (f64, f64)| (p.0 - q.0).hypot(p.1 - q.1);
+    let length = |p: (f64, f64), q: (f64, f64)| (p.0 - q.0).phypot(p.1 - q.1);
     Solid {
         name: format!("a disc with a notch to {gap:e} of its rim, at {tip_at}"),
         body,
@@ -196,7 +197,7 @@ fn eccentric_washer(frame: &Frame, k: f64, gap: f64, towards: f64, seam: bool) -
     let off = outer - gap * k - inner;
     let mut body = Body::new(BodyKind::Solid);
     let circle = |body: &mut Body, radius: f64, z: f64, shift: f64| {
-        let centre = frame.point(shift * towards.cos(), shift * towards.sin(), z);
+        let centre = frame.point(shift * towards.pcos(), shift * towards.psin(), z);
         let circle = Curve3::Circle(Circle::new(frame.at(centre).unwrap(), radius).unwrap());
         let vertex = body.add_vertex(circle.eval(0.0));
         (body.add_edge(circle, (0.0, TAU), vertex, vertex), vertex)
@@ -233,7 +234,7 @@ fn eccentric_washer(frame: &Frame, k: f64, gap: f64, towards: f64, seam: bool) -
         body.add_loop(vec![backward(inner0)]),
     ];
     let hole_axis = frame
-        .at(frame.point(off * towards.cos(), off * towards.sin(), 0.0))
+        .at(frame.point(off * towards.pcos(), off * towards.psin(), 0.0))
         .unwrap();
     let faces = vec![
         body.add_face(
@@ -414,7 +415,7 @@ fn no_tolerance_is_refused() {
         };
         for solid in solids(&frame, scale) {
             for step in 0..40 {
-                let rel = 10.0_f64.powf(-1.0 - 4.0 * f64::from(step) / 39.0);
+                let rel = 10.0_f64.ppowf(-1.0 - 4.0 * f64::from(step) / 39.0);
                 let tolerance = rel * scale;
                 let what = format!("{} at scale {scale}, tolerance {rel:.3e}", solid.name);
                 match tessellate_body(&solid.body, &params(tolerance)) {
@@ -526,7 +527,7 @@ fn the_edge_polylines_are_the_borders_of_the_mesh() {
                     .filter(|p| {
                         let (x, y, z) = circle.frame().local(**p);
                         let _ = centre;
-                        z.abs() <= 1e-12 && (x.hypot(y) - circle.radius()).abs() <= 1e-12
+                        z.abs() <= 1e-12 && (x.phypot(y) - circle.radius()).abs() <= 1e-12
                     })
                     .map(|&p| key(p))
                     .collect::<BTreeSet<_>>();
@@ -537,7 +538,7 @@ fn the_edge_polylines_are_the_borders_of_the_mesh() {
                     let middle = pair[0].lerp(pair[1], 0.5);
                     let (x, y, _) = circle.frame().local(middle);
                     assert!(
-                        circle.radius() - x.hypot(y) <= tolerance * (1.0 + 1e-9),
+                        circle.radius() - x.phypot(y) <= tolerance * (1.0 + 1e-9),
                         "{what}: a chord sags more than the tolerance"
                     );
                 }
@@ -569,11 +570,11 @@ fn an_edge_is_sampled_finer_only_where_it_must_be() {
         // The points added are near the tip, at the angle 0.12.
         let added: Vec<f64> = bottom
             .iter()
-            .map(|p| p.y.atan2(p.x))
+            .map(|p| p.y.patan2(p.x))
             .filter(|angle| {
                 !tessellate_edges(&far.body, &params(tolerance)).unwrap()[0]
                     .iter()
-                    .any(|q| (q.y.atan2(q.x) - angle).abs() < 1e-9)
+                    .any(|q| (q.y.patan2(q.x) - angle).abs() < 1e-9)
             })
             .collect();
         assert_eq!(added.len(), bottom.len() - plain);
@@ -601,14 +602,18 @@ fn a_hole_close_to_the_rim_of_a_cap_across_the_seam_of_a_sphere() {
         // A circle on the sphere, `angle` from the direction `about`,
         // that starts on the side of `start`.
         let ring = |about: Vec3, angle: f64, start: Vec3| {
-            let frame = Frame::new(about * (r * angle.cos()), about, start).unwrap();
-            Curve3::Circle(Circle::new(frame, r * angle.sin()).unwrap())
+            let frame = Frame::new(about * (r * angle.pcos()), about, start).unwrap();
+            Curve3::Circle(Circle::new(frame, r * angle.psin()).unwrap())
         };
         // The cap about x, where the sphere's seam starts; the hole's
         // centre off to one side and up.
         let away = wide - narrow - gap;
         let lean = 0.7_f64;
-        let hole_about = Vec3::new(away.cos(), away.sin() * lean.cos(), away.sin() * lean.sin());
+        let hole_about = Vec3::new(
+            away.pcos(),
+            away.psin() * lean.pcos(),
+            away.psin() * lean.psin(),
+        );
         // The rim starts just before the seam and is followed across it;
         // the hole starts where it is nearest the rim, on the other side
         // of the seam: a whole turn away in the sphere's parameter, and
@@ -625,10 +630,10 @@ fn a_hole_close_to_the_rim_of_a_cap_across_the_seam_of_a_sphere() {
         let face = body.add_face(Surface::Sphere(sphere), false, loops);
         body.add_shell(vec![face]);
         // A cap of angle a has area 2π r² (1 − cos a).
-        let expected = TAU * r * r * (narrow.cos() - wide.cos());
+        let expected = TAU * r * r * (narrow.pcos() - wide.pcos());
         let mut refused = Vec::new();
         for step in 0..40 {
-            let rel = 10.0_f64.powf(-1.0 - 3.0 * f64::from(step) / 39.0);
+            let rel = 10.0_f64.ppowf(-1.0 - 3.0 * f64::from(step) / 39.0);
             let tolerance = rel * scale;
             let what = format!("at scale {scale}, tolerance {rel:.3e}");
             let mesh = match tessellate_body(&body, &params(tolerance)) {
@@ -657,7 +662,7 @@ fn a_hole_close_to_the_rim_of_a_cap_across_the_seam_of_a_sphere() {
                 let from = |about: Vec3| {
                     (centroid.dot(about) / centroid.length())
                         .clamp(-1.0, 1.0)
-                        .acos()
+                        .pacos()
                 };
                 let slack = (2.0 * rel).sqrt() * 2.0;
                 assert!(from(Vec3::X) <= wide + slack, "{what}: beyond the rim");
@@ -696,7 +701,7 @@ fn curved_edges_that_really_cross_are_still_refused() {
             let centre = a.lerp(b, 0.5) + left * (radius * radius - half * half).sqrt();
             let circle =
                 Circle::new(Frame::new(centre, Vec3::Z, a - centre).unwrap(), radius).unwrap();
-            let sweep = 2.0 * (half / radius).asin();
+            let sweep = 2.0 * (half / radius).pasin();
             body.add_edge(
                 Curve3::Circle(circle),
                 (0.0, sweep),
@@ -765,7 +770,7 @@ fn a_body_no_cutting_cures_is_refused_within_a_bound() {
         let left = Vec3::Z.cross(q - p).normalized().unwrap();
         let centre = p.lerp(q, 0.5) + left * (radius * radius - half * half).sqrt();
         let circle = Circle::new(Frame::new(centre, Vec3::Z, p - centre).unwrap(), radius).unwrap();
-        let sweep = 2.0 * (half / radius).asin();
+        let sweep = 2.0 * (half / radius).pasin();
         body.add_edge(Curve3::Circle(circle), (0.0, sweep), a, b)
     };
     // Forward along one zigzag, back along the other: they cross in
@@ -828,7 +833,7 @@ fn sliver(scale: f64, arc: bool) -> Body {
         let radius = 10.0 * scale;
         let centre = Vec3::new(scale, (radius * radius - scale * scale).sqrt(), 0.0);
         let circle = Circle::new(Frame::new(centre, Vec3::Z, a - centre).unwrap(), radius).unwrap();
-        let sweep = 2.0 * (scale / radius).asin();
+        let sweep = 2.0 * (scale / radius).pasin();
         body.add_edge(Curve3::Circle(circle), (0.0, sweep), from, to)
     } else {
         line(&mut body, from, to)
@@ -851,8 +856,8 @@ fn sliver(scale: f64, arc: bool) -> Body {
 fn a_face_narrower_than_the_tolerance_between_an_arc_and_its_chord() {
     for scale in [1e-3, 1.0, 1e6] {
         let body = sliver(scale, true);
-        let half_angle = (0.1_f64).asin();
-        let exact = 100.0 * scale * scale * (half_angle - half_angle.sin() * half_angle.cos());
+        let half_angle = (0.1_f64).pasin();
+        let exact = 100.0 * scale * scale * (half_angle - half_angle.psin() * half_angle.pcos());
         let mut last = 0.0;
         for relative in [10.0, 1.0, 0.06, 0.04, 1e-2, 1e-3, 1e-5] {
             let tolerance = relative * scale;

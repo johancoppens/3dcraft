@@ -11,6 +11,7 @@
 //! `F0 · A(n·v, r) + B(n·v, r)`, where `A` and `B` integrate the BRDF
 //! over the hemisphere with Fresnel split out ([`brdf_lut`]).
 
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use std::f64::consts::PI;
 
@@ -67,7 +68,7 @@ pub fn sample_ggx(u: f64, v: f64, roughness: f64, n: Vec3) -> Vec3 {
     let cos_t = ((1.0 - v) / (1.0 + (a * a - 1.0) * v)).max(0.0).sqrt();
     let sin_t = (1.0 - cos_t * cos_t).max(0.0).sqrt();
     let (t, b) = frame(n);
-    t * (sin_t * phi.cos()) + b * (sin_t * phi.sin()) + n * cos_t
+    t * (sin_t * phi.pcos()) + b * (sin_t * phi.psin()) + n * cos_t
 }
 
 /// `A` and `B` of the split sum at `n·v` and roughness `r`, by GGX
@@ -85,7 +86,7 @@ pub fn split_sum(n_dot_v: f64, roughness: f64) -> (f64, f64) {
         if nl > 0.0 && nh > 0.0 && vh > 0.0 {
             // pdf(l) = D nh / (4 vh); f cos / pdf = V · 4 nl vh / nh.
             let g = smith_v(nv, nl, roughness) * 4.0 * nl * vh / nh;
-            let fc = (1.0 - vh).powi(5);
+            let fc = (1.0 - vh).ppowi(5);
             a += (1.0 - fc) * g;
             b += fc * g;
         }
@@ -133,14 +134,14 @@ mod tests {
             let t = (it as f64 + 0.5) / nt as f64 * PI / 2.0;
             for ip in 0..np {
                 let p = (ip as f64 + 0.5) / np as f64 * 2.0 * PI;
-                let l = Vec3::new(t.sin() * p.cos(), t.sin() * p.sin(), t.cos());
+                let l = Vec3::new(t.psin() * p.pcos(), t.psin() * p.psin(), t.pcos());
                 let Some(h) = (l + v).normalized() else {
                     continue;
                 };
                 let vh = v.dot(h).max(0.0);
                 let f = ggx_d(h.z, r) * smith_v(nv, l.z, r) * l.z;
-                let dw = t.sin() * (PI / 2.0 / nt as f64) * (2.0 * PI / np as f64);
-                let fc = (1.0 - vh).powi(5);
+                let dw = t.psin() * (PI / 2.0 / nt as f64) * (2.0 * PI / np as f64);
+                let fc = (1.0 - vh).ppowi(5);
                 a += (1.0 - fc) * f * dw;
                 b += fc * f * dw;
             }
@@ -166,7 +167,7 @@ mod tests {
         // A = 1 − (1 − n·v)^5, B = (1 − n·v)^5.
         for &nv in &[0.2, 0.5, 0.9] {
             let (a, b) = split_sum(nv, 0.02);
-            let fc = (1.0_f64 - nv).powi(5);
+            let fc = (1.0_f64 - nv).ppowi(5);
             assert!(
                 (a - (1.0 - fc)).abs() < 0.01 && (b - fc).abs() < 0.01,
                 "{nv}: {a} {b}"

@@ -74,6 +74,7 @@ use crate::refine::{
     composed_batched, from_pieces_raw, interpolate, piece_raw,
 };
 use crate::{GeomError, MAX_CONTROL_POINTS, MAX_DEGREE, NurbsCurve, NurbsSurface, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
 use std::fmt;
 
@@ -1804,7 +1805,7 @@ fn tangency(
             ));
         };
         let m = m * side;
-        worst = worst.max(n.cross(m).length().atan2(n.dot(m)));
+        worst = worst.max(n.cross(m).length().patan2(n.dot(m)));
     }
     Ok(worst)
 }
@@ -2191,7 +2192,7 @@ fn gordon_here(net: &Network<'_>) -> Result<Patch, NetworkError> {
             if !(wa > 0.0 && wb > 0.0) {
                 return Err(internal());
             }
-            set(&mut log, i, j, wa.ln() - wb.ln())?;
+            set(&mut log, i, j, wa.pln() - wb.pln())?;
         }
     }
     let row_mean: Vec<f64> = log
@@ -2215,12 +2216,12 @@ fn gordon_here(net: &Network<'_>) -> Result<Patch, NetworkError> {
     // is needed here.
     // u curve i times e^(−row mean), v curve j times e^(col mean − all).
     for (track, a) in us.iter_mut().zip(&row_mean) {
-        track.raw = scaled(&track.raw, (-a).exp());
-        track.scale *= (-a).exp();
+        track.raw = scaled(&track.raw, (-a).pexp());
+        track.scale *= (-a).pexp();
     }
     for (track, b) in vs.iter_mut().zip(&col_mean) {
-        track.raw = scaled(&track.raw, (b - all).exp());
-        track.scale *= (b - all).exp();
+        track.raw = scaled(&track.raw, (b - all).pexp());
+        track.scale *= (b - all).pexp();
     }
 
     // 5a. Curves crossing a tangent edge leave it along the face, to the
@@ -2836,7 +2837,7 @@ fn bend(
                     "the corner of {label} and {}: {} is held to its own face and leaves {label} at {:.3e} rad off its face; at a corner both faces must share the tangent plane",
                     EDGE_NAMES.get(other).copied().unwrap_or("an edge"),
                     name(family, k),
-                    sine.asin()
+                    sine.pasin()
                 ));
             }
             continue;
@@ -3842,8 +3843,8 @@ pub fn arc(frame: &Frame, radius: f64, start: f64, sweep: f64) -> Result<NurbsCu
         .max(1.0) as usize;
     let step = sweep / pieces as f64;
     let half = step / 2.0;
-    let w = half.cos();
-    let at = |a: f64, r: f64| frame.point(r * a.cos(), r * a.sin(), 0.0);
+    let w = half.pcos();
+    let at = |a: f64, r: f64| frame.point(r * a.pcos(), r * a.psin(), 0.0);
     let mut ctrl = vec![at(start, radius)];
     let mut weights = vec![1.0];
     let mut knots = vec![0.0; 3];
@@ -4052,7 +4053,7 @@ pub fn seam_gaps(
         let (pa, pb) = (a.eval(ua, va), b.eval(ub, vb));
         let gap = pa.distance(pb);
         let angle = match (a.normal(ua, va), b.normal(ub, vb)) {
-            (Some(x), Some(y)) => x.cross(y).length().min(1.0).asin(),
+            (Some(x), Some(y)) => x.cross(y).length().min(1.0).pasin(),
             _ => 0.0,
         };
         if gap > out.position {

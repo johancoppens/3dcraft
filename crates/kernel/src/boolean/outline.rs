@@ -13,6 +13,7 @@ use super::chart::{About, Chart, TOO_CLOSE};
 use super::freeform::{PatchTree, is_freeform};
 use super::hits::speed_bound;
 use craft3d_geom::{Curve3, Ellipse, NurbsCurve, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Frame, Vec3};
 use std::f64::consts::{FRAC_PI_2, FRAC_PI_8, PI, TAU};
 use std::sync::Arc;
@@ -119,8 +120,8 @@ fn nearest_on_ellipse(ellipse: &Ellipse, range: (f64, f64), p: Vec3) -> Option<(
     // The distance from `p` and the speed at `t`, from one sine and
     // cosine: each point of the search is a stretch's end twice over.
     let at = |t: f64| {
-        let (s, c) = t.sin_cos();
-        ((a * c - x).hypot(b * s - y), (a * s).hypot(b * c))
+        let (s, c) = t.psin_cos();
+        ((a * c - x).phypot(b * s - y), (a * s).phypot(b * c))
     };
     let distance = |t: f64| at(t).0;
     // The speed is monotone between multiples of a quarter turn.
@@ -159,7 +160,7 @@ fn nearest_on_ellipse(ellipse: &Ellipse, range: (f64, f64), p: Vec3) -> Option<(
     }
     let mut t = best.1;
     for _ in 0..40 {
-        let (s, c) = t.sin_cos();
+        let (s, c) = t.psin_cos();
         let (dx, dy) = (a * c - x, b * s - y);
         // Half the derivative of the squared distance, and its slope.
         let g = -dx * a * s + dy * b * c;
@@ -176,7 +177,7 @@ fn nearest_on_ellipse(ellipse: &Ellipse, range: (f64, f64), p: Vec3) -> Option<(
     }
     let d = distance(t);
     let (d, t) = if d <= best.0 { (d, t) } else { best };
-    let distance = d.hypot(z);
+    let distance = d.phypot(z);
     distance.is_finite().then_some((t, distance))
 }
 
@@ -377,7 +378,7 @@ pub(super) fn piece_box(curve: &Curve3, a: Vec3, b: Vec3) -> Bbox3 {
         }
     };
     if let Some((center, x, y)) = conic {
-        let reach = Vec3::new(x.x.hypot(y.x), x.y.hypot(y.y), x.z.hypot(y.z));
+        let reach = Vec3::new(x.x.phypot(y.x), x.y.phypot(y.y), x.z.phypot(y.z));
         bx.add(center - reach);
         bx.add(center + reach);
     }
@@ -521,7 +522,7 @@ impl Boxes {
 /// tolerances from every side: the last pass settles for three quarters
 /// of the margin.
 fn passes(margin: f64) -> [(f64, usize, f64); 3] {
-    let fine = 0.5_f64.powf(1.0 / 12.0);
+    let fine = 0.5_f64.ppowf(1.0 / 12.0);
     [
         (0.5, 64, margin),
         (fine, 768, margin),
@@ -1013,7 +1014,7 @@ pub(super) fn hull_of<E>(
         Surface::Cone(s) => (
             *s.frame(),
             s.radius(),
-            s.half_angle().tan(),
+            s.half_angle().ptan(),
             Some(s.apex_v()),
         ),
     };
@@ -1069,7 +1070,7 @@ fn arc_polygon(
         return false;
     }
     let at = |t: f64, out: f64| {
-        let (s, c) = t.sin_cos();
+        let (s, c) = t.psin_cos();
         center + (x * c + y * s) * out
     };
     // At most `piece` (itself at most a quarter turn) each, and at least
@@ -1077,7 +1078,7 @@ fn arc_polygon(
     let piece = piece.clamp(1e-3, FRAC_PI_2);
     let count = (sweep / piece).ceil().clamp(1.0, (TAU / piece).ceil());
     let step = sweep / count;
-    let out = 1.0 / (0.5 * step).cos();
+    let out = 1.0 / (0.5 * step).pcos();
     let mut t = from;
     points.push(at(from, 1.0));
     for _ in 0..(count as u32) {
@@ -1124,7 +1125,7 @@ fn torus_turns<E>(
             .map(|&p| {
                 let (x, y, _) = frame.local(p);
                 // (A point on the axis is of every turn.)
-                (x.hypot(y) > 0.0).then(|| y.atan2(x))
+                (x.phypot(y) > 0.0).then(|| y.patan2(x))
             })
             .collect();
         let Some(mut angles) = angles.filter(|a| !a.is_empty()) else {
@@ -1174,7 +1175,7 @@ fn torus_turns<E>(
             return Ok(None);
         };
         let next = if next <= end { next + TAU } else { next };
-        let (s, c) = (0.5 * (end + next)).sin_cos();
+        let (s, c) = (0.5 * (end + next)).psin_cos();
         if reaches(frame.point((major + minor) * c, (major + minor) * s, 0.0))? {
             covered.push((end.rem_euclid(TAU), next - end));
         }
@@ -1270,7 +1271,7 @@ impl Hull {
         for &(center, x, y) in &self.conics {
             add(
                 center.dot(direction),
-                x.dot(direction).hypot(y.dot(direction)),
+                x.dot(direction).phypot(y.dot(direction)),
             );
         }
         for &(center, radius) in &self.balls {
@@ -1474,7 +1475,7 @@ mod tests {
             .unwrap();
             assert_eq!(face.side(beside, 1e-6), Ok(Side::In));
             let (x, y, _) = frame.local(beside);
-            assert!((x - 1.0).hypot(y - 1.0) > 0.5);
+            assert!((x - 1.0).phypot(y - 1.0) > 0.5);
         }
     }
 
@@ -1483,7 +1484,7 @@ mod tests {
     /// points further up and down the cylinder.
     fn patch(frame: Frame) -> Outline {
         let r = 2.0;
-        let at = |u: f64, v: f64| frame.point(r * u.cos(), r * u.sin(), v);
+        let at = |u: f64, v: f64| frame.point(r * u.pcos(), r * u.psin(), v);
         let ring = |v: f64| frame.at(frame.point(0.0, 0.0, v)).unwrap();
         let outer = vec![
             arc(ring(0.0), r, (0.5, 2.5), false),
@@ -1505,7 +1506,7 @@ mod tests {
         for frame in [Frame::WORLD, tilted()] {
             let face = patch(frame);
             let r = 2.0;
-            let at = |u: f64, v: f64| frame.point(r * u.cos(), r * u.sin(), v);
+            let at = |u: f64, v: f64| frame.point(r * u.pcos(), r * u.psin(), v);
             let side = |u: f64, v: f64| face.side(at(u, v), 1e-6);
             for (u, v) in [
                 (1.0, 0.5),
@@ -1575,10 +1576,10 @@ mod tests {
             let frame = frame.at(frame.origin() * k).unwrap();
             // Radius 2 at the base, apex at height 4.
             let slope: f64 = -0.5;
-            let cone = Surface::Cone(Cone::new(frame, 2.0 * k, slope.atan()).unwrap());
+            let cone = Surface::Cone(Cone::new(frame, 2.0 * k, slope.patan()).unwrap());
             let at = |u: f64, v: f64| {
                 let r = (2.0 + v * slope) * k;
-                frame.point(r * u.cos(), r * u.sin(), v * k)
+                frame.point(r * u.pcos(), r * u.psin(), v * k)
             };
             let tol = 1e-6 * k;
             // The whole side: one rim, the apex inside.
@@ -1648,7 +1649,7 @@ mod tests {
         // than the rim is.
         let frame = tilted();
         let slope: f64 = -0.278;
-        let cone = Surface::Cone(Cone::new(frame, 0.625, slope.atan()).unwrap());
+        let cone = Surface::Cone(Cone::new(frame, 0.625, slope.patan()).unwrap());
         let side = outline(
             cone,
             false,
@@ -1663,7 +1664,7 @@ mod tests {
                 (0.5e-6, Side::On),
             ] {
                 let r = 0.625 + v * slope;
-                let p = frame.point(r * u.cos(), r * u.sin(), v);
+                let p = frame.point(r * u.pcos(), r * u.psin(), v);
                 assert_eq!(side.side(p, 1e-6), Ok(expected), "({u}, {v})");
             }
         }
@@ -1683,7 +1684,7 @@ mod tests {
                 let ring = frame.at(frame.point(0.0, 0.0, h * r)).unwrap();
                 arc(ring, r * (1.0 - h * h).sqrt(), (0.0, TAU), reversed)
             };
-            let latitude = |h: f64| h.asin();
+            let latitude = |h: f64| h.pasin();
             let build = |loops: Vec<Vec<Seg>>| {
                 Outline::new(sphere.clone(), false, loops, 4.0 * tol).unwrap()
             };
@@ -1747,14 +1748,14 @@ mod tests {
             // with v; and the circle about the axis at angle v around the
             // tube, running with u.
             let meridian = |u: f64, reversed: bool| {
-                let center = frame.point(major * u.cos(), major * u.sin(), 0.0);
-                let out = frame.vector(u.cos(), u.sin(), 0.0);
+                let center = frame.point(major * u.pcos(), major * u.psin(), 0.0);
+                let out = frame.vector(u.pcos(), u.psin(), 0.0);
                 let around = Frame::new(center, out.cross(frame.z()), out).unwrap();
                 arc(around, minor, (0.0, TAU), reversed)
             };
             let parallel = |v: f64, reversed: bool| {
-                let ring = frame.at(frame.point(0.0, 0.0, minor * v.sin())).unwrap();
-                arc(ring, major + minor * v.cos(), (0.0, TAU), reversed)
+                let ring = frame.at(frame.point(0.0, 0.0, minor * v.psin())).unwrap();
+                arc(ring, major + minor * v.pcos(), (0.0, TAU), reversed)
             };
             // The face is to the left of its boundary seen from outside:
             // beyond a meridian running with v lies lower u.
@@ -1904,12 +1905,12 @@ mod tests {
     fn the_turn_of_a_face_on_a_torus() {
         let frame = Frame::WORLD;
         let (major, minor) = (3.0, 1.0);
-        let at = |a: f64| frame.point(major * a.cos(), major * a.sin(), 0.5);
+        let at = |a: f64| frame.point(major * a.pcos(), major * a.psin(), 0.5);
         let piece = |a: f64, b: f64| vec![at(a), at(0.5 * (a + b)), at(b)];
         let pieces = vec![piece(0.1, 0.3), piece(1.0, 1.2)];
         let turn_of = |p: Vec3| {
             let (x, y, _) = frame.local(p);
-            y.atan2(x).rem_euclid(TAU)
+            y.patan2(x).rem_euclid(TAU)
         };
         // The face holds the circles between the pieces the short way.
         let mut short = |p: Vec3| -> Result<bool, ()> {
@@ -2007,7 +2008,7 @@ mod tests {
                 let corners: Vec<(f64, f64)> = polygon.iter().map(|&p| flat(p)).collect();
                 for i in 0..=200 {
                     let t = from + sweep * f64::from(i) / 200.0;
-                    let q = flat(centre + x * t.cos() + y * t.sin());
+                    let q = flat(centre + x * t.pcos() + y * t.psin());
                     let n = corners.len();
                     for j in 0..n {
                         let (p0, p1) = (corners[j], corners[(j + 1) % n]);

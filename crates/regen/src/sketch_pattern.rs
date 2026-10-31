@@ -36,6 +36,7 @@ use craft3d_doc::{
 };
 use craft3d_expr::Evaluation;
 use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2};
+use craft3d_math::Portable;
 use craft3d_solve::ImageMap;
 use std::collections::BTreeMap;
 
@@ -710,7 +711,7 @@ impl<'a, F: Fn(EntityId) -> Option<[f64; 2]>> Placer<'a, F> {
             Ok(Some(ends)) => {
                 let [ax, ay] = ends.from.2;
                 match self.apply(level, ends.from.2, (count, 0), Some(ends)) {
-                    Some([bx, by]) => (ax - bx).hypot(ay - by) <= linear,
+                    Some([bx, by]) => (ax - bx).phypot(ay - by) <= linear,
                     None => false,
                 }
             }

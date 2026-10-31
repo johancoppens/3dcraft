@@ -3,6 +3,7 @@
 //! in one colour, with lines `tokens.nav_icon_width` wide.
 
 use crate::theme::Tokens;
+use craft3d_math::Portable;
 use egui::{Color32, Pos2, Rect, Shape, Stroke, pos2, vec2};
 
 /// What an icon shows.
@@ -156,7 +157,7 @@ pub fn paint(painter: &egui::Painter, icon: Icon, place: Rect, ink: Color32, tok
             ];
             for k in 0..8 {
                 let a = std::f32::consts::FRAC_PI_4 * k as f32;
-                let (sin, cos) = a.sin_cos();
+                let (sin, cos) = a.psin_cos();
                 shapes.push(Shape::line_segment(
                     [p(0.55 * cos, 0.55 * sin), p(0.9 * cos, 0.9 * sin)],
                     stroke,
@@ -224,12 +225,12 @@ pub fn paint(painter: &egui::Painter, icon: Icon, place: Rect, ink: Color32, tok
             let points: Vec<Pos2> = (0..=20)
                 .map(|k| {
                     let a = -1.4 + (k as f32) / 20.0 * 5.0;
-                    p(0.7 * a.cos(), 0.7 * a.sin())
+                    p(0.7 * a.pcos(), 0.7 * a.psin())
                 })
                 .collect();
             let end = 3.6_f32;
-            let tip = p(0.7 * end.cos(), 0.7 * end.sin());
-            vec![line(points), head(tip, -end.sin(), end.cos())]
+            let tip = p(0.7 * end.pcos(), 0.7 * end.psin());
+            vec![line(points), head(tip, -end.psin(), end.pcos())]
         }
         Icon::Orbit => {
             // A flat ellipse about the vertical axis, an arrow on its
@@ -237,18 +238,18 @@ pub fn paint(painter: &egui::Painter, icon: Icon, place: Rect, ink: Color32, tok
             let points: Vec<Pos2> = (0..=24)
                 .map(|k| {
                     let a = 0.3 + (k as f32) / 24.0 * 5.4;
-                    p(0.85 * a.cos(), 0.35 * a.sin())
+                    p(0.85 * a.pcos(), 0.35 * a.psin())
                 })
                 .collect();
             let end = 5.7_f32;
-            let tip = p(0.85 * end.cos(), 0.35 * end.sin());
+            let tip = p(0.85 * end.pcos(), 0.35 * end.psin());
             vec![
                 Shape::line_segment(
                     [p(0.0, -0.9), p(0.0, 0.9)],
                     Stroke::new(stroke.width, faint),
                 ),
                 line(points),
-                head(tip, -0.85 * end.sin(), 0.35 * end.cos()),
+                head(tip, -0.85 * end.psin(), 0.35 * end.pcos()),
             ]
         }
         Icon::ZoomTo => {

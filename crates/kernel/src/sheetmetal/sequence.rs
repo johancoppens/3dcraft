@@ -17,6 +17,7 @@ use super::{Part, SheetFace, flat_faces, fold, refuse, world};
 use crate::KernelError;
 use crate::extrude::extrude;
 use crate::profile::{Curve2, Segment, Shape, SketchCurve, detect_profiles, distance};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Transform, Vec3};
 use craft3d_topo::{Body, EdgeId, FaceId};
 
@@ -221,7 +222,7 @@ pub fn bend_frame(
     // (cos ρ − 1) across + sin ρ normal, which is
     // 2 sin(ρ/2) (−sin(ρ/2) across + cos(ρ/2) normal).
     let half = 0.5 * rho;
-    let inside = (across * (-half.sin()) + normal * half.cos())
+    let inside = (across * (-half.psin()) + normal * half.pcos())
         .normalized()
         .ok_or_else(|| refuse(Some(bend), "a bend's frame is not finite"))?;
     Ok(BendFrame {
@@ -346,8 +347,8 @@ pub fn inside_piece(part: &Part, piece: PieceOf, p: Vec3) -> bool {
             } else {
                 q.z + b.radius
             };
-            let r = across.hypot(h);
-            let phi = across.atan2(if up { -h } else { h });
+            let r = across.phypot(h);
+            let phi = across.patan2(if up { -h } else { h });
             r > b.radius && r < b.radius + t && phi > 0.0 && phi < b.theta()
         }
     }
@@ -414,8 +415,8 @@ pub fn piece_points(part: &Part, piece: PieceOf) -> Vec<Vec3> {
             let up = b.angle > 0.0;
             let zc = if up { t + b.radius } else { -b.radius };
             let at = |r: f64, phi: f64| {
-                let w = if up { -phi.cos() } else { phi.cos() };
-                (r * phi.sin(), r * w)
+                let w = if up { -phi.pcos() } else { phi.pcos() };
+                (r * phi.psin(), r * w)
             };
             let theta = b.theta();
             let outer = b.radius + t;
@@ -429,7 +430,7 @@ pub fn piece_points(part: &Part, piece: PieceOf) -> Vec<Vec3> {
             // Each half arc (at most 90 degrees) lies inside the triangle
             // of its ends and where their tangents meet, `outer /
             // cos(θ/4)` from the axis at the half's middle.
-            let apex = outer / (0.25 * theta).cos();
+            let apex = outer / (0.25 * theta).pcos();
             if apex.is_finite() {
                 plane.push(at(apex, 0.25 * theta));
                 plane.push(at(apex, 0.75 * theta));
@@ -452,7 +453,7 @@ fn arc_span(segment: &Segment, center: [f64; 2], whole: bool) -> (f64, f64) {
     if whole {
         return (0.0, TAU);
     }
-    let angle = |p: [f64; 2]| (p[1] - center[1]).atan2(p[0] - center[0]);
+    let angle = |p: [f64; 2]| (p[1] - center[1]).patan2(p[0] - center[0]);
     let (from, to) = if segment.reversed {
         (angle(segment.end), angle(segment.start))
     } else {
@@ -479,8 +480,8 @@ pub fn outline_hull(outer: &[Segment]) -> Vec<[f64; 2]> {
                 let (from, sweep) = arc_span(s, *center, matches!(s.shape, Shape::Circle { .. }));
                 let pieces = (sweep / std::f64::consts::FRAC_PI_2).ceil().clamp(1.0, 4.0);
                 let step = sweep / pieces;
-                let apex = radius / (0.5 * step).cos();
-                let at = |r: f64, a: f64| [center[0] + r * a.cos(), center[1] + r * a.sin()];
+                let apex = radius / (0.5 * step).pcos();
+                let at = |r: f64, a: f64| [center[0] + r * a.pcos(), center[1] + r * a.psin()];
                 // `pieces` is 1 to 4.
                 for k in 0..(pieces as usize) {
                     let a = from + step * k as f64;
@@ -541,11 +542,11 @@ pub fn piece_lowest(part: &Part, piece: PieceOf, height: impl Fn(Vec3) -> f64) -
                             arc_span(s, *center, matches!(s.shape, Shape::Circle { .. }));
                         // Least along the circle where the point lies
                         // against the gradient.
-                        let down = (-g[1]).atan2(-g[0]);
+                        let down = (-g[1]).patan2(-g[0]);
                         if (down - from).rem_euclid(std::f64::consts::TAU) <= sweep {
                             least = least.min(skins(
-                                center[0] + radius * down.cos(),
-                                center[1] + radius * down.sin(),
+                                center[0] + radius * down.pcos(),
+                                center[1] + radius * down.psin(),
                             ));
                         }
                     }
@@ -576,7 +577,7 @@ pub fn piece_lowest(part: &Part, piece: PieceOf, height: impl Fn(Vec3) -> f64) -
             let gu = g[0] * b.across[0] + g[1] * b.across[1];
             let gw = g[2] * sign;
             // `gu sin φ + gw cos φ` is least at φ = atan2(−gu, −gw).
-            let down = (-gu).atan2(-gw);
+            let down = (-gu).patan2(-gw);
             let theta = b.theta();
             let mut angles = vec![0.0, theta];
             if down > 0.0 && down < theta {
@@ -585,7 +586,7 @@ pub fn piece_lowest(part: &Part, piece: PieceOf, height: impl Fn(Vec3) -> f64) -
             for p in [b.start, b.end] {
                 for r in [b.radius, b.radius + t] {
                     for &phi in &angles {
-                        let (u, wv) = (r * phi.sin(), sign * r * phi.cos());
+                        let (u, wv) = (r * phi.psin(), sign * r * phi.pcos());
                         least =
                             least.min(at(p[0] + u * b.across[0], p[1] + u * b.across[1], zc + wv));
                     }

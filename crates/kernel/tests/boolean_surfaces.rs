@@ -6,6 +6,7 @@
 // Test code: a failure in a helper is a failed test.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
+use craft3d_math::Portable;
 mod boolean_common;
 
 use boolean_common::*;
@@ -208,7 +209,7 @@ fn a_cone_cut_across_and_through_its_axis() {
         let (radius, height, cut) = (1.5, 3.0, 1.0);
         let cone = spike(k, [1.0, 2.0, 0.0], radius, height);
         let small = radius * (1.0 - cut / height);
-        let slant = |r0: f64, r1: f64, h: f64| PI * (r0 + r1) * (r0 - r1).hypot(h);
+        let slant = |r0: f64, r1: f64, h: f64| PI * (r0 + r1) * (r0 - r1).phypot(h);
         let above = boxed(k, [-4.0, -4.0, cut], [6.0, 8.0, 9.0]);
         let frustum = solve(&cone, &above, Subtract, k);
         assert_mass(
@@ -383,8 +384,8 @@ fn a_ring_cut_through_and_across_its_axis() {
         let c = 0.5_f64;
         let higher = boxed(k, [-6.0, -6.0, c], [6.0, 6.0, 3.0]);
         let slice = solve(&ring, &higher, Intersect, k);
-        let half_angle = (c / minor).acos();
-        let segment = minor * minor * (half_angle - half_angle.sin() * half_angle.cos());
+        let half_angle = (c / minor).pacos();
+        let segment = minor * minor * (half_angle - half_angle.psin() * half_angle.pcos());
         let chord = 2.0 * (minor * minor - c * c).sqrt();
         let m = mass(&slice.body);
         assert_close(m.volume, 2.0 * PI * major * segment * k * k * k, "volume");
@@ -409,12 +410,12 @@ fn a_ring_cut_through_and_across_its_axis() {
 fn rod_in_ring(major: f64, r: f64) -> f64 {
     let n = 1 << 16;
     let slice = |alpha: f64| {
-        let w = r * alpha.cos();
+        let w = r * alpha.pcos();
         if w <= 0.0 {
             return 0.0;
         }
         let (outer, inner) = (major + w, major - w);
-        let area = outer * outer * (inner / outer).acos() - inner * 2.0 * (major * w).sqrt();
+        let area = outer * outer * (inner / outer).pacos() - inner * 2.0 * (major * w).sqrt();
         area * w
     };
     let h = PI / f64::from(n);
@@ -519,12 +520,12 @@ fn lens(a: f64, b: f64, d: f64) -> f64 {
         return 0.0;
     }
     if d <= (a - b).abs() {
-        return PI * a.min(b).powi(2);
+        return PI * a.min(b).ppowi(2);
     }
     let x = ((d * d + a * a - b * b) / (2.0 * d * a)).clamp(-1.0, 1.0);
     let y = ((d * d + b * b - a * a) / (2.0 * d * b)).clamp(-1.0, 1.0);
     let k = ((-d + a + b) * (d + a - b) * (d - a + b) * (d + a + b)).max(0.0);
-    a * a * x.acos() + b * b * y.acos() - 0.5 * k.sqrt()
+    a * a * x.pacos() + b * b * y.pacos() - 0.5 * k.sqrt()
 }
 
 /// The volume two rings of one tube radius `r` share whose axes are
@@ -536,7 +537,7 @@ fn lens(a: f64, b: f64, d: f64) -> f64 {
 fn rings_in_common(r1: f64, r2: f64, apart: f64, r: f64) -> f64 {
     let n = 1 << 16;
     let slice = |alpha: f64| {
-        let w = r * alpha.cos();
+        let w = r * alpha.pcos();
         if w <= 0.0 {
             return 0.0;
         }
@@ -689,7 +690,7 @@ fn a_countersunk_hole() {
         // What the cone takes: a frustum from the top to the bottom face.
         let low = wide * (1.0 - t / deep);
         let frustum = |r0: f64, r1: f64, h: f64| PI * h * (r0 * r0 + r0 * r1 + r1 * r1) / 3.0;
-        let slant = |r0: f64, r1: f64, h: f64| PI * (r0 + r1) * (r0 - r1).hypot(h);
+        let slant = |r0: f64, r1: f64, h: f64| PI * (r0 + r1) * (r0 - r1).phypot(h);
         assert_mass(
             &sunk,
             12.0 - frustum(wide, low, t),
@@ -946,10 +947,10 @@ fn a_rim_through_a_wall_at_the_seam_of_its_circle() {
         // x = 0.625 - 0.375 cos s runs from 0.25 to 1.
         for i in 0..n {
             let s = PI * (f64::from(i) + 0.5) / f64::from(n);
-            let x = 0.625 - 0.375 * s.cos();
+            let x = 0.625 - 0.375 * s.pcos();
             let chord = 2.0 * (0.5625 - (x - 1.0) * (x - 1.0)).max(0.0).sqrt();
             let half = (0.25 - (x - 0.5) * (x - 0.5)).max(0.0).sqrt();
-            sum += chord * half * 0.375 * s.sin();
+            sum += chord * half * 0.375 * s.psin();
         }
         sum * PI / f64::from(n)
     };
@@ -960,7 +961,7 @@ fn a_rim_through_a_wall_at_the_seam_of_its_circle() {
         // The seam of the lying cylinder's base circle is on the wall of
         // the upright one.
         let seam = frame.point(0.75 * k, 0.0, 0.0);
-        assert!(((seam.x - 0.5 * k).hypot(seam.y - 0.5 * k) - 0.5 * k).abs() < 1e-12 * k);
+        assert!(((seam.x - 0.5 * k).phypot(seam.y - 0.5 * k) - 0.5 * k).abs() < 1e-12 * k);
         let (va, vb) = (PI * 0.25 * 2.5, PI * 0.5625);
         let volume = |op, a: &craft3d_topo::Body, b: &craft3d_topo::Body| {
             mass(&solve(a, b, op, k).body).volume / (k * k * k)
@@ -999,10 +1000,10 @@ fn a_torus_bead_in_the_corner_of_a_plate_and_a_boss() {
     // The tube's centre is 1 above the plate and 2 outside the boss.
     let (below, inward) = (1.0, 2.0);
     let r2 = minor * minor;
-    let segment = |d: f64| r2 * (d / minor).acos() - d * (r2 - d * d).sqrt();
+    let segment = |d: f64| r2 * (d / minor).pacos() - d * (r2 - d * d).sqrt();
     // ∫ sqrt(r² − x²) dx and ∫ x sqrt(r² − x²) dx.
-    let arc = |x: f64| 0.5 * (x * (r2 - x * x).sqrt() + r2 * (x / minor).asin());
-    let moment = |x: f64| -(r2 - x * x).powf(1.5) / 3.0;
+    let arc = |x: f64| 0.5 * (x * (r2 - x * x).sqrt() + r2 * (x / minor).pasin());
+    let moment = |x: f64| -(r2 - x * x).ppowf(1.5) / 3.0;
     // The part of the tube below the plate's top: a segment symmetric
     // about the tube's centre, so its centroid is at the major radius.
     let in_plate = 2.0 * PI * major * segment(below);

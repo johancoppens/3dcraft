@@ -9,6 +9,7 @@ use crate::params::Params;
 use crate::sketch_cmds::{change, entity_id, sketch_ref, sketch_result};
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::{EntityId, Expr, FORMULA_PARAMETER, Geometry, SketchError};
+use craft3d_math::Portable;
 use serde_json::{Value, json};
 
 pub(crate) static SPECS: &[CommandSpec] = &[
@@ -79,7 +80,7 @@ fn sketch_curve(session: &mut Session, params: &Value) -> Run {
     else {
         return fail(format!("{COMMAND}: the curve has no fitted points"));
     };
-    let meet = (first[0] - last[0]).hypot(first[1] - last[1]) <= tolerance;
+    let meet = (first[0] - last[0]).phypot(first[1] - last[1]) <= tolerance;
     let closed = closed.unwrap_or(meet && end.is_none_or(|e| Some(e) == start));
     if closed && !meet {
         return fail(format!(
@@ -95,7 +96,7 @@ fn sketch_curve(session: &mut Session, params: &Value) -> Run {
         // said now rather than after.
         let ensure = |s: &craft3d_doc::Sketch, id: EntityId, at: [f64; 2]| {
             let (px, py) = s.point(id)?;
-            let off = (px - at[0]).hypot(py - at[1]);
+            let off = (px - at[0]).phypot(py - at[1]);
             // Another formula curve that ends there holds the point where
             // its formulas put it: both have to meet.
             let other = s.entities.iter().find(|e| {

@@ -23,6 +23,7 @@ use super::{
     TANGENT_EDGE, VertexSource, Vertices, face_id,
 };
 use craft3d_geom::{Curve3, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
 use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, FaceId, VertexId};
 use std::collections::BTreeMap;
@@ -136,7 +137,7 @@ fn pair_up(
             .ok_or(Stop::of(LOST))?;
         let travel = if u.reversed { -tangent } else { tangent };
         let into = outward.cross(travel);
-        let angle = into.dot(frame.y()).atan2(into.dot(frame.x()));
+        let angle = into.dot(frame.y()).patan2(into.dot(frame.x()));
         if !angle.is_finite() {
             return Err(Stop::of(LOST));
         }
@@ -189,7 +190,7 @@ fn pair_up(
                     let off = onto(Sheet::bare(&face.surface), point + into * reach)
                         .ok_or(Stop::of(LOST))?
                         - point;
-                    let angle = off.dot(frame.y()).atan2(off.dot(frame.x()));
+                    let angle = off.dot(frame.y()).patan2(off.dot(frame.x()));
                     // Close to where it was, on the same turn.
                     entry.0 = base + (angle - base + TAU / 2.0).rem_euclid(TAU) - TAU / 2.0;
                 }

@@ -12,6 +12,7 @@
 //! `1000 N / (100 mm^2)` is 10 MPa.
 
 use crate::error::UnitMismatch;
+use craft3d_math::Portable;
 use std::fmt;
 
 /// Exponents of the base dimensions. `length: 2` is an area, all zero is a
@@ -150,7 +151,7 @@ impl Dimension {
             Dimension::DENSITY => {
                 return ShownUnit {
                     text: "kg/m^3".to_string(),
-                    factor: Unit::Metre.factor().powi(-3),
+                    factor: Unit::Metre.factor().ppowi(-3),
                     dimension: self,
                     length_power: 0,
                 };
@@ -172,7 +173,7 @@ impl Dimension {
         }
         ShownUnit {
             text: parts.join("*"),
-            factor: length.factor().powi(self.length),
+            factor: length.factor().ppowi(self.length),
             dimension: self,
             length_power: self.length,
         }
@@ -509,7 +510,7 @@ impl ShownUnit {
                 })?;
                 let power = power.checked_mul(sign).ok_or("a power is too large")?;
                 any = true;
-                factor *= unit.factor().powi(power);
+                factor *= unit.factor().ppowi(power);
                 dimension = unit
                     .dimension()
                     .checked_pow(power)

@@ -18,6 +18,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod boolean_common;
 
 use boolean_common::*;
@@ -185,7 +186,7 @@ fn a_cut_through_the_middle_leaves_two_lumps() {
         // Through a cylinder across its axis: two half-discs' prisms.
         let rod = rod(k, [0.0, 0.0, 0.0], 5.0, 10.0);
         let across = boxed(k, [-6.0, -1.0, -1.0], [6.0, 1.0, 11.0]);
-        let strip = 2.0 * (24f64.sqrt() + 25.0 * (0.2f64).asin());
+        let strip = 2.0 * (24f64.sqrt() + 25.0 * (0.2f64).pasin());
         case(
             &rod,
             &across,

@@ -147,6 +147,7 @@ use craft3d_gpu::{
     ADAPTER_HINT, Camera, Frame, Mesh, NO_FACE, Offscreen, Projection, RenderParams, SECTION_FACE,
     Section,
 };
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use craft3d_render::{Cut, section_bounds};
 use std::collections::BTreeMap;
@@ -327,7 +328,7 @@ pub fn band(mesh: &Mesh, camera: &Camera, cpu: &Frame) -> Vec<bool> {
         ) else {
             continue;
         };
-        let length = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
+        let length = ((b.0 - a.0).ppowi(2) + (b.1 - a.1).ppowi(2)).sqrt();
         // Half-pixel steps; an edge that long is mostly off screen anyway.
         let steps = ((length * 2.0).ceil() as usize).clamp(1, 8 * (w + h));
         for i in 0..=steps {
@@ -551,7 +552,7 @@ fn mark_outline(
         ) else {
             continue;
         };
-        let length = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
+        let length = ((b.0 - a.0).ppowi(2) + (b.1 - a.1).ppowi(2)).sqrt();
         let steps = ((length * 2.0).ceil() as usize).clamp(1, 8 * (w + h));
         for i in 0..=steps {
             let t = i as f64 / steps as f64;
@@ -900,7 +901,7 @@ pub fn seams(mesh: &Mesh, camera: &Camera, width: u32, height: u32) -> Vec<bool>
             let (Some(a), Some(b)) = (screen[p], screen[q]) else {
                 continue;
             };
-            let length = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
+            let length = ((b.0 - a.0).ppowi(2) + (b.1 - a.1).ppowi(2)).sqrt();
             let steps = ((length * 2.0).ceil() as usize).clamp(1, 8 * (w + h));
             for i in 0..=steps {
                 let t = i as f64 / steps as f64;

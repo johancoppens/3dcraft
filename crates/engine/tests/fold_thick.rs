@@ -12,6 +12,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{
@@ -45,7 +46,7 @@ fn thick_panels_fold_until_the_clearance_runs_out() {
             .unwrap()
             .to_string();
         let (t, gap) = (c / 10.0, c / 20.0);
-        let limit = 2.0 * (gap / t).atan().to_degrees();
+        let limit = 2.0 * (gap / t).patan().to_degrees();
         let panels = json!({"thickness": format!("{t} mm"), "clearance": format!("{gap} mm")});
         let at = |a: f64| json!([{"line": line, "kind": "mountain", "angle": format!("{a} deg")}]);
         built(

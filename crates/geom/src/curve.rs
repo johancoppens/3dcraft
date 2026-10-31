@@ -1,6 +1,7 @@
 //! Curves in space: analytic kinds stay analytic, everything else is NURBS.
 
 use crate::{GeomError, NurbsCurve};
+use craft3d_math::Portable;
 use craft3d_math::{Bits, Frame, Vec3};
 use std::f64::consts::TAU;
 
@@ -157,7 +158,7 @@ impl Curve3 {
         match self {
             Curve3::Line(l) => (l.origin + l.direction * t, l.direction),
             Curve3::Circle(c) => {
-                let (s, co) = t.sin_cos();
+                let (s, co) = t.psin_cos();
                 let r = c.radius;
                 (
                     c.frame.point(r * co, r * s, 0.0),
@@ -165,7 +166,7 @@ impl Curve3 {
                 )
             }
             Curve3::Ellipse(e) => {
-                let (s, co) = t.sin_cos();
+                let (s, co) = t.psin_cos();
                 (
                     e.frame.point(e.a * co, e.b * s, 0.0),
                     e.frame.vector(-e.a * s, e.b * co, 0.0),
@@ -194,7 +195,7 @@ impl Curve3 {
                 Ok(if x == 0.0 && y == 0.0 {
                     0.0
                 } else {
-                    wrap_angle(y.atan2(x))
+                    wrap_angle(y.patan2(x))
                 })
             }
             Curve3::Ellipse(_) => self.project_numeric(p, 64).map(wrap_angle),
@@ -342,11 +343,11 @@ mod tests {
                 // Circle: x² + y² = r², z = 0 in its frame.
                 let (x, y, z) = frame.local(all[1].eval(t));
                 assert!(
-                    (x.hypot(y) - 2.5 * scale).abs() <= 1e-13 * scale && z.abs() <= 1e-13 * scale
+                    (x.phypot(y) - 2.5 * scale).abs() <= 1e-13 * scale && z.abs() <= 1e-13 * scale
                 );
                 // Ellipse: (x/a)² + (y/b)² = 1.
                 let (x, y, z) = frame.local(all[2].eval(t));
-                let e = (x / (3.0 * scale)).powi(2) + (y / (1.2 * scale)).powi(2);
+                let e = (x / (3.0 * scale)).ppowi(2) + (y / (1.2 * scale)).ppowi(2);
                 assert!((e - 1.0).abs() <= 1e-13 && z.abs() <= 1e-13 * scale);
             }
         }

@@ -25,6 +25,7 @@ use super::{
 use crate::{
     Circle, Cone, Curve3, Cylinder, Ellipse, GeomError, Line, Plane, Sphere, Surface, Torus,
 };
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 
 /// An intersection in closed form, before it is clipped to a box.
@@ -348,7 +349,7 @@ fn plane_cone(p: &Plane, cone: &Cone, tol: &Tolerance) -> Result<Closed, GeomErr
     let f = p.frame();
     let n = f.z();
     let (apex, a) = cone_apex_axis(cone);
-    let (sin_a, cos_a) = cone.half_angle().abs().sin_cos();
+    let (sin_a, cos_a) = cone.half_angle().abs().psin_cos();
     let d = (apex - f.origin()).dot(n);
     let c = n.dot(a);
     let cross = n.cross(a);
@@ -533,7 +534,7 @@ fn cylinders(c: &Cylinder, d: &Cylinder, tol: &Tolerance) -> Result<Option<Close
         let (ef, (a, b)) = (ellipse.frame(), ellipse.semi_axes());
         let angle = |p: Vec3| {
             let (x, y, _) = ef.local(p);
-            super::wrap((y / b).atan2(x / a))
+            super::wrap((y / b).patan2(x / a))
         };
         let (t0, t1) = (angle(center + m * r), angle(center - m * r));
         let (t0, t1) = if t0 <= t1 { (t0, t1) } else { (t1, t0) };
@@ -588,7 +589,7 @@ fn profile(s: &Surface, frame: &Frame, tol: &Tolerance) -> Option<Profile> {
             q: 0.0,
         }),
         Surface::Cone(c) => on_axis(c.frame()).map(|(h, side)| {
-            let q = c.half_angle().tan() * side;
+            let q = c.half_angle().ptan() * side;
             Profile::Ruling {
                 p: c.radius() - q * h,
                 q,
@@ -626,7 +627,7 @@ fn coaxial(a: &Surface, b: &Surface, tol: &Tolerance) -> Result<Option<Closed>, 
     match (pa, pb) {
         (Profile::Ruling { p: p1, q: q1 }, Profile::Ruling { p: p2, q: q2 }) => {
             if (q1 - q2).abs() <= tol.angular {
-                let gap = (p1 - p2).abs() / q1.hypot(1.0);
+                let gap = (p1 - p2).abs() / q1.phypot(1.0);
                 return Ok(Some(if gap <= t {
                     Closed::Coincident { same_normal: true }
                 } else {
@@ -638,7 +639,7 @@ fn coaxial(a: &Surface, b: &Surface, tol: &Tolerance) -> Result<Option<Closed>, 
         }
         (Profile::Ruling { p, q }, Profile::Round { rho, z, r })
         | (Profile::Round { rho, z, r }, Profile::Ruling { p, q }) => {
-            let norm = q.hypot(1.0);
+            let norm = q.phypot(1.0);
             // The centre's distance from the line, along its normal (1, -q).
             let s = (rho - p - q * z) / norm;
             if s.abs() > r + t {
@@ -665,7 +666,7 @@ fn coaxial(a: &Surface, b: &Surface, tol: &Tolerance) -> Result<Option<Closed>, 
                 r: a2,
             },
         ) => {
-            let distance = (r2 - r1).hypot(z2 - z1);
+            let distance = (r2 - r1).phypot(z2 - z1);
             if distance <= t {
                 return Ok(Some(if (a1 - a2).abs() <= t {
                     Closed::Coincident { same_normal: true }
@@ -716,7 +717,7 @@ fn cone_translates(c: &Cone, d: &Cone, tol: &Tolerance) -> Result<Option<Closed>
     {
         return Ok(None);
     }
-    let k2 = c.half_angle().tan().powi(2);
+    let k2 = c.half_angle().ptan().ppowi(2);
     let t = apex2 - apex1;
     let h = t.dot(a1);
     let w = t - a1 * h;
@@ -751,15 +752,15 @@ fn parameter_at(shape: &Shape, p: Vec3, tol: f64) -> Option<f64> {
         Shape::Line(l) => (p - l.origin()).dot(l.direction()),
         Shape::Circle(c) => {
             let (x, y, _) = c.frame().local(p);
-            super::wrap(y.atan2(x))
+            super::wrap(y.patan2(x))
         }
         Shape::Ellipse(e) => {
             let (x, y, _) = e.frame().local(p);
             let (a, b) = e.semi_axes();
-            super::wrap((y / b).atan2(x / a))
+            super::wrap((y / b).patan2(x / a))
         }
         Shape::Parabola { o, d1, .. } => (p - *o).dot(*d1) / d1.length_squared(),
-        Shape::Hyperbola { c, e2, .. } => ((p - *c).dot(*e2) / e2.length_squared()).asinh(),
+        Shape::Hyperbola { c, e2, .. } => ((p - *c).dot(*e2) / e2.length_squared()).pasinh(),
         Shape::Lobe { .. } => return None,
     };
     (t.is_finite() && shape.eval(t).distance(p) <= tol).then_some(t)
@@ -782,7 +783,7 @@ fn same_apex(
         // One axis, or opposite ones: not this case.
         return Ok(None);
     }
-    let between = sine.atan2(a1.dot(a2));
+    let between = sine.patan2(a1.dot(a2));
     let ray = |direction: Vec3, tangent: bool| -> Result<ExactCurve, GeomError> {
         Ok(ExactCurve {
             shape: Shape::Line(Line::new(apex, direction)?),
@@ -793,8 +794,8 @@ fn same_apex(
     // In the plane of the axes, `e` across the first.
     let e = across(a2, a1).normalized().ok_or_else(degenerate)?;
     let (x, y) = (
-        alpha1.cos(),
-        (alpha2.cos() - alpha1.cos() * a1.dot(a2)) / sine,
+        alpha1.pcos(),
+        (alpha2.pcos() - alpha1.pcos() * a1.dot(a2)) / sine,
     );
     let touching = (between - (alpha1 + alpha2)).abs() <= tol.angular
         || (between - (alpha1 - alpha2).abs()).abs() <= tol.angular;
@@ -848,7 +849,7 @@ fn shared_ruling(c: &Cone, d: &Cone, tol: &Tolerance) -> Result<Option<Closed>, 
     let mut normals = [Vec3::ZERO; 2];
     for ((axis, alpha), normal) in [(a1, alpha1), (a2, alpha2)].into_iter().zip(&mut normals) {
         let off = across(axis, along);
-        let angle = off.length().atan2(axis.dot(along).abs());
+        let angle = off.length().patan2(axis.dot(along).abs());
         if (angle - alpha).abs() > tol.angular {
             return Ok(None);
         }
@@ -858,7 +859,7 @@ fn shared_ruling(c: &Cone, d: &Cone, tol: &Tolerance) -> Result<Option<Closed>, 
     if n.cross(other).length() > tol.angular {
         return Ok(None);
     }
-    let (cos1, cos2) = (alpha1.cos(), alpha2.cos());
+    let (cos1, cos2) = (alpha1.pcos(), alpha2.pcos());
     let lambda = (cos1 * cos1) / (cos2 * cos2);
     // Q = ν (a s + b ν + c) − cos² α τ², per cone.
     let form = |axis: Vec3, cos: f64, s0: f64| {
@@ -897,7 +898,7 @@ fn shared_ruling(c: &Cone, d: &Cone, tol: &Tolerance) -> Result<Option<Closed>, 
             });
         }
     }
-    let size = gs.hypot(gn);
+    let size = gs.phypot(gn);
     if !(size > tol.angular) {
         // No second plane: the line is all there is.
         return Ok(Some(meets(curves, Vec::new())));

@@ -18,6 +18,7 @@
     clippy::needless_range_loop
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::*;
@@ -86,19 +87,19 @@ fn implicit(surface: &Surface, p: Vec3) -> Option<f64> {
         Surface::Plane(s) => Some(s.frame().local(p).2),
         Surface::Cylinder(s) => {
             let (x, y, _) = s.frame().local(p);
-            Some(x.hypot(y) - s.radius())
+            Some(x.phypot(y) - s.radius())
         }
         Surface::Cone(s) => {
             let (x, y, z) = s.frame().local(p);
-            let radius = s.radius() + z * s.half_angle().tan();
+            let radius = s.radius() + z * s.half_angle().ptan();
             // Past the apex the radius is negative and this stays positive:
             // there is no surface there, everything is outside.
-            Some(x.hypot(y) - radius)
+            Some(x.phypot(y) - radius)
         }
         Surface::Sphere(s) => Some(p.distance(s.frame().origin()) - s.radius()),
         Surface::Torus(s) => {
             let (x, y, z) = s.frame().local(p);
-            Some((x.hypot(y) - s.radii().0).hypot(z) - s.radii().1)
+            Some((x.phypot(y) - s.radii().0).phypot(z) - s.radii().1)
         }
         Surface::Bezier(_) | Surface::Nurbs(_) => {
             let ((u0, u1), (v0, v1)) = surface.domain();

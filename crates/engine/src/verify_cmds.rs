@@ -16,6 +16,7 @@ use crate::verify::{self, Part};
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::{Document, FeatureId};
 use craft3d_kernel::boolean::{Interference, common_volume, interference};
+use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Tolerance, Vec3};
 use craft3d_regen::Regen;
 use craft3d_topo::Body;
@@ -1083,7 +1084,7 @@ fn body_box(
         _ => return Ok(Some(unknown)),
     };
     let floor = 10.0 * linear;
-    let fine = 8.0_f64.powi(i32::try_from(refine.min(8)).unwrap_or(8));
+    let fine = 8.0_f64.ppowi(i32::try_from(refine.min(8)).unwrap_or(8));
     let tolerance = (area.sqrt() * 1e-5 / fine).max(floor);
     let params = craft3d_tess::TessParams {
         chordal_tolerance: tolerance,

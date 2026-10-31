@@ -15,6 +15,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{failure, feature_brief as feature, inspect, refused_with as refused, run};
@@ -294,7 +295,7 @@ fn removed(d: f64, p: f64, length: f64) -> f64 {
     let step = FRAC_PI_2 / f64::from(n);
     let mut run = 0.0;
     for i in 0..=n {
-        let rho = rise * (f64::from(i) / f64::from(n)).powi(2);
+        let rho = rise * (f64::from(i) / f64::from(n)).ppowi(2);
         let w = if i == 0 || i == n {
             1.0
         } else if i % 2 == 1 {

@@ -13,6 +13,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{
@@ -79,7 +80,7 @@ fn a_square_folded_in_half_is_folded_again_across() {
             assert_close(&found["area"], 4.0 * c * c, "area");
             assert_close(
                 &found["bbox"][1][2],
-                c * degrees.to_radians().sin(),
+                c * degrees.to_radians().psin(),
                 "height",
             );
             deep(&mut s);

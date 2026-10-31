@@ -6,6 +6,7 @@
 
 use super::meet::MeetingCurve;
 use crate::{Circle, Curve3, Ellipse, GeomError, Line, NurbsCurve};
+use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Tolerance, Vec3};
 use std::f64::consts::TAU;
 
@@ -109,13 +110,13 @@ impl Shape {
             Shape::Line(l) => l.origin() + l.direction() * t,
             Shape::Circle(_) | Shape::Ellipse(_) => {
                 let (c, x, y) = self.trig().unwrap_or((Vec3::ZERO, Vec3::ZERO, Vec3::ZERO));
-                let (s, co) = t.sin_cos();
+                let (s, co) = t.psin_cos();
                 c + x * co + y * s
             }
             Shape::Parabola { o, d1, d2 } => *o + *d1 * t + *d2 * (t * t),
-            Shape::Hyperbola { c, e1, e2 } => *c + *e1 * t.cosh() + *e2 * t.sinh(),
+            Shape::Hyperbola { c, e1, e2 } => *c + *e1 * t.pcosh() + *e2 * t.psinh(),
             Shape::Lobe { o, a, b, c, k, .. } => {
-                let (s, co) = t.sin_cos();
+                let (s, co) = t.psin_cos();
                 *o + *a * (co * (1.0 + k * co * co).sqrt())
                     + *b * (co * co)
                     + *c * (s * (1.0 + co * co).sqrt())
@@ -129,7 +130,7 @@ impl Shape {
         let Shape::Lobe { a, b, c, k, .. } = self else {
             return None;
         };
-        let (s, co) = t.sin_cos();
+        let (s, co) = t.psin_cos();
         let w = (1.0 + co * co).sqrt();
         let v = (1.0 + k * co * co).sqrt();
         Some(
@@ -166,12 +167,12 @@ impl Shape {
                     return;
                 };
                 let (a, b) = (pick(x), pick(y));
-                let r = a.hypot(b);
+                let r = a.phypot(b);
                 let h = (bound - pick(c)) / r;
                 if !(r > 0.0 && h.abs() <= 1.0) {
                     return;
                 }
-                let (phase, spread) = (b.atan2(a), h.acos());
+                let (phase, spread) = (b.patan2(a), h.pacos());
                 out.push(phase - spread);
                 out.push(phase + spread);
             }
@@ -186,7 +187,7 @@ impl Shape {
                     0.5 * (beta - gamma),
                     &mut ys,
                 );
-                out.extend(ys.into_iter().filter(|y| *y > 0.0).map(f64::ln));
+                out.extend(ys.into_iter().filter(|y| *y > 0.0).map(f64::pln));
             }
             Shape::Lobe { .. } => {
                 // No closed form: a change of sign between samples, then
@@ -258,11 +259,11 @@ impl Shape {
                 }
                 // The handle that makes a circular arc of the same turn
                 // exact to sixth order, as the marcher's spans have it.
-                let theta = da.dot(*db).clamp(-1.0, 1.0).acos().min(2.0);
+                let theta = da.dot(*db).clamp(-1.0, 1.0).pacos().min(2.0);
                 let handle = if theta < 1e-4 {
                     1.0 / 3.0
                 } else {
-                    (2.0 / 3.0) * (0.25 * theta).tan() / (0.5 * theta).sin()
+                    (2.0 / 3.0) * (0.25 * theta).ptan() / (0.5 * theta).psin()
                 };
                 let l = chord * handle;
                 let (c1, c2) = (*pa + *da * l, *pb - *db * l);
@@ -336,16 +337,16 @@ fn hyperbola_arc(c: Vec3, e1: Vec3, e2: Vec3, s0: f64, s1: f64) -> Result<NurbsC
     } else {
         1
     };
-    let at = |s: f64| c + e1 * s.cosh() + e2 * s.sinh();
+    let at = |s: f64| c + e1 * s.pcosh() + e2 * s.psinh();
     let step = (s1 - s0) / pieces as f64;
     let (mut knots, mut ctrl, mut weights) = (vec![s0; 3], vec![at(s0)], vec![1.0]);
     for k in 0..pieces {
         let a = s0 + step * k as f64;
         let b = if k + 1 == pieces { s1 } else { a + step };
         let (m, d) = (0.5 * (a + b), 0.5 * (b - a));
-        let radius = e1 * m.cosh() + e2 * m.sinh();
-        ctrl.push(c + radius * (1.0 / d.cosh()));
-        weights.push(d.cosh());
+        let radius = e1 * m.pcosh() + e2 * m.psinh();
+        ctrl.push(c + radius * (1.0 / d.pcosh()));
+        weights.push(d.pcosh());
         ctrl.push(at(b));
         weights.push(1.0);
         knots.push(b);

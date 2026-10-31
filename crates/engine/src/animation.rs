@@ -8,6 +8,7 @@
 
 use crate::CommandError;
 use crate::commands::fail;
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use craft3d_render::{Camera, Projection};
 use serde_json::Value;
@@ -506,7 +507,7 @@ impl CameraPath {
             }
         }
         if self.orbit != 0.0 {
-            let (sn, c) = (self.orbit * progress).to_radians().sin_cos();
+            let (sn, c) = (self.orbit * progress).to_radians().psin_cos();
             let turn = |v: Vec3| Vec3::new(c * v.x - sn * v.y, sn * v.x + c * v.y, v.z);
             camera.eye = camera.target + turn(camera.eye - camera.target);
             camera.up = turn(camera.up);

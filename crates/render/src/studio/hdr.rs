@@ -8,6 +8,7 @@
 //! malformed or hostile file is an error, never a panic or a huge
 //! allocation.
 
+use craft3d_math::Portable;
 use std::fmt;
 
 /// Largest side of an environment picture this reader accepts.
@@ -45,7 +46,7 @@ fn rgbe([r, g, b, e]: [u8; 4]) -> [f32; 3] {
         return [0.0; 3];
     }
     // 2^(e - 128) / 256, exact in f32 for every e in 1..=255.
-    let scale = (f64::from(e) - 136.0).exp2() as f32;
+    let scale = (f64::from(e) - 136.0).pexp2() as f32;
     [
         f32::from(r) * scale,
         f32::from(g) * scale,

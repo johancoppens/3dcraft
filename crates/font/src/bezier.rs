@@ -29,7 +29,7 @@ pub(crate) fn cross(a: P2, b: P2) -> f64 {
 }
 
 pub(crate) fn dist(a: P2, b: P2) -> f64 {
-    (a[0] - b[0]).hypot(a[1] - b[1])
+    libm::hypot(a[0] - b[0], a[1] - b[1])
 }
 
 /// A Bézier segment: `degree + 1` points of `p` are used (1 a line, 2 a

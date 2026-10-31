@@ -29,6 +29,7 @@ use super::harness::{self, Extent, MeshFile, RELATIVE};
 use super::step;
 use super::{APPROX, EXACT, Expect, FLAT, RING, SPLINE, SPLINE_QUADRATURE, Set};
 use craft3d_engine::Session;
+use craft3d_math::Portable;
 use serde_json::{Value, json};
 use std::f64::consts::{FRAC_1_SQRT_2, PI};
 use std::fmt::Write as _;
@@ -181,7 +182,7 @@ fn integral(f: impl Fn(f64) -> f64) -> f64 {
 /// in polar coordinates about its centre.
 fn over_disc(centre: [f64; 2], b: f64, f: impl Fn(f64, f64) -> f64) -> f64 {
     integral(|u| {
-        let (sin, cos) = (2.0 * PI * u).sin_cos();
+        let (sin, cos) = (2.0 * PI * u).psin_cos();
         2.0 * PI
             * integral(|v| {
                 let rho = b * v;
@@ -201,7 +202,7 @@ fn peg_under(
     stretch: impl Fn(f64, f64) -> f64,
 ) -> (f64, f64) {
     let wall = integral(|u| {
-        let (sin, cos) = (2.0 * PI * u).sin_cos();
+        let (sin, cos) = (2.0 * PI * u).psin_cos();
         2.0 * PI * b * z(centre[0] + b * cos, centre[1] + b * sin)
     });
     (
@@ -221,7 +222,7 @@ fn up_to_an_inclined_plane(s: &mut Session, k: f64) -> Forms {
         s,
         "feature.cylinder",
         json!({"radius": 20.0 * k, "height": 3.0 * k, "position": [0, 0, h * k],
-               "axis": [tilt.sin(), 0, tilt.cos()], "name": "Roof"}),
+               "axis": [tilt.psin(), 0, tilt.pcos()], "name": "Roof"}),
     )?;
     sketch(s, "Round", json!("xy"), 0.0)?;
     circle(s, "Round", [0.0, 0.0], a * k)?;
@@ -236,7 +237,7 @@ fn up_to_an_inclined_plane(s: &mut Session, k: f64) -> Forms {
         closed(
             "Post",
             PI * a * a * h,
-            PI * a * a + 2.0 * PI * a * h + PI * a * a / tilt.cos(),
+            PI * a * a + 2.0 * PI * a * h + PI * a * a / tilt.pcos(),
         ),
     ])
 }
@@ -259,13 +260,13 @@ fn up_to_a_cylinder(s: &mut Session, k: f64) -> Forms {
         json!({"sketch": "Foot", "upTo": "F1:face(0)", "name": "Saddle"}),
     )?;
     let drop = (r * r - a * a).sqrt();
-    let front = 2.0 * a * h - a * drop - r * r * (a / r).asin();
+    let front = 2.0 * a * h - a * drop - r * r * (a / r).pasin();
     Ok(vec![
         closed("Pipe", PI * r * r * 10.0, 2.0 * PI * r * (r + 10.0)),
         closed(
             "Saddle",
             l * front,
-            2.0 * a * l + 2.0 * front + 2.0 * l * (h - drop) + 2.0 * r * (a / r).asin() * l,
+            2.0 * a * l + 2.0 * front + 2.0 * l * (h - drop) + 2.0 * r * (a / r).pasin() * l,
         ),
     ])
 }
@@ -283,11 +284,11 @@ fn up_to_a_sphere(s: &mut Session, k: f64) -> Forms {
         json!({"radius": rr * k, "position": [0, 0, 9.0 * k], "name": "Ball"}),
     )?;
     let fall = (rr * rr - b * b).sqrt();
-    let under_skin = 2.0 * PI / 3.0 * (rr.powi(3) - fall.powi(3));
+    let under_skin = 2.0 * PI / 3.0 * (rr.ppowi(3) - fall.ppowi(3));
     let cap_area = 2.0 * PI * rr * (rr - fall);
     let mut forms = vec![closed(
         "Ball",
-        4.0 / 3.0 * PI * rr.powi(3),
+        4.0 / 3.0 * PI * rr.ppowi(3),
         4.0 * PI * rr * rr,
     )];
     for (name, peg, offset, inside) in [
@@ -371,7 +372,7 @@ fn up_to_a_torus(s: &mut Session, k: f64) -> Forms {
         json!({"sketch": "Band", "upTo": "F1:face(0)", "name": "Sleeve"}),
     )?;
     let drop = (small * small - a * a).sqrt();
-    let turn = (a / small).asin();
+    let turn = (a / small).pasin();
     Ok(vec![
         closed(
             "Ring",
@@ -404,7 +405,7 @@ fn up_to_a_torus_off_its_circle(s: &mut Session, k: f64) -> Forms {
         "feature.extrude",
         json!({"sketch": "Round", "upTo": "F1:face(0)", "name": "Peg"}),
     )?;
-    let root = |x: f64, y: f64| (9.0 - ((x * x + y * y).sqrt() - 10.0).powi(2)).sqrt();
+    let root = |x: f64, y: f64| (9.0 - ((x * x + y * y).sqrt() - 10.0).ppowi(2)).sqrt();
     let (volume, area) = peg_under(
         [10.5, 1.0],
         1.5,
@@ -449,9 +450,9 @@ fn up_to_a_freeform_face(s: &mut Session, k: f64) -> Forms {
     )?;
     let t = |x: f64| (x + 6.0) / 12.0;
     let y = |x: f64| 4.0 + 8.0 * t(x) * (1.0 - t(x));
-    let primitive = |x: f64| 12.0 * (4.0 * t(x) + 4.0 * t(x).powi(2) - 8.0 / 3.0 * t(x).powi(3));
+    let primitive = |x: f64| 12.0 * (4.0 * t(x) + 4.0 * t(x).ppowi(2) - 8.0 / 3.0 * t(x).ppowi(3));
     let slope = |x: f64| (2.0 - 4.0 * t(x)) / 3.0;
-    let arc = |s: f64| (s * (1.0 + s * s).sqrt() + s.asinh()) / 2.0;
+    let arc = |s: f64| (s * (1.0 + s * s).sqrt() + s.pasinh()) / 2.0;
     let under = primitive(x1) - primitive(x0);
     let length = 9.0 * (arc(slope(x0)) - arc(slope(x1)));
     let whole_under = primitive(6.0) - primitive(-6.0);
@@ -589,7 +590,7 @@ const TILT: f64 = 35.0;
 /// The xy plane turned about x by `TILT` degrees, counter-clockwise seen
 /// from the tip of x: its x axis, y axis and normal.
 fn ramp() -> ([f64; 3], [f64; 3], [f64; 3]) {
-    let (sin, cos) = TILT.to_radians().sin_cos();
+    let (sin, cos) = TILT.to_radians().psin_cos();
     ([1.0, 0.0, 0.0], [0.0, cos, sin], [0.0, -sin, cos])
 }
 
@@ -796,7 +797,7 @@ fn mirror_in_a_datum_plane(s: &mut Session, k: f64) -> Forms {
         (12.0 * 2.0 + 8.0 * 5.0) / 20.0,
         2.0,
     ];
-    let (sin, cos) = 20.0_f64.to_radians().sin_cos();
+    let (sin, cos) = 20.0_f64.to_radians().psin_cos();
     let n = [cos, sin, 0.0];
     let image = sub(centre, mul(n, 2.0 * dot(centre, n)));
     let (volume, area) = (80.0, 2.0 * 20.0 + 24.0 * 4.0);
@@ -906,7 +907,7 @@ fn pattern_about_an_axis_through_datum_points(s: &mut Session, k: f64) -> Forms 
     Ok(vec![
         closed(
             "Balls",
-            3.0 * 4.0 / 3.0 * PI * 1.5_f64.powi(3),
+            3.0 * 4.0 / 3.0 * PI * 1.5_f64.ppowi(3),
             3.0 * 4.0 * PI * 2.25,
         )
         .at(centre),
@@ -983,7 +984,7 @@ fn pillar(s: &mut Session, k: f64) -> Forms {
     // The Bézier: x(t) by its Bernstein polynomials, and its height above
     // the chord w(t) = y(t) − 25 = 57 t (1 − t).
     let dx = |t: f64| {
-        3.0 * ((xs[1] - xs[0]) * (1.0 - t).powi(2)
+        3.0 * ((xs[1] - xs[0]) * (1.0 - t).ppowi(2)
             + 2.0 * (xs[2] - xs[1]) * t * (1.0 - t)
             + (xs[3] - xs[2]) * t * t)
     };
@@ -992,13 +993,13 @@ fn pillar(s: &mut Session, k: f64) -> Forms {
     let root = |w: f64| (324.0 - w * w).sqrt();
     // The volume over a strip of the leaf from the chord to w: the
     // integral of 45 − √(324 − w²).
-    let column = |w: f64| 45.0 * w - 0.5 * (w * root(w) + 324.0 * (w / 18.0).asin());
+    let column = |w: f64| 45.0 * w - 0.5 * (w * root(w) + 324.0 * (w / 18.0).pasin());
     let volume = integral(|t| column(w(t)) * dx(t));
     let floor = integral(|t| w(t) * dx(t));
     let front = (xs[3] - xs[0]) * (45.0 - 18.0);
-    let wall = integral(|t| (45.0 - root(w(t))) * (dx(t).powi(2) + dw(t).powi(2)).sqrt());
+    let wall = integral(|t| (45.0 - root(w(t))) * (dx(t).ppowi(2) + dw(t).ppowi(2)).sqrt());
     // The end, on the roller: 18 / √(324 − w²) per unit of floor.
-    let end = integral(|t| 18.0 * (w(t) / 18.0).asin() * dx(t));
+    let end = integral(|t| 18.0 * (w(t) / 18.0).pasin() * dx(t));
     Ok(vec![
         closed("Plate", 32000.0, 2.0 * (4000.0 + 640.0 + 400.0)).at([40.0, 25.0, 4.0]),
         closed("Roller", PI * 324.0 * 80.0, 2.0 * PI * 18.0 * (18.0 + 80.0)).at([40.0, 25.0, 45.0]),
@@ -1290,7 +1291,7 @@ fn housing(s: &mut Session, k: f64) -> Forms {
 
     // The pedestal's footprint: x = ±42 t (1 − t), y from -24 to 24 with
     // dy/dt = 288 t (1 − t).
-    let under = |x: f64| 32.0 * x - 0.5 * (x * (324.0 - x * x).sqrt() + 324.0 * (x / 18.0).asin());
+    let under = |x: f64| 32.0 * x - 0.5 * (x * (324.0 - x * x).sqrt() + 324.0 * (x / 18.0).pasin());
     let pedestal = 2.0 * integral(|t| under(42.0 * t * (1.0 - t)) * 288.0 * t * (1.0 - t));
     let sleeve = PI * (324.0 - 121.0) * 60.0;
     let bolts = 6.0 * PI * 3.5 * 3.5 * 8.0;
@@ -1299,8 +1300,12 @@ fn housing(s: &mut Session, k: f64) -> Forms {
     let oil = 2.0
         * integral(|t| {
             let phi = PI * (t - 0.5);
-            let u = a * phi.sin();
-            PI * 2.0 * a * a * phi.cos().powi(2) * ((324.0 - u * u).sqrt() - (121.0 - u * u).sqrt())
+            let u = a * phi.psin();
+            PI * 2.0
+                * a
+                * a
+                * phi.pcos().ppowi(2)
+                * ((324.0 - u * u).sqrt() - (121.0 - u * u).sqrt())
         });
     Ok(vec![
         closed(
@@ -1409,7 +1414,7 @@ fn oil_hole(degrees: f64, b: f64, depth: f64, along: f64) -> impl Fn(&mut Sessio
         // whole disc: the cases here end well inside it or well outside).
         let ends_in_the_wall = wall(0.0).iter().any(|&(low, high)| low < end && end < high);
         let bottom = if ends_in_the_wall { PI * b * b } else { 0.0 };
-        let rim = integral(|u| 2.0 * PI * b * gone(b * (2.0 * PI * u).cos()));
+        let rim = integral(|u| 2.0 * PI * b * gone(b * (2.0 * PI * u).pcos()));
         let tube = PI * (outer * outer - inner * inner);
         Ok(vec![
             closed(
@@ -1742,7 +1747,7 @@ pub fn check_meshes(dir: &std::path::Path, meshes: &[MeshCase]) -> (String, Vec<
         let reach = theirs.iter().fold(0.0_f64, |m, x| m.max(x.abs()));
         let rounding = reach * 1.2e-7;
         let volume = record["volume"].as_f64().unwrap_or(f64::NAN);
-        let sum = mesh.triangles as f64 * reach.powi(3) * 6e-8;
+        let sum = mesh.triangles as f64 * reach.ppowi(3) * 6e-8;
         let bound = mesh.area * (mesh.tolerance + rounding) + 2e-5 * mesh.volume + sum;
         let volume_off = (volume - mesh.volume).abs() / bound;
         if !(volume_off <= 1.0) {
@@ -1973,7 +1978,7 @@ fn freecad_reads_extrusion_ends_datums_splines_and_slivers() {
                     forms_bad.push(format!("{file}: no body {}", form.body));
                     continue;
                 };
-                let volume = part.volume / (form.volume * k.powi(3)) - 1.0;
+                let volume = part.volume / (form.volume * k.ppowi(3)) - 1.0;
                 let area = if form.with_area {
                     part.area / (form.area * k * k) - 1.0
                 } else {
@@ -1982,7 +1987,7 @@ fn freecad_reads_extrusion_ends_datums_splines_and_slivers() {
                 let size = part.area.sqrt();
                 let centre = form.centroid.map(|c| {
                     (0..3)
-                        .map(|i| (part.centroid[i] - c[i] * k).powi(2))
+                        .map(|i| (part.centroid[i] - c[i] * k).ppowi(2))
                         .sum::<f64>()
                         .sqrt()
                         / size

@@ -21,6 +21,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod boolean_common;
 
 use boolean_common::*;
@@ -1191,7 +1192,7 @@ fn a_sheet_partly_on_a_face_of_the_solid_divides_it_where_its_rim_crosses() {
                 closed_but_for_its_boundary(&result.body, k, &what(&format!("skin {name}")));
             }
             let (a_in, a_out) = (mass(&kept.body).area, mass(&left.body).area);
-            let segment = |r: f64, d: f64| r * r * (d / r).acos() - d * (r * r - d * d).sqrt();
+            let segment = |r: f64, d: f64| r * r * (d / r).pacos() - d * (r * r - d * d).sqrt();
             let exact = 5.0_f64.sqrt() * (segment(1.0, 0.3) - segment(0.5, 0.3)) * k * k;
             assert!(
                 (a_in - exact).abs() <= tol.linear * PI * k,

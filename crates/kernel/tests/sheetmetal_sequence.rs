@@ -23,6 +23,7 @@ use craft3d_kernel::sheetmetal::sequence::{PieceOf, final_worlds, piece_lowest, 
 use craft3d_kernel::sheetmetal::{
     Closing, Direction, FlangeSpec, LengthFrom, On, Part, Spec, build,
 };
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use std::f64::consts::{FRAC_PI_2, PI};
 
@@ -100,7 +101,7 @@ fn in_convex(poly: &[[f64; 2]], p: [f64; 2], slack: f64) -> bool {
         let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
         let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
         let cross = dx * (p[1] - a[1]) - dy * (p[0] - a[0]);
-        turn * cross >= -slack * dx.hypot(dy)
+        turn * cross >= -slack * dx.phypot(dy)
     })
 }
 
@@ -118,7 +119,7 @@ fn a_flats_hull_lies_in_its_outline_on_a_slanted_bend_line() {
     // A triangle, and a rectangle turned 30 degrees, each with a flange
     // on a slanted edge: the base's (and the flange's) hull points stay
     // in the outline, none past the bend's tangent line.
-    let (c, s) = ((PI / 6.0).cos(), (PI / 6.0).sin());
+    let (c, s) = ((PI / 6.0).pcos(), (PI / 6.0).psin());
     let turned: Vec<[f64; 2]> = [[0.0, 0.0], [40.0, 0.0], [40.0, 30.0], [0.0, 30.0]]
         .iter()
         .map(|p| [c * p[0] - s * p[1], s * p[0] + c * p[1]])
@@ -189,7 +190,7 @@ fn a_bends_lowest_point_is_exact_where_its_skin_touches_tangentially() {
             let height = |x: Vec3| {
                 let q = back.point(x);
                 let u = (q.x - b.start[0]) * b.across[0] + (q.y - b.start[1]) * b.across[1];
-                alpha.cos() * (q.z - zc) - alpha.sin() * u
+                alpha.pcos() * (q.z - zc) - alpha.psin() * u
             };
             let exact = -(b.radius + t);
             let got = piece_lowest(&p, PieceOf::Bend(0), height).unwrap();
@@ -255,10 +256,10 @@ fn an_arched_flats_lowest_point_is_its_arcs_least() {
             // points against it.
             let height = |x: Vec3| {
                 let q = back.point(x);
-                -(beta.cos() * q.x + beta.sin() * q.y) + 0.25 * q.z
+                -(beta.pcos() * q.x + beta.psin() * q.y) + 0.25 * q.z
             };
             let got = piece_lowest(&p, PieceOf::Flat(0), height).unwrap();
-            let exact = -(beta.cos() * 0.5 * w + beta.sin() * h + 0.5 * w);
+            let exact = -(beta.pcos() * 0.5 * w + beta.psin() * h + 0.5 * w);
             assert!(
                 (got - exact).abs() <= 1e-12 * k * 50.0,
                 "scale {k}, β {beta}: {got} against {exact}"
@@ -311,7 +312,7 @@ fn arc_segment(
     to: f64,
     reversed: bool,
 ) -> craft3d_kernel::profile::Segment {
-    let at = |a: f64| [center[0] + radius * a.cos(), center[1] + radius * a.sin()];
+    let at = |a: f64| [center[0] + radius * a.pcos(), center[1] + radius * a.psin()];
     // Counter-clockwise from `from` to `to`; a reversed one runs back.
     let (start, end) = if reversed {
         (at(to), at(from))
@@ -355,7 +356,7 @@ fn the_hull_holds_arcs_either_way_round_and_whole_circles() {
             };
             for j in 0..=256 {
                 let a = from + (to - from) * j as f64 / 256.0;
-                let p = [center[0] + radius * a.cos(), center[1] + radius * a.sin()];
+                let p = [center[0] + radius * a.pcos(), center[1] + radius * a.psin()];
                 assert!(
                     in_convex(&hull, p, 1e-9 * k),
                     "scale {k}: {p:?} of {seg:?} outside the hull {hull:?}"
@@ -377,7 +378,7 @@ fn the_hull_holds_arcs_either_way_round_and_whole_circles() {
         let hull = convex_hull(&outline_hull(&[circle]));
         for j in 0..256 {
             let a = std::f64::consts::TAU * j as f64 / 256.0;
-            let p = [c[0] + r * a.cos(), c[1] + r * a.sin()];
+            let p = [c[0] + r * a.pcos(), c[1] + r * a.psin()];
             assert!(in_convex(&hull, p, 1e-9 * k), "scale {k}: {p:?} outside");
         }
     }

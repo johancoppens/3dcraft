@@ -27,6 +27,7 @@
 )]
 
 use craft3d_geom::{Circle, Cone, Curve3, Cylinder, Line, Sphere, Surface, Torus};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
 use craft3d_tess::{TessError, TessParams, tessellate_body, tessellate_body_with_threads};
 use craft3d_topo::{Body, BodyKind, Coedge, EdgeId};
@@ -109,9 +110,9 @@ impl Wall {
         let s = self.size;
         match self.kind {
             Kind::Cylinder => (2.0 * s, v),
-            Kind::Cone(r) => (r * s + v * HALF_ANGLE.tan(), v),
-            Kind::Sphere => (2.0 * s * v.cos(), 2.0 * s * v.sin()),
-            Kind::Torus => (3.0 * s + s * v.cos(), s * v.sin()),
+            Kind::Cone(r) => (r * s + v * HALF_ANGLE.ptan(), v),
+            Kind::Sphere => (2.0 * s * v.pcos(), 2.0 * s * v.psin()),
+            Kind::Torus => (3.0 * s + s * v.pcos(), s * v.psin()),
         }
     }
 
@@ -134,8 +135,8 @@ impl Wall {
     /// the latitudes `v.0` and `v.1`.
     fn meridian_curve(&self, u: f64, v: (f64, f64)) -> (Curve3, (f64, f64)) {
         let frame = &self.frame;
-        let outward = frame.vector(u.cos(), u.sin(), 0.0);
-        let ahead = frame.vector(-u.sin(), u.cos(), 0.0);
+        let outward = frame.vector(u.pcos(), u.psin(), 0.0);
+        let ahead = frame.vector(-u.psin(), u.pcos(), 0.0);
         let round = |centre: Vec3, radius: f64| {
             let plane = Frame::new(centre, -ahead, outward).unwrap();
             (Curve3::Circle(Circle::new(plane, radius).unwrap()), v)
@@ -145,14 +146,14 @@ impl Wall {
             Kind::Torus => {
                 let major = 3.0 * self.size;
                 round(
-                    frame.point(major * u.cos(), major * u.sin(), 0.0),
+                    frame.point(major * u.pcos(), major * u.psin(), 0.0),
                     self.size,
                 )
             }
             Kind::Cylinder | Kind::Cone(_) => {
                 let at = |v: f64| {
                     let (r, z) = self.level(v);
-                    frame.point(r * u.cos(), r * u.sin(), z)
+                    frame.point(r * u.pcos(), r * u.psin(), z)
                 };
                 let (p, q) = (at(v.0), at(v.1));
                 (
@@ -206,11 +207,11 @@ impl Wall {
         match self.kind {
             Kind::Cylinder => 2.0 * s * du * (v1 - v0),
             Kind::Cone(r) => {
-                du * (r * s * (v1 - v0) + HALF_ANGLE.tan() * (v1 * v1 - v0 * v0) / 2.0)
-                    / HALF_ANGLE.cos()
+                du * (r * s * (v1 - v0) + HALF_ANGLE.ptan() * (v1 * v1 - v0 * v0) / 2.0)
+                    / HALF_ANGLE.pcos()
             }
-            Kind::Sphere => 4.0 * s * s * du * (v1.sin() - v0.sin()),
-            Kind::Torus => du * s * (3.0 * s * (v1 - v0) + s * (v1.sin() - v0.sin())),
+            Kind::Sphere => 4.0 * s * s * du * (v1.psin() - v0.psin()),
+            Kind::Torus => du * s * (3.0 * s * (v1 - v0) + s * (v1.psin() - v0.psin())),
         }
     }
 }

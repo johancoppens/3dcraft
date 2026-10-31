@@ -9,6 +9,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::plain::run;
@@ -120,7 +121,7 @@ fn evidence(name: &str, shot: &Shot) {
 /// the face is at `1.05 · d − half` and would fill the picture at
 /// `d − half`.
 fn near_face_share(half: f64) -> f64 {
-    let d = half + half / 15.0_f64.to_radians().tan();
+    let d = half + half / 15.0_f64.to_radians().ptan();
     (d - half) / (1.05 * d - half)
 }
 

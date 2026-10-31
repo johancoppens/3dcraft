@@ -16,6 +16,7 @@
 //! where a piece whose control polygon turns through less than half a turn
 //! cannot meet itself.
 
+use craft3d_math::Portable;
 use std::f64::consts::{PI, TAU};
 
 type P2 = [f64; 2];
@@ -75,7 +76,7 @@ fn cross(a: P2, b: P2) -> f64 {
 }
 
 fn distance(a: P2, b: P2) -> f64 {
-    (a[0] - b[0]).hypot(a[1] - b[1])
+    (a[0] - b[0]).phypot(a[1] - b[1])
 }
 
 /// An angle wrapped to `[0, 2π)`.
@@ -514,7 +515,7 @@ impl Part {
                 begin,
                 sweep,
             } => {
-                let (sin, cos) = (begin + sweep * s).sin_cos();
+                let (sin, cos) = (begin + sweep * s).psin_cos();
                 [center[0] + radius * cos, center[1] + radius * sin]
             }
         }
@@ -546,7 +547,7 @@ impl Part {
                 for quarter in 0..4_u8 {
                     let angle = f64::from(quarter) * std::f64::consts::FRAC_PI_2;
                     if wrap(angle - begin) <= *sweep {
-                        let (sin, cos) = angle.sin_cos();
+                        let (sin, cos) = angle.psin_cos();
                         points.push([center[0] + radius * cos, center[1] + radius * sin]);
                     }
                 }
@@ -567,7 +568,7 @@ impl Part {
                 let (a, b) = self.ends();
                 points.iter().all(|p| point_segment(*p, a, b) <= eps)
             }
-            Piece::Arc { radius, sweep, .. } => radius * (1.0 - (sweep / 2.0).cos()) <= eps,
+            Piece::Arc { radius, sweep, .. } => radius * (1.0 - (sweep / 2.0).pcos()) <= eps,
         }
     }
 
@@ -613,7 +614,7 @@ impl Part {
 
     fn size(&self) -> f64 {
         let b = self.bbox();
-        (b[2] - b[0]).hypot(b[3] - b[1])
+        (b[2] - b[0]).phypot(b[3] - b[1])
     }
 
     /// How far the control polygon of a Bézier piece turns in all, legs
@@ -627,11 +628,11 @@ impl Part {
         for pair in points.windows(2) {
             let [a, b] = pair else { continue };
             let leg = sub(*b, *a);
-            if leg[0].hypot(leg[1]) <= tiny {
+            if leg[0].phypot(leg[1]) <= tiny {
                 continue;
             }
             if let Some(last) = before {
-                turned += cross(last, leg).atan2(dot(last, leg)).abs();
+                turned += cross(last, leg).patan2(dot(last, leg)).abs();
             }
             before = Some(leg);
         }
@@ -658,7 +659,7 @@ pub(crate) fn point_on(parts: &[Part], t: f64) -> Option<P2> {
 fn box_gap(a: [f64; 4], b: [f64; 4]) -> f64 {
     let dx = (b[0] - a[2]).max(a[0] - b[2]).max(0.0);
     let dy = (b[1] - a[3]).max(a[1] - b[3]).max(0.0);
-    dx.hypot(dy)
+    dx.phypot(dy)
 }
 
 /// The stretch `[lo, hi]` of the segment `a` (0 at its start, 1 at its
@@ -900,7 +901,7 @@ pub(crate) fn turn_about(parts: &[Part], p: P2) -> f64 {
         if outside || matches!(part.piece, Piece::Line(..)) || depth >= 200 {
             let (from, to) = part.ends();
             let (a, b) = (sub(from, p), sub(to, p));
-            total += cross(a, b).atan2(dot(a, b));
+            total += cross(a, b).patan2(dot(a, b));
             continue;
         }
         let (first, second) = part.halves();
@@ -919,7 +920,7 @@ fn gauss_legendre(count: usize) -> Vec<(f64, f64)> {
     let n = count as f64;
     for i in 0..count {
         #[allow(clippy::cast_precision_loss)]
-        let mut x = (PI * (i as f64 + 0.75) / (n + 0.5)).cos();
+        let mut x = (PI * (i as f64 + 0.75) / (n + 0.5)).pcos();
         let mut slope = 1.0;
         for _ in 0..100 {
             // Legendre's recurrence up to P_count, and its derivative.
@@ -1190,7 +1191,7 @@ mod tests {
             let rule = gauss_legendre(count);
             assert_eq!(rule.len(), count);
             for power in [0, 1, 2 * count - 1] {
-                let sum: f64 = rule.iter().map(|(x, w)| w * x.powi(power as i32)).sum();
+                let sum: f64 = rule.iter().map(|(x, w)| w * x.ppowi(power as i32)).sum();
                 let exact = 1.0 / (power as f64 + 1.0);
                 assert!(
                     (sum - exact).abs() < 1e-13,
@@ -1347,7 +1348,7 @@ mod tests {
         // clockwise around points under it.
         let chord = |p: P2| {
             let (a, b) = (sub([4.0, 0.0], p), sub([0.0, 0.0], p));
-            cross(a, b).atan2(dot(a, b))
+            cross(a, b).patan2(dot(a, b))
         };
         for (p, inside) in [
             ([2.0, 1.0], true),

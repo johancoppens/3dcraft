@@ -1443,6 +1443,7 @@ impl WebHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use craft3d_math::Portable;
     use craft3d_ui_egui::files::ExportWhat;
 
     #[test]
@@ -2696,7 +2697,7 @@ mod tests {
             let mid = crank_at(&mut host);
             let a = angle.to_radians();
             assert!(
-                (mid[0] - 10.0 * a.cos()).abs() < 1.0 && (mid[1] - 10.0 * a.sin()).abs() < 1.0,
+                (mid[0] - 10.0 * a.pcos()).abs() < 1.0 && (mid[1] - 10.0 * a.psin()).abs() < 1.0,
                 "{angle} deg: the crank is at {mid:?}"
             );
         }

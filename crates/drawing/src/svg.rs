@@ -238,7 +238,7 @@ impl Out {
                 } => {
                     let (c, r) = (*center, *radius);
                     self.swept(r, r, 0.0, *start, *sweep, *to, |t| {
-                        [c[0] + r * t.cos(), c[1] + r * t.sin()]
+                        [c[0] + r * libm::cos(t), c[1] + r * libm::sin(t)]
                     })?;
                 }
                 Piece::Ellipse {
@@ -251,7 +251,7 @@ impl Out {
                     ..
                 } => {
                     let rx = norm(*major);
-                    let rotation = major[1].atan2(major[0]);
+                    let rotation = libm::atan2(major[1], major[0]);
                     let (c, m, k) = (*center, *major, *ratio);
                     self.swept(rx, rx * k, rotation, *start, *sweep, *to, |t| {
                         crate::ellipse_point(c, m, k, t)

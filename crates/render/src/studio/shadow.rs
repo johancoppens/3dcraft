@@ -12,6 +12,7 @@
 //! a triangle's border differently ([`super`], *Tolerance*).
 
 use crate::Cut;
+use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Vec3};
 use craft3d_tess::Mesh;
 
@@ -220,7 +221,7 @@ pub fn visibility(
     let texel = view.texel();
     let (x, y, d) = view.project(p + n * (NORMAL_OFFSET * texel));
     let bias = DEPTH_BIAS * texel;
-    let slope = radius.tan().max(0.0);
+    let slope = radius.ptan().max(0.0);
     // The blocker search over the widest penumbra.
     let search = (slope * 2.0 * view.radius / texel).clamp(1.0, MAX_PENUMBRA);
     let offset = |k: usize, taps: usize| (k as f64 + 0.5) / taps as f64 * 2.0 - 1.0;

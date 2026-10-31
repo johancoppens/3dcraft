@@ -494,6 +494,7 @@ fn cut(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
     use super::*;
+    use craft3d_math::Portable;
 
     /// A slanted straight line `k (1, 0.37, −0.61) t` as a cubic spline
     /// whose first span is `first` long (control points at the Greville
@@ -593,7 +594,7 @@ mod tests {
                 ctrl.push(Vec3::new(
                     x,
                     y,
-                    (0.7 * x).sin() + 0.3 * (y * 0.9).cos() + 0.1 * x * y,
+                    (0.7 * x).psin() + 0.3 * (y * 0.9).pcos() + 0.1 * x * y,
                 ));
                 weights.push(1.0 + 0.05 * x + 0.03 * y);
             }
@@ -688,7 +689,7 @@ mod tests {
         for i in 0..nu {
             for j in 0..nv {
                 let (x, y) = (i as f64, j as f64);
-                ctrl.push(Vec3::new(x, y, (0.9 * x).cos() + 0.4 * (0.7 * y).sin()));
+                ctrl.push(Vec3::new(x, y, (0.9 * x).pcos() + 0.4 * (0.7 * y).psin()));
                 weights.push(1.0 + 0.1 * x + 0.05 * y + 0.02 * x * y);
             }
         }
@@ -726,7 +727,7 @@ mod tests {
             for j in 0..3 {
                 // The first and the last row coincide.
                 let a = if i == 3 { 0.0 } else { f64::from(i) };
-                ctrl.push(Vec3::new(a.cos(), a.sin(), f64::from(j)));
+                ctrl.push(Vec3::new(a.pcos(), a.psin(), f64::from(j)));
             }
         }
         let s = NurbsSurface::new(

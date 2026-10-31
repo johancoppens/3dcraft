@@ -28,6 +28,7 @@ use super::{
     Angle, Arrangement, BoundarySegment, Crease, CreaseKind, EdgeKind, FoldError, Folded, Joint,
     Layers, Linkage, MAX_DENSE, arrange, fold_flat, layer_order, lift, vertex_checks,
 };
+use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Transform, Vec3};
 use std::collections::BTreeSet;
 use std::f64::consts::PI;
@@ -176,7 +177,7 @@ pub fn fold_stacked(
     let lesser_at = |at: [f64; 2]| -> bool {
         arr.around.iter().enumerate().any(|(v, around)| {
             arr.point(v).is_some_and(|p| {
-                (p[0] - at[0]).hypot(p[1] - at[1]) <= tol
+                (p[0] - at[0]).phypot(p[1] - at[1]) <= tol
                     && around.iter().any(|&h| lesser.contains(&(h / 2)))
             })
         })

@@ -6,6 +6,7 @@
 // Test code: a failure in a helper is a failed test.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
+use craft3d_math::Portable;
 mod boolean_common;
 
 use boolean_common::{SCALES, assert_close, boxed, mass, rod, solve, tolerance};
@@ -135,13 +136,13 @@ fn the_top_of_a_block_tilted_about_a_line_across_it_is_a_wedge() {
                 &turn([2.0, 1.5, 2.0], Vec3::Y, degrees, k),
                 k,
             );
-            let cos = degrees.to_radians().cos();
+            let cos = degrees.to_radians().pcos();
             assert_mass(&made, 24.0, 12.0 + 12.0 / cos + 16.0 + 12.0, k);
         }
         // About the line along y through one top edge: a wedge whose
         // height at the other side is 2 - 4 tan.
         let degrees: f64 = 20.0;
-        let tan = degrees.to_radians().tan();
+        let tan = degrees.to_radians().ptan();
         let made = moved(
             &block,
             &[top],
@@ -150,7 +151,7 @@ fn the_top_of_a_block_tilted_about_a_line_across_it_is_a_wedge() {
         );
         let low = 2.0 - 4.0 * tan;
         let area = 12.0
-            + 12.0 / degrees.to_radians().cos()
+            + 12.0 / degrees.to_radians().pcos()
             + 2.0 * 4.0 * (2.0 + low) / 2.0
             + 3.0 * 2.0
             + 3.0 * low;
@@ -166,7 +167,7 @@ fn the_top_of_a_block_tilted_about_a_line_across_it_is_a_wedge() {
             } => {
                 // The farthest corner, 2 from the line, moves along a
                 // chord of its circle; what fits is that part of the turn.
-                let chord = 2.0 * 2.0 * (60.0_f64.to_radians() / 2.0).sin();
+                let chord = 2.0 * 2.0 * (60.0_f64.to_radians() / 2.0).psin();
                 assert_close(value, chord * k, "value");
                 let part = largest / value;
                 assert!(part < 0.75 && part > 0.74, "{part}");
@@ -298,7 +299,7 @@ fn in_a_tilted_frame_the_wedge_is_the_same() {
             angle: 15.0_f64.to_radians(),
         };
         let made = moved(&tilted, &[top], &motion, k);
-        let cos = 15.0_f64.to_radians().cos();
+        let cos = 15.0_f64.to_radians().pcos();
         // The turn about the middle keeps the volume; the shift then
         // raises the top by 0.5 along the block's own z, everywhere.
         let h = 2.5;

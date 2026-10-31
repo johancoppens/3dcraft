@@ -8,6 +8,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::plain::run;
@@ -271,7 +272,7 @@ fn sketch_polylines_lie_on_their_plane_where_the_frame_puts_them() {
             turned += (a - centre)
                 .cross(b - centre)
                 .dot(normal)
-                .atan2((a - centre).dot(b - centre));
+                .patan2((a - centre).dot(b - centre));
         }
         assert!((turned - TAU).abs() <= 1e-9, "{name}: turned {turned}");
 
@@ -290,7 +291,7 @@ fn sketch_polylines_lie_on_their_plane_where_the_frame_puts_them() {
             turned += (a - origin)
                 .cross(b - origin)
                 .dot(normal)
-                .atan2((a - origin).dot(b - origin));
+                .patan2((a - origin).dot(b - origin));
         }
         assert!(
             (turned - FRAC_PI_2).abs() <= 1e-9,
@@ -319,7 +320,7 @@ fn an_arc_the_long_way_round_is_three_quarters_of_a_turn() {
         turned += pair[0]
             .cross(pair[1])
             .dot(Vec3::Z)
-            .atan2(pair[0].dot(pair[1]));
+            .patan2(pair[0].dot(pair[1]));
     }
     assert!((turned - 1.5 * PI).abs() <= 1e-9, "turned {turned}");
     // It passes through (-3, 0) and (0, -3).
@@ -705,7 +706,7 @@ fn bodies_carry_their_edges_as_polylines_on_the_mesh() {
         assert!(near(circle[0], *circle.last().unwrap()), "closed");
         for point in circle {
             assert_eq!(point.z, z);
-            let r = (point.x - 15.0).hypot(point.y - 20.0);
+            let r = (point.x - 15.0).phypot(point.y - 20.0);
             assert!((r - 6.0).abs() < 1e-9, "{r}");
         }
         // Within the tolerance of the circle: the polygon is shorter than
@@ -779,7 +780,7 @@ fn display(session: &mut Session, relative: f64, max_triangles: usize) -> Arc<Sc
 /// A number on the ladder of the display rule's and the first picture's
 /// tolerances: `2^(k/8)` for an integer `k` (`crate::scene::on_rung`).
 fn on_a_rung(tolerance: f64) -> bool {
-    let k = tolerance.log2() * 8.0;
+    let k = tolerance.plog2() * 8.0;
     (k - k.round()).abs() < 1e-9
 }
 
@@ -825,7 +826,7 @@ fn the_display_quality_is_a_finer_fraction_of_the_same_size() {
     let around: f64 = fine.windows(2).map(|w| w[0].distance(w[1])).sum();
     assert!(around < TAU * 6.0 && around > TAU * 6.0 * (1.0 - 2.0 * shown.tolerance / 6.0));
     for point in &fine {
-        assert!(((point.x - 15.0).hypot(point.y - 20.0) - 6.0).abs() < 1e-9);
+        assert!(((point.x - 15.0).phypot(point.y - 20.0) - 6.0).abs() < 1e-9);
     }
     // The sketch circles follow the same tolerance.
     let samples = |scene: &Scene| {

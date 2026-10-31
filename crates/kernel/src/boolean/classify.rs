@@ -816,6 +816,7 @@ mod tests {
     use crate::boolean::section::prepare;
     use crate::primitives;
     use craft3d_math::Frame;
+    use craft3d_math::Portable;
     use craft3d_topo::Body;
 
     fn prepared(body: &Body) -> Solid<'_> {
@@ -875,7 +876,7 @@ mod tests {
         let across = Vec3::new(-d.y, d.x, 0.0).normalized().unwrap();
         let touch = across + Vec3::Z;
         let p = touch - d;
-        assert!(p.x.hypot(p.y) > 1.0);
+        assert!(p.x.phypot(p.y) > 1.0);
         assert!(!is_inside(&solid, p));
         assert!(is_inside(&solid, Vec3::new(0.2, -0.3, 1.0)));
         // Through the rim, where wall and lid meet.
@@ -906,11 +907,11 @@ mod tests {
         for _ in 0..600 {
             let (x, y, z) = (unit() * 12.0, unit() * 12.0, unit() * 10.0);
             let p = frame.point(x, y, z);
-            let rho = x.hypot(y);
+            let rho = x.phypot(y);
             // Well away from the boundary, where rounding cannot decide.
             let in_cone = (rho - (2.0 - 0.5 * z), -z);
             let in_ball = Vec3::new(x, y, z).length() - 2.0;
-            let in_ring = (rho - 4.0).hypot(z) - 1.0;
+            let in_ring = (rho - 4.0).phypot(z) - 1.0;
             if in_cone.0.abs() > 1e-3 && in_cone.1.abs() > 1e-3 {
                 let expected = in_cone.0 < 0.0 && in_cone.1 < 0.0;
                 assert_eq!(is_inside(&cone, p), expected, "cone at ({x}, {y}, {z})");

@@ -11,6 +11,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 #[path = "common/bodies.rs"]
 mod bodies;
 
@@ -222,7 +223,7 @@ impl<'a> Graph<'a> {
         let d = sub(p, origin);
         let (px, py, pz) = (dot(d, x), dot(d, y), dot(d, z));
         // Out of the plane, and off the conic in it (as a length).
-        let conic = ((px / radii.0).powi(2) + (py / radii.1).powi(2)).sqrt() - 1.0;
+        let conic = ((px / radii.0).ppowi(2) + (py / radii.1).ppowi(2)).sqrt() - 1.0;
         Some(pz.abs().max(conic.abs() * radii.0.min(radii.1)))
     }
 
@@ -243,7 +244,7 @@ impl<'a> Graph<'a> {
         let y = cross(z, x);
         let d = sub(p, origin);
         let (px, py, pz) = (dot(d, x), dot(d, y), dot(d, z));
-        let rho = px.hypot(py);
+        let rho = px.phypot(py);
         let real = |i: usize| record.params[i].as_real().unwrap();
         Some(match kind {
             "PLANE" => pz,
@@ -253,12 +254,12 @@ impl<'a> Graph<'a> {
                 assert!(angle > 0.0 && angle < FRAC_PI_2, "a positive semi-angle");
                 assert!(real(2) >= 0.0);
                 // Distance from the line rho = R + z tan(a), outward.
-                (rho - real(2) - pz * angle.tan()) * angle.cos()
+                (rho - real(2) - pz * angle.ptan()) * angle.pcos()
             }
             "SPHERICAL_SURFACE" => norm(d) - real(2),
             _ => {
                 assert!(real(2) > real(3), "major radius first");
-                (rho - real(2)).hypot(pz) - real(3)
+                (rho - real(2)).phypot(pz) - real(3)
             }
         })
     }
@@ -713,8 +714,8 @@ fn surfaces_are_written_as_the_standard_parametrises_them() {
     // positive semi-angle; one that widens, as it is.
     let narrowing = primitives::cone(&frame, 2.0, 3.0).unwrap();
     for (angle_unit, expected) in [
-        (AngleUnit::Radian, (2.0_f64 / 3.0).atan()),
-        (AngleUnit::Degree, (2.0_f64 / 3.0).atan().to_degrees()),
+        (AngleUnit::Radian, (2.0_f64 / 3.0).patan()),
+        (AngleUnit::Degree, (2.0_f64 / 3.0).patan().to_degrees()),
     ] {
         let options = StepOptions {
             angle_unit,
@@ -732,7 +733,7 @@ fn surfaces_are_written_as_the_standard_parametrises_them() {
         let (_, z, x) = graph.placement(Graph::reference(&cone.params[1]));
         assert!(near(z, axis.map(|c| -c)), "the axis is turned: {z:?}");
         assert!(near(x, [frame.x().x, frame.x().y, frame.x().z]));
-        assert!((graph.radians_per_unit() * expected - (2.0_f64 / 3.0).atan()).abs() < 1e-15);
+        assert!((graph.radians_per_unit() * expected - (2.0_f64 / 3.0).patan()).abs() < 1e-15);
         // The apex is where the vertex loop is.
         let (_, vertex_loop) = graph.all("VERTEX_LOOP").next().unwrap();
         let apex = frame.point(0.0, 0.0, 3.0);
@@ -745,7 +746,7 @@ fn surfaces_are_written_as_the_standard_parametrises_them() {
     let mut widening = Body::new(BodyKind::Sheet);
     let surface = Surface::Cone(Cone::new(frame, 0.5, 0.3).unwrap());
     let mut rim = |v: f64| {
-        let radius = 0.5 + v * 0.3_f64.tan();
+        let radius = 0.5 + v * 0.3_f64.ptan();
         let at = frame.at(frame.point(0.0, 0.0, v)).unwrap();
         let vertex = widening.add_vertex(at.point(radius, 0.0, 0.0));
         widening.add_edge(

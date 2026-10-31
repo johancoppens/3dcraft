@@ -15,6 +15,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::{arc, circle, line, polygon, rectangle};
@@ -69,7 +70,7 @@ fn square(half: f64) -> Vec<SketchCurve> {
 }
 
 fn turned(points: &[P], angle: f64) -> Vec<P> {
-    let (s, c) = angle.sin_cos();
+    let (s, c) = angle.psin_cos();
     points
         .iter()
         .map(|p| [p[0] * c - p[1] * s, p[0] * s + p[1] * c])
@@ -276,7 +277,7 @@ fn a_square_to_the_same_square_is_a_box_with_plane_faces() {
         assert_eq!(made.body.faces.len(), 6);
         assert_eq!((made.body.edges.len(), made.body.vertices.len()), (12, 8));
         let (volume, area) = sound(&made);
-        assert!(close(volume, 12.0 * k.powi(3), 1e-12), "{volume}");
+        assert!(close(volume, 12.0 * k.ppowi(3), 1e-12), "{volume}");
         assert!(close(area, 32.0 * k * k, 1e-12), "{area}");
         // Named after the curves of both sections, in order.
         let sides: Vec<&Vec<u64>> = made
@@ -310,7 +311,7 @@ fn a_circle_to_a_coaxial_circle_is_a_frustum_with_a_cone_face() {
         let (volume, area) = sound(&made);
         let exact = PI * h / 3.0 * (r0 * r0 + r0 * r1 + r1 * r1);
         assert!(close(volume, exact, 1e-12), "{volume} for {exact}");
-        let slant = (h * h + (r0 - r1).powi(2)).sqrt();
+        let slant = (h * h + (r0 - r1).ppowi(2)).sqrt();
         let exact = PI * (r0 + r1) * slant + PI * (r0 * r0 + r1 * r1);
         assert!(close(area, exact, 1e-12), "{area} for {exact}");
 
@@ -349,7 +350,7 @@ fn a_square_to_a_smaller_square_is_the_frustum_of_a_pyramid() {
         let exact = h / 3.0 * (a1 + a2 + (a1 * a2).sqrt());
         assert!(close(volume, exact, 1e-12), "{volume} for {exact}");
         // Four trapezia of slant height √(h² + (a − b)²).
-        let slant = (h * h + (a - b).powi(2)).sqrt();
+        let slant = (h * h + (a - b).ppowi(2)).sqrt();
         let exact = a1 + a2 + 4.0 * (a + b) * slant;
         assert!(close(area, exact, 1e-12), "{area} for {exact}");
     }
@@ -416,7 +417,7 @@ fn a_smooth_loft_through_circles_whose_radii_grow_evenly_is_a_cone() {
         let (r0, r1, h) = (k, 2.5 * k, 6.0 * k);
         let exact = PI * h / 3.0 * (r0 * r0 + r0 * r1 + r1 * r1);
         assert!(close(volume, exact, 1e-9), "{volume} for {exact}");
-        let slant = (h * h + (r1 - r0).powi(2)).sqrt();
+        let slant = (h * h + (r1 - r0).ppowi(2)).sqrt();
         let exact = PI * (r0 + r1) * slant + PI * (r0 * r0 + r1 * r1);
         assert!(close(area, exact, 1e-9), "{area} for {exact}");
         // Ruled, the same circles give cones: one face per band.
@@ -432,8 +433,8 @@ fn on_circle(center: P, radius: f64, plane: &Frame) -> Vec<Vec3> {
         .map(|i| {
             let a = TAU * f64::from(i) / 64.0;
             plane.point(
-                center[0] + radius * a.cos(),
-                center[1] + radius * a.sin(),
+                center[0] + radius * a.pcos(),
+                center[1] + radius * a.psin(),
                 0.0,
             )
         })
@@ -506,7 +507,7 @@ fn a_smooth_loft_through_squares_and_rounded_shapes() {
         )
         .unwrap();
         assert_eq!(kinds(&made, Role::Side), vec!["plane"; 4]);
-        assert!(close(sound(&made).0, 20.0 * k.powi(3), 1e-12));
+        assert!(close(sound(&made).0, 20.0 * k.ppowi(3), 1e-12));
         // A slot (two lines, two half circles) to a larger one, turned:
         // arcs and lines in one loop.
         let slot = |id: u64, half: f64, r: f64| {
@@ -568,7 +569,7 @@ fn a_leaf_of_two_splines_to_a_larger_leaf() {
 /// A plane through the world's z axis, turned by `angle` about it: its x
 /// axis points away from the z axis, its y axis is the world's z.
 fn spoke(angle: f64) -> Frame {
-    let (s, c) = angle.sin_cos();
+    let (s, c) = angle.psin_cos();
     Frame::new(Vec3::ZERO, Vec3::new(-s, c, 0.0), Vec3::new(c, s, 0.0)).unwrap()
 }
 
@@ -590,7 +591,7 @@ fn sections_in_planes_that_are_not_parallel_make_a_bend() {
         let moment = 4.0 * k * k * 4.0 * k;
         let exact: f64 = angles
             .windows(2)
-            .map(|w| (w[1] - w[0]).sin() * moment)
+            .map(|w| (w[1] - w[0]).psin() * moment)
             .sum();
         assert!(close(volume, exact, 1e-11), "{volume} for {exact}");
         // Smooth: close to the piece of a ring, which is 1.5 · area · ρ.
@@ -619,7 +620,7 @@ fn a_closed_loft_is_a_ring() {
         assert_eq!(genus(&ruled.body), Some(1));
         let (volume, _) = sound(&ruled);
         let moment = 4.0 * k * k * 4.0 * k;
-        let exact = 6.0 * (TAU / 6.0).sin() * moment;
+        let exact = 6.0 * (TAU / 6.0).psin() * moment;
         assert!(close(volume, exact, 1e-11), "{volume} for {exact}");
         // Smooth: nearly the ring of revolution (Pappus), and the sections
         // lie on it.
@@ -671,13 +672,13 @@ fn sections_with_different_numbers_of_curves_are_cut_to_match() {
         let triangle: Vec<P> = (0..3)
             .map(|i| {
                 let a = TAU * f64::from(i) / 3.0;
-                [2.0 * k * a.cos(), 2.0 * k * a.sin()]
+                [2.0 * k * a.pcos(), 2.0 * k * a.psin()]
             })
             .collect();
         let hexagon: Vec<P> = (0..6)
             .map(|i| {
                 let a = TAU * f64::from(i) / 6.0;
-                [2.0 * k * a.cos(), 2.0 * k * a.sin()]
+                [2.0 * k * a.pcos(), 2.0 * k * a.psin()]
             })
             .collect();
         let made = loft(
@@ -933,7 +934,7 @@ fn a_loft_at_1e6_in_a_boolean() {
 /// about (∓d, 0), on the far side of the oval, end arcs about (0, ±e)
 /// tangent to them inside), at scale `k`, ids from 1.
 fn oval(k: f64, d: f64, e: f64, big: f64) -> Vec<SketchCurve> {
-    let apart = d.hypot(e);
+    let apart = d.phypot(e);
     // The top left junction, on the line through the two centres.
     let (jx, jy) = (d - big * d / apart, big * e / apart);
     let s = |x: f64, y: f64| [x * k, y * k];
@@ -950,13 +951,13 @@ fn on_arcs(curves: &[SketchCurve], plane: &Frame) -> Vec<Vec3> {
     let mut out = Vec::new();
     for c in curves {
         if let Curve2::Arc { center, start, end } = c.curve {
-            let r = (start[0] - center[0]).hypot(start[1] - center[1]);
-            let a0 = (start[1] - center[1]).atan2(start[0] - center[0]);
-            let a1 = (end[1] - center[1]).atan2(end[0] - center[0]);
+            let r = (start[0] - center[0]).phypot(start[1] - center[1]);
+            let a0 = (start[1] - center[1]).patan2(start[0] - center[0]);
+            let a1 = (end[1] - center[1]).patan2(end[0] - center[0]);
             let sweep = (a1 - a0).rem_euclid(TAU);
             for i in 0..=16 {
                 let a = a0 + sweep * f64::from(i) / 16.0;
-                out.push(plane.point(center[0] + r * a.cos(), center[1] + r * a.sin(), 0.0));
+                out.push(plane.point(center[0] + r * a.pcos(), center[1] + r * a.psin(), 0.0));
             }
         }
     }
@@ -1093,10 +1094,10 @@ fn aerofoil(k: f64, chord: f64, m: f64) -> (Vec<SketchCurve>, Vec<P>) {
         for i in 0..=16 {
             let t = f64::from(i) / 16.0;
             let b = [
-                (1.0 - t).powi(3),
-                3.0 * t * (1.0 - t).powi(2),
+                (1.0 - t).ppowi(3),
+                3.0 * t * (1.0 - t).ppowi(2),
                 3.0 * t * t * (1.0 - t),
-                t.powi(3),
+                t.ppowi(3),
             ];
             let x: f64 = (0..4).map(|j| b[j] * c[j][0]).sum();
             let y: f64 = (0..4).map(|j| b[j] * c[j][1]).sum();

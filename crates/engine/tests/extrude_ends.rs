@@ -11,6 +11,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{body, built, failed, new_document, refused, run, session};
@@ -338,7 +339,7 @@ fn up_to_an_inclined_plane_and_it_follows_the_plane() {
             &mut s,
             "feature.cylinder",
             json!({"radius": 20.0 * k, "height": 3.0 * k, "position": [0, 0, h],
-                   "axis": [tilt.sin(), 0, tilt.cos()], "name": "Roof"}),
+                   "axis": [tilt.psin(), 0, tilt.pcos()], "name": "Roof"}),
         );
         sketch(&mut s, "Round", "xy", 0.0);
         circle(&mut s, "Round", [0.0, 0.0], a);
@@ -351,7 +352,7 @@ fn up_to_an_inclined_plane_and_it_follows_the_plane() {
         let closed = |h: f64| {
             (
                 PI * a * a * h,
-                PI * a * a + 2.0 * PI * a * h + PI * a * a / tilt.cos(),
+                PI * a * a + 2.0 * PI * a * h + PI * a * a / tilt.pcos(),
             )
         };
         let (volume, area) = closed(h);
@@ -406,12 +407,12 @@ fn up_to_a_cylinder_and_a_sphere() {
             json!({"sketch": "Foot", "upTo": "F1:face(0)", "name": "Saddle"}),
         );
         let drop = (r * r - a * a).sqrt();
-        let front = 2.0 * a * h - a * drop - r * r * (a / r).asin();
+        let front = 2.0 * a * h - a * drop - r * r * (a / r).pasin();
         let saddle = body(&mut s, "Saddle");
         assert_measures(
             &saddle,
             l * front,
-            2.0 * a * l + 2.0 * front + 2.0 * l * (h - drop) + 2.0 * r * (a / r).asin() * l,
+            2.0 * a * l + 2.0 * front + 2.0 * l * (h - drop) + 2.0 * r * (a / r).pasin() * l,
             1e-9,
             "up to a cylinder",
         );
@@ -435,7 +436,7 @@ fn up_to_a_cylinder_and_a_sphere() {
             json!({"radius": rr, "position": [cx, 0, 9.0 * k], "name": "Ball"}),
         );
         let fall = (rr * rr - b * b).sqrt();
-        let cap_volume = 2.0 * PI / 3.0 * (rr.powi(3) - fall.powi(3));
+        let cap_volume = 2.0 * PI / 3.0 * (rr.ppowi(3) - fall.ppowi(3));
         let cap_area = 2.0 * PI * rr * (rr - fall);
         for (name, offset, inside) in [("Below", 0.0, false), ("Within", 8.0 * k, true)] {
             sketch(&mut s, name, "xy", offset);
@@ -513,16 +514,16 @@ fn up_to_a_freeform_face() {
         let t = |x: f64| (x + 6.0) / 12.0;
         let y = |x: f64| 4.0 + 8.0 * t(x) * (1.0 - t(x));
         let primitive =
-            |x: f64| 12.0 * (4.0 * t(x) + 4.0 * t(x).powi(2) - 8.0 / 3.0 * t(x).powi(3));
+            |x: f64| 12.0 * (4.0 * t(x) + 4.0 * t(x).ppowi(2) - 8.0 / 3.0 * t(x).ppowi(3));
         let under = primitive(x1) - primitive(x0);
         let slope = |x: f64| (2.0 - 4.0 * t(x)) / 3.0;
-        let arc = |s: f64| (s * (1.0 + s * s).sqrt() + s.asinh()) / 2.0;
+        let arc = |s: f64| (s * (1.0 + s * s).sqrt() + s.pasinh()) / 2.0;
         let length = 9.0 * (arc(slope(x0)) - arc(slope(x1)));
         let height = z1 - z0;
         let prop = body(&mut s, "Prop");
         assert_measures(
             &prop,
-            height * under * k.powi(3),
+            height * under * k.ppowi(3),
             ((x1 - x0) * height + height * length + 2.0 * under + height * (y(x0) + y(x1))) * k * k,
             1e-7,
             "up to a freeform face",
@@ -538,11 +539,11 @@ fn up_to_a_freeform_face() {
         );
         // Now y(x) = 4 + 12 t (1 - t): the area under it grows by half the
         // bulge's.
-        let primitive = |x: f64| 12.0 * (4.0 * t(x) + 6.0 * t(x).powi(2) - 4.0 * t(x).powi(3));
+        let primitive = |x: f64| 12.0 * (4.0 * t(x) + 6.0 * t(x).ppowi(2) - 4.0 * t(x).ppowi(3));
         let under = primitive(x1) - primitive(x0);
         assert_close(
             &body(&mut s, "Prop")["volume"],
-            height * under * k.powi(3),
+            height * under * k.ppowi(3),
             1e-7,
             "redrawn arch",
         );

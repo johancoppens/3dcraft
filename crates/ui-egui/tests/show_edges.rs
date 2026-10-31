@@ -14,6 +14,7 @@
 )]
 
 use craft3d_engine::{Scene, SceneQuality, Session, Workspace};
+use craft3d_math::Portable;
 use craft3d_render::Highlight;
 use craft3d_ui_egui::state::{CameraState, EdgeRef};
 use craft3d_ui_egui::viewport::{self, EdgeBlur, LineKind, Marks, Quality};
@@ -192,7 +193,7 @@ fn hiding_the_edges_changes_the_picture_only_where_they_were() {
                 0.0
             };
             let (px, py) = (l.from[0] + dx * t, l.from[1] + dy * t);
-            (x - px).hypot(y - py) <= reach
+            (x - px).phypot(y - py) <= reach
         })
     };
     let mut changed = 0;

@@ -41,6 +41,7 @@ use crate::params::Params;
 use crate::scene::{Scene, SceneBody};
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::PersistentName;
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use craft3d_render::{Camera, Neighbourhood, Projection, SECTION_FACE, Section, Viewpoint};
 use serde_json::{Value, json};
@@ -682,7 +683,7 @@ impl Scene {
                 let Some([sx, sy, depth]) = sight.view.project(point) else {
                     continue;
                 };
-                let distance = (sx - x).hypot(sy - y);
+                let distance = (sx - x).phypot(sy - y);
                 if distance <= radius {
                     candidates.push(Candidate {
                         distance,
@@ -1098,9 +1099,9 @@ fn samples_near(
     let [ax, ay, da] = a;
     let [bx, by, db] = b;
     let (dx, dy) = (bx - ax, by - ay);
-    let length = dx.hypot(dy);
+    let length = dx.phypot(dy);
     let at = |t: f64| -> Option<(f64, f64)> {
-        let distance = (x - (ax + dx * t)).hypot(y - (ay + dy * t));
+        let distance = (x - (ax + dx * t)).phypot(y - (ay + dy * t));
         // Along a line in the picture of a perspective camera it is the
         // reciprocal of the distance that changes evenly: the fraction in
         // space follows from it.

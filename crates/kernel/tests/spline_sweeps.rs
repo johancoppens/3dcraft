@@ -23,6 +23,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::{frames, polygon};
@@ -163,9 +164,9 @@ fn sums(loops: &[Vec<Piece>]) -> Sums {
         total[1] += part * integral(&|p, d| p[0] * p[0] / 2.0 * d[1]);
         total[2] += part * integral(&|p, d| p[0] * p[0] * p[1] / 2.0 * d[1]);
         total[3] += part * integral(&|p, d| p[0] * p[0] * p[0] / 3.0 * d[1]);
-        total[4] += integral(&|p, d| p[0] * d[0].hypot(d[1]));
+        total[4] += integral(&|p, d| p[0] * d[0].phypot(d[1]));
         total[5] += part * integral(&|p, d| p[0] * p[1] * d[1]);
-        total[6] += integral(&|_, d| d[0].hypot(d[1]));
+        total[6] += integral(&|_, d| d[0].phypot(d[1]));
     }
     Sums {
         area: total[0],
@@ -189,7 +190,7 @@ struct Placing {
 
 impl Placing {
     fn unit(&self) -> P {
-        let l = self.direction[0].hypot(self.direction[1]);
+        let l = self.direction[0].phypot(self.direction[1]);
         [self.direction[0] / l, self.direction[1] / l]
     }
 
@@ -360,7 +361,7 @@ fn turned(plane: &Frame, placing: &Placing, p: P, angle: f64) -> Vec3 {
     let origin = plane.point(placing.point[0], placing.point[1], 0.0);
     let axis = plane.vector(d[0], d[1], 0.0);
     let out = plane.vector(-d[1] * placing.side, d[0] * placing.side, 0.0);
-    origin + axis * p[1] + (out * angle.cos() + axis.cross(out) * angle.sin()) * p[0]
+    origin + axis * p[1] + (out * angle.pcos() + axis.cross(out) * angle.psin()) * p[0]
 }
 
 fn watertight(body: &Body, chord: f64, volume: f64, area: f64, name: &str) {
@@ -464,10 +465,10 @@ fn a_revolved_spline_profile_is_a_checked_solid_of_the_size_pappus_gives() {
                         let centre = turned(frame, placing, [0.0, exact.rho_z / exact.rho], 0.0)
                             + (turned(frame, placing, [1.0, 0.0], 0.0)
                                 - turned(frame, placing, [0.0, 0.0], 0.0))
-                                * (across * (end.sin() - start.sin()))
+                                * (across * (end.psin() - start.psin()))
                             + (turned(frame, placing, [1.0, 0.0], PI / 2.0)
                                 - turned(frame, placing, [0.0, 0.0], 0.0))
-                                * (across * (start.cos() - end.cos()));
+                                * (across * (start.pcos() - end.pcos()));
                         let found = mass.centroid.unwrap();
                         assert!(
                             found.distance(centre) <= 1e-8 * k,
@@ -527,7 +528,10 @@ fn the_surface_a_spline_sweeps_is_the_spline_turned_exactly() {
                 // Weights of a quarter turn or less are no smaller than
                 // cos 45°.
                 let least = surface.weights().iter().copied().fold(1.0, f64::min);
-                assert!(least >= (PI / 4.0).cos() - 1e-12, "weights down to {least}");
+                assert!(
+                    least >= (PI / 4.0).pcos() - 1e-12,
+                    "weights down to {least}"
+                );
                 let knots = knots(*degree, control.len());
                 let axis_point = turned(&frame, placing, [0.0, 0.0], 0.0);
                 let axis = turned(&frame, placing, [0.0, 1.0], 0.0) - axis_point;
@@ -549,7 +553,7 @@ fn the_surface_a_spline_sweeps_is_the_spline_turned_exactly() {
                             "placing {p} at ({u}, {v}): ({}, {z}) against {on_spline:?}",
                             radial.length()
                         );
-                        let angle = radial.dot(onward).atan2(radial.dot(out)).rem_euclid(TAU);
+                        let angle = radial.dot(onward).patan2(radial.dot(out)).rem_euclid(TAU);
                         angles.push(angle);
                     }
                     // From where the turn starts, onwards, to where it ends.
@@ -576,7 +580,7 @@ fn a_straight_spline_sweeps_what_the_line_sweeps() {
             (0..count)
                 .map(|i| {
                     // Unevenly spaced along the line.
-                    let t = (i as f64 / (count - 1) as f64).powf(1.7);
+                    let t = (i as f64 / (count - 1) as f64).ppowf(1.7);
                     [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
                 })
                 .collect()
@@ -595,7 +599,7 @@ fn a_straight_spline_sweeps_what_the_line_sweeps() {
             Piece::Line([r1, h], [r0, h]),
             Piece::Spline(4, between([r0, h], [r0, 0.0], 7)),
         ]];
-        let slant = (r1 - r0).hypot(h);
+        let slant = (r1 - r0).phypot(h);
         let shapes = [
             (
                 "frustum",

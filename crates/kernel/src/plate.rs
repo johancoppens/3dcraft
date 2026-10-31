@@ -84,6 +84,7 @@ use crate::offset_normal::TURN_SHARE;
 use crate::tweak::meet;
 use craft3d_geom::refine::interpolate;
 use craft3d_geom::{Circle, Curve3, Line, NurbsCurve, NurbsSurface, Plane, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, Coedge, Edge, EdgeId, Face, FaceId, VertexId, check};
 use std::collections::{BTreeMap, BTreeSet};
@@ -588,7 +589,7 @@ fn simplest(points: &[Vec3], spline: &NurbsCurve, tol: f64) -> Curve3 {
     {
         let off = |p: &Vec3| {
             let (x, y, z) = circle.frame().local(*p);
-            (x.hypot(y) - circle.radius()).hypot(z)
+            (x.phypot(y) - circle.radius()).phypot(z)
         };
         if points.iter().all(|p| off(p) <= limit) {
             return Curve3::Circle(circle);
@@ -638,7 +639,7 @@ fn running_with(circle: Circle, points: &[Vec3]) -> Option<Circle> {
         .filter_map(|pair| match pair {
             [a, b] => {
                 let (a, b) = (*a - center, *b - center);
-                Some(a.cross(b).dot(z).atan2(a.dot(b)))
+                Some(a.cross(b).dot(z).patan2(a.dot(b)))
             }
             _ => None,
         })
@@ -771,18 +772,18 @@ fn round_rim(rows: [&[Vec3]; 2], fits: [&NurbsCurve; 2], tol: f64) -> Option<Sur
     let surface = if (r1 - r0).abs() <= limit {
         Surface::Cylinder(craft3d_geom::Cylinder::new(frame, 0.5 * (r0 + r1)).ok()?)
     } else {
-        let half = ((r1 - r0) / height).atan();
+        let half = ((r1 - r0) / height).patan();
         Surface::Cone(craft3d_geom::Cone::new(frame, r0, half).ok()?)
     };
     // The distance of a point from it, in the frame of the axis.
     let (radius, slope) = match &surface {
         Surface::Cylinder(c) => (c.radius(), 0.0),
-        Surface::Cone(c) => (c.radius(), c.half_angle().tan()),
+        Surface::Cone(c) => (c.radius(), c.half_angle().ptan()),
         _ => return None,
     };
     let off = |p: Vec3| {
         let (x, y, z) = frame.local(p);
-        ((x.hypot(y) - (radius + z * slope)) / slope.hypot(1.0)).abs()
+        ((x.phypot(y) - (radius + z * slope)) / slope.phypot(1.0)).abs()
     };
     let holds = rows[0]
         .iter()
@@ -1691,7 +1692,7 @@ fn creased(
             format!(
                 "the faces of the plate meet at a crease at {} ({} degrees): {TURN_TOO_FAR}; plate them apart and join them",
                 at(p),
-                short((2.0 * (0.5 * apart).clamp(0.0, 1.0).asin()).to_degrees())
+                short((2.0 * (0.5 * apart).clamp(0.0, 1.0).pasin()).to_degrees())
             ),
         ));
     }
@@ -1757,7 +1758,7 @@ fn turned_steps(curve: &Curve3, a: f64, b: f64, least: usize) -> usize {
             continue;
         };
         if let Some(prev) = last {
-            turn += prev.dot(d).clamp(-1.0, 1.0).acos();
+            turn += prev.dot(d).clamp(-1.0, 1.0).pacos();
         }
         last = Some(d);
     }
@@ -1968,7 +1969,7 @@ fn flat_corners(
             st.point + st.normal * level(1),
         ]),
         (Joint::Bevel(angle), _, _) => {
-            let (s, c) = angle.sin_cos();
+            let (s, c) = angle.psin_cos();
             let d = st.normal * c - st.inward * s;
             Some([st.point + d * (level(0) / c), st.point + d * (level(1) / c)])
         }
@@ -2045,7 +2046,7 @@ fn foot_on(surface: &Surface, p: Vec3) -> Option<(Vec3, Vec3)> {
 /// plate and cuts no end).
 fn onto_start(st: &Station, q: Vec3, m: Vec3, height: f64, angular: f64) -> Option<Vec3> {
     let across = st.inward.dot(m);
-    if !(across.abs() > angular.sin()) {
+    if !(across.abs() > angular.psin()) {
         return None;
     }
     let base = st.point + st.normal * height;
@@ -2063,7 +2064,7 @@ type End = (VertexId, Station, [Vec3; 2], Vec3);
 fn three_planes(planes: [(Vec3, Vec3); 3], angular: f64) -> Option<Vec3> {
     let [(p1, n1), (p2, n2), (p3, n3)] = planes;
     let det = n1.dot(n2.cross(n3));
-    if !(det.abs() > angular.sin().max(1e-12)) {
+    if !(det.abs() > angular.psin().max(1e-12)) {
         return None;
     }
     let point = (n2.cross(n3) * n1.dot(p1) + n3.cross(n1) * n2.dot(p2) + n1.cross(n2) * n3.dot(p3))
@@ -2242,7 +2243,7 @@ fn sides(
     }
     let toward = in_near.dot(st.normal);
     let seen = st.inward.dot(n_near);
-    if !(toward.abs() > tolerance.angular.sin() && seen.abs() > tolerance.angular.sin()) {
+    if !(toward.abs() > tolerance.angular.psin() && seen.abs() > tolerance.angular.psin()) {
         return Err(refuse(
             Some(edge_id),
             "the plates continue each other in line along the edge: a joint between them has no corner; give the edge a square or bevelled end",
@@ -2291,7 +2292,7 @@ fn corners(
             snap(1, st.point + st.normal * levels[1])?,
         ]),
         (Joint::Bevel(angle), _, _) => {
-            let (s, c) = angle.sin_cos();
+            let (s, c) = angle.psin_cos();
             let d = st.normal * c - st.inward * s;
             let side = Frame::from_z(st.point, d.cross(st.tangent))
                 .map(|f| Surface::Plane(Plane::new(f)))
@@ -2339,7 +2340,7 @@ fn corners(
                 ));
             }
             let seen = st.inward.dot(n_near);
-            if !(seen.abs() > tolerance.angular.sin()) || (seen > 0.0) != (s.near_toward == 1) {
+            if !(seen.abs() > tolerance.angular.psin()) || (seen > 0.0) != (s.near_toward == 1) {
                 return Err(refuse(
                     Some(edge_id),
                     format!(

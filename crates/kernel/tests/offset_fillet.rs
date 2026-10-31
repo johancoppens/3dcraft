@@ -22,6 +22,7 @@
 // Test code: a failure in a helper is a failed test.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
+use craft3d_math::Portable;
 mod boolean_common;
 mod rational_common;
 
@@ -222,10 +223,10 @@ fn the_convex_rim_of_an_offset_freeform_face_is_filleted_as_the_torus_it_is() {
             let expected = PI / 4.0 * r * r - PI / 2.0 * (r - centroid_in(rho)) * corner(rho);
             // Every face within a quarter of the tolerance of the exact one.
             let slack = 0.5 * tol.linear * area;
-            let off = volume - expected * k.powi(3);
+            let off = volume - expected * k.ppowi(3);
             println!(
                 "rim, k {k}, d {d}: volume {volume}, closed form {}, off {off:e}, slack {slack:e}",
-                expected * k.powi(3)
+                expected * k.ppowi(3)
             );
             assert!(
                 off.abs() <= slack,
@@ -249,10 +250,10 @@ fn the_concave_foot_of_an_offset_freeform_face_is_filleted_as_the_torus_it_is() 
             let expected =
                 13.5 - PI / 4.0 * r * r + PI / 2.0 * (r - centroid_in(rho)) * corner(rho);
             let slack = 0.5 * tol.linear * area;
-            let off = volume - expected * k.powi(3);
+            let off = volume - expected * k.ppowi(3);
             println!(
                 "foot, k {k}, d {d}: volume {volume}, closed form {}, off {off:e}, slack {slack:e}",
-                expected * k.powi(3)
+                expected * k.ppowi(3)
             );
             assert!(
                 off.abs() <= slack,
@@ -298,7 +299,7 @@ fn the_offset_of_a_cubic_twin_has_the_normal_of_the_cylinder_across_its_knots_an
             } else {
                 knot = knot.max(sine);
             }
-            let r = p.x.hypot(p.y);
+            let r = p.x.phypot(p.y);
             assert!(
                 (r - 2.3).abs() <= 0.25 * tol.linear,
                 "radius {r} at ({u}, {v})"

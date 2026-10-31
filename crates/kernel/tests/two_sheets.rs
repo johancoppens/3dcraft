@@ -17,6 +17,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod boolean_common;
 
 use boolean_common::*;
@@ -159,7 +160,7 @@ fn trough(x0: f64, x1: f64, k: f64) -> Body {
 
 /// The length of `z = y²` from `0` to `y`.
 fn parabola(y: f64) -> f64 {
-    0.5 * y * (1.0 + 4.0 * y * y).sqrt() + 0.25 * (2.0 * y).asinh()
+    0.5 * y * (1.0 + 4.0 * y * y).sqrt() + 0.25 * (2.0 * y).pasinh()
 }
 
 /// The welded mesh of a sheet: every directed side of a triangle at most

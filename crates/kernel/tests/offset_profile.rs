@@ -15,6 +15,7 @@ use craft3d_kernel::offset_profile::{
     Corners, OffsetOutline, OffsetSource, offset_profiles, steiner_area,
 };
 use craft3d_kernel::profile::{Curve2, Profile, SketchCurve, detect_profiles};
+use craft3d_math::Portable;
 use craft3d_math::Tolerance;
 use std::f64::consts::PI;
 
@@ -83,10 +84,10 @@ fn pentagon(s: f64) -> (Vec<[f64; 2]>, f64, f64, Vec<f64>) {
     for i in 0..n {
         let (a, b, c) = (p[i], p[(i + 1) % n], p[(i + 2) % n]);
         area += (a[0] * b[1] - a[1] * b[0]) / 2.0;
-        perimeter += (b[0] - a[0]).hypot(b[1] - a[1]);
+        perimeter += (b[0] - a[0]).phypot(b[1] - a[1]);
         let u = [b[0] - a[0], b[1] - a[1]];
         let v = [c[0] - b[0], c[1] - b[1]];
-        turns.push((u[0] * v[1] - u[1] * v[0]).atan2(u[0] * v[0] + u[1] * v[1]));
+        turns.push((u[0] * v[1] - u[1] * v[0]).patan2(u[0] * v[0] + u[1] * v[1]));
     }
     (p, area, perimeter, turns)
 }
@@ -120,7 +121,7 @@ fn sharp_offset_of_a_convex_polygon_is_the_mitre_form() {
         let input = profiles(&polygon(&p, 1), &t);
         for d in [0.01 * s, 0.3 * s, 2.0 * s] {
             let o = offset_profiles(&input, d, Corners::Sharp, &t).unwrap();
-            let mitre: f64 = turns.iter().map(|k| (k / 2.0).tan()).sum();
+            let mitre: f64 = turns.iter().map(|k| (k / 2.0).ptan()).sum();
             close(area(&o), a + per * d + d * d * mitre, 1e-12);
             // Lines are lengthened: no corner pieces.
             assert_eq!(o.curves.len(), 5);
@@ -282,7 +283,7 @@ fn a_c_whose_inward_offset_splits_is_reported() {
         // about the inner corner.
         let (d, b) = (0.6 * s, 1.0 * s);
         let a = b - d;
-        let strip = d * a - (a * (d * d - a * a).sqrt() + d * d * (a / d).asin()) / 2.0;
+        let strip = d * a - (a * (d * d - a * a).sqrt() + d * d * (a / d).pasin()) / 2.0;
         close(
             area(&o),
             2.0 * ((10.0 * s - 2.0 * d) * (3.0 * s - 2.0 * d) + strip),
@@ -341,7 +342,7 @@ fn an_outward_offset_that_closes_a_channel_is_reported() {
         // at the channel's mouth between the arcs about its two corners:
         // twice the 0.6 by 0.5 rectangle less the disk of radius 0.6 in it.
         let (d, h) = (0.6 * s, 0.5 * s);
-        let disk = (h * (d * d - h * h).sqrt() + d * d * (h / d).asin()) / 2.0;
+        let disk = (h * (d * d - h * h).sqrt() + d * d * (h / d).pasin()) / 2.0;
         let hole = o.profiles[0].holes[0].signed_area();
         close(-hole, (4.8 * s) * (4.8 * s) + 2.0 * (d * h - disk), 1e-12);
     }
@@ -530,7 +531,7 @@ fn a_polygon_of_2100_round_corners_fits() {
     let points: Vec<[f64; 2]> = (0..n)
         .map(|i| {
             let a = std::f64::consts::TAU * i as f64 / n as f64;
-            [r * a.cos(), r * a.sin()]
+            [r * a.pcos(), r * a.psin()]
         })
         .collect();
     let input = profiles(&polygon(&points, 1), &t);
@@ -540,8 +541,8 @@ fn a_polygon_of_2100_round_corners_fits() {
     assert!(started.elapsed().as_secs_f64() < 5.0);
     assert_eq!(o.curves.len(), 2 * n);
     let k = n as f64;
-    let a = k / 2.0 * r * r * (2.0 * PI / k).sin();
-    let p = 2.0 * k * r * (PI / k).sin();
+    let a = k / 2.0 * r * r * (2.0 * PI / k).psin();
+    let p = 2.0 * k * r * (PI / k).psin();
     close(area(&o), steiner_area(a, p, 0.5), 1e-9);
     // Sharp corners add no curve where lines meet.
     let o = offset_profiles(&input, 0.5, Corners::Sharp, &t).unwrap();

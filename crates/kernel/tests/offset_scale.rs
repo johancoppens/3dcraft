@@ -13,6 +13,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::{circle, polygon, rectangle};
@@ -65,7 +66,7 @@ fn star(n: usize) -> Vec<SketchCurve> {
     let point = |k: usize| {
         let a = PI * k as f64 / n as f64;
         let r = if k.is_multiple_of(2) { 1.0 } else { 1000.0 };
-        [r * a.cos(), r * a.sin()]
+        [r * a.pcos(), r * a.psin()]
     };
     let points: Vec<[f64; 2]> = (0..2 * n).map(point).collect();
     polygon(0, 1, &points)
@@ -192,7 +193,7 @@ fn ngon(n: usize) -> Vec<SketchCurve> {
     let points: Vec<[f64; 2]> = (0..n)
         .map(|i| {
             let a = 2.0 * PI * i as f64 / n as f64;
-            [1000.0 * a.cos(), 1000.0 * a.sin()]
+            [1000.0 * a.pcos(), 1000.0 * a.psin()]
         })
         .collect();
     polygon(0, 1, &points)
@@ -260,7 +261,7 @@ fn a_bound_ends_the_search_for_a_distance() {
     println!("refused in {:.2?}", started.elapsed());
     // The search's first try, at half the outline's reach, is the one the
     // bound refuses.
-    let reach = 0.5 * length.hypot(20.0);
+    let reach = 0.5 * length.phypot(20.0);
     let err = offset_profiles(&input, -reach / 2.0, Corners::Round, &t).unwrap_err();
     assert!(matches!(err, KernelError::CrowdedOffset { .. }), "{err:?}");
     println!("{err}");

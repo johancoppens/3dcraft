@@ -11,6 +11,7 @@
     clippy::panic
 )]
 
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use craft3d_render::studio::polish::{
     self, Dof, Focus, Lens, bloom, bloom_down, bloom_tent, coc_radius, dof_gather, dof_taps,
@@ -146,7 +147,7 @@ fn camera_ray(camera: &Camera, w: usize, h: usize, x: usize, y: usize) -> Vec3 {
     let Projection::Perspective { fov_y_deg } = camera.projection else {
         panic!("perspective only");
     };
-    let t = (fov_y_deg.to_radians() * 0.5).tan();
+    let t = (fov_y_deg.to_radians() * 0.5).ptan();
     let aspect = w as f64 / h as f64;
     let cx = ((x as f64 + 0.5) / w as f64 * 2.0 - 1.0) * aspect * t;
     let cy = (1.0 - (y as f64 + 0.5) / h as f64 * 2.0) * t;
@@ -460,7 +461,7 @@ fn the_lens_blur_has_the_textbook_radius() {
         for y in 0..hh {
             for x in 0..w {
                 if out[y * w + x][0] > 0.0 {
-                    let d = ((x as f64 - 20.0).powi(2) + (y as f64 - 20.0).powi(2)).sqrt();
+                    let d = ((x as f64 - 20.0).ppowi(2) + (y as f64 - 20.0).ppowi(2)).sqrt();
                     farthest = farthest.max(d);
                 }
                 sum += f64::from(out[y * w + x][0]);
@@ -480,7 +481,7 @@ fn the_plane_of_focus_stays_sharp() {
     // front of a varied environment: the face keeps its picture exactly;
     // the background blurs.
     let env = Prepared::new(&environment(128, |d| {
-        let s = (d.x * 9.0).sin() * (d.z * 7.0).cos();
+        let s = (d.x * 9.0).psin() * (d.z * 7.0).pcos();
         [1.0 + s, 1.0 - 0.5 * s, 1.0]
     }))
     .unwrap();
@@ -758,14 +759,14 @@ fn the_lens_taps_spread_over_their_rings_by_area() {
     let mut first = 0;
     for i in 1..=rings {
         let k = i as f64;
-        let mid2 = ((k - 1.0).powi(2) + 0.5 * (2.0 * k - 1.0)) * (reach / rings as f64).powi(2);
+        let mid2 = ((k - 1.0).ppowi(2) + 0.5 * (2.0 * k - 1.0)) * (reach / rings as f64).ppowi(2);
         let (mut inside, mut all) = (0, 0);
         for index in 1..=frames {
             let taps = dof_taps(reach, index);
             for t in &taps[first..first + 8 * i] {
-                let r2 = f64::from(t[0]).powi(2) + f64::from(t[1]).powi(2);
-                let lo = ((k - 1.0) * reach / rings as f64).powi(2);
-                let hi = (k * reach / rings as f64).powi(2);
+                let r2 = f64::from(t[0]).ppowi(2) + f64::from(t[1]).ppowi(2);
+                let lo = ((k - 1.0) * reach / rings as f64).ppowi(2);
+                let hi = (k * reach / rings as f64).ppowi(2);
                 assert!(r2 >= lo - 1e-3 && r2 <= hi + 1e-3, "ring {i}: {r2}");
                 all += 1;
                 if r2 <= mid2 {
@@ -780,7 +781,7 @@ fn the_lens_taps_spread_over_their_rings_by_area() {
     }
     // Frame 0's rings lie at reach i / rings, as before.
     let taps = dof_taps(reach, 0);
-    assert!((f64::from(taps[0][0]).hypot(f64::from(taps[0][1])) - 2.0).abs() < 1e-5);
+    assert!((f64::from(taps[0][0]).phypot(f64::from(taps[0][1])) - 2.0).abs() < 1e-5);
 }
 
 /// A still of many frames whose samples together pass the limit is

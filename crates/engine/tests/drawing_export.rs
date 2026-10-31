@@ -11,6 +11,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::plain::run;
@@ -109,8 +110,8 @@ fn plate(s: &mut Session, k: f64) {
 fn plate_numbers() -> (f64, f64) {
     // A circle of radius r less the segment a chord c cuts off: the angle
     // it keeps, its arc and its area.
-    let keeps = |r: f64, c: f64| TAU - 2.0 * (c / 2.0 / r).asin();
-    let segment = |r: f64, c: f64| r * r / 2.0 * (keeps(r, c) - keeps(r, c).sin());
+    let keeps = |r: f64, c: f64| TAU - 2.0 * (c / 2.0 / r).pasin();
+    let segment = |r: f64, c: f64| r * r / 2.0 * (keeps(r, c) - keeps(r, c).psin());
     let length = (2.0 * (64.0 + 34.0) + 16.0 * PI)
         + (40.0 + 8.0 * PI)
         + (4.0 + 16.0 + 16.0 + 7.0 * keeps(7.0, 4.0))
@@ -492,10 +493,10 @@ fn the_curves_of_a_sketch_are_joined_into_chains() {
 /// The length of an ellipse with semi-axes `a` and `b`, by the series in
 /// `h = ((a - b) / (a + b))²`.
 fn ellipse_length(a: f64, b: f64) -> f64 {
-    let h = ((a - b) / (a + b)).powi(2);
+    let h = ((a - b) / (a + b)).ppowi(2);
     let (mut series, mut term) = (0.0, 1.0_f64);
     for n in 0..80 {
-        series += term * term * h.powi(n);
+        series += term * term * h.ppowi(n);
         term *= (0.5 - f64::from(n)) / (f64::from(n) + 1.0);
     }
     PI * (a + b) * series
@@ -561,8 +562,8 @@ fn the_faces_of_primitives_and_a_slanted_cut_keep_their_curves() {
     // The cylinder cut by a block whose bottom leans 30°, with one corner
     // on the cylinder's axis: the cut is a quarter of an ellipse with
     // semi-axes 5 / cos 30° and 5, and the two lines to its centre.
-    let (a, b) = (5.0 / (PI / 6.0).cos(), 5.0);
-    let lean = [0.5, 0.0, (PI / 6.0).cos()];
+    let (a, b) = (5.0 / (PI / 6.0).pcos(), 5.0);
+    let lean = [0.5, 0.0, (PI / 6.0).pcos()];
     run(
         &mut s,
         "feature.block",
@@ -969,7 +970,7 @@ fn a_spline_of_a_sketch_is_exported_as_a_spline() {
     let speed = |t: f64| {
         let dx = 30.0 * (1.0 - t) * (1.0 - t) - 30.0 * t * t;
         let dy = 60.0 * (1.0 - t) * t;
-        dx.hypot(dy)
+        dx.phypot(dy)
     };
     let n = 2000;
     let mut sum = speed(0.0) + speed(1.0);

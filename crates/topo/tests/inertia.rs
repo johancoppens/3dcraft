@@ -10,6 +10,7 @@
     clippy::needless_range_loop
 )]
 
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
 use craft3d_testkit::{solids, trimmed};
 use craft3d_topo::{inertia, mass_and_inertia, mass_properties};
@@ -100,7 +101,7 @@ fn the_tensors_of_the_reference_solids_are_their_closed_forms_at_three_scales() 
 
         let (major, minor) = (4.0 * scale, 1.0 * scale);
         let torus = solids::torus(&frame, major, minor).unwrap();
-        let v = 2.0 * std::f64::consts::PI.powi(2) * major * minor * minor;
+        let v = 2.0 * std::f64::consts::PI.ppowi(2) * major * minor * minor;
         let axial = v * (major * major + 0.75 * minor * minor);
         let side = v * (0.5 * major * major + 0.625 * minor * minor);
         let got = inertia(&torus.body).unwrap();

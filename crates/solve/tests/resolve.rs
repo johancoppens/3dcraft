@@ -10,6 +10,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use std::f64::consts::PI;
@@ -109,7 +110,7 @@ fn a_base_shrunk_to_nothing_is_the_same_conflict_every_time_and_heals() {
     assert!(sol.constraints[3].undefined.is_some());
     let (p1, p2): ([f64; 2], [f64; 2]) = (sol.point(p[1]).unwrap(), sol.point(p[2]).unwrap());
     assert!(p1[0].abs() <= 1e-9 && p1[1].abs() <= 1e-9);
-    assert!((p2[0].hypot(p2[1]) - 3.0).abs() <= 1e-9);
+    assert!((p2[0].phypot(p2[1]) - 3.0).abs() <= 1e-9);
 
     // Width 4 again, from the broken solution: the base gets its length
     // back (a point has no direction to grow in; +x is the convention and

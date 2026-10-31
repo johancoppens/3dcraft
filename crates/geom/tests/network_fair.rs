@@ -8,6 +8,7 @@ use craft3d_geom::curvature::second_derivatives;
 use craft3d_geom::network::{Condition, Network, Patch, arc, gordon};
 use craft3d_geom::refine::interpolate;
 use craft3d_geom::{Cylinder, NurbsCurve, NurbsSurface, Plane, Sphere, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
 use std::f64::consts::FRAC_PI_2;
 
@@ -130,7 +131,7 @@ fn dome_curves(r: f64) -> (Vec<NurbsCurve>, Vec<NurbsCurve>) {
         .iter()
         .map(|f: &f64| {
             let a = FRAC_PI_2 * f;
-            let d = v(a.cos(), a.sin(), 0.0);
+            let d = v(a.pcos(), a.psin(), 0.0);
             bezier([
                 d * r,
                 d * r + v(0.0, 0.0, 0.3 * r),
@@ -160,7 +161,7 @@ fn dome_on_spline() -> Case {
         .iter()
         .map(|f: &f64| {
             let a = FRAC_PI_2 * f;
-            let q = v(a.cos(), a.sin(), 0.0);
+            let q = v(a.pcos(), a.psin(), 0.0);
             let frame = Frame::new(v(0.0, 0.0, 0.0), v(q.y, -q.x, 0.0), q).unwrap();
             arc(&frame, r, 0.0, -FRAC_PI_2).unwrap()
         })

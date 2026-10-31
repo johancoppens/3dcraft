@@ -65,6 +65,7 @@
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
 use crate::{BezierSpan, Curve3, CurvePiece, NurbsCurve, RationalBezierPatch, Surface};
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 
 /// Orders of derivative carried: 0 to 4, what the error of cubic Hermite
@@ -565,7 +566,7 @@ impl<'a> CurveBound<'a> {
         let powers = |r: f64| -> Jet {
             let mut out = [0.0; N];
             for (k, slot) in out.iter_mut().enumerate().skip(1) {
-                *slot = r * h.abs().powi(k as i32);
+                *slot = r * h.abs().ppowi(k as i32);
             }
             out
         };
@@ -635,7 +636,7 @@ fn analytic_table(surface: &Surface, [_, (v0, v1)]: Box2) -> Option<Table> {
         }
         // S = o + ρ(v) (cos u x + sin u y) + v z, ρ = R + v tan α.
         Surface::Cone(c) => {
-            let slope = c.half_angle().tan().abs();
+            let slope = c.half_angle().ptan().abs();
             let widest = c.radius_at(v0).abs().max(c.radius_at(v1).abs());
             for i in 1..N {
                 set(i, 0, widest);
@@ -1536,8 +1537,8 @@ mod tests {
                 // and the middles between them.
                 let lift = bump
                     * k
-                    * (std::f64::consts::TAU * count as f64 * t).sin().powi(2)
-                    * (std::f64::consts::PI * 2.0 * count as f64 * t).sin();
+                    * (std::f64::consts::TAU * count as f64 * t).psin().ppowi(2)
+                    * (std::f64::consts::PI * 2.0 * count as f64 * t).psin();
                 let q = p + n * lift;
                 vec![q.x, q.y, q.z]
             })
@@ -1557,7 +1558,11 @@ mod tests {
             for i in 0..4 {
                 for j in 0..4 {
                     let (x, y) = (f64::from(i), f64::from(j));
-                    ctrl.push(Vec3::new(x * k, y * k, 0.3 * k * (1.7 * x + 0.9 * y).sin()));
+                    ctrl.push(Vec3::new(
+                        x * k,
+                        y * k,
+                        0.3 * k * (1.7 * x + 0.9 * y).psin(),
+                    ));
                 }
             }
             BezierPatch::new(3, 3, ctrl).unwrap()
@@ -1611,7 +1616,7 @@ mod tests {
             ),
             (
                 Surface::Bezier(wavy),
-                Box::new(|t| (t, 0.5 + 0.4 * (3.0 * t).sin())),
+                Box::new(|t| (t, 0.5 + 0.4 * (3.0 * t).psin())),
             ),
             (
                 Surface::Nurbs(rational),
@@ -1724,7 +1729,7 @@ mod tests {
         for (i, row) in table.iter_mut().enumerate() {
             for (j, slot) in row.iter_mut().enumerate() {
                 if i + j < N {
-                    *slot = 2.0_f64.powi(j as i32);
+                    *slot = 2.0_f64.ppowi(j as i32);
                 }
             }
         }
@@ -1734,7 +1739,7 @@ mod tests {
         let f = |t: f64| {
             let u = path.c[0][0] + t * (path.c[0][1] + t * (path.c[0][2] + t * path.c[0][3]));
             let v = path.c[1][0] + t * (path.c[1][1] + t * (path.c[1][2] + t * path.c[1][3]));
-            u.sin() * (2.0 * v).cos()
+            u.psin() * (2.0 * v).pcos()
         };
         let h = 1e-2;
         for k in 0..=20 {
@@ -1743,7 +1748,7 @@ mod tests {
             let d2 = (f(t + h) - 2.0 * f(t) + f(t - h)) / (h * h);
             let d4 = (f(t + 2.0 * h) - 4.0 * f(t + h) + 6.0 * f(t) - 4.0 * f(t - h)
                 + f(t - 2.0 * h))
-                / h.powi(4);
+                / h.ppowi(4);
             assert!(d1.abs() <= jet[1] * 1.01, "{d1} {}", jet[1]);
             assert!(d2.abs() <= jet[2] * 1.01, "{d2} {}", jet[2]);
             assert!(d4.abs() <= jet[4] * 1.05, "{d4} {}", jet[4]);
@@ -1756,7 +1761,7 @@ mod tests {
         let params: Vec<f64> = (0..=40).map(|i| f64::from(i) / 40.0).collect();
         let values: Vec<Vec<f64>> = params
             .iter()
-            .map(|t| vec![t * k, (gap + 4e-2 * (t - 0.507).powi(2)) * k, 0.0])
+            .map(|t| vec![t * k, (gap + 4e-2 * (t - 0.507).ppowi(2)) * k, 0.0])
             .collect();
         let (knots, rows) = crate::refine::interpolate(&params, 3, &values).unwrap();
         let ctrl = rows.iter().map(|r| Vec3::new(r[0], r[1], r[2])).collect();
@@ -1827,7 +1832,7 @@ mod tests {
         };
         let full = (0.0, std::f64::consts::TAU);
         let (slope, cone_v) = (0.4_f64, 1.0);
-        let cone_r = 2.0 + cone_v * slope.tan();
+        let cone_r = 2.0 + cone_v * slope.ptan();
         let lat = 0.4_f64;
         let (rs, rs_range) = spline(0.0, 2.0 + d);
         let (rt, rt_range) = spline(1.0 + d, 4.0);
@@ -1871,13 +1876,13 @@ mod tests {
             (
                 "circle round a cone",
                 Surface::Cone(Cone::new(f, 2.0, slope).unwrap()),
-                circle(cone_v, cone_r + d / slope.cos()),
+                circle(cone_v, cone_r + d / slope.pcos()),
                 full,
             ),
             (
                 "circle at a latitude of a sphere",
                 Surface::Sphere(Sphere::new(f, 3.0).unwrap()),
-                circle((3.0 + d) * lat.sin(), (3.0 + d) * lat.cos()),
+                circle((3.0 + d) * lat.psin(), (3.0 + d) * lat.pcos()),
                 (0.3, 2.9),
             ),
             (
@@ -1962,7 +1967,7 @@ mod tests {
         let sphere = Surface::Sphere(Sphere::new(frame, 10.0).unwrap());
         let meridian = Curve3::Circle(crate::Circle::new(tilted, 10.0).unwrap());
         let cone = Surface::Cone(Cone::new(frame, 0.0, 0.5).unwrap());
-        let up = Vec3::new(0.5f64.tan() * 0.6, 0.5f64.tan() * 0.8, 1.0);
+        let up = Vec3::new(0.5f64.ptan() * 0.6, 0.5f64.ptan() * 0.8, 1.0);
         let ruling = Curve3::Line(crate::Line::new(at, up).unwrap());
         // Running down to the apex on the same nappe.
         let falling = Curve3::Line(crate::Line::new(at, -up).unwrap());

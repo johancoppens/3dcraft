@@ -6,6 +6,7 @@
 // Two tests share this file and each uses a part of it.
 #![allow(clippy::neg_cmp_op_on_partial_ord, dead_code)]
 
+use craft3d_math::Portable;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -278,7 +279,7 @@ pub fn compare(case: &Case, record: &Value) -> Row {
             case.solids
         ));
     }
-    let (k, k2, k3) = (case.to_mm, case.to_mm.powi(2), case.to_mm.powi(3));
+    let (k, k2, k3) = (case.to_mm, case.to_mm.ppowi(2), case.to_mm.ppowi(3));
     row.quadrature_volume_ratio = record["quadrature_volume"]
         .as_f64()
         .map(|volume| volume / (case.volume * k3));
@@ -324,7 +325,7 @@ pub fn compare(case: &Case, record: &Value) -> Row {
             }
         }
         row.centre_off = (0..3)
-            .map(|axis| (centre[axis] / total - ours[axis] * k).powi(2))
+            .map(|axis| (centre[axis] / total - ours[axis] * k).ppowi(2))
             .sum::<f64>()
             .sqrt()
             / size;
@@ -344,7 +345,7 @@ pub fn compare(case: &Case, record: &Value) -> Row {
             let part_size = part.area.sqrt() * k;
             let centre_off = if centre.len() == 3 {
                 (0..3)
-                    .map(|axis| (centre[axis] - part.centroid[axis] * k).powi(2))
+                    .map(|axis| (centre[axis] - part.centroid[axis] * k).ppowi(2))
                     .sum::<f64>()
                     .sqrt()
                     / part_size

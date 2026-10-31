@@ -13,6 +13,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{body, built, error, failed, new_document, run, session_in, workdir};
@@ -47,7 +48,7 @@ fn arc(s: &mut Session, name: &str, z: f64, r: f64, from: f64, to: f64) {
     );
     let at = |deg: f64| {
         let a = deg.to_radians();
-        [r * a.cos(), r * a.sin()]
+        [r * a.pcos(), r * a.psin()]
     };
     run(
         s,
@@ -88,7 +89,7 @@ fn the_developable_between_coaxial_arcs_is_a_cone_frustum_and_unfolds_flat() {
         assert_eq!(sheet["kind"], "sheet", "{sheet}");
         assert_eq!(sheet["valid"], true, "{sheet}");
         let (big, small, h) = (20.0 * k, 10.0 * k, 15.0 * k);
-        let slant = (big - small).hypot(h);
+        let slant = (big - small).phypot(h);
         let sweep = 110_f64.to_radians();
         let area = 0.5 * sweep * (big + small) * slant;
         near(number(&sheet["area"]), area, 1e-6, "the panel's area");
@@ -113,7 +114,7 @@ fn the_developable_between_coaxial_arcs_is_a_cone_frustum_and_unfolds_flat() {
         // A point of the part goes to the pattern and back.
         let a = 60_f64.to_radians();
         let (rho, z) = (15.0 * k, 7.5 * k);
-        let p = [rho * a.cos(), rho * a.sin(), z];
+        let p = [rho * a.pcos(), rho * a.psin(), z];
         let there = run(
             &mut s,
             "unfold.map",
@@ -128,7 +129,7 @@ fn the_developable_between_coaxial_arcs_is_a_cone_frustum_and_unfolds_flat() {
         );
         let r = &back["points"][0]["point"];
         let d = (0..3)
-            .map(|i| (number(&r[i]) - p[i]).powi(2))
+            .map(|i| (number(&r[i]) - p[i]).ppowi(2))
             .sum::<f64>()
             .sqrt();
         assert!(d <= 1e-5 * k, "{back} against {p:?}: {d}");

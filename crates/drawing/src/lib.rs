@@ -460,7 +460,7 @@ pub(crate) fn scale(a: Point, k: f64) -> Point {
 }
 
 pub(crate) fn norm(a: Point) -> f64 {
-    a[0].hypot(a[1])
+    libm::hypot(a[0], a[1])
 }
 
 /// A quarter turn counter-clockwise.
@@ -521,7 +521,10 @@ pub(crate) fn minor_axis(major: Point, ratio: f64) -> Point {
 /// The point of an ellipse at parameter `t`.
 pub(crate) fn ellipse_point(center: Point, major: Point, ratio: f64, t: f64) -> Point {
     let minor = minor_axis(major, ratio);
-    add(center, add(scale(major, t.cos()), scale(minor, t.sin())))
+    add(
+        center,
+        add(scale(major, libm::cos(t)), scale(minor, libm::sin(t))),
+    )
 }
 
 /// The parameter of the point of an ellipse nearest in angle to `p`.
@@ -533,7 +536,7 @@ fn ellipse_param(p: Point, center: Point, major: Point, ratio: f64) -> f64 {
     // Components along the axes, each in units of its own semi-axis.
     let x = (d[0] * major[0] + d[1] * major[1]) / a2;
     let y = (d[0] * minor[0] + d[1] * minor[1]) / b2;
-    y.atan2(x)
+    libm::atan2(y, x)
 }
 
 fn signed(sweep: f64, ccw: bool) -> f64 {
@@ -587,7 +590,7 @@ impl Path {
                         } => {
                             let a = sub(from, *center);
                             let b = sub(*to, *center);
-                            let (a0, a1) = (a[1].atan2(a[0]), b[1].atan2(b[0]));
+                            let (a0, a1) = (libm::atan2(a[1], a[0]), libm::atan2(b[1], b[0]));
                             let sweep = turn(if *ccw { a1 - a0 } else { a0 - a1 });
                             Piece::Arc {
                                 from,
@@ -888,7 +891,7 @@ impl Drawing {
                             let (Some(&m), Some(&n)) = (major.get(axis), minor.get(axis)) else {
                                 continue;
                             };
-                            let t = n.atan2(m);
+                            let t = libm::atan2(n, m);
                             for t in [t, t + PI] {
                                 if within(t, start, sweep) {
                                     grow(ellipse_point(center, major, ratio, t));
@@ -933,7 +936,7 @@ impl Drawing {
                     } => {
                         let minor = minor_axis(major, ratio);
                         integrate(start, start + sweep.abs(), 512, |t| {
-                            norm(add(scale(major, -t.sin()), scale(minor, t.cos())))
+                            norm(add(scale(major, -libm::sin(t)), scale(minor, libm::cos(t))))
                         })
                     }
                     Piece::Spline { spline } => spline.beziers().map_or(0.0, |pieces| {

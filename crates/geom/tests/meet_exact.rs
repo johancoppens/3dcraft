@@ -9,6 +9,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::*;
@@ -112,7 +113,7 @@ fn a_plane_cuts_a_cone_in_every_conic() {
     for x in setups() {
         let (s, f) = (x.s, x.f);
         let alpha: f64 = 0.4;
-        let k = alpha.tan();
+        let k = alpha.ptan();
         let c = cone(f, 1.5 * s, alpha);
         let apex = f.point(0.0, 0.0, -1.5 * s / k);
 
@@ -130,21 +131,21 @@ fn a_plane_cuts_a_cone_in_every_conic() {
         let lean: f64 = 0.5; // between the plane's normal and the axis
         let through = f.point(0.0, 0.0, 2.0 * s);
         let oblique =
-            plane(Frame::new(through, f.vector(lean.sin(), 0.0, lean.cos()), f.y()).unwrap());
+            plane(Frame::new(through, f.vector(lean.psin(), 0.0, lean.pcos()), f.y()).unwrap());
         let m = x.curves(&oblique, &c, 1);
         let Curve3::Ellipse(e) = &m.curves[0].curve else {
             panic!("expected an ellipse: {m:?}");
         };
         assert!(m.curves[0].closed);
         let (major, minor) = e.semi_axes();
-        let eccentricity = (1.0 - (minor / major).powi(2)).sqrt();
-        assert!((eccentricity - lean.sin() / alpha.cos()).abs() < 1e-12);
+        let eccentricity = (1.0 - (minor / major).ppowi(2)).sqrt();
+        assert!((eccentricity - lean.psin() / alpha.pcos()).abs() < 1e-12);
 
         // Parallel to a ruling: a parabola, a polynomial quadratic that
         // runs to the box.
         let lean = FRAC_PI_2 - alpha;
         let parallel =
-            plane(Frame::new(through, f.vector(lean.sin(), 0.0, lean.cos()), f.y()).unwrap());
+            plane(Frame::new(through, f.vector(lean.psin(), 0.0, lean.pcos()), f.y()).unwrap());
         let m = x.curves(&parallel, &c, 1);
         let Curve3::Nurbs(parabola) = &m.curves[0].curve else {
             panic!("expected a NURBS parabola: {m:?}");
@@ -158,7 +159,7 @@ fn a_plane_cuts_a_cone_in_every_conic() {
         let far = plane(
             Frame::new(
                 f.point(0.0, 0.0, -9.0 * s),
-                f.vector(lean.sin(), 0.0, lean.cos()),
+                f.vector(lean.psin(), 0.0, lean.pcos()),
                 f.y(),
             )
             .unwrap(),
@@ -179,7 +180,7 @@ fn a_plane_cuts_a_cone_in_every_conic() {
         for p in samples(&m.curves[0], 50) {
             let (px, py, pz) = f.local(p);
             assert!((px - s).abs() <= 1e-9 * s);
-            assert!((py * py - ((1.5 * s + k * pz).powi(2) - s * s)).abs() <= 1e-9 * s * s * 40.0);
+            assert!((py * py - ((1.5 * s + k * pz).ppowi(2) - s * s)).abs() <= 1e-9 * s * s * 40.0);
             assert!(pz > -1.5 * s / k);
         }
 
@@ -198,7 +199,7 @@ fn a_plane_cuts_a_cone_in_every_conic() {
         }
         assert!(end(&m.curves[0]).distance(end(&m.curves[1])) > s);
         let grazing =
-            plane(Frame::new(apex, f.vector(alpha.cos(), 0.0, -alpha.sin()), f.y()).unwrap());
+            plane(Frame::new(apex, f.vector(alpha.pcos(), 0.0, -alpha.psin()), f.y()).unwrap());
         let m = x.curves(&grazing, &c, 1);
         assert!(matches!(m.curves[0].curve, Curve3::Line(_)) && m.curves[0].tangent);
         assert!(start(&m.curves[0]).distance(apex) <= 1e-9 * s);
@@ -206,7 +207,7 @@ fn a_plane_cuts_a_cone_in_every_conic() {
         // A cone that narrows along its axis.
         let down = cone(f, 1.5 * s, -0.7);
         let m = x.curves(&plane(f.at(f.point(0.0, 0.0, -s)).unwrap()), &down, 1);
-        x.circle(&m, 0, f.point(0.0, 0.0, -s), (1.5 + 0.7_f64.tan()) * s);
+        x.circle(&m, 0, f.point(0.0, 0.0, -s), (1.5 + 0.7_f64.ptan()) * s);
         let above = plane(f.at(f.point(0.0, 0.0, 3.0 * s)).unwrap());
         assert_eq!(x.meet(&above, &down), SurfaceMeeting::None);
     }
@@ -264,7 +265,7 @@ fn surfaces_about_one_axis_meet_in_circles() {
 
         // Cylinder and cone, the cylinder's axis either way round.
         let alpha: f64 = 0.4;
-        let k = alpha.tan();
+        let k = alpha.ptan();
         let c = cone(f, 1.5 * s, alpha);
         for axis in [f, f.reversed_at(up(7.0)).unwrap()] {
             let m = x.curves(&cylinder(axis, 2.5 * s), &c, 1);
@@ -277,12 +278,12 @@ fn surfaces_about_one_axis_meet_in_circles() {
         x.circle(
             &m,
             0,
-            apex + f.z() * (4.0 * s * alpha.cos()),
-            4.0 * s * alpha.sin(),
+            apex + f.z() * (4.0 * s * alpha.pcos()),
+            4.0 * s * alpha.psin(),
         );
 
         // Two cones facing each other: ρ = 1.5 + k z and ρ = 1 + k2 (6 - z).
-        let k2 = 0.3_f64.tan();
+        let k2 = 0.3_f64.ptan();
         let facing = cone(f.reversed_at(up(6.0)).unwrap(), s, 0.3);
         let z = (6.0 * k2 - 0.5) / (k + k2);
         let m = x.curves(&c, &facing, 1);
@@ -410,7 +411,7 @@ fn equal_cylinders_whose_axes_cross_meet_in_four_half_ellipses() {
         // The two points where the cylinders are tangent.
         let common = f.z().cross(g.z()).normalized().unwrap();
         let poles = [cross + common * r, cross - common * r];
-        let angle = f.z().dot(g.z()).acos();
+        let angle = f.z().dot(g.z()).pacos();
         let mut majors = Vec::new();
         for curve in &m.curves {
             let Curve3::Ellipse(e) = &curve.curve else {
@@ -427,8 +428,8 @@ fn equal_cylinders_whose_axes_cross_meet_in_four_half_ellipses() {
             majors.push(e.semi_axes().0 / r);
         }
         majors.sort_by(f64::total_cmp);
-        assert!((majors[0] - 1.0 / (0.5 * angle).cos()).abs() < 1e-9);
-        assert!((majors[3] - 1.0 / (0.5 * angle).sin()).abs() < 1e-9);
+        assert!((majors[0] - 1.0 / (0.5 * angle).pcos()).abs() < 1e-9);
+        assert!((majors[3] - 1.0 / (0.5 * angle).psin()).abs() < 1e-9);
         // The four halves are different curves.
         for i in 0..4 {
             for j in 0..i {
@@ -452,7 +453,7 @@ fn equal_cones_with_parallel_axes_meet_in_a_plane() {
             let p = lifted.eval(f64::from(i), f64::from(i % 7) * s);
             let (px, py, pz) = f.local(p);
             assert!(
-                px.hypot(py) < 1.5 * s + pz * 0.4_f64.tan(),
+                px.phypot(py) < 1.5 * s + pz * 0.4_f64.ptan(),
                 "inside the first"
             );
         }
@@ -527,7 +528,7 @@ fn curves_are_clipped_to_the_box() {
             let lines = Lines::of(&m, 400);
             for k in 0..3600 {
                 let angle = TAU * f64::from(k) / 3600.0;
-                let p = f.point(3.0 * s * angle.cos(), 3.0 * s * angle.sin(), 0.0);
+                let p = f.point(3.0 * s * angle.pcos(), 3.0 * s * angle.psin(), 0.0);
                 if cube(center, half - 0.01 * s).contains(p, 0.0) {
                     inside += 1;
                     assert!(lines.distance(p) <= 1e-3 * s, "missing at {angle}");
@@ -588,9 +589,9 @@ fn a_cylinder_that_goes_on_in_a_torus() {
         for (major, minor, turn) in [(4.0, 1.0, 0.7_f64), (0.7, 0.3, 2.9), (25.0, 0.5, -1.3)] {
             let (major, minor) = (major * s, minor * s);
             let ring = torus(*f, major, minor);
-            let at = f.point(major * turn.cos(), major * turn.sin(), 0.0);
-            let along = f.vector(-turn.sin(), turn.cos(), 0.0);
-            let inward = f.vector(-turn.cos(), -turn.sin(), 0.0);
+            let at = f.point(major * turn.pcos(), major * turn.psin(), 0.0);
+            let along = f.vector(-turn.psin(), turn.pcos(), 0.0);
+            let inward = f.vector(-turn.pcos(), -turn.psin(), 0.0);
             let lying = Frame::new(at - along * (3.0 * s), along, f.z()).unwrap();
             let rod = cylinder(lying, minor);
             let m = meeting(setup.meet(&rod, &ring));
@@ -640,11 +641,11 @@ fn a_cylinder_that_goes_on_in_a_torus() {
             // changes sign along a grid on the cylinder is on a curve.
             let lines = Lines::of(&m, 4000);
             let value = |x: f64, angle: f64| {
-                let p = at + along * x + (inward * angle.cos() + f.z() * angle.sin()) * minor;
+                let p = at + along * x + (inward * angle.pcos() + f.z() * angle.psin()) * minor;
                 let q = p - f.origin();
                 let h = q.dot(f.z());
                 let rho = (q - f.z() * h).length();
-                (rho - major).hypot(h) - minor
+                (rho - major).phypot(h) - minor
             };
             let reach = 2.5 * (major * minor).sqrt();
             let mut found = 0;
@@ -667,7 +668,8 @@ fn a_cylinder_that_goes_on_in_a_torus() {
                             hi = mid;
                         }
                     }
-                    let p = at + along * lo + (inward * angle.cos() + f.z() * angle.sin()) * minor;
+                    let p =
+                        at + along * lo + (inward * angle.pcos() + f.z() * angle.psin()) * minor;
                     assert!(lines.distance(p) <= 1e-3 * s, "a crossing off every curve");
                     found += 1;
                 }
@@ -712,7 +714,7 @@ fn a_torus_that_goes_on_in_a_torus() {
         ] {
             let (r1, r2, minor) = (r1 * s, r2 * s, minor * s);
             let first = torus(*f, r1, minor);
-            let toward = f.vector(turn.cos(), turn.sin(), 0.0);
+            let toward = f.vector(turn.pcos(), turn.psin(), 0.0);
             let apart = if outside { r1 + r2 } else { r1 - r2 };
             let centre2 = f.origin() + toward * apart;
             let axis2 = if flip { f.z() * -1.0 } else { f.z() };
@@ -766,13 +768,13 @@ fn a_torus_that_goes_on_in_a_torus() {
                 let q = p - centre2;
                 let h = q.dot(f.z());
                 let rho = (q - f.z() * h).length();
-                (rho - r2).hypot(h) - minor
+                (rho - r2).phypot(h) - minor
             };
             let base = turn;
             let reach = 2.5 * (minor / r1.min(r2)).sqrt() * (r1.min(r2) / r1);
             let point = |angle: f64, around: f64| {
-                let dir = f.vector(angle.cos(), angle.sin(), 0.0);
-                f.origin() + dir * (r1 + minor * around.cos()) + f.z() * (minor * around.sin())
+                let dir = f.vector(angle.pcos(), angle.psin(), 0.0);
+                f.origin() + dir * (r1 + minor * around.pcos()) + f.z() * (minor * around.psin())
             };
             for i in 0..=96 {
                 let around = TAU * (f64::from(i) + 0.37) / 97.0;
@@ -823,7 +825,7 @@ fn a_torus_that_goes_on_in_a_torus() {
 fn cone_side(p: Vec3, apex: Vec3, axis: Vec3, alpha: f64) -> f64 {
     let q = p - apex;
     let h = q.dot(axis);
-    (q - axis * h).length() * alpha.cos() - h * alpha.sin()
+    (q - axis * h).length() * alpha.pcos() - h * alpha.psin()
 }
 
 /// Walks circles of the first cone and asserts that every place where the
@@ -840,7 +842,7 @@ fn scan_cones(
     let frame = Frame::from_z(apex1, axis1).unwrap();
     let point = |height: f64, angle: f64| {
         apex1
-            + (axis1 + (frame.x() * angle.cos() + frame.y() * angle.sin()) * alpha1.tan())
+            + (axis1 + (frame.x() * angle.pcos() + frame.y() * angle.psin()) * alpha1.ptan())
                 * (height * s)
     };
     let value = |height: f64, angle: f64| cone_side(point(height, angle), apex2, axis2, alpha2);
@@ -889,11 +891,11 @@ fn cones_with_one_apex() {
         let apex = f.origin();
         let build = |axis: Vec3, alpha: f64| {
             let frame = Frame::from_z(apex + axis * s, axis).unwrap();
-            cone(frame, alpha.tan() * s, alpha)
+            cone(frame, alpha.ptan() * s, alpha)
         };
         for (alpha1, alpha2) in [(0.5_f64, 0.3_f64), (0.3, 0.9), (0.7, 0.7)] {
             let axis1 = f.z();
-            let leaning = |by: f64| f.vector(by.sin() * 0.6, by.sin() * 0.8, by.cos());
+            let leaning = |by: f64| f.vector(by.psin() * 0.6, by.psin() * 0.8, by.pcos());
             let one = build(axis1, alpha1);
             // (the angle between the axes, the rulings, a touch)
             let cases = [
@@ -955,12 +957,12 @@ fn cones_tangent_along_a_ruling() {
             // to either side of the plane.
             for signs in 0..16 {
                 let sign = |bit: u32| if signs >> bit & 1 == 0 { 1.0 } else { -1.0 };
-                let axis1 = along * (sign(0) * alpha1.cos()) + n * (sign(1) * alpha1.sin());
-                let axis2 = along * (sign(2) * alpha2.cos()) + n * (sign(3) * alpha2.sin());
+                let axis1 = along * (sign(0) * alpha1.pcos()) + n * (sign(1) * alpha1.psin());
+                let axis2 = along * (sign(2) * alpha2.pcos()) + n * (sign(3) * alpha2.psin());
                 let (apex1, apex2) = (at(0.0), at(gap));
                 let build = |apex: Vec3, axis: Vec3, alpha: f64| {
                     let frame = Frame::from_z(apex + axis * s, axis).unwrap();
-                    cone(frame, alpha.tan() * s, alpha)
+                    cone(frame, alpha.ptan() * s, alpha)
                 };
                 let (one, two) = (build(apex1, axis1, alpha1), build(apex2, axis2, alpha2));
                 let found = setup.meet(&one, &two);

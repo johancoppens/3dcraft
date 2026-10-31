@@ -20,6 +20,7 @@ use craft3d_geom::{Circle, Cone, Curve3, Cylinder, Line, NurbsCurve, Sphere, Sur
 use craft3d_kernel::developable::{Connected, Mark, Piece, Rail, RailPiece, connect};
 use craft3d_kernel::unfold::{DEVELOPABLE_SHARE, develop, face_curvature};
 use craft3d_kernel::{KernelError, primitives};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, Coedge, FaceId};
 use std::f64::consts::TAU;
@@ -145,7 +146,7 @@ fn rails_on_a_cone_are_joined_through_its_apex_with_a_fan_where_the_rail_starts_
         let (first, last) = (made.rulings[0], *made.rulings.last().unwrap());
         assert_eq!(first.0, 0.0);
         assert_eq!(last.0, 1.0);
-        let angle_of = |p: Vec3| p.y.atan2(p.x);
+        let angle_of = |p: Vec3| p.y.patan2(p.x);
         let angle = |t: f64| angle_of(at(&b, t).0);
         let (start, end) = (angle_of(at(&a, 0.0).0), angle_of(at(&a, 1.0).0));
         assert!(
@@ -171,7 +172,7 @@ fn rails_on_a_cone_are_joined_through_its_apex_with_a_fan_where_the_rail_starts_
 fn a_curve_and_a_differently_drawn_translate_are_joined_by_parallel_rulings() {
     for k in SCALES {
         let shift = Vec3::new(0.3, 0.2, 2.0) * k;
-        let wave = |x: f64| Vec3::new(x * k, (1.3 * x).sin() * k, 0.2 * x * x * k);
+        let wave = |x: f64| Vec3::new(x * k, (1.3 * x).psin() * k, 0.2 * x * x * k);
         let n = 40;
         let low: Vec<Vec3> = (0..=n).map(|j| wave(4.0 * j as f64 / n as f64)).collect();
         let a = spline(&low);
@@ -299,11 +300,11 @@ fn cylinders_and_cone_frustums_unroll_to_their_closed_forms() {
         // A frustum from radius R to r over h: the annular sector of the
         // slant radii ρ₂ = R s / (R − r), ρ₁ = ρ₂ − s, angle 2πR / ρ₂.
         let (big, small, height) = (3.0 * k, 1.0 * k, 4.0 * k);
-        let half = -((big - small) / height).atan();
-        let radius = |z: f64| big + z * half.tan();
+        let half = -((big - small) / height).patan();
+        let radius = |z: f64| big + z * half.ptan();
         let body = bands(&radius, &[0.0, height], Some(half));
         let dev = develop(&body, &[FaceId(0)], &tol(k)).unwrap();
-        let slant = (big - small).hypot(height);
+        let slant = (big - small).phypot(height);
         let rho2 = big / (big - small) * slant;
         let rho1 = rho2 - slant;
         let expected = 0.5 * (TAU * big / rho2) * (rho2 * rho2 - rho1 * rho1);
@@ -405,9 +406,9 @@ fn sphere_band(r: f64, half: f64) -> Body {
     let mut body = Body::new(BodyKind::Sheet);
     let mut circles = Vec::new();
     for lat in [-half, half] {
-        let h = r * lat.sin();
+        let h = r * lat.psin();
         let frame = Frame::new(Vec3::new(0.0, 0.0, h), Vec3::Z, Vec3::X).unwrap();
-        let rho = r * lat.cos();
+        let rho = r * lat.pcos();
         let v = body.add_vertex(Vec3::new(rho, 0.0, h));
         circles.push(body.add_edge(
             Curve3::Circle(Circle::new(frame, rho).unwrap()),
@@ -570,10 +571,10 @@ fn passing(k: f64, sigma: f64, alpha: f64, cut: f64) -> (Rail, Rail) {
     let x = [-1.0, -1.0 / 3.0, 1.0 / 3.0, 1.0];
     let x2 = [1.0, -1.0 / 3.0, -1.0 / 3.0, 1.0];
     let x3 = [-1.0, 1.0, -1.0, 1.0];
-    let sin60 = 60f64.to_radians().sin();
+    let sin60 = 60f64.to_radians().psin();
     let (c3, c2, c0) = (
-        20.0 / sigma.powi(3),
-        20.0 * sin60 / sigma.powi(2),
+        20.0 / sigma.ppowi(3),
+        20.0 * sin60 / sigma.ppowi(2),
         40.0 * sin60,
     );
     let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
@@ -857,7 +858,7 @@ fn branches_that_pass_each_other_at_an_inflection_are_bridged_by_a_fan() {
                 .unwrap()
                 .cross(w[1].normalized().unwrap())
                 .length()
-                .asin();
+                .pasin();
         }
         let measured = *areas[fan].as_ref().unwrap();
         assert!(
@@ -892,7 +893,7 @@ fn branches_that_pass_each_other_at_an_inflection_are_bridged_by_a_fan() {
         );
         let opened = (a[0] * b[1] - a[1] * b[0])
             .abs()
-            .atan2(a[0] * b[0] + a[1] * b[1]);
+            .patan2(a[0] * b[0] + a[1] * b[1]);
         assert!(
             (opened - angle).abs() <= 1e-6,
             "{k}: the fan opens by {opened} in the pattern, {angle} on the part"
@@ -949,7 +950,7 @@ fn a_plate_on_a_developable_with_short_and_long_rulings_has_its_closed_form_volu
         // The closed form, by Simpson's rule over x in [−1, 1].
         let flat = |v: Vec3| v - n * v.dot(n);
         let parts = |x: f64| {
-            let w = (10.0 + 180.0 * ((x + 1.0) / 2.0).powi(2)) * k;
+            let w = (10.0 + 180.0 * ((x + 1.0) / 2.0).ppowi(2)) * k;
             let c1 = flat(Vec3::new(100.0, 0.0, 40.0 * x) * k);
             let c2 = flat(Vec3::new(0.0, 0.0, 40.0) * k);
             (
@@ -1006,7 +1007,7 @@ fn twist(a: &Rail, b: &Rail, (s, t): (f64, f64)) -> f64 {
         ua.cross(d).normalized().unwrap(),
         ub.cross(d).normalized().unwrap(),
     );
-    let turn = na.cross(nb).length().atan2(na.dot(nb).abs());
+    let turn = na.cross(nb).length().patan2(na.dot(nb).abs());
     turn * d.length()
 }
 
@@ -1119,12 +1120,12 @@ fn a_plate_on_a_long_developable_that_tapers_to_a_tip_has_its_closed_form_volume
     use craft3d_kernel::plate::{Side, plate};
     use std::collections::BTreeMap;
     let alpha: f64 = 30f64.to_radians();
-    let (s, c) = (alpha.sin(), alpha.cos());
+    let (s, c) = (alpha.psin(), alpha.pcos());
     let sweep = 2.0;
     let count = 800;
     for k in SCALES {
         let (r0, w0, w1) = (3000.0 * k, 190.0 * k, 3.0 * k);
-        let g = |th: f64| Vec3::new(s * th.cos(), s * th.sin(), c);
+        let g = |th: f64| Vec3::new(s * th.pcos(), s * th.psin(), c);
         let w = |th: f64| w0 + (w1 - w0) * th / sweep;
         let at = |i: usize| sweep * i as f64 / (count - 1) as f64;
         let a: Vec<Vec3> = (0..count).map(|i| g(at(i)) * r0).collect();
@@ -1149,7 +1150,7 @@ fn a_plate_on_a_long_developable_that_tapers_to_a_tip_has_its_closed_form_volume
         // (signed distance `ρ cos α − z sin α` for a point near it), and
         // every point of an edge that runs along a skin too: within the
         // tolerance of the exact offset, not only of the fitted skins.
-        let off = |p: Vec3| p.x.hypot(p.y) * c - p.z * s;
+        let off = |p: Vec3| p.x.phypot(p.y) * c - p.z * s;
         let (half, limit) = (0.5 * t, tol(k).linear);
         let mut worst: f64 = 0.0;
         for edge in &plated.body.edges {
@@ -1514,7 +1515,7 @@ fn a_fan_is_laid_flat_about_its_apex() {
                     .unwrap()
                     .cross(w[1].normalized().unwrap())
                     .length()
-                    .asin()
+                    .pasin()
             })
             .sum();
         let dev = develop(&made.body, &[FaceId(fan as u32)], &tol(k))
@@ -1542,7 +1543,7 @@ fn a_fan_is_laid_flat_about_its_apex() {
         );
         let opened = (u[0] * w[1] - u[1] * w[0])
             .abs()
-            .atan2(u[0] * w[0] + u[1] * w[1]);
+            .patan2(u[0] * w[0] + u[1] * w[1]);
         assert!(
             (opened - angle).abs() <= 1e-6,
             "{k}: the fan opens by {opened} in the pattern, {angle} on the part"
@@ -1559,7 +1560,7 @@ fn a_fan_is_laid_flat_about_its_apex() {
         let (m, end) = (flat(surface.eval(0.4, 0.5)), flat(surface.eval(0.4, 1.0)));
         let half = [0.5 * (apex[0] + end[0]), 0.5 * (apex[1] + end[1])];
         assert!(
-            (m[0] - half[0]).hypot(m[1] - half[1]) <= 1e-6 * k,
+            (m[0] - half[0]).phypot(m[1] - half[1]) <= 1e-6 * k,
             "{k}: a ruling's middle off its image's"
         );
     }
@@ -1667,9 +1668,9 @@ fn a_rail_with_a_corner_is_turned_by_a_fan_from_the_corner() {
         // then from its end an arc of radius 3 that leaves the first's
         // tangent turned by 0.4 rad, for 0.5 rad.
         let corner_at = 1.0_f64;
-        let p = Vec3::new(r_up * corner_at.cos(), r_up * corner_at.sin(), h);
-        let tangent = Vec3::new(-corner_at.sin(), corner_at.cos(), 0.0);
-        let (c, s) = (0.4_f64.cos(), 0.4_f64.sin());
+        let p = Vec3::new(r_up * corner_at.pcos(), r_up * corner_at.psin(), h);
+        let tangent = Vec3::new(-corner_at.psin(), corner_at.pcos(), 0.0);
+        let (c, s) = (0.4_f64.pcos(), 0.4_f64.psin());
         let d = Vec3::new(
             c * tangent.x - s * tangent.y,
             s * tangent.x + c * tangent.y,
@@ -2010,7 +2011,7 @@ fn lens(k: f64, z: f64, s: f64) -> Rail {
     let r5 = 5f64.sqrt();
     let c1 = Frame::new(Vec3::new(0.0, 0.0, z * k), Vec3::Z, Vec3::X).unwrap();
     let c2 = Frame::new(Vec3::new(0.0, s * k, z * k), Vec3::Z, Vec3::X).unwrap();
-    let (t0, t1) = ((-1.0f64).atan2(-2.0) + TAU, (-1.0f64).atan2(2.0) + TAU);
+    let (t0, t1) = ((-1.0f64).patan2(-2.0) + TAU, (-1.0f64).patan2(2.0) + TAU);
     chain(vec![
         (
             Curve3::Circle(Circle::new(c1, 2.0 * s * k).unwrap()),

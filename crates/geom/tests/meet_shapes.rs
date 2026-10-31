@@ -10,6 +10,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::*;
@@ -94,16 +95,16 @@ fn unequal_crossing_cylinders_meet_in_two_closed_quartics() {
         let mut previous: Option<Vec3> = None;
         for k in 0..=2000 {
             let angle = TAU * f64::from(k) / 2000.0;
-            let y = 0.3 + angle.cos();
+            let y = 0.3 + angle.pcos();
             let x = (4.0 - y * y).sqrt();
             for side in [1.0, -1.0] {
-                let p = f.point(side * x * s, y * s, angle.sin() * s);
+                let p = f.point(side * x * s, y * s, angle.psin() * s);
                 assert!(
                     lines.distance(p) <= 1e-5 * s,
                     "the quartic is missing at {angle}"
                 );
             }
-            let p = f.point(x * s, y * s, angle.sin() * s);
+            let p = f.point(x * s, y * s, angle.psin() * s);
             expected += previous.map_or(0.0, |q| q.distance(p));
             previous = Some(p);
         }
@@ -135,9 +136,9 @@ fn a_sphere_tangent_inside_a_cylinder_gives_vivianis_curve() {
         for k in 0..=4000 {
             let angle = 2.0 * TAU * f64::from(k) / 4000.0;
             let p = f.point(
-                s * (1.0 + angle.cos()),
-                s * angle.sin(),
-                2.0 * s * (0.5 * angle).sin(),
+                s * (1.0 + angle.pcos()),
+                s * angle.psin(),
+                2.0 * s * (0.5 * angle).psin(),
             );
             assert!(lines.distance(p) <= 1e-5 * s, "missing at {angle}");
             expected += previous.map_or(0.0, |q| q.distance(p));
@@ -162,17 +163,24 @@ fn a_bitangent_plane_cuts_a_torus_in_villarceau_circles() {
         let within = cube(f.origin(), 12.0 * s);
         let (major, minor) = (4.0 * s, s);
         let ring = torus(f, major, minor);
-        let lean = (minor / major).asin();
+        let lean = (minor / major).pasin();
         let leaning = |angle: f64| {
-            plane(Frame::new(f.origin(), f.vector(-angle.sin(), 0.0, angle.cos()), f.y()).unwrap())
+            plane(
+                Frame::new(
+                    f.origin(),
+                    f.vector(-angle.psin(), 0.0, angle.pcos()),
+                    f.y(),
+                )
+                .unwrap(),
+            )
         };
         let m = meeting(solve(&leaning(lean), &ring, &within, &t).unwrap());
         // Two circles of the major radius about (0, ±r, 0), crossing at
         // the two points where the plane touches the torus: four arcs.
         let reach = (major * major - minor * minor).sqrt();
         let touch = [
-            f.point(reach * lean.cos(), 0.0, reach * lean.sin()),
-            f.point(-reach * lean.cos(), 0.0, -reach * lean.sin()),
+            f.point(reach * lean.pcos(), 0.0, reach * lean.psin()),
+            f.point(-reach * lean.pcos(), 0.0, -reach * lean.psin()),
         ];
         assert_eq!(m.curves.len(), 4, "{}", brief(&m));
         ends_at(&m, &touch, 2.0 * t.linear);

@@ -11,6 +11,7 @@
 
 use craft3d_kernel::boolean::{BooleanOp, boolean};
 use craft3d_kernel::primitives;
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_tess::{TessParams, tessellate_body};
 use craft3d_topo::{Body, check, mass_properties};
@@ -34,12 +35,12 @@ fn cases() -> Vec<(&'static str, Body, f64)> {
     let run = |a: &Body, b: &Body, op| boolean(a, b, op, &tol).unwrap().body;
     let plate = boxed([0.0, 0.0, 0.0], [4.0, 3.0, 1.0]);
     let post = rod([0.0, 0.0, 0.0], 1.0, 4.0);
-    let half = (0.5_f64).acos();
-    let lens = 2.0 * (half - half.sin() * half.cos());
+    let half = (0.5_f64).pacos();
+    let lens = 2.0 * (half - half.psin() * half.pcos());
     let tilt = 0.6_f64;
     let slanted = Frame::new(
         Vec3::new(0.0, 0.0, 2.0),
-        Vec3::new(tilt.sin(), 0.0, tilt.cos()),
+        Vec3::new(tilt.psin(), 0.0, tilt.pcos()),
         Vec3::Y,
     )
     .unwrap();
@@ -143,7 +144,7 @@ fn cases() -> Vec<(&'static str, Body, f64)> {
             {
                 // The slot's section: the strip |y| <= 1/4 of the unit disc.
                 let y: f64 = 0.25;
-                4.0 * PI - 2.0 * (y * (1.0 - y * y).sqrt() + y.asin())
+                4.0 * PI - 2.0 * (y * (1.0 - y * y).sqrt() + y.pasin())
             },
         ),
     ]
@@ -213,7 +214,7 @@ fn curved_cases() -> Vec<(&'static str, Body, f64)> {
                 &rod([0.0, 0.0, 0.0], 1.0, 6.0),
                 BooleanOp::Subtract,
             ),
-            PI * (2.0 * 3.0_f64.sqrt()).powi(3) / 6.0,
+            PI * (2.0 * 3.0_f64.sqrt()).ppowi(3) / 6.0,
         ),
         (
             "a frustum",

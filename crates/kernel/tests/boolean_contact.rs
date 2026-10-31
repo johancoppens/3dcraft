@@ -13,6 +13,7 @@
 // Test code: a failure in a helper is a failed test.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
+use craft3d_math::Portable;
 mod boolean_common;
 
 use boolean_common::*;
@@ -478,18 +479,18 @@ impl Pointed {
     fn body(&self) -> Body {
         let base = self.apex + self.axis * self.height;
         let frame = Frame::from_z(base, -self.axis).unwrap();
-        primitives::cone(&frame, self.height * self.alpha.tan(), self.height).unwrap()
+        primitives::cone(&frame, self.height * self.alpha.ptan(), self.height).unwrap()
     }
 
     fn volume(&self) -> f64 {
-        PI * (self.height * self.alpha.tan()).powi(2) * self.height / 3.0
+        PI * (self.height * self.alpha.ptan()).ppowi(2) * self.height / 3.0
     }
 
     /// Inside or not, and how far from the surfaces of its faces.
     fn holds(&self, p: Vec3) -> (bool, f64) {
         let q = p - self.apex;
         let h = q.dot(self.axis);
-        let side = (q - self.axis * h).length() * self.alpha.cos() - h * self.alpha.sin();
+        let side = (q - self.axis * h).length() * self.alpha.pcos() - h * self.alpha.psin();
         (
             h < self.height && h > 0.0 && side < 0.0,
             side.abs().min((h - self.height).abs()),
@@ -531,7 +532,7 @@ fn cones_that_share_a_ruling() {
                 (0.4, 0.9, 0.5, 0.8),
                 // The angles of tangent/cone-cone/002 of the corpus.
                 (
-                    (1.0_f64 / 1.125).atan(),
+                    (1.0_f64 / 1.125).patan(),
                     std::f64::consts::FRAC_PI_4,
                     -0.02,
                     1.125,
@@ -544,13 +545,13 @@ fn cones_that_share_a_ruling() {
                     alpha,
                     height,
                 };
-                let ruling = frame.vector(alpha.sin(), 0.0, -alpha.cos());
-                let slant = height / alpha.cos();
+                let ruling = frame.vector(alpha.psin(), 0.0, -alpha.pcos());
+                let slant = height / alpha.pcos();
                 for outside in [true, false] {
                     let lean = if outside { alpha + beta } else { alpha - beta };
                     let second = Pointed {
                         apex: first.apex + ruling * (along * slant),
-                        axis: frame.vector(lean.sin(), 0.0, -lean.cos()),
+                        axis: frame.vector(lean.psin(), 0.0, -lean.pcos()),
                         alpha: beta,
                         height: tall * k,
                     };
@@ -675,7 +676,7 @@ fn a_rim_that_touches_an_edge_a_tenth_of_a_tolerance_over_a_face() {
     // The block's top is x in [0.75, 2], y in [0, 1.75], z = 0; the rim's
     // centre is 0.5 from x = 0.75 and touches x = 2 and y = 0.
     let (centre, beyond) = ([1.25, 0.75], 0.5_f64);
-    let segment = radius * radius * (beyond / radius).acos()
+    let segment = radius * radius * (beyond / radius).pacos()
         - beyond * (radius * radius - beyond * beyond).sqrt();
     let overlap = PI * radius * radius - segment;
     for k in SCALES {
@@ -723,7 +724,7 @@ fn a_rim_that_touches_an_edge_a_tenth_of_a_tolerance_over_a_face() {
 #[test]
 fn a_block_against_a_cone_along_a_ruling_past_its_apex() {
     let (radius, height) = (0.75_f64, 1.875_f64);
-    let slant = radius.hypot(height);
+    let slant = radius.phypot(height);
     for k in SCALES {
         let cone = spike(k, [0.0, 0.0, 0.0], radius, height);
         // Along the ruling in the xz plane, from below the rim up past
@@ -785,7 +786,7 @@ fn a_rim_a_few_tolerances_inside_a_coaxial_cone() {
         let cone = spike(k, [0.0, 0.0, 0.0], radius, height);
         for tolerances in [3.0, 5.0, 40.0] {
             // The rod's top at z = 2, where the cone's radius is 1.
-            let r = 1.0 - tolerances * 1e-6 * (radius.hypot(height) / height);
+            let r = 1.0 - tolerances * 1e-6 * (radius.phypot(height) / height);
             let rod = rod(k, [0.0, 0.0, 0.5], r, 1.5);
             let (vr, vc) = (mass(&rod).volume, mass(&cone).volume);
             let common = solve(&cone, &rod, Intersect, k);
@@ -825,7 +826,7 @@ fn cylinder_in_torus(major: f64, minor: f64, rho: f64, height: f64, length: f64)
         let w = (minor * minor - z * z).max(0.0).sqrt();
         let a = major + w;
         let (x1, x2) = (major - q, (major + q).min(a));
-        let f = |x: f64| 0.5 * (x * (a * a - x * x).max(0.0).sqrt() + a * a * (x / a).asin());
+        let f = |x: f64| 0.5 * (x * (a * a - x * x).max(0.0).sqrt() + a * a * (x / a).pasin());
         let xc = (a * a - half * half).max(0.0).sqrt().clamp(x1, x2);
         2.0 * (half * (xc - x1) + f(x2) - f(xc))
     };
@@ -836,7 +837,8 @@ fn cylinder_in_torus(major: f64, minor: f64, rho: f64, height: f64, length: f64)
         let mid = -0.5 * PI + (f64::from(i) + 0.5) * width;
         for (x, weight) in NODES {
             let theta = mid + 0.5 * width * x;
-            total += weight * 0.5 * width * across(height + rho * theta.sin()) * rho * theta.cos();
+            total +=
+                weight * 0.5 * width * across(height + rho * theta.psin()) * rho * theta.pcos();
         }
     }
     total

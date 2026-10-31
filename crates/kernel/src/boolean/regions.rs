@@ -27,6 +27,7 @@ use super::chart::{About, Chart, TOO_CLOSE};
 use super::outline::{Seg, Sheet, boxes, left_of, outward_normal};
 use super::{Arc, Reason};
 use craft3d_geom::Surface;
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::TAU;
@@ -136,7 +137,7 @@ fn untie(
         .ok_or(LOST)?;
     // (Along the normal, at a cusp, the first ray has no direction across
     // it: any fixed one serves to read the others from.)
-    let base = if base.0.hypot(base.1) < 1e-9 {
+    let base = if base.0.phypot(base.1) < 1e-9 {
         (1.0, 0.0)
     } else {
         base
@@ -162,7 +163,7 @@ fn untie(
             }
             let chord = from_end(arc, ray.at_end, 0.5 * (near + far)) - origin;
             let (x, y) = (chord.dot(frame.x()), chord.dot(frame.y()));
-            let offset = (base.0 * y - base.1 * x).atan2(base.0 * x + base.1 * y);
+            let offset = (base.0 * y - base.1 * x).patan2(base.0 * x + base.1 * y);
             if !offset.is_finite() {
                 return Err(TANGENT);
             }
@@ -329,7 +330,7 @@ fn trace(
             ray.angle = ray
                 .direction
                 .dot(frame.y())
-                .atan2(ray.direction.dot(frame.x()));
+                .patan2(ray.direction.dot(frame.x()));
         }
         let angle = |index: usize| rays.get(index).map_or(0.0, |ray| ray.angle);
         fan.sort_by(|&a, &b| angle(a).total_cmp(&angle(b)).then(a.cmp(&b)));
@@ -341,7 +342,7 @@ fn trace(
         let axial = fan.iter().all(|&index| {
             rays.get(index).is_some_and(|ray| {
                 let (x, y) = (ray.direction.dot(frame.x()), ray.direction.dot(frame.y()));
-                x.hypot(y) < TIE
+                x.phypot(y) < TIE
             })
         });
         if count > 1 && axial {

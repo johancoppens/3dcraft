@@ -14,6 +14,7 @@ use craft3d_kernel::origami::{
     Angle, Arrangement, BoundarySegment, Crease, CreaseKind, FoldError, PanelSide, Panels, arrange,
     fold, thick_panels,
 };
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 
 const ANGULAR: f64 = 1e-9;
@@ -65,7 +66,7 @@ fn panels_beside_a_crease_meet_past_twice_the_angle_of_clearance_over_thickness(
         let tol = 1e-9 * scale;
         let tolerance = Tolerance::new(tol, ANGULAR).unwrap();
         let (t, c) = (0.1 * scale, 0.05 * scale);
-        let limit = 2.0 * (c / t).atan();
+        let limit = 2.0 * (c / t).patan();
         for (kind, side, towards) in [
             (CreaseKind::Mountain, PanelSide::Back, true),
             (CreaseKind::Valley, PanelSide::Back, false),
@@ -223,15 +224,15 @@ fn thick_panels_round_vertices() {
         .find(|c| c.start[1] > 0.0 && c.start[1] == c.end[1])
         .unwrap()
         .id;
-    let gamma = (h / d).atan();
+    let gamma = (h / d).patan();
     let (t, c): (f64, f64) = (0.05, 0.02);
-    let limit = 2.0 * (c / t).atan();
+    let limit = 2.0 * (c / t).patan();
     let panels = Panels {
         thickness: t,
         clearance: c,
         side: PanelSide::Back,
     };
-    let fastest = |rho: f64| 2.0 * ((rho / 2.0).tan() / gamma.cos()).atan();
+    let fastest = |rho: f64| 2.0 * ((rho / 2.0).ptan() / gamma.pcos()).patan();
     // Well within: folds, one shell per facet.
     let rho = 5f64.to_radians();
     assert!(fastest(rho) < limit);

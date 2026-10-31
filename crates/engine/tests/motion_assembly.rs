@@ -12,6 +12,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::plain::run;
@@ -83,8 +84,8 @@ fn four_bar(s: &mut Session, [a, b, c, d]: [f64; 4]) {
     // Where a bar of axis distance `len` lies with End1 at `p` and End2 at
     // `q` (its axes are 2 in from its corner at (0, 0)).
     let bar = |name: &str, len: f64, p: [f64; 2], q: [f64; 2]| {
-        let phi = (q[1] - p[1]).atan2(q[0] - p[0]);
-        let (cs, sn) = (phi.cos(), phi.sin());
+        let phi = (q[1] - p[1]).patan2(q[0] - p[0]);
+        let (cs, sn) = (phi.pcos(), phi.psin());
         let position = [
             p[0] - (2.0 * cs - 2.0 * sn),
             p[1] - (2.0 * sn + 2.0 * cs),
@@ -163,7 +164,7 @@ fn a_crank_rocker_coupler_point_follows_the_circle_intersections() {
         let t = k as f64 / 32.0;
         let theta = 2.0 * std::f64::consts::PI * t;
         let (tip, elbow) = (xy(tip), xy(elbow));
-        let want_tip = [a * theta.cos(), a * theta.sin()];
+        let want_tip = [a * theta.pcos(), a * theta.psin()];
         assert!(
             (tip[0] - want_tip[0]).abs() < 1e-6 && (tip[1] - want_tip[1]).abs() < 1e-6,
             "t = {t}: the crank's tip is at {tip:?}, not {want_tip:?}"
@@ -172,11 +173,11 @@ fn a_crank_rocker_coupler_point_follows_the_circle_intersections() {
         let near = both
             .iter()
             .min_by(|p, q| {
-                let e = |r: &[f64; 2]| (r[0] - elbow[0]).hypot(r[1] - elbow[1]);
+                let e = |r: &[f64; 2]| (r[0] - elbow[0]).phypot(r[1] - elbow[1]);
                 e(p).total_cmp(&e(q))
             })
             .unwrap();
-        let off = (near[0] - elbow[0]).hypot(near[1] - elbow[1]);
+        let off = (near[0] - elbow[0]).phypot(near[1] - elbow[1]);
         assert!(
             off < 1e-6,
             "t = {t}: the elbow is {off} off the circles: {elbow:?}"
@@ -283,7 +284,7 @@ fn a_dead_point_is_reported_with_its_t() {
     let mut s = session(&dir);
     let [a, b, c, d] = [40.0_f64, 30.0, 40.0, 60.0];
     four_bar(&mut s, [a, b, c, d]);
-    let theta = ((a * a + d * d - (b + c) * (b + c)) / (2.0 * a * d)).acos();
+    let theta = ((a * a + d * d - (b + c) * (b + c)) / (2.0 * a * d)).pacos();
     let t_dead = theta / (2.0 * std::f64::consts::PI);
     let checked = run(
         &mut s,

@@ -102,7 +102,7 @@ fn the_quadrature_is_exact_to_degree_six() {
         for b in 0..=(6 - a) {
             let sum: f64 = RULE
                 .iter()
-                .map(|(_, x, y, w)| 0.5 * w * x.powi(a as i32) * y.powi(b as i32))
+                .map(|(_, x, y, w)| 0.5 * w * x.ppowi(a as i32) * y.ppowi(b as i32))
                 .sum();
             let want = fact(a) * fact(b) / fact(a + b + 2);
             assert!((sum - want).abs() < 1e-14, "{a} {b}: {sum} vs {want}");
@@ -142,9 +142,9 @@ fn a_circle_twists_by_its_polar_moment() {
         let body = cylinder(&Frame::WORLD, r, 3.0 * k).unwrap();
         let t = twist(&body, &upright(), 1.5 * k, k);
         assert!(t.converged);
-        near(t.constant, PI * r.powi(4) / 2.0, 1e-6, "circle J");
-        assert!(t.shear_offset.0.hypot(t.shear_offset.1) <= 1e-6 * r);
-        assert!(t.warping.abs() <= 1e-6 * r.powi(6));
+        near(t.constant, PI * r.ppowi(4) / 2.0, 1e-6, "circle J");
+        assert!(t.shear_offset.0.phypot(t.shear_offset.1) <= 1e-6 * r);
+        assert!(t.warping.abs() <= 1e-6 * r.ppowi(6));
     }
 }
 
@@ -163,11 +163,11 @@ fn an_annulus_twists_by_its_polar_moment() {
     assert!(t.converged);
     near(
         t.constant,
-        PI * (big.powi(4) - small.powi(4)) / 2.0,
+        PI * (big.ppowi(4) - small.ppowi(4)) / 2.0,
         1e-6,
         "annulus J",
     );
-    assert!(t.shear_offset.0.hypot(t.shear_offset.1) <= 1e-6 * big);
+    assert!(t.shear_offset.0.phypot(t.shear_offset.1) <= 1e-6 * big);
 }
 
 /// The series solution for a rectangle of sides a ≥ b:
@@ -176,10 +176,10 @@ fn rectangle(a: f64, b: f64) -> f64 {
     let mut sum = 0.0;
     let mut n = 1.0;
     while n < 200.0 {
-        sum += (n * PI * a / (2.0 * b)).tanh() / n.powi(5);
+        sum += (n * PI * a / (2.0 * b)).ptanh() / n.ppowi(5);
         n += 2.0;
     }
-    a * b.powi(3) / 3.0 * (1.0 - 192.0 * b / (PI.powi(5) * a) * sum)
+    a * b.ppowi(3) / 3.0 * (1.0 - 192.0 * b / (PI.ppowi(5) * a) * sum)
 }
 
 /// Rectangles of several aspect ratios against the series, their shear
@@ -192,7 +192,7 @@ fn rectangles_match_the_series_solution() {
         let t = twist(&body, &upright(), 0.5, 1.0);
         assert!(t.converged, "{a} x {b}");
         near(t.constant, rectangle(a, b), 3e-4, &format!("{a} x {b}"));
-        assert!(t.shear_offset.0.hypot(t.shear_offset.1) <= 1e-5 * a);
+        assert!(t.shear_offset.0.phypot(t.shear_offset.1) <= 1e-5 * a);
     }
 }
 
@@ -219,9 +219,9 @@ fn a_thin_closed_box_lands_near_bredt() {
     let t = twist(&boxed, &across, 250.0, k);
     assert!(t.converged);
     let (w, h): (f64, f64) = (97.0, 146.0);
-    let bredt = 4.0 * (w * h).powi(2) / (2.0 * w / 4.0 + 2.0 * h / 3.0);
+    let bredt = 4.0 * (w * h).ppowi(2) / (2.0 * w / 4.0 + 2.0 * h / 3.0);
     near(t.constant, bredt, 0.03, "Bredt");
-    assert!(t.shear_offset.0.hypot(t.shear_offset.1) <= 1e-4 * h);
+    assert!(t.shear_offset.0.phypot(t.shear_offset.1) <= 1e-4 * h);
 }
 
 /// A thin channel: web 100 between the flanges' middles, flanges 50 from
@@ -264,14 +264,14 @@ fn a_thin_channel_matches_the_open_thin_walled_forms() {
     // The shear centre from the web's middle (x = 0), behind it.
     let centroid = found.section.centroid.unwrap();
     let at = t.shear_centre;
-    let e = 3.0 * 50.0f64.powi(2) / (6.0 * 50.0 + 100.0);
+    let e = 3.0 * 50.0f64.ppowi(2) / (6.0 * 50.0 + 100.0);
     near(-at.x, e, 0.05, "shear centre behind the web");
     assert!(at.y.abs() <= 1e-4, "on the axis of symmetry: {}", at.y);
     assert!((at.x - centroid.x - t.shear_offset.0).abs() < 1e-9);
     // The thin-walled warping constant of a channel,
     // Cw = t b³ h² (3b + 2h) / (12 (6b + h)), within the thin-wall error.
     let (b, h, th): (f64, f64, f64) = (50.0, 100.0, 2.0);
-    let cw = th * b.powi(3) * h * h * (3.0 * b + 2.0 * h) / (12.0 * (6.0 * b + h));
+    let cw = th * b.ppowi(3) * h * h * (3.0 * b + 2.0 * h) / (12.0 * (6.0 * b + h));
     near(t.warping, cw, 0.03, "Cw");
 }
 
@@ -293,7 +293,12 @@ fn torsion_does_not_depend_on_where_the_section_lies_or_its_scale() {
     assert!((t.shear_offset.1 - reference.shear_offset.1).abs() <= 1e-3);
     for k in [1e-3, 1e3] {
         let t = twist(&channel(k), &upright(), 5.0 * k, k);
-        near(t.constant, reference.constant * k.powi(4), 2e-4, "scaled J");
+        near(
+            t.constant,
+            reference.constant * k.ppowi(4),
+            2e-4,
+            "scaled J",
+        );
         near(
             t.shear_offset.0,
             reference.shear_offset.0 * k,
@@ -325,7 +330,7 @@ fn a_box_cut_through_a_hole_in_its_wall_is_open() {
     let open = twist(&holed, &across, 100.0, k);
     let closed = twist(&holed, &across, 30.0, k);
     let (w, h): (f64, f64) = (97.0, 146.0);
-    let bredt = 4.0 * (w * h).powi(2) / (2.0 * w / 4.0 + 2.0 * h / 3.0);
+    let bredt = 4.0 * (w * h).ppowi(2) / (2.0 * w / 4.0 + 2.0 * h / 3.0);
     near(closed.constant, bredt, 0.03, "away from the hole");
     let thin = (2.0 * h * 27.0 + w * 64.0 + (w - 20.0) * 64.0) / 3.0;
     assert!(

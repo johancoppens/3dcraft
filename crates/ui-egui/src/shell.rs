@@ -19,6 +19,7 @@ use craft3d_engine::{
     ScenePointed, SceneQuality, SectionPlane, Session,
 };
 use craft3d_math::Bbox3;
+use craft3d_math::Portable;
 use craft3d_render::{Highlight, Section};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -3939,7 +3940,7 @@ impl Shell {
                 }
                 let zoom = f64::from(touch.zoom_delta);
                 if zoom > 0.0 && zoom.is_finite() && zoom != 1.0 {
-                    let steps = zoom.ln() / crate::camera::ZOOM_PER_POINT;
+                    let steps = zoom.pln() / crate::camera::ZOOM_PER_POINT;
                     match self.zoom_point(touch.center_pos, rect, scene) {
                         Some(point) => self.state.camera.zoom_about(steps, point),
                         None => self.state.camera.zoom(steps),
@@ -4029,7 +4030,7 @@ impl Shell {
             // A pinch (or Ctrl and the wheel) as the turn of the wheel
             // that scales the distance alike.
             let pinch = if pinch > 0.0 && pinch.is_finite() && pinch != 1.0 {
-                pinch.ln() / crate::camera::ZOOM_PER_POINT
+                pinch.pln() / crate::camera::ZOOM_PER_POINT
             } else {
                 0.0
             };
@@ -4594,7 +4595,7 @@ fn paint_overlay(
             continue;
         };
         let long = viewport::fade_short(edge.extent, tokens, pixels_per_point);
-        let length = (line.to[0] - line.from[0]).hypot(line.to[1] - line.from[1]);
+        let length = (line.to[0] - line.from[0]).phypot(line.to[1] - line.from[1]);
         let pieces = (length / piece).ceil();
         let pieces = if pieces.is_finite() {
             pieces.clamp(1.0, 4096.0) as usize

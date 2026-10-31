@@ -36,6 +36,7 @@ use crate::equations::{CROWDED, Carry, Fail, Stage, prepare};
 use crate::factor::{Factor, Jacobian, Work};
 use crate::model::{Carried, Entity, EntityId, ImageMap, Sketch, SolveOptions};
 use crate::solver::{Homotopy, System};
+use craft3d_math::Portable;
 
 /// Most steps tried along the path, kept or halved.
 const MAX_STEPS: usize = 64;
@@ -484,7 +485,7 @@ fn step(
             .iter()
             .enumerate()
             .filter(|(i, _)| *i != t)
-            .fold(0.0f64, |s, (_, v)| s.hypot(*v));
+            .fold(0.0f64, |s, (_, v)| s.phypot(*v));
         if !size.is_finite() {
             return Step::Halve;
         }

@@ -429,6 +429,7 @@ pub(crate) fn draw_cap(
 mod tests {
     use super::*;
     use craft3d_math::Bbox3;
+    use craft3d_math::Portable;
     use craft3d_render::Section;
 
     fn cut(origin: Vec3, normal: Vec3, bounds: &Bbox3) -> Cut {
@@ -480,7 +481,7 @@ mod tests {
             let v = cut.normal.cross(u);
             for k in 0..64 {
                 let angle = f64::from(k) * 0.1;
-                let p = foot + (u * angle.cos() + v * angle.sin()) * radius;
+                let p = foot + (u * angle.pcos() + v * angle.psin()) * radius;
                 assert!(inside(&corners, cut.normal, p), "{p:?} is outside");
             }
         }

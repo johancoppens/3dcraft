@@ -11,6 +11,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod boolean_common;
 
 use boolean_common::{SCALES, mass, tolerance};
@@ -26,7 +27,7 @@ const POST: f64 = 17.5;
 const STAY: f64 = 6.0;
 
 fn stay_axis(alpha: f64) -> Vec3 {
-    Vec3::new(alpha.sin(), 0.0, alpha.cos())
+    Vec3::new(alpha.psin(), 0.0, alpha.pcos())
 }
 
 /// The tilted frame everything is built in.
@@ -64,7 +65,7 @@ fn weld_edge(body: &Body) -> EdgeId {
 
 /// Distance from the post's axis (local coordinates).
 fn rho_post(c: Vec3) -> f64 {
-    c.x.hypot(c.y)
+    c.x.phypot(c.y)
 }
 
 /// Distance from the stay's axis.
@@ -98,18 +99,18 @@ fn distance_to_centres(p: Vec3, alpha: f64, (a, s1): (f64, f64), (b, s2): (f64, 
     }
     // The curve: c = (a cos t, a sin t, z) with rho_stay(c) = b, a
     // quadratic in z; both roots, on the stay's side.
-    let (sa, ca) = (alpha.sin(), alpha.cos());
+    let (sa, ca) = (alpha.psin(), alpha.pcos());
     let points = |t: f64| -> [Option<Vec3>; 2] {
         let qa = sa * sa;
-        let qb = -2.0 * a * t.cos() * sa * ca;
-        let qc = a * a * (1.0 - t.cos() * t.cos() * sa * sa) - b * b;
+        let qb = -2.0 * a * t.pcos() * sa * ca;
+        let qc = a * a * (1.0 - t.pcos() * t.pcos() * sa * sa) - b * b;
         let disc = qb * qb - 4.0 * qa * qc;
         if disc < 0.0 {
             return [None, None];
         }
         let root = |sign: f64| {
             let z = (-qb + sign * disc.sqrt()) / (2.0 * qa);
-            let c = Vec3::new(a * t.cos(), a * t.sin(), z);
+            let c = Vec3::new(a * t.pcos(), a * t.psin(), z);
             (c.dot(d) > 0.0).then_some(c)
         };
         [root(-1.0), root(1.0)]
@@ -158,7 +159,7 @@ fn grid(alpha: f64, r: f64) -> Vec<Vec3> {
         // Round the stay: its surface points, followed in to the post.
         let e1 = d.cross(Vec3::Y).normalized().unwrap();
         let e2 = d.cross(e1);
-        let off = (e1 * t.cos() + e2 * t.sin()) * STAY;
+        let off = (e1 * t.pcos() + e2 * t.psin()) * STAY;
         // Solve rho_post(off + d s) = POST for s > 0.
         let (qa, qb, qc) = (
             d.x * d.x + d.y * d.y,

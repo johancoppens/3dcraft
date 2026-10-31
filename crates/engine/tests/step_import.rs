@@ -21,6 +21,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::plain::run;
@@ -83,8 +84,8 @@ fn same_bodies(ours: &[Value], theirs: &[Value], scale: f64) {
         for key in ["faces", "edges", "vertices", "shells", "kind"] {
             assert_eq!(a[key], b[key], "{key} of {} and {}", a["name"], b["name"]);
         }
-        let volume = a["volume"].as_f64().unwrap() * scale.powi(3);
-        let area = a["area"].as_f64().unwrap() * scale.powi(2);
+        let volume = a["volume"].as_f64().unwrap() * scale.ppowi(3);
+        let area = a["area"].as_f64().unwrap() * scale.ppowi(2);
         close(&json!(volume), &b["volume"], "volume");
         close(&json!(area), &b["area"], "area");
     }
@@ -749,7 +750,7 @@ fn every_body_of_the_showcase_reads_back() {
                     ));
                 }
                 if let Ok(ours) = &ours {
-                    let (v, a) = (ours.volume * factor.powi(3), ours.area * factor.powi(2));
+                    let (v, a) = (ours.volume * factor.ppowi(3), ours.area * factor.ppowi(2));
                     if (v - volume).abs() > 1e-7 * v.abs().max(volume.abs())
                         || (a - area).abs() > 1e-7 * a.abs().max(area.abs())
                     {
@@ -1116,7 +1117,7 @@ fn freecad_assemblies_read_where_freecad_places_them() {
                 c[2].as_f64().unwrap(),
             ];
             let near = ours.iter().position(|o| {
-                ((o[0] - c[0]).powi(2) + (o[1] - c[1]).powi(2) + (o[2] - c[2]).powi(2)).sqrt()
+                ((o[0] - c[0]).ppowi(2) + (o[1] - c[1]).ppowi(2) + (o[2] - c[2]).ppowi(2)).sqrt()
                     <= 1e-6 * 50.0
             });
             match near {

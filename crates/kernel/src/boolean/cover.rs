@@ -78,6 +78,7 @@ use super::hits::{ROUNDING, signed_distance, speed_bound, surface_size};
 use super::outline::{Outline, Sheet, Side, boxes_meet, nearest};
 use crate::boxtree::BoxTree;
 use craft3d_geom::{Curve3, RationalBezierPatch, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Vec3};
 use std::f64::consts::{FRAC_PI_2, TAU};
 use std::sync::OnceLock;
@@ -208,11 +209,11 @@ fn bounds(surface: &Surface, v: (f64, f64)) -> Option<[f64; 4]> {
         Surface::Plane(_) => [1.0, 1.0, 0.0, 0.0],
         Surface::Cylinder(c) => [c.radius(), 1.0, c.radius(), 0.0],
         Surface::Cone(c) => {
-            let slope = c.half_angle().tan();
+            let slope = c.half_angle().ptan();
             let r = (c.radius() + v.0 * slope)
                 .abs()
                 .max((c.radius() + v.1 * slope).abs());
-            [r, slope.hypot(1.0), r, 0.0]
+            [r, slope.phypot(1.0), r, 0.0]
         }
         Surface::Sphere(s) => [s.radius(), s.radius(), s.radius(), s.radius()],
         Surface::Torus(t) => {
@@ -862,6 +863,7 @@ mod tests {
     use super::super::section::{Solid, prepare};
     use super::super::{BooleanOp, BooleanResult, Operand, Vertices, boolean};
     use crate::primitives;
+    use craft3d_math::Portable;
     use craft3d_math::{Frame, Tolerance, Transform, Vec3};
     use craft3d_topo::Body;
     use std::f64::consts::TAU;
@@ -939,7 +941,7 @@ mod tests {
         for i in 0..3 {
             let angle = f64::from(i) * TAU / 3.0;
             let centre =
-                about + Vec3::new(angle.cos(), angle.sin(), 0.3 * f64::from(i)) * (7.5 * k);
+                about + Vec3::new(angle.pcos(), angle.psin(), 0.3 * f64::from(i)) * (7.5 * k);
             let frame =
                 Frame::new(centre, Vec3::new(0.0, 0.0, 1.0), Vec3::new(1.0, 0.0, 0.0)).unwrap();
             let one = solve(
@@ -1384,7 +1386,7 @@ mod tests {
                         let far = signed_distance(Sheet::bare(surface), middle).unwrap().abs();
                         far * (1.0 + 0.6 * next())
                     } else {
-                        k * 10f64.powf(-3.0 * next().abs()) * 2.0
+                        k * 10f64.ppowf(-3.0 * next().abs()) * 2.0
                     };
                     let way = Vec3::new(next().abs(), next().abs(), next().abs());
                     let half = way * (size / way.length().max(1e-3));
@@ -1477,7 +1479,7 @@ mod tests {
                     } else {
                         f.point(6.0 * k * next(), 6.0 * k * next(), 6.0 * k * next())
                     };
-                    let size = k * 10f64.powf(-2.0 * next().abs());
+                    let size = k * 10f64.ppowf(-2.0 * next().abs());
                     let half = Vec3::new(next().abs(), next().abs(), next().abs()) * size;
                     let bbox = Bbox3::from_points([middle - half, middle + half]);
                     if !clear_of_surface(surface, &bbox, margin) {

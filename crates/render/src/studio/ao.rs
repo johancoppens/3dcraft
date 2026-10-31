@@ -17,6 +17,7 @@
 //! distances, at the samples of the picture, with fixed slice angles and
 //! steps (no noise: the result is deterministic).
 
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use std::f64::consts::{FRAC_PI_2, PI};
 
@@ -57,7 +58,7 @@ pub fn occlusion(
     let (mut visible, mut open) = (0.0, 0.0);
     for k in 0..AO_SLICES {
         let phi = PI * (k as f64 + 0.5) / AO_SLICES as f64;
-        let (c, s) = (phi.cos(), phi.sin());
+        let (c, s) = (phi.pcos(), phi.psin());
         // The slice's direction on the screen (y down) and in space.
         let dir = right * c - up * s;
         let Some(t) = (dir - v * dir.dot(v)).normalized() else {
@@ -71,7 +72,7 @@ pub fn occlusion(
         // The side of the normal: +1 at zero (and −0), as the GPU's
         // `select(-1, 1, x >= 0)`.
         let side = if n.dot(t) >= 0.0 { 1.0 } else { -1.0 };
-        let gamma = (projected.dot(v) / len).clamp(-1.0, 1.0).acos() * side;
+        let gamma = (projected.dot(v) / len).clamp(-1.0, 1.0).pacos() * side;
         let mut horizon = [0.0; 2];
         for (side, sign) in [(0, 1.0), (1, -1.0)] {
             let mut highest = -1.0_f64;
@@ -92,14 +93,14 @@ pub fn occlusion(
                 highest = highest.max(-1.0 + (cos_h + 1.0) * fall);
             }
             if let Some(slot) = horizon.get_mut(side) {
-                *slot = sign * highest.clamp(-1.0, 1.0).acos();
+                *slot = sign * highest.clamp(-1.0, 1.0).pacos();
             }
         }
         let [h2, h1] = horizon;
         let h1 = gamma + (h1 - gamma).max(-FRAC_PI_2);
         let h2 = gamma + (h2 - gamma).min(FRAC_PI_2);
-        let (cg, sg) = (gamma.cos(), gamma.sin());
-        let arc = |h: f64| 0.25 * (-(2.0 * h - gamma).cos() + cg + 2.0 * h * sg);
+        let (cg, sg) = (gamma.pcos(), gamma.psin());
+        let arc = |h: f64| 0.25 * (-(2.0 * h - gamma).pcos() + cg + 2.0 * h * sg);
         visible += len * (arc(h1) + arc(h2));
         // The same slice with nothing in it: the arcs to the edges of the
         // normal's hemisphere, `cos γ + γ sin γ` in closed form.
@@ -179,13 +180,13 @@ mod tests {
     #[test]
     fn a_step_on_the_side_the_normal_leans_to_occludes_more() {
         let tilt: f64 = 0.6;
-        let n = Vec3::new(tilt.sin(), 0.0, tilt.cos());
+        let n = Vec3::new(tilt.psin(), 0.0, tilt.pcos());
         let occluded = |side: f64| {
             let point = move |x: i64, y: i64| {
                 let px = x as f64 + 0.5;
                 // The floor through (0, 0, −10) with normal n, two units
                 // higher beyond |x| = 2 on `side`.
-                let floor = -10.0 - tilt.tan() * px;
+                let floor = -10.0 - tilt.ptan() * px;
                 let z = if px * side >= 2.0 { floor + 2.0 } else { floor };
                 Some(Vec3::new(px, -(y as f64 + 0.5), z))
             };

@@ -86,6 +86,7 @@ use craft3d_geom::{
     Circle, Cone, Curve3, Cylinder, GeomError, Line, NurbsCurve, NurbsSurface, Plane, Sphere,
     Surface, Torus,
 };
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, FaceId, LoopId, VertexId};
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
@@ -150,7 +151,7 @@ impl Axis {
             let (c, _) = self.coordinates(center);
             let (begin, sweep) = segment.angles().unwrap_or((0.0, TAU));
             // Furthest left where the circle's radius points along `left`.
-            let leftmost = self.left[1].atan2(self.left[0]);
+            let leftmost = self.left[1].patan2(self.left[0]);
             if wrap(leftmost - begin) <= sweep {
                 high = high.max(c + radius);
             }
@@ -218,17 +219,17 @@ struct Builder {
 
 impl Builder {
     fn radial(&self, angle: f64) -> Vec3 {
-        self.frame.vector(angle.cos(), angle.sin(), 0.0)
+        self.frame.vector(angle.pcos(), angle.psin(), 0.0)
     }
 
     /// The direction a point at `angle` moves in as it turns.
     fn onward(&self, angle: f64) -> Vec3 {
-        self.frame.vector(-angle.sin(), angle.cos(), 0.0)
+        self.frame.vector(-angle.psin(), angle.pcos(), 0.0)
     }
 
     fn point(&self, p: Rz, angle: f64) -> Vec3 {
         self.frame
-            .point(p.rho * angle.cos(), p.rho * angle.sin(), p.z)
+            .point(p.rho * angle.pcos(), p.rho * angle.psin(), p.z)
     }
 
     /// The frame's axes at height `z` on the axis.
@@ -331,7 +332,7 @@ impl Builder {
             }
             Shape::Line => {
                 let (across, along) = (end.rho - start.rho, end.z - start.z);
-                let length = across.hypot(along);
+                let length = across.phypot(along);
                 // Close enough to perpendicular or parallel that both ends
                 // are on the plane or cylinder within the tolerance.
                 let slack = (self.angular * length).min(self.linear);
@@ -362,7 +363,7 @@ impl Builder {
                         // apex is then exactly the vertex.
                         let from = if end.rho == 0.0 { end } else { start };
                         let cone =
-                            Cone::new(self.level(from.z)?, from.rho, (across / along).atan())?;
+                            Cone::new(self.level(from.z)?, from.rho, (across / along).patan())?;
                         Some((Surface::Cone(cone), inward))
                     }
                 }
@@ -537,7 +538,7 @@ impl Builder {
         // arc runs through it (as in `Axis::reach`).
         let (left, along) = axis.coordinates(center);
         let nearest = self.side * left - radius;
-        let towards = (-self.side * axis.left[1]).atan2(-self.side * axis.left[0]);
+        let towards = (-self.side * axis.left[1]).patan2(-self.side * axis.left[0]);
         let inside = wrap(towards - begin);
         if nearest <= self.linear && inside > 0.0 && inside < sweep {
             let at_end = [first, last]
@@ -634,7 +635,7 @@ impl Builder {
                     let (across, along) = (p.rho - part.centre.rho, p.z - part.centre.z);
                     let (x_across, x_along) = self.sketch_x;
                     (self.side * (x_along * across - x_across * along))
-                        .atan2(x_across * across + x_along * along)
+                        .patan2(x_across * across + x_along * along)
                 };
                 let (first, last) = if segment.reversed {
                     (part.end, part.start)
@@ -692,7 +693,7 @@ impl Builder {
             }
         };
         for (segment, next) in segments.iter().zip(segments.iter().cycle().skip(1)) {
-            let gap = (segment.end[0] - next.start[0]).hypot(segment.end[1] - next.start[1]);
+            let gap = (segment.end[0] - next.start[0]).phypot(segment.end[1] - next.start[1]);
             if gap > self.linear || gap.is_nan() {
                 return Err(invalid(
                     "a loop that is not closed: a segment does not start where the one before it ends",
@@ -1016,10 +1017,10 @@ pub(crate) fn arcs_about(from: f64, sweep: f64) -> Ring {
         1
     };
     let half = sweep / (2.0 * f64::from(pieces));
-    let weight = half.cos();
+    let weight = half.pcos();
     let mut points = Vec::with_capacity(2 * usize::from(pieces) + 1);
     for k in 0..=2 * pieces {
-        let (sin, cos) = (from + half * f64::from(k)).sin_cos();
+        let (sin, cos) = (from + half * f64::from(k)).psin_cos();
         points.push(if k % 2 == 0 {
             (cos, sin, 1.0)
         } else {
@@ -1106,7 +1107,7 @@ pub fn revolve(
             reason: "its point is not finite",
         });
     }
-    let length = axis_direction[0].hypot(axis_direction[1]);
+    let length = axis_direction[0].phypot(axis_direction[1]);
     let direction = [axis_direction[0] / length, axis_direction[1] / length];
     if !(length.is_finite() && length > 0.0 && direction.iter().all(|v| v.is_finite())) {
         return Err(KernelError::InvalidAxis {
@@ -1187,8 +1188,8 @@ pub fn revolve(
     let start = if full { 0.0 } else { from };
     let origin = plane.point(axis_point[0], axis_point[1], 0.0);
     let along = plane.vector(direction[0], direction[1], 0.0);
-    let towards = plane.vector(axis.left[0], axis.left[1], 0.0) * (side * start.cos())
-        + plane.z() * (side * start.sin());
+    let towards = plane.vector(axis.left[0], axis.left[1], 0.0) * (side * start.pcos())
+        + plane.z() * (side * start.psin());
     let frame = Frame::new(origin, along, towards).ok_or_else(degenerate_frame)?;
     let mut b = Builder {
         body: Body::new(BodyKind::Solid),

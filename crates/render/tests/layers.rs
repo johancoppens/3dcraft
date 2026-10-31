@@ -11,6 +11,7 @@
     clippy::needless_range_loop
 )]
 
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use craft3d_render::studio::layers::{self, Optics, TangentField};
 use craft3d_render::studio::{
@@ -77,7 +78,7 @@ fn furnace_light(env: &Prepared, finish: Finish, optics: &Optics) -> Vec<f64> {
     let mut out = Vec::new();
     for i in 0..20 {
         let a = f64::from(i) / 20.0 * 1.5;
-        let n = Vec3::new(a.sin(), 0.0, a.cos());
+        let n = Vec3::new(a.psin(), 0.0, a.pcos());
         let s = light.shade_layered(
             [255; 3],
             finish,
@@ -197,7 +198,7 @@ fn the_anisotropic_key_lobe_reflects_no_more_than_it_receives() {
             let rho = (q / (1.0 - q)).sqrt();
             for j in 0..np {
                 let phi = (f64::from(j) + 0.5) / f64::from(np) * std::f64::consts::TAU;
-                let (u, w) = (rho * phi.cos(), rho * phi.sin());
+                let (u, w) = (rho * phi.pcos(), rho * phi.psin());
                 let h = (t * (-at * u) + b * (-ab * w) + n).normalized().unwrap();
                 let vh = v.dot(h);
                 if vh <= 0.0 {
@@ -209,7 +210,7 @@ fn the_anisotropic_key_lobe_reflects_no_more_than_it_receives() {
                     continue;
                 }
                 let (th, bh, nh) = (t.dot(h), b.dot(h), n.dot(h));
-                let k = (th / at).powi(2) + (bh / ab).powi(2) + nh * nh;
+                let k = (th / at).ppowi(2) + (bh / ab).ppowi(2) + nh * nh;
                 let d = 1.0 / (std::f64::consts::PI * at * ab * k * k);
                 let dv = layers::aniso_ggx_dv(at, ab, t, b, n, h, v, l);
                 sum += dv * nl * 4.0 * vh / (d * nh);
@@ -258,7 +259,7 @@ fn the_clear_coat_weakens_the_base_by_its_albedo() {
     for (c, rc) in [(1.0_f32, 0.1_f32), (0.4, 0.6)] {
         for i in 0..8 {
             let a = f64::from(i) / 8.0 * 1.4;
-            let n = Vec3::new(a.sin(), 0.0, a.cos());
+            let n = Vec3::new(a.psin(), 0.0, a.pcos());
             let base = [200, 40, 30];
             let f = finish(0, 150);
             let bare = light.shade_layered(base, f, None, Vec3::ZERO, n, v, 1.0, 1.0);
@@ -318,7 +319,7 @@ fn an_anisotropic_highlight_stretches_along_its_tangent_by_the_closed_form() {
     let v = l;
     let r = 0.3_f64;
     for (a, angle) in [(0.6_f32, 0.0_f64), (0.6, 0.5), (-0.4, 1.1), (0.85, 2.0)] {
-        let axis = [angle.cos() as f32, angle.sin() as f32, 0.0];
+        let axis = [angle.pcos() as f32, angle.psin() as f32, 0.0];
         let optics = Optics {
             anisotropy: a,
             tangent: TangentField::Axis(axis),
@@ -339,7 +340,7 @@ fn an_anisotropic_highlight_stretches_along_its_tangent_by_the_closed_form() {
         // bisection (the lobe falls monotonically from its peak).
         let peak = shade(0.0, 0.0);
         let width = |psi: f64| {
-            let (c, s) = (psi.cos(), psi.sin());
+            let (c, s) = (psi.pcos(), psi.psin());
             let (mut lo, mut hi) = (0.0, 2.0);
             for _ in 0..60 {
                 let mid = 0.5 * (lo + hi);
@@ -483,8 +484,8 @@ fn a_glass_slab_shifts_what_is_behind_it_by_the_closed_form() {
         (0.9, 1.5, 0.6),
         (0.7, 2.0, 0.4),
     ] {
-        let u = Vec3::new(theta.cos(), theta.sin(), 0.0);
-        let normal = Vec3::new(-theta.sin(), theta.cos(), 0.0);
+        let u = Vec3::new(theta.pcos(), theta.psin(), 0.0);
+        let normal = Vec3::new(-theta.psin(), theta.pcos(), 0.0);
         let glass = slab(
             Vec3::new(0.0, 0.0, 0.0),
             (u, 1.6),
@@ -521,11 +522,11 @@ fn a_glass_slab_shifts_what_is_behind_it_by_the_closed_form() {
             // The exit point, worked out apart from the renderer: the view
             // ray +y enters the front face (normal −normal) at θ, bends
             // by Snell, and leaves through the back face.
-            let sin_t = theta.sin() / ior;
-            let theta_t = sin_t.asin();
+            let sin_t = theta.psin() / ior;
+            let theta_t = sin_t.pasin();
             let offset = layers::slab_offset(thickness, ior, theta);
-            let path = thickness / theta_t.cos();
-            let lateral = path * (theta - theta_t).sin();
+            let path = thickness / theta_t.pcos();
+            let lateral = path * (theta - theta_t).psin();
             assert!(
                 (lateral - offset).abs() < 1e-12,
                 "{lateral} against {offset}"
@@ -545,8 +546,8 @@ fn a_glass_slab_shifts_what_is_behind_it_by_the_closed_form() {
 /// A glass slab larger than the picture, turned by `theta` about z, seen
 /// straight along +y in an orthographic picture of half height 2.
 fn glass_over_the_picture(theta: f64) -> (Mesh, Camera) {
-    let u = Vec3::new(theta.cos(), theta.sin(), 0.0);
-    let normal = Vec3::new(-theta.sin(), theta.cos(), 0.0);
+    let u = Vec3::new(theta.pcos(), theta.psin(), 0.0);
+    let normal = Vec3::new(-theta.psin(), theta.pcos(), 0.0);
     let glass = slab(Vec3::ZERO, (u, 5.0), (normal, 0.3), (Vec3::Z, 5.0), 0);
     let camera = Camera {
         eye: Vec3::new(0.0, -10.0, 0.0),

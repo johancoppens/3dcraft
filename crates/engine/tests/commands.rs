@@ -8,6 +8,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{error, run, session_in};
@@ -55,7 +56,7 @@ fn plate_volume(width: f64) -> f64 {
 }
 
 fn pin_volume(width: f64) -> f64 {
-    PI * (width / 10.0).powi(2) * 20.0
+    PI * (width / 10.0).ppowi(2) * 20.0
 }
 
 #[test]
@@ -890,7 +891,7 @@ fn measure_gives_its_bound_when_asked() {
         }
         assert_eq!(m["volumeBound"].as_f64().unwrap(), sum);
         let pin = &bodies[0];
-        let exact = PI * 9.0 * 5.0 * s.powi(3);
+        let exact = PI * 9.0 * 5.0 * s.ppowi(3);
         let off = (pin["volume"].as_f64().unwrap() - exact).abs();
         let bound = pin["volumeBound"].as_f64().unwrap();
         // The bound is an estimate: the closed form within it, and the

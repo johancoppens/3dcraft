@@ -16,6 +16,7 @@
 
 use craft3d_geom::intersect::{MeetingCurve, SurfaceMeeting, meet_surfaces};
 use craft3d_geom::{Curve3, NurbsSurface, Plane, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Frame, Tolerance, Vec3};
 
 const SCALES: [f64; 3] = [1e-3, 1.0, 1e6];
@@ -60,13 +61,13 @@ fn strip(row: &[Vec3; 6], across: &[Vec3; 6]) -> Surface {
 /// The first strip, about `0.01 k` wide and standing up along z with a
 /// little twist.
 fn across_a(k: f64) -> [Vec3; 6] {
-    std::array::from_fn(|i| Vec3::new(0.0, -0.2 * (i as f64).sin(), 1.0) * (0.01 * k))
+    std::array::from_fn(|i| Vec3::new(0.0, -0.2 * (i as f64).psin(), 1.0) * (0.01 * k))
 }
 
 /// The second strip's across, the first's turned by 0.5 about x towards
 /// +y.
 fn across_b(k: f64) -> [Vec3; 6] {
-    let (s, c) = (-0.5_f64).sin_cos();
+    let (s, c) = (-0.5_f64).psin_cos();
     across_a(k).map(|a| Vec3::new(a.x, c * a.y - s * a.z, s * a.y + c * a.z))
 }
 

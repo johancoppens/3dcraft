@@ -12,6 +12,7 @@
 )]
 
 use craft3d_engine::{Scene, Session, Workspace};
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use craft3d_ui_egui::Tokens;
 use craft3d_ui_egui::camera::Projector;
@@ -102,7 +103,7 @@ fn of_kind(overlay: &Overlay, kind: LineKind) -> Vec<OverlayLine> {
 }
 
 fn length(line: &OverlayLine) -> f64 {
-    (line.to[0] - line.from[0]).hypot(line.to[1] - line.from[1])
+    (line.to[0] - line.from[0]).phypot(line.to[1] - line.from[1])
 }
 
 /// The overlay with no stretch of an edge marked as an outline: where the
@@ -284,7 +285,7 @@ fn the_edges_of_a_block_show_where_they_face_the_viewer_and_not_behind_it() {
                             projector.project(*a).unwrap(),
                             projector.project(*b).unwrap(),
                         );
-                        (b.x - a.x).hypot(b.y - a.y)
+                        (b.x - a.x).phypot(b.y - a.y)
                     };
                     let all: f64 = edges.iter().map(on_screen).sum();
                     let facing: f64 = edges
@@ -317,7 +318,7 @@ fn the_edges_of_a_block_show_where_they_face_the_viewer_and_not_behind_it() {
                             projector.project(edge.1).unwrap(),
                         );
                         let same =
-                            |p: [f64; 2], q: [f64; 2]| (p[0] - q[0]).hypot(p[1] - q[1]) < 1e-6;
+                            |p: [f64; 2], q: [f64; 2]| (p[0] - q[0]).phypot(p[1] - q[1]) < 1e-6;
                         // Walk from one corner along stretches that start
                         // where the last one ended until the other corner.
                         let whole = |from: [f64; 2], to: [f64; 2]| {
@@ -332,7 +333,7 @@ fn the_edges_of_a_block_show_where_they_face_the_viewer_and_not_behind_it() {
                                         let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
                                         let cross =
                                             (l.to[0] - from[0]) * dy - (l.to[1] - from[1]) * dx;
-                                        cross.abs() < 1e-6 * dx.hypot(dy).max(1.0)
+                                        cross.abs() < 1e-6 * dx.phypot(dy).max(1.0)
                                     }
                                 }) else {
                                     return false;
@@ -384,7 +385,7 @@ fn half_of_the_circle_at_the_back_of_a_cylinder_is_behind_its_wall() {
                     projector.project(w[0]).unwrap(),
                     projector.project(w[1]).unwrap(),
                 );
-                (b.x - a.x).hypot(b.y - a.y)
+                (b.x - a.x).phypot(b.y - a.y)
             })
             .sum()
     };

@@ -31,6 +31,7 @@
 )]
 
 use craft3d_geom::{Curve3, Line, NurbsCurve, Plane, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
 use craft3d_tess::{Mesh, TessParams, tessellate_body, tessellate_edges};
 use craft3d_testkit::solids::{self, Reference};
@@ -107,7 +108,7 @@ fn volume(mesh: &Mesh) -> f64 {
 fn a_power_of_two_times_the_body_is_bit_for_bit_that_times_the_mesh() {
     let unit = cases(1.0);
     for exponent in [-40, -20, -10, 10, 20, 40] {
-        let scale = 2.0_f64.powi(exponent);
+        let scale = 2.0_f64.ppowi(exponent);
         let scaled = cases(scale);
         assert_eq!(scaled.len(), unit.len());
         for (case, reference) in scaled.iter().zip(&unit) {

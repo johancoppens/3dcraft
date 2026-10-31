@@ -31,6 +31,7 @@ use super::{
 use crate::KernelError;
 use crate::chamfer::ChamferSize;
 use craft3d_geom::Curve3;
+use craft3d_math::Portable;
 use craft3d_math::{Tolerance, Vec3};
 use craft3d_topo::{Body, EdgeId, VertexId};
 use std::collections::{BTreeMap, BTreeSet};
@@ -304,7 +305,7 @@ fn across(body: &Body, plan: &Plan, side: usize, point: Vec3) -> f64 {
                 .unwrap_or(centre);
             let (r0, h0) = level(start);
             let (r, h) = level(point);
-            (r - r0).hypot(h - h0)
+            (r - r0).phypot(h - h0)
         }
     }
 }

@@ -18,6 +18,7 @@
 use super::{BlendError, Size, refused};
 use crate::chamfer::ChamferSize;
 use craft3d_geom::Surface;
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use craft3d_topo::{EdgeId, FaceId};
 use std::f64::consts::PI;
@@ -57,7 +58,7 @@ impl Trace {
                 into,
             } => {
                 let phi = s / radius;
-                centre + (Trace::out(centre, radius) * phi.cos() + into * phi.sin()) * radius
+                centre + (Trace::out(centre, radius) * phi.pcos() + into * phi.psin()) * radius
             }
         }
     }
@@ -72,7 +73,7 @@ impl Trace {
                 into,
             } => {
                 let phi = s / radius;
-                into * phi.cos() - Trace::out(centre, radius) * phi.sin()
+                into * phi.pcos() - Trace::out(centre, radius) * phi.psin()
             }
         }
     }
@@ -89,7 +90,7 @@ impl Trace {
                 into,
             } => {
                 let d = offset - centre;
-                radius * d.dot(into).atan2(d.dot(Trace::out(centre, radius)))
+                radius * d.dot(into).patan2(d.dot(Trace::out(centre, radius)))
             }
         }
     }
@@ -210,7 +211,7 @@ fn crossings(a: Locus, b: Locus) -> Vec<[f64; 2]> {
             },
         ) => {
             let d = [c2[0] - c1[0], c2[1] - c1[1]];
-            let dist = d[0].hypot(d[1]);
+            let dist = d[0].phypot(d[1]);
             if !(dist > 1e-12 * r1.max(r2)) {
                 return Vec::new();
             }
@@ -299,8 +300,8 @@ pub(super) fn section(
             };
             let guess = flat(estimate);
             let best = crossings(*la, *lb).into_iter().min_by(|p, q| {
-                let dp = (p[0] - guess[0]).hypot(p[1] - guess[1]);
-                let dq = (q[0] - guess[0]).hypot(q[1] - guess[1]);
+                let dp = (p[0] - guess[0]).phypot(p[1] - guess[1]);
+                let dq = (q[0] - guess[0]).phypot(q[1] - guess[1]);
                 dp.total_cmp(&dq)
             });
             let Some([x, y]) = best else {
@@ -381,7 +382,7 @@ pub(super) fn section(
             } else {
                 angle
             };
-            let dir = back * turn.cos() + along.cross(back) * turn.sin();
+            let dir = back * turn.pcos() + along.cross(back) * turn.psin();
             let hit = match t2 {
                 Trace::Line { into } => {
                     let den = along.dot(dir.cross(into));

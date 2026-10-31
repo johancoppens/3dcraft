@@ -19,6 +19,7 @@ use super::harness;
 use super::{EXACT, Expect, RING, Set};
 use super::{edge, step};
 use craft3d_engine::Session;
+use craft3d_math::Portable;
 use serde_json::{Value, json};
 use std::f64::consts::PI;
 use std::path::PathBuf;
@@ -118,7 +119,7 @@ fn hexagon_all(s: &mut Session, k: f64) -> Forms {
     let points: Vec<[f64; 2]> = (0..6)
         .map(|i| {
             let a = f64::from(i) * PI / 3.0;
-            [2.0 * k * a.cos(), 2.0 * k * a.sin()]
+            [2.0 * k * a.pcos(), 2.0 * k * a.psin()]
         })
         .collect();
     step(
@@ -342,7 +343,7 @@ fn freecad_reads_filleted_bodies() {
                     bad.push(format!("{file}: no body {body}"));
                     continue;
                 };
-                let off = part.volume / (volume * k.powi(3)) - 1.0;
+                let off = part.volume / (volume * k.ppowi(3)) - 1.0;
                 if !(off.abs() <= 1e-9) {
                     bad.push(format!("{file}: {body} is {off:+e} off its closed form"));
                 }

@@ -23,6 +23,7 @@ use craft3d_kernel::below::{
     BelowPlane, CutError, CutPlane, Equilibrium, Level, Stability, below, floating, level_for,
     section_extent,
 };
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use craft3d_topo::Body;
 use serde_json::{Map, Value};
@@ -513,7 +514,7 @@ fn floating_volume(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<f64, String>
                     if q.dimension.is_dimensionless() {
                         q.value
                     } else if q.dimension == density {
-                        q.value / craft3d_expr::Unit::Metre.factor().powi(-3)
+                        q.value / craft3d_expr::Unit::Metre.factor().ppowi(-3)
                     } else {
                         return Err(format!(
                             "`{key}` is {}, but a density is needed (kg/m^3: a number, or `1025 kg / (1 m)^3`)",
@@ -535,7 +536,7 @@ fn floating_volume(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<f64, String>
         (None, Some(_), _) | (None, _, Some(_)) => {
             let cubic_metres = positive("mass")? / positive("density")?;
             let unit = ctx.doc.units.length.as_expr_unit().factor();
-            let volume = cubic_metres * (1000.0 / unit).powi(3);
+            let volume = cubic_metres * (1000.0 / unit).ppowi(3);
             if volume.is_finite() {
                 Ok(volume)
             } else {
@@ -569,9 +570,9 @@ fn equilibrium_json(e: &Equilibrium, start: &CutPlane, point: Vec3) -> Map<Strin
     let mut out = below_json(&below, &e.plane);
     let n = e.plane.normal;
     let (x0, y0, z0) = (start.x_axis, start.y_axis(), start.normal);
-    out.insert("heel".into(), degrees((-n.dot(y0)).atan2(n.dot(z0))));
-    out.insert("trim".into(), degrees(n.dot(x0).clamp(-1.0, 1.0).asin()));
-    out.insert("tilt".into(), degrees(n.dot(z0).clamp(-1.0, 1.0).acos()));
+    out.insert("heel".into(), degrees((-n.dot(y0)).patan2(n.dot(z0))));
+    out.insert("trim".into(), degrees(n.dot(x0).clamp(-1.0, 1.0).pasin()));
+    out.insert("tilt".into(), degrees(n.dot(z0).clamp(-1.0, 1.0).pacos()));
     out.insert("arm".into(), num(e.arm));
     out.insert("height".into(), num(e.energy));
     out.insert(
@@ -660,8 +661,8 @@ fn solve_floating(ctx: &Ctx<'_>, map: &Map<String, Value>) -> Result<Floated, Fl
     // The start: the upright plane turned by trim about y, then by
     // heel about x.
     let (x0, y0, z0) = (upright.x_axis, upright.y_axis(), upright.normal);
-    let (sh, ch) = heel.sin_cos();
-    let (st, ct) = trim.sin_cos();
+    let (sh, ch) = heel.psin_cos();
+    let (st, ct) = trim.psin_cos();
     let normal = x0 * st - y0 * (ct * sh) + z0 * (ct * ch);
     let x_axis = x0 * ct + y0 * (st * sh) - z0 * (st * ch);
     let start = CutPlane::new(normal, x_axis).map_err(|e| e.to_string())?;
@@ -819,8 +820,8 @@ fn floating_measure(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result
     } else {
         let value = match name {
             "floatingOffset" => below.offset - solved.point.dot(n),
-            "floatingHeel" => (-n.dot(y0)).atan2(n.dot(z0)),
-            "floatingTrim" => n.dot(x0).clamp(-1.0, 1.0).asin(),
+            "floatingHeel" => (-n.dot(y0)).patan2(n.dot(z0)),
+            "floatingTrim" => n.dot(x0).clamp(-1.0, 1.0).pasin(),
             "floatingGM" => gm_of(section.i_x)?,
             "floatingGML" => gm_of(section.i_y)?,
             _ => return Err(format!("unknown measure `{name}`")),

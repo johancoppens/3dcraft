@@ -15,6 +15,7 @@
 
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
+use craft3d_math::Portable;
 mod boolean_common;
 
 use boolean_common::*;
@@ -32,7 +33,7 @@ fn roofs(k: f64) -> (Body, Body) {
         // The same small turn for both, so nothing is axis-aligned.
         let axis = Vec3::new(0.3, -0.4, 0.86).normalized().unwrap();
         let angle: f64 = 0.37;
-        let (s, c) = angle.sin_cos();
+        let (s, c) = angle.psin_cos();
         v * c + axis.cross(v) * s + axis * (axis.dot(v) * (1.0 - c))
     };
     let upright = Frame::new(
@@ -186,7 +187,7 @@ fn two_bent_tubes_whose_tori_meet_far_away_are_apart() {
     use craft3d_math::Transform;
     let (ring, tube, turn, lean) = (2776.0, 6.0, 0.15, 0.02_f64);
     for k in SCALES {
-        let axis = Vec3::new(lean.sin(), lean.cos(), 0.0);
+        let axis = Vec3::new(lean.psin(), lean.pcos(), 0.0);
         let first = bent_tube(
             Vec3::new(0.0, 11.0, -ring) * k,
             axis,
@@ -210,7 +211,7 @@ fn two_bent_tubes_whose_tori_meet_far_away_are_apart() {
                 first.transformed(&place).unwrap(),
                 second.transformed(&place).unwrap(),
             );
-            let each = std::f64::consts::PI * (tube * k).powi(2) * (ring * k) * turn;
+            let each = std::f64::consts::PI * (tube * k).ppowi(2) * (ring * k) * turn;
             let (one, other) = (mass(&a), mass(&b));
             assert_close(one.volume, each, "a tube");
             assert_close(other.volume, each, "its mirror image");

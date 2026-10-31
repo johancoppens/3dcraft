@@ -33,6 +33,7 @@
 //! reported.
 
 use super::{CutError, CutPlane, Level, extent, level_for};
+use craft3d_math::Portable;
 use craft3d_math::{Tolerance, Vec3};
 use craft3d_topo::Body;
 
@@ -152,7 +153,7 @@ struct State {
 
 impl State {
     fn arm_length(&self) -> f64 {
-        self.arm[0].hypot(self.arm[1])
+        self.arm[0].phypot(self.arm[1])
     }
 }
 
@@ -160,10 +161,10 @@ impl State {
 /// with their unit eigenvectors.
 fn eigen([a, b, c]: [f64; 3]) -> [(f64, [f64; 2]); 2] {
     let mean = 0.5 * (a + c);
-    let radius = (0.5 * (a - c)).hypot(b);
+    let radius = (0.5 * (a - c)).phypot(b);
     // The larger one's eigenvector is at θ with tan 2θ = 2b / (a − c).
-    let theta = 0.5 * (2.0 * b).atan2(a - c);
-    let (s, co) = theta.sin_cos();
+    let theta = 0.5 * (2.0 * b).patan2(a - c);
+    let (s, co) = theta.psin_cos();
     [(mean - radius, [-s, co]), (mean + radius, [co, s])]
 }
 
@@ -182,7 +183,7 @@ fn turned(plane: &CutPlane, delta: [f64; 2]) -> Result<CutPlane, CutError> {
     let Some(axis) = n.cross(toward).normalized() else {
         return Ok(*plane);
     };
-    let (s, c) = angle.sin_cos();
+    let (s, c) = angle.psin_cos();
     // Rodrigues: v cos + (axis × v) sin + axis (axis · v)(1 − cos).
     let rotate = |v: Vec3| v * c + axis.cross(v) * s + axis * (axis.dot(v) * (1.0 - c));
     let normal = rotate(n);
@@ -262,7 +263,7 @@ impl Search<'_> {
             delta[0] += k * u[0];
             delta[1] += k * u[1];
         }
-        let length = delta[0].hypot(delta[1]);
+        let length = delta[0].phypot(delta[1]);
         if length > MAX_TURN {
             let k = MAX_TURN / length;
             delta = [delta[0] * k, delta[1] * k];
@@ -414,7 +415,7 @@ pub fn floating(
                 Ok(found) => {
                     let known = equilibria.iter().any(|e| {
                         let cos = e.plane.normal.dot(found.plane.normal).clamp(-1.0, 1.0);
-                        cos.acos() <= SAME
+                        cos.pacos() <= SAME
                     });
                     if !known {
                         equilibria.push(found);

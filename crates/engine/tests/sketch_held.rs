@@ -12,6 +12,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::assert_close;
@@ -514,12 +515,12 @@ fn an_arc_between_held_points_follows_a_large_change_of_angle() {
         let what = format!("a = {a}");
         assert_xy(
             xy(&mut s, "S", "e2"),
-            (10.0 * t.cos(), 10.0 * t.sin()),
+            (10.0 * t.pcos(), 10.0 * t.psin()),
             &what,
         );
         assert_xy(
             xy(&mut s, "S", "e3"),
-            (10.0 * u.cos(), 10.0 * u.sin()),
+            (10.0 * u.pcos(), 10.0 * u.psin()),
             &what,
         );
     }

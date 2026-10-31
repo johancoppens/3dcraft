@@ -19,6 +19,7 @@
 //! Exact as long as no product underflows, which takes coordinate
 //! differences below about 1e-100; callers refuse coordinates above 1e100.
 
+use craft3d_math::Portable;
 /// A point as three coordinates.
 pub(crate) type P = [f64; 3];
 
@@ -34,7 +35,7 @@ fn two_sum(a: f64, b: f64) -> (f64, f64) {
 fn two_product(a: f64, b: f64) -> (f64, f64) {
     let product = a * b;
     // A fused multiply-add rounds once, so this is the exact remainder.
-    (product, a.mul_add(b, -product))
+    (product, a.pmul_add(b, -product))
 }
 
 /// A number as a sum of `f64` components that do not overlap, smallest
@@ -307,7 +308,7 @@ mod tests {
     #[test]
     fn orient3d_agrees_with_integers() {
         let mut rng = Rng(7);
-        for unit in [1.0, 2f64.powi(-30), 2f64.powi(40)] {
+        for unit in [1.0, 2f64.ppowi(-30), 2f64.ppowi(40)] {
             for _ in 0..2000 {
                 let p: [[i64; 3]; 4] =
                     std::array::from_fn(|_| std::array::from_fn(|_| rng.int(36)));
@@ -379,11 +380,11 @@ mod tests {
     /// an `f64`, so the plain determinant cannot know.
     #[test]
     fn orient2d_is_right_where_rounding_decides() {
-        let (b, c) = (3.0 * 2f64.powi(55), 3.0 * 2f64.powi(56));
+        let (b, c) = (3.0 * 2f64.ppowi(55), 3.0 * 2f64.ppowi(56));
         let mut undecided = 0;
         for i in -8..=8_i32 {
             for j in -8..=8_i32 {
-                let a = [2f64.powi(52) + f64::from(i), 2f64.powi(52) + f64::from(j)];
+                let a = [2f64.ppowi(52) + f64::from(i), 2f64.ppowi(52) + f64::from(j)];
                 // (ax - cx)(b - c) - (ay - cy)(b - c) = (b - c)(i - j),
                 // and b < c.
                 let expected = -(i - j).signum() as i8;
@@ -425,7 +426,7 @@ mod tests {
         let mut rng = Rng(17);
         for _ in 0..500 {
             let p: [P; 4] = std::array::from_fn(|_| {
-                std::array::from_fn(|_| rng.int(40) as f64 * 2f64.powi(-20))
+                std::array::from_fn(|_| rng.int(40) as f64 * 2f64.ppowi(-20))
             });
             let s = orient3d(&p[0], &p[1], &p[2], &p[3]);
             assert_eq!(orient3d(&p[1], &p[0], &p[2], &p[3]), -s);

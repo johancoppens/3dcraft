@@ -14,6 +14,7 @@
 
 use craft3d_engine::{Session, Workspace};
 use craft3d_gpu::ADAPTER_HINT;
+use craft3d_math::Portable;
 use craft3d_render::{NO_FACE, RenderParams};
 use craft3d_ui_egui::backend::Backend;
 use craft3d_ui_egui::direct::headless_render_state;
@@ -234,7 +235,7 @@ fn transparency_is_view_state_that_ui_set_sets_and_the_screenshot_shows() {
                 } else {
                     0.0
                 };
-                (x - (l.from[0] + dx * t)).hypot(y - (l.from[1] + dy * t)) < 4.0
+                (x - (l.from[0] + dx * t)).phypot(y - (l.from[1] + dy * t)) < 4.0
             })
         };
         let (mut compared, mut blended) = (0, 0);

@@ -5,6 +5,7 @@
 
 use craft3d_geom::intersect::{SurfaceMeeting, meet_surfaces};
 use craft3d_geom::{NurbsSurface, Plane, Sphere, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Frame, Tolerance, Vec3};
 
 fn everywhere() -> Bbox3 {
@@ -288,7 +289,7 @@ fn a_small_closed_curve_in_a_large_box_is_gone_around_once() {
                 let (t0, t1) = curve.range;
                 let angle = |p: Vec3| {
                     let d = p - centre;
-                    d.dot(side).atan2(d.dot(across))
+                    d.dot(side).patan2(d.dot(across))
                 };
                 let (mut turned, mut last) = (0.0, angle(curve.curve.eval(t0)));
                 for i in 1..=2000 {
@@ -564,8 +565,8 @@ fn a_curve_that_leaves_the_box_and_comes_back_is_found_both_times() {
     for k in [1e-3, 1.0, 1e3] {
         let tol = Tolerance::new(1e-6 * k, 1e-9).unwrap();
         for (centre, closed_form) in [
-            (0.0, 4.0 * (1.0_f64 / 1.2).asin()),
-            (2.19, 2.0 * (1.19_f64 / 1.2).acos()),
+            (0.0, 4.0 * (1.0_f64 / 1.2).pasin()),
+            (2.19, 2.0 * (1.19_f64 / 1.2).pacos()),
         ] {
             for tilted in [false, true] {
                 // (Turned by quarter turns, so that the box stays the slab.)
@@ -626,7 +627,7 @@ fn a_curve_that_leaves_the_box_and_comes_back_is_found_both_times() {
                     let (t0, t1) = curve.range;
                     let angle = |p: Vec3| {
                         let (x, y, _) = axis.local(p);
-                        y.atan2(x)
+                        y.patan2(x)
                     };
                     let mut last = angle(curve.curve.eval(t0));
                     for i in 1..=400 {
@@ -648,7 +649,7 @@ fn a_curve_that_leaves_the_box_and_comes_back_is_found_both_times() {
                 }
                 // What of the circle is in the box, by its crossings of the
                 // box, each found by bisection (upright: 4 asin(1/1.2)).
-                let on_circle = |a: f64| axis.point(radius * a.cos(), radius * a.sin(), 0.0);
+                let on_circle = |a: f64| axis.point(radius * a.pcos(), radius * a.psin(), 0.0);
                 let inside = |a: f64| within.contains(on_circle(a), 0.0);
                 let steps = 4096;
                 let mut expected = 0.0;
@@ -706,7 +707,7 @@ fn skewed_plane(skew: f64) -> Surface {
     for i in 0..5 {
         for y in [-2.0, 2.0] {
             ctrl.push(Vec3::new(i as f64, y, 0.0));
-            weights.push(skew.powi(i));
+            weights.push(skew.ppowi(i));
         }
     }
     Surface::Nurbs(

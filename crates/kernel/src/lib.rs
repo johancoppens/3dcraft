@@ -9,6 +9,7 @@
 //! chamfers ([`chamfer`]), fillets ([`fillet`]) and the face operations
 //! ([`offset_face`], [`shell`]).
 
+use craft3d_math::Portable;
 pub mod below;
 mod blend;
 pub mod boolean;
@@ -699,7 +700,7 @@ fn short(value: f64) -> String {
     if !value.is_finite() || value == 0.0 {
         return value.to_string();
     }
-    let magnitude = value.abs().log10().floor();
+    let magnitude = value.abs().plog10().floor();
     // Bounded by the clamp: 0 to 15 decimals.
     let decimals = (8.0 - magnitude).clamp(0.0, 15.0) as usize;
     let text = format!("{value:.decimals$}");

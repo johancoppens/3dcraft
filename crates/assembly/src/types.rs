@@ -1,5 +1,6 @@
 //! The problem and its answer: pure data.
 
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 
 /// A 3×3 matrix stored as its three columns. As the axes of a frame or the
@@ -24,7 +25,7 @@ impl Mat3 {
         let Some(k) = axis.normalized() else {
             return Mat3::IDENTITY;
         };
-        let (s, c) = angle.sin_cos();
+        let (s, c) = angle.psin_cos();
         let col = |e: Vec3| e * c + k.cross(e) * s + k * (k.dot(e) * (1.0 - c));
         Mat3::from_cols(col(Vec3::X), col(Vec3::Y), col(Vec3::Z))
     }

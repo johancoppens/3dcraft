@@ -13,6 +13,7 @@ use craft3d_kernel::origami::{
     Angle, Arrangement, BoundarySegment, Crease, CreaseKind, FacetMeeting, FoldError, Folded,
     arrange, first_meeting, fold, fold_flat, fold_with, folded_sheet, layer_order, vertex_checks,
 };
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use std::f64::consts::PI;
 
@@ -134,7 +135,11 @@ fn a_single_fold_keeps_the_area_and_turns_by_its_angle() {
                     }
                 },
             );
-            let expect = Vec3::new(s / 2.0 + s / 2.0 * theta.cos(), 0.0, s / 2.0 * theta.sin());
+            let expect = Vec3::new(
+                s / 2.0 + s / 2.0 * theta.pcos(),
+                0.0,
+                s / 2.0 * theta.psin(),
+            );
             assert!(
                 close(far.x, expect.x, 1e-12 * s) && close(far.z, expect.z, 1e-12 * s),
                 "{far:?} vs {expect:?}"
@@ -145,7 +150,7 @@ fn a_single_fold_keeps_the_area_and_turns_by_its_angle() {
                 .iter()
                 .map(|t| t.vector(Vec3::Z))
                 .collect();
-            let between = normals[0].dot(normals[1]).clamp(-1.0, 1.0).acos();
+            let between = normals[0].dot(normals[1]).clamp(-1.0, 1.0).pacos();
             assert!(close(between, theta, 1e-9), "{between} vs {theta}");
             // A valley lifts the turned half towards the normal.
             assert!(far.z >= -1e-12 * s);
@@ -194,7 +199,7 @@ fn a_diagonal_fold_has_congruent_triangles_and_a_mountain_goes_down() {
             .iter()
             .map(|v| v.point.z)
             .fold(0.0, f64::min);
-        let expect = -(s / 2.0f64.sqrt()) * (PI / 3.0).sin();
+        let expect = -(s / 2.0f64.sqrt()) * (PI / 3.0).psin();
         assert!(close(lowest, expect, 1e-12 * s), "{lowest} vs {expect}");
     }
 }
@@ -210,7 +215,7 @@ fn single_vertex(scale: f64, directions: &[f64], kinds: &[CreaseKind]) -> Arrang
         .enumerate()
         .map(|(i, (&a, &kind))| {
             // Out to the square's boundary.
-            let (c, sn) = (a.cos(), a.sin());
+            let (c, sn) = (a.pcos(), a.psin());
             let t = s / c.abs().max(sn.abs());
             crease(10 + i as u64, [0.0, 0.0], [t * c, t * sn], kind)
         })
@@ -229,9 +234,9 @@ fn a_degree_four_vertex_folds_by_the_closed_form() {
                 let r1 = rho1.to_radians();
                 // Mode A: ρ3 = ρ1, ρ4 = −ρ2,
                 // tan(ρ2/2) = −cos((α+β)/2)/cos((α−β)/2) tan(ρ1/2).
-                let p = ((a + b) / 2.0).cos() / ((a - b) / 2.0).cos();
+                let p = ((a + b) / 2.0).pcos() / ((a - b) / 2.0).pcos();
                 if p.abs() > 1e-6 {
-                    let r2 = 2.0 * (-p * (r1 / 2.0).tan()).atan();
+                    let r2 = 2.0 * (-p * (r1 / 2.0).ptan()).patan();
                     let kinds = if r2 < 0.0 { [V, M, V, V] } else { [V, V, V, M] };
                     let arr = single_vertex(scale, &dirs, &kinds);
                     let folded =
@@ -252,9 +257,9 @@ fn a_degree_four_vertex_folds_by_the_closed_form() {
                 }
                 // Mode B: ρ3 = −ρ1, ρ4 = ρ2,
                 // tan(ρ2/2) = sin((α+β)/2)/sin((α−β)/2) tan(ρ1/2).
-                let q = ((a + b) / 2.0).sin() / ((a - b) / 2.0).sin();
+                let q = ((a + b) / 2.0).psin() / ((a - b) / 2.0).psin();
                 if q.is_finite() && (alpha - beta).abs() > 1.0 {
-                    let r2 = 2.0 * (q * (r1 / 2.0).tan()).atan();
+                    let r2 = 2.0 * (q * (r1 / 2.0).ptan()).patan();
                     if r2.abs() >= PI * 0.95 {
                         continue;
                     }
@@ -326,9 +331,9 @@ fn kawasaki_and_maekawa_hold_on_flat_foldable_vertices_and_fail_on_a_perturbed_o
 /// angles are the angles between the normals of the facets either side.
 fn waterbomb_angles(t: f64) -> (f64, f64) {
     let r2 = 0.5f64.sqrt();
-    let zd = r2 * (t / 2.0).tan();
+    let zd = r2 * (t / 2.0).ptan();
     let q = (0.5 - zd * zd).sqrt();
-    let m1 = Vec3::new(t.cos(), 0.0, t.sin());
+    let m1 = Vec3::new(t.pcos(), 0.0, t.psin());
     let d1 = Vec3::new(r2, q, zd);
     let d2 = Vec3::new(-r2, q, zd);
     let d4 = Vec3::new(r2, -q, zd);
@@ -338,7 +343,7 @@ fn waterbomb_angles(t: f64) -> (f64, f64) {
     let angle = |a: Vec3, b: Vec3| {
         (a.dot(b) / (a.length() * b.length()))
             .clamp(-1.0, 1.0)
-            .acos()
+            .pacos()
     };
     (angle(n0, n1), angle(n1, n2))
 }
@@ -480,7 +485,7 @@ fn miura(
 #[test]
 fn a_miura_ori_sheet_folds_with_one_degree_of_freedom_by_its_closed_form() {
     let (l, d, h): (f64, f64, f64) = (1.0, 0.5, 1.0);
-    let gamma = (h / d).atan(); // the parallelograms' acute angle
+    let gamma = (h / d).patan(); // the parallelograms' acute angle
     for scale in SCALES {
         let (boundary, creases) = miura(scale, 4, 4, l, d, h);
         let arr = arrange(&boundary, &creases, tol(scale)).unwrap();
@@ -509,7 +514,7 @@ fn a_miura_ori_sheet_folds_with_one_degree_of_freedom_by_its_closed_form() {
             .unwrap();
             // Every straight piece folds by ρ (alternately up and down), every
             // zigzag piece by 2 atan(tan(ρ/2) / cos γ).
-            let zig = 2.0 * ((rho / 2.0).tan() / gamma.cos()).atan();
+            let zig = 2.0 * ((rho / 2.0).ptan() / gamma.pcos()).patan();
             for (hinge, a) in arr.hinges.iter().zip(&folded.angles) {
                 let c = &arr.creases[hinge.crease];
                 let want = if c.start[1] == c.end[1] { rho } else { zig };
@@ -543,7 +548,7 @@ fn a_miura_ori_sheet_of_steep_parallelograms_folds_by_its_closed_form() {
     // 1 / cos 88° = 28.7 times as fast as the straight ones near flat.
     let gamma = 88f64.to_radians();
     let (l, h) = (1.0, 1.0);
-    let d = h / gamma.tan();
+    let d = h / gamma.ptan();
     let (boundary, creases) = miura(1.0, 3, 3, l, d, h);
     let arr = arrange(&boundary, &creases, tol(1.0)).unwrap();
     let driver = creases
@@ -554,7 +559,7 @@ fn a_miura_ori_sheet_of_steep_parallelograms_folds_by_its_closed_form() {
     for degrees in [2.0f64, 10.0, 30.0] {
         let rho = degrees.to_radians();
         let folded = fold(&arr, &angles(&arr, &[(driver, rho)]), 0, tol(1.0), ANGULAR).unwrap();
-        let zig = 2.0 * ((rho / 2.0).tan() / gamma.cos()).atan();
+        let zig = 2.0 * ((rho / 2.0).ptan() / gamma.pcos()).patan();
         for (hinge, a) in arr.hinges.iter().zip(&folded.angles) {
             let c = &arr.creases[hinge.crease];
             let want = if c.start[1] == c.end[1] { rho } else { zig };
@@ -807,11 +812,11 @@ fn solved_creases_need_an_angle_that_folds_and_contact_fails_closed() {
     // driving one. It folds, by the closed form.
     let (a2, b2) = (61f64.to_radians(), 59f64.to_radians());
     let steep = single_vertex(1.0, &[0.0, a2, a2 + b2, PI + b2], &[V, V, M, V]);
-    let q = ((a2 + b2) / 2.0).sin() / ((a2 - b2) / 2.0).sin();
+    let q = ((a2 + b2) / 2.0).psin() / ((a2 - b2) / 2.0).psin();
     for degrees in [1.0f64, 3.0, 10.0] {
         let r1 = degrees.to_radians();
         let folded = fold(&steep, &angles(&steep, &[(10, r1)]), 0, t, ANGULAR).unwrap();
-        let r2 = 2.0 * (q * (r1 / 2.0).tan()).atan();
+        let r2 = 2.0 * (q * (r1 / 2.0).ptan()).patan();
         for (id, w) in (10..14).zip([r1, r2, -r1, r2]) {
             let got = solved(&steep, &folded, id)[0];
             assert!(close(got, w, 1e-8), "{degrees}: e{id} {got} vs {w}");
@@ -854,8 +859,8 @@ fn a_small_sheet_far_from_the_origin_folds_as_one_at_the_origin() {
     let (a, b) = (70f64.to_radians(), 50f64.to_radians());
     let dirs = [0.0, a, a + b, PI + b];
     let r1 = 30f64.to_radians();
-    let p = ((a + b) / 2.0).cos() / ((a - b) / 2.0).cos();
-    let r2 = 2.0 * (-p * (r1 / 2.0).tan()).atan();
+    let p = ((a + b) / 2.0).pcos() / ((a - b) / 2.0).pcos();
+    let r2 = 2.0 * (-p * (r1 / 2.0).ptan()).patan();
     let want = [r1, r2, r1, -r2];
     for far in [0.0, 1e7] {
         // A sheet of side 2 about (far, far), the tolerance 1e-7.
@@ -871,7 +876,7 @@ fn a_small_sheet_far_from_the_origin_folds_as_one_at_the_origin() {
             .zip([V, M, V, V])
             .enumerate()
             .map(|(i, (&d, kind))| {
-                let (c, sn) = (d.cos(), d.sin());
+                let (c, sn) = (d.pcos(), d.psin());
                 let r = 1.0 / c.abs().max(sn.abs());
                 crease(10 + i as u64, at([0.0, 0.0]), at([r * c, r * sn]), kind)
             })
@@ -943,14 +948,14 @@ fn a_driving_angle_of_zero_is_the_flat_sheet() {
         let (alpha, beta) = (70f64.to_radians(), 50f64.to_radians());
         let dirs = [0.0, alpha, alpha + beta, PI + beta];
         // Mode A, ρ3 = ρ1, ρ4 = −ρ2, and mode B, ρ3 = −ρ1, ρ4 = ρ2.
-        let p = ((alpha + beta) / 2.0).cos() / ((alpha - beta) / 2.0).cos();
-        let q = ((alpha + beta) / 2.0).sin() / ((alpha - beta) / 2.0).sin();
+        let p = ((alpha + beta) / 2.0).pcos() / ((alpha - beta) / 2.0).pcos();
+        let q = ((alpha + beta) / 2.0).psin() / ((alpha - beta) / 2.0).psin();
         let mode_a = |r1: f64| {
-            let r2 = 2.0 * (-p * (r1 / 2.0).tan()).atan();
+            let r2 = 2.0 * (-p * (r1 / 2.0).ptan()).patan();
             [r1, r2, r1, -r2]
         };
         let mode_b = |r1: f64| {
-            let r2 = 2.0 * (q * (r1 / 2.0).tan()).atan();
+            let r2 = 2.0 * (q * (r1 / 2.0).ptan()).patan();
             [r1, r2, -r1, r2]
         };
         let kb = if mode_b(0.5)[1] > 0.0 { V } else { M };
@@ -1070,8 +1075,8 @@ fn a_crease_and_a_bend_fold_through_zero_both_ways() {
                 let y0 = -w + rho.abs() * r;
                 Vec3::new(
                     x,
-                    y0 * rho.cos() - sigma * r * rho.sin(),
-                    sigma * r - y0 * rho.sin() - sigma * r * rho.cos(),
+                    y0 * rho.pcos() - sigma * r * rho.psin(),
+                    sigma * r - y0 * rho.psin() - sigma * r * rho.pcos(),
                 )
             };
             let sweep = [
@@ -1133,7 +1138,7 @@ fn vertex_piece(
         .zip(kinds)
         .enumerate()
         .map(|(i, (&a, &kind))| {
-            let (c, sn) = (a.cos(), a.sin());
+            let (c, sn) = (a.pcos(), a.psin());
             let t = s / c.abs().max(sn.abs());
             crease(
                 first_crease + i as u64,
@@ -1168,21 +1173,21 @@ fn two_branches_that_nearly_coincide_are_told_apart_by_how_they_part() {
     let dirs2 = [0.0, a2, a2 + b2, PI + b2];
     let r_slow = 0.1f64.to_radians();
     let r_fast = 10f64.to_radians();
-    let ka = -((a + b) / 2.0).cos() / ((a - b) / 2.0).cos();
-    let kb = ((a + b) / 2.0).sin() / ((a - b) / 2.0).sin();
-    let q = ((a2 + b2) / 2.0).sin() / ((a2 - b2) / 2.0).sin();
+    let ka = -((a + b) / 2.0).pcos() / ((a - b) / 2.0).pcos();
+    let kb = ((a + b) / 2.0).psin() / ((a - b) / 2.0).psin();
+    let q = ((a2 + b2) / 2.0).psin() / ((a2 - b2) / 2.0).psin();
     let mode_a = |r: f64| {
-        let r2 = 2.0 * (ka * (r / 2.0).tan()).atan();
+        let r2 = 2.0 * (ka * (r / 2.0).ptan()).patan();
         [r2, r, -r2]
     };
     let mode_b = |r: f64| {
-        let r2 = 2.0 * (kb * (r / 2.0).tan()).atan();
+        let r2 = 2.0 * (kb * (r / 2.0).ptan()).patan();
         [r2, -r, r2]
     };
     // Near coincidence, by the closed forms at the first step.
     let first = 1f64.to_radians();
     let slow_first = r_slow * first / r_fast;
-    let fast_first = 2.0 * (q * (first / 2.0).tan()).atan();
+    let fast_first = 2.0 * (q * (first / 2.0).ptan()).patan();
     let apart = mode_a(slow_first)
         .iter()
         .zip(mode_b(slow_first))
@@ -1223,7 +1228,7 @@ fn two_branches_that_nearly_coincide_are_told_apart_by_how_they_part() {
     );
 
     // With the kinds of one mode, that mode, by its closed form.
-    let fast = [2.0 * (q * (r_fast / 2.0).tan()).atan(), -r_fast];
+    let fast = [2.0 * (q * (r_fast / 2.0).ptan()).patan(), -r_fast];
     for (kinds, want) in [
         ([V, M, V, V], mode_a(r_slow)),
         ([V, V, M, V], mode_b(r_slow)),
@@ -1255,10 +1260,10 @@ fn the_sparse_solve_agrees_with_the_dense_one_and_the_closed_forms() {
         // A degree-4 vertex, mode A.
         let (a, b) = (70f64.to_radians(), 50f64.to_radians());
         let dirs = [0.0, a, a + b, PI + b];
-        let p = ((a + b) / 2.0).cos() / ((a - b) / 2.0).cos();
+        let p = ((a + b) / 2.0).pcos() / ((a - b) / 2.0).pcos();
         for rho in [10f64, 60.0, 120.0] {
             let r1 = rho.to_radians();
-            let r2 = 2.0 * (-p * (r1 / 2.0).tan()).atan();
+            let r2 = 2.0 * (-p * (r1 / 2.0).ptan()).patan();
             let arr = single_vertex(scale, &dirs, &[V, M, V, V]);
             let given = angles(&arr, &[(10, r1)]);
             let dense = fold_with(&arr, &given, 0, t, ANGULAR, usize::MAX).unwrap();
@@ -1287,7 +1292,7 @@ fn the_sparse_solve_agrees_with_the_dense_one_and_the_closed_forms() {
                 .zip([V, M, V, V])
                 .enumerate()
                 .map(|(i, (&d, kind))| {
-                    let (c, sn) = (d.cos(), d.sin());
+                    let (c, sn) = (d.pcos(), d.psin());
                     let m = c.abs().max(sn.abs());
                     crease(
                         10 + i as u64,
@@ -1331,7 +1336,7 @@ fn the_sparse_solve_agrees_with_the_dense_one_and_the_closed_forms() {
         // A Miura sheet of 4 × 4, against the dense solve and the closed
         // form; twice, bit for bit.
         let (l, d, hh): (f64, f64, f64) = (1.0, 0.5, 1.0);
-        let gamma = (hh / d).atan();
+        let gamma = (hh / d).patan();
         let (boundary, creases) = miura(scale, 4, 4, l, d, hh);
         let arr = arrange(&boundary, &creases, t).unwrap();
         let driver = creases
@@ -1346,7 +1351,7 @@ fn the_sparse_solve_agrees_with_the_dense_one_and_the_closed_forms() {
             let sparse = fold_with(&arr, &given, 0, t, ANGULAR, 0).unwrap();
             let again = fold_with(&arr, &given, 0, t, ANGULAR, 0).unwrap();
             assert_eq!(sparse, again);
-            let zig = 2.0 * ((rho / 2.0).tan() / gamma.cos()).atan();
+            let zig = 2.0 * ((rho / 2.0).ptan() / gamma.pcos()).patan();
             for (i, hinge) in arr.hinges.iter().enumerate() {
                 let c = &arr.creases[hinge.crease];
                 let want = c.kind.sign() * if c.start[1] == c.end[1] { rho } else { zig };
@@ -1363,7 +1368,7 @@ fn the_sparse_solve_agrees_with_the_dense_one_and_the_closed_forms() {
 #[test]
 fn a_large_miura_sheet_folds_by_the_sparse_solve() {
     let (l, d, h): (f64, f64, f64) = (1.0, 0.5, 1.0);
-    let gamma = (h / d).atan();
+    let gamma = (h / d).patan();
     for (n, degrees) in [
         (16usize, &[20.0f64, 70.0][..]),
         (24, &[60.0]),
@@ -1396,7 +1401,7 @@ fn a_large_miura_sheet_folds_by_the_sparse_solve() {
                     arr.hinges.len() - 1,
                     clock.elapsed().as_secs_f64()
                 );
-                let zig = 2.0 * ((rho / 2.0).tan() / gamma.cos()).atan();
+                let zig = 2.0 * ((rho / 2.0).ptan() / gamma.pcos()).patan();
                 for (hinge, a) in arr.hinges.iter().zip(&dense.angles) {
                     let c = &arr.creases[hinge.crease];
                     let want = c.kind.sign() * if c.start[1] == c.end[1] { rho } else { zig };
@@ -1410,7 +1415,7 @@ fn a_large_miura_sheet_folds_by_the_sparse_solve() {
                 arr.hinges.len() - 1,
                 clock.elapsed().as_secs_f64()
             );
-            let zig = 2.0 * ((rho / 2.0).tan() / gamma.cos()).atan();
+            let zig = 2.0 * ((rho / 2.0).ptan() / gamma.pcos()).patan();
             for (hinge, a) in arr.hinges.iter().zip(&folded.angles) {
                 let c = &arr.creases[hinge.crease];
                 let want = c.kind.sign() * if c.start[1] == c.end[1] { rho } else { zig };
@@ -1508,7 +1513,7 @@ fn slits_and_slots_are_cuts_with_one_facet_on_both_sides() {
 #[test]
 fn a_dense_solve_of_three_hundred_angles_folds_within_the_budget_at_any_scale() {
     let (l, d, h): (f64, f64, f64) = (1.0, 0.5, 1.0);
-    let gamma = (h / d).atan();
+    let gamma = (h / d).patan();
     for scale in [1.0, 1e6] {
         let (boundary, creases) = miura(scale, 13, 13, l, d, h);
         let arr = arrange(&boundary, &creases, tol(scale)).unwrap();
@@ -1536,7 +1541,7 @@ fn a_dense_solve_of_three_hundred_angles_folds_within_the_budget_at_any_scale() 
                 clock.elapsed().as_secs_f64(),
                 folded.work
             );
-            let zig = 2.0 * ((rho / 2.0).tan() / gamma.cos()).atan();
+            let zig = 2.0 * ((rho / 2.0).ptan() / gamma.pcos()).patan();
             for (hinge, a) in arr.hinges.iter().zip(&folded.angles) {
                 let c = &arr.creases[hinge.crease];
                 let want = c.kind.sign() * if c.start[1] == c.end[1] { rho } else { zig };
@@ -1594,7 +1599,7 @@ fn a_slit_edge_running_on_past_a_collinear_edge_stays_a_cut_in_the_layers() {
 fn the_first_steps_worst_case_on_a_dense_sheet_stays_within_half_the_budget() {
     use craft3d_kernel::origami::MAX_WORK;
     let (l, d, h): (f64, f64, f64) = (1.0, 0.5, 1.0);
-    let gamma = (h / d).atan();
+    let gamma = (h / d).patan();
     let (boundary, creases) = miura(1.0, 13, 13, l, d, h);
     let arr = arrange(&boundary, &creases, tol(1.0)).unwrap();
     let driver = creases
@@ -1631,7 +1636,7 @@ fn the_first_steps_worst_case_on_a_dense_sheet_stays_within_half_the_budget() {
     assert!(folded.work <= MAX_WORK / 2, "{}", folded.work);
     // Every guess solved: 5 magnitudes times 2⁶ sign patterns at least.
     assert!(folded.guesses >= 5 * 64, "{}", folded.guesses);
-    let zig = 2.0 * ((rho / 2.0).tan() / gamma.cos()).atan();
+    let zig = 2.0 * ((rho / 2.0).ptan() / gamma.pcos()).patan();
     let holds = |folded: &Folded| {
         for (hinge, a) in arr.hinges.iter().zip(&folded.angles) {
             let c = &arr.creases[hinge.crease];

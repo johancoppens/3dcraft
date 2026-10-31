@@ -47,6 +47,7 @@
 //!    continue each other across the two operands, become one face again;
 //!    edges and vertices that only the imprint needed go.
 
+use craft3d_math::Portable;
 mod chart;
 mod classify;
 mod coincide;
@@ -1159,7 +1160,7 @@ fn walls_apart(f: &outline::Outline, b: Vec3, g: &outline::Outline, near: f64, r
     };
     for k in 0..8 {
         let angle = f64::from(k) * std::f64::consts::FRAC_PI_4;
-        let off = b + (frame.x() * angle.cos() + frame.y() * angle.sin()) * reach;
+        let off = b + (frame.x() * angle.pcos() + frame.y() * angle.psin()) * reach;
         let Some(y) = onto(Sheet::bare(&g.surface), off) else {
             continue;
         };
@@ -1808,7 +1809,7 @@ impl FaceGrid {
             * extent.y.max(largest * 1e-3)
             * extent.z.max(largest * 1e-3)
             / count)
-            .cbrt();
+            .pcbrt();
         let mut grid = FaceGrid {
             low: lo,
             cell,

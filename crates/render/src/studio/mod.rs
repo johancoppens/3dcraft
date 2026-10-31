@@ -34,6 +34,7 @@
 //!    bytes per sample; the samples of a pixel are averaged as in the
 //!    plain picture.
 
+use craft3d_math::Portable;
 pub mod ao;
 pub mod brdf;
 pub mod bundled;
@@ -168,7 +169,7 @@ impl Look {
     /// `2^exposure`, within 2^±20.
     pub fn exposure_scale(&self) -> f64 {
         if self.exposure.is_finite() {
-            self.exposure.clamp(-20.0, 20.0).exp2()
+            self.exposure.clamp(-20.0, 20.0).pexp2()
         } else {
             1.0
         }
@@ -186,7 +187,7 @@ impl Look {
                 azimuth.to_radians(),
                 elevation.clamp(-90.0, 90.0).to_radians(),
             );
-            return Vec3::new(e.cos() * a.cos(), e.cos() * a.sin(), e.sin()).normalized();
+            return Vec3::new(e.pcos() * a.pcos(), e.pcos() * a.psin(), e.psin()).normalized();
         }
         let [x, y, z] = key.direction.map(f64::from);
         rotate_z(Vec3::new(x, y, z), self.rotation_radians()).normalized()
@@ -195,7 +196,7 @@ impl Look {
 
 /// `d` turned by `angle` radians about z.
 pub fn rotate_z(d: Vec3, angle: f64) -> Vec3 {
-    let (s, c) = angle.sin_cos();
+    let (s, c) = angle.psin_cos();
     Vec3::new(c * d.x - s * d.y, s * d.x + c * d.y, d.z)
 }
 
@@ -472,7 +473,7 @@ impl<'a> FrameLight<'a> {
         };
         // Lagarde and de Rousiers' specular occlusion, with their
         // roughness α = r² (as Filament).
-        let occlusion = (nv + ao).powf((-16.0 * r * r - 1.0).exp2()) - 1.0 + ao;
+        let occlusion = (nv + ao).ppowf((-16.0 * r * r - 1.0).pexp2()) - 1.0 + ao;
         let specular_occlusion = occlusion.clamp(0.0, 1.0);
         let sum_ab = a + b;
         let transmission = f64::from(o.transmission);
@@ -569,7 +570,7 @@ impl<'a> FrameLight<'a> {
         if coat > 0.0 {
             let rc = f64::from(o.clearcoat_roughness);
             let fc = layers::coat_albedo(coat, self.env.split_sum(nv, rc));
-            let occlusion = (nv + ao).powf((-16.0 * rc * rc - 1.0).exp2()) - 1.0 + ao;
+            let occlusion = (nv + ao).ppowf((-16.0 * rc * rc - 1.0).pexp2()) - 1.0 + ao;
             let so = occlusion.clamp(0.0, 1.0);
             let mirror = n * (2.0 * n.dot(v)) - v;
             let coat_light = self.radiance(mirror, rc * self.top_level());
@@ -706,7 +707,7 @@ fn polish_key_specular(n: Vec3, v: Vec3, l: Vec3, r: f64, radius: f64, f0: f64) 
         n.dot(l).clamp(0.0, 1.0),
         v.dot(hv).clamp(0.0, 1.0),
     );
-    let f = f0 + (1.0 - f0) * (1.0 - vh).powi(5);
+    let f = f0 + (1.0 - f0) * (1.0 - vh).ppowi(5);
     polish::ggx_dv(alpha, nh, nv, nl) * f
 }
 
@@ -728,7 +729,7 @@ fn aniso_key_specular(
     let alpha = (r * r + 0.5 * radius).clamp(0.002, 1.0);
     let (at, ab) = layers::aniso_alphas(alpha, a);
     let vh = v.dot(hv).clamp(0.0, 1.0);
-    let f = f0 + (1.0 - f0) * (1.0 - vh).powi(5);
+    let f = f0 + (1.0 - f0) * (1.0 - vh).ppowi(5);
     layers::aniso_ggx_dv(at, ab, t, b, n, hv, v, l) * f
 }
 

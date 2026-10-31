@@ -31,6 +31,7 @@ use craft3d_kernel::sheetmetal::sequence::{
     piece_points, prism, stage_worlds, strip_slab, stroke_speed,
 };
 use craft3d_kernel::sheetmetal::{self, flange_length, flat_faces};
+use craft3d_math::Portable;
 use craft3d_math::{Tolerance, Transform, Vec3};
 use craft3d_topo::Body;
 use serde_json::{Map, Value, json};
@@ -1087,7 +1088,7 @@ fn ranked_strokes(part: &sheetmetal::Part, tol: &Tolerance, segmented: bool) -> 
 
 /// `v` scaled to unit length, if it has one.
 fn unit2(v: [f64; 2]) -> Option<[f64; 2]> {
-    let l = v[0].hypot(v[1]);
+    let l = v[0].phypot(v[1]);
     (l.is_finite() && l > 0.0).then(|| [v[0] / l, v[1] / l])
 }
 
@@ -1113,7 +1114,7 @@ fn stroke_words(g: &[usize]) -> String {
 /// The length of a segment of segmented tooling at bend `x`: as given,
 /// or else the bend's own.
 fn segment_length(x: &sheetmetal::Bend, given: Option<f64>) -> f64 {
-    given.unwrap_or_else(|| (x.end[0] - x.start[0]).hypot(x.end[1] - x.start[1]))
+    given.unwrap_or_else(|| (x.end[0] - x.start[0]).phypot(x.end[1] - x.start[1]))
 }
 
 fn degrees(r: f64) -> f64 {
@@ -1908,6 +1909,7 @@ pub(crate) fn take(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, Str
 mod tests {
     use super::*;
     use crate::Workspace;
+    use craft3d_math::Portable;
 
     fn run(s: &mut Session, id: &str, params: Value) -> Value {
         s.execute(id, &params)
@@ -2008,7 +2010,7 @@ mod tests {
                     ]);
                 }
             }
-            let diagonal = (hi[0] - lo[0]).hypot(hi[1] - lo[1]);
+            let diagonal = (hi[0] - lo[0]).phypot(hi[1] - lo[1]);
             let b = 1;
             let bend = &part.bends[b];
             let old_premise = diagonal + 2.0 * (bend.radius + bend.thickness);

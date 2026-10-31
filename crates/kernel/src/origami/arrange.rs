@@ -18,6 +18,7 @@ use super::{
     BoundarySegment, Crease, CreaseKind, FoldError, MAX_BOUNDARY, MAX_CREASES, P2, cross, dist,
     inside_loops, sub, to_segment,
 };
+use craft3d_math::Portable;
 use std::collections::BTreeMap;
 
 /// What an edge of the arrangement is part of.
@@ -350,7 +351,7 @@ pub fn arrange(
         match (vertices.get(from), vertices.get(to)) {
             (Some(a), Some(b)) => {
                 let d = sub(*b, *a);
-                d[1].atan2(d[0])
+                d[1].patan2(d[0])
             }
             _ => 0.0,
         }

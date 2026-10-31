@@ -32,6 +32,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{built, error, new_document, run, session_in, workdir};
@@ -176,7 +177,7 @@ fn tall_walls_hit_a_straight_punch_in_either_order_and_clear_a_gooseneck() {
         assert_eq!(out["feasible"], false, "{out}");
         assert_eq!(out["order"], Value::Null, "{out}");
         let (a, b, p) = (41.0_f64, 40.0_f64, 5.0_f64);
-        let first = 2.0 * (a.atan2(b) - (p / a.hypot(b)).asin());
+        let first = 2.0 * (a.patan2(b) - (p / a.phypot(b)).pasin());
         let collisions = out["collisions"].as_array().unwrap();
         for (bend, other) in [(1, 0), (0, 1)] {
             let c = collisions
@@ -439,7 +440,7 @@ fn polygon_part(s: &mut Session, k: f64, points: &[[f64; 2]], edge: usize, h: f6
 /// with the base lying on the die.
 #[test]
 fn a_flange_on_a_slanted_edge_is_proven_lying_on_the_die() {
-    let (c, s30) = ((PI / 6.0).cos(), (PI / 6.0).sin());
+    let (c, s30) = ((PI / 6.0).pcos(), (PI / 6.0).psin());
     let turned: Vec<[f64; 2]> = [[0.0, 0.0], [40.0, 0.0], [40.0, 30.0], [0.0, 30.0]]
         .iter()
         .map(|p| [c * p[0] - s30 * p[1], s30 * p[0] + c * p[1]])
@@ -447,7 +448,7 @@ fn a_flange_on_a_slanted_edge_is_proven_lying_on_the_die() {
     let hexagon: Vec<[f64; 2]> = (0..6)
         .map(|i| {
             let a = PI / 3.0 * f64::from(i);
-            [20.0 * a.cos(), 20.0 * a.sin()]
+            [20.0 * a.pcos(), 20.0 * a.psin()]
         })
         .collect();
     let shapes: [(&str, &[[f64; 2]]); 3] = [

@@ -23,6 +23,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::{band, offscreens, orthographic, params, perspective};
@@ -140,7 +141,7 @@ fn doubt(
     let plain =
         craft3d_render::render_analysed(mesh, &FaceColors::new(), values, camera, p).unwrap();
     for (axis, sign) in [(0, 1.0), (0, -1.0), (1, 1.0), (1, -1.0)] {
-        let (sin, cos) = (sign * NORMAL_DOUBT).sin_cos();
+        let (sin, cos) = (sign * NORMAL_DOUBT).psin_cos();
         let mut turned = mesh.clone();
         for n in &mut turned.normals {
             *n = if axis == 0 {

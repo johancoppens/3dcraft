@@ -15,6 +15,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::run;
@@ -35,7 +36,7 @@ fn constrain(s: &mut Session, sketch: &str, kind: &str, entities: Value, extra: 
 /// of (height - thickness) x thickness, `depth` deep, less two holes.
 fn by_hand(width: f64, height: f64, thickness: f64, hole_d: f64, depth: f64) -> f64 {
     (width * thickness + (height - thickness) * thickness) * depth
-        - 2.0 * PI * (hole_d / 2.0).powi(2) * depth
+        - 2.0 * PI * (hole_d / 2.0).ppowi(2) * depth
 }
 
 fn part_volume(s: &mut Session) -> f64 {

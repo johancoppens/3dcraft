@@ -10,6 +10,7 @@
     clippy::needless_range_loop
 )]
 
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use craft3d_render::studio::layers::Optics;
 use craft3d_render::studio::pattern::{
@@ -462,13 +463,13 @@ fn the_platform_free_sine_and_arc_tangent_are_the_standard_ones_within_rounding(
     for i in -2000..=2000 {
         let x = f64::from(i) / 2000.0;
         let ours = sin_pi(x);
-        let theirs = (std::f64::consts::PI * x).sin();
+        let theirs = (std::f64::consts::PI * x).psin();
         assert!((ours - theirs).abs() < 1e-14, "sin(π {x}): {ours} {theirs}");
     }
     let mut points = Points(5);
     for _ in 0..20_000 {
         let [x, y, _] = points.point(10.0);
-        let (ours, theirs) = (atan2_exact(y, x), y.atan2(x));
+        let (ours, theirs) = (atan2_exact(y, x), y.patan2(x));
         assert!(
             (ours - theirs).abs() < 1e-14,
             "atan2({y}, {x}): {ours} {theirs}"
@@ -482,7 +483,7 @@ fn the_platform_free_sine_and_arc_tangent_are_the_standard_ones_within_rounding(
         (1e-300, 1e300),
     ] {
         assert!(
-            (atan2_exact(y, x) - f64::atan2(y, x)).abs() < 1e-14,
+            (atan2_exact(y, x) - f64::patan2(y, x)).abs() < 1e-14,
             "{y} {x}"
         );
     }

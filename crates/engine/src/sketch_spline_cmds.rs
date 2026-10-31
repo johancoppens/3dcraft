@@ -19,6 +19,7 @@ use crate::{CommandSpec, Session};
 use craft3d_doc::{
     EntityId, MAX_SPLINE_DEGREE, MAX_SPLINE_POINTS, Sketch, SketchError, clamped_uniform_knots,
 };
+use craft3d_math::Portable;
 use craft3d_regen::curve_fit::{basis, interpolate};
 use serde_json::{Value, json};
 
@@ -69,11 +70,11 @@ impl<'a> SplineCurve<'a> {
     pub(crate) fn polyline(&self, tolerance: f64) -> Vec<(f64, f64)> {
         let off = |p: (f64, f64), a: (f64, f64), b: (f64, f64)| {
             let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-            let length = dx.hypot(dy);
+            let length = dx.phypot(dy);
             if length > 0.0 {
                 ((p.0 - a.0) * dy - (p.1 - a.1) * dx).abs() / length
             } else {
-                (p.0 - a.0).hypot(p.1 - a.1)
+                (p.0 - a.0).phypot(p.1 - a.1)
             }
         };
         let spans = self.control.len().saturating_sub(self.degree).max(1);
@@ -232,7 +233,7 @@ fn sketch_spline(session: &mut Session, params: &Value) -> Run {
             let places: Vec<Option<(f64, f64)>> = given.iter().map(|g| g.drawn(s)).collect();
             for (i, pair) in places.windows(2).enumerate() {
                 if let [Some(a), Some(b)] = pair
-                    && (a.0 - b.0).hypot(a.1 - b.1) <= tolerance
+                    && (a.0 - b.0).phypot(a.1 - b.1) <= tolerance
                     && !(closed && i + 1 == last)
                 {
                     return invalid(format!(
@@ -281,7 +282,7 @@ fn sketch_spline(session: &mut Session, params: &Value) -> Run {
             .collect::<Result<_, _>>()?;
         for (i, pair) in places.windows(2).enumerate() {
             if let [a, b] = pair
-                && (a.0 - b.0).hypot(a.1 - b.1) <= tolerance
+                && (a.0 - b.0).phypot(a.1 - b.1) <= tolerance
             {
                 return invalid(format!(
                     "points {} and {} of the spline are at the same place ({}, {}); a spline takes each place once",
@@ -347,6 +348,7 @@ fn sketch_spline(session: &mut Session, params: &Value) -> Run {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use craft3d_math::Portable;
     use craft3d_regen::curve_fit::MAX_THROUGH_POINTS;
 
     #[test]
@@ -396,8 +398,8 @@ mod tests {
                         .map(|i| {
                             let t = i as f64;
                             (
-                                scale * (t + 0.3 * (t * 1.7).sin()),
-                                scale * (2.0 * (t * 0.9).cos() + 0.01 * t * t),
+                                scale * (t + 0.3 * (t * 1.7).psin()),
+                                scale * (2.0 * (t * 0.9).pcos() + 0.01 * t * t),
                             )
                         })
                         .collect();
@@ -420,7 +422,7 @@ mod tests {
                             greville(degree, count, i)
                         };
                         let got = curve.point(u).unwrap();
-                        worst = worst.max((got.0 - wanted.0).hypot(got.1 - wanted.1));
+                        worst = worst.max((got.0 - wanted.0).phypot(got.1 - wanted.1));
                     }
                     assert!(
                         worst <= 1e-12 * size,
@@ -483,7 +485,7 @@ mod tests {
                             } else {
                                 0.0
                             };
-                            (p.0 - a.0 - dx * t).hypot(p.1 - a.1 - dy * t)
+                            (p.0 - a.0 - dx * t).phypot(p.1 - a.1 - dy * t)
                         })
                         .fold(f64::INFINITY, f64::min);
                     assert!(

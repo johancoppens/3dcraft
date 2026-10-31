@@ -16,6 +16,7 @@
 
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
+use craft3d_math::Portable;
 mod boolean_common;
 
 use boolean_common::*;
@@ -50,7 +51,7 @@ fn pair(k: f64, off: f64, angle: f64) -> (Body, Body) {
     let a = moved(&a, &[4, 5], Vec3::new(0.0, -off, 0.0));
     let z = Vec3::new(0.0, 1.0, -1.0).normalized().unwrap();
     let across = Vec3::new(0.0, -1.0, -1.0).normalized().unwrap();
-    let x = Vec3::X * angle.cos() + across * angle.sin();
+    let x = Vec3::X * angle.pcos() + across * angle.psin();
     let middle = Vec3::new(1.0, 0.0, 2.0) * k;
     let frame = Frame::new(middle - z * k, z, x).unwrap();
     let b = primitives::block(&frame, 1.0 * k, 1.0 * k, 2.5 * k).unwrap();

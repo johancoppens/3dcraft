@@ -20,6 +20,7 @@
 //!
 //! Timings proper (how fast, in release) are ignored tests that print.
 
+use craft3d_math::Portable;
 use std::time::{Duration, Instant};
 
 /// Nanoseconds the calling thread has spent on a CPU: the first field of
@@ -213,7 +214,7 @@ pub fn assert_growth_below(
 /// logarithm), a quadratic one 16 times, and the bound is 8.
 pub fn assert_not_quadratic(what: &str, sizes: (usize, usize), run: impl FnMut(usize)) {
     let k = sizes.1 as f64 / sizes.0.max(1) as f64;
-    assert_growth_below(what, sizes, k.powf(1.5), Duration::ZERO, run);
+    assert_growth_below(what, sizes, k.ppowf(1.5), Duration::ZERO, run);
 }
 
 #[cfg(test)]

@@ -17,6 +17,7 @@ use super::features::check_meshes;
 use super::step;
 use super::{APPROX, EXACT, Expect, FLAT, RING, SPLINE, SPLINE_QUADRATURE, Set, harness};
 use craft3d_engine::Session;
+use craft3d_math::Portable;
 use serde_json::{Value, json};
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 use std::fmt::Write as _;
@@ -110,7 +111,7 @@ fn cornered(s: &mut Session, k: f64, degrees: f64) -> Result<(), String> {
         [0.0, 0.0],
         json!([
             {"line": [0.0, 10.0 * k]},
-            {"line": [-8.0 * k * turn.sin(), (10.0 + 8.0 * turn.cos()) * k]},
+            {"line": [-8.0 * k * turn.psin(), (10.0 + 8.0 * turn.pcos()) * k]},
         ]),
     )
 }
@@ -212,7 +213,7 @@ fn mitred_rod(degrees: f64) -> impl Fn(&mut Session, f64) -> Forms {
         round(s, "Section", [0.0, 0.25 * k], 0.5 * k)?;
         cornered(s, k, degrees)?;
         sweep(s, "Rod")?;
-        let travel = 18.0 + 0.5 * (degrees.to_radians() / 2.0).tan();
+        let travel = 18.0 + 0.5 * (degrees.to_radians() / 2.0).ptan();
         Ok(vec![Closed {
             body: "Rod",
             volume: PI * 0.25 * travel,
@@ -226,7 +227,7 @@ fn mitred_bar(degrees: f64) -> impl Fn(&mut Session, f64) -> Forms {
         rectangle(s, "Section", [-0.5 * k, 0.5 * k], [-0.5 * k, k])?;
         cornered(s, k, degrees)?;
         sweep(s, "Bar")?;
-        let travel = |right: f64| 18.0 + 2.0 * right * (degrees.to_radians() / 2.0).tan();
+        let travel = |right: f64| 18.0 + 2.0 * right * (degrees.to_radians() / 2.0).ptan();
         Ok(vec![Closed {
             body: "Bar",
             volume: 1.5 * travel(0.25),
@@ -485,7 +486,7 @@ fn check_sweeps(
                     forms_bad.push(format!("{file}: no body {}", form.body));
                     continue;
                 };
-                let volume = part.volume / (form.volume * k.powi(3)) - 1.0;
+                let volume = part.volume / (form.volume * k.ppowi(3)) - 1.0;
                 let area = form.area.map_or(0.0, |a| part.area / (a * k * k) - 1.0);
                 writeln!(
                     forms_text,

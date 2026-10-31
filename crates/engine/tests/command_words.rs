@@ -14,6 +14,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::plain::run;
@@ -84,7 +85,7 @@ fn a_plain_number_like_degrees_in_sin_or_cos_is_warned_about() {
     let warned = set(&mut s, "10 mm * sin(30)");
     // Radians, as before: the value does not change.
     assert!(
-        (warned["value"].as_f64().unwrap() - 10.0 * 30f64.sin()).abs() < 1e-12,
+        (warned["value"].as_f64().unwrap() - 10.0 * 30f64.psin()).abs() < 1e-12,
         "{warned}"
     );
     let warning = warned["warning"].as_str().unwrap();

@@ -14,6 +14,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod boolean_common;
 
 use boolean_common::{SCALES, mass, tolerance};
@@ -87,8 +88,8 @@ impl Bez {
             .map(|i| -0.4 + 1.8 * f64::from(i) / 180.0)
             .min_by(|a, b| {
                 let (pa, pb) = (self.eval(*a), self.eval(*b));
-                let da = (pa[0] - q[0]).hypot(pa[1] - q[1]);
-                let db = (pb[0] - q[0]).hypot(pb[1] - q[1]);
+                let da = (pa[0] - q[0]).phypot(pa[1] - q[1]);
+                let db = (pb[0] - q[0]).phypot(pb[1] - q[1]);
                 da.total_cmp(&db)
             })
             .unwrap();
@@ -100,7 +101,7 @@ impl Bez {
             t -= f / df;
         }
         let (c, d) = (self.eval(t), self.d(t));
-        let len = d[0].hypot(d[1]);
+        let len = d[0].phypot(d[1]);
         (q[0] - c[0]) * d[1] / len - (q[1] - c[1]) * d[0] / len
     }
 
@@ -132,7 +133,7 @@ impl Outline {
     fn new(phi: f64, bow: f64) -> Outline {
         let arch = Bez([[-1.0, 0.0], [-1.0 / 3.0, 0.5], [1.0 / 3.0, 0.5], [1.0, 0.0]]);
         let back = [-0.8_f64, 0.6_f64];
-        let (s, c) = phi.sin_cos();
+        let (s, c) = phi.psin_cos();
         let dir = [back[0] * c - back[1] * s, back[0] * s + back[1] * c];
         // Bowed to the left of its direction (out of the material).
         let n = [-dir[1], dir[0]];
@@ -318,7 +319,7 @@ fn a_fillet_whose_edge_runs_out_at_a_slant_to_its_end_face() {
             let margin = 2e-4;
             let to_centres = |p: [f64; 3]| {
                 let s = outline.arch.signed([p[0], p[1]]);
-                (p[2] - (h - r)).max(0.0).hypot((r - s).max(0.0))
+                (p[2] - (h - r)).max(0.0).phypot((r - s).max(0.0))
             };
             let want = |p: [f64; 3]| {
                 let (a, s) = (
@@ -379,7 +380,7 @@ fn a_convex_fillet_that_runs_into_a_wall() {
         let margin = 2e-4;
         let to_centres = |p: [f64; 3]| {
             let s = outline.arch.signed([p[0], p[1]]);
-            (p[2] - (h - r)).max(0.0).hypot((r - s).max(0.0))
+            (p[2] - (h - r)).max(0.0).phypot((r - s).max(0.0))
         };
         let want = |p: [f64; 3]| {
             let s = outline.arch.signed([p[0], p[1]]);
@@ -444,7 +445,7 @@ fn a_concave_root_fillet_that_runs_out_at_the_end_of_a_wall() {
             // plate by the radius, out of the arch by it.
             let to_centres = |p: [f64; 3]| {
                 let out = -outline.arch.signed([p[0], p[1]]);
-                (r - p[2]).max(0.0).hypot((r - out).max(0.0))
+                (r - p[2]).max(0.0).phypot((r - out).max(0.0))
             };
             let want = |p: [f64; 3]| {
                 let (a, s) = (
@@ -482,7 +483,7 @@ fn wavy() -> (craft3d_geom::NurbsCurve, Vec<f64>, Vec<[f64; 2]>) {
     let control: Vec<[f64; 2]> = (0..n)
         .map(|i| {
             let x = -1.0 + 2.0 * f64::from(i) / f64::from(n - 1);
-            [x, (1.0 - x * x) * (0.3 + 0.08 * (9.0 * x).sin())]
+            [x, (1.0 - x * x) * (0.3 + 0.08 * (9.0 * x).psin())]
         })
         .collect();
     let mut knots = vec![0.0; 4];
@@ -587,7 +588,7 @@ fn a_small_fillet_along_a_wavy_rim_at_a_fine_tolerance() {
         let margin = 2e-5;
         let to_centres = |p: [f64; 3]| {
             let s = signed_from(&curve, [p[0], p[1]]);
-            (p[2] - (h - r)).max(0.0).hypot((r - s).max(0.0))
+            (p[2] - (h - r)).max(0.0).phypot((r - s).max(0.0))
         };
         let want = |p: [f64; 3]| {
             let s = signed_from(&curve, [p[0], p[1]]);
@@ -707,7 +708,7 @@ fn root_fillets_on_a_revolved_spline_hub() {
         // What they add: the corner's area times the root's length, about
         // (the hub is not square to the rib: within a fifth).
         let added = mass(&made.body).volume - mass(&body).volume;
-        let estimate = 2.0 * (r * k).powi(2) * (1.0 - std::f64::consts::FRAC_PI_4) * 2.0 * k;
+        let estimate = 2.0 * (r * k).ppowi(2) * (1.0 - std::f64::consts::FRAC_PI_4) * 2.0 * k;
         assert!(
             (added - estimate).abs() <= 0.2 * estimate,
             "scale {k}: added {added}, about {estimate}"

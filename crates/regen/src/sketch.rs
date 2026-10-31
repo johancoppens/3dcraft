@@ -17,6 +17,7 @@ use craft3d_doc::{
     WorldPlane,
 };
 use craft3d_expr::{Dimension, Evaluation, Quantity};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_solve as solve;
 use std::collections::BTreeMap;
@@ -918,7 +919,7 @@ fn problem(
     // The ends of formula curves, where the formulas put them.
     let mut pins = Vec::new();
     let mut held: BTreeMap<EntityId, (EntityId, [f64; 2])> = BTreeMap::new();
-    let distance2 = |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).hypot(a[1] - b[1]);
+    let distance2 = |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).phypot(a[1] - b[1]);
     for (curve, fit) in fits {
         let fit = fit.as_ref().map_err(Clone::clone)?;
         let Ok(Geometry::Formula { start, end, .. }) = sketch.entity(*curve).map(|e| &e.geometry)
@@ -930,7 +931,7 @@ fn problem(
             return Err(format!("{curve} has no fitted points"));
         };
         if start == end {
-            let gap = (first[0] - last[0]).hypot(first[1] - last[1]);
+            let gap = (first[0] - last[0]).phypot(first[1] - last[1]);
             if gap > doc.tolerance.linear {
                 return Err(format!(
                     "{curve} starts and ends on the one point {start}, but its formulas put its start at ({}, {}) and its end at ({}, {}), {gap:e} apart; end it on another point, or change the formulas so it closes",
@@ -992,7 +993,7 @@ fn closes_smoothly(control: &[[f64; 2]]) -> bool {
     };
     let leave = [b[0] - a[0], b[1] - a[1]];
     let arrive = [z[0] - y[0], z[1] - y[1]];
-    let (l, r) = (leave[0].hypot(leave[1]), arrive[0].hypot(arrive[1]));
+    let (l, r) = (leave[0].phypot(leave[1]), arrive[0].phypot(arrive[1]));
     if !(l > 0.0 && r > 0.0 && l.is_finite() && r.is_finite()) {
         return false;
     }
@@ -1370,7 +1371,7 @@ fn turned_onto(frame: &Frame, normal: Vec3) -> Option<Frame> {
         return Some(*frame);
     }
     let turn = match across.normalized() {
-        Some(axis) => craft3d_math::Transform::rotation(axis, sine.atan2(cosine))?,
+        Some(axis) => craft3d_math::Transform::rotation(axis, sine.patan2(cosine))?,
         // Turned right round: about x.
         None => craft3d_math::Transform::rotation(frame.x(), std::f64::consts::PI)?,
     };

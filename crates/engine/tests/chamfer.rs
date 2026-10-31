@@ -12,6 +12,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod blend_common;
 mod common;
 
@@ -184,7 +185,7 @@ fn the_first_distance_is_along_the_first_face_of_the_pair() {
                 "feature.chamfer",
                 json!({"edges": [pair], "distance": d1 * k, "second": d2 * k, "name": "Bevel"}),
             );
-            let area = 52.0 - (d1 + d2) * 4.0 - d1 * d2 + d1.hypot(d2) * 4.0;
+            let area = 52.0 - (d1 + d2) * 4.0 - d1 * d2 + d1.phypot(d2) * 4.0;
             assert_solid(&mut s, "Bevel", 24.0 - d1 * d2 / 2.0 * 4.0, Some(area), k);
             // The cut line on the top is `on_top` from the edge y = 0, the
             // one on the front `on_front` below the top.
@@ -202,7 +203,7 @@ fn the_first_distance_is_along_the_first_face_of_the_pair() {
             "feature.chamfer",
             json!({"edges": [[TOP, FRONT]], "distance": d1 * k, "angle": "30 deg", "name": "Bevel"}),
         );
-        let down = d1 * (PI / 6.0).tan();
+        let down = d1 * (PI / 6.0).ptan();
         assert_solid(&mut s, "Bevel", 24.0 - d1 * down / 2.0 * 4.0, None, k);
         let found = vertices(&mut s, "Bevel");
         assert_has_vertex(&found, [0.0, d1, 2.0], k);
@@ -253,7 +254,7 @@ fn the_rim_of_a_rod_becomes_a_cone() {
         let area = PI * r * r
             + 2.0 * PI * r * (h - d2)
             + PI * (r - d1) * (r - d1)
-            + PI * (2.0 * r - d1) * d1.hypot(d2);
+            + PI * (2.0 * r - d1) * d1.phypot(d2);
         let solid = assert_solid(&mut s, "Bevel", PI * r * r * h - removed, Some(area), k);
         assert_eq!(solid["faces"], 4);
         // Both ends, one distance: the frustum closed form at each.
@@ -653,7 +654,7 @@ fn bad_parameters_are_errors_and_what_is_not_built_says_its_kind() {
     {
         // c(t) and its derivatives.
         let c = |t: f64| {
-            let x = 3.0 * t * (1.0 - t).powi(2) + 9.0 * t * t * (1.0 - t) + 4.0 * t.powi(3);
+            let x = 3.0 * t * (1.0 - t).ppowi(2) + 9.0 * t * t * (1.0 - t) + 4.0 * t.ppowi(3);
             let y = 6.0 * t * (1.0 - t);
             let dx = 3.0 + 6.0 * t - 6.0 * t * t;
             let dy = 6.0 - 12.0 * t;
@@ -663,15 +664,15 @@ fn bad_parameters_are_errors_and_what_is_not_built_says_its_kind() {
         };
         let column = |t: f64| {
             let (_, y, dx, dy, ddx, ddy) = c(t);
-            let speed = dx.hypot(dy);
+            let speed = dx.phypot(dy);
             // The normal into the hump (below the arch) and the curvature
             // that shrinks the strip on that side.
             let ny = -dx / speed;
-            let kappa = (dy * ddx - dx * ddy) / speed.powi(3);
+            let kappa = (dy * ddx - dx * ddy) / speed.ppowi(3);
             let reach = if ny < 0.0 { (y / -ny).min(d) } else { d };
             // ∫ (1 − κ s)(d − s) ds from 0 to reach.
             let m = reach;
-            let inner = d * m - m * m / 2.0 - kappa * (d * m * m / 2.0 - m.powi(3) / 3.0);
+            let inner = d * m - m * m / 2.0 - kappa * (d * m * m / 2.0 - m.ppowi(3) / 3.0);
             speed * inner
         };
         let n = 20_000;
@@ -705,8 +706,8 @@ fn bad_parameters_are_errors_and_what_is_not_built_says_its_kind() {
         "feature.edit",
         json!({"feature": "Bevel", "edges": [[top, flat]], "distance": d}),
     );
-    let x = |t: f64| 3.0 * t * (1.0 - t).powi(2) + 9.0 * t * t * (1.0 - t) + 4.0 * t.powi(3);
-    let dx = |t: f64| 3.0 * (1.0 - t).powi(2) + 12.0 * t * (1.0 - t) + 3.0 * t * t;
+    let x = |t: f64| 3.0 * t * (1.0 - t).ppowi(2) + 9.0 * t * t * (1.0 - t) + 4.0 * t.ppowi(3);
+    let dx = |t: f64| 3.0 * (1.0 - t).ppowi(2) + 12.0 * t * (1.0 - t) + 3.0 * t * t;
     let simpson = |f: &dyn Fn(f64) -> f64, from: f64, to: f64| {
         let n = 20_000;
         let h = (to - from) / f64::from(n);
@@ -981,7 +982,7 @@ fn a_sketch_on_the_chamfer_face_and_a_chamfer_on_an_edge_of_a_chamfer() {
             "feature.chamfer",
             json!({"edges": [["F2:chamfer(0)", "F2:copy(0)/F1:face(1)"]], "distance": e * k, "name": "Eased"}),
         );
-        let eased = chamfered - e * e / 2.0 * (PI * 0.75).sin() * 4.0;
+        let eased = chamfered - e * e / 2.0 * (PI * 0.75).psin() * 4.0;
         let solid = assert_solid(&mut s, "Eased", eased, None, k);
         assert_eq!(solid["faces"], 8);
         let names = names_of(&solid);
@@ -1001,7 +1002,7 @@ fn a_sketch_on_the_chamfer_face_and_a_chamfer_on_an_edge_of_a_chamfer() {
             json!({"feature": "Bevel", "distance": 1.5 * k}),
         );
         let chamfered = 24.0 - 1.5 * 1.5 / 2.0 * 4.0;
-        let eased = chamfered - e * e / 2.0 * (PI * 0.75).sin() * 4.0;
+        let eased = chamfered - e * e / 2.0 * (PI * 0.75).psin() * 4.0;
         assert_solid(&mut s, "Eased", eased, None, k);
     }
 }

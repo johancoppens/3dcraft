@@ -15,6 +15,7 @@
 
 use super::Surface;
 use crate::{Projection, View};
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use std::f64::consts::PI;
 
@@ -189,7 +190,7 @@ pub fn dof_taps(reach: f64, index: u32) -> Vec<[f32; 2]> {
         for j in 0..n {
             let a = 2.0 * PI * j as f64 / n as f64 + turn + 0.5 * i as f64;
             // Deliberate narrowing: both renderers read these numbers.
-            out.push([(r * a.cos()) as f32, (r * a.sin()) as f32]);
+            out.push([(r * a.pcos()) as f32, (r * a.psin()) as f32]);
         }
     }
     out
@@ -459,7 +460,7 @@ pub(crate) fn edge_fade(x: usize, y: usize, w: usize, h: usize) -> f64 {
 /// cosine `c`.
 pub fn dielectric_fresnel(c: f64) -> f64 {
     let f0 = super::DIELECTRIC_F0;
-    f0 + (1.0 - f0) * (1.0 - c.clamp(0.0, 1.0)).powi(5)
+    f0 + (1.0 - f0) * (1.0 - c.clamp(0.0, 1.0)).ppowi(5)
 }
 
 /// GGX `D` and the height-correlated Smith visibility `V` (Filament) at
@@ -691,7 +692,7 @@ pub(crate) fn gather<const N: usize>(
                 let i = y * w + x;
                 let z0 = depth.get(i).copied().unwrap_or(f64::INFINITY);
                 let c0 = coc(z0);
-                let w0 = 1.0 / c0.max(0.5).powi(2);
+                let w0 = 1.0 / c0.max(0.5).ppowi(2);
                 let mut sum = [0.0; N];
                 add(&mut sum, values.get(i), w0);
                 let mut total = w0;
@@ -710,7 +711,7 @@ pub(crate) fn gather<const N: usize>(
                     if cover <= 0.0 {
                         continue;
                     }
-                    let wt = cover / c.max(0.5).powi(2);
+                    let wt = cover / c.max(0.5).ppowi(2);
                     add(&mut sum, values.get(j), wt);
                     total += wt;
                 }
@@ -979,7 +980,7 @@ mod tests {
     fn the_taps_lie_on_their_rings() {
         let taps = dof_taps(8.0, 0);
         assert_eq!(taps.len(), 8 + 16 + 24 + 32);
-        let r = |t: &[f32; 2]| f64::from(t[0]).hypot(f64::from(t[1]));
+        let r = |t: &[f32; 2]| f64::from(t[0]).phypot(f64::from(t[1]));
         assert!(taps.iter().all(|t| r(t) <= 8.0 + 1e-5));
         assert!(taps.iter().any(|t| (r(t) - 8.0).abs() < 1e-5));
     }

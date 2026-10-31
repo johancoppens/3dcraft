@@ -17,6 +17,7 @@
 )]
 
 use craft3d_engine::{Access, Session, Workspace};
+use craft3d_math::Portable;
 use serde_json::{Value, json};
 
 fn run(session: &mut Session, id: &str, params: Value) -> Value {
@@ -98,7 +99,7 @@ fn the_metacentric_height_of_a_box_hull_is_its_closed_form() {
     let mut s = kayak();
     close(value_of(&mut s, "T"), 250.0, 1e-9);
     close(value_of(&mut s, "KB"), 125.0, 1e-9);
-    close(value_of(&mut s, "I"), 2000.0 * 600f64.powi(3) / 12.0, 1e-9);
+    close(value_of(&mut s, "I"), 2000.0 * 600f64.ppowi(3) / 12.0, 1e-9);
     close(value_of(&mut s, "BM"), 120.0, 1e-9);
     close(value_of(&mut s, "GM"), 65.0, 1e-9);
     let gm = output(&mut s, "GM");
@@ -476,7 +477,7 @@ fn a_spheres_curvature_fails_a_max_below_it_at_three_scales() {
         }
         let flat = assertion(&mut s, "flat enough");
         assert_eq!(flat["status"], "failed", "scale {scale}: {flat}");
-        close(flat["measured"].as_f64().unwrap(), scale.powi(-2), 1e-6);
+        close(flat["measured"].as_f64().unwrap(), scale.ppowi(-2), 1e-6);
         let round = assertion(&mut s, "round");
         assert_eq!(round["status"], "passed", "scale {scale}: {round}");
     }
@@ -568,13 +569,13 @@ fn the_extent_of_a_section_along_an_axis_is_its_closed_form() {
     close(value_of(&mut s, "BWL"), 500.0, 1e-12);
     close(
         value_of(&mut s, "LogB"),
-        2.0 * (200f64.powi(2) - 120f64.powi(2)).sqrt(),
+        2.0 * (200f64.ppowi(2) - 120f64.ppowi(2)).sqrt(),
         1e-9,
     );
     close(value_of(&mut s, "LogL"), 1000.0, 1e-12);
     close(
         value_of(&mut s, "BallD"),
-        2.0 * (300f64.powi(2) - 180f64.powi(2)).sqrt(),
+        2.0 * (300f64.ppowi(2) - 180f64.ppowi(2)).sqrt(),
         1e-9,
     );
     assert_eq!(output(&mut s, "LWL")["unit"], "mm");

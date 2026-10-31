@@ -14,6 +14,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::{P, Rng, polygon};
@@ -59,7 +60,7 @@ fn assert_profile(points: &[P], what: &str) {
 /// The rectangle `l × w` centred on `c`, turned by `angle`, its corners in
 /// counter-clockwise order (clockwise when `reverse`).
 fn rectangle(c: P, l: f64, w: f64, angle: f64, reverse: bool) -> Vec<P> {
-    let (s, co) = angle.sin_cos();
+    let (s, co) = angle.psin_cos();
     let mut points: Vec<P> = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
         .iter()
         .map(|(x, y)| {
@@ -112,7 +113,7 @@ fn to_segment(p: P, a: P, b: P) -> f64 {
     let d = [b[0] - a[0], b[1] - a[1]];
     let l2 = d[0] * d[0] + d[1] * d[1];
     let t = (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / l2).clamp(0.0, 1.0);
-    (p[0] - a[0] - t * d[0]).hypot(p[1] - a[1] - t * d[1])
+    (p[0] - a[0] - t * d[0]).phypot(p[1] - a[1] - t * d[1])
 }
 
 #[test]
@@ -149,7 +150,7 @@ fn random_star_shaped_polygons_are_profiles_at_every_scale() {
                 .iter()
                 .map(|a| {
                     let r = uniform(&mut rng, 0.05, 1.0) * 40.0 * k;
-                    let (s, co) = (a + turn).sin_cos();
+                    let (s, co) = (a + turn).psin_cos();
                     [c[0] + r * co, c[1] + r * s]
                 })
                 .collect();
@@ -231,7 +232,7 @@ fn a_corner_within_the_tolerance_of_a_side_touches_it() {
             // The side from a to b, and the way into the rectangle.
             let mid = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
             let inward = [d[0] - a[0], d[1] - a[1]];
-            let length = inward[0].hypot(inward[1]);
+            let length = inward[0].phypot(inward[1]);
             let near = |gap: f64| {
                 [
                     mid[0] + inward[0] / length * gap,

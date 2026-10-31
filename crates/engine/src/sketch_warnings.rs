@@ -6,6 +6,7 @@
 
 use craft3d_doc::sketch::{ConstraintKind, EntityId, Geometry, Sketch};
 use craft3d_doc::{Document, FeatureId, FeatureKind};
+use craft3d_math::Portable;
 use craft3d_regen::{Regen, SketchResult, Status};
 use serde_json::{Value, json};
 
@@ -75,7 +76,7 @@ pub(crate) fn collapsed_lines(
         let (Some((ax, ay)), Some((bx, by))) = (solved.point(start), solved.point(end)) else {
             continue;
         };
-        let length = (bx - ax).hypot(by - ay);
+        let length = (bx - ax).phypot(by - ay);
         if length.is_nan() || length > tolerance {
             continue;
         }

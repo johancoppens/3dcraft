@@ -877,6 +877,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
     use craft3d_geom::refine::interpolate;
+    use craft3d_math::Portable;
 
     /// A fillet face that waves across a trim between the places the trim
     /// is fitted through and held at: `z = amplitude sin(16 π v)`, zero at
@@ -888,7 +889,7 @@ mod tests {
             .map(|v| {
                 vec![
                     v * k,
-                    amplitude * k * (16.0 * std::f64::consts::PI * v).sin(),
+                    amplitude * k * (16.0 * std::f64::consts::PI * v).psin(),
                 ]
             })
             .collect();

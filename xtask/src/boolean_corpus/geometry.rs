@@ -8,6 +8,7 @@
 //! bicubic Bézier patch, is evaluated here with the Bernstein polynomials
 //! written out.
 
+use craft3d_math::Portable;
 use std::f64::consts::{FRAC_1_SQRT_2, PI, TAU};
 use std::ops::{Add, Mul, Neg, Sub};
 
@@ -142,7 +143,7 @@ impl Rot {
     }
 
     pub fn about_z(angle: f64) -> Rot {
-        let (s, c) = angle.sin_cos();
+        let (s, c) = angle.psin_cos();
         Rot {
             x: V(c, s, 0.0),
             y: V(-s, c, 0.0),
@@ -328,7 +329,7 @@ fn dome_steepest(height: f64) -> f64 {
 fn gauss_legendre(n: usize) -> Vec<(f64, f64)> {
     let mut rule = Vec::with_capacity(n);
     for k in 1..=n {
-        let mut x = (PI * (k as f64 - 0.25) / (n as f64 + 0.5)).cos();
+        let mut x = (PI * (k as f64 - 0.25) / (n as f64 + 0.5)).pcos();
         let mut slope = 1.0;
         for _ in 0..100 {
             let (mut p0, mut p1) = (1.0, x);
@@ -525,7 +526,7 @@ impl Solid {
         match *self {
             Solid::Block { size } => 2.0 * (size.0 * size.1 + size.1 * size.2 + size.2 * size.0),
             Solid::Cylinder { radius, height } => TAU * radius * (radius + height),
-            Solid::Cone { radius, height } => pi * radius * (radius + radius.hypot(height)),
+            Solid::Cone { radius, height } => pi * radius * (radius + radius.phypot(height)),
             Solid::Sphere { radius } => 4.0 * pi * radius * radius,
             Solid::Torus { major, minor } => 4.0 * pi * pi * major * minor,
             Solid::Dome { size, .. } => {
@@ -576,7 +577,7 @@ impl Solid {
     /// A place of the class, or `None` when the solid has none.
     pub fn place(&self, class: Class, pick: Pick) -> Option<Place> {
         let angle = if pick.round { 0.0 } else { TAU * pick.u };
-        let (sin, cos) = angle.sin_cos();
+        let (sin, cos) = angle.psin_cos();
         let radial = V(cos, sin, 0.0);
         let around = V(-sin, cos, 0.0);
         // A fraction of a half-size to move off a centre by.
@@ -841,12 +842,12 @@ impl Solid {
             Solid::Block { size } => (size * 0.5, 0.5 * size.0.min(size.1).min(size.2)),
             Solid::Cylinder { radius, height } => (V::Z * (0.5 * height), radius.min(0.5 * height)),
             Solid::Cone { radius, height } => {
-                let rho = radius * height / (radius + radius.hypot(height));
+                let rho = radius * height / (radius + radius.phypot(height));
                 (V::Z * rho, rho)
             }
             Solid::Sphere { radius } => (V::ZERO, radius),
             Solid::Torus { major, minor } => {
-                let (s, c) = (TAU * turn).sin_cos();
+                let (s, c) = (TAU * turn).psin_cos();
                 (V(major * c, major * s, 0.0), minor)
             }
             // Under the lowest the roof gets (0.7 height).
@@ -865,7 +866,7 @@ impl Solid {
         match *self {
             Solid::Block { size } => (size * 0.5, 0.5 * size.length()),
             Solid::Cylinder { radius, height } | Solid::Cone { radius, height } => {
-                (V::Z * (0.5 * height), radius.hypot(0.5 * height))
+                (V::Z * (0.5 * height), radius.phypot(0.5 * height))
             }
             Solid::Sphere { radius } => (V::ZERO, radius),
             Solid::Torus { major, minor } => (V::ZERO, major + minor),
@@ -915,7 +916,7 @@ impl Solid {
 
     /// Whether the point, in the solid's own frame, is inside it.
     pub fn contains(&self, p: V) -> bool {
-        let rho = p.0.hypot(p.1);
+        let rho = p.0.phypot(p.1);
         match *self {
             Solid::Block { size } => {
                 (0.0..=size.0).contains(&p.0)
@@ -927,7 +928,7 @@ impl Solid {
                 (0.0..=height).contains(&p.2) && rho <= radius * (1.0 - p.2 / height)
             }
             Solid::Sphere { radius } => p.length() <= radius,
-            Solid::Torus { major, minor } => (rho - major).hypot(p.2) <= minor,
+            Solid::Torus { major, minor } => (rho - major).phypot(p.2) <= minor,
             Solid::Dome { size, .. } => {
                 (0.0..=size.0).contains(&p.0)
                     && (0.0..=size.1).contains(&p.1)
@@ -1173,7 +1174,7 @@ pub fn against(
     let s = match spin {
         Spin::Aligned => along,
         Spin::Quarter => across,
-        Spin::Angle(angle) => along * angle.cos() + across * angle.sin(),
+        Spin::Angle(angle) => along * angle.pcos() + across * angle.psin(),
     };
     let w = m.cross(s);
     let l = fb.n.cross(fb.t);

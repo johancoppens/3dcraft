@@ -13,6 +13,7 @@
 // Test code: a failure in a helper is a failed test.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
+use craft3d_math::Portable;
 mod boolean_common;
 
 use boolean_common::*;
@@ -81,8 +82,8 @@ fn corner_cut_a_few_tolerances_from_the_vertex() {
             let a = boxed(k, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
             let b = corner_cutter(k, delta);
             let what = format!("corner cut at {tolerances} tolerances, scale {k}");
-            let tetrahedron = (delta * k).powi(3) / 6.0;
-            let cube = k.powi(3);
+            let tetrahedron = (delta * k).ppowi(3) / 6.0;
+            let cube = k.ppowi(3);
             let block = 8.0 * cube;
             for (first, second) in [(&a, &b), (&b, &a)] {
                 let union = op(first, second, Union, k, &what);
@@ -157,7 +158,7 @@ fn concave_wedge(k: f64, delta: f64) -> Body {
 fn sliver_beside_an_edge_of_the_other_body() {
     for k in AT {
         let tol = tolerance(k).linear;
-        let cube = k.powi(3);
+        let cube = k.ppowi(3);
         for tolerances in [3.0, 5.0] {
             let delta = tolerances * tol;
             let a = boxed(k, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
@@ -246,7 +247,7 @@ fn angle_bar(k: f64, degrees: f64) -> Body {
 /// `(x, z)`: the strip of its leg between `x0` and `x1` of the profile,
 /// along the bar's length, turned about the pivot.
 fn strip(k: f64, degrees: f64, x0: f64, x1: f64) -> Vec<[f64; 2]> {
-    let (s, c) = degrees.to_radians().sin_cos();
+    let (s, c) = degrees.to_radians().psin_cos();
     // A rotation about y by θ maps (x, z) to (x cos θ + z sin θ, −x sin θ + z cos θ)
     // about the pivot.
     let turn = |x: f64, z: f64| {

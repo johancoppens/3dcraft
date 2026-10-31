@@ -12,6 +12,7 @@ use crate::state::ProjectionKind;
 use crate::theme::{Tokens, color, color_alpha};
 use crate::view_cube;
 use craft3d_engine::Scene;
+use craft3d_math::Portable;
 use egui::{Pos2, Rect, vec2};
 
 /// Where the controls go in the viewport ([`super::layout`]): the plates,
@@ -296,7 +297,7 @@ fn cube_shadow(tokens: &Tokens, center: egui::Pos2, arm: f32) -> egui::Mesh {
         for j in 0..AROUND {
             let angle = std::f32::consts::TAU * j as f32 / AROUND as f32;
             mesh.colored_vertex(
-                middle + vec2(rx * reach * angle.cos(), ry * reach * angle.sin()),
+                middle + vec2(rx * reach * angle.pcos(), ry * reach * angle.psin()),
                 color_alpha(tokens.view_cube_shadow, alpha),
             );
         }
@@ -718,7 +719,7 @@ impl Shell {
             let ink = tokens.axes.get(arm.axis).copied().unwrap_or(tokens.text);
             let alpha = if arm.toward < -0.05 { 150 } else { 255 };
             let tip = origin + vec2(arm.tip[0] as f32, arm.tip[1] as f32) * reach;
-            let length = arm.tip[0].hypot(arm.tip[1]);
+            let length = arm.tip[0].phypot(arm.tip[1]);
             // A short arm (one that points nearly at the viewer) has a
             // smaller head.
             let head = (width * 2.5).min(0.35 * length as f32 * reach);

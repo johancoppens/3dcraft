@@ -6,6 +6,7 @@
 // Test code: a failure in a helper is a failed test.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
+use craft3d_math::Portable;
 mod boolean_common;
 
 use boolean_common::{SCALES, assert_close, ball, boxed, mass, rod, solve, spike, tolerance};
@@ -355,7 +356,7 @@ fn a_round_hollow_in_a_block_is_widened() {
         let r: f64 = 3.0;
         assert_mass(
             &made,
-            500.0 - 2.0 / 3.0 * PI * r.powi(3),
+            500.0 - 2.0 / 3.0 * PI * r.ppowi(3),
             block_area(10.0, 10.0, 5.0) + PI * r * r,
             k,
         );

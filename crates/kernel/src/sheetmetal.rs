@@ -56,6 +56,7 @@ use crate::plate::{Plate, Side, plate};
 use crate::profile::{P2, Profile, Segment, Shape, cross, distance, dot, sub};
 use crate::unfold::develop;
 use craft3d_geom::{Circle, Curve3, Cylinder, Line, NurbsCurve, Plane, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Transform, Vec3};
 use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, FaceId, VertexId};
 use std::collections::BTreeMap;
@@ -352,7 +353,7 @@ impl Bend {
     /// (the rule a length to the mould line is refused by).
     pub fn setback(&self, angular: f64) -> Option<f64> {
         let half = 0.5 * self.theta();
-        (half < 0.5 * PI - angular).then(|| (self.radius + self.thickness) * half.tan())
+        (half < 0.5 * PI - angular).then(|| (self.radius + self.thickness) * half.ptan())
     }
 
     /// The bend deduction `2 (R + T) tan(θ/2) − BA` (DIN 6935's
@@ -577,7 +578,7 @@ fn scale(a: P2, s: f64) -> P2 {
 }
 
 fn unit(a: P2) -> Option<P2> {
-    let l = a[0].hypot(a[1]);
+    let l = a[0].phypot(a[1]);
     (l.is_finite() && l > 0.0).then(|| [a[0] / l, a[1] / l])
 }
 
@@ -1052,7 +1053,7 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
                                 "a length to the outside mould line needs an angle below 180 degrees (at 180 the outside surfaces never meet); measure it from the tangent line",
                             ));
                         }
-                        f.length - (f.radius + t) * half.tan()
+                        f.length - (f.radius + t) * half.ptan()
                     }
                 };
                 if !(flat_length > tol) {
@@ -2313,10 +2314,10 @@ fn reach_along(seg: &Segment, o: P2, n: P2) -> (f64, f64) {
             };
             let inside = |phi: f64| (phi - from).rem_euclid(TAU) <= sweep;
             let (mut lo, mut hi) = ends;
-            if inside(n[1].atan2(n[0])) {
+            if inside(n[1].patan2(n[0])) {
                 hi = hi.max(at(*center) + radius);
             }
-            if inside((-n[1]).atan2(-n[0])) {
+            if inside((-n[1]).patan2(-n[0])) {
                 lo = lo.min(at(*center) - radius);
             }
             (lo, hi)
@@ -2553,7 +2554,7 @@ fn notch(p: P2, ea: P2, eb: P2, relief: Relief) -> Result<Vec<Segment>, KernelEr
             // The corner's angle α between the edges; the circle tangent
             // to both at distance r from p has its centre on the bisector,
             // r / cos(α/2) from p, and the radius r tan(α/2).
-            let alpha = dot(ea, eb).clamp(-1.0, 1.0).acos();
+            let alpha = dot(ea, eb).clamp(-1.0, 1.0).pacos();
             let half = 0.5 * alpha;
             let bisector = unit(add(ea, eb)).ok_or_else(|| {
                 refuse(
@@ -2561,7 +2562,7 @@ fn notch(p: P2, ea: P2, eb: P2, relief: Relief) -> Result<Vec<Segment>, KernelEr
                     "a relief at a corner whose edges run back on each other",
                 )
             })?;
-            let (c, rho) = (half.cos(), half.tan());
+            let (c, rho) = (half.pcos(), half.ptan());
             if !(c > 1e-9 && rho.is_finite() && rho > 0.0) {
                 return Err(refuse(None, "a tear relief at a corner of 180 degrees"));
             }
@@ -2592,7 +2593,7 @@ fn fold(flats: &[Flat], bends: &[Bend], tolerance: &Tolerance) -> Result<Folded,
             }
         }
     }
-    let size = (hi[0] - lo[0]).hypot(hi[1] - lo[1]);
+    let size = (hi[0] - lo[0]).phypot(hi[1] - lo[1]);
     for (i, b) in bends.iter().enumerate() {
         let d = unit(sub(b.end, b.start)).ok_or_else(|| refuse(Some(i), "a bend has no length"))?;
         let direction = lift(d);
@@ -3001,7 +3002,7 @@ pub fn neutral_band(bend: &Bend) -> Result<Body, KernelError> {
     let w = distance(bend.start, bend.end);
     let mut body = Body::new(BodyKind::Sheet);
     let frame = Frame::WORLD;
-    let at = |u: f64, v: f64| Vec3::new(r * u.cos(), r * u.sin(), v);
+    let at = |u: f64, v: f64| Vec3::new(r * u.pcos(), r * u.psin(), v);
     let v00 = body.add_vertex(at(0.0, 0.0));
     let v10 = body.add_vertex(at(theta, 0.0));
     let v11 = body.add_vertex(at(theta, w));
@@ -3142,7 +3143,7 @@ pub fn measured_angle(part: &Part, bend: usize) -> Option<f64> {
     let b = part.bends.get(bend)?;
     let np = part.flats.get(b.parent)?.transform.vector(Vec3::Z);
     let nc = part.flats.get(b.child)?.transform.vector(Vec3::Z);
-    Some(np.dot(nc).clamp(-1.0, 1.0).acos())
+    Some(np.dot(nc).clamp(-1.0, 1.0).pacos())
 }
 
 /// How a hole of a flat lies to a bend beside that flat: the least

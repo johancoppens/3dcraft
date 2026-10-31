@@ -2285,6 +2285,7 @@ pub fn no_adapter_help(detail: &str) -> String {
 mod tests {
     use super::*;
     use craft3d_engine::Workspace;
+    use craft3d_math::Portable;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     fn desk() -> (Desk, mpsc::Sender<Request>) {
@@ -3323,7 +3324,7 @@ mod tests {
                 });
             let (lo, hi) = crank.mesh.bbox().corners().expect("a box");
             let mid = [(lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0];
-            let (c, n) = (angle.to_radians().cos(), angle.to_radians().sin());
+            let (c, n) = (angle.to_radians().pcos(), angle.to_radians().psin());
             assert!(
                 (mid[0] - 10.0 * c).abs() < 3.0 && (mid[1] - 10.0 * n).abs() < 3.0,
                 "{angle} deg: the crank is drawn at {mid:?}"

@@ -1217,6 +1217,7 @@ pub(crate) fn triangulate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use craft3d_math::Portable;
 
     /// An interior point keeps its clearance from every constraint, not
     /// only from those of the triangle it falls in: next to a corner of
@@ -1448,7 +1449,7 @@ mod tests {
         let hole_b: Vec<P2> = (0..24)
             .map(|i| {
                 let a = -std::f64::consts::TAU * f64::from(i) / 24.0;
-                (7.0 + 1.5 * a.cos(), 3.0 + 1.5 * a.sin())
+                (7.0 + 1.5 * a.pcos(), 3.0 + 1.5 * a.psin())
             })
             .collect();
         let (points, segments) = rings(&[&outer, &hole_a, &hole_b]);
@@ -1566,7 +1567,7 @@ mod tests {
             let circle: Vec<P2> = (0..n)
                 .map(|i| {
                     let a = std::f64::consts::TAU * i as f64 / n as f64;
-                    (3.0 + 2.0 * a.cos(), -1.0 + 2.0 * a.sin())
+                    (3.0 + 2.0 * a.pcos(), -1.0 + 2.0 * a.psin())
                 })
                 .collect();
             let (points, segments) = rings(&[&circle]);
@@ -1624,7 +1625,7 @@ mod tests {
             .map(|i| {
                 let a = std::f64::consts::TAU * (i as f64 + random.between(0.1, 0.9)) / n as f64;
                 let r = random.between(radius.0, radius.1);
-                (centre.0 + r * a.cos(), centre.1 + r * a.sin())
+                (centre.0 + r * a.pcos(), centre.1 + r * a.psin())
             })
             .collect();
         if clockwise {
@@ -1641,7 +1642,7 @@ mod tests {
         let mut random = Random(0x9E37_79B9_7F4A_7C15);
         for case in 0..400 {
             // Sizes and positions over many orders of magnitude.
-            let scale = 10.0_f64.powf(random.between(-6.0, 6.0).round());
+            let scale = 10.0_f64.ppowf(random.between(-6.0, 6.0).round());
             let offset = (
                 scale * random.between(-50.0, 50.0),
                 scale * random.between(-50.0, 50.0),
@@ -1661,8 +1662,8 @@ mod tests {
             for h in 0..holes {
                 let a = std::f64::consts::TAU * (h as f64 + 0.5) / holes as f64;
                 let centre = (
-                    offset.0 + 1.5 * scale * a.cos(),
-                    offset.1 + 1.5 * scale * a.sin(),
+                    offset.0 + 1.5 * scale * a.pcos(),
+                    offset.1 + 1.5 * scale * a.psin(),
                 );
                 let m = 4 + (random.next() * 12.0) as usize;
                 polygons.push(star(

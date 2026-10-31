@@ -13,6 +13,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{
@@ -72,7 +73,7 @@ fn circle(s: &mut Session, name: &str, z: f64, center: P, radius: f64) {
 }
 
 fn turned(points: &[P], angle: f64) -> Vec<P> {
-    let (s, c) = angle.sin_cos();
+    let (s, c) = angle.psin_cos();
     points
         .iter()
         .map(|p| [p[0] * c - p[1] * s, p[0] * s + p[1] * c])
@@ -140,7 +141,7 @@ fn two_profiles_give_the_solids_with_closed_forms_at_every_scale() {
         let found = body(&mut s, "Box");
         assert!(close(
             found["volume"].as_f64().unwrap(),
-            12.0 * k.powi(3),
+            12.0 * k.ppowi(3),
             1e-12
         ));
         assert!(close(found["area"].as_f64().unwrap(), 32.0 * k * k, 1e-12));
@@ -176,7 +177,7 @@ fn two_profiles_give_the_solids_with_closed_forms_at_every_scale() {
         let found = body(&mut s, "Frustum");
         let exact = PI * h / 3.0 * (r0 * r0 + r0 * r1 + r1 * r1);
         assert!(close(found["volume"].as_f64().unwrap(), exact, 1e-12));
-        let slant = (h * h + (r0 - r1).powi(2)).sqrt();
+        let slant = (h * h + (r0 - r1).ppowi(2)).sqrt();
         let exact = PI * (r0 + r1) * slant + PI * (r0 * r0 + r1 * r1);
         assert!(close(found["area"].as_f64().unwrap(), exact, 1e-12));
         assert_eq!(
@@ -342,7 +343,7 @@ fn rectangle_on(s: &mut Session, plane: &str, frame: [[f64; 3]; 3], x: P, y: P) 
     let (cx, cy) = ((x[0] + x[1]) / 2.0, (y[0] + y[1]) / 2.0);
     let [o, ax, ay] = frame;
     let c: Vec<f64> = (0..3).map(|i| o[i] + ax[i] * cx + ay[i] * cy).collect();
-    (x[1] - x[0]) * (y[1] - y[0]) * c[0].hypot(c[1])
+    (x[1] - x[0]) * (y[1] - y[0]) * c[0].phypot(c[1])
 }
 
 #[test]
@@ -378,7 +379,7 @@ fn profiles_on_datum_planes_that_are_not_parallel_make_a_bend_and_a_ring() {
         // sin(angle) times the area times the distance of its centre.
         let exact: f64 = angles
             .windows(2)
-            .map(|w| (w[1] - w[0]).to_radians().sin() * moment)
+            .map(|w| (w[1] - w[0]).to_radians().psin() * moment)
             .sum();
         assert!(close(volume(&mut s, "Bend"), exact, 1e-11));
         deep(&mut s);
@@ -412,7 +413,7 @@ fn profiles_on_datum_planes_that_are_not_parallel_make_a_bend_and_a_ring() {
             json!({"sections": sections, "ruled": true, "closed": true, "name": "Ring"}),
         );
         assert_eq!(made["status"], "ok", "{made}");
-        let exact = 6.0 * (TAU / 6.0).sin() * moment;
+        let exact = 6.0 * (TAU / 6.0).psin() * moment;
         assert!(close(volume(&mut s, "Ring"), exact, 1e-11));
         assert_eq!(face_names(&mut s, "Ring").len(), 24);
         deep(&mut s);
@@ -490,14 +491,14 @@ fn a_leaf_of_splines_lofts_and_survives_saving_and_booleans() {
                         "feature.block",
                         json!({"position": [-0.5 * k, -3.0 * k, 2.0 * k], "size": [4.0 * k, 6.0 * k, 3.0 * k], "name": "Tool"}),
                     );
-                    72.0 * k.powi(3)
+                    72.0 * k.ppowi(3)
                 } else {
                     run(
                         &mut s,
                         "feature.cylinder",
                         json!({"position": [0.3 * k, 0.1 * k, -k], "radius": 0.6 * k, "height": 10.0 * k, "name": "Tool"}),
                     );
-                    PI * 0.36 * 10.0 * k.powi(3)
+                    PI * 0.36 * 10.0 * k.ppowi(3)
                 };
                 let made = run(
                     &mut s,

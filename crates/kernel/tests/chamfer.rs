@@ -5,6 +5,7 @@
 // Test code: a failure in a helper is a failed test.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
+use craft3d_math::Portable;
 mod boolean_common;
 
 use boolean_common::{SCALES, assert_close, boxed, mass, tolerance};
@@ -143,7 +144,7 @@ fn convex_volume(planes: &[([f64; 3], f64)]) -> f64 {
         let x = (on[0] - middle).normalized().unwrap();
         let y = n.cross(x);
         on.sort_by(|p, q| {
-            let angle = |v: Vec3| (v - middle).dot(y).atan2((v - middle).dot(x));
+            let angle = |v: Vec3| (v - middle).dot(y).patan2((v - middle).dot(x));
             angle(*p).total_cmp(&angle(*q))
         });
         for pair in 0..on.len() {
@@ -496,7 +497,7 @@ fn two_distances_and_a_distance_with_an_angle() {
             let m = mass(&made.body);
             assert_close(m.volume, convex_volume(&planes) * k * k * k, "volume");
             assert_close(m.volume, (24.0 - d1 * d2 / 2.0 * 2.0) * k * k * k, "volume");
-            let area = 52.0 - (d1 + d2) * 2.0 - d1 * d2 + d1.hypot(d2) * 2.0;
+            let area = 52.0 - (d1 + d2) * 2.0 - d1 * d2 + d1.phypot(d2) * 2.0;
             assert_close(m.area, area * k * k, "area");
         }
         // 30 degrees between the first face and the chamfer face.
@@ -508,7 +509,7 @@ fn two_distances_and_a_distance_with_an_angle() {
                 angle,
             },
         );
-        let second = d1 * angle.tan();
+        let second = d1 * angle.ptan();
         let mut planes = box_planes([4.0, 3.0, 2.0]);
         planes.push(([-1.0 / second, -1.0 / d1, 0.0], -1.0));
         let m = mass(&made.body);
@@ -521,7 +522,7 @@ fn hexagon() -> Vec<[f64; 2]> {
     (0..6)
         .map(|i| {
             let a = f64::from(i) * PI / 3.0;
-            [2.0 * a.cos(), 2.0 * a.sin()]
+            [2.0 * a.pcos(), 2.0 * a.psin()]
         })
         .collect()
 }
@@ -531,7 +532,7 @@ fn hexagon_planes(height: f64) -> Vec<([f64; 3], f64)> {
     let mut planes: Vec<([f64; 3], f64)> = (0..6)
         .map(|i| {
             let a = (f64::from(i) + 0.5) * PI / 3.0;
-            ([a.cos(), a.sin(), 0.0], 3.0_f64.sqrt())
+            ([a.pcos(), a.psin(), 0.0], 3.0_f64.sqrt())
         })
         .collect();
     planes.push(([0.0, 0.0, -1.0], 0.0));
@@ -549,7 +550,7 @@ fn edges_of_a_hexagonal_prism_where_the_faces_are_not_square() {
             let d = 0.5;
             let upright = equal_in(&part, &frame, k, [2.0, 0.0, 1.5], d);
             let made = solve(&part, &[upright], k);
-            let removed = d * d / 2.0 * (2.0 * PI / 3.0).sin() * 3.0;
+            let removed = d * d / 2.0 * (2.0 * PI / 3.0).psin() * 3.0;
             let m = mass(&made.body);
             assert_close(m.volume, (whole - removed) * k * k * k, "volume");
             // The same with a distance and an angle of 20 degrees.
@@ -561,9 +562,9 @@ fn edges_of_a_hexagonal_prism_where_the_faces_are_not_square() {
                 },
                 ..upright
             };
-            let second = d * angle.sin() / (angle + 2.0 * PI / 3.0).sin();
+            let second = d * angle.psin() / (angle + 2.0 * PI / 3.0).psin();
             let made = solve(&part, &[sized], k);
-            let removed = d * second / 2.0 * (2.0 * PI / 3.0).sin() * 3.0;
+            let removed = d * second / 2.0 * (2.0 * PI / 3.0).psin() * 3.0;
             assert_close(
                 mass(&made.body).volume,
                 (whole - removed) * k * k * k,
@@ -572,10 +573,10 @@ fn edges_of_a_hexagonal_prism_where_the_faces_are_not_square() {
             // An edge of the top: at both ends the next wall leans away
             // and the chamfer face runs on until it leaves it.
             let a = 0.5 * PI / 3.0;
-            let rim = [3.0_f64.sqrt() * a.cos(), 3.0_f64.sqrt() * a.sin(), 3.0];
+            let rim = [3.0_f64.sqrt() * a.pcos(), 3.0_f64.sqrt() * a.psin(), 3.0];
             let made = solve(&part, &[equal_in(&part, &frame, k, rim, d)], k);
             let mut planes = hexagon_planes(3.0);
-            planes.push(([a.cos(), a.sin(), 1.0], 3.0_f64.sqrt() + 3.0 - d));
+            planes.push(([a.pcos(), a.psin(), 1.0], 3.0_f64.sqrt() + 3.0 - d));
             assert_close(
                 mass(&made.body).volume,
                 convex_volume(&planes) * k * k * k,
@@ -750,7 +751,7 @@ fn the_base_of_a_cone_and_the_end_of_a_frustum() {
         };
         let made = solve(&part, &[sized], k);
         // Up the slope from the rim: towards the apex.
-        let slant = r.hypot(h);
+        let slant = r.phypot(h);
         let up = [r - d2 * r / slant, d2 * h / slant];
         let removed = ring([[r, 0.0], [r - d1, 0.0], up]);
         assert_close(
@@ -1158,7 +1159,7 @@ fn a_rim_chain_that_ends_in_two_sharp_corners() {
             .filter(|i| !sharp.contains(i))
             .map(|i| turns[i] * (1.4 - inset))
             .sum::<f64>()
-        + sharp.iter().map(|i| inset / turns[*i].tan()).sum::<f64>();
+        + sharp.iter().map(|i| inset / turns[*i].ptan()).sum::<f64>();
     let removed = 0.5 * d * d * path;
     for (k, by_fillet) in SCALES.into_iter().flat_map(|k| [(k, false), (k, true)]) {
         // The finding's: a document in millimetres (1e-6) at ten times

@@ -15,6 +15,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{assert_close, body, built, error, new_document, run, session_in, workdir};
@@ -129,7 +130,7 @@ fn holes_in_flanges_are_cut_flat_and_folded_and_measured() {
                    "radius": format!("{r} mm"), "kFactor": 0.5, "cutouts": ["Vents", "Mirror"],
                    "flanges": [{"edge": lines[1], "length": format!("{l} mm"), "angle": "90 deg"}]}),
         );
-        let holes = PI * (1.7f64.powi(2) + 3.0f64.powi(2) + 1.0) * k * k;
+        let holes = PI * (1.7f64.ppowi(2) + 3.0f64.ppowi(2) + 1.0) * k * k;
         let area = 50.0 * k * 40.0 * k + 40.0 * k * (ba + l) - holes;
         assert_close(
             &body(&mut s, "Box")["volume"],

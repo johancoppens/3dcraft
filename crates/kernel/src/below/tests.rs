@@ -29,7 +29,7 @@ fn close(got: f64, want: f64, scale: f64, what: &str) {
 /// The plane turned by `angle` about its x axis (Rodrigues; the x axis
 /// is square to the normal).
 fn turned(plane: &CutPlane, angle: f64) -> CutPlane {
-    let (s, c) = angle.sin_cos();
+    let (s, c) = angle.psin_cos();
     CutPlane::new(
         plane.normal * c + plane.x_axis.cross(plane.normal) * s,
         plane.x_axis,
@@ -65,9 +65,9 @@ fn a_box_matches_its_closed_forms() {
         close(at.y, 0.0, k, "TCB");
         let wp = im.section;
         close(wp.area, l * b, k * k, "section area");
-        close(wp.i_x, l * b * b * b / 12.0, k.powi(4), "I_T = L B³/12");
-        close(wp.i_y, b * l * l * l / 12.0, k.powi(4), "I_L = B L³/12");
-        close(wp.product, 0.0, k.powi(4), "product");
+        close(wp.i_x, l * b * b * b / 12.0, k.ppowi(4), "I_T = L B³/12");
+        close(wp.i_y, b * l * l * l / 12.0, k.ppowi(4), "I_L = B L³/12");
+        close(wp.product, 0.0, k.ppowi(4), "product");
         close(wp.centroid.unwrap().z, t, k, "section in the plane");
         close(
             im.surface,
@@ -99,15 +99,15 @@ fn a_sphere_matches_the_spherical_cap() {
             close(
                 im.volume,
                 PI * s * s * (3.0 * r - s) / 3.0,
-                k.powi(3),
+                k.ppowi(3),
                 "cap volume",
             );
-            let d = 3.0 * (2.0 * r - s).powi(2) / (4.0 * (3.0 * r - s));
+            let d = 3.0 * (2.0 * r - s).ppowi(2) / (4.0 * (3.0 * r - s));
             close(im.centroid.unwrap().z, -d, k, "cap centroid");
             let a2 = r * r - h * h;
             close(im.section.area, PI * a2, k * k, "section circle");
-            close(im.section.i_x, PI * a2 * a2 / 4.0, k.powi(4), "I");
-            close(im.section.i_y, PI * a2 * a2 / 4.0, k.powi(4), "I");
+            close(im.section.i_x, PI * a2 * a2 / 4.0, k.ppowi(4), "I");
+            close(im.section.i_y, PI * a2 * a2 / 4.0, k.ppowi(4), "I");
             close(im.surface, 2.0 * PI * r * s, k * k, "cap area");
             // For a sphere the centroid height plus ix / V is its centre at every level.
             let km = im.centroid.unwrap().z + im.section.i_x / im.volume;
@@ -129,20 +129,25 @@ fn a_horizontal_cylinder_matches_the_circular_segment() {
         let body = cylinder(&frame, r, l).unwrap();
         for h in [-0.2 * k, 0.4 * k] {
             let im = below(&[&body], &upright(), h, &tol(k)).unwrap();
-            let theta = 2.0 * (-h / r).acos();
-            let segment = 0.5 * r * r * (theta - theta.sin());
-            close(im.volume, l * segment, k.powi(3), "segment volume");
-            let d = 4.0 * r * (0.5 * theta).sin().powi(3) / (3.0 * (theta - theta.sin()));
+            let theta = 2.0 * (-h / r).pacos();
+            let segment = 0.5 * r * r * (theta - theta.psin());
+            close(im.volume, l * segment, k.ppowi(3), "segment volume");
+            let d = 4.0 * r * (0.5 * theta).psin().ppowi(3) / (3.0 * (theta - theta.psin()));
             close(im.centroid.unwrap().z, -d, k, "segment centroid");
             let c = (r * r - h * h).sqrt();
             close(im.section.area, 2.0 * c * l, k * k, "section");
             close(
                 im.section.i_x,
-                l * (2.0 * c).powi(3) / 12.0,
-                k.powi(4),
+                l * (2.0 * c).ppowi(3) / 12.0,
+                k.ppowi(4),
                 "ix",
             );
-            close(im.section.i_y, 2.0 * c * l.powi(3) / 12.0, k.powi(4), "iy");
+            close(
+                im.section.i_y,
+                2.0 * c * l.ppowi(3) / 12.0,
+                k.ppowi(4),
+                "iy",
+            );
             close(
                 im.surface,
                 2.0 * segment + l * r * theta,
@@ -168,7 +173,7 @@ fn a_v_prism_matches_the_triangle() {
         .unwrap();
         let body = block(&frame, l, side, side).unwrap();
         let im = below(&[&body], &upright(), t, &tol(k)).unwrap();
-        close(im.volume, l * t * t, k.powi(3), "V");
+        close(im.volume, l * t * t, k.ppowi(3), "V");
         close(im.centroid.unwrap().z, 2.0 * t / 3.0, k, "centroid");
         close(im.section.area, 2.0 * t * l, k * k, "A");
         close(im.section.i_x / im.volume, 2.0 * t / 3.0, k, "ix / V");
@@ -198,7 +203,7 @@ fn results_do_not_depend_on_where_the_body_lies() {
         )
         .unwrap();
         let im = below(&[&moved], &turned, t, &tol(k)).unwrap();
-        close(im.volume, reference.volume, k.powi(3), "V");
+        close(im.volume, reference.volume, k.ppowi(3), "V");
         let b = im.centroid.unwrap();
         close(
             b.dot(turned.normal),
@@ -206,8 +211,8 @@ fn results_do_not_depend_on_where_the_body_lies() {
             k,
             "centroid height",
         );
-        close(im.section.i_x, reference.section.i_x, k.powi(4), "ix");
-        close(im.section.i_y, reference.section.i_y, k.powi(4), "iy");
+        close(im.section.i_x, reference.section.i_x, k.ppowi(4), "ix");
+        close(im.section.i_y, reference.section.i_y, k.ppowi(4), "iy");
         close(im.surface, reference.surface, k * k, "surface below");
     }
 }
@@ -235,7 +240,7 @@ fn a_turned_plane_moves_the_centroid_below_by_the_wall_sided_form() {
             let found = level_for(&[&body], &plane, volume, &tol(k)).unwrap();
             let at = found.below.centroid.unwrap();
             let lever = (at - q).dot(plane.normal.cross(plane.x_axis));
-            let want = phi.sin() * (t / 2.0 + r - c + 0.5 * r * phi.tan().powi(2));
+            let want = phi.psin() * (t / 2.0 + r - c + 0.5 * r * phi.ptan().ppowi(2));
             close(lever, want, k, "the centroid's lever");
         }
     }
@@ -299,7 +304,7 @@ fn two_bodies_sum_and_move_their_moments() {
     let (a, b) = (part(-1.0), part(1.0));
     let im = below(&[&a, &b], &upright(), 0.2, &tol(1.0)).unwrap();
     close(im.volume, 2.0 * 4.0 * 0.5 * 0.2, 1.0, "V");
-    let one = 4.0 * 0.5_f64.powi(3) / 12.0;
+    let one = 4.0 * 0.5_f64.ppowi(3) / 12.0;
     close(im.section.i_x, 2.0 * (one + 4.0 * 0.5 * 1.0), 1.0, "ix");
     close(im.section.centroid.unwrap().y, 0.0, 1.0, "centre");
 }
@@ -326,7 +331,7 @@ fn a_spline_cone_apex_down_matches_the_cone() {
         let im = below(&[&body], &upright(), h, &t).unwrap();
         let r = r_top * h / height;
         let within = |got: f64, want: f64, power: i32, what: &str| {
-            let allowed = 1e-9 * want.abs() + 20.0 * t.linear * k.powi(power - 1);
+            let allowed = 1e-9 * want.abs() + 20.0 * t.linear * k.ppowi(power - 1);
             assert!(
                 (got - want).abs() <= allowed,
                 "{what} at scale {k}: got {got}, want {want} (allowed {allowed})"
@@ -335,9 +340,9 @@ fn a_spline_cone_apex_down_matches_the_cone() {
         within(im.volume, PI * r * r * h / 3.0, 3, "volume");
         within(im.centroid.unwrap().z, 0.75 * h, 1, "centroid 3h/4");
         within(im.section.area, PI * r * r, 2, "section");
-        within(im.section.i_x, PI * r.powi(4) / 4.0, 4, "ix");
-        within(im.section.i_y, PI * r.powi(4) / 4.0, 4, "iy");
-        within(im.surface, PI * r * r.hypot(h), 2, "surface below");
+        within(im.section.i_x, PI * r.ppowi(4) / 4.0, 4, "ix");
+        within(im.section.i_y, PI * r.ppowi(4) / 4.0, 4, "iy");
+        within(im.surface, PI * r * r.phypot(h), 2, "surface below");
         // Found again from its own volume.
         let found = level_for(&[&body], &upright(), im.volume, &t).unwrap();
         within(found.below.offset, h, 1, "offset");
@@ -352,19 +357,19 @@ fn a_spline_cone_apex_down_matches_the_cone() {
 fn a_turned_rectangle_gives_its_principal_moments_back() {
     for k in SCALES {
         let (w, h, angle) = (3.0 * k, k, 0.4_f64);
-        let (s, c) = angle.sin_cos();
+        let (s, c) = angle.psin_cos();
         let long = Vec3::new(c, s, 0.0);
         let frame = Frame::new(Vec3::new(0.0, 0.0, -k), Vec3::new(0.0, 0.0, 1.0), long).unwrap();
         let body = block(&frame, w, h, 2.0 * k).unwrap();
         let plane = upright();
         let im = below(&[&body], &plane, 0.0, &tol(k)).unwrap();
         assert!(
-            im.section.product.abs() > 1e-3 * k.powi(4),
+            im.section.product.abs() > 1e-3 * k.ppowi(4),
             "the product mixes"
         );
         let (major, minor, axis) = im.section.principal(&plane).unwrap();
-        close(major, h * w.powi(3) / 12.0, k.powi(4), "major");
-        close(minor, w * h.powi(3) / 12.0, k.powi(4), "minor");
+        close(major, h * w.ppowi(3) / 12.0, k.ppowi(4), "major");
+        close(minor, w * h.ppowi(3) / 12.0, k.ppowi(4), "minor");
         close(
             axis.dot(long).abs(),
             0.0,
@@ -384,11 +389,11 @@ fn a_turned_rectangle_gives_its_principal_moments_back() {
 fn a_thin_tilted_rod_cut_far_from_its_middle_keeps_its_section_moments() {
     for k in SCALES {
         let (r, l, alpha) = (k, 1000.0 * k, 0.5_f64);
-        let axis = Vec3::new(alpha.sin(), 0.0, alpha.cos());
+        let axis = Vec3::new(alpha.psin(), 0.0, alpha.pcos());
         let frame = Frame::new(Vec3::ZERO, axis, Vec3::new(0.0, 1.0, 0.0)).unwrap();
         let body = cylinder(&frame, r, l).unwrap();
         let im = below(&[&body], &upright(), 5.0 * k, &tol(k)).unwrap();
-        let (a, b) = (r / alpha.cos(), r);
+        let (a, b) = (r / alpha.pcos(), r);
         let s = im.section;
         close(s.area, PI * a * b, k * k, "ellipse area");
         let rel = |got: f64, want: f64, what: &str| {
@@ -397,8 +402,8 @@ fn a_thin_tilted_rod_cut_far_from_its_middle_keeps_its_section_moments() {
                 "{what} at scale {k}: got {got}, want {want}"
             );
         };
-        rel(s.i_x, PI * a * b.powi(3) / 4.0, "ix");
-        rel(s.i_y, PI * a.powi(3) * b / 4.0, "iy");
+        rel(s.i_x, PI * a * b.ppowi(3) / 4.0, "ix");
+        rel(s.i_y, PI * a.ppowi(3) * b / 4.0, "iy");
         assert!(s.product.abs() <= 1e-9 * s.i_y, "ixy {}", s.product);
     }
 }
@@ -428,13 +433,13 @@ fn a_section_with_a_hole_takes_its_inner_loop_off() {
             k * k,
             "annulus",
         );
-        let i = PI * (big.powi(4) - small.powi(4)) / 4.0;
-        close(im.section.i_x, i, k.powi(4), "ix");
-        close(im.section.i_y, i, k.powi(4), "iy");
+        let i = PI * (big.ppowi(4) - small.ppowi(4)) / 4.0;
+        close(im.section.i_x, i, k.ppowi(4), "ix");
+        close(im.section.i_y, i, k.ppowi(4), "iy");
         close(
             im.volume,
             PI * (big * big - small * small) * 1.5 * k,
-            k.powi(3),
+            k.ppowi(3),
             "volume",
         );
     }
@@ -465,11 +470,16 @@ fn one_body_with_two_section_faces_sums_them() {
         let off = 0.5 * (gap + w);
         close(
             im.section.i_y,
-            2.0 * (d * w.powi(3) / 12.0 + w * d * off * off),
-            k.powi(4),
+            2.0 * (d * w.ppowi(3) / 12.0 + w * d * off * off),
+            k.ppowi(4),
             "iy by the parallel-axis rule",
         );
-        close(im.section.i_x, 2.0 * w * d.powi(3) / 12.0, k.powi(4), "ix");
+        close(
+            im.section.i_x,
+            2.0 * w * d.ppowi(3) / 12.0,
+            k.ppowi(4),
+            "ix",
+        );
         close(im.section.centroid.unwrap().x, 0.0, k, "centred");
     }
 }
@@ -494,13 +504,13 @@ fn a_level_on_a_flat_face_of_the_body_is_found() {
         let stepped = boolean(&base, &top, BooleanOp::Union, &tol(k))
             .unwrap()
             .body;
-        let found = level_for(&[&stepped], &upright(), 2.0 * k.powi(3), &tol(k)).unwrap();
+        let found = level_for(&[&stepped], &upright(), 2.0 * k.ppowi(3), &tol(k)).unwrap();
         close(found.below.offset, k, k, "the shoulder");
         let at_shoulder = below(&[&stepped], &upright(), k, &tol(k)).unwrap();
         close(
             at_shoulder.volume,
-            2.0 * k.powi(3),
-            k.powi(3),
+            2.0 * k.ppowi(3),
+            k.ppowi(3),
             "volume at the shoulder",
         );
         close(
@@ -532,7 +542,7 @@ fn an_oblique_tangent_plane_to_a_sphere_cuts_nothing() {
         close(
             cap.volume,
             PI * s * s * (3.0 * r - s) / 3.0,
-            k.powi(3),
+            k.ppowi(3),
             "cap",
         );
     }
@@ -599,8 +609,8 @@ fn a_torus_found_empty_above_its_bottom_is_lost_by_its_depth() {
         let (major, minor, t) = (3.0 * k, k, tol(k).linear);
         let centre = Vec3::new(-0.4 * k, 0.7 * k, 0.2 * k);
         let theta: f64 = 0.4;
-        let axis = Vec3::new(theta.sin(), 0.0, theta.cos());
-        let x = Vec3::new(theta.cos(), 0.0, -theta.sin());
+        let axis = Vec3::new(theta.psin(), 0.0, theta.pcos());
+        let x = Vec3::new(theta.pcos(), 0.0, -theta.psin());
         let body = torus(&Frame::new(centre, axis, x).unwrap(), major, minor).unwrap();
         assert!(body.vertices.is_empty());
         for plane in [
@@ -644,7 +654,7 @@ fn a_sphere_and_a_torus_cut_near_their_bottoms_match_their_closed_forms() {
             close(
                 im.volume,
                 PI * h * h * (3.0 * r - h) / 3.0,
-                k.powi(3),
+                k.ppowi(3),
                 "cap volume",
             );
             close(
@@ -659,11 +669,11 @@ fn a_sphere_and_a_torus_cut_near_their_bottoms_match_their_closed_forms() {
         for h in [1e-2 * k, 0.5 * k, 1.5 * k] {
             let im = below(&[&ring], &upright(), -minor + h, &tol(k)).unwrap();
             let half = (2.0 * minor * h - h * h).sqrt();
-            let segment = minor * minor * ((minor - h) / minor).acos() - (minor - h) * half;
+            let segment = minor * minor * ((minor - h) / minor).pacos() - (minor - h) * half;
             close(
                 im.volume,
                 2.0 * PI * major * segment,
-                k.powi(3),
+                k.ppowi(3),
                 "torus below",
             );
             close(

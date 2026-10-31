@@ -69,6 +69,7 @@ use crate::sweep::{
 };
 use crate::{KernelError, MAX_REPORTED};
 use craft3d_geom::{Cylinder, NurbsCurve, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, EdgeId, FaceId};
 use std::collections::BTreeMap;
@@ -197,12 +198,12 @@ impl Helix {
 
     /// The length of the helix: `turns · √((2πr)² + p²)`.
     pub fn length(&self) -> f64 {
-        self.turns * (TAU * self.radius).hypot(self.pitch)
+        self.turns * (TAU * self.radius).phypot(self.pitch)
     }
 
     /// `v` turned about the axis the way the helix goes, through `angle`.
     pub fn turned(&self, v: Vec3, angle: f64) -> Vec3 {
-        let (s, c) = (self.sense() * angle).sin_cos();
+        let (s, c) = (self.sense() * angle).psin_cos();
         let a = self.axis;
         v * c + a.cross(v) * s + a * (a.dot(v) * (1.0 - c))
     }
@@ -231,7 +232,7 @@ impl Helix {
         let across = d - self.axis * height;
         let x = across.dot(self.start);
         let y = across.dot(self.axis.cross(self.start)) * self.sense();
-        (across.length(), y.atan2(x), height)
+        (across.length(), y.patan2(x), height)
     }
 
     /// The helix as a polynomial B-spline within `tol` of it: parts of at
@@ -314,7 +315,7 @@ pub fn circle_error(per_turn: usize, degree: usize) -> Result<f64, KernelError> 
     let span = TAU / per_turn as f64;
     let within = stations_of(degree);
     let band = part_band(1, degree, &within)?;
-    let at = |a: f64| Vec3::new(a.cos(), a.sin(), 0.0);
+    let at = |a: f64| Vec3::new(a.pcos(), a.psin(), 0.0);
     let through: Vec<Vec3> = within.iter().map(|s| at(span * s)).collect();
     let curve = NurbsCurve::polynomial(degree, band.knots.clone(), band.points(&through))?;
     let mut worst: f64 = 0.0;

@@ -33,6 +33,7 @@ use craft3d_kernel::sheetmetal::{
     ReliefKind, SheetFace, Spec, build, developed_allowance, flange_length, flat_area, flat_faces,
     holes_to_bends, measured_angle, measured_radius, outline,
 };
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{FaceId, check, mass_properties};
 use std::f64::consts::{FRAC_PI_2, PI};
@@ -177,7 +178,7 @@ fn round_trip(part: &Part, tol: &Tolerance) {
                 .outer
                 .iter()
                 .chain(flat.holes.iter().flatten())
-                .map(|s| (s.start[0] - p.x).hypot(s.start[1] - p.y))
+                .map(|s| (s.start[0] - p.x).phypot(s.start[1] - p.y))
                 .fold(f64::INFINITY, f64::min);
             assert!(
                 on <= tol.linear,
@@ -231,7 +232,7 @@ fn an_l_bracket_by_its_closed_forms() {
             near(hi.z, t + r + l, 10.0 * tol.linear, "the flange's top");
             near(hi.y, d, 10.0 * tol.linear, "the base's far edge");
             // The volume: two slabs and the bend's quarter ring.
-            let v = w * t * (d + l) + theta * w * ((r + t).powi(2) - r * r) / 2.0;
+            let v = w * t * (d + l) + theta * w * ((r + t).ppowi(2) - r * r) / 2.0;
             let rel = 1e-9 * v;
             near(volume(&part), v, rel, "volume");
             // A T of the flat pattern, exactly at K = ½.
@@ -275,7 +276,7 @@ fn a_flange_measured_to_the_mould_line_reaches_its_length_from_the_virtual_sharp
             f.from = LengthFrom::Mould;
             let part = build(&spec(base(30.0, 20.0, None, k), t, vec![f], None), &tol).unwrap();
             healthy(&part, &tol);
-            let setback = (r + t) * (theta / 2.0).tan();
+            let setback = (r + t) * (theta / 2.0).ptan();
             near(
                 part.bends[0].flat_length,
                 l - setback,
@@ -331,7 +332,7 @@ fn a_u_channel_and_a_z_by_their_closed_forms() {
         near(lo.y, -(r + t), 10.0 * tol.linear, "U outside");
         near(hi.y, d + r + t, 10.0 * tol.linear, "U outside, far");
         near(hi.z, t + r + l, 10.0 * tol.linear, "U height");
-        let v = w * t * (d + 2.0 * l) + 2.0 * FRAC_PI_2 * w * ((r + t).powi(2) - r * r) / 2.0;
+        let v = w * t * (d + 2.0 * l) + 2.0 * FRAC_PI_2 * w * ((r + t).ppowi(2) - r * r) / 2.0;
         near(volume(&part), v, 1e-9 * v, "U volume");
         round_trip(&part, &tol);
 
@@ -418,7 +419,7 @@ fn a_box_with_four_flanges_and_corner_reliefs() {
             let chain = &chains[0];
             let (first, last) = (chain.first().unwrap(), chain.last().unwrap());
             assert!(
-                (first.start[0] - last.end[0]).hypot(first.start[1] - last.end[1]) <= tol.linear
+                (first.start[0] - last.end[0]).phypot(first.start[1] - last.end[1]) <= tol.linear
             );
             round_trip(&part, &tol);
         }
@@ -464,8 +465,8 @@ fn the_distance_from_a_hole_to_the_bend() {
         near(found[0].distance, 4.5 * k, 1e-12 * k, "hole to bend");
         // The volume less the hole.
         let (w, d, t, r, l) = (40.0 * k, 30.0 * k, 1.0 * k, 1.0 * k, 10.0 * k);
-        let ring = FRAC_PI_2 * ((r + t).powi(2) - r * r) / 2.0;
-        let v = (w * d - PI * (2.5 * k).powi(2)) * t + (w + d) * (l * t + ring);
+        let ring = FRAC_PI_2 * ((r + t).ppowi(2) - r * r) / 2.0;
+        let v = (w * d - PI * (2.5 * k).ppowi(2)) * t + (w + d) * (l * t + ring);
         near(volume(&part), v, 1e-6 * v, "volume with a hole");
     }
 }
@@ -863,10 +864,10 @@ fn reliefs_at_a_slanted_corner_and_near_a_straight_one() {
         )
         .unwrap();
         healthy(&part, &tol);
-        let alpha = (10.0f64 / 1000f64.sqrt()).acos();
+        let alpha = (10.0f64 / 1000f64.sqrt()).pacos();
         let ba = FRAC_PI_2 * (r + 0.5 * t);
         let slant = 1000f64.sqrt() * k;
-        let area = 1500.0 * k * k - s * s * alpha.sin()
+        let area = 1500.0 * k * k - s * s * alpha.psin()
             + (60.0 * k - s) * (ba + l)
             + (slant - s) * (ba + l);
         near(

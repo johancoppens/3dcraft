@@ -94,6 +94,7 @@
 use super::{H, NetworkError, Raw, Track, derivative, internal, iso_track_along, point, refuse};
 use crate::refine::SAME_KNOT;
 use crate::{NurbsCurve, NurbsSurface, Surface};
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 
 /// Most pieces an edge is cut into to decide how its faces meet.
@@ -469,7 +470,7 @@ fn norm_hi(v: &V3) -> f64 {
     for k in 0..=d {
         let s: f64 = e
             .iter()
-            .map(|p| p.c.get(k).copied().unwrap_or(0.0).powi(2))
+            .map(|p| p.c.get(k).copied().unwrap_or(0.0).ppowi(2))
             .sum();
         best = best.max(s.sqrt());
     }
@@ -486,7 +487,7 @@ fn norm_value_lo(v: &V3) -> f64 {
     let err = v.iter().map(|p| p.e * p.e).sum::<f64>().sqrt();
     let s: f64 = v
         .iter()
-        .map(|p| p.c.first().copied().unwrap_or(0.0).powi(2))
+        .map(|p| p.c.first().copied().unwrap_or(0.0).ppowi(2))
         .sum();
     (s.sqrt() - err).max(0.0)
 }
@@ -495,7 +496,7 @@ fn norm_value_hi(v: &V3) -> f64 {
     let err = v.iter().map(|p| p.e * p.e).sum::<f64>().sqrt();
     let s: f64 = v
         .iter()
-        .map(|p| p.c.first().copied().unwrap_or(0.0).powi(2))
+        .map(|p| p.c.first().copied().unwrap_or(0.0).ppowi(2))
         .sum();
     s.sqrt() + err
 }
@@ -620,7 +621,7 @@ pub(super) fn implicit_of(surface: &Surface, origin: Vec3) -> Option<ImplicitFor
         Surface::Cone(co) => {
             let d = co.frame().z();
             let apex = co.frame().point(0.0, 0.0, co.apex_v()) - origin;
-            let t = co.half_angle().tan();
+            let t = co.half_angle().ptan();
             let a = projector(d, 1.0 + t * t);
             let aa = mat3(&a, apex);
             Some(ImplicitForm::Cone(
@@ -628,7 +629,7 @@ pub(super) fn implicit_of(surface: &Surface, origin: Vec3) -> Option<ImplicitFor
                 apex,
                 d,
                 t.abs(),
-                co.half_angle().cos(),
+                co.half_angle().pcos(),
             ))
         }
         _ => None,
@@ -1311,7 +1312,7 @@ fn measure(
     let thr = thresholds(tolerance, angular, length);
     let limit = [
         thr[0],
-        angular.min(std::f64::consts::FRAC_PI_2).sin(),
+        angular.min(std::f64::consts::FRAC_PI_2).psin(),
         thr[2],
         thr[2],
         thr[2],
@@ -1472,7 +1473,7 @@ fn measure(
         let b = bound(q);
         let conv = |x: f64| {
             if as_angle {
-                x.clamp(0.0, 1.0).asin()
+                x.clamp(0.0, 1.0).pasin()
             } else {
                 x
             }
@@ -1569,7 +1570,7 @@ mod tests {
 
     fn mul(x: Dd, b: f64) -> Dd {
         let p = x.0 * b;
-        let e = x.0.mul_add(b, -p);
+        let e = x.0.pmul_add(b, -p);
         two_sum(p, e + x.1 * b)
     }
 

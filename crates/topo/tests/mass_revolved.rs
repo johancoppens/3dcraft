@@ -12,6 +12,7 @@
 )]
 
 use craft3d_geom::{Circle, Cone, Curve3, Cylinder, Line, Plane, Sphere, Surface, Torus};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_testkit::trimmed;
 use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, FaceId, check, mass_properties};
@@ -41,12 +42,12 @@ fn back(edge: EdgeId) -> Coedge {
 
 /// The direction away from the axis at `angle` about the frame's z.
 fn radial(frame: &Frame, angle: f64) -> Vec3 {
-    frame.vector(angle.cos(), angle.sin(), 0.0)
+    frame.vector(angle.pcos(), angle.psin(), 0.0)
 }
 
 /// The direction a point at `angle` moves in when the angle grows.
 fn onward(frame: &Frame, angle: f64) -> Vec3 {
-    frame.vector(-angle.sin(), angle.cos(), 0.0)
+    frame.vector(-angle.psin(), angle.pcos(), 0.0)
 }
 
 /// A circle about the frame's axis at height `z`; its parameter is the
@@ -82,7 +83,7 @@ fn flat(body: &mut Body, origin: Vec3, normal: Vec3, hint: Vec3, coedges: Vec<Co
 /// `sin(x) / x` for the centroid of a swept shape: the mean of the radial
 /// direction over a sweep of `2x`.
 fn chord_factor(sweep: f64) -> f64 {
-    (sweep / 2.0).sin() / (sweep / 2.0)
+    (sweep / 2.0).psin() / (sweep / 2.0)
 }
 
 /// The part of a torus tube (`major`, `minor`) cut off by a cylinder about
@@ -103,8 +104,8 @@ fn torus_segment(
     sweep: Option<f64>,
 ) -> Solid {
     let side = if outer { 1.0 } else { -1.0 };
-    let wall = major + side * minor * half.cos();
-    let height = minor * half.sin();
+    let wall = major + side * minor * half.pcos();
+    let height = minor * half.psin();
     let torus = Surface::Torus(Torus::new(*frame, major, minor).unwrap());
     let cylinder = Surface::Cylinder(Cylinder::new(*frame, wall).unwrap());
     // The tube angle the arc starts and ends at, and the height there.
@@ -113,7 +114,7 @@ fn torus_segment(
     } else {
         (PI - half, PI + half)
     };
-    let (z0, z1) = (minor * v0.sin(), minor * v1.sin());
+    let (z0, z1) = (minor * v0.psin(), minor * v1.psin());
     let mut body = Body::new(BodyKind::Solid);
     let corner = |angle: f64, z: f64| frame.origin() + radial(frame, angle) * wall + frame.z() * z;
     match sweep {
@@ -186,8 +187,8 @@ fn torus_segment(
             body.add_shell(vec![patch, wall_face, start, end]);
         }
     }
-    let segment = minor * minor * (2.0 * half - (2.0 * half).sin()) / 2.0;
-    let lever = 4.0 * minor * half.sin().powi(3) / (3.0 * (2.0 * half - (2.0 * half).sin()));
+    let segment = minor * minor * (2.0 * half - (2.0 * half).psin()) / 2.0;
+    let lever = 4.0 * minor * half.psin().ppowi(3) / (3.0 * (2.0 * half - (2.0 * half).psin()));
     let angle = sweep.unwrap_or(TAU);
     let caps = if sweep.is_some() { 2.0 * segment } else { 0.0 };
     Solid {
@@ -197,7 +198,7 @@ fn torus_segment(
         ),
         body,
         volume: angle * (major + side * lever) * segment,
-        area: angle * (major + side * minor * half.sin() / half) * 2.0 * half * minor
+        area: angle * (major + side * minor * half.psin() / half) * 2.0 * half * minor
             + angle * wall * 2.0 * height
             + caps,
         // All the way round the centroid is on the axis, in the plane of
@@ -243,14 +244,14 @@ fn sphere_segment(frame: &Frame, radius: f64, low: f64, high: f64) -> Solid {
     );
     body.add_shell(vec![zone, floor, lid]);
     let r2 = radius * radius;
-    let slab = |z: f64| r2 * z - z.powi(3) / 3.0;
-    let moment = |z: f64| r2 * z * z / 2.0 - z.powi(4) / 4.0;
+    let slab = |z: f64| r2 * z - z.ppowi(3) / 3.0;
+    let moment = |z: f64| r2 * z * z / 2.0 - z.ppowi(4) / 4.0;
     let volume = PI * (slab(high) - slab(low));
     Solid {
         name: format!("sphere segment {low}..{high}"),
         body,
         volume,
-        area: TAU * radius * (high - low) + PI * (rim(low).powi(2) + rim(high).powi(2)),
+        area: TAU * radius * (high - low) + PI * (rim(low).ppowi(2) + rim(high).ppowi(2)),
         centroid: Some(frame.point(0.0, 0.0, PI * (moment(high) - moment(low)) / volume)),
     }
 }
@@ -311,7 +312,7 @@ fn sphere_wedge(frame: &Frame, radius: f64, sweep: f64) -> Solid {
     Solid {
         name: format!("sphere wedge {sweep}"),
         body,
-        volume: sweep * 2.0 * radius.powi(3) / 3.0,
+        volume: sweep * 2.0 * radius.ppowi(3) / 3.0,
         area: 2.0 * sweep * radius * radius + PI * radius * radius,
         centroid: Some(frame.origin() + radial(frame, sweep / 2.0) * reach),
     }
@@ -348,7 +349,7 @@ fn sideways_hemisphere(frame: &Frame, radius: f64) -> Solid {
     Solid {
         name: "sideways hemisphere".to_owned(),
         body,
-        volume: TAU * radius.powi(3) / 3.0,
+        volume: TAU * radius.ppowi(3) / 3.0,
         area: 3.0 * PI * radius * radius,
         centroid: Some(frame.point(0.0, 3.0 * radius / 8.0, 0.0)),
     }
@@ -394,8 +395,8 @@ fn sideways_cut(frame: &Frame, radius: f64, level: f64, keep_cap: bool) -> Solid
     body.add_shell(vec![curved, disc]);
     let h = radius - level;
     let cap_volume = PI * h * h * (3.0 * radius - h) / 3.0;
-    let cap_centre = 3.0 * (2.0 * radius - h).powi(2) / (4.0 * (3.0 * radius - h));
-    let ball = 4.0 * PI * radius.powi(3) / 3.0;
+    let cap_centre = 3.0 * (2.0 * radius - h).ppowi(2) / (4.0 * (3.0 * radius - h));
+    let ball = 4.0 * PI * radius.ppowi(3) / 3.0;
     let disc_area = PI * rim_radius * rim_radius;
     let (volume, area, x) = if keep_cap {
         (cap_volume, TAU * radius * h + disc_area, cap_centre)
@@ -444,7 +445,7 @@ fn cone_wedge(frame: &Frame, radius: f64, height: f64, sweep: f64) -> Solid {
     let spoke1 = line(&mut body, centre, p1, (c.0, a1.0));
     let axis = line(&mut body, centre, apex, (c.0, top.0));
     let side = body.add_loop(vec![fwd(arc), fwd(ruling1), back(ruling0)]);
-    let cone = Cone::new(*frame, radius, -(radius / height).atan()).unwrap();
+    let cone = Cone::new(*frame, radius, -(radius / height).patan()).unwrap();
     let side = body.add_face(Surface::Cone(cone), false, vec![side]);
     let base = flat(
         &mut body,
@@ -468,7 +469,7 @@ fn cone_wedge(frame: &Frame, radius: f64, height: f64, sweep: f64) -> Solid {
         vec![fwd(axis), back(ruling1), back(spoke1)],
     );
     body.add_shell(vec![side, base, start, end]);
-    let slant = radius.hypot(height);
+    let slant = radius.phypot(height);
     let reach = radius / 2.0 * chord_factor(sweep);
     Solid {
         name: format!("cone wedge {sweep}"),

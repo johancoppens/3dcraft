@@ -14,6 +14,7 @@ use craft3d_doc::{
     Fold, FoldPanels, Geometry, MAX_FOLD_CREASES, PanelSide,
 };
 use craft3d_kernel::origami::{EdgeKind, vertex_checks};
+use craft3d_math::Portable;
 use serde_json::{Map, Value, json};
 
 /// What every result of `fold.check` says about the two conditions.
@@ -542,7 +543,7 @@ pub(crate) fn crease_pattern(
         lo = [lo[0].min(p[0]), lo[1].min(p[1])];
         hi = [hi[0].max(p[0]), hi[1].max(p[1])];
     }
-    let size = (hi[0] - lo[0]).hypot(hi[1] - lo[1]);
+    let size = (hi[0] - lo[0]).phypot(hi[1] - lo[1]);
     let dash = if size.is_finite() && size > 0.0 {
         size / 60.0
     } else {

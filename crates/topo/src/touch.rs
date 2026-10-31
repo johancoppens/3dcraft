@@ -12,6 +12,7 @@
 //! looked at together here.
 
 use crate::{Body, BodyKind, EdgeId};
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use std::fmt;
 
@@ -331,7 +332,7 @@ impl PointGrid {
         let thin = (largest * 1e-3).max(near);
         let count = points.len().max(1) as f64;
         let cell = (extent.x.max(thin) * extent.y.max(thin) * extent.z.max(thin) / count)
-            .cbrt()
+            .pcbrt()
             .max(near);
         let all: Vec<u32> = points.iter().map(|&(_, id, _)| id).collect();
         let mut grid = PointGrid {

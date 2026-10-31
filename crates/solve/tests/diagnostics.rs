@@ -8,6 +8,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use std::f64::consts::PI;
@@ -21,7 +22,7 @@ use craft3d_solve::{
 };
 
 fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
-    (a[0] - b[0]).hypot(a[1] - b[1])
+    (a[0] - b[0]).phypot(a[1] - b[1])
 }
 
 #[test]
@@ -889,16 +890,16 @@ fn an_arc_end_held_at_both_coordinates_is_not_redundant() {
         });
         s.add_constraint(C::CoordinateX {
             point: e,
-            value: r * t.cos(),
+            value: r * t.pcos(),
         });
         s.add_constraint(C::CoordinateY {
             point: e,
-            value: r * t.sin(),
+            value: r * t.psin(),
         });
         if extra {
             s.add_constraint(C::CoordinateY {
                 point: e,
-                value: r * t.sin(),
+                value: r * t.psin(),
             });
         }
         (s, e)
@@ -908,7 +909,7 @@ fn an_arc_end_held_at_both_coordinates_is_not_redundant() {
     assert_eq!(statuses(&sol), [Satisfied, Satisfied, Satisfied, Satisfied]);
     assert_eq!(sol.dof, 0);
     let [x, y] = sol.point(e).unwrap();
-    assert!(dist([x, y], [r * t.cos(), r * t.sin()]) < 1e-9);
+    assert!(dist([x, y], [r * t.pcos(), r * t.psin()]) < 1e-9);
     let (s, _) = build(true);
     let twice = solved(&s);
     assert_eq!(

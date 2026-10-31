@@ -11,6 +11,7 @@ use super::Shell;
 use crate::camera::Projector;
 use crate::theme::color;
 use craft3d_engine::{JointHandle, Scene, Session};
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use serde_json::json;
 
@@ -107,7 +108,7 @@ pub(crate) fn dragged_value(drag: &PartDrag, now: Vec3) -> Option<(f64, f64)> {
         let axis = Vec3::new(joint.axis[0], joint.axis[1], joint.axis[2]).normalized()?;
         let sin = drag.start.cross(now).dot(axis);
         let cos = drag.start.dot(now);
-        let within = sin.atan2(cos);
+        let within = sin.patan2(cos);
         // The turn nearest the last frame's.
         let tau = std::f64::consts::TAU;
         let turns = ((drag.swept - within) / tau).round();
@@ -394,6 +395,7 @@ impl Shell {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+    use craft3d_math::Portable;
 
     fn joint(sign: f64) -> JointHandle {
         JointHandle {
@@ -411,7 +413,7 @@ mod tests {
 
     fn at(degrees: f64) -> Vec3 {
         let a = degrees.to_radians();
-        Vec3::new(a.cos(), a.sin(), 0.0)
+        Vec3::new(a.pcos(), a.psin(), 0.0)
     }
 
     /// A drag that goes on past half a turn keeps turning: each frame's

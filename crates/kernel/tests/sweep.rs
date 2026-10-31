@@ -18,6 +18,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::{arc, circle, line, polygon, rectangle, scale_curves};
@@ -307,7 +308,7 @@ fn polygon_measures(points: &[P]) -> (f64, P, f64, P) {
         area += w / 2.0;
         mx += (p[0] + q[0]) * w / 6.0;
         my += (p[1] + q[1]) * w / 6.0;
-        let l = (q[0] - p[0]).hypot(q[1] - p[1]);
+        let l = (q[0] - p[0]).phypot(q[1] - p[1]);
         length += l;
         lx += (p[0] + q[0]) / 2.0 * l;
         ly += (p[1] + q[1]) / 2.0 * l;
@@ -452,7 +453,7 @@ fn a_sweep_is_the_union_of_its_pieces_with_no_more_faces() {
 /// Two lines that meet at a corner where the path turns left through
 /// `turn`: 10 along +y, then 8 on. Ids 101, 102.
 fn cornered(turn: f64, k: f64) -> Vec<SketchCurve> {
-    let (s, c) = turn.sin_cos();
+    let (s, c) = turn.psin_cos();
     scale_curves(
         &[
             line(101, [0.0, 0.0], [0.0, 10.0]),
@@ -469,7 +470,7 @@ fn a_corner_between_two_lines_is_mitred_on_the_bisecting_plane() {
             let turn = degrees.to_radians();
             // What a line of the profile at `a` to the left of the path
             // travels: the two legs less what the mitre takes of each.
-            let travel = |a: f64| 18.0 - 2.0 * a * (turn / 2.0).tan();
+            let travel = |a: f64| 18.0 - 2.0 * a * (turn / 2.0).ptan();
 
             // A rectangle off the path: 1.5 wide from a = −1 to 0.5 (the
             // world's x from −0.5 to 1), 1 high.
@@ -518,7 +519,7 @@ fn a_spline_profile_goes_round_a_mitre() {
     )
     .unwrap();
     let (volume, area, _) = sound(&swept, 1.0);
-    let travel = |a: f64| 18.0 - 2.0 * a * (turn / 2.0).tan();
+    let travel = |a: f64| 18.0 - 2.0 * a * (turn / 2.0).ptan();
     let (a, centre, length, middle) = polygon_measures(&bulge_outline(1.0));
     close(volume, a * travel(-centre[0]), 1e-9);
     close(area, length * travel(-middle[0]) + 2.0 * a, 1e-9);
@@ -726,7 +727,7 @@ fn a_path_a_tolerance_off_square_is_swept_and_one_farther_off_is_refused() {
             let slope = 0.5 * tol.linear / r;
             let pipe = sweep(&round, &plane, &leaning(slope), &Frame::WORLD, &tol)
                 .unwrap_or_else(|e| panic!("{k} plane {n}: {e}"));
-            let length = 10.0 * k * slope.hypot(1.0);
+            let length = 10.0 * k * slope.phypot(1.0);
             close(pipe.length, length, 1e-14);
             let (volume, _, _) = sound_with(&pipe, k, &tol);
             close(volume, PI * r * r * length, 1e-12);
@@ -953,10 +954,10 @@ fn faces_on_one_surface_kind_are_what_the_table_says() {
     // A segment of a circle of radius √101 with half-angle asin(1/√101):
     // its area, and its centre measured from the circle's.
     let radius = 101.0_f64.sqrt();
-    let half = (1.0 / radius).asin();
+    let half = (1.0 / radius).pasin();
     let area = 101.0 * half - 10.0;
     let centre =
-        -9.0 + 4.0 * radius * half.sin().powi(3) / (3.0 * (2.0 * half - (2.0 * half).sin()));
+        -9.0 + 4.0 * radius * half.psin().ppowi(3) / (3.0 * (2.0 * half - (2.0 * half).psin()));
     close(volume, area * bent_length(-centre), 1e-9);
 }
 
@@ -1303,7 +1304,7 @@ enum Go {
 }
 
 fn turned(v: P, angle: f64) -> P {
-    let (s, c) = angle.sin_cos();
+    let (s, c) = angle.psin_cos();
     [v[0] * c - v[1] * s, v[0] * s + v[1] * c]
 }
 
@@ -1347,7 +1348,7 @@ fn turtle(pieces: &[(f64, Go)], k: f64) -> (Vec<SketchCurve>, f64) {
 /// The kink that turns a profile reaching `reach` to the side of the path
 /// off the faces by `moved`: `reach (1 - cos a) = moved`.
 fn kink_for(moved: f64, reach: f64) -> f64 {
-    2.0 * (0.5 * moved / reach).sqrt().asin()
+    2.0 * (0.5 * moved / reach).sqrt().pasin()
 }
 
 /// Where two pieces of the path meet a little off tangent (a path drawn
@@ -1488,7 +1489,7 @@ fn a_kink_beyond_the_tolerance_is_a_corner_as_before() {
             (a, Go::Arc(5.0, -quarter)),
         ]));
         assert!(why.contains("the path ends on e103 turned"), "{k}: {why}");
-        let small = (0.25 * tol.linear / r).asin();
+        let small = (0.25 * tol.linear / r).pasin();
         let ending = go(&[
             (0.0, Go::Line(10.0)),
             (0.0, Go::Arc(5.0, quarter)),
@@ -1513,7 +1514,7 @@ fn a_closed_path_with_kinks_is_a_ring() {
         let round = profile(&[circle(1, [0.0, 0.0], r)]);
         let (a, big) = (8.0 * k, 3.0 * k);
         let over = kink_for(0.2 * tol.linear, r);
-        let first_end = [-big - big * over.cos(), a - big * over.sin()];
+        let first_end = [-big - big * over.pcos(), a - big * over.psin()];
         let path = [
             line(101, [0.0, -a], [0.0, a]),
             arc(102, [-big, a], [0.0, a], first_end),
@@ -1522,7 +1523,7 @@ fn a_closed_path_with_kinks_is_a_ring() {
         ];
         let length = 2.0 * a
             + big * (PI + over)
-            + (first_end[0] + 2.0 * big).hypot(first_end[1] + a)
+            + (first_end[0] + 2.0 * big).phypot(first_end[1] + a)
             + big * PI;
         let ring = sweep(&round, &front(), &path, &Frame::WORLD, &tol)
             .unwrap_or_else(|e| panic!("{k}: {e}"));

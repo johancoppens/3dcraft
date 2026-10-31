@@ -10,6 +10,7 @@
 )]
 
 use craft3d_engine::{Access, Session, Workspace};
+use craft3d_math::Portable;
 use craft3d_ui_egui::Shell;
 use egui::{Pos2, vec2};
 use serde_json::{Value, json};
@@ -251,7 +252,7 @@ fn the_window_follows_joint_set_on_an_assembly_and_fits_it() {
             let (lo, hi) = crank_box(&shell);
             // The crank turns about End1 at (2, 2) of the ground: its far
             // end is near 20 mm out at the angle.
-            let (c, n) = (angle.to_radians().cos(), angle.to_radians().sin());
+            let (c, n) = (angle.to_radians().pcos(), angle.to_radians().psin());
             let mid = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0];
             assert!(
                 (mid[0] - 10.0 * c).abs() < 3.0 && (mid[1] - 10.0 * n).abs() < 3.0,
@@ -502,7 +503,7 @@ fn alt_drag_turns_a_part_about_its_joint() {
     let screen = |angle: f64| {
         let a = angle.to_radians();
         let p = projector
-            .project(Vec3::new(14.0 * a.cos(), 14.0 * a.sin(), 2.0))
+            .project(Vec3::new(14.0 * a.pcos(), 14.0 * a.psin(), 2.0))
             .unwrap();
         egui::pos2(
             rect.left() + (p.x as f32) * rect.width() / w as f32,
@@ -532,7 +533,7 @@ fn alt_drag_turns_a_part_about_its_joint() {
 fn crank_angle(shell: &Shell) -> f64 {
     let (lo, hi) = crank_box(shell);
     let (x, y) = ((lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0);
-    y.atan2(x).to_degrees()
+    y.patan2(x).to_degrees()
 }
 
 /// Alt+drag on a part that is side a of its joint turns it toward the
@@ -574,7 +575,7 @@ fn alt_drag_turns_a_part_on_side_a_of_its_joint() {
     };
     let screen = |angle: f64| {
         let a = angle.to_radians();
-        at(14.0 * a.cos(), 14.0 * a.sin())
+        at(14.0 * a.pcos(), 14.0 * a.psin())
     };
     let drive = mate_value(&mut s, "Drive");
     window.drag(
@@ -643,7 +644,7 @@ fn the_four_bar_moves_over_t_in_the_viewport() {
         let a = 360.0_f64.to_radians() * t;
         let mid = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0];
         assert!(
-            (mid[0] - 10.0 * a.cos()).abs() < 1.0 && (mid[1] - 10.0 * a.sin()).abs() < 1.0,
+            (mid[0] - 10.0 * a.pcos()).abs() < 1.0 && (mid[1] - 10.0 * a.psin()).abs() < 1.0,
             "t = {t}: crank at {mid:?}"
         );
         let shot = call(
@@ -769,7 +770,7 @@ fn two_selected_faces_offer_the_mates_that_join_them() {
         Projector::new(&shell.state.camera.to_render(), f64::from(w), f64::from(h)).unwrap();
     let a = 60.0_f64.to_radians();
     let crank = projector
-        .project(Vec3::new(10.0 * a.cos(), 10.0 * a.sin(), 2.0))
+        .project(Vec3::new(10.0 * a.pcos(), 10.0 * a.psin(), 2.0))
         .unwrap();
     let ground = projector.project(Vec3::new(30.0, 0.0, 2.0)).unwrap();
     // The two faces under the pointer, selected as the window's clicks

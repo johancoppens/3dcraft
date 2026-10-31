@@ -8,6 +8,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use craft3d_render::analysis::{Analysis, AnalysisColors, AnalysisMode};
 use craft3d_render::{Camera, FaceColors, NO_FACE, Projection, RenderParams, render_analysed};
@@ -86,7 +87,7 @@ fn zebra_stripes_on_a_sphere_are_evenly_spaced_and_symmetric() {
         if wy.abs() > 0.95 {
             continue;
         }
-        let theta = wy.asin();
+        let theta = wy.pasin();
         let phase = -2.0 * theta / std::f64::consts::TAU * analysis.stripes;
         let f = phase - phase.floor();
         let expect = if f < analysis.width {
@@ -108,7 +109,7 @@ fn zebra_stripes_on_a_sphere_are_evenly_spaced_and_symmetric() {
     assert!(checked > 150, "{checked}");
     // asin 0.95 is 1.25 rad each way: 2 · 2.5 rad / τ · 16 periods, two
     // edges each.
-    let expected = (2.0 * 2.0 * 0.95_f64.asin() / std::f64::consts::TAU * 16.0 * 2.0).floor();
+    let expected = (2.0 * 2.0 * 0.95_f64.pasin() / std::f64::consts::TAU * 16.0 * 2.0).floor();
     assert!(
         (f64::from(transitions) - expected).abs() <= 2.0,
         "{transitions} edges, {expected} expected"

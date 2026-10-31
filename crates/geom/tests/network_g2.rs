@@ -18,6 +18,7 @@ use craft3d_geom::network::{
     Condition, Network, NetworkError, Order, Patch, arc, continuity, gordon,
 };
 use craft3d_geom::{Cylinder, NurbsCurve, NurbsSurface, Plane, Sphere, Surface, Torus};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
 use std::f64::consts::FRAC_PI_2;
 
@@ -62,7 +63,7 @@ fn first(c: Condition<'_>) -> [Condition<'_>; 4] {
 /// The direction at longitude `f` of a right angle (0 to 1).
 fn longitude(f: f64) -> Vec3 {
     let a = FRAC_PI_2 * f;
-    v(a.cos(), a.sin(), 0.0)
+    v(a.pcos(), a.psin(), 0.0)
 }
 
 /// A dome over a quarter of the equator of the sphere of radius `r` about
@@ -430,7 +431,7 @@ fn twisted(l: f64, amplitude: f64) -> NurbsSurface {
     for i in 0..nu {
         // Greville abscissae: the sheet runs along x at unit speed.
         let g = (knots[i + 1] + knots[i + 2] + knots[i + 3]) / 3.0;
-        let phi = amplitude * (8.0 * std::f64::consts::PI * g).sin();
+        let phi = amplitude * (8.0 * std::f64::consts::PI * g).psin();
         for vj in [0.0, 0.5, 1.0] {
             points.push(v(g * l, vj * l, vj * l * phi));
         }
@@ -465,7 +466,7 @@ fn a_twist_within_the_angular_tolerance_is_not_g2() {
             let (_, du, dv) = wrapped.derivatives(u, 0.0);
             let (_, duv, dvv) = second_derivatives(&wrapped, u, 0.0);
             let n = du.cross(dv).normalized().unwrap();
-            angle = angle.max(n.cross(v(0.0, 0.0, 1.0)).length().asin());
+            angle = angle.max(n.cross(v(0.0, 0.0, 1.0)).length().pasin());
             bend = bend.max(n.dot(dvv).abs() / dv.dot(dv));
             twist = twist.max(n.dot(duv).abs() / (du.length() * dv.length()));
         }

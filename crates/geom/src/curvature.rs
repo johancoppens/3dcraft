@@ -14,6 +14,7 @@
 //! docs/design/developable.md.
 
 use crate::{Curve3, NurbsCurve, NurbsSurface, Surface};
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 
 /// Highest degree the basis derivatives are worked out for here: the
@@ -23,7 +24,7 @@ const ROOM: usize = crate::MAX_DEGREE + 1;
 /// `(S_uu, S_uv, S_vv)` at `(u, v)`. Zero vectors where a surface has no
 /// such derivative (a plane; a spline of degree one in a direction).
 pub fn second_derivatives(surface: &Surface, u: f64, v: f64) -> (Vec3, Vec3, Vec3) {
-    let (su, cu) = u.sin_cos();
+    let (su, cu) = u.psin_cos();
     match surface {
         Surface::Plane(_) => (Vec3::ZERO, Vec3::ZERO, Vec3::ZERO),
         Surface::Cylinder(c) => {
@@ -35,7 +36,10 @@ pub fn second_derivatives(surface: &Surface, u: f64, v: f64) -> (Vec3, Vec3, Vec
             )
         }
         Surface::Cone(c) => {
-            let (rho, k) = (c.radius() + v * c.half_angle().tan(), c.half_angle().tan());
+            let (rho, k) = (
+                c.radius() + v * c.half_angle().ptan(),
+                c.half_angle().ptan(),
+            );
             (
                 c.frame().vector(-rho * cu, -rho * su, 0.0),
                 c.frame().vector(-k * su, k * cu, 0.0),
@@ -44,7 +48,7 @@ pub fn second_derivatives(surface: &Surface, u: f64, v: f64) -> (Vec3, Vec3, Vec
         }
         Surface::Sphere(s) => {
             let r = s.radius();
-            let (sv, cv) = v.sin_cos();
+            let (sv, cv) = v.psin_cos();
             (
                 s.frame().vector(-r * cv * cu, -r * cv * su, 0.0),
                 s.frame().vector(r * sv * su, -r * sv * cu, 0.0),
@@ -53,7 +57,7 @@ pub fn second_derivatives(surface: &Surface, u: f64, v: f64) -> (Vec3, Vec3, Vec
         }
         Surface::Torus(t) => {
             let (major, minor) = t.radii();
-            let (sv, cv) = v.sin_cos();
+            let (sv, cv) = v.psin_cos();
             let ring = major + minor * cv;
             (
                 t.frame().vector(-ring * cu, -ring * su, 0.0),
@@ -103,12 +107,12 @@ pub fn curve_second_derivative(curve: &Curve3, t: f64) -> Option<Vec3> {
     Some(match curve {
         Curve3::Line(_) => Vec3::ZERO,
         Curve3::Circle(c) => {
-            let (s, co) = t.sin_cos();
+            let (s, co) = t.psin_cos();
             let r = c.radius();
             c.frame().vector(-r * co, -r * s, 0.0)
         }
         Curve3::Ellipse(e) => {
-            let (s, co) = t.sin_cos();
+            let (s, co) = t.psin_cos();
             let (a, b) = e.semi_axes();
             e.frame().vector(-a * co, -b * s, 0.0)
         }
@@ -451,7 +455,7 @@ mod tests {
             let s = Surface::Torus(Torus::new(Frame::WORLD, major, minor).unwrap());
             for (u, v) in [(0.3, 0.2), (2.0, 2.5), (5.0, 4.0), (1.0, 3.0)] {
                 let k = gaussian_curvature(&s, u, v).unwrap();
-                let expected = v.cos() / (minor * (major + minor * v.cos()));
+                let expected = v.pcos() / (minor * (major + minor * v.pcos()));
                 assert!(
                     (k - expected).abs() <= 1e-12 / (scale * scale),
                     "K {k} against {expected}"
@@ -503,7 +507,7 @@ mod tests {
         for (i, row) in net.iter_mut().enumerate() {
             for (j, p) in row.iter_mut().enumerate() {
                 let (x, y) = (i as f64, j as f64);
-                *p = Vec3::new(x, y, (x * 0.7).sin() + 0.3 * x * y - 0.2 * y * y);
+                *p = Vec3::new(x, y, (x * 0.7).psin() + 0.3 * x * y - 0.2 * y * y);
             }
         }
         let patch = BezierPatch::bicubic(net).unwrap();
@@ -519,7 +523,7 @@ mod tests {
                 ctrl.push(Vec3::new(
                     x,
                     y + 0.1 * x * x,
-                    (x * 0.9).cos() * (y * 0.5).sin(),
+                    (x * 0.9).pcos() * (y * 0.5).psin(),
                 ));
                 weights.push(1.0 + 0.3 * ((i + 2 * j) % 3) as f64);
             }

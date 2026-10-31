@@ -11,6 +11,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::plain::{body, built, run, session};
@@ -57,10 +58,10 @@ fn the_cut_edges_of_a_halved_rod() {
             json!({"edges": [["F3:copy(1)/F2:face(4)", "F3:copy(0)/F1:face(0)"]], "radius": r * k, "name": "Round"}),
         );
         let mx = ((big - r) * (big - r) - r * r).sqrt();
-        let psi = r.atan2(mx);
+        let psi = r.patan2(mx);
         let corner = big * big * psi / 2.0 - mx * r / 2.0 - r * r * (PI / 2.0 + psi) / 2.0;
         // The pair names both cut edges.
-        let expected = (PI * big * big / 2.0 - 2.0 * corner) * height * k.powi(3);
+        let expected = (PI * big * big / 2.0 - 2.0 * corner) * height * k.ppowi(3);
         let volume = body(&mut s, "Round")["volume"].as_f64().unwrap();
         assert!(
             (volume - expected).abs() <= 1e-9 * expected,

@@ -272,6 +272,7 @@
 
 use crate::{Body, BodyKind, Coedge, Face};
 use craft3d_geom::{Curve3, GeomError, Sphere, Surface};
+use craft3d_math::Portable;
 use craft3d_math::quadrature::Rule;
 use craft3d_math::{Bbox3, Frame, Vec3};
 use std::collections::BTreeMap;
@@ -454,9 +455,9 @@ fn integrand((at, su, sv): (Vec3, Vec3, Vec3), about: Vec3, second: bool) -> Tot
             // is therefore counted as being at least.
             volume: (s.length() + POINT_ROUNDING * at.length()) * n.length() / 3.0,
             moment: Vec3::new(
-                (s.x.abs() + POINT_ROUNDING * at.x.abs()).powi(2),
-                (s.y.abs() + POINT_ROUNDING * at.y.abs()).powi(2),
-                (s.z.abs() + POINT_ROUNDING * at.z.abs()).powi(2),
+                (s.x.abs() + POINT_ROUNDING * at.x.abs()).ppowi(2),
+                (s.y.abs() + POINT_ROUNDING * at.y.abs()).ppowi(2),
+                (s.z.abs() + POINT_ROUNDING * at.z.abs()).ppowi(2),
             ) * (0.5 * n.length()),
         },
     }
@@ -973,7 +974,7 @@ fn moebius(surface: &Surface, along: Along, fixed: f64, (start, end): (f64, f64)
     let beta = match degree {
         1 => ratio,
         2 => ratio.sqrt(),
-        _ => ratio.powf(1.0 / degree as f64),
+        _ => ratio.ppowf(1.0 / degree as f64),
     };
     // Not `<=`: a NaN gives no map. Far outside `[1e-100, 1e100]` the map
     // squeezes every node into rounding of an end; the plain sums are
@@ -1600,9 +1601,9 @@ fn stands_still(
     let mut far = [0.0; 3];
     // Nearest the end first, each from the foot before it.
     for (slot, k) in far.iter_mut().zip([12, 10, 8]) {
-        let t = end + (toward - end) * 0.5_f64.powi(k);
+        let t = end + (toward - end) * 0.5_f64.ppowi(k);
         let ((u, v), _) = follow.project(curve.eval(t)).ok()?;
-        *slot = (u - u0).hypot(v - v0);
+        *slot = (u - u0).phypot(v - v0);
     }
     let limit = 2.0 * std::f64::consts::SQRT_2;
     let [c, b, a] = far;
@@ -3151,7 +3152,7 @@ fn uneven_weights(surface: &Surface) -> Option<f64> {
     let (m, n) = s.degrees();
     let mut worst = 0.0_f64;
     for span in s.bezier_spans().ok()? {
-        let logs: Vec<f64> = span.patch.weights().iter().map(|w| w.ln()).collect();
+        let logs: Vec<f64> = span.patch.weights().iter().map(|w| w.pln()).collect();
         let at = |i: usize, j: usize| logs.get(i * (n + 1) + j).copied();
         let (w00, w0n, wm0, wmn) = (at(0, 0)?, at(0, n)?, at(m, 0)?, at(m, n)?);
         let alpha = if m > 0 {
@@ -3180,7 +3181,7 @@ fn uneven_weights(surface: &Surface) -> Option<f64> {
             worst.max(spread)
         };
     }
-    Some(worst.exp())
+    Some(worst.pexp())
 }
 
 /// Faces integrated, and the work they took ([`Work::spent`]), since the
@@ -5010,7 +5011,7 @@ mod tests {
     /// The cap's sphere with its north pole `tilt` away from the cap's
     /// middle.
     fn turned(tilt: f64) -> Surface {
-        let pole = Vec3::new(tilt.sin() * 0.6, tilt.sin() * 0.8, tilt.cos());
+        let pole = Vec3::new(tilt.psin() * 0.6, tilt.psin() * 0.8, tilt.pcos());
         let frame = Frame::new(CENTRE, pole, Vec3::new(0.8, -0.6, 0.0)).unwrap();
         Surface::Sphere(Sphere::new(frame, RADIUS).unwrap())
     }
@@ -5036,7 +5037,7 @@ mod tests {
         for level in [-1.5_f64, 0.0, 1.2] {
             let body = cap(level);
             let expected = TAU * RADIUS * (RADIUS - level);
-            let rim = (level / RADIUS).acos();
+            let rim = (level / RADIUS).pacos();
             let mut tilts = vec![0.0, rim / 2.0, rim, (rim + PI) / 2.0];
             for off in [1e-13, 1e-10, 1e-7, 1e-5, 1e-3, 0.1] {
                 tilts.extend([rim - off, rim + off]);
@@ -5064,7 +5065,7 @@ mod tests {
         let level = 0.8_f64;
         let body = cap(level);
         let expected = TAU * RADIUS * (RADIUS - level);
-        let rim = (level / RADIUS).acos();
+        let rim = (level / RADIUS).pacos();
         let mut refused = 0;
         let mut measured = 0;
         for off in [
@@ -5103,7 +5104,7 @@ mod tests {
     #[test]
     fn the_chosen_frame_has_its_south_pole_clear_of_the_boundary() {
         for level in [-1.9_f64, -0.5, 0.0, 0.5, 1.9] {
-            for tilt in [0.0, 0.4, (level / RADIUS).acos(), 2.0, PI] {
+            for tilt in [0.0, 0.4, (level / RADIUS).pacos(), 2.0, PI] {
                 let mut body = cap(level);
                 body.faces[0].surface = turned(tilt);
                 let Surface::Sphere(given) = &body.faces[0].surface else {
@@ -5138,13 +5139,13 @@ mod tests {
         for (z, reversed) in [(level, false), (level + width, true)] {
             let frame = Frame::new(
                 CENTRE + Vec3::new(0.0, 0.0, z),
-                Vec3::new(0.0, -tilt.sin(), tilt.cos()),
+                Vec3::new(0.0, -tilt.psin(), tilt.pcos()),
                 Vec3::X,
             )
             .unwrap();
             let vertex = body.add_vertex(frame.point(RADIUS, 0.0, 0.0));
             let edge = body.add_edge(
-                Curve3::Ellipse(Ellipse::new(frame, RADIUS, RADIUS / tilt.cos()).unwrap()),
+                Curve3::Ellipse(Ellipse::new(frame, RADIUS, RADIUS / tilt.pcos()).unwrap()),
                 (0.0, TAU),
                 vertex,
                 vertex,
@@ -5309,7 +5310,7 @@ mod tests {
         let circle = Circle::new(frame, rim).unwrap();
         let at = |k: u32| TAU * f64::from(k) / f64::from(pieces);
         let vertices: Vec<_> = (0..pieces)
-            .map(|k| body.add_vertex(frame.point(rim * at(k).cos(), rim * at(k).sin(), 0.0)))
+            .map(|k| body.add_vertex(frame.point(rim * at(k).pcos(), rim * at(k).psin(), 0.0)))
             .collect();
         let mut coedges = Vec::new();
         for k in 0..pieces {
@@ -5337,7 +5338,7 @@ mod tests {
     fn a_face_refined_part_by_part_stops_at_its_cap() {
         let level = 0.8_f64;
         let body = cap_in_pieces(level, 3);
-        let rim = (level / RADIUS).acos();
+        let rim = (level / RADIUS).pacos();
         let surface = turned(PI - rim);
         let face = body.faces.first().unwrap();
         let rule = Rule::new(NODES);

@@ -29,6 +29,7 @@ use crate::extrude::{OpResult, fill};
 use crate::profile::{Curve2, SketchCurve, Spline2, detect_profiles};
 use craft3d_geom::Surface;
 use craft3d_geom::refine::interpolate;
+use craft3d_math::Portable;
 use craft3d_math::quadrature::Rule;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{Body, Coedge, EdgeId, FaceId};
@@ -62,7 +63,7 @@ fn sub2(a: P2, b: P2) -> P2 {
     [a[0] - b[0], a[1] - b[1]]
 }
 fn len2(a: P2) -> f64 {
-    a[0].hypot(a[1])
+    a[0].phypot(a[1])
 }
 
 /// A turn and shift of the plane.
@@ -128,9 +129,9 @@ impl Motion2 {
         let angle = if dot == 0.0 && cross == 0.0 {
             0.0
         } else {
-            cross.atan2(dot)
+            cross.patan2(dot)
         };
-        let (sin, cos) = angle.sin_cos();
+        let (sin, cos) = angle.psin_cos();
         let turned = Motion2 {
             cos,
             sin,
@@ -244,7 +245,7 @@ fn about_apex(surface: &Surface, outward: bool, u: f64, v: f64, apex_v: f64, the
         return [0.0, 0.0];
     }
     let local = planar_image(surface, outward, [u, apex_v], [u, v]);
-    let (sin, cos) = theta.sin_cos();
+    let (sin, cos) = theta.psin_cos();
     [
         cos * local[0] - sin * local[1],
         sin * local[0] + cos * local[1],
@@ -367,16 +368,16 @@ impl Layout {
             };
         let along_ref = planar_image(surface, outward, node, ruv);
         let flat_ref = sub2(self.point(reference.0, reference.1), self.point(ci, cj));
-        let start = flat_ref[1].atan2(flat_ref[0]) - along_ref[1].atan2(along_ref[0]);
+        let start = flat_ref[1].patan2(flat_ref[0]) - along_ref[1].patan2(along_ref[0]);
         let a = du * (ruv[0] - node[0]) + dv * (ruv[1] - node[1]);
         let b = du * (target[0] - node[0]) + dv * (target[1] - node[1]);
         let n = normal_near(surface, node, target).map(|n| if outward { n } else { -n });
         let turn = match n {
-            Some(n) => a.cross(b).dot(n).atan2(a.dot(b)),
+            Some(n) => a.cross(b).dot(n).patan2(a.dot(b)),
             None => 0.0,
         };
         let local = planar_image(surface, outward, node, target);
-        let (sin, cos) = (start + turn).sin_cos();
+        let (sin, cos) = (start + turn).psin_cos();
         let base = self.point(ci, cj);
         [
             base[0] + cos * local[0] - sin * local[1],
@@ -461,7 +462,7 @@ fn planar_image_steps(surface: &Surface, outward: bool, p: P2, q: P2, steps: usi
         let (w0, wm, w1) = (here.1, mid.1, next.1);
         let theta_m = theta + h / 24.0 * (5.0 * w0 + 8.0 * wm - w1);
         let theta_1 = theta + h / 6.0 * (w0 + 4.0 * wm + w1);
-        let dir = |th: f64, sp: f64| [sp * th.cos(), sp * th.sin()];
+        let dir = |th: f64, sp: f64| [sp * th.pcos(), sp * th.psin()];
         let (d0, dm, d1) = (
             dir(theta, here.0),
             dir(theta_m, mid.0),
@@ -1394,7 +1395,7 @@ fn curvature_over(surface: &Surface, (u0, u1): (f64, f64), (v0, v1): (f64, f64))
     let mid = [0.5 * (u0 + u1), 0.5 * (v0 + v1)];
     let length_u = on_surface(surface, &rule, [u0, mid[1]], [u1, mid[1]]);
     let length_v = on_surface(surface, &rule, [mid[0], v0], [mid[0], v1]);
-    let radius = 0.5 * length_u.hypot(length_v);
+    let radius = 0.5 * length_u.phypot(length_v);
     let mut largest: f64 = 0.0;
     let mut at = mid;
     let mut everywhere = true;
@@ -2023,7 +2024,7 @@ fn developed(
                         let (w0, wm, w1) = (here.1, mid.1, end.1);
                         let theta_m = theta + h / 24.0 * (5.0 * w0 + 8.0 * wm - w1);
                         let theta_1 = theta + h / 6.0 * (w0 + 4.0 * wm + w1);
-                        let dir = |th: f64, sp: f64| [sp * th.cos(), sp * th.sin()];
+                        let dir = |th: f64, sp: f64| [sp * th.pcos(), sp * th.psin()];
                         let (d0, dm, d1) =
                             (dir(theta, here.0), dir(theta_m, mid.0), dir(theta_1, end.0));
                         let half = [

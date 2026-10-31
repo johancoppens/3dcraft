@@ -1306,6 +1306,7 @@ pub(crate) fn contacts(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use craft3d_math::Portable;
 
     fn tri(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> [P; 3] {
         [a, b, c]
@@ -1508,7 +1509,7 @@ mod tests {
             mesh.positions.extend([
                 Vec3::new(0.0, 0.0, -1.0),
                 Vec3::new(0.0, 0.0, 1.0),
-                Vec3::new(angle.cos(), angle.sin(), 0.1),
+                Vec3::new(angle.pcos(), angle.psin(), 0.1),
             ]);
             // Not neighbours: each a little further along the line.
             for p in mesh.positions.iter_mut().skip(base as usize).take(2) {

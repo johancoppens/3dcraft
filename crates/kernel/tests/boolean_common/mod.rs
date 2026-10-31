@@ -12,6 +12,7 @@
 use craft3d_kernel::KernelError;
 use craft3d_kernel::boolean::{BooleanOp, BooleanResult, boolean};
 use craft3d_kernel::primitives;
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{Body, MassProperties, check, mass_properties};
 
@@ -270,7 +271,7 @@ pub fn sectors_at(body: &Body, at: Vec3, tol: &Tolerance, radius: f64) -> (usize
             let z = 1.0 - 2.0 * (i as f64 + 0.5) / N as f64;
             let r = (1.0 - z * z).sqrt();
             let a = golden * i as f64;
-            Vec3::new(r * a.cos(), r * a.sin(), z)
+            Vec3::new(r * a.pcos(), r * a.psin(), z)
         })
         .collect();
     let points: Vec<Vec3> = directions.iter().map(|d| at + *d * radius).collect();
@@ -554,7 +555,7 @@ pub fn walls_meet_at(body: &Body, at: Vec3, tol: &Tolerance) -> bool {
         let points: Vec<Vec3> = std::iter::once(Vec3::new(0.0, 0.0, 0.0))
             .chain((0..8).map(|k| {
                 let a = k as f64 * std::f64::consts::FRAC_PI_4;
-                frame.x() * a.cos() + frame.y() * a.sin()
+                frame.x() * a.pcos() + frame.y() * a.psin()
             }))
             .map(|side| at + (n + side) * step)
             .collect();

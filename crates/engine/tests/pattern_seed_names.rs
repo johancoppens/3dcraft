@@ -15,6 +15,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{body, built, feature, new_document, run, session};
@@ -109,7 +110,7 @@ fn fillet_angle(session: &mut Session, k: f64, what: &str) -> f64 {
     let y = (after.1[1] - before.1[1]) / added;
     let z = (after.1[2] - before.1[2]) / added - 95.0 * k;
     // Turned by θ about +x, +z goes to (0, −sin θ, cos θ).
-    (-y).atan2(z).rem_euclid(2.0 * PI)
+    (-y).patan2(z).rem_euclid(2.0 * PI)
 }
 
 fn assert_on_instance(session: &mut Session, k: f64, instance: u32, what: &str) {

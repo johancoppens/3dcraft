@@ -12,6 +12,7 @@
 //! egui's own widgets get its light or its dark visuals follows from the
 //! fills ([`is_light`]), never from a flag.
 
+use craft3d_math::Portable;
 /// An opaque sRGB colour.
 pub type Rgb = [u8; 3];
 
@@ -752,7 +753,7 @@ pub fn luminance(rgb: Rgb) -> f64 {
         if c <= 0.04045 {
             c / 12.92
         } else {
-            ((c + 0.055) / 1.055).powf(2.4)
+            ((c + 0.055) / 1.055).ppowf(2.4)
         }
     };
     let [r, g, b] = rgb;

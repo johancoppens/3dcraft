@@ -35,6 +35,7 @@ use super::{
 use crate::KernelError;
 use crate::profile::{Loop2, distance};
 use craft3d_geom::{Circle, Curve3, Cylinder, Plane, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Transform, Vec3};
 use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, FaceId, VertexId};
 use std::collections::BTreeMap;
@@ -160,7 +161,7 @@ fn loop_point(seg: &Segment, t: f64) -> P2 {
         Shape::Line => add(seg.start, scale(sub(seg.end, seg.start), t)),
         Shape::Arc { center, radius } | Shape::Circle { center, radius } => {
             let angle = loop_angle(seg, t);
-            add(*center, [radius * angle.cos(), radius * angle.sin()])
+            add(*center, [radius * angle.pcos(), radius * angle.psin()])
         }
         Shape::Spline(_) => seg.point_at(if seg.reversed { 1.0 - t } else { t }),
     }
@@ -229,7 +230,7 @@ fn crossings_of(seg: &Segment, tangent: &Tangent, tol: f64) -> Result<Vec<f64>, 
                     if seg.reversed { 1.0 - u } else { u }
                 })
             };
-            let beta = n[1].atan2(n[0]);
+            let beta = n[1].patan2(n[0]);
             let length = r * sweep;
             let inside = |t: f64| t * length > tol && (1.0 - t) * length > tol;
             if (dc.abs() - r).abs() <= tol {
@@ -244,7 +245,7 @@ fn crossings_of(seg: &Segment, tangent: &Tangent, tol: f64) -> Result<Vec<f64>, 
                     _ => Ok(Vec::new()),
                 };
             }
-            let half = (-dc / r).clamp(-1.0, 1.0).acos();
+            let half = (-dc / r).clamp(-1.0, 1.0).pacos();
             let mut ts: Vec<f64> = [beta + half, beta - half]
                 .into_iter()
                 .filter_map(at)
@@ -725,7 +726,7 @@ impl Skin {
         let phi = self.angle(s);
         self.frame.origin()
             + self.axis * u
-            + (self.frame.x() * phi.cos() + self.frame.y() * phi.sin()) * self.radius
+            + (self.frame.x() * phi.pcos() + self.frame.y() * phi.psin()) * self.radius
     }
 
     /// The tangent of the image of a pattern curve through `p` with the
@@ -736,7 +737,7 @@ impl Skin {
         let du = dot(dp, self.along);
         let dphi = dot(dp, self.across) / self.neutral;
         self.axis * du
-            + (self.frame.y() * phi.cos() - self.frame.x() * phi.sin()) * (self.radius * dphi)
+            + (self.frame.y() * phi.pcos() - self.frame.x() * phi.psin()) * (self.radius * dphi)
     }
 
     /// The circle of the skin `u` along the axis.
@@ -834,7 +835,7 @@ fn loop_tangent(seg: &Segment, t: f64) -> P2 {
             let (_, sweep) = seg.angles().unwrap_or((0.0, TAU));
             let turn = if seg.reversed { -sweep } else { sweep };
             let angle = loop_angle(seg, t);
-            [-radius * angle.sin() * turn, radius * angle.cos() * turn]
+            [-radius * angle.psin() * turn, radius * angle.pcos() * turn]
         }
         Shape::Spline(_) => {
             // By the central difference (a spline lies inside a strip, so

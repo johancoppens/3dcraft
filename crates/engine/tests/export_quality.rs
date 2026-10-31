@@ -12,6 +12,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::run;
@@ -56,7 +57,8 @@ fn rim_points(path: &std::path::Path) -> usize {
             let f =
                 |k: usize| f32::from_le_bytes(bytes[p + k * 4..p + k * 4 + 4].try_into().unwrap());
             let (x, y, z) = (f(0), f(1), f(2));
-            if (z - 20.0).abs() < 1e-3 && (x - 1200.0).abs() < 10.5 && (x - 1200.0).hypot(y) > 5.0 {
+            if (z - 20.0).abs() < 1e-3 && (x - 1200.0).abs() < 10.5 && (x - 1200.0).phypot(y) > 5.0
+            {
                 points.insert((x.to_bits(), y.to_bits()));
             }
         }

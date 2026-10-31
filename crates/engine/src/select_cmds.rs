@@ -11,6 +11,7 @@ use crate::selection::{
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::{ConstraintKind, Document, FeatureId, FeatureKind, NameRole, PersistentName};
 use craft3d_geom::{Curve3, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Vec3};
 use craft3d_regen::{Names, Regen};
 use craft3d_topo::{Body, EdgeId, FaceId};
@@ -697,7 +698,7 @@ impl<'a> Parser<'a> {
                     Some(quantity.value)
                 } else if quantity.dimension == wanted {
                     let factor = self.doc.units.length.as_expr_unit().factor();
-                    Some(quantity.value / factor.powi(power))
+                    Some(quantity.value / factor.ppowi(power))
                 } else {
                     return Err(format!(
                         "`{key}` is {}, but a length{} is needed",
@@ -720,7 +721,7 @@ impl<'a> Parser<'a> {
     fn range(&self, value: &Value, key: &str, power: i32) -> Result<Range, String> {
         let around = |eq: f64, tol: Option<f64>| {
             let tol = tol
-                .unwrap_or_else(|| 1e-6 * eq.abs() + self.doc.tolerance.linear.abs().powi(power));
+                .unwrap_or_else(|| 1e-6 * eq.abs() + self.doc.tolerance.linear.abs().ppowi(power));
             Range {
                 lo: eq - tol,
                 hi: eq + tol,
@@ -1220,7 +1221,7 @@ impl<'a> Context<'a> {
                         let d: f64 = has
                             .iter()
                             .zip(want)
-                            .map(|(a, b)| (f64::from(*a) - f64::from(*b)).powi(2))
+                            .map(|(a, b)| (f64::from(*a) - f64::from(*b)).ppowi(2))
                             .sum::<f64>()
                             .sqrt();
                         d <= *within
@@ -1255,8 +1256,8 @@ impl<'a> Context<'a> {
                 let Some((surface, reversed)) = surface_of(c) else {
                     return false;
                 };
-                let square = |v: Vec3, d: Vec3| v.dot(d).abs() <= tol.sin();
-                let parallel = |v: Vec3, d: Vec3| v.dot(d) >= tol.cos();
+                let square = |v: Vec3, d: Vec3| v.dot(d).abs() <= tol.psin();
+                let parallel = |v: Vec3, d: Vec3| v.dot(d) >= tol.pcos();
                 match surface {
                     Surface::Plane(plane) => {
                         let z = plane.frame().z();
@@ -1281,7 +1282,7 @@ impl<'a> Context<'a> {
                     }),
                     _ => None,
                 };
-                a.is_some_and(|a| a.dot(*along).abs() >= tol.cos())
+                a.is_some_and(|a| a.dot(*along).abs() >= tol.pcos())
             }
             Filter::Inside([lo, hi]) => self.bounds(c).is_some_and(|(a, b)| {
                 let slack = self.doc.tolerance.linear.abs();
@@ -1542,7 +1543,7 @@ fn is_hole(c: &Candidate<'_>) -> bool {
                 for i in 0..=HOLE_SAMPLES {
                     let t = t0 + (t1 - t0) * f64::from(i) / f64::from(HOLE_SAMPLES);
                     let d = edge.curve.eval(t) - origin;
-                    let a = d.dot(y).atan2(d.dot(x));
+                    let a = d.dot(y).patan2(d.dot(x));
                     if a.is_finite() {
                         angles.push(a);
                     }

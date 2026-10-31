@@ -909,6 +909,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
     use craft3d_geom::{Curve3, Line};
+    use craft3d_math::Portable;
     use craft3d_topo::{BodyKind, Vertex};
 
     /// A line along x from the origin and a curve that leaves the origin
@@ -919,7 +920,7 @@ mod tests {
         let points: Vec<Vec3> = params
             .iter()
             .map(|t| {
-                let y = 0.5 * t * (t - 0.7).powi(2) / 0.49 + gap * t / 0.7;
+                let y = 0.5 * t * (t - 0.7).ppowi(2) / 0.49 + gap * t / 0.7;
                 Vec3::new(*t, y, 0.0)
             })
             .collect();

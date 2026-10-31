@@ -848,6 +848,7 @@ impl Evaluation {
 mod tests {
     use super::*;
     use crate::units::Dimension;
+    use craft3d_math::Portable;
 
     fn table(rows: &[(&str, &str)]) -> VariableTable {
         let mut table = VariableTable::new();
@@ -894,7 +895,7 @@ mod tests {
             .evaluate_bound(&x, "t", Quantity::dimensionless(0.5))
             .unwrap();
         assert_eq!(got.dimension, Dimension::LENGTH);
-        assert!((got.value - 20.0 * (0.5f64.cos() + 0.5 * 0.5f64.sin())).abs() < 1e-12);
+        assert!((got.value - 20.0 * (0.5f64.pcos() + 0.5 * 0.5f64.psin())).abs() < 1e-12);
         // Without a variable of its name the parameter is still known.
         let plain = table(&[("rb", "20 mm")]).evaluate();
         assert!(

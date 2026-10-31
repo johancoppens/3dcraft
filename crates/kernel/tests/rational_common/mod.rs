@@ -17,6 +17,7 @@
 )]
 
 use craft3d_geom::{Curve3, NurbsCurve, NurbsSurface, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
 use craft3d_topo::Body;
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
@@ -37,16 +38,16 @@ pub struct Flat {
 pub fn arc(from: f64, to: f64, start: f64, end: f64) -> Flat {
     let spans = (((to - from) / FRAC_PI_2) - 1e-9).ceil().max(1.0) as usize;
     let step = (to - from) / spans as f64;
-    let weight = (0.5 * step).cos();
-    let mut points = vec![(from.cos(), from.sin())];
+    let weight = (0.5 * step).pcos();
+    let mut points = vec![(from.pcos(), from.psin())];
     let mut weights = vec![1.0];
     let mut knots = vec![start; 3];
     for s in 0..spans {
         let middle = from + step * (s as f64 + 0.5);
         let last = from + step * (s as f64 + 1.0);
-        points.push((middle.cos() / weight, middle.sin() / weight));
+        points.push((middle.pcos() / weight, middle.psin() / weight));
         weights.push(weight);
-        points.push((last.cos(), last.sin()));
+        points.push((last.pcos(), last.psin()));
         weights.push(1.0);
         let knot = if s + 1 == spans {
             end
@@ -143,7 +144,7 @@ pub fn rational_part(surface: &Surface, points: &[Vec3], pad: f64) -> Option<Nur
         _ => return None,
     };
     let local: Vec<(f64, f64, f64)> = points.iter().map(|&p| frame.local(p)).collect();
-    let (from, to) = padded(angle_range(local.iter().map(|p| p.1.atan2(p.0))), pad);
+    let (from, to) = padded(angle_range(local.iter().map(|p| p.1.patan2(p.0))), pad);
     // (The angles are unwrapped about the first: a face that reaches
     // further around, or around a pole, would get a patch that is not
     // under all of it.)
@@ -156,13 +157,16 @@ pub fn rational_part(surface: &Surface, points: &[Vec3], pad: f64) -> Option<Nur
         }
         Surface::Cone(s) => {
             let (low, high) = heights();
-            let slope = s.half_angle().tan();
+            let slope = s.half_angle().ptan();
             let reach = |z: f64| s.radius() + z * slope;
             assert!(reach(low) > 0.0 && reach(high) > 0.0, "through the apex");
             straight((reach(low), low), (reach(high), high))
         }
         Surface::Sphere(s) => {
-            let (low, high) = padded(range(local.iter().map(|p| p.2.atan2(p.0.hypot(p.1)))), pad);
+            let (low, high) = padded(
+                range(local.iter().map(|p| p.2.patan2(p.0.phypot(p.1)))),
+                pad,
+            );
             // Up to a pole the patch is still the sphere, with a border
             // collapsed into the pole.
             let (low, high) = (low.max(-FRAC_PI_2), high.min(FRAC_PI_2));
@@ -175,7 +179,7 @@ pub fn rational_part(surface: &Surface, points: &[Vec3], pad: f64) -> Option<Nur
         Surface::Torus(s) => {
             let (major, minor) = s.radii();
             let (low, high) = padded(
-                angle_range(local.iter().map(|p| p.2.atan2(p.0.hypot(p.1) - major))),
+                angle_range(local.iter().map(|p| p.2.patan2(p.0.phypot(p.1) - major))),
                 pad,
             );
             assert!(
@@ -284,7 +288,7 @@ pub fn skewed(surface: &NurbsSurface, cu: f64, cv: f64) -> NurbsSurface {
     let mut weights = surface.weights().to_vec();
     for i in 0..count_u {
         for j in 0..count_v {
-            weights[i * count_v + j] *= cu.powi(i as i32) * cv.powi(j as i32);
+            weights[i * count_v + j] *= cu.ppowi(i as i32) * cv.ppowi(j as i32);
         }
     }
     NurbsSurface::new(
@@ -308,7 +312,7 @@ pub fn skewed_apart(body: &Body, along_u: f64, along_v: f64) -> Body {
     for face in &mut skewed_body.faces {
         if let Surface::Nurbs(s) = &face.surface {
             let (du, dv) = s.degrees();
-            let root = |ratio: f64, degree: usize| ratio.powf(1.0 / degree as f64);
+            let root = |ratio: f64, degree: usize| ratio.ppowf(1.0 / degree as f64);
             face.surface = Surface::Nurbs(skewed(s, root(along_u, du), root(along_v, dv)));
         }
     }

@@ -44,6 +44,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::{arc, circle, line, rectangle};
@@ -74,7 +75,7 @@ fn profile(curves: &[SketchCurve]) -> Profile {
 }
 
 fn turned(v: P, angle: f64) -> P {
-    let (s, c) = angle.sin_cos();
+    let (s, c) = angle.psin_cos();
     [v[0] * c - v[1] * s, v[0] * s + v[1] * c]
 }
 
@@ -87,7 +88,7 @@ fn sub(a: P, b: P) -> P {
 }
 
 fn norm(v: P) -> f64 {
-    v[0].hypot(v[1])
+    v[0].phypot(v[1])
 }
 
 /// The angle in `[0, 2π)`.
@@ -145,7 +146,7 @@ impl Piece {
             } => {
                 let side = sweep.signum();
                 let angle = from + side * s / radius;
-                let (sin, cos) = angle.sin_cos();
+                let (sin, cos) = angle.psin_cos();
                 (
                     [centre[0] + radius * cos, centre[1] + radius * sin],
                     [-side * sin, side * cos],
@@ -174,7 +175,7 @@ impl Piece {
                 let within = if rho == 0.0 {
                     true
                 } else {
-                    let angle = off[1].atan2(off[0]);
+                    let angle = off[1].patan2(off[0]);
                     let along = if sweep > 0.0 {
                         wrapped(angle - from)
                     } else {
@@ -244,7 +245,7 @@ fn path(pieces: &[(f64, Go)], k: f64) -> (Vec<SketchCurve>, Vec<Piece>) {
                 drawn.push(Piece::Arc {
                     centre,
                     radius: r,
-                    from: out[1].atan2(out[0]),
+                    from: out[1].patan2(out[0]),
                     sweep: angle,
                 });
                 heading = turned(heading, angle);
@@ -303,13 +304,13 @@ impl Exact {
         let d2 = self.plan_distance([x.x, x.y]);
         match self.shape {
             Shape::Round(r) => {
-                let d = d2.hypot(x.z);
+                let d = d2.phypot(x.z);
                 if d >= r { d - r } else { (r - d) * self.crease }
             }
             Shape::Box(w, h) => {
                 let (across, up) = (d2 - w, x.z.abs() - h);
                 if across > 0.0 || up > 0.0 {
-                    across.max(0.0).hypot(up.max(0.0))
+                    across.max(0.0).phypot(up.max(0.0))
                 } else {
                     (-across * self.crease).min(-up)
                 }
@@ -325,7 +326,7 @@ impl Exact {
         let reach = self.shape.reach();
         let mut s: Vec<f64> = (0..=48).map(|i| length * f64::from(i) / 48.0).collect();
         for e in 0..14 {
-            let near = reach * 10f64.powf(-f64::from(e) / 2.0);
+            let near = reach * 10f64.ppowf(-f64::from(e) / 2.0);
             s.push(near);
             s.push(length - near);
         }
@@ -358,7 +359,7 @@ impl Exact {
                 let (_, leaving) = next.at(0.0);
                 let cross = arriving[0] * leaving[1] - arriving[1] * leaving[0];
                 let dot = arriving[0] * leaving[0] + arriving[1] * leaving[1];
-                let kink = cross.atan2(dot);
+                let kink = cross.patan2(dot);
                 for i in 0..=16 {
                     let beta = kink * f64::from(i) / 16.0;
                     stations.push((v, left(turned(arriving, beta))));
@@ -367,7 +368,7 @@ impl Exact {
         }
         let around = |n: u32| (0..n).map(move |i| TAU * (f64::from(i) + 0.25) / f64::from(n));
         let chebyshev =
-            |n: u32| (0..n).map(move |i| (PI * (f64::from(i) + 0.5) / f64::from(n)).cos());
+            |n: u32| (0..n).map(move |i| (PI * (f64::from(i) + 0.5) / f64::from(n)).pcos());
         let mut out = Vec::new();
         for (c, n) in stations {
             let centre = Vec3::new(c[0], c[1], 0.0);
@@ -375,10 +376,10 @@ impl Exact {
             match self.shape {
                 Shape::Round(r) => {
                     for theta in around(64) {
-                        let (sin, cos) = theta.sin_cos();
+                        let (sin, cos) = theta.psin_cos();
                         let normal = across * cos + Vec3::Z * sin;
                         let x = centre + normal * r;
-                        if self.plan_distance([x.x, x.y]).hypot(x.z) >= r * (1.0 - 1e-9) {
+                        if self.plan_distance([x.x, x.y]).phypot(x.z) >= r * (1.0 - 1e-9) {
                             out.push((x, normal));
                         }
                     }
@@ -785,7 +786,7 @@ impl<'a> Built<'a> {
 /// The kink that turns a profile reaching `reach` to the side through
 /// `moved`: `reach (1 - cos a) = moved`.
 fn kink_for(moved: f64, reach: f64) -> f64 {
-    2.0 * (0.5 * moved / reach).sqrt().asin()
+    2.0 * (0.5 * moved / reach).sqrt().pasin()
 }
 
 /// The paths: line, arc, line and so on, with the kink `a` where the
@@ -835,7 +836,7 @@ fn measured(swept: &Swept, pieces: Vec<Piece>, shape: Shape, kink: f64) -> (f64,
     let exact = Exact {
         pieces,
         shape,
-        crease: 1.0 / (kink / 2.0).cos(),
+        crease: 1.0 / (kink / 2.0).pcos(),
     };
     let mut built = Built::new(swept, reach);
     let (there, where_there, count) = built.body_to_exact(|p| exact.off(p));
@@ -955,7 +956,7 @@ fn the_measure_sees_a_mitre() {
             )
             .unwrap();
             let (there, back, _) = measured(&swept, pieces, shape, a);
-            let expected = shape.reach() * (1.0 / (a / 2.0).cos() - 1.0);
+            let expected = shape.reach() * (1.0 / (a / 2.0).pcos() - 1.0);
             assert!(expected > 40.0 * tol.linear);
             for (found, way) in [(there, "body→exact"), (back, "exact→body")] {
                 assert!(

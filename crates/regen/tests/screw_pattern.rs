@@ -17,6 +17,7 @@ use craft3d_doc::{
     AxisBy, Block, DatumAxis, Document, Expr, FeatureId, FeatureKind, Pattern, PatternLayout,
     PointRef, Units,
 };
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use craft3d_regen::{Regen, Status, regenerate};
 use craft3d_topo::mass_properties;
@@ -83,7 +84,7 @@ fn screw(
 /// The centroid of the block turned by `turns` degrees about the line
 /// through (1, 2) along z, `rise` higher.
 fn on_helix(turns: f64, rise: f64) -> Vec3 {
-    let (s, c) = turns.to_radians().sin_cos();
+    let (s, c) = turns.to_radians().psin_cos();
     let (dx, dy) = (39.0, -2.0);
     Vec3::new(1.0 + c * dx - s * dy, 2.0 + s * dx + c * dy, 2.0 + rise)
 }

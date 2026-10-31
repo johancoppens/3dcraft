@@ -15,6 +15,7 @@
 )]
 
 use craft3d_engine::{Session, Workspace};
+use craft3d_math::Portable;
 use serde_json::{Value, json};
 
 fn run(session: &mut Session, id: &str, params: Value) -> Value {
@@ -80,13 +81,13 @@ fn a_block_below_a_level_matches_its_closed_forms() {
     );
     let section = &below["section"];
     close(&section["area"], l * b, "section area");
-    close(&section["ix"], l * b.powi(3) / 12.0, "ix = l b³/12");
-    close(&section["iy"], b * l.powi(3) / 12.0, "iy = b l³/12");
+    close(&section["ix"], l * b.ppowi(3) / 12.0, "ix = l b³/12");
+    close(&section["iy"], b * l.ppowi(3) / 12.0, "iy = b l³/12");
     // Zero to the rounding of sums of the size of iy (1e14 mm^4).
     let ixy = section["ixy"].as_f64().unwrap();
-    assert!(ixy.abs() <= 1e-12 * b * l.powi(3) / 12.0, "ixy {ixy}");
-    close(&section["major"], b * l.powi(3) / 12.0, "major");
-    close(&section["minor"], l * b.powi(3) / 12.0, "minor");
+    assert!(ixy.abs() <= 1e-12 * b * l.ppowi(3) / 12.0, "ixy {ixy}");
+    close(&section["major"], b * l.ppowi(3) / 12.0, "major");
+    close(&section["minor"], l * b.ppowi(3) / 12.0, "minor");
     assert_eq!(below["lengthUnit"], "mm");
     // measure.section gives the same section; a plane given by its normal
     // the other way round keeps the other side.
@@ -334,7 +335,7 @@ fn a_block_floats_upright_or_lolls_at_its_wall_sided_angle() {
     assert_eq!(all[0]["stable"], false);
     assert_eq!(lolled["floats"], 1);
     let gm: f64 = 50.0 + 40000.0 / 1200.0 - 90.0;
-    let phi = (-2.0 * gm / (40000.0 / 1200.0)).sqrt().atan().to_degrees();
+    let phi = (-2.0 * gm / (40000.0 / 1200.0)).sqrt().patan().to_degrees();
     let mut heels: Vec<f64> = all[1..]
         .iter()
         .map(|e| e["heel"].as_f64().unwrap())
@@ -437,7 +438,7 @@ fn a_welded_box_twists_near_bredt() {
         section
     );
     let (w, h): (f64, f64) = (97.0, 146.0);
-    let bredt = 4.0 * (w * h).powi(2) / (2.0 * w / 4.0 + 2.0 * h / 3.0);
+    let bredt = 4.0 * (w * h).ppowi(2) / (2.0 * w / 4.0 + 2.0 * h / 3.0);
     let j = section["torsion"].as_f64().unwrap();
     assert!((j - bredt).abs() <= 0.03 * bredt, "J {j}, Bredt {bredt}");
     assert_eq!(section["torsionSolve"]["converged"], true, "{section}");

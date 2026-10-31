@@ -16,6 +16,7 @@
 )]
 
 use craft3d_geom::{Circle, Curve3, Cylinder, Line, Sphere, Surface, Torus};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
 use craft3d_tess::{TessParams, tessellate_body, tessellate_body_with_threads};
 use craft3d_topo::{Body, BodyKind, Coedge, EdgeId};
@@ -304,7 +305,7 @@ fn zones_and_lunes_of_a_sphere() {
         let r = 2.0;
         let sphere = || Surface::Sphere(Sphere::new(frame, r).unwrap());
         let latitude = |body: &mut Body, v: f64, start: f64| {
-            arc(body, &frame, r * v.cos(), r * v.sin(), start, start + TAU)
+            arc(body, &frame, r * v.pcos(), r * v.psin(), start, start + TAU)
         };
         // The zone between two latitudes, on either side of the equator
         // and close to a pole; the circles start at different angles.
@@ -320,7 +321,7 @@ fn zones_and_lunes_of_a_sphere() {
             );
             assert_sheet(
                 &body,
-                TAU * r * r * (v1.sin() - v0.sin()),
+                TAU * r * r * (v1.psin() - v0.psin()),
                 &format!("zone from {v0} to {v1}"),
             );
         }
@@ -328,19 +329,19 @@ fn zones_and_lunes_of_a_sphere() {
         let mut body = Body::new(BodyKind::Sheet);
         let rim = latitude(&mut body, 0.7, 1.0);
         sheet(&mut body, sphere(), false, vec![vec![backward(rim)]]);
-        assert_sheet(&body, TAU * r * r * (0.7_f64.sin() + 1.0), "bowl");
+        assert_sheet(&body, TAU * r * r * (0.7_f64.psin() + 1.0), "bowl");
         // A zone with a window cut out of it across the seam.
         let mut body = Body::new(BodyKind::Sheet);
         let low = latitude(&mut body, -0.8, 0.0);
         let high = latitude(&mut body, 0.8, 0.0);
         let (w0, w1) = (-0.3_f64, 0.4_f64);
-        let south = arc(&mut body, &frame, r * w0.cos(), r * w0.sin(), -0.5, 0.6);
-        let north = arc(&mut body, &frame, r * w1.cos(), r * w1.sin(), -0.5, 0.6);
+        let south = arc(&mut body, &frame, r * w0.pcos(), r * w0.psin(), -0.5, 0.6);
+        let north = arc(&mut body, &frame, r * w1.pcos(), r * w1.psin(), -0.5, 0.6);
         let meridian = |body: &mut Body, u: f64, from: EdgeId, to: EdgeId, at_end: bool| {
             // The circle through both poles at longitude u; its angle is
             // the latitude.
-            let x = frame.vector(u.cos(), u.sin(), 0.0);
-            let side = frame.vector(-u.sin(), u.cos(), 0.0);
+            let x = frame.vector(u.pcos(), u.psin(), 0.0);
+            let side = frame.vector(-u.psin(), u.pcos(), 0.0);
             let plane = Frame::new(frame.origin(), -side, x).unwrap();
             let curve = Curve3::Circle(Circle::new(plane, r).unwrap());
             let pick = |e: EdgeId| {
@@ -369,7 +370,7 @@ fn zones_and_lunes_of_a_sphere() {
         );
         assert_sheet(
             &body,
-            r * r * (TAU * 2.0 * 0.8_f64.sin() - 1.1 * (w1.sin() - w0.sin())),
+            r * r * (TAU * 2.0 * 0.8_f64.psin() - 1.1 * (w1.psin() - w0.psin())),
             "zone with a window",
         );
 
@@ -386,8 +387,8 @@ fn zones_and_lunes_of_a_sphere() {
             let south = body.add_vertex(frame.point(0.0, 0.0, -r));
             let north = body.add_vertex(frame.point(0.0, 0.0, r));
             let mut half = |u: f64| {
-                let x = frame.vector(u.cos(), u.sin(), 0.0);
-                let side = frame.vector(-u.sin(), u.cos(), 0.0);
+                let x = frame.vector(u.pcos(), u.psin(), 0.0);
+                let side = frame.vector(-u.psin(), u.pcos(), 0.0);
                 let plane = Frame::new(frame.origin(), -side, x).unwrap();
                 let curve = Curve3::Circle(Circle::new(plane, r).unwrap());
                 body.add_edge(curve, (-FRAC_PI_2, FRAC_PI_2), south, north)
@@ -429,8 +430,8 @@ fn bands_of_a_torus() {
                 arc(
                     body,
                     &frame,
-                    major + minor * v.cos(),
-                    minor * v.sin(),
+                    major + minor * v.pcos(),
+                    minor * v.psin(),
                     start,
                     start + TAU,
                 )
@@ -445,7 +446,7 @@ fn bands_of_a_torus() {
             );
             assert_sheet(
                 &body,
-                TAU * minor * (major * (v1 - v0) + minor * (v1.sin() - v0.sin())),
+                TAU * minor * (major * (v1 - v0) + minor * (v1.psin() - v0.psin())),
                 &format!("torus band from {v0} to {v1}"),
             );
         }
@@ -454,9 +455,9 @@ fn bands_of_a_torus() {
         for (u0, u1) in [(0.5, 1.9), (-0.8, 0.6), (4.0, 9.0)] {
             let mut body = Body::new(BodyKind::Sheet);
             let mut section = |u: f64, start: f64| {
-                let outward = frame.vector(u.cos(), u.sin(), 0.0);
-                let ahead = frame.vector(-u.sin(), u.cos(), 0.0);
-                let centre = frame.point(major * u.cos(), major * u.sin(), 0.0);
+                let outward = frame.vector(u.pcos(), u.psin(), 0.0);
+                let ahead = frame.vector(-u.psin(), u.pcos(), 0.0);
+                let centre = frame.point(major * u.pcos(), major * u.psin(), 0.0);
                 let plane = Frame::new(centre, -ahead, outward).unwrap();
                 let curve = Curve3::Circle(Circle::new(plane, minor).unwrap());
                 let vertex = body.add_vertex(curve.eval(start));

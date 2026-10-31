@@ -8,6 +8,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::plain::run;
@@ -46,7 +47,7 @@ fn a_miura_sheet_of_sketch_patterns_driven_by_one_crease_folds() {
     // › *Closed forms*): every straight piece by the driving angle, every
     // zigzag piece by 2 atan(tan(rho / 2) / cos gamma).
     let (rho, gamma) = (30f64.to_radians(), 60f64.to_radians());
-    let zigzag = (2.0 * ((rho / 2.0).tan() / gamma.cos()).atan()).to_degrees();
+    let zigzag = (2.0 * ((rho / 2.0).ptan() / gamma.pcos()).patan()).to_degrees();
     let mut pieces = 0;
     for crease in inspect["creases"].as_array().unwrap() {
         let line = crease["line"].as_str().unwrap();

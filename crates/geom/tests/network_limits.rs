@@ -19,6 +19,7 @@ use craft3d_geom::network::{
 };
 use craft3d_geom::refine::interpolate;
 use craft3d_geom::{NurbsCurve, NurbsSurface, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
 use std::f64::consts::FRAC_PI_2;
 
@@ -81,7 +82,7 @@ fn warped_grid(count: usize, side: f64) -> (Vec<NurbsCurve>, Vec<NurbsCurve>) {
         let gamma = warp(k);
         let points: Vec<Vec3> = (0..30)
             .map(|i| {
-                let s = side * (f64::from(i) / 29.0).powf(gamma);
+                let s = side * (f64::from(i) / 29.0).ppowf(gamma);
                 if across { v(at, s, 0.0) } else { v(s, at, 0.0) }
             })
             .collect();
@@ -229,7 +230,7 @@ fn the_mismatch_bounds_how_far_the_surface_passes_from_its_curves() {
         // tenth of the tolerance: the surface goes through the u curves
         // and within `mismatch` of the v curves, all along them.
         let tol = 1e-6 * scale;
-        let h = |x: f64, y: f64| 0.3 * (1.3 * x).sin() + 0.2 * (0.8 * y).cos();
+        let h = |x: f64, y: f64| 0.3 * (1.3 * x).psin() + 0.2 * (0.8 * y).pcos();
         let at = |x: f64, y: f64| v(x, y, h(x, y)) * scale;
         let mut us: Vec<NurbsCurve> = [0.0, 1.5, 3.0]
             .iter()
@@ -283,7 +284,7 @@ fn a_chain_smooth_within_a_tolerance_of_position_runs_on_at_one_speed() {
         let turn: f64 = 1e-7;
         let tail = line(
             v(0.0, r, 0.0),
-            v(-2.0 * r * turn.cos(), r + 2.0 * r * turn.sin(), 0.0),
+            v(-2.0 * r * turn.pcos(), r + 2.0 * r * turn.psin(), 0.0),
         );
         let joined = chain(&[quarter, tail], 1e-6 * scale, 1e-12).unwrap();
         let mut joint = 0.0;

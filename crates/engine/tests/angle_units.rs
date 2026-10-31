@@ -10,6 +10,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::run;
@@ -46,7 +47,7 @@ fn turn_of(s: &mut craft3d_engine::Session, angle: &str) -> f64 {
     run(s, "feature.delete", json!({"feature": "T"}));
     let (x, y) = (c[0].as_f64().unwrap(), c[1].as_f64().unwrap());
     // (x, y) = R(angle) (1/2, 1/2): the angle of (x, y) less 45 degrees.
-    y.atan2(x) - std::f64::consts::FRAC_PI_4
+    y.patan2(x) - std::f64::consts::FRAC_PI_4
 }
 
 #[test]

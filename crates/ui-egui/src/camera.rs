@@ -4,6 +4,7 @@
 //! lands on it.
 
 use crate::state::{CameraState, MAX_EXTENT, MIN_DISTANCE, ProjectionKind};
+use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Vec3};
 use craft3d_render::{Camera, Projection};
 
@@ -29,9 +30,9 @@ impl CameraState {
     pub fn toward_eye(&self) -> Vec3 {
         let (yaw, pitch) = self.angles();
         Vec3::new(
-            pitch.cos() * yaw.cos(),
-            pitch.cos() * yaw.sin(),
-            pitch.sin(),
+            pitch.pcos() * yaw.pcos(),
+            pitch.pcos() * yaw.psin(),
+            pitch.psin(),
         )
     }
 
@@ -41,9 +42,9 @@ impl CameraState {
     pub fn up(&self) -> Vec3 {
         let (yaw, pitch) = self.angles();
         Vec3::new(
-            -pitch.sin() * yaw.cos(),
-            -pitch.sin() * yaw.sin(),
-            pitch.cos(),
+            -pitch.psin() * yaw.pcos(),
+            -pitch.psin() * yaw.psin(),
+            pitch.pcos(),
         )
     }
 
@@ -51,7 +52,7 @@ impl CameraState {
     /// it: turning about the world Z keeps the horizon level.
     pub fn right(&self) -> Vec3 {
         let (yaw, _) = self.angles();
-        Vec3::new(-yaw.sin(), yaw.cos(), 0.0)
+        Vec3::new(-yaw.psin(), yaw.pcos(), 0.0)
     }
 
     pub fn target(&self) -> Vec3 {
@@ -65,7 +66,7 @@ impl CameraState {
     /// Half the height of what is visible at the target's depth, per unit
     /// of distance.
     fn half_tan(&self) -> f64 {
-        (self.fov_y.to_radians() * 0.5).tan()
+        (self.fov_y.to_radians() * 0.5).ptan()
     }
 
     /// The camera a renderer takes.
@@ -135,7 +136,7 @@ impl CameraState {
         if !scroll.is_finite() || scroll == 0.0 {
             return;
         }
-        let factor = (-ZOOM_PER_POINT * scroll).clamp(-20.0, 20.0).exp();
+        let factor = (-ZOOM_PER_POINT * scroll).clamp(-20.0, 20.0).pexp();
         self.distance = (self.distance * factor).clamp(MIN_DISTANCE, MAX_EXTENT);
         self.auto_fit = false;
     }
@@ -286,7 +287,7 @@ impl Projector {
                 if !(fov_y_deg > 0.0 && fov_y_deg < 180.0) {
                     return None;
                 }
-                (true, (fov_y_deg.to_radians() * 0.5).tan())
+                (true, (fov_y_deg.to_radians() * 0.5).ptan())
             }
             Projection::Orthographic { half_height } => (false, half_height),
         };
@@ -419,6 +420,7 @@ impl Projector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use craft3d_math::Portable;
 
     fn near(a: Vec3, b: Vec3) -> bool {
         a.distance(b) <= 1e-12
@@ -492,7 +494,7 @@ mod tests {
         let Projection::Orthographic { half_height } = ortho.to_render().projection else {
             panic!("not orthographic");
         };
-        assert!((half_height - 50.0 * 15.0_f64.to_radians().tan()).abs() < 1e-12);
+        assert!((half_height - 50.0 * 15.0_f64.to_radians().ptan()).abs() < 1e-12);
     }
 
     #[test]
@@ -543,7 +545,7 @@ mod tests {
             distance: 100.0,
             ..looking("front")
         };
-        let per_point = 2.0 * 100.0 * 15.0_f64.to_radians().tan() / 400.0;
+        let per_point = 2.0 * 100.0 * 15.0_f64.to_radians().ptan() / 400.0;
         camera.pan(40.0, 10.0, 400.0);
         // The model moved right and down with the pointer, so the camera
         // looks at a point further left (-X) and higher (+Z).
@@ -575,7 +577,7 @@ mod tests {
     fn zooming_scales_the_distance() {
         let mut camera = CameraState::default();
         camera.zoom(100.0);
-        assert!((camera.distance - 100.0 * (-0.2_f64).exp()).abs() < 1e-12);
+        assert!((camera.distance - 100.0 * (-0.2_f64).pexp()).abs() < 1e-12);
         camera.zoom(-100.0);
         assert!((camera.distance - 100.0).abs() < 1e-9);
         assert!(!camera.auto_fit);
@@ -620,7 +622,7 @@ mod tests {
                     for scroll in [120.0, -120.0, 40.0, 1500.0, -1500.0] {
                         let mut camera = start;
                         camera.zoom_about(scroll, point);
-                        let want = start.distance * (-ZOOM_PER_POINT * scroll).exp();
+                        let want = start.distance * (-ZOOM_PER_POINT * scroll).pexp();
                         assert!((camera.distance - want).abs() < 1e-9 * want);
                         assert!(!camera.auto_fit, "a zoom by hand stops the automatic fit");
                         let after = Projector::new(&camera.to_render(), w, h)
@@ -697,7 +699,7 @@ mod tests {
         let bbox = Bbox3::from_points([lo, hi]);
         let mut camera = looking("top");
         camera.fit(&bbox, 2.0);
-        let tan = 15.0_f64.to_radians().tan();
+        let tan = 15.0_f64.to_radians().ptan();
         let expected = (5.0 + 15.0 / tan) * 1.05;
         assert!(
             (camera.distance - expected).abs() < 1e-9,
@@ -739,7 +741,7 @@ mod tests {
             ..looking("top")
         };
         camera.fit(&Bbox3::from_points([lo, hi]), 2.0);
-        let tan = 15.0_f64.to_radians().tan();
+        let tan = 15.0_f64.to_radians().ptan();
         assert!((camera.distance - 15.0 / tan * 1.05).abs() < 1e-9);
         let projector = Projector::new(&camera.to_render(), 800.0, 400.0).unwrap();
         for corner in corners(lo, hi) {

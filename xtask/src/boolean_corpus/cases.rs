@@ -7,6 +7,7 @@
 use super::geometry::{
     Class, KINDS, Kind, Pick, Place, Placed, Rot, Solid, Spin, V, against, eighths,
 };
+use craft3d_math::Portable;
 use std::f64::consts::TAU;
 
 /// The linear tolerance at scale 1; gaps of the `near` category are
@@ -100,7 +101,7 @@ impl Rng {
 
     fn direction(&mut self) -> V {
         let z = self.between(-1.0, 1.0);
-        let (s, c) = (TAU * self.unit()).sin_cos();
+        let (s, c) = (TAU * self.unit()).psin_cos();
         let r = (1.0 - z * z).max(0.0).sqrt();
         V(r * c, r * s, z)
     }
@@ -109,8 +110,8 @@ impl Rng {
     fn rotation(&mut self) -> Rot {
         let (u1, u2, u3) = (self.unit(), self.unit(), self.unit());
         let (a, b) = ((1.0 - u1).sqrt(), u1.sqrt());
-        let (s2, c2) = (TAU * u2).sin_cos();
-        let (s3, c3) = (TAU * u3).sin_cos();
+        let (s2, c2) = (TAU * u2).psin_cos();
+        let (s3, c3) = (TAU * u3).psin_cos();
         Rot::from_quaternion(b * c3, a * s2, a * c2, b * s3)
     }
 
@@ -955,7 +956,7 @@ fn special_case(
         }
         ("tangent", Cone, Sphere, 0) => {
             let (r, h) = (len(0.75, 1.5), len(1.0, 2.5));
-            let rho = r * h / (r + r.hypot(h));
+            let rho = r * h / (r + r.phypot(h));
             special(
                 "inscribed",
                 cone(r, h),
@@ -967,10 +968,10 @@ fn special_case(
         }
         ("tangent", Cone, Sphere, 1) => {
             let (r, h) = (len(0.75, 1.5), len(1.0, 2.5));
-            let rho = 0.5 * r * h / (r + r.hypot(h));
+            let rho = 0.5 * r * h / (r + r.phypot(h));
             // On the axis, `rho` from the side: `rho / sin(half angle)`
             // below the apex.
-            let at = h - rho * r.hypot(h) / r;
+            let at = h - rho * r.phypot(h) / r;
             special(
                 "ball-against-the-side",
                 cone(r, h),
@@ -983,7 +984,7 @@ fn special_case(
         ("tangent", Cone, Torus, 0) => {
             let (r, h) = (len(1.0, 1.5), len(1.5, 2.5));
             let minor = len(0.25, 0.5);
-            let slant = r.hypot(h);
+            let slant = r.phypot(h);
             // The tube touches the side halfway up, from outside.
             let major = 0.5 * r + minor * h / slant;
             special(
@@ -1025,7 +1026,7 @@ fn special_case(
             special(
                 "ball-on-a-ring",
                 torus(major, minor),
-                sphere(major.hypot(up) - minor),
+                sphere(major.phypot(up) - minor),
                 V(0.0, 0.0, up),
                 id,
                 Some(Disjoint),

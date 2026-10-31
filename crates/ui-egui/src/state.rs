@@ -1245,6 +1245,7 @@ fn merge(into: &mut Value, key: &str, value: &Value) {
 mod tests {
     use super::*;
     use craft3d_engine::DISPLAY_MAX_ANGLE;
+    use craft3d_math::Portable;
     use serde_json::json;
 
     #[test]
@@ -1566,9 +1567,9 @@ mod tests {
                 state.camera.pitch.to_radians(),
             );
             let d = [
-                pitch.cos() * yaw.cos(),
-                pitch.cos() * yaw.sin(),
-                pitch.sin(),
+                pitch.pcos() * yaw.pcos(),
+                pitch.pcos() * yaw.psin(),
+                pitch.psin(),
             ];
             let length = toward.iter().map(|c| c * c).sum::<f64>().sqrt();
             for (got, want) in d.iter().zip(toward) {

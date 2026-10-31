@@ -16,6 +16,7 @@ use craft3d_geom::network::{
 };
 use craft3d_geom::refine::{compatible, elevated, interpolate, with_knots};
 use craft3d_geom::{Curve3, Cylinder, NurbsCurve, NurbsSurface, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
 use std::f64::consts::FRAC_PI_2;
 
@@ -151,7 +152,13 @@ fn tensor(scale: f64) -> NurbsSurface {
     for i in 0..5 {
         for j in 0..5 {
             let (x, y) = (f64::from(i), f64::from(j));
-            ctrl.push(v(x, y, (0.7 * x).sin() * (0.9 * y + 0.3).cos() + 0.1 * x * y) * scale);
+            ctrl.push(
+                v(
+                    x,
+                    y,
+                    (0.7 * x).psin() * (0.9 * y + 0.3).pcos() + 0.1 * x * y,
+                ) * scale,
+            );
         }
     }
     NurbsSurface::new(3, 3, knots.clone(), knots, 5, 5, ctrl, vec![1.0; 25]).unwrap()
@@ -268,7 +275,7 @@ fn a_network_of_meridians_and_parallels_is_the_sphere_octant() {
 }
 
 fn wavy(scale: f64) -> (Vec<NurbsCurve>, Vec<NurbsCurve>) {
-    let h = |x: f64, y: f64| 0.3 * (1.3 * x).sin() + 0.2 * (0.8 * y).cos() + 0.05 * x * y;
+    let h = |x: f64, y: f64| 0.3 * (1.3 * x).psin() + 0.2 * (0.8 * y).pcos() + 0.05 * x * y;
     let at = |x: f64, y: f64| v(x, y, h(x, y)) * scale;
     let xs = [0.0, 1.0, 2.0];
     let ys = [0.0, 1.5, 3.0];

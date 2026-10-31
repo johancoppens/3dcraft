@@ -21,6 +21,7 @@ use craft3d_kernel::sheetmetal::{
     self, developed_allowance, flange_length, flat_area, flat_faces, holes_to_bends,
     measured_angle, measured_radius,
 };
+use craft3d_math::Portable;
 use serde_json::{Map, Value, json};
 
 const FLANGE_KEYS: [&str; 14] = [
@@ -965,7 +966,7 @@ fn sheet_metal_bends(session: &mut Session, params: &Value) -> Run {
             .collect();
         bends.push(json!({
             "flange": i,
-            "length": (b.end[0] - b.start[0]).hypot(b.end[1] - b.start[1]),
+            "length": (b.end[0] - b.start[0]).phypot(b.end[1] - b.start[1]),
             "ends": ends,
             "id": made.flanges.get(i).map(|f| f.id),
             "on": on_text(&made, i),
@@ -1363,7 +1364,7 @@ fn one_pattern(
             }
         }
     }
-    let size = (hi[0] - lo[0]).hypot(hi[1] - lo[1]);
+    let size = (hi[0] - lo[0]).phypot(hi[1] - lo[1]);
     let dash = if size.is_finite() && size > 0.0 {
         size / 60.0
     } else {

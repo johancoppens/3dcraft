@@ -56,6 +56,7 @@
 
 use crate::refine::{interpolate, interpolate_on};
 use crate::{GeomError, NurbsSurface, Surface, pole};
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 
 /// Why there is no offset.
@@ -1232,10 +1233,10 @@ impl Bern {
     fn eval(&self, s: f64, t: f64) -> f64 {
         let mut sum = 0.0;
         for i in 0..=self.m {
-            let bu = binomial(self.m, i) * s.powi(i as i32) * (1.0 - s).powi((self.m - i) as i32);
+            let bu = binomial(self.m, i) * s.ppowi(i as i32) * (1.0 - s).ppowi((self.m - i) as i32);
             for j in 0..=self.n {
                 let bv =
-                    binomial(self.n, j) * t.powi(j as i32) * (1.0 - t).powi((self.n - j) as i32);
+                    binomial(self.n, j) * t.ppowi(j as i32) * (1.0 - t).ppowi((self.n - j) as i32);
                 sum += self.at(i, j) * bu * bv;
             }
         }
@@ -1927,7 +1928,7 @@ mod tests {
             .flat_map(|i| {
                 (0..4).map(move |j| {
                     let (x, y) = (f64::from(i) / 3.0, f64::from(j) / 3.0);
-                    Vec3::new(x, y, (3.0 * x).sin() * (2.0 * y).cos())
+                    Vec3::new(x, y, (3.0 * x).psin() * (2.0 * y).pcos())
                 })
             })
             .collect();
@@ -1969,7 +1970,7 @@ mod tests {
         );
         // |t − 0.5|³ + t: once differentiable at 0.5 (twice, in fact, but
         // not three times), analytic on either side.
-        let f = |t: f64| (t - 0.5).abs().powi(3) + t;
+        let f = |t: f64| (t - 0.5).abs().ppowi(3) + t;
         let params: Vec<f64> = (0..=20).map(|i| f64::from(i) / 20.0).collect();
         let values: Vec<Vec<f64>> = params.iter().map(|t| vec![f(*t), 0.0, 0.0]).collect();
         let (degree, knots, ctrl) =
@@ -2014,7 +2015,7 @@ mod tests {
         let split = steps_to_halve(&[0.1, 0.99, 4.0, 0.1, 0.1], CUBIC_DECAY);
         assert!((CUBIC_DECAY - (2.0 - 3.0_f64.sqrt())).abs() < 1e-15);
         let t = -QUINTIC_DECAY;
-        assert!((t.powi(4) + 26.0 * t.powi(3) + 66.0 * t * t + 26.0 * t + 1.0).abs() < 1e-12);
+        assert!((t.ppowi(4) + 26.0 * t.ppowi(3) + 66.0 * t * t + 26.0 * t + 1.0).abs() < 1e-12);
         assert_eq!(split, vec![false, true, true, true, false]);
     }
 }

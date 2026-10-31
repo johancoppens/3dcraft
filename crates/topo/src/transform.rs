@@ -53,6 +53,7 @@
 
 use crate::{Body, Coedge, EdgeId, Face, FaceId, Loop, LoopId, Shell, VertexId};
 use craft3d_geom::{Cone, Curve3, GeomError, ISOMETRY_EPSILON, MirrorRule, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Frame, Transform, Vec3};
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 use std::fmt;
@@ -530,11 +531,11 @@ fn arc_extent(frame: &Frame, a: f64, b: f64, curve: &Curve3, range: (f64, f64), 
         // Along this axis the coordinate is o + p cos t + q sin t
         // = o + h cos(t − peak), greatest at `peak`, least half a turn on.
         let (p, q) = (a * x, b * y);
-        let h = p.hypot(q);
+        let h = p.phypot(q);
         if h.is_nan() || h <= 0.0 {
             continue; // The conic is flat along this axis (or not finite).
         }
-        let peak = q.atan2(p);
+        let peak = q.patan2(p);
         for (extreme, value) in [(peak, o + h), (peak + PI, o - h)] {
             // The first angle equal to `extreme` (mod 2π) at or after the
             // start of the range.
@@ -617,13 +618,13 @@ fn reaches_apex(body: &Body, face: &Face, cone: &Cone) -> Result<bool, Transform
                 let (x, y, _) = frame.local(point);
                 // On the axis (which a cone only meets at its apex) the
                 // angle about it means nothing, and the apex is right here.
-                let off_axis = x.hypot(y);
+                let off_axis = x.phypot(y);
                 let near = 1e-9 * point.distance(apex);
                 if !(off_axis.is_finite() && near.is_finite()) || off_axis <= near {
                     return Ok(true);
                 }
                 if let Some((px, py)) = previous {
-                    let step = (px * y - py * x).atan2(px * x + py * y);
+                    let step = (px * y - py * x).patan2(px * x + py * y);
                     // Too coarse to tell which way round it went.
                     if step.is_nan() || step.abs() > FRAC_PI_2 {
                         return Ok(true);
@@ -656,18 +657,18 @@ fn torus_extremes(torus: &craft3d_geom::Torus, e: Vec3) -> Vec<Vec<Vec3>> {
         e.dot(frame.vector(0.0, 1.0, 0.0)),
         e.dot(frame.z()),
     );
-    let flat = ex.hypot(ey);
+    let flat = ex.phypot(ey);
     let at = |u: f64, v: f64| {
-        let (su, cu) = u.sin_cos();
-        let (sv, cv) = v.sin_cos();
+        let (su, cu) = u.psin_cos();
+        let (sv, cv) = v.psin_cos();
         let ring = major + minor * cv;
         frame.point(ring * cu, ring * su, minor * sv)
     };
     let mut groups = Vec::with_capacity(4);
     if flat > 0.0 {
-        let u = ey.atan2(ex);
+        let u = ey.patan2(ex);
         for (u, toward) in [(u, flat), (u + PI, -flat)] {
-            let v = ez.atan2(toward);
+            let v = ez.patan2(toward);
             groups.push(vec![at(u, v)]);
             groups.push(vec![at(u, v + PI)]);
         }
@@ -736,7 +737,7 @@ fn walk(
         let across = arc.normal.cross(along);
         let angle = |p: Vec3| {
             let d = p - arc.centre;
-            let a = d.dot(across).atan2(d.dot(along));
+            let a = d.dot(across).patan2(d.dot(along));
             if a <= 0.0 { a + TAU } else { a }
         };
         let reach = arc.end.map_or(TAU, angle);
@@ -940,7 +941,7 @@ fn face_extent(
                     let normals = marks
                         .iter()
                         .filter_map(|&b| (q - centre).cross(b - centre).normalized())
-                        .chain([0.5_f64, 2.0].map(|a| j * a.cos() + k * a.sin()));
+                        .chain([0.5_f64, 2.0].map(|a| j * a.pcos() + k * a.psin()));
                     let paths: Vec<Vec<Arc>> = normals
                         .map(|normal| {
                             vec![Arc {
@@ -973,20 +974,20 @@ fn face_extent(
             // Away from the tube's middle circle.
             let outward = |p: Vec3| {
                 let (x, y, _) = frame.local(p);
-                let ring = x.hypot(y);
+                let ring = x.phypot(y);
                 let middle = frame.point(major * x / ring, major * y / ring, 0.0);
                 (p - middle).normalized().map(|n| n * sign)
             };
             let at = |u: f64, v: f64| {
-                let (su, cu) = u.sin_cos();
-                let (sv, cv) = v.sin_cos();
+                let (su, cu) = u.psin_cos();
+                let (sv, cv) = v.psin_cos();
                 let ring = major + minor * cv;
                 frame.point(ring * cu, ring * su, minor * sv)
             };
             // A point's angles about the axis and about the tube.
             let angles = |p: Vec3| {
                 let (x, y, z) = frame.local(p);
-                (y.atan2(x), z.atan2(x.hypot(y) - major))
+                (y.patan2(x), z.patan2(x.phypot(y) - major))
             };
             // The circle about the axis through the point at `v`, and the
             // tube's section at `u`. Each plane cuts the torus in two
@@ -995,16 +996,16 @@ fn face_extent(
             // apart).
             let parallel = |start: Vec3, end: Option<Vec3>| {
                 let (_, v) = angles(start);
-                let ring = major + minor * v.cos();
-                let other = major - minor * v.cos();
+                let ring = major + minor * v.pcos();
+                let other = major - minor * v.pcos();
                 Arc {
                     start,
                     end,
                     normal: frame.z(),
-                    centre: frame.point(0.0, 0.0, minor * v.sin()),
+                    centre: frame.point(0.0, 0.0, minor * v.psin()),
                     keep: Box::new(move |p: Vec3| {
                         let (px, py, _) = frame.local(p);
-                        let r = px.hypot(py);
+                        let r = px.phypot(py);
                         let (own, far) = ((r - ring).abs(), (r - other).abs());
                         let apart = 0.25 * (ring - other).abs();
                         if own <= apart && own < far {
@@ -1021,7 +1022,7 @@ fn face_extent(
             // axis, their points at least `major − minor` from it.
             let section = |start: Vec3, end: Option<Vec3>| {
                 let (u, _) = angles(start);
-                let (su, cu) = u.sin_cos();
+                let (su, cu) = u.psin_cos();
                 Arc {
                     start,
                     end,

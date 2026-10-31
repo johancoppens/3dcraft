@@ -14,6 +14,7 @@
 )]
 
 use craft3d_engine::{Scene, Session, Workspace};
+use craft3d_math::Portable;
 use craft3d_render::NO_FACE;
 use craft3d_ui_egui::Tokens;
 use craft3d_ui_egui::state::{CameraState, ProjectionKind};
@@ -121,7 +122,7 @@ fn levels(a: [u8; 3], b: [u8; 3]) -> u8 {
 }
 
 fn length(line: &OverlayLine) -> f64 {
-    (line.to[0] - line.from[0]).hypot(line.to[1] - line.from[1])
+    (line.to[0] - line.from[0]).phypot(line.to[1] - line.from[1])
 }
 
 fn middle(line: &OverlayLine) -> [f64; 2] {
@@ -193,7 +194,7 @@ fn an_edge_is_drawn_in_a_shade_of_its_own_body() {
             let crowded = lines.iter().enumerate().any(|(j, other)| {
                 j != k && {
                     let q = middle(other);
-                    let d = |a: [f64; 2]| (a[0] - p[0]).hypot(a[1] - p[1]);
+                    let d = |a: [f64; 2]| (a[0] - p[0]).phypot(a[1] - p[1]);
                     d(other.from).min(d(other.to)).min(d(q)) < 8.0
                 }
             });
@@ -364,7 +365,7 @@ fn crowded_and_short_edges_fade_and_are_crisp_up_close() {
         .iter()
         .filter(|line| {
             let p = middle(line);
-            line.edge.is_some() && (p[0] - c.x).hypot(p[1] - c.y) < 4.0
+            line.edge.is_some() && (p[0] - c.x).phypot(p[1] - c.y) < 4.0
         })
         .collect();
     assert!(!speck_lines.is_empty());

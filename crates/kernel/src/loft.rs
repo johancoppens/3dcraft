@@ -57,6 +57,7 @@ use craft3d_geom::refine::{
 use craft3d_geom::{
     Circle, Cone, Curve3, Cylinder, Line, NurbsCurve, NurbsSurface, Plane, Surface,
 };
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, FaceId, VertexId};
 use std::f64::consts::{FRAC_PI_2, TAU};
@@ -138,7 +139,7 @@ struct Arc {
 
 impl Arc {
     fn at(&self, angle: f64) -> Vec3 {
-        let (s, c) = angle.sin_cos();
+        let (s, c) = angle.psin_cos();
         self.frame.point(self.radius * c, self.radius * s, 0.0)
     }
 
@@ -149,13 +150,13 @@ impl Arc {
         let spans = ((self.sweep / FRAC_PI_2) - 1e-9).ceil().clamp(1.0, 4.0);
         let step = self.sweep / spans;
         let spans = spans as usize;
-        let weight = (step / 2.0).cos();
+        let weight = (step / 2.0).pcos();
         let mut control = vec![start];
         let mut weights = vec![1.0];
         let mut knots = vec![0.0; 3];
         for i in 0..spans {
             let begin = self.from + step * i as f64;
-            let (s, c) = (begin + step / 2.0).sin_cos();
+            let (s, c) = (begin + step / 2.0).psin_cos();
             let reach = self.radius / weight;
             control.push(self.frame.point(reach * c, reach * s, 0.0));
             weights.push(weight);
@@ -1063,7 +1064,7 @@ fn round(a: &Arc, b: &Arc, forward: Vec3, tolerance: &Tolerance) -> Option<(Surf
     let surface = if (a.radius - b.radius).abs() <= tolerance.linear {
         Surface::Cylinder(Cylinder::new(a.frame, a.radius).ok()?)
     } else {
-        let half_angle = ((b.radius - a.radius) / height).atan();
+        let half_angle = ((b.radius - a.radius) / height).patan();
         Surface::Cone(Cone::new(a.frame, a.radius, half_angle).ok()?)
     };
     Some((surface, outward))
@@ -1834,7 +1835,7 @@ fn tangent_columns(
         if ls.iter().any(|l| !(l.is_finite() && *l > 0.0)) {
             continue;
         }
-        let mean = (ls.iter().map(|l| l.ln()).sum::<f64>() / ls.len() as f64).exp();
+        let mean = (ls.iter().map(|l| l.pln()).sum::<f64>() / ls.len() as f64).pexp();
         let (a_free, b_free) = (corner((j + width - 1) % width), corner(next(j)));
         for (row, l) in asked.iter_mut().zip(&ls) {
             let q = mean / l;

@@ -19,6 +19,7 @@ use super::outline::Sheet;
 use super::poly::Poly;
 use craft3d_geom::intersect::{CurveHit, CurveIntersection, intersect_curve_surface};
 use craft3d_geom::{Curve3, GeomError, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Tolerance, Vec3};
 
 const FREEFORM: &str = "a freeform (Bézier or NURBS) surface that was not indexed for booleans (a bug in 3DCraft, please report it)";
@@ -38,18 +39,18 @@ pub(super) fn signed_distance(sheet: Sheet, p: Vec3) -> Option<f64> {
         Surface::Plane(s) => s.frame().local(p).2,
         Surface::Cylinder(s) => {
             let (x, y, _) = s.frame().local(p);
-            x.hypot(y) - s.radius()
+            x.phypot(y) - s.radius()
         }
         Surface::Cone(s) => {
             let (x, y, z) = s.frame().local(p);
-            let (sine, cosine) = s.half_angle().sin_cos();
-            (x.hypot(y) - s.radius()) * cosine - z * sine
+            let (sine, cosine) = s.half_angle().psin_cos();
+            (x.phypot(y) - s.radius()) * cosine - z * sine
         }
         Surface::Sphere(s) => p.distance(s.frame().origin()) - s.radius(),
         Surface::Torus(s) => {
             let (x, y, z) = s.frame().local(p);
             let (major, minor) = s.radii();
-            (x.hypot(y) - major).hypot(z) - minor
+            (x.phypot(y) - major).phypot(z) - minor
         }
         Surface::Bezier(_) | Surface::Nurbs(_) => {
             return sheet.tree.and_then(|tree| tree.signed_distance(p));
@@ -697,7 +698,7 @@ fn turning_points(curve: &Curve3, surface: &Surface) -> Option<Vec<f64>> {
                 // At one distance all round: nowhere to divide.
                 return Some(Vec::new());
             }
-            let phase = b.atan2(a);
+            let phase = b.patan2(a);
             Some(vec![phase, phase + std::f64::consts::PI])
         }
         (Curve3::Line(line), Surface::Cone(cone)) => {
@@ -717,7 +718,7 @@ fn turning_points(curve: &Curve3, surface: &Surface) -> Option<Vec<f64>> {
             let near = -(x0 * dx + y0 * dy) / a;
             let (px, py) = (x0 + near * dx, y0 + near * dy);
             let c = px * px + py * py;
-            let (sine, cosine) = cone.half_angle().sin_cos();
+            let (sine, cosine) = cone.half_angle().psin_cos();
             let (k, m) = (cosine * cosine, sine * sine * dz * dz);
             // `cos² α (A s)² = sin² α z'² (A s² + C)`: `s² A (k A − m) = m C`.
             let mut turns = vec![near];
@@ -859,7 +860,7 @@ fn quartic_turns(curve: &Curve3, surface: &Surface, range: (f64, f64)) -> Option
                 turns.extend(
                     poly.changes(-1.0, 1.0)
                         .into_iter()
-                        .map(|u| shift + 2.0 * u.atan()),
+                        .map(|u| shift + 2.0 * u.patan()),
                 );
             }
             Some(turns)
@@ -970,8 +971,8 @@ fn levels<'a>(curve: &'a Curve3, surface: &'a Surface) -> Option<Box<Level<'a>>>
             let w = f.origin() - sphere.frame().origin();
             let r = circle.radius();
             let (a, b) = (2.0 * r * w.dot(f.x()), 2.0 * r * w.dot(f.y()));
-            let (h, amplitude) = (w.length_squared() + r * r, a.hypot(b));
-            let (phase, radius) = (b.atan2(a), sphere.radius());
+            let (h, amplitude) = (w.length_squared() + r * r, a.phypot(b));
+            let (phase, radius) = (b.patan2(a), sphere.radius());
             if amplitude.is_nan() || amplitude <= 0.0 {
                 return None;
             }
@@ -981,7 +982,7 @@ fn levels<'a>(curve: &'a Curve3, surface: &'a Surface) -> Option<Box<Level<'a>>>
                 if !(-1.0..=1.0).contains(&cosine) {
                     return None;
                 }
-                let spread = cosine.acos();
+                let spread = cosine.pacos();
                 let tau = std::f64::consts::TAU;
                 [phase - spread, phase + spread].into_iter().find_map(|t| {
                     // Moved by whole turns into the stretch.
@@ -1250,7 +1251,7 @@ fn coaxial(curve: &Curve3, sheet: Sheet, tol: f64) -> Option<CurveIntersection> 
         _ => return None,
     };
     let (n, radius) = (frame.z(), circle.radius());
-    let tilt = n.cross(axis).length().atan2(n.dot(axis).abs());
+    let tilt = n.cross(axis).length().patan2(n.dot(axis).abs());
     let offset = frame.origin() - origin;
     let along = axis * offset.dot(axis);
     let off_axis = (offset - along).length();
@@ -1297,7 +1298,7 @@ fn ruling(
     };
     let tol = tolerance.linear;
     let (frame, alpha) = (cone.frame(), cone.half_angle());
-    let tangent = alpha.tan();
+    let tangent = alpha.ptan();
     if !(tangent.is_finite() && tangent != 0.0) {
         return None;
     }
@@ -1317,7 +1318,7 @@ fn ruling(
     // the line over the piece: the apex's distance from the line, and the
     // angle between the line and the cone (from the axis) times the reach.
     let miss = (o + d * at).distance(apex);
-    let angle = (ray.dot(into).clamp(-1.0, 1.0).acos() - alpha.abs()).abs();
+    let angle = (ray.dot(into).clamp(-1.0, 1.0).pacos() - alpha.abs()).abs();
     let reach = (t0 - at).abs().max((t1 - at).abs());
     // (False for NaN as well.)
     let close = miss + angle * reach <= 0.25 * tol;
@@ -1588,7 +1589,7 @@ mod tests {
         assert!((hits[0].t - 1.0).abs() < 1e-6);
         // Through the apex of a cone, from outside to outside: a touch.
         let cone = Surface::Cone(Cone::new(Frame::WORLD, 1.0, -0.5).unwrap());
-        let apex = Vec3::new(0.0, 0.0, 1.0 / 0.5_f64.tan());
+        let apex = Vec3::new(0.0, 0.0, 1.0 / 0.5_f64.ptan());
         let past = Curve3::Line(Line::new(apex - Vec3::X * 3.0, Vec3::X).unwrap());
         let CurveIntersection::Hits(hits) =
             curve_hits(&past, (0.0, 6.0), Sheet::bare(&cone), &tol).unwrap()
@@ -2325,8 +2326,8 @@ mod tests {
                     // A point of the tube, its outward normal, and a
                     // direction square to it.
                     let (u, v) = (TAU * r(), TAU * r());
-                    let ring = f.x() * u.cos() + f.y() * u.sin();
-                    let normal = ring * v.cos() + f.z() * v.sin();
+                    let ring = f.x() * u.pcos() + f.y() * u.psin();
+                    let normal = ring * v.pcos() + f.z() * v.psin();
                     let at = f.origin() + ring * major + normal * (minor + off);
                     let across = normal.cross(Vec3::new(r(), r(), r())).normalized().unwrap();
                     let start = if r() > 0.0 { -5.0 * k } else { 8.0 * tol * r() };

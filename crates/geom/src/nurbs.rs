@@ -16,6 +16,7 @@
 
 use crate::surface::GridCache;
 use crate::{BezierPatch, GeomError, MAX_DEGREE};
+use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Bits, Frame, Vec3};
 use std::fmt;
 
@@ -2025,9 +2026,9 @@ impl NurbsSurface {
                     if !(a > 0.0 && b > 0.0) {
                         return None;
                     }
-                    log_ratio += (a / b).ln();
+                    log_ratio += (a / b).pln();
                 }
-                let beta = (log_ratio / (across as f64 * degree as f64)).exp();
+                let beta = (log_ratio / (across as f64 * degree as f64)).pexp();
                 if !(beta.is_finite() && beta > 0.0) {
                     return None;
                 }
@@ -2360,7 +2361,7 @@ mod tests {
                 // Rounding is relative to the coordinates, which include
                 // the frame's origin (about 4 units from the world origin).
                 let eps = 1e-14 * (radius + 4.0);
-                assert!((x.hypot(y) - radius).abs() <= eps, "t = {t}");
+                assert!((x.phypot(y) - radius).abs() <= eps, "t = {t}");
                 assert!(z.abs() <= eps);
                 // Tangent is perpendicular to the radius and never vanishes.
                 assert!(d.dot(p - frame.origin()).abs() <= 1e-12 * (radius + 4.0) * d.length());
@@ -2496,7 +2497,7 @@ mod tests {
             for j in 0..=4 {
                 let (u, v) = (f64::from(i) / 20.0, f64::from(j) / 4.0);
                 let (p, du, dv) = surface.derivatives(u, v);
-                assert!((p.x.hypot(p.y) - 2.0).abs() < 1e-14 && (p.z - 5.0 * v).abs() < 1e-14);
+                assert!((p.x.phypot(p.y) - 2.0).abs() < 1e-14 && (p.z - 5.0 * v).abs() < 1e-14);
                 assert!(close(dv, Vec3::Z * 5.0, 1e-13));
                 // Outward normal: du × dv points away from the axis.
                 assert!(du.cross(dv).dot(Vec3::new(p.x, p.y, 0.0)) > 0.0);
@@ -2696,7 +2697,7 @@ mod tests {
     /// Evaluates a Bernstein net of degrees `(m, n)` at `(s, t)`.
     fn net_at(net: &[Vec3], m: usize, n: usize, s: f64, t: f64) -> Vec3 {
         let b = |k: usize, i: usize, x: f64| {
-            binomial(k, i) * x.powi(i as i32) * (1.0 - x).powi((k - i) as i32)
+            binomial(k, i) * x.ppowi(i as i32) * (1.0 - x).ppowi((k - i) as i32)
         };
         let mut sum = Vec3::ZERO;
         for i in 0..=m {
@@ -3086,15 +3087,15 @@ mod tests {
                 // the one before.
                 for r in usize::from(k > 0)..count {
                     log += if along_u {
-                        (at(0, r) / at(m, r)).ln()
+                        (at(0, r) / at(m, r)).pln()
                     } else {
-                        (at(r, 0) / at(r, n)).ln()
+                        (at(r, 0) / at(r, n)).pln()
                     };
                     rows += 1;
                 }
             }
             let degree = if along_u { m } else { n };
-            (log / (rows * degree) as f64).exp()
+            (log / (rows * degree) as f64).pexp()
         };
         let moebius = |b: f64, s: f64| b * s / ((1.0 - s) + b * s);
         let mut rng = 0x5eed_u64;

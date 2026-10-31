@@ -519,6 +519,7 @@ pub fn meet_surfaces_numeric(
 mod tests {
     use super::*;
     use crate::{BezierPatch, Sphere};
+    use craft3d_math::Portable;
 
     #[test]
     fn the_shelf_keeps_the_questions_of_a_big_boolean_and_lets_go_of_the_oldest() {
@@ -553,7 +554,7 @@ mod tests {
         for i in 0..4 {
             for j in 0..4 {
                 let (x, y) = (f64::from(i), f64::from(j));
-                ctrl.push(Vec3::new(x, y, 0.4 * (1.3 * x - 0.7 * y).sin()));
+                ctrl.push(Vec3::new(x, y, 0.4 * (1.3 * x - 0.7 * y).psin()));
             }
         }
         let roof = Surface::Bezier(BezierPatch::new(3, 3, ctrl).unwrap());

@@ -1427,6 +1427,7 @@ fn analysis_legend(ui: &mut egui::Ui, view: &crate::viewport::ViewAnalysis, toke
 #[cfg(test)]
 mod tests {
     use super::*;
+    use craft3d_math::Portable;
 
     /// The viewport of a window of 1920 × 1080 and one of 1280 × 800 (the
     /// tree on the left, the tabs over it and the status bar under it).
@@ -1645,7 +1646,7 @@ mod tests {
         assert_eq!(reach, tokens.nav_triad_arm);
         let longest = arms
             .iter()
-            .map(|a| a.tip[0].hypot(a.tip[1]) as f32 * reach)
+            .map(|a| a.tip[0].phypot(a.tip[1]) as f32 * reach)
             .fold(0.0, f32::max);
         assert!((45.0..=50.0).contains(&longest), "{longest}");
         assert!(triad_side(&tokens) <= 1.5 * tokens.nav_cube_size);

@@ -14,6 +14,7 @@ use crate::params::Params;
 use crate::verify_cmds::{Ctx, Dim, MEASURES, Outcome, only, take};
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::{Assertion, Document, Expect, Expr};
+use craft3d_math::Portable;
 use craft3d_regen::Regen;
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
@@ -890,7 +891,7 @@ pub(crate) fn shown(v: f64) -> String {
     if v == 0.0 || !v.is_finite() {
         return format!("{v}");
     }
-    let digits = 9 - (v.abs().log10().floor() as i32) - 1;
+    let digits = 9 - (v.abs().plog10().floor() as i32) - 1;
     let digits = usize::try_from(digits.clamp(0, 15)).unwrap_or(0);
     let text = format!("{v:.digits$}");
     if text.contains('.') {
@@ -1270,7 +1271,7 @@ pub(crate) fn decide(
         // would make the slack grow as the tolerance shrinks, so it, like
         // a number, is met within rounding only.
         let tol = match dim {
-            Dim::Length(k) if k > 0 => linear.powi(k),
+            Dim::Length(k) if k > 0 => linear.ppowi(k),
             _ => 0.0,
         };
         tol.max(1e-12 * b.abs())

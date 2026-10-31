@@ -12,6 +12,7 @@
 //! widget is [`NumberField::show`].
 
 use crate::theme::{Tokens, color, color_alpha};
+use craft3d_math::Portable;
 use egui::{Rect, pos2, vec2};
 
 /// The value after a drag of `dx` points across a field `width` points
@@ -71,7 +72,7 @@ pub fn nice_step(range: [f64; 2]) -> f64 {
         return 1.0;
     }
     let rough = span / 20.0;
-    let power = 10f64.powf(rough.log10().floor());
+    let power = 10f64.ppowf(rough.plog10().floor());
     let step = [1.0, 2.0, 5.0, 10.0]
         .into_iter()
         .map(|m| m * power)

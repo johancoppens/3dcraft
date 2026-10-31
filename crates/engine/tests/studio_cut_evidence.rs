@@ -14,6 +14,7 @@
 )]
 
 use craft3d_engine::{Session, Workspace};
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use craft3d_render::studio::{Look, bundled::environment, render_studio};
 use craft3d_render::{Camera, Projection, RenderParams, Section};
@@ -175,7 +176,7 @@ fn gear_outline(cx: f64, cy: f64, root: f64, tip: f64, teeth: usize) -> Vec<[f64
         let a = k as f64 * pitch;
         for (da, r) in [(0.0, root), (0.18, tip), (0.42, tip), (0.6, root)] {
             let t = a + da * pitch;
-            points.push([cx + r * t.cos(), cy + r * t.sin()]);
+            points.push([cx + r * t.pcos(), cy + r * t.psin()]);
         }
     }
     points

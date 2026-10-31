@@ -33,6 +33,7 @@
     clippy::assign_op_pattern
 )]
 
+use craft3d_math::Portable;
 mod boolean_common;
 
 use boolean_common::{SCALES, assert_empty, mass, solve, tolerance};
@@ -58,7 +59,7 @@ fn skin(k: f64, lift: f64) -> NurbsSurface {
         for j in 0..nv {
             let (fi, fj) = (i as f64, j as f64);
             let z = 0.8
-                * (0.6 + 0.25 * (1.7 * fi + 0.9 * fj).sin() + 0.1 * (2.3 * fj - 0.4 * fi).cos());
+                * (0.6 + 0.25 * (1.7 * fi + 0.9 * fj).psin() + 0.1 * (2.3 * fj - 0.4 * fi).pcos());
             ctrl.push(Vec3::new(
                 L * greville(&KNOTS_U, i) * k,
                 W * greville(&KNOTS_V, j) * k,

@@ -13,6 +13,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{body, built, error, new_document, run, session_in, workdir};
@@ -298,8 +299,8 @@ fn seam_pair(s: &mut Session, r: f64, h: f64, g2: bool) {
     // The arc from the seam over 1.2 r of its length, turning towards -x.
     let turn = 1.2 * r / radius;
     let end = [
-        center[0] - radius * turn.sin(),
-        center[1] + radius * turn.cos(),
+        center[0] - radius * turn.psin(),
+        center[1] + radius * turn.pcos(),
     ];
     arc(s, "LowB", 0.0, center, [0.0, r], end);
     arc(s, "HighB", h, center, [0.0, r], end);
@@ -347,7 +348,7 @@ fn stripe_kinks(frame: &craft3d_render::Frame, ids: [u32; 2], seam: [[f64; 2]; 2
         }
     }
     let [p0, p1] = seam;
-    let length = (p1[0] - p0[0]).hypot(p1[1] - p0[1]);
+    let length = (p1[0] - p0[0]).phypot(p1[1] - p0[1]);
     let u = [(p1[0] - p0[0]) / length, (p1[1] - p0[1]) / length];
     let n = [-u[1], u[0]];
     let mut seen = vec![false; w * h];
@@ -415,7 +416,7 @@ fn stripe_kinks(frame: &craft3d_render::Frame, ids: [u32; 2], seam: [[f64; 2]; 2
         if let Some(&(sb, bb)) = best
             && (sb - sa).abs() <= 2.0
         {
-            kinks.push((ba.atan() - bb.atan()).abs().to_degrees());
+            kinks.push((ba.patan() - bb.patan()).abs().to_degrees());
         }
     }
     kinks
@@ -646,7 +647,7 @@ fn the_draft_of_curved_faces_is_bounded() {
         assert!(lower <= -90.0 + 1e-9 && least >= -90.0 - 1e-9, "{m}");
         assert!(least <= -85.0 && lower >= -110.0, "{m}");
 
-        let (sin, cos) = 30f64.to_radians().sin_cos();
+        let (sin, cos) = 30f64.to_radians().psin_cos();
         built(
             &mut s,
             "feature.cylinder",

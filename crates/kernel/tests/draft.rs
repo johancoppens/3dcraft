@@ -7,6 +7,7 @@
 // Test code: a failure in a helper is a failed test.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
+use craft3d_math::Portable;
 mod boolean_common;
 
 use boolean_common::{SCALES, assert_close, boxed, mass, rod, solve, tolerance};
@@ -121,7 +122,7 @@ fn a_drafted_block_is_a_frustum_of_a_pyramid() {
         let block = boxed(k, [0.0, 0.0, 0.0], [10.0, 10.0, 5.0]);
         let four = sides(&block, k, [10.0, 10.0, 5.0]);
         for degrees in [3.0_f64, 10.0, 25.0] {
-            let tan = degrees.to_radians().tan();
+            let tan = degrees.to_radians().ptan();
             // From the bottom: narrower at the top.
             let made = drafted(&block, &up(four.clone(), 0.0, degrees, k), k);
             assert_volume(&made, frustum(10.0, 10.0 - 10.0 * tan, 5.0), k);
@@ -138,7 +139,7 @@ fn a_drafted_block_is_a_frustum_of_a_pyramid() {
         }
         // One side only: a prism on a trapezium.
         let one = drafted(&block, &up(vec![four[3]], 0.0, 20.0, k), k);
-        let tan = 20.0_f64.to_radians().tan();
+        let tan = 20.0_f64.to_radians().ptan();
         assert_volume(&one, 10.0 * 5.0 * (10.0 + 10.0 - 5.0 * tan) / 2.0, k);
         // At 45 degrees from the bottom the top is drawn to a point at
         // height 5: what fits is below that.
@@ -159,7 +160,7 @@ fn a_drafted_rod_is_a_frustum_of_a_cone_and_a_drafted_hole_widens() {
         let wall = face_at(&bar, k, "cylinder", [2.0, 0.0, 3.0]);
         let cone = |r1: f64, r2: f64, h: f64| PI * h / 3.0 * (r1 * r1 + r1 * r2 + r2 * r2);
         for degrees in [5.0_f64, 15.0] {
-            let tan = degrees.to_radians().tan();
+            let tan = degrees.to_radians().ptan();
             let made = drafted(&bar, &up(vec![wall], 0.0, degrees, k), k);
             assert_volume(&made, cone(2.0, 2.0 - 6.0 * tan, 6.0), k);
             assert_eq!(made.faces[wall.0 as usize].surface.kind(), "cone");
@@ -172,14 +173,14 @@ fn a_drafted_rod_is_a_frustum_of_a_cone_and_a_drafted_hole_widens() {
         let drill = rod(k, [5.0, 5.0, -1.0], 2.0, 7.0);
         let drilled = solve(&block, &drill, BooleanOp::Subtract, k).body;
         let hole = face_at(&drilled, k, "cylinder", [7.0, 5.0, 2.5]);
-        let tan = 10.0_f64.to_radians().tan();
+        let tan = 10.0_f64.to_radians().ptan();
         let made = drafted(&drilled, &up(vec![hole], 0.0, 10.0, k), k);
         assert_volume(&made, 500.0 - cone(2.0, 2.0 + 5.0 * tan, 5.0), k);
         // A rod drawn to a point at a third of its height: 2 / tan = 6
         // at 18.43 degrees.
         match refused(&bar, &up(vec![wall], 0.0, 30.0, k), k) {
             KernelError::FaceOpTooFar { value, largest, .. } => {
-                let fits = (2.0_f64 / 6.0).atan().to_degrees() / 30.0;
+                let fits = (2.0_f64 / 6.0).patan().to_degrees() / 30.0;
                 let part = largest / value;
                 assert!(part < fits && part > 0.98 * fits, "{part} {fits}");
             }
@@ -214,7 +215,7 @@ fn a_rounded_box_drafted_is_a_rounded_frustum() {
             .collect();
         assert_eq!(walls.len(), 8);
         let degrees = 8.0_f64;
-        let t = degrees.to_radians().tan();
+        let t = degrees.to_radians().ptan();
         let made = drafted(&rounded, &up(walls, 0.0, degrees, k), k);
         // The section at height z is the rounded rectangle moved in by
         // z tan, its corners of radius r - z tan.
@@ -240,7 +241,7 @@ fn in_a_tilted_frame_the_frustum_is_the_same() {
             angle: 12.0_f64.to_radians(),
         };
         let made = drafted(&tilted, &how, k);
-        let tan = 12.0_f64.to_radians().tan();
+        let tan = 12.0_f64.to_radians().ptan();
         assert_volume(&made, frustum(10.0, 10.0 - 10.0 * tan, 5.0), k);
     }
 }

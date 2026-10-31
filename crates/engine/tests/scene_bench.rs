@@ -11,6 +11,7 @@
 )]
 
 use craft3d_engine::{SceneQuality, Session, Workspace};
+use craft3d_math::Portable;
 use serde_json::{Value, json};
 use std::time::Instant;
 
@@ -151,8 +152,8 @@ pub fn polygon(sides: usize) -> Session {
     let points: Vec<[f64; 2]> = (0..sides)
         .map(|i| {
             let a = std::f64::consts::TAU * i as f64 / sides as f64;
-            let r = 40.0 + 3.0 * (7.0 * a).sin();
-            [r * a.cos(), r * a.sin()]
+            let r = 40.0 + 3.0 * (7.0 * a).psin();
+            [r * a.pcos(), r * a.psin()]
         })
         .collect();
     run(

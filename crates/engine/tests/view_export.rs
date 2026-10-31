@@ -10,6 +10,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::plain::run;
@@ -67,7 +68,7 @@ fn lines(dxf: &str, layer: &str) -> Vec<[f64; 4]> {
 }
 
 fn length(l: &[f64; 4]) -> f64 {
-    (l[2] - l[0]).hypot(l[3] - l[1])
+    (l[2] - l[0]).phypot(l[3] - l[1])
 }
 
 fn export(s: &mut Session, dir: &std::path::Path, name: &str, params: Value) -> (Value, String) {
@@ -251,7 +252,7 @@ fn a_cylinder_seen_along_its_axis_is_a_circle() {
 #[test]
 fn a_cylinder_seen_at_30_degrees_is_ellipses_of_r_and_r_cos_30() {
     let (mut s, dir) = cylinder("tilted");
-    let (sin, cos) = 30f64.to_radians().sin_cos();
+    let (sin, cos) = 30f64.to_radians().psin_cos();
     let target = craft3d_math::Vec3::new(0.0, 0.0, 10.0);
     s.set_window_camera(Some(craft3d_render::Camera {
         eye: target + craft3d_math::Vec3::new(0.0, -sin, cos) * 100.0,
@@ -271,7 +272,7 @@ fn a_cylinder_seen_at_30_degrees_is_ellipses_of_r_and_r_cos_30() {
     // The top whole, the near half of the bottom; its far half hidden.
     assert_eq!((visible.len(), hidden.len()), (2, 1), "{result}");
     for e in visible.iter().chain(&hidden) {
-        let major = group(e, "11").hypot(group(e, "21"));
+        let major = group(e, "11").phypot(group(e, "21"));
         assert!((major - 5.0).abs() < 1e-9, "{e:?}");
         assert!((group(e, "40") - cos).abs() < 1e-9, "{e:?}");
         // The longer axis across the view.
@@ -352,7 +353,7 @@ fn a_drilled_block_in_iso_has_its_rims_as_ellipses() {
     let ratio = group(&rims[0], "40");
     for e in rims.iter().chain(&entities(&dxf, "ELLIPSE", "hidden")) {
         assert!(
-            (group(e, "11").hypot(group(e, "21")) - 5.0).abs() < 1e-9,
+            (group(e, "11").phypot(group(e, "21")) - 5.0).abs() < 1e-9,
             "{e:?}"
         );
         assert!((group(e, "40") - ratio).abs() < 1e-12, "{e:?}");

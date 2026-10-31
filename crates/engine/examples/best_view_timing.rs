@@ -7,6 +7,7 @@
 //! ```
 
 use craft3d_engine::{Scene, SceneQuality, SelectionItem, SelectionKind, Session, Workspace};
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use serde_json::json;
 use std::time::Instant;
@@ -40,9 +41,9 @@ fn main() -> Result<(), String> {
         for yaw in yaws {
             let yaw = yaw.to_radians();
             toward.push(Vec3::new(
-                up.cos() * yaw.cos(),
-                up.cos() * yaw.sin(),
-                up.sin(),
+                up.pcos() * yaw.pcos(),
+                up.pcos() * yaw.psin(),
+                up.psin(),
             ));
         }
     }

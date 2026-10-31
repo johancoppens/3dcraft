@@ -9,6 +9,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{feature_brief as feature, run};
@@ -78,7 +79,7 @@ fn assert_body(session: &mut Session, name: &str, volume: f64, centroid: [f64; 3
     for axis in 0..3 {
         let c = found["centroid"][axis].as_f64().unwrap();
         assert!(
-            (c - centroid[axis]).abs() <= 1e-9 * (1.0 + volume.abs().cbrt()),
+            (c - centroid[axis]).abs() <= 1e-9 * (1.0 + volume.abs().pcbrt()),
             "{name}: centroid {}, expected {centroid:?}",
             found["centroid"]
         );
@@ -383,7 +384,7 @@ fn a_sketch_lies_on_a_face_of_a_copy() {
         &mut s,
         "Boss",
         4.0 * PI,
-        [25.0 * third.cos(), 25.0 * third.sin(), 4.0],
+        [25.0 * third.pcos(), 25.0 * third.psin(), 4.0],
     );
     // More instances: instance 2 is now at 90 degrees, and the boss with it.
     run(&mut s, "variable.set", json!({"name": "n", "expr": "8"}));
@@ -860,7 +861,7 @@ fn a_chain_of_copies_saves_reopens_and_regenerates_the_same() {
         &mut s,
         "Moved",
         80.0,
-        [25.0 * half.cos(), 25.0 * half.sin(), 6.0],
+        [25.0 * half.pcos(), 25.0 * half.psin(), 6.0],
     );
     assert_eq!(body_names(&mut s), ["Moved", "Ring"]);
     let names = body(&mut s, "Ring").unwrap()["faceNames"].clone();
@@ -910,7 +911,7 @@ fn tread() -> Session {
 fn stair_centroid(count: u32, angle: f64, rise: f64) -> [f64; 3] {
     let mut sum = [0.0; 3];
     for k in 0..count {
-        let (s, c) = (angle * k as f64).to_radians().sin_cos();
+        let (s, c) = (angle * k as f64).to_radians().psin_cos();
         sum[0] += 500.0 * c;
         sum[1] += 500.0 * s;
         sum[2] += 15.0 + rise * k as f64;
@@ -1060,7 +1061,7 @@ fn a_screw_with_a_zero_step_is_the_plain_turn_and_comes_back_to_it() {
         &mut s,
         "Boss",
         4.0 * PI,
-        [25.0 * turned.cos(), 25.0 * turned.sin(), 20.0],
+        [25.0 * turned.pcos(), 25.0 * turned.psin(), 20.0],
     );
     // A different step moves the boss along: the reference holds.
     run(
@@ -1072,7 +1073,7 @@ fn a_screw_with_a_zero_step_is_the_plain_turn_and_comes_back_to_it() {
         &mut s,
         "Boss",
         4.0 * PI,
-        [25.0 * turned.cos(), 25.0 * turned.sin(), 2.0 - 8.0 + 2.0],
+        [25.0 * turned.pcos(), 25.0 * turned.psin(), 2.0 - 8.0 + 2.0],
     );
 }
 

@@ -21,6 +21,7 @@
 )]
 
 use craft3d_geom::{Circle, Curve3, Line, NurbsCurve, NurbsSurface, Plane, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_tess::{Mesh, TessError, TessParams, tessellate_body, tessellate_body_with_threads};
 use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, LoopId, check, mass_properties};
@@ -36,10 +37,10 @@ fn params(tolerance: f64) -> TessParams {
 /// The unit circle as nine rational quadratic control points `(x, y, w)`
 /// and its knots, starting at `from` radians: four quarter arcs.
 fn ring(from: f64) -> (Vec<(f64, f64, f64)>, Vec<f64>) {
-    let weight = FRAC_PI_4.cos();
+    let weight = FRAC_PI_4.pcos();
     let points = (0..9)
         .map(|k| {
-            let (sin, cos) = (from + FRAC_PI_4 * f64::from(k)).sin_cos();
+            let (sin, cos) = (from + FRAC_PI_4 * f64::from(k)).psin_cos();
             if k % 2 == 0 {
                 (cos, sin, 1.0)
             } else {
@@ -113,7 +114,7 @@ fn revolved(profile: &Profile, from: f64, around_v: bool) -> NurbsSurface {
 
 /// The profile as a curve in space, in the half-plane at `angle`.
 fn profile_curve(profile: &Profile, angle: f64) -> Curve3 {
-    let (sin, cos) = angle.sin_cos();
+    let (sin, cos) = angle.psin_cos();
     let ctrl = profile
         .iter()
         .map(|&(rho, z)| Vec3::new(rho * cos, rho * sin, z))
@@ -173,7 +174,7 @@ fn along_part(
 /// Volume and area of the solid the profile and its two discs bound.
 fn exact(profile: &Profile) -> (f64, f64) {
     let volume = PI * along(profile, |(rho, _), (_, dz)| rho * rho * dz);
-    let side = TAU * along(profile, |(rho, _), (dr, dz)| rho * dr.hypot(dz));
+    let side = TAU * along(profile, |(rho, _), (dr, dz)| rho * dr.phypot(dz));
     let (bottom, top) = (profile[0].0, profile[3].0);
     (volume, side + PI * (bottom * bottom + top * top))
 }
@@ -194,7 +195,7 @@ enum Wall {
 /// `from` radians and the seam edge, when there is one, lies there too.
 fn turned(profile: &Profile, wall: Wall, from: f64, around_v: bool) -> Body {
     let mut body = Body::new(BodyKind::Solid);
-    let (sin, cos) = from.sin_cos();
+    let (sin, cos) = from.psin_cos();
     let x_axis = Vec3::new(cos, sin, 0.0);
     let rim = |body: &mut Body, (rho, z): (f64, f64)| -> EdgeId {
         let vertex = body.add_vertex(Vec3::new(rho * cos, rho * sin, z));
@@ -476,15 +477,15 @@ fn a_window_across_the_seam_and_the_wall_around_it() {
     let (t0, t1) = (0.3, 0.7);
     for from in [0.0, 2.0] {
         for (a0, a1) in [(from - 0.5, from + 0.6), (from + 0.3, from + 1.4)] {
-            let strip = TAU * along(&profile, |(rho, _), (dr, dz)| rho * dr.hypot(dz));
-            let pane =
-                (a1 - a0) * along_part(&profile, (t0, t1), |(rho, _), (dr, dz)| rho * dr.hypot(dz));
+            let strip = TAU * along(&profile, |(rho, _), (dr, dz)| rho * dr.phypot(dz));
+            let pane = (a1 - a0)
+                * along_part(&profile, (t0, t1), |(rho, _), (dr, dz)| rho * dr.phypot(dz));
             // The window's four edges; its loop as it runs around the
             // window, and backwards as a hole.
             let window = |body: &mut Body, hole: bool| -> LoopId {
                 let ((low, _), (high, _)) = (bernstein(&profile, t0), bernstein(&profile, t1));
                 let corner =
-                    |(rho, z): (f64, f64), a: f64| Vec3::new(rho * a.cos(), rho * a.sin(), z);
+                    |(rho, z): (f64, f64), a: f64| Vec3::new(rho * a.pcos(), rho * a.psin(), z);
                 let corners = [
                     body.add_vertex(corner(low, a0)),
                     body.add_vertex(corner(low, a1)),
@@ -492,7 +493,7 @@ fn a_window_across_the_seam_and_the_wall_around_it() {
                     body.add_vertex(corner(high, a0)),
                 ];
                 let arc = |(rho, z): (f64, f64)| {
-                    let x_axis = Vec3::new(a0.cos(), a0.sin(), 0.0);
+                    let x_axis = Vec3::new(a0.pcos(), a0.psin(), 0.0);
                     let frame = Frame::new(Vec3::new(0.0, 0.0, z), Vec3::Z, x_axis).unwrap();
                     Curve3::Circle(Circle::new(frame, rho).unwrap())
                 };
@@ -660,7 +661,7 @@ fn a_surface_that_closes_to_a_point_at_both_ends_is_meshed_closed() {
     for k in [1.0, 1e-3, 1e3] {
         let profile = egg(k);
         let volume = PI * along(&profile, |(rho, _), (_, dz)| rho * rho * dz);
-        let area = TAU * along(&profile, |(rho, _), (dr, dz)| rho * dr.hypot(dz));
+        let area = TAU * along(&profile, |(rho, _), (dr, dz)| rho * dr.phypot(dz));
         // Without edges, and with its seam as an edge from pole to pole
         // that the one loop walks there and back, as a STEP file has it:
         // the loop turns around each pole.
@@ -727,7 +728,7 @@ fn what_is_not_followed_is_refused() {
     let (radius, height) = (1.5, 2.0);
     let corner = |i: usize| {
         let a = TAU * (i % 8) as f64 / 8.0;
-        Vec3::new(radius * a.cos(), radius * a.sin(), 0.0)
+        Vec3::new(radius * a.pcos(), radius * a.psin(), 0.0)
     };
     let knots: Vec<f64> = (0..13).map(f64::from).collect();
     let mut ctrl = Vec::new();
@@ -902,11 +903,11 @@ fn a_nurbs_torus_is_measured_at_three_scales() {
         // Around the axis from φ0 to φ1, around the tube from θ0 to θ1:
         // both ranges go over the seams at 0.
         for ((f0, f1), (t0, t1)) in [((-0.5, 0.6), (-0.4, 0.7)), ((2.0, 2.5), (-1.0, 0.3))] {
-            let pane = minor * (f1 - f0) * (major * (t1 - t0) + minor * (t1.sin() - t0.sin()));
+            let pane = minor * (f1 - f0) * (major * (t1 - t0) + minor * (t1.psin() - t0.psin()));
             let window = |body: &mut Body, hole: bool| -> LoopId {
                 let at = |f: f64, t: f64| {
-                    let rho = major + minor * t.cos();
-                    Vec3::new(rho * f.cos(), rho * f.sin(), minor * t.sin())
+                    let rho = major + minor * t.pcos();
+                    Vec3::new(rho * f.pcos(), rho * f.psin(), minor * t.psin())
                 };
                 let corners = [
                     body.add_vertex(at(f0, t0)),
@@ -916,14 +917,14 @@ fn a_nurbs_torus_is_measured_at_three_scales() {
                 ];
                 // Around the axis at tube angle `t`, from φ0.
                 let around = |t: f64| {
-                    let x_axis = Vec3::new(f0.cos(), f0.sin(), 0.0);
+                    let x_axis = Vec3::new(f0.pcos(), f0.psin(), 0.0);
                     let frame =
-                        Frame::new(Vec3::new(0.0, 0.0, minor * t.sin()), Vec3::Z, x_axis).unwrap();
-                    Curve3::Circle(Circle::new(frame, major + minor * t.cos()).unwrap())
+                        Frame::new(Vec3::new(0.0, 0.0, minor * t.psin()), Vec3::Z, x_axis).unwrap();
+                    Curve3::Circle(Circle::new(frame, major + minor * t.pcos()).unwrap())
                 };
                 // Around the tube at axis angle `f`, from its outer equator.
                 let tube = |f: f64| {
-                    let radial = Vec3::new(f.cos(), f.sin(), 0.0);
+                    let radial = Vec3::new(f.pcos(), f.psin(), 0.0);
                     let frame = Frame::new(radial * major, radial.cross(Vec3::Z), radial).unwrap();
                     Curve3::Circle(Circle::new(frame, minor).unwrap())
                 };
@@ -994,7 +995,7 @@ fn an_egg_is_measured_at_three_scales() {
         let profile = egg(k);
         let expected = (
             PI * along(&profile, |(rho, _), (_, dz)| rho * rho * dz),
-            TAU * along(&profile, |(rho, _), (dr, dz)| rho * dr.hypot(dz)),
+            TAU * along(&profile, |(rho, _), (dr, dz)| rho * dr.phypot(dz)),
         );
         for around_v in [false, true] {
             for (from, seam) in [(0.0, false), (1.1, false), (0.0, true), (1.1, true)] {
@@ -1038,14 +1039,14 @@ fn a_window_across_a_seam_in_v_is_measured() {
         let (t0, t1) = (0.3, 0.7);
         for (a0, a1) in [(-0.5, 0.6), (0.3, 1.4)] {
             let side = |range: (f64, f64)| {
-                along_part(&profile, range, |(rho, _), (dr, dz)| rho * dr.hypot(dz))
+                along_part(&profile, range, |(rho, _), (dr, dz)| rho * dr.phypot(dz))
             };
             let strip = TAU * side((0.0, 1.0));
             let pane = (a1 - a0) * side((t0, t1));
             let window = |body: &mut Body, hole: bool| -> LoopId {
                 let ((low, _), (high, _)) = (bernstein(&profile, t0), bernstein(&profile, t1));
                 let corner =
-                    |(rho, z): (f64, f64), a: f64| Vec3::new(rho * a.cos(), rho * a.sin(), z);
+                    |(rho, z): (f64, f64), a: f64| Vec3::new(rho * a.pcos(), rho * a.psin(), z);
                 let corners = [
                     body.add_vertex(corner(low, a0)),
                     body.add_vertex(corner(low, a1)),
@@ -1053,7 +1054,7 @@ fn a_window_across_a_seam_in_v_is_measured() {
                     body.add_vertex(corner(high, a0)),
                 ];
                 let arc = |(rho, z): (f64, f64)| {
-                    let x_axis = Vec3::new(a0.cos(), a0.sin(), 0.0);
+                    let x_axis = Vec3::new(a0.pcos(), a0.psin(), 0.0);
                     let frame = Frame::new(Vec3::new(0.0, 0.0, z), Vec3::Z, x_axis).unwrap();
                     Curve3::Circle(Circle::new(frame, rho).unwrap())
                 };
@@ -1141,15 +1142,15 @@ fn what_the_tessellator_declines_on_closed_freeform() {
     body.add_shell(vec![face]);
     let expected = (
         PI * along(&profile, |(rho, _), (_, dz)| rho * rho * dz),
-        TAU * along(&profile, |(rho, _), (dr, dz)| rho * dr.hypot(dz)),
+        TAU * along(&profile, |(rho, _), (dr, dz)| rho * dr.phypot(dz)),
     );
     measures_as(&body, expected, 1.0, "egg without loops, around v");
 
     let (major, minor) = (3.0, 1.0);
     let ((f0, f1), (t0, t1)) = ((-0.5, 0.6), (-0.4, 0.7));
     let at = |f: f64, t: f64| {
-        let rho = major + minor * t.cos();
-        Vec3::new(rho * f.cos(), rho * f.sin(), minor * t.sin())
+        let rho = major + minor * t.pcos();
+        Vec3::new(rho * f.pcos(), rho * f.psin(), minor * t.psin())
     };
     let mut body = Body::new(BodyKind::Solid);
     let corners = [
@@ -1159,12 +1160,12 @@ fn what_the_tessellator_declines_on_closed_freeform() {
         body.add_vertex(at(f0, t1)),
     ];
     let around = |t: f64| {
-        let x_axis = Vec3::new(f0.cos(), f0.sin(), 0.0);
-        let frame = Frame::new(Vec3::new(0.0, 0.0, minor * t.sin()), Vec3::Z, x_axis).unwrap();
-        Curve3::Circle(Circle::new(frame, major + minor * t.cos()).unwrap())
+        let x_axis = Vec3::new(f0.pcos(), f0.psin(), 0.0);
+        let frame = Frame::new(Vec3::new(0.0, 0.0, minor * t.psin()), Vec3::Z, x_axis).unwrap();
+        Curve3::Circle(Circle::new(frame, major + minor * t.pcos()).unwrap())
     };
     let tube = |f: f64| {
-        let radial = Vec3::new(f.cos(), f.sin(), 0.0);
+        let radial = Vec3::new(f.pcos(), f.psin(), 0.0);
         let frame = Frame::new(radial * major, radial.cross(Vec3::Z), radial).unwrap();
         Curve3::Circle(Circle::new(frame, minor).unwrap())
     };
@@ -1239,7 +1240,7 @@ fn the_normal_at_a_smooth_pole_is_the_axis() {
                         continue;
                     };
                     at_poles[pole] += 1;
-                    let angle = n.cross(exact).length().atan2(n.dot(exact));
+                    let angle = n.cross(exact).length().patan2(n.dot(exact));
                     assert!(
                         (n.length() - 1.0).abs() < 1e-9 && angle <= within,
                         "{what} at {relative}: normal {n:?} at the pole {p:?}, {angle} rad off"

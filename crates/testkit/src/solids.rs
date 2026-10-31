@@ -5,6 +5,7 @@
 
 use craft3d_geom::{Circle, Curve3, GeomError, Plane, Sphere, Surface};
 use craft3d_kernel::{KernelError, primitives};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
 use craft3d_topo::{Body, BodyKind, Coedge, EdgeId};
 use std::f64::consts::{PI, TAU};
@@ -101,7 +102,7 @@ pub fn cone(frame: &Frame, radius: f64, height: f64) -> Result<Reference, GeomEr
         name: "cone",
         body,
         volume: PI * radius * radius * height / 3.0,
-        area: PI * radius * (radius + radius.hypot(height)),
+        area: PI * radius * (radius + radius.phypot(height)),
         centroid: frame.point(0.0, 0.0, height / 4.0),
         counts: (1, 1, 2),
         genus: 0,
@@ -159,7 +160,7 @@ pub fn spline_cone(frame: &Frame, radius: f64, height: f64) -> Result<Reference,
         name: "spline cone",
         body,
         volume: PI * radius * radius * height / 3.0,
-        area: PI * radius * (radius + radius.hypot(height)),
+        area: PI * radius * (radius + radius.phypot(height)),
         centroid: frame.point(0.0, 0.75 * height, 0.0),
         counts,
         genus: 0,
@@ -172,7 +173,7 @@ pub fn sphere(frame: &Frame, radius: f64) -> Result<Reference, GeomError> {
     Ok(Reference {
         name: "sphere",
         body,
-        volume: 4.0 / 3.0 * PI * radius.powi(3),
+        volume: 4.0 / 3.0 * PI * radius.ppowi(3),
         area: 4.0 * PI * radius * radius,
         centroid: frame.origin(),
         counts: (0, 0, 1),
@@ -200,7 +201,7 @@ pub fn hemisphere(frame: &Frame, radius: f64) -> Result<Reference, GeomError> {
     Ok(Reference {
         name: "hemisphere",
         body,
-        volume: 2.0 / 3.0 * PI * radius.powi(3),
+        volume: 2.0 / 3.0 * PI * radius.ppowi(3),
         area: 3.0 * PI * radius * radius,
         centroid: frame.point(0.0, 0.0, 3.0 * radius / 8.0),
         counts: (1, 1, 2),

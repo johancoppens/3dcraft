@@ -23,6 +23,7 @@
 )]
 
 use craft3d_geom::{Circle, Curve3, Sphere, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
 use craft3d_tess::{TessParams, tessellate_body};
 use craft3d_topo::{Body, BodyKind, Coedge};
@@ -44,7 +45,7 @@ fn arc(frame: &Frame, r: f64, p: Vec3, q: Vec3, n: Vec3) -> (Curve3, f64) {
         let local = q - centre;
         let angle = local
             .dot(circle_frame.y())
-            .atan2(local.dot(circle_frame.x()));
+            .patan2(local.dot(circle_frame.x()));
         let angle = if angle < 0.0 { angle + TAU } else { angle };
         if angle < PI {
             return (Curve3::Circle(circle), angle);
@@ -75,7 +76,7 @@ fn pinched(
 ) -> Body {
     let at_longitude = |z: f64, longitude: f64| {
         let across = (r * r - z * z).sqrt();
-        at.point(across * longitude.cos(), across * longitude.sin(), z)
+        at.point(across * longitude.pcos(), across * longitude.psin(), z)
     };
     let (p, q) = (at_longitude(c, 0.0), at_longitude(c_q, -west));
     let mut body = Body::new(BodyKind::Sheet);
@@ -93,7 +94,7 @@ fn pinched(
         .unwrap();
     let turned = |angle: f64| {
         let side = axis.cross(meridian);
-        meridian * angle.cos() + side * angle.sin()
+        meridian * angle.pcos() + side * angle.psin()
     };
     let left = (p - at.origin()).cross(q - p);
     let mut arcs = Vec::new();
@@ -172,7 +173,7 @@ fn a_zone_with_a_pocket_hanging_from_its_rim_meshes_whichever_way_it_is_laid_out
         // way at a longitude away from the sphere's own seam, and the
         // sphere's own frame either way up.
         for (up, longitude) in [(Vec3::Z, 2.0_f64), (-Vec3::Z, 4.4)] {
-            let turn = Vec3::new(longitude.cos(), longitude.sin(), 0.0);
+            let turn = Vec3::new(longitude.pcos(), longitude.psin(), 0.0);
             let at = Frame::new(centre, up, turn).unwrap();
             for own_up in [Vec3::Z, -Vec3::Z] {
                 let own = Frame::new(centre, own_up, Vec3::X).unwrap();

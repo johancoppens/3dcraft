@@ -17,6 +17,7 @@ use craft3d_io::{
     DrawingFormat, FaceAxes, encode_drawing, face_frame, face_outline, face_outline_in,
     sketch_outline,
 };
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, Coedge, FaceId};
 use std::f64::consts::TAU;
@@ -160,7 +161,7 @@ fn a_spline_edge_of_a_flat_face_is_a_spline_in_the_outline() {
                 };
                 let expected = flat(curve.eval(u));
                 assert!(
-                    (got[0] - expected[0]).hypot(got[1] - expected[1]) < 1e-12,
+                    (got[0] - expected[0]).phypot(got[1] - expected[1]) < 1e-12,
                     "{backwards} {reversed} {s}: {got:?} {expected:?}"
                 );
             }

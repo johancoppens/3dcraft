@@ -9,6 +9,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 mod revolve_support;
 
@@ -252,7 +253,7 @@ fn lathe_arc(
 #[test]
 fn arcs_whose_circle_reaches_the_axis_match_pappus() {
     let mut count = 0;
-    let alpha = 0.6_f64.acos();
+    let alpha = 0.6_f64.pacos();
     let lens_area = 25.0 * (alpha - 0.48);
     let lens_rho = 20.0 * 0.512 / (3.0 * (2.0 * alpha - 0.96)) - 3.0;
     let quarter = 8.0 / (3.0 * PI);
@@ -345,8 +346,8 @@ fn arc_region(arcs: &[((f64, f64), f64, f64, f64)]) -> (f64, (f64, f64)) {
         let step = (to - from) / f64::from(steps);
         for i in 0..=steps {
             let t = from + step * f64::from(i);
-            let (rho, h) = (cr + r * t.cos(), ch + r * t.sin());
-            let (drho, dh) = (-r * t.sin(), r * t.cos());
+            let (rho, h) = (cr + r * t.pcos(), ch + r * t.psin());
+            let (drho, dh) = (-r * t.psin(), r * t.pcos());
             let w = if i == 0 || i == steps {
                 1.0
             } else if i % 2 == 1 {
@@ -375,7 +376,7 @@ fn arc_region(arcs: &[((f64, f64), f64, f64, f64)]) -> (f64, (f64, f64)) {
 fn two_halved_arcs_that_meet_on_the_axis_each_have_a_vertex_there() {
     let r2 = (0.5_f64 * 0.5 + 1.5 * 1.5).sqrt();
     let (area, (rho, h)) = arc_region(&[
-        ((0.5, 1.5), r2, (-1.5_f64).atan2(-0.5), 0.5_f64.atan2(1.5)),
+        ((0.5, 1.5), r2, (-1.5_f64).patan2(-0.5), 0.5_f64.patan2(1.5)),
         ((2.0, 0.0), 2.0, FRAC_PI_2, PI),
     ]);
     let mut count = 0;

@@ -2,6 +2,7 @@
 //! sRGB encoding (IEC 61966-2-1). Shading is linear throughout; colours
 //! from the document (sRGB bytes) are decoded first.
 
+use craft3d_math::Portable;
 /// The tone curve.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Tonemap {
@@ -62,7 +63,7 @@ pub fn srgb_encode(c: f64) -> f64 {
     if c <= 0.003_130_8 {
         12.92 * c
     } else {
-        1.055 * c.powf(1.0 / 2.4) - 0.055
+        1.055 * c.ppowf(1.0 / 2.4) - 0.055
     }
 }
 
@@ -71,7 +72,7 @@ pub fn srgb_decode(c: f64) -> f64 {
     if c <= 0.040_45 {
         c / 12.92
     } else {
-        ((c + 0.055) / 1.055).powf(2.4)
+        ((c + 0.055) / 1.055).ppowf(2.4)
     }
 }
 
@@ -98,7 +99,7 @@ fn agx(c: [f64; 3]) -> [f64; 3] {
         0.042_375_654_905_705_1 * r + 0.078_433_6 * g + 0.879_142_973_793_104 * b,
     ];
     let curve = inset.map(|v| {
-        let ev = if v > 0.0 { v.log2() } else { AGX_MIN_EV };
+        let ev = if v > 0.0 { v.plog2() } else { AGX_MIN_EV };
         let t = (ev.clamp(AGX_MIN_EV, AGX_MAX_EV) - AGX_MIN_EV) / (AGX_MAX_EV - AGX_MIN_EV);
         agx_curve(t)
     });
@@ -183,7 +184,7 @@ fn agx_inverse(d: [f64; 3]) -> [f64; 3] {
     ];
     let [r, g, b] = k.map(|v| {
         let t = agx_curve_inverse(v);
-        (AGX_MIN_EV + t * (AGX_MAX_EV - AGX_MIN_EV)).exp2()
+        (AGX_MIN_EV + t * (AGX_MAX_EV - AGX_MIN_EV)).pexp2()
     });
     // And the outset matrix the inset one.
     [
@@ -255,7 +256,7 @@ mod tests {
         for curve in [Tonemap::Agx, Tonemap::Aces, Tonemap::Linear] {
             let mut last = -1.0;
             for i in 0..2000 {
-                let x = (f64::from(i) / 100.0 - 12.0).exp2();
+                let x = (f64::from(i) / 100.0 - 12.0).pexp2();
                 let [v, ..] = display([x; 3], curve);
                 assert!((0.0..=1.0).contains(&v), "{curve:?} {x} {v}");
                 assert!(v >= last - 1e-9, "{curve:?} not monotonic at {x}");

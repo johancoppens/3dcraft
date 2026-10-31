@@ -18,6 +18,7 @@ use craft3d_geom::support::{SurfaceNets, surface_piece};
 use craft3d_geom::{NurbsSurface, Surface};
 use craft3d_kernel::boolean::{BooleanOp, boolean};
 use craft3d_kernel::primitives::{block, cylinder, sphere};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::Body;
 use std::f64::consts::{FRAC_PI_2, FRAC_PI_6};
@@ -146,8 +147,8 @@ fn a_proof_cut_short_by_its_caps_is_still_no_higher_than_the_closed_form() {
 /// tangents with weight `cos(d / 2)`. (reach, height) points and weights.
 fn arc(from: f64, to: f64, radius: f64) -> (Vec<(f64, f64)>, Vec<f64>) {
     let middle = 0.5 * (from + to);
-    let w = (0.5 * (to - from)).cos();
-    let on = |a: f64, scale: f64| (radius * a.cos() * scale, radius * a.sin() * scale);
+    let w = (0.5 * (to - from)).pcos();
+    let on = |a: f64, scale: f64| (radius * a.pcos() * scale, radius * a.psin() * scale);
     (
         vec![on(from, 1.0), on(middle, 1.0 / w), on(to, 1.0)],
         vec![1.0, w, 1.0],

@@ -20,6 +20,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::plain::run;
@@ -178,7 +179,7 @@ fn freecad_reads_the_outline_of_a_sketch_and_of_faces() {
         "feature.cylinder",
         json!({"radius": 5, "height": 30, "name": "Pin"}),
     );
-    let lean = [0.5, 0.0, (PI / 6.0).cos()];
+    let lean = [0.5, 0.0, (PI / 6.0).pcos()];
     let corner = [30.0 * lean[2], -30.0, 20.0 - 30.0 * lean[0]];
     run(
         &mut s,
@@ -190,7 +191,7 @@ fn freecad_reads_the_outline_of_a_sketch_and_of_faces() {
         "feature.boolean",
         json!({"op": "subtract", "target": "Pin", "tool": "Knife", "name": "Cut"}),
     );
-    let ellipse_area = PI * 5.0 * 5.0 / (PI / 6.0).cos();
+    let ellipse_area = PI * 5.0 * 5.0 / (PI / 6.0).pcos();
     for format in ["dxf", "svg"] {
         let file = format!("slant.{format}");
         let result = run(
@@ -253,7 +254,7 @@ fn freecad_reads_the_outline_of_a_sketch_and_of_faces() {
 /// parameter `t0` to `t1`, by Simpson's rule on 4000 panels.
 fn elliptic_arc(a: f64, ratio: f64, t0: f64, t1: f64) -> f64 {
     let b = a * ratio;
-    let speed = |t: f64| (a * t.sin()).hypot(b * t.cos());
+    let speed = |t: f64| (a * t.psin()).phypot(b * t.pcos());
     let n = 4000;
     let h = (t1 - t0) / f64::from(n);
     let mut sum = speed(t0) + speed(t1);
@@ -279,7 +280,7 @@ fn elliptic_arcs(dxf: &str) -> Vec<(f64, f64, f64, f64)> {
         };
         let (t0, t1) = (value("41"), value("42"));
         if (t1 - t0 - std::f64::consts::TAU).abs() > 1e-12 {
-            out.push((value("11").hypot(value("21")), value("40"), t0, t1));
+            out.push((value("11").phypot(value("21")), value("40"), t0, t1));
         }
     }
     out

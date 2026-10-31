@@ -35,6 +35,7 @@ use crate::boolean::{BooleanOp, FaceSource, Operand, boolean};
 use crate::primitives::block;
 use craft3d_geom::support::{CurveNets, Piece, SurfaceNets, curve_piece, surface_piece};
 use craft3d_geom::{Curve3, RationalBezierPatch, Surface};
+use craft3d_math::Portable;
 use craft3d_math::quadrature::Rule;
 use craft3d_math::{Bbox3, Frame, Tolerance, Transform, Vec3};
 use craft3d_topo::{Body, BodyKind, FaceId, MassError, TransformError, mass_properties};
@@ -157,13 +158,13 @@ impl Section {
         }
         let mean = 0.5 * (self.i_x + self.i_y);
         let half = 0.5 * (self.i_x - self.i_y);
-        let radius = half.hypot(self.product);
+        let radius = half.phypot(self.product);
         let (major, minor) = (mean + radius, mean - radius);
         // The moment about an axis at angle θ from x is
         // i_x cos²θ + i_y sin²θ − 2 product sin θ cos θ; it is largest at
         // 2θ = atan2(−product, half).
-        let theta = 0.5 * (-self.product).atan2(half);
-        let (s, c) = theta.sin_cos();
+        let theta = 0.5 * (-self.product).patan2(half);
+        let (s, c) = theta.psin_cos();
         let direction = plane.x_axis * c + plane.y_axis() * s;
         Some((major, minor, direction))
     }
@@ -433,7 +434,7 @@ fn onto_z(direction: Vec3) -> Result<Transform, CutError> {
     let axis = direction.cross(z);
     match axis.normalized() {
         // Turning `direction` onto z about their common normal.
-        Some(axis) if axis.is_finite() => Transform::rotation(axis, cos.acos()),
+        Some(axis) if axis.is_finite() => Transform::rotation(axis, cos.pacos()),
         // Along z already, or against it.
         _ if cos > 0.0 => Some(Transform::IDENTITY),
         _ => Transform::rotation(Vec3::new(1.0, 0.0, 0.0), PI),
@@ -1301,7 +1302,7 @@ fn edge_sums(
             else {
                 return false;
             };
-            let allowed = PANEL_ALLOWANCE * size.powi(*p) * share + 64.0 * f64::EPSILON * m;
+            let allowed = PANEL_ALLOWANCE * size.ppowi(*p) * share + 64.0 * f64::EPSILON * m;
             (f - c).abs() <= allowed
         });
         if settled {

@@ -21,6 +21,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{
@@ -80,7 +81,7 @@ fn wire(s: &mut Session, name: &str, u: f64, v: f64, radius: f64) {
 }
 
 fn helix_length(radius: f64, pitch: f64, turns: f64) -> f64 {
-    turns * (TAU * radius).hypot(pitch)
+    turns * (TAU * radius).phypot(pitch)
 }
 
 #[test]
@@ -280,7 +281,7 @@ fn a_coil_spring_square_to_its_helix_is_its_wire_times_the_helix_length() {
     // Square to the helix at its start: through the start, x away from
     // the axis, the normal along (0, r, p / 2π).
     let k = p / TAU;
-    let n = r.hypot(k);
+    let n = r.phypot(k);
     run(
         &mut s,
         "datum.plane",

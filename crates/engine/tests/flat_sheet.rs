@@ -12,6 +12,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::plain::run;
@@ -143,10 +144,10 @@ fn loops(d: &str) -> Vec<Loop> {
                 // SVG's sweep flag 1 runs clockwise once y is turned up.
                 let cw = num(&mut i) != 0.0;
                 let p = [num(&mut i), -num(&mut i)];
-                let chord = ((p[0] - at[0]).powi(2) + (p[1] - at[1]).powi(2)).sqrt();
-                let half = (chord / 2.0 / rx).clamp(-1.0, 1.0).asin();
+                let chord = ((p[0] - at[0]).ppowi(2) + (p[1] - at[1]).ppowi(2)).sqrt();
+                let half = (chord / 2.0 / rx).clamp(-1.0, 1.0).pasin();
                 let theta = if large { TAU - 2.0 * half } else { 2.0 * half };
-                let segment = rx * rx / 2.0 * (theta - theta.sin());
+                let segment = rx * rx / 2.0 * (theta - theta.psin());
                 twice += cross(at, p) + 2.0 * if cw { -segment } else { segment };
                 grow(&mut bbox, p);
                 at = p;

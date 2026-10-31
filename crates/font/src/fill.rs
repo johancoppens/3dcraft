@@ -185,7 +185,7 @@ fn collinear_overlap(a: &Seg, b: &Seg, eps: f64) -> bool {
         return false;
     }
     let d = sub(a.end(), a.start());
-    let len = d[0].hypot(d[1]);
+    let len = libm::hypot(d[0], d[1]);
     if len.is_nan() || len <= eps {
         return false;
     }
@@ -209,7 +209,7 @@ fn refine(a: &Seg, b: &Seg, ta: f64, tb: f64) -> (f64, f64) {
         let (da, db) = (a.derivative(s), b.derivative(t));
         // [da, −db] (ds, dt) = −f.
         let det = -cross(da, db);
-        let scale = (da[0].hypot(da[1]) * db[0].hypot(db[1])).max(f64::MIN_POSITIVE);
+        let scale = (libm::hypot(da[0], da[1]) * libm::hypot(db[0], db[1])).max(f64::MIN_POSITIVE);
         if det.is_nan() || det.abs() <= 1e-12 * scale {
             return (ta, tb);
         }
@@ -519,10 +519,10 @@ pub fn fill_nonzero(contours: &[Contour], eps: f64) -> Result<Vec<Contour>, Font
     let side = |seg: &Seg| -> Option<(i64, i64)> {
         let m = seg.eval(0.5);
         let mut d = seg.derivative(0.5);
-        let mut len = d[0].hypot(d[1]);
+        let mut len = libm::hypot(d[0], d[1]);
         if !(len > 0.0 && len.is_finite()) {
             d = sub(seg.end(), seg.start());
-            len = d[0].hypot(d[1]);
+            len = libm::hypot(d[0], d[1]);
         }
         if !(len > 0.0 && len.is_finite()) {
             return None;
@@ -605,7 +605,10 @@ pub fn fill_nonzero(contours: &[Contour], eps: f64) -> Result<Vec<Contour>, Font
             let turn = |k: usize| {
                 kept.get(k).map_or(f64::NEG_INFINITY, |q| {
                     let out = q.0.derivative(0.0);
-                    cross(incoming, out).atan2(incoming[0] * out[0] + incoming[1] * out[1])
+                    libm::atan2(
+                        cross(incoming, out),
+                        incoming[0] * out[0] + incoming[1] * out[1],
+                    )
                 })
             };
             let preferred = candidates
@@ -990,7 +993,7 @@ mod tests {
                 .map(|i| {
                     let a =
                         std::f64::consts::FRAC_PI_2 + i as f64 * 4.0 * std::f64::consts::PI / 5.0;
-                    [1.5 + 1.4 * a.cos(), 1.5 + 1.4 * a.sin()]
+                    [1.5 + 1.4 * libm::cos(a), 1.5 + 1.4 * libm::sin(a)]
                 })
                 .collect();
             Contour {

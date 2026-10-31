@@ -27,6 +27,7 @@ use craft3d_kernel::sheetmetal::{
     Closing, Direction, FlangeSpec, LengthFrom, On, Part, Relief, ReliefKind, SheetFace, Spec,
     build, developed_allowance, edge_numbers, flat_area,
 };
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{FaceId, check, mass_properties};
 use std::collections::BTreeSet;
@@ -102,7 +103,7 @@ fn volume(part: &Part) -> f64 {
 
 /// A quarter bend's material: `θ w ((R + T)² − R²) / 2`.
 fn ring(w: f64, r: f64, t: f64) -> f64 {
-    FRAC_PI_2 * w * ((r + t).powi(2) - r * r) / 2.0
+    FRAC_PI_2 * w * ((r + t).ppowi(2) - r * r) / 2.0
 }
 
 fn reason(spec: &Spec, tol: &Tolerance) -> String {
@@ -146,7 +147,7 @@ fn healthy(part: &Part, tol: &Tolerance) {
                     .outer
                     .iter()
                     .chain(flat.holes.iter().flatten())
-                    .map(|s| (s.start[0] - p.x).hypot(s.start[1] - p.y))
+                    .map(|s| (s.start[0] - p.x).phypot(s.start[1] - p.y))
                     .fold(f64::INFINITY, f64::min);
                 assert!(on <= tol.linear, "a vertex lands {on} from its corner");
             }
@@ -236,7 +237,7 @@ fn a_tab_with_bend_reliefs_loses_their_notches_in_closed_form() {
                 let has = |p: [f64; 2]| {
                     starts
                         .iter()
-                        .any(|q| (q[0] - p[0]).hypot(q[1] - p[1]) <= tol.linear)
+                        .any(|q| (q[0] - p[0]).phypot(q[1] - p[1]) <= tol.linear)
                 };
                 assert!(
                     has([i0 - rs, 0.0]),

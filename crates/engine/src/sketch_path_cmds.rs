@@ -21,6 +21,7 @@ use crate::sketch_cmds::{
 use crate::typed::Typed;
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::{ConstraintId, ConstraintKind, EntityId, Expr, Sketch, SketchError};
+use craft3d_math::Portable;
 use serde_json::{Map, Value, json};
 
 const COMMAND: &str = "sketch.path";
@@ -297,7 +298,7 @@ fn finite(point: Xy) -> Option<Xy> {
 
 /// The unit vector along `v`; `None` when it has no length or overflows.
 fn unit(v: Xy) -> Option<Xy> {
-    let length = v.0.hypot(v.1);
+    let length = v.0.phypot(v.1);
     if !(length.is_finite() && length > 0.0) {
         return None;
     }
@@ -315,7 +316,7 @@ fn arc_direction(center: Xy, point: Xy, ccw: bool) -> Option<Xy> {
 /// `from`, so the coordinates that are squared are differences.
 fn arc_through(from: Xy, through: Xy, to: Xy, tolerance: f64) -> Result<(Xy, bool), SketchError> {
     let (b, c) = (sub(to, from), sub(through, from));
-    let chord = b.0.hypot(b.1);
+    let chord = b.0.phypot(b.1);
     let turn = cross(b, c);
     // How far the through point is from the chord: with nothing in
     // between, the three points are on one line and the circle is not
@@ -350,7 +351,7 @@ fn arc_by_radius(
     tolerance: f64,
 ) -> Result<Xy, SketchError> {
     let chord = sub(to, from);
-    let length = chord.0.hypot(chord.1);
+    let length = chord.0.phypot(chord.1);
     let half = length / 2.0;
     if radius < half - tolerance {
         return invalid(format!(
@@ -448,9 +449,9 @@ struct Snap {
 /// it is more than [`SNAP_SHARE`] of the radius off it.
 fn snap(center: Xy, from: Xy, to: Xy, tolerance: f64) -> Option<Snap> {
     let radius = sub(from, center);
-    let radius = radius.0.hypot(radius.1);
+    let radius = radius.0.phypot(radius.1);
     let reach = sub(to, center);
-    let off = (reach.0.hypot(reach.1) - radius).abs();
+    let off = (reach.0.phypot(reach.1) - radius).abs();
     if !(off.is_finite() && off > tolerance && off <= SNAP_SHARE * radius) {
         return None;
     }
@@ -460,7 +461,7 @@ fn snap(center: Xy, from: Xy, to: Xy, tolerance: f64) -> Option<Snap> {
     Some(Snap {
         given: to,
         end,
-        moved: moved.0.hypot(moved.1),
+        moved: moved.0.phypot(moved.1),
     })
 }
 
@@ -473,9 +474,9 @@ fn snap(center: Xy, from: Xy, to: Xy, tolerance: f64) -> Option<Snap> {
 /// have to be for the start to stay.
 fn off_circle(center: Xy, from: Xy, to: Xy, tolerance: f64) -> Option<String> {
     let radius = sub(from, center);
-    let radius = radius.0.hypot(radius.1);
+    let radius = radius.0.phypot(radius.1);
     let reach = sub(to, center);
-    let off = reach.1.hypot(reach.0) - radius;
+    let off = reach.1.phypot(reach.0) - radius;
     if !(off.is_finite() && off.abs() > tolerance) {
         return None;
     }
@@ -534,7 +535,7 @@ fn draw_segment(
     };
     let end_at = s.point(end)?;
     let chord = sub(end_at, from_at);
-    let length = chord.0.hypot(chord.1);
+    let length = chord.0.phypot(chord.1);
     if end == from || !(length.is_finite() && length > tolerance) {
         return invalid(if length.is_finite() {
             "it ends where it starts; a segment needs two different points"
@@ -590,7 +591,7 @@ fn draw_segment(
     };
     for (name, corner) in [("start", from_at), ("end", end_at)] {
         let radius = sub(corner, center_at);
-        let radius = radius.0.hypot(radius.1);
+        let radius = radius.0.phypot(radius.1);
         if !(radius.is_finite() && radius > tolerance) {
             return invalid(format!(
                 "the arc's centre is on its {name} (or immeasurably far from it): there is no radius"
@@ -700,7 +701,7 @@ fn build(s: &mut Sketch, path: &Path) -> Result<Built, SketchError> {
             );
         }
         let (dx, dy) = sub(s.point(start)?, at.1);
-        let length = dx.hypot(dy);
+        let length = dx.phypot(dy);
         if !(length.is_finite() && length > path.tolerance) {
             return invalid(
                 "`closed` would add a line of no length: the last segment ends at the coordinates of the start; end it at \"start\" instead, so both are one point",

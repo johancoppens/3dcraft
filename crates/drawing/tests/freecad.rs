@@ -192,7 +192,7 @@ fn plate(unit: Unit, k: f64) -> Drawing {
 /// Closed forms for the plate at `k` = 1: its length and its area.
 fn plate_numbers() -> (f64, f64) {
     // Half the angle the D's flat cuts off.
-    let half = (3.0_f64 / 5.0).acos();
+    let half = libm::acos(3.0_f64 / 5.0);
     let length = (2.0 * (50.0 + 30.0) + TAU * 5.0)
         + TAU * 4.0
         + (8.0 + 5.0 * (TAU - 2.0 * half))
@@ -200,7 +200,7 @@ fn plate_numbers() -> (f64, f64) {
     let outline = 60.0 * 40.0 - (4.0 - PI) * 25.0;
     let hole = PI * 16.0;
     // The circle less the segment beyond the flat.
-    let d = PI * 25.0 - 25.0 * (half - half.sin() * half.cos());
+    let d = PI * 25.0 - 25.0 * (half - libm::sin(half) * libm::cos(half));
     let slot = 20.0 * 6.0 + PI * 9.0;
     (length, outline - hole - d - slot)
 }
@@ -293,7 +293,7 @@ fn freecad_reads_the_plate_at_its_true_size_in_every_unit_and_scale() {
 fn freecad_reads_ellipses_and_splines_as_what_they_are() {
     // An ellipse turned 30° with semi-axes 4 and 1.5, whole.
     let turn = PI / 6.0;
-    let major = [4.0 * turn.cos(), 4.0 * turn.sin()];
+    let major = [4.0 * libm::cos(turn), 4.0 * libm::sin(turn)];
     let whole = drawing(
         Unit::Millimeter,
         vec![Path::Ellipse {
@@ -306,8 +306,8 @@ fn freecad_reads_ellipses_and_splines_as_what_they_are() {
     let on = |t: f64| {
         let minor = [-major[1] * 0.375, major[0] * 0.375];
         [
-            2.0 + major[0] * t.cos() + minor[0] * t.sin(),
-            -1.0 + major[1] * t.cos() + minor[1] * t.sin(),
+            2.0 + major[0] * libm::cos(t) + minor[0] * libm::sin(t),
+            -1.0 + major[1] * libm::cos(t) + minor[1] * libm::sin(t),
         ]
     };
     let half = |ccw: bool| {
@@ -391,10 +391,10 @@ fn freecad_reads_ellipses_and_splines_as_what_they_are() {
     // Closed forms. The ellipse: area π a b; its length by the series in
     // h = ((a - b) / (a + b))².
     let (a, b) = (4.0_f64, 1.5_f64);
-    let h = ((a - b) / (a + b)).powi(2);
+    let h = libm::pow((a - b) / (a + b), 2.0);
     let (mut series, mut term) = (0.0, 1.0_f64);
     for n in 0..60 {
-        series += term * term * h.powi(n);
+        series += term * term * libm::pow(h, f64::from(n));
         term *= (0.5 - f64::from(n)) / (f64::from(n) + 1.0);
     }
     let perimeter = PI * (a + b) * series;

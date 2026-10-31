@@ -10,6 +10,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{error, run, session};
@@ -51,7 +52,7 @@ fn constrain(s: &mut Session, kind: &str, entities: Value, value: Option<String>
 
 #[track_caller]
 fn near(got: [f64; 2], want: [f64; 2], k: f64, what: &str) {
-    let gap = (got[0] - want[0]).hypot(got[1] - want[1]);
+    let gap = (got[0] - want[0]).phypot(got[1] - want[1]);
     // The fit is within half the tolerance of the formulas, the solve
     // within the tolerance.
     assert!(
@@ -306,7 +307,7 @@ fn a_live_spline_takes_points_and_tangents_and_they_follow_it() {
             );
             // Along (10 k, 2 h k), 5 k long.
             let (dx, dy): (f64, f64) = (10.0, 2.0 * h);
-            let n = 5.0 / dx.hypot(dy);
+            let n = 5.0 / dx.phypot(dy);
             near(
                 at(&mut s, &lead["end"]),
                 [dx * n * k, dy * n * k],

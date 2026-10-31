@@ -12,6 +12,7 @@
     clippy::panic
 )]
 
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use craft3d_render::studio::layers::Optics;
 use craft3d_render::studio::{HdrImage, Look, Prepared, env::texel_direction, render_studio};
@@ -39,7 +40,7 @@ fn sphere(center: Vec3, r: f64, rings: u32, segments: u32, face: u32) -> Mesh {
         let t = std::f64::consts::PI * f64::from(i) / f64::from(rings);
         for j in 0..=segments {
             let p = 2.0 * std::f64::consts::PI * f64::from(j) / f64::from(segments);
-            let n = Vec3::new(t.sin() * p.cos(), t.sin() * p.sin(), t.cos());
+            let n = Vec3::new(t.psin() * p.pcos(), t.psin() * p.psin(), t.pcos());
             mesh.positions.push(center + n * r);
             mesh.normals.push(n);
         }

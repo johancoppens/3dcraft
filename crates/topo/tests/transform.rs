@@ -11,6 +11,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 #[path = "common/transform_checks.rs"]
 mod checks;
 
@@ -522,7 +523,7 @@ fn faces_on_spheres_and_tori_are_boxed_by_what_they_hold() {
                 let elbow = trimmed::pipe_elbow(&frame, 3.0 * scale, scale, sweep).unwrap();
                 cases.push((
                     elbow,
-                    Box::new(move |x, y, _| y.atan2(x).rem_euclid(TAU) <= sweep),
+                    Box::new(move |x, y, _| y.patan2(x).rem_euclid(TAU) <= sweep),
                 ));
             }
             cases.push((
@@ -623,11 +624,11 @@ fn arcs_are_boxed_by_the_part_that_is_there() {
     body.add_edge(ellipse.clone(), (t0, t1), a, b);
     let (lo, hi) = body.bbox().unwrap().corners().unwrap();
     assert!(
-        close(lo.x, -3.0) && close(hi.x, 3.0 * t0.cos()),
+        close(lo.x, -3.0) && close(hi.x, 3.0 * t0.pcos()),
         "{lo:?} {hi:?}"
     );
     assert!(
-        close(lo.y, t1.sin()) && close(hi.y, t0.sin()),
+        close(lo.y, t1.psin()) && close(hi.y, t0.psin()),
         "{lo:?} {hi:?}"
     );
 }

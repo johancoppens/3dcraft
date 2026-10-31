@@ -17,6 +17,7 @@
 //! Regeneration with a [`RegenCache`] rebuilds only the features an edit
 //! touches, and gives exactly what a full regeneration gives ([`cache`]).
 
+use craft3d_math::Portable;
 mod blend;
 mod boolean;
 mod cache;
@@ -1011,7 +1012,7 @@ fn to_document(quantity: Quantity, doc: &Document) -> Value {
         .to_unit(doc.units.length.as_expr_unit())
         .unwrap_or(1.0);
     Value {
-        value: quantity.value * per_mm.powi(quantity.dimension.length),
+        value: quantity.value * per_mm.ppowi(quantity.dimension.length),
         dimension: quantity.dimension,
     }
 }
@@ -1176,7 +1177,7 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
                     axis.x, axis.y, axis.z
                 )
             })?;
-            let x = upright.x() * turn.cos() + upright.y() * turn.sin();
+            let x = upright.x() * turn.pcos() + upright.y() * turn.psin();
             Frame::new(origin, axis, x).ok_or("orientation is not finite".to_string())
         };
     // Sizes are checked here, where the parameter has the name the user
@@ -2000,6 +2001,7 @@ fn build_feature(
 mod tests {
     use super::*;
     use craft3d_doc::{Block, Cylinder, LengthUnit, Sphere, Units};
+    use craft3d_math::Portable;
     use craft3d_topo::mass_properties;
     use std::f64::consts::PI;
 
@@ -2116,7 +2118,7 @@ mod tests {
         let per_inch = 25.4_f64;
         assert!(close(
             volumes(&regen)[0],
-            40.0 * 20.0 * 10.0 / per_inch.powi(3)
+            40.0 * 20.0 * 10.0 / per_inch.ppowi(3)
         ));
         let width = regen.variables.iter().find(|v| v.name == "width").unwrap();
         assert!(close(width.value.clone().unwrap().value, 40.0 / per_inch));

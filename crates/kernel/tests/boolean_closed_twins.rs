@@ -25,6 +25,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod boolean_common;
 mod rational_common;
 
@@ -146,7 +147,7 @@ fn turned(profile: &Flat, from: f64, around_v: bool) -> NurbsSurface {
 
 /// A full circle about the z axis at `height`, starting at `from`.
 fn rim(body: &mut Body, reach: f64, height: f64, from: f64) -> craft3d_topo::EdgeId {
-    let (sin, cos) = from.sin_cos();
+    let (sin, cos) = from.psin_cos();
     let vertex = body.add_vertex(Vec3::new(reach * cos, reach * sin, height));
     let frame = Frame::new(
         Vec3::new(0.0, 0.0, height),

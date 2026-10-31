@@ -20,6 +20,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::{P, Rng, arc, catalogue, circle, line, polygon};
@@ -397,7 +398,7 @@ fn ngon(n: usize, r: f64, first_id: u64) -> Vec<SketchCurve> {
     let points: Vec<P> = (0..n)
         .map(|i| {
             let a = i as f64 / n as f64 * 2.0 * PI;
-            [r * a.cos(), r * a.sin()]
+            [r * a.pcos(), r * a.psin()]
         })
         .collect();
     polygon(first_id, 1, &points)
@@ -409,7 +410,7 @@ fn scalloped(teeth: usize, r: f64) -> Vec<SketchCurve> {
     let n = teeth * 2;
     let at = |i: usize| {
         let a = (i % n) as f64 / n as f64 * 2.0 * PI;
-        [r * a.cos(), r * a.sin()]
+        [r * a.pcos(), r * a.psin()]
     };
     (0..n)
         .map(|i| {
@@ -459,12 +460,12 @@ fn timed(name: &str, curves: &[SketchCurve], expect_area: Option<f64>) {
 #[test]
 fn large_and_adversarial_inputs_finish() {
     // A regular n-gon inscribed in radius r has area n r² sin(2π/n) / 2.
-    let ngon_area = |n: usize, r: f64| n as f64 * r * r * (2.0 * PI / n as f64).sin() / 2.0;
+    let ngon_area = |n: usize, r: f64| n as f64 * r * r * (2.0 * PI / n as f64).psin() / 2.0;
     timed("300-gon", &ngon(300, 100.0, 0), Some(ngon_area(300, 100.0)));
     // Chords and arcs alternate: half the sectors are whole (r² θ / 2 each),
     // half are triangles (r² sin θ / 2), with θ = 2π / 400.
     let theta = 2.0 * PI / 400.0;
-    let area = 200.0 * 50.0 * 50.0 * (theta + theta.sin()) / 2.0;
+    let area = 200.0 * 50.0 * 50.0 * (theta + theta.psin()) / 2.0;
     timed(
         "scalloped, 200 lines and 200 arcs",
         &scalloped(200, 50.0),
@@ -507,7 +508,7 @@ fn large_and_adversarial_inputs_finish() {
         .collect();
     timed("one line many times", &same, None);
     let fan: Vec<SketchCurve> = (0..n as u64)
-        .map(|i| line(i, [0.0, 0.0], [(i as f64).cos(), (i as f64).sin()]))
+        .map(|i| line(i, [0.0, 0.0], [(i as f64).pcos(), (i as f64).psin()]))
         .collect();
     timed("a fan of lines", &fan, None);
     let mut mesh = Vec::new();
@@ -539,7 +540,7 @@ fn large_and_adversarial_inputs_finish() {
 /// accepted. Every layout: `the_cap_finishes_with_every_layout`.
 #[test]
 fn the_cap_finishes() {
-    let ngon_area = |n: usize, r: f64| n as f64 * r * r * (2.0 * PI / n as f64).sin() / 2.0;
+    let ngon_area = |n: usize, r: f64| n as f64 * r * r * (2.0 * PI / n as f64).psin() / 2.0;
     timed(
         "the cap as one polygon",
         &ngon(MAX_CURVES, 1e5, 0),
@@ -568,7 +569,7 @@ fn the_cap_finishes() {
 #[test]
 #[ignore = "seconds per layout; run in release with --ignored --nocapture"]
 fn the_cap_finishes_with_every_layout() {
-    let ngon_area = |n: usize, r: f64| n as f64 * r * r * (2.0 * PI / n as f64).sin() / 2.0;
+    let ngon_area = |n: usize, r: f64| n as f64 * r * r * (2.0 * PI / n as f64).psin() / 2.0;
     timed(
         "the cap as one polygon",
         &ngon(MAX_CURVES, 1e5, 0),
@@ -593,7 +594,7 @@ fn the_cap_finishes_with_every_layout() {
     timed(
         "scalloped",
         &scalloped(n / 2, 1e5),
-        Some((n / 2) as f64 * 1e10 * (theta + theta.sin()) / 2.0),
+        Some((n / 2) as f64 * 1e10 * (theta + theta.psin()) / 2.0),
     );
     let concentric: Vec<SketchCurve> = (0..n)
         .map(|i| circle(i as u64, [0.0, 0.0], (i + 1) as f64))
@@ -604,7 +605,7 @@ fn the_cap_finishes_with_every_layout() {
         .collect();
     crowded("one line many times", &same, 4 * MAX_PAIRS);
     let fan: Vec<SketchCurve> = (0..n as u64)
-        .map(|i| line(i, [0.0, 0.0], [(i as f64).cos(), (i as f64).sin()]))
+        .map(|i| line(i, [0.0, 0.0], [(i as f64).pcos(), (i as f64).psin()]))
         .collect();
     crowded("a fan of lines", &fan, 4 * MAX_PAIRS);
     let stacked: Vec<SketchCurve> = (0..n as u64 / 2)

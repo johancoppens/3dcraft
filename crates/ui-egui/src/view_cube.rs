@@ -23,6 +23,7 @@
 
 use crate::state::CameraState;
 use crate::theme::Tokens;
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use craft3d_render::ViewAxes;
 
@@ -287,8 +288,8 @@ fn patches(style: &CubeStyle) -> Vec<Patch> {
                         let angle = (start + 90.0 * j as f64 / QUARTER as f64).to_radians();
                         points.push(point([
                             (a, of(a)),
-                            (u, cu + rho * angle.cos()),
-                            (v, cv + rho * angle.sin()),
+                            (u, cu + rho * angle.pcos()),
+                            (v, cv + rho * angle.psin()),
                         ]));
                     }
                 }
@@ -314,7 +315,7 @@ fn patches(style: &CubeStyle) -> Vec<Patch> {
                     for j in 0..=END {
                         let angle = (start + 180.0 * j as f64 / END as f64).to_radians();
                         points.push(
-                            centre(t) + along * (r * angle.cos()) + across * (r * angle.sin()),
+                            centre(t) + along * (r * angle.pcos()) + across * (r * angle.psin()),
                         );
                     }
                 }
@@ -333,7 +334,7 @@ fn patches(style: &CubeStyle) -> Vec<Patch> {
                 let points = (0..ROUND)
                     .map(|j| {
                         let angle = std::f64::consts::TAU * j as f64 / ROUND as f64;
-                        centre + t1 * (r * angle.cos()) + t2 * (r * angle.sin())
+                        centre + t1 * (r * angle.pcos()) + t2 * (r * angle.psin())
                     })
                     .collect();
                 (points, None)
@@ -513,7 +514,7 @@ pub fn inside_by(polygon: &[[f64; 2]], at: [f64; 2]) -> Option<f64> {
     (0..n)
         .filter_map(|k| {
             let (a, b) = (polygon.get(k)?, polygon.get((k + 1) % n)?);
-            let length = (b[0] - a[0]).hypot(b[1] - a[1]);
+            let length = (b[0] - a[0]).phypot(b[1] - a[1]);
             (length > 0.0).then(|| {
                 let cross = (b[0] - a[0]) * (at[1] - a[1]) - (b[1] - a[1]) * (at[0] - a[0]);
                 cross * area.signum() / length
@@ -620,11 +621,11 @@ pub fn facet_at_styled(camera: &CameraState, style: &CubeStyle, at: [f64; 2]) ->
 /// in the standard views.
 pub fn angles(side: [i8; 3]) -> Option<(f64, f64)> {
     let d = direction(side)?;
-    let pitch = d.z.clamp(-1.0, 1.0).asin().to_degrees();
+    let pitch = d.z.clamp(-1.0, 1.0).pasin().to_degrees();
     let yaw = if side[0] == 0 && side[1] == 0 {
         -90.0
     } else {
-        d.y.atan2(d.x).to_degrees()
+        d.y.patan2(d.x).to_degrees()
     };
     Some((yaw, pitch))
 }
@@ -685,6 +686,7 @@ pub fn between(from: &CameraState, to: &CameraState, t: f64) -> CameraState {
 mod tests {
     use super::*;
     use crate::state::{ProjectionKind, VIEWS};
+    use craft3d_math::Portable;
 
     fn cameras() -> [CameraState; 2] {
         [
@@ -730,7 +732,7 @@ mod tests {
                         .outline
                         .iter()
                         .chain(&facet.patch)
-                        .all(|p| p[0].hypot(p[1]) <= 1.0 + 1e-9)
+                        .all(|p| p[0].phypot(p[1]) <= 1.0 + 1e-9)
                 );
                 assert!(
                     facet.toward >= f64::from(Tokens::default().view_cube_fade)
@@ -803,7 +805,7 @@ mod tests {
         assert!(
             face.patch
                 .iter()
-                .all(|p| p[0].hypot(p[1]) < k * std::f64::consts::SQRT_2 - 1e-3)
+                .all(|p| p[0].phypot(p[1]) < k * std::f64::consts::SQRT_2 - 1e-3)
         );
         // Every patch is convex, and no two overlap.
         for f in &seen {
@@ -1086,7 +1088,9 @@ mod tests {
             for (k, d) in [Vec3::X, Vec3::Y, Vec3::Z].into_iter().enumerate() {
                 let a = arm(&turned, k);
                 assert!(near(a.tip, [d.dot(axes.right), -d.dot(axes.up)]));
-                assert!((a.tip[0].hypot(a.tip[1]).powi(2) + a.toward.powi(2) - 1.0).abs() < 1e-9);
+                assert!(
+                    (a.tip[0].phypot(a.tip[1]).ppowi(2) + a.toward.ppowi(2) - 1.0).abs() < 1e-9
+                );
             }
         }
     }

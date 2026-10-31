@@ -12,6 +12,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod blend_common;
 mod common;
 
@@ -254,7 +255,7 @@ fn regular_prism(session: &mut Session, k: f64, sides: u32, height: f64) {
     let points: Vec<[f64; 2]> = (0..sides)
         .map(|i| {
             let a = f64::from(i) * 2.0 * PI / f64::from(sides);
-            [2.0 * k * a.cos(), 2.0 * k * a.sin()]
+            [2.0 * k * a.pcos(), 2.0 * k * a.psin()]
         })
         .collect();
     run(
@@ -289,8 +290,8 @@ fn edges_between_faces_at_sixty_and_at_a_hundred_and_twenty_degrees() {
             );
             // The kite between the two tangent lengths less the sector.
             let half = theta / 2.0;
-            let section = r * r * (1.0 / half.tan() - (PI - theta) / 2.0);
-            let d = r / half.tan();
+            let section = r * r * (1.0 / half.ptan() - (PI - theta) / 2.0);
+            let d = r / half.ptan();
             let area = 2.0 * base + f64::from(sides) * side * h - 2.0 * d * h - 2.0 * section
                 + (PI - theta) * r * h;
             assert_solid(&mut s, "Round", (base - section) * h, Some(area), k);
@@ -302,7 +303,7 @@ fn edges_between_faces_at_sixty_and_at_a_hundred_and_twenty_degrees() {
             );
             let origin = point(&axis["datum"]["origin"]);
             assert!(
-                (origin[0] - (2.0 - r / half.sin()) * k).abs() <= 1e-9 * k,
+                (origin[0] - (2.0 - r / half.psin()) * k).abs() <= 1e-9 * k,
                 "{axis}"
             );
             assert!(origin[1].abs() <= 1e-9 * k, "{axis}");
@@ -361,20 +362,20 @@ fn the_inside_corner_of_an_l_gains_material() {
 /// kite between the tangent lengths less the sector of the ball, each at
 /// its own centroid), and the area of the torus the arc sweeps.
 fn ring(rim: [f64; 2], b1: [f64; 2], b2: [f64; 2], r: f64) -> (f64, f64) {
-    let theta = (b1[0] * b2[0] + b1[1] * b2[1]).clamp(-1.0, 1.0).acos();
-    let d = r / (theta / 2.0).tan();
+    let theta = (b1[0] * b2[0] + b1[1] * b2[1]).clamp(-1.0, 1.0).pacos();
+    let d = r / (theta / 2.0).ptan();
     let t1 = rim[0] + d * b1[0];
     let t2 = rim[0] + d * b2[0];
-    let far = d / (1.0 + theta.cos());
+    let far = d / (1.0 + theta.pcos());
     let centre = [
         rim[0] + far * (b1[0] + b2[0]),
         rim[1] + far * (b1[1] + b2[1]),
     ];
     let kite = 0.5 * d * r * ((rim[0] + t1 + centre[0]) + (rim[0] + t2 + centre[0])) / 3.0;
     let alpha = (PI - theta) / 2.0;
-    let to_rim = (rim[0] - centre[0]) / (rim[0] - centre[0]).hypot(rim[1] - centre[1]);
-    let sector = r * r * alpha * (centre[0] + to_rim * 2.0 * r * alpha.sin() / (3.0 * alpha));
-    let arc_at = centre[0] + to_rim * r * alpha.sin() / alpha;
+    let to_rim = (rim[0] - centre[0]) / (rim[0] - centre[0]).phypot(rim[1] - centre[1]);
+    let sector = r * r * alpha * (centre[0] + to_rim * 2.0 * r * alpha.psin() / (3.0 * alpha));
+    let arc_at = centre[0] + to_rim * r * alpha.psin() / alpha;
     (
         2.0 * PI * (kite - sector),
         2.0 * PI * arc_at * 2.0 * alpha * r,
@@ -436,7 +437,7 @@ fn the_rim_of_a_rod_and_the_base_of_a_cone_become_tori() {
             "feature.fillet",
             json!({"edges": [base], "radius": r * k, "name": "Round"}),
         );
-        let slant = rr.hypot(h);
+        let slant = rr.phypot(h);
         let (removed, _) = ring([rr, 0.0], [-1.0, 0.0], [-rr / slant, h / slant], r);
         assert_solid(&mut s, "Round", PI * rr * rr * h / 3.0 - removed, None, k);
     }
@@ -1154,14 +1155,14 @@ fn saved_and_reopened_the_bodies_are_the_same() {
 fn a_fillet_whose_border_crosses_onto_an_earlier_round() {
     let (depth, height, length, big, r) = (3.0_f64, 2.0_f64, 4.0_f64, 1.8_f64, 1.4_f64);
     let (cy, cz) = (depth - big, height - big);
-    let mz = cz + ((big - r).powi(2) - (r - cy).powi(2)).sqrt();
+    let mz = cz + ((big - r).ppowi(2) - (r - cy).ppowi(2)).sqrt();
     let (dy, dz) = (r - cy, mz - cz);
-    let len = dy.hypot(dz);
+    let len = dy.phypot(dz);
     let touch = [cy + dy / len * big, cz + dz / len * big];
-    let angle = |c: [f64; 2], p: [f64; 2]| (p[1] - c[1]).atan2(p[0] - c[0]);
+    let angle = |c: [f64; 2], p: [f64; 2]| (p[1] - c[1]).patan2(p[0] - c[0]);
     let line = |p: [f64; 2], q: [f64; 2]| p[0] * q[1] - p[1] * q[0];
     let arc = |c: [f64; 2], rad: f64, a: f64, b: f64| {
-        rad * rad * (b - a) + rad * (c[0] * (b.sin() - a.sin()) - c[1] * (b.cos() - a.cos()))
+        rad * rad * (b - a) + rad * (c[0] * (b.psin() - a.psin()) - c[1] * (b.pcos() - a.pcos()))
     };
     let twice = line([0.0, mz], [0.0, height])
         + line([0.0, height], [cy, height])
@@ -1234,7 +1235,7 @@ fn a_box_rounded_in_two_steps_of_one_radius() {
         w * d * h
             - (4.0 - PI) * r * r * h
             - 2.0 * (w + d - 4.0 * r) * SPANDREL * r * r
-            - 4.0 * (PI * r.powi(3) / 4.0 - PI * r.powi(3) / 6.0)
+            - 4.0 * (PI * r.ppowi(3) / 4.0 - PI * r.ppowi(3) / 6.0)
     };
     for k in SCALES {
         let mut s = session();

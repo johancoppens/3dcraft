@@ -17,6 +17,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 #[path = "../../gpu/tests/common/mod.rs"]
 mod common;
 
@@ -530,7 +531,7 @@ fn near_lines(overlay: &Overlay, width: u32, height: u32, radius: f64) -> Vec<bo
         }
     };
     for line in &overlay.lines {
-        let length = (line.to[0] - line.from[0]).hypot(line.to[1] - line.from[1]);
+        let length = (line.to[0] - line.from[0]).phypot(line.to[1] - line.from[1]);
         let steps = ((length * 2.0).ceil() as usize).clamp(1, 8 * (w + h));
         for i in 0..=steps {
             let t = i as f64 / steps as f64;
@@ -624,7 +625,7 @@ fn fill_decisions(
                 // angle (1 / cos of it).
                 let grazing = direction.length() * normal.length() / along.abs();
                 let error =
-                    2f64.powi(-18) * (t.abs() + r.length() + u.length() + v.length()) * grazing;
+                    2f64.ppowi(-18) * (t.abs() + r.length() + u.length() + v.length()) * grazing;
                 // The 5 × 5 around the pixel, over its drawn samples: one
                 // plane, or not. The GPU's mean of a pixel's samples equals
                 // the CPU's centre on a plane and differs by at most the
@@ -653,7 +654,7 @@ fn fill_decisions(
                         }
                     }
                 }
-                let planar = kink5 <= far5 * 2f64.powi(-40);
+                let planar = kink5 <= far5 * 2f64.ppowi(-40);
                 let window = error + 2.0 * slack + if planar { 0.0 } else { far5 - near5 };
                 if !window.is_finite() || hides(t - window) != hides(t + window) {
                     marginal[i] = true;
@@ -674,7 +675,7 @@ fn distance_to(p: [f64; 2], line: &OverlayLine) -> f64 {
     } else {
         0.0
     };
-    (p[0] - (ax + dx * t)).hypot(p[1] - (ay + dy * t))
+    (p[0] - (ax + dx * t)).phypot(p[1] - (ay + dy * t))
 }
 
 fn pixel(rgb: &[u8], width: u32, p: [f64; 2]) -> [u8; 3] {
@@ -857,7 +858,7 @@ fn the_direct_path_fades_short_and_crowded_edges_as_the_oracle_does() {
         .iter()
         .filter(|l| l.edge.is_some() && !l.hidden)
     {
-        let length = (line.to[0] - line.from[0]).hypot(line.to[1] - line.from[1]);
+        let length = (line.to[0] - line.from[0]).phypot(line.to[1] - line.from[1]);
         let steps = (length * 2.0).ceil().max(1.0) as usize;
         for i in 0..=steps {
             let t = i as f64 / steps as f64;
@@ -1320,7 +1321,7 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
     // Samples per edge colour of the CPU's picture.
     let mut colour_samples: Vec<([u8; 3], usize)> = Vec::new();
     for (k, line) in everything.lines.iter().enumerate() {
-        let length = (line.to[0] - line.from[0]).hypot(line.to[1] - line.from[1]);
+        let length = (line.to[0] - line.from[0]).phypot(line.to[1] - line.from[1]);
         // Every 2 pixels, and the middle of a segment shorter than 4.
         let steps = ((length / 2.0).floor() as usize).max(2);
         let neighbours = if line.kind == viewport::LineKind::Edge {
@@ -1347,7 +1348,7 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
                 || everything
                     .points
                     .iter()
-                    .any(|dot| (p[0] - dot.at[0]).hypot(p[1] - dot.at[1]) < 5.0);
+                    .any(|dot| (p[0] - dot.at[0]).phypot(p[1] - dot.at[1]) < 5.0);
             if crowded {
                 continue;
             }
@@ -1364,7 +1365,7 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
                         .collect(),
                     None => vec![s.from, s.to],
                 };
-                s.kind == line.kind && ends.iter().any(|e| (p[0] - e[0]).hypot(p[1] - e[1]) < 3.0)
+                s.kind == line.kind && ends.iter().any(|e| (p[0] - e[0]).phypot(p[1] - e[1]) < 3.0)
             });
             if near_end {
                 continue;
@@ -1839,7 +1840,7 @@ fn the_flange_holes_are_round_at_the_display_quality() {
             let rim = projector
                 .project(craft3d_math::Vec3::new(34.0, 0.0, 10.0))
                 .unwrap();
-            let radius_px = (rim.x - centre.x).hypot(rim.y - centre.y);
+            let radius_px = (rim.x - centre.x).phypot(rim.y - centre.y);
             let px_per_mm = radius_px / 4.0;
             let chord_px = scene.tolerance * px_per_mm;
             let half = (radius_px * 1.6).ceil() as u32;
@@ -1864,14 +1865,14 @@ fn the_flange_holes_are_round_at_the_display_quality() {
                 .filter(|edge| {
                     edge.len() > 2
                         && edge.iter().all(|p| {
-                            ((p.x - 30.0).hypot(p.y) - 4.0).abs() < 1e-6
+                            ((p.x - 30.0).phypot(p.y) - 4.0).abs() < 1e-6
                                 && (p.z - 10.0).abs() < 1e-6
                         })
                 })
                 .flat_map(|edge| edge.windows(2))
                 .map(|w| {
                     let mid = w[0].lerp(w[1], 0.5);
-                    4.0 - (mid.x - 30.0).hypot(mid.y)
+                    4.0 - (mid.x - 30.0).phypot(mid.y)
                 })
                 .fold(f64::NAN, f64::max);
             let rim_px = rim_sag_mm * px_per_mm;
@@ -2273,7 +2274,7 @@ fn the_direct_path_fades_edges_with_the_lens_as_the_oracle_does() {
         .iter()
         .filter(|l| l.edge.is_some() && !l.hidden)
     {
-        let length = (line.to[0] - line.from[0]).hypot(line.to[1] - line.from[1]);
+        let length = (line.to[0] - line.from[0]).phypot(line.to[1] - line.from[1]);
         let steps = (length * 2.0).ceil().max(1.0) as usize;
         for i in 0..=steps {
             let t = i as f64 / steps as f64;

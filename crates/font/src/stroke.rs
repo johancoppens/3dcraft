@@ -307,7 +307,7 @@ fn parse_path(path: &str, shift: P2, out: &mut Vec<Contour>) -> Result<(), FontE
             "A" => {
                 let (c, r) = (at(n(0), n(1)), [n(2), n(3)]);
                 let (a0, a1) = (n(4).to_radians(), n(5).to_radians());
-                let point = |a: f64| [c[0] + r[0] * a.cos(), c[1] + r[1] * a.sin()];
+                let point = |a: f64| [c[0] + r[0] * libm::cos(a), c[1] + r[1] * libm::sin(a)];
                 let start = point(a0);
                 match pen {
                     Some(p) if dist(p, start) > 1e-9 => current.push(Seg::line(p, start)),
@@ -317,13 +317,13 @@ fn parse_path(path: &str, shift: P2, out: &mut Vec<Contour>) -> Result<(), FontE
                 let sweep = a1 - a0;
                 let parts = (sweep.abs() / std::f64::consts::FRAC_PI_2).ceil().max(1.0);
                 let step = sweep / parts;
-                let k = 4.0 / 3.0 * (step / 4.0).tan();
+                let k = 4.0 / 3.0 * libm::tan(step / 4.0);
                 let mut a = a0;
                 for _ in 0..(parts as usize).min(16) {
                     let b = a + step;
                     let (p0, p3) = (point(a), point(b));
-                    let d0 = [-r[0] * a.sin(), r[1] * a.cos()];
-                    let d1 = [-r[0] * b.sin(), r[1] * b.cos()];
+                    let d0 = [-r[0] * libm::sin(a), r[1] * libm::cos(a)];
+                    let d1 = [-r[0] * libm::sin(b), r[1] * libm::cos(b)];
                     let p1 = [p0[0] + k * d0[0], p0[1] + k * d0[1]];
                     let p2 = [p3[0] - k * d1[0], p3[1] - k * d1[1]];
                     current.push(Seg::cubic(p0, p1, p2, p3));
@@ -334,15 +334,15 @@ fn parse_path(path: &str, shift: P2, out: &mut Vec<Contour>) -> Result<(), FontE
             "E" => {
                 flush(&mut current, out);
                 let (c, r) = (at(n(0), n(1)), [n(2), n(3)]);
-                let k = 4.0 / 3.0 * (std::f64::consts::FRAC_PI_8).tan();
+                let k = 4.0 / 3.0 * libm::tan(std::f64::consts::FRAC_PI_8);
                 let mut segs = Vec::new();
                 for q in 0..4 {
                     let a = f64::from(q) * std::f64::consts::FRAC_PI_2;
                     let b = a + std::f64::consts::FRAC_PI_2;
-                    let p0 = [c[0] + r[0] * a.cos(), c[1] + r[1] * a.sin()];
-                    let p3 = [c[0] + r[0] * b.cos(), c[1] + r[1] * b.sin()];
-                    let d0 = [-r[0] * a.sin(), r[1] * a.cos()];
-                    let d1 = [-r[0] * b.sin(), r[1] * b.cos()];
+                    let p0 = [c[0] + r[0] * libm::cos(a), c[1] + r[1] * libm::sin(a)];
+                    let p3 = [c[0] + r[0] * libm::cos(b), c[1] + r[1] * libm::sin(b)];
+                    let d0 = [-r[0] * libm::sin(a), r[1] * libm::cos(a)];
+                    let d1 = [-r[0] * libm::sin(b), r[1] * libm::cos(b)];
                     segs.push(Seg::cubic(
                         p0,
                         [p0[0] + k * d0[0], p0[1] + k * d0[1]],

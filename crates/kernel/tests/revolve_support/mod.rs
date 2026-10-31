@@ -9,6 +9,7 @@ use craft3d_kernel::extrude::OpResult;
 use craft3d_kernel::extrude::Origin;
 use craft3d_kernel::profile::{Curve2, SketchCurve, detect_profiles};
 use craft3d_kernel::revolve::revolve;
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance};
 use craft3d_topo::{check, mass_properties};
 use std::collections::BTreeSet;
@@ -39,7 +40,7 @@ pub struct Axis {
 impl Axis {
     /// How far `p` is to the left of the axis.
     pub fn left(&self, p: P) -> f64 {
-        let length = self.direction[0].hypot(self.direction[1]);
+        let length = self.direction[0].phypot(self.direction[1]);
         let n = [-self.direction[1] / length, self.direction[0] / length];
         (p[0] - self.point[0]) * n[0] + (p[1] - self.point[1]) * n[1]
     }
@@ -54,22 +55,22 @@ pub fn measure(curve: &Curve2) -> (f64, P) {
     match *curve {
         Curve2::Spline(_) => panic!("the revolve tests draw no splines: they are not revolved"),
         Curve2::Line { start, end } => (
-            (end[0] - start[0]).hypot(end[1] - start[1]),
+            (end[0] - start[0]).phypot(end[1] - start[1]),
             [(start[0] + end[0]) / 2.0, (start[1] + end[1]) / 2.0],
         ),
         Curve2::Circle { center, radius } => (TAU * radius, center),
         Curve2::Arc { center, start, end } => {
-            let radius = (start[0] - center[0]).hypot(start[1] - center[1]);
-            let begin = (start[1] - center[1]).atan2(start[0] - center[0]);
-            let finish = (end[1] - center[1]).atan2(end[0] - center[0]);
+            let radius = (start[0] - center[0]).phypot(start[1] - center[1]);
+            let begin = (start[1] - center[1]).patan2(start[0] - center[0]);
+            let finish = (end[1] - center[1]).patan2(end[0] - center[0]);
             let angle = (finish - begin).rem_euclid(TAU);
-            let reach = radius * (angle / 2.0).sin() / (angle / 2.0);
+            let reach = radius * (angle / 2.0).psin() / (angle / 2.0);
             let middle = begin + angle / 2.0;
             (
                 radius * angle,
                 [
-                    center[0] + reach * middle.cos(),
-                    center[1] + reach * middle.sin(),
+                    center[0] + reach * middle.pcos(),
+                    center[1] + reach * middle.psin(),
                 ],
             )
         }
@@ -95,7 +96,7 @@ pub fn corners(curves: &[SketchCurve]) -> [P; 4] {
             Curve2::Spline(ref spline) => spline.control.iter().for_each(|p| add(*p, 0.0)),
             Curve2::Circle { center, radius } => add(center, radius),
             Curve2::Arc { center, start, .. } => {
-                add(center, (start[0] - center[0]).hypot(start[1] - center[1]))
+                add(center, (start[0] - center[0]).phypot(start[1] - center[1]))
             }
         }
     }
@@ -110,7 +111,7 @@ pub fn corners(curves: &[SketchCurve]) -> [P; 4] {
 /// The axis along `direction` that has all the curves to its left, the
 /// nearest of their box's corners `gap` away.
 pub fn clear_axis(curves: &[SketchCurve], direction: P, gap: f64) -> Axis {
-    let length = direction[0].hypot(direction[1]);
+    let length = direction[0].phypot(direction[1]);
     let n = [-direction[1] / length, direction[0] / length];
     let nearest = corners(curves)
         .iter()
@@ -211,7 +212,7 @@ pub fn assert_pappus(
 /// A sketch point given in the axis's own terms: `rho` to the left of it
 /// (`side` +1) or to its right (−1), and `h` along it.
 pub fn lathe(axis: Axis, side: f64, rho: f64, h: f64) -> P {
-    let length = axis.direction[0].hypot(axis.direction[1]);
+    let length = axis.direction[0].phypot(axis.direction[1]);
     let d = [axis.direction[0] / length, axis.direction[1] / length];
     let n = [-d[1] * side, d[0] * side];
     [

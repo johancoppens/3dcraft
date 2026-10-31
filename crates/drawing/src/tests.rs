@@ -119,7 +119,7 @@ fn plate_length() -> f64 {
     let outline = 2.0 * (50.0 + 30.0) + TAU * 5.0;
     let hole = TAU * 4.0;
     // The D: the chord, and the circle less the arc the chord cuts off.
-    let half = (3.0_f64 / 5.0).acos();
+    let half = libm::acos(3.0_f64 / 5.0);
     let d = 2.0 * 4.0 + 5.0 * (TAU - 2.0 * half);
     let slot = 2.0 * 20.0 + TAU * 3.0;
     outline + hole + d + slot
@@ -350,7 +350,7 @@ impl Dxf {
 /// writer's side: arcs by their angles.
 fn entity_length(entity: &Entity) -> f64 {
     match entity {
-        Entity::Line(a, b) => (b[0] - a[0]).hypot(b[1] - a[1]),
+        Entity::Line(a, b) => libm::hypot(b[0] - a[0], b[1] - a[1]),
         Entity::Circle(_, r) => TAU * r,
         Entity::Arc(_, r, a0, a1) => {
             let sweep = (a1 - a0).rem_euclid(TAU);
@@ -446,16 +446,16 @@ fn arc_center(from: Point, step: &Step) -> (Point, f64) {
         panic!("not an arc")
     };
     let (x1, y1, x2, y2) = (from[0], -from[1], to[0], -to[1]);
-    let (sin, cos) = rotation.to_radians().sin_cos();
+    let (sin, cos) = libm::sincos(rotation.to_radians());
     let (dx, dy) = ((x1 - x2) / 2.0, (y1 - y2) / 2.0);
     let (xp, yp) = (cos * dx + sin * dy, -sin * dx + cos * dy);
-    let lambda = (xp / rx).powi(2) + (yp / ry).powi(2);
+    let lambda = libm::pow(xp / rx, 2.0) + libm::pow(yp / ry, 2.0);
     assert!(
         lambda <= 1.0 + 1e-9,
         "the radii do not reach the end points: {lambda}"
     );
-    let numerator = (rx * ry).powi(2) - (rx * yp).powi(2) - (ry * xp).powi(2);
-    let denominator = (rx * yp).powi(2) + (ry * xp).powi(2);
+    let numerator = libm::pow(rx * ry, 2.0) - libm::pow(rx * yp, 2.0) - libm::pow(ry * xp, 2.0);
+    let denominator = libm::pow(rx * yp, 2.0) + libm::pow(ry * xp, 2.0);
     let mut k = (numerator.max(0.0) / denominator).sqrt();
     if large == sweep {
         k = -k;
@@ -463,7 +463,8 @@ fn arc_center(from: Point, step: &Step) -> (Point, f64) {
     let (cxp, cyp) = (k * rx * yp / ry, -k * ry * xp / rx);
     let cx = cos * cxp - sin * cyp + (x1 + x2) / 2.0;
     let cy = sin * cxp + cos * cyp + (y1 + y2) / 2.0;
-    let angle = |ux: f64, uy: f64, vx: f64, vy: f64| (ux * vy - uy * vx).atan2(ux * vx + uy * vy);
+    let angle =
+        |ux: f64, uy: f64, vx: f64, vy: f64| libm::atan2(ux * vy - uy * vx, ux * vx + uy * vy);
     let (ux, uy) = ((xp - cxp) / rx, (yp - cyp) / ry);
     let (vx, vy) = ((-xp - cxp) / rx, (-yp - cyp) / ry);
     let mut delta = angle(ux, uy, vx, vy);
@@ -522,7 +523,7 @@ fn got_length(pieces: &[Got]) -> f64 {
     pieces
         .iter()
         .map(|piece| match piece {
-            Got::Line(a, b) => (b[0] - a[0]).hypot(b[1] - a[1]),
+            Got::Line(a, b) => libm::hypot(b[0] - a[0], b[1] - a[1]),
             Got::Arc(_, _, _, r, _, sweep) => {
                 assert_eq!(r[0], r[1], "a circular arc");
                 r[0] * sweep.abs()
@@ -737,7 +738,7 @@ fn check_dxf(drawing: &Drawing, size: f64) {
                 // Counter-clockwise from a0 to a1: for a clockwise piece
                 // that is from its end to its start.
                 let (first, last) = if *sweep > 0.0 { (from, to) } else { (to, from) };
-                let on = |a: f64| [c[0] + r * a.cos(), c[1] + r * a.sin()];
+                let on = |a: f64| [c[0] + r * libm::cos(a), c[1] + r * libm::sin(a)];
                 assert!(near_point(on(*a0), *first, size), "{entity:?} {piece:?}");
                 assert!(near_point(on(*a1), *last, size), "{entity:?} {piece:?}");
                 let run = (a1 - a0).rem_euclid(TAU);
@@ -821,7 +822,7 @@ fn check_svg(drawing: &Drawing, size: f64) {
 #[test]
 fn arcs_of_either_direction_and_size_come_back_from_both_files() {
     let r = 5.0;
-    let p = |a: f64| [3.0 + r * a.cos(), -2.0 + r * a.sin()];
+    let p = |a: f64| [3.0 + r * libm::cos(a), -2.0 + r * libm::sin(a)];
     let c = [3.0, -2.0];
     for (a0, a1, ccw) in [
         (0.3, 1.1, true),
@@ -913,7 +914,7 @@ fn a_full_circle_is_a_circle_in_dxf_and_four_quarter_arcs_in_svg() {
 fn ellipses_keep_their_axes_and_direction_in_both_files() {
     // Turned 30°, semi-axes 4 and 1.5.
     let turn = PI / 6.0;
-    let major = [4.0 * turn.cos(), 4.0 * turn.sin()];
+    let major = [4.0 * libm::cos(turn), 4.0 * libm::sin(turn)];
     let (center, ratio) = ([2.0, -1.0], 0.375);
     let on = |t: f64| ellipse_point(center, major, ratio, t);
     let whole = Path::Ellipse {
@@ -924,11 +925,11 @@ fn ellipses_keep_their_axes_and_direction_in_both_files() {
     // Ramanujan's second formula is good to 1e-9 here; the series is exact.
     let length = drawing(vec![whole.clone()]).length();
     let (a, b) = (4.0_f64, 1.5_f64);
-    let h = ((a - b) / (a + b)).powi(2);
+    let h = libm::pow((a - b) / (a + b), 2.0);
     let mut series = 0.0;
     let mut term = 1.0_f64;
     for n in 0..60 {
-        series += term * term * h.powi(n);
+        series += term * term * libm::pow(h, f64::from(n));
         // Binomial(1/2, n + 1) from binomial(1/2, n).
         term *= (0.5 - f64::from(n)) / (f64::from(n) + 1.0);
     }
@@ -1116,7 +1117,7 @@ fn a_spline_evaluates_as_the_basis_functions_say() {
     let circle = quarter_circle();
     for t in samples(0.0, 1.0) {
         let p = circle.eval(t).unwrap();
-        assert!(near(p[0].hypot(p[1]), 1.0, 1.0));
+        assert!(near(libm::hypot(p[0], p[1]), 1.0, 1.0));
     }
     assert_eq!(spline.start(), [0.0, 0.0]);
     assert_eq!(spline.end(), [10.0, 1.0]);
@@ -1183,7 +1184,7 @@ fn bezier_pieces_pieces_between_parameters_and_the_reverse_are_the_same_curve() 
     for piece in part.beziers().unwrap() {
         for t in samples(0.0, 1.0) {
             let p = piece.eval(t);
-            assert!(near(p[0].hypot(p[1]), 1.0, 1.0));
+            assert!(near(libm::hypot(p[0], p[1]), 1.0, 1.0));
             let d = piece.derivative(t);
             // The tangent of a circle is square to its radius.
             assert!((d[0] * p[0] + d[1] * p[1]).abs() < 1e-12);
@@ -1357,7 +1358,7 @@ fn a_rational_or_high_degree_spline_is_itself_in_dxf_and_within_tolerance_in_svg
                 count += 1;
                 for s in samples(0.0, 1.0) {
                     let p = cubic.eval(s);
-                    worst = worst.max((p[0].hypot(p[1]) - 1.0).abs());
+                    worst = worst.max((libm::hypot(p[0], p[1]) - 1.0).abs());
                 }
             }
             at = *to;
@@ -1761,8 +1762,8 @@ fn the_signed_area_of_a_path_is_its_closed_form_and_says_which_way_it_runs() {
     let rectangle = 60.0 * 40.0 - (4.0 - PI) * r * r;
     let slot = 20.0 * 6.0 + PI * 9.0;
     // The D: the circle less the segment the chord at 3 cuts off.
-    let half = (3.0_f64 / 5.0).acos();
-    let d = 25.0 / 2.0 * ((TAU - 2.0 * half) + (2.0 * half).sin());
+    let half = libm::acos(3.0_f64 / 5.0);
+    let d = 25.0 / 2.0 * ((TAU - 2.0 * half) + libm::sin(2.0 * half));
     let cases = [
         (rounded_rectangle(60.0, 40.0, r), rectangle),
         (slot_path(), -slot),

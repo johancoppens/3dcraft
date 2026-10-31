@@ -29,6 +29,7 @@
 
 use super::{FrameLight, PLAIN_BACKDROP, Shaded, Surface, layers};
 use crate::{FaceColors, NO_FACE, View};
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 
 /// What [`pass_through`] needs of the frame.
@@ -120,7 +121,7 @@ pub(crate) fn pass_through(
                 let exit = p + r * path;
                 let absorbed = optics
                     .absorption
-                    .map(|sigma| (-f64::from(sigma) * path).exp());
+                    .map(|sigma| (-f64::from(sigma) * path).pexp());
                 let at = view
                     .project(exit)
                     .map(|at| (at.sx, at.sy))

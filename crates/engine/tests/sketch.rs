@@ -8,6 +8,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{error, refused, run, session, session_in};
@@ -632,7 +633,7 @@ fn entities_can_be_moved_marked_and_deleted() {
         point(&mut s, "Profile", "e2"),
         point(&mut s, "Profile", "e4"),
     );
-    let (to_start, to_end) = ((a.0 - c.0).hypot(a.1 - c.1), (b.0 - c.0).hypot(b.1 - c.1));
+    let (to_start, to_end) = ((a.0 - c.0).phypot(a.1 - c.1), (b.0 - c.0).phypot(b.1 - c.1));
     assert!((to_start - to_end).abs() <= NEAR, "{to_start} and {to_end}");
     assert!(to_start > 4.0 && to_start < 5.0, "{to_start}");
     run(

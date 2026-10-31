@@ -12,6 +12,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::*;
@@ -200,7 +201,7 @@ fn evidence_jansen_leg_and_four_bar() {
     // (c) A crank-rocker four-bar (a 1, b 4, c 3, d 3.5): the coupler curve.
     let (a, b, c, d) = (1.0, 4.0, 3.0, 3.5);
     let th0 = 60f64.to_radians();
-    let a0 = v2(a * th0.cos(), a * th0.sin());
+    let a0 = v2(a * th0.pcos(), a * th0.psin());
     let b0 = circ(a0, b, v2(d, 0.0), c, 1.0).unwrap();
     let u = (b0 - a0) * (1.0 / b);
     let p0 = a0 + u * (0.5 * b) + Vec3::new(-u.y, u.x, 0.0) * (0.4 * b);

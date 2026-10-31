@@ -13,6 +13,7 @@
 
 use craft3d_geom::{Curve3, Surface};
 use craft3d_kernel::boolean::probe::{LineHit, OnFace, Place, Probe};
+use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Vec3};
 use craft3d_tess::{Mesh, TessParams, tessellate_body};
 use craft3d_topo::{Body, Edge};
@@ -132,7 +133,7 @@ impl<'a> Part<'a> {
                     } else {
                         r - (r * r - chord * chord / 4.0).max(0.0).sqrt()
                     };
-                    chord.min((r * (1.0 - (0.5 * MESH_ANGLE).cos())).max(sagitta))
+                    chord.min((r * (1.0 - (0.5 * MESH_ANGLE).pcos())).max(sagitta))
                 };
                 match &f.surface {
                     Surface::Plane(_) if straight => 0.0,

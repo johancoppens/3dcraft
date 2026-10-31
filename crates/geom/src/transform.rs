@@ -270,6 +270,7 @@ impl Surface {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use craft3d_math::Portable;
     use craft3d_math::Vec3;
     use std::f64::consts::TAU;
 
@@ -545,7 +546,7 @@ mod tests {
                 let p = t.point(Surface::Cone(cone).eval(1.0, v));
                 let (x, y, z) = image.frame().local(p);
                 assert!((z + v).abs() < 1e-13);
-                assert!((x.hypot(y) - (1.5 + v * half_angle.tan())).abs() < 1e-13);
+                assert!((x.phypot(y) - (1.5 + v * half_angle.ptan())).abs() < 1e-13);
             }
         }
     }

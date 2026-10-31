@@ -12,6 +12,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{built, error, failed, inspect, run, session, workdir};
@@ -350,14 +351,14 @@ fn text_on_a_circle_keeps_each_glyph_baseline_tangent() {
             let half = g["advance"].as_f64().unwrap() / 2.0;
             // The middle of the glyph's baseline.
             let m = [o[0] + d[0] * half, o[1] + d[1] * half];
-            let dist = m[0].hypot(m[1]);
+            let dist = m[0].phypot(m[1]);
             // On the circle shrunk (left, inside) or grown (right, outside)
             // by the offset ...
             assert!((dist - (r + sign * offset)).abs() < 1e-9, "{g}: {dist}");
             // ... and the baseline along the circle's tangent there.
             let radial = [m[0] / dist, m[1] / dist];
             assert!((d[0] * radial[0] + d[1] * radial[1]).abs() < 1e-12, "{g}");
-            assert!((d[0].hypot(d[1]) - 1.0).abs() < 1e-12);
+            assert!((d[0].phypot(d[1]) - 1.0).abs() < 1e-12);
         }
     }
     // A glyph on the curve keeps its shape: the area of the closed text

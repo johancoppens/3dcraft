@@ -74,6 +74,7 @@
 // for NaN.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
+use craft3d_math::Portable;
 mod tacnode;
 
 use super::field::{Bounds, Chart, Cusp, Field, Sample, TOUCH};
@@ -241,7 +242,7 @@ struct Disc {
 
 impl Disc {
     fn holds(&self, u: f64, v: f64) -> bool {
-        ((u - self.u) * self.lu).hypot((v - self.v) * self.lv) <= self.radius
+        ((u - self.u) * self.lu).phypot((v - self.v) * self.lv) <= self.radius
     }
 
     /// True when the cell around `(u, v)` of half sizes `(hu, hv)` lies in
@@ -570,7 +571,7 @@ impl Marcher {
         );
         let radius = 0.5 * (wu / bu as f64 + wv / bv as f64);
         let levels = if radius > self.tol.linear {
-            ((radius / self.tol.linear).log2().ceil() as u32).min(MAX_LEVELS)
+            ((radius / self.tol.linear).plog2().ceil() as u32).min(MAX_LEVELS)
         } else {
             0
         };
@@ -1766,7 +1767,7 @@ impl Marcher {
             } else {
                 ((hb * gv - hc * gu) / det, (hb * gu - ha * gv) / det)
             };
-            let moved = step_u.hypot(step_v);
+            let moved = step_u.phypot(step_v);
             if flat || moved <= self.on {
                 // Converged (or no better step exists).
                 let found = Stationary {
@@ -1831,7 +1832,7 @@ impl Marcher {
     fn touches(&self, s: &Stationary, finest: f64) -> bool {
         let (ha, hb, hc) = s.h;
         let size = ha.abs().max(hb.abs()).max(hc.abs());
-        let tangent = s.g.0.hypot(s.g.1) <= 1e-6_f64.max(TOUCH * size * self.tol.linear);
+        let tangent = s.g.0.phypot(s.g.1) <= 1e-6_f64.max(TOUCH * size * self.tol.linear);
         tangent && s.e.dist <= self.tol.linear.min(finest) && self.inside(s.u, s.v)
     }
 
@@ -1906,7 +1907,7 @@ impl Marcher {
                     self.spent().ok()?;
                     let angle =
                         std::f64::consts::TAU * (f64::from(k) + 0.5 * ring) / f64::from(count);
-                    let (x, y) = (ring * radius * angle.cos(), ring * radius * angle.sin());
+                    let (x, y) = (ring * radius * angle.pcos(), ring * radius * angle.psin());
                     let (u, v) = (s.u + x / s.lu, s.v + y / s.lv);
                     if !self.inside(u, v) {
                         continue; // No cell lies there.
@@ -1957,7 +1958,7 @@ impl Marcher {
     fn disc(&mut self, s: &Stationary, finest: f64) -> Option<Disc> {
         let (ha, hb, hc) = s.h;
         let size = ha.abs().max(hb.abs()).max(hc.abs());
-        let tangent = s.g.0.hypot(s.g.1) <= 1e-6_f64.max(TOUCH * size * self.tol.linear);
+        let tangent = s.g.0.phypot(s.g.1) <= 1e-6_f64.max(TOUCH * size * self.tol.linear);
         if s.flat || !tangent || !self.inside(s.u, s.v) {
             return None;
         }
@@ -1982,15 +1983,15 @@ impl Marcher {
                     // The inner ring sits between the outer one's places.
                     let angle =
                         std::f64::consts::TAU * (f64::from(k) + 0.5 * ring) / f64::from(count);
-                    let (x, y) = (ring * radius * angle.cos(), ring * radius * angle.sin());
+                    let (x, y) = (ring * radius * angle.pcos(), ring * radius * angle.psin());
                     let (u, v) = (s.u + x / s.lu, s.v + y / s.lv);
                     if !self.inside(u, v) {
                         continue; // No cell lies there.
                     }
                     let model = (ha * x + hb * y, hb * x + hc * y);
                     let holds = self.eval(u, v).is_some_and(|e| {
-                        let off = (e.gu / s.lu - model.0).hypot(e.gv / s.lv - model.1);
-                        off <= DISC_MODEL * model.0.hypot(model.1)
+                        let off = (e.gu / s.lu - model.0).phypot(e.gv / s.lv - model.1);
+                        off <= DISC_MODEL * model.0.phypot(model.1)
                             && (touching || (e.f * s.e.f > 0.0 && smooth(&e)))
                     });
                     if !holds {
@@ -2143,8 +2144,8 @@ impl Marcher {
         let mut pts: Vec<Pt> = Vec::new();
         let mut cur = *start;
         let mut h = 0.25 * self.hmax;
-        let cos_turn = MAX_TURN.cos();
-        let cos_half = (0.5 * MAX_TURN).cos();
+        let cos_turn = MAX_TURN.pcos();
+        let cos_half = (0.5 * MAX_TURN).pcos();
         let hmin = self.hmin;
         loop {
             self.spent()?;
@@ -2537,12 +2538,12 @@ impl Marcher {
         let n = cusp.narrowing;
         for k in 1..=80 {
             self.spent()?;
-            let across = cusp.from + gap * 0.5_f64.powi(k);
+            let across = cusp.from + gap * 0.5_f64.ppowi(k);
             // Nearer than this every iso-curve along is shorter than `on`
             // (the rest is one line to that, and `f` is rounding there),
             // or the pole is within `on`.
             let share = (across - cusp.from).abs() / n.span;
-            if n.width * share.powi(n.order as i32) <= self.on
+            if n.width * share.ppowi(n.order as i32) <= self.on
                 || speed * (across - cusp.from).abs() <= self.on
             {
                 break;
@@ -2702,11 +2703,11 @@ impl Marcher {
     /// the chord: the value that makes a circular arc of the same turn
     /// exact to sixth order, `(2/3) tan(θ/4) / sin(θ/2)`.
     fn handle(a: &Pt, b: &Pt) -> f64 {
-        let theta = a.t.dot(b.t).clamp(-1.0, 1.0).acos().min(2.0);
+        let theta = a.t.dot(b.t).clamp(-1.0, 1.0).pacos().min(2.0);
         if theta < 1e-4 {
             1.0 / 3.0
         } else {
-            (2.0 / 3.0) * (0.25 * theta).tan() / (0.5 * theta).sin()
+            (2.0 / 3.0) * (0.25 * theta).ptan() / (0.5 * theta).psin()
         }
     }
 
@@ -3696,7 +3697,7 @@ mod tests {
         let pts = (0..=40)
             .map(|i| {
                 let a = from + (to - from) * f64::from(i) / 40.0;
-                let (s, c) = a.sin_cos();
+                let (s, c) = a.psin_cos();
                 let (x, y) = (centre.0 + radius * c, centre.1 + radius * s);
                 Pt {
                     u: x,
@@ -3830,7 +3831,7 @@ mod tests {
                     }
                 }
                 let p = wall.eval(0.5 * (lo + hi), 0.0);
-                p.y.atan2(p.x)
+                p.y.patan2(p.x)
             };
             let (rise, fall) = (cross(0.75, 1.0), cross(0.0, 0.25));
             assert!(
@@ -3838,7 +3839,7 @@ mod tests {
                 "{rise} {fall}"
             );
             let point = |a: f64| {
-                let (s, c) = a.sin_cos();
+                let (s, c) = a.psin_cos();
                 Pt {
                     u: k * c,
                     v: k * s,
@@ -3879,7 +3880,7 @@ mod tests {
             let described: Vec<String> = pieces
                 .iter()
                 .map(|(p, _)| {
-                    let angle = |q: &Pt| q.p.y.atan2(q.p.x);
+                    let angle = |q: &Pt| q.p.y.patan2(q.p.x);
                     let (f, l) = (p.first().unwrap(), p.last().unwrap());
                     format!(
                         "{} pts {:.6}..{:.6} (u {:.6}..{:.6})",
@@ -3910,11 +3911,11 @@ mod tests {
                 // No span passes over a bump: the angles run on by less
                 // than a bump's width each, and none is inside one.
                 for (a, b) in piece.iter().zip(piece.iter().skip(1)) {
-                    let (ta, tb) = (a.p.y.atan2(a.p.x), b.p.y.atan2(b.p.x));
+                    let (ta, tb) = (a.p.y.patan2(a.p.x), b.p.y.patan2(b.p.x));
                     let step = (tb - ta).rem_euclid(tau);
                     assert!(step < fall - rise, "{k}: a span of {step} rad");
                     let middle = (a.p + b.p) * 0.5;
-                    assert!(!in_bump(middle.y.atan2(middle.x)), "{k}: {middle:?}");
+                    assert!(!in_bump(middle.y.patan2(middle.x)), "{k}: {middle:?}");
                 }
             }
         }

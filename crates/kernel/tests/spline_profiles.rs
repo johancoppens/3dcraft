@@ -15,6 +15,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::{circle, frames, line};
@@ -101,7 +102,7 @@ fn along_spline(degree: usize, control: &[P]) -> [f64; 4] {
             swept / 2.0,
             p[0] * swept / 3.0,
             p[1] * swept / 3.0,
-            d[0].hypot(d[1]),
+            d[0].phypot(d[1]),
         ]
     };
     let mut sum = [0.0; 4];
@@ -137,7 +138,7 @@ fn along_line(a: P, b: P) -> [f64; 4] {
         w / 2.0,
         (a[0] + b[0]) * w / 6.0,
         (a[1] + b[1]) * w / 6.0,
-        (b[0] - a[0]).hypot(b[1] - a[1]),
+        (b[0] - a[0]).phypot(b[1] - a[1]),
     ]
 }
 
@@ -671,7 +672,7 @@ fn random_spline_loops_give_valid_solids_or_errors() {
             .map(|i| {
                 let angle = (i as f64 + rng.unit() * 0.6) / corners as f64 * 2.0 * PI;
                 let radius = 4.0 + rng.unit() * 4.0;
-                [radius * angle.cos(), radius * angle.sin()]
+                [radius * angle.pcos(), radius * angle.psin()]
             })
             .collect();
         let mut curves = Vec::new();

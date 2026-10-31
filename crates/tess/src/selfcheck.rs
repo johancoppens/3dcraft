@@ -73,6 +73,7 @@ use crate::body::tessellate_faces;
 use crate::intersections::{Crossing, CrossingKind, Rules, common_area, contacts, raw_cap};
 use crate::{Mesh, TessError, TessParams, tessellate_body_with_threads};
 use craft3d_geom::{Curve3, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Vec3};
 use craft3d_topo::{Body, BodyKind};
 use std::fmt;
@@ -331,7 +332,7 @@ fn solid_angle(p: Vec3, [a, b, c]: [Vec3; 3]) -> f64 {
     if numerator == 0.0 && denominator == 0.0 {
         return 0.0;
     }
-    2.0 * numerator.atan2(denominator)
+    2.0 * numerator.patan2(denominator)
 }
 
 /// The distance from `p` to the triangle `a b c` (C. Ericson, "Real-Time

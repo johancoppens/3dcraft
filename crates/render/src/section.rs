@@ -222,6 +222,7 @@ impl Cut {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use craft3d_math::Portable;
 
     fn cut(origin: Vec3, normal: Vec3) -> Cut {
         let bounds = Bbox3::from_points([Vec3::new(-1.0, -1.0, -1.0), Vec3::new(1.0, 1.0, 1.0)]);
@@ -340,7 +341,7 @@ mod tests {
         let outline = at(0.5).outline(&mesh);
         assert_eq!(outline.len(), 3);
         let length: f64 = outline.iter().map(|[a, b]| a.distance(*b)).sum();
-        assert!((length - (0.5 + 0.5 + 0.5_f64.hypot(0.5))).abs() < 1e-12);
+        assert!((length - (0.5 + 0.5 + 0.5_f64.phypot(0.5))).abs() < 1e-12);
         assert!(outline.iter().flatten().all(|p| (p.z - 0.5).abs() < 1e-12));
         // Through the base, everything above it cut away: nothing is kept.
         assert_eq!(at(0.0).outline(&mesh).len(), 0);

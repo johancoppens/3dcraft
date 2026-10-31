@@ -21,6 +21,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod boolean_common;
 mod common;
 
@@ -80,7 +81,7 @@ impl Part {
     /// point is in front of the back where `n · p < c`.
     fn back(&self) -> ([f64; 2], f64) {
         let (dx, dy) = (self.l, self.a - self.b);
-        let len = dx.hypot(dy);
+        let len = dx.phypot(dy);
         let n = [-dy / len, dx / len];
         (n, n[1] * self.b)
     }
@@ -102,7 +103,7 @@ impl Part {
     /// How far `p` is from the rounded top and back's wedge.
     fn off_wedge(&self, p: [f64; 3]) -> f64 {
         let q = self.wedge(p);
-        ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt()
+        ((p[0] - q[0]).ppowi(2) + (p[1] - q[1]).ppowi(2) + (p[2] - q[2]).ppowi(2)).sqrt()
     }
 
     fn body(&self, f: &Frame, k: f64, tol: &Tolerance) -> Body {
@@ -135,7 +136,8 @@ impl Part {
         let onto_front = |q: [f64; 3]| [q[0], q[1].max(r), q[2]];
         let onto_round = |q: [f64; 3]| {
             let w = self.wedge(q);
-            let d = ((q[0] - w[0]).powi(2) + (q[1] - w[1]).powi(2) + (q[2] - w[2]).powi(2)).sqrt();
+            let d =
+                ((q[0] - w[0]).ppowi(2) + (q[1] - w[1]).ppowi(2) + (q[2] - w[2]).ppowi(2)).sqrt();
             if d <= rho {
                 q
             } else {
@@ -162,13 +164,13 @@ impl Part {
                 y[2] + qa[2] - z[2],
             ];
             let moved =
-                ((z[0] - x[0]).powi(2) + (z[1] - x[1]).powi(2) + (z[2] - x[2]).powi(2)).sqrt();
+                ((z[0] - x[0]).ppowi(2) + (z[1] - x[1]).ppowi(2) + (z[2] - x[2]).ppowi(2)).sqrt();
             x = z;
             if moved < 1e-15 {
                 break;
             }
         }
-        ((p[0] - x[0]).powi(2) + (p[1] - x[1]).powi(2) + (p[2] - x[2]).powi(2)).sqrt()
+        ((p[0] - x[0]).ppowi(2) + (p[1] - x[1]).ppowi(2) + (p[2] - x[2]).ppowi(2)).sqrt()
     }
 }
 
@@ -336,19 +338,19 @@ fn a_face_wholly_inside_what_a_fillet_takes_goes() {
     // In the section: the round's centre at (y, z) = (b - big, h - big),
     // the ball's at y = r, big - r from it.
     let (cy, cz) = (part.b - part.big, part.h - part.big);
-    let mz = cz + ((part.big - r).powi(2) - (r - cy).powi(2)).sqrt();
+    let mz = cz + ((part.big - r).ppowi(2) - (r - cy).ppowi(2)).sqrt();
     // What the fillet takes from the section (y, z): the region bounded
     // by the front from the ball's foot (0, mz) up to the edge (0, h),
     // the top to where the round begins (cy, h), the round down to where
     // the ball touches it, and the ball's arc over its top back to its
     // foot; by Green's theorem (half the integral of y dz - z dy).
     let (dy, dz) = (r - cy, mz - cz);
-    let len = dy.hypot(dz);
+    let len = dy.phypot(dz);
     let touch = [cy + dy / len * part.big, cz + dz / len * part.big];
-    let angle = |c: [f64; 2], p: [f64; 2]| (p[1] - c[1]).atan2(p[0] - c[0]);
+    let angle = |c: [f64; 2], p: [f64; 2]| (p[1] - c[1]).patan2(p[0] - c[0]);
     let line = |p: [f64; 2], q: [f64; 2]| p[0] * q[1] - p[1] * q[0];
     let arc = |c: [f64; 2], rad: f64, a: f64, b: f64| {
-        rad * rad * (b - a) + rad * (c[0] * (b.sin() - a.sin()) - c[1] * (b.cos() - a.cos()))
+        rad * rad * (b - a) + rad * (c[0] * (b.psin() - a.psin()) - c[1] * (b.pcos() - a.pcos()))
     };
     let h = part.h;
     let twice = line([0.0, mz], [0.0, h])
@@ -466,7 +468,7 @@ fn a_chamfer_border_crosses_the_tangent_line_of_an_earlier_round() {
                 for _ in 0..100 {
                     let t = 0.5 * (lo + hi);
                     let p = at(t);
-                    if p[0].hypot(part.h - p[1]) < d {
+                    if p[0].phypot(part.h - p[1]) < d {
                         lo = t
                     } else {
                         hi = t
@@ -490,7 +492,7 @@ fn a_chamfer_border_crosses_the_tangent_line_of_an_earlier_round() {
                 if nn[0] * (0.0 - q1[0]) + nn[1] * (part.h - q1[1]) < 0.0 {
                     nn = [-nn[0], -nn[1]];
                 }
-                let len = nn[0].hypot(nn[1]);
+                let len = nn[0].phypot(nn[1]);
                 let side = (nn[0] * (p[1] - q1[0]) + nn[1] * (p[2] - q1[1])) / len;
                 let back = n[0] * p[0] + n[1] * p[1] - c;
                 let round = part.off_wedge(p) - part.big;
@@ -548,14 +550,14 @@ fn an_inside_fillet_fills_a_floor_strip_narrower_than_its_radius() {
     let far = w + big;
     // The ball is r from the wall, big + r from the round's axis at
     // (w, -big).
-    let zc = -big + ((big + r).powi(2) - (r - w).powi(2)).sqrt();
+    let zc = -big + ((big + r).ppowi(2) - (r - w).ppowi(2)).sqrt();
     let (dy, dz) = (r - w, zc + big);
-    let len = dy.hypot(dz);
+    let len = dy.phypot(dz);
     let touch = [w + dy / len * big, -big + dz / len * big];
-    let angle = |c: [f64; 2], p: [f64; 2]| (p[1] - c[1]).atan2(p[0] - c[0]);
+    let angle = |c: [f64; 2], p: [f64; 2]| (p[1] - c[1]).patan2(p[0] - c[0]);
     let line = |p: [f64; 2], q: [f64; 2]| p[0] * q[1] - p[1] * q[0];
     let arc = |c: [f64; 2], rad: f64, a: f64, b: f64| {
-        rad * rad * (b - a) + rad * (c[0] * (b.sin() - a.sin()) - c[1] * (b.cos() - a.cos()))
+        rad * rad * (b - a) + rad * (c[0] * (b.psin() - a.psin()) - c[1] * (b.pcos() - a.pcos()))
     };
     // Up the wall to the ball's foot, round the ball's lower side to the
     // round, up the round to the floor, back along the floor.
@@ -659,7 +661,7 @@ fn a_hole_in_the_face_beyond_a_crossing_is_not_left_behind() {
         // axis (which runs along the back, big below the top).
         let phi = 0.06_f64 / part.big;
         let centre = [x, g, part.h - part.big];
-        let out = [n[0] * phi.sin(), n[1] * phi.sin(), phi.cos()];
+        let out = [n[0] * phi.psin(), n[1] * phi.psin(), phi.pcos()];
         let p = [
             centre[0] + out[0] * part.big,
             centre[1] + out[1] * part.big,

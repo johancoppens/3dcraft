@@ -34,6 +34,7 @@
 
 use super::sparse::{Chain, Pattern, chain_rows, cycle_basis};
 use super::{FoldError, MAX_DENSE, MAX_FREE};
+use craft3d_math::Portable;
 use craft3d_math::{Transform, Vec3};
 use std::collections::{BTreeMap, VecDeque};
 use std::f64::consts::PI;
@@ -1100,7 +1101,7 @@ pub(super) fn fold_linkage_within(
         let (Some(&v), Some(&s)) = (rho.get(k), signs.get(c)) else {
             continue;
         };
-        let wrapped = v.sin().atan2(v.cos());
+        let wrapped = v.psin().patan2(v.pcos());
         if s * wrapped < -angular {
             return Err(FoldError::WrongWay {
                 id: source(k),
@@ -2099,10 +2100,10 @@ mod tests {
     #[test]
     fn a_near_dependence_no_pivot_shows_is_undetermined_dense_and_sparse_alike() {
         let n = 100usize;
-        let (c, s) = (1.2f64.cos(), 1.2f64.sin());
+        let (c, s) = (1.2f64.pcos(), 1.2f64.psin());
         let rows: Vec<Row> = (0..n)
             .map(|i| {
-                let scale = s.powi(i as i32);
+                let scale = s.ppowi(i as i32);
                 let by = (i..n)
                     .map(|j| {
                         let k = if j == i { scale } else { -c * scale };

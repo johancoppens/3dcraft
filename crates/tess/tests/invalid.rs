@@ -10,6 +10,7 @@
 )]
 
 use craft3d_geom::{BezierPatch, Curve3, Line, NurbsCurve, Plane, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
 use craft3d_tess::{TessError, TessParams, tessellate_body, tessellate_body_with_threads};
 use craft3d_testkit::{solids, trimmed};
@@ -147,8 +148,8 @@ fn faces_once_beyond_the_method_are_meshed() {
     use std::f64::consts::{FRAC_PI_2, PI, TAU};
     let sphere = || Surface::Sphere(Sphere::new(Frame::WORLD, 2.0).unwrap());
     let meridian = |u: f64| {
-        let x = Vec3::new(u.cos(), u.sin(), 0.0);
-        let side = Vec3::new(-u.sin(), u.cos(), 0.0);
+        let x = Vec3::new(u.pcos(), u.psin(), 0.0);
+        let side = Vec3::new(-u.psin(), u.pcos(), 0.0);
         Curve3::Circle(Circle::new(Frame::new(Vec3::ZERO, -side, x).unwrap(), 2.0).unwrap())
     };
     let one_face = |surface: Surface, edges: Vec<(Curve3, (f64, f64))>, uses: &[(usize, bool)]| {

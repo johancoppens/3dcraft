@@ -13,6 +13,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::plain::run;
@@ -38,7 +39,7 @@ fn wheel_part(s: &mut craft3d_engine::Session) {
         .map(|k| {
             let a = std::f64::consts::TAU * f64::from(k) / 256.0;
             let r = if k % 2 == 0 { 12.0 } else { 10.5 };
-            json!([r * a.cos(), r * a.sin()])
+            json!([r * a.pcos(), r * a.psin()])
         })
         .collect();
     run(

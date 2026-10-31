@@ -15,6 +15,7 @@
 
 use craft3d_geom::network::{Condition, Network, NetworkError, Patch, arc, gordon};
 use craft3d_geom::{Cone, Cylinder, NurbsCurve, NurbsSurface, Plane, Sphere, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
 use std::f64::consts::{FRAC_PI_2, PI};
 
@@ -223,7 +224,7 @@ fn a_patch_tangent_along_a_parallel_of_a_sphere_has_its_normals() {
         let face = Surface::Sphere(Sphere::new(Frame::WORLD, big).unwrap());
         // The parallel at 30 degrees: not a great circle.
         let phi = PI / 6.0;
-        let (z0, rho) = (big * phi.sin(), big * phi.cos());
+        let (z0, rho) = (big * phi.psin(), big * phi.pcos());
         let us = vec![
             arc(&at_height(z0), rho, 0.0, FRAC_PI_2).unwrap(),
             arc(&at_height(1.2 * big), 0.4 * big, 0.0, FRAC_PI_2).unwrap(),
@@ -232,12 +233,12 @@ fn a_patch_tangent_along_a_parallel_of_a_sphere_has_its_normals() {
             .iter()
             .map(|f| {
                 let (p0, p1) = (us[0].eval(*f), us[1].eval(*f));
-                let theta = p0.y.atan2(p0.x);
+                let theta = p0.y.patan2(p0.x);
                 // Up the meridian, and a little outwards: bent.
                 let up = v(
-                    -phi.sin() * theta.cos(),
-                    -phi.sin() * theta.sin(),
-                    phi.cos(),
+                    -phi.psin() * theta.pcos(),
+                    -phi.psin() * theta.psin(),
+                    phi.pcos(),
                 );
                 let out = p0.normalized().unwrap();
                 spline(&[p0, p0 + up * (0.5 * big) + out * (0.15 * big), p1])
@@ -255,15 +256,19 @@ fn a_patch_tangent_along_a_circle_of_a_cone_has_its_normals() {
         let face = Surface::Cone(Cone::new(Frame::WORLD, r0, alpha).unwrap());
         let us = vec![
             arc(&Frame::WORLD, r0, 0.0, FRAC_PI_2).unwrap(),
-            arc(&at_height(h), r0 + h * alpha.tan() + scale, 0.0, FRAC_PI_2).unwrap(),
+            arc(&at_height(h), r0 + h * alpha.ptan() + scale, 0.0, FRAC_PI_2).unwrap(),
         ];
         let vs: Vec<NurbsCurve> = FRACTIONS
             .iter()
             .map(|f| {
                 let (p0, p1) = (us[0].eval(*f), us[1].eval(*f));
-                let theta = p0.y.atan2(p0.x);
-                let ruling = v(alpha.tan() * theta.cos(), alpha.tan() * theta.sin(), 1.0);
-                let out = v(theta.cos(), theta.sin(), 0.0);
+                let theta = p0.y.patan2(p0.x);
+                let ruling = v(
+                    alpha.ptan() * theta.pcos(),
+                    alpha.ptan() * theta.psin(),
+                    1.0,
+                );
+                let out = v(theta.pcos(), theta.psin(), 0.0);
                 spline(&[p0, p0 + ruling * (0.4 * h) + out * (0.3 * scale), p1])
             })
             .collect();
@@ -273,10 +278,10 @@ fn a_patch_tangent_along_a_circle_of_a_cone_has_its_normals() {
         meets_with_one_tangent_plane(
             &patch,
             |p| {
-                let theta = p.y.atan2(p.x);
-                v(theta.cos(), theta.sin(), -alpha.tan())
+                let theta = p.y.patan2(p.x);
+                v(theta.pcos(), theta.psin(), -alpha.ptan())
             },
-            |p| (v(p.x, p.y, 0.0).length() - (r0 + p.z * alpha.tan())).abs() * alpha.cos(),
+            |p| (v(p.x, p.y, 0.0).length() - (r0 + p.z * alpha.ptan())).abs() * alpha.pcos(),
             scale,
         );
     }

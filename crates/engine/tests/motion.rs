@@ -9,6 +9,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::plain::run;
@@ -94,8 +95,8 @@ fn a_crank_traced_is_its_closed_form_circle() {
         let t = i as f64 / (samples - 1) as f64;
         let theta = TAU * t;
         let want = [
-            rest[0] + r * theta.cos() - r,
-            rest[1] + r * theta.sin(),
+            rest[0] + r * theta.pcos() - r,
+            rest[1] + r * theta.psin(),
             rest[2],
         ];
         let got = point(p);
@@ -105,7 +106,7 @@ fn a_crank_traced_is_its_closed_form_circle() {
     }
     assert_eq!(out["closed"], true);
     // The polyline's length is that of the inscribed 40-gon.
-    let chords = 40.0 * 2.0 * r * (TAU / 80.0).sin();
+    let chords = 40.0 * 2.0 * r * (TAU / 80.0).psin();
     assert!((number(&out["length"]) - chords).abs() < 1e-8);
     assert_eq!(point(&out["plane"]["normal"]), [0.0, 0.0, 1.0]);
     // The window draws it.
@@ -160,8 +161,8 @@ fn a_sketch_point_traced_follows_its_formulas() {
     for (i, p) in out["points"].as_array().unwrap().iter().enumerate() {
         let theta = TAU * 0.5 * i as f64 / 8.0;
         let got = point(p);
-        assert!((got[0] - 10.0 * theta.cos()).abs() < 1e-7, "{got:?}");
-        assert!((got[1] - 5.0 * theta.sin()).abs() < 1e-7, "{got:?}");
+        assert!((got[0] - 10.0 * theta.pcos()).abs() < 1e-7, "{got:?}");
+        assert!((got[1] - 5.0 * theta.psin()).abs() < 1e-7, "{got:?}");
         assert!(got[2].abs() < 1e-12);
     }
     assert_eq!(out["closed"], false);
@@ -411,7 +412,7 @@ fn clearance_over_the_motion_is_its_closed_form() {
     assert!((number(&gap["max"]["value"]) - 25.0).abs() < 1e-9);
     for sample in gap["samples"].as_array().unwrap() {
         let t = number(&sample["t"]);
-        let want = 15.0 + 10.0 * (TAU * t).cos();
+        let want = 15.0 + 10.0 * (TAU * t).pcos();
         assert!(
             (number(&sample["measured"]) - want).abs() < 1e-9,
             "{sample}"
@@ -767,11 +768,11 @@ fn four_bar(s: &mut Session) -> String {
 
 /// C of the four-bar at `t` on the branch it starts on, in closed form.
 fn coupler_at(t: f64) -> [f64; 2] {
-    let (bx, by) = (10.0 * (TAU * t).cos(), 10.0 * (TAU * t).sin());
+    let (bx, by) = (10.0 * (TAU * t).pcos(), 10.0 * (TAU * t).psin());
     let (dx, dy) = (40.0 - bx, -by);
-    let d = dx.hypot(dy);
-    let a = (40.0_f64.powi(2) - 30.0_f64.powi(2) + d * d) / (2.0 * d);
-    let h = (40.0_f64.powi(2) - a * a).sqrt();
+    let d = dx.phypot(dy);
+    let a = (40.0_f64.ppowi(2) - 30.0_f64.ppowi(2) + d * d) / (2.0 * d);
+    let h = (40.0_f64.ppowi(2) - a * a).sqrt();
     let (ux, uy) = (dx / d, dy / d);
     [bx + a * ux - h * uy, by + a * uy + h * ux]
 }
@@ -961,7 +962,7 @@ fn a_long_motion_replays_in_chunks_with_every_frame() {
     for (k, f) in frames.iter().enumerate() {
         let t = k as f64 / 64.0;
         assert_eq!(number(&f["t"]), t);
-        let inside = 15.0 + 20.0 * (TAU * t).cos() < 0.0;
+        let inside = 15.0 + 20.0 * (TAU * t).pcos() < 0.0;
         assert_eq!(
             f["collisions"].as_u64().unwrap(),
             u64::from(inside),

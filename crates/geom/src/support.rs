@@ -50,6 +50,7 @@
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
 use crate::{Curve3, GeomError, MAX_DEGREE, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Vec3};
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
@@ -273,18 +274,18 @@ pub enum Piece {
 
 /// The least of `a cos t + b sin t` over `[t0, t1]`.
 pub fn least_cos(a: f64, b: f64, (t0, t1): (f64, f64)) -> f64 {
-    let m = a.hypot(b);
+    let m = a.phypot(b);
     if !(t1 - t0 < TAU) {
         return -m;
     }
     let f = |t: f64| {
-        let (s, c) = t.sin_cos();
+        let (s, c) = t.psin_cos();
         a * c + b * s
     };
     let mut least = f(t0).min(f(t1));
     if m > 0.0 {
         // The least is at atan2(b, a) + π, shifted by turns into the range.
-        let at = b.atan2(a) + PI;
+        let at = b.patan2(a) + PI;
         let k = ((t0 - at) / TAU).ceil();
         let t = at + k * TAU;
         if (t0..=t1).contains(&t) {
@@ -399,7 +400,7 @@ pub fn surface_piece(
                 y: f.y(),
                 z: f.z(),
                 r: c.radius(),
-                slope: c.half_angle().tan(),
+                slope: c.half_angle().ptan(),
                 u,
                 v,
                 apex: (v.0..=v.1).contains(&apex),
@@ -543,7 +544,7 @@ fn cone_of(differences: &[Vec3], reach: f64) -> Option<(Vec3, f64)> {
     let axis = sum.normalized()?;
     let half = units
         .iter()
-        .map(|d| d.dot(axis).clamp(-1.0, 1.0).acos())
+        .map(|d| d.dot(axis).clamp(-1.0, 1.0).pacos())
         .fold(0.0, f64::max)
         + turn_margin(reach, shortest);
     (half < FRAC_PI_2).then_some((axis, half))
@@ -576,11 +577,11 @@ fn normal_cone(along_u: &[Vec3], along_v: &[Vec3], reach: f64) -> Option<Cone> {
     let (b, beta) = cone_of(along_v, reach)?;
     let n = a.cross(b);
     let s = n.length();
-    let e = 2.0 * (0.5 * alpha).sin() + 2.0 * (0.5 * beta).sin();
+    let e = 2.0 * (0.5 * alpha).psin() + 2.0 * (0.5 * beta).psin();
     if !(e < s) {
         return None;
     }
-    let half = (e / s).asin() + 1e-12;
+    let half = (e / s).pasin() + 1e-12;
     let axis = n.normalized()?;
     (half < FRAC_PI_2 - 1e-9).then_some(Cone {
         axis,
@@ -780,13 +781,13 @@ impl Piece {
                 if *apex {
                     return None;
                 }
-                let (s, c) = mid(*u).sin_cos();
+                let (s, c) = mid(*u).psin_cos();
                 let n = (*x * c + *y * s) - *z * *slope;
                 within(n.normalized(), 0.5 * width(*u))
             }
             Piece::Round { x, y, z, u, v, .. } => {
-                let (su, cu) = mid(*u).sin_cos();
-                let (sv, cv) = mid(*v).sin_cos();
+                let (su, cu) = mid(*u).psin_cos();
+                let (sv, cv) = mid(*v).psin_cos();
                 let n = (*x * cu + *y * su) * cv + *z * sv;
                 within(n.normalized(), 0.5 * (width(*u) + width(*v)))
             }
@@ -794,7 +795,7 @@ impl Piece {
             Piece::Point(_) => None,
             Piece::Segment { a, b } => within((*b - *a).normalized(), 0.0),
             Piece::Arc { x, y, a, b, t, .. } => {
-                let (s, c) = mid(*t).sin_cos();
+                let (s, c) = mid(*t).psin_cos();
                 let tangent = *x * (-a * s) + *y * (b * c);
                 let (big, small) = (a.max(*b), a.min(*b));
                 if !(small > 0.0) {
@@ -855,7 +856,11 @@ mod tests {
         for i in 0..7 {
             for j in 0..5 {
                 let (a, b) = (i as f64 * 0.9 + 0.1, j as f64 * 0.7 - 1.3);
-                out.push(Vec3::new(a.cos() * b.cos(), a.sin() * b.cos(), b.sin()));
+                out.push(Vec3::new(
+                    a.pcos() * b.pcos(),
+                    a.psin() * b.pcos(),
+                    b.psin(),
+                ));
             }
         }
         out.extend([Vec3::X, Vec3::Y, Vec3::Z, -Vec3::X, -Vec3::Y, -Vec3::Z]);
@@ -896,7 +901,7 @@ mod tests {
                     let a = u.0 + (u.1 - u.0) * i as f64 / 20.0;
                     let b = v.0 + (v.1 - v.0) * j as f64 / 20.0;
                     let Some(n) = s.normal(a, b) else { continue };
-                    let angle = n.dot(cone.axis).abs().min(1.0).acos();
+                    let angle = n.dot(cone.axis).abs().min(1.0).pacos();
                     assert!(angle <= cone.half_angle + 1e-9, "normal outside the cone");
                 }
             }
@@ -1076,7 +1081,7 @@ mod tests {
                             .dot(cone.axis)
                             .abs()
                             .min(1.0)
-                            .acos();
+                            .pacos();
                         assert!(angle <= cone.half_angle + 1e-9, "{c:?}: tangent outside");
                     }
                 }
@@ -1087,7 +1092,7 @@ mod tests {
     #[test]
     fn the_least_of_a_turning_line_is_found_inside_the_range() {
         assert!((least_cos(1.0, 0.0, (2.0, 4.0)) + 1.0).abs() < 1e-15);
-        assert!((least_cos(1.0, 0.0, (0.0, 1.0)) - 1.0_f64.cos()).abs() < 1e-15);
+        assert!((least_cos(1.0, 0.0, (0.0, 1.0)) - 1.0_f64.pcos()).abs() < 1e-15);
         assert!((least_cos(0.0, 1.0, (-8.0, -7.0)) + 1.0).abs() < 1e-15);
         assert_eq!(least_cos(0.0, 0.0, (0.0, 1.0)), 0.0);
     }

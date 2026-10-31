@@ -35,6 +35,7 @@ use super::freeform::{IRREGULAR, PatchTree};
 use super::hits::speed_bound;
 use super::outline::{Seg, Sheet};
 use craft3d_geom::{Curve3, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
 use std::f64::consts::{PI, TAU};
 use std::sync::Arc;
@@ -175,7 +176,7 @@ fn times_conj(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
 /// `a = t e^{iθ}` and `b = 1 − t` of the shares `(s, t)`: the point of
 /// the sphere chart in homogeneous form, `z = a / b`.
 fn homogeneous((s, t): (f64, f64)) -> ((f64, f64), f64) {
-    let (sin, cos) = (TAU * s).sin_cos();
+    let (sin, cos) = (TAU * s).psin_cos();
     ((t * cos, t * sin), 1.0 - t)
 }
 
@@ -212,13 +213,13 @@ fn wrap(a: f64) -> f64 {
 
 /// The angle from direction `a` to direction `b`, in `(-π, π]`.
 fn angle(a: (f64, f64), b: (f64, f64)) -> f64 {
-    (a.0 * b.1 - a.1 * b.0).atan2(a.0 * b.0 + a.1 * b.1)
+    (a.0 * b.1 - a.1 * b.0).patan2(a.0 * b.0 + a.1 * b.1)
 }
 
 /// The angles about the axis and around the tube of a point of a torus.
 fn torus_angles(frame: &Frame, major: f64, p: Vec3) -> (f64, f64) {
     let (x, y, z) = frame.local(p);
-    (y.atan2(x), z.atan2(x.hypot(y) - major))
+    (y.patan2(x), z.patan2(x.phypot(y) - major))
 }
 
 /// The middle of the widest stretch of the circle that none of the
@@ -626,14 +627,14 @@ impl Chart {
         };
         let (s, reach) = match *layout {
             Layout::Annulus => (s, 1.0 + t),
-            Layout::Disc { high, order } => (s, (if high { 1.0 - t } else { t }).powi(order)),
+            Layout::Disc { high, order } => (s, (if high { 1.0 - t } else { t }).ppowi(order)),
             Layout::Torus { cut, swapped } => {
                 let (s, t) = if swapped { (t, s) } else { (s, t) };
                 (s, 1.0 + wrap_share(t - cut))
             }
             Layout::Open | Layout::Sphere { .. } => return (f64::NAN, f64::NAN),
         };
-        let (sin, cos) = (TAU * s).sin_cos();
+        let (sin, cos) = (TAU * s).psin_cos();
         (reach * cos, reach * sin)
     }
 
@@ -649,14 +650,14 @@ impl Chart {
             } => {
                 let (u, v) = torus_angles(frame, *major, p);
                 let reach = 1.0 + wrap(u - cut) / TAU;
-                (reach * v.cos(), reach * v.sin())
+                (reach * v.pcos(), reach * v.psin())
             }
             Chart::Ring {
                 frame, major, cut, ..
             } => {
                 let (u, v) = torus_angles(frame, *major, p);
                 let reach = 1.0 + wrap(v - cut) / TAU;
-                (reach * u.cos(), reach * u.sin())
+                (reach * u.pcos(), reach * u.psin())
             }
             Chart::Patch {
                 layout: Layout::Open,
@@ -716,7 +717,7 @@ impl Chart {
             },
             Chart::Cylinder { frame, radius } => {
                 let (x, y, z) = frame.local(q);
-                let reach = x.hypot(y);
+                let reach = x.phypot(y);
                 if !(reach.is_finite() && reach > 0.0) {
                     return None;
                 }
@@ -796,14 +797,14 @@ impl Chart {
                 // T = (E - 1) / (E + 1) = tanh(Δheight / 2 radius) nothing
                 // overflows.
                 let (x, y, z) = frame.local(p);
-                let reach = x.hypot(y);
+                let reach = x.phypot(y);
                 if !(reach.is_finite() && reach > 0.0) {
                     return (0.0, 0.0);
                 }
                 let (ux, uy) = (x / reach, y / reach);
                 let c = ux * target.q.x + uy * target.q.y;
                 let s = target.q.x * uy - target.q.y * ux;
-                let t = (0.5 * (z - target.q.z) / radius).tanh();
+                let t = (0.5 * (z - target.q.z) / radius).ptanh();
                 (0.5 * (t * (1.0 + c) - (1.0 - c)), 0.5 * (t + 1.0) * s)
             }
             Chart::Sphere {
@@ -895,7 +896,7 @@ impl Chart {
             if craft3d_geom::allowance::pass() {
                 return Err(SPENT);
             }
-            let far = p0.0.hypot(p0.1);
+            let far = p0.0.phypot(p0.1);
             if far > pace * (t1 - t0) || (local.is_some() && far > pace_over(t0, t1)) {
                 // On a torus cut open the chart is continuous only off the
                 // cut, and the sum assumes it: a stretch whose image moves
@@ -903,7 +904,7 @@ impl Chart {
                 // it (a jump between the inner and the outer end of the
                 // annulus) runs through the cut.
                 if let Some(radial) = self.radial_pace(curve_speed) {
-                    let reach = |p: (f64, f64)| (p.0 + target.at.0).hypot(p.1 + target.at.1);
+                    let reach = |p: (f64, f64)| (p.0 + target.at.0).phypot(p.1 + target.at.1);
                     let moved = (reach(p1) - reach(p0)).abs();
                     if moved.is_nan() || moved > radial * (t1 - t0) * (1.0 + CUT_SLACK) + 1e-12 {
                         return Err(CUT_CROSSED);
@@ -945,7 +946,7 @@ impl Chart {
         {
             // Likewise at the point the chart leaves out.
             let (x, y) = from_drop((target.q.x, target.q.y), target.q.z, *drop);
-            if x.hypot(y) < 1e-9 {
+            if x.phypot(y) < 1e-9 {
                 return Ok(0);
             }
         }
@@ -979,10 +980,10 @@ mod tests {
         knots: Vec<f64>,
         around_v: bool,
     ) -> Surface {
-        let weight = FRAC_PI_4.cos();
+        let weight = FRAC_PI_4.pcos();
         let ring: Vec<(f64, f64, f64)> = (0..9)
             .map(|k| {
-                let (sin, cos) = (0.3 + FRAC_PI_4 * f64::from(k)).sin_cos();
+                let (sin, cos) = (0.3 + FRAC_PI_4 * f64::from(k)).psin_cos();
                 if k % 2 == 0 {
                     (cos, sin, 1.0)
                 } else {
@@ -1027,7 +1028,7 @@ mod tests {
     /// The closed surfaces the charts are for: a wall (closed around), a
     /// cup (and a pole), a ball (two poles) and a torus (closed both ways).
     fn closed(around_v: bool) -> Vec<(&'static str, Surface)> {
-        let w = FRAC_PI_4.cos();
+        let w = FRAC_PI_4.pcos();
         let quarter = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
         let half = vec![0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0];
         let circle = vec![
@@ -1035,7 +1036,7 @@ mod tests {
         ];
         let tube: Vec<(f64, f64, f64)> = (0..9)
             .map(|k| {
-                let (sin, cos) = (FRAC_PI_4 * f64::from(k)).sin_cos();
+                let (sin, cos) = (FRAC_PI_4 * f64::from(k)).psin_cos();
                 if k % 2 == 0 {
                     (2.0 + 0.6 * cos, 0.6 * sin, 1.0)
                 } else {
@@ -1121,8 +1122,10 @@ mod tests {
                         let b = b.clamp(1e-3, 0.999);
                         for turn in 0..8 {
                             let angle = f64::from(turn) * PI / 4.0;
-                            let (p, q) =
-                                (at(a, b), at(a + 1e-4 * angle.cos(), b + 1e-4 * angle.sin()));
+                            let (p, q) = (
+                                at(a, b),
+                                at(a + 1e-4 * angle.pcos(), b + 1e-4 * angle.psin()),
+                            );
                             let travelled = p.distance(q);
                             if travelled <= 1e-13 {
                                 continue;
@@ -1143,7 +1146,7 @@ mod tests {
                                 let target = chart.target(About::Point(target)).unwrap();
                                 let (x0, y0) = chart.direction(&target, p);
                                 let (x1, y1) = chart.direction(&target, q);
-                                let pace = (x1 - x0).hypot(y1 - y0) / travelled;
+                                let pace = (x1 - x0).phypot(y1 - y0) / travelled;
                                 assert!(
                                     pace <= target.lipschitz * (1.0 + 1e-6),
                                     "{name}, around v {around_v}: at ({a}, {b}) {pace} per length, above {}",
@@ -1166,7 +1169,7 @@ mod tests {
                     for b in [0.2, 0.7] {
                         let (x, y) = chart.coordinates(at(0.0, b));
                         let (x1, y1) = chart.coordinates(at(1.0 - 1e-12, b));
-                        assert!((x - x1).hypot(y - y1) < 1e-9, "{name}");
+                        assert!((x - x1).phypot(y - y1) < 1e-9, "{name}");
                     }
                 }
             }
@@ -1186,7 +1189,7 @@ mod tests {
                 // A small circle on the surface across the seam (the seam
                 // is at the angle 0.3 about the z axis), as a curve near
                 // enough to it for a winding number.
-                let (sin, cos) = 0.3_f64.sin_cos();
+                let (sin, cos) = 0.3_f64.psin_cos();
                 let side = Vec3::new(cos, sin, 0.0);
                 let mut centre = Vec3::new(0.0, 0.0, 0.5) + side * 2.0;
                 if name == "torus" {
@@ -1310,7 +1313,7 @@ mod tests {
         // 10 + 3 cos 0.5, height 3 sin 0.5), as one piece: it crosses
         // every circle around the tube, so a chart cut along one of
         // them (as if the coverage had missed it) is no chart of it.
-        let (sin, cos) = 0.5_f64.sin_cos();
+        let (sin, cos) = 0.5_f64.psin_cos();
         let frame = Frame::WORLD.at(Vec3::new(0.0, 0.0, 3.0 * sin)).unwrap();
         let circle = Curve3::Circle(Circle::new(frame, 10.0 + 3.0 * cos).unwrap());
         let seg = Seg {

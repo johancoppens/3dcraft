@@ -3,6 +3,7 @@
 //! `crates/io/tests/step_import.rs`, which has the exporter.
 
 use super::*;
+use craft3d_math::Portable;
 use craft3d_math::Tolerance;
 
 const HEAD: &str = "ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION((''),'2;1');\nFILE_NAME('','',(''),(''),'','','');\nFILE_SCHEMA(('AUTOMOTIVE_DESIGN'));\nENDSEC;\nDATA;\n";
@@ -264,7 +265,7 @@ fn swept_and_offset_surfaces_that_are_not_read_are_named() {
     match reader.surface(51).unwrap() {
         geometry::Read::Done(craft3d_geom::Surface::Cone(c), false) => {
             assert!(
-                (c.radius() - (2.0 + 0.5 / 0.5f64.cos())).abs() < 1e-12,
+                (c.radius() - (2.0 + 0.5 / 0.5f64.pcos())).abs() < 1e-12,
                 "{c:?}"
             );
         }

@@ -14,6 +14,7 @@ use craft3d_kernel::origami::{
     Angle, Arrangement, BoundarySegment, Crease, CreaseKind, FoldError, Folded, Layers, arrange,
     fold_flat, folded_sheet, folds_flat, layer_order,
 };
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use std::f64::consts::PI;
 
@@ -279,7 +280,7 @@ fn vertex(s: f64, scale: f64, directions: &[f64], kinds: &[CreaseKind]) -> Arran
         .enumerate()
         .map(|(i, (&a, &kind))| {
             let a = a.to_radians();
-            let (c, sn) = (a.cos(), a.sin());
+            let (c, sn) = (a.pcos(), a.psin());
             let t = s / c.abs().max(sn.abs());
             crease(10 + i as u64, [0.0, 0.0], [t * c, t * sn], kind)
         })
@@ -418,7 +419,7 @@ fn square_twist(scale: f64) -> Arrangement {
         let base = (270.0 + 90.0 * i as f64).to_radians();
         for (k, (turn, kind)) in [(45.0f64, V), (135.0, M)].into_iter().enumerate() {
             let a = base + turn.to_radians();
-            let (c, sn) = (a.cos(), a.sin());
+            let (c, sn) = (a.pcos(), a.psin());
             let tx = if c > 0.0 {
                 (l - p[0]) / c
             } else if c < 0.0 {
@@ -599,7 +600,7 @@ fn a_stack_folded_in_half_is_folded_on_by_a_crossing_crease() {
             assert_eq!(stacked.stack[ul], stacked.stack[ur]);
             assert_eq!(stacked.stack[ll], stacked.stack[lr]);
             assert_ne!(stacked.stack[ul], stacked.stack[ll]);
-            let want = Vec3::new(-s, s * rho.cos(), s * rho.sin());
+            let want = Vec3::new(-s, s * rho.pcos(), s * rho.psin());
             for (facet, corner) in [(ul, [-s, s]), (ur, [s, s])] {
                 let got = f.transforms[facet].point(Vec3::new(corner[0], corner[1], 0.0));
                 assert!(
@@ -722,7 +723,7 @@ fn a_stack_not_flat_names_whether_creases_folded_by_less_meet_there() {
         let s = scale;
         let t = 1e-9 * scale;
         let boundary = polygon(&[[-s, -s], [s, -s], [s, s], [-s, s]]);
-        let (c, sn) = (80f64.to_radians().cos(), 80f64.to_radians().sin());
+        let (c, sn) = (80f64.to_radians().pcos(), 80f64.to_radians().psin());
         let k = s / sn;
         let creases = [
             crease(10, [-s, 0.0], [s, 0.0], CreaseKind::Valley),

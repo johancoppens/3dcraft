@@ -16,6 +16,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod boolean_common;
 mod common;
 
@@ -60,14 +61,16 @@ fn area(pieces: &[Piece]) -> f64 {
                 radius: r,
                 from: a,
                 to: b,
-            } => r * r * (b - a) + r * (c[0] * (b.sin() - a.sin()) - c[1] * (b.cos() - a.cos())),
+            } => {
+                r * r * (b - a) + r * (c[0] * (b.psin() - a.psin()) - c[1] * (b.pcos() - a.pcos()))
+            }
         };
     }
     0.5 * twice
 }
 
 fn angle(from: P, to: P) -> f64 {
-    (to[1] - from[1]).atan2(to[0] - from[0])
+    (to[1] - from[1]).patan2(to[0] - from[0])
 }
 
 /// The profile extruded from 0 to `height` in `frame`, at scale `k`.
@@ -180,7 +183,7 @@ fn half_disc_corner(big: f64, r: f64) -> (f64, f64, f64, f64) {
     let mx = ((big - r) * (big - r) - r * r).sqrt();
     let m = [mx, r];
     let psi = angle([0.0, 0.0], m);
-    let foot_arc = [big * psi.cos(), big * psi.sin()];
+    let foot_arc = [big * psi.pcos(), big * psi.psin()];
     let removed = area(&[
         Piece::Line([mx, 0.0], [big, 0.0]),
         Piece::Arc {
@@ -333,7 +336,7 @@ fn the_tip_of_a_lens_is_rounded() {
                 },
             ]);
             let removed = 2.0 * half;
-            let theta = (c / big).acos();
+            let theta = (c / big).pacos();
             let lens_area = 2.0 * (big * big * theta - c * a);
             let perimeter = 4.0 * big * theta - 2.0 * big * (to - from) + 2.0 * r * to;
             let section = lens_area - removed;
@@ -446,7 +449,7 @@ fn a_halved_rod_is_chamfered_along_the_diameter_and_the_arc() {
             .unwrap();
             assert_eq!(check(&made.body, &tolerance(k)), []);
             let phi = d2 / big;
-            let foot = [big * phi.cos(), big * phi.sin()];
+            let foot = [big * phi.pcos(), big * phi.psin()];
             let removed = area(&[
                 Piece::Line([big - d1, 0.0], [big, 0.0]),
                 Piece::Arc {
@@ -457,7 +460,7 @@ fn a_halved_rod_is_chamfered_along_the_diameter_and_the_arc() {
                 },
                 Piece::Line(foot, [big - d1, 0.0]),
             ]);
-            let chord = (foot[0] - (big - d1)).hypot(foot[1]);
+            let chord = (foot[0] - (big - d1)).phypot(foot[1]);
             let section = PI * big * big / 2.0 - removed;
             let perimeter = PI * big + 2.0 * big - d1 - d2 + chord;
             let got = mass(&made.body);
@@ -594,7 +597,7 @@ fn a_boss_root_fillet_does_not_depend_on_the_seam() {
     assert!(added > 0.0);
     // The disc's part above the wall: the side of the chord at distance
     // d below the centre that holds the centre.
-    let cap = big * big * (PI - (d / big).acos()) + d * ex;
+    let cap = big * big * (PI - (d / big).pacos()) + d * ex;
     let section = 8.0 * 3.0 + cap + 2.0 * added;
     for k in SCALES {
         for frame in frames(k) {
@@ -606,7 +609,7 @@ fn a_boss_root_fillet_does_not_depend_on_the_seam() {
                 let boss_frame = Frame::new(
                     frame.point(0.0, d * k, 0.0),
                     frame.z(),
-                    frame.vector(turn.cos(), turn.sin(), 0.0),
+                    frame.vector(turn.pcos(), turn.psin(), 0.0),
                 )
                 .unwrap();
                 let boss = primitives::cylinder(&boss_frame, big * k, height * k).unwrap();

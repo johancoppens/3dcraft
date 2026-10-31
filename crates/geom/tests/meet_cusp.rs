@@ -9,6 +9,7 @@
 
 use craft3d_geom::intersect::{SurfaceMeeting, meet_surfaces};
 use craft3d_geom::{Curve3, Cylinder, NurbsSurface, Plane, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Frame, Tolerance, Vec3};
 
 /// The needle: `ρ = 9 t² − 6 t³`, `y = 6 t`, swept in a whole turn about
@@ -55,7 +56,7 @@ fn needle(k: f64) -> Surface {
 fn off_needle(p: Vec3, k: f64) -> f64 {
     let t = p.y / (6.0 * k);
     let rho = (9.0 * t * t - 6.0 * t * t * t) * k;
-    (p.x.hypot(p.z) - rho).abs()
+    (p.x.phypot(p.z) - rho).abs()
 }
 
 fn curves(a: &Surface, b: &Surface, k: f64) -> Vec<(Curve3, (f64, f64), f64)> {
@@ -109,7 +110,7 @@ fn faces_that_hold_the_axis_of_a_cusp_meet_it_in_curves_that_end_on_the_point() 
                     for i in 0..=400 {
                         let share = f64::from(i) / 400.0;
                         // Dense near the ends, where the point is.
-                        let share = 0.5 - 0.5 * (std::f64::consts::PI * share).cos();
+                        let share = 0.5 - 0.5 * (std::f64::consts::PI * share).pcos();
                         let p = curve.eval(range.0 + (range.1 - range.0) * share);
                         assert!(off_needle(p, k) <= *deviation, "{name} at {k}: {p:?}");
                         let off = match other {
@@ -117,7 +118,7 @@ fn faces_that_hold_the_axis_of_a_cusp_meet_it_in_curves_that_end_on_the_point() 
                             _ => {
                                 let side = normal.cross(Vec3::Y) * (2.0 * k);
                                 let q = p - side;
-                                (q.x.hypot(q.z) - 2.0 * k).abs()
+                                (q.x.phypot(q.z) - 2.0 * k).abs()
                             }
                         };
                         assert!(off <= *deviation, "{name} at {k}: {p:?} {off}");
@@ -146,6 +147,6 @@ fn a_plane_across_a_cusp_near_its_point_cuts_its_circle() {
         let t: f64 = 0.0005;
         let rho = (9.0 * t * t - 6.0 * t * t * t) * k;
         let p = curve.eval(0.5 * (range.0 + range.1));
-        assert!((p.x.hypot(p.z) - rho).abs() <= 1e-6 * k, "{k}: {p:?}");
+        assert!((p.x.phypot(p.z) - rho).abs() <= 1e-6 * k, "{k}: {p:?}");
     }
 }

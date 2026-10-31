@@ -5,6 +5,7 @@
 //! and readability over speed, and is deterministic: single-threaded `f64`
 //! arithmetic, triangles drawn in mesh order.
 
+use craft3d_math::Portable;
 pub mod analysis;
 mod section;
 pub mod studio;
@@ -128,7 +129,7 @@ impl Camera {
         let dir = toward_eye.normalized()?;
         let right = up.cross(dir).normalized()?;
         let view_up = dir.cross(right);
-        let half_y = (fov_y_deg.to_radians() * 0.5).tan();
+        let half_y = (fov_y_deg.to_radians() * 0.5).ptan();
         let half_x = half_y * aspect;
         if !(fov_y_deg > 0.0 && fov_y_deg < 180.0 && half_x.is_finite() && half_x > 0.0) {
             return None;
@@ -219,7 +220,7 @@ impl Camera {
             }
         }
         let narrowed = if half_y > 0.0 {
-            (half_y * 1.05).atan().to_degrees() * 2.0
+            (half_y * 1.05).patan().to_degrees() * 2.0
         } else {
             fov_y_deg
         };
@@ -293,8 +294,8 @@ impl Camera {
                 if !(fov_y_deg > 0.0 && fov_y_deg < 180.0) {
                     return None;
                 }
-                let half = (fov_y_deg.to_radians() * 0.5).tan() / factor;
-                let fov_y_deg = half.atan().to_degrees() * 2.0;
+                let half = (fov_y_deg.to_radians() * 0.5).ptan() / factor;
+                let fov_y_deg = half.patan().to_degrees() * 2.0;
                 if !(fov_y_deg > 0.0 && fov_y_deg < 180.0) {
                     return None;
                 }
@@ -421,7 +422,7 @@ impl Camera {
                 if !(fov_y_deg > 0.0 && fov_y_deg < 180.0) {
                     return Err(RenderError::DegenerateCamera);
                 }
-                (fov_y_deg.to_radians() * 0.5).tan()
+                (fov_y_deg.to_radians() * 0.5).ptan()
             }
             Projection::Orthographic { half_height } => half_height,
         };
@@ -1161,7 +1162,7 @@ fn shade(
     };
     let specular = (light + to_viewer)
         .normalized()
-        .map_or(0.0, |half| n.dot(half).max(0.0).powi(shininess));
+        .map_or(0.0, |half| n.dot(half).max(0.0).ppowi(shininess));
     // A metal reflects less diffusely.
     let intensity = weights.0
         + (weights.1 * diffuse + weights.2 * fill) * (1.0 - SHADE_METAL_DIFFUSE * metallic);
@@ -2770,7 +2771,7 @@ mod tests {
         for projection in [
             Projection::Orthographic { half_height: 1.0 },
             Projection::Perspective {
-                fov_y_deg: 2.0 * (1.0_f64 / 5.0).atan().to_degrees(),
+                fov_y_deg: 2.0 * (1.0_f64 / 5.0).patan().to_degrees(),
             },
         ] {
             let camera = Camera {
@@ -3334,7 +3335,7 @@ mod tests {
         let fill = view.fill.map_or(0.0, |f| n.dot(f).max(0.0));
         let specular = (light + to_viewer)
             .normalized()
-            .map_or(0.0, |half| n.dot(half).max(0.0).powi(SHADE_SHININESS));
+            .map_or(0.0, |half| n.dot(half).max(0.0).ppowi(SHADE_SHININESS));
         let intensity = weights.0 + (weights.1 * diffuse + weights.2 * fill);
         base.map(|c| {
             (f64::from(c) * intensity + 255.0 * SHADE_SPECULAR * specular)
@@ -3359,9 +3360,9 @@ mod tests {
                     std::f64::consts::TAU * f64::from(j) / 200.0,
                 );
                 let n = Vec3::new(
-                    theta.sin() * phi.cos(),
-                    theta.sin() * phi.sin(),
-                    theta.cos(),
+                    theta.psin() * phi.pcos(),
+                    theta.psin() * phi.psin(),
+                    theta.pcos(),
                 );
                 let near = (half + n * 0.05).normalized().unwrap();
                 for normal in [n, near] {
@@ -3449,7 +3450,7 @@ mod tests {
             if c <= 0.04045 {
                 c / 12.92
             } else {
-                ((c + 0.055) / 1.055).powf(2.4)
+                ((c + 0.055) / 1.055).ppowf(2.4)
             }
         });
         0.2126 * r + 0.7152 * g + 0.0722 * b

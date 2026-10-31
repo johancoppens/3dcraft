@@ -10,6 +10,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 mod revolve_support;
 
@@ -36,11 +37,11 @@ fn straddles(curves: &[SketchCurve], axis: Axis, margin: f64) -> bool {
                     start[1] + t * (end[1] - start[1]),
                 ],
                 Curve2::Arc { center, start, end } => {
-                    let radius = (start[0] - center[0]).hypot(start[1] - center[1]);
-                    let begin = (start[1] - center[1]).atan2(start[0] - center[0]);
-                    let finish = (end[1] - center[1]).atan2(end[0] - center[0]);
+                    let radius = (start[0] - center[0]).phypot(start[1] - center[1]);
+                    let begin = (start[1] - center[1]).patan2(start[0] - center[0]);
+                    let finish = (end[1] - center[1]).patan2(end[0] - center[0]);
                     let a = begin + t * (finish - begin).rem_euclid(TAU);
-                    [center[0] + radius * a.cos(), center[1] + radius * a.sin()]
+                    [center[0] + radius * a.pcos(), center[1] + radius * a.psin()]
                 }
                 _ => panic!("blobs are lines and arcs"),
             };
@@ -71,7 +72,7 @@ fn blob(rng: &mut Rng, centre: P, size: f64) -> (Vec<SketchCurve>, Vec<P>) {
         .iter()
         .map(|a| {
             let r = size * between(rng, 0.6, 1.0);
-            [centre[0] + r * a.cos(), centre[1] + r * a.sin()]
+            [centre[0] + r * a.pcos(), centre[1] + r * a.psin()]
         })
         .collect();
     let mut curves = Vec::new();
@@ -90,7 +91,7 @@ fn blob(rng: &mut Rng, centre: P, size: f64) -> (Vec<SketchCurve>, Vec<P>) {
             continue;
         }
         let chord = [b[0] - a[0], b[1] - a[1]];
-        let length = chord[0].hypot(chord[1]);
+        let length = chord[0].phypot(chord[1]);
         let sagitta = length * between(rng, 0.03, 0.2);
         let radius = (length * length / 4.0 + sagitta * sagitta) / (2.0 * sagitta);
         let left = [-chord[1] / length, chord[0] / length];
@@ -134,8 +135,8 @@ fn turned(rng: &mut Rng, axis: Axis, side: f64, size: f64, offset: f64) -> Vec<S
     }
     let at = |latitude: f64| {
         (
-            offset + radius * latitude.cos(),
-            h + radius * latitude.sin(),
+            offset + radius * latitude.pcos(),
+            h + radius * latitude.psin(),
         )
     };
     let (p1, p2) = (at(low), at(high));
@@ -161,7 +162,7 @@ fn turned(rng: &mut Rng, axis: Axis, side: f64, size: f64, offset: f64) -> Vec<S
     if high < FRAC_PI_2 || offset > 0.0 {
         points.push((offset, above));
     }
-    points.dedup_by(|a, b| (a.0 - b.0).hypot(a.1 - b.1) < 1e-3 * size);
+    points.dedup_by(|a, b| (a.0 - b.0).phypot(a.1 - b.1) < 1e-3 * size);
     let place = |p: (f64, f64)| lathe(axis, side, p.0, p.1);
     let centre = place((offset, h));
     let mut curves = Vec::new();
@@ -220,8 +221,8 @@ fn random_profiles_axes_and_sweeps() {
             between(&mut rng, -5.0, 5.0) * k,
         ];
         let angle = between(&mut rng, 0.0, TAU);
-        let direction = [angle.cos() * between(&mut rng, 0.1, 9.0), angle.sin()];
-        let direction = if direction[0].hypot(direction[1]) > 0.01 {
+        let direction = [angle.pcos() * between(&mut rng, 0.1, 9.0), angle.psin()];
+        let direction = if direction[0].phypot(direction[1]) > 0.01 {
             direction
         } else {
             [1.0, 0.0]

@@ -16,6 +16,7 @@ use craft3d_geom::{
     Circle, Cone, Curve3, Cylinder, Ellipse, Line, NurbsCurve, NurbsSurface, Plane, Sphere,
     Surface, Torus,
 };
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
 use craft3d_step::{Entity, Param, Record};
 
@@ -829,7 +830,7 @@ impl<'a> Reader<'a> {
                     };
                     let height = (far - apex).dot(axis);
                     let reach = (far - apex - axis * height).length();
-                    let half_angle = (reach / height).atan();
+                    let half_angle = (reach / height).patan();
                     let frame = Frame::from_z(apex, axis)
                         .ok_or_else(|| ImportError(format!("{}: no axis", self.describe(id))))?;
                     Some(Surface::Cone(
@@ -977,12 +978,12 @@ impl<'a> Reader<'a> {
                 // positive: past the apex in the direction it opens), its
                 // normal's part away from the axis: the radius at v = 0
                 // grows by d / cos α.
-                let v = c.apex_v() + c.half_angle().tan().signum();
+                let v = c.apex_v() + c.half_angle().ptan().signum();
                 let p = surface.eval(0.0, v);
                 let o = c.frame().origin();
                 let radial = p - o - c.frame().z() * (p - o).dot(c.frame().z());
                 let sign = file_normal(0.0, v)?.dot(radial).signum();
-                let radius = c.radius() + sign * distance / c.half_angle().cos();
+                let radius = c.radius() + sign * distance / c.half_angle().pcos();
                 if !(radius >= 0.0) {
                     return Err(gone());
                 }

@@ -89,6 +89,7 @@ mod native {
     use crate::commands::{Framing, feature_ref, vec3};
     use crate::pictures::{Choice, Painter, Shading};
     use craft3d_doc::FeatureId;
+    use craft3d_math::Portable;
     use craft3d_math::{Bbox3, Vec3};
     use craft3d_regen::Status;
     use craft3d_render::{Camera, Projection, RenderParams};
@@ -311,7 +312,7 @@ mod native {
         let mut points = Vec::new();
         for k in 0..=samples {
             let angle = -orbit.signum() * sweep * f64::from(k) / f64::from(samples);
-            let (s, c) = angle.to_radians().sin_cos();
+            let (s, c) = angle.to_radians().psin_cos();
             for x in [lo.x, hi.x] {
                 for y in [lo.y, hi.y] {
                     for z in [lo.z, hi.z] {
@@ -339,7 +340,7 @@ mod native {
             }
         } else {
             let fov_y_deg = 30.0_f64;
-            let half_y = (fov_y_deg.to_radians() * 0.5).tan();
+            let half_y = (fov_y_deg.to_radians() * 0.5).ptan();
             let half_x = half_y * aspect;
             let mut far = 0.0_f64;
             for r in &points {

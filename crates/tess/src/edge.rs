@@ -9,6 +9,7 @@
 use crate::face::Chord;
 use crate::{TessError, TessParams};
 use craft3d_geom::Curve3;
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use craft3d_topo::Body;
 use std::collections::BTreeMap;
@@ -21,7 +22,7 @@ use std::f64::consts::{FRAC_PI_2, TAU};
 /// circle does not collapse onto its diameter at a coarse tolerance.
 pub(crate) fn arc_segments(radius: f64, sweep: f64, params: &TessParams) -> Result<u32, TessError> {
     let sag = (params.chordal_tolerance / radius).min(1.0);
-    let half_angle = (1.0 - sag).acos();
+    let half_angle = (1.0 - sag).pacos();
     // With an angle criterion, no chord turns the tangent further than
     // that, unless the chord would be shorter than the floor (an angle of
     // `floor / radius` is the chord's length at that radius).
@@ -672,7 +673,7 @@ mod tests {
                 ..TessParams::default()
             };
             let n = arc_segments(radius, TAU, &params).unwrap();
-            let sag = |n: u32| radius * (1.0 - (PI / f64::from(n)).cos());
+            let sag = |n: u32| radius * (1.0 - (PI / f64::from(n)).pcos());
             assert!(
                 sag(n) <= tol * (1.0 + 1e-12),
                 "r {radius} tol {tol}: n = {n}"

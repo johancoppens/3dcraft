@@ -9,6 +9,7 @@ use crate::scene::Scene;
 use crate::{CommandError, Session};
 use craft3d_geom::Surface;
 use craft3d_geom::curvature::{curvatures, curve_curvature, second_derivatives};
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use craft3d_render::analysis::{Analysis, AnalysisColors, AnalysisMode, MAX_STRIPES};
 use craft3d_topo::Body;
@@ -1016,7 +1017,7 @@ use crate::verify_cmds::{Ctx, Dim, Outcome};
 ///   and `1/|major − minor|` (the arc between two points at most `π/2`
 ///   times their chord), capped at π.
 fn triangle_lower(surface: &Surface, corners: &[(Vec3, Vec3); 3], d: Vec3) -> Option<f64> {
-    let draft = |n: Vec3| n.dot(d).clamp(-1.0, 1.0).asin();
+    let draft = |n: Vec3| n.dot(d).clamp(-1.0, 1.0).pasin();
     let least = corners
         .iter()
         .map(|(_, n)| draft(*n))
@@ -1036,7 +1037,7 @@ fn triangle_lower(surface: &Surface, corners: &[(Vec3, Vec3); 3], d: Vec3) -> Op
             let (x, y) = (f.x(), f.y());
             let angle = |p: Vec3| {
                 let q = p - f.origin();
-                q.dot(y).atan2(q.dot(x))
+                q.dot(y).patan2(q.dot(x))
             };
             // The side: the normals point away from the axis or towards it.
             let radial = |p: Vec3| {
@@ -1049,8 +1050,8 @@ fn triangle_lower(surface: &Surface, corners: &[(Vec3, Vec3); 3], d: Vec3) -> Op
                 -1.0
             };
             let (a, b) = (x.dot(d), y.dot(d));
-            let r = a.hypot(b);
-            let phi = b.atan2(a);
+            let r = a.phypot(b);
+            let phi = b.patan2(a);
             // Unwrap the corners' angles about the first.
             let first = angle(pa);
             let tau = std::f64::consts::TAU;
@@ -1065,7 +1066,7 @@ fn triangle_lower(surface: &Surface, corners: &[(Vec3, Vec3); 3], d: Vec3) -> Op
             if hi - lo >= std::f64::consts::PI {
                 return turn(std::f64::consts::PI);
             }
-            let value = |t: f64| s * r * (t - phi).cos();
+            let value = |t: f64| s * r * (t - phi).pcos();
             let mut m = value(lo).min(value(hi));
             // Where s·cos(θ − φ) is −1: θ = φ + π for s > 0, φ for s < 0.
             let at = if s > 0.0 {
@@ -1077,9 +1078,9 @@ fn triangle_lower(surface: &Surface, corners: &[(Vec3, Vec3); 3], d: Vec3) -> Op
             if at + k * tau <= hi {
                 m = -r;
             }
-            Some(m.clamp(-1.0, 1.0).asin())
+            Some(m.clamp(-1.0, 1.0).pasin())
         }
-        Surface::Sphere(sp) => turn(2.0 * (longest / (2.0 * sp.radius())).min(1.0).asin()),
+        Surface::Sphere(sp) => turn(2.0 * (longest / (2.0 * sp.radius())).min(1.0).pasin()),
         Surface::Torus(t) => {
             let (major, minor) = t.radii();
             let k = (1.0 / minor).max(1.0 / (major - minor).abs());
@@ -1134,7 +1135,7 @@ pub(crate) fn draft_measure(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Out
     }
     .to_radians();
     let found = crate::verify_cmds::faces_of_subject(ctx, p.get("faces"))?;
-    let draft_of = |n: Vec3| n.dot(d).clamp(-1.0, 1.0).asin();
+    let draft_of = |n: Vec3| n.dot(d).clamp(-1.0, 1.0).pasin();
     let (mut least, mut lower, mut proven) = (f64::INFINITY, f64::INFINITY, true);
     let (mut area, mut below) = (0.0_f64, 0.0_f64);
     let mut at = Vec3::ZERO;

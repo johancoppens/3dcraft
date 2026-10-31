@@ -44,7 +44,7 @@ fn boxed(k: f64, (l, b, d): (f64, f64, f64)) -> Body {
 
 /// The heel of a normal from z, in radians.
 fn tilt(n: Vec3) -> f64 {
-    n.z.clamp(-1.0, 1.0).acos()
+    n.z.clamp(-1.0, 1.0).pacos()
 }
 
 /// The GM of `found` for a turn about `axis` (one of its principal axes).
@@ -65,7 +65,7 @@ const BOX: (f64, f64, f64) = (10.0, 2.0, 2.0);
 fn a_box_upright_is_stable_with_its_metacentric_heights() {
     for k in SCALES {
         let body = boxed(k, BOX);
-        let volume = 10.0 * 2.0 * 1.0 * k.powi(3);
+        let volume = 10.0 * 2.0 * 1.0 * k.ppowi(3);
         let centre = Vec3::new(0.0, 0.0, 0.5 * k);
         let found = floating(&[&body], &upright(), volume, centre, &tol(k)).unwrap();
         assert_eq!(found.equilibria.len(), 1, "{found:?}");
@@ -93,12 +93,12 @@ fn a_box_upright_is_stable_with_its_metacentric_heights() {
 fn a_box_unstable_upright_finds_its_two_angles_of_loll() {
     for k in SCALES {
         let body = boxed(k, BOX);
-        let volume = 20.0 * k.powi(3);
+        let volume = 20.0 * k.ppowi(3);
         // KG 0.9: GM = 0.5 + 1/3 − 0.9 < 0; wall-sided, the loll is at
         // tan² φ = −2 GM / BM, deck and bilge clear (B/2 tan φ < T).
         let kg: f64 = 0.9;
         let gm = 0.5 + 1.0 / 3.0 - kg;
-        let phi = (-2.0 * gm / (1.0 / 3.0)).sqrt().atan();
+        let phi = (-2.0 * gm / (1.0 / 3.0)).sqrt().patan();
         let centre = Vec3::new(0.0, 0.0, kg * k);
         let found = floating(&[&body], &upright(), volume, centre, &tol(k)).unwrap();
         assert!(found.unfinished.is_empty(), "{:?}", found.unfinished);
@@ -116,7 +116,7 @@ fn a_box_unstable_upright_finds_its_two_angles_of_loll() {
             // line at the draft.
             close(
                 e.level.below.offset,
-                k * phi.cos(),
+                k * phi.pcos(),
                 1e-8 * k,
                 "the plane through the middle at the draft",
             );
@@ -131,7 +131,7 @@ fn a_box_unstable_upright_finds_its_two_angles_of_loll() {
 fn a_box_heels_by_a_centre_of_gravity_off_its_middle() {
     for k in SCALES {
         let body = boxed(k, BOX);
-        let volume = 20.0 * k.powi(3);
+        let volume = 20.0 * k.ppowi(3);
         let (kg, g): (f64, f64) = (0.5, 0.1);
         let (gm, bm) = (0.5 + 1.0 / 3.0 - kg, 1.0 / 3.0);
         // t (GM + BM t² / 2) = g, by Newton's method.
@@ -144,7 +144,7 @@ fn a_box_heels_by_a_centre_of_gravity_off_its_middle() {
         assert_eq!(found.equilibria.len(), 1, "{found:?}");
         let e = found.equilibria[0];
         assert!(e.is_stable() && e.settled, "{e:?}");
-        close(tilt(e.plane.normal).tan(), t, 1e-7, "tan φ");
+        close(tilt(e.plane.normal).ptan(), t, 1e-7, "tan φ");
         // The weight's side goes down: the normal tips away from it.
         assert!(e.plane.normal.y < 0.0, "{e:?}");
         assert!(e.arm <= 1e-8 * k, "{e:?}");
@@ -165,13 +165,13 @@ fn a_cylinder_rolls_until_its_centre_of_gravity_is_below_its_axis() {
         let body = cylinder(&frame, r, l).unwrap();
         let volume = 0.5 * std::f64::consts::PI * r * r * l;
         let (e_off, alpha) = (0.3 * k, 30f64.to_radians());
-        let centre = Vec3::new(0.0, e_off * alpha.sin(), -e_off * alpha.cos());
+        let centre = Vec3::new(0.0, e_off * alpha.psin(), -e_off * alpha.pcos());
         let found = floating(&[&body], &upright(), volume, centre, &tol(k)).unwrap();
         let e = found.equilibria[0];
         assert!(e.is_stable(), "{e:?}");
         // G on the normal through the axis: n along (0, −sin α, cos α).
-        close(e.plane.normal.y, -alpha.sin(), 1e-8, "roll");
-        close(e.plane.normal.z, alpha.cos(), 1e-8, "roll");
+        close(e.plane.normal.y, -alpha.psin(), 1e-8, "roll");
+        close(e.plane.normal.z, alpha.pcos(), 1e-8, "roll");
         close(e.plane.normal.x, 0.0, 1e-9, "no trim");
         // Half the volume: the plane through the axis.
         close(e.level.below.offset, 0.0, 1e-8 * k, "through the axis");
@@ -185,7 +185,7 @@ fn a_sphere_about_its_centre_is_neutral_and_off_it_hangs_below_it() {
     for k in SCALES {
         let r = k;
         let body = sphere(&Frame::WORLD, r).unwrap();
-        let whole = 4.0 / 3.0 * std::f64::consts::PI * r.powi(3);
+        let whole = 4.0 / 3.0 * std::f64::consts::PI * r.ppowi(3);
         let found = floating(&[&body], &upright(), 0.3 * whole, Vec3::ZERO, &tol(k)).unwrap();
         assert_eq!(found.equilibria.len(), 1, "{found:?}");
         let e = found.equilibria[0];

@@ -22,6 +22,7 @@
     clippy::neg_cmp_op_on_partial_ord
 )]
 
+use craft3d_math::Portable;
 #[path = "common/bodies.rs"]
 mod bodies;
 #[path = "common/step_harness.rs"]
@@ -344,7 +345,7 @@ fn freecad_reads_every_kernel_body_as_the_solid_we_made() {
                 to_mm,
             );
             // In millimetres whatever the unit: 40 x 20 x 10.
-            assert!((c.volume * to_mm.powi(3) - 8000.0).abs() < 1e-6);
+            assert!((c.volume * to_mm.ppowi(3) - 8000.0).abs() < 1e-6);
             cases.push(c);
             cases.push(case(
                 &format!("unit-{name}-{tag}-cone"),
@@ -478,7 +479,7 @@ fn freecad_reads_booleans_of_domed_blocks() {
             let both = add("dome-post-union", &dome.body, &post, BooleanOp::Union, 1);
             closed.push((
                 both.clone(),
-                dome.volume / scale.powi(3) + post_volume - shared,
+                dome.volume / scale.ppowi(3) + post_volume - shared,
             ));
             let less = add(
                 "dome-post-subtract",
@@ -487,7 +488,7 @@ fn freecad_reads_booleans_of_domed_blocks() {
                 BooleanOp::Subtract,
                 1,
             );
-            closed.push((less, dome.volume / scale.powi(3) - shared));
+            closed.push((less, dome.volume / scale.ppowi(3) - shared));
             let common = add(
                 "dome-post-intersect",
                 &dome.body,
@@ -585,7 +586,7 @@ fn freecad_reads_booleans_of_domed_blocks() {
         } else {
             1.0
         };
-        let off = case.volume / (volume * scale.powi(3)) - 1.0;
+        let off = case.volume / (volume * scale.ppowi(3)) - 1.0;
         println!("{file}: our volume over the roof's own integral - 1 = {off:+.2e}");
         let skin = 1e-6 * scale * case.area / case.volume;
         if !(off.abs() <= skin) {

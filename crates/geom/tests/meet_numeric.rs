@@ -9,6 +9,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::*;
@@ -483,7 +484,7 @@ fn freeform_patches_that_cross_through_a_touch_meet_in_four_arms() {
                         (y.abs() - 1.25 * x.abs()).abs() <= 4.0 * t.linear / k,
                         "scale {k} nurbs {nurbs}: ({x}, {y})"
                     );
-                    if x.hypot(y) > 0.01 {
+                    if x.phypot(y) > 0.01 {
                         quadrants[usize::from(x > 0.0) + 2 * usize::from(y > 0.0)] = true;
                     }
                 }
@@ -568,7 +569,7 @@ fn a_crossing_a_tenth_of_a_tolerance_apart_is_drawn_to_the_point() {
                 let p = curve.curve.eval(node + inwards * 2e-4 * k);
                 let (x, y, _) = frame.local(p);
                 let (x, y) = (x / k - at.0, y / k - at.1);
-                let off = (y.abs().atan2(x.abs()) - 1.25_f64.atan()).abs();
+                let off = (y.abs().patan2(x.abs()) - 1.25_f64.patan()).abs();
                 assert!(
                     off < 15.0_f64.to_radians(),
                     "scale {k} nurbs {nurbs}: an arm leaves towards ({x}, {y})"
@@ -674,7 +675,7 @@ fn a_cylinder_that_fits_a_torus_touches_it_along_a_circle() {
                 for p in &m.points {
                     let (x, y, z) = frame.local(*p);
                     assert!(
-                        (x.hypot(y) - radius * k).abs() <= t.linear && z.abs() <= 64.0 * t.linear,
+                        (x.phypot(y) - radius * k).abs() <= t.linear && z.abs() <= 64.0 * t.linear,
                         "scale {k} radius {radius}: a touch at ({x}, {y}, {z})"
                     );
                 }
@@ -782,8 +783,8 @@ fn tacnode_reference(k: f64, radius: f64, frame: &Frame) -> Vec<Vec3> {
     let mut out = Vec::new();
     for i in 1..400 {
         let phi = std::f64::consts::TAU * f64::from(i) / 400.0;
-        let x = major + rho * phi.sin();
-        let z = minor - rho + rho * phi.cos();
+        let x = major + rho * phi.psin();
+        let z = minor - rho + rho * phi.pcos();
         let w = (minor * minor - z * z).max(0.0).sqrt();
         let y = ((major + w) * (major + w) - x * x).max(0.0).sqrt();
         for side in [1.0, -1.0] {

@@ -14,6 +14,7 @@
 // Test code: a failure in a helper is a failed test.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
+use craft3d_math::Portable;
 mod boolean_common;
 mod rational_common;
 
@@ -345,7 +346,7 @@ fn a_plane_along_the_border_at_the_pole_meets_the_patch_once() {
             // The circle the plane cuts from the ball.
             let lift = normal.dot(pole - centre);
             let middle = centre + normal * lift;
-            let radius = ((2.0 * k).powi(2) - lift * lift).sqrt();
+            let radius = ((2.0 * k).ppowi(2) - lift * lift).sqrt();
             let mut rng = Rng(0x0b0e_5eed ^ k.to_bits() ^ u64::from(tilted));
             for _ in 0..40 {
                 let mut reach = || {
@@ -383,9 +384,9 @@ fn a_plane_along_the_border_at_the_pole_meets_the_patch_once() {
                     let across = normal.dot(p - middle);
                     let around = ((p - middle) - normal * across).length() - radius;
                     assert!(
-                        across.hypot(around) <= tol.linear,
+                        across.phypot(around) <= tol.linear,
                         "{what}: {:e} off the circle",
-                        across.hypot(around)
+                        across.phypot(around)
                     );
                 }
             }
@@ -521,7 +522,7 @@ impl Meridian {
     fn swept(&self, from: f64, to: f64) -> (f64, f64) {
         (
             PI * self.integral(from, to, &|p, d| p[0] * p[0] * d[1]),
-            TAU * self.integral(from, to, &|p, d| p[0] * d[0].hypot(d[1])),
+            TAU * self.integral(from, to, &|p, d| p[0] * d[0].phypot(d[1])),
         )
     }
 
@@ -735,7 +736,7 @@ fn a_dome_cut_by_a_plane_is_what_its_profile_says() {
         let [_, common, rest] = identities(&dome, &above, k, &format!("dome above 2.3 at {k}"));
         let t = meridian.at_height(2.3 * k);
         let (volume, curved) = meridian.swept(t, 1.0);
-        let disc = PI * meridian.at(t)[0].powi(2);
+        let disc = PI * meridian.at(t)[0].ppowi(2);
         near(mass(&common).volume, volume, 1e-7, "above: volume");
         near(mass(&common).area, curved + disc, 1e-7, "above: area");
         near(mass(&rest).volume, whole.0 - volume, 1e-7, "below: volume");
@@ -803,7 +804,7 @@ fn a_drop_cut_by_a_plane_is_what_its_profile_says() {
         let drop = swept_solid(&DROP, k);
         let meridian = Meridian::new(&DROP, k);
         let whole = meridian.swept(0.0, 1.0);
-        let lid = PI * (3.0 * k).powi(2);
+        let lid = PI * (3.0 * k).ppowi(2);
         let m = mass(&drop);
         near(m.volume, whole.0, 1e-9, "the drop's volume");
         near(m.area, whole.1 + lid, 1e-9, "the drop's area");
@@ -811,7 +812,7 @@ fn a_drop_cut_by_a_plane_is_what_its_profile_says() {
         let [_, common, rest] = identities(&drop, &above, k, &format!("drop above 1.4 at {k}"));
         let t = meridian.at_height(1.4 * k);
         let (volume, curved) = meridian.swept(t, 1.0);
-        let disc = PI * meridian.at(t)[0].powi(2);
+        let disc = PI * meridian.at(t)[0].ppowi(2);
         near(mass(&common).volume, volume, 1e-7, "above: volume");
         near(mass(&common).area, curved + disc + lid, 1e-7, "above: area");
         near(mass(&rest).volume, whole.0 - volume, 1e-7, "below: volume");
@@ -859,12 +860,12 @@ fn a_cusp_is_an_operand() {
         let cusp = swept_solid(&CUSP, k);
         let meridian = Meridian::new(&CUSP, k);
         let (volume, curved) = meridian.swept(0.0, 1.0);
-        let lid = PI * (3.0 * k).powi(2);
+        let lid = PI * (3.0 * k).ppowi(2);
         let m = mass(&cusp);
         near(m.volume, volume, 1e-9, "the cusp's volume");
         near(m.area, curved + lid, 1e-9, "the cusp's area");
         let radius = |y: f64| meridian.at(meridian.at_height(y))[0];
-        let inside = |p: Vec3| p.y > 0.0 && p.y < 6.0 * k && p.x.hypot(p.z) < radius(p.y);
+        let inside = |p: Vec3| p.y > 0.0 && p.y < 6.0 * k && p.x.phypot(p.z) < radius(p.y);
         let lean = Vec3::new(0.5, -0.7, 0.3).normalized().unwrap();
         let tools = [
             (
@@ -895,7 +896,7 @@ fn a_cusp_is_an_operand() {
                 "around: block" | "across" => {
                     let top = if *name == "across" { 2.0 } else { 1.0 };
                     let (v, a) = meridian.swept(0.0, meridian.at_height(top * k));
-                    let cap = PI * radius(top * k).powi(2);
+                    let cap = PI * radius(top * k).ppowi(2);
                     let c = mass(&common);
                     near(c.volume, v, 1e-7, &format!("{what}: common volume"));
                     near(c.area, a + cap, 1e-7, &format!("{what}: common area"));
@@ -957,7 +958,7 @@ fn cusp_membership(
 ) {
     let meridian = Meridian::new(&CUSP, k);
     let radius = |y: f64| meridian.at(meridian.at_height(y))[0];
-    let inside = |p: Vec3| p.y > 0.0 && p.y < 6.0 * k && p.x.hypot(p.z) < radius(p.y);
+    let inside = |p: Vec3| p.y > 0.0 && p.y < 6.0 * k && p.x.phypot(p.z) < radius(p.y);
     let points: Vec<Vec3> = (0..400)
         .map(|_| {
             Vec3::new(
@@ -1003,7 +1004,7 @@ fn a_cusp_cut_along_its_axis_is_what_its_profile_says() {
         let cusp = swept_solid(&CUSP, k);
         let meridian = Meridian::new(&CUSP, k);
         let (volume, curved) = meridian.swept(0.0, 1.0);
-        let lid = PI * (3.0 * k).powi(2);
+        let lid = PI * (3.0 * k).ppowi(2);
         let section = meridian.section(0.0, 1.0);
         for (name, normal) in [
             ("along the seam", -Vec3::X),
@@ -1044,8 +1045,8 @@ fn a_cusp_cut_along_its_axis_is_what_its_profile_says() {
                 return 0.0;
             }
             let d = big;
-            let a = (r / (2.0 * big)).clamp(-1.0, 1.0).acos();
-            let b = (1.0 - r * r / (2.0 * big * big)).clamp(-1.0, 1.0).acos();
+            let a = (r / (2.0 * big)).clamp(-1.0, 1.0).pacos();
+            let b = (1.0 - r * r / (2.0 * big * big)).clamp(-1.0, 1.0).pacos();
             let k4 = (-d + r + big) * (d + r - big) * (d - r + big) * (d + r + big);
             r * r * a + big * big * b - 0.5 * k4.max(0.0).sqrt()
         };
@@ -1062,7 +1063,7 @@ fn a_cusp_cut_along_its_axis_is_what_its_profile_says() {
             1e-7,
             &format!("{what}: rest volume"),
         );
-        let in_tool = |p: Vec3| (p.x - big).hypot(p.z) < big && p.y > -k && p.y < 7.0 * k;
+        let in_tool = |p: Vec3| (p.x - big).phypot(p.z) < big && p.y > -k && p.y < 7.0 * k;
         cusp_membership(&results, k, &in_tool, &mut rng, &what);
     }
 }
@@ -1098,12 +1099,12 @@ fn cusp_quartered(k: f64, turn: f64) {
     let cusp = swept_solid(&CUSP, k);
     let meridian = Meridian::new(&CUSP, k);
     let (volume, curved) = meridian.swept(0.0, 1.0);
-    let lid = PI * (3.0 * k).powi(2);
+    let lid = PI * (3.0 * k).ppowi(2);
     let section = meridian.section(0.0, 1.0);
     let what = format!("cusp, a block edge along the axis (turned {turn}), at {k}");
     let (x, z) = (
-        Vec3::new(turn.cos(), 0.0, -turn.sin()),
-        Vec3::new(turn.sin(), 0.0, turn.cos()),
+        Vec3::new(turn.pcos(), 0.0, -turn.psin()),
+        Vec3::new(turn.psin(), 0.0, turn.pcos()),
     );
     let frame = Frame::new(-Vec3::Y * k, z, x).unwrap();
     let tool = primitives::block(&frame, 10.0 * k, 10.0 * k, 8.0 * k).unwrap();
@@ -1178,7 +1179,7 @@ fn surfaces_through_a_cusp_that_leave_its_axis_are_cut_or_refused() {
         let rho = |y: f64| y * y / 4.0 - y * y * y / 36.0;
         let needle = move |p: Vec3| {
             let y = p.y / k;
-            (k * rho(y.clamp(0.0, 6.0)) - p.x.hypot(p.z))
+            (k * rho(y.clamp(0.0, 6.0)) - p.x.phypot(p.z))
                 .min(p.y)
                 .min(6.0 * k - p.y)
         };
@@ -1198,13 +1199,13 @@ fn surfaces_through_a_cusp_that_leave_its_axis_are_cut_or_refused() {
             "a cone about the axis, its apex on the point".to_string(),
             cone,
             Box::new(move |p: Vec3| {
-                ((0.5 * p.y - p.x.hypot(p.z)) * 0.8_f64.sqrt())
+                ((0.5 * p.y - p.x.phypot(p.z)) * 0.8_f64.sqrt())
                     .min(p.y)
                     .min(2.0 * k - p.y)
             }),
         ));
         for angle in [1e-3_f64, 1e-2] {
-            let normal = Vec3::new(-angle.cos(), angle.sin(), 0.0);
+            let normal = Vec3::new(-angle.pcos(), angle.psin(), 0.0);
             tools.push((
                 format!("a plane through the point {angle} off the axis"),
                 half_space(k, Vec3::ZERO, normal, Vec3::Z),
@@ -1218,7 +1219,7 @@ fn surfaces_through_a_cusp_that_leave_its_axis_are_cut_or_refused() {
             "a chord's cylinder through the point and the axis at 4e-3".to_string(),
             primitives::cylinder(&frame, big * k, 4.0 * k).unwrap(),
             Box::new(move |p: Vec3| {
-                (big * k - (p.x - centre.x).hypot(p.y - centre.y))
+                (big * k - (p.x - centre.x).phypot(p.y - centre.y))
                     .min(p.z + 2.0 * k)
                     .min(2.0 * k - p.z)
             }),
@@ -1318,7 +1319,7 @@ fn a_cone_cut_along_its_axis_is_what_it_measures() {
     for k in SCALES {
         let (r, h) = (3.0 * k, 6.0 * k);
         let volume = PI * r * r * h / 3.0;
-        let area = PI * r * r.hypot(h) + PI * r * r;
+        let area = PI * r * r.phypot(h) + PI * r * r;
         let triangle = 0.5 * r * h;
         // The analytic cone stands on z = 0 with its apex up; the twin
         // stands on its apex at the origin of the y axis.
@@ -1447,7 +1448,7 @@ fn cuts_through_a_cusp_and_an_apex_mesh_closed_and_converge() {
                 "spline cone",
                 swept_solid(&cone, k),
                 Vec3::new(0.5, 0.0, 0.75_f64.sqrt()),
-                PI * (3.0 * k).powi(2) * 6.0 * k / 3.0,
+                PI * (3.0 * k).ppowi(2) * 6.0 * k / 3.0,
             ),
         ];
         for (name, solid, normal, volume) in cases {

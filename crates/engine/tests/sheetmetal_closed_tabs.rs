@@ -18,6 +18,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{body, built, new_document, run, session_in, workdir};
@@ -119,7 +120,7 @@ fn a_closed_corner_of_a_wall_with_screw_tabs_on_its_tip() {
             "scale {k}: flat area {a} against {} + {grown}",
             a0
         );
-        let ring = FRAC_PI_2 * w * ((r + t).powi(2) - r * r) / 2.0;
+        let ring = FRAC_PI_2 * w * ((r + t).ppowi(2) - r * r) / 2.0;
         let v = number(&found["volume"]);
         let more = 2.0 * (t * w * l + ring);
         assert!(

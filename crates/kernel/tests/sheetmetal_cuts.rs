@@ -33,6 +33,7 @@ use craft3d_kernel::sheetmetal::{
     Closing, Cutout, Direction, FlangeSpec, LengthFrom, On, Part, SheetFace, Spec, build,
     flat_area, outline,
 };
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{check, mass_properties};
 use std::f64::consts::{FRAC_PI_2, PI};
@@ -167,16 +168,16 @@ fn to_segment(p: [f64; 2], s: &Segment) -> f64 {
             let l2 = d[0] * d[0] + d[1] * d[1];
             let t =
                 (((p[0] - s.start[0]) * d[0] + (p[1] - s.start[1]) * d[1]) / l2).clamp(0.0, 1.0);
-            (p[0] - s.start[0] - t * d[0]).hypot(p[1] - s.start[1] - t * d[1])
+            (p[0] - s.start[0] - t * d[0]).phypot(p[1] - s.start[1] - t * d[1])
         }
         Shape::Circle { center, radius } => {
-            ((p[0] - center[0]).hypot(p[1] - center[1]) - radius).abs()
+            ((p[0] - center[0]).phypot(p[1] - center[1]) - radius).abs()
         }
         Shape::Arc { center, radius } => {
-            let on = ((p[0] - center[0]).hypot(p[1] - center[1]) - radius).abs();
+            let on = ((p[0] - center[0]).phypot(p[1] - center[1]) - radius).abs();
             let ends = (p[0] - s.start[0])
-                .hypot(p[1] - s.start[1])
-                .min((p[0] - s.end[0]).hypot(p[1] - s.end[1]));
+                .phypot(p[1] - s.start[1])
+                .min((p[0] - s.end[0]).phypot(p[1] - s.end[1]));
             // On the arc's circle near the arc: good enough for a test that
             // samples the arc's own edges.
             on.min(ends)
@@ -255,7 +256,7 @@ fn round_trip(part: &Part, tol: &Tolerance) {
                         let b = &part.bends[*n];
                         let back = part.flats[b.parent].transform.inverse().unwrap();
                         let p = back.point(Vec3::new(x, y, z));
-                        let len = (b.end[0] - b.start[0]).hypot(b.end[1] - b.start[1]);
+                        let len = (b.end[0] - b.start[0]).phypot(b.end[1] - b.start[1]);
                         let d = [(b.end[0] - b.start[0]) / len, (b.end[1] - b.start[1]) / len];
                         let u = (p.x - b.start[0]) * d[0] + (p.y - b.start[1]) * d[1];
                         let zc = if b.angle > 0.0 {
@@ -272,13 +273,13 @@ fn round_trip(part: &Part, tol: &Tolerance) {
                         let r0 = (0.0, -zc);
                         let rb = zc.abs();
                         near(
-                            v.0.hypot(v.1),
+                            v.0.phypot(v.1),
                             rb,
                             tol.linear,
                             "a bend's edge from its axis",
                         );
                         let phi =
-                            (r0.0 * v.1 - r0.1 * v.0).atan2(r0.0 * v.0 + r0.1 * v.1) * zc.signum();
+                            (r0.0 * v.1 - r0.1 * v.0).patan2(r0.0 * v.0 + r0.1 * v.1) * zc.signum();
                         let s = phi * b.neutral();
                         let q = [foot[0] + s * b.across[0], foot[1] + s * b.across[1]];
                         on_pattern(q, "a bend's edge");

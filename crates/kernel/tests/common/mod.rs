@@ -5,6 +5,7 @@
 #![allow(dead_code, clippy::vec_init_then_push)]
 
 use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
 use std::f64::consts::PI;
 
@@ -299,7 +300,7 @@ fn unit_catalogue() -> Vec<Case> {
     // They meet at (0, ±4); each arc spans 2α with cos α = 3/5. The lens is
     // two circular segments of area r²(2α − sin 2α)/2 = 25α − 12 each:
     // area 50α − 24, perimeter 2·r·2α = 20α, centre the origin.
-    let alpha = 0.6_f64.acos();
+    let alpha = 0.6_f64.pacos();
     cases.push(Case {
         name: "lens",
         curves: vec![
@@ -527,7 +528,7 @@ pub fn rounded_polygon(
         polygon_area += 0.5 * (p[0] * q[1] - p[1] * q[0]);
     }
     let unit = |a: [f64; 2], b: [f64; 2]| {
-        let l = (b[0] - a[0]).hypot(b[1] - a[1]);
+        let l = (b[0] - a[0]).phypot(b[1] - a[1]);
         [(b[0] - a[0]) / l, (b[1] - a[1]) / l]
     };
     // Per corner: the tangent points on the incoming and outgoing side,
@@ -535,12 +536,12 @@ pub fn rounded_polygon(
     for i in 0..n {
         let (prev, here, next) = (points[(i + n - 1) % n], points[i], points[(i + 1) % n]);
         let (a, b) = (unit(prev, here), unit(here, next));
-        let turn = (a[0] * b[1] - a[1] * b[0]).atan2(a[0] * b[0] + a[1] * b[1]);
+        let turn = (a[0] * b[1] - a[1] * b[0]).patan2(a[0] * b[0] + a[1] * b[1]);
         let big = radii[i];
         // A corner that turns right (an inside corner) is rounded the
         // other way round: its arc's centre lies to the right.
         let side = turn.signum();
-        let back = big * (turn.abs() / 2.0).tan();
+        let back = big * (turn.abs() / 2.0).ptan();
         let t_in = [here[0] - a[0] * back, here[1] - a[1] * back];
         let t_out = [here[0] + b[0] * back, here[1] + b[1] * back];
         let centre = [t_in[0] - a[1] * big * side, t_in[1] + a[0] * big * side];
@@ -563,10 +564,10 @@ pub fn rounded_polygon(
         let next_in = corners[(i + 1) % n].0;
         curves.push(line(id, t_out, next_in));
         id += 1;
-        lines += (next_in[0] - t_out[0]).hypot(next_in[1] - t_out[1]);
+        lines += (next_in[0] - t_out[0]).phypot(next_in[1] - t_out[1]);
         // What the arc cuts off an outside corner, or fills in an inside
         // one.
-        cut += turn.signum() * big * big * ((turn.abs() / 2.0).tan() - turn.abs() / 2.0);
+        cut += turn.signum() * big * big * ((turn.abs() / 2.0).ptan() - turn.abs() / 2.0);
     }
     let turns = corners.iter().map(|c| c.3).collect();
     (curves, polygon_area - cut, lines, turns)

@@ -1682,6 +1682,7 @@ pub fn periodic_derivatives(
 mod tests {
     use super::*;
     use craft3d_math::Frame;
+    use craft3d_math::Portable;
 
     fn arc_and_spline() -> [NurbsCurve; 2] {
         let arc = NurbsCurve::new(
@@ -1719,7 +1720,7 @@ mod tests {
         let params: Vec<f64> = (0..9).map(|i| f64::from(i) * 0.125).collect();
         let values: Vec<Vec<f64>> = params
             .iter()
-            .map(|t| vec![(3.0 * t).sin(), t * t, 1.0 / (1.0 + t)])
+            .map(|t| vec![(3.0 * t).psin(), t * t, 1.0 / (1.0 + t)])
             .collect();
         let (knots, ctrl) = interpolate(&params, 3, &values).unwrap();
         let again = interpolate_on(&params, 3, &knots, &values).unwrap();
@@ -1866,11 +1867,13 @@ mod tests {
     #[test]
     fn the_linear_periodic_solve_is_the_dense_one() {
         for n in [3_usize, 4, 7, 40] {
-            let steps: Vec<f64> = (0..n).map(|i| 0.3 + (i as f64 * 1.7).sin().abs()).collect();
+            let steps: Vec<f64> = (0..n)
+                .map(|i| 0.3 + (i as f64 * 1.7).psin().abs())
+                .collect();
             let values: Vec<Vec<f64>> = (0..n)
                 .map(|i| {
                     let t = i as f64;
-                    vec![(0.9 * t).cos(), t * t * 0.01, 2.0 - (0.4 * t).sin()]
+                    vec![(0.9 * t).pcos(), t * t * 0.01, 2.0 - (0.4 * t).psin()]
                 })
                 .collect();
             let matrix = periodic_tangents(&steps).unwrap();
@@ -1889,15 +1892,15 @@ mod tests {
         let values: Vec<Vec<f64>> = (0..many)
             .map(|i| {
                 let a = std::f64::consts::TAU * i as f64 / many as f64;
-                vec![a.cos(), a.sin()]
+                vec![a.pcos(), a.psin()]
             })
             .collect();
         let got = periodic_derivatives(&steps, &values).unwrap();
         for (i, g) in got.iter().enumerate() {
             let a = std::f64::consts::TAU * i as f64 / many as f64;
             let want = [
-                -a.sin() * std::f64::consts::TAU,
-                a.cos() * std::f64::consts::TAU,
+                -a.psin() * std::f64::consts::TAU,
+                a.pcos() * std::f64::consts::TAU,
             ];
             assert!((g[0] - want[0]).abs() < 1e-9 && (g[1] - want[1]).abs() < 1e-9);
         }
@@ -1905,10 +1908,10 @@ mod tests {
 
     #[test]
     fn the_banded_interpolation_is_the_dense_one() {
-        let params: Vec<f64> = (0..40).map(|i| f64::from(i).powf(1.3) / 40.0).collect();
+        let params: Vec<f64> = (0..40).map(|i| f64::from(i).ppowf(1.3) / 40.0).collect();
         let values: Vec<Vec<f64>> = params
             .iter()
-            .map(|t| vec![(3.0 * t).sin(), t * t, 1.0 + 0.1 * t])
+            .map(|t| vec![(3.0 * t).psin(), t * t, 1.0 + 0.1 * t])
             .collect();
         let (knots, matrix) = interpolation(&params, 3).unwrap();
         let (banded_knots, control) = interpolate(&params, 3, &values).unwrap();
@@ -2125,7 +2128,7 @@ mod tests {
         let points: Vec<Vec3> = (0..n)
             .map(|k| {
                 let a = std::f64::consts::TAU * f64::from(k) / f64::from(n);
-                Vec3::new(a.cos(), a.sin(), 0.0)
+                Vec3::new(a.pcos(), a.psin(), 0.0)
             })
             .collect();
         let matrix = periodic_tangents(&vec![1.0; n as usize]).unwrap();

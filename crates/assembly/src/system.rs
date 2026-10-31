@@ -12,6 +12,7 @@ use crate::ldl::{Budget, Ordering, Pattern};
 use crate::types::{
     CouplingKind, Diagnosis, Frame, Group, Mat3, MateKind, MateSpec, Pose, Problem, VarKind,
 };
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use std::collections::BTreeSet;
 use std::f64::consts::PI;
@@ -415,7 +416,7 @@ impl System {
         let wb = pb.frame(&mate.fb);
         let local = wa.axes.apply_transposed(wb.origin - wa.origin);
         let gx = wb.axes.x();
-        let phi = wa.axes.y().dot(gx).atan2(wa.axes.x().dot(gx));
+        let phi = wa.axes.y().dot(gx).patan2(wa.axes.x().dot(gx));
         let theta = wrap(phi - mate.angle);
         mate.kind
             .variables()
@@ -738,7 +739,7 @@ impl System {
 pub(crate) fn rotation_angle(r: &Mat3) -> f64 {
     let tr = r.x().x + r.y().y + r.z().z;
     let s = Vec3::new(r.y().z - r.z().y, r.z().x - r.x().z, r.x().y - r.y().x).length() * 0.5;
-    s.atan2((tr - 1.0) * 0.5)
+    s.patan2((tr - 1.0) * 0.5)
 }
 
 /// `a` plus the whole turns that bring it into `[lo, hi]`, or nearest to it
@@ -804,7 +805,7 @@ pub(crate) fn log_so3(r: &Mat3) -> Vec3 {
     let axial = Vec3::new(r.y().z - r.z().y, r.z().x - r.x().z, r.x().y - r.y().x) * 0.5;
     let cos = ((r.x().x + r.y().y + r.z().z - 1.0) * 0.5).clamp(-1.0, 1.0);
     let sin = axial.length();
-    let theta = sin.atan2(cos);
+    let theta = sin.patan2(cos);
     if !theta.is_finite() {
         return Vec3::ZERO;
     }
@@ -848,7 +849,7 @@ pub(crate) fn jl_inv(phi: Vec3) -> [[f64; 3]; 3] {
         1.0 / 12.0 + theta * theta / 720.0
     } else {
         let half = 0.5 * theta;
-        1.0 / (theta * theta) - half.cos() / (half.sin() * 2.0 * theta)
+        1.0 / (theta * theta) - half.pcos() / (half.psin() * 2.0 * theta)
     };
     let mut out = [[0.0; 3]; 3];
     for (r, row) in out.iter_mut().enumerate() {

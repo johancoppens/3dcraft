@@ -24,6 +24,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::plain::{run, session};
@@ -159,8 +160,8 @@ impl Curve {
                 // About z: the arm is horizontal.
                 center
                     + Vec3::new(
-                        arm.x * angle.cos() - arm.y * angle.sin(),
-                        arm.x * angle.sin() + arm.y * angle.cos(),
+                        arm.x * angle.pcos() - arm.y * angle.psin(),
+                        arm.x * angle.psin() + arm.y * angle.pcos(),
                         0.0,
                     )
             }
@@ -178,8 +179,8 @@ impl Curve {
             Curve::Circle { center, start, .. } => {
                 let radius = (start - center).length();
                 let rel = p - center;
-                let radial = rel.x.hypot(rel.y);
-                (radial - radius).hypot(rel.z)
+                let radial = rel.x.phypot(rel.y);
+                (radial - radius).phypot(rel.z)
             }
         }
     }
@@ -303,7 +304,7 @@ fn nearest_vertex(picture: &Picture, corners: &[Corner], x: f64, y: f64) -> f64 
         .iter()
         .filter_map(|c| {
             let (cx, cy, _) = picture.project(c.point);
-            let d = (cx - x).hypot(cy - y);
+            let d = (cx - x).phypot(cy - y);
             // The ray is cast only for the ones that matter.
             (d <= 70.0 && picture.in_sight(c.point)).then_some(d)
         })
@@ -348,7 +349,7 @@ fn check_vertex<'a>(
     let distance = vertex["distance"].as_f64().unwrap();
     let (px, py) = (picked["x"].as_f64().unwrap(), picked["y"].as_f64().unwrap());
     assert!(
-        ((x - px).hypot(y - py) - distance).abs() < 1e-6,
+        ((x - px).phypot(y - py) - distance).abs() < 1e-6,
         "{context}: lands at ({x}, {y})"
     );
     assert!(
@@ -567,7 +568,7 @@ fn check_edge<'a>(
     let distance = edge["distance"].as_f64().unwrap();
     let (px, py) = (picked["x"].as_f64().unwrap(), picked["y"].as_f64().unwrap());
     assert!(
-        ((x - px).hypot(y - py) - distance).abs() < 1e-6,
+        ((x - px).phypot(y - py) - distance).abs() < 1e-6,
         "{context}: lands at ({x}, {y})"
     );
     assert!(
@@ -706,7 +707,7 @@ fn a_pick_on_an_edge_in_sight_is_the_edge_document_edges_lists() {
                 // the edge agree, so that the border of what covers an
                 // edge is not what decides.
                 let ahead = picture.project(chords.at(u + 1e-4));
-                let pixels_per_u = (ahead.0 - x).hypot(ahead.1 - y) / 1e-4;
+                let pixels_per_u = (ahead.0 - x).phypot(ahead.1 - y) / 1e-4;
                 let step = 2.0 / pixels_per_u;
                 let sight = [u - step, u, u + step].map(|v| picture.in_sight(chords.at(v)));
                 let picked = run(&mut s, "view.pick", pick_params(view, x, y));
@@ -815,7 +816,7 @@ fn the_nearest_edge_in_sight_within_the_radius_wins() {
                 .windows(2)
                 .map(|w| {
                     let (a, b) = (picture.project(w[0]), picture.project(w[1]));
-                    (b.0 - a.0).hypot(b.1 - a.1)
+                    (b.0 - a.0).phypot(b.1 - a.1)
                 })
                 .sum();
             let count = ((pixels * 4.0).ceil() as usize).clamp(4, 20_000);
@@ -847,7 +848,7 @@ fn the_nearest_edge_in_sight_within_the_radius_wins() {
                 let mut clearly: Option<(f64, usize)> = None;
                 let mut at_all: Option<f64> = None;
                 for i in 0..samples.len() {
-                    let d = (samples[i].at.0 - x).hypot(samples[i].at.1 - y);
+                    let d = (samples[i].at.0 - x).phypot(samples[i].at.1 - y);
                     if d > radius + 1.0 || !in_sight(i, &samples) {
                         continue;
                     }
@@ -1432,7 +1433,7 @@ fn a_vertex_wins_over_an_edge_within_the_radius_and_the_nearest_vertex_wins() {
         assert_eq!(out.get("edge").is_some(), expected == "edge", "{context}");
         if expected == "vertex" {
             let vertex = &out["vertex"];
-            let d = f64::hypot(dx, dy);
+            let d = f64::phypot(dx, dy);
             assert!(
                 (vertex["distance"].as_f64().unwrap() - d).abs() < 1e-9,
                 "{context}"

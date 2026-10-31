@@ -8,6 +8,7 @@
 //! a `craft3d-cli serve` process per worker (`cargo xtask actions`, which
 //! includes this file by path).
 
+use craft3d_math::Portable;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -422,7 +423,7 @@ fn length(edge: &Edge) -> Option<f64> {
 /// Decimals that leave six significant digits of `x`.
 fn decimals(x: f64) -> usize {
     let magnitude = if x.abs() > 0.0 && x.is_finite() {
-        x.abs().log10().floor()
+        x.abs().plog10().floor()
     } else {
         0.0
     };
@@ -521,7 +522,7 @@ pub fn turning(e: &Edge) -> Option<f64> {
     if !(polygon.is_finite() && polygon > 0.0 && chord.is_finite()) {
         return None;
     }
-    let sinc = |x: f64| if x == 0.0 { 1.0 } else { x.sin() / x };
+    let sinc = |x: f64| if x == 0.0 { 1.0 } else { x.psin() / x };
     // The half angle whose sinc is `q`, sinc decreasing on [0, π].
     let half = |q: f64| {
         if q >= 1.0 {
@@ -640,16 +641,16 @@ pub fn orient(action: &mut Action, edges: &[Edge], outward: &BTreeMap<String, [f
     if sa.abs() < 1e-9 || sb.abs() < 1e-9 || (sa < 0.0) != (sb < 0.0) {
         return;
     }
-    let phi = dot(da, db).clamp(-1.0, 1.0).acos();
+    let phi = dot(da, db).clamp(-1.0, 1.0).pacos();
     if !(phi > 1e-6 && phi < std::f64::consts::PI - 1e-6) {
         return;
     }
-    let half = (0.5 * phi).tan();
+    let half = (0.5 * phi).ptan();
     let (section, setback, across) = if chamfer {
         (
-            0.5 * size * size * phi.sin(),
+            0.5 * size * size * phi.psin(),
             size,
-            2.0 * size * (0.5 * phi).sin(),
+            2.0 * size * (0.5 * phi).psin(),
         )
     } else {
         (
@@ -753,7 +754,7 @@ pub fn refine(action: &mut Action, list: &[Edge], normals: &Normals) {
             // The wedge is π less the angle between the outward normals;
             // either way round, it is at least the smaller of that angle
             // and its supplement.
-            let beta = dot(na, nb).abs().min(1.0).acos();
+            let beta = dot(na, nb).abs().min(1.0).pacos();
             least = Some(least.map_or(beta, |l: f64| l.min(beta)));
         }
         *wedge = least.filter(|w| *w > 1e-6);
@@ -1241,7 +1242,7 @@ fn general_section(size: f64, chamfer: bool, wedge: Option<f64>) -> (f64, f64) {
         return (0.5 * size * size, size);
     }
     let per_r = wedge
-        .map(|w| 1.0 / (0.5 * w.min(std::f64::consts::PI)).tan())
+        .map(|w| 1.0 / (0.5 * w.min(std::f64::consts::PI)).ptan())
         .filter(|x| x.is_finite() && *x >= 0.0)
         .unwrap_or(SETBACK);
     (per_r * size * size, per_r * size)
@@ -1536,7 +1537,7 @@ pub fn identity(action: &Action, after: &Measured) -> Result<(), String> {
         }
         Expect::Draft(diag) => {
             changes("a draft")?;
-            at_most("a draft by 3°", 3f64.to_radians().tan() * diag * larger)
+            at_most("a draft by 3°", 3f64.to_radians().ptan() * diag * larger)
         }
         Expect::Hollow(t) => {
             if volume >= v0 {

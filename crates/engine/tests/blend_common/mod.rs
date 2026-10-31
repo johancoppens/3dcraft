@@ -13,6 +13,7 @@
 
 use crate::common::checked::{built, run};
 use craft3d_engine::Session;
+use craft3d_math::Portable;
 use serde_json::{Value, json};
 
 pub const SCALES: [f64; 3] = [1e-3, 1.0, 1e6];
@@ -47,7 +48,8 @@ pub fn edge_between(
 ) -> Value {
     let listed = run(session, "document.edges", json!({"feature": feature}));
     let far = |p: [f64; 3], q: [f64; 3]| {
-        ((p[0] - q[0] * k).powi(2) + (p[1] - q[1] * k).powi(2) + (p[2] - q[2] * k).powi(2)).sqrt()
+        ((p[0] - q[0] * k).ppowi(2) + (p[1] - q[1] * k).ppowi(2) + (p[2] - q[2] * k).ppowi(2))
+            .sqrt()
     };
     let (edge, off) = listed["edges"]
         .as_array()

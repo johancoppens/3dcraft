@@ -27,6 +27,7 @@
 //!   subsurface colour.
 
 use super::DIELECTRIC_F0;
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use std::f64::consts::PI;
 
@@ -223,7 +224,7 @@ pub fn absorption_coefficients(color: [u8; 3], distance: f64) -> [f32; 3] {
     color.map(|b| {
         let c = super::tonemap::byte_to_linear(b).max(MIN_ABSORBED);
         // Deliberate narrowing: the coefficient both renderers read.
-        (-c.ln() / distance) as f32
+        (-c.pln() / distance) as f32
     })
 }
 
@@ -316,7 +317,7 @@ pub fn slab_path(across: f64, nv: f64, n: Vec3, refracted: Vec3) -> f64 {
 /// `t sin θ (1 − cos θ / √(n² − sin² θ))` (the textbook closed form; the
 /// tests hold the screen-space refraction to it).
 pub fn slab_offset(thickness: f64, ior: f64, theta: f64) -> f64 {
-    let (s, c) = theta.sin_cos();
+    let (s, c) = theta.psin_cos();
     thickness * s * (1.0 - c / (ior * ior - s * s).sqrt())
 }
 
@@ -366,10 +367,10 @@ mod tests {
     fn refraction_follows_snell() {
         let n = Vec3::Z;
         let theta: f64 = 0.6;
-        let d = Vec3::new(theta.sin(), 0.0, -theta.cos());
+        let d = Vec3::new(theta.psin(), 0.0, -theta.pcos());
         let r = refract(d, n, 1.5).unwrap();
         let sin_t = r.x;
-        assert!((theta.sin() - 1.5 * sin_t).abs() < 1e-12);
+        assert!((theta.psin() - 1.5 * sin_t).abs() < 1e-12);
         assert!(r.z < 0.0);
     }
 

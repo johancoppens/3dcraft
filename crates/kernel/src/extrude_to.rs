@@ -52,6 +52,7 @@ use crate::primitives;
 use crate::profile::{Profile, Shape};
 use crate::{KernelError, MAX_REPORTED};
 use craft3d_geom::{Curve3, Line, NurbsCurve, NurbsSurface, Plane, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, FaceId, VertexId};
 use std::collections::BTreeSet;
@@ -294,7 +295,7 @@ fn torus_tool(sweep: &Sweep, torus: &craft3d_geom::Torus) -> Result<Tool, Kernel
     let far = sweep.far_enough(sweep.depth(frame.origin()) + major + minor)?;
     let inside = sweep.starts_inside(|p| {
         let (x, y, z) = frame.local(p);
-        (x.hypot(y) - major).hypot(z) - minor
+        (x.phypot(y) - major).phypot(z) - minor
     })?;
     Ok(Tool {
         body: primitives::torus(frame, major, minor)?,

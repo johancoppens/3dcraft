@@ -16,6 +16,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{built, new_document, run, session};
@@ -54,7 +55,7 @@ fn vector(value: &Value) -> V {
 }
 
 fn distance(a: V, b: V) -> f64 {
-    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+    ((a[0] - b[0]).ppowi(2) + (a[1] - b[1]).ppowi(2) + (a[2] - b[2]).ppowi(2)).sqrt()
 }
 
 fn texts(value: &Value) -> Vec<String> {
@@ -521,7 +522,7 @@ fn sweeps(s: &mut Session, k: f64) -> Vec<&'static str> {
         s,
         "feature.cylinder",
         json!({"radius": 20.0 * k, "height": 3.0 * k, "position": [0, 100.0 * k, 7.0 * k],
-               "axis": [0.4_f64.sin(), 0, 0.4_f64.cos()], "name": "Roof"}),
+               "axis": [0.4_f64.psin(), 0, 0.4_f64.pcos()], "name": "Roof"}),
     );
     let roof = id_of(s, "Roof");
     sketch(s, "PostProfile", "xy", 0.0);

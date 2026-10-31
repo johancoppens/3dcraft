@@ -13,6 +13,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 #[path = "common/bodies.rs"]
 mod bodies;
 
@@ -261,7 +262,7 @@ fn a_file_in_inches_reads_back_in_millimetres() {
         )
         .unwrap();
     let volume = craft3d_topo::mass_properties(&done.body).unwrap().volume;
-    let expected = 6.0 * 25.4f64.powi(3);
+    let expected = 6.0 * 25.4f64.ppowi(3);
     assert!((volume - expected).abs() < 1e-9 * expected, "{volume}");
     assert_eq!(done.report.length_unit, "INCH");
     assert_eq!(done.name, "inch block");
@@ -967,7 +968,7 @@ fn as_swept(file: &StepFile, turn: bool) -> (StepFile, usize) {
             "CONICAL_SURFACE" => {
                 let f = frame_of(file, p[1].as_ref().unwrap());
                 let (r, a) = (real(2), real(3));
-                let along = f.vector(a.sin(), 0.0, a.cos()) * sign;
+                let along = f.vector(a.psin(), 0.0, a.pcos()) * sign;
                 let line = adder.line(f.point(r, 0.0, 0.0), along);
                 let axis = adder.axis1(f.origin(), f.z());
                 Record::new(
@@ -1232,12 +1233,12 @@ fn as_swept_splines(file: &StepFile, turn: bool) -> (StepFile, usize) {
             "CONICAL_SURFACE" => {
                 let f = frame_of(file, p[1].as_ref().unwrap());
                 let (r, a) = (real(2), real(3));
-                let up = f.vector(a.sin(), 0.0, a.cos());
+                let up = f.vector(a.psin(), 0.0, a.pcos());
                 // Long enough to hold every face on the cone: from the
                 // axis (the apex) to well past the base, or back.
                 let base = f.point(r, 0.0, 0.0);
                 let reach = 20.0 * (r + 1.0);
-                let apex = base - up * (r / a.sin());
+                let apex = base - up * (r / a.psin());
                 let (from, to) = if turn {
                     (base + up * reach, apex)
                 } else {
@@ -1382,7 +1383,7 @@ fn as_offsets(file: &StepFile, d: f64, outward: bool) -> (StepFile, usize) {
                 vec![
                     Param::string(""),
                     p[1].clone(),
-                    Param::Real(real(2) - d * sign / real(3).cos()),
+                    Param::Real(real(2) - d * sign / real(3).pcos()),
                     p[3].clone(),
                 ],
             ),
@@ -1618,7 +1619,7 @@ fn seamed(frame: &Frame, k: f64) -> Vec<(String, Body, f64)> {
     out.push((
         "seamed sphere".to_string(),
         body,
-        4.0 / 3.0 * std::f64::consts::PI * radius.powi(3),
+        4.0 / 3.0 * std::f64::consts::PI * radius.ppowi(3),
     ));
     out
 }
@@ -1764,7 +1765,7 @@ fn faces_that_share_nothing_and_meet_within_a_gap_are_sewn() {
             let file = file_of(&name, &body);
             let moves = |f: usize| {
                 let a = 0.7 * f as f64 + 0.3;
-                Vec3::new(a.cos(), a.sin(), (1.3 * a).cos()) * (k * tol.linear * 0.5)
+                Vec3::new(a.pcos(), a.psin(), (1.3 * a).pcos()) * (k * tol.linear * 0.5)
             };
             let apart = faces_apart(&file, moves);
             match read_all(&apart) {
@@ -1896,7 +1897,7 @@ fn a_side_against_two_faces_split_across_it_reads_as_one_body() {
         let moves: Vec<Vec3> = (0..expected.faces.len())
             .map(|f| {
                 let a = 0.7 * f as f64 + 0.3;
-                Vec3::new(a.cos(), a.sin(), (1.3 * a).cos()) * (k * tol.linear * 0.5)
+                Vec3::new(a.pcos(), a.psin(), (1.3 * a).pcos()) * (k * tol.linear * 0.5)
             })
             .collect();
         let loose = exploded_from(

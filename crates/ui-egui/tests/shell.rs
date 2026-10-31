@@ -12,6 +12,7 @@ use craft3d_engine::{
     AUTOMATIC_RELATIVE_TOLERANCE, DISPLAY_MAX_ANGLE_DEGREES, DISPLAY_MAX_TRIANGLES,
     DISPLAY_RELATIVE_TOLERANCE, FeatureState, SceneQuality, Session, Workspace,
 };
+use craft3d_math::Portable;
 use craft3d_ui_egui::camera::{ORBIT_DEGREES_PER_POINT, Projector};
 use craft3d_ui_egui::shell::image_quality;
 use craft3d_ui_egui::state::{CameraState, ProjectionKind};
@@ -722,7 +723,7 @@ fn a_sketch_square_seen_from_the_top_projects_to_a_square_of_the_expected_size()
     camera.set_view("top").unwrap();
 
     let overlay = viewport::overlay(Some(&scene), &camera, 400, 400, None);
-    let per_unit = 400.0 / (2.0 * 100.0 * 15.0_f64.to_radians().tan());
+    let per_unit = 400.0 / (2.0 * 100.0 * 15.0_f64.to_radians().ptan());
     let half = 10.0 * per_unit;
     assert!((half - 74.641).abs() < 1e-3, "{half}");
     let (left, right, top, bottom) = (200.0 - half, 200.0 + half, 200.0 - half, 200.0 + half);

@@ -11,6 +11,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::plain::run;
@@ -65,7 +66,7 @@ fn a_followed_subject_measures_the_newest_body_and_an_exact_one_keeps_its_meanin
         block(&mut s, k);
         close(
             &listed(&mut s, "grown")["measured"],
-            6000.0 * k.powi(3),
+            6000.0 * k.ppowi(3),
             "B alone",
         );
         // A hole through B: the exact subject is in error (its body went
@@ -80,7 +81,7 @@ fn a_followed_subject_measures_the_newest_body_and_an_exact_one_keeps_its_meanin
             "feature.boolean",
             json!({"op": "subtract", "target": "B", "tool": "T", "name": "Cut"}),
         );
-        let cut = 5520.0 * k.powi(3);
+        let cut = 5520.0 * k.ppowi(3);
         let exact = listed(&mut s, "exact");
         assert_eq!(exact["status"], "error", "{exact}");
         assert!(
@@ -119,7 +120,7 @@ fn a_followed_subject_measures_the_newest_body_and_an_exact_one_keeps_its_meanin
             "feature.boolean",
             json!({"op": "union", "target": "Cut", "tool": "D", "name": "Join"}),
         );
-        let joined = 5670.0 * k.powi(3);
+        let joined = 5670.0 * k.ppowi(3);
         close(
             &listed(&mut s, "grown")["measured"],
             joined,

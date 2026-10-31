@@ -16,6 +16,7 @@
 // Test code: a failure in a helper is a failed test.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
+use craft3d_math::Portable;
 mod boolean_common;
 mod rational_common;
 
@@ -258,11 +259,11 @@ fn a_convex_fillet_moved_with_its_faces_is_the_torus_of_the_radius_plus_the_dist
             let (r, h, tube) = (2.0 + d, 1.0 + d, rho + d);
             let expected = PI / 4.0 * r * r * h - PI / 2.0 * (r - centroid_in(tube)) * corner(tube);
             let slack = 0.5 * tol.linear * m.area;
-            let off = m.volume - expected * k.powi(3);
+            let off = m.volume - expected * k.ppowi(3);
             println!(
                 "convex, k {k}, d {d}: volume {}, closed form {}, off {off:e}, slack {slack:e}",
                 m.volume,
-                expected * k.powi(3)
+                expected * k.ppowi(3)
             );
             assert!(off.abs() <= slack, "k {k}, d {d}: off by {off:e}");
             let ring = (2.0 - rho) * k;
@@ -300,11 +301,11 @@ fn a_concave_fillet_moved_with_its_faces_is_the_torus_of_the_radius_less_the_dis
             let expected =
                 13.5 - PI / 4.0 * r * r * depth + PI / 2.0 * (r - centroid_in(tube)) * corner(tube);
             let slack = 0.5 * tol.linear * m.area;
-            let off = m.volume - expected * k.powi(3);
+            let off = m.volume - expected * k.ppowi(3);
             println!(
                 "concave, k {k}, d {d}: volume {}, closed form {}, off {off:e}, slack {slack:e}",
                 m.volume,
-                expected * k.powi(3)
+                expected * k.ppowi(3)
             );
             assert!(off.abs() <= slack, "k {k}, d {d}: off by {off:e}");
         }
@@ -348,7 +349,7 @@ fn balls(k: f64, union: bool, big: f64, a: f64, rho: f64, tol: &Tolerance) -> (B
 
 /// `∫ sqrt(r² − z²) dz` from `z0` to `z1` (`|z| ≤ r`).
 fn half_disc(r: f64, z0: f64, z1: f64) -> f64 {
-    let f = |z: f64| 0.5 * (z * (r * r - z * z).max(0.0).sqrt() + r * r * (z / r).asin());
+    let f = |z: f64| 0.5 * (z * (r * r - z * z).max(0.0).sqrt() + r * r * (z / r).pasin());
     f(z1) - f(z0)
 }
 
@@ -365,14 +366,14 @@ fn balls_volume(union: bool, big: f64, a: f64, rho: f64) -> f64 {
     let touch = a * rho / reach;
     // π ∫ (big² − (x ∓ a)²) dx over a cap of a ball: the ball's part
     // beyond `from` (distance from its centre along x) to its pole.
-    let cap = |from: f64| PI * (big * big * (big - from) - (big.powi(3) - from.powi(3)) / 3.0);
+    let cap = |from: f64| PI * (big * big * (big - from) - (big.ppowi(3) - from.ppowi(3)) / 3.0);
     // π ∫ (centre ∓ sqrt(rho² − x²))² dx over |x| ≤ touch.
     let ring = |sign: f64| {
         let length = 2.0 * touch;
         PI * (centre * centre * length
             + 2.0 * sign * centre * half_disc(rho, -touch, touch)
             + rho * rho * length
-            - 2.0 * touch.powi(3) / 3.0)
+            - 2.0 * touch.ppowi(3) / 3.0)
     };
     if union {
         // The far ball beyond x = touch is the near ball's... each ball
@@ -402,9 +403,9 @@ fn a_ring_between_two_balls_moved_with_them_is_the_ring_of_the_radius_moved() {
             println!(
                 "balls {union}, k {k}: volume {} against {}",
                 m.volume,
-                made * k.powi(3)
+                made * k.ppowi(3)
             );
-            assert!((m.volume - made * k.powi(3)).abs() <= 0.5 * tol.linear * m.area);
+            assert!((m.volume - made * k.ppowi(3)).abs() <= 0.5 * tol.linear * m.area);
             let all: Vec<FaceId> = (0..body.faces.len()).map(|f| FaceId(f as u32)).collect();
             for d in moves(k, [0.2, -0.15]) {
                 let result = moved(&body, &all, d * k, &Blends::default(), &tol);
@@ -412,11 +413,11 @@ fn a_ring_between_two_balls_moved_with_them_is_the_ring_of_the_radius_moved() {
                 let tube = if union { rho - d } else { rho + d };
                 let expected = balls_volume(union, big + d, a, tube);
                 let slack = 0.5 * tol.linear * m.area;
-                let off = m.volume - expected * k.powi(3);
+                let off = m.volume - expected * k.ppowi(3);
                 println!(
                     "balls {union}, k {k}, d {d}: volume {}, closed form {}, off {off:e}, slack {slack:e}",
                     m.volume,
-                    expected * k.powi(3)
+                    expected * k.ppowi(3)
                 );
                 assert!(
                     off.abs() <= slack,
@@ -455,11 +456,11 @@ fn balls_with_their_ring_filleted_shell_to_the_closed_form() {
             let expected =
                 balls_volume(union, big, a, rho) - balls_volume(union, big - t, a, hollow_tube);
             let slack = 0.5 * tol.linear * m.area;
-            let off = m.volume - expected * k.powi(3);
+            let off = m.volume - expected * k.ppowi(3);
             println!(
                 "shell {union}, k {k}: volume {}, closed form {}, off {off:e}",
                 m.volume,
-                expected * k.powi(3)
+                expected * k.ppowi(3)
             );
             assert!(off.abs() <= slack, "union {union}, k {k}: off by {off:e}");
         }
@@ -634,7 +635,7 @@ fn a_fillet_on_an_offset_face_moved_again_with_it() {
         let m = mass(&result);
         let (r, h, tube) = (2.2 + d, 1.0 + d, rho + d);
         let expected = PI / 4.0 * r * r * h - PI / 2.0 * (r - centroid_in(tube)) * corner(tube);
-        let off = m.volume - expected * k.powi(3);
+        let off = m.volume - expected * k.ppowi(3);
         let slack = 0.5 * tol.linear * m.area;
         println!("twice, k {k}: off {off:e}, slack {slack:e}");
         assert!(off.abs() <= slack, "k {k}: off by {off:e}");
@@ -743,7 +744,7 @@ fn a_rounded_block_moved_shelled_and_thickened_to_the_closed_form() {
             let result = moved(&body, &faces, d * k, &Blends::default(), &tol);
             let m = mass(&result);
             let expected = block(a, b + d, c + d, rho + d);
-            let off = m.volume - expected * k.powi(3);
+            let off = m.volume - expected * k.ppowi(3);
             let slack = 0.5 * tol.linear * m.area;
             println!("block, k {k}, d {d}: off {off:e}, slack {slack:e}");
             assert!(off.abs() <= slack, "k {k}, d {d}: off by {off:e}");
@@ -774,7 +775,7 @@ fn a_rounded_block_moved_shelled_and_thickened_to_the_closed_form() {
         assert_eq!(check(&shelled.body, &tol), []);
         let m = mass(&shelled.body);
         let expected = block(a, b, c, rho) - block(a - 2.0 * t, b - 2.0 * t, c - t, rho - t);
-        let off = m.volume - expected * k.powi(3);
+        let off = m.volume - expected * k.ppowi(3);
         println!("block shelled, k {k}: off {off:e}");
         assert!(
             off.abs() <= 0.5 * tol.linear * m.area,
@@ -794,7 +795,7 @@ fn a_rounded_block_moved_shelled_and_thickened_to_the_closed_form() {
         assert_eq!(check(&layer.body, &tol), []);
         let m = mass(&layer.body);
         let expected = block(a, b + t, c + t, rho + t) - block(a, b, c, rho);
-        let off = m.volume - expected * k.powi(3);
+        let off = m.volume - expected * k.ppowi(3);
         println!("block thickened, k {k}: off {off:e}");
         assert!(
             off.abs() <= 0.5 * tol.linear * m.area,
@@ -830,7 +831,7 @@ fn a_freeform_fillet_shelled_past_its_radius_leaves_a_sharp_hollow() {
             assert_eq!(check(&shelled.body, &tol), []);
             let m = mass(&shelled.body);
             let expected = block(a, b, c, rho) - (a - 2.0 * t) * (b - 2.0 * t) * (c - t);
-            let off = m.volume - expected * k.powi(3);
+            let off = m.volume - expected * k.ppowi(3);
             println!("block shelled {t}, k {k}: off {off:e}");
             assert!(
                 off.abs() <= 0.5 * tol.linear * m.area,
@@ -908,9 +909,9 @@ fn imposter(k: f64, tilt: f64, bump: f64) -> (Body, FaceId, [FaceId; 3]) {
             let off = corner - q1;
             let along_axis = axis * off.dot(axis);
             let radial = off - along_axis;
-            let turned = radial * tilt.cos()
-                + axis.cross(radial) * tilt.sin()
-                + axis * axis.dot(radial) * (1.0 - tilt.cos());
+            let turned = radial * tilt.pcos()
+                + axis.cross(radial) * tilt.psin()
+                + axis * axis.dot(radial) * (1.0 - tilt.pcos());
             middle = q1 + along_axis + turned;
         }
         let weight = if inner && i % 2 == 1 { w * bump } else { w };

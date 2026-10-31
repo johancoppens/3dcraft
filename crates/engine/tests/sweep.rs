@@ -20,6 +20,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{
@@ -199,7 +200,7 @@ fn a_pipe_and_a_bar_along_line_bend_line_have_their_closed_forms_at_every_scale(
         assert_eq!(made["status"], "ok", "{made}");
         close(
             volume(&mut s, "Bar"),
-            6.0 * bent_length(2.5) * k.powi(3),
+            6.0 * bent_length(2.5) * k.ppowi(3),
             1e-12,
         );
         // The sides square to the path's plane (2 long, at 1 and at 4),
@@ -291,12 +292,12 @@ fn a_corner_of_the_path_is_mitred_at_90_60_and_120_degrees() {
             let turn = degrees.to_radians();
             let corner = json!([
                 {"line": [0.0, 10.0 * k]},
-                {"line": [-8.0 * k * turn.sin(), (10.0 + 8.0 * turn.cos()) * k]},
+                {"line": [-8.0 * k * turn.psin(), (10.0 + 8.0 * turn.pcos()) * k]},
             ]);
             // What a line of the profile `right` of the path travels: the
             // two legs, and what the mitre gives it on the outside of the
             // corner (the path turns left).
-            let travel = |right: f64| 18.0 + 2.0 * right * (turn / 2.0).tan();
+            let travel = |right: f64| 18.0 + 2.0 * right * (turn / 2.0).ptan();
 
             // A rectangle 1 by 1.5: the two prisms cut by the bisecting
             // plane.
@@ -305,7 +306,11 @@ fn a_corner_of_the_path_is_mitred_at_90_60_and_120_degrees() {
             path(&mut s, "Route", corner.clone(), false);
             let made = sweep(&mut s, "Section", "Route", "Bar");
             assert_eq!(made["status"], "ok", "{degrees}° at {k}: {made}");
-            close(volume(&mut s, "Bar"), 1.5 * travel(0.25) * k.powi(3), 1e-12);
+            close(
+                volume(&mut s, "Bar"),
+                1.5 * travel(0.25) * k.ppowi(3),
+                1e-12,
+            );
             let sides = 2.0 * 1.5 * travel(0.25) + travel(-0.5) + travel(1.0) + 3.0;
             close(area(&mut s, "Bar"), sides * k * k, 1e-12);
             assert_eq!(face_names(&mut s, "Bar").len(), 8);
@@ -321,7 +326,7 @@ fn a_corner_of_the_path_is_mitred_at_90_60_and_120_degrees() {
             assert_eq!(made["status"], "ok", "{degrees}° at {k}: {made}");
             close(
                 volume(&mut s, "Rod"),
-                PI * 0.25 * travel(0.25) * k.powi(3),
+                PI * 0.25 * travel(0.25) * k.ppowi(3),
                 1e-12,
             );
             close(
@@ -409,7 +414,7 @@ fn a_closed_path_gives_a_ring_without_ends() {
         let made = sweep(&mut s, "Section", "Route", "Frame");
         assert_eq!(made["status"], "ok", "{made}");
         // 16 by 10 outside, 12 by 6 inside, 1 high.
-        close(volume(&mut s, "Frame"), 88.0 * k.powi(3), 1e-12);
+        close(volume(&mut s, "Frame"), 88.0 * k.ppowi(3), 1e-12);
         close(
             area(&mut s, "Frame"),
             (2.0 * 88.0 + 52.0 + 36.0) * k * k,
@@ -433,7 +438,7 @@ fn a_closed_path_gives_a_ring_without_ends() {
         );
         let made = sweep(&mut s, "Section", "Route", "Ring");
         assert_eq!(made["status"], "ok", "{made}");
-        close(volume(&mut s, "Ring"), 4.0 * TAU * 6.0 * k.powi(3), 1e-12);
+        close(volume(&mut s, "Ring"), 4.0 * TAU * 6.0 * k.ppowi(3), 1e-12);
         let names = face_names(&mut s, "Ring");
         // The circle is two half turns: the faces of a side that is
         // square to the path's plane are told apart by a number.
@@ -482,7 +487,7 @@ fn wave_length() -> f64 {
                 at(3.0 * i as f64 / n as f64),
                 at(3.0 * (i + 1) as f64 / n as f64),
             );
-            (b[0] - a[0]).hypot(b[1] - a[1])
+            (b[0] - a[0]).phypot(b[1] - a[1])
         })
         .sum()
 }
@@ -786,7 +791,7 @@ fn sweeps_in_booleans_keep_the_set_identities_and_survive_a_file() {
         assert_eq!(made["status"], "ok", "{made}");
         deep(&mut s);
         let swept = volume(&mut s, "Bar");
-        close(swept, 4.0 * bent_length(0.0) * k.powi(3), 1e-12);
+        close(swept, 4.0 * bent_length(0.0) * k.ppowi(3), 1e-12);
         let before = inspect(&mut s)["bodies"].clone();
         run(&mut s, "file.save", json!({"path": "bar.3dcraft"}));
         run(&mut s, "file.close", json!({}));
@@ -799,7 +804,7 @@ fn sweeps_in_booleans_keep_the_set_identities_and_survive_a_file() {
             ("leg", [-3.0 * k, 3.0 * k, -0.5 * k]),
             ("bend", [-4.5 * k, 10.5 * k, -0.25 * k]),
         ] {
-            let other = 6.0 * 4.0 * 3.0 * k.powi(3);
+            let other = 6.0 * 4.0 * 3.0 * k.ppowi(3);
             let mut volumes = Vec::new();
             for op in ["union", "intersect", "subtract"] {
                 run(&mut s, "file.close", json!({"discard": true}));
@@ -1161,8 +1166,8 @@ fn a_path_whose_arc_end_was_rounded_is_swept_at_the_default_tolerance() {
     deep(&mut s);
     // Line, clockwise arc of radius 22 from the angle of 180° down to the
     // end's, line.
-    let turn = PI - (end[1] - 16.0).atan2(end[0] - 72.0);
-    let last = (62.0088 - end[0]).hypot(40.0868 - end[1]);
+    let turn = PI - (end[1] - 16.0).patan2(end[0] - 72.0);
+    let last = (62.0088 - end[0]).phypot(40.0868 - end[1]);
     let length = 6.0 + 22.0 * turn + last;
     close(volume(&mut s, "Tube"), PI * 25.0 * length, 1e-9);
 }
@@ -1194,7 +1199,7 @@ fn a_lean_within_the_tolerance_is_swept_at_every_scale() {
             sweep(&mut s, "Section", "Route", "Rod");
             if built {
                 assert_eq!(feature(&mut s, "Rod")["status"], "ok", "{k}");
-                let length = 10.0 * k * slope.hypot(1.0);
+                let length = 10.0 * k * slope.phypot(1.0);
                 close(volume(&mut s, "Rod"), PI * k * k * length, 1e-12);
                 deep(&mut s);
             } else {

@@ -21,6 +21,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::{circle, rectangle, scale_curves};
@@ -145,7 +146,7 @@ fn a_helix_is_as_long_as_the_closed_form_and_keeps_its_radius_and_pitch() {
         for left in [false, true] {
             let (r, p, turns) = (5.0 * k, 1.5 * k, 3.25);
             let h = helix(r, p, turns, left);
-            close(h.length(), turns * (TAU * r).hypot(p), 1e-15);
+            close(h.length(), turns * (TAU * r).phypot(p), 1e-15);
             close(h.height(), p * turns, 1e-15);
             // A turn takes it one pitch along the axis, back over its
             // start; a quarter turn to +y for a right-handed one.
@@ -164,7 +165,7 @@ fn a_helix_is_as_long_as_the_closed_form_and_keeps_its_radius_and_pitch() {
             assert_eq!(curve.eval(t1), h.point(h.angle()));
             for i in 0..=1000 {
                 let at = curve.eval(t0 + (t1 - t0) * f64::from(i) / 1000.0);
-                let rho = at.x.hypot(at.y);
+                let rho = at.x.phypot(at.y);
                 assert!((rho - r).abs() <= tolerance / 4.0, "{rho} at {i}");
             }
             close(curve_length(curve, 400), h.length(), 1e-6);
@@ -533,7 +534,7 @@ fn removed(thread: &IsoThread, length: f64) -> f64 {
     let mut run = 0.0;
     for i in 0..=n {
         let phi = h * i as f64;
-        let rho = rise * (phi / FRAC_PI_2).powi(2);
+        let rho = rise * (phi / FRAC_PI_2).ppowi(2);
         let w = if i == 0 || i == n {
             1.0
         } else if i % 2 == 1 {
@@ -785,7 +786,7 @@ fn removed_internal(thread: &IsoThread, hole: f64, length: f64) -> f64 {
     let mut run = 0.0;
     for i in 0..=n {
         let phi = h * i as f64;
-        let rho = rise * (phi / FRAC_PI_2).powi(2);
+        let rho = rise * (phi / FRAC_PI_2).ppowi(2);
         let w = if i == 0 || i == n {
             1.0
         } else if i % 2 == 1 {

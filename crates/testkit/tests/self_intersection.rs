@@ -21,6 +21,7 @@
 )]
 
 // The operands and the generator of the kernel's own boolean tests.
+use craft3d_math::Portable;
 #[path = "../../kernel/tests/boolean_common/mod.rs"]
 mod boolean_common;
 
@@ -1272,7 +1273,7 @@ fn the_boolean_scenarios_give_bodies_that_do_not_cross_themselves() {
         let tilt = 0.6_f64;
         let slanted = Frame::new(
             v(0.0, 0.0, 2.0 * k),
-            v(tilt.sin(), 0.0, tilt.cos()),
+            v(tilt.psin(), 0.0, tilt.pcos()),
             Vec3::Y,
         )
         .unwrap();
@@ -1735,7 +1736,7 @@ fn booleans_and_their_meshes_have_no_size_of_their_own() {
             let unit_edges = tessellate_edges(&unit, &params(1.0)).unwrap();
             let (unit_area, unit_volume) = (unit_mesh.area(), volume(&unit_mesh));
             for exponent in [-20, 20] {
-                let k = 2.0_f64.powi(exponent);
+                let k = 2.0_f64.ppowi(exponent);
                 let what = format!("seed {seed} {placement:?} {op:?} at 2^{exponent}");
                 let body = result(k).unwrap_or_else(|e| panic!("{what}: {e}"));
                 let mesh =

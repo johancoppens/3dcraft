@@ -11,6 +11,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod boolean_common;
 
 use boolean_common::{SCALES, boxed, mass, tolerance};
@@ -78,19 +79,19 @@ fn meridian(k: f64) -> Meridian {
     let root: f64 = 0.06;
     let d1 = {
         let (x, y) = (low[0] - corner[0], low[1] - corner[1]);
-        let l = x.hypot(y);
+        let l = x.phypot(y);
         [x / l, y / l]
     };
     let d2: [f64; 2] = [1.0, 0.0];
     let cos = d1[0] * d2[0] + d1[1] * d2[1];
-    let half = 0.5 * cos.acos();
-    let along = root / half.tan();
+    let half = 0.5 * cos.pacos();
+    let along = root / half.ptan();
     let bis = {
         let (x, y) = (d1[0] + d2[0], d1[1] + d2[1]);
-        let l = x.hypot(y);
+        let l = x.phypot(y);
         [x / l, y / l]
     };
-    let out = root / half.sin();
+    let out = root / half.psin();
     let s = |p: [f64; 2]| [p[0] * k, p[1] * k];
     Meridian {
         points: [
@@ -161,7 +162,7 @@ fn cut_chain(body: &Body, m: &Meridian) -> [EdgeId; 3] {
         let (cx, cy) = (m.centre[0], m.centre[1]);
         let (a, b) = ([p[2][0] - cx, p[2][1] - cy], [p[3][0] - cx, p[3][1] - cy]);
         let (x, y) = (a[0] + b[0], a[1] + b[1]);
-        let l = x.hypot(y);
+        let l = x.phypot(y);
         Vec3::new(cx + x / l * m.root, cy + y / l * m.root, 0.0)
     };
     [
@@ -215,9 +216,9 @@ fn to_wall(m: &Meridian, wall: usize, rho: f64, y: f64) -> f64 {
         0 => {
             let (a, b) = (p[1], p[2]);
             let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
-            ((rho - a[0]) * dy - (y - a[1]) * dx).abs() / dx.hypot(dy)
+            ((rho - a[0]) * dy - (y - a[1]) * dx).abs() / dx.phypot(dy)
         }
-        1 => ((rho - m.centre[0]).hypot(y - m.centre[1]) - m.root).abs(),
+        1 => ((rho - m.centre[0]).phypot(y - m.centre[1]) - m.root).abs(),
         _ => (y - p[3][1]).abs(),
     }
 }
@@ -249,7 +250,7 @@ fn by_definition(made: &craft3d_kernel::fillet::FilletResult, m: &Meridian, r: f
                 let n = if face.reversed { -n } else { n };
                 let c = q - n * r;
                 let off_plane = (c.z - r).abs();
-                let off_wall = (to_wall(m, wall, c.x.hypot(c.z), c.y) - r).abs();
+                let off_wall = (to_wall(m, wall, c.x.phypot(c.z), c.y) - r).abs();
                 worst = worst.max(off_plane).max(off_wall);
             }
         }
@@ -289,7 +290,7 @@ fn the_cut_edge_of_a_casing_through_its_root_fillet() {
         println!(
             "scale {k}: off the definition {:e}, largest crease {crease:e} over {seams} seams, removed {:e}",
             off / tol.linear,
-            removed / k.powi(3)
+            removed / k.ppowi(3)
         );
         // Three faces, each tangent to the cut plane and to its wall, and
         // to the next face across the two joints.
@@ -298,7 +299,7 @@ fn the_cut_edge_of_a_casing_through_its_root_fillet() {
         assert!(crease <= 10.0 * tol.linear / r, "a crease of {crease}");
         // A quarter disc's corner along the chain, about 9.5 long.
         let corner = (1.0 - std::f64::consts::FRAC_PI_4) * 0.05 * 0.05;
-        assert!(removed > 9.0 * corner * k.powi(3) && removed < 10.0 * corner * k.powi(3));
+        assert!(removed > 9.0 * corner * k.ppowi(3) && removed < 10.0 * corner * k.ppowi(3));
     }
 }
 
@@ -333,7 +334,7 @@ impl Bez {
             let (a, b) = (f64::from(i) / f64::from(n), f64::from(i + 1) / f64::from(n));
             for (x, w) in nodes {
                 let d = self.d(0.5 * (a + b) + 0.5 * (b - a) * x);
-                sum += 0.5 * (b - a) * w * d[0].hypot(d[1]);
+                sum += 0.5 * (b - a) * w * d[0].phypot(d[1]);
             }
         }
         sum
@@ -791,7 +792,7 @@ fn foot(body: &Body, k: f64) -> Vec<EdgeId> {
             (0..=8).all(|j| {
                 let t = e.range.0 + (e.range.1 - e.range.0) * f64::from(j) / 8.0;
                 let p = e.curve.eval(t) * (1.0 / k);
-                ((p.x + 20.0).hypot(p.y - 82.0) - 17.0).abs() < 1e-6 && p.z < 131.0
+                ((p.x + 20.0).phypot(p.y - 82.0) - 17.0).abs() < 1e-6 && p.z < 131.0
             })
         })
         .map(|i| EdgeId(i as u32))
@@ -806,7 +807,7 @@ fn to_base(y: f64, z: f64) -> f64 {
     let (a, b) = ([98.0_f64, 45.0_f64], [63.0_f64, 110.0_f64]);
     let along = {
         let (dy, dz) = (b[0] - a[0], b[1] - a[1]);
-        let l = dy.hypot(dz);
+        let l = dy.phypot(dz);
         [dy / l, dz / l]
     };
     // Out of the material: away from the block's inside.
@@ -840,13 +841,13 @@ fn to_base(y: f64, z: f64) -> f64 {
     if cross(from_line, to) * cross(from_line, from_boss) >= -1e-9
         && cross(to, from_boss) * cross(from_line, from_boss) >= -1e-9
     {
-        best = best.min((4.0 - to[0].hypot(to[1])).abs());
+        best = best.min((4.0 - to[0].phypot(to[1])).abs());
     }
     // The boss, on the far side of the fillet's tangent point.
     let to_h = [y - h[0], z - h[1]];
     let tangent_h = [on_boss[0] - h[0], on_boss[1] - h[1]];
     if cross(tangent_h, to_h) * cross(tangent_h, [on_line[0] - h[0], on_line[1] - h[1]]) <= 1e-9 {
-        best = best.min((to_h[0].hypot(to_h[1]) - 22.0).abs());
+        best = best.min((to_h[0].phypot(to_h[1]) - 22.0).abs());
     }
     best
 }
@@ -910,7 +911,7 @@ fn the_foot_of_a_boss_over_a_root_fillet() {
                 let n = if face.reversed { -n } else { n };
                 // Concave: the ball is outside, along the outward normal.
                 let c = q + n * r;
-                let to_wall = ((c.x + 20.0).hypot(c.y - 82.0) - 17.0 - r).abs();
+                let to_wall = ((c.x + 20.0).phypot(c.y - 82.0) - 17.0 - r).abs();
                 let to_base = (to_base(c.y, c.z) - r).abs();
                 worst = worst.max(to_wall).max(to_base);
             }
@@ -927,7 +928,7 @@ fn the_foot_of_a_boss_over_a_root_fillet() {
 /// The nearest point to `p` of the solid cone about z with radius `a` at
 /// z = 0 narrowing to its apex at z = 3a.
 fn onto_cone(p: Vec3, a: f64) -> Vec3 {
-    let rho = p.x.hypot(p.y);
+    let rho = p.x.phypot(p.y);
     let (cx, cy) = if rho > 0.0 {
         (p.x / rho, p.y / rho)
     } else {
@@ -1063,7 +1064,7 @@ fn two_fillets_that_meet_where_a_third_edge_stays_sharp() {
                         lo + (hi - lo) * (m as f64 + 0.37) / n_grid as f64
                     };
                     let p = Vec3::new(f(i, -0.75, 0.75), f(j, -0.02, 0.3), f(l, 1.0, 1.4));
-                    let cone = (1.0 - p.z / 3.0 - p.x.hypot(p.y)) * 3.0 / 10f64.sqrt();
+                    let cone = (1.0 - p.z / 3.0 - p.x.phypot(p.y)) * 3.0 / 10f64.sqrt();
                     let top = -n.dot(p - q);
                     let in_body = p.y > 0.0 && cone > 0.0 && top > 0.0;
                     let near_body = [p.y, cone, top].iter().any(|d| d.abs() < margin);
@@ -1085,7 +1086,7 @@ fn two_fillets_that_meet_where_a_third_edge_stays_sharp() {
                 None => undecided += 1,
             }
             let q = *p * (1.0 / k);
-            let cone = (1.0 - q.z / 3.0 - q.x.hypot(q.y)) * 3.0 / 10f64.sqrt();
+            let cone = (1.0 - q.z / 3.0 - q.x.phypot(q.y)) * 3.0 / 10f64.sqrt();
             if q.y > 0.0 && cone > 0.0 && -n.dot(q - tilted_top().0) > 0.0 && !want {
                 removed += 1;
             }
@@ -1105,7 +1106,7 @@ fn two_fillets_that_meet_where_a_third_edge_stays_sharp() {
 /// A cubic Bézier of a blade section, turned by `angle` and scaled by `s`.
 fn section_curve(id: u64, control: [[f64; 2]; 4], s: f64, angle: f64, k: f64) -> SketchCurve {
     use craft3d_kernel::profile::Spline2;
-    let (sin, cos) = angle.sin_cos();
+    let (sin, cos) = angle.psin_cos();
     SketchCurve {
         id,
         curve: Curve2::Spline(Spline2 {
@@ -1162,7 +1163,7 @@ fn at_tip(control: [[f64; 2]; 4], t: f64) -> [f64; 2] {
             y + b[i] * control[i][1] * 0.8,
         )
     });
-    let (sin, cos) = 0.3_f64.sin_cos();
+    let (sin, cos) = 0.3_f64.psin_cos();
     [x * cos - y * sin, x * sin + y * cos]
 }
 
@@ -1327,7 +1328,7 @@ fn two_fillets_that_meet_in_a_pocket() {
                         lo + (hi - lo) * (m as f64 + 0.37) / n_grid as f64
                     };
                     let p = Vec3::new(f(i, -0.75, 0.75), f(j, -0.02, 0.3), f(l, 1.0, 1.4));
-                    let cone = (1.0 - p.z / 3.0 - p.x.hypot(p.y)) * 3.0 / 10f64.sqrt();
+                    let cone = (1.0 - p.z / 3.0 - p.x.phypot(p.y)) * 3.0 / 10f64.sqrt();
                     let top = -n.dot(p - q);
                     let in_pocket = p.y > 0.0 && cone > 0.0 && top > 0.0;
                     let near_pocket = [p.y, cone, top].iter().any(|d| d.abs() < margin);
@@ -1351,7 +1352,7 @@ fn two_fillets_that_meet_in_a_pocket() {
                 None => undecided += 1,
             }
             let q = *p * (1.0 / k);
-            let cone = (1.0 - q.z / 3.0 - q.x.hypot(q.y)) * 3.0 / 10f64.sqrt();
+            let cone = (1.0 - q.z / 3.0 - q.x.phypot(q.y)) * 3.0 / 10f64.sqrt();
             if q.y > 0.0 && cone > 0.0 && -n.dot(q - tilted_top().0) > 0.0 && *want {
                 added += 1;
             }
@@ -1379,7 +1380,7 @@ impl ArchCorner {
         let arch = Bez([[-1.0, 0.0], [-1.0 / 3.0, 0.5], [1.0 / 3.0, 0.5], [1.0, 0.0]]);
         // Back along the arch from its end, turned on by `phi`.
         let back = [-0.8_f64, 0.6_f64];
-        let (s, c) = phi.sin_cos();
+        let (s, c) = phi.psin_cos();
         let side = [back[0] * c - back[1] * s, back[0] * s + back[1] * c];
         ArchCorner { arch, side }
     }
@@ -1412,8 +1413,8 @@ impl ArchCorner {
             .map(|i| -0.3 + 1.6 * f64::from(i) / 64.0)
             .min_by(|a, b| {
                 let (pa, pb) = (self.eval(*a), self.eval(*b));
-                let da = (pa[0] - q[0]).hypot(pa[1] - q[1]);
-                let db = (pb[0] - q[0]).hypot(pb[1] - q[1]);
+                let da = (pa[0] - q[0]).phypot(pa[1] - q[1]);
+                let db = (pb[0] - q[0]).phypot(pb[1] - q[1]);
                 da.total_cmp(&db)
             })
             .unwrap();
@@ -1425,7 +1426,7 @@ impl ArchCorner {
             t -= f / df;
         }
         let (c, d) = (self.eval(t), self.arch.d(t));
-        let len = d[0].hypot(d[1]);
+        let len = d[0].phypot(d[1]);
         // Right of the direction of travel is below the arch.
         let n = [d[1] / len, -d[0] / len];
         (t, (q[0] - c[0]) * n[0] + (q[1] - c[1]) * n[1])
@@ -1434,7 +1435,7 @@ impl ArchCorner {
     /// The point `r` in from the arch at `t`.
     fn inset(&self, t: f64, r: f64) -> [f64; 2] {
         let (c, d) = (self.eval(t), self.arch.d(t));
-        let len = d[0].hypot(d[1]);
+        let len = d[0].phypot(d[1]);
         [c[0] + r * d[1] / len, c[1] - r * d[0] / len]
     }
 
@@ -1466,7 +1467,7 @@ impl ArchCorner {
                 [p[0] + n[0] * (r - d), p[1] + n[1] * (r - d)]
             }
         };
-        let dist = |p: [f64; 2]| (p[0] - q[0]).hypot(p[1] - q[1]);
+        let dist = |p: [f64; 2]| (p[0] - q[0]).phypot(p[1] - q[1]);
         if !side {
             return dist(onto_arch(q));
         }
@@ -1586,7 +1587,7 @@ fn two_fillets_that_meet_at_the_corner_of_a_spline_wall() {
             };
             let to_a = |xy: [f64; 2], z: f64| {
                 let dz = (z - (h - r)).max(0.0);
-                dz.hypot(corner.to_centres(xy, r, false))
+                dz.phypot(corner.to_centres(xy, r, false))
             };
             let to_b = |xy: [f64; 2]| corner.to_centres(xy, r, true);
             // Points near the corner.

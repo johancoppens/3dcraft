@@ -11,6 +11,7 @@
 
 use craft3d_geom::offset::{OffsetError, offset, regular};
 use craft3d_geom::{NurbsSurface, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
 use std::f64::consts::{FRAC_PI_2, PI};
 
@@ -21,21 +22,21 @@ const SCALES: [f64; 3] = [1e-3, 1.0, 1e6];
 fn arc(from: f64, to: f64) -> (Vec<f64>, Vec<(f64, f64)>, Vec<f64>) {
     let spans = (((to - from) / FRAC_PI_2) - 1e-9).ceil().max(1.0) as usize;
     let step = (to - from) / spans as f64;
-    let weight = (0.5 * step).cos();
+    let weight = (0.5 * step).pcos();
     let mut knots = vec![0.0; 3];
     let mut points = Vec::new();
     let mut weights = Vec::new();
     for s in 0..spans {
         let a = from + step * s as f64;
         if s == 0 {
-            points.push((a.cos(), a.sin()));
+            points.push((a.pcos(), a.psin()));
             weights.push(1.0);
         }
         let m = a + 0.5 * step;
-        points.push((m.cos() / weight, m.sin() / weight));
+        points.push((m.pcos() / weight, m.psin() / weight));
         weights.push(weight);
         let b = a + step;
-        points.push((b.cos(), b.sin()));
+        points.push((b.pcos(), b.psin()));
         weights.push(1.0);
         if s + 1 < spans {
             knots.extend([(s + 1) as f64 / spans as f64; 2]);
@@ -152,7 +153,7 @@ fn the_offset_of_pieces_of_a_torus_outside_and_inside_is_the_torus_with_its_tube
             let torus = revolved(&frame, major, minor, across, (-0.4, 1.3));
             let tube = |p: Vec3| {
                 let (x, y, _) = frame.local(p);
-                let rho = x.hypot(y);
+                let rho = x.phypot(y);
                 frame.point(x / rho * major, y / rho * major, 0.0)
             };
             let sign = outward(&torus, tube);
@@ -196,7 +197,7 @@ fn an_offset_past_the_radius_of_curvature_folds_and_says_where_and_how_far() {
         let torus = revolved(&frame, 3.0 * k, 1.0 * k, (2.0, 4.2), (-0.4, 1.3));
         let tube = |p: Vec3| {
             let (x, y, _) = frame.local(p);
-            let rho = x.hypot(y);
+            let rho = x.phypot(y);
             frame.point(x / rho * 3.0 * k, y / rho * 3.0 * k, 0.0)
         };
         let inward = -outward(&torus, tube);

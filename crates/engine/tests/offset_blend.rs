@@ -17,6 +17,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{body, built, deep, failed, new_document, run, session};
@@ -26,7 +27,7 @@ use std::f64::consts::PI;
 
 /// `∫ sqrt(r² − z²) dz` from `z0` to `z1` (`|z| ≤ r`).
 fn half_disc(r: f64, z0: f64, z1: f64) -> f64 {
-    let f = |z: f64| 0.5 * (z * (r * r - z * z).max(0.0).sqrt() + r * r * (z / r).asin());
+    let f = |z: f64| 0.5 * (z * (r * r - z * z).max(0.0).sqrt() + r * r * (z / r).pasin());
     f(z1) - f(z0)
 }
 
@@ -36,13 +37,13 @@ fn balls_volume(union: bool, big: f64, a: f64, rho: f64) -> f64 {
     let reach = if union { big + rho } else { big - rho };
     let centre = (reach * reach - a * a).sqrt();
     let touch = a * rho / reach;
-    let cap = |from: f64| PI * (big * big * (big - from) - (big.powi(3) - from.powi(3)) / 3.0);
+    let cap = |from: f64| PI * (big * big * (big - from) - (big.ppowi(3) - from.ppowi(3)) / 3.0);
     let ring = |sign: f64| {
         let length = 2.0 * touch;
         PI * (centre * centre * length
             + 2.0 * sign * centre * half_disc(rho, -touch, touch)
             + rho * rho * length
-            - 2.0 * touch.powi(3) / 3.0)
+            - 2.0 * touch.ppowi(3) / 3.0)
     };
     if union {
         2.0 * cap(touch - a) + ring(-1.0)
@@ -98,10 +99,10 @@ fn volume_is(s: &mut Session, name: &str, expected: f64, k: f64, tolerance: f64)
         found["volume"].as_f64().unwrap(),
         found["area"].as_f64().unwrap(),
     );
-    let off = volume - expected * k.powi(3);
+    let off = volume - expected * k.ppowi(3);
     println!(
         "{name} at {k}: volume {volume}, closed form {}, off {off:e}",
-        expected * k.powi(3)
+        expected * k.ppowi(3)
     );
     assert!(
         off.abs() <= 0.5 * tolerance * area,

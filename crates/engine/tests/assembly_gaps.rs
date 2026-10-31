@@ -13,6 +13,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::plain::run;
@@ -774,9 +775,12 @@ fn a_part_in_another_length_unit_keeps_its_size() {
                 .unwrap()["measured"]["volume"],
         )
     };
-    assert!(close(volume("A"), inch.powi(3), 1e-6 * inch.powi(3)), "{i}");
     assert!(
-        close(volume("B"), 2.0 * inch.powi(3), 1e-6 * inch.powi(3)),
+        close(volume("A"), inch.ppowi(3), 1e-6 * inch.ppowi(3)),
+        "{i}"
+    );
+    assert!(
+        close(volume("B"), 2.0 * inch.ppowi(3), 1e-6 * inch.ppowi(3)),
         "{i}"
     );
     // A frame of the converted part: its axis datum at the origin.
@@ -797,7 +801,7 @@ fn a_part_in_another_length_unit_keeps_its_size() {
     // And B's own origin lies a half of 2 by 1 inches away from it.
     let p = run(&mut s, "measure.pose", json!({ "instance": "B" }));
     let (x, y) = (number(&p["position"][0]), number(&p["position"][1]));
-    assert!(close(x.hypot(y), (inch).hypot(inch / 2.0), 1e-6), "{p}");
+    assert!(close(x.phypot(y), (inch).phypot(inch / 2.0), 1e-6), "{p}");
     // A subassembly in inches is refused by name.
     run(&mut s, "file.save", json!({ "path": "mm.3dcraftasm" }));
     run(&mut s, "assembly.new", json!({ "units": "in" }));

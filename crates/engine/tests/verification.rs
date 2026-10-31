@@ -11,6 +11,7 @@
 )]
 
 use craft3d_engine::{AssertionStatus, Session, Workspace};
+use craft3d_math::Portable;
 use serde_json::{Value, json};
 
 fn run(session: &mut Session, id: &str, params: Value) -> Value {
@@ -121,7 +122,7 @@ fn the_distance_between_faces_is_exact_at_three_scales() {
         close(&ab["from"]["point"][0], 10.0 * k, 1e-9 * k, "on A's side");
         // From A's corner edge (10, 10) to the cylinder at (20, 25), r = 3.
         let ac = run(&mut s, "measure.distance", json!({"from": "A", "to": "C"}));
-        let want = ((10.0_f64).powi(2) + (15.0_f64).powi(2)).sqrt() * k - 3.0 * k;
+        let want = ((10.0_f64).ppowi(2) + (15.0_f64).ppowi(2)).sqrt() * k - 3.0 * k;
         close(&ac["distance"], want, 1e-8 * k, &format!("A to C at {k}"));
         // Faces by query: A's top to B's bottom are 3k apart in z but
         // 7.25k in x: the least distance of the two faces.
@@ -130,7 +131,7 @@ fn the_distance_between_faces_is_exact_at_three_scales() {
             "measure.distance",
             json!({"from": {"in": "A", "normal": {"along": "z"}}, "to": {"in": "B", "normal": {"along": "-z"}}}),
         );
-        let gap: f64 = (7.25_f64.powi(2) + 7.0_f64.powi(2)).sqrt() * k;
+        let gap: f64 = (7.25_f64.ppowi(2) + 7.0_f64.ppowi(2)).sqrt() * k;
         close(&faces["distance"], gap, 1e-8 * k, "top of A to bottom of B");
     }
 }
@@ -193,7 +194,7 @@ fn clearance_tells_clear_touch_and_overlap() {
         json!({"from": ["Apart"], "to": ["Touch", "Inside"]}),
     );
     // Apart (12.5..16.5, 0..4) to Inside (4..6): 6.5; to Touch (0..4, 10..14): 6.
-    let want = (8.5_f64.powi(2) + 6.0_f64.powi(2)).sqrt().min(6.5);
+    let want = (8.5_f64.ppowi(2) + 6.0_f64.ppowi(2)).sqrt().min(6.5);
     close(&least["clearance"], want, 1e-9, "least");
 }
 

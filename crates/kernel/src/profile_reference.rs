@@ -234,7 +234,7 @@ mod tests {
             .map(|i| {
                 let a = TAU * f64::from(i) / 8.0;
                 let s = if i % 2 == 0 { r } else { 0.7 * r };
-                [c[0] + s * a.cos(), c[1] + s * a.sin()]
+                [c[0] + s * a.pcos(), c[1] + s * a.psin()]
             })
             .collect();
         control.push(control[0]);
@@ -523,7 +523,7 @@ mod tests {
             (0..40)
                 .map(|i| {
                     let a = TAU * f64::from(i) / 40.0;
-                    line([0.0, 0.0], [a.cos(), a.sin()])
+                    line([0.0, 0.0], [a.pcos(), a.psin()])
                 })
                 .collect(),
         ));
@@ -571,7 +571,7 @@ mod tests {
                     .map(|i| {
                         let a = TAU * i as f64 / n as f64 + turn;
                         let r = if i % 2 == 0 { r0 } else { r1 };
-                        [r * a.cos(), r * a.sin()]
+                        [r * a.pcos(), r * a.psin()]
                     })
                     .collect()
             };

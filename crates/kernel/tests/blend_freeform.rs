@@ -11,6 +11,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod boolean_common;
 
 use boolean_common::{SCALES, boxed, mass, tolerance};
@@ -107,7 +108,7 @@ fn half_frustum(k: f64) -> Body {
 /// z = 0 narrowing to its apex at z = 3a (slope 1 : 3, as the cone of the
 /// test), the radius moved in by `inset` across its side.
 fn onto_cone(p: Vec3, a: f64) -> Vec3 {
-    let rho = p.x.hypot(p.y);
+    let rho = p.x.phypot(p.y);
     let (cx, cy) = if rho > 0.0 {
         (p.x / rho, p.y / rho)
     } else {
@@ -181,7 +182,7 @@ fn a_straight_edge_between_a_plane_and_a_cone_by_its_definition() {
                     let f =
                         |m: usize, lo: f64, hi: f64| lo + (hi - lo) * (m as f64 + 0.37) / n as f64;
                     let p = Vec3::new(f(i, 0.4, 1.0), f(j, 0.0, 0.35), f(l, -0.05, 1.05));
-                    let side = (1.0 - p.z / 3.0 - p.x.hypot(p.y)) * 3.0 / 10f64.sqrt();
+                    let side = (1.0 - p.z / 3.0 - p.x.phypot(p.y)) * 3.0 / 10f64.sqrt();
                     let in_body = p.y > 0.0 && side > 0.0 && p.z > 0.0 && p.z < 1.0;
                     let near_body = [p.y, side, p.z, 1.0 - p.z].iter().any(|d| d.abs() < margin);
                     let d = to_centres(p, r, 1.0);
@@ -203,7 +204,7 @@ fn a_straight_edge_between_a_plane_and_a_cone_by_its_definition() {
             }
             // Points of the body the fillet took away.
             let q = *p * (1.0 / k);
-            let side = (1.0 - q.z / 3.0 - q.x.hypot(q.y)) * 3.0 / 10f64.sqrt();
+            let side = (1.0 - q.z / 3.0 - q.x.phypot(q.y)) * 3.0 / 10f64.sqrt();
             if q.y > 0.0 && side > 0.0 && q.z > 0.0 && q.z < 1.0 && !want {
                 removed += 1;
             }
@@ -276,7 +277,7 @@ impl Bez {
         for i in 0..=2000 {
             let t = f64::from(i) / 2000.0;
             let q = self.at(t);
-            let d = (q[0] - p[0]).hypot(q[1] - p[1]);
+            let d = (q[0] - p[0]).phypot(q[1] - p[1]);
             if d < best.1 {
                 best = (t, d);
             }
@@ -354,7 +355,7 @@ fn a_straight_edge_between_two_spline_walls() {
     // at the parameter where it is r from the pressure side too.
     let inward = |t: f64| {
         let d = suction.d(t);
-        let len = d[0].hypot(d[1]);
+        let len = d[0].phypot(d[1]);
         // The section runs clockwise suction then pressure: in is to the
         // right of the suction side.
         [d[1] / len, -d[0] / len]
@@ -366,7 +367,7 @@ fn a_straight_edge_between_two_spline_walls() {
     let gap = |t: f64| {
         let m = centre_at(t);
         let q = pressure.at(pressure.nearest(m));
-        (q[0] - m[0]).hypot(q[1] - m[1]) - r
+        (q[0] - m[0]).phypot(q[1] - m[1]) - r
     };
     // The gap is negative right at the corner and positive further in.
     let (mut lo, mut hi) = (1e-4, 0.5);
@@ -385,8 +386,8 @@ fn a_straight_edge_between_two_spline_walls() {
     let (q1, q2) = (suction.at(t1), pressure.at(t2));
     // The region cut off: along the suction side from the corner to q1,
     // round the ball back to q2, along the pressure side to the corner.
-    let a1 = (q1[1] - m[1]).atan2(q1[0] - m[0]);
-    let mut a2 = (q2[1] - m[1]).atan2(q2[0] - m[0]);
+    let a1 = (q1[1] - m[1]).patan2(q1[0] - m[0]);
+    let mut a2 = (q2[1] - m[1]).patan2(q2[0] - m[0]);
     // The short way round: the arc that faces the corner spans less than
     // half a turn.
     let corner = suction.at(0.0);
@@ -394,7 +395,8 @@ fn a_straight_edge_between_two_spline_walls() {
         (a + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI
     };
     a2 = a1 + wrap(a2 - a1);
-    let arc = r * r * (a2 - a1) + r * (m[0] * (a2.sin() - a1.sin()) - m[1] * (a2.cos() - a1.cos()));
+    let arc =
+        r * r * (a2 - a1) + r * (m[0] * (a2.psin() - a1.psin()) - m[1] * (a2.pcos() - a1.pcos()));
     let removed = (suction.green(0.0, t1) + 0.5 * arc + pressure.green(t2, 1.0)).abs();
     for k in SCALES {
         let tol = tolerance(k);
@@ -557,7 +559,7 @@ fn to_rim_centres(p: Vec3, r: f64) -> f64 {
         let y = if over > 0.0 { y0 - n * over } else { y0 };
         pp = y0 - y;
         let x0 = y + qq;
-        let rho = x0.x.hypot(x0.y);
+        let rho = x0.x.phypot(x0.y);
         x = if rho > 1.0 - r {
             Vec3::new(x0.x * (1.0 - r) / rho, x0.y * (1.0 - r) / rho, x0.z)
         } else {
@@ -605,7 +607,7 @@ fn the_rim_of_a_slanted_cut_of_a_rod() {
                         lo + (hi - lo) * (m as f64 + 0.37) / n_grid as f64
                     };
                     let p = Vec3::new(f(i, -1.05, 1.05), f(j, -1.05, 1.05), f(l, 0.0, 1.8));
-                    let side = 1.0 - p.x.hypot(p.y);
+                    let side = 1.0 - p.x.phypot(p.y);
                     let below = -n.dot(p - o);
                     let in_body = side > 0.0 && below > 0.0 && p.z > 0.0;
                     let near_body = [side, below, p.z].iter().any(|d| d.abs() < margin);

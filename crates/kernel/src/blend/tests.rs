@@ -84,7 +84,7 @@ fn a_boss_root_in_place_is_the_tools_result_at_every_seam_angle() {
             let boss_frame = Frame::new(
                 at(0.0, d, 0.0),
                 frame.z(),
-                frame.vector(turn.cos(), turn.sin(), 0.0),
+                frame.vector(turn.pcos(), turn.psin(), 0.0),
             )
             .unwrap();
             let boss = primitives::cylinder(&boss_frame, big * k, height * k).unwrap();

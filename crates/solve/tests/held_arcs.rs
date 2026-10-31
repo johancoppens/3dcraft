@@ -16,6 +16,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::{resolved, solved, statuses};
@@ -66,7 +67,7 @@ fn arc(hold: Hold, at: [[f64; 2]; 2], drawn: [[f64; 2]; 2]) -> (Sketch, [EntityI
 fn ends(r: f64, a: f64, factor: f64, symmetric: bool) -> [[f64; 2]; 2] {
     let at = |deg: f64| {
         let t = deg.to_radians();
-        [r * t.cos(), r * t.sin()]
+        [r * t.pcos(), r * t.psin()]
     };
     if symmetric {
         [at(-a), at(a)]
@@ -190,7 +191,7 @@ fn edited_and_fresh(r: f64, a0: f64, a1: f64) -> (Solution, Solution) {
     let Entity::Point { x: cx, y: cy } = first.entities[0] else {
         panic!("not a point");
     };
-    assert!(cx.hypot(cy) <= 1e-9 * r, "built at ({cx}, {cy})");
+    assert!(cx.phypot(cy) <= 1e-9 * r, "built at ({cx}, {cy})");
     let edited = solved(&resolved(
         &free_centre(r, after, before, [0.0, 0.0]),
         &first,

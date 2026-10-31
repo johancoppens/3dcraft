@@ -10,6 +10,7 @@
 )]
 
 use craft3d_geom::Curve3;
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
 use craft3d_tess::{TessError, TessParams, tessellate_body, tessellate_edges};
 use craft3d_testkit::solids::{self, Reference};
@@ -160,7 +161,7 @@ fn a_block_has_twelve_straight_edges_and_a_cylinder_two_circles() {
             // tolerance shrinks.
             let (exact, got) = (TAU * radius, length(circle));
             let segments = (circle.len() - 1) as f64;
-            let inscribed = 2.0 * segments * radius * (TAU / (2.0 * segments)).sin();
+            let inscribed = 2.0 * segments * radius * (TAU / (2.0 * segments)).psin();
             assert!((got - inscribed).abs() < 1e-9, "{got} vs {inscribed}");
             assert!(got < exact && got > exact * (1.0 - 2.0 * tolerance / radius));
             assert!(got >= previous - 1e-9);

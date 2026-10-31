@@ -54,6 +54,7 @@ use super::Reason;
 use craft3d_geom::closure::closes as closure;
 use craft3d_geom::pole::{Border, Pole, poles};
 use craft3d_geom::{BezierPatch, NurbsSurface, RationalBezierPatch, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Vec3};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BinaryHeap};
@@ -582,7 +583,7 @@ fn sigma_bound(patch: &RationalBezierPatch, width: (f64, f64)) -> f64 {
     // surface's parameters `a` and `b` are the piece's own over the
     // widths of the piece.
     let sum = longest_u / (wu * wu) + longest_v / (wv * wv);
-    let product = (normal / (wu * wv)).powi(2);
+    let product = (normal / (wu * wv)).ppowi(2);
     least_singular(sum, product)
 }
 
@@ -673,7 +674,7 @@ impl Wedge {
     /// of the way between them, as the chart draws it: zero at a pole, to
     /// the pole's order (`t`, `1 − t`, `t (1 − t)`; `t²` at a cusp).
     fn width(&self, t: f64) -> f64 {
-        t.powi(self.orders.0) * (1.0 - t).powi(self.orders.1)
+        t.ppowi(self.orders.0) * (1.0 - t).ppowi(self.orders.1)
     }
 
     /// Where the width is greatest when there is a pole at either end.
@@ -1291,8 +1292,8 @@ fn wedge_sigma(patch: &RationalBezierPatch, u: (f64, f64), v: (f64, f64), wedge:
         // the whole way across.
         let (scale, least_factor) = match (at_start, at_end) {
             (true, true) => (1.0, 1.0),
-            (true, false) => (wt.powi(wedge.orders.0), (1.0 - t1).powi(wedge.orders.1)),
-            (false, true) => (wt.powi(wedge.orders.1), t0.powi(wedge.orders.0)),
+            (true, false) => (wt.ppowi(wedge.orders.0), (1.0 - t1).ppowi(wedge.orders.1)),
+            (false, true) => (wt.ppowi(wedge.orders.1), t0.ppowi(wedge.orders.0)),
             (false, false) => return 0.0,
         };
         (
@@ -3211,7 +3212,7 @@ impl PatchTree {
             let (s, su, sv) = derivatives(u, v);
             let r = s - p;
             let (g1, g2) = (su.dot(r), sv.dot(r));
-            if !(g1.hypot(g2) > 0.0) {
+            if !(g1.phypot(g2) > 0.0) {
                 break;
             }
             // Descent is held to the sides of the domain it stands on.
@@ -3271,7 +3272,7 @@ impl PatchTree {
                 let candidate = self.surface.eval(nu, nv);
                 let d = candidate.distance(p);
                 if d < distance || (d == distance && (nu != u || nv != v) && damping < 1e-3) {
-                    let step = (nu - u).hypot(nv - v);
+                    let step = (nu - u).phypot(nv - v);
                     // A step from the first-order terms that gains little
                     // is a far point converging slowly: the curvature
                     // terms from the next step on.
@@ -3843,7 +3844,7 @@ mod tests {
         let cases = [
             (false, 0.0),
             (true, 0.0),
-            (false, std::f64::consts::FRAC_PI_2.cos()),
+            (false, std::f64::consts::FRAC_PI_2.pcos()),
         ];
         for (tilted, top) in cases {
             let frame = if tilted {
@@ -3892,7 +3893,7 @@ mod tests {
             let p = Vec3::new(4.0 * t, 3.0 * (1.0 - t), 1.0 + t);
             let _ = tree.nearest(p);
             let _ = tree.lower_bound(p, 1e-3, 0.1);
-            let _ = tree.sigma_near(p, 10f64.powi(-(k % 5)));
+            let _ = tree.sigma_near(p, 10f64.ppowi(-(k % 5)));
         }
         let used = tree.bytes();
         assert!(used > bare, "{used} {bare}");
@@ -4022,7 +4023,7 @@ mod tests {
         let questions: Vec<(Vec3, f64)> = (0..400)
             .map(|_| {
                 let p = Vec3::new(4.0 * unit(), 3.0 * unit(), 1.8 + 0.5 * unit());
-                (p, 10f64.powf(-6.0 * unit()))
+                (p, 10f64.ppowf(-6.0 * unit()))
             })
             .collect();
         let room = 4 * FINE_LOOKS + 1;
@@ -4098,7 +4099,7 @@ mod tests {
                     1 => Vec3::new(0.0, 3.0 * t, 2.0),
                     _ => Vec3::new(4.0 * t, 3.0 * (1.0 - t), 2.0),
                 };
-                (p, 10f64.powi(-(k % 7)))
+                (p, 10f64.ppowi(-(k % 7)))
             })
             .collect();
         let surface = plate(1000.0);
@@ -4587,8 +4588,8 @@ mod tests {
                             let angle = f64::from(turn) * std::f64::consts::PI / 8.0;
                             for reach in [1e-4, 1e-7] {
                                 let (nu, nv) = tree.clamp(
-                                    u + reach * (u1 - u0) * angle.cos(),
-                                    v + reach * (v1 - v0) * angle.sin(),
+                                    u + reach * (u1 - u0) * angle.pcos(),
+                                    v + reach * (v1 - v0) * angle.psin(),
                                 );
                                 let travelled = surface.eval(u, v).distance(surface.eval(nu, nv));
                                 if !(travelled > 1e-13) {
@@ -4596,7 +4597,7 @@ mod tests {
                                 }
                                 let (x0, y0) = tree.chart(u, v);
                                 let (x1, y1) = tree.chart(nu, nv);
-                                let pace = (x1 - x0).hypot(y1 - y0) / travelled;
+                                let pace = (x1 - x0).phypot(y1 - y0) / travelled;
                                 assert!(
                                     pace <= speed * (1.0 + 1e-6),
                                     "{name}, flipped {flip}: at ({a}, {b}) the chart moves {pace} per length, above {speed}"
@@ -4803,7 +4804,7 @@ mod tests {
             let mut value = 0.0;
             let mut choose = 1.0;
             for (j, c) in net.iter().enumerate() {
-                value += choose * t.powi(j as i32) * (1.0 - t).powi((n - j) as i32) * c.x;
+                value += choose * t.ppowi(j as i32) * (1.0 - t).ppowi((n - j) as i32) * c.x;
                 choose = choose * (n - j) as f64 / (j + 1) as f64;
             }
             value
@@ -4885,7 +4886,7 @@ mod tests {
             let t = 0.4 * i as f64 / (count_u - 1) as f64;
             let r = radius * (1.0 + t * t);
             let a = turn + t;
-            let p = Vec3::new(r * a.cos(), r * a.sin(), 0.0);
+            let p = Vec3::new(r * a.pcos(), r * a.psin(), 0.0);
             ctrl.push(p);
             ctrl.push(p + Vec3::new(0.0, 0.0, width));
         }

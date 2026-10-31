@@ -13,6 +13,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{error, run, session, session_in, str_of};
@@ -587,9 +588,9 @@ fn a_ring_that_misses_its_start_does_not_close_and_its_images_say_so() {
         .clone();
     let (x, y) = (image["x"].as_f64().unwrap(), image["y"].as_f64().unwrap());
     let turn = 12.0 * (30.0_f64.to_radians() + 5e-11);
-    let (wx, wy) = (r * turn.cos(), r * turn.sin());
-    assert!((x - wx).hypot(y - wy) < 1e-9 * r, "{x} {y} vs {wx} {wy}");
-    assert!((x - r).hypot(y) > 1e-6, "not taken to be the start {a}");
+    let (wx, wy) = (r * turn.pcos(), r * turn.psin());
+    assert!((x - wx).phypot(y - wy) < 1e-9 * r, "{x} {y} vs {wx} {wy}");
+    assert!((x - r).phypot(y) > 1e-6, "not taken to be the start {a}");
 }
 
 /// The caps of a loft through two rings of runs name each run once, at
@@ -712,7 +713,7 @@ fn a_ring_of_teeth_closes_and_is_its_closed_form() {
             assert_eq!(inspected["patterns"][0]["chainState"], "satisfied");
             // Each tooth is the triangles O A T and O T B: r (r + h) sin(θ/2).
             let theta = TAU / f64::from(n);
-            let area = f64::from(n) * r * (r + h) * (theta / 2.0).sin();
+            let area = f64::from(n) * r * (r + h) * (theta / 2.0).psin();
             let wheel = body(&mut s, "Wheel");
             assert_close(
                 wheel["volume"].as_f64().unwrap(),

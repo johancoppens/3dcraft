@@ -23,6 +23,7 @@ use super::Shell;
 use super::number_field::{self, FieldMemory, NumberField, Typing};
 use crate::theme::{color, color_alpha};
 use craft3d_engine::{FeatureState, Scene, Session};
+use craft3d_math::Portable;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -180,7 +181,7 @@ pub fn decimals_of(value: f64) -> usize {
         return 0;
     }
     for decimals in 0..MAX_DECIMALS {
-        let scale = 10f64.powi(decimals as i32);
+        let scale = 10f64.ppowi(decimals as i32);
         let scaled = value * scale;
         if (scaled - scaled.round()).abs() <= 1e-9 * scaled.abs().max(1.0) {
             return decimals;
@@ -367,7 +368,7 @@ pub fn settle(p: &Param, wanted: f64) -> Option<Settled> {
         if snapped.is_finite() {
             // Keep the decimals the step has: 0.1 * 3 is 0.30000000000000004.
             let decimals = decimals_of(step).max(decimals_of(base));
-            let scale = 10f64.powi(decimals as i32);
+            let scale = 10f64.ppowi(decimals as i32);
             let tidy = (snapped * scale).round() / scale;
             value = if tidy.is_finite() { tidy } else { snapped };
         }

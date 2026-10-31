@@ -13,6 +13,7 @@
 // Test code: a failure in a helper is a failed test.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
+use craft3d_math::Portable;
 mod boolean_common;
 mod rational_common;
 
@@ -74,7 +75,7 @@ fn frustum(k: f64) -> Solid {
     let cone = spike(k, [0.0, 0.0, 0.0], 2.0, 4.0);
     let slab = boxed(k, [0.0, 0.0, 0.5], [3.0, 3.0, 2.0]);
     let (low, high, height) = (1.75_f64, 1.0_f64, 1.5_f64);
-    let slant = height.hypot(low - high);
+    let slant = height.phypot(low - high);
     Solid {
         name: "frustum",
         body: solve(&cone, &slab, Intersect, k).body,
@@ -862,7 +863,7 @@ fn roof_above(roof: &NurbsSurface, x: f64, y: f64, start: (f64, f64)) -> ((f64, 
     for _ in 0..50 {
         let (p, su, sv) = roof.derivatives(u, v);
         let (rx, ry) = (p.x - x, p.y - y);
-        if rx.hypot(ry) < 1e-13 {
+        if rx.phypot(ry) < 1e-13 {
             return ((u, v), p.z);
         }
         let det = su.x * sv.y - su.y * sv.x;
@@ -918,13 +919,13 @@ fn disc(center: (f64, f64), radius: f64) -> impl Iterator<Item = (f64, f64, f64)
     const N: usize = 1600;
     let (dp, da) = (0.5 * PI / N as f64, 2.0 * PI / N as f64);
     (0..N).flat_map(move |i| {
-        let (sine, cosine) = ((i as f64 + 0.5) * dp).sin_cos();
+        let (sine, cosine) = ((i as f64 + 0.5) * dp).psin_cos();
         let r = radius * sine;
         (0..N).map(move |j| {
             let a = (j as f64 + 0.5) * da;
             (
-                center.0 + r * a.cos(),
-                center.1 + r * a.sin(),
+                center.0 + r * a.pcos(),
+                center.1 + r * a.psin(),
                 radius * radius * sine * cosine * dp * da,
             )
         })
@@ -1016,7 +1017,7 @@ fn a_weighted_roof_against_a_block_and_a_ball() {
     });
     let (centre, radius) = ([2.1, 1.4, 2.0], 0.8);
     let in_ball = under_roof(&roof, disc((centre[0], centre[1]), radius), |x, y, z| {
-        let half = (radius * radius - (x - centre[0]).powi(2) - (y - centre[1]).powi(2))
+        let half = (radius * radius - (x - centre[0]).ppowi(2) - (y - centre[1]).ppowi(2))
             .max(0.0)
             .sqrt();
         (z.min(centre[2] + half) - (centre[2] - half)).max(0.0)

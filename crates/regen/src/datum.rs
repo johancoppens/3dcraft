@@ -17,6 +17,7 @@ use craft3d_doc::{
 use craft3d_expr::Evaluation;
 use craft3d_geom::{Curve3, Surface};
 use craft3d_kernel::helix::Helix;
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Transform, Vec3};
 use craft3d_topo::Body;
 
@@ -761,7 +762,7 @@ pub(crate) fn plane(
             }
             // A plane can only be turned about a line it holds, or one
             // beside it: the turned plane goes through the axis.
-            let tilt = frame.z().dot(axis.direction).clamp(-1.0, 1.0).asin();
+            let tilt = frame.z().dot(axis.direction).clamp(-1.0, 1.0).pasin();
             if tilt.abs() > tolerance.angular {
                 return Err(format!(
                     "about: the axis is not parallel to the plane (it makes {} deg with it); a plane is turned about a line in it or beside it",

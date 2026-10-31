@@ -14,6 +14,7 @@
 use crate::closure::closes;
 use crate::pole::{Pole, poles};
 use crate::{BezierPatch, BezierSpan, DerivativeBounds, GeomError, NurbsSurface, Sphere, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Frame, Tolerance, Vec3};
 use std::f64::consts::{FRAC_PI_2, TAU};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -469,7 +470,7 @@ impl Field {
             },
             Surface::Cone(c) => {
                 let (apex, axis) = cone_apex_axis(c);
-                let (sin, cos) = c.half_angle().abs().sin_cos();
+                let (sin, cos) = c.half_angle().abs().psin_cos();
                 Field::Cone {
                     apex,
                     axis,
@@ -506,7 +507,7 @@ impl Field {
             Field::Plane { origin, normal } => exact((p - *origin).dot(*normal), *normal),
             Field::Cylinder { frame, radius } => {
                 let (x, y, _) = frame.local(p);
-                let rho = x.hypot(y);
+                let rho = x.phypot(y);
                 let radial = if rho > 0.0 {
                     frame.vector(x / rho, y / rho, 0.0)
                 } else {
@@ -549,14 +550,14 @@ impl Field {
                 minor,
             } => {
                 let (x, y, z) = frame.local(p);
-                let rho = x.hypot(y);
+                let rho = x.phypot(y);
                 let radial = if rho > 0.0 {
                     frame.vector(x / rho, y / rho, 0.0)
                 } else {
                     frame.x()
                 };
                 let off = rho - major;
-                let d = off.hypot(z);
+                let d = off.phypot(z);
                 let normal = if d > 0.0 {
                     radial * (off / d) + frame.z() * (z / d)
                 } else {
@@ -583,7 +584,7 @@ impl Field {
             Field::Plane { .. } => Some(0.0),
             Field::Cylinder { frame, .. } => {
                 let (x, y, _) = frame.local(p);
-                within(x.hypot(y))
+                within(x.phypot(y))
             }
             Field::Cone {
                 apex,
@@ -603,8 +604,8 @@ impl Field {
             Field::Sphere { center, .. } => within(p.distance(*center)),
             Field::Torus { frame, major, .. } => {
                 let (x, y, z) = frame.local(p);
-                let rho = x.hypot(y);
-                let tube = within((rho - major).hypot(z))?;
+                let rho = x.phypot(y);
+                let tube = within((rho - major).phypot(z))?;
                 Some(tube.max(within(rho)?))
             }
             // The closest points of everything within `reach` of `p` lie
@@ -1020,9 +1021,9 @@ impl Chart {
             }
             let k = n.order as i32;
             let (speed, bend, twist) = (
-                n.speed * far.powi(k),
-                n.bend * far.powi(k),
-                n.twist * far.powi(k - 1),
+                n.speed * far.ppowi(k),
+                n.bend * far.ppowi(k),
+                n.twist * far.ppowi(k - 1),
             );
             if cusp.pole.across_v() {
                 b.lu = b.lu.min(speed);
@@ -1093,10 +1094,10 @@ impl Chart {
         // The angles about an axis a box can reach, when it is clear of it.
         let turn = |frame: &Frame| {
             let (x, y, _) = frame.local(center);
-            let away = x.hypot(y);
+            let away = x.phypot(y);
             if away > half * 1.001 + margin && away > 0.0 {
-                let spread = ((half + margin) / away).min(1.0).asin() * 1.001 + 1e-9;
-                let mid = y.atan2(x);
+                let spread = ((half + margin) / away).min(1.0).pasin() * 1.001 + 1e-9;
+                let mid = y.patan2(x);
                 ((mid - spread, mid + spread), false)
             } else {
                 ((0.0, TAU), true)
@@ -1148,8 +1149,8 @@ impl Chart {
                 let (u, periodic_u) = turn(&f);
                 let (mut v0, mut v1) = range(&|c| f.local(c).2);
                 // Stop just short of the apex, where the chart collapses.
-                let slope = c.half_angle().tan();
-                let short = 0.25 * tol.linear * c.half_angle().cos().abs() / slope.abs();
+                let slope = c.half_angle().ptan();
+                let short = 0.25 * tol.linear * c.half_angle().pcos().abs() / slope.abs();
                 if c.half_angle() > 0.0 {
                     v0 = v0.max(c.apex_v() + short);
                 } else {
@@ -1169,7 +1170,7 @@ impl Chart {
                     periodic_v: false,
                     bounds: Bounds {
                         lu: widest,
-                        lv: 1.0 / c.half_angle().cos().abs(),
+                        lv: 1.0 / c.half_angle().pcos().abs(),
                         muu: widest,
                         muv: slope.abs(),
                         mvv: 0.0,
@@ -1487,7 +1488,7 @@ fn holds_the_strip(
             chart.surface.eval(x, middle)
         }
     };
-    let width = |off: f64| 0.5 * n.width * (off / n.span).powi(n.order as i32);
+    let width = |off: f64| 0.5 * n.width * (off / n.span).ppowi(n.order as i32);
     let start = tol.linear / speed;
     if !(start < wide && speed > 0.0) {
         return false;
@@ -1565,7 +1566,7 @@ fn same_crossings(
     for level in 0..=levels {
         let off = (wide - step * level as f64).max(start);
         let x = from + toward * off;
-        let width = n.width * (off / n.span).powi(n.order as i32);
+        let width = n.width * (off / n.span).ppowi(n.order as i32);
         let places = (2.0 * width / tol.linear).ceil().clamp(8.0, 1e6) as usize;
         looks = looks.saturating_add(places + 1);
         if looks > STRIP_LOOKS {
@@ -1793,7 +1794,7 @@ mod tests {
         for i in 0..4 {
             for j in 0..4 {
                 let (x, y) = (f64::from(i), f64::from(j));
-                let z = 0.3 * (1.7 * x + 0.9 * y).sin() + 0.1 * x * y;
+                let z = 0.3 * (1.7 * x + 0.9 * y).psin() + 0.1 * x * y;
                 ctrl.push(if pole && i == 0 {
                     Vec3::new(0.0, 1.5 * k, 0.2 * k)
                 } else {

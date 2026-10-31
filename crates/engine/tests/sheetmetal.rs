@@ -15,6 +15,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{
@@ -95,7 +96,7 @@ fn an_l_bracket_follows_its_closed_forms_and_a_variable() {
             let found = body(&mut s, "Bracket");
             assert_eq!(found["kind"], "solid", "{found}");
             assert_eq!(found["valid"], true);
-            let v = w * t * (d + l) + FRAC_PI_2 * w * ((r + t).powi(2) - r * r) / 2.0;
+            let v = w * t * (d + l) + FRAC_PI_2 * w * ((r + t).ppowi(2) - r * r) / 2.0;
             assert_close(&found["volume"], v, "volume");
             assert_close(&found["bbox"][0][1], -(r + t), "the flange's outside");
             assert_close(&found["bbox"][1][2], t + r + l, "the flange's top");
@@ -173,7 +174,7 @@ fn a_box_with_reliefs_and_the_manufacturability_assertions() {
                    "kFactor": 0.5, "flanges": flanges}),
         );
         let ba = FRAC_PI_2 * (r + 0.5 * t);
-        let bare = w * d - std::f64::consts::PI * (2.5 * k).powi(2) + 2.0 * (w + d) * (ba + l);
+        let bare = w * d - std::f64::consts::PI * (2.5 * k).ppowi(2) + 2.0 * (w + d) * (ba + l);
         // K = 1/2: the volume is the flat area times the thickness.
         assert_close(
             &body(&mut s, "Tray")["volume"],

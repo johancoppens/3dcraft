@@ -11,6 +11,7 @@
 // Test code: a failure in a helper is a failed test.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
+use craft3d_math::Portable;
 mod boolean_common;
 
 use boolean_common::*;
@@ -162,7 +163,7 @@ fn random_shape(
                 body: primitives::cone(&frame, r, h).unwrap(),
                 contains: Box::new(move |p| {
                     let (x, y, z) = frame.local(p);
-                    (0.0..=h).contains(&z) && x.hypot(y) <= r * (1.0 - z / h)
+                    (0.0..=h).contains(&z) && x.phypot(y) <= r * (1.0 - z / h)
                 }),
                 lo,
                 hi,
@@ -188,7 +189,7 @@ fn random_shape(
                 body: primitives::torus(&frame, major, minor).unwrap(),
                 contains: Box::new(move |p| {
                     let (x, y, z) = frame.local(p);
-                    (x.hypot(y) - major).hypot(z) <= minor
+                    (x.phypot(y) - major).phypot(z) <= minor
                 }),
                 lo,
                 hi,
@@ -279,7 +280,7 @@ fn random_shape(
                 body: extrude(&profiles, &frame, 0.0, c, &tol).unwrap().body,
                 contains: Box::new(move |p| {
                     let (x, y, z) = frame.local(p);
-                    let within = |cx: f64, radius: f64| (x - cx).hypot(y) <= radius;
+                    let within = |cx: f64, radius: f64| (x - cx).phypot(y) <= radius;
                     let slot =
                         ((0.0..=a).contains(&x) && y.abs() <= r) || within(0.0, r) || within(a, r);
                     (0.0..=c).contains(&z) && slot && !within(a * 0.5, hole)

@@ -47,6 +47,7 @@ use super::{
     Arrangement, BoundarySegment, Crease, CreaseKind, EdgeKind, FoldError, Folded, P2, arrange,
     dot, inside_loops, lift, sub,
 };
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -529,7 +530,7 @@ pub fn layer_order(arr: &Arrangement, folded: &Folded, tol: f64) -> Result<Layer
             b[3].max(fb[3]),
         ];
     }
-    let size = ((b[2] - b[0]).powi(2) + (b[3] - b[1]).powi(2)).sqrt();
+    let size = ((b[2] - b[0]).ppowi(2) + (b[3] - b[1]).ppowi(2)).sqrt();
     if !size.is_finite() {
         return Err(FoldError::Broken {
             reason: "the folded sheet has no box",

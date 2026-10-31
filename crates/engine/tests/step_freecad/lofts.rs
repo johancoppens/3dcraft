@@ -17,6 +17,7 @@ use super::features::check_meshes;
 use super::step;
 use super::{APPROX, EXACT, Expect, FLAT, SPLINE, SPLINE_QUADRATURE, Set, harness};
 use craft3d_engine::Session;
+use craft3d_math::Portable;
 use serde_json::{Value, json};
 use std::f64::consts::{PI, TAU};
 use std::fmt::Write as _;
@@ -133,7 +134,7 @@ fn pyramid(s: &mut Session, k: f64) -> Forms {
 /// `tests/loft.rs`.
 fn twist(s: &mut Session, k: f64) -> Forms {
     let corners = [[-2.0, -1.0], [2.0, -1.0], [2.0, 1.0], [-2.0, 1.0]];
-    let (sin, cos) = 30f64.to_radians().sin_cos();
+    let (sin, cos) = 30f64.to_radians().psin_cos();
     let above: Vec<[f64; 2]> = corners
         .iter()
         .map(|p| [p[0] * cos - p[1] * sin, p[0] * sin + p[1] * cos])
@@ -257,7 +258,7 @@ fn bend(ruled: bool) -> impl Fn(&mut Session, f64) -> Forms {
         }
         let volume: f64 = angles
             .windows(2)
-            .map(|w| (w[1] - w[0]).to_radians().sin() * 16.0)
+            .map(|w| (w[1] - w[0]).to_radians().psin() * 16.0)
             .sum();
         Ok(vec![Closed {
             body: "Bend",
@@ -278,7 +279,7 @@ fn ring(ruled: bool) -> impl Fn(&mut Session, f64) -> Forms {
         }
         Ok(vec![Closed {
             body: "Ring",
-            volume: 6.0 * (TAU / 6.0).sin() * 16.0,
+            volume: 6.0 * (TAU / 6.0).psin() * 16.0,
             area: None,
         }])
     }
@@ -371,7 +372,7 @@ fn freecad_reads_lofts() {
                     forms_bad.push(format!("{file}: no body {}", form.body));
                     continue;
                 };
-                let volume = part.volume / (form.volume * k.powi(3)) - 1.0;
+                let volume = part.volume / (form.volume * k.ppowi(3)) - 1.0;
                 let area = form.area.map_or(0.0, |a| part.area / (a * k * k) - 1.0);
                 writeln!(
                     forms_text,

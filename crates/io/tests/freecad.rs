@@ -18,6 +18,7 @@
 )]
 
 use craft3d_io::{MeshFormat, export_mesh, to_object};
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use craft3d_meshio::Unit;
 use craft3d_tess::{Mesh, TessParams, tessellate_patches};
@@ -362,7 +363,7 @@ fn freecad_reads_a_needle_cut_along_its_axis_as_a_solid() {
         .unwrap()
         .body;
     // π ∫ (9t² − 6t³)² 6 dt over [0, 1], halved.
-    let volume = 0.5 * std::f64::consts::PI * 6.0 * (81.0 / 5.0 - 18.0 + 36.0 / 7.0) * k.powi(3);
+    let volume = 0.5 * std::f64::consts::PI * 6.0 * (81.0 / 5.0 - 18.0 + 36.0 / 7.0) * k.ppowi(3);
     let tolerance = 0.01 * k;
     let params = TessParams {
         chordal_tolerance: tolerance,

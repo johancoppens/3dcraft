@@ -13,6 +13,7 @@
 )]
 
 use craft3d_engine::{Session, Workspace};
+use craft3d_math::Portable;
 use craft3d_ui_egui::state::VIEWS;
 use craft3d_ui_egui::{MIN_FLY_CONTEXT, Shell, ZOOM_TOOLTIP};
 use egui::{Event, PointerButton, Pos2, vec2};
@@ -183,7 +184,7 @@ fn a_small_fillet_is_flown_to_from_above_with_its_body_around_it() {
     let eye = camera.eye();
     assert!(eye.z > 20.0, "{eye:?}");
     let diagonal = (400.0_f64 * 400.0 + 300.0 * 300.0 + 50.0 * 50.0).sqrt();
-    let half_view = camera.distance * (camera.fov_y.to_radians() / 2.0).tan();
+    let half_view = camera.distance * (camera.fov_y.to_radians() / 2.0).ptan();
     assert!(
         half_view * 2.0 >= MIN_FLY_CONTEXT * diagonal / 3.0_f64.sqrt() * 0.99,
         "{} of {diagonal}",
@@ -384,7 +385,7 @@ fn a_small_hole_on_a_big_part_is_framed_as_a_hole() {
     let camera = shell.state.camera;
     // The hole's wall: radius 1, 20 high, a diagonal of about 20.2.
     let wall = (2.0_f64 * 2.0 + 2.0 * 2.0 + 20.0 * 20.0).sqrt();
-    let seen = 2.0 * camera.distance * (camera.fov_y.to_radians() / 2.0).tan();
+    let seen = 2.0 * camera.distance * (camera.fov_y.to_radians() / 2.0).ptan();
     assert!(seen > wall * 0.5, "{seen}");
     assert!(
         seen < 8.0 * wall * 1.5,

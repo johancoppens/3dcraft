@@ -15,6 +15,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use std::f64::consts::PI;
@@ -45,7 +46,7 @@ fn line_dist(p: P, a: P, b: P) -> f64 {
 }
 /// Counter-clockwise angle from `u` to `v`, in `(-pi, pi]`.
 fn turn(u: P, v: P) -> f64 {
-    cross(u, v).atan2(dot(u, v))
+    cross(u, v).patan2(dot(u, v))
 }
 
 /// Four points in general position, two lines, two circles and an arc.
@@ -623,8 +624,8 @@ fn alone_angle() {
         // direction by `value` and it must point along cd.
         let u = sub(b, a);
         let rotated = [
-            u[0] * value.cos() - u[1] * value.sin(),
-            u[0] * value.sin() + u[1] * value.cos(),
+            u[0] * value.pcos() - u[1] * value.psin(),
+            u[0] * value.psin() + u[1] * value.pcos(),
         ];
         assert!(
             turn(rotated, sub(d, c)).abs() <= ANGULAR,

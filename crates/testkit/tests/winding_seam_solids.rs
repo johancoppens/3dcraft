@@ -20,6 +20,7 @@
 use craft3d_geom::Surface;
 use craft3d_kernel::boolean::{BooleanOp, boolean};
 use craft3d_kernel::primitives;
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_tess::{TessParams, tessellate_body};
 use craft3d_topo::{Body, check, mass_properties};
@@ -41,7 +42,7 @@ fn drilled_pipe(size: f64) -> Body {
     for (row, z) in [0.9, 2.1].into_iter().enumerate() {
         for k in 0..5 {
             let angle = 0.37 + TAU / 5.0 * (k as f64 + 0.5 * row as f64);
-            let out = Vec3::new(angle.cos(), angle.sin(), 0.0);
+            let out = Vec3::new(angle.pcos(), angle.psin(), 0.0);
             // From inside the bore to beyond the wall.
             let frame = Frame::new(out * size + Vec3::Z * (z * size), out, Vec3::Z).unwrap();
             let drill = primitives::cylinder(&frame, 0.7 * size, 2.0 * size).unwrap();

@@ -43,6 +43,7 @@
 //!   the mould), and between them *too shallow*. Lit like the map.
 
 use crate::ViewAxes;
+use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Vec3};
 
 /// Below this `|N·M|` a highlight line's normal line runs along the light
@@ -226,13 +227,13 @@ impl Resolved {
         let angle = finite_or(analysis.direction, 0.0);
         let min = finite_or(analysis.min_draft, 0.0).clamp(0.0, std::f64::consts::FRAC_PI_2);
         let [lo, hi] = analysis.range.map(|v| finite_or(v, 0.0));
-        let (sin_a, cos_a) = angle.sin_cos();
+        let (sin_a, cos_a) = angle.psin_cos();
         let mut out = Self {
             mode: analysis.mode,
             count,
             width,
             offset,
-            sin_min: min.sin(),
+            sin_min: min.psin(),
             axis: Vec3::ZERO,
             first: Vec3::ZERO,
             second: Vec3::ZERO,
@@ -338,7 +339,7 @@ impl Resolved {
             AnalysisMode::Zebra => {
                 let n = if n.dot(to_viewer) < 0.0 { -n } else { n };
                 let r = n * (2.0 * n.dot(to_viewer)) - to_viewer;
-                let phi = r.dot(self.second).atan2(r.dot(self.first));
+                let phi = r.dot(self.second).patan2(r.dot(self.first));
                 Some(phi / std::f64::consts::TAU * self.count + self.offset)
             }
             AnalysisMode::Highlight => {
@@ -405,7 +406,7 @@ pub fn draw_lines(
             let (Some(pa), Some(pb)) = (view.project(a), view.project(b)) else {
                 continue;
             };
-            let pixels = (pb[0] - pa[0]).hypot(pb[1] - pa[1]);
+            let pixels = (pb[0] - pa[0]).phypot(pb[1] - pa[1]);
             if !pixels.is_finite() {
                 continue;
             }
@@ -463,7 +464,7 @@ mod tests {
         let v = Vec3::new(0.0, 0.0, 1.0);
         for k in 1..8 {
             let theta = 0.1 * f64::from(k);
-            let n = Vec3::new(0.0, theta.sin(), theta.cos());
+            let n = Vec3::new(0.0, theta.psin(), theta.pcos());
             let phase = r.phase(n, v, Vec3::ZERO).unwrap();
             let expect = 2.0 * theta / std::f64::consts::TAU * 16.0;
             assert!((phase.abs() - expect).abs() < 1e-12, "{phase} {expect}");
@@ -479,7 +480,7 @@ mod tests {
         let lit = |c: [u8; 3]| c.map(|x| (f64::from(x) * ANALYSIS_AMBIENT).round() as u8);
         let side = |deg: f64| {
             let s = f64::to_radians(deg);
-            let n = Vec3::new(s.cos(), 0.0, s.sin());
+            let n = Vec3::new(s.pcos(), 0.0, s.psin());
             r.color(Some(n), Vec3::new(0.0, 1.0, 0.0), Vec3::ZERO, 0.0)
         };
         let c = AnalysisColors::default();

@@ -9,6 +9,7 @@ use crate::IoError;
 use craft3d_doc::{EntityId, Geometry, Sketch, clamped_uniform_knots};
 use craft3d_drawing::{Drawing, Path, Point, Segment, Spline, SvgOptions, SvgReport};
 use craft3d_geom::{Curve3, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{Body, Coedge, FaceId};
 use std::collections::BTreeMap;
@@ -383,7 +384,7 @@ impl Nodes {
                 if pb[0] - pa[0] > self.tolerance {
                     break;
                 }
-                if (pb[0] - pa[0]).hypot(pb[1] - pa[1]) <= self.tolerance {
+                if (pb[0] - pa[0]).phypot(pb[1] - pa[1]) <= self.tolerance {
                     let (ra, rb) = (self.find(a), self.find(b));
                     let (low, high) = (ra.min(rb), ra.max(rb));
                     if let Some(parent) = self.parent.get_mut(high) {
@@ -491,7 +492,7 @@ fn segment(
     match &link.curve {
         LinkCurve::Line => Ok(Segment::Line { to }),
         LinkCurve::Arc { center } => {
-            let distance = |p: Point| (p[0] - center[0]).hypot(p[1] - center[1]);
+            let distance = |p: Point| (p[0] - center[0]).phypot(p[1] - center[1]);
             let (a, b) = (distance(from), distance(to));
             // The two ends of an arc are at one distance from its centre
             // once the sketch is solved; joining points within the

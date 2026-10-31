@@ -13,6 +13,7 @@ use craft3d_geom::{
     BezierPatch, Circle, Cone, Curve3, Cylinder, Ellipse, GeomError, Line, NurbsCurve,
     NurbsSurface, Plane, Sphere, Surface, Torus,
 };
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
 use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, VertexId, mass_properties};
 use std::f64::consts::{PI, TAU};
@@ -124,7 +125,7 @@ fn layer(body: &mut Body, frame: &Frame, profile: &Profile, z: f64) -> Result<La
                 } else {
                     (p, q, from, to)
                 };
-                let angle = |c: (f64, f64)| (c.1 - centre.1).atan2(c.0 - centre.0);
+                let angle = |c: (f64, f64)| (c.1 - centre.1).patan2(c.0 - centre.0);
                 let begin = angle(first);
                 let mut sweep = (angle(last) - begin).rem_euclid(TAU);
                 if sweep < 1e-12 {
@@ -375,7 +376,7 @@ pub fn spherical_cap(frame: &Frame, radius: f64, height: f64) -> Result<Referenc
         centroid: frame.point(
             0.0,
             0.0,
-            3.0 * (2.0 * radius - height).powi(2) / (4.0 * (3.0 * radius - height)),
+            3.0 * (2.0 * radius - height).ppowi(2) / (4.0 * (3.0 * radius - height)),
         ),
         counts: (1, 1, 2),
         genus: 0,
@@ -395,7 +396,11 @@ pub fn cone_frustum(
     let top_frame = frame_at(frame.point(0.0, 0.0, height), frame.z(), frame.x())?;
     let low = full_circle(&mut body, *frame, bottom)?;
     let high = full_circle(&mut body, top_frame, top)?;
-    let surface = Surface::Cone(Cone::new(*frame, bottom, ((top - bottom) / height).atan())?);
+    let surface = Surface::Cone(Cone::new(
+        *frame,
+        bottom,
+        ((top - bottom) / height).patan(),
+    )?);
     let wall_loops = vec![
         body.add_loop(vec![coedge(low, false)]),
         body.add_loop(vec![coedge(high, true)]),
@@ -416,7 +421,8 @@ pub fn cone_frustum(
         name: "cone frustum",
         body,
         volume: PI * height * squares / 3.0,
-        area: PI * (bottom * bottom + top * top) + PI * (bottom + top) * height.hypot(bottom - top),
+        area: PI * (bottom * bottom + top * top)
+            + PI * (bottom + top) * height.phypot(bottom - top),
         centroid: frame.point(
             0.0,
             0.0,
@@ -445,7 +451,7 @@ pub fn oblique_cylinder(
     // The cut plane z = mean + slope x: its normal, and the ellipse's
     // major axis along the slope. With that axis the ellipse's parameter
     // is the cylinder's angle.
-    let stretch = slope.hypot(1.0);
+    let stretch = slope.phypot(1.0);
     let cut_frame = frame_at(
         frame.point(0.0, 0.0, mean),
         frame.vector(-slope, 0.0, 1.0),
@@ -667,10 +673,10 @@ pub fn pipe_elbow(
     // The tube's cross-section at angle `u`: a circle whose parameter is
     // the torus's v, about the direction of decreasing u.
     let section = |u: f64| -> Result<Frame, GeomError> {
-        let outward = frame.vector(u.cos(), u.sin(), 0.0);
-        let forward = frame.vector(-u.sin(), u.cos(), 0.0);
+        let outward = frame.vector(u.pcos(), u.psin(), 0.0);
+        let forward = frame.vector(-u.psin(), u.pcos(), 0.0);
         frame_at(
-            frame.point(major * u.cos(), major * u.sin(), 0.0),
+            frame.point(major * u.pcos(), major * u.psin(), 0.0),
             -forward,
             outward,
         )
@@ -708,15 +714,15 @@ pub fn pipe_elbow(
     // The swept disc's second moment puts the centroid of each slice at
     // R + r² / 4R from the axis; over the sweep that averages to the
     // chord factor sin(θ/2) / (θ/2) along the bisector.
-    let reach = (major + minor * minor / (4.0 * major)) * (sweep / 2.0).sin() / (sweep / 2.0);
+    let reach = (major + minor * minor / (4.0 * major)) * (sweep / 2.0).psin() / (sweep / 2.0);
     Ok(Reference {
         name: "pipe elbow",
         body,
         volume: disc * major * sweep,
         area: TAU * minor * major * sweep + 2.0 * disc,
         centroid: frame.point(
-            reach * (sweep / 2.0).cos(),
-            reach * (sweep / 2.0).sin(),
+            reach * (sweep / 2.0).pcos(),
+            reach * (sweep / 2.0).psin(),
             0.0,
         ),
         counts: (2, 2, 3),
@@ -801,7 +807,7 @@ pub fn sphere_octant(frame: &Frame, radius: f64) -> Result<Reference, GeomError>
     Ok(Reference {
         name: "sphere octant",
         body,
-        volume: PI * radius.powi(3) / 6.0,
+        volume: PI * radius.ppowi(3) / 6.0,
         area: PI * radius * radius / 2.0 + 3.0 * PI * radius * radius / 4.0,
         centroid: frame.point(3.0 * radius / 8.0, 3.0 * radius / 8.0, 3.0 * radius / 8.0),
         counts: (4, 6, 4),

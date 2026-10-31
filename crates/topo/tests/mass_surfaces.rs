@@ -16,6 +16,7 @@
 )]
 
 use craft3d_geom::{Circle, Curve3, Cylinder, Line, NurbsCurve, NurbsSurface, Plane, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{
     Body, BodyKind, Coedge, EdgeId, FaceId, MassProperties, check, mass_properties,
@@ -155,7 +156,7 @@ fn can(frame: &Frame, r: f64, h: f64, wall: Wall, turn: f64) -> Body {
     // The rims: the same circles, started `turn` round from the seam, as
     // two edges each so that the seam's ends are vertices.
     let turned = |at: &Frame| {
-        let x = at.vector(turn.cos(), turn.sin(), 0.0);
+        let x = at.vector(turn.pcos(), turn.psin(), 0.0);
         NurbsCurve::circle(&Frame::new(at.origin(), at.z(), x).unwrap(), r).unwrap()
     };
     let (bottom_curve, top_curve) = (turned(frame), turned(&top_frame));
@@ -338,7 +339,7 @@ fn a_spline_sphere_and_a_spline_torus_match_their_closed_forms() {
                 (
                     "sphere",
                     whole(revolved(&frame, &meridian(r))),
-                    4.0 * PI * r.powi(3) / 3.0,
+                    4.0 * PI * r.ppowi(3) / 3.0,
                     4.0 * PI * r * r,
                 ),
                 (
@@ -444,7 +445,7 @@ fn ball_slice(
     let mut body = Body::new(BodyKind::Solid);
     let mut rim = |z: f64| {
         let radius = (r * r - z * z).sqrt();
-        let x = frame.vector(turn.cos(), turn.sin(), 0.0);
+        let x = frame.vector(turn.pcos(), turn.psin(), 0.0);
         let placed = Frame::new(frame.point(0.0, 0.0, z), frame.z(), x).unwrap();
         let curve = NurbsCurve::circle(&placed, radius).unwrap();
         let vertex = body.add_vertex(curve.eval(0.0));
@@ -479,7 +480,7 @@ fn ball_slice(
     }
     body.add_shell(faces);
     let (z0, z1) = (low.unwrap_or(-r), high.unwrap_or(r));
-    let slab = |z: f64| r * r * z - z.powi(3) / 3.0;
+    let slab = |z: f64| r * r * z - z.ppowi(3) / 3.0;
     let disc = |z: Option<f64>| z.map_or(0.0, |z| PI * (r * r - z * z));
     (
         body,
@@ -633,7 +634,7 @@ fn leaning_can(frame: &Frame, r: f64, mean: f64, rise: f64, wall: Wall) -> (Body
     use craft3d_geom::Ellipse;
     let mut body = Body::new(BodyKind::Solid);
     let centre = frame.point(0.0, 0.0, mean);
-    let slant = r.hypot(rise);
+    let slant = r.phypot(rise);
     let uphill = frame.vector(r / slant, 0.0, rise / slant);
     let normal = frame.vector(-rise / slant, 0.0, r / slant);
     let on_plane = Frame::new(centre, normal, uphill).unwrap();

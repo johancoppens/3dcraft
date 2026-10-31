@@ -2018,6 +2018,7 @@ fn lying_edges(
 
 #[cfg(test)]
 pub(super) mod tests {
+    use craft3d_math::Portable;
     thread_local! {
         /// Booleans on this thread work without covers (`cover.rs`), to
         /// hold them to the results with covers bit for bit.
@@ -2040,7 +2041,7 @@ pub(super) mod tests {
         let mut ctrl: Vec<Vec3> = (0..8)
             .map(|i| {
                 let a = std::f64::consts::TAU * f64::from(i) / 8.0;
-                Vec3::new(r * a.cos(), r * a.sin(), 0.0)
+                Vec3::new(r * a.pcos(), r * a.psin(), 0.0)
             })
             .collect();
         ctrl.push(ctrl[0]);
@@ -2329,7 +2330,7 @@ pub(super) mod tests {
             let torus = Surface::Torus(Torus::new(Frame::WORLD, 4.0 * k, k).unwrap());
             let top = Vec3::new(4.0 * k, 0.0, k);
             for slant in [0.1, 1.0_f64] {
-                let normal = Vec3::new(slant.sin(), 0.0, slant.cos());
+                let normal = Vec3::new(slant.psin(), 0.0, slant.pcos());
                 let slanted = Surface::Plane(Plane::new(Frame::from_z(top, normal).unwrap()));
                 // The curve leaves `top` along y, by symmetry.
                 assert_eq!(
@@ -2358,7 +2359,7 @@ pub(super) mod tests {
             }
             // At a slant of 0.0006 the lens is 0.18 of a tolerance thick.
             let slant = 6e-4_f64;
-            let normal = Vec3::new(slant.sin(), 0.0, slant.cos());
+            let normal = Vec3::new(slant.psin(), 0.0, slant.pcos());
             let slanted = Surface::Plane(Plane::new(Frame::from_z(top, normal).unwrap()));
             for (a, b) in [(&torus, &slanted), (&slanted, &torus)] {
                 match passage(Sheet::bare(a), Sheet::bare(b), top, Vec3::Y, 10.0 * k, tol) {

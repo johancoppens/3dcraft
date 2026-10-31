@@ -1,5 +1,6 @@
 //! The solver's input and output: a sketch as plain numbers.
 
+use craft3d_math::Portable;
 use craft3d_math::Tolerance;
 
 /// Position of an entity in [`Sketch::entities`]. Stable for the caller as
@@ -95,7 +96,7 @@ impl ImageMap {
                     Some(id) => point(id)?,
                     None => at,
                 };
-                let (sin, cos) = angle.sin_cos();
+                let (sin, cos) = angle.psin_cos();
                 let (ux, uy) = (px - cx, py - cy);
                 [cx + (ux * cos - uy * sin), cy + (ux * sin + uy * cos)]
             }
@@ -494,7 +495,7 @@ pub(crate) fn radius_of(entities: &[Entity], id: EntityId) -> Option<f64> {
         Entity::Arc { center, start, .. } => {
             let c = point_of(entities, *center)?;
             let s = point_of(entities, *start)?;
-            Some((s[0] - c[0]).hypot(s[1] - c[1]))
+            Some((s[0] - c[0]).phypot(s[1] - c[1]))
         }
         _ => None,
     }

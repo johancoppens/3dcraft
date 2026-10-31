@@ -8,6 +8,7 @@
     clippy::panic
 )]
 
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use craft3d_render::studio::{
     FrameLight, HdrImage, Look, Prepared, Tonemap, env::texel_direction, render_studio, tonemap,
@@ -39,7 +40,7 @@ fn sphere(center: Vec3, r: f64, rings: u32, segments: u32) -> Mesh {
         let t = std::f64::consts::PI * f64::from(i) / f64::from(rings);
         for j in 0..=segments {
             let p = 2.0 * std::f64::consts::PI * f64::from(j) / f64::from(segments);
-            let n = Vec3::new(t.sin() * p.cos(), t.sin() * p.sin(), t.cos());
+            let n = Vec3::new(t.psin() * p.pcos(), t.psin() * p.psin(), t.pcos());
             mesh.positions.push(center + n * r);
             mesh.normals.push(n);
         }
@@ -104,7 +105,7 @@ fn a_white_sphere_in_a_white_furnace_keeps_its_energy() {
         for roughness in [0_u8, 64, 128, 192, 255] {
             for i in 0..20 {
                 let a = f64::from(i) / 20.0 * 1.5;
-                let n = Vec3::new(a.sin(), 0.0, a.cos());
+                let n = Vec3::new(a.psin(), 0.0, a.pcos());
                 let finish = Finish {
                     metallic,
                     roughness: Some(roughness),
@@ -169,7 +170,7 @@ fn a_lambertian_surface_has_the_closed_form_irradiance() {
     assert!(env.key.is_none());
     for i in 0..=12 {
         let a = std::f64::consts::PI * f64::from(i) / 12.0;
-        let n = Vec3::new(a.sin() * 0.6, a.sin() * 0.8, a.cos());
+        let n = Vec3::new(a.psin() * 0.6, a.psin() * 0.8, a.pcos());
         let e = env.irradiance(n);
         let want = std::f64::consts::PI + 2.0 * std::f64::consts::PI / 3.0 * 0.5 * n.z;
         for c in e {
@@ -292,7 +293,7 @@ fn the_ground_under_a_lit_ball_is_in_its_shadow() {
     assert_eq!(light.ground_factor(Vec3::new(-2.5, -2.5, 5.0), down), 1.0);
     for k in 0..16 {
         let a = f64::from(k) / 16.0 * std::f64::consts::TAU;
-        let (c, s) = (a.cos(), a.sin());
+        let (c, s) = (a.pcos(), a.psin());
         let umbra = visibility(0.3 * c, 0.3 * s);
         let inside = visibility(0.8 * c, 0.8 * s);
         let beyond = visibility(1.35 * c, 1.35 * s);
@@ -490,14 +491,14 @@ fn brute_irradiance(level: &craft3d_render::studio::Level, n: Vec3) -> f64 {
     let mut sum = 0.0;
     for y in 0..h {
         let (t0, t1) = (y as f64 / h as f64 * PI, (y + 1) as f64 / h as f64 * PI);
-        let dw = 2.0 * PI / w as f64 * (t0.cos() - t1.cos());
+        let dw = 2.0 * PI / w as f64 * (t0.pcos() - t1.pcos());
         let theta = (y as f64 + 0.5) / h as f64 * PI;
         for x in 0..w {
             let phi = ((x as f64 + 0.5) / w as f64 - 0.5) * 2.0 * PI;
             let d = Vec3::new(
-                theta.sin() * phi.cos(),
-                theta.sin() * phi.sin(),
-                theta.cos(),
+                theta.psin() * phi.pcos(),
+                theta.psin() * phi.psin(),
+                theta.pcos(),
             );
             let c = level.texels[y * w + x];
             sum += lum(c) * n.dot(d).max(0.0) * dw;
@@ -513,7 +514,7 @@ fn power(level: &craft3d_render::studio::Level) -> f64 {
     let mut sum = 0.0;
     for y in 0..h {
         let (t0, t1) = (y as f64 / h as f64 * PI, (y + 1) as f64 / h as f64 * PI);
-        let dw = 2.0 * PI / w as f64 * (t0.cos() - t1.cos());
+        let dw = 2.0 * PI / w as f64 * (t0.pcos() - t1.pcos());
         for x in 0..w {
             sum += lum(level.texels[y * w + x]) * dw;
         }
@@ -596,12 +597,12 @@ fn the_key_and_the_rest_carry_the_environments_light() {
             let e = env.irradiance(n);
             let model = 0.2126 * e[0] + 0.7152 * e[1] + 0.0722 * e[2] + k * n.dot(l).max(0.0);
             let nl = n.dot(l);
-            let key_bound = if env.key.is_none() || nl <= -rho.sin() {
+            let key_bound = if env.key.is_none() || nl <= -rho.psin() {
                 0.0
-            } else if nl >= rho.sin() {
-                k * (1.0 - rho.cos())
+            } else if nl >= rho.psin() {
+                k * (1.0 - rho.pcos())
             } else {
-                2.0 * k * (rho / 2.0).sin()
+                2.0 * k * (rho / 2.0).psin()
             };
             let bound = 3.0 / 32.0 * (p - k) + key_bound + 2e-3 * p;
             eprintln!(

@@ -34,6 +34,7 @@ use craft3d_geom::{Circle, Curve3, NurbsCurve, NurbsSurface, Plane, Surface};
 use craft3d_kernel::boolean::BooleanOp::Intersect;
 use craft3d_kernel::boolean::boolean;
 use craft3d_kernel::primitives;
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_tess::{TessParams, tessellate_body};
 use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, check, mass_properties};
@@ -75,10 +76,10 @@ fn vase_volume() -> f64 {
 /// surface's second parameter. The wall is bounded by its two rims and,
 /// with `seam`, by the seam edge walked up and down.
 fn vase(from: f64, around_v: bool, seam: bool, k: f64) -> Body {
-    let weight = FRAC_PI_4.cos();
+    let weight = FRAC_PI_4.pcos();
     let ring: Vec<(f64, f64, f64)> = (0..9)
         .map(|k| {
-            let (sin, cos) = (from + FRAC_PI_4 * f64::from(k)).sin_cos();
+            let (sin, cos) = (from + FRAC_PI_4 * f64::from(k)).psin_cos();
             if k % 2 == 0 {
                 (cos, sin, 1.0)
             } else {
@@ -116,7 +117,7 @@ fn vase(from: f64, around_v: bool, seam: bool, k: f64) -> Body {
     .unwrap();
 
     let mut body = Body::new(BodyKind::Solid);
-    let (sin, cos) = from.sin_cos();
+    let (sin, cos) = from.psin_cos();
     let x_axis = Vec3::new(cos, sin, 0.0);
     let rim = |body: &mut Body, (rho, z): (f64, f64)| -> EdgeId {
         let vertex = body.add_vertex(Vec3::new(rho * cos, rho * sin, z) * k);

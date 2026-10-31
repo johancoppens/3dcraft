@@ -17,6 +17,7 @@
 )]
 
 use craft3d_geom::{Circle, Curve3, Line, NurbsSurface, Plane, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, FaceId, VertexId, check, mass_properties};
 use std::f64::consts::{FRAC_1_SQRT_2, FRAC_PI_2, PI, TAU};
@@ -43,12 +44,12 @@ fn flat(body: &mut Body, origin: Vec3, normal: Vec3, coedges: Vec<Coedge>) -> Fa
 
 /// The direction away from the axis at `angle` about the frame's z.
 fn radial(frame: &Frame, angle: f64) -> Vec3 {
-    frame.vector(angle.cos(), angle.sin(), 0.0)
+    frame.vector(angle.pcos(), angle.psin(), 0.0)
 }
 
 /// The direction a point at `angle` moves in when the angle grows.
 fn onward(frame: &Frame, angle: f64) -> Vec3 {
-    frame.vector(-angle.sin(), angle.cos(), 0.0)
+    frame.vector(-angle.psin(), angle.pcos(), 0.0)
 }
 
 /// A circle of `radius` about a point of the axis at height `z`, in the
@@ -120,7 +121,7 @@ fn swept(frame: &Frame, profile: &Profile, quarters: usize) -> NurbsSurface {
         };
         for (&(rho, z), &w_v) in profile.points.iter().zip(&profile.weights) {
             let rho = rho * reach;
-            ctrl.push(frame.point(angle.cos() * rho, angle.sin() * rho, z));
+            ctrl.push(frame.point(angle.pcos() * rho, angle.psin() * rho, z));
             weights.push(w_u * w_v);
         }
     }
@@ -221,11 +222,11 @@ fn ball_wedge(frame: &Frame, r: f64, quarters: usize, flip: bool) -> Solid {
         vec![back(last), back(axis)],
     );
     body.add_shell(vec![curved, at_start, at_end]);
-    let off = 3.0 * PI * r / 16.0 * (alpha / 2.0).sin() / (alpha / 2.0);
+    let off = 3.0 * PI * r / 16.0 * (alpha / 2.0).psin() / (alpha / 2.0);
     Solid {
         name: format!("wedge of {quarters} quarters, flipped {flip}"),
         body,
-        volume: 2.0 * r.powi(3) * alpha / 3.0,
+        volume: 2.0 * r.ppowi(3) * alpha / 3.0,
         area: 2.0 * r * r * alpha + PI * r * r,
         centroid: frame.origin() + radial(frame, alpha / 2.0) * off,
     }
@@ -295,7 +296,7 @@ fn ball_octant(frame: &Frame, r: f64, whole: bool, flip: bool) -> Solid {
     Solid {
         name: format!("octant, whole meridian {whole}, flipped {flip}"),
         body,
-        volume: PI * r.powi(3) / 6.0,
+        volume: PI * r.ppowi(3) / 6.0,
         area: PI * r * r / 2.0 + 3.0 * PI * r * r / 4.0,
         centroid: frame.point(c, c, c),
     }
@@ -312,7 +313,7 @@ fn ruled_cone(frame: &Frame, r: f64, h: f64, flip: bool) -> Solid {
     let apex = body.add_vertex(frame.point(0.0, 0.0, h));
     let east = body.add_vertex(frame.point(r, 0.0, 0.0));
     let west = body.add_vertex(frame.point(-r, 0.0, 0.0));
-    let slant = r.hypot(h);
+    let slant = r.phypot(h);
     let mut up = |from: Vec3, start: VertexId| {
         body.add_edge(
             Curve3::Line(Line::through(from, frame.point(0.0, 0.0, h)).unwrap()),
@@ -366,12 +367,12 @@ fn ruled_cone(frame: &Frame, r: f64, h: f64, flip: bool) -> Solid {
 fn cap_through_the_pole(frame: &Frame, r: f64, gamma: f64, flip: bool) -> Solid {
     // The cap looks along −x, tilted up by a quarter turn less `gamma`:
     // half a turn from the seam of the surface.
-    let towards = frame.vector(-gamma.sin(), 0.0, gamma.cos());
-    let centre = frame.origin() + towards * (r * gamma.cos());
+    let towards = frame.vector(-gamma.psin(), 0.0, gamma.pcos());
+    let centre = frame.origin() + towards * (r * gamma.pcos());
     let pole = frame.point(0.0, 0.0, r);
     // The pole a quarter of the way round the circle, not at its vertex.
     let placed = Frame::new(centre, towards, (pole - centre).cross(towards)).unwrap();
-    let circle = Curve3::Circle(Circle::new(placed, r * gamma.sin()).unwrap());
+    let circle = Curve3::Circle(Circle::new(placed, r * gamma.psin()).unwrap());
     assert!(circle.eval(FRAC_PI_2).distance(pole) < 1e-9 * r);
     let mut body = Body::new(BodyKind::Solid);
     let vertex = body.add_vertex(circle.eval(0.0));
@@ -384,13 +385,13 @@ fn cap_through_the_pole(frame: &Frame, r: f64, gamma: f64, flip: bool) -> Solid 
     );
     let disc = flat(&mut body, centre, -towards, vec![back(rim)]);
     body.add_shell(vec![curved, disc]);
-    let h = r * (1.0 - gamma.cos());
-    let off = 3.0 * (2.0 * r - h).powi(2) / (4.0 * (3.0 * r - h));
+    let h = r * (1.0 - gamma.pcos());
+    let off = 3.0 * (2.0 * r - h).ppowi(2) / (4.0 * (3.0 * r - h));
     Solid {
         name: format!("cap of {gamma} through the pole, flipped {flip}"),
         body,
         volume: PI * h * h * (3.0 * r - h) / 3.0,
-        area: TAU * r * h + PI * (r * gamma.sin()).powi(2),
+        area: TAU * r * h + PI * (r * gamma.psin()).ppowi(2),
         centroid: frame.origin() + towards * off,
     }
 }

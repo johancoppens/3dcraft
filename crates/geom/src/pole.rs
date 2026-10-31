@@ -15,6 +15,7 @@
 //! control net: control points that differ by rounding are one.
 
 use crate::{RationalBezierPatch, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Vec3};
 
 /// Control points this share of the size of the control net apart are one.
@@ -320,7 +321,7 @@ impl Narrowing {
         if !(self.width > 0.0 && length > 0.0) {
             return self.span;
         }
-        let share = (length / self.width).powf(1.0 / f64::from(self.order.max(1)));
+        let share = (length / self.width).ppowf(1.0 / f64::from(self.order.max(1)));
         self.span * share.min(1.0)
     }
 }
@@ -546,7 +547,7 @@ mod tests {
     /// a quarter turn of it: u around the axis, v from the apex out.
     fn quarter_cone(alpha: f64) -> Surface {
         let s = std::f64::consts::FRAC_1_SQRT_2;
-        let (r, h) = (alpha.sin(), alpha.cos());
+        let (r, h) = (alpha.psin(), alpha.pcos());
         let ring = [(1.0, 0.0, 1.0), (1.0, 1.0, s), (0.0, 1.0, 1.0)];
         let mut ctrl = Vec::new();
         let mut weights = Vec::new();
@@ -640,20 +641,23 @@ mod tests {
                         let (p, su, _) = at(u, beta);
                         length += p.distance(last);
                         last = p;
-                        assert!(su.length() <= n.speed * beta.powi(m) * (1.0 + 1e-9));
+                        assert!(su.length() <= n.speed * beta.ppowi(m) * (1.0 + 1e-9));
                         let a = u.clamp(h, 1.0 - h);
                         let suu = (at(a + h, beta).1 - at(a - h, beta).1) * (0.5 / h);
-                        assert!(suu.length() <= n.bend * beta.powi(m) * 1.01, "{beta}");
+                        assert!(suu.length() <= n.bend * beta.ppowi(m) * 1.01, "{beta}");
                         let b = beta.max(h);
                         let suv = (at(u, b + h).1 - at(u, b - h).1) * (0.5 / h);
                         let reach = (b + h).min(1.0);
-                        assert!(suv.length() <= n.twist * reach.powi(m - 1) * 1.01, "{beta}");
+                        assert!(
+                            suv.length() <= n.twist * reach.ppowi(m - 1) * 1.01,
+                            "{beta}"
+                        );
                     }
-                    assert!(length <= n.width * beta.powi(m) * (1.0 + 1e-9), "{beta}");
+                    assert!(length <= n.width * beta.ppowi(m) * (1.0 + 1e-9), "{beta}");
                     // Not loose by more than the weights and the hull
                     // allow (a factor of two here).
                     if (1e-3..=0.1).contains(&beta) {
-                        assert!(length >= 0.25 * n.width * beta.powi(m), "{beta}: {length}");
+                        assert!(length >= 0.25 * n.width * beta.ppowi(m), "{beta}: {length}");
                     }
                 }
                 // Within the width asked for, every iso-curve is as long.
@@ -701,11 +705,11 @@ mod tests {
             // which is where its normal `∂u × ∂v` points (away from the
             // axis and back).
             for (x, y) in [(0.3, 0.1), (0.1, 0.4), (0.2, 0.2)] {
-                let ruling = Vec3::new(x, y, 0.0).normalized().unwrap() * alpha.sin()
-                    + Vec3::Z * alpha.cos();
+                let ruling = Vec3::new(x, y, 0.0).normalized().unwrap() * alpha.psin()
+                    + Vec3::Z * alpha.pcos();
                 // Square to a ruling and outwards, then pushed back.
-                let out = (Vec3::new(x, y, 0.0).normalized().unwrap() * alpha.cos()
-                    - Vec3::Z * alpha.sin())
+                let out = (Vec3::new(x, y, 0.0).normalized().unwrap() * alpha.pcos()
+                    - Vec3::Z * alpha.psin())
                     * 0.3
                     - ruling * 0.2;
                 let n = pole.normal_towards(&cone, out).unwrap();

@@ -30,6 +30,7 @@ use crate::verify_cmds::{Dim, MEASURES, dim_of_dimension};
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::{Assertion, DocError, Document, Expr, Output, OutputDef};
 use craft3d_expr::{Dimension, Evaluation, Quantity};
+use craft3d_math::Portable;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -399,7 +400,7 @@ pub(crate) fn from_checked(doc: &Document, checked: &Checked) -> OutputValue {
             let lower = at("atLeast").unwrap_or(v);
             let upper = at("atMost").unwrap_or(v);
             let tol = match dim {
-                Dim::Length(k) if k > 0 => doc.tolerance.linear.powi(k),
+                Dim::Length(k) if k > 0 => doc.tolerance.linear.ppowi(k),
                 _ => 0.0,
             };
             if upper - lower > tol.max(1e-9 * v.abs()) {

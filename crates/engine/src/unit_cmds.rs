@@ -27,6 +27,7 @@ use crate::{CommandError, CommandSpec, OpenDocument, Session};
 use craft3d_doc::sketch::{ConstraintKind, Geometry, PlaceMap};
 use craft3d_doc::{Document, Expect, Expr, FeatureKind, LengthUnit, OutputDef, PatternLayout};
 use craft3d_expr::{Dimension, Evaluation, Quantity};
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use serde_json::{Map, Value, json};
 
@@ -244,7 +245,7 @@ fn with_unit(
     let got = values
         .eval(&written)
         .map_err(|e| format!("`{written}` does not evaluate: {e}"))?;
-    let want = plain.value * unit.as_expr_unit().factor().powi(dim.length);
+    let want = plain.value * unit.as_expr_unit().factor().ppowi(dim.length);
     let close = (got.value - want).abs() <= 1e-12 * want.abs().max(f64::MIN_POSITIVE);
     if got.dimension != dim || !close {
         return Err(format!(
@@ -922,7 +923,7 @@ fn same_checks(
         let same = match (&was.value, &now.value, power) {
             (Value::Number(a), Value::Number(b), Some(p)) => match (a.as_f64(), b.as_f64()) {
                 (Some(a), Some(b)) => {
-                    let a = a * k.powi(p);
+                    let a = a * k.ppowi(p);
                     (a - b).abs() <= 1e-6 * a.abs().max(b.abs()) + 1e-12
                 }
                 _ => false,
@@ -1009,12 +1010,12 @@ fn same_sizes(
             }
             return Err(format!("`{}` has other faces in the new unit", called(id)));
         };
-        if !near(was.volume * k.powi(3), now.volume) || !near(was.area * k.powi(2), now.area) {
+        if !near(was.volume * k.ppowi(3), now.volume) || !near(was.area * k.ppowi(2), now.area) {
             return Err(format!(
                 "`{}` has another size in the new unit (volume {} for {})",
                 called(id),
                 now.volume,
-                was.volume * k.powi(3)
+                was.volume * k.ppowi(3)
             ));
         }
         // Where it is, not only how large: its centroid and its box, by
@@ -1053,6 +1054,7 @@ fn same_sizes(
 mod tests {
     use super::*;
     use crate::workspace::Workspace;
+    use craft3d_math::Portable;
 
     fn block_at(x: &str) -> Document {
         let mut s = Session::new(Workspace::none());
@@ -1111,7 +1113,7 @@ mod tests {
         assert!((v - 6000.0).abs() < 1e-9, "{v}");
         let k: f64 = 0.1;
         let mut scaled = was.clone();
-        scaled.0[0].value = json!(v * k.powi(3));
+        scaled.0[0].value = json!(v * k.ppowi(3));
         assert!(same_checks(&was, &scaled, &[Some(3)], k).is_ok());
         let mut unscaled = was.clone();
         unscaled.0[0].value = json!(v * k);

@@ -13,6 +13,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{body, built, error, failed, run, session};
@@ -130,7 +131,7 @@ fn an_archimedean_spiral_sweeps_its_closed_form_area() {
         json!({"sketch": "S", "distance": 2, "name": "Spiral"}),
     );
     let (a, b) = (10.0, 3.0);
-    let area = ((a + 2.0 * PI * b).powi(3) - a.powi(3)) / (6.0 * b);
+    let area = ((a + 2.0 * PI * b).ppowi(3) - a.ppowi(3)) / (6.0 * b);
     assert_volume(&mut s, "Spiral", area * 2.0, 1e-6 * 200.0 * 2.0);
     let fit = fit_of(&mut s, "S", curve["entity"].as_str().unwrap());
     assert!(fit["controlPoints"].as_u64().unwrap() < 400, "{fit}");
@@ -247,12 +248,12 @@ fn gear_area(m: f64, z: u32) -> f64 {
     let alpha = 20f64.to_radians();
     let zf = f64::from(z);
     let rp = m * zf / 2.0;
-    let rb = rp * alpha.cos();
+    let rb = rp * alpha.pcos();
     let ra = rp + m;
     let rf = rp - 1.25 * m;
-    let g = -PI / (2.0 * zf) - (alpha.tan() - alpha);
-    let ta = ((ra / rb).powi(2) - 1.0).sqrt();
-    let tooth = rb * rb * ta.powi(3) / 3.0 - ra * ra * (g + ta - ta.atan()) + rf * rf * g;
+    let g = -PI / (2.0 * zf) - (alpha.ptan() - alpha);
+    let ta = ((ra / rb).ppowi(2) - 1.0).sqrt();
+    let tooth = rb * rb * ta.ppowi(3) / 3.0 - ra * ra * (g + ta - ta.patan()) + rf * rf * g;
     PI * rf * rf + zf * tooth
 }
 
@@ -654,12 +655,12 @@ fn tooth_area(m: f64, z: u32) -> f64 {
     let alpha = 20f64.to_radians();
     let zf = f64::from(z);
     let rp = m * zf / 2.0;
-    let rb = rp * alpha.cos();
+    let rb = rp * alpha.pcos();
     let ra = rp + m;
     let rc = rp - 1.75 * m;
-    let g = -PI / (2.0 * zf) - (alpha.tan() - alpha);
-    let ta = ((ra / rb).powi(2) - 1.0).sqrt();
-    rb * rb * ta.powi(3) / 3.0 - ra * ra * (g + ta - ta.atan()) + rc * rc * g
+    let g = -PI / (2.0 * zf) - (alpha.ptan() - alpha);
+    let ta = ((ra / rb).ppowi(2) - 1.0).sqrt();
+    rb * rb * ta.ppowi(3) / 3.0 - ra * ra * (g + ta - ta.patan()) + rc * rc * g
 }
 
 /// A tooth repeated round the centre by a sketch pattern: every instance is
@@ -759,7 +760,7 @@ fn a_line_leaves_a_formula_curve_along_it_and_its_end_is_on_it() {
     // one-sided estimate is exact for a parabola, the solve holds the
     // angle to the document's angular tolerance.
     assert!(
-        (dy - 2.0 * dx).abs() <= 1e-8 * dx.hypot(dy),
+        (dy - 2.0 * dx).abs() <= 1e-8 * dx.phypot(dy),
         "the line runs along ({dx}, {dy})"
     );
 }
@@ -877,7 +878,7 @@ fn a_nearly_closed_formula_curve_turns_with_its_ring() {
         json!({"sketch": "R", "distance": 1, "name": "Rings"}),
     );
     let theta = 359f64.to_radians();
-    let area = 9.0 / 2.0 * (theta - theta.sin());
+    let area = 9.0 / 2.0 * (theta - theta.psin());
     assert_volume(&mut s, "Rings", 4.0 * area, 4.0 * 20.0 * 1e-6);
 }
 

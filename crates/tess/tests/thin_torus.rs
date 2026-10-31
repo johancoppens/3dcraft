@@ -22,6 +22,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
 use craft3d_tess::{ANGLE_FLOOR, Mesh, TessParams, tessellate_body, tessellate_body_with_threads};
 use craft3d_testkit::solids::{self, Reference};
@@ -31,7 +32,7 @@ use std::f64::consts::{PI, TAU};
 const DEGREES: f64 = PI / 180.0;
 
 fn turn(a: Vec3, b: Vec3) -> f64 {
-    a.cross(b).length().atan2(a.dot(b))
+    a.cross(b).length().patan2(a.dot(b))
 }
 
 /// The largest turn of the normal over a side not below `floor`, and how
@@ -60,7 +61,7 @@ fn worst_turn(mesh: &Mesh, floor: f64) -> (f64, usize) {
 /// refined: what the angle cannot do without.
 fn grid(major: f64, minor: f64, sweep: f64, across: f64, tolerance: f64, angle: f64) -> f64 {
     let arc = |radius: f64, span: f64| {
-        let chordal = 2.0 * (1.0 - (tolerance / radius).min(1.0)).acos();
+        let chordal = 2.0 * (1.0 - (tolerance / radius).min(1.0)).pacos();
         let floor = ANGLE_FLOOR * tolerance / radius;
         (span / chordal.min(angle.max(floor))).ceil()
     };

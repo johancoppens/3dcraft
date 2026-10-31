@@ -13,6 +13,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{
@@ -112,7 +113,7 @@ fn a_single_fold_follows_its_variable_and_keeps_the_area() {
             assert_close(&found["area"], 4.0 * c * c, "area");
             // The far edge at (c cos a, ., c sin a).
             let t = degrees.to_radians();
-            assert_close(&found["bbox"][1][2], c * t.sin(), "height");
+            assert_close(&found["bbox"][1][2], c * t.psin(), "height");
             let inspect = run(&mut s, "fold.inspect", json!({"fold": "Folded"}));
             assert_eq!(inspect["ok"], true, "{inspect}");
             let a = piece_angles(&inspect, &lines[0]);
@@ -152,8 +153,8 @@ fn a_degree_four_vertex_solves_its_other_creases_by_the_closed_form() {
         new_document(&mut s, k);
         let c = 10.0 * k;
         let ray = |a: f64| {
-            let t = c / a.cos().abs().max(a.sin().abs());
-            [t * a.cos(), t * a.sin()]
+            let t = c / a.pcos().abs().max(a.psin().abs());
+            [t * a.pcos(), t * a.psin()]
         };
         let dirs = [0.0, alpha, alpha + beta, PI + beta];
         let made = square_lines(
@@ -189,8 +190,8 @@ fn a_degree_four_vertex_solves_its_other_creases_by_the_closed_form() {
             let inspect = run(&mut s, "fold.inspect", json!({"fold": "Vertex"}));
             assert_eq!(inspect["ok"], true, "{inspect}");
             let r1 = degrees.to_radians();
-            let p = ((alpha + beta) / 2.0).cos() / ((alpha - beta) / 2.0).cos();
-            let r2 = 2.0 * (-p * (r1 / 2.0).tan()).atan();
+            let p = ((alpha + beta) / 2.0).pcos() / ((alpha - beta) / 2.0).pcos();
+            let r2 = 2.0 * (-p * (r1 / 2.0).ptan()).patan();
             let want = [r1, r2, r1, -r2].map(f64::to_degrees);
             for (line, w) in lines.iter().zip(want) {
                 let got = piece_angles(&inspect, line)[0];

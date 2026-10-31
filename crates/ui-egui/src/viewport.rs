@@ -18,6 +18,7 @@ use crate::camera::{Projected, Projector};
 use crate::state::{CameraState, EdgeRef, VertexRef};
 use crate::theme::{EdgeColors, Rgb, Tokens};
 use craft3d_engine::{Scene, SceneDatum, SceneDatumShape, SceneSketch};
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use craft3d_render::{Frame, Highlight, RenderParams, SUBPIXEL_GRAIN};
 
@@ -1178,7 +1179,7 @@ fn stretches(
         let hidden = map.covers(a.x, a.y, a.depth);
         return vec![piece(0.0, 1.0, hidden)];
     }
-    let length = (b.x - a.x).hypot(b.y - a.y);
+    let length = (b.x - a.x).phypot(b.y - a.y);
     let direction = [(b.x - a.x) / length, (b.y - a.y) / length];
     let outline = outline.filter(|_| direction.iter().all(|c| c.is_finite()));
     // At least one, at most MAX_DEPTH_STEPS: fits an integer.
@@ -1533,7 +1534,7 @@ pub fn extent_on_screen(projector: &Projector, points: &[Vec3]) -> f64 {
     }
     match (projector.project(lo), projector.project(hi)) {
         (Some(a), Some(b)) => {
-            let length = (b.x - a.x).hypot(b.y - a.y);
+            let length = (b.x - a.x).phypot(b.y - a.y);
             if length.is_finite() {
                 length
             } else {
@@ -2093,7 +2094,7 @@ impl EdgeDensity {
         let end_ink = if a >= 0.0 {
             std::f64::consts::PI * (a * a / 2.0 + a / 2.0 + 1.0 / 6.0)
         } else {
-            std::f64::consts::PI * (half + 0.5).powi(3) / 6.0
+            std::f64::consts::PI * (half + 0.5).ppowi(3) / 6.0
         };
         let side = f64::from(tile);
         let (wf, hf) = (width as f64, height as f64);
@@ -2128,7 +2129,7 @@ impl EdgeDensity {
         }
         for (from, to, cut) in runs {
             let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
-            let length = dx.hypot(dy);
+            let length = dx.phypot(dy);
             if !length.is_finite() {
                 continue;
             }
@@ -2335,7 +2336,7 @@ fn cover_line(
     let uv = |p: [f64; 2]| if steep { [p[1], p[0]] } else { p };
     let (a, b) = (uv(a), uv(b));
     let (du, dv) = (b[0] - a[0], b[1] - a[1]);
-    let length = du.hypot(dv);
+    let length = du.phypot(dv);
     // How far from the line's centre a column can still be inked: the
     // perpendicular reach, seen along the column. A line is at most 45°
     // from its own main axis.
@@ -2370,7 +2371,7 @@ fn cover_line(
             } else {
                 0.0
             };
-            let distance = (su - (a[0] + du * along)).hypot(sv - (a[1] + dv * along));
+            let distance = (su - (a[0] + du * along)).phypot(sv - (a[1] + dv * along));
             let alpha = (half + 0.5 - distance).clamp(0.0, 1.0);
             if alpha <= 0.0 {
                 continue;
@@ -2391,6 +2392,7 @@ fn cover_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use craft3d_math::Portable;
 
     /// A sequence of numbers in [0, 1) from a seed, the same every run.
     fn sequence(seed: u64) -> impl FnMut() -> f64 {
@@ -2441,7 +2443,7 @@ mod tests {
         for _ in 0..20_000 {
             let (fu, fv) = (next(), next());
             let angle = next() * std::f64::consts::TAU;
-            let (nx, ny) = (angle.cos(), angle.sin());
+            let (nx, ny) = (angle.pcos(), angle.psin());
             let base = 1.0 + next() * 1e5;
             let along = (next() - 0.5) * 2e3;
             let (s1, s2) = ((next() - 0.5) * 4e3, (next() - 0.5) * 4e3);
@@ -2820,7 +2822,7 @@ mod tests {
         }
         // 6 % of the distance at the target's depth: the viewport shows
         // 2 · tan(15°) of the distance over 400 pixels.
-        let length = 0.06 / (2.0 * 15.0_f64.to_radians().tan()) * 400.0;
+        let length = 0.06 / (2.0 * 15.0_f64.to_radians().ptan()) * 400.0;
         assert!((x.to[0] - (200.0 + length)).abs() < 1e-9, "{x:?}");
         assert!((x.to[1] - 200.0).abs() < 1e-9);
         assert!((z.to[1] - (200.0 - length)).abs() < 1e-9, "{z:?}");

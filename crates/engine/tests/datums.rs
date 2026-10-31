@@ -13,6 +13,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{body, built, failed, feature, inspect, new_document, refused, run, session};
@@ -358,8 +359,8 @@ fn a_box_on_a_plane_at_an_angle_is_tilted_by_that_angle() {
         let frame = |a: f64| -> (V, V, V) {
             (
                 [1.0, 0.0, 0.0],
-                [0.0, a.cos(), a.sin()],
-                [0.0, -a.sin(), a.cos()],
+                [0.0, a.pcos(), a.psin()],
+                [0.0, -a.psin(), a.pcos()],
             )
         };
         let expect = |s: &mut Session, degrees: f64| {
@@ -745,7 +746,7 @@ fn a_mirror_in_a_datum_plane_is_the_reflection() {
             json!({"source": "Twin", "plane": "Skew", "name": "Skewed"}),
         );
         let a = 30.0_f64.to_radians();
-        let n = [a.cos(), a.sin(), 0.0];
+        let n = [a.pcos(), a.psin(), 0.0];
         let twin_centre = reflected(centre, [-3.0 * k, 0.0, 0.0], [1.0, 0.0, 0.0]);
         let skewed = body(&mut s, "Skewed");
         box_measures(&skewed, size, "skewed");
@@ -1562,7 +1563,7 @@ fn a_datum_axis_lies_where_its_definition_puts_it() {
         );
         // (0, -sin, cos) cross (0, 1, 0) = (-cos, 0, 0).
         assert_near(vector(&lies["direction"]), [-1.0, 0.0, 0.0], 1e-15, "ridge");
-        let height = 2.0 * k * 40.0_f64.to_radians().tan();
+        let height = 2.0 * k * 40.0_f64.to_radians().ptan();
         assert!(off_axis(&lies, [0.0, 2.0 * k, height]) <= slack);
         assert!(off_axis(&lies, [7.0 * k, 2.0 * k, height]) <= slack);
         // A plane turned about a datum axis goes through it: xy stood up
@@ -1660,8 +1661,8 @@ fn a_revolve_about_a_datum_axis_is_a_known_ring() {
             "quarter area",
         );
         let alpha = PI / 2.0;
-        let radial = 2.0 / 3.0 * (r2.powi(3) - r1.powi(3)) / (r2 * r2 - r1 * r1)
-            * (alpha / 2.0).sin()
+        let radial = 2.0 / 3.0 * (r2.ppowi(3) - r1.ppowi(3)) / (r2 * r2 - r1 * r1)
+            * (alpha / 2.0).psin()
             / (alpha / 2.0);
         let root = 0.5_f64.sqrt();
         assert_near(

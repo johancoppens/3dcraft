@@ -27,6 +27,7 @@
 )]
 
 use craft3d_geom::{Circle, Curve3, Cylinder, Line, NurbsCurve, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
 use craft3d_tess::{TessParams, tessellate_body};
 use craft3d_testkit::cost::WorkClock;
@@ -58,7 +59,7 @@ fn backward(edge: EdgeId) -> Coedge {
 }
 
 fn on_wall(angle: f64, z: f64) -> Vec3 {
-    Vec3::new(RADIUS * angle.cos(), RADIUS * angle.sin(), z)
+    Vec3::new(RADIUS * angle.pcos(), RADIUS * angle.psin(), z)
 }
 
 /// A helix on the wall from `from` to `to` (angles), at height `lift`
@@ -68,7 +69,7 @@ fn on_wall(angle: f64, z: f64) -> Vec3 {
 fn helix(from: f64, to: f64, lift: f64) -> NurbsCurve {
     let pieces = ((to - from) / (TAU / 8.0)).ceil().max(1.0) as usize;
     let step = (to - from) / pieces as f64;
-    let k = 4.0 / 3.0 * (step / 4.0).tan();
+    let k = 4.0 / 3.0 * (step / 4.0).ptan();
     let height = |angle: f64| lift + PITCH * angle / TAU;
     let mut ctrl = Vec::new();
     let mut knots = vec![0.0; 4];
@@ -76,8 +77,8 @@ fn helix(from: f64, to: f64, lift: f64) -> NurbsCurve {
         let (a, b) = (from + step * piece as f64, from + step * (piece + 1) as f64);
         let (za, zb) = (height(a), height(b));
         let (pa, pb) = (on_wall(a, za), on_wall(b, zb));
-        let ta = Vec3::new(-a.sin(), a.cos(), 0.0) * (k * RADIUS);
-        let tb = Vec3::new(-b.sin(), b.cos(), 0.0) * (k * RADIUS);
+        let ta = Vec3::new(-a.psin(), a.pcos(), 0.0) * (k * RADIUS);
+        let tb = Vec3::new(-b.psin(), b.pcos(), 0.0) * (k * RADIUS);
         let third = (zb - za) / 3.0;
         if piece == 0 {
             ctrl.push(pa);

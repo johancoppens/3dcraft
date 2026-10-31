@@ -20,6 +20,7 @@ use crate::error::{Site, SolveError};
 use crate::factor::{Factor, Jacobian, Work};
 use crate::model::{ConstraintReport, ConstraintStatus, Entity, Sketch, Solution, SolveOptions};
 use crate::{MAX_BLAMED, RUNS_PER_SOLVE};
+use craft3d_math::Portable;
 
 /// Polishing target: an equation is done when its residual, relative to the
 /// magnitude of the sketch (lengths) or in radians (angles), is below this.
@@ -1071,7 +1072,7 @@ fn residual(eq: &Equation, x: &[f64], min_len: f64, prep: &crate::equations::Pre
             .rows
             .iter()
             .take(e.count)
-            .fold(0.0f64, |norm, row| norm.hypot(row.v)),
+            .fold(0.0f64, |norm, row| norm.phypot(row.v)),
         Err(_) => f64::INFINITY,
     }
 }
@@ -1114,7 +1115,7 @@ mod tests {
         use crate::model::Constraint as C;
         let mut s = Sketch::new();
         let c = s.add_point(0.0, 0.0);
-        let a = s.add_point(30f64.to_radians().cos(), 30f64.to_radians().sin());
+        let a = s.add_point(30f64.to_radians().pcos(), 30f64.to_radians().psin());
         let b = s.add_point(0.0, 1.0);
         for (point, [x, y]) in [(c, [0.0, 0.0]), (a, [0.0, 1.0]), (b, [0.0, -1.0])] {
             s.add_constraint(C::CoordinateX { point, value: x });

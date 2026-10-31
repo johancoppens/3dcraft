@@ -10,6 +10,7 @@
 )]
 
 use craft3d_geom::{Circle, Curve3, Surface, Torus};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
 use craft3d_tess::{TessError, TessParams, tessellate_body};
 use craft3d_testkit::solids::{self, Reference};
@@ -183,11 +184,11 @@ fn what_cannot_be_tessellated_yet_is_an_error_that_says_so() {
     // that touches it twice (tilted by asin(r / R); the circle has radius
     // R and its centre is r off the axis).
     let (major, minor) = (3.0_f64, 1.0_f64);
-    let tilt = (minor / major).asin();
+    let tilt = (minor / major).pasin();
     let plane = Frame::new(
         Vec3::new(0.0, minor, 0.0),
-        Vec3::new(-tilt.sin(), 0.0, tilt.cos()),
-        Vec3::new(tilt.cos(), 0.0, tilt.sin()),
+        Vec3::new(-tilt.psin(), 0.0, tilt.pcos()),
+        Vec3::new(tilt.pcos(), 0.0, tilt.psin()),
     )
     .unwrap();
     let circle = Curve3::Circle(Circle::new(plane, major).unwrap());

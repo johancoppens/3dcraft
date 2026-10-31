@@ -19,6 +19,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::plain::{body, built, run, session};
@@ -138,7 +139,7 @@ fn polygon(points: &[[f64; 2]]) -> f64 {
     (0..points.len())
         .map(|i| {
             let (a, b) = (points[i], points[(i + 1) % points.len()]);
-            (a[0] - b[0]).hypot(a[1] - b[1])
+            (a[0] - b[0]).phypot(a[1] - b[1])
         })
         .sum()
 }

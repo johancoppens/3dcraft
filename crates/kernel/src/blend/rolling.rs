@@ -78,6 +78,7 @@ use craft3d_geom::certify::{
 };
 use craft3d_geom::refine::interpolate;
 use craft3d_geom::{Curve3, NurbsCurve, NurbsSurface, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, Coedge, Edge, EdgeId, FaceId, Loop, LoopId, Vertex, VertexId};
 
@@ -243,7 +244,7 @@ impl Spine<'_> {
             if !(x > 0.0) {
                 continue;
             }
-            let w = x.powi(4) * (35.0 + x * (-84.0 + x * (70.0 - 20.0 * x)));
+            let w = x.ppowi(4) * (35.0 + x * (-84.0 + x * (70.0 - 20.0 * x)));
             let there = self.plain(end)?;
             n += (joint.normal - there.normal) * w;
             d += (joint.normal.dot(joint.point) - there.normal.dot(there.point)) * w;
@@ -278,12 +279,12 @@ impl Section {
         let (a, b) = (q1 - c, q2 - c);
         let r = a.length();
         let cosine = (a.dot(b) / (r * b.length())).clamp(-1.0, 1.0);
-        let half = 0.5 * cosine.acos();
+        let half = 0.5 * cosine.pacos();
         // An arc of half a turn or more has no single quadratic.
         if !(half < 0.5 * std::f64::consts::PI * (1.0 - 1e-6)) {
             return None;
         }
-        let w = half.cos();
+        let w = half.pcos();
         let middle = (a + b).normalized()?;
         Some(vec![(q1, 1.0), (c + middle * (r / w), w), (q2, 1.0)])
     }
@@ -3469,7 +3470,7 @@ mod tests {
         let values: Vec<Vec<f64>> = params
             .iter()
             .map(|a| {
-                let x = 0.5 * k + amplitude * k * (16.0 * std::f64::consts::PI * a).sin();
+                let x = 0.5 * k + amplitude * k * (16.0 * std::f64::consts::PI * a).psin();
                 vec![x, a * k]
             })
             .collect();
@@ -3537,7 +3538,7 @@ mod tests {
         let params: Vec<f64> = (0..=40).map(|i| f64::from(i) / 40.0).collect();
         let points: Vec<Vec3> = params
             .iter()
-            .map(|t| Vec3::new(t * k, (gap + 4e-2 * (t - 0.507).powi(2)) * k, 0.0))
+            .map(|t| Vec3::new(t * k, (gap + 4e-2 * (t - 0.507).ppowi(2)) * k, 0.0))
             .collect();
         let bow = curve_through(&params, &points).unwrap();
         let line = Line::new(Vec3::new(-0.2 * k, 0.0, 0.0), Vec3::X).unwrap();
@@ -3610,7 +3611,7 @@ mod tests {
             let values: Vec<Vec<f64>> = params
                 .iter()
                 .map(|a| {
-                    let x = 0.5 * k + 1e-4 * k * (8.0 * std::f64::consts::PI * a).sin();
+                    let x = 0.5 * k + 1e-4 * k * (8.0 * std::f64::consts::PI * a).psin();
                     vec![x, a * k]
                 })
                 .collect();

@@ -16,6 +16,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod boolean_common;
 
 use boolean_common::{SCALES, assert_close, boxed, mass, tolerance};
@@ -108,7 +109,7 @@ fn closed_form([w, d, h]: [f64; 3], r: f64) -> f64 {
     w * d * h
         - (4.0 - PI) * r * r * h
         - 2.0 * (w + d - 4.0 * r) * (1.0 - PI / 4.0) * r * r
-        - 4.0 * (PI * r.powi(3) / 4.0 - PI * r.powi(3) / 6.0)
+        - 4.0 * (PI * r.ppowi(3) / 4.0 - PI * r.ppowi(3) / 6.0)
 }
 
 #[test]

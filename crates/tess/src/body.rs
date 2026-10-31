@@ -78,6 +78,7 @@ use crate::face::{Chord, FaceMesh, curved_chords, face_boundary, mesh_face};
 use crate::long::{Cuts, LONG_ROUNDS, long_chords};
 use crate::{Mesh, TessError, TessParams};
 use craft3d_geom::{Curve3, Surface};
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use craft3d_topo::Body;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -1161,7 +1162,7 @@ pub fn tessellate_within_budget(
                 needed_segments,
                 max_segments,
                 ..
-            } => (needed_segments / f64::from((*max_segments).max(1)) * 1.1).powi(2),
+            } => (needed_segments / f64::from((*max_segments).max(1)) * 1.1).ppowi(2),
             _ => return Err(error),
         };
         let factor = if factor.is_finite() {
@@ -1339,7 +1340,7 @@ mod tests {
         let line = Curve3::Line(Line::through(low, high).unwrap());
         let frame = Frame::WORLD.at(Vec3::new(-9.0, 0.0, 0.0)).unwrap();
         let radius = 101.0_f64.sqrt();
-        let half = (1.0 / radius).asin();
+        let half = (1.0 / radius).pasin();
         let arc = Curve3::Circle(Circle::new(frame, radius).unwrap());
         body.add_edge(line, (0.0, 2.0), a, b);
         body.add_edge(arc, (-half, half), a, b);

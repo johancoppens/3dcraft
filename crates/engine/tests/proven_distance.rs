@@ -14,6 +14,7 @@
 )]
 
 use craft3d_engine::{AssertionStatus, Session, Workspace};
+use craft3d_math::Portable;
 use serde_json::{Value, json};
 use std::time::Instant;
 
@@ -125,7 +126,7 @@ fn parallel_discs_are_proven_to_their_gap_at_three_scales() {
         );
         // Big disc to small disc: the rims, (150 - 15 - 100) across and 1
         // along the axis.
-        let rims = (35.0_f64.powi(2) + 1.0).sqrt() * k;
+        let rims = (35.0_f64.ppowi(2) + 1.0).sqrt() * k;
         measured(
             &mut s,
             "measure.clearance",

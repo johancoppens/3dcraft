@@ -10,6 +10,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::run;
@@ -99,7 +100,7 @@ fn part(unit: &str, k: f64) -> Session {
     run(
         &mut s,
         "assert.add",
-        json!({"name": "row", "measure": "volume", "of": "Row", "min": 1000.0 * k.powi(3)}),
+        json!({"name": "row", "measure": "volume", "of": "Row", "min": 1000.0 * k.ppowi(3)}),
     );
     s
 }
@@ -126,7 +127,7 @@ fn keeping_the_sizes_keeps_the_volumes_at_several_scales() {
             let scale = mm(from) / mm(to);
             close(
                 volume(&mut s),
-                before * scale.powi(3),
+                before * scale.ppowi(3),
                 &format!("{from} to {to} at {k}"),
             );
             let check = run(&mut s, "document.check", json!({}));
@@ -179,7 +180,7 @@ fn what_cannot_be_kept_is_refused_and_bad_params_are_errors() {
         "document.setUnit",
         json!({"units": "in", "keep": "sizes"}),
     );
-    close(v(&mut s), before / 25.4f64.powi(3), "the output in inches");
+    close(v(&mut s), before / 25.4f64.ppowi(3), "the output in inches");
     run(&mut s, "edit.undo", json!({}));
     run(
         &mut s,
@@ -328,10 +329,10 @@ fn outputs_and_value_assertions_keep_their_sizes() {
         );
         assert!(changed["rewritten"].as_u64().unwrap() >= 10, "{changed}");
         assert_eq!(statuses(&mut s), before, "{from} to {to}");
-        close(output(&mut s, "v"), 1200.0 * f.powi(3), "v");
-        close(output(&mut s, "half"), 600.0 * f.powi(3), "half");
-        close(output(&mut s, "below"), 400.0 * f.powi(3), "below");
-        close(output(&mut s, "section"), 200.0 * f.powi(2), "section");
+        close(output(&mut s, "v"), 1200.0 * f.ppowi(3), "v");
+        close(output(&mut s, "half"), 600.0 * f.ppowi(3), "half");
+        close(output(&mut s, "below"), 400.0 * f.ppowi(3), "below");
+        close(output(&mut s, "section"), 200.0 * f.ppowi(2), "section");
     }
 }
 
@@ -379,7 +380,7 @@ fn formula_curves_keep_their_sizes() {
             );
         }
         let parabola = 4.0 / 3.0 * 20.0 * 10.0 * 5.0;
-        let spiral = ((10.0 + 2.0 * PI * 3.0).powi(3) - 1000.0) / 18.0 * 5.0;
+        let spiral = ((10.0 + 2.0 * PI * 3.0).ppowi(3) - 1000.0) / 18.0 * 5.0;
         let near = |a: f64, b: f64, what: &str| {
             assert!((a - b).abs() <= 1e-5 * b, "{what}: {a} vs {b}");
         };
@@ -390,7 +391,7 @@ fn formula_curves_keep_their_sizes() {
             json!({"units": to, "keep": "sizes"}),
         );
         assert!(changed["rewritten"].as_u64().unwrap() >= 4, "{changed}");
-        near(volume(&mut s), (parabola + spiral) * f.powi(3), "after");
+        near(volume(&mut s), (parabola + spiral) * f.ppowi(3), "after");
         let inspect = run(&mut s, "sketch.inspect", json!({"sketch": "P"}));
         assert!(
             inspect
@@ -473,7 +474,7 @@ fn numbers_in_sets_and_subjects_keep_their_sizes() {
             .clone();
         close(
             in_box["measured"].as_f64().unwrap(),
-            1200.0 * f.powi(3),
+            1200.0 * f.ppowi(3),
             "inBox",
         );
         let sets = run(&mut s, "set.list", json!({}));
@@ -514,7 +515,7 @@ fn a_dimensioned_sketch_keeps_its_size() {
         "document.setUnit",
         json!({"units": "mm", "keep": "sizes"}),
     );
-    close(volume(&mut s), before * 25.4f64.powi(3), "in millimetres");
+    close(volume(&mut s), before * 25.4f64.ppowi(3), "in millimetres");
 }
 
 /// With the history rolled back, the features after the marker are
@@ -531,7 +532,7 @@ fn keeping_the_sizes_with_a_marker_set_converts_what_is_rolled_back() {
         json!({"units": "in", "keep": "sizes"}),
     );
     run(&mut s, "history.rollback", json!({"feature": null}));
-    close(volume(&mut s), whole / 25.4f64.powi(3), "rolled forward");
+    close(volume(&mut s), whole / 25.4f64.ppowi(3), "rolled forward");
     assert_eq!(run(&mut s, "document.check", json!({}))["ok"], true);
 }
 

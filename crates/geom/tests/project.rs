@@ -26,6 +26,7 @@
 use craft3d_geom::{
     BezierPatch, Cone, Cylinder, NurbsCurve, NurbsSurface, Plane, Sphere, Surface, Torus,
 };
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
 use craft3d_testkit::teapot::teapot;
 
@@ -153,13 +154,13 @@ fn fixtures(k: f64, random: &mut Random) -> Vec<Fixture> {
             name: "cone, widening".into(),
             surface: Surface::Cone(Cone::new(frame, 1.5 * k, 0.4).unwrap()),
             // From the apex, at −1.5 k / tan 0.4, upwards.
-            range: (turn, (-1.5 * k / 0.4_f64.tan(), 3.0 * k)),
+            range: (turn, (-1.5 * k / 0.4_f64.ptan(), 3.0 * k)),
             size: 3.0 * k,
         },
         Fixture {
             name: "cone, narrowing".into(),
             surface: Surface::Cone(Cone::new(frame, 1.5 * k, -0.7).unwrap()),
-            range: (turn, (-3.0 * k, 1.5 * k / 0.7_f64.tan())),
+            range: (turn, (-3.0 * k, 1.5 * k / 0.7_f64.ptan())),
             size: 3.0 * k,
         },
         Fixture {
@@ -740,8 +741,8 @@ fn a_projection_from_the_point_before_lands_where_the_search_does() {
                 let mut last: Option<(f64, f64)> = None;
                 for _ in 0..100 {
                     angle += random.between(-0.5, 0.5);
-                    u = (u + angle.cos() * wu / 150.0).clamp(u0, u1);
-                    v = (v + angle.sin() * wv / 150.0).clamp(v0, v1);
+                    u = (u + angle.pcos() * wu / 150.0).clamp(u0, u1);
+                    v = (v + angle.psin() * wv / 150.0).clamp(v0, v1);
                     let (origin, su, sv) = surface.derivatives(u, v);
                     let (lu, lv) = (su.length() * wu, sv.length() * wv);
                     let told_apart = lu > 1e-3 * size
@@ -845,7 +846,7 @@ fn a_projection_onto_a_long_narrow_sheet_far_from_the_origin_settles() {
         let mut ctrl = Vec::new();
         for i in 0..rows {
             let x = 5000.0 * i as f64 / (rows - 1) as f64;
-            let wave = (x / 700.0).sin();
+            let wave = (x / 700.0).psin();
             let low = Vec3::new(2500.0 + x, 40.0 * wave, 200.0 + 10.0 * wave);
             let high = low + Vec3::new(3.0 * wave, 120.0, 90.0 + 20.0 * wave);
             ctrl.push(low * k);

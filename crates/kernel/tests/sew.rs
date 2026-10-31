@@ -28,6 +28,7 @@
 
 use craft3d_kernel::boolean::{BooleanOp, boolean};
 use craft3d_kernel::primitives;
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_testkit::parallel::map_parallel;
 use craft3d_testkit::trimmed;
@@ -732,7 +733,7 @@ fn a_fan_of_thousands_of_loose_facets_is_sewn_within_its_bounds() {
     let mut body = Body::new(craft3d_topo::BodyKind::Sheet);
     let rim = |i: usize| {
         let a = std::f64::consts::TAU * (i % n) as f64 / n as f64;
-        Vec3::new(a.cos(), a.sin(), 0.0)
+        Vec3::new(a.pcos(), a.psin(), 0.0)
     };
     for i in 0..n {
         let pts = [Vec3::ZERO, rim(i), rim(i + 1)];

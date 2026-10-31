@@ -34,6 +34,7 @@
 use craft3d_engine::{Session, Workspace};
 use craft3d_geom::intersect::{SurfaceMeeting, meet_surfaces};
 use craft3d_kernel::boolean::{BooleanOp, boolean};
+use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Transform, Vec3};
 use craft3d_topo::{Body, mass_properties};
 use serde_json::{Value, json};
@@ -508,7 +509,7 @@ fn winding(mesh: &craft3d_tess::Mesh, p: Vec3) -> f64 {
         let (la, lb, lc) = (a.length(), b.length(), c.length());
         let num = a.dot(b.cross(c));
         let den = la * lb * lc + a.dot(b) * lc + a.dot(c) * lb + b.dot(c) * la;
-        sum += 2.0 * num.atan2(den);
+        sum += 2.0 * num.patan2(den);
     }
     sum / (4.0 * std::f64::consts::PI)
 }

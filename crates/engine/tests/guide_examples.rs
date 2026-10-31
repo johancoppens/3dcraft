@@ -13,6 +13,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::run;
@@ -286,7 +287,7 @@ fn the_origami_chapter_folds_as_it_says() {
             .as_f64()
             .unwrap()
     };
-    let r2 = 2.0 * (-0.5 * 20f64.to_radians().tan()).atan().to_degrees();
+    let r2 = 2.0 * (-0.5 * 20f64.to_radians().ptan()).patan().to_degrees();
     assert!(
         (angle("e14") - r2).abs() < 1e-7 && (r2 + 20.6).abs() < 0.05,
         "{inspect}"
@@ -391,7 +392,7 @@ fn the_outputs_of_the_measuring_chapter_are_as_it_says() {
     for (name, want) in [
         ("T", 250.0),
         ("KB", 125.0),
-        ("I", 2000.0 * 600f64.powi(3) / 12.0),
+        ("I", 2000.0 * 600f64.ppowi(3) / 12.0),
         ("BM", 120.0),
         ("GM", 65.0),
     ] {
@@ -481,7 +482,7 @@ fn the_floating_assertions_of_the_measuring_chapter_are_as_it_says() {
     assert_eq!(listed["ok"], true, "{listed}");
     let trim = listed["assertions"][1]["measured"].as_f64().unwrap();
     assert!(
-        (trim.abs() - 0.05_f64.atan()).abs() < 1e-7,
+        (trim.abs() - 0.05_f64.patan()).abs() < 1e-7,
         "trim {trim}: {listed}"
     );
     let outputs = run(&mut s, "output.list", json!({}));

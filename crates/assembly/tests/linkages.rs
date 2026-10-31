@@ -9,6 +9,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::*;
@@ -49,7 +50,7 @@ impl FourBar {
     }
 
     fn joints(&self, th: f64) -> Option<(Vec3, Vec3)> {
-        let a = v2(self.a * th.cos(), self.a * th.sin());
+        let a = v2(self.a * th.pcos(), self.a * th.psin());
         let b = circ(a, self.b, self.pivot_d(), self.c, self.sg)?;
         Some((a, b))
     }
@@ -168,7 +169,7 @@ fn grashof_rockers_stop_at_their_closed_form_dead_points() {
                 .map(|k| vec![(2.0 * k as f64).to_radians()])
                 .collect();
             let seq = solve_sequence(&p, &frames).unwrap();
-            let want = ((a * a + d * d - (b + c) * (b + c)) / (2.0 * a * d)).acos();
+            let want = ((a * a + d * d - (b + c) * (b + c)) / (2.0 * a * d)).pacos();
             let got = fb.th0 + dead_point(&seq);
             assert!(
                 (got - want).abs() < 1e-5,
@@ -209,8 +210,8 @@ fn an_undriven_four_bar_has_one_free_motion() {
 /// 3 the slider.
 fn slider_crank(s: f64, th0: f64) -> (Problem, Vec3, f64, f64) {
     let (r, l) = (1.0 * s, 3.0 * s);
-    let a0 = v2(r * th0.cos(), r * th0.sin());
-    let x0 = r * th0.cos() + (l * l - (r * th0.sin()).powi(2)).sqrt();
+    let a0 = v2(r * th0.pcos(), r * th0.psin());
+    let x0 = r * th0.pcos() + (l * l - (r * th0.psin()).ppowi(2)).sqrt();
     let p0 = v2(x0, 0.0);
     let mut p = planar(4, s, 4.0);
     pin(&mut p, 0, 1, Vec3::ZERO, "crank");
@@ -233,7 +234,7 @@ fn a_slider_crank_follows_its_closed_form_at_three_scales() {
         assert!(seq.stopped.is_none(), "{:?}", seq.stopped);
         for sol in &seq.frames {
             let th = th0 + sol.drives[0];
-            let x = r * th.cos() + (l * l - (r * th.sin()).powi(2)).sqrt();
+            let x = r * th.pcos() + (l * l - (r * th.psin()).ppowi(2)).sqrt();
             let got = sol.poses[3].point(p0);
             assert!(
                 close(got, v2(x, 0.0), 1e-6 * p.scale),
@@ -265,7 +266,7 @@ fn a_slider_crank_driven_by_its_slider_stops_at_top_dead_centre() {
         for sol in &seq.frames {
             let x = p0.x + sol.drives[0];
             let cos_th = (x * x + r * r - l * l) / (2.0 * x * r);
-            let a = sol.poses[1].point(v2(r * th0.cos(), r * th0.sin()));
+            let a = sol.poses[1].point(v2(r * th0.pcos(), r * th0.psin()));
             assert!((a.x / r - cos_th).abs() < 1e-6, "crank at slider {x}");
         }
     }
@@ -304,7 +305,7 @@ fn a_parallelogram_stays_a_parallelogram_through_its_flat_position() {
     for s in SCALES {
         for step_deg in [7.0, 5.0] {
             let th0 = 60f64.to_radians();
-            let a0 = v2(s * th0.cos(), s * th0.sin());
+            let a0 = v2(s * th0.pcos(), s * th0.psin());
             let d = v2(3.0 * s, 0.0);
             let b0 = a0 + d;
             let mut p = planar(4, s, 3.0);

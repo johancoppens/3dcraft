@@ -6,6 +6,7 @@
 //! a circle) are taken here, once, from the starting guess, so the equations
 //! are smooth during the iteration and the solve stays on its branch.
 
+use craft3d_math::Portable;
 use std::f64::consts::{PI, TAU};
 
 use crate::dual::{Dual, SLOTS, angle_of, length};
@@ -203,7 +204,7 @@ impl ImageVars {
             }
             .at(x, images),
             (Carry::Turn { from, to, at, .. }, MapVars::Turn { of, centre, .. }) => {
-                let (sin, cos) = lerp(from, to, t).sin_cos();
+                let (sin, cos) = lerp(from, to, t).psin_cos();
                 let centre = match centre {
                     Centre::Own(c) => Centre::Own(c),
                     Centre::At(c) => Centre::At([lerp(at[0], c[0], t), lerp(at[1], c[1], t)]),
@@ -617,7 +618,7 @@ impl<'a> Ctx<'a> {
             Foot::On(at) | Foot::Corner(at) => at,
         };
         let [tx, ty] = at.tangent;
-        let speed = tx.hypot(ty);
+        let speed = tx.phypot(ty);
         if !speed.is_finite() {
             return Err(Fail::NonFinite);
         }
@@ -629,7 +630,7 @@ impl<'a> Ctx<'a> {
         // Across the curve; at a corner that the point is nearest to,
         // from the corner to the point (unless it is on it already).
         let away = [target[0] - at.point[0], target[1] - at.point[1]];
-        let far = away[0].hypot(away[1]);
+        let far = away[0].phypot(away[1]);
         let normal = match foot {
             Foot::Corner(_) if far > self.min_len => [away[0] / far, away[1] / far],
             _ => [-ty / speed, tx / speed],
@@ -1604,7 +1605,7 @@ pub(crate) fn prepare(sketch: &Sketch, min_len: f64) -> Result<Prepared, SolveEr
             }
             crate::ImageMap::Turn { center, at, angle } => {
                 finite(&[at[0], at[1], angle])?;
-                let (sin, cos) = angle.sin_cos();
+                let (sin, cos) = angle.psin_cos();
                 let centre = match center {
                     Some(id) => Centre::Own(own(id)?),
                     None => Centre::At(at),
@@ -1865,14 +1866,14 @@ mod tests {
             MapVars::Turn {
                 of: Pt::Own(0),
                 centre: Centre::Own(6),
-                sin: 0.8_f64.sin(),
-                cos: 0.8_f64.cos(),
+                sin: 0.8_f64.psin(),
+                cos: 0.8_f64.pcos(),
             },
             MapVars::Turn {
                 of: Pt::Own(4),
                 centre: Centre::At([0.25, -0.5]),
-                sin: (-2.1_f64).sin(),
-                cos: (-2.1_f64).cos(),
+                sin: (-2.1_f64).psin(),
+                cos: (-2.1_f64).pcos(),
             },
         ]
         .map(ImageVars::new);
@@ -2009,8 +2010,8 @@ mod tests {
             ImageVars::new(MapVars::Turn {
                 of: Pt::Image(1),
                 centre: Centre::Own(6),
-                sin: 0.3_f64.sin(),
-                cos: 0.3_f64.cos(),
+                sin: 0.3_f64.psin(),
+                cos: 0.3_f64.pcos(),
             }),
             // 3: a shift of the inner end, carried straight.
             ImageVars {
@@ -2107,8 +2108,8 @@ mod tests {
                 map: MapVars::Turn {
                     of: Pt::Own(0),
                     centre: Centre::Own(6),
-                    sin: 4.7_f64.sin(),
-                    cos: 4.7_f64.cos(),
+                    sin: 4.7_f64.psin(),
+                    cos: 4.7_f64.pcos(),
                 },
                 stage: Stage::WHOLE,
                 carry: Some(Carry::Turn {
@@ -2122,8 +2123,8 @@ mod tests {
                 map: MapVars::Turn {
                     of: Pt::Own(4),
                     centre: Centre::At([0.25, -0.5]),
-                    sin: (-2.1_f64).sin(),
-                    cos: (-2.1_f64).cos(),
+                    sin: (-2.1_f64).psin(),
+                    cos: (-2.1_f64).pcos(),
                 },
                 stage: Stage::WHOLE,
                 carry: Some(Carry::Turn {

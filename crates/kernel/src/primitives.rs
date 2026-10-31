@@ -4,6 +4,7 @@ use crate::KernelError;
 use craft3d_geom::{
     Circle, Cone, Curve3, Cylinder, GeomError, Line, Plane, Sphere, Surface, Torus,
 };
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
 use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, VertexId};
 use std::collections::BTreeMap;
@@ -165,7 +166,7 @@ pub fn cone(frame: &Frame, radius: f64, height: f64) -> Result<Body, KernelError
     let mut body = Body::new(BodyKind::Solid);
     let base = full_circle(&mut body, *frame, radius)?;
     // Narrowing along +z: a negative half-angle.
-    let surface = Surface::Cone(Cone::new(*frame, radius, -(radius / height).atan())?);
+    let surface = Surface::Cone(Cone::new(*frame, radius, -(radius / height).patan())?);
     let side_loop = body.add_loop(vec![forward(base)]);
     let side = body.add_face(surface, false, vec![side_loop]);
     let floor_loop = body.add_loop(vec![backward(base)]);

@@ -9,6 +9,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use std::time::Duration;
@@ -262,7 +263,7 @@ fn check_solution(sketch: &Sketch, solution: &Solution, what: &str) {
                 solution.point(*start).unwrap(),
                 solution.point(*end).unwrap(),
             );
-            let gap = (s[0] - c[0]).hypot(s[1] - c[1]) - (e[0] - c[0]).hypot(e[1] - c[1]);
+            let gap = (s[0] - c[0]).phypot(s[1] - c[1]) - (e[0] - c[0]).phypot(e[1] - c[1]);
             assert!(gap.abs() <= tol.linear, "{what}: arc off by {gap}");
         }
     }

@@ -111,7 +111,7 @@ fn degrees(radians: f64) -> f64 {
 }
 
 fn angle_of(p: Point, center: Point) -> f64 {
-    (p[1] - center[1]).atan2(p[0] - center[0])
+    libm::atan2(p[1] - center[1], p[0] - center[0])
 }
 
 /// Writes the drawing as an ASCII DXF file of AutoCAD 2000.

@@ -16,6 +16,7 @@
 // Test code: a failure in a helper is a failed test.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
+use craft3d_math::Portable;
 mod boolean_common;
 
 use boolean_common::*;
@@ -100,7 +101,7 @@ fn plate(k: f64) -> Body {
 /// area `h` (the difference of two corner triangles, `((½ + h)² − (½ −
 /// h)²) / 2`), over the cube's full width in `x`.
 fn common_volume(k: f64) -> f64 {
-    PLATE * 0.5_f64.sqrt() * k.powi(3)
+    PLATE * 0.5_f64.sqrt() * k.ppowi(3)
 }
 
 /// A clipped cube whose triangle is 3, 6 or 9 tolerances along each edge
@@ -120,8 +121,8 @@ fn a_face_that_is_a_sliver_is_classified_by_a_point_near_its_boundary() {
             let a = clipped_cube(k, delta);
             let b = plate(k);
             let what = format!("the triangle at {tolerances} tolerances, scale {k}");
-            let cube = k.powi(3) - (delta * k).powi(3) / 6.0;
-            let plate = 3.0 * 3.0 * PLATE * k.powi(3);
+            let cube = k.ppowi(3) - (delta * k).ppowi(3) / 6.0;
+            let plate = 3.0 * 3.0 * PLATE * k.ppowi(3);
             let common = common_volume(k);
             for (first, second) in [(&a, &b), (&b, &a)] {
                 let union = op(first, second, Union, k, &what);

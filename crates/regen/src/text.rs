@@ -23,6 +23,7 @@ use craft3d_expr::{Dimension, Evaluation};
 use craft3d_font::{
     Align, Contour, FontFile, LayoutOptions, Metrics, Outline, STROKE, StrokeFont, layout,
 };
+use craft3d_math::Portable;
 use std::collections::BTreeMap;
 
 /// Most curves all the texts of one sketch make.
@@ -210,7 +211,7 @@ enum Track {
 impl Track {
     fn length(&self) -> f64 {
         match self {
-            Track::Line { a, b } => (b[0] - a[0]).hypot(b[1] - a[1]),
+            Track::Line { a, b } => (b[0] - a[0]).phypot(b[1] - a[1]),
             Track::Arc { r, sweep, .. } => r * sweep.abs(),
             Track::Poly { cum, .. } => cum.last().copied().unwrap_or(0.0),
         }
@@ -242,8 +243,8 @@ impl Track {
                 let dir = sweep.signum();
                 let ang = a0 + dir * s / r;
                 Some((
-                    [c[0] + r * ang.cos(), c[1] + r * ang.sin()],
-                    [-ang.sin() * dir, ang.cos() * dir],
+                    [c[0] + r * ang.pcos(), c[1] + r * ang.psin()],
+                    [-ang.psin() * dir, ang.pcos() * dir],
                 ))
             }
             Track::Poly { pts, cum } => {
@@ -285,7 +286,7 @@ fn track(sketch: &Sketch, id: EntityId, solved: &Solved<'_>, tol: f64) -> Result
         let mut prev: Option<[f64; 2]> = None;
         for q in &pts {
             if let Some(a) = prev {
-                total += (q[0] - a[0]).hypot(q[1] - a[1]);
+                total += (q[0] - a[0]).phypot(q[1] - a[1]);
             }
             cum.push(total);
             prev = Some(*q);
@@ -305,9 +306,9 @@ fn track(sketch: &Sketch, id: EntityId, solved: &Solved<'_>, tol: f64) -> Result
         }),
         &Geometry::Arc { center, start, end } => {
             let (c, s, e) = (p(center)?, p(start)?, p(end)?);
-            let r = (s[0] - c[0]).hypot(s[1] - c[1]);
-            let a0 = (s[1] - c[1]).atan2(s[0] - c[0]);
-            let a1 = (e[1] - c[1]).atan2(e[0] - c[0]);
+            let r = (s[0] - c[0]).phypot(s[1] - c[1]);
+            let a0 = (s[1] - c[1]).patan2(s[0] - c[0]);
+            let a1 = (e[1] - c[1]).patan2(e[0] - c[0]);
             let mut sweep = (a1 - a0).rem_euclid(std::f64::consts::TAU);
             if sweep <= 0.0 {
                 sweep = std::f64::consts::TAU;
@@ -454,7 +455,7 @@ pub(crate) fn lay_out(
     let at = (solved.point)(text.at)
         .filter(|p| p.iter().all(|v| v.is_finite()))
         .ok_or_else(|| format!("{} has no solved position", text.at))?;
-    let (sin, cos) = rotation.sin_cos();
+    let (sin, cos) = rotation.psin_cos();
     let tol = doc.tolerance.linear;
     // Along a curve: the curve by arc length, where the text starts on it,
     // its distance from it and on which side.

@@ -11,6 +11,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 use craft3d_math::Tolerance;
 use craft3d_solve::{
     Carried, Constraint as C, ConstraintStatus, Entity, EntityId, ImageMap, ImageStart, Sketch,
@@ -260,7 +261,7 @@ fn a_turn_whose_angle_changes_carries_what_hangs_on_its_image() {
             (s, image, q)
         };
         let a = 30f64.to_radians();
-        let (s, image, q) = build(30.0, [p(4.0) * a.cos(), p(4.0) * a.sin()]);
+        let (s, image, q) = build(30.0, [p(4.0) * a.pcos(), p(4.0) * a.psin()]);
         let first = solve(&s, &options(scale)).unwrap();
         ok(&first);
         let was = image_at(&s, image);
@@ -283,8 +284,8 @@ fn a_turn_whose_angle_changes_carries_what_hangs_on_its_image() {
         let [x, y] = solved.point(q).unwrap();
         let b = 170f64.to_radians();
         assert!(
-            (x - p(4.0) * b.cos()).abs() <= 1e-9 * scale
-                && (y - p(4.0) * b.sin()).abs() <= 1e-9 * scale,
+            (x - p(4.0) * b.pcos()).abs() <= 1e-9 * scale
+                && (y - p(4.0) * b.psin()).abs() <= 1e-9 * scale,
             "at {scale}: q at {x}, {y}"
         );
     }
@@ -427,7 +428,7 @@ fn returned(scale: f64, from: f64, to: f64, how: Start) -> (Solution, EntityId) 
     let (s, image, q) = turn(
         scale,
         from,
-        [4.0 * scale * from.cos(), 4.0 * scale * from.sin()],
+        [4.0 * scale * from.pcos(), 4.0 * scale * from.psin()],
     );
     let first = solve(&s, &options(scale)).unwrap();
     ok(&first);
@@ -464,7 +465,7 @@ fn a_ring_whose_count_jumps_carries_what_hangs_on_its_image() {
             ok(&solved);
             assert_eq!(solved.carry, Some(Carried::Whole));
             let [x, y] = solved.point(q).unwrap();
-            let (wx, wy) = (4.0 * scale * to.cos(), 4.0 * scale * to.sin());
+            let (wx, wy) = (4.0 * scale * to.pcos(), 4.0 * scale * to.psin());
             assert!(
                 (x - wx).abs() <= 1e-9 * scale && (y - wy).abs() <= 1e-9 * scale,
                 "{} -> {} deg at {scale}: q at {x}, {y}, want {wx}, {wy}",
@@ -638,7 +639,7 @@ fn a_path_that_runs_out_of_work_says_so() {
         o
     };
     let found = (0..120u32)
-        .map(|i| 2f64.powf(f64::from(i) / 3.0) as u64)
+        .map(|i| 2f64.ppowf(f64::from(i) / 3.0) as u64)
         .any(|limit| {
             matches!(
                 solve(&carried, &with(limit)),

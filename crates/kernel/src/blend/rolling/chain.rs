@@ -52,6 +52,7 @@ use super::{
 };
 use crate::chamfer::ChamferSize;
 use craft3d_geom::{Curve3, NurbsCurve, NurbsSurface, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Tolerance, Vec3};
 use craft3d_topo::{Body, Edge, EdgeId, FaceId, VertexId};
 use std::collections::BTreeMap;
@@ -196,7 +197,7 @@ fn vertex_of(data: &Edge, forward: bool, at_end: bool) -> VertexId {
 /// tolerance, or straight on as [`super::super::tangent_chain`] has it.
 fn continues(cosine: f64, tolerance: &Tolerance) -> bool {
     let cosine = cosine.clamp(-1.0, 1.0);
-    cosine > 1.0 - 1e-9 || cosine.acos() <= tolerance.angular
+    cosine > 1.0 - 1e-9 || cosine.pacos() <= tolerance.angular
 }
 
 /// What is needed to read the body around a joint.
@@ -1709,7 +1710,7 @@ fn walk(
         let found = solver
             .ball(ahead, &current, radius, convex)
             .and_then(|next| Some((next, spine_tangent(solver.sides, &next, t)?)));
-        let Some((next, turned)) = found.filter(|(_, n)| n.dot(t) > 0.25_f64.cos()) else {
+        let Some((next, turned)) = found.filter(|(_, n)| n.dot(t) > 0.25_f64.pcos()) else {
             h *= 0.5;
             if h < shortest {
                 return Err(Stop::Unsolvable);
@@ -1745,7 +1746,7 @@ fn walk(
         }
         travelled += centre.distance(c);
         balls.push(next);
-        let straight = turned.dot(t) > 0.05_f64.cos();
+        let straight = turned.dot(t) > 0.05_f64.pcos();
         current = next;
         t = turned;
         if straight {

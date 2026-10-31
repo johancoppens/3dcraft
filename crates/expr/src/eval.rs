@@ -18,6 +18,7 @@ use crate::error::{ErrorKind, ExprError};
 use crate::parser::{BinaryOp, Expr, Function, LookupRow, Node, NodeId, NodeKind};
 use crate::tables::{RowRef, Table};
 use crate::units::{Dimension, Quantity};
+use craft3d_math::Portable;
 
 /// What a node evaluated to: a value, or the index of its error in the
 /// list of errors met so far (an error is stored once and shared by every
@@ -398,7 +399,7 @@ fn power(base: Quantity, exponent: i32) -> Result<Quantity, ErrorKind> {
         .dimension
         .checked_pow(exponent)
         .ok_or(ErrorKind::DimensionOverflow)?;
-    Ok(Quantity::new(base.value.powi(exponent), dimension))
+    Ok(Quantity::new(base.value.ppowi(exponent), dimension))
 }
 
 /// The single argument of a one-argument function. The parser has checked
@@ -424,9 +425,9 @@ fn call(function: Function, args: &[Quantity]) -> Result<Quantity, ErrorKind> {
                 });
             }
             let value = match function {
-                Function::Sin => x.value.sin(),
-                Function::Cos => x.value.cos(),
-                _ => x.value.tan(),
+                Function::Sin => x.value.psin(),
+                Function::Cos => x.value.pcos(),
+                _ => x.value.ptan(),
             };
             Ok(Quantity::dimensionless(value))
         }
@@ -440,15 +441,15 @@ fn call(function: Function, args: &[Quantity]) -> Result<Quantity, ErrorKind> {
                 });
             }
             let value = match function {
-                Function::Atan => x.value.atan(),
+                Function::Atan => x.value.patan(),
                 _ if !(-1.0..=1.0).contains(&x.value) => {
                     return Err(ErrorKind::OutOfDomain {
                         function: name,
                         value: x.value,
                     });
                 }
-                Function::Asin => x.value.asin(),
-                _ => x.value.acos(),
+                Function::Asin => x.value.pasin(),
+                _ => x.value.pacos(),
             };
             Ok(Quantity::new(value, Dimension::ANGLE))
         }
@@ -458,7 +459,7 @@ fn call(function: Function, args: &[Quantity]) -> Result<Quantity, ErrorKind> {
             };
             // Any dimension will do as long as it cancels: atan2(dy, dx).
             same_dimension(name, *y, *x)?;
-            Ok(Quantity::new(y.value.atan2(x.value), Dimension::ANGLE))
+            Ok(Quantity::new(y.value.patan2(x.value), Dimension::ANGLE))
         }
         Function::Sqrt => {
             let x = single(args)?;
@@ -509,18 +510,18 @@ fn call(function: Function, args: &[Quantity]) -> Result<Quantity, ErrorKind> {
         | Function::Tanh => {
             let x = dimensionless(name, single(args)?)?;
             let value = match function {
-                Function::Exp => x.exp(),
-                Function::Sinh => x.sinh(),
-                Function::Cosh => x.cosh(),
-                Function::Tanh => x.tanh(),
+                Function::Exp => x.pexp(),
+                Function::Sinh => x.psinh(),
+                Function::Cosh => x.pcosh(),
+                Function::Tanh => x.ptanh(),
                 _ if x <= 0.0 => {
                     return Err(ErrorKind::OutOfDomain {
                         function: name,
                         value: x,
                     });
                 }
-                Function::Ln => x.ln(),
-                _ => x.log10(),
+                Function::Ln => x.pln(),
+                _ => x.plog10(),
             };
             Ok(Quantity::dimensionless(value))
         }
@@ -539,10 +540,10 @@ fn call(function: Function, args: &[Quantity]) -> Result<Quantity, ErrorKind> {
                 });
             }
             let value = match function {
-                Function::Asinh => x.asinh(),
-                Function::Acosh => x.acosh(),
-                Function::Atanh => x.atanh(),
-                _ => x.log2(),
+                Function::Asinh => x.pasinh(),
+                Function::Acosh => x.pacosh(),
+                Function::Atanh => x.patanh(),
+                _ => x.plog2(),
             };
             Ok(Quantity::dimensionless(value))
         }
@@ -554,7 +555,7 @@ fn call(function: Function, args: &[Quantity]) -> Result<Quantity, ErrorKind> {
             let mut length = first.value.abs();
             for &next in rest {
                 same_dimension(name, *first, next)?;
-                length = length.hypot(next.value);
+                length = length.phypot(next.value);
             }
             Ok(Quantity::new(length, first.dimension))
         }
@@ -585,7 +586,7 @@ fn call(function: Function, args: &[Quantity]) -> Result<Quantity, ErrorKind> {
                     value: base,
                 });
             }
-            Ok(Quantity::dimensionless(base.powf(exponent)))
+            Ok(Quantity::dimensionless(base.ppowf(exponent)))
         }
         Function::Clamp => {
             let [x, lo, hi] = args else {
@@ -834,7 +835,7 @@ mod tests {
         check("width / 2 + 3 mm", 23.0, LENGTH);
         check("height - 2 * wall", 26.0, LENGTH);
         check("2 * pi * r", 10.0 * PI, LENGTH);
-        check("atan2(a, b)", (3.0f64).atan2(4.0), ANGLE);
+        check("atan2(a, b)", (3.0f64).patan2(4.0), ANGLE);
         check("10 mm + 1 in", 35.4, LENGTH);
     }
 
@@ -960,14 +961,14 @@ mod tests {
         check("sin(pi / 2)", 1.0, NONE);
         check("cos(0)", 1.0, NONE);
         check("sin(tilt)", 0.5, NONE);
-        check("sin(0.5 rad)", (0.5f64).sin(), NONE);
-        check("r * cos(tilt)", 5.0 * (PI / 6.0).cos(), LENGTH);
+        check("sin(0.5 rad)", (0.5f64).psin(), NONE);
+        check("r * cos(tilt)", 5.0 * (PI / 6.0).pcos(), LENGTH);
         check("asin(0.5)", PI / 6.0, ANGLE);
         check("asin(-1)", -PI / 2.0, ANGLE);
         check("acos(0.5)", PI / 3.0, ANGLE);
         check("acos(1)", 0.0, ANGLE);
         check("atan(1)", PI / 4.0, ANGLE);
-        check("atan(a / b)", (0.75f64).atan(), ANGLE);
+        check("atan(a / b)", (0.75f64).patan(), ANGLE);
         check("atan2(1, 1)", PI / 4.0, ANGLE);
         check("atan2(1, -1)", 3.0 * PI / 4.0, ANGLE);
         check("atan2(-1 mm, 0 mm)", -PI / 2.0, ANGLE);
@@ -1756,12 +1757,16 @@ mod tests {
         check("pow(2, 0.5)", 2f64.sqrt(), NONE);
         check("pow(-2, 3)", -8.0, NONE);
         check("pow(0, 0)", 1.0, NONE);
-        check("pow(width / 1 mm, 1 / 3)", 40f64.powf(1.0 / 3.0), NONE);
-        check("sinh(1)", 1f64.sinh(), NONE);
+        check("pow(width / 1 mm, 1 / 3)", 40f64.ppowf(1.0 / 3.0), NONE);
+        check("sinh(1)", 1f64.psinh(), NONE);
         check("cosh(0)", 1.0, NONE);
-        check("tanh(1)", 1f64.tanh(), NONE);
+        check("tanh(1)", 1f64.ptanh(), NONE);
         // A catenary: y = a * cosh(x / a), a curve from a formula.
-        check("r * cosh(width / r) - r", 5.0 * (8f64.cosh() - 1.0), LENGTH);
+        check(
+            "r * cosh(width / r) - r",
+            5.0 * (8f64.pcosh() - 1.0),
+            LENGTH,
+        );
         let domain = |source: &str| match err(source).kind {
             ErrorKind::OutOfDomain { function, value } => (function, value),
             other => panic!("`{source}`: {other:?}"),
@@ -1803,9 +1808,9 @@ mod tests {
         check("atanh(tanh(0.5))", 0.5, NONE);
         check("asinh(0)", 0.0, NONE);
         check("acosh(1)", 0.0, NONE);
-        check("asinh(-2)", -(2f64.asinh()), NONE);
+        check("asinh(-2)", -(2f64.pasinh()), NONE);
         // A solar cooker's gore: asinh(u) is ln(u + sqrt(1 + u^2)).
-        check("asinh(width / r)", (8.0 + 65f64.sqrt()).ln(), NONE);
+        check("asinh(width / r)", (8.0 + 65f64.sqrt()).pln(), NONE);
         check("log2(8)", 3.0, NONE);
         check("log2(width / 5 mm)", 3.0, NONE);
         // hypot keeps the dimension of its components.

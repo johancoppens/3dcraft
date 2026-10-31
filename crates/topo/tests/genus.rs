@@ -15,6 +15,7 @@
 )]
 
 use craft3d_geom::{Circle, Cone, Curve3, Cylinder, Line, Plane, Sphere, Surface, Torus};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_testkit::solids;
 use craft3d_topo::{
@@ -46,11 +47,11 @@ fn turned(mut coedges: Vec<Coedge>) -> Vec<Coedge> {
 }
 
 fn radial(frame: &Frame, angle: f64) -> Vec3 {
-    frame.vector(angle.cos(), angle.sin(), 0.0)
+    frame.vector(angle.pcos(), angle.psin(), 0.0)
 }
 
 fn onward(frame: &Frame, angle: f64) -> Vec3 {
-    frame.vector(-angle.sin(), angle.cos(), 0.0)
+    frame.vector(-angle.psin(), angle.pcos(), 0.0)
 }
 
 /// A circle about the frame's axis at height `z`; its parameter is the
@@ -155,13 +156,13 @@ fn holed_torus_and_plug(
     let (x0, x1) = (x0 * k, x1 * k);
     let (rho0, rho1) = (major + x0, major + x1);
     // Where the two cylinders meet the upper half of the tube.
-    let (va, vb) = ((x1 / minor).acos(), (x0 / minor).acos());
+    let (va, vb) = ((x1 / minor).pacos(), (x0 / minor).pacos());
     let build = |plug: bool| {
         let mut body = Body::new(BodyKind::Solid);
         let point = |u: f64, v: f64| {
             frame.origin()
-                + radial(frame, u) * (major + minor * v.cos())
-                + frame.z() * (minor * v.sin())
+                + radial(frame, u) * (major + minor * v.pcos())
+                + frame.z() * (minor * v.psin())
         };
         // Named by angle (0, 1), cylinder (0, 1) and top or bottom.
         let t00 = body.add_vertex(point(u0, vb));
@@ -172,7 +173,7 @@ fn holed_torus_and_plug(
         let b01 = body.add_vertex(point(u0, -va));
         let b10 = body.add_vertex(point(u1, -vb));
         let b11 = body.add_vertex(point(u1, -va));
-        let (h0, h1) = (minor * vb.sin(), minor * va.sin());
+        let (h0, h1) = (minor * vb.psin(), minor * va.psin());
         let lat_top0 = body.add_edge(level_circle(frame, h0, rho0), (u0, u1), t00, t10);
         let lat_top1 = body.add_edge(level_circle(frame, h1, rho1), (u0, u1), t01, t11);
         let lat_bot0 = body.add_edge(level_circle(frame, -h0, rho0), (u0, u1), b00, b10);
@@ -228,7 +229,7 @@ fn holed_torus_and_plug(
     };
     let part = |x: f64| {
         let root = (minor * minor - x * x).sqrt();
-        major * (x * root + minor * minor * (x / minor).asin()) - 2.0 / 3.0 * root.powi(3)
+        major * (x * root + minor * minor * (x / minor).pasin()) - 2.0 / 3.0 * root.ppowi(3)
     };
     let plug = (u1 - u0) * (part(x1) - part(x0));
     let whole = 2.0 * PI * PI * major * minor * minor;
@@ -358,7 +359,7 @@ fn ball_less_three_caps(frame: &Frame, radius: f64, level: f64) -> Case {
         name: "a ball less three caps".to_owned(),
         body,
         genus: 0,
-        volume: Some(4.0 * PI * radius.powi(3) / 3.0 - PI * h * h * (3.0 * radius - h)),
+        volume: Some(4.0 * PI * radius.ppowi(3) / 3.0 - PI * h * h * (3.0 * radius - h)),
     }
 }
 
@@ -389,7 +390,7 @@ fn napkin_ring(frame: &Frame, radius: f64, hole: f64) -> Case {
         name: "a ball with a hole through it".to_owned(),
         body,
         genus: 1,
-        volume: Some(4.0 * PI / 3.0 * half.powi(3)),
+        volume: Some(4.0 * PI / 3.0 * half.ppowi(3)),
     }
 }
 
@@ -403,7 +404,7 @@ fn bored_frustum(frame: &Frame, r1: f64, r2: f64, height: f64, hole: f64) -> Cas
     let outer_high = ring(&mut body, frame, height, r2);
     let inner_low = ring(&mut body, frame, 0.0, hole);
     let inner_high = ring(&mut body, frame, height, hole);
-    let cone = Cone::new(*frame, r1, ((r2 - r1) / height).atan()).unwrap();
+    let cone = Cone::new(*frame, r1, ((r2 - r1) / height).patan()).unwrap();
     let wall = curved(
         &mut body,
         Surface::Cone(cone),
@@ -468,14 +469,14 @@ fn cases(frame: &Frame, k: f64) -> Vec<Case> {
         name: "both halves of a torus cut through its axis".to_owned(),
         body: together(&[&halves[0].body, &halves[1].body]),
         genus: 0,
-        volume: Some(2.0 * PI * PI * MAJOR * MINOR * MINOR * k.powi(3)),
+        volume: Some(2.0 * PI * PI * MAJOR * MINOR * MINOR * k.ppowi(3)),
     });
     let halves = [torus_half(frame, k, true), torus_half(frame, k, false)];
     all.push(Case {
         name: "both halves of a torus cut across its axis".to_owned(),
         body: together(&[&halves[0].body, &halves[1].body]),
         genus: 2,
-        volume: Some(2.0 * PI * PI * MAJOR * MINOR * MINOR * k.powi(3)),
+        volume: Some(2.0 * PI * PI * MAJOR * MINOR * MINOR * k.ppowi(3)),
     });
     // Cavities: a block around the torus (which reaches 4 from its axis
     // and 1 either side of its plane), with a void in it.
@@ -624,7 +625,7 @@ fn a_solid_pinched_at_a_point_passes_and_counts_as_a_ball() {
                 vec![vec![fwd(bottom)], vec![back(top)]],
             );
             // Both cones have their apex at h/2 and the solid outside.
-            let slope = (r / (h / 2.0)).atan();
+            let slope = (r / (h / 2.0)).patan();
             let lower = Cone::new(frame, r, -slope).unwrap();
             let upper = Cone::new(frame.at(frame.point(0.0, 0.0, h)).unwrap(), r, slope).unwrap();
             let low = curved(
@@ -662,7 +663,7 @@ fn two_lumps_that_touch_in_a_point_are_two_shells_or_a_defect() {
         let mut body = Body::new(BodyKind::Solid);
         let bottom = ring(&mut body, &frame, 0.0, r);
         let top = ring(&mut body, &frame, h, r);
-        let slope = (r / (h / 2.0)).atan();
+        let slope = (r / (h / 2.0)).patan();
         let lower = Cone::new(frame, r, -slope).unwrap();
         let upper = Cone::new(frame.at(frame.point(0.0, 0.0, h)).unwrap(), r, slope).unwrap();
         let low = curved(

@@ -10,6 +10,7 @@
 )]
 
 use craft3d_engine::{Session, Workspace};
+use craft3d_math::Portable;
 use serde_json::{Value, json};
 use std::time::Instant;
 
@@ -37,8 +38,8 @@ pub fn model(parts: usize, sides: usize) -> Session {
             .map(|i| {
                 let a = std::f64::consts::TAU * i as f64 / sides as f64;
                 // A wavy outline, so no two sides are parallel by accident.
-                let r = 40.0 + 3.0 * (7.0 * a).sin();
-                [cx + r * a.cos(), r * a.sin()]
+                let r = 40.0 + 3.0 * (7.0 * a).psin();
+                [cx + r * a.pcos(), r * a.psin()]
             })
             .collect();
         run(

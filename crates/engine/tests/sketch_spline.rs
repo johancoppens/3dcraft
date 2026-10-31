@@ -14,6 +14,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{body, error, run, session_in};
@@ -514,7 +515,7 @@ fn a_spline_through_points_passes_through_them() {
             for (i, wanted) in through.iter().enumerate() {
                 let u = knots[i + 1..=i + degree].iter().sum::<f64>() / degree as f64;
                 let got = spline_point(degree, &points, u);
-                let off = (got[0] - wanted[0]).hypot(got[1] - wanted[1]);
+                let off = (got[0] - wanted[0]).phypot(got[1] - wanted[1]);
                 assert!(
                     off <= 1e-12 * 9.0 * k,
                     "degree {degree} x{k}, point {i}: off by {off:e}"
@@ -652,7 +653,7 @@ fn a_spline_follows_the_constraints_on_its_points() {
         for (id, wanted) in expected {
             let got = at(id);
             assert!(
-                (got[0] - wanted[0] * k).hypot(got[1] - wanted[1] * k) <= 1e-5 * k,
+                (got[0] - wanted[0] * k).phypot(got[1] - wanted[1] * k) <= 1e-5 * k,
                 "{id} {name}: {got:?}"
             );
         }
@@ -862,13 +863,13 @@ fn what_a_spline_cannot_do_yet_is_refused_with_the_reason() {
     };
     // The last leg, e5 to e4, lies along the line e8-e9 now.
     let (e4, e5, e8, e9) = (at(3), at(4), at(7), at(8));
-    assert!((e9[0] - e5[0]).hypot(e9[1] - e5[1]) <= 1e-6, "{inspected}");
+    assert!((e9[0] - e5[0]).phypot(e9[1] - e5[1]) <= 1e-6, "{inspected}");
     let (leg, line) = (
         [e4[0] - e5[0], e4[1] - e5[1]],
         [e8[0] - e9[0], e8[1] - e9[1]],
     );
     let sine =
-        (leg[0] * line[1] - leg[1] * line[0]) / (leg[0].hypot(leg[1]) * line[0].hypot(line[1]));
+        (leg[0] * line[1] - leg[1] * line[0]) / (leg[0].phypot(leg[1]) * line[0].phypot(line[1]));
     assert!(sine.abs() <= 1e-6, "{inspected}");
     let untied = run(
         &mut s,
@@ -1213,7 +1214,7 @@ fn a_spline_is_drawn_as_a_polyline_on_its_curve() {
     for point in &spline.points {
         let nearest = samples
             .iter()
-            .map(|q| (point.x - q[0]).hypot(point.y - q[1]))
+            .map(|q| (point.x - q[0]).phypot(point.y - q[1]))
             .fold(f64::INFINITY, f64::min);
         assert!(nearest < 5e-3, "{point:?}: {nearest}");
     }
@@ -1236,7 +1237,7 @@ fn off_spline(degree: usize, control: &[P], p: P) -> f64 {
         } else {
             0.0
         };
-        least = least.min((p[0] - before[0] - d[0] * t).hypot(p[1] - before[1] - d[1] * t));
+        least = least.min((p[0] - before[0] - d[0] * t).phypot(p[1] - before[1] - d[1] * t));
         before = here;
     }
     least

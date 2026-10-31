@@ -9,6 +9,7 @@
 )]
 
 use craft3d_engine::{Access, Session, Workspace};
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use craft3d_ui_egui::camera::Projector;
 use craft3d_ui_egui::shell::{DEFAULT_VIEWPORT, image_quality};
@@ -408,7 +409,7 @@ fn ui_fit_frames_the_model_and_refuses_when_there_is_none() {
     // is 20 in front of the centre. In a 960 × 640 viewport (3:2) the half
     // width of 30 needs 30 / (1.5 · tan 15°) = 74.6 of depth and the half
     // height of 19 needs 19 / tan 15° = 70.9: the width decides.
-    let expected = (20.0 + 30.0 / (1.5 * 15.0_f64.to_radians().tan())) * 1.05;
+    let expected = (20.0 + 30.0 / (1.5 * 15.0_f64.to_radians().ptan())) * 1.05;
     let distance = fitted["camera"]["distance"].as_f64().unwrap();
     assert!(
         (distance - expected).abs() < 1e-9,

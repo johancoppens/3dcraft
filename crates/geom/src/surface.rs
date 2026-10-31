@@ -5,6 +5,7 @@
 
 use crate::curve::wrap_angle;
 use crate::{BezierPatch, GeomError, NurbsSurface};
+use craft3d_math::Portable;
 use craft3d_math::{Bits, Frame, Vec3};
 use std::f64::consts::{FRAC_PI_2, TAU};
 use std::sync::{Arc, OnceLock};
@@ -394,11 +395,11 @@ impl Cone {
 
     /// The `v` of the apex.
     pub fn apex_v(&self) -> f64 {
-        -self.radius / self.half_angle.tan()
+        -self.radius / self.half_angle.ptan()
     }
 
     pub(crate) fn radius_at(&self, v: f64) -> f64 {
-        self.radius + v * self.half_angle.tan()
+        self.radius + v * self.half_angle.ptan()
     }
 }
 
@@ -559,7 +560,7 @@ impl Surface {
     pub fn derivatives(&self, u: f64, v: f64) -> (Vec3, Vec3, Vec3) {
         // The angle's sine and cosine only for the kinds that turn about an
         // axis (a freeform surface is evaluated in its own parameters).
-        let turn = || u.sin_cos();
+        let turn = || u.psin_cos();
         match self {
             Surface::Plane(p) => (p.frame.point(u, v, 0.0), p.frame.x(), p.frame.y()),
             Surface::Cylinder(c) => {
@@ -573,7 +574,7 @@ impl Surface {
             }
             Surface::Cone(c) => {
                 let (su, cu) = turn();
-                let (r, slope) = (c.radius_at(v), c.half_angle.tan());
+                let (r, slope) = (c.radius_at(v), c.half_angle.ptan());
                 (
                     c.frame.point(r * cu, r * su, v),
                     c.frame.vector(-r * su, r * cu, 0.0),
@@ -582,7 +583,7 @@ impl Surface {
             }
             Surface::Sphere(s) => {
                 let (su, cu) = turn();
-                let (sv, cv) = v.sin_cos();
+                let (sv, cv) = v.psin_cos();
                 let r = s.radius;
                 (
                     s.frame.point(r * cv * cu, r * cv * su, r * sv),
@@ -592,7 +593,7 @@ impl Surface {
             }
             Surface::Torus(t) => {
                 let (su, cu) = turn();
-                let (sv, cv) = v.sin_cos();
+                let (sv, cv) = v.psin_cos();
                 let ring = t.major + t.minor * cv;
                 (
                     t.frame.point(ring * cu, ring * su, t.minor * sv),
@@ -610,7 +611,7 @@ impl Surface {
     /// form, which also holds at the poles of a sphere; `None` at a cone's
     /// apex and wherever a freeform surface has no normal.
     pub fn normal(&self, u: f64, v: f64) -> Option<Vec3> {
-        let turn = || u.sin_cos();
+        let turn = || u.psin_cos();
         match self {
             Surface::Plane(p) => Some(p.frame.z()),
             Surface::Cylinder(c) => {
@@ -619,21 +620,21 @@ impl Surface {
             }
             Surface::Cone(c) => {
                 // At the apex, up to the rounding of `radius + v tan α`.
-                let slope = c.half_angle.tan();
+                let slope = c.half_angle.ptan();
                 if c.radius_at(v) <= 1e-12 * (c.radius + (v * slope).abs()) {
                     return None;
                 }
                 let (su, cu) = turn();
-                c.frame.vector(cu, su, -c.half_angle.tan()).normalized()
+                c.frame.vector(cu, su, -c.half_angle.ptan()).normalized()
             }
             Surface::Sphere(s) => {
                 let (su, cu) = turn();
-                let (sv, cv) = v.sin_cos();
+                let (sv, cv) = v.psin_cos();
                 Some(s.frame.vector(cv * cu, cv * su, sv))
             }
             Surface::Torus(t) => {
                 let (su, cu) = turn();
-                let (sv, cv) = v.sin_cos();
+                let (sv, cv) = v.psin_cos();
                 Some(t.frame.vector(cv * cu, cv * su, sv))
             }
             Surface::Bezier(b) => b.normal(u, v),
@@ -666,7 +667,7 @@ impl Surface {
             if x == 0.0 && y == 0.0 {
                 0.0
             } else {
-                wrap_angle(y.atan2(x))
+                wrap_angle(y.patan2(x))
             }
         };
         Ok(match self {
@@ -682,8 +683,8 @@ impl Surface {
                 let (x, y, z) = s.frame.local(p);
                 // In the half-plane (ρ, z) the cone is the ray from the
                 // apex along (tan α, 1); project onto it, stopping at the apex.
-                let slope = s.half_angle.tan();
-                let v = ((x.hypot(y) - s.radius) * slope + z) / (slope * slope + 1.0);
+                let slope = s.half_angle.ptan();
+                let v = ((x.phypot(y) - s.radius) * slope + z) / (slope * slope + 1.0);
                 let apex = s.apex_v();
                 (
                     angle(y, x),
@@ -696,19 +697,19 @@ impl Surface {
             }
             Surface::Sphere(s) => {
                 let (x, y, z) = s.frame.local(p);
-                let rho = x.hypot(y);
+                let rho = x.phypot(y);
                 (
                     angle(y, x),
                     if rho == 0.0 && z == 0.0 {
                         0.0
                     } else {
-                        z.atan2(rho)
+                        z.patan2(rho)
                     },
                 )
             }
             Surface::Torus(s) => {
                 let (x, y, z) = s.frame.local(p);
-                let off = x.hypot(y) - s.major;
+                let off = x.phypot(y) - s.major;
                 (angle(y, x), angle(z, off))
             }
             Surface::Bezier(_) | Surface::Nurbs(_) => self.project_numeric(p)?,
@@ -1539,9 +1540,9 @@ mod tests {
         let point = |k: usize| {
             let t = k as f64;
             Vec3::new(
-                (t * 0.137).sin() * 2.0 + 1.5,
-                (t * 0.261).cos() * 3.0 + 2.0,
-                (t * 0.093).sin() * 1.5,
+                (t * 0.137).psin() * 2.0 + 1.5,
+                (t * 0.261).pcos() * 3.0 + 2.0,
+                (t * 0.093).psin() * 1.5,
             )
         };
         let surfaces: Vec<Surface> = (0..8).map(make).collect();
@@ -1626,9 +1627,9 @@ mod tests {
                 for k in 0..30 {
                     let t = f64::from(k);
                     let p = Vec3::new(
-                        (t * 0.37).sin() * 2.0 + 1.5,
-                        (t * 0.61).cos() * 3.0,
-                        (t * 0.23).sin(),
+                        (t * 0.37).psin() * 2.0 + 1.5,
+                        (t * 0.61).pcos() * 3.0,
+                        (t * 0.23).psin(),
                     ) * scale;
                     let start = (0.1 + 0.02 * t, 0.9 - 0.025 * t);
                     let Ok(((u, v), at)) = surface.project_from_with_derivatives(p, start) else {
@@ -1660,9 +1661,9 @@ mod tests {
                 for k in 0..40 {
                     let t = f64::from(k);
                     let p = Vec3::new(
-                        (t * 0.37).sin() * 2.0 + 1.5,
-                        (t * 0.61).cos() * 3.0 + 2.0,
-                        (t * 0.23).sin() * 1.5,
+                        (t * 0.37).psin() * 2.0 + 1.5,
+                        (t * 0.61).pcos() * 3.0 + 2.0,
+                        (t * 0.23).psin() * 1.5,
                     ) * scale;
                     let fresh = make().project(p).unwrap();
                     let again = kept.project(p).unwrap();
@@ -1724,14 +1725,14 @@ mod tests {
             for s in surfaces(scale) {
                 for (u, v) in samples(&s, scale) {
                     let (x, y, z) = f.local(s.eval(u, v));
-                    let rho = x.hypot(y);
+                    let rho = x.phypot(y);
                     let residual = match &s {
                         Surface::Plane(_) => z,
                         Surface::Cylinder(c) => rho - c.radius(),
-                        Surface::Cone(c) => rho - (c.radius() + z * c.half_angle().tan()),
+                        Surface::Cone(c) => rho - (c.radius() + z * c.half_angle().ptan()),
                         Surface::Sphere(sp) => (rho * rho + z * z).sqrt() - sp.radius(),
                         Surface::Torus(t) => {
-                            ((rho - t.radii().0).powi(2) + z * z).sqrt() - t.radii().1
+                            ((rho - t.radii().0).ppowi(2) + z * z).sqrt() - t.radii().1
                         }
                         Surface::Bezier(_) | Surface::Nurbs(_) => 0.0,
                     };
@@ -1798,7 +1799,7 @@ mod tests {
                         let from = match &s {
                             Surface::Sphere(_) => f.origin(),
                             Surface::Torus(t) => {
-                                let k = t.radii().0 / x.hypot(y);
+                                let k = t.radii().0 / x.phypot(y);
                                 f.point(x * k, y * k, 0.0)
                             }
                             _ => f.point(0.0, 0.0, z),
@@ -1876,7 +1877,7 @@ mod tests {
             (0.0, FRAC_PI_2)
         );
 
-        let cone = Cone::new(f, 1.0, 0.5_f64.atan()).unwrap();
+        let cone = Cone::new(f, 1.0, 0.5_f64.patan()).unwrap();
         assert!((cone.apex_v() + 2.0).abs() < 1e-14);
         let cone = Surface::Cone(cone);
         assert!(cone.normal(0.3, -2.0).is_none(), "no normal at the apex");

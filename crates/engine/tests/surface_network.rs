@@ -12,6 +12,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{body, built, error, failed, new_document, run, session_in, workdir};
@@ -109,7 +110,7 @@ fn a_coons_patch_of_arcs_and_lines_is_the_quarter_cylinder_and_makes_a_plate() {
         assert_eq!(tube["valid"], true, "{tube}");
         near(
             number(&tube["volume"]),
-            FRAC_PI_2 / 2.0 * ((r + t).powi(2) - r * r) * h,
+            FRAC_PI_2 / 2.0 * ((r + t).ppowi(2) - r * r) * h,
             1e-6,
             "the tube's volume",
         );

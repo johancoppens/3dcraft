@@ -24,6 +24,7 @@
 
 use crate::dual::SLOTS;
 use crate::equations::Pt;
+use craft3d_math::Portable;
 
 /// The highest degree of a spline a point can be put on: the equation
 /// touches the point and `degree + 1` control points, two unknowns each.
@@ -294,7 +295,7 @@ impl SplineVars {
         let mut best: Option<(usize, f64)> = None;
         for (index, &u) in places.iter().enumerate() {
             let at = self.at(points, u)?;
-            let distance = (at.point[0] - target[0]).hypot(at.point[1] - target[1]);
+            let distance = (at.point[0] - target[0]).phypot(at.point[1] - target[1]);
             if !distance.is_finite() {
                 return None;
             }
@@ -335,7 +336,7 @@ impl SplineVars {
         // away without ever running across.
         let away = [target[0] - at.point[0], target[1] - at.point[1]];
         let along = away[0] * at.tangent[0] + away[1] * at.tangent[1];
-        let size = away[0].hypot(away[1]) * at.tangent[0].hypot(at.tangent[1]);
+        let size = away[0].phypot(away[1]) * at.tangent[0].phypot(at.tangent[1]);
         Some(if along.abs() > 1e-6 * size {
             Foot::Corner(at)
         } else {
@@ -403,7 +404,7 @@ mod tests {
                 let at = spline.at(&WAVE, u).unwrap();
                 let theirs = de_boor(&spline, &WAVE, u.min(1.0 - 1e-15));
                 assert!(
-                    (at.point[0] - theirs[0]).hypot(at.point[1] - theirs[1]) < 1e-13,
+                    (at.point[0] - theirs[0]).phypot(at.point[1] - theirs[1]) < 1e-13,
                     "degree {degree} at {u}"
                 );
                 let total: f64 = at.basis.iter().sum();
@@ -437,13 +438,13 @@ mod tests {
                 let Foot::On(at) = spline.foot(&WAVE, target).unwrap() else {
                     panic!("degree {degree} {target:?}: the foot is on the curve");
                 };
-                let distance = (at.point[0] - target[0]).hypot(at.point[1] - target[1]);
+                let distance = (at.point[0] - target[0]).phypot(at.point[1] - target[1]);
                 // No finer look finds a nearer point.
                 let mut least = f64::INFINITY;
                 for i in 0..=20_000 {
                     let u = f64::from(i) / 20_000.0;
                     let p = de_boor(&spline, &WAVE, u.min(1.0 - 1e-15));
-                    least = least.min((p[0] - target[0]).hypot(p[1] - target[1]));
+                    least = least.min((p[0] - target[0]).phypot(p[1] - target[1]));
                 }
                 assert!(distance <= least + 1e-9, "degree {degree} {target:?}");
                 // At right angles to the curve there.

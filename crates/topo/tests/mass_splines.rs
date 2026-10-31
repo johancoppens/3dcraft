@@ -16,6 +16,7 @@
 )]
 
 use craft3d_geom::{Circle, Cone, Curve3, Cylinder, Line, NurbsCurve, Plane, Sphere, Surface};
+use craft3d_math::Portable;
 use craft3d_math::quadrature::Rule;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{
@@ -79,15 +80,15 @@ fn spline_ellipse(frame: &Frame, a: f64, b: f64, pieces: usize) -> Curve3 {
     let mut knots = vec![0.0, 0.0, 0.0];
     for k in 0..pieces {
         let at = 2.0 * half * k as f64;
-        ctrl.push(frame.point(a * at.cos(), b * at.sin(), 0.0));
+        ctrl.push(frame.point(a * at.pcos(), b * at.psin(), 0.0));
         weights.push(1.0);
         let between = at + half;
         ctrl.push(frame.point(
-            a * between.cos() / half.cos(),
-            b * between.sin() / half.cos(),
+            a * between.pcos() / half.pcos(),
+            b * between.psin() / half.pcos(),
             0.0,
         ));
-        weights.push(half.cos());
+        weights.push(half.pcos());
         if k > 0 {
             let knot = k as f64 / pieces as f64;
             knots.extend([knot, knot]);
@@ -151,7 +152,7 @@ fn frustum(frame: &Frame, r1: f64, r2: f64, height: f64, pieces: usize) -> Solid
     let mut body = Body::new(BodyKind::Solid);
     let bottom = spline_ring(&mut body, frame, 0.0, r1, pieces);
     let top = spline_ring(&mut body, frame, height, r2, pieces + 1);
-    let cone = Cone::new(*frame, r1, ((r2 - r1) / height).atan()).unwrap();
+    let cone = Cone::new(*frame, r1, ((r2 - r1) / height).patan()).unwrap();
     let wall = curved(
         &mut body,
         Surface::Cone(cone),
@@ -169,7 +170,7 @@ fn frustum(frame: &Frame, r1: f64, r2: f64, height: f64, pieces: usize) -> Solid
         name: format!("frustum, rims in {pieces} and {} pieces", pieces + 1),
         body,
         volume: PI * height * (r1 * r1 + r1 * r2 + r2 * r2) / 3.0,
-        area: PI * (r1 + r2) * height.hypot(r2 - r1) + PI * (r1 * r1 + r2 * r2),
+        area: PI * (r1 + r2) * height.phypot(r2 - r1) + PI * (r1 * r1 + r2 * r2),
     }
 }
 
@@ -271,7 +272,7 @@ fn steinmetz(frame: &Frame, r: f64) -> Solid {
     Solid {
         name: "what two crossing cylinders share".to_owned(),
         body,
-        volume: 16.0 * r.powi(3) / 3.0,
+        volume: 16.0 * r.ppowi(3) / 3.0,
         area: 16.0 * r * r,
     }
 }
@@ -279,7 +280,7 @@ fn steinmetz(frame: &Frame, r: f64) -> Solid {
 /// The area between the hyperbola Z²/a² − y²/b² = 1 and its chord at
 /// Z = c: (b/a) (c √(c² − a²) − a² acosh(c/a)).
 fn hyperbolic_segment(a: f64, b: f64, c: f64) -> f64 {
-    b / a * (c * (c * c - a * a).sqrt() - a * a * (c / a).acosh())
+    b / a * (c * (c * c - a * a).sqrt() - a * a * (c / a).pacosh())
 }
 
 /// A cone (base `r` on the frame's xy plane, apex at `h`) cut by the
@@ -300,7 +301,7 @@ fn hyperbolic_segment(a: f64, b: f64, c: f64) -> f64 {
 fn cut_cone(frame: &Frame, r: f64, h: f64, d: f64, small: bool) -> Solid {
     let mut body = Body::new(BodyKind::Solid);
     let yc = (r * r - d * d).sqrt();
-    let phi = (d / r).acos();
+    let phi = (d / r).pacos();
     let p0 = body.add_vertex(frame.point(d, -yc, 0.0));
     let p2 = body.add_vertex(frame.point(d, yc, 0.0));
     let hyperbola = NurbsCurve::new(
@@ -317,7 +318,7 @@ fn cut_cone(frame: &Frame, r: f64, h: f64, d: f64, small: bool) -> Solid {
     let cut = body.add_edge(Curve3::Nurbs(hyperbola), (0.0, 1.0), p0, p2);
     let chord = line(&mut body, (p0, p2));
     let circle = Curve3::Circle(Circle::new(*frame, r).unwrap());
-    let cone = Surface::Cone(Cone::new(*frame, r, -(r / h).atan()).unwrap());
+    let cone = Surface::Cone(Cone::new(*frame, r, -(r / h).patan()).unwrap());
     let on_plane = frame.point(d, 0.0, 0.0);
     let faces = if small {
         let arc = body.add_edge(circle, (-phi, phi), p0, p2);
@@ -347,8 +348,8 @@ fn cut_cone(frame: &Frame, r: f64, h: f64, d: f64, small: bool) -> Solid {
     body.add_shell(faces);
 
     let segment = hyperbolic_segment(d * h / r, d, h);
-    let base_beyond = r * r * (phi - phi.sin() * phi.cos());
-    let slant = r.hypot(h);
+    let base_beyond = r * r * (phi - phi.psin() * phi.pcos());
+    let slant = r.phypot(h);
     // ∫ S(x) dx from d to r, with x = r − (r − d) t² so that the square
     // root in S at x = r is no trouble to the rule.
     let rule = Rule::new(16);
@@ -488,7 +489,7 @@ fn loop_spline(
     for i in 0..points - 1 {
         let angle = TAU * (i as f64 + 0.3 * random.next()) / (points - 1) as f64;
         let radius = k * (1.0 + 0.5 * random.next());
-        ctrl.push(frame.point(radius * angle.cos(), radius * angle.sin(), 0.0));
+        ctrl.push(frame.point(radius * angle.pcos(), radius * angle.psin(), 0.0));
         weights.push(if rational {
             0.4 + 2.0 * random.next()
         } else {
@@ -937,8 +938,8 @@ fn a_long_spline_panel_is_measured() {
             .map(|i| {
                 let s = i as f64 / (count - 1) as f64;
                 // Unevenly spaced along x, a gentle curve in z.
-                let x = length * (s + 0.01 * (7.0 * s).sin());
-                Vec3::new(x, 0.0, 120.0 * k * (std::f64::consts::PI * s).sin())
+                let x = length * (s + 0.01 * (7.0 * s).psin());
+                Vec3::new(x, 0.0, 120.0 * k * (std::f64::consts::PI * s).psin())
             })
             .collect();
         let spans = count - 3;

@@ -12,6 +12,7 @@
     clippy::needless_range_loop
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::*;
@@ -30,16 +31,16 @@ fn implicit(surface: &Surface, p: Vec3) -> Option<f64> {
         Surface::Plane(s) => Some(s.frame().local(p).2),
         Surface::Cylinder(s) => {
             let (x, y, _) = s.frame().local(p);
-            Some(x.hypot(y) - s.radius())
+            Some(x.phypot(y) - s.radius())
         }
         Surface::Cone(s) => {
             let (x, y, z) = s.frame().local(p);
-            Some(x.hypot(y) - (s.radius() + z * s.half_angle().tan()))
+            Some(x.phypot(y) - (s.radius() + z * s.half_angle().ptan()))
         }
         Surface::Sphere(s) => Some(p.distance(s.frame().origin()) - s.radius()),
         Surface::Torus(s) => {
             let (x, y, z) = s.frame().local(p);
-            Some((x.hypot(y) - s.radii().0).hypot(z) - s.radii().1)
+            Some((x.phypot(y) - s.radii().0).phypot(z) - s.radii().1)
         }
         Surface::Bezier(_) | Surface::Nurbs(_) => {
             let ((u0, u1), (v0, v1)) = surface.domain();
@@ -244,7 +245,7 @@ fn lines_meet_spheres_cones_and_tori() {
         assert!((found[1].t - found[0].t - 2.0 * 8.0_f64.sqrt() * s).abs() <= 1e-9 * s);
 
         let alpha: f64 = 0.4;
-        let k = alpha.tan();
+        let k = alpha.ptan();
         let c = cone(f, 1.5 * s, alpha);
         let apex = f.point(0.0, 0.0, -1.5 * s / k);
         count(
@@ -273,16 +274,16 @@ fn lines_meet_spheres_cones_and_tori() {
             false,
             "line behind the apex",
         );
-        let ruling = line(apex, f.vector(alpha.sin(), 0.0, alpha.cos()));
+        let ruling = line(apex, f.vector(alpha.psin(), 0.0, alpha.pcos()));
         assert!(on_surface(&ruling, &c, s), "a ruling is on the cone");
         // Parallel to a ruling: inside the cone it meets the opposite
         // ruling once (x = -z tan α at t = 1 / (2 sin α)); outside, the
         // one point it shares with the double cone is on the other nappe.
-        let inside = line(apex - f.x() * s, f.vector(alpha.sin(), 0.0, alpha.cos()));
+        let inside = line(apex - f.x() * s, f.vector(alpha.psin(), 0.0, alpha.pcos()));
         let found = check(&inside, &c, s, "line parallel to a ruling, inside");
         assert!(found.len() == 1 && !found[0].tangent, "{found:?}");
-        assert!((found[0].t - s / (2.0 * alpha.sin())).abs() <= 1e-9 * s);
-        let outside = line(apex + f.x() * s, f.vector(alpha.sin(), 0.0, alpha.cos()));
+        assert!((found[0].t - s / (2.0 * alpha.psin())).abs() <= 1e-9 * s);
+        let outside = line(apex + f.x() * s, f.vector(alpha.psin(), 0.0, alpha.pcos()));
         count(
             &outside,
             &c,
@@ -293,7 +294,7 @@ fn lines_meet_spheres_cones_and_tori() {
         );
         // Tangent: in the plane that touches the cone along the ruling at
         // u = 0, across that ruling.
-        let on_ruling = apex + f.vector(alpha.sin(), 0.0, alpha.cos()) * (4.0 * s);
+        let on_ruling = apex + f.vector(alpha.psin(), 0.0, alpha.pcos()) * (4.0 * s);
         count(
             &line(on_ruling, f.y()),
             &c,
@@ -419,7 +420,7 @@ fn circles_and_ellipses_meet_curved_surfaces() {
         let about = |z: f64, r: f64| {
             Curve3::Circle(Circle::new(f.at(f.point(0.0, 0.0, z * s)).unwrap(), r * s).unwrap())
         };
-        assert!(on_surface(&about(2.0, 1.5 + 2.0 * 0.4_f64.tan()), &c, s));
+        assert!(on_surface(&about(2.0, 1.5 + 2.0 * 0.4_f64.ptan()), &c, s));
         count(
             &about(2.0, 1.0),
             &c,
@@ -439,12 +440,12 @@ fn circles_and_ellipses_meet_curved_surfaces() {
             "coaxial circle inside tube",
         );
         // A Villarceau circle lies on the torus.
-        let lean = 0.25_f64.asin();
+        let lean = 0.25_f64.pasin();
         let villarceau = Curve3::Circle(
             Circle::new(
                 Frame::new(
                     f.point(0.0, s, 0.0),
-                    f.vector(-lean.sin(), 0.0, lean.cos()),
+                    f.vector(-lean.psin(), 0.0, lean.pcos()),
                     f.y(),
                 )
                 .unwrap(),
@@ -791,7 +792,7 @@ fn a_crossing_at_the_seam_of_a_circle_is_found() {
         // of a turn, where the first intervals of the search meet.
         for k in 0..16 {
             let angle = std::f64::consts::TAU * f64::from(k) / 16.0;
-            let x = Vec3::Z * angle.cos() + Vec3::X * angle.sin();
+            let x = Vec3::Z * angle.pcos() + Vec3::X * angle.psin();
             let frame = Frame::new(Vec3::new(1.0, 0.5, 1.0) * s, Vec3::Y, x).unwrap();
             let circle = Curve3::Circle(Circle::new(frame, 0.75 * s).unwrap());
             let hits = hits_of(&circle, &cylinder, &t);

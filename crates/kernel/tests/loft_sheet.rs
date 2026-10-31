@@ -16,6 +16,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod boolean_common;
 
 use boolean_common::*;
@@ -467,7 +468,7 @@ fn sections_whose_sketches_disagree_on_down_are_refused() {
 /// is out from it), its chain a line across the sketch from `−half` to
 /// `half`.
 fn round_the_bend(theta: f64, radius: f64, half: f64) -> Section {
-    let (sin, cos) = theta.sin_cos();
+    let (sin, cos) = theta.psin_cos();
     let plane = Frame::new(
         Vec3::new(radius * cos, 0.0, radius * sin),
         Vec3::new(-sin, 0.0, cos),
@@ -560,7 +561,7 @@ fn sections_whose_frames_turn_round_a_bend_build_facing_down_in_each_sketch() {
                 assert_eq!(sheet.kind, BodyKind::Sheet);
                 assert_eq!(check(&sheet, &tol), [], "{what}");
                 // Flat strips 2 half wide, each across a chord of the bend.
-                let strips = (count - 1) as f64 * 2.0 * half * 2.0 * radius * (step / 2.0).sin();
+                let strips = (count - 1) as f64 * 2.0 * half * 2.0 * radius * (step / 2.0).psin();
                 assert_close(
                     mass_properties(&sheet).unwrap().area,
                     strips * k * k,
@@ -663,7 +664,7 @@ fn a_loft_through_the_most_sections_is_made_and_one_more_is_refused() {
     let wave = |count: usize| -> Vec<Section> {
         (0..count)
             .map(|i| {
-                let z = (i as f64 * 0.3).sin();
+                let z = (i as f64 * 0.3).psin();
                 open_section(
                     &[heights(1, HALF_WIDTH, [z, 2.0 + z, 1.0 - z], k)],
                     i as f64,

@@ -9,6 +9,7 @@
 
 use craft3d_doc::{Document, FeatureKind, Sketch, SketchPlane, Units};
 use craft3d_format::{from_bytes, to_bytes};
+use craft3d_math::Portable;
 
 /// A reopened document must regenerate to the bodies it was saved from, so
 /// a coordinate comes back as the very number that was written, not the
@@ -26,7 +27,7 @@ fn coordinates_come_back_bit_for_bit() {
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
         let unit = (state >> 11) as f64 / (1u64 << 53) as f64;
-        (unit - 0.5) * 10f64.powi((state % 13) as i32 - 6)
+        (unit - 0.5) * 10f64.ppowi((state % 13) as i32 - 6)
     };
     for _ in 0..1000 {
         sketch.add_point(next(), next()).unwrap();

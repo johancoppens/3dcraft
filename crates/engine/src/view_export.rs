@@ -64,6 +64,7 @@ use crate::{CommandError, Session};
 use craft3d_drawing::{Color, Drawing, Layer, Path as DrawingPath, Point, Segment};
 use craft3d_geom::Curve3;
 use craft3d_io::DrawingFormat;
+use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Vec3};
 use craft3d_render::Projection;
 use craft3d_tess::{Mesh, TessError};
@@ -342,7 +343,7 @@ impl Occluders {
         budget: &mut Budget,
     ) -> Result<Self, CommandError> {
         let mut flats = Vec::new();
-        let tiny_area = (scale * 1e-9).powi(2);
+        let tiny_area = (scale * 1e-9).ppowi(2);
         for mesh in meshes {
             let seen: Vec<([Vec3; 3], Flat, u32)> = (0..mesh.triangles.len())
                 .filter_map(|t| {
@@ -1486,7 +1487,7 @@ pub(crate) fn export(
             }
         }
     }
-    let scale = (hi[0] - lo[0]).hypot(hi[1] - lo[1]);
+    let scale = (hi[0] - lo[0]).phypot(hi[1] - lo[1]);
     if !(scale.is_finite() && scale > 0.0) {
         return fail(format!("{ID}: the bodies have no size in this view"));
     }

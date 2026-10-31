@@ -22,6 +22,7 @@ use super::harness;
 use super::step;
 use super::{EXACT, Expect, RING, Set};
 use craft3d_engine::Session;
+use craft3d_math::Portable;
 use serde_json::{Value, json};
 use std::f64::consts::PI;
 use std::path::PathBuf;
@@ -104,7 +105,7 @@ fn frustum(s: &mut Session, k: f64) -> Forms {
         (0..6)
             .map(|i| {
                 let a = f64::from(i) * PI / 3.0;
-                [r * k * a.cos(), r * k * a.sin()]
+                [r * k * a.pcos(), r * k * a.psin()]
             })
             .collect()
     };
@@ -412,7 +413,7 @@ fn freecad_reads_bodies_of_the_face_operations() {
                     bad.push(format!("{file}: no body {body}"));
                     continue;
                 };
-                let off = part.volume / (volume * k.powi(3)) - 1.0;
+                let off = part.volume / (volume * k.ppowi(3)) - 1.0;
                 if !(off.abs() <= 1e-9) {
                     bad.push(format!("{file}: {body} is {off:+e} off its closed form"));
                 }
@@ -443,7 +444,7 @@ fn wedge(s: &mut Session, k: f64) -> Forms {
         json!({"faces": ["F1:face(1)"], "angle": "20 deg", "axis": [0, 1, 0],
                "pivot": [0.0, 0.0, 5.0 * k], "name": "Wedge"}),
     )?;
-    let low = 5.0 - 10.0 * 20.0_f64.to_radians().tan();
+    let low = 5.0 - 10.0 * 20.0_f64.to_radians().ptan();
     Ok(vec![("Wedge", 10.0 * 10.0 * (5.0 + low) / 2.0)])
 }
 
@@ -493,7 +494,7 @@ fn frustum_drafted(s: &mut Session, k: f64) -> Forms {
         json!({"faces": ["F1:face(2)", "F1:face(3)", "F1:face(4)", "F1:face(5)"],
                "neutral": "F1:face(0)", "angle": "8 deg", "name": "Tapered"}),
     )?;
-    let b = 10.0 - 10.0 * 8.0_f64.to_radians().tan();
+    let b = 10.0 - 10.0 * 8.0_f64.to_radians().ptan();
     Ok(vec![("Tapered", 5.0 / 3.0 * (100.0 + 10.0 * b + b * b))])
 }
 
@@ -514,7 +515,7 @@ fn rounded_drafted(s: &mut Session, k: f64) -> Forms {
         "feature.draft",
         json!({"faces": walls, "neutral": "xy", "angle": "6 deg", "name": "Moulded"}),
     )?;
-    let t = 6.0_f64.to_radians().tan();
+    let t = 6.0_f64.to_radians().ptan();
     let volume = a * b * h - (a + b) * t * h * h + 4.0 / 3.0 * t * t * h * h * h
         - (4.0 - PI) * (r * r * h - r * t * h * h + t * t * h * h * h / 3.0);
     Ok(vec![("Moulded", volume)])
@@ -562,7 +563,7 @@ fn freecad_reads_bodies_moved_thickened_and_drafted() {
                     bad.push(format!("{file}: no body {body}"));
                     continue;
                 };
-                let off = part.volume / (volume * k.powi(3)) - 1.0;
+                let off = part.volume / (volume * k.ppowi(3)) - 1.0;
                 if !(off.abs() <= 1e-9) {
                     bad.push(format!("{file}: {body} is {off:+e} off its closed form"));
                 }

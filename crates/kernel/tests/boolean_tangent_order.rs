@@ -15,6 +15,7 @@
 // Test code: a failure in a helper is a failed test.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
+use craft3d_math::Portable;
 mod boolean_common;
 
 use boolean_common::*;
@@ -35,7 +36,7 @@ impl Turn {
     /// About `axis` by `angle` (Rodrigues).
     fn about(axis: [f64; 3], angle: f64) -> Turn {
         let k = Vec3::new(axis[0], axis[1], axis[2]).normalized().unwrap();
-        let (s, c) = angle.sin_cos();
+        let (s, c) = angle.psin_cos();
         let image = |v: Vec3| v * c + k.cross(v) * s + k * (k.dot(v) * (1.0 - c));
         Turn([
             image(Vec3::new(1.0, 0.0, 0.0)),
@@ -103,7 +104,7 @@ fn assert_volume(result: &BooleanResult, expected: f64, k: f64, what: &str) {
 /// `∫₀ᵃ (R − √(R² − y²)) dy`: the area between a circle of radius `r`
 /// and its tangent, across `a` from the point of contact.
 fn beyond_circle(r: f64, a: f64) -> f64 {
-    a * r - 0.5 * (a * (r * r - a * a).sqrt() + r * r * (a / r).asin())
+    a * r - 0.5 * (a * (r * r - a * a).sqrt() + r * r * (a / r).pasin())
 }
 
 /// The drill tip of the Perseverance (2026-10-21), at scale 1 a cylinder
@@ -145,7 +146,7 @@ fn a_cone_whose_base_circle_lies_off_a_cylinder_wall() {
                         k,
                         [e, 0.0, height - sunk],
                         [0.0, 0.0, 1.0],
-                        [seam.cos(), seam.sin(), 0.0],
+                        [seam.pcos(), seam.psin(), 0.0],
                     ),
                     radius * k,
                     tip * k,

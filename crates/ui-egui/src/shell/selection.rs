@@ -24,6 +24,7 @@ use craft3d_engine::{
     Scene, SceneBody, ScenePick, ScenePointed, SelectionItem, SelectionKind, SelectionView,
     Session, selection_summary,
 };
+use craft3d_math::Portable;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
@@ -391,7 +392,7 @@ impl Shell {
         let same = self.select.last_click.as_ref().is_some_and(|last| {
             last.revision == scene.revision
                 && last.camera == camera
-                && (last.at[0] - x).hypot(last.at[1] - y) <= SAME_SPOT
+                && (last.at[0] - x).phypot(last.at[1] - y) <= SAME_SPOT
         });
         if alt || same {
             let index = if same {

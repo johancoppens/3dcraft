@@ -15,6 +15,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Transform, Vec3};
 use craft3d_tess::{
     Crossing, CrossingKind, Mesh, TessError, TessParams, self_intersection_report,
@@ -91,9 +92,9 @@ impl Soup {
             }
             centre
                 + v(
-                    radius * polar.sin() * around.cos(),
-                    radius * polar.sin() * around.sin(),
-                    radius * polar.cos(),
+                    radius * polar.psin() * around.pcos(),
+                    radius * polar.psin() * around.psin(),
+                    radius * polar.pcos(),
                 )
         };
         for ring in 0..n {
@@ -189,7 +190,7 @@ fn flat_meshes_askew_have_no_crossings() {
     let n = 720;
     let rim = |k: usize| {
         let angle = std::f64::consts::TAU * (k % n) as f64 / n as f64;
-        v(3.0 * angle.cos(), 3.0 * angle.sin(), 0.0)
+        v(3.0 * angle.pcos(), 3.0 * angle.psin(), 0.0)
     };
     for k in 0..n {
         fan.triangle(Vec3::ZERO, rim(k), rim(k + 1), 0);

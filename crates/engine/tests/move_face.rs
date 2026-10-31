@@ -11,6 +11,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 mod face_ops_common;
 
@@ -57,7 +58,7 @@ fn the_top_of_a_block_shifted_and_tilted() {
                 json!({"faces": [TOP], "angle": format!("{degrees} deg"), "axis": [0, 1, 0],
                        "pivot": [5.0 * k, 5.0 * k, 5.0 * k], "name": "Wedge"}),
             );
-            let cos = degrees.to_radians().cos();
+            let cos = degrees.to_radians().pcos();
             assert_solid(&mut s, "Wedge", 500.0, Some(300.0 + 100.0 / cos), k);
         }
     }
@@ -163,7 +164,7 @@ fn a_fillet_on_a_moved_face_survives_edits_of_the_motion() {
             }
             // The edge runs across the tilted top, 10 / cos long between
             // the two side faces it ends in.
-            let cos = tilt.to_radians().cos();
+            let cos = tilt.to_radians().pcos();
             assert_solid(
                 &mut s,
                 "Round",
@@ -206,7 +207,7 @@ fn a_sketch_on_a_turned_face_turns_with_it() {
         // A rod of radius 0.5 and length 2 whose axis leans 30 degrees
         // from z: that is how high it reaches over its foot.
         let pin = assert_solid(&mut s, "Pin", PI * 0.25 * 2.0, None, k);
-        let (sin, cos) = degrees.to_radians().sin_cos();
+        let (sin, cos) = degrees.to_radians().psin_cos();
         let low = pin["bbox"][0][2].as_f64().unwrap();
         let high = pin["bbox"][1][2].as_f64().unwrap();
         let height = high - low;

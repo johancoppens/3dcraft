@@ -10,6 +10,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{body, error, run, session, session_in};
@@ -234,7 +235,7 @@ fn d_shapes_drawn_as_paths_have_their_volumes() {
         );
         // The segment cut off spans the half angle a with cos a = 3/5 and
         // sin a = 4/5: its area is r^2 (a - sin a cos a).
-        let a = 0.6_f64.acos();
+        let a = 0.6_f64.pacos();
         let area = PI * r * r - r * r * (a - 0.8 * 0.6);
         let solid = assert_volume(&mut s, area * depth, units);
         let hi = solid["bbox"][1][0].as_f64().unwrap();
@@ -321,7 +322,7 @@ fn arcs_written_with_expressions_follow_their_variables() {
             json!({"sketch": "P", "distance": depth, "name": "Body"}),
         );
         // As in `d_shapes_drawn_as_paths_have_their_volumes`, per k^2.
-        let a = 0.6_f64.acos();
+        let a = 0.6_f64.pacos();
         let unit_area = PI * 25.0 - 25.0 * (a - 0.8 * 0.6);
         assert_volume(&mut s, unit_area * k * k * depth, units);
         run(
@@ -519,7 +520,7 @@ fn each_way_of_giving_an_arc_gives_the_arc_worked_out_by_hand() {
         // Both corners are on the circle.
         let radius = |id: &Value| {
             let (x, y) = xy(&inspected, text(id));
-            (x - found.0).hypot(y - found.1)
+            (x - found.0).phypot(y - found.1)
         };
         assert!(
             (radius(from) - radius(to)).abs() <= EXACT,
@@ -779,7 +780,7 @@ fn one_undo_removes_a_path_and_a_saved_one_reopens_as_the_same_body() {
     // The head is a disc of radius 5 without the segment below the chord
     // of 4 at its bottom (half angle a, sin a = 2/5); the shank reaches up
     // to that chord, sqrt(21) under the centre.
-    let a = 0.4_f64.asin();
+    let a = 0.4_f64.pasin();
     let below = 21.0_f64.sqrt();
     let head = PI * 25.0 - 25.0 * (a - 0.4 * below / 5.0);
     let area = head + 4.0 * 10.0;
@@ -844,7 +845,7 @@ fn an_arc_end_off_its_circle_is_snapped_or_reported_with_the_distance() {
         // The point of the circle in the direction (-18, 12.6) from the
         // centre, `off` farther out.
         let toward = (-18.0_f64, 12.6_f64);
-        let length = toward.0.hypot(toward.1);
+        let length = toward.0.phypot(toward.1);
         let end = |off: f64| {
             let reach = radius + off;
             json!([

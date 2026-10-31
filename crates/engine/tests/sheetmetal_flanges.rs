@@ -15,6 +15,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::assert_close;
@@ -122,7 +123,7 @@ fn a_panel_of_every_kind_of_flange_by_its_closed_forms() {
         let strips: f64 = widths.iter().map(|w| w * ba).sum();
         let rings: f64 = widths
             .iter()
-            .map(|w| FRAC_PI_2 * w * ((r + t).powi(2) - r * r) / 2.0)
+            .map(|w| FRAC_PI_2 * w * ((r + t).ppowi(2) - r * r) / 2.0)
             .sum();
         // At K = 1/2 the volume is the flat area times T.
         let made = body(&mut s, "Panel");

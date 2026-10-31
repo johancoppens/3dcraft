@@ -17,6 +17,7 @@ use super::harness;
 use super::{EXACT, Expect, FLAT, Set};
 use super::{edge, step};
 use craft3d_engine::Session;
+use craft3d_math::Portable;
 use serde_json::{Value, json};
 use std::f64::consts::PI;
 use std::path::PathBuf;
@@ -117,7 +118,7 @@ fn ell(s: &mut Session, k: f64) -> Forms {
     // Each a triangle with sides d and d tan(angle) at a right angle: the
     // inside corner gains one 2 long, the outside corner loses one 2
     // long, the top edge of the end of the long arm loses one 1.5 long.
-    let section = d * d * angle.to_radians().tan() / 2.0;
+    let section = d * d * angle.to_radians().ptan() / 2.0;
     Ok(vec![(
         "Web",
         16.5 + section * 2.0 - section * 2.0 - section * 1.5,
@@ -269,7 +270,7 @@ fn freecad_reads_chamfered_bodies() {
                     bad.push(format!("{file}: no body {body}"));
                     continue;
                 };
-                let off = part.volume / (volume * k.powi(3)) - 1.0;
+                let off = part.volume / (volume * k.ppowi(3)) - 1.0;
                 if !(off.abs() <= 1e-9) {
                     bad.push(format!("{file}: {body} is {off:+e} off its closed form"));
                 }

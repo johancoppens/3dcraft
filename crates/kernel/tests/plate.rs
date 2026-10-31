@@ -23,6 +23,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod boolean_common;
 
 use boolean_common::*;
@@ -274,7 +275,7 @@ fn cylinder_sheet(r: f64, theta: f64, h: f64, k: f64) -> Body {
         curve: Curve2::Arc {
             center: [0.0, 0.0],
             start: [r * k, 0.0],
-            end: [r * k * theta.cos(), r * k * theta.sin()],
+            end: [r * k * theta.pcos(), r * k * theta.psin()],
         },
     };
     let section = |z: f64| Section {
@@ -355,11 +356,11 @@ fn channel(r: f64, h: f64, k: f64) -> Body {
 /// across, a line along), facing the same way: a freeform twin.
 fn freeform_twin(r: f64, theta: f64, h: f64, k: f64) -> Body {
     let mut body = cylinder_sheet(r, theta, h, k);
-    let (c, half) = ((theta / 2.0).cos(), theta / 2.0);
+    let (c, half) = ((theta / 2.0).pcos(), theta / 2.0);
     let arc = [
         Vec3::new(r * k, 0.0, 0.0),
-        Vec3::new(r * k * half.cos() / c, r * k * half.sin() / c, 0.0),
-        Vec3::new(r * k * theta.cos(), r * k * theta.sin(), 0.0),
+        Vec3::new(r * k * half.pcos() / c, r * k * half.psin() / c, 0.0),
+        Vec3::new(r * k * theta.pcos(), r * k * theta.psin(), 0.0),
     ];
     let mut ctrl = Vec::new();
     let mut weights = Vec::new();
@@ -381,7 +382,7 @@ fn freeform_twin(r: f64, theta: f64, h: f64, k: f64) -> Body {
     )
     .unwrap();
     let face = &mut body.faces[0];
-    let probe = Vec3::new(r * k * half.cos(), r * k * half.sin(), 0.5 * h * k);
+    let probe = Vec3::new(r * k * half.pcos(), r * k * half.psin(), 0.5 * h * k);
     let outward = |s: &Surface, reversed: bool| {
         let (u, v) = s.project(probe).unwrap();
         s.normal(u, v).unwrap() * if reversed { -1.0 } else { 1.0 }
@@ -665,7 +666,7 @@ fn a_bevel_adds_or_takes_its_wedge() {
                 // The rim leans outward at the front by tan α per height:
                 // the plate gains l ∫ s tan α ds over its levels.
                 let (lo, hi) = side.levels(t);
-                let wedge = l * angle.tan() * (hi * hi - lo * lo) / 2.0;
+                let wedge = l * angle.ptan() * (hi * hi - lo * lo) / 2.0;
                 near(
                     volume(&made.body),
                     (l * a * t + wedge) * k * k * k,

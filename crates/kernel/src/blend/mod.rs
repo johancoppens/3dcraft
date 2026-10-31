@@ -96,6 +96,7 @@ use crate::profile::{Curve2, SketchCurve, detect_profiles};
 use crate::revolve::revolve;
 use crate::shared::index_u32;
 use craft3d_geom::{Curve3, GeomError, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, EdgeId, EdgeUse as Use, FaceId, VertexId, edge_uses};
 use std::collections::{BTreeMap, BTreeSet};
@@ -789,7 +790,7 @@ fn distances(
                 return Err(refused(edge, Reason::Angle));
             }
             // The sine rule in the triangle of the section.
-            let second = distance * angle.sin() / (angle + between).sin();
+            let second = distance * angle.psin() / (angle + between).psin();
             if !(second.is_finite() && second > 0.0) {
                 return Err(refused(edge, Reason::Angle));
             }
@@ -952,7 +953,7 @@ fn plan(body: &Body, uses: &[Vec<Use>], request: &Request, tol: f64) -> Result<P
     };
     let [into_first, into_second] = into;
     let cosine = into_first.dot(into_second).clamp(-1.0, 1.0);
-    let between = cosine.acos();
+    let between = cosine.pacos();
     let half_tan = half_tan(cosine);
     let mut distances = distances(edge, request.size, between, half_tan, tol)?;
     let round = match request.size {
@@ -1444,7 +1445,7 @@ fn tool(plan: &Plan, tolerance: &Tolerance) -> Result<Tool, BlendError> {
                 Some((start, sweep)) => {
                     let back = -plan.longer[0];
                     (
-                        start * back.cos() + axis.cross(start) * back.sin(),
+                        start * back.pcos() + axis.cross(start) * back.psin(),
                         sweep + plan.longer[0] + plan.longer[1],
                     )
                 }

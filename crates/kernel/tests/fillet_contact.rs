@@ -23,6 +23,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod boolean_common;
 mod common;
 mod rational_common;
@@ -381,7 +382,7 @@ fn nearest(p: &[P2; 4], q: P2) -> f64 {
     for i in 0..=4000 {
         let t = f64::from(i) / 4000.0;
         let a = bez_at(p, t);
-        let d = (a[0] - q[0]).hypot(a[1] - q[1]);
+        let d = (a[0] - q[0]).phypot(a[1] - q[1]);
         if d < best.1 {
             best = (t, d);
         }
@@ -437,7 +438,7 @@ const PRESSURE: [P2; 4] = [
 fn blade_corner(r: f64) -> Vec<SketchCurve> {
     let inward = |t: f64| {
         let d = bez_d(&SUCTION, t);
-        let len = d[0].hypot(d[1]);
+        let len = d[0].phypot(d[1]);
         [d[1] / len, -d[0] / len]
     };
     let centre_at = |t: f64| {
@@ -447,7 +448,7 @@ fn blade_corner(r: f64) -> Vec<SketchCurve> {
     let gap = |t: f64| {
         let m = centre_at(t);
         let q = bez_at(&PRESSURE, nearest(&PRESSURE, m));
-        (q[0] - m[0]).hypot(q[1] - m[1]) - r
+        (q[0] - m[0]).phypot(q[1] - m[1]) - r
     };
     let (mut lo, mut hi) = (1e-4, 0.5);
     assert!(gap(lo) < 0.0 && gap(hi) > 0.0);
@@ -467,8 +468,8 @@ fn blade_corner(r: f64) -> Vec<SketchCurve> {
     let (q1, q2) = (along_suction[3], along_pressure[0]);
     // Counter-clockwise from start to end, the short way.
     let (a1, a2) = (
-        (q1[1] - m[1]).atan2(q1[0] - m[0]),
-        (q2[1] - m[1]).atan2(q2[0] - m[0]),
+        (q1[1] - m[1]).patan2(q1[0] - m[0]),
+        (q2[1] - m[1]).patan2(q2[0] - m[0]),
     );
     let (start, end) = if (a2 - a1).rem_euclid(TAU) < PI {
         (q1, q2)
@@ -566,7 +567,7 @@ fn lofted_blade(k: f64) -> Body {
     const FRONT: [P2; 4] = [[1.0, 0.0], [0.4, 0.12], [-0.5, 0.12], [-1.0, 0.0]];
     let tol = tolerance(k);
     let turned = |control: &[P2; 4], s: f64, angle: f64| {
-        let (sin, cos) = f64::sin_cos(angle);
+        let (sin, cos) = f64::psin_cos(angle);
         let mut out = *control;
         for p in &mut out {
             let (x, y) = (p[0] * s, p[1] * s);
@@ -596,7 +597,7 @@ fn lofted_blade(k: f64) -> Body {
 fn tip_rim() -> Vec3 {
     let control = [[-1.0, 0.0], [-0.5, 0.3], [0.4, 0.3], [1.0, 0.0]];
     let p = bez_at(&control, 0.5);
-    let (sin, cos) = 0.3_f64.sin_cos();
+    let (sin, cos) = 0.3_f64.psin_cos();
     let (x, y) = (p[0] * 0.8, p[1] * 0.8);
     Vec3::new(x * cos - y * sin, x * sin + y * cos, 3.0)
 }

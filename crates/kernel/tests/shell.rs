@@ -5,6 +5,7 @@
 // Test code: a failure in a helper is a failed test.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
+use craft3d_math::Portable;
 mod boolean_common;
 
 use boolean_common::{SCALES, assert_close, boxed, mass, rod, solve, tolerance};
@@ -261,7 +262,7 @@ fn rounded_block_volume(w: f64, d: f64, h: f64, r: f64) -> f64 {
     a * b * c
         + 2.0 * r * (a * b + a * c + b * c)
         + PI * r * r * (a + b + c)
-        + 4.0 / 3.0 * PI * r.powi(3)
+        + 4.0 / 3.0 * PI * r.ppowi(3)
 }
 
 /// A block of 10 x 8 x 6 whose twelve edges are rounded with radius 2,
@@ -577,7 +578,7 @@ fn a_rod_with_a_rounded_rim_shells_past_its_round() {
     // radius `big`.
     let taken = |big: f64, rho: f64| {
         let corner = rho * rho * (1.0 - PI / 4.0);
-        let from_axis = big - rho + rho.powi(3) / (6.0 * corner);
+        let from_axis = big - rho + rho.ppowi(3) / (6.0 * corner);
         2.0 * PI * from_axis * corner
     };
     let outer = PI * radius * radius * height - taken(radius, r);
@@ -607,7 +608,7 @@ fn a_rod_with_a_rounded_rim_shells_past_its_round() {
         let bottom = face_at(&body, k, "plane", [0.0, 0.0, 0.0]);
         for t in [1.0, 1.5, 2.0] {
             let made = hollowed(&body, t, &[bottom], k);
-            let mut hollow = PI * (radius - t).powi(2) * (height - t);
+            let mut hollow = PI * (radius - t).ppowi(2) * (height - t);
             if t < r {
                 hollow -= taken(radius - t, r - t);
             }

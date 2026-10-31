@@ -53,6 +53,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod boolean_common;
 
 use craft3d_kernel::KernelError;
@@ -711,7 +712,7 @@ impl Convex {
 
     /// Negative inside the tube of a torus about the z axis.
     fn tube(major: f64, minor: f64, (x, y, z): (f64, f64, f64)) -> f64 {
-        let off = x.hypot(y) - major;
+        let off = x.phypot(y) - major;
         off * off + z * z - minor * minor
     }
 

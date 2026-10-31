@@ -13,6 +13,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{
@@ -262,7 +263,7 @@ fn hexagonal_frustum(session: &mut Session, k: f64) {
         (0..6)
             .map(|i| {
                 let a = f64::from(i) * PI / 3.0;
-                [r * k * a.cos(), r * k * a.sin()]
+                [r * k * a.pcos(), r * k * a.psin()]
             })
             .collect()
     };
@@ -1076,7 +1077,7 @@ fn a_box_rounded_all_round_shells_open_at_its_top_with_a_lip() {
         a * b * c
             + 2.0 * r * (a * b + a * c + b * c)
             + PI * r * r * (a + b + c)
-            + 4.0 / 3.0 * PI * r.powi(3)
+            + 4.0 / 3.0 * PI * r.ppowi(3)
     };
     let (w, d, h, r) = (40.0, 30.0, 20.0, 2.0);
     for k in SCALES {

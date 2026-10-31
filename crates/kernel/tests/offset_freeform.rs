@@ -12,6 +12,7 @@
 // Test code: a failure in a helper is a failed test.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
+use craft3d_math::Portable;
 mod boolean_common;
 mod rational_common;
 
@@ -128,7 +129,7 @@ fn integral(a: f64, b: f64, f: impl Fn(f64) -> f64) -> f64 {
     const N: usize = 48;
     let mut sum = 0.0;
     for i in 0..N {
-        let mut x = (PI * (i as f64 + 0.75) / (N as f64 + 0.5)).cos();
+        let mut x = (PI * (i as f64 + 0.75) / (N as f64 + 0.5)).pcos();
         let mut dp = 0.0;
         for _ in 0..100 {
             let (mut p0, mut p1) = (1.0, x);
@@ -152,14 +153,14 @@ fn integral(a: f64, b: f64, f: impl Fn(f64) -> f64) -> f64 {
 
 /// `∫ √(ρ² − x²) dx` from 0 to `x`.
 fn under_circle(rho: f64, x: f64) -> f64 {
-    0.5 * (x * (rho * rho - x * x).max(0.0).sqrt() + rho * rho * (x / rho).asin())
+    0.5 * (x * (rho * rho - x * x).max(0.0).sqrt() + rho * rho * (x / rho).pasin())
 }
 
 /// The quarter ball zone of radius `rho`, heights −1 to 1: volume and
 /// area (at scale 1).
 fn zone(rho: f64) -> (f64, f64) {
     let volume = PI / 4.0 * (2.0 * rho * rho - 2.0 / 3.0);
-    let side = (rho * rho - 1.0).sqrt() + rho * rho * (1.0 / rho).asin();
+    let side = (rho * rho - 1.0).sqrt() + rho * rho * (1.0 / rho).pasin();
     let area = PI * rho + PI * (rho * rho - 1.0) / 2.0 + 2.0 * side;
     (volume, area)
 }
@@ -189,7 +190,7 @@ fn the_sphere_face_of_a_rational_ball_zone_moves_out_and_in() {
                 // sphere: the volume within that times the area.
                 within(
                     m.volume,
-                    volume * k.powi(3),
+                    volume * k.ppowi(3),
                     area * k * k * 0.25 * tol.linear,
                     &what,
                 );
@@ -235,7 +236,7 @@ fn the_outer_face_of_a_rational_ring_slice_moves_out_and_in() {
                 .unwrap_or_else(|e| panic!("{what}: {e}"));
                 assert_eq!(check(&made.body, &tol), [], "{what}");
                 let m = mass(&made.body);
-                let volume = ring_volume(d) * k.powi(3);
+                let volume = ring_volume(d) * k.ppowi(3);
                 within(m.volume, volume, m.area * 0.25 * tol.linear, &what);
             }
         }
@@ -259,7 +260,7 @@ fn a_rational_ball_zone_made_hollow_has_the_volume_of_the_exact_shell() {
         let tol = tolerance(k);
         let t = 0.3;
         let (outer, _) = zone(2.0);
-        let expected = (outer - zone_hollow(t)) * k.powi(3);
+        let expected = (outer - zone_hollow(t)) * k.ppowi(3);
         // The analytic body first: the oracle is right.
         let plain = shell(&ball_zone(k), t * k, &[], &tol).unwrap();
         let m = mass(&plain.body);

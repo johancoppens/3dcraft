@@ -41,6 +41,7 @@ use crate::offset_normal::Turn;
 use crate::tweak::{self, TweakError};
 use craft3d_geom::offset::OffsetError;
 use craft3d_geom::{Cone, Cylinder, NurbsSurface, Plane, Sphere, Surface, Torus};
+use craft3d_math::Portable;
 use craft3d_math::Tolerance;
 use craft3d_topo::{Body, BodyKind, EdgeId, Face, FaceId, VertexId};
 use std::collections::{BTreeMap, BTreeSet};
@@ -192,7 +193,7 @@ pub(crate) fn offset_surface_each(
         Surface::Cone(cone) => {
             // The same angle about the same axis; the radius at every
             // height changes by the distance over the cosine.
-            let (slope, cosine) = (cone.half_angle().tan(), cone.half_angle().cos());
+            let (slope, cosine) = (cone.half_angle().ptan(), cone.half_angle().pcos());
             if !(cosine > 0.0 && slope != 0.0) {
                 return Err(NoOffset::Gone);
             }

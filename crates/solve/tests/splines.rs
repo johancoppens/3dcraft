@@ -13,6 +13,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::{resolved, statuses};
@@ -86,7 +87,7 @@ fn off_curve(degree: usize, control: &[P], p: P) -> f64 {
         } else {
             0.0
         };
-        least = least.min((p[0] - before[0] - d[0] * t).hypot(p[1] - before[1] - d[1] * t));
+        least = least.min((p[0] - before[0] - d[0] * t).phypot(p[1] - before[1] - d[1] * t));
         before = here;
     }
     least
@@ -152,7 +153,7 @@ fn a_point_lands_on_a_fixed_spline_and_keeps_one_freedom() {
                 let at = solution.point(point).unwrap();
                 assert!(off_curve(degree, &curve, at) <= 1e-6 * k, "{name}: {at:?}");
                 // It took the shortest way there: no further than it was.
-                let moved = (at[0] - start[0] * k).hypot(at[1] - start[1] * k);
+                let moved = (at[0] - start[0] * k).phypot(at[1] - start[1] * k);
                 assert!(
                     moved
                         <= off_curve(degree, &curve, [start[0] * k, start[1] * k]) * 1.0001
@@ -389,7 +390,7 @@ fn beyond_its_ends_a_spline_goes_on_straight() {
         let at = solution.point(point).unwrap();
         let (a, b): (P, P) = leg;
         let off = ((b[0] - a[0]) * (at[1] - a[1]) - (b[1] - a[1]) * (at[0] - a[0]))
-            / (b[0] - a[0]).hypot(b[1] - a[1]);
+            / (b[0] - a[0]).phypot(b[1] - a[1]);
         assert!(off.abs() <= 1e-6, "{start:?}: {at:?}");
         assert_eq!(solution.dof, 1);
     }

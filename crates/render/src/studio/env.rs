@@ -11,6 +11,7 @@
 use super::brdf::{LUT_SIZE, ggx_d, hammersley, sample_ggx, shared_lut};
 use super::hdr::HdrImage;
 use crate::RenderError;
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use std::f64::consts::PI;
 
@@ -74,16 +75,16 @@ pub fn texel_direction(x: usize, y: usize, w: usize, h: usize) -> Vec3 {
     let phi = ((x as f64 + 0.5) / w as f64 - 0.5) * 2.0 * PI;
     let theta = (y as f64 + 0.5) / h as f64 * PI;
     Vec3::new(
-        theta.sin() * phi.cos(),
-        theta.sin() * phi.sin(),
-        theta.cos(),
+        theta.psin() * phi.pcos(),
+        theta.psin() * phi.psin(),
+        theta.pcos(),
     )
 }
 
 /// The solid angle of a texel of row `y` of a `w × h` picture.
 fn texel_solid_angle(y: usize, w: usize, h: usize) -> f64 {
     let theta = (y as f64 + 0.5) / h as f64 * PI;
-    (2.0 * PI / w as f64) * (PI / h as f64) * theta.sin()
+    (2.0 * PI / w as f64) * (PI / h as f64) * theta.psin()
 }
 
 /// Rec. 709 luminance.
@@ -170,8 +171,8 @@ impl Level {
 /// The texture coordinates of a direction, turned by `rotation` radians
 /// about z (the environment turned the other way).
 pub fn direction_uv(d: Vec3, rotation: f64) -> (f64, f64) {
-    let u = d.y.atan2(d.x) / (2.0 * PI) + 0.5 - rotation / (2.0 * PI);
-    let v = d.z.clamp(-1.0, 1.0).acos() / PI;
+    let u = d.y.patan2(d.x) / (2.0 * PI) + 0.5 - rotation / (2.0 * PI);
+    let v = d.z.clamp(-1.0, 1.0).pacos() / PI;
     (u, v)
 }
 
@@ -431,7 +432,7 @@ fn extract_key(mirror: &Level, chain: &[Level]) -> Option<(Key, Vec<[f64; 3]>)> 
     }
     let threshold = KEY_THRESHOLD.max(peak.0 * 0.25);
     let (w, h) = (mirror.width, mirror.height);
-    let cos_cone = KEY_CONE.cos();
+    let cos_cone = KEY_CONE.pcos();
     let mut excess = vec![[0.0; 3]; mirror.texels.len()];
     let (mut total, mut weighted, mut area) = ([0.0_f64; 3], Vec3::ZERO, 0.0);
     for (i, t) in mirror.texels.iter().enumerate() {
@@ -499,7 +500,7 @@ fn prefilter(chain: &[Level], roughness: f64, w: usize, h: usize) -> Result<Leve
                     let pdf = ggx_d(nh, roughness) / 4.0;
                     let lod = if pdf > 0.0 {
                         let omega_s = 1.0 / (f64::from(PREFILTER_SAMPLES) * pdf);
-                        (0.5 * (omega_s / texel_angle).log2() + 1.0).max(0.0)
+                        (0.5 * (omega_s / texel_angle).plog2() + 1.0).max(0.0)
                     } else {
                         0.0
                     };

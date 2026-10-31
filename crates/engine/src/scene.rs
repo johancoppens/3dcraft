@@ -13,6 +13,7 @@ use crate::meshes::{
 };
 use crate::{CommandError, Session, Workspace};
 use craft3d_doc::{AngleUnit, Document, Entity, FeatureKind, Geometry, Sketch};
+use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Vec3};
 use craft3d_regen::{Regen, SketchResult, Status};
 use craft3d_tess::{Mesh, TessError, TessParams};
@@ -993,15 +994,15 @@ pub(crate) fn picture_tolerance(
         return floor;
     }
     // ⌊log2⌋ of a ratio of at least 2 and at most f64::MAX: 1 to 1023.
-    let mut rung = ratio.log2().floor().clamp(1.0, 1023.0) as i32;
+    let mut rung = ratio.plog2().floor().clamp(1.0, 1023.0) as i32;
     // `log2` may round across an integer: put the rung right, exactly
     // (the rungs are the floor times powers of two).
-    if floor * 2f64.powi(rung) > footprint {
+    if floor * 2f64.ppowi(rung) > footprint {
         rung -= 1;
-    } else if rung < 1023 && floor * 2f64.powi(rung + 1) <= footprint {
+    } else if rung < 1023 && floor * 2f64.ppowi(rung + 1) <= footprint {
         rung += 1;
     }
-    let tolerance = floor * 2f64.powi(rung);
+    let tolerance = floor * 2f64.ppowi(rung);
     if tolerance.is_finite() {
         tolerance
     } else {
@@ -1027,7 +1028,7 @@ pub fn pixel_footprint(camera: &craft3d_render::Camera, height: u32, model: &Bbo
                 eye.y.max(low.y).min(high.y),
                 eye.z.max(low.z).min(high.z),
             );
-            2.0 * eye.distance(nearest) * (fov_y_deg.to_radians() * 0.5).tan()
+            2.0 * eye.distance(nearest) * (fov_y_deg.to_radians() * 0.5).ptan()
         }
     };
     let footprint = seen / pixels;
@@ -1070,7 +1071,7 @@ pub fn arc_segments(r: f64, sweep: f64, tolerance: f64) -> usize {
     if !(r.is_finite() && r > 0.0 && tolerance.is_finite() && tolerance > 0.0) || tolerance >= r {
         return least;
     }
-    let step = 2.0 * (1.0 - tolerance / r).acos();
+    let step = 2.0 * (1.0 - tolerance / r).pacos();
     if !(step.is_finite() && step > 0.0) {
         return MAX_ARC_SEGMENTS;
     }
@@ -1097,7 +1098,7 @@ fn sample_arc(
     (0..=segments)
         .map(|k| {
             let angle = from + sweep * (k as f64 / segments as f64);
-            solved.to_world(cx + r * angle.cos(), cy + r * angle.sin())
+            solved.to_world(cx + r * angle.pcos(), cy + r * angle.psin())
         })
         .collect()
 }
@@ -1160,9 +1161,9 @@ fn polyline(solved: &SketchResult, entity: &Entity, tolerance: f64) -> Option<Sc
                 solved.point(start)?,
                 solved.point(end)?,
             );
-            let r = (a.0 - c.0).hypot(a.1 - c.1);
-            let from = (a.1 - c.1).atan2(a.0 - c.0);
-            let to = (b.1 - c.1).atan2(b.0 - c.0);
+            let r = (a.0 - c.0).phypot(a.1 - c.1);
+            let from = (a.1 - c.1).patan2(a.0 - c.0);
+            let to = (b.1 - c.1).patan2(b.0 - c.0);
             // Counter-clockwise from start to end; coincident ends are a
             // full turn.
             let mut sweep = (to - from).rem_euclid(std::f64::consts::TAU);
@@ -1214,9 +1215,9 @@ fn instance_polyline(
         }
         Curve2::Arc { center, start, end } => {
             let (c, a, b) = (center, start, end);
-            let r = (a[0] - c[0]).hypot(a[1] - c[1]);
-            let from = (a[1] - c[1]).atan2(a[0] - c[0]);
-            let to = (b[1] - c[1]).atan2(b[0] - c[0]);
+            let r = (a[0] - c[0]).phypot(a[1] - c[1]);
+            let from = (a[1] - c[1]).patan2(a[0] - c[0]);
+            let to = (b[1] - c[1]).patan2(b[0] - c[0]);
             let mut sweep = (to - from).rem_euclid(std::f64::consts::TAU);
             if sweep <= 0.0 {
                 sweep = std::f64::consts::TAU;
@@ -1320,7 +1321,7 @@ fn scene_helix(
     tolerance: f64,
 ) -> Option<SceneSketch> {
     let step = if tolerance < helix.radius {
-        2.0 * (1.0 - tolerance / helix.radius).acos()
+        2.0 * (1.0 - tolerance / helix.radius).pacos()
     } else {
         std::f64::consts::FRAC_PI_2
     };
@@ -1812,7 +1813,7 @@ fn coarser_by(stop: &Stop, max_triangles: usize) -> Option<f64> {
         }
         // Segments on a patch grow as the inverse square root of the
         // tolerance; a tenth more for the rounding of the count.
-        Stop::TooFine { needed, max } => (needed / f64::from(max.max(1)) * 1.1).powi(2),
+        Stop::TooFine { needed, max } => (needed / f64::from(max.max(1)) * 1.1).ppowi(2),
     };
     Some(if factor.is_finite() {
         factor.clamp(2.0, 64.0)
@@ -2642,6 +2643,7 @@ pub fn base64(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use craft3d_math::Portable;
     use std::cell::Cell;
 
     thread_local! {
@@ -3051,17 +3053,17 @@ mod tests {
     /// where it is, and a number that is no tolerance is left alone.
     #[test]
     fn the_ladder_has_eight_rungs_to_an_octave() {
-        let ratio = 2f64.powf(0.125);
+        let ratio = 2f64.ppowf(0.125);
         for k in -40..40 {
-            let rung = ratio.powi(k);
+            let rung = ratio.ppowi(k);
             let on = on_rung(rung);
             assert!((on / rung - 1.0).abs() < 1e-12, "{rung} -> {on}");
             // Within the octave the rung is exact: the one `RUNGS` holds.
             let (octave, step) = (k.div_euclid(8), k.rem_euclid(8) as usize);
-            assert_eq!(on, RUNGS[step] * 2f64.powi(octave));
+            assert_eq!(on, RUNGS[step] * 2f64.ppowi(octave));
             // Up to just under half a rung away, the same rung.
             for fraction in [-0.49, -0.25, 0.25, 0.49] {
-                let near = rung * ratio.powf(fraction);
+                let near = rung * ratio.ppowf(fraction);
                 assert_eq!(on_rung(near), on, "{near} near {rung}");
             }
         }
@@ -3083,7 +3085,7 @@ mod tests {
     /// The closed form: n chords over a sweep are each `sweep / n` wide, and
     /// a chord of width θ is r·(1 − cos(θ/2)) from the circle.
     fn sagitta(r: f64, sweep: f64, n: usize) -> f64 {
-        r * (1.0 - (sweep / n as f64 / 2.0).cos())
+        r * (1.0 - (sweep / n as f64 / 2.0).pcos())
     }
 
     #[test]

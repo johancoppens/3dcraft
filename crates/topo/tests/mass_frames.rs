@@ -16,6 +16,7 @@
 )]
 
 use craft3d_geom::{Circle, Cone, Curve3, Ellipse, Line, Plane, Sphere, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, FaceId, VertexId, check, mass_properties};
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
@@ -44,12 +45,12 @@ fn back(edge: EdgeId) -> Coedge {
 
 /// The direction away from the frame's axis at `angle` about it.
 fn radial(frame: &Frame, angle: f64) -> Vec3 {
-    frame.vector(angle.cos(), angle.sin(), 0.0)
+    frame.vector(angle.pcos(), angle.psin(), 0.0)
 }
 
 /// The direction a point at `angle` moves in when the angle grows.
 fn onward(frame: &Frame, angle: f64) -> Vec3 {
-    frame.vector(-angle.sin(), angle.cos(), 0.0)
+    frame.vector(-angle.psin(), angle.pcos(), 0.0)
 }
 
 fn line(body: &mut Body, ends: (VertexId, VertexId)) -> EdgeId {
@@ -104,13 +105,13 @@ fn inside_out(body: &Body) -> Body {
 /// `tilt` away from the axis of `place`, towards the direction at angle
 /// `towards` about it, and whose longitude 0 is turned by `spin`.
 fn turned_sphere(place: &Frame, radius: f64, tilt: f64, towards: f64, spin: f64) -> Surface {
-    let pole = place.z() * tilt.cos() + radial(place, towards) * tilt.sin();
+    let pole = place.z() * tilt.pcos() + radial(place, towards) * tilt.psin();
     let across = onward(place, towards);
     let third = pole.cross(across);
     let frame = Frame::new(
         place.origin(),
         pole,
-        across * spin.cos() + third * spin.sin(),
+        across * spin.pcos() + third * spin.psin(),
     )
     .unwrap();
     Surface::Sphere(Sphere::new(frame, radius).unwrap())
@@ -141,8 +142,8 @@ fn cut_ball(place: &Frame, sphere: Surface, radius: f64, level: f64, keep_cap: b
     body.add_shell(vec![curved, disc]);
     let h = radius - level;
     let cap_volume = PI * h * h * (3.0 * radius - h) / 3.0;
-    let cap_centre = 3.0 * (2.0 * radius - h).powi(2) / (4.0 * (3.0 * radius - h));
-    let ball = 4.0 * PI * radius.powi(3) / 3.0;
+    let cap_centre = 3.0 * (2.0 * radius - h).ppowi(2) / (4.0 * (3.0 * radius - h));
+    let ball = 4.0 * PI * radius.ppowi(3) / 3.0;
     let disc_area = PI * rim_radius * rim_radius;
     let (volume, area, z) = if keep_cap {
         (cap_volume, TAU * radius * h + disc_area, cap_centre)
@@ -191,14 +192,14 @@ fn zone(place: &Frame, sphere: Surface, radius: f64, low: f64, high: f64) -> Sol
     );
     body.add_shell(vec![curved, floor, lid]);
     let r2 = radius * radius;
-    let slab = |z: f64| r2 * z - z.powi(3) / 3.0;
-    let moment = |z: f64| r2 * z * z / 2.0 - z.powi(4) / 4.0;
+    let slab = |z: f64| r2 * z - z.ppowi(3) / 3.0;
+    let moment = |z: f64| r2 * z * z / 2.0 - z.ppowi(4) / 4.0;
     let volume = PI * (slab(high) - slab(low));
     Solid {
         name: format!("zone {low}..{high}"),
         body,
         volume,
-        area: TAU * radius * (high - low) + PI * (rim(low).powi(2) + rim(high).powi(2)),
+        area: TAU * radius * (high - low) + PI * (rim(low).ppowi(2) + rim(high).ppowi(2)),
         centroid: place.point(0.0, 0.0, PI * (moment(high) - moment(low)) / volume),
     }
 }
@@ -239,11 +240,11 @@ fn wedge(place: &Frame, sphere: Surface, radius: f64, sweep: f64) -> Solid {
         vec![fwd(axis), back(m1)],
     );
     body.add_shell(vec![lune, start, end]);
-    let reach = 3.0 * PI * radius / 16.0 * (sweep / 2.0).sin() / (sweep / 2.0);
+    let reach = 3.0 * PI * radius / 16.0 * (sweep / 2.0).psin() / (sweep / 2.0);
     Solid {
         name: format!("wedge {sweep}"),
         body,
-        volume: sweep * 2.0 * radius.powi(3) / 3.0,
+        volume: sweep * 2.0 * radius.ppowi(3) / 3.0,
         area: 2.0 * sweep * radius * radius + PI * radius * radius,
         centroid: place.origin() + radial(place, sweep / 2.0) * reach,
     }
@@ -268,7 +269,7 @@ fn lens(place: &Frame, spheres: (Surface, Surface), r1: f64, r2: f64, apart: f64
     body.add_shell(vec![first, second]);
     let (h1, h2) = (r1 - d, r2 - (apart - d));
     let cap = |r: f64, h: f64| PI * h * h * (3.0 * r - h) / 3.0;
-    let centre = |r: f64, h: f64| 3.0 * (2.0 * r - h).powi(2) / (4.0 * (3.0 * r - h));
+    let centre = |r: f64, h: f64| 3.0 * (2.0 * r - h).ppowi(2) / (4.0 * (3.0 * r - h));
     let (v1, v2) = (cap(r1, h1), cap(r2, h2));
     let z = (v1 * centre(r1, h1) + v2 * (apart - centre(r2, h2))) / (v1 + v2);
     Solid {
@@ -400,7 +401,7 @@ fn a_cut_ball_is_the_same_in_every_frame_of_its_sphere() {
         for place in places(scale) {
             let radius = 2.0 * scale;
             for level in [-1.6, -0.3, 0.0, 1.1, 1.9] {
-                let rim = (level / 2.0_f64).acos();
+                let rim = (level / 2.0_f64).pacos();
                 for tilt in tilts(rim) {
                     for (towards, spin) in [(0.0, 0.0), (2.1, 1.3), (4.0, PI)] {
                         let what = format!(
@@ -430,8 +431,8 @@ fn a_zone_is_the_same_in_every_frame_of_its_sphere() {
             for (low, high) in [(-0.5, 1.2), (0.3, 1.9), (-1.7, -0.2), (-1.99, 1.99)] {
                 // Poles about either rim, between the two (in the face),
                 // and inside either hole.
-                let mut all = tilts((high / 2.0_f64).acos());
-                all.extend(tilts((low / 2.0_f64).acos()));
+                let mut all = tilts((high / 2.0_f64).pacos());
+                all.extend(tilts((low / 2.0_f64).pacos()));
                 for tilt in all {
                     for (towards, spin) in [(0.0, 0.0), (2.1, 1.3)] {
                         let what =
@@ -513,8 +514,8 @@ fn a_lens_is_the_same_in_every_frame_of_its_spheres() {
                 let d = (apart * apart + r1 * r1 - r2 * r2) / (2.0 * apart);
                 let other = place.at(place.point(0.0, 0.0, apart)).unwrap();
                 // The rim as each sphere sees it from its own centre.
-                let rim1 = (d / r1).acos();
-                let rim2 = ((d - apart) / r2).acos();
+                let rim1 = (d / r1).pacos();
+                let rim2 = ((d - apart) / r2).pacos();
                 let (tilts1, tilts2) = (tilts(rim1), tilts(rim2));
                 for (k, &tilt1) in tilts1.iter().enumerate() {
                     // Every tilt of the one against a different tilt of
@@ -557,16 +558,16 @@ fn a_lens_is_the_same_in_every_frame_of_its_spheres() {
 /// along the axis or against it.
 fn cone_tip(place: &Frame, alpha: f64, height: f64, lean: f64, shift: f64, flipped: bool) -> Solid {
     let ruling = |side: f64| {
-        let t = height * lean.cos() / (alpha - side * lean).cos();
-        place.point(side * t * alpha.sin(), 0.0, t * alpha.cos())
+        let t = height * lean.pcos() / (alpha - side * lean).pcos();
+        place.point(side * t * alpha.psin(), 0.0, t * alpha.pcos())
     };
     let (p1, p2) = (ruling(1.0), ruling(-1.0));
     let apex = place.origin();
     let t1 = p1.distance(apex);
     let t2 = p2.distance(apex);
-    let (a, b) = (p1.distance(p2) / 2.0, (t1 * t2).sqrt() * alpha.sin());
+    let (a, b) = (p1.distance(p2) / 2.0, (t1 * t2).sqrt() * alpha.psin());
     let centre = p1.lerp(p2, 0.5);
-    let normal = place.vector(lean.sin(), 0.0, lean.cos());
+    let normal = place.vector(lean.psin(), 0.0, lean.pcos());
     let on_plane = Frame::new(centre, normal, p1 - p2).unwrap();
     let frame = if flipped {
         place.reversed_at(place.point(0.0, 0.0, shift)).unwrap()
@@ -575,7 +576,7 @@ fn cone_tip(place: &Frame, alpha: f64, height: f64, lean: f64, shift: f64, flipp
     };
     let cone = Cone::new(
         frame,
-        shift * alpha.tan(),
+        shift * alpha.ptan(),
         if flipped { -alpha } else { alpha },
     )
     .unwrap();
@@ -597,8 +598,8 @@ fn cone_tip(place: &Frame, alpha: f64, height: f64, lean: f64, shift: f64, flipp
             "cone tip, half-angle {alpha}, lean {lean}, frame {shift} along, flipped: {flipped}"
         ),
         body,
-        volume: ellipse * height * lean.cos() / 3.0,
-        area: ellipse * lean.cos() / alpha.sin() + ellipse,
+        volume: ellipse * height * lean.pcos() / 3.0,
+        area: ellipse * lean.pcos() / alpha.psin() + ellipse,
         centroid: apex + (centre - apex) * 0.75,
     }
 }
@@ -644,12 +645,12 @@ fn cone_slice(
     let (frame, half_angle) = if flipped {
         (
             place.reversed_at(place.point(0.0, 0.0, shift)).unwrap(),
-            slope.atan(),
+            slope.patan(),
         )
     } else {
         (
             place.at(place.point(0.0, 0.0, shift)).unwrap(),
-            -slope.atan(),
+            -slope.patan(),
         )
     };
     let cone = Surface::Cone(Cone::new(frame, (height - shift) * slope, half_angle).unwrap());
@@ -715,12 +716,12 @@ fn cone_slice(
     faces.push(base);
     body.add_shell(faces);
 
-    let slant = radius.hypot(height);
-    let chord = (sweep / 2.0).sin() / (sweep / 2.0);
+    let slant = radius.phypot(height);
+    let chord = (sweep / 2.0).psin() / (sweep / 2.0);
     // The whole slice less the tip, which is `cut` times as large and
     // starts `1 − cut` of the height up.
     let whole = sweep * radius * radius * height / 6.0;
-    let tip_volume = whole * cut.powi(3);
+    let tip_volume = whole * cut.ppowi(3);
     let volume = whole - tip_volume;
     let out = (whole * radius / 2.0 - tip_volume * cut * radius / 2.0) * chord / volume;
     let up = (whole * height / 4.0 - tip_volume * height * (1.0 - cut + cut / 4.0)) / volume;
@@ -780,7 +781,7 @@ fn a_band_far_from_the_apex_is_measured_as_a_band() {
         for place in places(scale) {
             for half_angle in [1e-6_f64, -1e-6, 1e-3, 0.3] {
                 let (r1, h) = (2.0 * scale, 3.0 * scale);
-                let r2 = r1 + h * half_angle.tan();
+                let r2 = r1 + h * half_angle.ptan();
                 let cone = Cone::new(place, r1, half_angle).unwrap();
                 let mut body = Body::new(BodyKind::Solid);
                 let bottom = parallel(&mut body, &place, 0.0, r1);
@@ -800,7 +801,7 @@ fn a_band_far_from_the_apex_is_measured_as_a_band() {
                 body.add_shell(vec![wall, floor, lid]);
                 let mass = mass_properties(&body).unwrap();
                 let volume = PI * h * (r1 * r1 + r1 * r2 + r2 * r2) / 3.0;
-                let area = PI * (r1 + r2) * h.hypot(r2 - r1) + PI * (r1 * r1 + r2 * r2);
+                let area = PI * (r1 + r2) * h.phypot(r2 - r1) + PI * (r1 * r1 + r2 * r2);
                 let what = format!("half-angle {half_angle}, scale {scale}");
                 assert!(
                     (mass.volume - volume).abs() <= 1e-11 * volume,

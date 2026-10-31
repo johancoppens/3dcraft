@@ -14,6 +14,7 @@
     clippy::needless_range_loop
 )]
 
+use craft3d_math::Portable;
 mod common;
 mod devices;
 
@@ -947,8 +948,8 @@ fn clear_glass_on_a_plain_white_background_stays_white() {
         let adapter = offscreen.adapter().to_string();
         for tonemap in [Tonemap::Agx, Tonemap::Aces, Tonemap::Linear] {
             for (theta, thin) in [(0.0_f64, false), (0.7, false), (0.7, true)] {
-                let u = Vec3::new(theta.cos(), theta.sin(), 0.0);
-                let normal = Vec3::new(-theta.sin(), theta.cos(), 0.0);
+                let u = Vec3::new(theta.pcos(), theta.psin(), 0.0);
+                let normal = Vec3::new(-theta.psin(), theta.pcos(), 0.0);
                 let mesh = slab(Vec3::ZERO, (u, 5.0), (normal, 0.3), (Vec3::Z, 5.0));
                 let mut colors = FaceColors::new();
                 for face in 0..6 {

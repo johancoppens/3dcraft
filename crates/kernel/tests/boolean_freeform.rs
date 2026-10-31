@@ -8,6 +8,7 @@
 // Test code: a failure in a helper is a failed test.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
+use craft3d_math::Portable;
 mod boolean_common;
 
 use boolean_common::*;
@@ -73,7 +74,7 @@ fn over_disc(center: (f64, f64), radius: f64, f: impl Fn(f64, f64) -> f64) -> f6
         let r = (i as f64 + 0.5) * dr;
         for j in 0..N {
             let a = (j as f64 + 0.5) * da;
-            sum += f(center.0 + r * a.cos(), center.1 + r * a.sin()) * r;
+            sum += f(center.0 + r * a.pcos(), center.1 + r * a.psin()) * r;
         }
     }
     sum * dr * da
@@ -232,7 +233,7 @@ fn a_ball_sunk_into_the_roof() {
     // The part of the ball below the roof: over the disc under the ball,
     // the height of the ball's underside up to the roof.
     let sunk = over_disc(center, 0.6, |x, y| {
-        let r2 = (x - center.0).powi(2) + (y - center.1).powi(2);
+        let r2 = (x - center.0).ppowi(2) + (y - center.1).ppowi(2);
         let half = (0.36 - r2).max(0.0).sqrt();
         (roof_height(x, y) - (z0 - half)).clamp(0.0, 2.0 * half)
     });

@@ -15,6 +15,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{error, run, session, str_of};
@@ -598,15 +599,20 @@ fn a_grid_of_bolt_circles_is_its_closed_form() {
             if nx > 1 && ny > 1 {
                 let name = format!("F2:side({hole}[1][1,1])");
                 let angle = 2.0 * PI / f64::from(m);
-                let x = cx + pitch_x + ring * angle.cos();
-                let y = cy + pitch_y + ring * angle.sin();
+                let x = cx + pitch_x + ring * angle.pcos();
+                let y = cy + pitch_y + ring * angle.psin();
                 let got = boxes
                     .get(&name)
                     .unwrap_or_else(|| panic!("{what}: no {name}"));
                 // A circle's edges start and end on its seam: the box has
                 // the seam point; it lies on the circle about (x, y).
                 let (px, py) = (got[0], got[2]);
-                close(((px - x).powi(2) + (py - y).powi(2)).sqrt(), r, 1e-9, &name);
+                close(
+                    ((px - x).ppowi(2) + (py - y).ppowi(2)).sqrt(),
+                    r,
+                    1e-9,
+                    &name,
+                );
             }
             let cells = boxes
                 .keys()
@@ -673,7 +679,7 @@ fn a_ring_of_rows_of_slots_is_its_shoelace_area() {
             assert_eq!(status(&mut s, "Body"), "ok", "{what}");
             let mut slots = 0.0;
             for j in 0..n {
-                let (sin, cos) = (2.0 * PI * f64::from(j) / f64::from(n)).sin_cos();
+                let (sin, cos) = (2.0 * PI * f64::from(j) / f64::from(n)).psin_cos();
                 for i in 0..q {
                     let x = x0 + f64::from(i) * pitch;
                     let corners: Vec<[f64; 2]> =
@@ -849,7 +855,7 @@ fn a_skipped_instance_is_left_out_and_the_others_keep_their_names() {
                 if i < n {
                     let got = &boxes[&format!("F2:side({hole}[{i}])")];
                     let x = x0 + f64::from(i) * pitch;
-                    close((got[0] - x).hypot(got[2] - depth / 2.0), r, 1e-9, &what);
+                    close((got[0] - x).phypot(got[2] - depth / 2.0), r, 1e-9, &what);
                 }
             }
             let inspected = run(&mut s, "sketch.inspect", json!({"sketch": "Plate"}));

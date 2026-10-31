@@ -10,4 +10,5 @@ description = "Font files read into exact outlines (TrueType quadratic and CFF c
 workspace = true
 
 [dependencies]
+libm.workspace = true
 ttf-parser.workspace = true

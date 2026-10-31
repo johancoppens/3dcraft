@@ -20,6 +20,7 @@
 
 use craft3d_engine::{Scene, Session, Workspace};
 use craft3d_gpu::ADAPTER_HINT;
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use craft3d_render::Projection;
 use craft3d_ui_egui::backend::Backend;
@@ -295,7 +296,7 @@ fn edges_in_sight(
             let by_a_vertex = scene.bodies.iter().flat_map(|b| &b.vertices).any(|v| {
                 projector
                     .project(*v)
-                    .is_some_and(|c| (c.x - at.x).hypot(c.y - at.y) < 6.0)
+                    .is_some_and(|c| (c.x - at.x).phypot(c.y - at.y) < 6.0)
             });
             (inside && clear && !by_a_vertex).then(|| (listed.clone(), p, [at.x, at.y]))
         })
@@ -345,7 +346,7 @@ fn distance_to(p: [f64; 2], line: &OverlayLine) -> f64 {
     } else {
         0.0
     };
-    (p[0] - (ax + dx * t)).hypot(p[1] - (ay + dy * t))
+    (p[0] - (ax + dx * t)).phypot(p[1] - (ay + dy * t))
 }
 
 /// The screenshot of the viewport at its own size, as RGB.
@@ -407,7 +408,7 @@ fn inked(
         .iter()
         .filter(|l| l.kind == LineKind::Highlight && !l.hidden)
     {
-        let length = (line.to[0] - line.from[0]).hypot(line.to[1] - line.from[1]);
+        let length = (line.to[0] - line.from[0]).phypot(line.to[1] - line.from[1]);
         let steps = (length / 2.0).floor() as usize;
         for i in 1..steps {
             let t = i as f64 / steps as f64;
@@ -768,7 +769,7 @@ fn ui_pick_and_ui_highlight_speak_of_edges() {
             .collect();
         for line in hidden
             .iter()
-            .filter(|l| (l.to[0] - l.from[0]).hypot(l.to[1] - l.from[1]) > 12.0)
+            .filter(|l| (l.to[0] - l.from[0]).phypot(l.to[1] - l.from[1]) > 12.0)
         {
             let mid = [
                 0.5 * (line.from[0] + line.to[0]),
@@ -1051,7 +1052,7 @@ fn a_highlighted_edge_is_the_same_on_the_gpus_direct_path_as_in_the_oracle() {
         // other lines.
         let (mut here, mut here_agree) = (0, 0);
         for line in &highlight {
-            let length = (line.to[0] - line.from[0]).hypot(line.to[1] - line.from[1]);
+            let length = (line.to[0] - line.from[0]).phypot(line.to[1] - line.from[1]);
             let steps = (length / 2.0).floor() as usize;
             for i in 1..steps {
                 let t = i as f64 / steps as f64;
@@ -1063,7 +1064,7 @@ fn a_highlighted_edge_is_the_same_on_the_gpus_direct_path_as_in_the_oracle() {
                     s.hidden != line.hidden
                         && [s.from, s.to]
                             .iter()
-                            .any(|e| (p[0] - e[0]).hypot(p[1] - e[1]) < 3.0)
+                            .any(|e| (p[0] - e[0]).phypot(p[1] - e[1]) < 3.0)
                 });
                 // Other lines within reach, the edge's own line apart
                 // (it is under the highlight all along).
@@ -1242,7 +1243,7 @@ fn vertices_in_sight(
                 && landed
                     .iter()
                     .enumerate()
-                    .all(|(j, other)| j == *k || (other[0] - at[0]).hypot(other[1] - at[1]) > 10.0)
+                    .all(|(j, other)| j == *k || (other[0] - at[0]).phypot(other[1] - at[1]) > 10.0)
         })
         .map(|(_, (corner, at))| (corner.clone(), *at))
         .collect()
@@ -1314,7 +1315,7 @@ fn a_click_on_a_vertex_picks_it_and_ui_highlight_shows_one() {
         assert!(!dots.is_empty(), "{context}");
         assert!(
             dots.iter()
-                .any(|d| !d.hidden && (d.at[0] - x).hypot(d.at[1] - y) < 1e-6),
+                .any(|d| !d.hidden && (d.at[0] - x).phypot(d.at[1] - y) < 1e-6),
             "{context}: no dot on the vertex"
         );
         assert!(overlay.lines.iter().all(|l| l.kind != LineKind::Highlight));
@@ -1341,7 +1342,7 @@ fn a_click_on_a_vertex_picks_it_and_ui_highlight_shows_one() {
                     let differs = pixel(&marked, width, p) != pixel(&plain, width, p);
                     let near = dots
                         .iter()
-                        .any(|d| (d.at[0] - p[0]).hypot(d.at[1] - p[1]) <= 5.5);
+                        .any(|d| (d.at[0] - p[0]).phypot(d.at[1] - p[1]) <= 5.5);
                     assert!(!differs || near, "{context}: the picture changed at {p:?}");
                     changed += usize::from(differs);
                 }
@@ -1403,7 +1404,7 @@ fn a_click_on_a_vertex_picks_it_and_ui_highlight_shows_one() {
                             .unwrap()
                             .project(c.point)
                             .unwrap();
-                    (p.x - at[0]).hypot(p.y - at[1]) > 12.0
+                    (p.x - at[0]).phypot(p.y - at[1]) > 12.0
                 })
         })
         .expect("a vertex at the back");
@@ -1603,7 +1604,7 @@ fn a_highlighted_vertex_is_the_same_on_the_gpus_direct_path_as_in_the_oracle() {
         let (wu, hu) = (w as usize, h as usize);
         for i in (0..wu * hu).step_by(5) {
             let p = [(i % wu) as f64 + 0.5, (i / wu) as f64 + 0.5];
-            if (p[0] - x).hypot(p[1] - y) > 6.5 {
+            if (p[0] - x).phypot(p[1] - y) > 6.5 {
                 assert!(
                     levels(pixel(&direct, w, p), pixel(&direct_plain, w, p)) <= 1,
                     "{} vertex {}: the picture changed at {p:?}",

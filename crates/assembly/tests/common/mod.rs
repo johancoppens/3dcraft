@@ -9,6 +9,7 @@
 )]
 
 use craft3d_assembly::{Frame, Mat3, MateKind, MateSpec, Pose, Problem};
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 
 /// The scales every closed-form test runs at (AGENTS.md rule 3).
@@ -45,11 +46,12 @@ pub fn disturb(p: &mut Problem, fraction: f64) {
             continue;
         }
         let k = i as f64;
-        let t = Vec3::new((k * 1.3).sin(), (k * 2.1).cos(), (k * 0.7).sin() * 0.5) * (fraction * l);
+        let t =
+            Vec3::new((k * 1.3).psin(), (k * 2.1).pcos(), (k * 0.7).psin() * 0.5) * (fraction * l);
         let w = Vec3::new(
-            (k * 0.9).cos() * 0.1,
-            (k * 1.7).sin() * 0.1,
-            (k * 0.3).sin(),
+            (k * 0.9).pcos() * 0.1,
+            (k * 1.7).psin() * 0.1,
+            (k * 0.3).psin(),
         ) * fraction;
         *pose = Pose::new(Mat3::exp(w).mul(&pose.rotation), pose.translation + t);
     }
@@ -59,9 +61,9 @@ pub fn disturb(p: &mut Problem, fraction: f64) {
 /// P→Q), as the strandbeest Jig's generator computes it.
 pub fn circ(p: Vec3, r: f64, q: Vec3, s: f64, sg: f64) -> Option<Vec3> {
     let (dx, dy) = (q.x - p.x, q.y - p.y);
-    let d = dx.hypot(dy);
+    let d = dx.phypot(dy);
     let al = (r * r - s * s + d * d) / (2.0 * d);
-    let disc = 1.0 - (al / r).powi(2);
+    let disc = 1.0 - (al / r).ppowi(2);
     if disc < 0.0 {
         return None;
     }
@@ -75,7 +77,7 @@ pub fn circ(p: Vec3, r: f64, q: Vec3, s: f64, sg: f64) -> Option<Vec3> {
 /// The turn of a pose about z (its x axis's angle in the xy plane).
 pub fn turn(pose: &Pose) -> f64 {
     let x = pose.rotation.x();
-    x.y.atan2(x.x)
+    x.y.patan2(x.x)
 }
 
 pub fn close(a: Vec3, b: Vec3, tol: f64) -> bool {
@@ -123,7 +125,7 @@ pub fn jansen_joints(th: f64, s: f64, z: f64) -> Option<[Vec3; 8]> {
     let n = HOLY;
     let o = v2(0.0, 0.0);
     let b = v2(-n.a * s, -n.l * s);
-    let a = v2(n.m * s * th.cos(), n.m * s * th.sin());
+    let a = v2(n.m * s * th.pcos(), n.m * s * th.psin());
     let c = circ(a, n.j * s, b, n.b * s, -1.0)?;
     let d = circ(b, n.d * s, c, n.e * s, 1.0)?;
     let e = circ(a, n.k * s, b, n.c * s, 1.0)?;

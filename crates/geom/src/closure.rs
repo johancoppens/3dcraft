@@ -113,14 +113,15 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
     use crate::{BezierPatch, NurbsSurface};
+    use craft3d_math::Portable;
 
     /// A ring of nine control points around the z axis, rational
     /// quadratic quarters, at the radius and height given.
     fn ring(radius: f64, height: f64, from: f64) -> Vec<(Vec3, f64)> {
-        let weight = std::f64::consts::FRAC_PI_4.cos();
+        let weight = std::f64::consts::FRAC_PI_4.pcos();
         (0..9)
             .map(|k| {
-                let (sin, cos) = (from + std::f64::consts::FRAC_PI_4 * f64::from(k)).sin_cos();
+                let (sin, cos) = (from + std::f64::consts::FRAC_PI_4 * f64::from(k)).psin_cos();
                 if k % 2 == 0 {
                     (Vec3::new(radius * cos, radius * sin, height), 1.0)
                 } else {

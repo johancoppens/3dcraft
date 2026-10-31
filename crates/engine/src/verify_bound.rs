@@ -48,6 +48,7 @@ use craft3d_geom::support::{
 };
 use craft3d_geom::{Curve3, Surface};
 use craft3d_kernel::boolean::probe::OnFace;
+use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Vec3};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BinaryHeap};
@@ -317,7 +318,7 @@ enum Img {
 }
 
 fn d2(a: (f64, f64), b: (f64, f64)) -> f64 {
-    (a.0 - b.0).hypot(a.1 - b.1)
+    (a.0 - b.0).phypot(a.1 - b.1)
 }
 
 fn pt_seg(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
@@ -356,7 +357,7 @@ fn seg_seg(a: (f64, f64), b: (f64, f64), c: (f64, f64), d: (f64, f64)) -> f64 {
 fn pt_rect(p: (f64, f64), (x0, x1, y0, y1): (f64, f64, f64, f64)) -> f64 {
     let dx = (x0 - p.0).max(0.0).max(p.0 - x1);
     let dy = (y0 - p.1).max(0.0).max(p.1 - y1);
-    dx.hypot(dy)
+    dx.phypot(dy)
 }
 
 fn corners(r: (f64, f64, f64, f64)) -> [(f64, f64); 4] {
@@ -399,7 +400,7 @@ fn img_distance(a: &Img, b: &Img) -> f64 {
         (Img::Rect(a0, a1, b0, b1), Img::Rect(c0, c1, e0, e1)) => {
             let dx = (c0 - a1).max(0.0).max(a0 - c1);
             let dy = (e0 - b1).max(0.0).max(b0 - e1);
-            dx.hypot(dy)
+            dx.phypot(dy)
         }
         (Img::Circle(c, r), Img::Seg(p, q)) | (Img::Seg(p, q), Img::Circle(c, r)) => {
             circle_to(*r, pt_seg(*c, *p, *q), d2(*c, *p).max(d2(*c, *q)))
@@ -482,7 +483,7 @@ fn surface_sym(s: &Surface) -> Sym {
             z: c.frame().z(),
             shape: Shape::Cone {
                 r: c.radius(),
-                slope: c.half_angle().tan(),
+                slope: c.half_angle().ptan(),
             },
         },
         Surface::Sphere(s) => Sym::Sphere {
@@ -1508,9 +1509,9 @@ fn excluded(a: &Rec, b: &Rec) -> bool {
             continue;
         };
         let (w1, w2, wk) = (range(e1), range(e2), range(cone.axis));
-        let across_least = least_abs(w1).hypot(least_abs(w2));
-        let across_most = most_abs(w1).hypot(most_abs(w2));
-        let tan = cone.half_angle.tan();
+        let across_least = least_abs(w1).phypot(least_abs(w2));
+        let across_most = most_abs(w1).phypot(most_abs(w2));
+        let tan = cone.half_angle.ptan();
         let out = match kind {
             ConeKind::Normal => across_least > tan * most_abs(wk),
             ConeKind::Tangent => least_abs(wk) > tan * across_most,

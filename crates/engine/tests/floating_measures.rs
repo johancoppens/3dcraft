@@ -17,6 +17,7 @@
 )]
 
 use craft3d_engine::{Session, Workspace};
+use craft3d_math::Portable;
 use serde_json::{Value, json};
 
 const SCALES: [f64; 3] = [1e-3, 1.0, 1e6];
@@ -112,7 +113,7 @@ fn afloat(k: f64, measure: &str, more: Value) -> Value {
     let mut p = json!({
         "measure": measure,
         "of": "Barge",
-        "volume": 2000.0 * 600.0 * 250.0 * k.powi(3),
+        "volume": 2000.0 * 600.0 * 250.0 * k.ppowi(3),
         "centerOfGravity": ["xg", "0 mm", "zG"],
     });
     for (key, v) in more.as_object().unwrap() {
@@ -145,7 +146,7 @@ fn a_box_barge_floats_at_its_closed_form_at_three_scales() {
         assert_eq!(gm["unit"], "mm", "{gm}");
         close(gm["measured"].as_f64().unwrap(), 65.0 * k, 1e-7, "GM");
         let gml = add(&mut s, "GML", k, "floatingGML", json!({"min": "0 mm"}));
-        let bml = 2000.0_f64.powi(2) / (12.0 * 250.0);
+        let bml = 2000.0_f64.ppowi(2) / (12.0 * 250.0);
         close(
             gml["measured"].as_f64().unwrap(),
             (125.0 + bml - 180.0) * k,
@@ -216,7 +217,7 @@ fn a_box_barge_floats_at_its_closed_form_at_three_scales() {
         assert_eq!(trim["status"], "passed", "scale {k}: {trim}");
         close(
             trim["measured"].as_f64().unwrap().abs(),
-            t.atan(),
+            t.patan(),
             1e-6,
             "trim",
         );
@@ -307,7 +308,7 @@ fn a_neutral_sphere_is_neither_stable_nor_unstable_for_certain() {
             "feature.sphere",
             json!({"radius": mm(100.0 * k), "name": "Ball"}),
         );
-        let whole = 4.0 / 3.0 * std::f64::consts::PI * (100.0 * k).powi(3);
+        let whole = 4.0 / 3.0 * std::f64::consts::PI * (100.0 * k).ppowi(3);
         run(
             &mut s,
             "assert.add",

@@ -32,6 +32,7 @@ use crate::KernelError;
 use crate::plate::Made;
 use crate::profile::Loop2;
 use crate::spline2::Spline2;
+use craft3d_math::Portable;
 use craft3d_math::{Tolerance, Vec3};
 use craft3d_topo::Body;
 
@@ -80,7 +81,7 @@ fn flat_point(part: &Part, role: SheetFace, level: usize, p: Vec3) -> Option<(P2
             let r0 = [0.0, -zc];
             // Signed: positive towards the flange (a bend up turns with
             // the axis above, a bend down below).
-            let phi = cross(r0, v).atan2(dot(r0, v)) * zc.signum();
+            let phi = cross(r0, v).patan2(dot(r0, v)) * zc.signum();
             // The bottom skin is the outside of a bend up.
             let bottom = zc.abs();
             let radius = match (level, b.angle > 0.0) {
@@ -91,7 +92,7 @@ fn flat_point(part: &Part, role: SheetFace, level: usize, p: Vec3) -> Option<(P2
             let s = phi * b.neutral();
             Some((
                 [foot[0] + s * b.across[0], foot[1] + s * b.across[1]],
-                (v[0].hypot(v[1]) - radius).abs(),
+                (v[0].phypot(v[1]) - radius).abs(),
             ))
         }
     }

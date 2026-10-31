@@ -27,6 +27,7 @@
 use crate::KernelError;
 use craft3d_geom::refine::interpolate_with_end_derivatives;
 use craft3d_geom::{Curve3, Line, NurbsSurface, Plane, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, FaceId, VertexId};
 use std::collections::BTreeMap;
@@ -232,7 +233,7 @@ impl Rail {
     /// The joints where the rail has a corner: the tangent turns there by
     /// more than `angular` (as whole-number rail parameters, in order).
     fn corners(&self, angular: f64) -> Vec<f64> {
-        let turn = |u: Vec3, w: Vec3| u.cross(w).length().atan2(u.dot(w));
+        let turn = |u: Vec3, w: Vec3| u.cross(w).length().patan2(u.dot(w));
         (1..self.pieces.len())
             .filter_map(|k| {
                 let s = k as f64;
@@ -333,7 +334,7 @@ impl Rail {
                 // The tangents on both sides of the joint (their limits
                 // where a curve stands still there).
                 let joint = (index + 1) as f64;
-                let turn = |u: Vec3, w: Vec3| u.cross(w).length().atan2(u.dot(w));
+                let turn = |u: Vec3, w: Vec3| u.cross(w).length().patan2(u.dot(w));
                 if let (Some(u), Some(w)) = (
                     self.tangent_side(joint, true),
                     self.tangent_side(joint, false),
@@ -540,7 +541,7 @@ enum Start {
 /// The tangent of the zero set at `(x, y)`, oriented to increase `x + y`.
 fn tangent_at(pair: &Pair, x: f64, y: f64) -> Option<(f64, f64)> {
     let (gx, gy) = pair.gradient(x, y)?;
-    let norm = gx.hypot(gy);
+    let norm = gx.phypot(gy);
     if norm.is_nan() || norm <= 1e-9 {
         return None;
     }
@@ -719,7 +720,7 @@ fn trace(
                 pair.where_(x, y)
             )));
         };
-        let norm = gx.hypot(gy);
+        let norm = gx.phypot(gy);
         if norm.is_nan() || norm <= 1e-9 {
             if fold.is_none()
                 && let Some(q) = cross(
@@ -798,7 +799,7 @@ fn trace(
                 Some(f) if f.falls_t => (tx.max(0.0), ty),
                 Some(_) => (tx, ty.max(0.0)),
             };
-            let n = cx.hypot(cy).max(f64::MIN_POSITIVE);
+            let n = cx.phypot(cy).max(f64::MIN_POSITIVE);
             (cx / n, cy / n)
         };
         // Predictor, stopped at the sides of the square.
@@ -862,7 +863,7 @@ fn trace(
                     pair.where_(la, lb)
                 )));
             }
-            let moved = (la - x).hypot(lb - y);
+            let moved = (la - x).phypot(lb - y);
             if moved > 0.0 {
                 before = ((la - x) / moved, (lb - y) / moved);
             }
@@ -916,7 +917,7 @@ fn trace(
         // tangent turned by little: a corrector that lands on another
         // branch, or a step over a fold, is retried shorter.
         let accepted = corrected.filter(|&(qx, qy)| {
-            let moved = (qx - x).hypot(qy - y);
+            let moved = (qx - x).phypot(qy - y);
             // On a corner's line the tangent is taken a little way back,
             // on the side the walk came from.
             let (ax, ay) = match on_corner {
@@ -931,7 +932,7 @@ fn trace(
                 None => (qx, qy),
             };
             let turned = tangent_at(pair, ax, ay)
-                .is_some_and(|(ux, uy)| (ux * tx + uy * ty).abs() >= MAX_TURN.cos());
+                .is_some_and(|(ux, uy)| (ux * tx + uy * ty).abs() >= MAX_TURN.pcos());
             let forward = match fold {
                 None => qx >= x - 1e-12 && qy >= y - 1e-12,
                 Some(f) if f.falls_t => qx >= x - 1e-12,
@@ -968,7 +969,7 @@ fn trace(
             }
             continue;
         };
-        let moved = (qx - x).hypot(qy - y);
+        let moved = (qx - x).phypot(qy - y);
         if moved > 0.0 {
             before = ((qx - x) / moved, (qy - y) / moved);
         }
@@ -1432,7 +1433,7 @@ fn turning_point(
     let (lo_y, hi_y) = (from.1.min(to.1), from.1.max(to.1));
     let room = 2.0 * (hi_x - lo_x).max(hi_y - lo_y);
     let (dx, dy) = (to.0 - from.0, to.1 - from.1);
-    let length = dx.hypot(dy);
+    let length = dx.phypot(dy);
     if !(length > 0.0 && length.is_finite()) {
         return None;
     }
@@ -1483,12 +1484,12 @@ fn heading(path: &[(f64, f64)]) -> (f64, f64) {
     let from = path
         .iter()
         .rev()
-        .find(|(px, py)| (lx - px).hypot(ly - py) >= 2.0 * STEP_MAX)
+        .find(|(px, py)| (lx - px).phypot(ly - py) >= 2.0 * STEP_MAX)
         .or(path.first())
         .copied()
         .unwrap_or((lx, ly));
     let (dx, dy) = (lx - from.0, ly - from.1);
-    let n = dx.hypot(dy);
+    let n = dx.phypot(dy);
     if n > 0.0 && n.is_finite() {
         (dx / n, dy / n)
     } else {
@@ -1552,7 +1553,7 @@ fn cross(
 ) -> Option<(f64, f64)> {
     let model = model_saddle(pair, (x, y))?;
     let (dx, dy) = model.offset;
-    let far = dx.hypot(dy);
+    let far = dx.phypot(dy);
     let (cx, cy) = (x + dx, y + dy);
     if !(far <= STEP_MAX && (0.0..=1.0).contains(&cx) && (0.0..=1.0).contains(&cy)) {
         return None;
@@ -1616,12 +1617,12 @@ fn past_saddle(
 ) -> Option<(f64, f64)> {
     // The eigenvalues and eigenvectors of H (symmetric, one of each sign).
     let mean = 0.5 * (hxx + hyy);
-    let radius = (0.5 * (hxx - hyy)).hypot(hxy);
+    let radius = (0.5 * (hxx - hyy)).phypot(hxy);
     let (l1, l2) = (mean + radius, mean - radius);
-    let angle = 0.5 * (2.0 * hxy).atan2(hxx - hyy);
-    let (v1, v2) = ((angle.cos(), angle.sin()), (-angle.sin(), angle.cos()));
+    let angle = 0.5 * (2.0 * hxy).patan2(hxx - hyy);
+    let (v1, v2) = ((angle.pcos(), angle.psin()), (-angle.psin(), angle.pcos()));
     let (a, b) = (l2.abs().sqrt(), l1.abs().sqrt());
-    let norm = a.hypot(b);
+    let norm = a.phypot(b);
     if !(norm > 0.0 && norm.is_finite() && l1 > 0.0 && l2 < 0.0) {
         return None;
     }
@@ -1660,11 +1661,11 @@ fn past_saddle(
     let l = nearest_root(&along, 0.5 * reach)?;
     let (px, py) = ((qx + l * nx).clamp(0.0, 1.0), (qy + l * ny).clamp(0.0, 1.0));
     // Forward of where the walk was, and on the branch it chose.
-    if !(px >= x && py >= y && (px - x).hypot(py - y) > 0.0) {
+    if !(px >= x && py >= y && (px - x).phypot(py - y) > 0.0) {
         return None;
     }
-    let on =
-        tangent_at(pair, px, py).is_none_or(|(ux, uy)| (ux * ex + uy * ey).abs() >= MAX_TURN.cos());
+    let on = tangent_at(pair, px, py)
+        .is_none_or(|(ux, uy)| (ux * ex + uy * ey).abs() >= MAX_TURN.pcos());
     on.then_some((px, py))
 }
 
@@ -1706,7 +1707,7 @@ fn saddle_ahead(
 ) -> Option<f64> {
     let model = model_saddle(pair, p)?;
     let (dx, dy) = model.offset;
-    let far = dx.hypot(dy);
+    let far = dx.phypot(dy);
     if !(far > 0.0 && far <= h) || dx * tangent.0 + dy * tangent.1 <= 0.0 {
         return None;
     }
@@ -1730,8 +1731,8 @@ fn split_between(pair: &Pair, p: (f64, f64), q: (f64, f64), tolerance: f64) -> b
     };
     let (dx, dy) = model.offset;
     let c = (middle.0 + dx, middle.1 + dy);
-    let half = 0.5 * (q.0 - p.0).hypot(q.1 - p.1);
-    if dx.hypot(dy).partial_cmp(&half) != Some(std::cmp::Ordering::Less) {
+    let half = 0.5 * (q.0 - p.0).phypot(q.1 - p.1);
+    if dx.phypot(dy).partial_cmp(&half) != Some(std::cmp::Ordering::Less) {
         return false;
     }
     pair.points(c.0, c.1)
@@ -1759,7 +1760,7 @@ fn nearest_root(g: &dyn Fn(f64) -> Option<f64>, half: f64) -> Option<f64> {
 fn across_chord(pair: &Pair, p: (f64, f64), q: (f64, f64)) -> Option<(f64, f64)> {
     let (mx, my) = (0.5 * (p.0 + q.0), 0.5 * (p.1 + q.1));
     let (dx, dy) = (q.0 - p.0, q.1 - p.1);
-    let length = dx.hypot(dy);
+    let length = dx.phypot(dy);
     if !(length > 0.0 && length.is_finite()) {
         return None;
     }
@@ -1790,8 +1791,8 @@ fn crossed(pair: &Pair, p: (f64, f64), q: (f64, f64)) -> bool {
         return false;
     }
     let (dx, dy) = (-(hyy * gx - hxy * gy) / det, -(hxx * gy - hxy * gx) / det);
-    let length = (q.0 - p.0).hypot(q.1 - p.1);
-    dx.hypot(dy) <= length
+    let length = (q.0 - p.0).phypot(q.1 - p.1);
+    dx.phypot(dy) <= length
 }
 
 /// A zero of `g` between `a` and `b` (both in `[0, 1]`), by sampling and
@@ -2081,7 +2082,7 @@ fn winding(rail: &Rail, frame: &Frame, q: Vec3, d: f64) -> Option<i64> {
             continue;
         }
         let (u, w) = (flat(s0)?, flat(s1)?);
-        total += (u.0 * w.1 - u.1 * w.0).atan2(u.0 * w.0 + u.1 * w.1);
+        total += (u.0 * w.1 - u.1 * w.0).patan2(u.0 * w.0 + u.1 * w.1);
     }
     let turns = total / std::f64::consts::TAU;
     turns.is_finite().then(|| turns.round() as i64)
@@ -2134,7 +2135,7 @@ fn tube(a: &Rail, b: &Rail, tolerance: &Tolerance) -> Result<Connected, KernelEr
         if rail.at_side(0.0, false).is_none() || rail.at_side(rail.len(), false).is_none() {
             return Err(no_point());
         }
-        let turn = |u: Vec3, w: Vec3| u.cross(w).length().atan2(u.dot(w));
+        let turn = |u: Vec3, w: Vec3| u.cross(w).length().patan2(u.dot(w));
         Ok(
             match (
                 rail.tangent_side(rail.len(), true),
@@ -2398,11 +2399,11 @@ fn along_pair(
         // (`α s² = β t²` to second order); find it on a small arc.
         // A radius of about a hundred tolerances along the rails.
         let r0 = (REACH * tol / length_a.min(length_b)).clamp(1e-9, 1e-2);
-        let along = |phi: f64| pair.f(r0 * phi.cos(), r0 * phi.sin());
+        let along = |phi: f64| pair.f(r0 * phi.pcos(), r0 * phi.psin());
         match first_root(&|u| along(u * std::f64::consts::FRAC_PI_2), 0.0) {
             Some(u) => {
                 let phi = u * std::f64::consts::FRAC_PI_2;
-                (Start::Corner, Some((r0 * phi.cos(), r0 * phi.sin())))
+                (Start::Corner, Some((r0 * phi.pcos(), r0 * phi.psin())))
             }
             None => (start_fan(pair)?.0, None),
         }
@@ -2955,7 +2956,7 @@ fn ruling_turn_side(
         return None;
     }
     let sine = ua.dot(ub.cross(ud)).abs() / (sa * sb);
-    let angle = sine.min(1.0).asin();
+    let angle = sine.min(1.0).pasin();
     let length = d.length();
     (angle.is_finite() && length.is_finite()).then_some((angle, length))
 }
@@ -3370,7 +3371,7 @@ fn build(
                     // whose rulings keep their tangent plane.
                     let fitted = Surface::Nurbs(surface.clone());
                     if let (Some(n0), Some(n1)) = (fitted.normal(um, 0.0), fitted.normal(um, 1.0)) {
-                        let turn = n0.cross(n1).length().atan2(n0.dot(n1));
+                        let turn = n0.cross(n1).length().patan2(n0.dot(n1));
                         off = off.max(turn * pa.distance(pb));
                     }
                     // The true ruling's middle against the surface.
@@ -3457,7 +3458,7 @@ fn build(
                 }
                 worst = worst.max(off);
                 if let Some(stored) = fitted.normal(u, 0.5).and_then(|n| n.normalized()) {
-                    let turn = stored.cross(intended).length().atan2(stored.dot(intended));
+                    let turn = stored.cross(intended).length().patan2(stored.dot(intended));
                     let gap = turn * pa.distance(pb);
                     if gap.is_finite() {
                         rounded = rounded.max(gap);
@@ -3556,7 +3557,7 @@ fn end_turn(
             continue;
         }
         let expected = rail.tangent_side(at, before)?.cross(ud).normalized()?;
-        angle = angle.max(n.cross(expected).length().min(1.0).asin());
+        angle = angle.max(n.cross(expected).length().min(1.0).pasin());
     }
     let off = angle * d.length();
     off.is_finite().then_some(off)
@@ -3916,7 +3917,7 @@ mod tests {
                 for (v, rail, row) in [(0.0, &a, 0), (1.0, &b, 1)] {
                     let (_, du, _) = surface.derivatives(u, v);
                     let (_, tangent) = rail.at(s).unwrap();
-                    let angle = du.cross(tangent).length().atan2(du.dot(tangent));
+                    let angle = du.cross(tangent).length().patan2(du.dot(tangent));
                     // What the control points' coordinates resolve of the
                     // direction of the first control leg.
                     let (p0, p1) = (ctrl[2 * end + row], ctrl[2 * next + row]);
@@ -4086,7 +4087,7 @@ mod tests {
             let (a, first, last) = standing_rail(k, 0.0);
             let (b, _, _) = standing_rail(k, h);
             assert!(a.at(0.0).unwrap().1.normalized().is_none(), "{k}");
-            let angle = |u: Vec3, w: Vec3| u.cross(w).length().atan2(u.dot(w));
+            let angle = |u: Vec3, w: Vec3| u.cross(w).length().patan2(u.dot(w));
             assert!(
                 angle(a.tangent_side(0.0, false).unwrap(), first) < 1e-9,
                 "{k}"

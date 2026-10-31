@@ -15,6 +15,7 @@ use craft3d_geom::{Circle, Curve3, Line, NurbsCurve};
 use craft3d_kernel::developable::{Mark, Piece, Rail, RailPiece, connect};
 use craft3d_kernel::profile::{Shape, detect_profiles, open_chain};
 use craft3d_kernel::unfold::{Development, develop};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{Body, FaceId};
 use std::sync::Arc;
@@ -348,7 +349,7 @@ fn placed_frame(doc: &Document, variables: &Evaluation, feature: &Unfold) -> Res
     if !turn.is_finite() {
         return Err("angle is not finite".to_string());
     }
-    let (s, c) = turn.sin_cos();
+    let (s, c) = turn.psin_cos();
     Frame::new(at, Vec3::Z, Vec3::new(c, s, 0.0))
         .ok_or_else(|| "the placement has no axes".to_string())
 }

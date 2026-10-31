@@ -13,6 +13,7 @@
 
 use craft3d_kernel::boolean::{BooleanOp, boolean};
 use craft3d_kernel::primitives;
+use craft3d_math::Portable;
 use craft3d_math::quadrature::gauss_legendre;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_testkit::trimmed::domed_block;
@@ -171,7 +172,7 @@ fn a_sliver_ten_tolerances_thick_is_measured() {
     .unwrap();
     let dome = domed_block(&frame, 1.5, 2.0, 1.75, true).unwrap();
     let cone_volume = PI * radius * radius * height / 3.0;
-    let cone_area = PI * radius * (radius + radius.hypot(height));
+    let cone_area = PI * radius * (radius + radius.phypot(height));
 
     let made = |op: BooleanOp| {
         let body = boolean(&cone, &dome.body, op, &tol).unwrap().body;

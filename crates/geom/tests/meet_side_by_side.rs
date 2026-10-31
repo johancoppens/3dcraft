@@ -17,6 +17,7 @@
 
 use craft3d_geom::intersect::{SurfaceMeeting, bounded_marches, meet_surfaces};
 use craft3d_geom::{NurbsSurface, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Tolerance, Vec3};
 
 const SCALES: [f64; 3] = [1e-3, 1.0, 1e6];
@@ -35,7 +36,7 @@ fn skin(k: f64, lift: f64, tilt: f64) -> Surface {
         for j in 0..nv {
             let (fi, fj) = (i as f64, j as f64);
             let z = 0.8
-                * (0.6 + 0.25 * (1.7 * fi + 0.9 * fj).sin() + 0.1 * (2.3 * fj - 0.4 * fi).cos());
+                * (0.6 + 0.25 * (1.7 * fi + 0.9 * fj).psin() + 0.1 * (2.3 * fj - 0.4 * fi).pcos());
             let x = L * greville(&KNOTS_U, i);
             ctrl.push(Vec3::new(
                 x * k,
@@ -159,7 +160,7 @@ fn fine(k: f64, lift: f64, dip: f64) -> Surface {
     for i in 0..nu {
         for j in 0..nv {
             let (x, y) = (L * greville(&ku, i), W * greville(&kv, j));
-            let mut z = 0.5 + 0.2 * (1.1 * x + 0.3).sin() * (0.8 * y - 0.2).cos() + lift;
+            let mut z = 0.5 + 0.2 * (1.1 * x + 0.3).psin() * (0.8 * y - 0.2).pcos() + lift;
             if (i, j) == (7, 6) {
                 z -= dip;
             }

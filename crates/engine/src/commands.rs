@@ -4748,6 +4748,7 @@ fn render_picture(
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod loose_mesh_tests {
     use super::loose_mesh_problem;
+    use craft3d_math::Portable;
     use craft3d_math::{Tolerance, Vec3};
     use craft3d_testkit::loose::{SPLIT_TOP_SIDES, exploded_from, split_top_block};
 
@@ -4764,7 +4765,7 @@ mod loose_mesh_tests {
             let moves: Vec<Vec3> = (0..expected.faces.len())
                 .map(|f| {
                     let a = 0.7 * f as f64 + 0.3;
-                    Vec3::new(a.cos(), a.sin(), (1.3 * a).cos()) * (300.0 * tol.linear * 0.5)
+                    Vec3::new(a.pcos(), a.psin(), (1.3 * a).pcos()) * (300.0 * tol.linear * 0.5)
                 })
                 .collect();
             let loose = exploded_from(

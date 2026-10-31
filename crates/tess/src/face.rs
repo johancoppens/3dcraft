@@ -49,6 +49,7 @@ use crate::edge::{ACROSS_MARGIN, Across};
 use crate::{TessError, TessParams};
 use craft3d_geom::closure::clamped;
 use craft3d_geom::{Curve3, GeomError, Surface};
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use craft3d_topo::{Body, Face};
 use std::f64::consts::FRAC_PI_2;
@@ -1032,7 +1033,7 @@ impl Ring {
             if !(cross.is_finite() && dot.is_finite()) || (cross == 0.0 && dot == 0.0) {
                 return None;
             }
-            let angle = cross.atan2(dot);
+            let angle = cross.patan2(dot);
             Some(if angle < 0.0 {
                 angle + std::f64::consts::TAU
             } else {
@@ -2256,7 +2257,7 @@ impl Routes<'_> {
                 if p.station == q.station {
                     continue;
                 }
-                let length = (p.plane.0 - q.plane.0).hypot(p.plane.1 - q.plane.1);
+                let length = (p.plane.0 - q.plane.0).phypot(p.plane.1 - q.plane.1);
                 for (p, q) in [(p, q), (q, p)] {
                     bridges.push(Bridge {
                         from: p.station,
@@ -2953,7 +2954,7 @@ fn seed_cells(
         Surface::Plane(_) => Ok((1, 1)),
         Surface::Cylinder(c) => Ok((arc_cells(c.radius(), span_u, tolerance, params, face)?, 1)),
         Surface::Cone(c) => {
-            let slope = c.half_angle().tan();
+            let slope = c.half_angle().ptan();
             let radius = (c.radius() + low.1 * slope)
                 .abs()
                 .max((c.radius() + high.1 * slope).abs());
@@ -2963,7 +2964,7 @@ fn seed_cells(
             let widest = if low.1 <= 0.0 && high.1 >= 0.0 {
                 1.0
             } else {
-                low.1.cos().max(high.1.cos()).max(0.0)
+                low.1.pcos().max(high.1.pcos()).max(0.0)
             };
             both_ways(
                 |p| arc_cells(s.radius() * widest, span_u, half, p, face),
@@ -3550,7 +3551,7 @@ impl Work<'_> {
                     }
                     let [p, q] = pair(i);
                     let (p, q) = (self.plane(p.0), self.plane(q.0));
-                    let length = (p.0 - q.0).hypot(p.1 - q.1);
+                    let length = (p.0 - q.0).phypot(p.1 - q.1);
                     if longest.is_none_or(|(l, _)| length > l) {
                         longest = Some((length, i));
                     }
@@ -4240,7 +4241,7 @@ fn plane_distance_to_segment(p: P2, a: P2, b: P2) -> f64 {
         0.0
     };
     let t = if t.is_nan() { 0.0 } else { t };
-    (p.0 - a.0 - t * dx).hypot(p.1 - a.1 - t * dy)
+    (p.0 - a.0 - t * dx).phypot(p.1 - a.1 - t * dy)
 }
 
 /// The distance from `p` to the segment from `a` to `b`.
@@ -5090,7 +5091,7 @@ fn mesh_face_in(
             let longest = corners
                 .iter()
                 .zip(corners.iter().cycle().skip(1))
-                .map(|(p, q)| (p.0 - q.0).hypot(p.1 - q.1))
+                .map(|(p, q)| (p.0 - q.0).phypot(p.1 - q.1))
                 .fold(0.0_f64, f64::max);
             let mut flat_against: Option<(f64, Chord)> = None;
             // Failing that, the nearest chord whose bulge the triangle
@@ -5506,10 +5507,10 @@ mod tests {
     /// Nine rational quadratic control points `(x, y, w)` of the unit
     /// circle, and their knots.
     fn ring() -> (Vec<(f64, f64, f64)>, Vec<f64>) {
-        let weight = FRAC_PI_4.cos();
+        let weight = FRAC_PI_4.pcos();
         let points = (0..9)
             .map(|k| {
-                let (sin, cos) = (FRAC_PI_4 * f64::from(k)).sin_cos();
+                let (sin, cos) = (FRAC_PI_4 * f64::from(k)).psin_cos();
                 if k % 2 == 0 {
                     (cos, sin, 1.0)
                 } else {
@@ -5847,7 +5848,7 @@ mod tests {
             let t = turns * std::f64::consts::TAU * i as f64 / pieces as f64;
             let r = 3.0 + 0.05 * t / std::f64::consts::TAU;
             for z in [0.0, 3.3] {
-                ctrl.push(Vec3::new(r * t.cos(), r * t.sin(), z));
+                ctrl.push(Vec3::new(r * t.pcos(), r * t.psin(), z));
             }
         }
         let weights = vec![1.0; ctrl.len()];
@@ -5954,7 +5955,7 @@ mod tests {
         let surface = Surface::Nurbs(revolved(&[(1.0, 0.0), (1.0, 1.0)], 1));
         let param = param_of(&surface);
         let at = |deg: f64, z: f64| {
-            let (s, c) = deg.to_radians().sin_cos();
+            let (s, c) = deg.to_radians().psin_cos();
             Vec3::new(c, s, z)
         };
         let mut points: Vec<(Vec3, Chord)> = Vec::new();

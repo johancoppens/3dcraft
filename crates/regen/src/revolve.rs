@@ -7,6 +7,7 @@ use craft3d_doc::{Document, Geometry, Revolve, RevolveAxis};
 use craft3d_expr::Evaluation;
 use craft3d_kernel::KernelError;
 use craft3d_kernel::extrude::Origins;
+use craft3d_math::Portable;
 use craft3d_topo::Body;
 use std::f64::consts::TAU;
 
@@ -47,7 +48,7 @@ pub(crate) fn build(
                 ));
             };
             let direction = [b.0 - a.0, b.1 - a.1];
-            if direction[0].hypot(direction[1]) <= tolerance.linear {
+            if direction[0].phypot(direction[1]) <= tolerance.linear {
                 return Err(format!(
                     "axis: {entity} of sketch `{name}` has no length, so it gives no direction"
                 ));
@@ -64,7 +65,7 @@ pub(crate) fn build(
                 line.direction.dot(plane.y()),
                 line.direction.dot(plane.z()),
             );
-            let lean = lean.clamp(-1.0, 1.0).asin();
+            let lean = lean.clamp(-1.0, 1.0).pasin();
             if lean.is_nan() || lean.abs() > tolerance.angular {
                 return Err(format!(
                     "axis: `{made_by}` does not lie in the plane of sketch `{name}` (it makes {} deg with it); a revolution turns about a line in the sketch's plane",

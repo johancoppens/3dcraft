@@ -26,6 +26,7 @@
 use crate::view_export::View;
 use craft3d_drawing::{Path as DrawingPath, Point, Segment, Spline};
 use craft3d_geom::Curve3;
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use std::collections::BTreeMap;
 
@@ -123,9 +124,9 @@ fn to_segment3(p: Vec3, a: Vec3, b: Vec3) -> f64 {
 /// and the unit eigenvector of the larger.
 fn eigen2(a: f64, b: f64, c: f64) -> (f64, f64, Point) {
     let mean = 0.5 * (a + c);
-    let radius = (0.5 * (a - c)).hypot(b);
-    let theta = 0.5 * (2.0 * b).atan2(a - c);
-    (mean - radius, mean + radius, [theta.cos(), theta.sin()])
+    let radius = (0.5 * (a - c)).phypot(b);
+    let theta = 0.5 * (2.0 * b).patan2(a - c);
+    (mean - radius, mean + radius, [theta.pcos(), theta.psin()])
 }
 
 /// The parameters at which an edge on `curve` over `range` is cut into
@@ -280,8 +281,8 @@ fn off_ellipse(p: Point, center: Point, major: Point, ratio: f64) -> f64 {
         return f64::INFINITY;
     }
     let d = sub2(p, center);
-    let t = (dot2(d, minor) / b2).atan2(dot2(d, major) / a2);
-    let (s, c) = t.sin_cos();
+    let t = (dot2(d, minor) / b2).patan2(dot2(d, major) / a2);
+    let (s, c) = t.psin_cos();
     dist2(
         p,
         [
@@ -313,7 +314,7 @@ fn conic(view: &View, c: Vec3, u: Vec3, v: Vec3, resolution: f64) -> Option<Form
             let q = c - eye;
             let f = view.forward;
             // Every point of the whole curve in front of the eye.
-            let nearest = q.dot(f) - u.dot(f).hypot(v.dot(f));
+            let nearest = q.dot(f) - u.dot(f).phypot(v.dot(f));
             if nearest.is_nan() || nearest <= 1e-6 * q.length() {
                 return None;
             }
@@ -601,6 +602,7 @@ pub(crate) fn chain_of(points: &[Point], closed: bool, close: f64) -> Option<Dra
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
+    use craft3d_math::Portable;
 
     fn front() -> View {
         View {
@@ -641,7 +643,7 @@ mod tests {
             other => panic!("{other:?}"),
         }
         // Tilted by 30° about x: semi-axes 2 and 2 cos 30°.
-        let (s, c) = 30f64.to_radians().sin_cos();
+        let (s, c) = 30f64.to_radians().psin_cos();
         match form_of(&circle(Vec3::new(0.0, c, s), 2.0), &view, 1e-9) {
             Form::Conic { major, ratio, .. } => {
                 assert!((dist2(major, [0.0, 0.0]) - 2.0).abs() < 1e-12);
@@ -666,7 +668,7 @@ mod tests {
             perspective: Some((Vec3::new(0.5, -20.0, 1.0), 20.0)),
             near: 1.0,
         };
-        let (s, c) = 40f64.to_radians().sin_cos();
+        let (s, c) = 40f64.to_radians().psin_cos();
         let curve = circle(Vec3::new(0.3, c, s).normalized().unwrap(), 2.0);
         let Form::Conic {
             center,
@@ -696,7 +698,7 @@ mod tests {
         assert!(breaks.windows(2).all(|w| w[1] > w[0]));
         let step = breaks.windows(2).map(|w| w[1] - w[0]).fold(0.0, f64::max);
         // Sagitta r (1 − cos(Δ/2)) within the target.
-        assert!(1.0 - (0.5 * step).cos() <= 1e-4, "{step}");
+        assert!(1.0 - (0.5 * step).pcos() <= 1e-4, "{step}");
         let line = Curve3::Line(craft3d_geom::Line::new(Vec3::ZERO, Vec3::X).unwrap());
         assert_eq!(breaks_of(&line, (0.0, 3.0), 1e-9), [0.0, 3.0]);
         assert!(breaks_of(&line, (3.0, 0.0), 1e-9).is_empty());

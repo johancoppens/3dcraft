@@ -30,6 +30,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod boolean_common;
 
 use boolean_common::*;
@@ -139,14 +140,14 @@ fn reference_volume(tubes: &[Tube]) -> f64 {
         union_area(&rects)
     };
     let below = |theta: f64| {
-        let (s, c) = theta.sin_cos();
+        let (s, c) = theta.psin_cos();
         slice(BORE * s) * BORE * c
     };
     let above = |phi: f64| {
-        let (s, c) = phi.sin_cos();
+        let (s, c) = phi.psin_cos();
         slice(OUTER * s) * OUTER * c
     };
-    let top = (BORE / OUTER).asin();
+    let top = (BORE / OUTER).pasin();
     let half = std::f64::consts::FRAC_PI_2;
     2.0 * (simpson(&below, 0.0, half, 1e-10) + simpson(&above, top, half, 1e-10))
 }
@@ -295,7 +296,7 @@ fn points(tubes: &[Tube], count: usize, seed: u64) -> Vec<Vec3> {
             let across = Vec3::new(-t.axis.y, t.axis.x, 0.0);
             let along = rng.between(-1.0, LENGTH + 1.0);
             let r = rng.between(BORE - 0.4, OUTER + 0.4);
-            let (s, c) = rng.between(0.0, TAU).sin_cos();
+            let (s, c) = rng.between(0.0, TAU).psin_cos();
             t.start + t.axis * along + (across * c + up * s) * r
         })
         .collect()

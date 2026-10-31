@@ -11,6 +11,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod boolean_common;
 mod common;
 
@@ -238,14 +239,14 @@ fn prism(frame: &Frame, k: f64, points: &[[f64; 2]], height: f64) -> Body {
 /// between the faces: the kite between the two tangent lengths less the
 /// sector of the ball.
 fn section(theta: f64, r: f64) -> f64 {
-    r * r * (1.0 / (theta / 2.0).tan() - (PI - theta) / 2.0)
+    r * r * (1.0 / (theta / 2.0).ptan() - (PI - theta) / 2.0)
 }
 
 fn regular(sides: u32, circumradius: f64) -> Vec<[f64; 2]> {
     (0..sides)
         .map(|i| {
             let a = f64::from(i) * 2.0 * PI / f64::from(sides);
-            [circumradius * a.cos(), circumradius * a.sin()]
+            [circumradius * a.pcos(), circumradius * a.psin()]
         })
         .collect()
 }
@@ -266,7 +267,7 @@ fn edges_between_faces_at_sixty_and_at_a_hundred_and_twenty_degrees() {
                 // The upright edge through the first corner.
                 let edges = [round_in(&part, &frame, k, [2.0, 0.0, h / 2.0], r)];
                 let made = solve(&part, &edges, k);
-                let d = r / (theta / 2.0).tan();
+                let d = r / (theta / 2.0).ptan();
                 let volume = base * h - section(theta, r) * h;
                 let area = 2.0 * base + f64::from(sides) * side * h
                     - 2.0 * d * h
@@ -282,7 +283,7 @@ fn edges_between_faces_at_sixty_and_at_a_hundred_and_twenty_degrees() {
                 assert_close(cylinder.radius(), r * k, "radius");
                 // The axis is the radius from both faces: on the bisector,
                 // r / sin(theta / 2) from the edge.
-                let on_axis = frame.point((2.0 - r / (theta / 2.0).sin()) * k, 0.0, 0.0);
+                let on_axis = frame.point((2.0 - r / (theta / 2.0).psin()) * k, 0.0, 0.0);
                 let offset = on_axis - cylinder.frame().origin();
                 let axis = cylinder.frame().z();
                 assert!((offset - axis * offset.dot(axis)).length() < 1e-9 * k);
@@ -678,7 +679,7 @@ fn hexagon_planes(height: f64) -> Vec<(Vec3, f64)> {
     let mut planes: Vec<(Vec3, f64)> = (0..6)
         .map(|i| {
             let a = (f64::from(i) + 0.5) * PI / 3.0;
-            (Vec3::new(a.cos(), a.sin(), 0.0), 3.0_f64.sqrt())
+            (Vec3::new(a.pcos(), a.psin(), 0.0), 3.0_f64.sqrt())
         })
         .collect();
     planes.push((-Vec3::Z, 0.0));
@@ -859,11 +860,11 @@ fn seeded_random_sets_of_edges_of_random_blocks() {
 /// axis, and the area the arc sweeps (Pappus, twice). The sides leave the
 /// corner along the unit directions `b1` and `b2`.
 fn ring(rim: [f64; 2], b1: [f64; 2], b2: [f64; 2], r: f64) -> (f64, f64) {
-    let theta = (b1[0] * b2[0] + b1[1] * b2[1]).clamp(-1.0, 1.0).acos();
-    let d = r / (theta / 2.0).tan();
+    let theta = (b1[0] * b2[0] + b1[1] * b2[1]).clamp(-1.0, 1.0).pacos();
+    let d = r / (theta / 2.0).ptan();
     let t1 = [rim[0] + d * b1[0], rim[1] + d * b1[1]];
     let t2 = [rim[0] + d * b2[0], rim[1] + d * b2[1]];
-    let far = d / (1.0 + theta.cos());
+    let far = d / (1.0 + theta.pcos());
     let centre = [
         rim[0] + far * (b1[0] + b2[0]),
         rim[1] + far * (b1[1] + b2[1]),
@@ -873,10 +874,10 @@ fn ring(rim: [f64; 2], b1: [f64; 2], b2: [f64; 2], r: f64) -> (f64, f64) {
     // The sector of the ball, half of whose angle is alpha: its centroid
     // and that of its arc lie towards the corner.
     let alpha = (PI - theta) / 2.0;
-    let to_rim = (rim[0] - centre[0]) / (rim[0] - centre[0]).hypot(rim[1] - centre[1]);
-    let sector_at = centre[0] + to_rim * 2.0 * r * alpha.sin() / (3.0 * alpha);
+    let to_rim = (rim[0] - centre[0]) / (rim[0] - centre[0]).phypot(rim[1] - centre[1]);
+    let sector_at = centre[0] + to_rim * 2.0 * r * alpha.psin() / (3.0 * alpha);
     let sector = r * r * alpha * sector_at;
-    let arc_at = centre[0] + to_rim * r * alpha.sin() / alpha;
+    let arc_at = centre[0] + to_rim * r * alpha.psin() / alpha;
     (
         2.0 * PI * (kite - sector),
         2.0 * PI * arc_at * 2.0 * alpha * r,
@@ -1119,7 +1120,7 @@ fn the_base_of_a_cone() {
         let part = primitives::cone(&Frame::WORLD, rr * k, h * k).unwrap();
         let made = solve(&part, &[round(&part, k, [-rr, 0.0, 0.0], r)], k);
         // Up the slope from the rim: towards the apex.
-        let slant = rr.hypot(h);
+        let slant = rr.phypot(h);
         let (removed, _) = ring([rr, 0.0], [-1.0, 0.0], [-rr / slant, h / slant], r);
         assert_close(
             mass(&made.body).volume,
@@ -1623,7 +1624,7 @@ fn a_rim_chain_round_shallow_tangent_arcs() {
     let (curves, area, lines, turns) = rounded_polygon(&points, &[big; 6]);
     // Before 2026-10-15 the fit estimate took the far end of the shallow
     // arc as the end of the cap: below 0.27.
-    assert!(turns.iter().any(|t| big * (1.0 - t.cos()) < r));
+    assert!(turns.iter().any(|t| big * (1.0 - t.pcos()) < r));
     // The spandrel's centroid lies this far in from both faces.
     let inset = r * (10.0 - 3.0 * PI) / (12.0 - 3.0 * PI);
     let spandrel = SPANDREL * r * r;
@@ -1678,7 +1679,7 @@ fn a_rim_chain_that_ends_in_two_sharp_corners() {
             .filter(|i| !sharp.contains(i))
             .map(|i| turns[i] * (1.4 - inset))
             .sum::<f64>()
-        + sharp.iter().map(|i| inset / turns[*i].tan()).sum::<f64>();
+        + sharp.iter().map(|i| inset / turns[*i].ptan()).sum::<f64>();
     let removed = SPANDREL * r * r * path;
     for (k, by_fillet) in SCALES.into_iter().flat_map(|k| [(k, false), (k, true)]) {
         let fine = craft3d_math::Tolerance::new(1e-7 * k, 1e-9).unwrap();

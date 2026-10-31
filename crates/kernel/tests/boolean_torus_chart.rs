@@ -24,6 +24,7 @@
 // Test code: a failure in a helper is a failed test.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
+use craft3d_math::Portable;
 mod boolean_common;
 
 use boolean_common::*;
@@ -47,14 +48,14 @@ const BALL_CENTRE: [f64; 3] = [2.0, 0.0, 0.0];
 const BALL_RADIUS: f64 = 8.98;
 
 fn dimple_centre() -> [f64; 3] {
-    let (sin, cos) = DIMPLE.sin_cos();
+    let (sin, cos) = DIMPLE.psin_cos();
     [MAJOR * cos, MAJOR * sin, MINOR]
 }
 
 /// Inside the exact result: in the tube, in neither ball.
 fn exact(p: Vec3, k: f64) -> bool {
-    let radial = p.x.hypot(p.y);
-    let to_core = (radial - MAJOR * k).hypot(p.z);
+    let radial = p.x.phypot(p.y);
+    let to_core = (radial - MAJOR * k).phypot(p.z);
     let d = dimple_centre();
     let to_dimple = p.distance(Vec3::new(d[0], d[1], d[2]) * k);
     let to_ball = p.distance(Vec3::new(BALL_CENTRE[0], BALL_CENTRE[1], BALL_CENTRE[2]) * k);
@@ -64,8 +65,8 @@ fn exact(p: Vec3, k: f64) -> bool {
 /// How far `p` is from the nearest boundary surface of the exact result,
 /// so that points near one are left out of the grid.
 fn clearance(p: Vec3, k: f64) -> f64 {
-    let radial = p.x.hypot(p.y);
-    let to_core = (radial - MAJOR * k).hypot(p.z);
+    let radial = p.x.phypot(p.y);
+    let to_core = (radial - MAJOR * k).phypot(p.z);
     let d = dimple_centre();
     let to_dimple = p.distance(Vec3::new(d[0], d[1], d[2]) * k);
     let to_ball = p.distance(Vec3::new(BALL_CENTRE[0], BALL_CENTRE[1], BALL_CENTRE[2]) * k);

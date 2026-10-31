@@ -18,6 +18,7 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_math::Portable;
 mod common;
 
 use common::checked::{body, built, failed, new_document, run, session};
@@ -62,7 +63,7 @@ const AREA: f64 = 4.2;
 /// they meet (`x(t*) = d/2`), `∫ (d − 2x) y' dt`, a quartic integrated
 /// exactly by three Gauss points.
 fn lens(d: f64) -> f64 {
-    let x = |t: f64| 3.0 * t + 3.0 * t * t - 2.0 * t.powi(3);
+    let x = |t: f64| 3.0 * t + 3.0 * t * t - 2.0 * t.ppowi(3);
     let dx = |t: f64| 3.0 + 6.0 * t - 6.0 * t * t;
     let mut t = 0.1;
     for _ in 0..60 {
@@ -152,7 +153,7 @@ fn humps_moved_into_each_other_share_the_lens_between_their_curves() {
 fn the_lens_is_what_the_curves_give() {
     // The oracle itself, against a sum of thin strips across y.
     let d = 0.5;
-    let x = |t: f64| 3.0 * t + 3.0 * t * t - 2.0 * t.powi(3);
+    let x = |t: f64| 3.0 * t + 3.0 * t * t - 2.0 * t.ppowi(3);
     let y = |t: f64| 6.0 * t * (1.0 - t);
     let n = 200_000;
     let mut area = 0.0;

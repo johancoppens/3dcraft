@@ -5,6 +5,7 @@
 // Test code: a failure in a helper is a failed test.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
+use craft3d_math::Portable;
 mod boolean_common;
 
 use boolean_common::*;
@@ -443,13 +444,13 @@ fn a_cylinder_and_a_box() {
         // A segment: a chord at half the radius. Area of the circular
         // segment with half-angle a = acos(1/2): a - sin a cos a.
         let side = boxed(k, [0.5, -3.0, -1.0], [3.0, 3.0, 5.0]);
-        let a = (0.5_f64).acos();
-        let segment = a - a.sin() * a.cos();
+        let a = (0.5_f64).pacos();
+        let segment = a - a.psin() * a.pcos();
         let s = solve(&post, &side, Intersect, k);
         assert_mass(
             &s,
             segment * h,
-            2.0 * segment + 2.0 * a * h + 2.0 * a.sin() * h,
+            2.0 * segment + 2.0 * a * h + 2.0 * a.psin() * h,
             k,
         );
         // A box that pokes into the side of the cylinder without reaching
@@ -458,7 +459,7 @@ fn a_cylinder_and_a_box() {
         let dented = solve(&post, &poke, Subtract, k);
         let chord = |y: f64| (1.0 - y * y).sqrt();
         // Cross-section of the dent: ∫ (sqrt(1 - y²) - 0.5) dy over ±0.25.
-        let cap = |y: f64| 0.5 * (y * chord(y) + y.asin());
+        let cap = |y: f64| 0.5 * (y * chord(y) + y.pasin());
         let dent = 2.0 * (cap(0.25) - 0.5 * 0.25);
         let m = mass(&dented.body);
         assert_close(m.volume, (PI * h - dent) * k * k * k, "volume");
@@ -473,8 +474,8 @@ fn cylinders_with_parallel_axes() {
         // circular segments with half-angle acos(1/2).
         let a = rod(k, [0.0, 0.0, 0.0], 1.0, 2.0);
         let b = rod(k, [1.0, 0.0, 0.0], 1.0, 2.0);
-        let half = (0.5_f64).acos();
-        let lens = 2.0 * (half - half.sin() * half.cos());
+        let half = (0.5_f64).pacos();
+        let lens = 2.0 * (half - half.psin() * half.pcos());
         let common = solve(&a, &b, Intersect, k);
         assert_mass(&common, lens * 2.0, 2.0 * lens + 4.0 * half * 2.0, k);
         // Four corners and the two vertices of A's circles (at angle 0,
@@ -530,14 +531,14 @@ fn an_oblique_cut_of_a_cylinder() {
         let tilt = 0.6_f64;
         let frame = Frame::new(
             Vec3::new(0.0, 0.0, 2.0 * k),
-            Vec3::new(tilt.sin(), 0.0, tilt.cos()),
+            Vec3::new(tilt.psin(), 0.0, tilt.pcos()),
             Vec3::Y,
         )
         .unwrap();
         let corner = frame.at(frame.point(-10.0 * k, -10.0 * k, 0.0)).unwrap();
         let above = primitives::block(&corner, 20.0 * k, 20.0 * k, 20.0 * k).unwrap();
         let cut = solve(&post, &above, Subtract, k);
-        let ellipse = PI * r * r / tilt.cos();
+        let ellipse = PI * r * r / tilt.pcos();
         assert_mass(&cut, PI * 2.0, PI + 2.0 * PI * 2.0 + ellipse, k);
         assert_eq!(counts(&cut), (2, 2, 3, 1));
         assert!(

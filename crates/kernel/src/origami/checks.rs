@@ -14,6 +14,7 @@
 //! never say that a pattern folds flat.
 
 use super::{Arrangement, CreaseKind, P2, sub};
+use craft3d_math::Portable;
 use std::f64::consts::{PI, TAU};
 
 /// The two conditions at one interior vertex.
@@ -68,7 +69,7 @@ pub fn vertex_checks(arr: &Arrangement, angular: f64) -> (Vec<VertexCheck>, Vec<
             .filter_map(|&h| {
                 let head = arr.point(arr.head(h)?)?;
                 let d = sub(head, at);
-                Some(d[1].atan2(d[0]))
+                Some(d[1].patan2(d[0]))
             })
             .collect();
         let n = angles.len();

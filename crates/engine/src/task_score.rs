@@ -18,6 +18,7 @@
 
 use crate::{CommandError, Session, Workspace};
 use craft3d_expr::{Dimension, Quantity, Unit, VariableTable};
+use craft3d_math::Portable;
 use serde_json::{Map, Value, json};
 
 /// The format tag a task file carries.
@@ -372,7 +373,7 @@ fn expected_values(
                 .evaluate(source)
                 .map_err(|err| task_error(format!("{} `{source}`: {err}", e.name)))?;
             if q.dimension.is_dimensionless() && want.angle == 0 && want.length > 0 {
-                return Ok(q.value * units.factor().powi(want.length));
+                return Ok(q.value * units.factor().ppowi(want.length));
             }
             if q.dimension != want {
                 return Err(task_error(format!(
@@ -447,9 +448,9 @@ fn measure(inspect: &Value) -> Measured {
         });
     counts.insert("threads".into(), threads.into());
     for body in bodies {
-        let v = body.get("volume").and_then(number).unwrap_or(0.0) * factor.powi(3);
+        let v = body.get("volume").and_then(number).unwrap_or(0.0) * factor.ppowi(3);
         volume += v;
-        area += body.get("area").and_then(number).unwrap_or(0.0) * factor.powi(2);
+        area += body.get("area").and_then(number).unwrap_or(0.0) * factor.ppowi(2);
         if let Some(c) = triple(body.get("centroid")) {
             for (m, c) in moment.iter_mut().zip(c) {
                 *m += v * c * factor;
