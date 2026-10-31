@@ -1124,7 +1124,7 @@ where
             }
             least = least.min(edge_from(edge, foot));
         }
-        let rounding = 1e-13 * (foot.length() + least.min(1e300) + 1.0);
+        let rounding = 4e-15 * (foot.length() + least.min(1e300) + 1.0);
         let floor = if least.is_finite() {
             (least - prim.tolerant - rounding).max(0.0)
         } else {
