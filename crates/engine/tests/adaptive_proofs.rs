@@ -336,14 +336,14 @@ fn a_countersunk_plate_is_proven_to_its_wall_at_three_scales() {
     }
 }
 
-/// A block whose top is a spline valley, `y = 10 + x² / 50` over x from
-/// −20 to 20, extruded 30 along z: 10 thick at the valley's floor (a
-/// spline face with a plane and with itself). At 1e-3 the formula curve
-/// does not come out as drawn (a sliver 4e-9 thick), so the smallest
-/// scale here is 1e-2 (docs/design/verification.md › *Open*).
+/// A block whose top is a spline hump, `y = 18 − x² / 50` over x from
+/// −20 to 20, extruded 30 along z: 10 thick where the hump meets the
+/// sides (a spline face with a plane, with the sides at obtuse edges, and
+/// with itself). A valley would meet upright sides at acute edges, where
+/// the thickness tends to 0.
 #[test]
-fn a_spline_valley_is_proven_to_its_floor_at_three_scales() {
-    for k in [1e-2, 1.0, 1e3] {
+fn a_spline_hump_is_proven_to_its_thinnest_at_three_scales() {
+    for k in [1e-3, 1.0, 1e3] {
         let mm = |x: f64| format!("{} mm", x * k);
         let mut s = new_at(k);
         run(
@@ -354,7 +354,7 @@ fn a_spline_valley_is_proven_to_its_floor_at_three_scales() {
         run(
             &mut s,
             "sketch.curve",
-            json!({"sketch": "Profile", "x": format!("{} * (1 - 2 * t)", mm(20.0)), "y": format!("{} + {} * (1 - 2 * t)^2", mm(10.0), mm(8.0)), "t": [0, 1]}),
+            json!({"sketch": "Profile", "x": format!("{} * (1 - 2 * t)", mm(20.0)), "y": format!("{} - {} * (1 - 2 * t)^2", mm(18.0), mm(8.0)), "t": [0, 1]}),
         );
         run(
             &mut s,
@@ -364,9 +364,9 @@ fn a_spline_valley_is_proven_to_its_floor_at_three_scales() {
         run(
             &mut s,
             "feature.extrude",
-            json!({"sketch": "Profile", "distance": mm(30.0), "symmetric": true, "name": "Valley"}),
+            json!({"sketch": "Profile", "distance": mm(30.0), "symmetric": true, "name": "Hump"}),
         );
-        thickness_is(&mut s, "Valley", 10.0 * k, &format!("spline valley at {k}"));
+        thickness_is(&mut s, "Hump", 10.0 * k, &format!("spline hump at {k}"));
     }
 }
 
