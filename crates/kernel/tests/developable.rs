@@ -752,6 +752,50 @@ fn a_fan_that_lands_where_the_other_branch_turns_back_is_followed_by_a_second() 
     }
 }
 
+/// The fan along that follows a fan landed on a branch that already
+/// turns back does not hang on the rounding of the condition where it
+/// starts (2026-10-31: the walk's first step from the landing point
+/// stepped over the whole dip, and the search for where the zero set
+/// comes back to the fan's line started on that point, a zero of the
+/// condition whose rounded value, of either sign, decided the fan: with a
+/// sine that differed in its last bit the fan ended off the zero set and
+/// the sheet was refused, on macOS and hosted Linux, and everywhere once
+/// the maths was made portable). [`a_fan_that_lands_where_the_other_branch_turns_back_is_followed_by_a_second`]
+/// at scale 1 with A's bend changed by a few parts in 1e13 (each a
+/// different rounding of the same rails): the same faces, and the second
+/// fan ends on the same ruling within the tolerance.
+#[test]
+fn a_fan_along_from_where_a_fan_landed_does_not_hang_on_rounding() {
+    let k = 1.0;
+    let mut ends: Vec<(f64, Vec3)> = Vec::new();
+    for j in [-3.0, -2.0, -1.0, 1.0, 2.0, 3.0] {
+        let alpha = 2.0 + j * 1e-13;
+        let (a, b) = passing(k, 1.01, alpha, 0.8);
+        let made = connect(&a, &b, &tol(k)).unwrap_or_else(|e| panic!("{alpha}: {e}"));
+        assert_eq!(
+            made.faces,
+            vec![
+                Piece::StartFan,
+                Piece::Rulings,
+                Piece::Fan(Mark::FoldFromEnd(1)),
+                Piece::Fan(Mark::FoldFromEnd(0)),
+                Piece::Last,
+                Piece::EndFan,
+            ],
+            "{alpha}"
+        );
+        check_rulings(&made, &a, &b);
+        ends.push((alpha, made.body.faces[3].surface.eval(1.0, 1.0)));
+    }
+    let (_, first) = ends[0];
+    for (alpha, end) in &ends {
+        assert!(
+            end.distance(first) <= 1e-6 * k,
+            "{alpha}: {end:?} against {first:?}"
+        );
+    }
+}
+
 /// A fold at the middle of the sheet keeps its name under edits that do
 /// not move it (review of 2026-10-29: a fold was counted from the start
 /// below the sheet's middle and from the end at or above it, so on rails

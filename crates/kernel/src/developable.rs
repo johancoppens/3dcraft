@@ -616,13 +616,15 @@ impl Path {
 }
 
 /// A fold of the zero set the walk is going round: where it turned (the
-/// last point of the path), whether `t` falls there (else `s`), and the
-/// bridge across, if there is one (below).
+/// last point of the path), whether `t` falls there (else `s`), the
+/// bridge across, if there is one (below), and whether it starts where a
+/// fan landed (else where the zero set turned).
 #[derive(Clone, Copy, Debug)]
 struct Fold {
     at: (f64, f64),
     falls_t: bool,
     bridge: Option<(f64, f64)>,
+    landed: bool,
 }
 
 impl Fold {
@@ -630,6 +632,29 @@ impl Fold {
     /// where the zero set turned.
     fn level(&self) -> f64 {
         if self.falls_t { self.at.1 } else { self.at.0 }
+    }
+
+    /// The sign of `f` on the fan's line (`t` = [`Fold::level`] when `t`
+    /// falls, else `s`) just past where the fold starts, forward in the
+    /// other parameter. The fold starts on a zero of `f` on that line, so
+    /// `f`'s value there is rounding, of either sign, and says nothing:
+    /// a search for where the zero set comes back to the line that starts
+    /// there needs the sign beside it. That is the sign of the first
+    /// derivative of `f` along the line that does not vanish there: the
+    /// first where the fold starts at a fan's end (a simple zero of the
+    /// line: the fan landed on a branch that crosses it), the second where
+    /// the zero set turned (tangent to the line there: a double zero).
+    /// `None` when that derivative vanishes or cannot be taken.
+    fn sign_past_start(&self, pair: &Pair) -> Option<f64> {
+        let (x, y) = self.at;
+        let d = if self.landed {
+            let (gx, gy) = pair.gradient(x, y)?;
+            if self.falls_t { gx } else { gy }
+        } else {
+            let [fxx, _, fyy] = hessian(pair, x, y)?;
+            if self.falls_t { fxx } else { fyy }
+        };
+        (d != 0.0 && d.is_finite()).then_some(d)
     }
 }
 
@@ -783,11 +808,17 @@ fn trace(
             // point kept and this one (the walk notices the turn a step
             // after it), and kept in place of this one.
             let falls_t = ty < BACK;
+            let landed = path
+                .points
+                .len()
+                .checked_sub(1)
+                .is_some_and(|k| path.fixed(k));
             let at = fold_start(pair, &mut path, (x, y), falls_t);
             fold = Some(Fold {
                 at,
                 falls_t,
                 bridge: bridge(pair, at, falls_t, tolerance),
+                landed,
             });
         }
         // The direction to step in: forward in what must go forward (both
@@ -986,16 +1017,32 @@ fn trace(
             if back {
                 // Back at the fan's parameter: the fan along ends where
                 // the zero set crosses it; the one that covers less of its
-                // rail is taken, this one or the bridge across.
+                // rail is taken, this one or the bridge across. A step
+                // that came back from where the fold starts (the walk
+                // stepped over the whole dip) searches the line from that
+                // zero of `f`, with the sign beside it from its
+                // derivatives, not from its rounded value
+                // ([`Fold::sign_past_start`]; 2026-10-31: a last-bit
+                // change of a sine made that value's sign, and with it
+                // the fan, flip).
+                let past_start = if (x, y) == f.at {
+                    f.sign_past_start(pair)
+                } else {
+                    None
+                };
+                let along_line = |g: &dyn Fn(f64) -> Option<f64>, a: f64, b: f64| match past_start {
+                    Some(sign) => root_between_from(g, a, sign, b),
+                    None => root_between(g, a, b),
+                };
                 let end = if f.falls_t {
                     (
-                        root_between(&|u| pair.f(u, level), x, qx).unwrap_or(qx),
+                        along_line(&|u| pair.f(u, level), x, qx).unwrap_or(qx),
                         level,
                     )
                 } else {
                     (
                         level,
-                        root_between(&|v| pair.f(level, v), y, qy).unwrap_or(qy),
+                        along_line(&|v| pair.f(level, v), y, qy).unwrap_or(qy),
                     )
                 };
                 let along = if f.falls_t {
@@ -1801,11 +1848,22 @@ fn root_between(g: &dyn Fn(f64) -> Option<f64>, a: f64, b: f64) -> Option<f64> {
     if b <= a {
         return None;
     }
-    let samples = 16;
-    let mut before = (a, g(a)?);
-    if before.1 == 0.0 {
+    let value = g(a)?;
+    if value == 0.0 {
         return Some(a);
     }
+    root_between_from(g, a, value, b)
+}
+
+/// [`root_between`] with the value of `g` at `a` given (only its sign is
+/// used): from a zero of `g` at `a`, the next one, with `at_a` the sign
+/// of `g` just past `a`.
+fn root_between_from(g: &dyn Fn(f64) -> Option<f64>, a: f64, at_a: f64, b: f64) -> Option<f64> {
+    if b <= a || at_a == 0.0 || at_a.is_nan() {
+        return None;
+    }
+    let samples = 16;
+    let mut before = (a, at_a);
     for k in 1..=samples {
         let x = a + (b - a) * k as f64 / samples as f64;
         let value = g(x)?;
