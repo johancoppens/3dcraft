@@ -498,24 +498,13 @@ fn a_document_in_memory_is_not_recent() {
 }
 
 /// Assertions of the published examples that 3DCraft cannot prove today
-/// though they hold, as (example, assertion). Each is reported notProven,
-/// never failed: the clearance measure's lower bound is the mesh's
-/// distance less what the mesh can be off by, and the mesh's chordal
-/// tolerance is relative to the body's size (`verify::mesh_of`, size
-/// times 1e-3), so on the planetary ring (spline tooth flanks) a 0.047 mm
-/// gap is only proven above 0.020 mm, below the 0.3 jn = 0.028 mm the
-/// assertion asks. What still pins it: the value found is a distance
-/// between two points on the faces, so the upper bound holds; the example's
-/// own overlap assertion proves the gears do not touch; the backlash itself
-/// comes from the Jig's closed-form tooth thickness. The Jigs repository's
-/// check of the same assembly (scripts/asm.py) counts notProven as a
-/// warning, as check-range does. The published file stays that
-/// repository's file, unchanged. A regression guard, not a proof: when the
-/// measure proves it, this entry goes.
-const MAY_BE_NOT_PROVEN: &[(&str, &str)] = &[(
-    "asm-planetary",
-    "Planet 1 and the ring mesh with the backlash (0.3 to 0.7 jn)",
-)];
+/// though they hold, as (example, assertion): each must be reported
+/// notProven, never failed, with the value found within its bounds, and
+/// leaves this list once it is proven. None now: the planetary gearbox's
+/// "Planet 1 and the ring mesh with the backlash" was here until the
+/// proven distance learned the flat end faces of gears in mesh
+/// (docs/design/verification.md, 2026-10-31).
+const MAY_BE_NOT_PROVEN: &[(&str, &str)] = &[];
 
 #[test]
 fn every_example_builds_in_a_new_document_and_passes_its_assertions() {
