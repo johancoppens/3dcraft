@@ -169,11 +169,12 @@ mod tests {
     use super::*;
 
     fn frame(ctx: &egui::Context, fonts: &mut UiFonts) {
-        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
             fonts.update(ui);
             ui.heading("Export");
             ui.label("text");
         });
+        out.textures_delta.clear();
     }
 
     #[test]
