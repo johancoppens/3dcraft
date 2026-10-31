@@ -899,12 +899,12 @@ fn a_given_camera_is_the_one_the_picture_is_seen_from() {
     assert_eq!(away.extent(), (0, 0));
     for (params, reason) in [
         (
-            json!({"view": "top", "camera": {"eye": [0, 0, 100], "target": [0, 0, 0]}}),
+            json!({"view": "top", "camera": {"eye": [0, 0, 100], "target": [0, 0, 0], "up": [1, 0, 0]}}),
             "give one or the other",
         ),
         (json!({"camera": {"target": [0, 0, 0]}}), "needs `eye`"),
         (
-            json!({"camera": {"eye": [0, 0, 1], "target": [0, 0, 0], "fovY": 200}}),
+            json!({"camera": {"eye": [0, 0, 1], "target": [0, 0, 0], "up": [1, 0, 0], "fovY": 200}}),
             "between 0 and 180",
         ),
         (json!({"camera": "top"}), "camera"),
