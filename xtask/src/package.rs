@@ -310,13 +310,14 @@ fn set_mode(_path: &Path, _executable: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// The built-in fonts and their licences (`cargo xtask fonts` fetches
+/// The built-in fonts, the interface's font (Inter) and their licences
+/// (`cargo xtask fonts` fetches
 /// them first, pinned by SHA-256), copied into `dir`: where the program
 /// looks for them beside itself (docs/design/text.md).
 pub(crate) fn copy_fonts(dir: &Path) -> Result<(), String> {
     crate::fonts::run()?;
     let from = crate::fonts::dir();
-    for font in craft3d_font::BUILTIN {
+    for font in craft3d_font::shipped() {
         for file in [font.file, font.licence] {
             copy(&from.join(file), &dir.join(file), false)?;
         }

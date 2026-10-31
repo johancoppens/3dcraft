@@ -10,6 +10,12 @@
 
 use std::collections::BTreeSet;
 
+/// Whether `name` is the interface's own font (Inter, fetched at start-up
+/// for the shell: `craft3d_ui_egui::fonts`), which no text uses.
+pub fn is_interface_font(name: &str) -> bool {
+    name == craft3d_ui_egui::fonts::TEXT
+}
+
 /// Which built-in fonts were asked for already.
 #[derive(Debug, Default)]
 pub struct FontFetches {

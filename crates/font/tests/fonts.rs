@@ -267,3 +267,21 @@ fn the_stroke_font_is_open_strokes() {
     assert!(o.contours.iter().all(|c| c.closed));
     let _: &[Seg] = &o.contours[0].segs;
 }
+
+#[test]
+fn the_interface_font_is_shipped_but_no_text_can_name_it() {
+    let inter = craft3d_font::shipped_font("inter").unwrap();
+    assert!(craft3d_font::builtin("inter").is_none());
+    assert_eq!(
+        craft3d_font::shipped().count(),
+        craft3d_font::BUILTIN.len() + 1
+    );
+    // No interface font shares a name with a built-in one.
+    for f in craft3d_font::UI_FONTS {
+        assert!(craft3d_font::builtin(f.name).is_none(), "{}", f.name);
+    }
+    let bytes = font_bytes(inter.file);
+    let f = FontFile::parse(&bytes).unwrap();
+    assert_eq!(f.info().family, "Inter Variable");
+    assert_eq!(f.info().outlines, OutlineKind::Quadratic);
+}

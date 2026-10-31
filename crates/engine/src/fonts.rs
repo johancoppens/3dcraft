@@ -15,6 +15,9 @@
 //! not here yet fails with a message that says it is being fetched, and
 //! the font is listed by [`wanted`]; the page fetches `fonts/<file>` and
 //! hands it to [`register`], and the command is run again.
+//!
+//! The interface's own font (`craft3d_font::UI_FONTS`, Inter) is found
+//! and fetched the same way, by [`load`], but a text cannot name it.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -40,7 +43,8 @@ fn checked(font: &'static craft3d_font::BuiltinFont, bytes: &[u8]) -> Result<Arc
 /// Hands the bytes of built-in font `name` over (the web page, once it
 /// fetched them); checked against the pinned SHA-256.
 pub fn register(name: &str, bytes: &[u8]) -> Result<(), String> {
-    let font = craft3d_font::builtin(name).ok_or_else(|| format!("no built-in font `{name}`"))?;
+    let font =
+        craft3d_font::shipped_font(name).ok_or_else(|| format!("no built-in font `{name}`"))?;
     let bytes = checked(font, bytes)?;
     LOADED
         .lock()
@@ -57,8 +61,7 @@ pub fn register(name: &str, bytes: &[u8]) -> Result<(), String> {
 /// (for the web page to fetch `fonts/<file>`).
 pub fn wanted() -> Vec<(&'static str, &'static str)> {
     let wanted = WANTED.lock().unwrap_or_else(PoisonError::into_inner);
-    craft3d_font::BUILTIN
-        .iter()
+    craft3d_font::shipped()
         .filter(|f| wanted.contains(f.name))
         .map(|f| (f.name, f.file))
         .collect()
@@ -95,9 +98,18 @@ fn places() -> Vec<std::path::PathBuf> {
     out
 }
 
-/// The bytes of built-in font `name`.
+/// The bytes of shipped font `name` (built-in or the interface's), for
+/// the interface: read from where the fonts are installed, or in the
+/// browser listed by [`wanted`] for the page to fetch (an `Err` until it
+/// is here).
+pub fn load(name: &str) -> Result<Arc<[u8]>, String> {
+    bytes(name)
+}
+
+/// The bytes of shipped font `name`.
 pub(crate) fn bytes(name: &str) -> Result<Arc<[u8]>, String> {
-    let font = craft3d_font::builtin(name).ok_or_else(|| format!("no built-in font `{name}`"))?;
+    let font =
+        craft3d_font::shipped_font(name).ok_or_else(|| format!("no built-in font `{name}`"))?;
     if let Some(found) = LOADED
         .lock()
         .unwrap_or_else(PoisonError::into_inner)

@@ -985,6 +985,18 @@ impl Review {
                 out.push_str(&format!("  Noted: {}\n", e.noted.join(", ")));
             }
         }
+        out.push_str("\nBundled fonts (SIL Open Font Licence 1.1)\n------------------------------------------\n\n");
+        out.push_str(
+            "The programs carry these font files in fonts/ (the web page fetches\n\
+             them from fonts/ beside it), each under the SIL Open Font Licence 1.1\n\
+             with its copyright and licence text in the file named beside it:\n\n",
+        );
+        for font in craft3d_font::shipped() {
+            out.push_str(&format!(
+                "  fonts/{}  (licence: fonts/{}; from {})\n",
+                font.file, font.licence, font.url
+            ));
+        }
         out.push_str("\nBundled examples (CC BY 4.0)\n----------------------------\n\n");
         out.push_str(
             "The desktop programs carry built in, and the web page fetches from\n\
@@ -1248,6 +1260,18 @@ mod tests {
         assert!(text.contains("\nBundled examples (CC BY 4.0)\n"));
         assert!(text.contains("planetary-gearbox.3dcraftasm"));
         assert!(text.contains("creativecommons.org/licenses/by/4.0"));
+        // The font files beside the programs, the interface's Inter too.
+        assert!(text.contains("\nBundled fonts (SIL Open Font Licence 1.1)\n"));
+        for font in [
+            "NotoSans-Regular.otf",
+            "JetBrainsMono-Regular.ttf",
+            "InterVariable.ttf",
+        ] {
+            assert!(
+                text.contains(&format!("fonts/{font}")),
+                "{font} is not named"
+            );
+        }
         // self_cell (Apache-2.0 OR GPL-2.0-only) says what it is used under.
         if let Some(e) = review.entries.iter().find(|e| e.krate.name == "self_cell") {
             assert_eq!(e.used_under.as_deref(), Some("Apache-2.0"));

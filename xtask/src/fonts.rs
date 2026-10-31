@@ -1,5 +1,6 @@
-//! `cargo xtask fonts`: fetches the built-in fonts and their licences
-//! (`craft3d_font::BUILTIN`, each pinned to a URL and a SHA-256) into
+//! `cargo xtask fonts`: fetches the built-in fonts, the interface's font
+//! and their licences (`craft3d_font::shipped`, each pinned to a URL and a
+//! SHA-256) into
 //! `$CRAFT3D_FONTS`, or `assets/fonts/` of the repository when that is not
 //! set. A file that is there with the right sum is kept; one with another
 //! sum is fetched again. Font files are never committed (AGENTS.md): this
@@ -54,7 +55,7 @@ fn fetch(dir: &Path, file: &str, url: &str, sha256: &str) -> Result<(), String> 
 pub(crate) fn run() -> Result<(), String> {
     let dir = dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
-    for font in craft3d_font::BUILTIN {
+    for font in craft3d_font::shipped() {
         fetch(&dir, font.file, font.url, font.sha256)?;
         fetch(&dir, font.licence, font.licence_url, font.licence_sha256)?;
     }

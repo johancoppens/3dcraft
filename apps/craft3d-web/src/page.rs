@@ -1002,6 +1002,14 @@ impl Page {
         let news: Vec<(String, Result<(), String>)> =
             self.font_news.borrow_mut().drain(..).collect();
         for (name, outcome) in news {
+            // The interface's font is no text's: when it does not come,
+            // egui's own font stays, unsaid and not fetched again.
+            if crate::fonts::is_interface_font(&name) {
+                if let Err(why) = outcome {
+                    log::warn!("the interface font {name} could not be fetched: {why}");
+                }
+                continue;
+            }
             if outcome.is_err() {
                 self.fonts.failed(&name);
             }

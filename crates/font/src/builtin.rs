@@ -50,7 +50,32 @@ pub const BUILTIN: &[BuiltinFont] = &[
     },
 ];
 
-/// The built-in font called `name`.
+/// The fonts of the user interface, which a text in a model cannot name:
+/// Inter (variable: its weight axis gives the regular and the medium
+/// weight), under the SIL Open Font Licence 1.1, pinned to a release. The
+/// interface's monospace font is the built-in `mono`.
+pub const UI_FONTS: &[BuiltinFont] = &[BuiltinFont {
+    name: "inter",
+    file: "InterVariable.ttf",
+    url: "https://raw.githubusercontent.com/rsms/inter/v4.1/docs/font-files/InterVariable.ttf",
+    sha256: "4989b125924991b90d05b2d16e0e388c48f7d5bb8b30539bbf9c755278d0ccaf",
+    licence: "Inter-OFL.txt",
+    licence_url: "https://raw.githubusercontent.com/rsms/inter/v4.1/LICENSE.txt",
+    licence_sha256: "262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a",
+}];
+
+/// The built-in font called `name` (one a text may use).
 pub fn builtin(name: &str) -> Option<&'static BuiltinFont> {
     BUILTIN.iter().find(|f| f.name == name)
+}
+
+/// Every font file the programs carry: the built-in fonts, then the
+/// interface's.
+pub fn shipped() -> impl Iterator<Item = &'static BuiltinFont> {
+    BUILTIN.iter().chain(UI_FONTS.iter())
+}
+
+/// The shipped font called `name`, built-in or the interface's.
+pub fn shipped_font(name: &str) -> Option<&'static BuiltinFont> {
+    shipped().find(|f| f.name == name)
 }

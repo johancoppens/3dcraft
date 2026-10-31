@@ -748,6 +748,9 @@ pub struct Shell {
     /// The box the camera was last fitted to automatically.
     framed: Bbox3,
     themed: bool,
+    /// The interface's fonts: Inter and JetBrains Mono once they are here
+    /// (`crate::fonts`).
+    fonts: crate::fonts::UiFonts,
     quit: bool,
     /// The application was asked to stop without saving (`ui.quit`, or
     /// `ui.quit {save: "discard"}`): the autosaves go too.
@@ -1156,6 +1159,7 @@ impl Shell {
             section_lost: None,
             framed: Bbox3::EMPTY,
             themed: false,
+            fonts: crate::fonts::UiFonts::default(),
             quit: false,
             quit_discards: false,
             quitting: None,
@@ -2194,8 +2198,10 @@ impl Shell {
     fn ui_with(&mut self, ui: &mut egui::Ui, mut session: Option<&mut Session>) {
         if !self.themed {
             self.tokens.apply(ui.ctx());
+            ui.ctx().all_styles_mut(crate::fonts::style_headings);
             self.themed = true;
         }
+        self.fonts.update(ui.ctx());
         self.player_shown_last = std::mem::take(&mut self.player_shown);
         // A finger was seen: touch sizes from now on, at any width.
         if ui.input(egui::InputState::any_touches) {

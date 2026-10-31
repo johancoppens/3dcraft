@@ -24,7 +24,7 @@ mod layout;
 mod stroke;
 
 pub use bezier::{Contour, P2, Seg};
-pub use builtin::{BUILTIN, BuiltinFont, STROKE, builtin};
+pub use builtin::{BUILTIN, BuiltinFont, STROKE, UI_FONTS, builtin, shipped, shipped_font};
 pub use face::{Embedding, FontFile, FontInfo, OutlineKind};
 pub use fill::{MAX_FILL_SEGMENTS, fill_nonzero};
 pub use layout::{Align, Layout, LayoutOptions, Metrics, Placed, advance_width, layout};
