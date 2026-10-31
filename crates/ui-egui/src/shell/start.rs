@@ -29,12 +29,16 @@ pub enum ExampleSection {
     Jigs,
     /// Packed assemblies, opened ready to play.
     Assemblies,
+    /// Showcase parts built by their scripts: class-A surfaces with their
+    /// proofs (the fuel tank, 2026-10-31).
+    Showcase,
 }
 
 impl ExampleSection {
     /// Every section, in the start screen's order.
-    pub const ALL: [ExampleSection; 3] = [
+    pub const ALL: [ExampleSection; 4] = [
         ExampleSection::Parts,
+        ExampleSection::Showcase,
         ExampleSection::Jigs,
         ExampleSection::Assemblies,
     ];
@@ -44,6 +48,7 @@ impl ExampleSection {
             ExampleSection::Parts => "Parts",
             ExampleSection::Jigs => "Jigs",
             ExampleSection::Assemblies => "Assemblies",
+            ExampleSection::Showcase => "Showcase",
         }
     }
 
@@ -53,6 +58,7 @@ impl ExampleSection {
             ExampleSection::Parts => "parts",
             ExampleSection::Jigs => "jigs",
             ExampleSection::Assemblies => "assemblies",
+            ExampleSection::Showcase => "showcase",
         }
     }
 }
@@ -138,11 +144,14 @@ pub struct Example {
 
 macro_rules! example {
     ($id:literal, $title:literal, $summary:literal) => {
+        example!(ExampleSection::Parts, $id, $title, $summary)
+    };
+    ($section:expr, $id:literal, $title:literal, $summary:literal) => {
         Example {
             id: $id,
             title: $title,
             summary: $summary,
-            section: ExampleSection::Parts,
+            section: $section,
             source: Source::Script(include_str!(concat!(
                 "../../../../docs/examples/",
                 $id,
@@ -177,7 +186,7 @@ macro_rules! published {
 
 /// The start screen's examples, section by section: ten of the guide's
 /// parts, then the published Jigs and assemblies.
-pub const EXAMPLES: [Example; 16] = [
+pub const EXAMPLES: [Example; 17] = [
     example!("bracket", "L-bracket", "extrude, fillet, holes"),
     example!("nameplate", "Name plate", "text, fillet, materials"),
     example!("clamp", "Clamp block", "fillet, bore, chamfer"),
@@ -188,6 +197,12 @@ pub const EXAMPLES: [Example; 16] = [
     example!("case", "Shelled case", "fillet, shell"),
     example!("spring", "Coil spring", "sweep along a helix"),
     example!("gear", "Involute gear", "curves from formulas, pattern"),
+    example!(
+        ExampleSection::Showcase,
+        "tank",
+        "Fuel tank",
+        "class-A surfaces, G2 seams, litres"
+    ),
     published!(
         ExampleSection::Jigs,
         "jig-planetary",

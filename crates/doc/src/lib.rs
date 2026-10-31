@@ -841,16 +841,26 @@ pub enum BooleanOp {
     Subtract,
     /// What is in both bodies.
     Intersect,
+    /// Two sheets joined along the boundary edges they share, without
+    /// intersecting them (format 59): sheets that meet tangentially along
+    /// an edge, which a union cannot intersect there.
+    Sew,
 }
 
 impl BooleanOp {
-    pub const ALL: [BooleanOp; 3] = [BooleanOp::Union, BooleanOp::Subtract, BooleanOp::Intersect];
+    pub const ALL: [BooleanOp; 4] = [
+        BooleanOp::Union,
+        BooleanOp::Subtract,
+        BooleanOp::Intersect,
+        BooleanOp::Sew,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
             BooleanOp::Union => "union",
             BooleanOp::Subtract => "subtract",
             BooleanOp::Intersect => "intersect",
+            BooleanOp::Sew => "sew",
         }
     }
 

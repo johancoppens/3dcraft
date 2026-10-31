@@ -1580,6 +1580,8 @@ pub enum BooleanOp {
     Union,
     Subtract,
     Intersect,
+    /// Format 59: two sheets sewn along the edges they share.
+    Sew,
 }
 
 /// One profile of a loft: the sketch by the id of its feature, and the

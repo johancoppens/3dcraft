@@ -58,6 +58,7 @@ mod cut;
 mod facetree;
 mod freeform;
 mod hits;
+mod knit;
 mod loose;
 mod merge;
 mod outline;
@@ -72,6 +73,7 @@ mod verify;
 pub use contact::{ContactKind, Interference, MAX_CONTACT_POINTS, common_volume, interference};
 pub use freeform::{release_unused, shelf_size};
 pub(crate) use hits::speed_bound;
+pub use knit::sew_sheets;
 pub use verify::{Verification, VerifyOptions, Violation, VolumeRule, Volumes, verify};
 
 use crate::{KernelError, MAX_REPORTED};

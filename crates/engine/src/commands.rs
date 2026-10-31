@@ -58,8 +58,8 @@ macro_rules! spec {
 pub(crate) use spec;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
-    spec!("file.new", "New Document", r#"{"units": "um|mm|cm|m|in|ft" = "mm", "tolerance": number = 1e-6, "loosest": number = 1000 × tolerance}"#,
-        "Creates an empty document and makes it the active one. The tolerance is in the document's length unit, from 1e-12 to 1e3. loosest is the cap on the tolerance any vertex or edge may have of its own (geometry that is not exact to the document's tolerance, as imported files bring it), at least the tolerance: an operation on a body with an entity looser than it refuses.", doc: false, file_new),
+    spec!("file.new", "New Document", r#"{"units": "um|mm|cm|m|in|ft" = "mm", "tolerance": number = 1e-6, "angular": number = 1e-9, "loosest": number = 1000 × tolerance}"#,
+        "Creates an empty document and makes it the active one. The tolerance is in the document's length unit, from 1e-12 to 1e3; angular is the angular tolerance in radians, from 1e-12 to 1e-3 (document.setTolerance changes both later). loosest is the cap on the tolerance any vertex or edge may have of its own (geometry that is not exact to the document's tolerance, as imported files bring it), at least the tolerance: an operation on a body with an entity looser than it refuses.", doc: false, file_new),
     spec!("file.open", "Open", r#"{"path": string}"#,
         "Opens a .3dcraft file from the read root and makes it the active document.", doc: false, file_open),
     spec!("file.save", "Save", r#"{"path": string = the document's own path, "overwrite": boolean = false, "thumbnail": boolean = true for a Jig}"#,
@@ -884,7 +884,11 @@ pub(crate) fn length_unit(doc: &Document) -> &'static str {
 // ------------------------------------------------------------------- file
 
 pub(crate) fn file_new(session: &mut Session, params: &Value) -> Run {
-    let p = Params::new("file.new", params, &["units", "tolerance", "loosest"])?;
+    let p = Params::new(
+        "file.new",
+        params,
+        &["units", "tolerance", "angular", "loosest"],
+    )?;
     let length = match p.str("units")? {
         None => LengthUnit::default(),
         Some(symbol) => LengthUnit::from_symbol(symbol).ok_or_else(|| {
@@ -910,6 +914,15 @@ pub(crate) fn file_new(session: &mut Session, params: &Value) -> Run {
             linear,
             ..Tolerance::default()
         };
+    }
+    if let Some(angular) = p.number("angular")? {
+        use crate::tolerance_cmds::{GREATEST_ANGULAR, LEAST_ANGULAR};
+        if !(LEAST_ANGULAR..=GREATEST_ANGULAR).contains(&angular) {
+            return fail(format!(
+                "file.new: `angular` must be between {LEAST_ANGULAR:e} and {GREATEST_ANGULAR:e} rad; got {angular:e}"
+            ));
+        }
+        document.tolerance.angular = angular;
     }
     if let Some(loosest) = p.number("loosest")? {
         if !(loosest.is_finite() && loosest >= document.tolerance.linear) {
@@ -2597,7 +2610,7 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
         None => None,
         Some(op) => Some(BooleanOp::from_name(op).ok_or_else(|| {
             CommandError::new(format!(
-                "feature.edit: unknown op `{op}`; use union, subtract or intersect"
+                "feature.edit: unknown op `{op}`; use union, subtract, intersect or sew"
             ))
         })?),
     };
@@ -4323,6 +4336,9 @@ fn boolean_check(
         craft3d_doc::BooleanOp::Union => BooleanOp::Union,
         craft3d_doc::BooleanOp::Subtract => BooleanOp::Subtract,
         craft3d_doc::BooleanOp::Intersect => BooleanOp::Intersect,
+        // Sewing cuts nothing: its result is held by the sewing's own
+        // proofs (every joined edge on both faces) and the checker.
+        craft3d_doc::BooleanOp::Sew => return 0,
     };
     let found = match verify(a, b, op, result, tolerance, &VerifyOptions::default()) {
         Ok(found) => found,

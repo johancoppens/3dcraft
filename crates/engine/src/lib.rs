@@ -102,6 +102,7 @@ mod sweep_path_cmds;
 mod table_cmds;
 pub mod task_score;
 mod text_cmds;
+mod tolerance_cmds;
 mod typed;
 mod unit_cmds;
 mod verify;
@@ -639,6 +640,7 @@ impl Session {
                 motion::SPECS,
                 report::SPECS,
                 unit_cmds::SPECS,
+                tolerance_cmds::SPECS,
             ]
             .concat()
         })

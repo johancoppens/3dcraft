@@ -290,6 +290,8 @@ pub enum Unit {
     Megapascal,
     Gigapascal,
     Joule,
+    Millilitre,
+    Litre,
 }
 
 impl Unit {
@@ -306,12 +308,13 @@ impl Unit {
         Unit::Radian,
     ];
 
-    /// The units of mass, time, force, pressure (and stress) and energy.
+    /// The units of mass, time, force, pressure (and stress), energy and
+    /// volume (the litre, a cubic decimetre, and the millilitre).
     /// Their symbols are not reserved, because designs name variables
     /// `N`, `s`, `g` and `t`: they are units only right after a number
     /// (`20 N`), a parenthesis or `pi`, and a variable everywhere else.
     /// A force unit followed by a length unit is a moment: `20 N m`.
-    pub const MECHANICAL: [Unit; 10] = [
+    pub const MECHANICAL: [Unit; 12] = [
         Unit::Gram,
         Unit::Kilogram,
         Unit::Second,
@@ -322,6 +325,8 @@ impl Unit {
         Unit::Megapascal,
         Unit::Gigapascal,
         Unit::Joule,
+        Unit::Millilitre,
+        Unit::Litre,
     ];
 
     /// Every unit: [`Unit::ALL`], then [`Unit::MECHANICAL`].
@@ -355,6 +360,8 @@ impl Unit {
             Unit::Megapascal => "MPa",
             Unit::Gigapascal => "GPa",
             Unit::Joule => "J",
+            Unit::Millilitre => "mL",
+            Unit::Litre => "L",
         }
     }
 
@@ -379,6 +386,8 @@ impl Unit {
             Unit::Megapascal => "megapascal",
             Unit::Gigapascal => "gigapascal",
             Unit::Joule => "joule",
+            Unit::Millilitre => "millilitre",
+            Unit::Litre => "litre",
         }
     }
 
@@ -403,6 +412,7 @@ impl Unit {
                 Dimension::PRESSURE
             }
             Unit::Joule => Dimension::MOMENT,
+            Unit::Millilitre | Unit::Litre => Dimension::new(3, 0),
         }
     }
 
@@ -410,7 +420,9 @@ impl Unit {
     /// their products) one of this unit is. The inch is exactly 25.4 mm by
     /// definition (1959), the foot 12 inches. A newton is 1 kg·m/s², so
     /// 1000 kg·mm/s²; a pascal 1 N/m², so 10⁻³ kg/(mm·s²), and a
-    /// megapascal (1 N/mm²) 1000 of them; a joule 1 N·m.
+    /// megapascal (1 N/mm²) 1000 of them; a joule 1 N·m. A litre is a
+    /// cubic decimetre (10⁶ mm³, by the definition of 1964), a millilitre
+    /// a cubic centimetre.
     pub fn factor(self) -> f64 {
         match self {
             Unit::Micrometre => 1e-3,
@@ -431,6 +443,8 @@ impl Unit {
             Unit::Megapascal => 1e3,
             Unit::Gigapascal => 1e6,
             Unit::Joule => 1e6,
+            Unit::Millilitre => 1e3,
+            Unit::Litre => 1e6,
         }
     }
 }
@@ -782,6 +796,35 @@ mod tests {
         assert_eq!(Dimension::MASS.described(), "a mass");
         assert_eq!(Dimension::DENSITY.to_string(), "density");
         assert_eq!(Dimension::of(-2, 0, 1, 0).to_string(), "length^-2 * mass");
+    }
+
+    #[test]
+    fn litres_are_cubic_decimetres() {
+        // A cube of 100 mm holds one litre; a millilitre is a cubic centimetre.
+        let cube = eval("(100 mm)^3");
+        assert_eq!(cube.dimension, Dimension::new(3, 0));
+        assert!(close(cube.to_unit(Unit::Litre).unwrap(), 1.0));
+        assert!(close(eval("2.5 L").value, 2.5e6));
+        assert!(close(eval("1 mL").value, eval("(1 cm)^3").value));
+        assert!(close(
+            eval("1 L").to_unit(Unit::Millilitre).unwrap(),
+            1000.0
+        ));
+        // A volume and a length do not add; a litre over a length is an area.
+        assert!(crate::evaluate("1 L + 1 mm", |_| None).is_err());
+        assert_eq!(eval("1 L / 1 mm").dimension, Dimension::new(2, 0));
+        // Shown in litres: the unit of an output.
+        let shown = ShownUnit::parse("L").unwrap();
+        assert_eq!(shown.dimension, Dimension::new(3, 0));
+        assert!(close(shown.value_of(eval("(200 mm)^3")).unwrap(), 8.0));
+        assert!(
+            ShownUnit::parse("L")
+                .unwrap()
+                .value_of(eval("1 mm^2"))
+                .is_err()
+        );
+        // Not reserved: a design may name a variable `L` (a length).
+        assert!(!Unit::Litre.is_reserved());
     }
 
     #[test]

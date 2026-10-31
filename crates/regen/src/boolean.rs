@@ -42,12 +42,14 @@ pub(crate) fn combine(
     use craft3d_kernel::KernelError;
     use craft3d_kernel::boolean::{
         BooleanOp as Op, BooleanOptions, EdgeSource, FaceSource, Operand, VertexSource,
-        boolean_with,
+        boolean_with, sew_sheets,
     };
     let op = match op {
-        BooleanOp::Union => Op::Union,
-        BooleanOp::Subtract => Op::Subtract,
-        BooleanOp::Intersect => Op::Intersect,
+        BooleanOp::Union => Some(Op::Union),
+        BooleanOp::Subtract => Some(Op::Subtract),
+        BooleanOp::Intersect => Some(Op::Intersect),
+        // Not a boolean of the kernel's: the sheets are sewn, not cut.
+        BooleanOp::Sew => None,
     };
     let number = |operand: Operand| match operand {
         Operand::A => 0,
@@ -59,7 +61,11 @@ pub(crate) fn combine(
         loosest: Some(loosest),
         ..BooleanOptions::default()
     };
-    let result = boolean_with(target, tool, op, tolerance, &options).map_err(|e| match e {
+    let result = match op {
+        Some(op) => boolean_with(target, tool, op, tolerance, &options),
+        None => sew_sheets(target, tool, tolerance),
+    };
+    let result = result.map_err(|e| match e {
         KernelError::ZeroThickness { at, faces, .. } => {
             let [a, b] = faces.map(|(operand, face)| {
                 let [first, second] = names;

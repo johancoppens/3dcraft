@@ -454,6 +454,8 @@ fn spelled_unit(word: &str) -> Option<Unit> {
         "megapascal" | "mpa" => Unit::Megapascal,
         "gigapascal" | "gpa" => Unit::Gigapascal,
         "joule" => Unit::Joule,
+        "litre" | "liter" | "l" => Unit::Litre,
+        "millilitre" | "milliliter" | "ml" => Unit::Millilitre,
         _ => return None,
     };
     Some(unit)
