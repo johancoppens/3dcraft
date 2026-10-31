@@ -473,9 +473,11 @@ static PASSED: Mutex<Vec<(Vec<u64>, u64)>> = Mutex::new(Vec::new());
 const PASSED_BODIES: usize = 8;
 const PASSED_WORDS: usize = 1 << 22;
 
-/// Lets go of the bodies remembered as passed (each is checked again, with
-/// the same answer, when asked for), and says how many there were.
+/// Lets go of the bodies remembered as passed, and of the faces that
+/// passed the region rule (`crate::regionless`): each is checked again,
+/// with the same answer, when asked for. Says how many bodies there were.
 pub fn forget_passed() -> usize {
+    crate::region::forget_passed_faces();
     std::mem::take(&mut *PASSED.lock().unwrap_or_else(PoisonError::into_inner)).len()
 }
 

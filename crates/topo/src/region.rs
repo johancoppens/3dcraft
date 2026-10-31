@@ -42,7 +42,9 @@
 use crate::{Body, Coedge, Face, FaceId};
 use craft3d_geom::{Curve3, Surface};
 use craft3d_math::{Tolerance, Vec3};
+use std::collections::{BTreeMap, VecDeque};
 use std::f64::consts::PI;
+use std::sync::{Mutex, PoisonError};
 
 /// Most points one face is followed at; a larger face is passed.
 pub const MOST_PER_FACE: usize = 1 << 18;
@@ -377,14 +379,117 @@ pub fn face_holds(body: &Body, face: &Face, tol: &Tolerance, points: &[Vec3]) ->
 }
 
 /// Every face of `body` whose loops do not bound a region, with why.
+///
+/// Faces that passed lately are remembered by everything
+/// [`region_fault`] reads of them (see [`face_key`]), so a face a boolean
+/// or a regeneration carries over unchanged from a body checked before is
+/// not followed again: in a row of operations most faces of each result
+/// are faces of its operands.
 pub fn regionless(body: &Body, tol: &Tolerance) -> Vec<(FaceId, String)> {
     let mut found = Vec::new();
+    let near = 10.0 * body.working_tolerance(tol.linear);
     for (i, face) in body.faces.iter().enumerate() {
-        if let Some(why) = region_fault(body, face, tol) {
+        if let Some(why) = remembered_fault(body, face, tol, near) {
             found.push((FaceId(u32::try_from(i).unwrap_or(u32::MAX)), why));
         }
     }
     found
+}
+
+/// Faces that passed [`region_fault`] lately, by the hash of their key
+/// ([`face_key`]): the key in full (a hit must match it word for word)
+/// and the work the check took (`craft3d_geom::allowance`), the oldest
+/// first in `order`.
+struct PassedFaces {
+    by_hash: BTreeMap<u64, (Vec<u64>, u64)>,
+    order: VecDeque<u64>,
+    words: usize,
+}
+
+static PASSED_FACES: Mutex<PassedFaces> = Mutex::new(PassedFaces {
+    by_hash: BTreeMap::new(),
+    order: VecDeque::new(),
+    words: 0,
+});
+/// Lets go of the faces remembered as passed (`crate::forget_passed`).
+pub(crate) fn forget_passed_faces() {
+    let mut passed = PASSED_FACES.lock().unwrap_or_else(PoisonError::into_inner);
+    passed.by_hash.clear();
+    passed.order.clear();
+    passed.words = 0;
+}
+
+/// How many words all remembered faces are at most (16 MB).
+const PASSED_FACE_WORDS: usize = 1 << 21;
+
+/// Everything [`region_fault`] reads of `face` in `body`, every bit of
+/// every number: the reach `near` (ten of the body's working tolerances),
+/// the surface and its sense, and each loop's coedges as their sense, the
+/// edge's curve and its range. `None` for a face that names a loop or an
+/// edge the body does not have (checked in full, never remembered).
+fn face_key(body: &Body, face: &Face, near: f64) -> Option<Vec<u64>> {
+    use craft3d_math::Bits;
+    let mut key = Vec::new();
+    near.push_bits(&mut key);
+    face.surface.push_bits(&mut key);
+    face.reversed.push_bits(&mut key);
+    face.loops.len().push_bits(&mut key);
+    for id in &face.loops {
+        let lp = body.loop_(*id)?;
+        lp.coedges.len().push_bits(&mut key);
+        for coedge in &lp.coedges {
+            let edge = body.edge(coedge.edge)?;
+            coedge.reversed.push_bits(&mut key);
+            edge.curve.push_bits(&mut key);
+            edge.range.push_bits(&mut key);
+        }
+    }
+    Some(key)
+}
+
+/// [`region_fault`] of `face`, answered from [`PASSED_FACES`] when the
+/// face passed before. A hit charges the work the check took, so an
+/// operation counts the same whether the face was remembered or not; a
+/// face is remembered only when it passed while work was counted (not
+/// cut short by a bound).
+fn remembered_fault(body: &Body, face: &Face, tol: &Tolerance, near: f64) -> Option<String> {
+    use craft3d_geom::allowance;
+    let Some(key) = face_key(body, face, near) else {
+        return region_fault(body, face, tol);
+    };
+    let hash = key.iter().fold(0xcbf2_9ce4_8422_2325_u64, |h, w| {
+        (h ^ w).wrapping_mul(0x0100_0000_01b3)
+    });
+    {
+        let passed = PASSED_FACES.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((kept, units)) = passed.by_hash.get(&hash)
+            && *kept == key
+        {
+            allowance::charge(*units);
+            return None;
+        }
+    }
+    let counting = allowance::counting();
+    let (fault, units) = allowance::cost_of(|| region_fault(body, face, tol));
+    if fault.is_none() && counting && allowance::counting() && key.len() <= PASSED_FACE_WORDS {
+        let mut passed = PASSED_FACES.lock().unwrap_or_else(PoisonError::into_inner);
+        let words = key.len();
+        if let Some((old, _)) = passed.by_hash.insert(hash, (key, units)) {
+            passed.words = passed.words.saturating_sub(old.len());
+        } else {
+            passed.order.push_back(hash);
+        }
+        passed.words = passed.words.saturating_add(words);
+        while passed.words > PASSED_FACE_WORDS {
+            let Some(oldest) = passed.order.pop_front() else {
+                break;
+            };
+            if let Some((old, _)) = passed.by_hash.remove(&oldest) {
+                passed.words = passed.words.saturating_sub(old.len());
+            }
+        }
+    }
+    fault
 }
 
 fn list(areas: &[f64]) -> String {

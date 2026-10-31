@@ -293,18 +293,52 @@ fn a_perforated_tube_is_checked_in_time_about_its_holes() {
             })
         };
         let body = make(false);
+        // Cold: nothing remembered (other tests of this file run beside
+        // it, so a face of theirs may be; not one of these).
+        craft3d_topo::forget_passed();
         let started = std::time::Instant::now();
         let found = check(&body, &tol());
         let whole = started.elapsed().as_secs_f64();
+        craft3d_topo::forget_passed();
         let started = std::time::Instant::now();
         let region = craft3d_topo::regionless(&body, &tol());
         let rule = started.elapsed().as_secs_f64();
+        // Warm: the face passed just now and is remembered.
+        let started = std::time::Instant::now();
+        let again = craft3d_topo::regionless(&body, &tol());
+        let warm = started.elapsed().as_secs_f64();
+        assert!(again.is_empty());
         println!(
-            "REGION {} holes: check {whole:.4} s, the region rule {rule:.4} s",
+            "REGION {} holes: check {whole:.4} s, the region rule {rule:.4} s, remembered {warm:.5} s",
             n * n
         );
         assert_eq!(found, vec![], "{} holes", n * n);
         assert!(region.is_empty());
         assert!(regionless(&make(true)), "{} holes and a stray one", n * n);
     }
+}
+
+/// A face that passed is remembered by everything the rule reads of it:
+/// asked again it passes, at the same work counted; the same loops on the
+/// face turned over (one bit of the key) are still found, every time, and
+/// a fault is never remembered.
+#[test]
+fn a_remembered_face_is_the_same_face_bit_for_bit() {
+    use craft3d_geom::allowance;
+    let r = 3.0;
+    let good = sheet(r, false, |b| {
+        vec![patch_loop(b, r, (-0.5, 0.5), (0.0, 1.0), false)]
+    });
+    let bad = sheet(r, true, |b| {
+        vec![patch_loop(b, r, (-0.5, 0.5), (0.0, 1.0), false)]
+    });
+    let (first, cold) = allowance::measured(|| craft3d_topo::regionless(&good, &tol()));
+    let (second, warm) = allowance::measured(|| craft3d_topo::regionless(&good, &tol()));
+    assert!(first.is_empty() && second.is_empty());
+    assert_eq!(cold, warm, "a hit charges what the check took");
+    for _ in 0..2 {
+        assert_eq!(craft3d_topo::regionless(&bad, &tol()).len(), 1);
+    }
+    // The good face once more, after the bad one: still a pass.
+    assert!(craft3d_topo::regionless(&good, &tol()).is_empty());
 }
