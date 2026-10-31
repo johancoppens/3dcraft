@@ -2382,33 +2382,88 @@ pub fn continuity(
     if !origin.is_finite() {
         return Err(internal());
     }
-    let Some(xs) = spline_rows(&sa, edge, tolerance, origin)? else {
-        return refuse(
-            "the edge does not run along a parameter line of its spline face, so the face cannot be written along it exactly (owed: a measure at the feet with a Lipschitz bound)".to_string(),
-        );
+    // The face `a` the edge runs along a parameter line of; the other a
+    // spline face along a parameter line too or along any curve on it
+    // (the ribbon, from the edge's own curve in its parameters only), or
+    // an analytic face.
+    let other_spline = spline(other_face)?;
+    let (xs, other_face, other_spline) = match spline_rows(&sa, edge, tolerance, origin, false)? {
+        Some(xs) => (xs, other_face.clone(), other_spline),
+        None => {
+            let swapped = match &other_spline {
+                Some(sb) => spline_rows(sb, edge, tolerance, origin, false)?,
+                None => None,
+            };
+            match (swapped, Surface::Nurbs(sa.clone())) {
+                (Some(xs), first) => (xs, first, Some(sa.clone())),
+                (None, _) => {
+                    return refuse(
+                        "the edge does not run along a parameter line of either face, so neither can be written along it as the measure's first face (owed: two faces both written across the edge)".to_string(),
+                    );
+                }
+            }
+        }
     };
-    let (other, ys) = match other_face {
-        Surface::Nurbs(_) | Surface::Bezier(_) => {
-            let sb = spline(other_face)?.ok_or_else(internal)?;
-            let Some(ys) = spline_rows(&sb, edge, tolerance, origin)? else {
+    let (other, ys) = match (&other_face, other_spline) {
+        (Surface::Nurbs(_) | Surface::Bezier(_), Some(sb)) => {
+            let Some(ys) = spline_rows(&sb, edge, tolerance, origin, true)? else {
                 return refuse(
-                    "the edge does not run along a parameter line of the other spline face, so the two cannot be compared at corresponding points (owed: a measure at the feet with a Lipschitz bound)".to_string(),
+                    "the edge is neither a parameter line of the other spline face nor a curve recovered on it (its points' parameters do not give a curve whose image is the edge within a hundredth of the tolerance), so the seam is not proven (owed: a measure at the feet with a Lipschitz bound)".to_string(),
                 );
             };
             (Other::Spline, Some(ys))
         }
-        Surface::Torus(_) => {
+        (Surface::Torus(_), _) => {
             return refuse(
                 "continuity to a torus is not measured yet (a quartic; owed: its implicit form)"
                     .to_string(),
             );
         }
-        analytic => (
+        (analytic, _) => (
             implicit_of(analytic, origin).ok_or_else(internal)?.other(),
             None,
         ),
     };
     measure(xs, ys, other, origin, tolerance, angular)
+}
+
+/// The rows of a spline face along an edge that is no parameter line of
+/// it but a curve on it (`ribbon`: the face written across the edge,
+/// `R(t, ρ) = Φ(c(t) + ρ e)`), in the measure's [`Line`]: `Φ∘c`, its
+/// first and second derivatives along, `Φ_e∘c`, its derivative along, and
+/// `Φ_ee∘c`, over the parameter of `c`. Only where `c` is the edge's own
+/// curve in the face's parameters, recovered with a proven distance (never
+/// a sampled projection: what is not recovered is not measured). The rows
+/// are formed as a parameter line's are, derivatives first on the stored
+/// net (`tracked`), and each coefficient's bound is that of its
+/// coordinate over the row; a bound that is not a number is infinite, as
+/// everywhere in the measure, so it proves nothing.
+fn ribbon_line(
+    surface: &NurbsSurface,
+    local: &NurbsSurface,
+    track: &Track,
+    tolerance: f64,
+    origin: Vec3,
+) -> Result<Option<Line>, NetworkError> {
+    let Some(r) = super::ribbon::ribbon(local, track, tolerance, false)? else {
+        return Ok(None);
+    };
+    if !r.exact {
+        return Ok(None);
+    }
+    let (from, to) = r.uv.domain();
+    let made = super::tracked::ribbon_rows(surface, origin, &r.uv, r.across_u)?;
+    let [a, b, c, d, e, f] = made.map(|(raw, bound)| {
+        let bound = bound.map(|x| if x.is_nan() { f64::INFINITY } else { x });
+        let bounds = vec![bound; raw.points.len()];
+        (raw, bounds)
+    });
+    Ok(Some(Line {
+        rows: [a, b, c, d, e, f],
+        from,
+        to,
+        reversed: false,
+    }))
 }
 
 /// The rows of a spline face along `edge` ([`Line`]): its iso-curve there
@@ -2452,6 +2507,7 @@ fn spline_rows(
     edge: &NurbsCurve,
     tolerance: f64,
     origin: Vec3,
+    any_curve: bool,
 ) -> Result<Option<Line>, NetworkError> {
     let local = NurbsSurface::new(
         surface.degrees().0,
@@ -2475,7 +2531,11 @@ fn spline_rows(
     )?;
     let track = Track::new(&local_edge, tolerance)?;
     let Some(line) = super::iso_line(&local, &track, tolerance)? else {
-        return Ok(None);
+        return if any_curve {
+            ribbon_line(surface, &local, &track, tolerance, origin)
+        } else {
+            Ok(None)
+        };
     };
     // Along v the rows across are derivatives in u.
     let along_v = line.along_v;
@@ -2943,7 +3003,7 @@ mod tests {
         let (s, _) = far_patch();
         let edge = iso_curve(&s, true, 0.0).unwrap();
         let origin = edge.control_points()[0];
-        let line = spline_rows(&s, &edge, 1e-6, origin).unwrap().unwrap();
+        let line = spline_rows(&s, &edge, 1e-6, origin, false).unwrap().unwrap();
         assert!(!line.reversed && line.from == 0.0 && line.to == 1.0);
         let [x0, x0d, x0dd, x1, x1d, x2] = &line.rows;
         let t = s.knots_v()[4];
@@ -3073,7 +3133,7 @@ mod tests {
         .unwrap();
         let edge = iso_curve(&s, true, 0.25).unwrap();
         let origin = edge.control_points()[0];
-        let line = spline_rows(&s, &edge, 1e-6, origin).unwrap().unwrap();
+        let line = spline_rows(&s, &edge, 1e-6, origin, false).unwrap().unwrap();
         let [x0, _, _, x1, _, x2] = &line.rows;
         // The line the rows are of: the parameter `iso_track_along` found
         // from the edge's projections, a rounding off 0.25 (how far the
@@ -3238,7 +3298,7 @@ mod tests {
         let s = rational_far_patch();
         let edge = iso_curve(&s, true, 0.0).unwrap();
         let origin = edge.control_points()[2];
-        let line = spline_rows(&s, &edge, 1e-6, origin).unwrap().unwrap();
+        let line = spline_rows(&s, &edge, 1e-6, origin, false).unwrap().unwrap();
         assert!(!line.reversed && line.from == 0.0 && line.to == 1.0);
         let (ku, kv) = (s.knots_u().to_vec(), s.knots_v().to_vec());
         // The net in double-double, `[i along][j across]`.
@@ -3377,8 +3437,8 @@ mod tests {
         let (a, b) = continued_pair(2e-4);
         let edge = iso_curve(&b, true, 0.0).unwrap();
         let origin = edge.control_points()[1];
-        let la = spline_rows(&a, &edge, tol, origin).unwrap().unwrap();
-        let lb = spline_rows(&b, &edge, tol, origin).unwrap().unwrap();
+        let la = spline_rows(&a, &edge, tol, origin, false).unwrap().unwrap();
+        let lb = spline_rows(&b, &edge, tol, origin, false).unwrap().unwrap();
         let mut rows: Vec<P4> = Vec::new();
         for line in [&la, &lb] {
             for row in &line.rows {
@@ -3491,8 +3551,8 @@ mod tests {
         let (a, b) = (make(a_pts), make(b_pts));
         let edge = iso_curve(&b, true, 0.0).unwrap();
         let origin = edge.control_points()[2];
-        let la = spline_rows(&a, &edge, tol, origin).unwrap().unwrap();
-        let lb = spline_rows(&b, &edge, tol, origin).unwrap().unwrap();
+        let la = spline_rows(&a, &edge, tol, origin, false).unwrap().unwrap();
+        let lb = spline_rows(&b, &edge, tol, origin, false).unwrap().unwrap();
         let mut per: Vec<Vec<P4>> = Vec::new();
         for line in [&la, &lb] {
             for row in &line.rows {
@@ -3557,8 +3617,8 @@ mod tests {
         let (a, b) = continued_pair(0.0);
         let edge = iso_curve(&b, true, 0.0).unwrap();
         let origin = edge.control_points()[1];
-        let la = spline_rows(&a, &edge, 1e-6, origin).unwrap().unwrap();
-        let lb = spline_rows(&b, &edge, 1e-6, origin).unwrap().unwrap();
+        let la = spline_rows(&a, &edge, 1e-6, origin, false).unwrap().unwrap();
+        let lb = spline_rows(&b, &edge, 1e-6, origin, false).unwrap().unwrap();
         let mut per: Vec<Vec<P4>> = Vec::new();
         for line in [&la, &lb] {
             for row in &line.rows {

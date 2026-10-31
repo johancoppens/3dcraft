@@ -83,6 +83,8 @@ mod border_snap_tests;
 mod continuity;
 mod fair;
 pub mod nsided;
+mod ribbon;
+mod tracked;
 pub use continuity::{
     Continuity, Gap, MAX_SEAM_DEGREE, MAX_SEAM_PIECES, MAX_SEAM_WORK, Order, continuity, describe,
     thresholds,
@@ -689,6 +691,7 @@ impl Track {
         own: &[f64],
         common: &[f64],
         angular: f64,
+        tol: f64,
         label: &str,
     ) -> Result<(), NetworkError> {
         let knots = self.raw.interior();
@@ -709,6 +712,47 @@ impl Track {
             .zip(common)
             .all(|(a, b)| (a - b).abs() <= SAME_KNOT)
         {
+            return Ok(());
+        }
+        // Crossings a rounding of a projection apart from the family's
+        // (a curve on a face found by projecting, a Gauss–Newton crossing)
+        // would triple the curve's degree for a shift of the order of the
+        // projection's accuracy. Where the curve moves by taking the
+        // family's parameters at most a tenth of the tolerance (its
+        // speed, from the derivative's control points, times the largest
+        // shift), it is left as it is: the surface then passes the curve
+        // at the family's parameters, and how far is the proven
+        // `mismatch` of every curve against the result, held to the
+        // tolerance as any other.
+        let shift = own
+            .iter()
+            .zip(common)
+            .fold(0.0_f64, |m, (a, b)| m.max((a - b).abs()));
+        let speed = {
+            let d = derivative(&self.raw)?;
+            let lightest = self
+                .raw
+                .points
+                .iter()
+                .map(|h| h[3])
+                .fold(f64::INFINITY, f64::min);
+            let reach = self
+                .raw
+                .points
+                .iter()
+                .filter_map(|h| point(*h))
+                .fold(0.0_f64, |m, p| m.max(p.length()));
+            let lead = d
+                .points
+                .iter()
+                .fold(0.0_f64, |m, h| m.max(xyz(*h).length() + reach * h[3].abs()));
+            if lightest > 0.0 {
+                lead / lightest
+            } else {
+                f64::INFINITY
+            }
+        };
+        if (speed * shift).is_finite() && speed * shift <= 0.1 * tol {
             return Ok(());
         }
         let secants: Vec<f64> = own
@@ -1252,7 +1296,13 @@ fn iso_track(
     curve: &Track,
     tol: f64,
 ) -> Result<Option<[Raw; 3]>, NetworkError> {
-    Ok(iso_track_along(surface, curve, tol)?.map(|(rows, _, _)| rows))
+    if let Some((rows, _, _)) = iso_track_along(surface, curve, tol)? {
+        return Ok(Some(rows));
+    }
+    // Any other curve on the face: the face written across it
+    // (`ribbon`), from the edge's own curve in its parameters where it is
+    // one, else from the projection of its points.
+    Ok(ribbon::ribbon(surface, curve, tol, true)?.map(|r| r.rows))
 }
 
 /// How far in parameter, as a share of the range, an edge's end may lie
@@ -2216,6 +2266,7 @@ fn gordon_here(net: &Network<'_>) -> Result<Patch, NetworkError> {
                 s.get(i).ok_or_else(internal)?,
                 &common_u,
                 net.angular,
+                tol,
                 &name('u', i),
             )?;
         }
@@ -2226,6 +2277,7 @@ fn gordon_here(net: &Network<'_>) -> Result<Patch, NetworkError> {
                 tt.get(j).ok_or_else(internal)?,
                 &common_v,
                 net.angular,
+                tol,
                 &name('v', j),
             )?;
         }
@@ -2301,6 +2353,7 @@ fn gordon_here(net: &Network<'_>) -> Result<Patch, NetworkError> {
             &own,
             crossings,
             net.angular,
+            tol,
             EDGE_NAMES.get(e).copied().unwrap_or("an edge"),
         )?;
         *track = swap;

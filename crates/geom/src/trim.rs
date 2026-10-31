@@ -70,6 +70,10 @@ fn internal() -> TrimError {
 /// subdivisions for positive weights together).
 pub const MAX_COMPOSED_PIECES: usize = 1 << 14;
 
+/// Crossings of knot lines closer than this (in a piece's own parameter,
+/// 0 to 1) to its ends or to each other are taken as one ([`compose_net`]).
+const CUT_MERGE: f64 = 1e-10;
+
 /// Most samples taken along one curve projected onto a surface.
 pub const MAX_PROJECTED_SAMPLES: usize = 4096;
 
@@ -256,6 +260,7 @@ fn binomial(n: usize, k: usize) -> f64 {
 /// coefficients, the curve's homogeneous coordinates), the patch over
 /// `u × v` of the surface's parameters: the homogeneous Bernstein points
 /// of the curve on the surface, degree `d (p + q)`.
+#[allow(clippy::too_many_arguments)]
 fn compose_piece(
     points: &[H],
     degrees: (usize, usize),
@@ -264,6 +269,7 @@ fn compose_piece(
     big_u: &[f64],
     big_v: &[f64],
     big_w: &[f64],
+    magnitude: bool,
 ) -> Result<Vec<H>, TrimError> {
     let (p, q) = degrees;
     let (du, dv) = (u.1 - u.0, v.1 - v.0);
@@ -282,6 +288,14 @@ fn compose_piece(
         .collect();
     let um: Vec<f64> = big_w.iter().zip(&us).map(|(w, a)| w - a).collect();
     let vm: Vec<f64> = big_w.iter().zip(&vs).map(|(w, a)| w - a).collect();
+    let mag = |x: Vec<f64>| -> Vec<f64> {
+        if magnitude {
+            x.into_iter().map(f64::abs).collect()
+        } else {
+            x
+        }
+    };
+    let (us, um, vs, vm) = (mag(us), mag(um), mag(vs), mag(vm));
     let (pu, pum) = (powers(&us, p), powers(&um, p));
     let (pv, pvm) = (powers(&vs, q), powers(&vm, q));
     let mut bu: Vec<Vec<f64>> = Vec::with_capacity(p + 1);
@@ -314,7 +328,7 @@ fn compose_piece(
             }
             for (slot, x) in out.iter_mut().zip(&prod) {
                 for (s, c) in slot.iter_mut().zip(h) {
-                    *s += c * x;
+                    *s += if magnitude { c.abs() * x } else { c * x };
                 }
             }
         }
@@ -344,6 +358,267 @@ fn span_of(breaks: &[f64], x: f64) -> usize {
     i
 }
 
+/// A tensor-product spline as its Bézier patches on homogeneous points,
+/// each over its own `[0, 1]²` (the patch `(i, j)` over the knot spans
+/// `[ku[i], ku[i + 1]] × [kv[j], kv[j + 1]]` of the surface's parameters).
+/// Derivatives of the surface are nets of the same kind ([`BezierNet::derivative`]),
+/// whose homogeneous points need not have positive weights.
+#[derive(Clone, Debug)]
+pub(crate) struct BezierNet {
+    pub(crate) degrees: (usize, usize),
+    pub(crate) ku: Vec<f64>,
+    pub(crate) kv: Vec<f64>,
+    /// Row-major over the spans (`i` along u), each patch's points
+    /// row-major (`a` along u) at `a * (q + 1) + b`.
+    pub(crate) patches: Vec<Vec<H>>,
+}
+
+impl BezierNet {
+    /// The surface's Bézier patches.
+    pub(crate) fn of(surface: &NurbsSurface) -> Result<BezierNet, TrimError> {
+        let ((u0, u1), (v0, v1)) = surface.domain();
+        let ku = {
+            let mut b = vec![u0];
+            b.extend(inner_breaks(surface.knots_u(), u0, u1));
+            b.push(u1);
+            b
+        };
+        let kv = {
+            let mut b = vec![v0];
+            b.extend(inner_breaks(surface.knots_v(), v0, v1));
+            b.push(v1);
+            b
+        };
+        let spans = surface.bezier_spans()?;
+        let columns = kv.len().saturating_sub(1);
+        let rows = ku.len().saturating_sub(1);
+        let mut patches: Vec<Option<Vec<H>>> = vec![None; rows * columns];
+        for span in &spans {
+            let i = span_of(&ku, 0.5 * (span.u.0 + span.u.1));
+            let j = span_of(&kv, 0.5 * (span.v.0 + span.v.1));
+            if let Some(slot) = patches.get_mut(i * columns + j) {
+                *slot = Some(patch_points(&span.patch));
+            }
+        }
+        let patches = patches
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(internal)?;
+        Ok(BezierNet {
+            degrees: surface.degrees(),
+            ku,
+            kv,
+            patches,
+        })
+    }
+
+    /// The Bézier patches of a tensor-product spline given as plain data:
+    /// degrees, clamped knot vectors, `nu × nv` homogeneous points
+    /// row-major (`i` along u, at `i * nv + j`), any 4-vectors (a
+    /// derivative of a surface, or bounds carried beside one: the
+    /// extraction is knot insertion, convex combinations, so a net of
+    /// nonnegative bounds stays a bound of what it bounded, up to its own
+    /// rounding).
+    pub(crate) fn of_net(
+        degrees: (usize, usize),
+        knots_u: &[f64],
+        knots_v: &[f64],
+        nu: usize,
+        nv: usize,
+        points: &[H],
+    ) -> Result<BezierNet, TrimError> {
+        let (p, q) = degrees;
+        if points.len() != nu.saturating_mul(nv) {
+            return Err(internal());
+        }
+        // Along u first: each column j as a curve in u.
+        let mut bounds_u: Vec<f64> = Vec::new();
+        let mut columns: Vec<Vec<Vec<H>>> = Vec::with_capacity(nv);
+        for j in 0..nv {
+            let raw = Raw {
+                degree: p,
+                knots: knots_u.to_vec(),
+                points: (0..nu)
+                    .map(|i| points.get(i * nv + j).copied().ok_or_else(internal))
+                    .collect::<Result<_, _>>()?,
+            };
+            let (b, pieces) = pieces_of(raw)?;
+            bounds_u = b;
+            columns.push(pieces);
+        }
+        let rows = bounds_u.len().saturating_sub(1);
+        // Then each piece's rows along v.
+        let mut bounds_v: Vec<f64> = Vec::new();
+        // by_piece[k][a] = the pieces along v of local row a of u piece k.
+        let mut by_piece: Vec<Vec<Vec<Vec<H>>>> = Vec::with_capacity(rows);
+        for k in 0..rows {
+            let mut locals = Vec::with_capacity(p + 1);
+            for a in 0..=p {
+                let raw = Raw {
+                    degree: q,
+                    knots: knots_v.to_vec(),
+                    points: columns
+                        .iter()
+                        .map(|c| {
+                            c.get(k)
+                                .and_then(|piece| piece.get(a))
+                                .copied()
+                                .ok_or_else(internal)
+                        })
+                        .collect::<Result<_, _>>()?,
+                };
+                let (b, pieces) = pieces_of(raw)?;
+                bounds_v = b;
+                locals.push(pieces);
+            }
+            by_piece.push(locals);
+        }
+        let cols = bounds_v.len().saturating_sub(1);
+        let mut patches = Vec::with_capacity(rows * cols);
+        for locals in &by_piece {
+            for l in 0..cols {
+                let mut pts = Vec::with_capacity((p + 1) * (q + 1));
+                for local in locals {
+                    let piece = local.get(l).ok_or_else(internal)?;
+                    pts.extend(piece.iter().copied());
+                }
+                if pts.len() != (p + 1) * (q + 1) {
+                    return Err(internal());
+                }
+                patches.push(pts);
+            }
+        }
+        Ok(BezierNet {
+            degrees,
+            ku: bounds_u,
+            kv: bounds_v,
+            patches,
+        })
+    }
+
+    /// The homogeneous partial derivative in u (`in_u`) or v, patch by
+    /// patch in the surface's own parameters: `p (H_{a+1,b} − H_{a,b}) / Δu`.
+    /// With `magnitude`, the bound `p (|H_{a+1,b}| + |H_{a,b}|) / Δu` on
+    /// each coordinate instead (for rounding allowances).
+    pub(crate) fn derivative(&self, in_u: bool, magnitude: bool) -> Result<BezierNet, TrimError> {
+        let (p, q) = self.degrees;
+        let columns = self.kv.len().saturating_sub(1);
+        let along = if in_u { p } else { q };
+        if along == 0 {
+            return Ok(BezierNet {
+                degrees: self.degrees,
+                ku: self.ku.clone(),
+                kv: self.kv.clone(),
+                patches: self
+                    .patches
+                    .iter()
+                    .map(|x| vec![[0.0; 4]; x.len()])
+                    .collect(),
+            });
+        }
+        let (np, nq) = if in_u { (p - 1, q) } else { (p, q - 1) };
+        let mut patches = Vec::with_capacity(self.patches.len());
+        for (k, pts) in self.patches.iter().enumerate() {
+            let (i, j) = (k / columns.max(1), k % columns.max(1));
+            let width = if in_u {
+                self.ku.get(i + 1).zip(self.ku.get(i)).map(|(b, a)| b - a)
+            } else {
+                self.kv.get(j + 1).zip(self.kv.get(j)).map(|(b, a)| b - a)
+            }
+            .ok_or_else(internal)?;
+            if !(width > 0.0) {
+                return Err(internal());
+            }
+            let f = along as f64 / width;
+            let mut out = Vec::with_capacity((np + 1) * (nq + 1));
+            for a in 0..=np {
+                for b in 0..=nq {
+                    let (lo, hi) = if in_u {
+                        (a * (q + 1) + b, (a + 1) * (q + 1) + b)
+                    } else {
+                        (a * (q + 1) + b, a * (q + 1) + b + 1)
+                    };
+                    let (Some(x), Some(y)) = (pts.get(lo), pts.get(hi)) else {
+                        return Err(internal());
+                    };
+                    let mut h = [0.0; 4];
+                    for (c, slot) in h.iter_mut().enumerate() {
+                        *slot = if magnitude {
+                            f * (x[c].abs() + y[c].abs())
+                        } else {
+                            f * (y[c] - x[c])
+                        };
+                    }
+                    out.push(h);
+                }
+            }
+            patches.push(out);
+        }
+        Ok(BezierNet {
+            degrees: (np, nq),
+            ku: self.ku.clone(),
+            kv: self.kv.clone(),
+            patches,
+        })
+    }
+
+    fn patch(&self, i: usize, j: usize) -> Option<&Vec<H>> {
+        self.patches.get(i * self.kv.len().saturating_sub(1) + j)
+    }
+}
+
+/// The Bézier pieces of a spline given as plain data and the knots that
+/// bound them; degree 0 (a derivative of a degree-1 direction) taken span
+/// by span.
+fn pieces_of(mut raw: Raw) -> Result<(Vec<f64>, Vec<Vec<H>>), TrimError> {
+    if raw.degree == 0 {
+        let mut bounds: Vec<f64> = Vec::new();
+        let mut pieces: Vec<Vec<H>> = Vec::new();
+        for (i, h) in raw.points.iter().enumerate() {
+            let (Some(&a), Some(&b)) = (raw.knots.get(i), raw.knots.get(i + 1)) else {
+                return Err(internal());
+            };
+            if b > a {
+                if bounds.is_empty() {
+                    bounds.push(a);
+                }
+                bounds.push(b);
+                pieces.push(vec![*h]);
+            }
+        }
+        return Ok((bounds, pieces));
+    }
+    // Every knot raised to the degree, then each piece's points from where
+    // the last ended, as far on as that knot's multiplicity (a derivative
+    // of a spline joined only in position has knots once more than its
+    // degree, and its pieces do not meet).
+    let p = raw.degree;
+    let missing = raw.to_multiplicity(p);
+    raw.insert_all(&missing)?;
+    let (a, b) = raw.domain()?;
+    let runs = raw.knot_runs();
+    let mut bounds = vec![a];
+    bounds.extend(runs.iter().map(|r| r.0));
+    bounds.push(b);
+    let mut pieces = Vec::with_capacity(runs.len() + 1);
+    let mut start = 0usize;
+    for k in 0..=runs.len() {
+        let piece = raw
+            .points
+            .get(start..=start + p)
+            .ok_or_else(internal)?
+            .to_vec();
+        pieces.push(piece);
+        if let Some(run) = runs.get(k) {
+            start += run.1;
+        }
+    }
+    if start + p + 1 != raw.points.len() {
+        return Err(internal());
+    }
+    Ok((bounds, pieces))
+}
+
 /// The curve `S(c(t))` on `surface` of the parameter-space curve `uv`
 /// (its `x` and `y` are `u` and `v`; `z` is ignored), exactly, as a
 /// (rational) B-spline over `uv`'s own parameter, of degree
@@ -352,7 +627,51 @@ fn span_of(breaks: &[f64], x: f64) -> usize {
 /// rounding), or where it would take more than [`MAX_COMPOSED_PIECES`]
 /// pieces.
 pub fn compose(surface: &NurbsSurface, uv: &NurbsCurve) -> Result<NurbsCurve, TrimError> {
-    let degrees = surface.degrees();
+    let net = BezierNet::of(surface)?;
+    Ok(compose_net(&net, uv, Composed::Positive)?.curve()?)
+}
+
+/// What [`compose_net`] makes of each piece.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Composed {
+    /// The curve on the surface, its weights kept positive (pieces
+    /// subdivided where they are not).
+    Positive,
+    /// Any homogeneous net (a derivative of the surface): no condition on
+    /// the weights.
+    Any,
+    /// A bound on the magnitude of every Bernstein coefficient's terms:
+    /// the net's coordinates and the curve's local coefficients taken by
+    /// their magnitudes (every product then has nonnegative terms that
+    /// dominate the true ones), for rounding allowances.
+    Magnitude,
+}
+
+/// [`compose`] on a net of Bézier patches, as plain homogeneous data
+/// (pieces joined in position: each piece's first point is the last
+/// one's end).
+pub(crate) fn compose_net(
+    net: &BezierNet,
+    uv: &NurbsCurve,
+    how: Composed,
+) -> Result<Raw, TrimError> {
+    let (degree, bounds, pieces) = compose_net_pieces(net, uv, how)?;
+    Ok(from_pieces_raw(degree, &bounds, &pieces)?)
+}
+
+/// [`compose_net`] as its Bézier pieces, each its own (a derivative net
+/// joined only in position across a knot line gives pieces that do not
+/// meet there): the degree, the pieces' bounds in `uv`'s parameter, and
+/// their homogeneous points. The bounds depend only on `uv` and the net's
+/// knot lines (and, for [`Composed::Positive`], the subdivisions for
+/// positive weights), so nets of one surface and its derivatives
+/// composed with one curve (not `Positive`) share them.
+pub(crate) fn compose_net_pieces(
+    net: &BezierNet,
+    uv: &NurbsCurve,
+    how: Composed,
+) -> Result<(usize, Vec<f64>, Vec<Vec<H>>), TrimError> {
+    let degrees = net.degrees;
     let d = uv.degree();
     let degree = composed_degree(degrees, d);
     if degree > MAX_DEGREE {
@@ -361,31 +680,20 @@ pub fn compose(surface: &NurbsSurface, uv: &NurbsCurve) -> Result<NurbsCurve, Tr
             degrees.0, degrees.1
         ));
     }
-    let ((u0, u1), (v0, v1)) = surface.domain();
-    let ku = {
-        let mut b = vec![u0];
-        b.extend(inner_breaks(surface.knots_u(), u0, u1));
-        b.push(u1);
-        b
+    let (ku, kv) = (&net.ku, &net.kv);
+    let (Some(&u0), Some(&u1), Some(&v0), Some(&v1)) =
+        (ku.first(), ku.last(), kv.first(), kv.last())
+    else {
+        return Err(internal());
     };
-    let kv = {
-        let mut b = vec![v0];
-        b.extend(inner_breaks(surface.knots_v(), v0, v1));
-        b.push(v1);
-        b
-    };
-    let spans = surface.bezier_spans()?;
-    let columns = kv.len().saturating_sub(1);
-    // Find a span by its place; bezier_spans lists them in some order, so
-    // index them by their ranges.
-    let mut table: Vec<Option<usize>> = vec![None; spans.len()];
-    for (index, span) in spans.iter().enumerate() {
-        let i = span_of(&ku, 0.5 * (span.u.0 + span.u.1));
-        let j = span_of(&kv, 0.5 * (span.v.0 + span.v.1));
-        if let Some(slot) = table.get_mut(i * columns + j) {
-            *slot = Some(index);
-        }
-    }
+    let inner_u: Vec<f64> = ku
+        .get(1..ku.len().saturating_sub(1))
+        .unwrap_or(&[])
+        .to_vec();
+    let inner_v: Vec<f64> = kv
+        .get(1..kv.len().saturating_sub(1))
+        .unwrap_or(&[])
+        .to_vec();
     let reach = (u1 - u0).abs().max(v1 - v0).max(1.0) * 1e-9;
     let (bounds, pieces) = bezier_pieces_raw(Raw::of(uv))?;
     let mut out_bounds: Vec<f64> = Vec::new();
@@ -446,18 +754,27 @@ pub fn compose(surface: &NurbsSurface, uv: &NurbsCurve) -> Result<NurbsCurve, Tr
             }
         }
         let mut cuts: Vec<f64> = vec![0.0, 1.0];
-        for &k in inner_breaks(surface.knots_u(), lo_u.max(u0), hi_u.min(u1)).iter() {
+        for &k in inner_u.iter().filter(|k| **k > lo_u && **k < hi_u) {
             let c: Vec<f64> = big_u.iter().zip(&big_w).map(|(a, w)| a - k * w).collect();
             let floor = 1e-12 * (k.abs() + (u1 - u0)) * wmax;
             cuts.extend(sign_changes(&c, floor, MAX_COMPOSED_PIECES)?);
         }
-        for &k in inner_breaks(surface.knots_v(), lo_v.max(v0), hi_v.min(v1)).iter() {
+        for &k in inner_v.iter().filter(|k| **k > lo_v && **k < hi_v) {
             let c: Vec<f64> = big_v.iter().zip(&big_w).map(|(a, w)| a - k * w).collect();
             let floor = 1e-12 * (k.abs() + (v1 - v0)) * wmax;
             cuts.extend(sign_changes(&c, floor, MAX_COMPOSED_PIECES)?);
         }
         cuts.sort_by(f64::total_cmp);
-        cuts.dedup_by(|a, b| (*a - *b).abs() <= 1e-14);
+        // A crossing within `CUT_MERGE` of the piece's end or of another
+        // crossing is that one (a curve recovered from an edge that was
+        // already cut there finds its crossings again a rounding inside
+        // its ends): the piece then reaches past the knot line by that
+        // much of its parameter, where the neighbouring patch differs from
+        // its own by the jump of a derivative times that width to its
+        // order, far below rounding, instead of leaving a sliver whose
+        // knots lie within rounding of each other.
+        cuts.retain(|c| *c <= 0.0 || *c >= 1.0 || (*c > CUT_MERGE && *c < 1.0 - CUT_MERGE));
+        cuts.dedup_by(|a, b| (*a - *b).abs() <= CUT_MERGE);
         // Sub-pieces, each subdivided further while the composed weights
         // are not all positive.
         let mut todo: Vec<(f64, f64, u32)> = cuts
@@ -480,26 +797,39 @@ pub fn compose(surface: &NurbsSurface, uv: &NurbsCurve) -> Result<NurbsCurve, Tr
             let m = 0.5 * (a + b);
             let wm = bern_eval(&big_w, m);
             let (um, vm) = (bern_eval(&big_u, m) / wm, bern_eval(&big_v, m) / wm);
-            let (i, j) = (span_of(&ku, um), span_of(&kv, vm));
-            let Some(Some(index)) = table.get(i * columns + j) else {
+            let (i, j) = (span_of(ku, um), span_of(kv, vm));
+            let (Some(points), Some(&pu0), Some(&pu1), Some(&pv0), Some(&pv1)) = (
+                net.patch(i, j),
+                ku.get(i),
+                ku.get(i + 1),
+                kv.get(j),
+                kv.get(j + 1),
+            ) else {
                 return Err(internal());
             };
-            let Some(span) = spans.get(*index) else {
-                return Err(internal());
-            };
-            let points = patch_points(&span.patch);
-            let composed = compose_piece(&points, degrees, span.u, span.v, &su, &sv, &sw)?;
-            let wmax = composed.iter().fold(0.0_f64, |m, h| m.max(h[3].abs()));
-            let positive = composed.iter().all(|h| h[3] > wmax * 1e-12);
-            if !positive {
-                if depth >= 12 {
-                    return refuse(
-                        "the curve on the surface keeps weights that are not positive (a surface whose weights vary too much along it)".into(),
-                    );
+            let composed = compose_piece(
+                points,
+                degrees,
+                (pu0, pu1),
+                (pv0, pv1),
+                &su,
+                &sv,
+                &sw,
+                how == Composed::Magnitude,
+            )?;
+            if how == Composed::Positive {
+                let wmax = composed.iter().fold(0.0_f64, |m, h| m.max(h[3].abs()));
+                let positive = composed.iter().all(|h| h[3] > wmax * 1e-12);
+                if !positive {
+                    if depth >= 12 {
+                        return refuse(
+                            "the curve on the surface keeps weights that are not positive (a surface whose weights vary too much along it)".into(),
+                        );
+                    }
+                    todo.push((m, b, depth + 1));
+                    todo.push((a, m, depth + 1));
+                    continue;
                 }
-                todo.push((m, b, depth + 1));
-                todo.push((a, m, depth + 1));
-                continue;
             }
             if out_bounds.is_empty() {
                 out_bounds.push(t0 + a * (t1 - t0));
@@ -527,7 +857,7 @@ pub fn compose(surface: &NurbsSurface, uv: &NurbsCurve) -> Result<NurbsCurve, Tr
     if pieces.is_empty() {
         return refuse("the parameter-space curve has no length".into());
     }
-    Ok(from_pieces_raw(degree, &bounds, &pieces)?.curve()?)
+    Ok((degree, bounds, pieces))
 }
 
 /// The cubic (or lower, for fewer points) parameter-space curve through
