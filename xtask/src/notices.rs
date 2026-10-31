@@ -449,10 +449,15 @@ fn chosen(e: &Expr) -> Option<String> {
             Expr::And(parts) => {
                 let picked: Option<Vec<String>> = parts
                     .iter()
+                    // A choice made inside leaves a licence or an AND,
+                    // which alone needs its parentheses.
                     .map(|p| {
-                        pick(p).map(|s| match p {
-                            Expr::Leaf { .. } => s,
-                            _ => format!("({s})"),
+                        pick(p).map(|s| {
+                            if s.contains(" AND ") {
+                                format!("({s})")
+                            } else {
+                                s
+                            }
                         })
                     })
                     .collect();
