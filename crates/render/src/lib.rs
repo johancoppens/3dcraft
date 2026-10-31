@@ -7,6 +7,7 @@
 
 use craft3d_math::Portable;
 pub mod analysis;
+mod clip;
 mod section;
 pub mod studio;
 
@@ -1223,8 +1224,10 @@ fn shade(
 
 /// Renders `mesh` as seen from `camera`.
 ///
-/// Triangles with a vertex at or behind the eye plane are skipped (there is
-/// no near-plane clipping yet); put the camera outside the model.
+/// In perspective, triangles are clipped to the near plane the GPU
+/// renderer uses (the mesh's nearest corner of its box less a margin, at
+/// least a millionth of the farthest; `clip`), so a camera close to a
+/// surface or inside the model draws what lies in front of it.
 ///
 /// **See-through** ([`RenderParams::opacity`] below 1). Per sample, two
 /// surfaces count: the nearest one (the *front*, what the opaque picture
@@ -1332,13 +1335,20 @@ pub fn render_analysed(
     let s = ssaa as usize;
     let (w, h) = (width as usize * s, height as usize * s);
     let view = View::new(camera, w, h)?;
-
-    let projected: Vec<Option<Projected>> =
-        mesh.positions.iter().map(|&p| view.project(p)).collect();
+    // The analysis and the section are placed by the mesh as given; what
+    // is drawn is the mesh clipped to the near plane.
     let analysis = match params.analysis {
         Some(a) => Some(analysis::Resolved::new(&a, &camera.axes()?, &mesh.bbox())),
         None => None,
     };
+    let cut = params
+        .section
+        .and_then(|section| Cut::new(&section, &section_bounds(mesh)));
+    let clipped = clip::clip_mesh(mesh, values, &view)?;
+    let (mesh, values) = (&*clipped.mesh, &*clipped.values);
+
+    let projected: Vec<Option<Projected>> =
+        mesh.positions.iter().map(|&p| view.project(p)).collect();
     let value_at = |k: u32| values.get(k as usize).map_or(f64::NAN, |&v| f64::from(v));
     let mut color = vec![params.background; w * h];
     let mut ids = vec![NO_FACE; w * h];
@@ -1362,9 +1372,6 @@ pub fn render_analysed(
     };
     // The section: every vertex's distance from the plane, and per sample
     // whether the number of surfaces left out there is odd.
-    let cut = params
-        .section
-        .and_then(|section| Cut::new(&section, &section_bounds(mesh)));
     let sides: Vec<f64> = cut.map_or_else(Vec::new, |cut| {
         mesh.positions.iter().map(|&p| cut.side(p)).collect()
     });
@@ -1704,8 +1711,9 @@ pub struct Hit {
 ///
 /// It is the renderer's own arithmetic for one sample: at a pixel centre
 /// the face is the one [`Frame::ids`] holds for that pixel in a picture of
-/// the same size with one sample per pixel, triangles skipped by the
-/// renderer (a vertex at or behind the eye plane) are skipped here, and a
+/// the same size with one sample per pixel, triangles are clipped to the
+/// near plane as the renderer clips them (the hit names the mesh's
+/// triangle the part comes from), and a
 /// tie goes to the triangle that comes first in the mesh.
 ///
 /// `Ok(None)` when nothing is under the position, when it is outside the
@@ -1739,8 +1747,10 @@ pub fn pick_cut(
         return Ok(None);
     };
     let mut state = SampleState::default();
-    for (t, (tri, &face)) in mesh.triangles.iter().zip(&mesh.face_ids).enumerate() {
-        let Some(seen) = sample.seen(mesh, t, *tri, face)? else {
+    let clipped = clip::clip_mesh(mesh, &[], &sample.view)?;
+    let drawn = &*clipped.mesh;
+    for (t, (tri, &face)) in drawn.triangles.iter().zip(&drawn.face_ids).enumerate() {
+        let Some(seen) = sample.seen(drawn, clipped.origin(t), *tri, face)? else {
             continue;
         };
         seen.hit(&sample.view, x, y, &mut state, None);
@@ -1768,8 +1778,10 @@ pub fn cut_faces(
     };
     let mut state = SampleState::default();
     let mut faces = Vec::new();
-    for (t, (tri, &face)) in mesh.triangles.iter().zip(&mesh.face_ids).enumerate() {
-        let Some(seen) = sample.seen(mesh, t, *tri, face)? else {
+    let clipped = clip::clip_mesh(mesh, &[], &sample.view)?;
+    let drawn = &*clipped.mesh;
+    for (t, (tri, &face)) in drawn.triangles.iter().zip(&drawn.face_ids).enumerate() {
+        let Some(seen) = sample.seen(drawn, clipped.origin(t), *tri, face)? else {
             continue;
         };
         seen.hit(&sample.view, x, y, &mut state, Some(&mut faces));
@@ -1799,8 +1811,10 @@ pub fn pick_all(
         every: Some(Vec::new()),
         ..SampleState::default()
     };
-    for (t, (tri, &face)) in mesh.triangles.iter().zip(&mesh.face_ids).enumerate() {
-        let Some(seen) = sample.seen(mesh, t, *tri, face)? else {
+    let clipped = clip::clip_mesh(mesh, &[], &sample.view)?;
+    let drawn = &*clipped.mesh;
+    for (t, (tri, &face)) in drawn.triangles.iter().zip(&drawn.face_ids).enumerate() {
+        let Some(seen) = sample.seen(drawn, clipped.origin(t), *tri, face)? else {
             continue;
         };
         seen.hit(&sample.view, x, y, &mut state, None);
@@ -1928,7 +1942,8 @@ struct Seen {
 
 impl Seen {
     /// `None` for a triangle the renderer does not draw: a corner at or
-    /// behind the eye plane, no area in the picture.
+    /// behind the eye plane (the callers clip to the near plane first, so
+    /// only a corner that is not a number), no area in the picture.
     fn new(
         view: &View,
         triangle: usize,
@@ -2097,9 +2112,13 @@ impl Neighbourhood {
         let within = [x - radius, y - radius, x + radius, y + radius];
         let mut seen = Vec::new();
         let usable = within.iter().all(|c| c.is_finite());
-        for (t, (tri, &face)) in mesh.triangles.iter().zip(&mesh.face_ids).enumerate() {
+        let clipped = clip::clip_mesh(mesh, &[], &view)?;
+        let drawn = &*clipped.mesh;
+        for (k, (tri, &face)) in drawn.triangles.iter().zip(&drawn.face_ids).enumerate() {
+            let t = clipped.origin(k);
             let vertex = |k: u32| {
-                mesh.positions
+                drawn
+                    .positions
                     .get(k as usize)
                     .copied()
                     .ok_or(RenderError::InvalidMesh { triangle: t })

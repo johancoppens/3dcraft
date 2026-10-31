@@ -58,9 +58,10 @@
 //!
 //! # Known differences from the CPU renderer
 //!
-//! - A triangle that crosses the eye plane is clipped by the GPU, where the
-//!   CPU renderer drops the whole triangle. Parity is stated for a camera
-//!   outside the model.
+//! - Both renderers clip a triangle to the same near plane (`depth_range`;
+//!   the CPU renderer's `clip`, since 2026-10-31); where the near plane cuts
+//!   a triangle, the rasteriser's clipping and the CPU's new corners differ
+//!   by rounding only.
 //! - A triangle with a non-finite corner, or one that does not fit in `f32`
 //!   relative to the mesh centre, is not drawn.
 //! - A sample that lies exactly on a triangle's edge follows the GPU's

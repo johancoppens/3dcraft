@@ -1299,6 +1299,10 @@ pub(crate) fn rasterise_layers(
     keep: &dyn Fn(u32, bool) -> bool,
     raster: Raster<'_>,
 ) -> Result<(Vec<Surface>, Vec<Surface>), RenderError> {
+    // Clipped to the near plane (`crate::clip`); a surface names the
+    // mesh's triangle its part comes from.
+    let clipped = crate::clip::clip_mesh(mesh, &[], view)?;
+    let mesh = &*clipped.mesh;
     let projected: Vec<_> = mesh.positions.iter().map(|&p| view.project(p)).collect();
     let none = Surface {
         key: f64::INFINITY,
@@ -1426,7 +1430,7 @@ pub(crate) fn rasterise_layers(
                     dist: crate::distance_at(view, [wa, wb, wc], [&a, &b, &c]),
                     normal: [normal.x as f32, normal.y as f32, normal.z as f32],
                     face,
-                    tri: u32::try_from(t).unwrap_or(NO_TRIANGLE),
+                    tri: u32::try_from(clipped.origin(t)).unwrap_or(NO_TRIANGLE),
                 };
                 if !front {
                     if let Some(slot) = behind.get_mut(i) {
@@ -1563,6 +1567,8 @@ fn peel_doubt(
     [front, behind]: [&[Surface]; 2],
     margin: f64,
 ) -> Result<Vec<bool>, RenderError> {
+    let clipped = crate::clip::clip_mesh(mesh, &[], view)?;
+    let mesh = &*clipped.mesh;
     let projected: Vec<_> = mesh.positions.iter().map(|&p| view.project(p)).collect();
     let mut out = vec![false; w * h];
     let eps = margin * f64::from(f32::EPSILON);
@@ -1598,7 +1604,7 @@ fn peel_doubt(
                 .map_or(0.0, |n| n.dot(cut.normal));
             (cut, [cut.side(pa), cut.side(pb), cut.side(pc)], facing)
         });
-        let this = u32::try_from(t).unwrap_or(NO_TRIANGLE);
+        let this = u32::try_from(clipped.origin(t)).unwrap_or(NO_TRIANGLE);
         for y in y0..=y1 {
             let py = y as f64 + 0.5;
             for x in x0..=x1 {

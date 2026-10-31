@@ -216,6 +216,74 @@ fn the_reference_solids_match_the_cpu_renderer() {
     assert_eq!(check(&scenes), scenes.len() * offscreens().len());
 }
 
+/// A camera close to a surface or inside the model (docs/design/
+/// rendering.md › *Near-plane clipping*): triangles that cross the near
+/// plane are clipped by both renderers. Before the CPU renderer clipped,
+/// it left out every triangle with a corner behind the eye, and showed
+/// what was behind those triangles instead.
+fn close_scenes() -> Vec<Scene> {
+    let world = craft3d_math::Frame::new(Vec3::ZERO, Vec3::Z, Vec3::X).unwrap();
+    let tess = TessParams {
+        chordal_tolerance: 0.002,
+        ..TessParams::default()
+    };
+    let sphere = tessellate_body(&solids::sphere(&world, 1.0).unwrap().body, &tess).unwrap();
+    let block =
+        tessellate_body(&solids::block(&world, 2.0, 2.0, 2.0).unwrap().body, &tess).unwrap();
+    let cameras = [
+        // Skimming the sphere just above its pole, looking along it.
+        (
+            "skim",
+            &sphere,
+            Vec3::new(0.0, 0.0, 1.02),
+            Vec3::new(1.0, 0.1, 0.85),
+            60.0,
+        ),
+        // Inside the sphere, looking at its wall.
+        (
+            "inside",
+            &sphere,
+            Vec3::new(0.1, 0.2, 0.0),
+            Vec3::new(1.0, 0.3, 0.2),
+            70.0,
+        ),
+        // Inside a block, near a corner.
+        (
+            "corner",
+            &block,
+            Vec3::new(0.3, 0.4, 0.2),
+            Vec3::new(1.5, 1.2, 1.7),
+            80.0,
+        ),
+    ];
+    cameras
+        .into_iter()
+        .enumerate()
+        .map(|(k, (name, mesh, eye, target, fov))| {
+            let params = params([240, 201, 160][k], [180, 151, 200][k], [1, 2, 3][k]);
+            Scene {
+                name: format!("close-{name}"),
+                mesh: mesh.clone(),
+                camera: Camera {
+                    eye,
+                    target,
+                    up: Vec3::Z,
+                    projection: Projection::Perspective { fov_y_deg: fov },
+                },
+                params,
+                colors: FaceColors::new(),
+                evidence: true,
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn a_camera_close_to_or_inside_the_model_matches_the_cpu_renderer() {
+    let scenes = close_scenes();
+    assert_eq!(check(&scenes), scenes.len() * offscreens().len());
+}
+
 /// The first round of the reference solids with faces highlighted: every
 /// other face, and in the next scene one run of three, so that the runs of
 /// the uniform block are all used and are used in pairs.
