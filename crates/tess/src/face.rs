@@ -3302,9 +3302,7 @@ fn spline_parts(
     low: (f64, f64),
     high: (f64, f64),
 ) -> Option<Vec<PartBound>> {
-    let Ok(spans) = surface.bezier_spans() else {
-        return None;
-    };
+    let spans = surface.bezier_spans().ok()?;
     let (domain_u, domain_v) = surface.domain();
     let [wrap_u, wrap_v] = closure.wrap;
     let across_u = stretches(low.0, high.0, domain_u, wrap_u);
@@ -3357,9 +3355,7 @@ fn spline_parts(
                     (span.v.1 - span.v.0) * (t1 - t0),
                 );
                 let travel = patch_travel(&patch, width);
-                let Some((mut uu, mut uv, mut vv)) = patch_second_bounds(patch, width) else {
-                    return None;
-                };
+                let (mut uu, mut uv, mut vv) = patch_second_bounds(patch, width)?;
                 // The bound of the B-spline's own derivative nets over the
                 // whole span, where it is lower: on a span far narrower
                 // than its neighbours the Bézier net's differences are
@@ -3472,7 +3468,7 @@ fn bounds_for_step(
                 wide = wide.max(second(part));
             }
         }
-        if narrow.is_empty() || !(h > 0.0) {
+        if narrow.is_empty() || h.is_nan() || h <= 0.0 {
             return all;
         }
         // Across the seam of a closed parameter, the parts of the start
