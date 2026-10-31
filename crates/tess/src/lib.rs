@@ -84,7 +84,11 @@ pub struct TessParams {
     /// units.
     pub chordal_tolerance: f64,
     /// Upper limit on grid segments per patch direction. A tolerance that
-    /// needs more is an error, never a silent coarser mesh.
+    /// needs more is an error, never a silent coarser mesh. The grid over a
+    /// face on a Bézier or spline surface is held to as many cells as a
+    /// square grid of this side has, not to this many along each side
+    /// (since 2026-10-31): a long, narrow face may have more along its
+    /// length.
     pub max_segments: u32,
     /// A triangle budget, or `None` for no limit (the default). A mesh
     /// that would have more triangles is not made:
