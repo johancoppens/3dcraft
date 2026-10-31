@@ -1108,7 +1108,7 @@ fn a_file_named_by_a_relative_path_is_saved_back_to_itself() {
     author
         .execute("file.save", &json!({"path": relative}))
         .unwrap();
-    let file = dir.join("work/part.3dcraft").canonicalize().unwrap();
+    let file = craft3d_engine::canonical(&dir.join("work/part.3dcraft")).unwrap();
 
     let options = Options {
         file: Some(relative.to_string()),

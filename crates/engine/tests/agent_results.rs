@@ -274,14 +274,20 @@ fn errors_of_paths_name_their_command() {
     let dir = workdir("roots");
     let mut s = session_in(&dir);
     run(&mut s, "file.new", json!({"units": "mm"}));
-    let outside = error(&mut s, "file.save", json!({"path": "/x.3dcraft"}));
+    // An absolute path on this platform (Windows' needs a drive).
+    let away = if cfg!(windows) {
+        r"C:\x.3dcraft"
+    } else {
+        "/x.3dcraft"
+    };
+    let outside = error(&mut s, "file.save", json!({"path": away}));
     assert!(
-        outside.starts_with("file.save: `/x.3dcraft` is outside the write root"),
+        outside.starts_with(&format!("file.save: `{away}` is outside the write root")),
         "{outside}"
     );
-    let outside = error(&mut s, "file.open", json!({"path": "/x.3dcraft"}));
+    let outside = error(&mut s, "file.open", json!({"path": away}));
     assert!(
-        outside.starts_with("file.open: `/x.3dcraft` is outside the read root"),
+        outside.starts_with(&format!("file.open: `{away}` is outside the read root")),
         "{outside}"
     );
     let mut sealed = session();

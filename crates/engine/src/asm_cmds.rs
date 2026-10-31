@@ -623,8 +623,8 @@ fn source_relative(
         let path = if absolute(p) {
             let path = std::path::PathBuf::from(p);
             match (folder, path.parent(), path.file_name()) {
-                (true, _, _) => std::fs::canonicalize(&path).unwrap_or(path),
-                (false, Some(parent), Some(name)) => std::fs::canonicalize(parent)
+                (true, _, _) => crate::workspace::canonical(&path).unwrap_or(path),
+                (false, Some(parent), Some(name)) => crate::workspace::canonical(parent)
                     .map(|parent| parent.join(name))
                     .unwrap_or(path),
                 _ => path,

@@ -198,7 +198,7 @@ fn a_document_opened_by_a_relative_path_keeps_it_absolute() {
         json!({"name": "A", "size": [1, 2, 3]}),
     );
     let saved = run(&mut author, "file.save", json!({"path": relative}));
-    let file = dir.join("work/part.3dcraft").canonicalize().unwrap();
+    let file = craft3d_engine::canonical(&dir.join("work/part.3dcraft")).unwrap();
     assert_eq!(saved["path"], file.to_str().unwrap());
 
     let mut s = Session::new(Workspace {
@@ -212,7 +212,7 @@ fn a_document_opened_by_a_relative_path_keeps_it_absolute() {
     let found = run(&mut s, "file.activate", json!({"path": relative}));
     assert_eq!(found["active"], 0);
 
-    let root = dir.canonicalize().unwrap();
+    let root = craft3d_engine::canonical(&dir).unwrap();
     s.set_workspace(Workspace {
         read: Access::Root(root.clone()),
         write: Access::Root(root.clone()),

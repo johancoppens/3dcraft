@@ -160,6 +160,7 @@ pub use selection::{
 };
 pub use typed::TypedKind;
 pub use workspace::{Access, Workspace};
+pub use workspace::{canonical, plain};
 
 use craft3d_doc::Document;
 use craft3d_ops::History;

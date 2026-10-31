@@ -917,7 +917,7 @@ mod tests {
             .join(format!("../../target/tmp/craft3d-files-{name}"));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::canonicalize(dir).unwrap()
+        craft3d_engine::canonical(&dir).unwrap()
     }
 
     fn subdir(dir: &Path, name: &str) -> PathBuf {

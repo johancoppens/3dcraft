@@ -292,7 +292,7 @@ mod tests {
             .join(format!("../../target/tmp/craft3d-tabs-{name}"));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::canonicalize(dir).unwrap()
+        craft3d_engine::canonical(&dir).unwrap()
     }
 
     fn run(session: &mut Session, command: &str, params: Value) -> Value {

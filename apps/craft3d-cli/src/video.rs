@@ -318,21 +318,26 @@ mod tests {
     fn ffmpeg_reads_the_frames_at_the_frame_rate_and_stops_at_the_count() {
         let a = ffmpeg_args(Output::Gif, Path::new("d"), 12, 24, "o.gif", false, &[]);
         let joined = a.join(" ");
+        // The platform's own separator (a `\\` on Windows).
+        let sep = std::path::MAIN_SEPARATOR;
         assert!(
-            joined.contains("-framerate 24 -i file:d/frame-%05d.png"),
+            joined.contains(&format!("-framerate 24 -i file:d{sep}frame-%05d.png")),
             "{joined}"
         );
         assert!(joined.ends_with("-frames:v 12 file:o.gif"), "{joined}");
         // A `%` of the directory's own is not a pattern; a name that looks
         // like an option or a protocol is a file.
         let odd = ffmpeg_args(Output::Gif, Path::new("50%"), 2, 30, "-x.gif", false, &[]).join(" ");
-        assert!(odd.contains("-i file:50%%/frame-%05d.png"), "{odd}");
+        assert!(
+            odd.contains(&format!("-i file:50%%{sep}frame-%05d.png")),
+            "{odd}"
+        );
         assert!(odd.ends_with("file:-x.gif"), "{odd}");
         assert!(joined.contains("palettegen"), "{joined}");
         let a = ffmpeg_args(Output::Mp4, Path::new("d"), 3, 30, "o.mp4", true, &[]).join(" ");
         assert!(a.contains("yuv420p"), "{a}");
         assert!(
-            a.contains("-i file:d/captions.srt") && a.contains("mov_text"),
+            a.contains(&format!("-i file:d{sep}captions.srt")) && a.contains("mov_text"),
             "{a}"
         );
         let a = ffmpeg_args(

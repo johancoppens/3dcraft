@@ -18,7 +18,7 @@ pub(crate) enum Protocol {
 /// and is made absolute with its symbolic links resolved: the engine
 /// compares paths as text, so the root has to be the one true spelling.
 fn root(flag: &str, dir: &str) -> Result<Access, CliError> {
-    let path = std::fs::canonicalize(dir)
+    let path = craft3d_engine::canonical(std::path::Path::new(dir))
         .map_err(|e| CliError::Failed(format!("`{flag} {dir}`: cannot use this directory: {e}")))?;
     if !path.is_dir() {
         return Err(CliError::Failed(format!("`{flag} {dir}`: not a directory")));

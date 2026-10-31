@@ -73,18 +73,49 @@ pub(crate) fn kept_path(access: &Access, path: &str, resolved: &Path) -> String 
     if !matches!(access, Access::Unrestricted) || Path::new(path).is_absolute() {
         return path.to_string();
     }
-    std::fs::canonicalize(resolved)
+    canonical(resolved)
         .or_else(|_| std::path::absolute(resolved))
         .ok()
         .and_then(|p| p.to_str().map(str::to_string))
         .unwrap_or_else(|| path.to_string())
 }
 
+/// `path` absolute with its links resolved (`std::fs::canonicalize`), in
+/// the spelling people and the other paths use: on Windows the system
+/// hands back a verbatim path (`\\?\C:\a`, `\\?\UNC\server\share`),
+/// which no path a user or an agent writes ever starts with, so it is
+/// written as the plain path (`C:\a`, `\\server\share`). Every
+/// canonical spelling the engine and its hosts compare goes through here.
+pub fn canonical(path: &Path) -> std::io::Result<PathBuf> {
+    std::fs::canonicalize(path).map(plain)
+}
+
+/// A verbatim Windows path written plainly ([`canonical`]); any other
+/// path as it is.
+pub fn plain(path: PathBuf) -> PathBuf {
+    let Some(text) = path.to_str() else {
+        return path;
+    };
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = text.strip_prefix(r"\\?\") {
+        // Only a drive path: `\\?\C:\...`.
+        let mut chars = rest.chars();
+        if let (Some(drive), Some(':')) = (chars.next(), chars.next())
+            && drive.is_ascii_alphabetic()
+        {
+            return PathBuf::from(rest);
+        }
+    }
+    path
+}
+
 /// `root` written absolute with its links resolved, as the hosts spell
 /// the roots they make (`std::fs::canonicalize`); as given where it
 /// cannot be (it does not exist, or there is no file system).
 pub(crate) fn spelled_root(root: &Path) -> PathBuf {
-    std::fs::canonicalize(root)
+    canonical(root)
         .or_else(|_| std::path::absolute(root))
         .unwrap_or_else(|_| root.to_path_buf())
 }
@@ -197,12 +228,18 @@ mod tests {
     /// canonical spelling, and the same directory written relative to the
     /// working directory.
     fn real_root(name: &str) -> (PathBuf, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("craft3d-ws-{name}-{}", std::process::id()));
+        // Under the target directory, on the working directory's drive
+        // (Windows' temporary directory may be on another, which no
+        // relative path reaches).
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
+            "../../target/tmp/craft3d-ws-{name}-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.3dcraft"), b"x").unwrap();
-        let canonical = std::fs::canonicalize(&dir).unwrap();
-        let cwd = std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap();
+        let canonical = super::canonical(&dir).unwrap();
+        let cwd = super::canonical(&std::env::current_dir().unwrap()).unwrap();
         let a: Vec<_> = cwd.components().collect();
         let b: Vec<_> = canonical.components().collect();
         let common = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
@@ -233,6 +270,17 @@ mod tests {
         assert!(resolve(&access, &sibling, "read").is_err(), "{sibling}");
         assert!(resolve(&access, canonical.to_str().unwrap(), "read").is_err());
         assert!(resolve(&access, &format!("{}/", canonical.display()), "read").is_err());
+    }
+
+    #[test]
+    fn verbatim_windows_paths_are_written_plainly() {
+        let p = |s: &str| plain(PathBuf::from(s));
+        assert_eq!(p(r"\\?\C:\a\b"), PathBuf::from(r"C:\a\b"));
+        assert_eq!(p(r"\\?\UNC\srv\share\x"), PathBuf::from(r"\\srv\share\x"));
+        // Not a drive: as it is.
+        assert_eq!(p(r"\\?\Volume{1}\x"), PathBuf::from(r"\\?\Volume{1}\x"));
+        assert_eq!(p("/home/a"), PathBuf::from("/home/a"));
+        assert_eq!(p(r"D:\a"), PathBuf::from(r"D:\a"));
     }
 
     #[test]

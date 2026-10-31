@@ -5,3 +5,11 @@ docs/examples/*.json text eol=lf
 docs/examples/thumbs/STAMPS.txt text eol=lf
 *.png binary
 *.hdr binary
+# Files tests read byte for byte, and files the packages carry as they are
+# (a desktop entry, a shell script and AppRun must keep LF on Linux and
+# macOS even when they were checked out on Windows): LF in every checkout.
+# On Windows with core.autocrlf the golden STEP text and the desktop entry
+# came out with CRLF, and their tests failed (CI, 2026-10-30).
+crates/*/tests/golden/** text eol=lf
+packaging/** text eol=lf
+*.step text eol=lf

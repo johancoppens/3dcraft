@@ -106,7 +106,7 @@ pub(crate) fn root(flag: &str, dir: Option<&str>) -> Result<Access, String> {
         std::fs::create_dir(wanted)
             .map_err(|e| format!("`{flag} {dir}`: cannot make this directory: {e}"))?;
     }
-    let path = std::fs::canonicalize(dir)
+    let path = craft3d_engine::canonical(wanted)
         .map_err(|e| format!("`{flag} {dir}`: cannot use this directory: {e}"))?;
     if !path.is_dir() {
         return Err(format!("`{flag} {dir}`: not a directory"));
@@ -2306,7 +2306,7 @@ mod tests {
             .join("../../target/tmp/craft3d-desk-record");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let dir = std::fs::canonicalize(&dir).unwrap();
+        let dir = craft3d_engine::canonical(&dir).unwrap();
         let (requests, incoming) = mpsc::channel();
         let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
         let host = Host::new(Session::new(Workspace {
@@ -2451,7 +2451,7 @@ mod tests {
             .join("../../target/tmp/craft3d-desk-record-speed");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let dir = std::fs::canonicalize(&dir).unwrap();
+        let dir = craft3d_engine::canonical(&dir).unwrap();
         let (requests, incoming) = mpsc::channel();
         let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
         let mut host = Host::new(Session::new(Workspace {
@@ -3206,7 +3206,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("craft3d-asm-window-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("demo/asm")).unwrap();
-        let dir = std::fs::canonicalize(&dir).unwrap();
+        let dir = craft3d_engine::canonical(&dir).unwrap();
         let (requests, incoming) = mpsc::channel::<Request>();
         let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
         // The window's own session: the user's authority narrowed to the

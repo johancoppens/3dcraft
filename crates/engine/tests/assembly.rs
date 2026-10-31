@@ -1613,7 +1613,7 @@ fn a_source_beneath_a_relative_root_joins_an_assembly_kept_by_its_absolute_path(
     block_part(&mut s, "demo/parts.3dcraft", [10.0, 10.0, 10.0], 1e-6);
     block_part(&mut s, "demo/other.3dcraft", [20.0, 10.0, 10.0], 1e-6);
     run(&mut s, "assembly.new", json!({}));
-    let absolute = std::fs::canonicalize(dir.join("demo"))
+    let absolute = craft3d_engine::canonical(&dir.join("demo"))
         .unwrap()
         .join("planetary.3dcraftasm");
     run(
