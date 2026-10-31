@@ -362,6 +362,12 @@ pub struct Tokens {
     pub popover_pointer: f32,
     /// The one width of the sliders in a popover, in points.
     pub popover_slider_width: f32,
+    /// A popover's fill: `plate_fill` at this opacity (0 to 255), more
+    /// opaque than a plate's so its rows read over any model.
+    pub popover_opacity: u8,
+    /// A slider's rail and knob and a check box's square in a popover:
+    /// `plate_text_dim` at this opacity (0 to 255).
+    pub popover_widget_opacity: u8,
     /// Below `narrow_width` points of window width the shell lays out for
     /// a phone or a small tablet (and a narrow desktop window alike): the
     /// side panel becomes a drawer behind a button, at most
@@ -634,6 +640,8 @@ impl Tokens {
             nav_caret_width: 18.0,
             popover_pointer: 6.0,
             popover_slider_width: 130.0,
+            popover_opacity: 242,
+            popover_widget_opacity: 110,
             narrow_width: 800.0,
             drawer_share: 0.85,
             touch_target: 40.0,
@@ -733,17 +741,23 @@ impl Tokens {
         visuals.hyperlink_color = color(self.info_code);
         visuals.selection.bg_fill = color_alpha(self.accent, self.nav_on_opacity);
         visuals.selection.stroke = egui::Stroke::new(1.0, color(self.knob));
+        // Buttons and chosen-not options lit with the glass tint; a
+        // slider's rail and knob and a check box's square in the dim text
+        // colour, so they read on the dark plate.
+        let (rest, hover, press) = (
+            self.popover_widget_opacity,
+            self.popover_widget_opacity.saturating_add(40),
+            self.popover_widget_opacity.saturating_add(80),
+        );
         visuals.widgets.inactive.weak_bg_fill = color_alpha(self.glass, self.control_opacity);
-        visuals.widgets.inactive.bg_fill = color_alpha(self.glass, self.control_opacity);
+        visuals.widgets.inactive.bg_fill = color_alpha(self.plate_text_dim, rest);
         visuals.widgets.hovered.weak_bg_fill =
             color_alpha(self.glass, self.control_opacity.saturating_mul(2));
-        visuals.widgets.hovered.bg_fill =
-            color_alpha(self.glass, self.control_opacity.saturating_mul(2));
+        visuals.widgets.hovered.bg_fill = color_alpha(self.plate_text_dim, hover);
         visuals.widgets.active.weak_bg_fill =
             color_alpha(self.glass, self.control_opacity.saturating_mul(3));
-        visuals.widgets.active.bg_fill =
-            color_alpha(self.glass, self.control_opacity.saturating_mul(3));
-        visuals.extreme_bg_color = color_alpha(self.glass, self.control_opacity);
+        visuals.widgets.active.bg_fill = color_alpha(self.plate_text, press);
+        visuals.extreme_bg_color = color_alpha(self.plate_text_dim, rest);
         self.round(&mut visuals);
         visuals
     }

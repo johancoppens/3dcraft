@@ -112,7 +112,7 @@ impl Shell {
         let stroke = 1.0;
         let inset = tokens.nav_inset;
         let inner_width = (place.width() - 2.0 * (inset + stroke)).max(0.0);
-        let fill = color_alpha(tokens.plate_fill, tokens.plate_opacity);
+        let fill = color_alpha(tokens.plate_fill, tokens.popover_opacity);
         let rim = color_alpha(tokens.plate_rim, tokens.plate_rim_opacity);
         let area = egui::Area::new(egui::Id::new(id))
             .fixed_pos(place.min)

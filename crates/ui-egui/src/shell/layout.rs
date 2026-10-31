@@ -1522,7 +1522,7 @@ fn analysis_legend(ui: &mut egui::Ui, view: &crate::viewport::ViewAnalysis, toke
         return;
     };
     ui.separator();
-    ui.label(egui::RichText::new(title).color(color(tokens.text)));
+    ui.label(egui::RichText::new(title).color(color(tokens.plate_text)));
     for (swatches, words) in rows {
         ui.horizontal(|ui| {
             let (rect, _) = ui.allocate_exact_size(vec2(28.0, 12.0), egui::Sense::hover());
