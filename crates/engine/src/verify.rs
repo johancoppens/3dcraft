@@ -60,6 +60,111 @@ pub(crate) struct Part<'a> {
     /// Per edge of the body: the box of [`EDGE_SAMPLES`] points along it
     /// grown by the chord, when first needed.
     edge_boxes: std::cell::OnceCell<Vec<Bbox3>>,
+    /// The tolerance the probe was made with, as bits (linear, angular):
+    /// with the body, what a line's answer depends on.
+    tolerance_bits: (u64, u64),
+    /// The lines of a thickness cast so far ([`thickness_at`]), kept
+    /// beside equal bodies between measures ([`KEPT_LINES`]).
+    lines: std::cell::RefCell<Lines>,
+}
+
+/// The lines cast into the material of one body: by face, point, the
+/// tolerance and the length allowed (as bits), what the line met.
+type Lines = BTreeMap<(usize, [u64; 3], u64, u64), Option<(f64, Vec3, usize)>>;
+
+/// The lines of a thickness, kept between measures for bodies equal to
+/// one measured before, with the tolerance they were cast with: a Jig's
+/// points (`document.sample`) regenerate each a fresh body, the same
+/// wherever the values sampled do not reach it, and every line is then
+/// asked again. A line's answer depends on the body, the tolerance, the
+/// face, the point and the length allowed only, so one kept is the very
+/// answer casting it gives. A body is told by its full text (`Debug`,
+/// which writes every number so that it reads back to the same bits:
+/// `==` would take 0 and -0 for one). The most recent bodies last.
+#[cfg(not(test))]
+static KEPT_LINES: std::sync::Mutex<Vec<Kept>> = std::sync::Mutex::new(Vec::new());
+/// A body's text, the tolerance as bits and the lines cast into it.
+type Kept = (String, (u64, u64), Lines);
+
+#[cfg(test)]
+thread_local! {
+    /// In tests, the kept lines of this thread alone, so that what a test
+    /// keeps is not let go by tests running beside it.
+    static KEPT_LINES: std::cell::RefCell<Vec<Kept>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// In tests, how many lines this thread has cast.
+    pub(crate) static CAST: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// `f` with the lines kept.
+fn with_kept<R>(f: impl FnOnce(&mut Vec<Kept>) -> R) -> R {
+    #[cfg(not(test))]
+    {
+        f(&mut KEPT_LINES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner))
+    }
+    #[cfg(test)]
+    {
+        KEPT_LINES.with(|kept| f(&mut kept.borrow_mut()))
+    }
+}
+/// Most bodies whose lines are kept.
+const KEPT_BODIES: usize = 4;
+/// Most lines kept per body (past it, no more are added).
+const KEPT_PER_BODY: usize = 1 << 16;
+/// Bodies with more faces than this keep no lines (their text, kept to
+/// tell an equal body by, would be large).
+const KEPT_FACES: usize = 4096;
+
+impl Part<'_> {
+    /// The text an equal body is told by, for a body small enough to keep
+    /// lines for.
+    fn kept_id(&self) -> Option<String> {
+        let body = self.body();
+        (body.faces.len() <= KEPT_FACES).then(|| format!("{body:?}"))
+    }
+
+    /// The lines kept for a body of text `id`, copied (a measure of an
+    /// equal body beside this one may use them too).
+    fn take_kept_lines(&self, id: &str) {
+        let taken = with_kept(|kept| {
+            kept.iter()
+                .find(|(b, t, _)| *t == self.tolerance_bits && b == id)
+                .map(|(_, _, lines)| lines.clone())
+        });
+        if let Some(lines) = taken {
+            *self.lines.borrow_mut() = lines;
+        }
+    }
+
+    /// Keeps this part's lines for an equal body measured later, with
+    /// those kept for it meanwhile (the same answers where both have one),
+    /// as the most recent.
+    fn keep_lines(&self, id: String) {
+        let mut lines = std::mem::take(&mut *self.lines.borrow_mut());
+        if lines.is_empty() {
+            return;
+        }
+        with_kept(|kept| {
+            if let Some(i) = kept
+                .iter()
+                .position(|(b, t, _)| *t == self.tolerance_bits && *b == id)
+            {
+                let (_, _, before) = kept.remove(i);
+                for (key, found) in before {
+                    if lines.len() >= KEPT_PER_BODY {
+                        break;
+                    }
+                    lines.entry(key).or_insert(found);
+                }
+            }
+            if kept.len() >= KEPT_BODIES {
+                kept.remove(0);
+            }
+            kept.push((id, self.tolerance_bits, lines));
+        });
+    }
 }
 
 impl<'a> Part<'a> {
@@ -157,6 +262,8 @@ impl<'a> Part<'a> {
             err,
             linear: tolerance.linear,
             edge_boxes: std::cell::OnceCell::new(),
+            tolerance_bits: (tolerance.linear.to_bits(), tolerance.angular.to_bits()),
+            lines: std::cell::RefCell::new(BTreeMap::new()),
         })
     }
 
@@ -1042,6 +1149,33 @@ fn thickness_at(
     tol: f64,
     limit: f64,
 ) -> Answer<Option<(f64, Vec3, usize)>> {
+    let key = (
+        face,
+        [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()],
+        tol.to_bits(),
+        limit.to_bits(),
+    );
+    if let Some(found) = part.lines.borrow().get(&key) {
+        return Ok(*found);
+    }
+    let found = cast_into(part, face, p, tol, limit)?;
+    let mut lines = part.lines.borrow_mut();
+    if lines.len() < KEPT_PER_BODY {
+        lines.insert(key, found);
+    }
+    Ok(found)
+}
+
+/// [`thickness_at`], cast.
+fn cast_into(
+    part: &Part<'_>,
+    face: usize,
+    p: Vec3,
+    tol: f64,
+    limit: f64,
+) -> Answer<Option<(f64, Vec3, usize)>> {
+    #[cfg(test)]
+    CAST.with(|c| c.set(c.get() + 1));
     let Some(normal) = part.probe.normal(face, p).map_err(|e| e.to_string())? else {
         return Ok(None);
     };
@@ -1634,6 +1768,19 @@ const MAX_BOUND_PAIRS: usize = 200_000;
 /// No more than `stop` is proven (what an assertion asks: the work of
 /// proving beyond it is not spent; infinite for as close as it can).
 pub(crate) fn thickness_to(part: &Part<'_>, tol: f64, stop: f64) -> Answer<Option<Thin>> {
+    let id = part.kept_id();
+    if let Some(id) = &id {
+        part.take_kept_lines(id);
+    }
+    let thin = thinnest(part, tol, stop);
+    if let Some(id) = id {
+        part.keep_lines(id);
+    }
+    thin
+}
+
+/// [`thickness_to`], with the lines kept for the part's body.
+fn thinnest(part: &Part<'_>, tol: f64, stop: f64) -> Answer<Option<Thin>> {
     let faces: Vec<usize> = part.triangles.keys().copied().collect();
     if faces.is_empty() {
         return Ok(None);
@@ -2371,6 +2518,57 @@ mod settle_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tube (a cylinder less a coaxial one) measured, then a body equal
+    /// to it but made again (another copy, as each point of a Jig's
+    /// sample regenerates one) measured: the same answer to the bit, and
+    /// not one line cast for it; the same body at another tolerance, or a
+    /// different body, casts its own.
+    #[test]
+    fn the_lines_of_an_equal_body_are_not_cast_again() {
+        use craft3d_kernel::boolean::{BooleanOp, boolean};
+        use craft3d_kernel::primitives::cylinder;
+        use craft3d_math::{Frame, Tolerance};
+        let tube = |inner: f64| {
+            let outer = cylinder(&Frame::WORLD, 5.0, 7.0).unwrap();
+            let bore = cylinder(
+                &Frame::WORLD.at(Vec3::new(0.0, 0.0, -1.0)).unwrap(),
+                inner,
+                9.0,
+            )
+            .unwrap();
+            boolean(&outer, &bore, BooleanOp::Subtract, &Tolerance::default())
+                .unwrap()
+                .body
+        };
+        let measure = |body: &Body, tolerance: &Tolerance| {
+            let part = Part::new(body, None, tolerance).unwrap();
+            let before = CAST.with(std::cell::Cell::get);
+            let thin = thickness_to(&part, tolerance.linear, f64::INFINITY)
+                .unwrap()
+                .unwrap();
+            let cast = CAST.with(std::cell::Cell::get) - before;
+            (
+                thin.thickness,
+                format!(
+                    "{} {} {:?} {:?}",
+                    thin.thickness, thin.lower, thin.at, thin.to
+                ),
+                cast,
+            )
+        };
+        let tolerance = Tolerance::default();
+        let (wall, first, cast) = measure(&tube(3.0), &tolerance);
+        assert!(cast > 100, "{cast}");
+        assert!((wall - 2.0).abs() < 1e-6, "{first}");
+        let (_, again, cast) = measure(&tube(3.0), &tolerance);
+        assert_eq!(again, first);
+        assert_eq!(cast, 0);
+        let finer = Tolerance::new(0.5 * tolerance.linear, tolerance.angular).unwrap();
+        assert!(measure(&tube(3.0), &finer).2 > 100);
+        let (wall, other, cast) = measure(&tube(3.5), &tolerance);
+        assert!(cast > 100 && (wall - 1.5).abs() < 1e-6, "{other} {cast}");
+    }
 
     #[test]
     fn triangle_distances_are_exact_for_simple_cases() {

@@ -27,6 +27,19 @@ const ALONG: &str = "a curve that runs along a surface within the tolerance with
 
 /// The most evaluations one curve and surface may cost.
 const MAX_EVALUATIONS: usize = 200_000;
+/// How much narrower than the distance allows a window cleared about a
+/// stretch's middle is kept, for the rounding of the distance and of the
+/// parameters (relative).
+const WINDOW_MARGIN: f64 = 1e-9;
+/// A window narrower than this part of half its stretch is not cut out:
+/// the stretch is halved, as without one (three pieces where two do).
+const WINDOW_LEAST: f64 = 0.125;
+/// What part of the distance in the middle a bound below it is asked to
+/// reach for a window (the bound is refined no further than that).
+const WINDOW_ASKED: f64 = 0.9;
+/// A stretch whose window would take more than this part of half of it
+/// is not bounded as a whole first (see `numeric`).
+const STRETCH_BEFORE_WINDOW: f64 = 0.5;
 
 /// A signed distance from `p` to the surface: zero on it, changing by at
 /// most the distance moved, and of one sign on each side. For a cone it is
@@ -393,9 +406,18 @@ fn numeric(
         return Ok(CurveIntersection::OnSurface);
     }
     let mut runs: Vec<(f64, f64, Kind)> = Vec::new();
-    let mut stack = vec![(start, end)];
+    // Stretches still to judge, and stretches already judged clear on the
+    // way (see the window below), taken from the left.
+    let mut stack: Vec<(f64, f64, Option<Kind>)> = vec![(start, end, None)];
     let mut evaluations = 0_usize;
-    while let Some((a, b)) = stack.pop() {
+    while let Some((a, b, judged)) = stack.pop() {
+        if let Some(kind) = judged {
+            match runs.last_mut() {
+                Some(last) if last.2 == kind => last.1 = b,
+                _ => runs.push((a, b, kind)),
+            }
+            continue;
+        }
         evaluations += 1;
         if evaluations > MAX_EVALUATIONS {
             return Err(GeomError::Unsupported(ALONG));
@@ -439,8 +461,37 @@ fn numeric(
             Some(bound) => bound(curve.eval(t), 1.001 * tol) > tol,
             None => f(t).abs() > tol,
         };
+        // Where the curve cannot come within the tolerance of the surface
+        // while it stays nearer to `mid` than the distance there less the
+        // tolerance (over its speed): that window is clear, on the side of
+        // the middle, by the same reasoning that clears a whole stretch.
+        // A bound below the distance is asked where the distance itself
+        // may be an overestimate. Asked once, where it is needed.
+        let window = std::cell::OnceCell::new();
+        let reach = || {
+            *window.get_or_init(|| {
+                let below = if value.abs() > tol {
+                    match lower {
+                        Some(bound) => {
+                            bound(curve.eval(mid), WINDOW_ASKED * value.abs()).min(value.abs())
+                        }
+                        None => value.abs(),
+                    }
+                } else {
+                    0.0
+                };
+                // Less what rounding can move the window's ends by.
+                (below - tol) / speed * (1.0 - WINDOW_MARGIN) - 4.0 * f64::EPSILON * mid.abs()
+            })
+        };
+        // The bound below a whole stretch is asked only where such a
+        // window would leave most of it: where it would take most of it,
+        // the curve is far from the surface for its length, and a
+        // crossing beside it (where the bound below the stretch fails
+        // after all its work) is the likelier case.
         let clear = certain - stray > tol
             || (value.abs() > tol
+                && (reach().is_nan() || reach() <= STRETCH_BEFORE_WINDOW * half)
                 && lower_stretch.is_some_and(|bound| {
                     [a, 0.5 * (a + mid), 0.5 * (mid + b), b]
                         .into_iter()
@@ -463,8 +514,32 @@ fn numeric(
         } else if near {
             Kind::Near
         } else {
-            stack.push((mid, b));
-            stack.push((a, mid));
+            // Not clear as a whole: the window about the middle is cut
+            // out and only what lies beside it is divided further. Where
+            // the curve crosses the surface at an angle this closes in on
+            // the crossing in a few steps, where halving takes one per bit
+            // of the stretch's length over the tolerance
+            // (docs/design/booleans.md › *A crossing closed in on*).
+            let reach = reach();
+            if reach.is_finite() && reach > WINDOW_LEAST * half {
+                let (lo, hi) = ((mid - reach).max(a), (mid + reach).min(b));
+                if hi < b {
+                    stack.push((hi, b, None));
+                }
+                stack.push((
+                    lo,
+                    hi,
+                    Some(Kind::Clear {
+                        positive: value > 0.0,
+                    }),
+                ));
+                if lo > a {
+                    stack.push((a, lo, None));
+                }
+            } else {
+                stack.push((mid, b, None));
+                stack.push((a, mid, None));
+            }
             continue;
         };
         match runs.last_mut() {
@@ -478,7 +553,11 @@ fn numeric(
     if let [(_, _, Kind::Near)] = runs.as_slice() {
         return Ok(CurveIntersection::OnSurface);
     }
-    let hits = hits_of_runs(curve, &runs, &f, bounded, tol, None);
+    // A crossing's root by false position (a few evaluations where
+    // halving takes one per bit, down to the rounding), halving where it
+    // finds no sign change.
+    let solve = |level: f64, lo: f64, hi: f64| false_position(&|t| f(t) - level, lo, hi);
+    let hits = hits_of_runs(curve, &runs, &f, bounded, tol, Some(&solve));
     if failed.get() {
         return Err(GeomError::Unsupported(FREEFORM));
     }
@@ -1835,6 +1914,56 @@ mod tests {
             tol,
         )
         .unwrap()
+    }
+
+    /// A line through a ball at a slant, by the root isolation alone at
+    /// three scales: both crossings at their closed-form places, and in
+    /// few evaluations of the distance. Halving down to the tolerance took
+    /// one evaluation per bit of the stretch over it and the root then
+    /// eighty more (some 370 here); the window about each middle the
+    /// distance clears, and false position for the root, close in on each
+    /// crossing in a few (docs/design/booleans.md › *A crossing closed in
+    /// on*).
+    #[test]
+    fn a_line_through_a_ball_is_settled_in_few_evaluations() {
+        for k in [1e-3, 1.0, 1e6] {
+            let tol = 1e-6 * k;
+            let ball = Surface::Sphere(Sphere::new(tilted(k), 3.0 * k).unwrap());
+            let sheet = Sheet::bare(&ball);
+            let centre = tilted(k).origin();
+            let way = Vec3::new(0.6, -0.3, 0.74).normalized().unwrap();
+            // 1.2 from the centre, so the chord is 2·sqrt(9 − 1.44).
+            let off = way.cross(Vec3::new(0.0, 0.0, 1.0)).normalized().unwrap();
+            let line = Curve3::Line(Line::new(centre + off * (1.2 * k), way).unwrap());
+            let count = std::cell::Cell::new(0_usize);
+            let found = numeric(
+                &line,
+                (-10.0 * k, 12.0 * k),
+                Probe {
+                    distance: &|p| {
+                        count.set(count.get() + 1);
+                        signed_distance(sheet, p)
+                    },
+                    lower: None,
+                    lower_stretch: None,
+                    bend: None,
+                    within: None,
+                    bounded: false,
+                },
+                tol,
+            )
+            .unwrap();
+            let CurveIntersection::Hits(hits) = found else {
+                panic!("on the surface")
+            };
+            let half = (9.0_f64 - 1.44).sqrt() * k;
+            assert_eq!(hits.len(), 2, "{k}: {hits:?}");
+            for (hit, t) in hits.iter().zip([-half, half]) {
+                assert!((hit.t - t).abs() <= 1e-9 * k, "{k}: {} for {t}", hit.t);
+                assert!(!hit.tangent);
+            }
+            assert!(count.get() <= 120, "{k}: {} evaluations", count.get());
+        }
     }
 
     /// The closed form, as `curve_hits` asks it now.
