@@ -450,6 +450,20 @@ impl Marcher {
         true
     }
 
+    /// Whether a cell or an edge of the grid whose centre is `dist` from
+    /// the field's surface and whose image lies within `reach` of the
+    /// centre's is clear of zero: only when `dist` exceeds `reach` by more
+    /// than rounding (`on`). A zero exactly on a node, where the reach is
+    /// tight (a surface linear across the cell, a plane square to it),
+    /// lies at the distance of the reach: a centre rounded a hair further
+    /// off left the cell (or a border's edge) out as clear, the cell
+    /// beyond counted the node's zero with its own sign and showed no
+    /// change, and the curve was lost (docs/design/booleans.md › *A plane
+    /// through a node of the marcher's grid*).
+    fn clear_of_zero(&self, dist: f64, reach: f64) -> bool {
+        dist > reach + self.on
+    }
+
     /// Tells the marcher the chart of the field's surface, when that is a
     /// freeform surface with borders (see [`Marcher::field_border_seeds`]).
     pub(super) fn with_field_chart(mut self, chart: Chart) -> Self {
@@ -1292,9 +1306,8 @@ impl Marcher {
             };
             let reach = speed * half;
             let monotonic = match self.eval(u, v) {
-                // (Clear of zero by more than rounding, as a cell in
-                // `seeds`.)
-                Some(e) if e.dist > reach + self.on => continue,
+                // (Clear of zero by more than rounding: `clear_of_zero`.)
+                Some(e) if self.clear_of_zero(e.dist, reach) => continue,
                 Some(e) => self.field.bend_at(e.p, reach, e.dist).is_some_and(|k| {
                     let slope = if along_u { e.gu } else { e.gv };
                     slope.abs() > 1.01 * (k * speed * speed + bend) * half
@@ -1527,17 +1540,9 @@ impl Marcher {
                 continue;
             }
             let simple = match here {
-                // Clear of zero only when the distance at the centre
-                // exceeds the reach by more than rounding (`on`). A zero
-                // exactly on a node, where the reach is tight (a surface
-                // linear across the cell, a plane square to it), lies at
-                // the distance of the reach: a centre rounded a hair
-                // further off left the cell (or a border's edge) out as
-                // clear, the cell beyond counted the node's zero with its
-                // own sign and showed no change, and the curve was lost
-                // (docs/design/booleans.md › *A plane through a node of
-                // the marcher's grid*).
-                Some(e) if e.dist > reach + self.on => continue,
+                // Clear of zero only by more than rounding
+                // (`clear_of_zero`).
+                Some(e) if self.clear_of_zero(e.dist, reach) => continue,
                 Some(e) => self.field.bend_at(e.p, reach, e.dist).is_some_and(|k| {
                     let (muu, muv, mvv) = (
                         k * b.lu * b.lu + b.muu,
@@ -3701,6 +3706,28 @@ mod tests {
         let field = Field::new(&rod).unwrap();
         let chart = Chart::new(&plane, &within, &tol, &field).unwrap().unwrap();
         Marcher::new(chart, field, &within, &tol).unwrap()
+    }
+
+    /// A cell whose centre is exactly its reach from the field's surface
+    /// (a zero on one of its nodes), or a rounding further, is not clear
+    /// of zero; one further by more than the field's resolution is. Pins
+    /// the rule itself, whatever rounding a given geometry meets
+    /// (docs/design/booleans.md › *A plane through a node of the
+    /// marcher's grid*).
+    #[test]
+    fn a_cell_whose_zero_is_on_a_node_is_not_clear_of_zero() {
+        for k in [1e-3, 1.0, 1e6] {
+            let m = marcher(k);
+            for reach in [1e-3 * k, 0.37 * k, k, 2.5 * k] {
+                assert!(!m.clear_of_zero(reach, reach), "k {k}, reach {reach}");
+                // A centre rounded a few bits further off.
+                let rounded = reach * (1.0 + 8.0 * f64::EPSILON);
+                assert!(!m.clear_of_zero(rounded, reach), "k {k}, reach {reach}");
+                assert!(!m.clear_of_zero(reach + 0.5 * m.on, reach), "k {k}");
+                assert!(m.clear_of_zero(reach + 2.0 * m.on, reach), "k {k}");
+                assert!(m.clear_of_zero(reach + m.tol.linear, reach), "k {k}");
+            }
+        }
     }
 
     /// The arc of the circle about `centre` (in the plane) of `radius` over

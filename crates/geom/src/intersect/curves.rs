@@ -220,7 +220,21 @@ fn coaxial_circle(
     })
 }
 
-/// Bounds on the first and second derivative of a curve over its range.
+/// Whether an interval of a curve whose middle `p` is `dist` from the
+/// surface and whose points lie within `reach` of `p` is clear of it: only
+/// when `dist` exceeds `reach` by more than rounding, as the marcher's
+/// `on` reads it (a ten thousandth of the tolerance or 64 ulps of the
+/// coordinates, whichever is more). A crossing exactly at an end of the
+/// interval, where the curve runs straight at the surface, lies at the
+/// distance of the reach; a middle rounded a hair further off left the
+/// interval out, while the next one counts the end's zero with its own
+/// sign (docs/design/booleans.md › *A plane through a node of the
+/// marcher's grid*).
+fn clear_of_surface(dist: f64, reach: f64, tol: &Tolerance, p: Vec3) -> bool {
+    let rounding = (1e-4 * tol.linear).max(64.0 * f64::EPSILON * (p.length() + reach));
+    dist > reach + rounding
+}
+
 fn curve_bounds(curve: &Curve3, range: (f64, f64)) -> (f64, f64) {
     match curve {
         Curve3::Line(_) => (1.0, 0.0),
@@ -369,7 +383,8 @@ pub(super) fn numeric(
         let (mid, half) = (0.5 * (lo + hi), 0.5 * (hi - lo));
         let reach = speed * half;
         let monotonic = match sample(mid) {
-            Some((_, s, _)) if s.dist > reach => continue,
+            // (Clear only by more than rounding: `clear_of_surface`.)
+            Some((p, s, _)) if clear_of_surface(s.dist, reach, tol, p) => continue,
             Some((p, s, slope)) => field
                 .bend_at(p, reach, s.dist)
                 .is_some_and(|k| slope.abs() > 1.01 * (k * speed * speed + bend) * half),
@@ -517,4 +532,41 @@ pub(super) fn numeric(
         }
     }
     Ok(hits(merged))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    /// An interval whose middle is exactly its reach from the surface (a
+    /// crossing on one of its ends), or a rounding further, is not clear
+    /// of it; one further by more than rounding is. Pins the rule
+    /// whatever rounding a given curve meets.
+    #[test]
+    fn an_interval_with_a_crossing_on_its_end_is_not_clear() {
+        for k in [1e-3, 1.0, 1e6] {
+            let tol = Tolerance::new(1e-6 * k, 1e-9).unwrap();
+            for (p, reach) in [
+                (Vec3::new(0.25, -0.5, 4.6875) * k, 0.3125 * k),
+                (Vec3::new(20.0, 7.0, -3.0) * k, 1e-3 * k),
+                (Vec3::new(1.0, 1.0, 1.0) * k, 2.5 * k),
+            ] {
+                assert!(!clear_of_surface(reach, reach, &tol, p), "k {k}");
+                let rounded = reach * (1.0 + 8.0 * f64::EPSILON);
+                assert!(!clear_of_surface(rounded, reach, &tol, p), "k {k}");
+                assert!(!clear_of_surface(
+                    reach + 0.5e-4 * tol.linear,
+                    reach,
+                    &tol,
+                    p
+                ));
+                assert!(
+                    clear_of_surface(reach + tol.linear, reach, &tol, p),
+                    "k {k}"
+                );
+            }
+        }
+    }
 }

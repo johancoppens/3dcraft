@@ -51,10 +51,29 @@ fn knots(degree: usize, count: usize) -> Vec<f64> {
 /// A tooth gap's root, as a gear's is: a cubic spline from (-w/2, 0) to
 /// (w/2, 0) that dips below the axis, closed by three lines up to y = w;
 /// extruded along z from `from` to `to` (all times `k`).
+const W: f64 = 1.0;
+const HEIGHTS: [f64; 6] = [0.0, -0.08, -0.12, -0.12, -0.08, 0.0];
+const DEGREE: usize = 3;
+
+/// The area of the root's profile, in closed form (times `k²`): the
+/// control points lie at their Greville abscissae, so x runs linearly
+/// with the parameter, x = -w/2 + w t, and the area under y = w less the
+/// area under the spline is w² − w ∫ y dt, with ∫ N_i dt = (t_{i+p+1} −
+/// t_i) / (p + 1) for each B-spline of degree p.
+fn profile_area(k: f64) -> f64 {
+    let knots = knots(DEGREE, HEIGHTS.len());
+    let under: f64 = HEIGHTS
+        .iter()
+        .enumerate()
+        .map(|(i, c)| c * (knots[i + DEGREE + 1] - knots[i]) / (DEGREE + 1) as f64)
+        .sum();
+    (W * W - W * under) * k * k
+}
+
 fn root_prism(k: f64, from: f64, to: f64) -> Body {
-    let w = 1.0;
-    let heights = [0.0, -0.08, -0.12, -0.12, -0.08, 0.0];
-    let degree = 3;
+    let w = W;
+    let heights = HEIGHTS;
+    let degree = DEGREE;
     let knots = knots(degree, heights.len());
     let control: Vec<[f64; 2]> = heights
         .iter()
@@ -129,7 +148,15 @@ fn cut_at_the_middle(k: f64, from: f64) -> Result<(), String> {
     let prism = root_prism(k, from, to);
     valid(&prism, &tol, "the prism")?;
     let whole = mass_properties(&prism).unwrap();
-    let area = whole.volume / (to - from);
+    let area = profile_area(k);
+    // The prism itself against its closed form, within the tolerance
+    // times its walls' area.
+    close(
+        whole.volume,
+        area * (to - from),
+        tol.linear * 4.0 * k * (to - from),
+        "the prism's volume",
+    )?;
     let at = 5.0 * k;
     // The measure the gearbox asks for: the part below and its section.
     let side = CutPlane::new(Vec3::new(0.0, 0.0, 1.0), Vec3::new(1.0, 0.0, 0.0)).unwrap();
