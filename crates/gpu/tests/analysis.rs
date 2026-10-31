@@ -248,16 +248,6 @@ fn check(name: &str, mesh: &Mesh, values: &[f32], camera: &Camera, p: &RenderPar
             .render_analysed(mesh, &FaceColors::new(), values, camera, p)
             .unwrap();
         let report = compare(&cpu, &frame, &near_edge, &in_doubt, &variants);
-        std::fs::write(
-            common::evidence(&format!("DBG-{name}-gpu.png")),
-            craft3d_render::encode_png(frame.width, frame.height, &frame.rgb).unwrap(),
-        )
-        .unwrap();
-        std::fs::write(
-            common::evidence(&format!("DBG-{name}-cpu.png")),
-            craft3d_render::encode_png(cpu.width, cpu.height, &cpu.rgb).unwrap(),
-        )
-        .unwrap();
         if report.over_one > 0 {
             let png = |f: &Frame| craft3d_render::encode_png(f.width, f.height, &f.rgb).unwrap();
             craft3d_testkit::evidence::print(&format!("{name}-cpu"), &png(&cpu));

@@ -769,10 +769,20 @@ mod tests {
         if !phase.is_finite() {
             return width;
         }
+        if width <= 0.0 {
+            return 0.0;
+        }
+        if width >= 1.0 {
+            return 1.0;
+        }
         let x = phase - phase.floor();
         let point = if x < width { 1.0 } else { 0.0 };
         if footprint == 0.0 {
             return point;
+        }
+        // ANALYSIS_FLAT_FOOTPRINT, `FLAT_FOOTPRINT` in `f32`.
+        if !(footprint > 0.0 && footprint <= 1e6) {
+            return width;
         }
         let f = footprint;
         let (to_start, to_end, to_next) = (x, (x - width).abs(), 1.0 - x);
