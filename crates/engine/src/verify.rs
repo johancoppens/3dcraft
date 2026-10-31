@@ -69,8 +69,10 @@ pub(crate) struct Part<'a> {
 }
 
 /// The lines cast into the material of one body: by face, point, the
-/// tolerance and the length allowed (as bits), what the line met.
-type Lines = BTreeMap<(usize, [u64; 3], u64, u64), Option<(f64, Vec3, usize)>>;
+/// tolerance and the length allowed (as bits), what the line met and the
+/// work casting it took (`craft3d_geom::allowance`), charged again when it
+/// is found here.
+type Lines = BTreeMap<(usize, [u64; 3], u64, u64), (Option<(f64, Vec3, usize)>, u64)>;
 
 /// The lines of a thickness, kept between measures for bodies equal to
 /// one measured before, with the tolerance they were cast with: a Jig's
@@ -78,13 +80,22 @@ type Lines = BTreeMap<(usize, [u64; 3], u64, u64), Option<(f64, Vec3, usize)>>;
 /// wherever the values sampled do not reach it, and every line is then
 /// asked again. A line's answer depends on the body, the tolerance, the
 /// face, the point and the length allowed only, so one kept is the very
-/// answer casting it gives. A body is told by its full text (`Debug`,
-/// which writes every number so that it reads back to the same bits:
-/// `==` would take 0 and -0 for one). The most recent bodies last.
+/// answer casting it gives. A body is told by every bit of every number
+/// of it (`craft3d_math::bits_of`, as `craft3d_topo::check_remembered`
+/// tells the bodies that passed: 0 and -0, and NaNs of different
+/// payloads, are told apart), a hash of those words looked at first. The
+/// most recent bodies last; at most [`KEPT_BODIES`] bodies of
+/// [`KEPT_WORDS`] words in all, [`KEPT_PER_BODY`] lines each.
 #[cfg(not(test))]
 static KEPT_LINES: std::sync::Mutex<Vec<Kept>> = std::sync::Mutex::new(Vec::new());
-/// A body's text, the tolerance as bits and the lines cast into it.
-type Kept = (String, (u64, u64), Lines);
+
+/// A body kept: the hash of its words, its words (with the tolerance's
+/// first), and the lines cast into it.
+struct Kept {
+    hash: u64,
+    words: Vec<u64>,
+    lines: Lines,
+}
 
 #[cfg(test)]
 thread_local! {
@@ -109,29 +120,58 @@ fn with_kept<R>(f: impl FnOnce(&mut Vec<Kept>) -> R) -> R {
         KEPT_LINES.with(|kept| f(&mut kept.borrow_mut()))
     }
 }
-/// Most bodies whose lines are kept.
+
+/// Lets go of every line kept ([`KEPT_LINES`]): when a document closes,
+/// after a run of `document.sample` and between its points where the
+/// caller asks for that. Each is cast again, the same, when asked for.
+/// Says how many bodies there were.
+pub(crate) fn forget_kept_lines() -> usize {
+    with_kept(|kept| std::mem::take(kept).len())
+}
+
+/// Most bodies whose lines are kept, and how many words their keys are
+/// at most in all (a body with more keeps none): 32 MB of keys and some
+/// 4 × 65,536 lines of about 130 bytes (34 MB) at most natively; in the
+/// browser one body of 4 MB.
+#[cfg(not(target_arch = "wasm32"))]
 const KEPT_BODIES: usize = 4;
+#[cfg(not(target_arch = "wasm32"))]
+const KEPT_WORDS: usize = 1 << 22;
+#[cfg(target_arch = "wasm32")]
+const KEPT_BODIES: usize = 1;
+#[cfg(target_arch = "wasm32")]
+const KEPT_WORDS: usize = 1 << 19;
 /// Most lines kept per body (past it, no more are added).
 const KEPT_PER_BODY: usize = 1 << 16;
-/// Bodies with more faces than this keep no lines (their text, kept to
-/// tell an equal body by, would be large).
-const KEPT_FACES: usize = 4096;
+
+/// FNV-1a over words.
+fn hash_words(words: &[u64]) -> u64 {
+    words.iter().fold(0xcbf2_9ce4_8422_2325_u64, |h, w| {
+        (h ^ w).wrapping_mul(0x0100_0000_01b3)
+    })
+}
 
 impl Part<'_> {
-    /// The text an equal body is told by, for a body small enough to keep
-    /// lines for.
-    fn kept_id(&self) -> Option<String> {
-        let body = self.body();
-        (body.faces.len() <= KEPT_FACES).then(|| format!("{body:?}"))
+    /// The words an equal body is told by (the tolerance's, then the
+    /// body's) and their hash, for a body small enough to keep lines for.
+    /// The words are as many as the body has numbers: no more than the
+    /// body itself takes, and let go at once when over [`KEPT_WORDS`].
+    fn kept_id(&self) -> Option<(u64, Vec<u64>)> {
+        use craft3d_math::Bits;
+        let mut words = vec![self.tolerance_bits.0, self.tolerance_bits.1];
+        self.body().push_bits(&mut words);
+        (words.len() <= KEPT_WORDS).then(|| (hash_words(&words), words))
     }
 
-    /// The lines kept for a body of text `id`, copied (a measure of an
-    /// equal body beside this one may use them too).
-    fn take_kept_lines(&self, id: &str) {
+    /// The lines kept for a body told by `id`, taken over (not copied: a
+    /// measure of an equal body beside this one casts its own, and the two
+    /// are put together when kept again).
+    fn take_kept_lines(&self, (hash, words): &(u64, Vec<u64>)) {
         let taken = with_kept(|kept| {
-            kept.iter()
-                .find(|(b, t, _)| *t == self.tolerance_bits && b == id)
-                .map(|(_, _, lines)| lines.clone())
+            let i = kept
+                .iter()
+                .position(|k| k.hash == *hash && k.words == *words)?;
+            Some(kept.remove(i).lines)
         });
         if let Some(lines) = taken {
             *self.lines.borrow_mut() = lines;
@@ -141,28 +181,26 @@ impl Part<'_> {
     /// Keeps this part's lines for an equal body measured later, with
     /// those kept for it meanwhile (the same answers where both have one),
     /// as the most recent.
-    fn keep_lines(&self, id: String) {
+    fn keep_lines(&self, (hash, words): (u64, Vec<u64>)) {
         let mut lines = std::mem::take(&mut *self.lines.borrow_mut());
         if lines.is_empty() {
             return;
         }
         with_kept(|kept| {
-            if let Some(i) = kept
-                .iter()
-                .position(|(b, t, _)| *t == self.tolerance_bits && *b == id)
-            {
-                let (_, _, before) = kept.remove(i);
-                for (key, found) in before {
+            if let Some(i) = kept.iter().position(|k| k.hash == hash && k.words == words) {
+                for (key, found) in kept.remove(i).lines {
                     if lines.len() >= KEPT_PER_BODY {
                         break;
                     }
                     lines.entry(key).or_insert(found);
                 }
             }
-            if kept.len() >= KEPT_BODIES {
+            kept.push(Kept { hash, words, lines });
+            while kept.len() > KEPT_BODIES
+                || kept.iter().map(|k| k.words.len()).sum::<usize>() > KEPT_WORDS
+            {
                 kept.remove(0);
             }
-            kept.push((id, self.tolerance_bits, lines));
         });
     }
 }
@@ -1155,13 +1193,22 @@ fn thickness_at(
         tol.to_bits(),
         limit.to_bits(),
     );
-    if let Some(found) = part.lines.borrow().get(&key) {
-        return Ok(*found);
+    use craft3d_geom::allowance;
+    // A line found kept charges the work its casting took, as any cache
+    // that skips counted work does, so that what a bound in force sees
+    // does not depend on what was measured before. (No measure runs under
+    // a bound today; this keeps it so if one ever does.)
+    if let Some(&(found, units)) = part.lines.borrow().get(&key) {
+        allowance::charge(units);
+        return Ok(found);
     }
-    let found = cast_into(part, face, p, tol, limit)?;
+    let counting = allowance::counting();
+    let (found, units) = allowance::measured(|| cast_into(part, face, p, tol, limit));
+    let found = found?;
     let mut lines = part.lines.borrow_mut();
-    if lines.len() < KEPT_PER_BODY {
-        lines.insert(key, found);
+    // One cast while not counting, or cut short by a bound, is not kept.
+    if counting && allowance::counting() && lines.len() < KEPT_PER_BODY {
+        lines.insert(key, (found, units));
     }
     Ok(found)
 }
@@ -2568,6 +2615,11 @@ mod tests {
         assert!(measure(&tube(3.0), &finer).2 > 100);
         let (wall, other, cast) = measure(&tube(3.5), &tolerance);
         assert!(cast > 100 && (wall - 1.5).abs() < 1e-6, "{other} {cast}");
+        // Let go of: cast again, to the same answer.
+        assert!(forget_kept_lines() > 0);
+        let (_, after, cast) = measure(&tube(3.0), &tolerance);
+        assert!(cast > 100, "{cast}");
+        assert_eq!(after, first);
     }
 
     #[test]

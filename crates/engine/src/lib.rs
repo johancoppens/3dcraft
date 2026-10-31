@@ -563,6 +563,15 @@ impl Session {
         if now == self.trees_held_for {
             return;
         }
+        // A document closed: the lines of thicknesses kept for its bodies
+        // (and any other's) go too, measured again when asked for.
+        if self
+            .trees_held_for
+            .iter()
+            .any(|(id, _)| !now.iter().any(|(n, _)| n == id))
+        {
+            crate::verify::forget_kept_lines();
+        }
         let bodies: Vec<&craft3d_topo::Body> = self
             .documents
             .iter()

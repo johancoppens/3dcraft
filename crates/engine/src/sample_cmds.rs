@@ -755,8 +755,9 @@ fn tell(point: &Value) -> bool {
 
 /// Lets go of what the kernel keeps per process between operations: the
 /// intersections of surfaces, the projections onto them, the meshes of
-/// faces, the bodies that passed their check, and what is remembered of
-/// bodies that are gone. Each is worked out again, the same, when asked
+/// faces, the bodies that passed their check, what is remembered of
+/// bodies that are gone, and the lines of thicknesses
+/// (`verify::forget_kept_lines`). Each is worked out again, the same, when asked
 /// for: only the time differs. A point's surfaces are mostly its own, so
 /// what one point kept is of little use to the next, and kept it filled
 /// the caches to their bounds and the memory with them (a gear pair's
@@ -767,6 +768,7 @@ fn forget_kept() {
     craft3d_tess::forget_kept_meshes();
     craft3d_topo::forget_passed();
     crate::mass::forget_gone();
+    crate::verify::forget_kept_lines();
 }
 
 /// How many corners the box of `movers` parameters has (2^n), while that

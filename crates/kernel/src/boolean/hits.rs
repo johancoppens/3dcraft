@@ -492,10 +492,16 @@ fn numeric(
         // window would leave most of it: where it would take most of it,
         // the curve is far from the surface for its length, and a
         // crossing beside it (where the bound below the stretch fails
-        // after all its work) is the likelier case.
+        // after all its work) is the likelier case. Always on a stretch
+        // too short to halve, which would otherwise be called near for its
+        // length alone: what the bound below a stretch skipped above it
+        // would have cleared is cleared here, piece by piece, so that the
+        // runs come out as before (docs/design/booleans.md › *A crossing
+        // closed in on*).
+        let shortest = b - a <= finest || !(mid > a && mid < b);
         let clear = certain - stray > tol
             || (value.abs() > tol
-                && (reach().is_nan() || reach() <= STRETCH_BEFORE_WINDOW * half)
+                && (shortest || reach().is_nan() || reach() <= STRETCH_BEFORE_WINDOW * half)
                 && lower_stretch.is_some_and(|bound| {
                     [a, 0.5 * (a + mid), 0.5 * (mid + b), b]
                         .into_iter()
@@ -508,8 +514,7 @@ fn numeric(
         // that lies on the surface is then found in one piece rather
         // than in pieces the size of the tolerance).
         let near = value.abs() + stray <= tol
-            || b - a <= finest
-            || !(mid > a && mid < b)
+            || shortest
             || (value.abs() <= tol && within.is_some_and(|proven| proven(a, b)));
         let kind = if clear {
             Kind::Clear {
@@ -583,8 +588,22 @@ fn hits_of_runs(
             .and_then(|solve| solve(0.0, lo, hi))
             .unwrap_or_else(|| root(f, lo, hi))
     };
-    let side = |run: Option<&(f64, f64, Kind)>| match run {
-        Some(&(_, _, Kind::Clear { positive })) => Some(positive),
+    // The side of a clear run next to a near one, by the distance itself
+    // where the two meet, not by the label the run was given: a run
+    // cleared by a window about a middle further off (`numeric`) carries
+    // that middle's sign, and the signed distance to a patch that ends
+    // can turn over beside its rim while staying clear of it. Clear there
+    // means further than the tolerance, so the sign there is the side the
+    // near run is entered from or left to.
+    let side = |run: Option<&(f64, f64, Kind)>, at: f64| match run {
+        Some(&(_, _, Kind::Clear { positive })) => {
+            let v = f(at);
+            Some(if v.is_finite() && v != 0.0 {
+                v > 0.0
+            } else {
+                positive
+            })
+        }
         _ => None,
     };
     let mut hits = Vec::new();
@@ -592,8 +611,8 @@ fn hits_of_runs(
         if kind != Kind::Near {
             continue;
         }
-        let before = index.checked_sub(1).and_then(|i| side(runs.get(i)));
-        let after = side(runs.get(index + 1));
+        let before = index.checked_sub(1).and_then(|i| side(runs.get(i), lo));
+        let after = side(runs.get(index + 1), hi);
         // A curve that lies on a surface that ends (an edge of one body
         // along a patch of the other, past where the patch ends) is cut
         // where it leaves it: at each end of the stretch that is not an
@@ -1919,7 +1938,8 @@ mod tests {
     /// crossings at their closed-form places, in fewer looks. Before the
     /// windows (docs/design/booleans.md › *A crossing closed in on*) it
     /// took 198 distances and 51 bounds; the pieces halved into a window
-    /// need none, 153 to 155 and 62 now.
+    /// need none, 157 to 159 and 60 now (two looks per near run at its
+    /// ends included).
     #[test]
     fn a_line_through_a_ball_is_settled_in_fewer_evaluations() {
         for k in [1e-3, 1.0, 1e6] {
