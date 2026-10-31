@@ -466,12 +466,12 @@ pub fn surface_piece(
                         if i < span.m
                             && let (Some(p), Some(q)) = (at(i, j), at(i + 1, j))
                         {
-                            along_u.extend((q - p).normalized());
+                            along_u.push(q - p);
                         }
                         if j < span.n
                             && let (Some(p), Some(q)) = (at(i, j), at(i, j + 1))
                         {
-                            along_v.extend((q - p).normalized());
+                            along_v.push(q - p);
                         }
                     }
                 }
@@ -482,7 +482,7 @@ pub fn surface_piece(
             }
             let reach = all.iter().map(|p| p.length()).fold(rounding, f64::max);
             let cone = if polynomial {
-                normal_cone(&along_u, &along_v)
+                normal_cone(&along_u, &along_v, reach)
             } else {
                 None
             };
@@ -523,18 +523,45 @@ fn cut_net(span: &SpanNet, (u0, u1): (f64, f64), (v0, v1): (f64, f64)) -> Vec<Ho
     c
 }
 
-/// The narrowest cone found around unit directions: their mean and the
-/// largest angle from it; `None` when they do not lie within a right
-/// angle of it (or there are none).
-fn cone_of(directions: &[Vec3]) -> Option<(Vec3, f64)> {
-    let sum = directions.iter().fold(Vec3::ZERO, |s, d| s + *d);
+/// The narrowest cone found around differences of a net's points: their
+/// directions' mean and the largest angle from it, widened by what
+/// rounding can turn a difference by; `None` when they do not lie within
+/// a right angle of it (or there are none, or one is zero).
+fn cone_of(differences: &[Vec3], reach: f64) -> Option<(Vec3, f64)> {
+    let mut units = Vec::with_capacity(differences.len());
+    let mut shortest = f64::INFINITY;
+    for d in differences {
+        // Two points that are one (the same numbers: a pole, a repeated
+        // point) add nothing to the positive combination.
+        if *d == Vec3::ZERO {
+            continue;
+        }
+        shortest = shortest.min(d.length());
+        units.push(d.normalized()?);
+    }
+    let sum = units.iter().fold(Vec3::ZERO, |s, d| s + *d);
     let axis = sum.normalized()?;
-    let half = directions
+    let half = units
         .iter()
         .map(|d| d.dot(axis).clamp(-1.0, 1.0).acos())
         .fold(0.0, f64::max)
-        + 1e-12;
+        + turn_margin(reach, shortest);
     (half < FRAC_PI_2).then_some((axis, half))
+}
+
+/// What rounding can turn a difference of two of a net's points by (an
+/// angle): the points are off by up to [`ROUNDING`] of the net's reach
+/// (the magnitudes their computation, de Casteljau's included, scales
+/// with), each of them, so a difference of length `shortest` turns by at
+/// most about twice that over it; four times for the axis's and the
+/// `acos`'s own rounding; never less than 1e-12. Infinite (no cone) when
+/// a difference is not longer than what rounding moves it by.
+fn turn_margin(reach: f64, shortest: f64) -> f64 {
+    let moved = 2.0 * ROUNDING * reach;
+    if !(shortest > 2.0 * moved) {
+        return f64::INFINITY;
+    }
+    (4.0 * moved / shortest).max(1e-12)
 }
 
 /// A cone around the normals of a polynomial patch from the differences
@@ -544,9 +571,9 @@ fn cone_of(directions: &[Vec3]) -> Option<(Vec3, f64)> {
 /// of `a` and `β` of `b` have `|t_u × t_v − a × b| ≤ c_α + c_β` (the
 /// chords `2 sin(α/2)`, `2 sin(β/2)`), so the normal is within
 /// `asin((c_α + c_β) / |a × b|)` of `a × b` when that is below 1.
-fn normal_cone(along_u: &[Vec3], along_v: &[Vec3]) -> Option<Cone> {
-    let (a, alpha) = cone_of(along_u)?;
-    let (b, beta) = cone_of(along_v)?;
+fn normal_cone(along_u: &[Vec3], along_v: &[Vec3], reach: f64) -> Option<Cone> {
+    let (a, alpha) = cone_of(along_u, reach)?;
+    let (b, beta) = cone_of(along_v, reach)?;
     let n = a.cross(b);
     let s = n.length();
     let e = 2.0 * (0.5 * alpha).sin() + 2.0 * (0.5 * beta).sin();
@@ -775,33 +802,32 @@ impl Piece {
                 }
                 within(tangent.normalized(), 0.5 * width(*t) * big / small)
             }
-            Piece::CurveHull { nets, rational, .. } => {
-                let mut directions = Vec::new();
+            Piece::CurveHull {
+                nets,
+                rational,
+                reach,
+            } => {
+                let mut differences = Vec::new();
                 for net in nets {
                     if *rational {
                         for (i, p) in net.iter().enumerate() {
                             for q in net.iter().skip(i + 1) {
-                                directions.extend((*q - *p).normalized());
+                                differences.push(*q - *p);
                             }
                         }
                     } else {
                         for pair in net.windows(2) {
                             if let [p, q] = pair {
-                                directions.extend((*q - *p).normalized());
+                                differences.push(*q - *p);
                             }
                         }
                     }
                 }
-                let sum = directions.iter().fold(Vec3::ZERO, |s, d| s + *d);
-                let axis = sum.normalized()?;
-                let half = directions
-                    .iter()
-                    .map(|d| d.dot(axis).clamp(-1.0, 1.0).acos())
-                    .fold(0.0, f64::max);
                 // The derivative is a positive combination of these: in
                 // the cone, and never zero, when it is narrower than a
-                // right angle. Rounding of the acos: a little more.
-                within(Some(axis), half + 1e-12)
+                // right angle; widened by what rounding turns them by.
+                let (axis, half) = cone_of(&differences, *reach)?;
+                within(Some(axis), half)
             }
         }
     }
@@ -943,6 +969,67 @@ mod tests {
         };
         let (g1, g2) = (gap(0.1), gap(0.05));
         assert!(g2 < 0.3 * g1, "{g1} then {g2}");
+    }
+
+    /// A tiny piece of a spline patch a million from the origin: its net's
+    /// differences are short against what rounding moves its points by, so
+    /// its normal cone is widened by far more than 1e-12 (and every normal
+    /// is in it); a piece shorter than that rounding has no cone.
+    #[test]
+    fn a_tiny_piece_far_away_has_a_cone_widened_by_its_rounding() {
+        let far = Vec3::new(1e6, 1e6, 1e6);
+        let grid = [
+            (0.0, 0.0, 0.0),
+            (0.0, 1.0, 0.5),
+            (0.0, 2.0, 0.0),
+            (1.0, 0.0, 0.7),
+            (1.0, 1.0, 2.0),
+            (1.0, 2.0, 0.3),
+            (2.0, 0.0, 0.0),
+            (2.0, 1.0, 0.4),
+            (2.0, 2.0, 0.0),
+        ];
+        let patch = crate::BezierPatch::new(
+            2,
+            2,
+            grid.iter()
+                .map(|&(x, y, z)| far + Vec3::new(x, y, z))
+                .collect(),
+        )
+        .unwrap();
+        let s = Surface::Bezier(patch);
+        let nets = SurfaceNets::of(&s).unwrap();
+        let (u, v) = ((0.4, 0.4001), (0.6, 0.6001));
+        let piece = surface_piece(&s, &nets, u, v).unwrap();
+        let cone = piece.cone().expect("a cone, widened");
+        // Points off by 2e-15 of 1.7e6 over differences of about 1e-4.
+        assert!(cone.half_angle > 1e-6, "{cone:?}");
+        for i in 0..=10 {
+            for j in 0..=10 {
+                let a = u.0 + (u.1 - u.0) * i as f64 / 10.0;
+                let b = v.0 + (v.1 - v.0) * j as f64 / 10.0;
+                let n = s.normal(a, b).unwrap();
+                let angle = n.dot(cone.axis).abs().min(1.0).acos();
+                assert!(angle <= cone.half_angle, "normal outside the cone");
+            }
+        }
+        // A piece a billionth wide: its differences are within rounding.
+        let tiny = surface_piece(&s, &nets, (0.4, 0.4 + 1e-12), (0.6, 0.6 + 1e-12)).unwrap();
+        assert!(tiny.cone().is_none());
+        // Near the origin the margin is the old 1e-12 or little more.
+        let near = crate::BezierPatch::new(
+            2,
+            2,
+            grid.iter().map(|&(x, y, z)| Vec3::new(x, y, z)).collect(),
+        )
+        .unwrap();
+        let near = Surface::Bezier(near);
+        let nets = SurfaceNets::of(&near).unwrap();
+        let cone = surface_piece(&near, &nets, (0.4, 0.5), (0.6, 0.7))
+            .unwrap()
+            .cone()
+            .unwrap();
+        assert!(cone.half_angle < 0.5, "{cone:?}");
     }
 
     #[test]
