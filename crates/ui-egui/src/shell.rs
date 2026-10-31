@@ -2869,26 +2869,28 @@ impl Shell {
                 first = false;
                 let label =
                     egui::Label::new(egui::RichText::new(&item.text).color(item.tint)).truncate();
-                let response = ui
-                    .allocate_ui_with_layout(
-                        egui::vec2(width, height),
-                        egui::Layout::left_to_right(egui::Align::Center),
-                        |ui| {
-                            ui.set_width(width);
-                            if item.slot == StatusSlot::Work {
-                                // The work indicator: a small spinner
-                                // before the words.
-                                ui.add(
-                                    egui::Spinner::new()
-                                        .size(tokens.work_spinner)
-                                        .color(color(tokens.info_accent)),
-                                );
-                                ui.add_space(tokens.work_spinner * 0.5);
-                            }
-                            ui.add(label)
-                        },
-                    )
-                    .inner;
+                // The slot is exactly `width` wide, whatever its words
+                // measure in the font in force: a truncated text a fraction
+                // wider than its room would otherwise widen the slot and
+                // move the items after it.
+                let (slot, _) =
+                    ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+                let mut inside = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(slot)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                );
+                inside.set_clip_rect(slot.intersect(ui.clip_rect()));
+                if item.slot == StatusSlot::Work {
+                    // The work indicator: a small spinner before the words.
+                    inside.add(
+                        egui::Spinner::new()
+                            .size(tokens.work_spinner)
+                            .color(color(tokens.info_accent)),
+                    );
+                    inside.add_space(tokens.work_spinner * 0.5);
+                }
+                let response = inside.add(label);
                 hits.push((item.slot, response.rect));
                 if width + 0.5 < measure(&item.text) {
                     // The whole text, where the bar is too narrow for it.
