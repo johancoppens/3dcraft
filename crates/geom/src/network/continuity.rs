@@ -1798,7 +1798,10 @@ mod tests {
         .unwrap();
         let track = Track::new(&local_edge, 1e-6).unwrap();
         let (_, _, at) = iso_track_along(&local, &track, 1e-6).unwrap().unwrap();
-        assert!((at - 0.25).abs() < 1e-6, "{at}");
+        // The line's parameter is the mean of the edge's projections: at a
+        // million from the origin they round to a few 1e-11 (5.5e-11
+        // found), so the line is within that of 0.25, not exactly on it.
+        assert!((at - 0.25).abs() <= 1e-10, "{at}");
         let p = s.control_points();
         for k in 0..3 {
             for c in 0..3 {

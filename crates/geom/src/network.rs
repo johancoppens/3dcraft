@@ -78,6 +78,8 @@ use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
 use std::fmt;
 
+#[cfg(test)]
+mod border_snap_tests;
 mod continuity;
 mod fair;
 pub use continuity::{
@@ -1252,6 +1254,13 @@ fn iso_track(
     Ok(iso_track_along(surface, curve, tol)?.map(|(rows, _, _)| rows))
 }
 
+/// How far in parameter, as a share of the range, an edge's end may lie
+/// inside a face's border and still be cut on it ([`iso_track_along`]):
+/// what the projection of a point on the border rounds to (2.5e-11 found,
+/// at a million from the origin), with room, and far below any end that
+/// really lies inside.
+const BORDER_SNAP: f64 = 1e-8;
+
 /// As [`iso_track`], with whether the line runs along v (u fixed, so the
 /// rows across are derivatives in u) and the fixed parameter of the line
 /// (the first or the last of its range exactly when the line was found
@@ -1402,10 +1411,14 @@ fn iso_track_along(
             continue;
         }
         let (a, b) = (s.min(e).max(lo), s.max(e).min(hi));
-        // An edge whose end lies within the tolerance of where the line
-        // meets the face's border runs to the border: cut there, not where
-        // the end's projection fell (a rounding of the projection short
-        // of it, which only shifted the rows' control points; 2026-10-31).
+        // An edge whose end is a rounding of the projection short of the
+        // face's border runs to the border: cut there, not where the end's
+        // projection fell, which only shifted the rows' control points
+        // (2026-10-31). Both must hold: the end lies within the tolerance
+        // of where the line meets the border, and its parameter within
+        // `BORDER_SNAP` of the range from it, so that a border where the
+        // line is slow or stands still (a pole, a run of equal control
+        // points) does not pull an end that is far inside in parameter.
         let line_at = |r: f64| {
             if along_v {
                 wrapped.eval(at, r)
@@ -1422,12 +1435,13 @@ fn iso_track_along(
         } else {
             (last_point, first_point)
         };
-        let a = if a - lo <= slack || line_at(lo).distance(low_point) <= tol {
+        let near = BORDER_SNAP * (hi - lo);
+        let a = if a - lo <= slack || (a - lo <= near && line_at(lo).distance(low_point) <= tol) {
             lo
         } else {
             a
         };
-        let b = if hi - b <= slack || line_at(hi).distance(high_point) <= tol {
+        let b = if hi - b <= slack || (hi - b <= near && line_at(hi).distance(high_point) <= tol) {
             hi
         } else {
             b

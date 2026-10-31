@@ -21,7 +21,7 @@ mod boolean_common;
 use boolean_common::*;
 use craft3d_geom::Surface;
 use craft3d_kernel::KernelError;
-use craft3d_kernel::boolean::{BooleanResult, Operand, sew_sheets};
+use craft3d_kernel::boolean::{BooleanResult, EdgeSource, Operand, sew_sheets};
 use craft3d_kernel::extrude::fill;
 use craft3d_kernel::loft::{Options, Section, loft};
 use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2, detect_profiles, open_chain};
@@ -281,8 +281,53 @@ fn a_long_edge_against_two_short_ones_is_split_and_sewn() {
         let left = rectangle([0.0, 1.0], [1.0, 2.0], &Frame::WORLD, k);
         let right = rectangle([1.0, 1.0], [2.0, 2.0], &Frame::WORLD, k);
         let pair = sew_sheets(&left, &right, &tol).unwrap().body;
-        for (a, b) in [(&plate, &pair), (&pair, &plate)] {
+        // The plate's long edge, along y = 1, and the pair's two short
+        // edges along it.
+        let along = |body: &Body| -> Vec<u32> {
+            (0..body.edges.len())
+                .filter(|&i| {
+                    let e = &body.edges[i];
+                    let (p, q) = (
+                        body.vertices[e.start.0 as usize].point,
+                        body.vertices[e.end.0 as usize].point,
+                    );
+                    (p.y - k).abs() <= tol.linear && (q.y - k).abs() <= tol.linear
+                })
+                .map(|i| i as u32)
+                .collect()
+        };
+        let long = along(&plate);
+        assert_eq!(long.len(), 1, "{what}");
+        let short = along(&pair);
+        assert_eq!(short.len(), 2, "{what}");
+        for (first, (a, b)) in [(true, (&plate, &pair)), (false, (&pair, &plate))] {
             let sewn = sew_sheets(a, b, &tol).unwrap_or_else(|e| panic!("{what}: {e}"));
+            // The same twice, bit for bit.
+            let again = sew_sheets(a, b, &tol).unwrap();
+            assert_eq!(format!("{again:?}"), format!("{sewn:?}"), "{what}");
+            let kept = |operand: Operand, edge: u32| {
+                sewn.edges
+                    .iter()
+                    .filter(|s| {
+                        **s == EdgeSource::Kept {
+                            operand,
+                            edge: craft3d_topo::EdgeId(edge),
+                        }
+                    })
+                    .count()
+            };
+            if first {
+                // The long edge is the first operand's: both pieces of it
+                // keep it as their source.
+                assert_eq!(kept(Operand::A, long[0]), 2, "{what}: {:?}", sewn.edges);
+            } else {
+                // The short edges are the first operand's: each piece is
+                // one of them, and none is the long edge's.
+                for s in &short {
+                    assert_eq!(kept(Operand::A, *s), 1, "{what}: {:?}", sewn.edges);
+                }
+                assert_eq!(kept(Operand::B, long[0]), 0, "{what}: {:?}", sewn.edges);
+            }
             let body = &sewn.body;
             assert_eq!(check(body, &tol), [], "{what}");
             assert_eq!((body.faces.len(), body.shells.len()), (3, 1), "{what}");
