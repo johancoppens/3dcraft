@@ -761,15 +761,15 @@ fn a_fan_that_lands_where_the_other_branch_turns_back_is_followed_by_a_second() 
 /// sine that differed in its last bit the fan ended off the zero set and
 /// the sheet was refused, on macOS and hosted Linux, and everywhere once
 /// the maths was made portable). [`a_fan_that_lands_where_the_other_branch_turns_back_is_followed_by_a_second`]
-/// at scale 1 with A's bend changed by a few parts in 1e13 (each a
-/// different rounding of the same rails): the same faces, and the second
+/// at scale 1 with A's bend changed by 1 to 10 parts in 1e13, both ways (twenty
+/// different roundings of the same rails): the same faces, and the second
 /// fan ends on the same ruling within the tolerance.
 #[test]
 fn a_fan_along_from_where_a_fan_landed_does_not_hang_on_rounding() {
     let k = 1.0;
     let mut ends: Vec<(f64, Vec3)> = Vec::new();
-    for j in [-3.0, -2.0, -1.0, 1.0, 2.0, 3.0] {
-        let alpha = 2.0 + j * 1e-13;
+    for j in (-10..=10).filter(|j| *j != 0) {
+        let alpha = 2.0 + f64::from(j) * 1e-13;
         let (a, b) = passing(k, 1.01, alpha, 0.8);
         let made = connect(&a, &b, &tol(k)).unwrap_or_else(|e| panic!("{alpha}: {e}"));
         assert_eq!(

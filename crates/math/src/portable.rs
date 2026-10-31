@@ -211,10 +211,88 @@ portable!(
     acoshf, atanhf, expf, exp2f, expm1f, logf, log1pf, log10f, log2f, powf, cbrtf, hypotf, fmaf
 );
 
+/// A sweep of arguments: a seeded walk over several decades, both signs,
+/// and some special values.
+pub(crate) fn sweep() -> Vec<f64> {
+    let mut out = vec![0.0, -0.0, 1.0, -1.0, 0.5, f64::MIN_POSITIVE, 1e-300, 1e300];
+    let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+    for _ in 0..20_000 {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        let mantissa = (state >> 11) as f64 / (1u64 << 53) as f64;
+        let decade = ((state >> 3) % 13) as i32 - 6;
+        let sign = if state & 1 == 1 { -1.0 } else { 1.0 };
+        out.push(sign * mantissa * 10f64.ppowi(decade));
+    }
+    out
+}
+
+/// A hash (FNV-1a) of the bits of every [`Portable`] function over
+/// [`sweep`] (pairs of neighbouring arguments for the functions of two),
+/// `f32` included. It is the same on every platform, wasm included: the
+/// contract of this module, pinned by its test and run on the targets the
+/// tests do not reach (docs/design/geometry.md, Portable maths).
+#[doc(hidden)]
+pub fn fingerprint() -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    // A NaN's sign and payload are left to the hardware (x86 gives a
+    // negative one, ARM and wasm a positive one): every NaN is hashed as
+    // one.
+    let mut mix = |x: f64| {
+        let bits = if x.is_nan() {
+            f64::NAN.to_bits()
+        } else {
+            x.to_bits()
+        };
+        for byte in bits.to_le_bytes() {
+            hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    let xs = sweep();
+    for pair in xs.windows(2) {
+        let &[y, x] = pair else {
+            continue;
+        };
+        for v in [
+            x.psin(),
+            x.pcos(),
+            x.ptan(),
+            x.pasin(),
+            x.pacos(),
+            x.patan(),
+            y.patan2(x),
+            x.psinh(),
+            x.pcosh(),
+            x.ptanh(),
+            x.pasinh(),
+            x.abs().pacosh(),
+            x.patanh(),
+            x.pexp(),
+            x.pexp2(),
+            x.pexp_m1(),
+            x.abs().pln(),
+            x.pln_1p(),
+            x.abs().plog10(),
+            x.abs().plog2(),
+            y.abs().ppowf(x.clamp(-30.0, 30.0)),
+            x.ppowi(7),
+            x.pcbrt(),
+            y.phypot(x),
+            y.pmul_add(x, 1.5),
+            f64::from((x as f32).psin()),
+            f64::from((y as f32).patan2(x as f32)),
+        ] {
+            mix(v);
+        }
+    }
+    hash
+}
+
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)] // compares against the standard's versions
 mod tests {
-    use super::Portable;
+    use super::{Portable, fingerprint, sweep};
 
     /// Distance in units in the last place between two finite `f64`s.
     fn ulps(a: f64, b: f64) -> u64 {
@@ -228,30 +306,22 @@ mod tests {
         key(a).abs_diff(key(b))
     }
 
-    /// A sweep of arguments: a fixed pseudo-random walk over several
-    /// decades, both signs, and the special values.
-    fn sweep() -> Vec<f64> {
-        let mut out = vec![0.0, -0.0, 1.0, -1.0, 0.5, f64::MIN_POSITIVE, 1e-300, 1e300];
-        let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
-        for _ in 0..20_000 {
-            state = state
-                .wrapping_mul(6_364_136_223_846_793_005)
-                .wrapping_add(1_442_695_040_888_963_407);
-            let mantissa = (state >> 11) as f64 / (1u64 << 53) as f64;
-            let decade = ((state >> 3) % 13) as i32 - 6;
-            let sign = if state & 1 == 1 { -1.0 } else { 1.0 };
-            out.push(sign * mantissa * 10f64.ppowi(decade));
-        }
-        out
-    }
-
     type Pair = (&'static str, fn(f64) -> f64, fn(f64) -> f64);
 
     /// The portable functions agree with the platform's to within two ulps
     /// over the sweep (four for `tanh`), so swapping one for the other
     /// moves a result by rounding only. The worst and the number of
     /// arguments whose last bits differ are printed.
+    ///
+    /// Measured against glibc only: Apple's library and the UCRT promise
+    /// their own accuracy, and the platform's library is what this module
+    /// replaces, so its last bits are not a contract. The pinned
+    /// [`fingerprint`] is.
     #[test]
+    #[cfg_attr(
+        not(all(target_os = "linux", target_env = "gnu")),
+        ignore = "measured against glibc only; the pinned fingerprint is the contract"
+    )]
     fn the_portable_functions_agree_with_the_platform_within_a_few_ulps() {
         let unary: [Pair; 17] = [
             ("sin", f64::psin, f64::sin),
@@ -308,57 +378,19 @@ mod tests {
         }
     }
 
-    /// The portable functions give the same bits on every platform: a hash
-    /// of their results over the sweep is pinned. A different hash on some
-    /// platform means its build of `libm` computes differently, which this
-    /// module exists to rule out.
+    /// The portable functions give the same bits on every platform: their
+    /// [`fingerprint`] is pinned. A different one on some platform means its
+    /// build of `libm` computes differently, which this module exists to
+    /// rule out.
     #[test]
     fn the_portable_functions_give_the_same_bits_everywhere() {
-        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-        let mut mix = |x: f64| {
-            for byte in x.to_bits().to_le_bytes() {
-                hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
-            }
-        };
-        let xs = sweep();
-        for pair in xs.windows(2) {
-            let (y, x) = (pair[0], pair[1]);
-            for v in [
-                x.psin(),
-                x.pcos(),
-                x.ptan(),
-                x.pasin(),
-                x.pacos(),
-                x.patan(),
-                y.patan2(x),
-                x.psinh(),
-                x.pcosh(),
-                x.ptanh(),
-                x.pasinh(),
-                x.abs().pacosh(),
-                x.patanh(),
-                x.pexp(),
-                x.pexp2(),
-                x.pexp_m1(),
-                x.abs().pln(),
-                x.pln_1p(),
-                x.abs().plog10(),
-                x.abs().plog2(),
-                y.abs().ppowf(x.clamp(-30.0, 30.0)),
-                x.ppowi(7),
-                x.pcbrt(),
-                y.phypot(x),
-                y.pmul_add(x, 1.5),
-                f64::from((x as f32).psin()),
-                f64::from((y as f32).patan2(x as f32)),
-            ] {
-                mix(v);
-            }
-        }
+        let hash = fingerprint();
         eprintln!("hash {hash:#018x}");
         assert_eq!(hash, PINNED);
     }
 
-    /// Measured on x86_64 Linux (2026-10-31); every platform must give it.
-    const PINNED: u64 = 0x447c_3829_8ab1_ba43;
+    /// Measured on x86_64 Linux and on wasm32 in Node (debug and release
+    /// builds, 2026-10-31); every platform must give it. (The first pin
+    /// hashed a NaN's own bits, which x86 and wasm make differently.)
+    const PINNED: u64 = 0x5d41_fac0_5637_ef43;
 }

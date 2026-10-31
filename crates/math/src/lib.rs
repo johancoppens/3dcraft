@@ -14,7 +14,7 @@ mod transform;
 
 pub use bits::{Bits, bits_of};
 pub use frame::Frame;
-pub use portable::Portable;
+pub use portable::{Portable, fingerprint as portable_fingerprint};
 pub use threads::available_threads;
 pub use tolerance::{DEFAULT_LOOSEST, Tolerance};
 pub use transform::Transform;

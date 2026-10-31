@@ -429,7 +429,7 @@ impl Pair<'_> {
     /// sides of the square and beside a corner's line (on the side the
     /// point is on; on the line, the side after it).
     fn gradient(&self, x: f64, y: f64) -> Option<(f64, f64)> {
-        let h = 1e-7;
+        let h = GRADIENT_STEP;
         let diff = |lo: f64, hi: f64, at: &dyn Fn(f64) -> Option<f64>| -> Option<f64> {
             let (a, b) = (lo.max(0.0), hi.min(1.0));
             if b <= a {
@@ -617,15 +617,31 @@ impl Path {
 
 /// A fold of the zero set the walk is going round: where it turned (the
 /// last point of the path), whether `t` falls there (else `s`), the
-/// bridge across, if there is one (below), and whether it starts where a
-/// fan landed (else where the zero set turned).
+/// bridge across, if there is one (below), and what its start is.
 #[derive(Clone, Copy, Debug)]
 struct Fold {
     at: (f64, f64),
     falls_t: bool,
     bridge: Option<(f64, f64)>,
-    landed: bool,
+    start: FoldStart,
 }
+
+/// Where a fold starts, as [`fold_start`] found it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FoldStart {
+    /// At a fan's end: the fan landed on a branch that crosses the fan's
+    /// line there, a simple zero of `f` along the line.
+    Landed,
+    /// Where the zero set turned ([`turning_point`]): tangent to the
+    /// fan's line there, a double zero of `f` along the line.
+    Turned,
+    /// Where the walk noticed the turn, the turning point not found.
+    Noticed,
+}
+
+/// What the rounding of `f` can be, about: a determinant of three unit
+/// vectors, each product of order one, so a few ulps of one.
+const F_ROUNDING: f64 = 16.0 * f64::EPSILON;
 
 impl Fold {
     /// The fan's parameter while the walk goes round: the `t` (or `s`)
@@ -645,16 +661,34 @@ impl Fold {
     /// line: the fan landed on a branch that crosses it), the second where
     /// the zero set turned (tangent to the line there: a double zero).
     /// `None` when that derivative vanishes or cannot be taken.
+    ///
+    /// The derivatives are differences of `f`, so a sign is trusted only
+    /// where the derivative is larger than what the rounding of `f` makes
+    /// of the difference: `2 F_ROUNDING / h` for the first (one-sided at a
+    /// corner, [`GRADIENT_STEP`]), `4 F_ROUNDING / h²` for the second
+    /// ([`HESSIAN_STEP`]). A start found by neither rule
+    /// ([`FoldStart::Noticed`]) has no known order: `None`, and the
+    /// search goes as before.
     fn sign_past_start(&self, pair: &Pair) -> Option<f64> {
         let (x, y) = self.at;
-        let d = if self.landed {
-            let (gx, gy) = pair.gradient(x, y)?;
-            if self.falls_t { gx } else { gy }
-        } else {
-            let [fxx, _, fyy] = hessian(pair, x, y)?;
-            if self.falls_t { fxx } else { fyy }
+        let (d, noise) = match self.start {
+            FoldStart::Landed => {
+                let (gx, gy) = pair.gradient(x, y)?;
+                (
+                    if self.falls_t { gx } else { gy },
+                    2.0 * F_ROUNDING / GRADIENT_STEP,
+                )
+            }
+            FoldStart::Turned => {
+                let [fxx, _, fyy] = hessian(pair, x, y)?;
+                (
+                    if self.falls_t { fxx } else { fyy },
+                    4.0 * F_ROUNDING / (HESSIAN_STEP * HESSIAN_STEP),
+                )
+            }
+            FoldStart::Noticed => return None,
         };
-        (d != 0.0 && d.is_finite()).then_some(d)
+        (d.is_finite() && d.abs() > noise).then_some(d)
     }
 }
 
@@ -808,17 +842,12 @@ fn trace(
             // point kept and this one (the walk notices the turn a step
             // after it), and kept in place of this one.
             let falls_t = ty < BACK;
-            let landed = path
-                .points
-                .len()
-                .checked_sub(1)
-                .is_some_and(|k| path.fixed(k));
-            let at = fold_start(pair, &mut path, (x, y), falls_t);
+            let (at, start) = fold_start(pair, &mut path, (x, y), falls_t);
             fold = Some(Fold {
                 at,
                 falls_t,
                 bridge: bridge(pair, at, falls_t, tolerance),
-                landed,
+                start,
             });
         }
         // The direction to step in: forward in what must go forward (both
@@ -1145,24 +1174,33 @@ fn trace(
 /// fold), the point before lies across the fan, not on the branch, and
 /// the fan's end must stay where it is: the fold starts at `here`. Its
 /// fan then starts on the ruling the first one ended on, both on the
-/// zero set, so the two share their tangent planes there.
-fn fold_start(pair: &Pair, path: &mut Path, here: (f64, f64), falls_t: bool) -> (f64, f64) {
+/// zero set, so the two share their tangent planes there. With which of
+/// the two the start is ([`FoldStart`]).
+fn fold_start(
+    pair: &Pair,
+    path: &mut Path,
+    here: (f64, f64),
+    falls_t: bool,
+) -> ((f64, f64), FoldStart) {
     let Some(last) = path.points.len().checked_sub(1) else {
-        return here;
+        return (here, FoldStart::Noticed);
     };
     if path.fixed(last) {
-        return here;
+        return (here, FoldStart::Landed);
     }
     let previous = last
         .checked_sub(1)
         .and_then(|k| path.points.get(k))
         .copied()
         .unwrap_or(here);
-    let at = turning_point(pair, previous, here, falls_t).unwrap_or(here);
+    let (at, start) = match turning_point(pair, previous, here, falls_t) {
+        Some(at) => (at, FoldStart::Turned),
+        None => (here, FoldStart::Noticed),
+    };
     if let Some(point) = path.points.get_mut(last) {
         *point = at;
     }
-    at
+    (at, start)
 }
 
 /// The path with fans that follow one another with one apex made one:
@@ -1563,6 +1601,10 @@ fn hessian(pair: &Pair, x: f64, y: f64) -> Option<[f64; 3]> {
         .all(|v| v.is_finite())
         .then_some([fxx, fxy, fyy])
 }
+
+/// The step of the differences [`Pair::gradient`] takes, in the unit
+/// square.
+const GRADIENT_STEP: f64 = 1e-7;
 
 /// The step of the differences [`hessian`] takes, in the unit square:
 /// large enough that the rounding of `f` (about 1e-16) stays below 1e-8
@@ -4202,10 +4244,94 @@ mod tests {
         path.push((0.2, 0.2));
         path.push((0.3, 0.3));
         path.push_fan((0.3, 0.5));
-        let at = fold_start(&pair, &mut path, (0.3, 0.5), true);
-        assert_eq!(at, (0.3, 0.5));
+        let (at, start) = fold_start(&pair, &mut path, (0.3, 0.5), true);
+        assert_eq!((at, start), ((0.3, 0.5), FoldStart::Landed));
         assert_eq!(path.points, vec![(0.2, 0.2), (0.3, 0.3), (0.3, 0.5)]);
         assert_eq!(path.fan_after, vec![false, true, false]);
+    }
+
+    /// The rails of `passing` in `tests/developable.rs` at scale 1 (B's
+    /// profile scaled by 1.01, A bent out of its plane by `2 x²`, over 80 %
+    /// of their range), whose zero set turns back in `s` about
+    /// `(0.6252, 0.6287)` of the square.
+    fn passing_rails() -> (Rail, Rail) {
+        let x = [-1.0, -1.0 / 3.0, 1.0 / 3.0, 1.0];
+        let x2 = [1.0, -1.0 / 3.0, -1.0 / 3.0, 1.0];
+        let x3 = [-1.0, 1.0, -1.0, 1.0];
+        let (sigma, alpha) = (1.01_f64, 2.0);
+        let sin60 = 60f64.to_radians().psin();
+        let (c3, c2, c0) = (
+            20.0 / sigma.ppowi(3),
+            20.0 * sin60 / sigma.ppowi(2),
+            40.0 * sin60,
+        );
+        let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+        let a: Vec<Vec3> = (0..4)
+            .map(|i| Vec3::new(100.0 * x[i], alpha * x2[i], 20.0 * x3[i]))
+            .collect();
+        let b: Vec<Vec3> = (0..4)
+            .map(|i| {
+                Vec3::new(
+                    100.0 * x[i],
+                    20.0 + 10.0 * x2[i],
+                    c3 * x3[i] + c0 + c2 * x2[i],
+                )
+            })
+            .collect();
+        let rail = |ctrl: Vec<Vec3>| Rail {
+            pieces: vec![RailPiece {
+                curve: Curve3::Nurbs(
+                    craft3d_geom::NurbsCurve::polynomial(3, knots.clone(), ctrl).unwrap(),
+                ),
+                range: (0.0, 0.8),
+                reversed: false,
+                source: 0,
+            }],
+        };
+        (rail(a), rail(b))
+    }
+
+    /// A fold found where the zero set turned is a double zero of `f` along
+    /// the fan's line: the sign beside it, on both sides, is the sign of the
+    /// second derivative along the line, which [`Fold::sign_past_start`]
+    /// gives for such a start (review of 2026-10-31: the branch the fan of
+    /// the passing rails does not take); a start whose kind is not known
+    /// gives none.
+    #[test]
+    fn a_fold_where_the_zero_set_turned_takes_the_sign_beside_it_from_the_second_derivative() {
+        let (a, b) = passing_rails();
+        let pair = Pair::new(&a, &b, 1e-9);
+        // On the zero set before the fold (going forward in s) and after it
+        // (s fallen back), as the walk had them.
+        let before = onto_zero(&pair, 0.62, 0.62).unwrap();
+        let after = onto_zero(&pair, 0.6244387967028062, 0.6361095695038361).unwrap();
+        assert!(
+            before.0 < 0.6252 && after.0 < 0.6252,
+            "{before:?} {after:?}"
+        );
+        let mut path = Path::default();
+        path.push(before);
+        path.push(after);
+        let (at, start) = fold_start(&pair, &mut path, after, false);
+        assert_eq!(start, FoldStart::Turned, "{at:?}");
+        let fold = Fold {
+            at,
+            falls_t: false,
+            bridge: None,
+            start,
+        };
+        let sign = fold
+            .sign_past_start(&pair)
+            .expect("a second derivative above its rounding");
+        for d in [1e-5, 1e-4, -1e-5, -1e-4] {
+            let beside = pair.f(at.0, at.1 + d).unwrap();
+            assert_eq!(beside > 0.0, sign > 0.0, "{d}: f {beside:e}, f_tt {sign:e}");
+        }
+        let unknown = Fold {
+            start: FoldStart::Noticed,
+            ..fold
+        };
+        assert_eq!(unknown.sign_past_start(&pair), None);
     }
 
     /// Two fans in a row with one apex are one fan; two with apexes on

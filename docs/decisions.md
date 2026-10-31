@@ -6,6 +6,16 @@ Decisions that shape the project, newest first, each with its reason. An agent t
 
 ## Taken
 
+### 2026-10-31: The `libm` crate for transcendental functions (AWAITING THE DEVELOPER; proposed by an agent, narrows D-open-5)
+
+Not decided. Branch `r1-portable-math` is built on it and waits for this.
+
+- **Proposal.** Sines, cosines, arc tangents, exponentials, logarithms, powers, cube roots and hypotenuses in every crate go through `craft3d_math::Portable`, which calls the `libm` crate (MIT, a pure-Rust port of musl's maths library), instead of the standard library's methods, which call the platform's C library. That is an exception to D-open-5's default ("write it"), for these functions only. Linear algebra, interval and exact arithmetic stay under D-open-5 as they are.
+- **The measured reason.** glibc and `libm` differ in the last bit for 0.01 to 5 % of arguments, depending on the function: 2 of 20,008 for `ln_1p`, 339 for `sin`, 1,084 for `log10`. The worst difference is 1 ulp, 3 for `tanh`. glibc, Apple's library and the UCRT differ from each other in the same way. On GitHub's hosted runners (2026-10-30/31) the same commit gave different results on macOS, Windows and Linux, against rule 5. On macOS: the rotor's mass evaluations +14 %, 9 faces instead of 8 on a kayak plate, a STEP cone apex, the kernel's cone-through-apex outline, the sheet-metal bits. On Windows: sheet metal 1 ulp off. On macOS and hosted Linux: the developable fan refused, with a turn of 2.28e-4 over the ruling. Built against `libm`, the fan failed on the Strix with exactly that value. A sign at a known zero of the condition decided the fan; it now comes from the derivative, and that fix is in the same branch.
+- **Why this crate.** Licence MIT. Pure Rust: plain arithmetic, so the same bits on every target, wasm included. Its only platform-specific paths are correctly rounded IEEE operations (`sqrt`, `fma`, `floor`, `ceil`, `trunc`, `rint`, `fabs`), whose results the standard fixes. It is already in `Cargo.lock` through `naga` and `num-traits`, so no new code is shipped. Writing our own would mean re-deriving musl's argument reduction and polynomial kernels: weeks of work for no difference a user would see.
+- **Enforced** by clippy's `disallowed-methods` for the `f64`/`f32` transcendental methods (`clippy.toml`). A pinned hash of the portable results over a sweep is the contract (`craft3d-math`, `portable.rs`).
+- **The other option**, if the developer refuses: our own implementations in `craft3d-math` behind the same trait (no call sites change), with the same hash test.
+
 ### 2026-10-30: A flexible subassembly's own drives are its parent's to set (decided by the coordinator, under the developer's pre-release rule)
 
 In a parent, a free motion that a flexible subassembly drives itself (its `<mate>_angle` variable, a formula of its
@@ -617,7 +627,7 @@ Made by the agent, overnight; the developer can overturn any of them.
 
 | # | Question | Options | Needed by | Default if nobody decides |
 |---|---|---|---|---|
-| D-open-5 | **General-purpose maths dependencies in the kernel** (linear algebra, interval or exact arithmetic) | Write everything; allow specific permissive pure-Rust crates | M1 | Write it; revisit with a measured reason |
+| D-open-5 | **General-purpose maths dependencies in the kernel** (linear algebra, interval or exact arithmetic). The transcendental functions are proposed as an exception, awaiting the developer: see *2026-10-31: The `libm` crate for transcendental functions* under Taken | Write everything; allow specific permissive pure-Rust crates | M1 | Write it; revisit with a measured reason |
 | D-open-9 | **Default units and tolerance** of a new document | mm / deg / 1e-6 mm; other | M2 | mm, degrees, 1e-6 mm linear, 1e-9 rad angular |
 | D-open-10 | **Compression crate for 3MF/`.3dcraft`** (DEFLATE, zstd) | Permissive pure-Rust crates; write our own | M2/M3 | Use permissive pure-Rust crates: not modelling code |
 | D-open-11 | **Coordinate convention** | Z up (CAD/3D-printing convention); Y up | M2 | Z up, right-handed |
