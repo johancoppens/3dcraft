@@ -1316,7 +1316,12 @@ fn iso_track_along(
         let at =
             (fixed.iter().sum::<f64>() / fixed.len() as f64).clamp(fixed_range.0, fixed_range.1);
         // On the border where it is there within rounding: the rows across
-        // are then made of the border's net rows only.
+        // are then made of the border's net rows only. The rows are those
+        // of the face's parameter line at `at`; the edge's distance from
+        // that line (here at most `SAME_KNOT` of the range in parameter)
+        // is the position gap, which the continuity measure bounds and
+        // holds to the tolerance on its own, so the snap is not an
+        // allowance the rows' rounding must count.
         let near_border = SAME_KNOT * (fixed_range.1 - fixed_range.0);
         let at = if at - fixed_range.0 <= near_border {
             fixed_range.0

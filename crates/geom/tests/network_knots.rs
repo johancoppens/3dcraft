@@ -8,7 +8,7 @@
 use craft3d_geom::NurbsCurve;
 use craft3d_geom::network::{Condition, Network, gordon};
 use craft3d_geom::refine::{interpolate, interpolate_on};
-use craft3d_math::Vec3;
+use craft3d_math::{Portable, Vec3};
 
 fn v(x: f64, y: f64, z: f64) -> Vec3 {
     Vec3::new(x, y, z)
@@ -34,10 +34,10 @@ fn a_curve_with_knots_between_its_crossings_is_made_one_with_its_family() {
         let xs = [0.0, 3.0, 5.0, 7.0, 10.0];
         let side = |y: f64| -> Vec<Vec3> {
             xs.iter()
-                .map(|&x| v(x, y, 1.0 + 0.3 * (x * 0.3).sin()) * scale)
+                .map(|&x| v(x, y, 1.0 + 0.3 * (x * 0.3).psin()) * scale)
                 .collect()
         };
-        let crown_z = |x: f64| 2.0 + 0.5 * (x * 0.31).sin() + 0.02 * x * x;
+        let crown_z = |x: f64| 2.0 + 0.5 * (x * 0.31).psin() + 0.02 * x * x;
         // The crown passes through the crossings and through points
         // between them.
         let mut crown_pts: Vec<Vec3> = Vec::new();
@@ -58,9 +58,9 @@ fn a_curve_with_knots_between_its_crossings_is_made_one_with_its_family() {
         let vs: Vec<NurbsCurve> = xs
             .iter()
             .map(|&x| {
-                let a = v(x, -1.0, 1.0 + 0.3 * (x * 0.3).sin()) * scale;
+                let a = v(x, -1.0, 1.0 + 0.3 * (x * 0.3).psin()) * scale;
                 let c = v(x, 0.0, crown_z(x)) * scale;
-                let b = v(x, 1.0, 1.0 + 0.3 * (x * 0.3).sin()) * scale;
+                let b = v(x, 1.0, 1.0 + 0.3 * (x * 0.3).psin()) * scale;
                 through(&[
                     a,
                     (a + c) * 0.5 + v(0.0, 0.0, 0.2) * scale,

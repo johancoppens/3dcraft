@@ -25,7 +25,7 @@ use craft3d_kernel::boolean::{BooleanResult, Operand, sew_sheets};
 use craft3d_kernel::extrude::fill;
 use craft3d_kernel::loft::{Options, Section, loft};
 use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2, detect_profiles, open_chain};
-use craft3d_math::{Frame, Vec3};
+use craft3d_math::{Frame, Portable, Vec3};
 use craft3d_topo::{Body, BodyKind, ShellId, boundary_loops, check};
 
 const SCALES: [f64; 3] = [1e-3, 1.0, 1e6];
@@ -105,7 +105,7 @@ fn half_trough(k: f64) -> Body {
 
 /// The length of `z = y²` from `0` to `y`.
 fn parabola(y: f64) -> f64 {
-    0.5 * y * (1.0 + 4.0 * y * y).sqrt() + 0.25 * (2.0 * y).asinh()
+    0.5 * y * (1.0 + 4.0 * y * y).sqrt() + 0.25 * (2.0 * y).pasinh()
 }
 
 /// The unit square with a corner at `origin` (times `k`), facing `normal`.
@@ -263,5 +263,32 @@ fn what_cannot_be_sewn_is_refused() {
         let both = sew_sheets(&square, &next, &tol).unwrap();
         assert_eq!(both.body.faces.len(), 2, "{what}");
         assert_close(mass(&both.body).area, 2.0 * k * k, &what);
+    }
+}
+
+/// One long edge against two short ones along it (a T-junction): the
+/// plate 2 × 1 sewn to a sheet of two unit squares standing on its long
+/// edge. `topo::sew` splits the long edge at the short ones' common end,
+/// and every piece keeps the long edge's source (it had none, and was
+/// refused as a bug, before 2026-10-31): one sheet of three faces, area
+/// 4, one shell, one boundary loop, valid; and the other way round.
+#[test]
+fn a_long_edge_against_two_short_ones_is_split_and_sewn() {
+    for k in SCALES {
+        let what = format!("at {k}");
+        let tol = tolerance(k);
+        let plate = rectangle([0.0, 0.0], [2.0, 1.0], &Frame::WORLD, k);
+        let left = rectangle([0.0, 1.0], [1.0, 2.0], &Frame::WORLD, k);
+        let right = rectangle([1.0, 1.0], [2.0, 2.0], &Frame::WORLD, k);
+        let pair = sew_sheets(&left, &right, &tol).unwrap().body;
+        for (a, b) in [(&plate, &pair), (&pair, &plate)] {
+            let sewn = sew_sheets(a, b, &tol).unwrap_or_else(|e| panic!("{what}: {e}"));
+            let body = &sewn.body;
+            assert_eq!(check(body, &tol), [], "{what}");
+            assert_eq!((body.faces.len(), body.shells.len()), (3, 1), "{what}");
+            assert_eq!(boundary_loops(body, ShellId(0)), Some(1), "{what}");
+            assert_close(mass(body).area, 4.0 * k * k, &what);
+            assert_eq!(sewn.edges.len(), body.edges.len(), "{what}");
+        }
     }
 }

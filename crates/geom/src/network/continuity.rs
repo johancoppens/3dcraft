@@ -76,9 +76,13 @@
 //! carried through each sum and product (running error analysis, Higham
 //! ch. 3). The faces and the edge are first written about a point of the
 //! edge, so the rows are formed from local points and nothing cancels far
-//! from the origin; a row across, `Σ cᵢ Pᵢ`, enters with `16 (p + q + 4) ε`
-//! times `Σ |cᵢ|` (bounded from the knots) times the net's local
-//! magnitude (`spline_rows`); derivatives along the edge and the cut into
+//! from the origin; a row across, `Σ cᵢ Pᵢ`, enters with `(4p + 6q + 24) ε`
+//! times `Σ |cᵢ|` (bounded from the knots) times, per homogeneous
+//! coordinate, the largest local value of that coordinate over the net's
+//! rows the row is made from (`spline_rows`: on a clamped border the
+//! first `j + 1` rows for the row `j`, every other basis function and its
+//! first two derivatives being exactly zero there; on an inner line the
+//! `q + 1` rows whose basis functions reach it); derivatives along the edge and the cut into
 //! pieces add their own; each product of degrees `m` and `n` adds `γ_k`,
 //! `k = 4 (m + n) + min(m, n) + 8`, times the product of the magnitudes
 //! (`Poly::mul_gamma`). A NaN anywhere makes a bound infinite. Bounds take
@@ -1194,9 +1198,31 @@ pub fn continuity(
 /// `S₁ = 2p / D_p` and at most `S₂ = S₁ · 2(p − 1) / D_{p−1}`
 /// (`N′ᵢ = p (N_{i,p−1} / Δᵢ − N_{i+1,p−1} / Δᵢ₊₁)` and the partition of
 /// unity; `D_k` the shortest positive `t_{i+k} − t_i`, in the direction
-/// across). So each coefficient is within `γ S M` of the exact one, `M`
-/// the net's largest local coordinate (or weight) and `γ = (4p + 6q +
-/// 24) ε` with `p` the degree along and `q` across: the net's rounding
+/// across). So each coefficient is within `γ S M_c` of the exact one,
+/// `γ = (4p + 6q + 24) ε` with `p` the degree along and `q` across, and
+/// `M_c` for each homogeneous coordinate `c` on its own (x, y, z times the
+/// weight, and the weight): the largest local value of that coordinate
+/// over the net's rows the row is a combination of. A coordinate of the
+/// row is a sum of that coordinate of those points only, so its rounding
+/// is of their size, not of the largest coordinate of the whole net (on a
+/// long seam far longer than the patch is wide, the rows along the far
+/// side and the other coordinates no longer set the allowance). Which
+/// rows: on a clamped border (`at` exactly the first or the last knot)
+/// the row `j` (`j` = 0 the line, 1 and 2 its derivatives across) is made
+/// of the first `j + 1` rows of the net from that border, every other
+/// basis function and its first and second derivatives being exactly zero
+/// there (the clamped knot's multiplicity `q + 1`: `Nᵢ` with `i > j`
+/// vanishes to order `i` at the border, so its derivatives up to `j < i`
+/// are zero, exactly, in the recursions as computed: they are sums of
+/// products with a factor that is exactly 0); on an inner line, the
+/// `q + 1` rows whose basis functions reach the knot span of `at` (both
+/// spans where `at` is a knot). The line is the face's parameter line at
+/// `at` (`iso_track_along` puts `at` onto the border where the edge's
+/// projections lie within `SAME_KNOT` of it): what is bounded here is
+/// that line's rounding, and how far the edge lies from that line is the
+/// position gap, which the measure bounds and holds to the tolerance in
+/// its own right; the snap moves nothing the claim depends on. The
+/// factor `γ` is the sum of: the net's rounding
 /// (`2 ε`), the `cᵢ`'s (Cox–de Boor, `3 ε` a level, so `3q ε`; the
 /// divided differences of the second row, `8 ε` each, and its de Boor
 /// evaluation, `3q ε`), the sum (`q` more) and the cut to the edge (up to
@@ -1694,6 +1720,85 @@ mod tests {
             }
             for (row, exact) in [(&x0, 1.0), (&x1, 0.0), (&x2, 0.0)] {
                 assert!((row.0.points[k][3] - exact).abs() <= row.1[3]);
+            }
+        }
+    }
+    /// The B-spline basis function `i` of degree `p` on `knots` at `v`, and
+    /// its first and second derivatives (`order` 0, 1, 2), by the
+    /// recursions straight from the definition: on dyadic knots at a
+    /// dyadic `v` every step is exact in `f64`.
+    fn basis_exact(knots: &[f64], p: usize, i: usize, v: f64, order: usize) -> f64 {
+        let ratio = |num: f64, den: f64| if den == 0.0 { 0.0 } else { num / den };
+        if order == 0 {
+            if p == 0 {
+                return if knots[i] <= v && v < knots[i + 1] {
+                    1.0
+                } else {
+                    0.0
+                };
+            }
+            let a = ratio(v - knots[i], knots[i + p] - knots[i]);
+            let b = ratio(knots[i + p + 1] - v, knots[i + p + 1] - knots[i + 1]);
+            return a * basis_exact(knots, p - 1, i, v, 0)
+                + b * basis_exact(knots, p - 1, i + 1, v, 0);
+        }
+        let pf = p as f64;
+        ratio(pf, knots[i + p] - knots[i]) * basis_exact(knots, p - 1, i, v, order - 1)
+            - ratio(pf, knots[i + p + 1] - knots[i + 1])
+                * basis_exact(knots, p - 1, i + 1, v, order - 1)
+    }
+
+    /// The same as `the_rows_rounding_is_within_its_allowance_far_from_the_origin`
+    /// on an inner line (M2 of the class-A review, 2026-10-31): the rows
+    /// are then made of the `q + 1` rows of the net whose basis functions
+    /// reach the line, not of the border's first `j + 1`, and each
+    /// coefficient is still within its allowance of the exact one. Dyadic
+    /// knots and line, so the basis values and their derivatives are exact
+    /// and the reference is the double-double sum of exact multiples of
+    /// the points' exact differences.
+    #[test]
+    fn the_rows_rounding_is_within_its_allowance_on_an_inner_line() {
+        let (far, _) = far_patch();
+        let knots_v = vec![0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0];
+        let s = NurbsSurface::new(
+            2,
+            3,
+            far.knots_u().to_vec(),
+            knots_v.clone(),
+            3,
+            5,
+            far.control_points().to_vec(),
+            vec![1.0; 15],
+        )
+        .unwrap();
+        let at = 0.25;
+        let edge = iso_curve(&s, true, at).unwrap();
+        let origin = edge.control_points()[0];
+        let [x0, x1, x2] = spline_rows(&s, &edge, 1e-6, origin).unwrap().unwrap();
+        let p = s.control_points();
+        for k in 0..3 {
+            for c in 0..3 {
+                let get = |q: Vec3| [q.x, q.y, q.z][c];
+                for (order, row) in [(0, &x0), (1, &x1), (2, &x2)] {
+                    // Σ N⁽ᵒʳᵈᵉʳ⁾ⱼ (Pⱼ − o): the differences of nearby
+                    // doubles exact, the multiples exact, the sum in
+                    // double-double.
+                    let mut sum: Dd = (0.0, 0.0);
+                    for j in 0..5 {
+                        let n = basis_exact(&knots_v, 3, j, at, order);
+                        let d = get(p[k * 5 + j]) - get(origin);
+                        sum = add(sum, mul((d, 0.0), n));
+                    }
+                    let exact = sum.0 + sum.1;
+                    let got = row.0.points[k][c];
+                    assert!(
+                        (got - exact).abs() <= row.1[c],
+                        "order {order}, control point {k}, coordinate {c}: {got:e} is {:e} off {exact:e}, the allowance is {:e}",
+                        (got - exact).abs(),
+                        row.1[c]
+                    );
+                    assert!(row.1[c] > 0.0, "an inner row has rounding to allow for");
+                }
             }
         }
     }

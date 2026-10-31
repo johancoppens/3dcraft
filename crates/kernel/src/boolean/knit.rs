@@ -11,8 +11,10 @@
 //! into one body, and `craft3d_topo::sew` joins the free edges that run
 //! between the same places within the tolerance, the two uses against
 //! each other (a consistent orientation), proving every joined edge on
-//! both faces' surfaces over its whole curve. Nothing is moved and no
-//! face is cut.
+//! both faces' surfaces over its whole curve. A long free edge along
+//! which shorter ones run end to end (a T-junction) is split at their
+//! ends first (`Sewn::split`); each piece keeps the long edge as its
+//! source. Nothing is moved and no face is cut.
 //!
 //! What it does not look at is whether the faces also pass through each
 //! other away from those edges; regeneration holds every boolean's result
@@ -135,8 +137,8 @@ pub fn sew_sheets(a: &Body, b: &Body, tolerance: &Tolerance) -> Result<BooleanRe
     // Some edge of `a` and some edge of `b` became one.
     let mut owner: Vec<Option<EdgeSource>> = vec![None; sewn.body.edges.len()];
     let mut shared = false;
-    for (index, (into, _)) in sewn.edges.iter().enumerate() {
-        let source = if index < na_edges {
+    let source_of = |index: usize| {
+        if index < na_edges {
             EdgeSource::Kept {
                 operand: Operand::A,
                 edge: EdgeId(u32::try_from(index).unwrap_or(u32::MAX)),
@@ -146,7 +148,26 @@ pub fn sew_sheets(a: &Body, b: &Body, tolerance: &Tolerance) -> Result<BooleanRe
                 operand: Operand::B,
                 edge: EdgeId(u32::try_from(index - na_edges).unwrap_or(u32::MAX)),
             }
-        };
+        }
+    };
+    // Every edge given, and every piece of one split at a T-junction (one
+    // long edge against shorter ones along it: each piece is a piece of
+    // the long edge, so it has its source), in the order of the edges
+    // given: an edge of `a` before one of `b`.
+    let mut uses: Vec<(usize, EdgeId)> = sewn
+        .edges
+        .iter()
+        .enumerate()
+        .map(|(index, (into, _))| (index, *into))
+        .collect();
+    for (given, pieces) in &sewn.split {
+        for (into, _) in pieces {
+            uses.push((given.0 as usize, *into));
+        }
+    }
+    uses.sort_by_key(|(index, into)| (*index, into.0));
+    for (index, into) in uses {
+        let source = source_of(index);
         let Some(slot) = owner.get_mut(into.0 as usize) else {
             return Err(refused("sewing lost track of an edge; this is a bug"));
         };

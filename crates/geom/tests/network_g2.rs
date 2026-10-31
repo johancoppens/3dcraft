@@ -648,3 +648,66 @@ fn a_patch_measured_against_itself_along_an_inner_line_is_g2() {
     let c = continuity(&s, &s, &iso, 1e-6, 1e-9).unwrap();
     assert_eq!(c.order, Order::G2, "{c:?}");
 }
+
+/// A sheet flat in the plane z = 0 along the edge y = z = 0, `l` long and
+/// wide, of 64 spans along it and degree 2 across, whose third row of
+/// control points across is lifted by `delta` in z: along the edge its
+/// curvature across is `2 delta / l²` and its tangent plane the plane's.
+fn lifted(l: f64, delta: f64) -> NurbsSurface {
+    let spans = 64;
+    let mut knots = vec![0.0; 4];
+    knots.extend((1..spans).map(|k| f64::from(k) / f64::from(spans)));
+    knots.extend([1.0; 4]);
+    let nu = spans as usize + 3;
+    let mut points = Vec::new();
+    for i in 0..nu {
+        let g = (knots[i + 1] + knots[i + 2] + knots[i + 3]) / 3.0;
+        points.push(v(g * l, 0.0, 0.0));
+        points.push(v(g * l, 0.5 * l, 0.0));
+        points.push(v(g * l, l, delta));
+    }
+    NurbsSurface::new(
+        3,
+        2,
+        knots,
+        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+        nu,
+        3,
+        points,
+        vec![1.0; nu * 3],
+    )
+    .unwrap()
+}
+
+/// The tighter rounding allowance (per coordinate, from the rows that
+/// make a row; 2026-10-31) still refuses a seam that is not G2: a long
+/// seam of many spans along a plane, its second row across lifted so that
+/// the curvature across is three thresholds off, is G1 by its curvature,
+/// the bound covering the closed form; lifted to a tenth of a threshold
+/// it is proven G2.
+#[test]
+fn a_plane_seam_with_its_second_row_lifted_is_g1_by_its_curvature() {
+    for scale in SCALES {
+        let (tol, ang) = (1e-6 * scale, 1e-9);
+        let plane = Surface::Plane(Plane::new(Frame::WORLD));
+        let edge = line(v(0.0, 0.0, 0.0), v(scale, 0.0, 0.0));
+        let threshold = (ang / scale).min(2.0 * tol / (scale * scale));
+        for (times, order) in [(3.0, Order::G1), (0.1, Order::G2)] {
+            // Curvature across 2 delta / l² = times · threshold.
+            let delta = 0.5 * times * threshold * scale * scale;
+            let s = lifted(scale, delta);
+            let c = continuity(&Surface::Nurbs(s), &plane, &edge, tol, ang).unwrap();
+            assert_eq!(c.order, order, "scale {scale}, {times} thresholds: {c:?}");
+            let exact = times * threshold;
+            assert!(
+                c.curvature.bound >= exact * (1.0 - 1e-6),
+                "scale {scale}: the bound {:e} is below the curvature {exact:e}",
+                c.curvature.bound
+            );
+            if order == Order::G1 {
+                assert!(c.curvature.beyond(), "{c:?}");
+                assert!(c.angle.within() && c.twist.within(), "{c:?}");
+            }
+        }
+    }
+}

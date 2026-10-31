@@ -1143,3 +1143,73 @@ fn freecad_assemblies_read_where_freecad_places_them() {
     println!("said: {said:#?}\nwrong: {wrong:#?}");
     assert!(wrong.is_empty(), "{wrong:#?}");
 }
+
+/// The cap on an entity's own tolerance (`loosest`) is part of what a
+/// result depends on (2026-10-31, the class-A review): a loose import (a
+/// corner 1e-4 mm off its edges) united with a block is built under the
+/// default cap of 1e-3 mm and refused under 5e-5; `document.setTolerance`
+/// changing only the cap must rebuild them, not hand back the cached
+/// bodies. Each state is held to the same document opened afresh from
+/// its saved file.
+#[test]
+fn changing_only_the_cap_rebuilds_what_it_decides() {
+    let dir = workdir("step-import", "loosest-cache");
+    let mut s = session_in(&dir);
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(&mut s, "feature.block", json!({"size": [10, 20, 30]}));
+    run(&mut s, "file.export", json!({"path": "block.step"}));
+    let text = std::fs::read_to_string(dir.join("block.step")).unwrap();
+    let moved = text.replacen(
+        "CARTESIAN_POINT('',(10.,",
+        "CARTESIAN_POINT('',(10.0001,",
+        1,
+    );
+    assert_ne!(moved, text);
+    std::fs::write(dir.join("loose.step"), moved).unwrap();
+    let mut s = session_in(&dir);
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(&mut s, "file.import", json!({"path": "loose.step"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [4, 4, 4], "position": [8, 8, 8], "name": "Lug"}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "union", "target": "F1", "tool": "Lug", "name": "Joined"}),
+    );
+    let statuses = |s: &mut Session| -> Vec<(String, String)> {
+        run(s, "document.inspect", json!({"measures": false}))["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| {
+                (
+                    f["name"].as_str().unwrap().to_string(),
+                    f["status"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    };
+    let fresh = |s: &mut Session, name: &str| -> Vec<(String, String)> {
+        run(s, "file.save", json!({"path": name, "overwrite": true}));
+        let mut other = session_in(&dir);
+        run(&mut other, "file.open", json!({"path": name}));
+        statuses(&mut other)
+    };
+    let before = statuses(&mut s);
+    assert!(before.iter().all(|(_, st)| st == "ok"), "{before:?}");
+    assert_eq!(fresh(&mut s, "wide.3dcraft"), before);
+    // Only the cap changes: the loose import and what is built on it fail.
+    run(&mut s, "document.setTolerance", json!({"loosest": 5e-5}));
+    let tight = statuses(&mut s);
+    let joined = tight.iter().find(|(n, _)| n == "Joined").unwrap();
+    assert_eq!(joined.1, "failed", "{tight:?}");
+    assert_eq!(fresh(&mut s, "tight.3dcraft"), tight);
+    // And back: built again.
+    run(&mut s, "document.setTolerance", json!({"loosest": null}));
+    let wide = statuses(&mut s);
+    assert_eq!(wide, before);
+    assert_eq!(fresh(&mut s, "wide-again.3dcraft"), wide);
+}

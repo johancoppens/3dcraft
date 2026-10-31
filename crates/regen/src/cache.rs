@@ -35,8 +35,16 @@ fn evaluated(variables: &Evaluation, exprs: &[(String, &craft3d_doc::Expr)]) -> 
         .collect()
 }
 
-fn bits(tolerance: Tolerance) -> (u64, u64) {
-    (tolerance.linear.to_bits(), tolerance.angular.to_bits())
+/// The tolerances a result depends on, exactly: the linear and angular
+/// ones and the cap on an entity's own tolerance (`loosest`, which the
+/// booleans, blends and the cap check read), so a change of any of them
+/// is a change of the key.
+fn bits(tolerance: Tolerance) -> (u64, u64, u64) {
+    (
+        tolerance.linear.to_bits(),
+        tolerance.angular.to_bits(),
+        tolerance.loosest_linear().to_bits(),
+    )
 }
 
 /// A feature this one is made from, directly or through others, as it was
@@ -68,7 +76,7 @@ struct Context {
     followed: Result<Option<Feature>, String>,
     values: Vec<Evaluated>,
     units: Units,
-    tolerance: (u64, u64),
+    tolerance: (u64, u64, u64),
     inputs: Vec<Input>,
     /// For a sketch with texts: the fonts of the document
     /// ([`text_fonts`]), which its texts are laid out in.
@@ -107,7 +115,7 @@ struct Solve {
     /// document, for a sketch with texts.
     fonts: Vec<(String, String, bool)>,
     units: Units,
-    tolerance: (u64, u64),
+    tolerance: (u64, u64, u64),
     outcome: (Status, Option<SketchResult>),
 }
 
@@ -121,7 +129,7 @@ struct Fitted {
     /// The tables those expressions look values up in, as they were.
     tables: Vec<(String, Option<craft3d_expr::Table>)>,
     units: Units,
-    tolerance: (u64, u64),
+    tolerance: (u64, u64, u64),
     fits: Arc<FormulaFits>,
 }
 
