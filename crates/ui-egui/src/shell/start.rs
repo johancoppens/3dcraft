@@ -186,7 +186,7 @@ macro_rules! published {
 
 /// The start screen's examples, section by section: ten of the guide's
 /// parts, then the published Jigs and assemblies.
-pub const EXAMPLES: [Example; 17] = [
+pub const EXAMPLES: [Example; 18] = [
     example!("bracket", "L-bracket", "extrude, fillet, holes"),
     example!("nameplate", "Name plate", "text, fillet, materials"),
     example!("clamp", "Clamp block", "fillet, bore, chamfer"),
@@ -202,6 +202,12 @@ pub const EXAMPLES: [Example; 17] = [
         "tank",
         "Fuel tank",
         "class-A surfaces, G2 seams, litres"
+    ),
+    example!(
+        ExampleSection::Showcase,
+        "mouse",
+        "Class-A mouse",
+        "G2 top on flat flanks, sewn"
     ),
     published!(
         ExampleSection::Jigs,

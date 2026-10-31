@@ -283,6 +283,33 @@ line, so that both sides of the seam share one parametrisation; only one edge of
 way. The sheet is refused unless the measure proves G2, with the gaps it found; a torus, or a spline face
 along a curve that is not one of its parameter lines, is refused as for tangency.
 
+### A class-A mouse
+
+Sheets whose edges meet are joined by `feature.boolean` with `"op": "sew"`: their edges are sewn where
+they run along one another, nothing is cut, and the result is a solid once every edge has its partner.
+A union intersects the sheets first, and two sheets in G2 contact along their seam are too nearly one
+surface beside it to intersect. Build each sheet from the edges of the ones before it (`{"edges": [...]}`
+as a network's curve) and the edges meet exactly. The start screen's mouse
+([`mouse.json`](../examples/mouse.json), under Showcase) is built that way:
+
+1. *The flanks.* A flat side whose top edge is the seam, a live spline through points written in the
+   variables (`length`, `width`, `height`, `hump`), filled (`feature.fill`) and mirrored.
+2. *The top.* One Gordon surface (`feature.surface.network`): the two seams and the crown as u curves,
+   the rear, three sections and the nose as v curves; both seams held in curvature (`"kind":
+   "curvature"`) to the flanks. The crown and the seams have nine points each and are crossed at the same
+   ones, so no curve is re-parametrised and the surface stays cubic. The rear and the nose leave each
+   flank along it with three control points in line, so they have no curvature across it, as the G2 seam
+   asks, and the hold leaves them as drawn.
+3. *The underside.* The flanks' feet and the same rear and nose curves in one sketch, filled.
+4. *Sewn* into a solid (three sews), rounded along its foot (`feature.fillet` with `chain`), the split
+   line between the buttons and the wheel's slot cut out, a wheel put in.
+
+Its assertions hold both seams G2 (`measure.continuity` proves it, at the default tolerances), a closed
+solid of a mouse's volume and a wheel that turns free. Published (`variable.publish` with ranges),
+`craft3d-cli check-range` proves the seams G2 at every corner of length 100 to 130 mm, width 54 to 70,
+height 34 to 46 and hump 0.36 to 0.50. With zebra stripes (`ui.set {"analysis": {"mode": "zebra"}}`)
+the stripes on the top run on into the flat flank without a kink or a jump in width.
+
 ## Plates and joints
 
 `feature.plate` gives faces a thickness: a sheet (a fill, a loft of open sections, a developable) becomes a

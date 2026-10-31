@@ -695,20 +695,26 @@ impl ImplicitForm {
     }
 }
 
-/// A row as it enters the measure, with a bound on the rounding of each of
-/// its coefficients (the coordinates', the weight's).
-type Row = (Raw, [f64; 2]);
+/// A row as it enters the measure, with the bound on its coefficients'
+/// rounding, coordinate by coordinate (`x w`, `y w`, `z w`, `w`): each is
+/// formed from that coordinate alone, so its rounding is of that
+/// coordinate's size (an edge along a plane has its coordinate across the
+/// plane at zero, and its rounding there with it: 2026-10-31, the
+/// class-A mouse's seams).
+type Row = (Raw, [f64; 4]);
 
 /// A row cut into pieces at `breaks`: its coefficients carry what it came
 /// in with (`allow`) and the cutting's own rounding (convex combinations,
 /// `16 (p + 2) ε` of its magnitude).
-fn row_pieces(raw: &Raw, breaks: &[f64], allow: [f64; 2]) -> Result<Vec<P4>, NetworkError> {
+fn row_pieces(raw: &Raw, breaks: &[f64], allow: [f64; 4]) -> Result<Vec<P4>, NetworkError> {
     let own = self::magnitude(raw);
-    // The coordinates and the weight each by their own magnitudes.
-    let allowance = |factor: f64| {
-        let xyz = allow[0] + factor * EPS * own[0];
-        let w = allow[1] + factor * EPS * own[1];
-        [xyz, xyz, xyz, w]
+    // Each coordinate and the weight by their own magnitudes.
+    let allowance = |factor: f64| -> [f64; 4] {
+        let mut out = allow;
+        for (a, m) in out.iter_mut().zip(own) {
+            *a += factor * EPS * m;
+        }
+        out
     };
     let mut raw = raw.clone();
     let mut have = raw.knots.clone();
@@ -745,13 +751,14 @@ fn row_pieces(raw: &Raw, breaks: &[f64], allow: [f64; 2]) -> Result<Vec<P4>, Net
         .collect())
 }
 
-/// The largest coordinate and the largest weight of a row.
-fn magnitude(raw: &Raw) -> [f64; 2] {
-    raw.points.iter().fold([0.0_f64; 2], |[m, w], h| {
-        [
-            m.max(h[0].abs()).max(h[1].abs()).max(h[2].abs()),
-            w.max(h[3].abs()),
-        ]
+/// The largest of each homogeneous coordinate of a row (`x w`, `y w`,
+/// `z w`, `w`).
+fn magnitude(raw: &Raw) -> [f64; 4] {
+    raw.points.iter().fold([0.0_f64; 4], |mut m, h| {
+        for (m, x) in m.iter_mut().zip(h) {
+            *m = m.max(x.abs());
+        }
+        m
     })
 }
 
@@ -784,7 +791,7 @@ fn derived(row: &Row) -> Result<Row, NetworkError> {
         2.0 * f * allow.get(k).copied().unwrap_or(f64::INFINITY)
             + 8.0 * EPS * f * mag.get(k).copied().unwrap_or(f64::INFINITY)
     };
-    Ok((d, [a(0), a(1)]))
+    Ok((d, [a(0), a(1), a(2), a(3)]))
 }
 
 /// One piece of the edge with every row on it.
@@ -1222,34 +1229,71 @@ fn spline_rows(
         edge.weights().to_vec(),
     )?;
     let track = Track::new(&local_edge, tolerance)?;
-    let Some((rows, along_v)) = iso_track_along(&local, &track, tolerance)? else {
+    let Some((rows, along_v, at)) = iso_track_along(&local, &track, tolerance)? else {
         return Ok(None);
     };
-    let m =
-        local
-            .control_points()
-            .iter()
-            .zip(local.weights())
-            .fold([0.0_f64; 2], |[m, mw], (p, w)| {
-                let w = w.abs();
-                [
-                    m.max(p.x.abs() * w).max(p.y.abs() * w).max(p.z.abs() * w),
-                    mw.max(w),
-                ]
-            });
     // Along v the rows across are derivatives in u.
     let (pu, pv) = local.degrees();
-    let (knots, q) = if along_v {
-        (local.knots_u(), pu)
+    let (nu, nv) = local.counts();
+    let (knots, q, n) = if along_v {
+        (local.knots_u(), pu, nu)
     } else {
-        (local.knots_v(), pv)
+        (local.knots_v(), pv, nv)
+    };
+    // The net's rows across that row `j` (0 the line, 1 and 2 the
+    // derivatives across) is made from: on a clamped border only the first
+    // `j + 1` from it (every other basis function and its first two
+    // derivatives are exactly zero there, so the other rows add exactly
+    // nothing); elsewhere the `q + 1` whose basis functions reach the line.
+    let (first, last) = (knots.first().copied(), knots.last().copied());
+    let span_rows = || {
+        let s = knots
+            .iter()
+            .rposition(|k| *k <= at)
+            .unwrap_or(0)
+            .min(n.saturating_sub(1).max(q));
+        (s.saturating_sub(q), s.min(n.saturating_sub(1)))
+    };
+    let touched = |j: usize| -> (usize, usize) {
+        if Some(at) == first {
+            (0, j.min(n.saturating_sub(1)))
+        } else if Some(at) == last {
+            (n.saturating_sub(1 + j), n.saturating_sub(1))
+        } else {
+            span_rows()
+        }
+    };
+    // Each homogeneous coordinate's largest local value over those rows: a
+    // row's coordinate is a sum of that coordinate of the net's points.
+    let magnitude_of = |(lo, hi): (usize, usize)| -> [f64; 4] {
+        let points = local.control_points();
+        let weights = local.weights();
+        let count_along = if along_v { nv } else { nu };
+        let mut m = [0.0_f64; 4];
+        for i in lo..=hi {
+            for k in 0..count_along {
+                let index = if along_v { i * nv + k } else { k * nv + i };
+                let (Some(p), Some(w)) = (points.get(index), weights.get(index)) else {
+                    continue;
+                };
+                let w = w.abs();
+                m = [
+                    m[0].max(p.x.abs() * w),
+                    m[1].max(p.y.abs() * w),
+                    m[2].max(p.z.abs() * w),
+                    m[3].max(w),
+                ];
+            }
+        }
+        m
     };
     let s = across_sums(knots, q);
     let sums = [1.0, s[0], s[1]];
     let mut out = Vec::with_capacity(3);
-    for (raw, sum) in rows.into_iter().zip(sums) {
+    for (j, (raw, sum)) in rows.into_iter().zip(sums).enumerate() {
         let gamma = (4 * raw.degree + 6 * q + 24) as f64 * EPS;
-        out.push((raw, [gamma * sum * m[0], gamma * sum * m[1]]));
+        let m = magnitude_of(touched(j));
+        out.push((raw, m.map(|m| gamma * sum * m)));
     }
     let [x0, x1, x2]: [Row; 3] = out.try_into().map_err(|_| internal())?;
     Ok(Some([x0, x1, x2]))
@@ -1641,15 +1685,15 @@ mod tests {
                 for (row, exact) in [(&x0, d0), (&x1, r1.0 + r1.1), (&x2, r2.0 + r2.1)] {
                     let got = row.0.points[k][c];
                     assert!(
-                        (got - exact).abs() <= row.1[0],
+                        (got - exact).abs() <= row.1[c],
                         "control point {k}, coordinate {c}: {got:e} is {:e} off {exact:e}, the allowance is {:e}",
                         (got - exact).abs(),
-                        row.1[0]
+                        row.1[c]
                     );
                 }
             }
             for (row, exact) in [(&x0, 1.0), (&x1, 0.0), (&x2, 0.0)] {
-                assert!((row.0.points[k][3] - exact).abs() <= row.1[1]);
+                assert!((row.0.points[k][3] - exact).abs() <= row.1[3]);
             }
         }
     }

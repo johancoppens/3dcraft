@@ -672,6 +672,15 @@ impl Track {
     /// tangent there (and the surface's tangent plane) is no longer known
     /// within the angular tolerance: such crossings, spaced too unevenly
     /// against the family's, are refused.
+    ///
+    /// A crossing within [`SAME_KNOT`] of one of the curve's own knots is
+    /// taken at that knot (the crossing is found by Gauss-Newton, to
+    /// about that much anyway): cut a rounding's width beside a knot, the
+    /// piece would keep a span of that width, which composed and joined
+    /// again gives the curve a knot of twice the degree's multiplicity
+    /// within rounding of the crossing, and a block of control points its
+    /// family does not have (a crown through points at its crossings'
+    /// own Greville abscissae, 2026-10-31).
     fn align(
         &mut self,
         own: &[f64],
@@ -679,6 +688,19 @@ impl Track {
         angular: f64,
         label: &str,
     ) -> Result<(), NetworkError> {
+        let knots = self.raw.interior();
+        let own: Vec<f64> = own
+            .iter()
+            .map(|&s| {
+                knots
+                    .iter()
+                    .copied()
+                    .filter(|k| (k - s).abs() <= SAME_KNOT)
+                    .min_by(|a, b| (a - s).abs().total_cmp(&(b - s).abs()))
+                    .unwrap_or(s)
+            })
+            .collect();
+        let own = own.as_slice();
         if own
             .iter()
             .zip(common)
@@ -1227,16 +1249,18 @@ fn iso_track(
     curve: &Track,
     tol: f64,
 ) -> Result<Option<[Raw; 3]>, NetworkError> {
-    Ok(iso_track_along(surface, curve, tol)?.map(|(rows, _)| rows))
+    Ok(iso_track_along(surface, curve, tol)?.map(|(rows, _, _)| rows))
 }
 
 /// As [`iso_track`], with whether the line runs along v (u fixed, so the
-/// rows across are derivatives in u).
+/// rows across are derivatives in u) and the fixed parameter of the line
+/// (the first or the last of its range exactly when the line was found
+/// within rounding of the face's border).
 fn iso_track_along(
     surface: &NurbsSurface,
     curve: &Track,
     tol: f64,
-) -> Result<Option<([Raw; 3], bool)>, NetworkError> {
+) -> Result<Option<([Raw; 3], bool, f64)>, NetworkError> {
     let wrapped = Surface::Nurbs(surface.clone());
     let mut ts = samples(&curve.raw, 4, 33);
     if ts.len() > 1025 {
@@ -1291,6 +1315,16 @@ fn iso_track_along(
         let fixed: Vec<f64> = uv.iter().map(|(_, c)| near(split(*c).0)).collect();
         let at =
             (fixed.iter().sum::<f64>() / fixed.len() as f64).clamp(fixed_range.0, fixed_range.1);
+        // On the border where it is there within rounding: the rows across
+        // are then made of the border's net rows only.
+        let near_border = SAME_KNOT * (fixed_range.1 - fixed_range.0);
+        let at = if at - fixed_range.0 <= near_border {
+            fixed_range.0
+        } else if fixed_range.1 - at <= near_border {
+            fixed_range.1
+        } else {
+            at
+        };
         // The running coordinate, followed across a seam.
         let mut run: Vec<f64> = Vec::with_capacity(uv.len());
         for (_, c) in &uv {
@@ -1378,7 +1412,7 @@ fn iso_track_along(
             field = reverse(&field);
             second = reverse(&second);
         }
-        return Ok(Some(([iso, field, second], along_v)));
+        return Ok(Some(([iso, field, second], along_v, at)));
     }
     Ok(None)
 }

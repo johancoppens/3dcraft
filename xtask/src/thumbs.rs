@@ -17,7 +17,7 @@
 use std::path::{Path, PathBuf};
 
 /// The examples, as `docs/examples` names them (the guide's order).
-pub const EXAMPLES: [&str; 16] = [
+pub const EXAMPLES: [&str; 17] = [
     "bracket",
     "flange",
     "case",
@@ -34,6 +34,7 @@ pub const EXAMPLES: [&str; 16] = [
     "fin",
     "shade",
     "tank",
+    "mouse",
 ];
 
 /// The published Jigs and assemblies of the start screen
