@@ -128,6 +128,13 @@
  [
   "variable.set",
   {
+   "name": "lift",
+   "expr": "45 mm"
+  }
+ ],
+ [
+  "variable.set",
+  {
    "name": "sl",
    "expr": "50 mm"
   }
@@ -733,7 +740,7 @@
   "sketch.create",
   {
    "plane": "xy",
-   "offset": "ztop",
+   "offset": "ztop + lift",
    "name": "Lid outline"
   }
  ],
@@ -799,7 +806,7 @@
   "sketch.create",
   {
    "plane": "xy",
-   "offset": "ztop",
+   "offset": "ztop + lift",
    "name": "Lid vents"
   }
  ],
@@ -1311,14 +1318,15 @@
   "material.preset",
   {
    "body": "Lid",
-   "preset": "aluminium-brushed"
+   "preset": "aluminium-brushed",
+   "roughness": 0.38
   }
  ],
  [
   "material.preset",
   {
    "body": "Drive bracket",
-   "preset": "aluminium-brushed"
+   "preset": "steel"
   }
  ],
  [

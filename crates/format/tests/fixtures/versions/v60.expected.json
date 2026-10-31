@@ -1,0 +1,451 @@
+{
+  "format_version": 60,
+  "written_by": "986d522a1a2a3a5ff63dee99ce432177b41bcd9b",
+  "how": "craft3d-cli (release) built from that commit (r1-chassis squashed and rebased onto main b5776ecb) on the developer's laptop: craft3d-cli run --new '{\"units\": \"mm\"}' --script v60.steps.json --out v60.3dcraft, then document.inspect of the file opened again; a panel 60 x 40 with a wall 30 high on its front edge, a slot 20 x 8 in the wall drawn in a cutouts sketch and a louvre bent out of the slot's top line (cutout: {sketch, edge}) with rect bend reliefs: the flange on a cut-out's edge of format 60 (first written as format 59 on the branch, renumbered when the class-A round took 59)",
+  "rollback": null,
+  "features": [
+    {
+      "dof": 0,
+      "id": "F1",
+      "name": "Base",
+      "params": {
+        "constraints": [
+          {
+            "id": 1,
+            "kind": {
+              "point": 1,
+              "type": "x",
+              "value": "0 mm"
+            }
+          },
+          {
+            "id": 2,
+            "kind": {
+              "point": 1,
+              "type": "y",
+              "value": "0 mm"
+            }
+          },
+          {
+            "id": 3,
+            "kind": {
+              "point": 2,
+              "type": "x",
+              "value": "60 mm"
+            }
+          },
+          {
+            "id": 4,
+            "kind": {
+              "point": 2,
+              "type": "y",
+              "value": "40 mm"
+            }
+          },
+          {
+            "id": 5,
+            "kind": {
+              "a": 5,
+              "b": null,
+              "type": "horizontal"
+            }
+          },
+          {
+            "id": 6,
+            "kind": {
+              "a": 6,
+              "b": null,
+              "type": "vertical"
+            }
+          },
+          {
+            "id": 7,
+            "kind": {
+              "a": 7,
+              "b": null,
+              "type": "horizontal"
+            }
+          },
+          {
+            "id": 8,
+            "kind": {
+              "a": 8,
+              "b": null,
+              "type": "vertical"
+            }
+          }
+        ],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 0.0,
+              "y": 0.0
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 60.0,
+              "y": 40.0
+            },
+            "id": 2
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 60.0,
+              "y": 0.0
+            },
+            "id": 3
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 0.0,
+              "y": 40.0
+            },
+            "id": 4
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 3,
+              "start": 1,
+              "type": "line"
+            },
+            "id": 5
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 2,
+              "start": 3,
+              "type": "line"
+            },
+            "id": 6
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 4,
+              "start": 2,
+              "type": "line"
+            },
+            "id": 7
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 1,
+              "start": 4,
+              "type": "line"
+            },
+            "id": 8
+          }
+        ],
+        "next_constraint_id": 9,
+        "next_entity_id": 9,
+        "plane": {
+          "offset": "0",
+          "plane": "xy",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "dof": 0,
+      "id": "F2",
+      "name": "Vents",
+      "params": {
+        "constraints": [
+          {
+            "id": 1,
+            "kind": {
+              "point": 1,
+              "type": "x",
+              "value": "20 mm"
+            }
+          },
+          {
+            "id": 2,
+            "kind": {
+              "point": 1,
+              "type": "y",
+              "value": "-ba - 20 mm"
+            }
+          },
+          {
+            "id": 3,
+            "kind": {
+              "point": 2,
+              "type": "x",
+              "value": "40 mm"
+            }
+          },
+          {
+            "id": 4,
+            "kind": {
+              "point": 2,
+              "type": "y",
+              "value": "-ba - 12 mm"
+            }
+          },
+          {
+            "id": 5,
+            "kind": {
+              "a": 5,
+              "b": null,
+              "type": "horizontal"
+            }
+          },
+          {
+            "id": 6,
+            "kind": {
+              "a": 6,
+              "b": null,
+              "type": "vertical"
+            }
+          },
+          {
+            "id": 7,
+            "kind": {
+              "a": 7,
+              "b": null,
+              "type": "horizontal"
+            }
+          },
+          {
+            "id": 8,
+            "kind": {
+              "a": 8,
+              "b": null,
+              "type": "vertical"
+            }
+          }
+        ],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 20.0,
+              "y": -22.199114857512853
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 40.0,
+              "y": -14.199114857512855
+            },
+            "id": 2
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 40.0,
+              "y": -22.199114857512853
+            },
+            "id": 3
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 20.0,
+              "y": -14.199114857512855
+            },
+            "id": 4
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 3,
+              "start": 1,
+              "type": "line"
+            },
+            "id": 5
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 2,
+              "start": 3,
+              "type": "line"
+            },
+            "id": 6
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 4,
+              "start": 2,
+              "type": "line"
+            },
+            "id": 7
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 1,
+              "start": 4,
+              "type": "line"
+            },
+            "id": 8
+          }
+        ],
+        "next_constraint_id": 9,
+        "next_entity_id": 9,
+        "plane": {
+          "offset": "0",
+          "plane": "xy",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "id": "F3",
+      "name": "Panel",
+      "params": {
+        "bend_relief": {
+          "shape": {
+            "named": "rect"
+          },
+          "size": "0.5 mm"
+        },
+        "corner": null,
+        "corners": [],
+        "cutouts": [
+          2
+        ],
+        "flanges": [
+          {
+            "angle": "90 deg",
+            "direction": "up",
+            "from": "tangent",
+            "id": 1,
+            "inset_end": null,
+            "inset_start": null,
+            "k_factor": null,
+            "length": "30 mm",
+            "on": {
+              "base": 5
+            },
+            "outline": null,
+            "radius": null
+          },
+          {
+            "angle": "35 deg",
+            "direction": "down",
+            "from": "tangent",
+            "id": 2,
+            "inset_end": "2 mm",
+            "inset_start": "2 mm",
+            "k_factor": null,
+            "length": "4 mm",
+            "on": {
+              "cutout": [
+                2,
+                7
+              ]
+            },
+            "outline": null,
+            "radius": null
+          }
+        ],
+        "k_factor": "0.4",
+        "next_flange_id": 3,
+        "radius": "1 mm",
+        "relief": null,
+        "sketch": 1,
+        "thickness": "t",
+        "type": "sheetMetal"
+      },
+      "status": "ok",
+      "suppressed": false
+    }
+  ],
+  "bodies": [
+    {
+      "area": 8851.609854951574,
+      "bbox": [
+        [
+          0.0,
+          -4.47515370111521,
+          0.0
+        ],
+        [
+          60.0,
+          40.0,
+          31.999999999999996
+        ]
+      ],
+      "bboxTolerance": 0.09408299450459458,
+      "centroid": [
+        30.0,
+        10.609474801235724,
+        7.119040875320028
+      ],
+      "edges": 80,
+      "faceNames": [
+        "F3:copy(0)/F3:face(0)",
+        "F3:copy(1)/F3:face(0)",
+        "F3:copy(0)/F3:face(2)",
+        "F3:copy(1)/F3:face(2)",
+        "F3:copy(0)/F3:face(4)",
+        "F3:copy(1)/F3:face(4)",
+        "F3:copy(0)/F3:face(1)",
+        "F3:copy(1)/F3:face(1)",
+        "F3:copy(0)/F3:face(3)",
+        "F3:copy(1)/F3:face(3)",
+        "F3:rim(261578576927915)/F3:face(0)",
+        "F3:rim(154823368612462)/F3:face(0)",
+        "F3:rim(93450841295609)/F3:face(0)",
+        "F3:rim(28829409746002)/F3:face(2)",
+        "F3:rim(141009469305409)/F3:face(2)",
+        "F3:rim(55285349974996)/F3:face(2)",
+        "F3:rim(217926689829360)/F3:face(1)",
+        "F3:rim(195936457120285)/F3:face(1)",
+        "F3:rim(64230646675003)/F3:face(2)",
+        "F3:rim(174181809640958)/F3:face(2)",
+        "F3:rim(136457849430586)/F3:face(2)",
+        "F3:rim(248852380662445)/F3:face(2)",
+        "F3:rim(59736380866368)/F3:face(2)",
+        "F3:rim(94920752423195)/F3:face(2)",
+        "F3:rim(251086545452592)/F3:face(2)",
+        "F3:rim(229096312743517)/F3:face(2)",
+        "F3:rim(114747103264718)/F3:face(2)",
+        "F3:rim(142184961858834)/F3:face(2)",
+        "F3:rim(169783763529184)/F3:face(2)",
+        "F3:rim(227346162439231)/F3:face(4)",
+        "F3:rim(36142508553052)/F3:face(4)",
+        "F3:rim(16316157711529)/F3:face(4)",
+        "F3:rim(215692525039213)/F3:face(3)",
+        "F3:rim(26576525243136)/F3:face(3)"
+      ],
+      "faces": 34,
+      "feature": "F3",
+      "kind": "solid",
+      "name": "Panel",
+      "shells": 1,
+      "valid": true,
+      "vertices": 48,
+      "volume": 4259.532435128343
+    }
+  ]
+}
