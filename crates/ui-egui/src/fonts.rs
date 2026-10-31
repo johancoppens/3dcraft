@@ -28,13 +28,17 @@ const WEIGHT_MEDIUM: f32 = 500.0;
 pub struct UiFonts {
     asked: bool,
     installed: [bool; 2],
+    /// Whether headings are in the family [`MEDIUM`] now.
+    medium_headings: bool,
 }
 
 impl UiFonts {
     /// Asks for the fonts once and puts in those that are here, again
     /// whenever one more arrives (in the browser, a fetch that ended).
-    /// Cheap when nothing changed: two lookups.
-    pub fn update(&mut self, ctx: &egui::Context) {
+    /// Cheap when nothing changed: a few lookups. Called once per frame
+    /// with the pass's root `ui`, before anything is drawn in it.
+    pub fn update(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
         if !self.asked {
             self.asked = true;
             // On the desktop this reads the files; in the browser it lists
@@ -43,6 +47,28 @@ impl UiFonts {
             let _ = craft3d_engine::fonts::load(TEXT);
             #[cfg(not(target_arch = "wasm32"))]
             let _ = craft3d_engine::fonts::load(MONO);
+        }
+        // Headings use the family [`MEDIUM`] only while the fonts in force
+        // have it: new definitions take effect at the next pass, and a
+        // family that is not bound would stop egui.
+        let medium = ctx.fonts(|f| {
+            f.definitions()
+                .families
+                .contains_key(&FontFamily::Name(Arc::from(MEDIUM)))
+        });
+        if medium != self.medium_headings {
+            self.medium_headings = medium;
+            ctx.all_styles_mut(|style| style_headings(style, medium));
+        }
+        // The root `ui` took its style before this pass's fonts were known.
+        let heading = if medium {
+            FontFamily::Name(Arc::from(MEDIUM))
+        } else {
+            FontFamily::Proportional
+        };
+        let root = ui.style().text_styles.get(&egui::TextStyle::Heading);
+        if root.is_some_and(|f| f.family != heading) {
+            style_headings(ui.style_mut(), medium);
         }
         let have = [TEXT, MONO].map(craft3d_engine::fonts::ready);
         if have == self.installed {
@@ -126,17 +152,51 @@ fn put(defs: &mut FontDefinitions, name: &str, data: FontData, families: &[(Font
     }
 }
 
-/// Headings in the medium weight (egui's text styles otherwise as they
-/// are).
-pub fn style_headings(style: &mut egui::Style) {
+/// Headings in the medium weight (`medium`), or in egui's proportional
+/// family; egui's text styles otherwise as they are.
+pub fn style_headings(style: &mut egui::Style, medium: bool) {
     if let Some(font) = style.text_styles.get_mut(&egui::TextStyle::Heading) {
-        font.family = FontFamily::Name(Arc::from(MEDIUM));
+        font.family = if medium {
+            FontFamily::Name(Arc::from(MEDIUM))
+        } else {
+            FontFamily::Proportional
+        };
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn frame(ctx: &egui::Context, fonts: &mut UiFonts) {
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            fonts.update(ui);
+            ui.heading("Export");
+            ui.label("text");
+        });
+    }
+
+    #[test]
+    fn a_heading_never_names_a_family_the_fonts_in_force_lack() {
+        // Fonts set in a pass take effect at the next one: the headings
+        // follow the fonts in force, with the files here or not.
+        let ctx = egui::Context::default();
+        let mut fonts = UiFonts::default();
+        for _ in 0..3 {
+            frame(&ctx, &mut fonts);
+        }
+        // Inter put in (any bytes do for the families), then egui's own
+        // fonts put back by someone else: no pass names a family that is
+        // not bound.
+        ctx.set_fonts(definitions(None, None));
+        frame(&ctx, &mut fonts);
+        frame(&ctx, &mut fonts);
+        assert!(fonts.medium_headings);
+        ctx.set_fonts(FontDefinitions::default());
+        frame(&ctx, &mut fonts);
+        assert!(!fonts.medium_headings);
+        frame(&ctx, &mut fonts);
+    }
 
     #[test]
     fn without_the_files_egui_fonts_remain_and_the_medium_family_exists() {

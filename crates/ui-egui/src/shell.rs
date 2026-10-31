@@ -2198,10 +2198,9 @@ impl Shell {
     fn ui_with(&mut self, ui: &mut egui::Ui, mut session: Option<&mut Session>) {
         if !self.themed {
             self.tokens.apply(ui.ctx());
-            ui.ctx().all_styles_mut(crate::fonts::style_headings);
             self.themed = true;
         }
-        self.fonts.update(ui.ctx());
+        self.fonts.update(ui);
         self.player_shown_last = std::mem::take(&mut self.player_shown);
         // A finger was seen: touch sizes from now on, at any width.
         if ui.input(egui::InputState::any_touches) {
