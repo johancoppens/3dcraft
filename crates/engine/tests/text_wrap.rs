@@ -224,8 +224,13 @@ fn embossed_and_engraved_on_a_cone() {
             else {
                 panic!("no cone")
             };
+            // On the skin (the text on the surface itself): each vertex
+            // of the plate taken to the surface along its normal, not the
+            // corners at the depth or the lap.
+            let surface = craft3d_geom::Surface::Cone(*c);
             for v in &wrapped.vertices {
-                let (x, y, _) = c.frame().local(v.point);
+                let (u, w) = surface.project(v.point).unwrap();
+                let (x, y, _) = c.frame().local(surface.eval(u, w));
                 radii.0 = radii.0.min(x.hypot(y));
                 radii.1 = radii.1.max(x.hypot(y));
             }
@@ -363,8 +368,7 @@ fn editing_the_depth_keeps_the_wrap() {
     let expected = a * ((0.5 + lap) + (0.25 - lap * lap) / (2.0 * r));
     let v = volume_of(&mut s, "Wrapped");
     assert!((v - expected).abs() <= 1e-5 * expected, "{v} vs {expected}");
-    // Moved onto the same face by name again, and given a throughAll: a
-    // plain extrusion then.
+    // Wrapped onto the same face by name again: the same body.
     run(
         &mut s,
         "feature.edit",
@@ -780,4 +784,77 @@ fn every_glyph_wraps_and_meshes() {
     }
     println!("EVERY: {failures} of {total} failed");
     assert_eq!(failures, 0, "{failures} of {total} glyphs failed");
+}
+
+/// A face cut in two by a later feature (a groove round the can) keeps
+/// one name for both pieces: wrapping onto that name is refused, naming
+/// how many faces it names.
+#[test]
+fn a_wrap_name_of_several_faces_is_refused() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    built(
+        &mut s,
+        "feature.cylinder",
+        json!({"radius": 20, "height": 40, "name": "Can"}),
+    );
+    built(
+        &mut s,
+        "feature.torus",
+        json!({"major": 20, "minor": 2, "position": [0, 0, 20], "name": "Ring"}),
+    );
+    built(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Can", "tool": "Ring", "name": "Grooved"}),
+    );
+    let names = common::checked::body(&mut s, "Grooved")["faceNames"].clone();
+    let names: Vec<&str> = names
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n.as_str().unwrap())
+        .collect();
+    let split = names
+        .iter()
+        .find(|n| n.ends_with("F1:face(0)") && names.iter().filter(|m| m == n).count() == 2)
+        .unwrap_or_else(|| panic!("the can's side is not in two pieces: {names:?}"))
+        .to_string();
+    run(&mut s, "sketch.create", json!({"name": "L"}));
+    run(
+        &mut s,
+        "sketch.text",
+        json!({"sketch": "L", "text": "X", "size": 5, "at": [0, 5]}),
+    );
+    let why = failed(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "L", "wrap": split, "distance": 0.5}),
+    );
+    assert!(why.contains("names 2 faces"), "{why}");
+}
+
+/// Half a turn on a steep cone (a narrow development sector): a text
+/// that reaches round to the back of the surface is refused there too.
+#[test]
+fn past_half_a_turn_on_a_steep_cone_is_refused() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    built(
+        &mut s,
+        "feature.cone",
+        json!({"radius": 3, "height": 80, "name": "Spike"}),
+    );
+    run(&mut s, "sketch.create", json!({"name": "L"}));
+    run(
+        &mut s,
+        "sketch.text",
+        json!({"sketch": "L", "text": "far too long", "size": 3, "at": [0, 2]}),
+    );
+    let why = failed(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "L", "wrap": "F1:face(0)", "distance": 0.2}),
+    );
+    assert!(why.contains("back of the surface"), "{why}");
 }

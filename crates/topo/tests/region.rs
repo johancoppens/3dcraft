@@ -336,9 +336,60 @@ fn a_remembered_face_is_the_same_face_bit_for_bit() {
     let (second, warm) = allowance::measured(|| craft3d_topo::regionless(&good, &tol()));
     assert!(first.is_empty() && second.is_empty());
     assert_eq!(cold, warm, "a hit charges what the check took");
+    // On a spline patch, whose projections count their work: a hit
+    // charges that work, not nothing.
+    let patch = bump_patch();
+    craft3d_topo::forget_passed();
+    let (first, cold) = allowance::measured(|| craft3d_topo::regionless(&patch, &tol()));
+    let (second, warm) = allowance::measured(|| craft3d_topo::regionless(&patch, &tol()));
+    assert!(first.is_empty() && second.is_empty());
+    assert!(cold > 0, "the check of a spline face counts its work");
+    assert_eq!(cold, warm, "a hit charges what the check took");
     for _ in 0..2 {
         assert_eq!(craft3d_topo::regionless(&bad, &tol()).len(), 1);
     }
     // The good face once more, after the bad one: still a pass.
     assert!(craft3d_topo::regionless(&good, &tol()).is_empty());
+}
+
+/// A sheet of one face on a quadratic spline patch over the unit square,
+/// raised in its middle, bounded by its four sides (straight: their
+/// control points lie on them).
+fn bump_patch() -> Body {
+    use craft3d_geom::NurbsSurface;
+    let mut ctrl = Vec::new();
+    for i in 0..3 {
+        for j in 0..3 {
+            let z = if i == 1 && j == 1 { 0.3 } else { 0.0 };
+            ctrl.push(Vec3::new(0.5 * i as f64, 0.5 * j as f64, z));
+        }
+    }
+    let knots = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+    let surface = NurbsSurface::new(2, 2, knots.clone(), knots, 3, 3, ctrl, vec![1.0; 9]).unwrap();
+    let mut body = Body::new(BodyKind::Sheet);
+    let corners = [
+        Vec3::new(0.0, 0.0, 0.0),
+        Vec3::new(1.0, 0.0, 0.0),
+        Vec3::new(1.0, 1.0, 0.0),
+        Vec3::new(0.0, 1.0, 0.0),
+    ];
+    let v: Vec<_> = corners.iter().map(|p| body.add_vertex(*p)).collect();
+    let mut coedges = Vec::new();
+    for k in 0..4 {
+        let (a, b) = (corners[k], corners[(k + 1) % 4]);
+        let edge = body.add_edge(
+            Curve3::Line(Line::through(a, b).unwrap()),
+            (0.0, 1.0),
+            v[k],
+            v[(k + 1) % 4],
+        );
+        coedges.push(Coedge {
+            edge,
+            reversed: false,
+        });
+    }
+    let lp = body.add_loop(coedges);
+    let face = body.add_face(Surface::Nurbs(surface), false, vec![lp]);
+    body.add_shell(vec![face]);
+    body
 }

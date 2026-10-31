@@ -1,6 +1,6 @@
 //! Profiles wrapped onto a cylinder or a cone and given a thickness: the
 //! solid an embossed (out) or engraved (in) text or outline is
-//! (docs/design/text.md › *Wrapped onto a surface*).
+//! (docs/design/text.md › *Wrapped onto a cylinder or a cone*).
 //!
 //! **The map.** A cylinder and a cone are developable, and their
 //! development is known in closed form: the profile's plane is laid on the
@@ -152,6 +152,78 @@ impl Development {
 /// The point of a segment at `t` in [0, 1] along the loop's direction.
 fn on_segment(segment: &Segment, t: f64) -> [f64; 2] {
     segment.point_at(if segment.reversed { 1.0 - t } else { t })
+}
+
+/// Most steps one segment is sampled in for [`craft3d_topo::face_holds`].
+const MOST_HOLD_STEPS: usize = 256;
+
+/// The shortest distance between the ends of an edge of `face` (an edge
+/// that closes on itself counts its curve's length round instead: a
+/// circle's points a quarter round apart); infinity for a face with none.
+fn shortest_edge(body: &Body, face: &craft3d_topo::Face) -> f64 {
+    let mut shortest = f64::INFINITY;
+    for id in &face.loops {
+        let Some(lp) = body.loop_(*id) else { continue };
+        for coedge in &lp.coedges {
+            let Some(edge) = body.edge(coedge.edge) else {
+                continue;
+            };
+            let (t0, t1) = edge.range;
+            let a = edge.curve.eval(t0);
+            let length = if edge.start == edge.end {
+                // Closed: four chords round it.
+                (0..4)
+                    .map(|k| {
+                        let f = |k: f64| edge.curve.eval(t0 + (t1 - t0) * k / 4.0);
+                        f(k as f64).distance(f(k as f64 + 1.0))
+                    })
+                    .sum::<f64>()
+            } else {
+                a.distance(edge.curve.eval(t1))
+            };
+            if length.is_finite() && length > 0.0 {
+                shortest = shortest.min(length);
+            }
+        }
+    }
+    shortest
+}
+
+/// The diagonal of the box of a loop's segments' ends and middles.
+fn box_diagonal(l: &crate::profile::Loop2) -> f64 {
+    let mut lo = [f64::INFINITY; 2];
+    let mut hi = [f64::NEG_INFINITY; 2];
+    for segment in &l.segments {
+        for t in [0.0, 0.5] {
+            let p = segment.point_at(t);
+            for d in 0..2 {
+                if let (Some(l), Some(h), Some(x)) = (lo.get_mut(d), hi.get_mut(d), p.get(d)) {
+                    *l = l.min(*x);
+                    *h = h.max(*x);
+                }
+            }
+        }
+    }
+    let d = (hi[0] - lo[0]).hypot(hi[1] - lo[1]);
+    if d.is_finite() { d } else { 0.0 }
+}
+
+/// How many steps of at most `step` a segment's length needs (its length
+/// read off eight chords), at least two and at most [`MOST_HOLD_STEPS`].
+fn steps_along(segment: &Segment, step: f64) -> usize {
+    let mut length = 0.0;
+    let mut before = segment.point_at(0.0);
+    for k in 1..=8 {
+        let p = segment.point_at(k as f64 / 8.0);
+        length += (p[0] - before[0]).hypot(p[1] - before[1]);
+        before = p;
+    }
+    let n = (length / step).ceil();
+    if n.is_finite() && step > 0.0 {
+        (n as usize).clamp(2, MOST_HOLD_STEPS)
+    } else {
+        2
+    }
 }
 
 /// The unit direction a segment leaves its point at `t` (0 or 1) by, along
@@ -700,11 +772,22 @@ pub fn wrap_onto(
         return Err(refuse("there is no profile to wrap"));
     }
     if let Some((body, on)) = face {
+        // Each segment sampled in steps no longer than the face's shortest
+        // edge (a notch of the face is at least that wide where it opens,
+        // so a step cannot jump over it whole) and a sixteenth of its
+        // loop's box, at least ten tolerances; at least two steps and at
+        // most `MOST_HOLD_STEPS`.
+        let shortest = shortest_edge(body, on).max(10.0 * tolerance.linear);
         let mut points = Vec::new();
         for p in profiles {
             for l in std::iter::once(&p.outer).chain(p.holes.iter()) {
+                let step = shortest
+                    .min(box_diagonal(l) / 16.0)
+                    .max(10.0 * tolerance.linear);
                 for segment in &l.segments {
-                    for t in [0.0, 0.5] {
+                    let steps = steps_along(segment, step);
+                    for k in 0..steps {
+                        let t = k as f64 / steps as f64;
                         let (u, v) = dev.uv(on_segment(segment, t))?;
                         points.push(surface.eval(u, v));
                     }
