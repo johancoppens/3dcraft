@@ -181,7 +181,12 @@ fn spec(
 
 /// What main built before closed corners existed (76e4d0f5 and 8ee335b4,
 /// Check runs 40609618286 and 40608178864, this file's parts printed
-/// there): open parts are built bit for bit as they were.
+/// there): open parts are built bit for bit as they were. Re-pinned when
+/// the transcendental functions moved from the platform's maths library
+/// to the portable `libm` (2026-10-31, docs/design/geometry.md › Portable
+/// maths): every count, area and flat area kept its bits; the vertex
+/// hashes moved, and the volumes of box-round and z by one ulp and of
+/// cutout by two. The same bits on the Strix and on a laptop.
 const PINS: &[(&str, Pin)] = &[
     (
         "box-none",
@@ -192,7 +197,7 @@ const PINS: &[(&str, Pin)] = &[
             39,
             79,
             42,
-            0xb645a3d6dc522ee,
+            0xebc19837d77d4da8,
         ),
     ),
     (
@@ -204,19 +209,19 @@ const PINS: &[(&str, Pin)] = &[
             47,
             103,
             58,
-            0xf376c9112c666e45,
+            0xb2971b90b56a148c,
         ),
     ),
     (
         "box-round",
         (
-            0x40b1a6243d70cb73,
+            0x40b1a6243d70cb74,
             0x40c2426a782f9832,
             0x40b18a7edc2db3b8,
             43,
             91,
             50,
-            0x37a9a030a0a0b8d2,
+            0xc1aac69eec97e2d7,
         ),
     ),
     (
@@ -228,31 +233,31 @@ const PINS: &[(&str, Pin)] = &[
             43,
             91,
             50,
-            0x96495c5ef99d6e3b,
+            0xfe8dc17af2168a87,
         ),
     ),
     (
         "z",
         (
-            0x40a118fdb9effea7,
+            0x40a118fdb9effea8,
             0x40b1d66a782f9838,
             0x40a0ffdbbe9bba77,
             22,
             44,
             24,
-            0xbfd02f4c22107336,
+            0x9c9a2ef0d1a2aad8,
         ),
     ),
     (
         "cutout",
         (
-            0x40ababb1d4f9870f,
+            0x40ababb1d4f9870d,
             0x40bcb065f0030f89,
             0x40ab8e29e7435092,
             24,
             50,
             28,
-            0xa5007de87ed7f0af,
+            0x584f6e43edc2b4f5,
         ),
     ),
 ];
