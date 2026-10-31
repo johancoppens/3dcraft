@@ -873,3 +873,44 @@ fn the_default_frame_is_the_box_of_what_the_faces_hold() {
         }
     }
 }
+
+/// `camera` (2026-10-31): the picture is the one a given camera sees, as
+/// `view.pick` takes it. An orthographic camera looking down at the plate
+/// from above, its height the plate's length, shows the 60-unit side
+/// across the picture's height to scale (and the 40-unit side as two
+/// thirds of it); a camera that looks away from the plate shows nothing
+/// of it; framing keys beside `camera`, and a camera without its eye,
+/// are refused with the reason.
+#[test]
+fn a_given_camera_is_the_one_the_picture_is_seen_from() {
+    let mut s = plate(1.0);
+    let shot = shoot(
+        &mut s,
+        json!({"width": 200, "height": 200, "camera": {"eye": [30, 20, 100], "target": [30, 20, 0], "up": [1, 0, 0], "projection": "orthographic", "height": 60}}),
+    );
+    let (w, h) = shot.extent();
+    // Up is +x (60 units over the 200 pixels), across is y (40 of 60).
+    assert!((h as f64 - 200.0).abs() <= 2.0, "{w} x {h}");
+    assert!((w as f64 - 200.0 * 40.0 / 60.0).abs() <= 2.0, "{w} x {h}");
+    let away = shoot(
+        &mut s,
+        json!({"width": 64, "height": 64, "camera": {"eye": [30, 20, 100], "target": [30, 20, 200]}}),
+    );
+    assert_eq!(away.extent(), (0, 0));
+    for (params, reason) in [
+        (
+            json!({"view": "top", "camera": {"eye": [0, 0, 100], "target": [0, 0, 0]}}),
+            "give one or the other",
+        ),
+        (json!({"camera": {"target": [0, 0, 0]}}), "needs `eye`"),
+        (
+            json!({"camera": {"eye": [0, 0, 1], "target": [0, 0, 0], "fovY": 200}}),
+            "between 0 and 180",
+        ),
+        (json!({"camera": "top"}), "camera"),
+    ] {
+        let why = refused(&mut s, params.clone());
+        assert!(why.contains(reason), "{params}: {why}");
+        assert!(why.starts_with("view.render"), "{params}: {why}");
+    }
+}

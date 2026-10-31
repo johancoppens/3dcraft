@@ -1200,9 +1200,14 @@ fn camera_json(camera: &Camera) -> Value {
 
 /// The `camera` of `view.pick`.
 fn camera_param(value: &Value) -> Result<Camera, CommandError> {
-    const ID: &str = "view.pick";
+    camera_of("view.pick", value)
+}
+
+/// The `camera` param of command `ID` (`view.pick`, `view.render`): eye,
+/// target, up, and a perspective's `fovY` or an orthographic's `height`.
+pub(crate) fn camera_of(id: &'static str, value: &Value) -> Result<Camera, CommandError> {
     let p = Params::new(
-        ID,
+        id,
         value,
         &["eye", "target", "up", "projection", "fovY", "height"],
     )
@@ -1218,20 +1223,20 @@ fn camera_param(value: &Value) -> Result<Camera, CommandError> {
         };
         parsed.map(Some).ok_or_else(|| {
             CommandError::new(format!(
-                "{ID}: `camera.{key}` must be [x, y, z], numbers within ±1e12"
+                "{id}: `camera.{key}` must be [x, y, z], numbers within ±1e12"
             ))
         })
     };
     let eye = point("eye")?
-        .ok_or_else(|| CommandError::new(format!("{ID}: `camera` needs `eye`, [x, y, z]")))?;
+        .ok_or_else(|| CommandError::new(format!("{id}: `camera` needs `eye`, [x, y, z]")))?;
     let target = point("target")?
-        .ok_or_else(|| CommandError::new(format!("{ID}: `camera` needs `target`, [x, y, z]")))?;
+        .ok_or_else(|| CommandError::new(format!("{id}: `camera` needs `target`, [x, y, z]")))?;
     let up = point("up")?.unwrap_or(Vec3::Z);
     let projection = match p.str("projection")?.unwrap_or("perspective") {
         "perspective" => {
             if p.get("height").is_some() {
                 return fail(format!(
-                    "{ID}: `camera.height` belongs to an orthographic camera; a perspective one takes `fovY`"
+                    "{id}: `camera.height` belongs to an orthographic camera; a perspective one takes `fovY`"
                 ));
             }
             let fov_y_deg = match p.number("fovY")? {
@@ -1239,7 +1244,7 @@ fn camera_param(value: &Value) -> Result<Camera, CommandError> {
                 Some(fov) if fov > 0.0 && fov < 180.0 => fov,
                 Some(_) => {
                     return fail(format!(
-                        "{ID}: `camera.fovY` must be an angle between 0 and 180 degrees"
+                        "{id}: `camera.fovY` must be an angle between 0 and 180 degrees"
                     ));
                 }
             };
@@ -1248,7 +1253,7 @@ fn camera_param(value: &Value) -> Result<Camera, CommandError> {
         "orthographic" => {
             if p.get("fovY").is_some() {
                 return fail(format!(
-                    "{ID}: `camera.fovY` belongs to a perspective camera; an orthographic one takes `height`"
+                    "{id}: `camera.fovY` belongs to a perspective camera; an orthographic one takes `height`"
                 ));
             }
             match p.number("height")? {
@@ -1257,12 +1262,12 @@ fn camera_param(value: &Value) -> Result<Camera, CommandError> {
                 },
                 Some(_) => {
                     return fail(format!(
-                        "{ID}: `camera.height` must be a positive length, at most 1e12"
+                        "{id}: `camera.height` must be a positive length, at most 1e12"
                     ));
                 }
                 None => {
                     return fail(format!(
-                        "{ID}: an orthographic `camera` needs `height`, the model units from the top of the picture to its bottom"
+                        "{id}: an orthographic `camera` needs `height`, the model units from the top of the picture to its bottom"
                     ));
                 }
             }
@@ -1270,7 +1275,7 @@ fn camera_param(value: &Value) -> Result<Camera, CommandError> {
         other => {
             let other: String = other.chars().take(40).collect();
             return fail(format!(
-                "{ID}: unknown `camera.projection` `{other}`; use perspective or orthographic"
+                "{id}: unknown `camera.projection` `{other}`; use perspective or orthographic"
             ));
         }
     };
@@ -1284,7 +1289,7 @@ fn camera_param(value: &Value) -> Result<Camera, CommandError> {
     // view) is refused here, with its reason.
     camera
         .axes()
-        .map_err(|e| CommandError::new(format!("{ID}: `camera`: {e}")))?;
+        .map_err(|e| CommandError::new(format!("{id}: `camera`: {e}")))?;
     Ok(camera)
 }
 
