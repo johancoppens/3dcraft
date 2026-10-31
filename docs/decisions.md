@@ -6,7 +6,7 @@ Decisions that shape the project, newest first, each with its reason. An agent t
 
 ## Taken
 
-### 2026-10-31: The `libm` crate for transcendental functions (AWAITING THE DEVELOPER; proposed by an agent, narrows D-open-5)
+### 2026-10-31: The `libm` crate for transcendental functions (decided by the developer, 2026-10-31; narrows D-open-5)
 
 Not decided. Branch `r1-portable-math` is built on it and waits for this.
 
@@ -627,7 +627,7 @@ Made by the agent, overnight; the developer can overturn any of them.
 
 | # | Question | Options | Needed by | Default if nobody decides |
 |---|---|---|---|---|
-| D-open-5 | **General-purpose maths dependencies in the kernel** (linear algebra, interval or exact arithmetic). The transcendental functions are proposed as an exception, awaiting the developer: see *2026-10-31: The `libm` crate for transcendental functions* under Taken | Write everything; allow specific permissive pure-Rust crates | M1 | Write it; revisit with a measured reason |
+| D-open-5 | **General-purpose maths dependencies in the kernel** (linear algebra, interval or exact arithmetic). The transcendental functions are an exception, decided by the developer: see *2026-10-31: The `libm` crate for transcendental functions* under Taken | Write everything; allow specific permissive pure-Rust crates | M1 | Write it; revisit with a measured reason |
 | D-open-9 | **Default units and tolerance** of a new document | mm / deg / 1e-6 mm; other | M2 | mm, degrees, 1e-6 mm linear, 1e-9 rad angular |
 | D-open-10 | **Compression crate for 3MF/`.3dcraft`** (DEFLATE, zstd) | Permissive pure-Rust crates; write our own | M2/M3 | Use permissive pure-Rust crates: not modelling code |
 | D-open-11 | **Coordinate convention** | Z up (CAD/3D-printing convention); Y up | M2 | Z up, right-handed |
