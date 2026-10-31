@@ -634,6 +634,31 @@ pub fn draw_lines(
             let (Some(&a), Some(&b)) = (a, b) else {
                 continue;
             };
+            // In perspective, the part in front of the eye: an end behind
+            // it (or at it) moves along the segment to a millionth of the
+            // other end's distance, as the mesh's near plane is at most a
+            // millionth of the farthest (`clip`).
+            let (a, b) = if view.is_perspective() {
+                let (da, db) = (view.distance(a), view.distance(b));
+                let near = 1e-6 * da.max(db);
+                if near.is_nan() || near <= 0.0 || (da < near && db < near) {
+                    continue;
+                }
+                let toward = |from: Vec3, d_from: f64, to: Vec3, d_to: f64| {
+                    // `from` is in front, `to` is not.
+                    let t = ((d_from - near) / (d_from - d_to)).clamp(0.0, 1.0);
+                    from + (to - from) * t
+                };
+                if da < near {
+                    (toward(b, db, a, da), b)
+                } else if db < near {
+                    (a, toward(a, da, b, db))
+                } else {
+                    (a, b)
+                }
+            } else {
+                (a, b)
+            };
             let (Some(pa), Some(pb)) = (view.project(a), view.project(b)) else {
                 continue;
             };

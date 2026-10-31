@@ -89,12 +89,15 @@ fn pack_part(
         });
     }
     let chunk_triangles = chunk_triangles.clamp(1, CHUNK_TRIANGLES);
-    // The centre of the positions that fit in `f32` at all, so that one
-    // hostile coordinate cannot push the rest of the mesh out of range.
+    // The centre of the corners of the triangles, of those that fit in
+    // `f32` at all, so that one hostile coordinate cannot push the rest of
+    // the mesh out of range, nor can a vertex no triangle uses (far away,
+    // it would cost the drawn ones their precision).
     let representable = mesh
-        .positions
+        .triangles
         .iter()
-        .copied()
+        .flatten()
+        .filter_map(|&k| mesh.positions.get(k as usize).copied())
         .filter(|&p| narrow(p).is_some());
     let origin = Bbox3::from_points(representable)
         .center()

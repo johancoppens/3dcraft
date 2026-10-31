@@ -135,42 +135,11 @@ pub(crate) fn check_params(params: &RenderParams, max_texture_side: u32) -> Resu
 }
 
 /// Near and far distance along the view direction that enclose `bounds`
-/// with a margin: the tighter the range, the finer the depth buffer.
+/// with a margin: the tighter the range, the finer the depth buffer. The
+/// CPU renderer's own function (`craft3d_render::depth_range`), so that
+/// both clip at the same near plane.
 fn depth_range(axes: &ViewAxes, bounds: &Bbox3, perspective: bool) -> (f64, f64) {
-    // Nothing to draw: any valid range will do.
-    const EMPTY: (f64, f64) = (0.5, 1.0);
-    let Some((lo, hi)) = bounds.corners() else {
-        return EMPTY;
-    };
-    let (mut nearest, mut farthest) = (f64::INFINITY, f64::NEG_INFINITY);
-    for x in [lo.x, hi.x] {
-        for y in [lo.y, hi.y] {
-            for z in [lo.z, hi.z] {
-                let dist = (craft3d_math::Vec3::new(x, y, z) - axes.eye).dot(axes.forward);
-                nearest = nearest.min(dist);
-                farthest = farthest.max(dist);
-            }
-        }
-    }
-    if !(nearest.is_finite() && farthest.is_finite()) {
-        return EMPTY;
-    }
-    // The margin covers the rounding of positions to f32 (relative error
-    // 2^-24 ≈ 6e-8 of the mesh size) many times over, and keeps a flat mesh
-    // seen head-on from having an empty range.
-    let reach = nearest.abs().max(farthest.abs());
-    let pad = (1e-3 * (farthest - nearest) + 1e-5 * reach).max(1e-30);
-    if perspective {
-        let far = farthest + pad;
-        if far <= 0.0 {
-            // Everything is behind the eye and is clipped anyway.
-            return EMPTY;
-        }
-        // A camera inside the model: keep the ratio far / near bounded.
-        ((nearest - pad).max(far * 1e-6), far)
-    } else {
-        (nearest - pad, farthest + pad)
-    }
+    craft3d_render::depth_range(axes.eye, axes.forward, bounds, perspective)
 }
 
 /// The numbers of `scene.wgsl`'s uniform block, computed in `f64` and

@@ -508,6 +508,49 @@ fn cut_open_models_match_the_cpu_renderer() {
     assert_eq!(compared, 4 * 14 * offscreens().len());
 }
 
+/// A camera inside a cut-open body, close to the cap, and one just outside
+/// the drawn box but within the cap's margin (docs/design/rendering.md ›
+/// *Near-plane clipping*): both renderers clip at the near plane of the
+/// box grown by the cap's margin (`craft3d_render::depth_bounds`).
+#[test]
+fn a_camera_inside_a_cut_open_body_matches_the_cpu_renderer() {
+    let world = Frame::new(Vec3::ZERO, Vec3::Z, Vec3::X).unwrap();
+    let mesh = mesh_of!(&solids::sphere(&world, 1.0).unwrap().body, 0.002);
+    let cut = section(Vec3::new(0.2, 0.0, 0.0), Vec3::X);
+    let margin = 2.0 * 3.0_f64.sqrt() * craft3d_render::SECTION_MARGIN;
+    let mut scenes = Vec::new();
+    for (k, (eye, target)) in [
+        // In the half cut away, inside the sphere, looking at the cap.
+        (Vec3::new(0.6, 0.1, 0.05), Vec3::new(-1.0, -0.2, 0.0)),
+        // Just outside the sphere's box, within the cap's margin of it.
+        (
+            Vec3::new(1.0 + 0.5 * margin, 0.05, 0.02),
+            Vec3::new(-1.0, 0.0, 0.0),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let params = RenderParams {
+            section: Some(cut),
+            ..params(200, 150, 2)
+        };
+        scenes.push(Scene {
+            name: format!("inside-cut-{k}"),
+            mesh: mesh.clone(),
+            camera: Camera {
+                eye,
+                target,
+                up: Vec3::Z,
+                projection: Projection::Perspective { fov_y_deg: 70.0 },
+            },
+            params,
+            evidence: true,
+        });
+    }
+    assert_eq!(check("inside", &scenes), scenes.len() * offscreens().len());
+}
+
 /// An orthographic camera that looks at the plane head-on from the half
 /// that is cut away, with `side` model units across the square picture.
 fn head_on(mesh: &Mesh, section: &Section, side: f64) -> Camera {

@@ -904,6 +904,7 @@ fn studio_frame(
         cut: cut.as_ref(),
         caps: true,
         peel: see_through,
+        depth: crate::clip::depth_bounds(&section_bounds(mesh), cut.is_some_and(|c| c.cap)),
     };
     let (surfaces, peeled) = rasterise_layers(mesh, &view, (w, h), &|_, _| true, raster)?;
     // Layer 3: the faces that let light through cast no shadow; the
@@ -1052,6 +1053,7 @@ fn studio_frame(
             cut.as_ref(),
             [&surfaces, &peeled],
             margin,
+            &raster.depth,
         )?;
         if near.iter().any(|&d| d) {
             doubt = near.iter().map(|&d| [f32::from(u8::from(d))]).collect();
@@ -1280,6 +1282,9 @@ pub(crate) struct Raster<'c> {
     /// Keep the nearest surface strictly behind the front one too (a
     /// see-through picture).
     pub peel: bool,
+    /// The box the depth range is fitted to (`clip::depth_bounds` of the
+    /// whole scene): the near plane the triangles are clipped at.
+    pub depth: craft3d_math::Bbox3,
 }
 
 /// The nearest surface per sample and, with [`Raster::peel`], the nearest
@@ -1301,7 +1306,7 @@ pub(crate) fn rasterise_layers(
 ) -> Result<(Vec<Surface>, Vec<Surface>), RenderError> {
     // Clipped to the near plane (`crate::clip`); a surface names the
     // mesh's triangle its part comes from.
-    let clipped = crate::clip::clip_mesh(mesh, &[], view)?;
+    let clipped = crate::clip::clip_mesh(mesh, &[], view, &raster.depth)?;
     let mesh = &*clipped.mesh;
     let projected: Vec<_> = mesh.positions.iter().map(|&p| view.project(p)).collect();
     let none = Surface {
@@ -1566,8 +1571,9 @@ fn peel_doubt(
     cut: Option<&Cut>,
     [front, behind]: [&[Surface]; 2],
     margin: f64,
+    depth: &craft3d_math::Bbox3,
 ) -> Result<Vec<bool>, RenderError> {
-    let clipped = crate::clip::clip_mesh(mesh, &[], view)?;
+    let clipped = crate::clip::clip_mesh(mesh, &[], view, depth)?;
     let mesh = &*clipped.mesh;
     let projected: Vec<_> = mesh.positions.iter().map(|&p| view.project(p)).collect();
     let mut out = vec![false; w * h];

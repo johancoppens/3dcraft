@@ -35,7 +35,7 @@ use crate::renderer::{
     MESH_ATTRIBUTES, Step, float_bytes, fragment_depth, scene_primitive, scene_source_for,
 };
 use craft3d_math::Vec3;
-use craft3d_render::{Cut, RenderParams, SECTION_FACE, SECTION_MARGIN};
+use craft3d_render::{Cut, RenderParams, SECTION_FACE};
 
 /// The target of the count: 0 or 1 per sample.
 pub(crate) const PARITY_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
@@ -82,15 +82,7 @@ pub(crate) fn section_uniforms(mesh: &GpuMesh, cut: Option<&Cut>) -> [[f64; 4]; 
 /// The box around the mesh, grown as the box the cap is drawn in: what the
 /// depth range of a cut-open frame has to hold.
 pub(crate) fn cap_bounds(mesh: &GpuMesh) -> craft3d_math::Bbox3 {
-    let mut bounds = mesh.bounds;
-    if let Some((lo, hi)) = mesh.bounds.corners() {
-        let margin = Vec3::new(1.0, 1.0, 1.0) * (mesh.bounds.diagonal() * SECTION_MARGIN);
-        if margin.is_finite() {
-            bounds.add(lo - margin);
-            bounds.add(hi + margin);
-        }
-    }
-    bounds
+    craft3d_render::depth_bounds(&mesh.bounds, true)
 }
 
 /// The corners of the cap: a triangle in the plane of `cut` that holds
@@ -511,6 +503,6 @@ mod tests {
         // The margin of the cap's box is what the depth range grows by.
         let (lo, hi) = ready.within.unwrap();
         assert!(lo.x < 0.0 && hi.x > 1.0);
-        assert!((hi.x - 1.0 - 3.0_f64.sqrt() * SECTION_MARGIN).abs() < 1e-12);
+        assert!((hi.x - 1.0 - 3.0_f64.sqrt() * craft3d_render::SECTION_MARGIN).abs() < 1e-12);
     }
 }

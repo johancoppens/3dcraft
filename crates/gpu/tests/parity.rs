@@ -230,6 +230,23 @@ fn close_scenes() -> Vec<Scene> {
     let sphere = tessellate_body(&solids::sphere(&world, 1.0).unwrap().body, &tess).unwrap();
     let block =
         tessellate_body(&solids::block(&world, 2.0, 2.0, 2.0).unwrap().body, &tess).unwrap();
+    // The sphere with two vertices no triangle uses, one infinite, one far
+    // away: the near plane is the drawn triangles' (`depth_bounds`), on
+    // both renderers. The CPU renderer once took every position, so the
+    // infinite one made its box infinite and it clipped nothing.
+    let mut stray = sphere.clone();
+    stray.positions.push(Vec3::new(f64::INFINITY, 0.0, 0.0));
+    stray.positions.push(Vec3::new(1e7, -1e7, 1e7));
+    stray.normals.extend([Vec3::Z, Vec3::Z]);
+    // At a thousandth of a model unit (rule 3's smallest scale).
+    let small = tessellate_body(
+        &solids::sphere(&world, 1e-3).unwrap().body,
+        &TessParams {
+            chordal_tolerance: 2e-6,
+            ..TessParams::default()
+        },
+    )
+    .unwrap();
     let cameras = [
         // Skimming the sphere just above its pole, looking along it.
         (
@@ -265,15 +282,31 @@ fn close_scenes() -> Vec<Scene> {
             Vec3::new(1.5, 1.2, 1.7),
             80.0,
         ),
+        // The pole again, with vertices no triangle uses.
+        (
+            "stray",
+            &stray,
+            Vec3::new(0.006, -0.008, 1.025),
+            Vec3::new(0.0, 0.0, 1.0),
+            35.0,
+        ),
+        // Inside a sphere of radius 1e-3, near its wall.
+        (
+            "small",
+            &small,
+            Vec3::new(0.0, 0.0, 9.9e-4),
+            Vec3::new(1e-3, 2e-4, 5e-4),
+            80.0,
+        ),
     ];
     cameras
         .into_iter()
         .enumerate()
         .map(|(k, (name, mesh, eye, target, fov))| {
             let params = params(
-                [240, 201, 240, 160][k],
-                [180, 151, 180, 200][k],
-                [1, 2, 2, 3][k],
+                [240, 201, 240, 160, 240, 200][k],
+                [180, 151, 180, 200, 180, 150][k],
+                [1, 2, 2, 3, 2, 2][k],
             );
             Scene {
                 name: format!("close-{name}"),
@@ -282,7 +315,11 @@ fn close_scenes() -> Vec<Scene> {
                     eye,
                     target,
                     // Looking down at the pole, the picture's up is +y.
-                    up: if name == "pole" { Vec3::Y } else { Vec3::Z },
+                    up: if name == "pole" || name == "stray" {
+                        Vec3::Y
+                    } else {
+                        Vec3::Z
+                    },
                     projection: Projection::Perspective { fov_y_deg: fov },
                 },
                 params,
