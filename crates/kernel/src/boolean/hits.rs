@@ -554,11 +554,7 @@ fn numeric(
     if let [(_, _, Kind::Near)] = runs.as_slice() {
         return Ok(CurveIntersection::OnSurface);
     }
-    // A crossing's root by false position (a few evaluations where
-    // halving takes one per bit, down to the rounding), halving where it
-    // finds no sign change.
-    let solve = |level: f64, lo: f64, hi: f64| false_position(&|t| f(t) - level, lo, hi);
-    let hits = hits_of_runs(curve, &runs, &f, bounded, tol, Some(&solve));
+    let hits = hits_of_runs(curve, &runs, &f, bounded, tol, None);
     if failed.get() {
         return Err(GeomError::Unsupported(FREEFORM));
     }
@@ -1920,13 +1916,10 @@ mod tests {
     /// A line through a ball at a slant, by the root isolation alone at
     /// three scales, with a bound below the distance as a freeform
     /// surface's index gives one (here the distance itself): both
-    /// crossings at their closed-form places, in fewer evaluations of the
-    /// distance and the bound. Halving took one evaluation per bit of the
-    /// stretch's length over the tolerance and each root then one per bit
-    /// down to the rounding (198 distances and 51 bounds here); the window
-    /// about each middle that the bound clears (the pieces halved into it
-    /// need no look), and false position for the root, take 99 and 62
-    /// (docs/design/booleans.md › *A crossing closed in on*).
+    /// crossings at their closed-form places, in fewer looks. Before the
+    /// windows (docs/design/booleans.md › *A crossing closed in on*) it
+    /// took 198 distances and 51 bounds; the pieces halved into a window
+    /// need none, 153 to 155 and 62 now.
     #[test]
     fn a_line_through_a_ball_is_settled_in_fewer_evaluations() {
         for k in [1e-3, 1.0, 1e6] {
@@ -1971,7 +1964,7 @@ mod tests {
             }
             // 198 distances and 51 bounds before.
             let (count, bounds) = (count.get(), bounds.get());
-            assert!(count <= 110 && bounds <= 70, "{k}: {count} and {bounds}");
+            assert!(count <= 165 && bounds <= 70, "{k}: {count} and {bounds}");
         }
     }
 
