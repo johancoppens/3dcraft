@@ -1876,7 +1876,7 @@ fn prove_rays(
         };
         *budget = budget.saturating_sub(1);
         consider(
-            &search,
+            search,
             ra,
             rb,
             id,
@@ -1907,7 +1907,7 @@ fn prove_rays(
         let c = center(&rb.bbox) - center(&ra.bbox);
         let size = ra.bbox.diagonal() + rb.bbox.diagonal();
         let d = c.normalized().filter(|_| c.length() > 1e-9 * size);
-        let Some((which, dir)) = cut_apart(&search, ra, rb, d, node.bound <= 0.0) else {
+        let Some((which, dir)) = cut_apart(search, ra, rb, d, node.bound <= 0.0) else {
             if let Some(slot) = least.get_mut(node.pair) {
                 *slot = slot.min(node.bound);
             }
@@ -1926,7 +1926,7 @@ fn prove_rays(
             };
             *budget = budget.saturating_sub(1);
             consider(
-                &search,
+                search,
                 x,
                 y,
                 node.pair,
@@ -2202,7 +2202,7 @@ mod tests {
         };
         let ((du, dv), (cu, cv)) = (n.degrees(), n.counts());
         let mut points = n.control_points().to_vec();
-        points[1] = points[1] + Vec3::new(30e-6, 0.0, 0.0);
+        points[1] += Vec3::new(30e-6, 0.0, 0.0);
         let perturbed = craft3d_geom::NurbsSurface::new(
             du,
             dv,

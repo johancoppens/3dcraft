@@ -60,7 +60,7 @@ The bound on a pair of pieces `P` (of `a`) and `Q` (of `b`) is the distance boun
 
 Every rule holds for any shape: they are the definition of the line (along the inward normal, coming out of the body) applied to sets that hold the pieces' points and normals, the cones and supports of `craft3d_geom::support` (closed form for the analytic kinds, the Bézier net for splines).
 
-**Cost** (release, Strix, tests in parallel): a fat torus (R 5, r 4), whose proof spends the whole 100 000 pairs and stops at 7.32 of its 8, see the timings in the dev log of 2026-10-31; a plate of 841 holes (about 1700 faces) likewise. **Limits.** A cone's piece that reaches its apex has no cone (its normal is not defined there), so a pit coming to a point is bounded there only by its boxes. A wall at one thickness all along a curved face (a fillet against a parallel round) is bounded piece by piece within the work allowed; where the round's lines pass through an axis or a centre the focal bound takes it at once.
+**Cost** (release, Strix, tests in parallel; `adaptive_proofs.rs`): a fat torus (R 5, r 4), whose proof spends the whole 100 000 pairs and stops at 7.32 of its 8, 0.52 s; a plate 300 × 300 × 10 with 841 holes (about 1700 faces) proven to 3.9999999999983 of its 4 in 1.54 s, and an assertion `min 3 mm` on it passes in 1.21 s; the shelled case 0.38 s, the clamp 0.24 s. **Limits.** A cone's piece that reaches its apex has no cone (its normal is not defined there), so a pit coming to a point is bounded there only by its boxes. A wall at one thickness all along a curved face (a fillet against a parallel round) is bounded piece by piece within the work allowed; where the round's lines pass through an axis or a centre the focal bound takes it at once.
 
 ### Assertions
 
