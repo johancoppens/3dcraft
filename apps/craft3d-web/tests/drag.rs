@@ -240,7 +240,19 @@ fn drag(name: &str, values: &[String], interval: Duration, before: bool) -> Drag
                 during += 1;
             }
         }
-        if next == values.len() && page.scene_ready(quality()) {
+        // Done once the worker's answer for the last value is complete:
+        // with the display scene refined elsewhere, `scene_ready` holds as
+        // soon as the quick first picture is there, and `scene_with` then
+        // gives that picture (2026-10-31: the scene compared too early).
+        // (`scene_with` only once the first picture is there: before, it
+        // would build the scene on this thread.)
+        let display_there = page.scene_ready(SceneQuality::Preview)
+            && page
+                .scene_with(quality())
+                .ok()
+                .flatten()
+                .is_some_and(|scene| !scene.preview);
+        if next == values.len() && scenes.busy().is_none() && display_there {
             let last = start + interval * u32::try_from(values.len() - 1).unwrap();
             let done = Drag {
                 first,
