@@ -690,7 +690,12 @@ fn unproven_jig(s: &mut Session) {
 fn an_assertion_not_proven_is_counted_apart_and_fails_the_point_when_strict() {
     let mut s = session();
     unproven_jig(&mut s);
-    let result = sample(&mut s, json!({"samples": 0, "values": true}));
+    // No time limit: each point is a proof of seconds (see
+    // `each_point_is_told_as_soon_as_it_is_checked`).
+    let result = sample(
+        &mut s,
+        json!({"samples": 0, "values": true, "timeLimitMs": null}),
+    );
     // The defaults (2 mm) and the corners 0 mm and 4 mm.
     assert_eq!(result["counts"]["points"], 3, "{result}");
     assert_eq!(result["passed"], 1, "{result}");
@@ -705,7 +710,10 @@ fn an_assertion_not_proven_is_counted_apart_and_fails_the_point_when_strict() {
     assert_eq!(listed[0]["assertions"][0]["assertion"], "wall", "{result}");
     assert_eq!(listed[0]["values"]["lim"], "2 mm", "{result}");
 
-    let strict = sample(&mut s, json!({"samples": 0, "strict": true}));
+    let strict = sample(
+        &mut s,
+        json!({"samples": 0, "strict": true, "timeLimitMs": null}),
+    );
     assert_eq!(strict["ok"], false, "{strict}");
     assert_eq!(strict["passed"], 1, "{strict}");
     assert_eq!(strict["unproven"], 0, "{strict}");
@@ -732,7 +740,18 @@ fn each_point_is_told_as_soon_as_it_is_checked() {
             into.borrow_mut().push(point.clone());
             true
         },
-        || sample(&mut s, json!({"samples": 2, "seed": 4})),
+        // No time limit: each point of this fixture is a proof of some
+        // twenty seconds on the Strix, so the default limit (a minute) cut
+        // the run after the corners when the machine was loaded (Gate
+        // 41180425318: 3 points told of 5; main's own Gate ran this test
+        // past a minute too). The number of points is the defaults, the
+        // two corners and the two samples, whatever the clock says.
+        || {
+            sample(
+                &mut s,
+                json!({"samples": 2, "seed": 4, "timeLimitMs": null}),
+            )
+        },
     );
     assert_eq!(told.borrow().len(), 5, "{told:?}");
     for (n, point) in told.borrow().iter().enumerate() {
