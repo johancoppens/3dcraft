@@ -307,6 +307,66 @@ fn highlight_lines_toward_a_vertical_face_fade_to_their_mean() {
     assert!(var < 1e-3, "variance {var}");
 }
 
+/// A plane in orthographic zebra has one normal and one view direction, so
+/// one phase and no footprint (only the rounding of identical vertex
+/// normals): every face of a block is one of the two stripe colours
+/// exactly, never a grey (reviewer's finding on 9cc2c64f: a footprint of
+/// rounding, about 10⁻¹⁷, made the tent's second difference draw the
+/// mean; on this mesh the footprint comes out exactly zero, so this holds
+/// the outcome, and `analysis::tests::dark_share_holds_at_small_footprints`
+/// the cause).
+#[test]
+fn planes_in_orthographic_zebra_are_the_stripe_colours() {
+    let block = craft3d_testkit::solids::block(&world(), 2.0, 1.5, 1.0).unwrap();
+    let mesh = mesh_of(block, 1e-3);
+    let colors = AnalysisColors::default();
+    let mut seen = std::collections::BTreeSet::new();
+    for (k, eye) in [
+        Vec3::new(3.0, -4.0, 5.0),
+        Vec3::new(-5.0, -2.0, 3.0),
+        Vec3::new(4.0, 3.0, -2.0),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        for (stripes, offset) in [(4.0, 0.0), (16.0, 0.37), (64.0, 0.11)] {
+            let mut a = Analysis::new(AnalysisMode::Zebra);
+            a.stripes = stripes;
+            a.offset = offset;
+            a.width = 0.3;
+            let camera = Camera {
+                eye,
+                target: Vec3::new(1.0, 0.75, 0.5),
+                up: Vec3::Z,
+                projection: Projection::Orthographic { half_height: 2.0 },
+            };
+            let frame = render_analysed(
+                &mesh,
+                &FaceColors::new(),
+                &[],
+                &camera,
+                &params(160, 120, a),
+            )
+            .unwrap();
+            let mut model = 0;
+            for (i, &id) in frame.ids.iter().enumerate() {
+                if id == NO_FACE {
+                    continue;
+                }
+                model += 1;
+                let rgb = [frame.rgb[3 * i], frame.rgb[3 * i + 1], frame.rgb[3 * i + 2]];
+                assert!(
+                    rgb == colors.dark || rgb == colors.light,
+                    "view {k}, {stripes} stripes: pixel {i} of face {id} is {rgb:?}"
+                );
+                seen.insert(rgb);
+            }
+            assert!(model > 1500, "{model}");
+        }
+    }
+    assert_eq!(seen.len(), 2, "both colours appear over the views");
+}
+
 /// Zebra stripes on a cylinder seen square to its axis run straight along
 /// it: the normal, so the reflected ray, does not change along a ruling,
 /// and the interpolation of a ruling's normals does not either. Every

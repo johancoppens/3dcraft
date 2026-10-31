@@ -39,13 +39,16 @@ use craft3d_render::analysis::{Analysis, AnalysisMode};
 use craft3d_tess::{TessParams, tessellate_body};
 
 /// The zebra stripes' shift that marks a pixel in doubt, in periods per
-/// stripe of the count: the phase `φ / τ · count` in `f32` carries a
-/// relative error of a few `2^-24` of its largest value, `count / 2`;
-/// sixty-four of them. Since the band limit (2026-10-31) the stripes are a
-/// continuous grey, which a shift moves by its slope times the shift (at
-/// most `225 / footprint` levels per period), so the shift is what `f32`
-/// can be off by, not 10⁻³ of a period, which moved every ramp more than
-/// the tolerance (half the pixels in doubt).
+/// stripe of the count: the phase `φ / τ · count` is at most `count / 2`,
+/// and `4·10⁻⁶ · count` is about 128 roundings (`2^-24`) of that. It
+/// relies on the adapter's `atan2` being within about 64 ULP of `φ` (that
+/// alone is `1.9·10⁻⁶ · count`), as the adapters tested are (RADV,
+/// radeonsi, llvmpipe, Intel); WGSL itself only promises 4096 ULP, which
+/// would be `1.2·10⁻⁴ · count`. Since the band limit (2026-10-31) the
+/// stripes are a continuous grey, which a shift moves by its slope times
+/// the shift (at most `225 / footprint` levels per period), so the shift
+/// is what `f32` can be off by, not 10⁻³ of a period, which moved every
+/// ramp more than the tolerance (half the pixels in doubt).
 const STRIPE_DOUBT: f64 = 4e-6;
 /// The highlight lines' shift, in periods per line of the count: their
 /// phase is at most about `count / GRAZING · 1.3` periods (the light plane
@@ -79,13 +82,16 @@ const DRAFT_DOUBT: f64 = 1e-4;
 /// sphere 0.0011 (was 0.0124), on the cylinder 0.0011 (was 0.0116), at
 /// 512 stripes 0; highlight lines on the torus 0.0023 (was 0.118), with 20
 /// lines 0.0028 (did not hold before); the curvature map 0, draft 0.0008
-/// and 0.0009. The caps of the stripes are a quarter above, at least
+/// and 0.0009; seen close on a gentle surface (the footprint about 10⁻⁴,
+/// the edges nearly sharp, so decisions again) 0.014 (highlight lines) and
+/// 0.0085 (zebra). The caps of the stripes are a quarter above, at least
 /// 0.001.
 const CAP_ZEBRA_SPHERE: f64 = 0.0015;
 const CAP_ZEBRA_CYLINDER: f64 = 0.0015;
 const CAP_FINE_ZEBRA: f64 = 0.001;
 const CAP_HIGHLIGHT: f64 = 0.003;
 const CAP_FINE_HIGHLIGHT: f64 = 0.0035;
+const CAP_CLOSE: f64 = 0.018;
 const CAP_CURVATURE: f64 = 0.002;
 const CAP_DRAFT: f64 = 0.0025;
 
@@ -242,6 +248,16 @@ fn check(name: &str, mesh: &Mesh, values: &[f32], camera: &Camera, p: &RenderPar
             .render_analysed(mesh, &FaceColors::new(), values, camera, p)
             .unwrap();
         let report = compare(&cpu, &frame, &near_edge, &in_doubt, &variants);
+        std::fs::write(
+            common::evidence(&format!("DBG-{name}-gpu.png")),
+            craft3d_render::encode_png(frame.width, frame.height, &frame.rgb).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            common::evidence(&format!("DBG-{name}-cpu.png")),
+            craft3d_render::encode_png(cpu.width, cpu.height, &cpu.rgb).unwrap(),
+        )
+        .unwrap();
         if report.over_one > 0 {
             let png = |f: &Frame| craft3d_render::encode_png(f.width, f.height, &f.rgb).unwrap();
             craft3d_testkit::evidence::print(&format!("{name}-cpu"), &png(&cpu));
@@ -436,6 +452,46 @@ fn stripes_finer_than_a_sample_match_the_cpu() {
         &p,
         CAP_FINE_ZEBRA,
     );
+}
+
+/// Few stripes seen close on a gently curved surface (the class-A case):
+/// a sphere of radius 1 from 0.3 above its pole through a 2° lens, with 4
+/// stripes, so that the footprint is about 10⁻⁴ of a period per sample,
+/// where the tent's second difference cancelled in `f32` (reviewer's
+/// finding on 9cc2c64f: shares of 0.86 to 0.95 for 1, some samples the
+/// other colour). Each stripe edge in turn is put at the middle of the
+/// picture (the offset from the phase there); now the point sample away
+/// from the edge and the one edge's share at it.
+#[test]
+fn stripes_seen_close_on_a_gentle_surface_match_the_cpu() {
+    let mesh = sphere();
+    let target = Vec3::new(0.0, 0.0, 1.0);
+    let camera = Camera {
+        eye: Vec3::new(0.06, -0.08, 1.3),
+        target,
+        up: Vec3::Y,
+        projection: craft3d_render::Projection::Perspective { fov_y_deg: 2.0 },
+    };
+    let axes = camera.axes().unwrap();
+    let bounds = craft3d_math::Bbox3::from_points(mesh.positions.iter().copied());
+    for mode in [AnalysisMode::Highlight, AnalysisMode::Zebra] {
+        let mut a = Analysis::new(mode);
+        a.stripes = 4.0;
+        a.width = 0.3;
+        let r = craft3d_render::analysis::Resolved::new(&a, &axes, &bounds);
+        let to_viewer = (camera.eye - target).normalized().unwrap();
+        let phase = r.phase(target, to_viewer, target - camera.eye).unwrap();
+        let fraction = phase - phase.floor();
+        for (k, edge) in [0.0, a.width].into_iter().enumerate() {
+            let p = with(mode, |b| {
+                b.stripes = a.stripes;
+                b.width = a.width;
+                b.offset = edge - fraction;
+            });
+            let name = format!("{}-close-{k}", mode.name());
+            check(&name, &mesh, &[], &camera, &p, CAP_CLOSE);
+        }
+    }
 }
 
 #[test]

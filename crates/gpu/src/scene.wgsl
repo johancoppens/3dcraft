@@ -304,17 +304,55 @@ fn analysis_wave_integral(t: f32, w: f32) -> f32 {
     return whole * w * (1.0 - w) / 2.0 + inner;
 }
 
+// The tent's share past the point `u · footprint` from its centre
+// (craft3d_render::analysis::dark_share's `beyond`).
+fn analysis_tent_beyond(u_in: f32) -> f32 {
+    let u = clamp(u_in, -1.0, 1.0);
+    if u >= 0.0 {
+        return (1.0 - u) * (1.0 - u) / 2.0;
+    }
+    return 1.0 - (1.0 + u) * (1.0 + u) / 2.0;
+}
+
 // craft3d_render::analysis::dark_share: the dark share of the stripes'
-// square wave averaged with a tent `±footprint` periods wide.
+// square wave averaged with a tent `±footprint` periods wide; the point
+// sample where the tent reaches no edge, one edge's share where it can
+// reach one, the second difference of the wave's integral only wider
+// (it cancels for a small footprint).
 fn analysis_dark_share(phase: f32, footprint: f32, width: f32) -> f32 {
+    // Not finite (exponent all ones): the mean, as on the CPU.
+    if (bitcast<u32>(phase) & 0x7f800000u) == 0x7f800000u {
+        return width;
+    }
+    if width <= 0.0 {
+        return 0.0;
+    }
+    if width >= 1.0 {
+        return 1.0;
+    }
     let x = phase - floor(phase);
+    let point = select(0.0, 1.0, x < width);
     if footprint == 0.0 {
-        return select(0.0, 1.0, x < width);
+        return point;
     }
     if !(footprint > 0.0 && footprint <= ANALYSIS_FLAT_FOOTPRINT) {
         return width;
     }
     let f = footprint;
+    let to_start = x;
+    let to_end = abs(x - width);
+    let to_next = 1.0 - x;
+    if f <= min(min(to_start, to_end), to_next) {
+        return point;
+    }
+    if 2.0 * f < min(width, 1.0 - width) {
+        if to_end <= min(to_start, to_next) {
+            return 1.0 - analysis_tent_beyond((width - x) / f);
+        } else if to_start <= to_next {
+            return analysis_tent_beyond(-x / f);
+        }
+        return analysis_tent_beyond(to_next / f);
+    }
     let second = analysis_wave_integral(x + f, width) - 2.0 * analysis_wave_integral(x, width)
         + analysis_wave_integral(x - f, width);
     return clamp(width + second / (f * f), 0.0, 1.0);

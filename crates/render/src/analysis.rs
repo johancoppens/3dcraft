@@ -61,12 +61,14 @@ use craft3d_math::{Bbox3, Vec3};
 
 /// Below this `|N·M|` a highlight line's normal line runs along the light
 /// plane: no phase, and the sample is the stripes' mean (`width` dark), the
-/// value the filtered stripes tend to as `|N·M|` falls. The phase grows as
-/// `stripes / |N·M|` periods, and its rounding with it: at most 512 / 0.05
-/// ≈ 10⁴ periods keeps the `f32` phase of the GPU within about 10⁻³ of a
-/// period of the CPU's, and the stripes below this are some twenty times
-/// finer than over the model's top, finer than a pixel on any view that
-/// shows them whole (their footprint grows as `1 / |N·M|²`).
+/// value the filtered stripes tend to as `|N·M|` falls: at the zoom where
+/// the bound is usually seen (the whole model in view) they are that mean
+/// just above it already, so the band does not show; seen close, where the
+/// stripes just above the bound are still resolved, a step remains. The
+/// phase grows as `stripes / |N·M|` periods, and its rounding with it: at
+/// most 512 / 0.05 ≈ 10⁴ periods keeps the `f32` phase of the GPU within
+/// about 10⁻³ of a period of the CPU's (their footprint grows as
+/// `1 / |N·M|²`).
 pub const GRAZING: f64 = 0.05;
 /// A footprint above this many periods is the mean, `width`, outright: the
 /// box over it is the mean within `1 / footprint` (`dark_share`).
@@ -247,28 +249,70 @@ pub struct Slopes {
 /// periods wide centred on `phase` (weights `1 − |s| / footprint`: the box
 /// over the footprint taken twice, so that what stripes finer than it leave
 /// over the mean falls as `1 / footprint²`, not as `1 / footprint`).
-/// Closed form: the wave is `width + g` with `g` periodic of mean zero; the
-/// tent's average of `width` is `width`, and that of `g` is the second
-/// difference of `G = ∫∫ g` ([`wave_integral`]) over the footprint, divided
-/// by its square. A footprint of zero is the point sample (`0` or `1`); one
-/// that is not a number, infinite or above [`FLAT_FOOTPRINT`] is the mean,
-/// `width`.
+///
+/// In three regimes, each closed form and none cancelling where it is used
+/// (a second difference of values of order 0.1 divided by `f²` loses
+/// everything for a small `f`: in `f32` at `f = 10⁻⁴`, in `f64` at 10⁻⁸):
+/// - the tent reaches no edge (`f` at most the distance to the nearest of
+///   `0`, `width`, `1`): the point sample, `0` or `1` exactly;
+/// - it can reach one edge only (`2f < min(width, 1 − width)`): the tent's
+///   share beyond that edge, a quadratic in `d / f` with `d` the signed
+///   distance to it;
+/// - wider: the wave is `width + g` with `g` periodic of mean zero; the
+///   tent's average of `g` is the second difference of `G = ∫∫ g`
+///   ([`wave_integral`]) over the footprint, divided by its square.
+///
+/// A footprint that is not a number, infinite or above [`FLAT_FOOTPRINT`],
+/// or a phase that is not finite, is the mean, `width`.
 pub fn dark_share(phase: f64, footprint: f64, width: f64) -> f64 {
-    let point = if phase - phase.floor() < width {
-        1.0
-    } else {
-        0.0
-    };
-    if footprint == 0.0 {
-        return point;
-    }
-    if !(footprint > 0.0 && footprint <= FLAT_FOOTPRINT) || !phase.is_finite() {
+    if !phase.is_finite() {
         return width;
+    }
+    if width <= 0.0 {
+        return 0.0;
+    }
+    if width >= 1.0 {
+        return 1.0;
     }
     // Relative to the period the sample is in, so that a phase of many
     // periods loses nothing to the subtractions.
     let x = phase - phase.floor();
+    let point = if x < width { 1.0 } else { 0.0 };
+    if footprint == 0.0 {
+        return point;
+    }
+    if !(footprint > 0.0 && footprint <= FLAT_FOOTPRINT) {
+        return width;
+    }
     let f = footprint;
+    // The distances to the edges: into the dark at 0 (and 1), out of it at
+    // `width`.
+    let (to_start, to_end, to_next) = (x, (x - width).abs(), 1.0 - x);
+    if f <= to_start.min(to_end).min(to_next) {
+        return point;
+    }
+    if 2.0 * f < width.min(1.0 - width) {
+        // One edge in reach: the nearest. `beyond(u)` is the tent's share
+        // past the point `u · f` from its centre.
+        let beyond = |u: f64| {
+            let u = u.clamp(-1.0, 1.0);
+            if u >= 0.0 {
+                (1.0 - u) * (1.0 - u) / 2.0
+            } else {
+                1.0 - (1.0 + u) * (1.0 + u) / 2.0
+            }
+        };
+        return if to_end <= to_start.min(to_next) {
+            // Dark before `width`.
+            1.0 - beyond((width - x) / f)
+        } else if to_start <= to_next {
+            // Dark after 0.
+            beyond(-x / f)
+        } else {
+            // Dark after 1.
+            beyond(to_next / f)
+        };
+    }
     let second =
         wave_integral(x + f, width) - 2.0 * wave_integral(x, width) + wave_integral(x - f, width);
     (width + second / (f * f)).clamp(0.0, 1.0)
@@ -701,6 +745,127 @@ mod tests {
         assert!(dark_share(0.65, 0.2, 0.3).abs() < 1e-12);
         // At an edge, half.
         assert!((dark_share(0.3, 0.2, 0.3) - 0.5).abs() < 1e-12);
+    }
+
+    /// `scene.wgsl`'s `analysis_dark_share` in `f32`, line by line.
+    fn dark_share_f32(phase: f32, footprint: f32, width: f32) -> f32 {
+        fn wave(t: f32, w: f32) -> f32 {
+            let whole = t.floor();
+            let u = t - whole;
+            let mut inner = (1.0 - w) * w * w / 2.0 + w * ((u - w) - (u * u - w * w) / 2.0);
+            if u < w {
+                inner = (1.0 - w) * u * u / 2.0;
+            }
+            whole * w * (1.0 - w) / 2.0 + inner
+        }
+        fn beyond(u: f32) -> f32 {
+            let u = u.clamp(-1.0, 1.0);
+            if u >= 0.0 {
+                (1.0 - u) * (1.0 - u) / 2.0
+            } else {
+                1.0 - (1.0 + u) * (1.0 + u) / 2.0
+            }
+        }
+        if !phase.is_finite() {
+            return width;
+        }
+        let x = phase - phase.floor();
+        let point = if x < width { 1.0 } else { 0.0 };
+        if footprint == 0.0 {
+            return point;
+        }
+        let f = footprint;
+        let (to_start, to_end, to_next) = (x, (x - width).abs(), 1.0 - x);
+        if f <= to_start.min(to_end).min(to_next) {
+            return point;
+        }
+        if 2.0 * f < width.min(1.0 - width) {
+            return if to_end <= to_start.min(to_next) {
+                1.0 - beyond((width - x) / f)
+            } else if to_start <= to_next {
+                beyond(-x / f)
+            } else {
+                beyond(to_next / f)
+            };
+        }
+        let second = wave(x + f, width) - 2.0 * wave(x, width) + wave(x - f, width);
+        (width + second / (f * f)).clamp(0.0, 1.0)
+    }
+
+    /// The tent's average of the wave, by brute force, about `phase` given
+    /// as a period's fraction (`x`) for a small footprint.
+    fn brute_tent(x: f64, f: f64, w: f64) -> f64 {
+        let n = 20_000;
+        let (mut dark, mut total) = (0.0, 0.0);
+        for k in 0..n {
+            let s = -1.0 + 2.0 * (f64::from(k) + 0.5) / f64::from(n);
+            let weight = 1.0 - s.abs();
+            let t = x + s * f;
+            total += weight;
+            if t - t.floor() < w {
+                dark += weight;
+            }
+        }
+        dark / total
+    }
+
+    /// Small footprints (the reviewer's finding on 9cc2c64f): the second
+    /// difference cancelled, in `f32` at 10⁻⁴ and in `f64` at 10⁻⁸ (a plane
+    /// in orthographic zebra, whose footprint is 10⁻¹⁷ of rounding, came
+    /// out the mean). Now the point sample away from an edge, exact, and
+    /// the tent's share at an edge, from 10⁻¹² to 10⁻³, in `f64` and in the
+    /// GPU's `f32` alike.
+    #[test]
+    fn dark_share_holds_at_small_footprints() {
+        let w = 0.3;
+        for f in [
+            1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9, 1e-10, 1e-11, 1e-12,
+        ] {
+            // Away from every edge: the point sample, exactly.
+            for x in [0.05, 0.15, 0.29, 0.31, 0.6, 0.99] {
+                let expect = if x < w { 1.0 } else { 0.0 };
+                assert_eq!(dark_share(x, f, w), expect, "{x} {f}");
+                assert_eq!(dark_share(x + 7.0, f, w), expect, "{x} {f}");
+            }
+            // At an edge: the brute-force tent.
+            for k in [-0.9, -0.5, -0.1, 0.0, 0.3, 0.7] {
+                for edge in [w, 1.0] {
+                    let x = edge + k * f;
+                    let brute = brute_tent(x, f, w);
+                    let x = x - x.floor();
+                    assert!(
+                        (dark_share(x, f, w) - brute).abs() < 1e-3,
+                        "{x} {f} {k} {edge}"
+                    );
+                }
+            }
+        }
+        // The GPU's `f32` path, from 10⁻⁷ (a few ulp of a phase near 1) up.
+        let w32 = 0.3f32;
+        for f in [1e-3f32, 1e-4, 1e-5, 1e-6, 1e-7] {
+            for x in [0.05f32, 0.15, 0.29, 0.31, 0.6, 0.99] {
+                let expect = if x < w32 { 1.0 } else { 0.0 };
+                assert_eq!(dark_share_f32(x, f, w32), expect, "f32 {x} {f}");
+                assert_eq!(dark_share_f32(x + 5.0, f, w32), expect, "f32 {x} {f}");
+            }
+            for k in [-0.9f32, -0.5, -0.1, 0.0, 0.3, 0.7] {
+                for edge in [w32, 1.0] {
+                    let x = edge + k * f;
+                    let truth = dark_share(f64::from(x), f64::from(f), f64::from(w32));
+                    let got = f64::from(dark_share_f32(x, f, w32));
+                    assert!((got - truth).abs() < 1e-3, "f32 {x} {f} {k}: {got} {truth}");
+                }
+            }
+        }
+        // Large footprints agree too (the second difference in `f32`).
+        for &(p, f) in &[(0.2f32, 0.2f32), (3.7, 1.3), (0.95, 40.0)] {
+            let truth = dark_share(f64::from(p), f64::from(f), 0.3);
+            let got = f64::from(dark_share_f32(p, f, 0.3));
+            assert!((got - truth).abs() < 1e-4, "f32 {p} {f}: {got} {truth}");
+        }
+        // A phase that is not finite is the mean, whatever the footprint.
+        assert_eq!(dark_share(f64::NAN, 0.0, w), w);
+        assert_eq!(dark_share(f64::INFINITY, 1e-9, w), w);
     }
 
     /// The footprint's chain rule against a central difference of the
