@@ -321,14 +321,10 @@ fn a_slider_dragged_over_the_turbofan() {
             .collect();
         for before in [true, false] {
             let d = drag(name, &values, interval, before);
-            // Asserted for the worker as it is. The emulation of the
-            // policy before 2026-10-30 starts a thread per ended worker,
-            // one after another in this process, and its last scene did
-            // not always match (2026-10-31: in every scenario), while
-            // the same builds in one thread do, stopped anywhere and
-            // replaced part way (the diagnoses below): state the process
-            // keeps across threads, which two Web Workers never share.
-            if !d.same && !before {
+            // The worker as it is and the emulation of the old policy
+            // alike (docs/design/engine.md › *A worker that can be
+            // stopped, with its caches*, open finding).
+            if !d.same {
                 differ.push(format!(
                     "{name} {}",
                     if before { "before" } else { "after" }
