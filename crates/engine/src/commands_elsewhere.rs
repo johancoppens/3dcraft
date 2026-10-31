@@ -84,6 +84,13 @@ pub(crate) struct CommandJob {
     serial: u64,
     /// Written out for the host ([`Session::command_request`]).
     posted: bool,
+    /// Another command handed over before it, on the same state and
+    /// selection, still waits: the worker runs this one on the selection
+    /// that one left (`run_command`), as it would have here.
+    follows: bool,
+    /// The window's camera, when it was given for this document (an
+    /// export `view: "current"` draws what the window shows).
+    camera: Option<Value>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -101,6 +108,11 @@ pub(crate) struct Commands {
     /// what the first left (`run_command`), so its answer is taken too
     /// (two clicks that add, in quick succession).
     adopted: Option<(u64, u64)>,
+    /// The command being run was dispatched by a person or an agent
+    /// ([`Session::execute_deferrable`]): only such a command is handed
+    /// over. A host's own reads (what the export dialog offers, how many
+    /// are selected) need their answer now.
+    deferrable: bool,
 }
 
 /// Most commands waiting for their answers at once; past that a command
@@ -132,6 +144,7 @@ impl Session {
     /// told to note that. `None` when it runs here as always.
     pub(crate) fn try_without_bodies(&mut self) -> Option<Session> {
         if !self.commands.enabled
+            || !self.commands.deferrable
             || self.commands.busy
             || self.commands.jobs.len() >= MAX_JOBS
             || !self.regen_elsewhere()
@@ -177,6 +190,18 @@ impl Session {
         };
         self.commands.token = self.commands.token.wrapping_add(1).max(1);
         let token = self.commands.token;
+        let current = open.history.current();
+        let serial = open.selection.serial();
+        let follows = self
+            .commands
+            .jobs
+            .iter()
+            .any(|j| j.doc_id == open.id && j.serial == serial && Arc::ptr_eq(&j.doc, current));
+        let camera = self
+            .window_camera
+            .as_ref()
+            .filter(|(id, _)| *id == open.id)
+            .map(|(_, camera)| camera_wire(camera));
         self.commands.jobs.push(CommandJob {
             token,
             doc_id: open.id,
@@ -184,14 +209,28 @@ impl Session {
             command: id.to_string(),
             params: params.clone(),
             selection: open.selection.to_wire(),
-            serial: open.selection.serial(),
+            serial,
             posted: false,
+            follows,
+            camera,
         });
         Trial::Deferred(json!({
             "deferred": true,
             "job": token,
             "summary": format!("{id} runs where the bodies are; its answer follows"),
         }))
+    }
+
+    /// [`Session::execute`] for a command a person or an agent asked for:
+    /// while the active document is regenerated elsewhere and not here,
+    /// one that needs the bodies and only reads is handed over, and its
+    /// result now is `{deferred: true, job}` (`commands_elsewhere.rs`).
+    /// [`Session::execute`] itself always answers at once.
+    pub fn execute_deferrable(&mut self, id: &str, params: &Value) -> Result<Value, CommandError> {
+        let was = std::mem::replace(&mut self.commands.deferrable, true);
+        let outcome = self.execute(id, params);
+        self.commands.deferrable = was;
+        outcome
     }
 
     /// A command that was run again here after its trial is done.
@@ -240,6 +279,8 @@ impl Session {
             "command": job.command,
             "params": job.params,
             "selection": job.selection,
+            "follows": job.follows,
+            "camera": job.camera,
         });
         Ok(CommandRequest {
             token,
@@ -261,6 +302,9 @@ impl Session {
         let at = self.commands.jobs.iter().position(|j| j.token == token)?;
         let job = self.commands.jobs.remove(at);
         let result = self.take_answer(&job, answer);
+        if let Err(why) = &result {
+            self.record_failure(&job.command, &job.params, why);
+        }
         let (result, files) = match result {
             Ok((value, files)) => (Ok(value), files),
             Err(why) => (Err(why), Vec::new()),
@@ -376,4 +420,50 @@ pub(crate) fn answer_json(
         map.insert("selection".into(), selection.unwrap_or(Value::Null));
     }
     answer.to_string()
+}
+
+/// A camera written out, its numbers as their bits.
+fn camera_wire(camera: &craft3d_render::Camera) -> Value {
+    let bits = |v: f64| format!("{:016x}", v.to_bits());
+    let vec = |v: craft3d_math::Vec3| json!([bits(v.x), bits(v.y), bits(v.z)]);
+    let projection = match camera.projection {
+        craft3d_render::Projection::Perspective { fov_y_deg } => {
+            json!({"perspective": bits(fov_y_deg)})
+        }
+        craft3d_render::Projection::Orthographic { half_height } => {
+            json!({"orthographic": bits(half_height)})
+        }
+    };
+    json!({"eye": vec(camera.eye), "target": vec(camera.target), "up": vec(camera.up), "projection": projection})
+}
+
+/// A camera read back from [`camera_wire`].
+pub(crate) fn camera_from(value: &Value) -> Option<craft3d_render::Camera> {
+    let bits = |v: &Value| {
+        u64::from_str_radix(v.as_str()?, 16)
+            .ok()
+            .map(f64::from_bits)
+    };
+    let vec = |key: &str| -> Option<craft3d_math::Vec3> {
+        let [x, y, z] = value.get(key)?.as_array()?.as_slice() else {
+            return None;
+        };
+        Some(craft3d_math::Vec3::new(bits(x)?, bits(y)?, bits(z)?))
+    };
+    let p = value.get("projection")?;
+    let projection = if let Some(f) = p.get("perspective") {
+        craft3d_render::Projection::Perspective {
+            fov_y_deg: bits(f)?,
+        }
+    } else {
+        craft3d_render::Projection::Orthographic {
+            half_height: bits(p.get("orthographic")?)?,
+        }
+    };
+    Some(craft3d_render::Camera {
+        eye: vec("eye")?,
+        target: vec("target")?,
+        up: vec("up")?,
+        projection,
+    })
 }

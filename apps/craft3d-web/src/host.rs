@@ -26,7 +26,7 @@
 use craft3d_engine::{Session, Workspace};
 use craft3d_ui_egui::files::{
     ASSEMBLY_EXTENSION, EXPORT_FORMATS, EXTENSION, ExportPlan, JIG_EXTENSION, export_params,
-    extension_of, file_stem, guarded, suggested_jig_name, suggested_name,
+    extension_of, file_stem, suggested_jig_name, suggested_name,
 };
 use craft3d_ui_egui::shell::ExportRequest;
 use craft3d_ui_egui::{CommandReport, DocAction, FileAction, Shell, Work};
@@ -751,8 +751,21 @@ impl WebHost {
         });
     }
 
+    /// Runs a command the person asked for: one that needs the bodies the
+    /// page does not have is handed to the worker that has them
+    /// (`Session::execute_deferrable`; the answer comes to
+    /// [`Self::answered`]). The shell's own reads (what the export
+    /// dialog offers) answer at once.
     fn run(&mut self, command: &str, params: &Value) -> Result<Value, String> {
-        guarded(&mut self.session, command, params)
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.session.execute_deferrable(command, params)
+        }))
+        .unwrap_or_else(|_| {
+            Err(craft3d_engine::CommandError::new(
+                "internal error (a bug in 3DCraft, please report it); the document was kept",
+            ))
+        })
+        .map_err(|e| e.message().to_string())
     }
 
     /// Reports `outcome` under `label`, empties the memory and shows what
@@ -1265,8 +1278,10 @@ impl WebHost {
             );
             return outcome;
         }
+        let handed = self.deferred_exports.len();
         let files = self.export_with(&request.name, request.plan.clone());
         if files.is_empty()
+            && self.deferred_exports.len() > handed
             && let Some((_, waiting @ None)) = self.deferred_exports.last_mut()
         {
             *waiting = Some(request);
@@ -1334,6 +1349,13 @@ impl WebHost {
             self.report("file.export", &answer.result);
             if answer.result.is_err() || files.is_empty() {
                 continue;
+            }
+            // Exported: the format the next export dialog chooses first.
+            if let Some(format) = files
+                .first()
+                .and_then(|f| craft3d_ui_egui::files::ExportFormat::of_name(&f.name))
+            {
+                self.shell.state.export.format = format;
             }
             match request {
                 Some(request) if self.pickers => {
@@ -1639,6 +1661,87 @@ mod tests {
         assert_eq!(files(&outcome.downloads), files(&want));
         assert!(host.shell.last_command.as_ref().is_some_and(|r| r.ok));
         assert!(!host.session.regenerated_here());
+    }
+
+    /// Bodies selected, a slider moved, then Export: only the selected
+    /// bodies are written, as on a page that regenerates itself. The
+    /// export's own reads (what is selected) answer at once on the page;
+    /// only the export goes to the worker.
+    #[test]
+    fn a_selection_then_a_slider_then_export_writes_only_the_selection() {
+        let steps = [
+            ("file.new", json!({"units": "mm"})),
+            ("variable.set", json!({"name": "k", "expr": "10 mm"})),
+            (
+                "variable.publish",
+                json!({"name": "k", "min": "1 mm", "max": "50 mm"}),
+            ),
+            (
+                "feature.block",
+                json!({"size": ["k", 20, 10], "name": "Plate"}),
+            ),
+            (
+                "feature.block",
+                json!({"size": [5, 5, 5], "position": [80, 0, 0], "name": "Other"}),
+            ),
+        ];
+        let mut want = host();
+        for (id, params) in &steps {
+            want.session.execute(id, params).unwrap();
+        }
+        want.session
+            .execute("select.set", &json!({"names": ["Plate"]}))
+            .unwrap();
+        want.session
+            .execute("param.set", &json!({"values": {"k": "12 mm"}}))
+            .unwrap();
+        let want = want.export_as("part.stl");
+        let mut host = host();
+        host.set_stepwise(true);
+        host.session.set_checks_elsewhere(true);
+        host.session.set_regen_elsewhere(true);
+        host.session.set_commands_elsewhere(true);
+        for (id, params) in &steps {
+            host.session.execute(id, params).unwrap();
+        }
+        let quality = host.shell.scene_quality();
+        let settle = |host: &mut WebHost| {
+            while let Some(token) = host.session.scene_job(quality) {
+                let request = host.session.scene_request(token).unwrap();
+                craft3d_engine::scene_begin(&request.document, &request.work);
+                while let Some(part) = craft3d_engine::scene_next() {
+                    host.session.scene_answered(token, Ok(&part));
+                }
+                host.session.scene_done(token);
+            }
+            let mut answered = Vec::new();
+            for token in host.session.command_jobs() {
+                let request = host.session.command_request(token).unwrap();
+                let answer = craft3d_engine::run_command(&request.document, &request.work);
+                answered.extend(host.session.command_answered(token, Ok(answer)));
+            }
+            answered
+        };
+        settle(&mut host);
+        let click = host
+            .session
+            .execute_deferrable("select.set", &json!({"names": ["Plate"]}))
+            .unwrap();
+        assert_eq!(click["deferred"], true);
+        settle(&mut host);
+        host.session
+            .execute("param.set", &json!({"values": {"k": "12 mm"}}))
+            .unwrap();
+        settle(&mut host);
+        assert!(!host.session.regenerated_here());
+        // Written now (the dialog's own reads needed the bodies here) or
+        // by the worker: either way only the selection.
+        let mut written = host.export_as("part.stl");
+        let answered = settle(&mut host);
+        written.extend(host.answered(answered).downloads);
+        assert_eq!(written.len(), 1);
+        assert_eq!(written[0].bytes, want[0].bytes);
+        assert_eq!(host.shell.state.export.format.extension(), "stl");
     }
 
     fn modelled() -> WebHost {

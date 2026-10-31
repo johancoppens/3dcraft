@@ -465,7 +465,15 @@ struct Builder {
     /// the one it left: a command that comes with the same selection was
     /// handed over before that answer reached the host, so it runs on
     /// what the last one left, as it would have there.
-    selected: Option<(Value, Value)>,
+    selected: Option<(u64, Value, Value)>,
+}
+
+/// A digest of a document's bytes: which state a selection was left on.
+fn digest(bytes: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    hasher.finish()
 }
 
 thread_local! {
@@ -648,10 +656,12 @@ pub fn run_command(document: &[u8], work: &str) -> crate::CommandAnswer {
         let params = work.get("params").cloned().unwrap_or(Value::Null);
         let builder = &mut *builder;
         let read = work.get("selection").cloned().unwrap_or(Value::Null);
+        // Chained only when the host says the command follows one still
+        // waiting there, on this very state and selection.
+        let follows = work.get("follows") == Some(&Value::Bool(true));
+        let state = digest(document);
         let wire = match &builder.selected {
-            Some((input, output))
-                if *input == read && builder.loaded.as_deref() == Some(document) =>
-            {
+            Some((on, input, output)) if follows && *on == state && *input == read => {
                 output.clone()
             }
             _ => read.clone(),
@@ -666,6 +676,11 @@ pub fn run_command(document: &[u8], work: &str) -> crate::CommandAnswer {
         }
         let open = session.documents.get_mut(0).ok_or("no document")?;
         open.selection = selection;
+        let id = open.id;
+        session.window_camera = work
+            .get("camera")
+            .and_then(crate::commands_elsewhere::camera_from)
+            .map(|camera| (id, camera));
         let revision = open.history.revision();
         for name in session.file_names() {
             session.take_file(&name);
@@ -681,7 +696,7 @@ pub fn run_command(document: &[u8], work: &str) -> crate::CommandAnswer {
         let after = session.documents.first().map(|o| o.selection.to_wire());
         let selection = (!edited && after != before).then_some(after).flatten();
         builder.selected = match &selection {
-            Some(left) => Some((read, left.clone())),
+            Some(left) => Some((state, read, left.clone())),
             None if !edited && wire != read => builder.selected.clone(),
             None => None,
         };

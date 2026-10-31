@@ -279,7 +279,9 @@ impl Shell {
     pub(crate) fn apply_selection_requests(&mut self, session: &mut Session) -> bool {
         let pending = std::mem::take(&mut self.select.pending);
         for params in &pending {
-            match session.execute("select.set", params) {
+            // A click: handed to where the bodies are when they are not
+            // here (the page's worker).
+            match session.execute_deferrable("select.set", params) {
                 Ok(_) => self.select.problem = None,
                 Err(e) => self.select.problem = Some(e.message().to_string()),
             }

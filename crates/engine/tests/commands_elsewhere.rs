@@ -125,7 +125,7 @@ fn answer_commands(session: &mut Session) -> Vec<Answered> {
 /// `id` on the page, its answer once the other side ran it.
 fn on_page(session: &mut Session, id: &str, params: &Value) -> (Result<Value, String>, bool) {
     let now = session
-        .execute(id, params)
+        .execute_deferrable(id, params)
         .map_err(|e| e.message().to_string());
     let Ok(result) = &now else {
         return (now, false);
@@ -211,7 +211,7 @@ fn clicks_in_quick_succession_add_up() {
     ];
     for click in &clicks {
         desktop.execute("select.set", click).unwrap();
-        let now = page.execute("select.set", click).unwrap();
+        let now = page.execute_deferrable("select.set", click).unwrap();
         assert_eq!(now["deferred"], true);
     }
     let answered = answer_commands(&mut page);
@@ -269,7 +269,7 @@ fn a_section_on_a_datum_plane_while_scrubbed_never_regenerates_on_the_page() {
 fn a_late_answer_is_not_taken_and_a_stopped_worker_leaves_errors() {
     let mut page = page(1.0);
     let done = page
-        .execute("select.set", &json!({"names": ["B"]}))
+        .execute_deferrable("select.set", &json!({"names": ["B"]}))
         .unwrap();
     assert_eq!(done["deferred"], true);
     page.execute("param.set", &json!({"values": {"w": "42 mm"}}))
@@ -279,9 +279,9 @@ fn a_late_answer_is_not_taken_and_a_stopped_worker_leaves_errors() {
     assert!(error.contains("the document changed"), "{error}");
     assert!(page.selection().items.is_empty());
     settle(&mut page);
-    page.execute("measure.thickness", &json!({"of": "B"}))
+    page.execute_deferrable("measure.thickness", &json!({"of": "B"}))
         .unwrap();
-    page.execute("measure.thickness", &json!({"of": "Holed"}))
+    page.execute_deferrable("measure.thickness", &json!({"of": "Holed"}))
         .unwrap();
     let failed = page.commands_failed("the worker stopped");
     assert_eq!(failed.len(), 2);
@@ -298,7 +298,7 @@ fn a_late_answer_is_not_taken_and_a_stopped_worker_leaves_errors() {
         assert!(answer.answer.contains("error"), "{work}: {}", answer.answer);
     }
     let token = page
-        .execute("measure.thickness", &json!({"of": "B"}))
+        .execute_deferrable("measure.thickness", &json!({"of": "B"}))
         .unwrap()["job"]
         .as_u64()
         .unwrap();
@@ -327,9 +327,115 @@ fn an_edit_is_never_handed_over() {
         ("feature.block", json!({"size": [1, 1, 1], "name": "C"})),
     ] {
         let revision = page.document_revision();
-        let got = page.execute(id, &params).unwrap();
+        let got = page.execute_deferrable(id, &params).unwrap();
         assert!(got.get("job").is_none(), "{id}: {got}");
         assert_ne!(page.document_revision(), revision, "{id}");
         assert!(!page.commands_waiting());
     }
+}
+
+/// What the host asks for itself (the export dialog's choices, the count
+/// of what is selected) is answered at once, never handed over: only a
+/// command dispatched with `execute_deferrable` is.
+#[test]
+fn only_what_is_dispatched_is_handed_over() {
+    let mut page = page(1.0);
+    let got = page
+        .execute("measure.thickness", &json!({"of": "B"}))
+        .unwrap();
+    assert!(got.get("deferred").is_none(), "{got}");
+    assert!(!page.commands_waiting());
+}
+
+/// An export of the view as the window shows it takes the window's
+/// camera with it to where the bodies are.
+#[test]
+fn an_export_of_the_current_view_keeps_the_window_camera() {
+    for s in [1e-2, 1.0, 1e3] {
+        let camera = craft3d_render::Camera {
+            eye: craft3d_math::Vec3::new(30.0 * s, -80.0 * s, 25.0 * s),
+            target: craft3d_math::Vec3::new(20.0 * s, 10.0 * s, 0.0),
+            up: craft3d_math::Vec3::new(0.0, 0.0, 1.0),
+            projection: craft3d_render::Projection::Orthographic {
+                half_height: 60.0 * s,
+            },
+        };
+        let params = json!({"path": "view.svg", "view": "current"});
+        let mut desktop = desktop(s);
+        desktop
+            .execute(
+                "param.set",
+                &json!({"values": {"w": format!("{} mm", 41.0 * s)}}),
+            )
+            .ok();
+        desktop.set_window_camera(Some(camera));
+        let want = desktop
+            .execute("file.export", &params)
+            .map_err(|e| e.message().to_string());
+        let mut page = page(s);
+        page.set_window_camera(Some(camera));
+        let (got, handed) = on_page(&mut page, "file.export", &params);
+        assert!(handed, "at {s}");
+        assert_eq!(got, want, "at {s}");
+        assert_eq!(
+            page.take_file("view.svg"),
+            desktop.take_file("view.svg"),
+            "at {s}"
+        );
+        // And the iso view is another picture: the camera mattered.
+        let iso = desktop
+            .execute("file.export", &json!({"path": "iso.svg", "view": "iso"}))
+            .map(|_| desktop.take_file("iso.svg"));
+        if let Ok(Some(iso)) = iso {
+            assert_ne!(Some(iso), page.take_file("view.svg"));
+        }
+    }
+}
+
+/// Clicks in two tabs: the second tab's click does not follow the first
+/// tab's, though both read an empty selection.
+#[test]
+fn a_click_in_another_tab_does_not_follow_the_first_tabs() {
+    let mut page = page(1.0);
+    page.execute_deferrable("select.set", &json!({"names": ["B"]}))
+        .unwrap();
+    build(&mut page, 2.0);
+    settle(&mut page);
+    let done = page
+        .execute_deferrable("select.set", &json!({"names": ["A"], "mode": "add"}))
+        .unwrap();
+    assert_eq!(done["deferred"], true);
+    answer_commands(&mut page);
+    let names: Vec<String> = page
+        .selection()
+        .items
+        .iter()
+        .map(|i| i.name.clone())
+        .collect();
+    assert_eq!(names, ["A"]);
+}
+
+/// A click whose answer was refused (an edit came between), then an undo
+/// back to the state it read: the next click does not follow it.
+#[test]
+fn a_click_after_a_refused_one_and_an_undo_does_not_follow_it() {
+    let mut page = page(1.0);
+    page.execute_deferrable("select.set", &json!({"names": ["B"]}))
+        .unwrap();
+    page.execute("param.set", &json!({"values": {"w": "42 mm"}}))
+        .unwrap();
+    let refused = answer_commands(&mut page);
+    assert!(refused[0].result.is_err());
+    page.execute("edit.undo", &json!({})).unwrap();
+    settle(&mut page);
+    page.execute_deferrable("select.set", &json!({"names": ["Ball"], "mode": "add"}))
+        .unwrap();
+    answer_commands(&mut page);
+    let names: Vec<String> = page
+        .selection()
+        .items
+        .iter()
+        .map(|i| i.name.clone())
+        .collect();
+    assert_eq!(names, ["Ball"]);
 }
