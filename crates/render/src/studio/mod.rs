@@ -1474,7 +1474,9 @@ pub(crate) fn rasterise_layers(
                 (i % w) as f64 + 0.5 + view.jitter.0,
                 (i / w) as f64 + 0.5 + view.jitter.1,
             );
-            let Some((key, dist, _)) = view.cap_at(cut, px, py) else {
+            let Some((key, dist, _)) =
+                view.cap_at(cut, px, py, crate::clip::near_distance(view, &raster.depth))
+            else {
                 continue;
             };
             let cap = Surface {

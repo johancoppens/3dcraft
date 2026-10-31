@@ -996,8 +996,10 @@ impl View {
     /// when the cap can be there: the depth key, the distance along the
     /// view direction and the point. `None` when the ray runs along the
     /// plane, meets it at or behind the eye plane of a perspective camera,
-    /// or outside the box the cap stays in.
-    fn cap_at(&self, cut: &Cut, px: f64, py: f64) -> Option<(f64, f64, Vec3)> {
+    /// or outside the box the cap stays in, and in front of `near`, the
+    /// near plane the triangles are clipped at (`clip`), as the GPU clips
+    /// its cap.
+    fn cap_at(&self, cut: &Cut, px: f64, py: f64, near: Option<f64>) -> Option<(f64, f64, Vec3)> {
         // The inverse of `project`: the offsets across the view at
         // distance 1 (perspective) or at any distance (orthographic).
         let cx = (px / self.w * 2.0 - 1.0) * self.aspect * self.half;
@@ -1011,8 +1013,9 @@ impl View {
         let dist = (cut.origin - start).dot(cut.normal) / direction.dot(cut.normal);
         let key = match self.projection {
             Projection::Perspective { .. } => {
-                // As `project`: any distance in front of the eye.
-                if dist.is_nan() || dist <= 0.0 {
+                // As `project`: any distance in front of the eye, and not
+                // in front of the near plane.
+                if dist.is_nan() || dist <= 0.0 || near.is_some_and(|near| dist < near) {
                     return None;
                 }
                 -1.0 / dist
@@ -1352,6 +1355,7 @@ pub fn render_analysed(
         .section
         .and_then(|section| Cut::new(&section, &section_bounds(mesh)));
     let bounds = clip::depth_bounds(&section_bounds(mesh), cut.is_some_and(|c| c.cap));
+    let near = clip::near_distance(&view, &bounds);
     let clipped = clip::clip_mesh(mesh, values, &view, &bounds)?;
     let (mesh, values) = (&*clipped.mesh, &*clipped.values);
 
@@ -1572,7 +1576,7 @@ pub fn render_analysed(
     if let Some(cut) = cut.filter(|cut| cut.cap) {
         for (i, _) in odd.iter().enumerate().filter(|&(_, &inside)| inside) {
             let (px, py) = ((i % w) as f64 + 0.5, (i / w) as f64 + 0.5);
-            let Some((key, dist, _)) = view.cap_at(&cut, px, py) else {
+            let Some((key, dist, _)) = view.cap_at(&cut, px, py, near) else {
                 continue;
             };
             let (Some(k_slot), Some(c_slot), Some(id_slot), Some(d_slot)) = (
@@ -1760,7 +1764,7 @@ pub fn pick_cut(
             seen.hit(&sample.view, x, y, &mut state, None);
         }
     }
-    Ok(state.finish(&sample.view, sample.cut.as_ref(), x, y))
+    Ok(state.finish(&sample.view, sample.cut.as_ref(), sample.near, x, y))
 }
 
 /// The face ids of the surfaces that a section leaves out at the position
@@ -1936,11 +1940,18 @@ struct SampleState {
 impl SampleState {
     /// The hit, once every triangle was looked at: the nearest triangle,
     /// or the cap of the section where that is nearer.
-    fn finish(self, view: &View, cut: Option<&Cut>, x: f64, y: f64) -> Option<Hit> {
+    fn finish(
+        self,
+        view: &View,
+        cut: Option<&Cut>,
+        near: Option<f64>,
+        x: f64,
+        y: f64,
+    ) -> Option<Hit> {
         let triangle = self.best;
         let cap = cut
             .filter(|cut| cut.cap && self.odd)
-            .and_then(|cut| view.cap_at(cut, x, y));
+            .and_then(|cut| view.cap_at(cut, x, y, near));
         match (triangle, cap) {
             // Strict, as in the renderer: the triangle wins a tie.
             (Some((nearest, _)), Some((key, dist, point))) if key < nearest => Some(Hit {
@@ -2103,6 +2114,8 @@ pub struct Neighbourhood {
     within: [f64; 4],
     view: View,
     cut: Option<Cut>,
+    /// The near plane the picture clips at (`clip`).
+    near: Option<f64>,
 }
 
 impl Neighbourhood {
@@ -2180,6 +2193,7 @@ impl Neighbourhood {
             within,
             view,
             cut,
+            near,
         })
     }
 
@@ -2201,7 +2215,7 @@ impl Neighbourhood {
         for triangle in &self.seen {
             triangle.hit(&self.view, x, y, &mut state, None);
         }
-        state.finish(&self.view, self.cut.as_ref(), x, y)
+        state.finish(&self.view, self.cut.as_ref(), self.near, x, y)
     }
 }
 
@@ -2210,6 +2224,44 @@ mod tests {
     use super::*;
     use craft3d_tess::{TessParams, tessellate_patches};
     use craft3d_testkit::teapot::{PATCH_COUNT, teapot};
+
+    /// The cap is clipped at the near plane as the triangles are (and as
+    /// the GPU clips its cap): with the eye a quarter of the near distance
+    /// from the cut plane, the cap's point straight ahead is in front of
+    /// the near plane and is not drawn; with no near plane (or further
+    /// away) it is.
+    #[test]
+    fn the_cap_is_clipped_at_the_near_plane() {
+        let camera = Camera {
+            eye: Vec3::ZERO,
+            target: Vec3::X,
+            up: Vec3::Z,
+            projection: Projection::Perspective { fov_y_deg: 50.0 },
+        };
+        let view = View::new(&camera, 40, 30).unwrap();
+        let bounds = Bbox3::from_points([Vec3::new(-1.0, -1.0, -1.0), Vec3::new(9.0, 1.0, 1.0)]);
+        let near = clip::near_distance(&view, &clip::depth_bounds(&bounds, true)).unwrap();
+        assert!(near > 0.0 && near < 1e-4, "{near}");
+        let cap_at = |x: f64| {
+            let section = Section {
+                origin: Vec3::new(x, 0.0, 0.0),
+                normal: Vec3::new(-1.0, 0.0, 0.0),
+                cap: true,
+                color: [1, 2, 3],
+            };
+            let cut = Cut::new(&section, &bounds).unwrap();
+            (
+                view.cap_at(&cut, 20.0, 15.0, Some(near)),
+                view.cap_at(&cut, 20.0, 15.0, None),
+            )
+        };
+        let (clipped, unclipped) = cap_at(0.25 * near);
+        assert!(clipped.is_none());
+        assert!(unclipped.is_some());
+        let (kept, _) = cap_at(4.0 * near);
+        let (_, dist, _) = kept.unwrap();
+        assert!((dist - 4.0 * near).abs() < 1e-12, "{dist}");
+    }
 
     fn quad(corners: [Vec3; 4], face: u32, mesh: &mut Mesh) {
         let base = mesh.positions.len() as u32;
