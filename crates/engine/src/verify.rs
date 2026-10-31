@@ -1135,6 +1135,42 @@ fn shape(body: &Body, face: usize) -> Shape {
     }
 }
 
+/// The direction along which face `face`'s surface is a cylinder over a
+/// curve, where it is known exactly: a cylinder's axis, or a spline of
+/// degree 1 with two rows of control points one the other moved by one
+/// vector (with the same weights) — an extrusion, whatever its curve.
+pub(crate) fn extruded(body: &Body, face: usize) -> Option<Vec3> {
+    match &body.faces.get(face)?.surface {
+        Surface::Cylinder(c) => Some(c.frame().z()),
+        Surface::Nurbs(n) => {
+            let ((du, dv), (cu, cv)) = (n.degrees(), n.counts());
+            let (points, weights) = (n.control_points(), n.weights());
+            // The pairs of indices of a row and its moved copy.
+            let pairs: Vec<(usize, usize)> = if dv == 1 && cv == 2 {
+                (0..cu).map(|i| (i * 2, i * 2 + 1)).collect()
+            } else if du == 1 && cu == 2 {
+                (0..cv).map(|j| (j, cv + j)).collect()
+            } else {
+                return None;
+            };
+            let (&(a0, b0), _) = pairs.split_first()?;
+            let shift = *points.get(b0)? - *points.get(a0)?;
+            let scale = points
+                .iter()
+                .map(|p| p.length())
+                .fold(shift.length(), f64::max);
+            for &(a, b) in &pairs {
+                let d = *points.get(b)? - *points.get(a)?;
+                if (d - shift).length() > 1e-12 * scale || weights.get(a)? != weights.get(b)? {
+                    return None;
+                }
+            }
+            shift.normalized()
+        }
+        _ => None,
+    }
+}
+
 /// The outward normal of a flat or round face at `p` (a point of it), and
 /// how much the normal can turn between the corners of one of its
 /// triangles and inside it (as a change of a dot product).
@@ -1297,21 +1333,13 @@ fn pair_bound(part: &Part<'_>, a: usize, b: usize, tol: f64) -> (Option<f64>, Ve
     };
     // A line square to a cylinder's axis never comes out through a flat
     // face square to that axis, and a line along the axis never through
-    // the cylinder: they only graze.
-    let cylinder = |s: Shape| match s {
-        Shape::Round {
-            axis,
-            major: None,
-            sphere: false,
-            ..
-        } => Some(axis),
-        _ => None,
-    };
-    match (sa, sb) {
-        (Shape::Flat(_, na), _) if cylinder(sb).is_some_and(|z| na.cross(z).length() < 1e-12) => {
-            return (None, seeds);
-        }
-        (_, Shape::Flat(_, nb)) if cylinder(sa).is_some_and(|z| nb.cross(z).length() < 1e-12) => {
+    // the cylinder: they only graze. The same for a spline extruded along
+    // a direction (its normals square to it, and it holds every line
+    // along it through one of its points).
+    match (sa, sb, extruded(body, a), extruded(body, b)) {
+        (Shape::Flat(_, na), _, _, Some(z)) | (_, Shape::Flat(_, na), Some(z), _)
+            if na.cross(z).length() < 1e-12 =>
+        {
             return (None, seeds);
         }
         _ => {}

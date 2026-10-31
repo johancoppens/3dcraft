@@ -934,17 +934,25 @@ where
             }
             lb = lb.max(along.hypot(across));
         }
+        // A surface extruded along `z` (a cylinder, a spline extrusion)
+        // has its normals square to `z`: so has `w`.
+        if pa.kind == Kind::Face
+            && let Some(z) = self
+                .part(pa.side, pa.part)
+                .and_then(|part| crate::verify::extruded(part.body(), pa.index))
+        {
+            let (lo, hi) = range(z);
+            if lo > 0.0 || hi < 0.0 {
+                return None;
+            }
+        }
         match pa.sym {
-            // A cylinder's normals are square to its axis: so is `w`.
+            // A convex cylinder's lines pass through its axis.
             Sym::Axis {
                 o,
                 z,
                 shape: Shape::Cylinder { r },
             } if pa.kind == Kind::Face => {
-                let (lo, hi) = range(z);
-                if lo > 0.0 || hi < 0.0 {
-                    return None;
-                }
                 let radial = |p: Vec3| (p - o) - z * (p - o).dot(z);
                 lb = lb.max(focal(a, b, r, o, |p| from_axis(p, o, z), radial));
             }
