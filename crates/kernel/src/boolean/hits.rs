@@ -410,15 +410,28 @@ fn numeric(
     // Stretches still to judge, and stretches already judged clear on the
     // way (see the window below), taken from the left.
     let mut stack: Vec<(f64, f64, Vec<Window>)> = vec![(start, end, Vec::new())];
+    // Per run, the middles of its first and last pieces where those were
+    // cleared in a window unevaluated (`hits_of_runs` reads the side
+    // there).
+    let mut windowed: Vec<(Option<f64>, Option<f64>)> = Vec::new();
     let mut evaluations = 0_usize;
     while let Some((a, b, windows)) = stack.pop() {
         // Within a window cleared about the middle of a stretch it was
         // halved from: clear, on that middle's side, unevaluated.
         if let Some(&(_, _, positive)) = windows.iter().find(|w| w.0 <= a && b <= w.1) {
             let kind = Kind::Clear { positive };
+            let middle = 0.5 * (a + b);
             match runs.last_mut() {
-                Some(last) if last.2 == kind => last.1 = b,
-                _ => runs.push((a, b, kind)),
+                Some(last) if last.2 == kind => {
+                    last.1 = b;
+                    if let Some(edge) = windowed.last_mut() {
+                        edge.1 = Some(middle);
+                    }
+                }
+                _ => {
+                    runs.push((a, b, kind));
+                    windowed.push((Some(middle), Some(middle)));
+                }
             }
             continue;
         }
@@ -549,8 +562,16 @@ fn numeric(
             continue;
         };
         match runs.last_mut() {
-            Some(last) if last.2 == kind => last.1 = b,
-            _ => runs.push((a, b, kind)),
+            Some(last) if last.2 == kind => {
+                last.1 = b;
+                if let Some(edge) = windowed.last_mut() {
+                    edge.1 = None;
+                }
+            }
+            _ => {
+                runs.push((a, b, kind));
+                windowed.push((None, None));
+            }
         }
     }
     if failed.get() {
@@ -559,7 +580,7 @@ fn numeric(
     if let [(_, _, Kind::Near)] = runs.as_slice() {
         return Ok(CurveIntersection::OnSurface);
     }
-    let hits = hits_of_runs(curve, &runs, &f, bounded, tol, None);
+    let hits = hits_of_runs(curve, &runs, &windowed, &f, bounded, tol, None);
     if failed.get() {
         return Err(GeomError::Unsupported(FREEFORM));
     }
@@ -576,6 +597,7 @@ fn numeric(
 fn hits_of_runs(
     curve: &Curve3,
     runs: &[(f64, f64, Kind)],
+    windowed: &[(Option<f64>, Option<f64>)],
     f: &dyn Fn(f64) -> f64,
     bounded: bool,
     tol: f64,
@@ -588,20 +610,25 @@ fn hits_of_runs(
             .and_then(|solve| solve(0.0, lo, hi))
             .unwrap_or_else(|| root(f, lo, hi))
     };
-    // The side of a clear run next to a near one, by the distance itself
-    // where the two meet, not by the label the run was given: a run
-    // cleared by a window about a middle further off (`numeric`) carries
-    // that middle's sign, and the signed distance to a patch that ends
-    // can turn over beside its rim while staying clear of it. Clear there
-    // means further than the tolerance, so the sign there is the side the
-    // near run is entered from or left to.
-    let side = |run: Option<&(f64, f64, Kind)>, at: f64| match run {
+    // The side of a clear run next to a near one: the sign of the
+    // distance at the middle of its piece next to the near run, where
+    // that piece was looked at (its label), and looked at now where it
+    // was cleared in a window unevaluated (`windowed`): such a piece
+    // carries the sign of a middle further off, and the signed distance
+    // to a patch that ends can turn over beside its rim while staying
+    // clear of it. So the side is the one halving would have read, as
+    // before. (Read at the near run's very end instead, a fillet's tool
+    // turned from a body into a refusal: the sign beside a patch's rim,
+    // within a few tolerances of it, is noise; `fillet_contact.rs` ›
+    // `a_straight_edge_rounded_by_its_tool`.)
+    let side = |i: usize, last: bool| match runs.get(i) {
         Some(&(_, _, Kind::Clear { positive })) => {
-            let v = f(at);
-            Some(if v.is_finite() && v != 0.0 {
-                v > 0.0
-            } else {
-                positive
+            let middle = windowed
+                .get(i)
+                .and_then(|&(first, end)| if last { end } else { first });
+            Some(match middle.map(f) {
+                Some(v) if v.is_finite() && v != 0.0 => v > 0.0,
+                _ => positive,
             })
         }
         _ => None,
@@ -611,8 +638,8 @@ fn hits_of_runs(
         if kind != Kind::Near {
             continue;
         }
-        let before = index.checked_sub(1).and_then(|i| side(runs.get(i), lo));
-        let after = side(runs.get(index + 1), hi);
+        let before = index.checked_sub(1).and_then(|i| side(i, true));
+        let after = side(index + 1, false);
         // A curve that lies on a surface that ends (an edge of one body
         // along a patch of the other, past where the patch ends) is cut
         // where it leaves it: at each end of the stretch that is not an
@@ -1315,6 +1342,7 @@ fn monotone(
     Some(CurveIntersection::Hits(hits_of_runs(
         curve,
         &runs,
+        &[],
         &f,
         false,
         tol,
@@ -1938,8 +1966,8 @@ mod tests {
     /// crossings at their closed-form places, in fewer looks. Before the
     /// windows (docs/design/booleans.md › *A crossing closed in on*) it
     /// took 198 distances and 51 bounds; the pieces halved into a window
-    /// need none, 157 to 159 and 60 now (two looks per near run at its
-    /// ends included).
+    /// need none, 157 to 159 and 60 now (with the bound below a whole
+    /// stretch on the shortest pieces).
     #[test]
     fn a_line_through_a_ball_is_settled_in_fewer_evaluations() {
         for k in [1e-3, 1.0, 1e6] {
