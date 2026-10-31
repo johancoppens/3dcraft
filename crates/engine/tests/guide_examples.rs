@@ -593,10 +593,10 @@ fn the_field_test_tasks_two_and_four_are_as_the_page_says() {
             .unwrap()["status"]
             .clone()
     };
-    // At 2 mm the bound is not proven on this case (its inside corners are
-    // sharp; the page says so); it is never "failed".
+    // At 2 mm the wall is proven (since 2026-10-31: the exact faces bound
+    // the lines where rounds meet rounds).
     let at_two = thin(&mut s);
-    assert!(at_two == "passed" || at_two == "notProven", "{at_two}");
+    assert_eq!(at_two, "passed");
     run(
         &mut s,
         "variable.set",
