@@ -39,6 +39,7 @@
 use crate::KernelError;
 use crate::extrude::{OpResult, Origin, Origins, Role};
 use crate::plate::{Made, Side, plate};
+use craft3d_math::Portable;
 
 use crate::profile::{Profile, Segment};
 use craft3d_geom::{Curve3, NurbsCurve, Surface};
@@ -94,7 +95,7 @@ impl Development {
             Surface::Cylinder(c) => Ok(Development::Cylinder { r: c.radius() }),
             Surface::Cone(c) => {
                 let a = c.half_angle();
-                let (sin, cos) = (a.abs().sin(), a.abs().cos());
+                let (sin, cos) = (a.abs().psin(), a.abs().pcos());
                 let r = c.radius();
                 if !(r > 0.0 && sin > 0.0) {
                     return Err(refuse(
@@ -136,8 +137,8 @@ impl Development {
                         "the profile reaches the cone's apex: it is wrapped onto the cone only short of it",
                     ));
                 }
-                let rho = p[0].hypot(w);
-                (p[0].atan2(w) / sin, sign * (rho - rho0) * cos)
+                let rho = p[0].phypot(w);
+                (p[0].patan2(w) / sin, sign * (rho - rho0) * cos)
             }
         };
         if !(u.is_finite() && v.is_finite()) || u.abs() >= PI {
@@ -204,7 +205,7 @@ fn box_diagonal(l: &crate::profile::Loop2) -> f64 {
             }
         }
     }
-    let d = (hi[0] - lo[0]).hypot(hi[1] - lo[1]);
+    let d = (hi[0] - lo[0]).phypot(hi[1] - lo[1]);
     if d.is_finite() { d } else { 0.0 }
 }
 
@@ -215,7 +216,7 @@ fn steps_along(segment: &Segment, step: f64) -> usize {
     let mut before = segment.point_at(0.0);
     for k in 1..=8 {
         let p = segment.point_at(k as f64 / 8.0);
-        length += (p[0] - before[0]).hypot(p[1] - before[1]);
+        length += (p[0] - before[0]).phypot(p[1] - before[1]);
         before = p;
     }
     let n = (length / step).ceil();
@@ -238,7 +239,7 @@ fn leaving(segment: &Segment, t: f64) -> Option<[f64; 2]> {
         } else {
             [p[0] - q[0], p[1] - q[1]]
         };
-        let l = d[0].hypot(d[1]);
+        let l = d[0].phypot(d[1]);
         if l > 0.0 && l.is_finite() {
             return Some([d[0] / l, d[1] / l]);
         }

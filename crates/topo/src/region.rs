@@ -41,7 +41,7 @@
 
 use crate::{Body, Coedge, Face, FaceId};
 use craft3d_geom::{Curve3, Surface};
-use craft3d_math::{Tolerance, Vec3};
+use craft3d_math::{Portable, Tolerance, Vec3};
 use std::collections::{BTreeMap, VecDeque};
 use std::f64::consts::PI;
 use std::sync::{Mutex, PoisonError};
@@ -538,7 +538,7 @@ impl Chart<'_> {
         }
         // Poles and apexes: the parameter around them is not defined.
         match self.surface {
-            Surface::Sphere(s) if s.radius() * v.cos() <= self.near => return None,
+            Surface::Sphere(s) if s.radius() * v.pcos() <= self.near => return None,
             Surface::Cone(c) if self.surface.eval(0.0, c.apex_v()).distance(p) <= self.near => {
                 return None;
             }
@@ -615,7 +615,7 @@ fn follow(
             let middle = chart.at(edge.curve.eval(at(k as f64 + 0.5)))?;
             let next = chart.at(edge.curve.eval(at(k as f64 + 1.0)))?;
             let chord = [0.5 * (before[0] + next[0]), 0.5 * (before[1] + next[1])];
-            error = error.max(2.0 * (chord[0] - middle[0]).hypot(chord[1] - middle[1]));
+            error = error.max(2.0 * (chord[0] - middle[0]).phypot(chord[1] - middle[1]));
             before = next;
         }
     }
@@ -658,7 +658,7 @@ impl Ring {
     fn box_distance(&self, p: [f64; 2]) -> f64 {
         let dx = (self.low[0] - p[0]).max(p[0] - self.high[0]).max(0.0);
         let dy = (self.low[1] - p[1]).max(p[1] - self.high[1]).max(0.0);
-        dx.hypot(dy)
+        dx.phypot(dy)
     }
 
     fn shift(&mut self, d: usize, by: f64) {
@@ -691,7 +691,7 @@ fn perimeter(points: &[[f64; 2]]) -> f64 {
     (0..n)
         .filter_map(|i| {
             let (a, b) = (points.get(i)?, points.get((i + 1) % n)?);
-            Some((b[0] - a[0]).hypot(b[1] - a[1]))
+            Some((b[0] - a[0]).phypot(b[1] - a[1]))
         })
         .sum()
 }
@@ -715,7 +715,7 @@ fn to_segment(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
     } else {
         0.0
     };
-    (a[0] + t * dx - p[0]).hypot(a[1] + t * dy - p[1])
+    (a[0] + t * dx - p[0]).phypot(a[1] + t * dy - p[1])
 }
 
 /// How many times the closed polyline `points` winds around `p`
@@ -743,7 +743,7 @@ fn winding(p: [f64; 2], points: &[[f64; 2]]) -> i64 {
 /// positive), or `None` for a step of no length.
 fn side(a: [f64; 2], b: [f64; 2], p: [f64; 2]) -> Option<f64> {
     let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
-    let length = dx.hypot(dy);
+    let length = dx.phypot(dy);
     (length > 0.0).then(|| (dx * (p[1] - a[1]) - dy * (p[0] - a[0])) / length)
 }
 

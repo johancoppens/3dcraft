@@ -14,6 +14,7 @@
 use craft3d_geom::{Cylinder, Surface};
 use craft3d_kernel::profile::{Curve2, SketchCurve, detect_profiles};
 use craft3d_kernel::wrap::wrap;
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance};
 use craft3d_topo::check;
 
@@ -22,7 +23,7 @@ use craft3d_topo::check;
 fn three_arcs(x: f64, y: f64, r: f64) -> Vec<SketchCurve> {
     let at = |k: f64| {
         let a = k * std::f64::consts::TAU / 3.0;
-        [x + r * a.cos(), y + r * a.sin()]
+        [x + r * a.pcos(), y + r * a.psin()]
     };
     (0..3)
         .map(|k| SketchCurve {

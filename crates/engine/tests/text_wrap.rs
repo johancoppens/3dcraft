@@ -17,6 +17,7 @@ mod common;
 use common::checked::{built, failed, inspect, run, session};
 use craft3d_engine::Session;
 use craft3d_font::{FontFile, Metrics, filled_outline};
+use craft3d_math::Portable;
 use serde_json::json;
 use std::path::PathBuf;
 
@@ -173,7 +174,7 @@ fn cone_part(s: &mut Session, dir: &std::path::Path, widening: bool) -> (String,
         .unwrap();
     let names = common::checked::body(s, "Body")["faceNames"].clone();
     let name = names[i].as_str().unwrap().to_string();
-    (name, half, half.abs().cos())
+    (name, half, half.abs().pcos())
 }
 
 /// On a cone (both signs of the half-angle): the join adds `A d + K d²/2`
@@ -231,12 +232,12 @@ fn embossed_and_engraved_on_a_cone() {
             for v in &wrapped.vertices {
                 let (u, w) = surface.project(v.point).unwrap();
                 let (x, y, _) = c.frame().local(surface.eval(u, w));
-                radii.0 = radii.0.min(x.hypot(y));
-                radii.1 = radii.1.max(x.hypot(y));
+                radii.0 = radii.0.min(x.phypot(y));
+                radii.1 = radii.1.max(x.phypot(y));
             }
         }
         let a = text_area("CONE", 5.0);
-        let cos = halves[0].abs().cos();
+        let cos = halves[0].abs().pcos();
         let (join, cut) = (terms[0], terms[1]);
         assert!(
             (join + cut - 2.0 * a * d).abs() <= 1e-5 * a * d,

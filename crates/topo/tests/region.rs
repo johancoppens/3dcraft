@@ -12,6 +12,7 @@
 )]
 
 use craft3d_geom::{Circle, Curve3, Cylinder, Line, Surface};
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_testkit::solids;
 use craft3d_topo::{Body, BodyKind, Coedge, Defect, LoopId, check};
@@ -35,7 +36,7 @@ fn patch_loop(
     (z0, z1): (f64, f64),
     backwards: bool,
 ) -> LoopId {
-    let at = |u: f64, z: f64| Vec3::new(r * u.cos(), r * u.sin(), z);
+    let at = |u: f64, z: f64| Vec3::new(r * u.pcos(), r * u.psin(), z);
     let corners = [at(u0, z0), at(u1, z0), at(u1, z1), at(u0, z1)];
     let v: Vec<_> = corners.iter().map(|p| body.add_vertex(*p)).collect();
     let arc = |z: f64| {

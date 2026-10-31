@@ -1954,14 +1954,14 @@ fn a_glyph_written_as_spline_pieces_reads_back_with_its_area() {
         let mut segments = Vec::new();
         let point = |k: usize| {
             let a = k as f64 * std::f64::consts::TAU / n as f64 * if ccw { 1.0 } else { -1.0 };
-            [r * a.cos(), r * a.sin()]
+            [r * libm::cos(a), r * libm::sin(a)]
         };
         let half = std::f64::consts::PI / n as f64;
         let mut area = 0.0;
         for k in 0..n {
             let (a, c) = (point(k), point(k + 1));
             let mid = [(a[0] + c[0]) / 2.0, (a[1] + c[1]) / 2.0];
-            let s = 1.0 / half.cos() / (mid[0].hypot(mid[1]) / r);
+            let s = 1.0 / libm::cos(half) / (libm::hypot(mid[0], mid[1]) / r);
             let b = [mid[0] * s, mid[1] * s];
             let q = [
                 a,
