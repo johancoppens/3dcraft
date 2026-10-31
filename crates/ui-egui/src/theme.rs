@@ -360,6 +360,11 @@ pub struct Tokens {
     /// The caret's chevron: its half width as a share of `nav_icon_size`
     /// (drawn in `nav_icon_width`, as the icons are).
     pub nav_caret_chevron: f32,
+    /// The caret's width with touch sizes ([`Tokens::touch`]): as wide as
+    /// a finger needs while the camera plate, with both split buttons,
+    /// still fits a phone of 390 points (the full `touch_target` would
+    /// push the plate off it; 2026-10-31).
+    pub touch_caret_width: f32,
     /// How far the popover's pointer reaches up from its top edge toward
     /// its chip, in points (within the gap under the camera plate).
     pub popover_pointer: f32,
@@ -642,6 +647,7 @@ impl Tokens {
             popover_width: 340.0,
             nav_caret_width: 18.0,
             nav_caret_chevron: 0.2,
+            touch_caret_width: 30.0,
             popover_pointer: 6.0,
             popover_slider_width: 130.0,
             popover_opacity: 242,
@@ -691,8 +697,9 @@ impl Tokens {
         let mut t = *self;
         t.nav_height = t.nav_height.max(t.touch_target);
         t.tree_split_grip = t.tree_split_grip.max(t.touch_target * 0.5);
-        // A finger reaches the caret of a split button as it does a chip.
-        t.nav_caret_width = t.nav_caret_width.max(t.touch_target);
+        // A finger reaches the caret of a split button: as high as a chip,
+        // and as wide as still keeps the camera plate on a phone.
+        t.nav_caret_width = t.nav_caret_width.max(t.touch_caret_width);
         t
     }
 

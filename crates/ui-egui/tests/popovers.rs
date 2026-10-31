@@ -383,8 +383,8 @@ fn the_popovers_are_read_and_set_through_the_control_channel() {
     let panels = |shell: &mut Shell, session: &mut Session| {
         let got = call(shell, session, "ui.get", None);
         (
-            got["panels"]["lookOptions"].as_bool().unwrap(),
-            got["panels"]["analysisOptions"].as_bool().unwrap(),
+            got["state"]["panels"]["lookOptions"].as_bool().unwrap(),
+            got["state"]["panels"]["analysisOptions"].as_bool().unwrap(),
         )
     };
     // Closed by hand, then the look switched on: its options open.

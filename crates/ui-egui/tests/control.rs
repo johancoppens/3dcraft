@@ -329,7 +329,8 @@ fn ui_set_changes_the_state_or_nothing() {
     assert_eq!(set["state"]["camera"]["projection"], "orthographic");
     assert_eq!(
         set["state"]["panels"],
-        json!({"tree": false, "status": true, "recovery": true, "treeWidth": 260.0, "drawer": false})
+        json!({"tree": false, "status": true, "recovery": true, "treeWidth": 260.0, "drawer": false,
+               "lookOptions": true, "analysisOptions": true})
     );
     assert_eq!(set["state"]["notice"], "Step 1");
     assert_eq!(set["state"]["selectedFeature"], "F2");

@@ -245,7 +245,13 @@ fn a_phone_gets_a_drawer_and_controls_a_finger_hits() {
     let viewport = shell.viewport_rect().unwrap();
     assert!(viewport.width() >= 389.0, "{viewport:?}");
     every_control_reachable(&shell, &NAMES, tokens.touch_target, "phone");
-    carets_reachable(&shell, tokens.touch_target, tokens.touch_target, "phone");
+    carets_reachable(
+        &shell,
+        tokens.touch_caret_width,
+        tokens.touch_target,
+        "phone",
+    );
+    assert!(tokens.nav_caret_width >= tokens.touch_caret_width);
     // The section's options, on a plate of their own when the bar has no
     // room for them.
     set(&mut shell, &mut session, json!({"section": {"on": true}}));
