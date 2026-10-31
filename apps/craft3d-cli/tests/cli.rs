@@ -1715,22 +1715,22 @@ fn build_jig(dir: &Path, name: &str, t_max: &str) -> String {
 
 /// `check-range` counts a point whose assertion is not proven apart from
 /// the passed and the failed ones, lists it, and fails it with --strict:
-/// a block with a conical pit coming to a point, 14 thick but proven near
-/// 0 at the pit's tip (a cone's pieces at its apex have no normal cone),
-/// with an assertion that it is at least `lim`, from 0 mm (passed) to
-/// 10 mm (not proven); 5 mm by default.
+/// a ring turned from a spline, 5 thick but proven near 0 (a rational
+/// surface has no normal cone), with an assertion that it is at least
+/// `lim`, from 0 mm (passed) to 4 mm (not proven); 2 mm by default.
 #[test]
 fn check_range_counts_unproven_points_apart_and_fails_them_when_strict() {
     let dir = workdir("check-range-unproven");
     let file = path(&dir, "ring.3dcraft");
     let script = path(&dir, "ring.json");
     let steps = json!([
-        ["variable.set", {"name": "lim", "expr": "5 mm"}],
-        ["feature.block", {"name": "Blank", "size": [40, 40, 20]}],
-        ["feature.cone", {"name": "Tip", "radius": 8, "height": 8, "position": [20, 20, 22], "axis": [0, 0, -1]}],
-        ["feature.boolean", {"name": "Ring", "op": "subtract", "target": "Blank", "tool": "Tip"}],
+        ["variable.set", {"name": "lim", "expr": "2 mm"}],
+        ["sketch.create", {"name": "Profile", "plane": "zx"}],
+        ["sketch.curve", {"sketch": "Profile", "x": "10 mm * t", "y": "10 mm + 8 mm * t * (1 - t)", "t": [0, 1]}],
+        ["sketch.path", {"sketch": "Profile", "start": "e2", "segments": [{"line": ["10 mm", "5 mm"]}, {"line": ["0 mm", "5 mm"]}, {"line": "e1"}]}],
+        ["feature.revolve", {"sketch": "Profile", "axis": "x", "name": "Ring"}],
         ["assert.add", {"name": "wall", "measure": "thickness", "of": "Ring", "min": "lim"}],
-        ["variable.publish", {"name": "lim", "min": "0 mm", "max": "10 mm"}],
+        ["variable.publish", {"name": "lim", "min": "0 mm", "max": "4 mm"}],
     ]);
     std::fs::write(&script, steps.to_string()).unwrap();
     cli(&["run", "--script", &script, "--out", &file]).ok();
@@ -1745,13 +1745,13 @@ fn check_range_counts_unproven_points_apart_and_fails_them_when_strict() {
     );
     assert!(ran.stdout.contains("point 0 (default, "), "{}", ran.stdout);
     assert!(
-        ran.stdout.contains("not proven: wall: lim=5 mm"),
+        ran.stdout.contains("not proven: wall: lim=2 mm"),
         "{}",
         ran.stdout
     );
     assert!(
         ran.stdout
-            .contains("NOT PROVEN point 0 (default): lim=5 mm"),
+            .contains("NOT PROVEN point 0 (default): lim=2 mm"),
         "{}",
         ran.stdout
     );
@@ -1774,21 +1774,22 @@ fn check_range_counts_unproven_points_apart_and_fails_them_when_strict() {
 /// `check-range` counts an inactive assertion (its `when` is 0 there) as
 /// neither passed nor failed nor unproven: the ring of
 /// [`check_range_counts_unproven_points_apart_and_fails_them_when_strict`]
-/// with its wall assertion switched off from `lim` 7 mm on, so the corner
-/// at 10 mm passes, and the default (5 mm) stays unproven.
+/// with its wall assertion switched off from `lim` 3 mm on, so the corner
+/// at 4 mm passes, and the default (2 mm) stays unproven.
 #[test]
 fn check_range_does_not_count_an_inactive_assertion_as_unproven() {
     let dir = workdir("check-range-inactive");
     let file = path(&dir, "ring.3dcraft");
     let script = path(&dir, "ring.json");
     let steps = json!([
-        ["variable.set", {"name": "lim", "expr": "5 mm"}],
-        ["feature.block", {"name": "Blank", "size": [40, 40, 20]}],
-        ["feature.cone", {"name": "Tip", "radius": 8, "height": 8, "position": [20, 20, 22], "axis": [0, 0, -1]}],
-        ["feature.boolean", {"name": "Ring", "op": "subtract", "target": "Blank", "tool": "Tip"}],
-        ["assert.add", {"name": "wall", "measure": "thickness", "of": "Ring", "min": "lim", "when": "lim < 7 mm"}],
+        ["variable.set", {"name": "lim", "expr": "2 mm"}],
+        ["sketch.create", {"name": "Profile", "plane": "zx"}],
+        ["sketch.curve", {"sketch": "Profile", "x": "10 mm * t", "y": "10 mm + 8 mm * t * (1 - t)", "t": [0, 1]}],
+        ["sketch.path", {"sketch": "Profile", "start": "e2", "segments": [{"line": ["10 mm", "5 mm"]}, {"line": ["0 mm", "5 mm"]}, {"line": "e1"}]}],
+        ["feature.revolve", {"sketch": "Profile", "axis": "x", "name": "Ring"}],
+        ["assert.add", {"name": "wall", "measure": "thickness", "of": "Ring", "min": "lim", "when": "lim < 3 mm"}],
         ["assert.add", {"name": "never", "measure": "volume", "of": "Ring", "max": "1 mm^3", "when": "0"}],
-        ["variable.publish", {"name": "lim", "min": "0 mm", "max": "10 mm"}],
+        ["variable.publish", {"name": "lim", "min": "0 mm", "max": "4 mm"}],
     ]);
     std::fs::write(&script, steps.to_string()).unwrap();
     cli(&["run", "--script", &script, "--out", &file]).ok();
