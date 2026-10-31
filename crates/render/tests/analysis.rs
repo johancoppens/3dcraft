@@ -265,7 +265,9 @@ fn stripes_finer_than_a_pixel_fade_to_their_mean() {
 /// shrinks as `|N·M|²` (the normal line meets the light plane further
 /// out), so on a sphere seen from the side, where `0.06 < |n_z| < 0.1`
 /// (above the grazing bound of 0.05), 24 lines are tens of periods per
-/// pixel: the band is their mean, `width` dark, without moiré.
+/// pixel: the band is their mean, `width` dark, without moiré. Below the
+/// bound, where there is no phase, the sample is that mean too: the band
+/// across the bound is one grey.
 #[test]
 fn highlight_lines_toward_a_vertical_face_fade_to_their_mean() {
     let mesh = mesh_of(
@@ -285,6 +287,18 @@ fn highlight_lines_toward_a_vertical_face_fade_to_their_mean() {
     );
     println!("highlight near vertical: mean {mean:.4} variance {var:.5} over {n}");
     assert!(n > 400, "{n}");
+    assert!((mean - 0.3).abs() < 0.01, "mean {mean}");
+    assert!(var < 1e-3, "variance {var}");
+    let (mean, var, n) = share_stats(
+        &mesh,
+        a,
+        Vec3::new(0.0, -10.0, 0.0),
+        Vec3::Z,
+        241,
+        |x, z| x.abs() < 0.5 && z.abs() < 0.1,
+    );
+    println!("highlight across the grazing bound: mean {mean:.4} variance {var:.5} over {n}");
+    assert!(n > 800, "{n}");
     assert!((mean - 0.3).abs() < 0.01, "mean {mean}");
     assert!(var < 1e-3, "variance {var}");
 }

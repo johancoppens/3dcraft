@@ -426,19 +426,21 @@ fn analysis_of(in: VertexOut) -> vec4<f32> {
                     has_phase = true;
                 }
             }
+            // Without a phase (a grazing normal), the stripes' mean.
+            var share = scene.analysis.z;
             if has_phase {
                 // Without an interpolated normal (the triangle's own) the
                 // normal's slope is zero (len_n is 0).
                 let footprint = analysis_slope(mode, n, len_n, d_normal_x, to_viewer, in.rel, d_rel_x)
                     + analysis_slope(mode, n, len_n, d_normal_y, to_viewer, in.rel, d_rel_y);
-                let share = analysis_dark_share(phase, footprint, scene.analysis.z);
-                if share >= 1.0 {
-                    rgb = dark;
-                } else if share <= 0.0 {
-                    rgb = light;
-                } else {
-                    rgb = clamp(round(light + (dark - light) * share), vec3<f32>(0.0), vec3<f32>(255.0));
-                }
+                share = analysis_dark_share(phase, footprint, scene.analysis.z);
+            }
+            if share >= 1.0 {
+                rgb = dark;
+            } else if share <= 0.0 {
+                rgb = light;
+            } else {
+                rgb = clamp(round(light + (dark - light) * share), vec3<f32>(0.0), vec3<f32>(255.0));
             }
         } else if mode == 3u {
             if in.value.y > 0.999 {

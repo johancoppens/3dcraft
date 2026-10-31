@@ -28,8 +28,8 @@
 //!   `P + t N`, meets the plane at `Q = P + t N` with `t = (A − P)·M /
 //!   (N·M)`; the phase is `(Q − A)·S / spacing + offset`, dark below
 //!   `width` as for zebra. Where `|N·M|` is below [`GRAZING`] (0.05) the normal
-//!   line runs along the plane and the sample has no phase (the neutral
-//!   colour).
+//!   line runs along the plane and the sample has no phase: it is the
+//!   stripes' mean, as the filtered stripes are just above the bound.
 //! - **Band limit** (zebra and highlight lines): the square wave of the
 //!   stripes is box-filtered over the sample's footprint in phase, the
 //!   phase's change from one sample to the next, `|∂p/∂x| + |∂p/∂y|`
@@ -58,11 +58,13 @@ use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Vec3};
 
 /// Below this `|N·M|` a highlight line's normal line runs along the light
-/// plane: no phase. The phase grows as `stripes / |N·M|` periods, and its
-/// rounding with it: at most 512 / 0.05 ≈ 10⁴ periods keeps the `f32`
-/// phase of the GPU within about 10⁻³ of a period of the CPU's, and the
-/// stripes below this are some twenty times finer than over the model's
-/// top, finer than a pixel on any view that shows them whole.
+/// plane: no phase, and the sample is the stripes' mean (`width` dark), the
+/// value the filtered stripes tend to as `|N·M|` falls. The phase grows as
+/// `stripes / |N·M|` periods, and its rounding with it: at most 512 / 0.05
+/// ≈ 10⁴ periods keeps the `f32` phase of the GPU within about 10⁻³ of a
+/// period of the CPU's, and the stripes below this are some twenty times
+/// finer than over the model's top, finer than a pixel on any view that
+/// shows them whole (their footprint grows as `1 / |N·M|²`).
 pub const GRAZING: f64 = 0.05;
 /// A footprint above this many periods is the mean, `width`, outright: the
 /// box over it is the mean within `1 / footprint` (`dark_share`).
@@ -118,8 +120,8 @@ pub struct AnalysisColors {
     pub draft_out: [u8; 3],
     /// Draft: less than the minimum either way.
     pub draft_shallow: [u8; 3],
-    /// Where there is no value (a curvature the surface does not have, a
-    /// highlight line's grazing normal, no normal).
+    /// Where there is no value (a curvature the surface does not have, no
+    /// normal).
     pub none: [u8; 3],
     /// The curvature map's ramp, from `lo` to `hi`.
     pub ramp: [[u8; 3]; 5],
@@ -373,25 +375,30 @@ impl Resolved {
             rgb.map(|v| (f64::from(v) * k).round().clamp(0.0, 255.0) as u8)
         };
         match self.mode {
-            AnalysisMode::Zebra | AnalysisMode::Highlight => match self.phase(n, to_viewer, rel) {
-                Some(phase) => {
-                    let footprint = slopes.map_or(0.0, |s| self.footprint(n, to_viewer, rel, s));
-                    let dark = dark_share(phase, footprint, self.width);
-                    if dark >= 1.0 {
-                        c.dark
-                    } else if dark <= 0.0 {
-                        c.light
-                    } else {
-                        let mut out = [0u8; 3];
-                        for (o, (&d, &l)) in out.iter_mut().zip(c.dark.iter().zip(c.light.iter())) {
-                            let (d, l) = (f64::from(d), f64::from(l));
-                            *o = (l + (d - l) * dark).round().clamp(0.0, 255.0) as u8;
-                        }
-                        out
+            AnalysisMode::Zebra | AnalysisMode::Highlight => {
+                // Without a phase (a highlight line's grazing normal) the
+                // stripes are finer than anything: their mean.
+                let dark = match self.phase(n, to_viewer, rel) {
+                    Some(phase) => {
+                        let footprint =
+                            slopes.map_or(0.0, |s| self.footprint(n, to_viewer, rel, s));
+                        dark_share(phase, footprint, self.width)
                     }
+                    None => self.width,
+                };
+                if dark >= 1.0 {
+                    c.dark
+                } else if dark <= 0.0 {
+                    c.light
+                } else {
+                    let mut out = [0u8; 3];
+                    for (o, (&d, &l)) in out.iter_mut().zip(c.dark.iter().zip(c.light.iter())) {
+                        let (d, l) = (f64::from(d), f64::from(l));
+                        *o = (l + (d - l) * dark).round().clamp(0.0, 255.0) as u8;
+                    }
+                    out
                 }
-                None => c.none,
-            },
+            }
             AnalysisMode::Curvature => {
                 let span = self.hi - self.lo;
                 if !value.is_finite() {
