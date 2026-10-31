@@ -1186,7 +1186,7 @@ fn focal(
     let Some(ca) = a.out else {
         return 0.0;
     };
-    if !(ca.axis.dot(radial(a.center)) > 0.0) {
+    if ca.axis.dot(radial(a.center)).partial_cmp(&0.0) != Some(Ordering::Greater) {
         return 0.0;
     }
     let Some((l, h)) = b.bbox.corners() else {
