@@ -2311,12 +2311,15 @@ mod tests {
                 .into_iter()
                 .find(|(name, _)| *name == "sans")
                 .unwrap();
-            let bytes = std::fs::read(
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../assets/fonts")
-                    .join(file),
-            )
-            .unwrap();
+            // Where the engine finds it natively: CRAFT3D_FONTS, else the
+            // checkout's assets/fonts (`cargo xtask fonts`).
+            let dir = std::env::var_os("CRAFT3D_FONTS")
+                .filter(|d| !d.is_empty())
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| {
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/fonts")
+                });
+            let bytes = std::fs::read(dir.join(file)).unwrap();
             host.font_fetched("sans", craft3d_engine::fonts::register("sans", &bytes));
         }
         host.pump();
