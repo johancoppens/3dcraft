@@ -3,8 +3,6 @@
 # checkout, also with core.autocrlf on Windows.
 docs/examples/*.json text eol=lf
 docs/examples/thumbs/STAMPS.txt text eol=lf
-*.png binary
-*.hdr binary
 # Files tests read byte for byte, and files the packages carry as they are
 # (a desktop entry, a shell script and AppRun must keep LF on Linux and
 # macOS even when they were checked out on Windows): LF in every checkout.
@@ -13,3 +11,14 @@ docs/examples/thumbs/STAMPS.txt text eol=lf
 crates/*/tests/golden/** text eol=lf
 packaging/** text eol=lf
 *.step text eol=lf
+# Binary files last, so no text rule above (packaging/**) claims them:
+# a later line wins in .gitattributes.
+*.png binary
+*.hdr binary
+*.ico binary
+*.icns binary
+*.ttf binary
+*.otf binary
+*.3dcraft binary
+*.3dcraftjig binary
+*.3dcraftasm binary
