@@ -2007,8 +2007,18 @@ fn flange_to_manifest(place: usize, flange: &doc::Flange) -> manifest::SheetFlan
         outline,
         id,
     } = flange;
+    let cutout = match on {
+        doc::FlangeOn::Cutout(doc::FeatureId(sketch), doc::EntityId(l)) => {
+            Some(manifest::SheetFlangeCutout {
+                sketch: *sketch,
+                line: *l,
+            })
+        }
+        _ => None,
+    };
     let (base, tip, side, line) = match on {
         doc::FlangeOn::Base(doc::EntityId(id)) => (Some(*id), None, None, None),
+        doc::FlangeOn::Cutout(..) => (None, None, None, None),
         doc::FlangeOn::Tip(i) => (None, Some(*i), None, None),
         doc::FlangeOn::Side(i, end) => (
             None,
@@ -2034,6 +2044,7 @@ fn flange_to_manifest(place: usize, flange: &doc::Flange) -> manifest::SheetFlan
     };
     manifest::SheetFlange {
         line,
+        cutout,
         id: (*id != place_id(place)).then_some(*id),
         base,
         tip,
@@ -2077,20 +2088,27 @@ fn flange_to_doc(place: usize, flange: manifest::SheetFlange) -> doc::Flange {
         outline,
         id,
         line,
+        cutout,
     } = flange;
     doc::Flange {
         id: id.unwrap_or_else(|| place_id(place)),
-        on: match (base, tip, side, line) {
-            (Some(id), None, None, None) => doc::FlangeOn::Base(doc::EntityId(id)),
-            (None, Some(i), None, None) => doc::FlangeOn::Tip(i),
-            (None, None, None, Some(l)) => doc::FlangeOn::Line(l.flange, doc::EntityId(l.line)),
-            (None, None, Some(side), None) => doc::FlangeOn::Side(
-                side.flange,
-                match side.end {
-                    manifest::FlangeSideEnd::Start => doc::FlangeSide::Start,
-                    manifest::FlangeSideEnd::End => doc::FlangeSide::End,
-                },
-            ),
+        on: match (base, tip, side, line, cutout) {
+            (None, None, None, None, Some(c)) => {
+                doc::FlangeOn::Cutout(doc::FeatureId(c.sketch), doc::EntityId(c.line))
+            }
+            (base, tip, side, line, None) => match (base, tip, side, line) {
+                (Some(id), None, None, None) => doc::FlangeOn::Base(doc::EntityId(id)),
+                (None, Some(i), None, None) => doc::FlangeOn::Tip(i),
+                (None, None, None, Some(l)) => doc::FlangeOn::Line(l.flange, doc::EntityId(l.line)),
+                (None, None, Some(side), None) => doc::FlangeOn::Side(
+                    side.flange,
+                    match side.end {
+                        manifest::FlangeSideEnd::Start => doc::FlangeSide::Start,
+                        manifest::FlangeSideEnd::End => doc::FlangeSide::End,
+                    },
+                ),
+                _ => doc::FlangeOn::Tip(u32::MAX),
+            },
             _ => doc::FlangeOn::Tip(u32::MAX),
         },
         inset_start: inset_start.map(doc::Expr),

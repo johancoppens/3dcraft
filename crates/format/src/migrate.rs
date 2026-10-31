@@ -37,7 +37,7 @@ const STEPS: &[Step] = &[
     v34_to_v35, v35_to_v36, v36_to_v37, v37_to_v38, v38_to_v39, v39_to_v40, v40_to_v41, v41_to_v42,
     v42_to_v43, v43_to_v44, v44_to_v45, v45_to_v46, v46_to_v47, v47_to_v48, v48_to_v49, v49_to_v50,
     v50_to_v51, v51_to_v52, v52_to_v53, v53_to_v54, v54_to_v55, v55_to_v56, v56_to_v57, v57_to_v58,
-    v58_to_v59,
+    v58_to_v59, v59_to_v60,
 ];
 
 /// Version 2 adds the `cone` and `torus` feature kinds and an optional
@@ -1089,6 +1089,15 @@ fn v57_to_v58(manifest: Value) -> Result<Value, String> {
 /// that an older build says a newer 3DCraft is needed instead of
 /// refusing the operation.
 fn v58_to_v59(manifest: Value) -> Result<Value, String> {
+    Ok(manifest)
+}
+
+/// Version 60 adds a sheet-metal flange on a cut-out's edge (`cutout`:
+/// the sketch and the line). A file of an older version has none, which
+/// is what a missing field reads as, so nothing changes (an identity
+/// step); the version was raised so that an older build says a newer
+/// 3DCraft is needed instead of refusing the field.
+fn v59_to_v60(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 

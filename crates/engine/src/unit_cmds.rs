@@ -440,7 +440,7 @@ impl Sizer<'_> {
                 // Not lengths: a mass in kg and a density per cubic metre
                 // whatever the unit, angles (a plain one in degrees), a
                 // count of distances.
-                "mass" | "density" | "heel" | "trim" | "maxWork" => v.clone(),
+                "mass" | "density" | "heel" | "trim" | "maxWork" | "formed" | "order" => v.clone(),
                 "offset" | "tol" | "length" | "clearance" => self.sized(v, 1, &here)?,
                 "volume" => self.sized(v, 3, &here)?,
                 // A point (the centre of gravity) and polygons of points

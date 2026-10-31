@@ -311,7 +311,7 @@ impl Segment {
     }
 
     /// `[min x, min y, max x, max y]`.
-    fn bbox(&self) -> [f64; 4] {
+    pub(crate) fn bbox(&self) -> [f64; 4] {
         let mut b = [
             self.start[0].min(self.end[0]),
             self.start[1].min(self.end[1]),

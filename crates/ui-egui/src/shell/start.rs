@@ -30,7 +30,8 @@ pub enum ExampleSection {
     /// Packed assemblies, opened ready to play.
     Assemblies,
     /// Showcase parts built by their scripts: class-A surfaces with their
-    /// proofs (the fuel tank, 2026-10-31).
+    /// proofs (the fuel tank, the mouse) and sheet metal with its press
+    /// brake (the mini-PC chassis), 2026-10-31.
     Showcase,
 }
 
@@ -186,7 +187,7 @@ macro_rules! published {
 
 /// The start screen's examples, section by section: ten of the guide's
 /// parts, then the published Jigs and assemblies.
-pub const EXAMPLES: [Example; 18] = [
+pub const EXAMPLES: [Example; 19] = [
     example!("bracket", "L-bracket", "extrude, fillet, holes"),
     example!("nameplate", "Name plate", "text, fillet, materials"),
     example!("clamp", "Clamp block", "fillet, bore, chamfer"),
@@ -208,6 +209,12 @@ pub const EXAMPLES: [Example; 18] = [
         "mouse",
         "Class-A mouse",
         "G2 top on flat flanks, sewn"
+    ),
+    example!(
+        ExampleSection::Showcase,
+        "chassis",
+        "Mini-PC chassis",
+        "sheet metal: louvres, hem, jog"
     ),
     published!(
         ExampleSection::Jigs,

@@ -30,7 +30,7 @@ use craft3d_kernel::sheetmetal::sequence::{
     PieceOf, bend_faces, bend_frame, final_worlds, from_axis, inside_piece, piece_lowest,
     piece_points, prism, stage_worlds, strip_slab, stroke_speed,
 };
-use craft3d_kernel::sheetmetal::{self, flange_length, flat_faces};
+use craft3d_kernel::sheetmetal::{self, cut_pieces, flange_length, flat_faces};
 use craft3d_math::Portable;
 use craft3d_math::{Tolerance, Transform, Vec3};
 use craft3d_topo::Body;
@@ -40,8 +40,8 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(crate) static SPECS: &[CommandSpec] = &[spec!(
     "sheetMetal.bendSequence",
     "Bend Sequence",
-    r#"{"feature": id or name, "punch": [[x, y], ...], "die": [[x, y], ...], "length": number or [number or null, ...] (one per flange) = the part's reach, "segmented": boolean = false, "clearance": number = the document's tolerance, "order": [flange or [flange, ...], ...] = searched, "maxWork": number = 20000}"#,
-    "Checks whether a sheet-metal part (feature.sheetMetal) can be bent on a press brake with the punch and die given, and finds an order of its bends (changes nothing). punch and die are closed polygons (at least 3 points, in the document's length unit) in the plane square to a bend: the punch's with the centre of its tip at the origin and its body along +y, the die's with the point under the bend on the part's outer skin at the origin and its body below (y < 0); each is extruded along the bend: one piece length long centred on the middle of the bends made in the stroke (default: long enough to cover the whole part), or, with segmented true or a list of lengths, segmented tooling set up per bend, a segment per bend centred on its middle, as long as length gives for it (one number for every bend, or a list of one per flange with null for the bend's own) or else as long as the bend; unchecked states which. Bends on one line of one flat with the same angle, direction, radius and K-factor (tabs on one edge) are made in one stroke. At every bend both stand in the bend's frame: origin on the bend's axis (the die's R + T further out), y along the bisector of the two flats towards the inside (as on a press brake where both legs rise half the angle), z along the axis. A step, a bend made with some others already made and the rest still flat, clears when the proven distance (its lower bound) between the punch and every piece of the part but that bend's own strip and its two flats, and between the die counted lowered (moved away from the punch) by clearance plus the document's tolerance and every piece but the bend's own strip, is at least clearance over the whole stroke from 0 to the bend's angle (so the sheet may rest on the die's top, but not go into it by more than the tolerance nor come nearer than clearance from any other side), with the part as it lies or turned end for end (about the tools' y, as an operator turns it: the tools mirrored in x; segments stay at their bends), unless both tools are their own mirror image (the same polygon, compared as a cyclic list of points): proven at eight stroke angles, and between two of them less how far any point of the part can move against the tools in between (half its distance from the bend's axis, the farthest at either end of the stroke, plus the bend's neutral radius, per radian), the interval halved (to 1/1024 of the stroke) until that holds, or, for a die wholly below its top (y <= 0), by the piece's lowest point staying above the die's top less the tolerance between them (its height bounded by its heights there and how fast it can bend, halved as needed: what proves a piece lifting off the die); a piece and a tool wholly inside one another count as 0. With order (a list of strokes, each a flange or a list of flanges on one line; every flange once) that order is checked step by step, every step, instead of a search. Otherwise the order is searched depth first over all orders of the strokes (with one-piece tools a stroke is every bend on its line, and an order given must keep them together; with segmented tooling the bends of a line are tried together and one by one), the bends whose flanges carry the fewest others first (then the shorter flange, then the lower index), every set of bends made that leads nowhere remembered. Returns feasible, given (whether the order was given), order (the strokes, first bent first: a flange by index, or a list for a stroke of several; null when none clears), steps (per stroke of the order, also those that cleared of an order given that does not: flange (its first), flanges, segments (with segmented tooling: the tools' length at each of its bends), done (the flanges made before it), least (the least distance to the punch proven at the stroke angles measured), at (the stroke angle of it, degrees), proven (the least distance to the punch proven over the whole stroke, between the angles measured too) die (least, at and proven for the lowered die) and turned (whether the part is turned end for end for it)), collisions (every step tried that did not clear, per orientation tried: flange, flanges, done, tool (punch or die), piece (the base, flange i, or the strip of flange i, bent or flat), angle (degrees), distance and lower (the distance found and what is proven below it; to the lowered die for the die), or notProven with the stroke interval no halving could prove; certain: whether this failure is certain, a tool and a piece found nearer than the clearance at a real place or wholly inside one another, where a collision only not proven clear is not; stepCertain: whether the step fails for certain, both as the part lies and turned; turned: whether this failure is the turned one), infeasibleProven (with feasible false: whether every step tried that failed failed for certain, so that no order exists with these tools, or for an order given whether a step of it fails for certain; false means no order was found but one may exist), unchecked (what is not looked at) and work (distances measured). Refused: a part with a hole across a bend (owed), a polygon that crosses itself, a clearance that is not more than 0, and more distances and heights measured than maxWork (default 20000, at most 10000000; give the order, or raise it). Not looked at (said in unchecked): a bend's own strip during its stroke, and its own two flats against the punch (an acute bend with a punch of a wider angle closing its flats onto it is not found).",
+    r#"{"feature": id or name, "punch": [[x, y], ...], "die": [[x, y], ...], "length": number or [number or null, ...] (one per flange) = the part's reach, "segmented": boolean = false, "clearance": number = the document's tolerance, "order": [flange or [flange, ...], ...] = searched, "formed": [flange, ...] = none, "maxWork": number = 20000}"#,
+    "Checks whether a sheet-metal part (feature.sheetMetal) can be bent on a press brake with the punch and die given, and finds an order of its bends (changes nothing). punch and die are closed polygons (at least 3 points, in the document's length unit) in the plane square to a bend: the punch's with the centre of its tip at the origin and its body along +y, the die's with the point under the bend on the part's outer skin at the origin and its body below (y < 0); each is extruded along the bend: one piece length long centred on the middle of the bends made in the stroke (default: long enough to cover the whole part), or, with segmented true or a list of lengths, segmented tooling set up per bend, a segment per bend centred on its middle, as long as length gives for it (one number for every bend, or a list of one per flange with null for the bend's own) or else as long as the bend; unchecked states which. Bends on one line of one flat with the same angle, direction, radius and K-factor (tabs on one edge) are made in one stroke. At every bend both stand in the bend's frame: origin on the bend's axis (the die's R + T further out), y along the bisector of the two flats towards the inside (as on a press brake where both legs rise half the angle), z along the axis. A step, a bend made with some others already made and the rest still flat, clears when the proven distance (its lower bound) between the punch and every piece of the part but that bend's own strip and its two flats, and between the die counted lowered (moved away from the punch) by clearance plus the document's tolerance and every piece but the bend's own strip, is at least clearance over the whole stroke from 0 to the bend's angle (so the sheet may rest on the die's top, but not go into it by more than the tolerance nor come nearer than clearance from any other side), with the part as it lies or turned end for end (about the tools' y, as an operator turns it: the tools mirrored in x; segments stay at their bends), unless both tools are their own mirror image (the same polygon, compared as a cyclic list of points): proven at eight stroke angles, and between two of them less how far any point of the part can move against the tools in between (half its distance from the bend's axis, the farthest at either end of the stroke, plus the bend's neutral radius, per radian), the interval halved (to 1/1024 of the stroke) until that holds, or, for a die wholly below its top (y <= 0), by the piece's lowest point staying above the die's top less the tolerance between them (its height bounded by its heights there and how fast it can bend, halved as needed: what proves a piece lifting off the die); a piece and a tool wholly inside one another count as 0. formed lists flanges made before the press brake by a tool of their own (a louvre on a punch press, a jog by an offset die, a hem closed by a flattening tool): they are made from the start, are no step of the order and are not checked themselves (said in unchecked). With order (a list of strokes, each a flange or a list of flanges on one line; every flange once) that order is checked step by step, every step, instead of a search. Otherwise the order is searched depth first over all orders of the strokes (with one-piece tools a stroke is every bend on its line, and an order given must keep them together; with segmented tooling the bends of a line are tried together and one by one), the bends whose flanges carry the fewest others first (then the shorter flange, then the lower index), every set of bends made that leads nowhere remembered. Returns feasible, given (whether the order was given), order (the strokes, first bent first: a flange by index, or a list for a stroke of several; null when none clears), steps (per stroke of the order, also those that cleared of an order given that does not: flange (its first), flanges, segments (with segmented tooling: the tools' length at each of its bends), done (the flanges made before it), least (the least distance to the punch proven at the stroke angles measured), at (the stroke angle of it, degrees), proven (the least distance to the punch proven over the whole stroke, between the angles measured too) die (least, at and proven for the lowered die) and turned (whether the part is turned end for end for it)), collisions (every step tried that did not clear, per orientation tried: flange, flanges, done, tool (punch or die), piece (the base, flange i, or the strip of flange i, bent or flat), angle (degrees), distance and lower (the distance found and what is proven below it; to the lowered die for the die), or notProven with the stroke interval no halving could prove; certain: whether this failure is certain, a tool and a piece found nearer than the clearance at a real place or wholly inside one another, where a collision only not proven clear is not; stepCertain: whether the step fails for certain, both as the part lies and turned; turned: whether this failure is the turned one), infeasibleProven (with feasible false: whether every step tried that failed failed for certain, so that no order exists with these tools, or for an order given whether a step of it fails for certain; false means no order was found but one may exist), unchecked (what is not looked at) and work (distances measured). A part with a hole across a bend is checked with each strip not yet bent as its whole slab (more material than it has, so a clearance proven is proven; a collision with such a strip, or found inside a flat by its outline, is not certain). Refused: a polygon that crosses itself, a clearance that is not more than 0, and more distances and heights measured than maxWork (default 20000, at most 10000000; give the order, or raise it). Not looked at (said in unchecked): a bend's own strip during its stroke, and its own two flats against the punch (an acute bend with a punch of a wider angle closing its flats onto it is not found).",
     doc: true,
     names: ["feature"],
     bend_sequence
@@ -52,6 +52,10 @@ const MAX_WORK: usize = 20_000;
 
 /// Most distances a caller of the command may ask for (`maxWork`).
 const MAX_WORK_ASKED: u64 = 10_000_000;
+/// Most distances and heights the measure `bendable` may measure when it
+/// checks an order given (a search stays at [`MAX_WORK`]): it runs on the
+/// assertions' one job thread and in the web build's one thread.
+const MEASURE_ORDER_WORK: usize = 1_000_000;
 
 /// Most points in a tool's polygon.
 const MAX_POINTS: usize = 1_000;
@@ -188,6 +192,11 @@ enum Failure {
         lower: f64,
         /// Found with the part turned end for end (the tools mirrored).
         turned: bool,
+        /// Whether `distance` is between real places of the piece: not for
+        /// a strip not yet bent that a hole across a bend crosses (its
+        /// slab holds the hole's material too) nor for a point found
+        /// inside a flat by its outline when holes cross its bends.
+        real: bool,
     },
     NotProven {
         from: f64,
@@ -204,7 +213,7 @@ impl Failure {
     /// is proven below it), or an interval of the stroke no halving
     /// proved, is not.
     fn certain(&self, clearance: f64) -> bool {
-        matches!(self, Failure::Collision { distance, .. } if *distance < clearance)
+        matches!(self, Failure::Collision { distance, real: true, .. } if *distance < clearance)
     }
 
     /// The failure in words, for a step: the stroke `g` after `done`.
@@ -548,6 +557,9 @@ impl Check<'_> {
             };
             let tool_frame = frame.tool(below).ok_or("a tool's frame is not finite")?;
             let pieces: Vec<&Piece<'_>> = self.checked(done, g, tool).collect();
+            // The strips and flats a hole across a bend may lie in (by
+            // boxes: a strip left out is its slab exactly).
+            let (holed_strips, holed_flats) = cut_pieces(part, &self.tol);
             // The tool carried into each carrier's built place, built once
             // per carrier and segment (every piece it carries shares it).
             let carriers: Vec<usize> = pieces
@@ -586,6 +598,12 @@ impl Check<'_> {
                 let mut lower = f64::INFINITY;
                 let mut found = f64::INFINITY;
                 let mut inside = false;
+                // A strip not yet bent that a hole across a bend may cross
+                // is its slab whole (more material than it has: a clearance
+                // proven to it is proven, a collision found with it may lie
+                // in the hole), and such a flat's outline knows no hole
+                // that crosses its tangent line.
+                let mut real = !matches!(piece.what, Kind::Strip(i) if holed_strips.contains(&i));
                 for ((carrier, body, local, zmid), tool_m) in bodies.iter().zip(&measured) {
                     if *carrier != piece.carrier {
                         continue;
@@ -602,10 +620,25 @@ impl Check<'_> {
                         .first()
                         .map(|q| local.point(q[0], q[1], *zmid))
                         .ok_or("a tool has no points")?;
-                    let within = inside_piece(part, piece.what.piece(), tool_point)
-                        || contains_points(body, &piece.points, &self.tol)
-                            .map_err(|e| e.to_string())?
-                            .contains(&Some(true));
+                    let by_points = contains_points(body, &piece.points, &self.tol)
+                        .map_err(|e| e.to_string())?
+                        .contains(&Some(true));
+                    let by_outline = inside_piece(part, piece.what.piece(), tool_point);
+                    if by_outline
+                        && !by_points
+                        && match piece.what {
+                            Kind::Flat(f) => holed_flats.contains(&f),
+                            // A bend made or a strip not yet bent: its
+                            // ring sector or slab knows no hole across it
+                            // either (review 2026-10-31: a made bend was
+                            // left out, so a tool point in its hole was a
+                            // certain collision, a false no).
+                            Kind::Bend(i) | Kind::Strip(i) => holed_strips.contains(&i),
+                        }
+                    {
+                        real = false;
+                    }
+                    let within = by_outline || by_points;
                     inside |= within;
                     lower = lower.min(if within { 0.0 } else { near.lower.max(0.0) });
                     found = found.min(if within { 0.0 } else { near.distance });
@@ -634,6 +667,7 @@ impl Check<'_> {
                         distance: found,
                         lower,
                         turned,
+                        real,
                     };
                     // A collision found at a real place is the answer; one
                     // only not proven clear is kept while the other
@@ -1273,6 +1307,10 @@ struct Tools {
     clearance: Option<f64>,
     /// The order to check, as given (flange indices per stroke).
     order: Option<Vec<Vec<usize>>>,
+    /// Flanges made before the press brake by a tool of their own (a
+    /// louvre on a punch press, a jog by an offset die): made at the
+    /// start, never a step of the order, not checked themselves.
+    formed: BTreeSet<usize>,
     max_work: usize,
 }
 
@@ -1327,9 +1365,10 @@ fn checked_order(
     tol: &Tolerance,
     order: &[Vec<usize>],
     segmented: bool,
+    formed: &BTreeSet<usize>,
 ) -> Result<Vec<Vec<usize>>, String> {
     let n = part.bends.len();
-    let mut seen = BTreeSet::new();
+    let mut seen = formed.clone();
     for g in order {
         let Some(&first) = g.first() else {
             return Err("`order` has an empty stroke".into());
@@ -1339,6 +1378,11 @@ fn checked_order(
                 return Err(format!(
                     "`order` names flanges by their index, 0 to {}; got {b}",
                     n.saturating_sub(1)
+                ));
+            }
+            if formed.contains(&b) {
+                return Err(format!(
+                    "`order` lists flange {b}, which is `formed` (made before the press brake)"
                 ));
             }
             if !seen.insert(b) {
@@ -1356,7 +1400,7 @@ fn checked_order(
         return Err(format!("`order` leaves out flanges {missing:?}"));
     }
     if !segmented {
-        let groups = strokes(part, tol);
+        let groups = without(strokes(part, tol), formed);
         for g in order {
             let mut given: Vec<usize> = g.clone();
             given.sort_unstable();
@@ -1411,18 +1455,20 @@ fn prove(
     let built = craft3d_regen::sheet_metal_part(doc, regen, feature).map_err(Stopped::Error)?;
     let part = &built.part;
     let tol = built.tolerance;
-    if !part.cuts.is_empty() {
-        return Err(Stopped::Error(
-            "the part has a hole across a bend; a strip not yet bent with a hole in it is not built as a piece (not supported)".into(),
-        ));
-    }
     let clearance = tools.clearance.unwrap_or(tol.linear);
     let n = part.bends.len();
     let tooling = tooling_of(&tools.length, tools.segmented, n).map_err(Stopped::Error)?;
+    if let Some(&b) = tools.formed.iter().find(|&&b| b >= n) {
+        return Err(Stopped::Error(format!(
+            "`formed` names flanges by their index, 0 to {}; got {b}",
+            n.saturating_sub(1)
+        )));
+    }
     let given = match &tools.order {
-        Some(order) => {
-            Some(checked_order(part, &tol, order, tooling.segmented()).map_err(Stopped::Error)?)
-        }
+        Some(order) => Some(
+            checked_order(part, &tol, order, tooling.segmented(), &tools.formed)
+                .map_err(Stopped::Error)?,
+        ),
         None => None,
     };
     // The tools must be simple outlines: checked once here, so a bad one
@@ -1473,7 +1519,8 @@ fn prove(
             Stopped::Error(e)
         }
     };
-    let mut done = BTreeSet::new();
+    // The flanges formed before the press brake are made from the start.
+    let mut done = tools.formed.clone();
     let mut order: Vec<Step> = Vec::new();
     let mut tried: Tried = BTreeMap::new();
     let feasible = match &given {
@@ -1493,7 +1540,10 @@ fn prove(
             every
         }
         None => {
-            let ranked = ranked_strokes(part, &tol, check.tooling.segmented());
+            let ranked = without(
+                ranked_strokes(part, &tol, check.tooling.segmented()),
+                &tools.formed,
+            );
             let mut dead = BTreeSet::new();
             let mut step = |done: &BTreeSet<usize>, g: &[usize]| check.step(done, g);
             search(
@@ -1574,6 +1624,66 @@ fn order_param(p: &Params) -> Result<Option<Vec<Vec<usize>>>, CommandError> {
     Ok(Some(out))
 }
 
+/// The strokes `groups` without the flanges `formed` (made before the
+/// press brake), a stroke left empty dropped.
+fn without(groups: Vec<Vec<usize>>, formed: &BTreeSet<usize>) -> Vec<Vec<usize>> {
+    let mut out: Vec<Vec<usize>> = Vec::with_capacity(groups.len());
+    for g in groups {
+        let kept: Vec<usize> = g.into_iter().filter(|b| !formed.contains(b)).collect();
+        if !kept.is_empty() && !out.contains(&kept) {
+            out.push(kept);
+        }
+    }
+    out
+}
+
+/// `formed` as given: a list of flange indices (checked against the part
+/// in [`prove`]).
+fn formed_param(v: Option<&Value>) -> Result<BTreeSet<usize>, String> {
+    let bad = || {
+        "`formed` is a list of flanges (indices) made before the press brake by a tool of their own"
+            .to_string()
+    };
+    match v {
+        None | Some(Value::Null) => Ok(BTreeSet::new()),
+        Some(Value::Array(list)) => list
+            .iter()
+            .map(|v| {
+                v.as_u64()
+                    .and_then(|i| usize::try_from(i).ok())
+                    .ok_or_else(bad)
+            })
+            .collect(),
+        Some(_) => Err(bad()),
+    }
+}
+
+/// `order` of the measure: strokes, each a flange index or a list of
+/// them, as the command takes it.
+fn order_value(v: Option<&Value>) -> Result<Option<Vec<Vec<usize>>>, String> {
+    let bad = || {
+        "`order` is a list of flanges (indices), each a number or a list of flanges bent in one stroke"
+            .to_string()
+    };
+    let index = |v: &Value| {
+        v.as_u64()
+            .and_then(|i| usize::try_from(i).ok())
+            .ok_or_else(bad)
+    };
+    match v {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(list)) => list
+            .iter()
+            .map(|item| match item {
+                Value::Array(many) => many.iter().map(index).collect(),
+                one => index(one).map(|i| vec![i]),
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some),
+        Some(_) => Err(bad()),
+    }
+}
+
 /// `segmented` as given: true or false, or left out.
 fn segmented_param(v: Option<&Value>) -> Result<Option<bool>, String> {
     match v {
@@ -1596,6 +1706,7 @@ fn bend_sequence(session: &mut Session, params: &Value) -> Run {
             "segmented",
             "clearance",
             "order",
+            "formed",
             "maxWork",
         ],
     )?;
@@ -1605,6 +1716,8 @@ fn bend_sequence(session: &mut Session, params: &Value) -> Run {
     let segmented =
         segmented_param(p.get("segmented")).map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
     let order = order_param(&p)?;
+    let formed =
+        formed_param(p.get("formed")).map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
     let max_work = match p.get("maxWork") {
         None | Some(Value::Null) => MAX_WORK,
         Some(v) => match v.as_u64() {
@@ -1636,6 +1749,7 @@ fn bend_sequence(session: &mut Session, params: &Value) -> Run {
         segmented,
         clearance,
         order,
+        formed: formed.clone(),
         max_work,
     };
     let proof = prove(doc, &regen, feature, tools).map_err(|e| match e {
@@ -1681,6 +1795,7 @@ fn bend_sequence(session: &mut Session, params: &Value) -> Run {
                     distance,
                     lower,
                     turned,
+                    ..
                 } => {
                     v.insert("turned".into(), json!(turned));
                     v.insert("tool".into(), json!(tool));
@@ -1717,7 +1832,16 @@ fn bend_sequence(session: &mut Session, params: &Value) -> Run {
         "steps": if feasible || proof.given { json!(steps) } else { json!([]) },
         "collisions": collisions,
         "clearance": proof.clearance,
-        "unchecked": unchecked(proof.segments.is_some()),
+        "formed": formed.iter().collect::<Vec<_>>(),
+        "unchecked": if formed.is_empty() {
+            unchecked(proof.segments.is_some())
+        } else {
+            format!(
+                "{}; the flanges formed ({}) are made before the press brake by tools of their own and not checked",
+                unchecked(proof.segments.is_some()),
+                formed.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
+            )
+        },
         "work": proof.work,
         "lengthUnit": length_unit(doc),
     }))
@@ -1726,8 +1850,10 @@ fn bend_sequence(session: &mut Session, params: &Value) -> Run {
 // ------------------------------------------------------------- the measure
 
 /// The parameters of the assertion measure `bendable`.
-pub(crate) const MEASURE_KEYS: [&str; 7] = [
+pub(crate) const MEASURE_KEYS: [&str; 9] = [
     "of",
+    "formed",
+    "order",
     "punch",
     "die",
     "length",
@@ -1789,8 +1915,10 @@ fn positive(ctx: &Ctx<'_>, p: &Map<String, Value>, key: &str) -> Result<Option<f
 /// than the clearance at a real place); otherwise not proven, with the
 /// step that could not be told and why: a collision only not proven
 /// clear, an interval of the stroke no halving proved, or the search
-/// running out of its work (`maxWork`, shared by the parts, at most
-/// 20000 distances). The tools are one piece reaching past the part
+/// running out of its work (`maxWork`, shared by the parts: at most 20000
+/// distances for a search, at most [`MEASURE_ORDER_WORK`] for an `order`
+/// given to check, of one part; about 2400 distances a second on the
+/// chassis tray, so the cap is some minutes). The tools are one piece reaching past the part
 /// unless `length` says how long or `segmented` asks for segmented
 /// tooling (a segment per bend), as in the command.
 pub(crate) fn take(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
@@ -1800,15 +1928,44 @@ pub(crate) fn take(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, Str
     let length = positive(ctx, p, "length")?;
     let clearance = positive(ctx, p, "clearance")?;
     let segmented = segmented_param(p.get("segmented"))?;
+    let formed = formed_param(p.get("formed"))?;
+    let order = order_value(p.get("order"))?;
+    // A search over orders is held to 20000 distances; an order given is
+    // checked step by step, a bounded work the caller may allow more for.
+    // A search over orders is held to 20000 distances; an order given is
+    // checked step by step, a bounded work the caller may allow more for,
+    // up to 1e6: the measure runs on the assertions' one job thread (and
+    // the web build's one thread), so it stays below the command's 1e7
+    // (coordinator, 2026-10-31).
+    let most = if order.is_some() {
+        MEASURE_ORDER_WORK
+    } else {
+        MAX_WORK
+    };
     let max_work = match p.get("maxWork").filter(|v| !v.is_null()) {
         None => MAX_WORK,
         Some(v) => v
             .as_u64()
             .and_then(|n| usize::try_from(n).ok())
-            .filter(|n| (1..=MAX_WORK).contains(n))
-            .ok_or_else(|| format!("`maxWork` must be a whole number from 1 to {MAX_WORK}"))?,
+            .filter(|n| (1..=most).contains(n))
+            .ok_or_else(|| {
+                format!(
+                    "`maxWork` must be a whole number from 1 to {most}{}",
+                    if order.is_some() {
+                        String::new()
+                    } else {
+                        format!(" ({MEASURE_ORDER_WORK} with an `order` to check)")
+                    }
+                )
+            })?,
     };
     let parts = crate::sheetmetal_cmds::parts_of(ctx, p)?;
+    if (!formed.is_empty() || order.is_some()) && parts.len() != 1 {
+        return Err(
+            "`formed` and `order` name flanges of one part: give `of` one sheet-metal part"
+                .to_string(),
+        );
+    }
     let mut left = max_work;
     let mut listed = Vec::new();
     let mut fails = Vec::new();
@@ -1834,7 +1991,8 @@ pub(crate) fn take(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, Str
             length: Length::One(length),
             segmented,
             clearance,
-            order: None,
+            order: order.clone(),
+            formed: formed.clone(),
             max_work: left,
         };
         match prove(ctx.doc, ctx.regen, id, tools) {
@@ -2139,6 +2297,7 @@ mod tests {
             distance,
             lower,
             turned,
+            real: true,
         }
     }
 

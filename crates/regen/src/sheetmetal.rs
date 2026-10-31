@@ -107,7 +107,9 @@ pub(crate) fn analyse(
         .iter()
         .filter_map(|f| match f.on {
             FlangeOn::Base(line) => profiles.iter().position(|p| holds(p, line.0)),
-            FlangeOn::Tip(_) | FlangeOn::Side(..) | FlangeOn::Line(..) => None,
+            FlangeOn::Tip(_) | FlangeOn::Side(..) | FlangeOn::Line(..) | FlangeOn::Cutout(..) => {
+                None
+            }
         })
         .collect();
     on.sort_unstable();
@@ -139,6 +141,9 @@ pub(crate) fn analyse(
             from: from.clone(),
         })
         .collect();
+    // Per cut-out, the sketch it is drawn in (what a flange on its edge
+    // names).
+    let mut cut_sketch: Vec<FeatureId> = vec![made.sketch; cutouts.len()];
     for (i, &other) in made.cutouts.iter().enumerate() {
         // A sketch switched off cuts nothing (a vent with `when`).
         let off = earlier.iter().find(|r| r.id == other).is_some_and(|r| {
@@ -167,6 +172,7 @@ pub(crate) fn analyse(
             ));
         }
         let from = format!("sketch `{hname}`");
+        cut_sketch.extend(std::iter::repeat_n(other, found.len()));
         cutouts.extend(found.into_iter().map(|profile| Cutout {
             profile,
             from: from.clone(),
@@ -194,6 +200,43 @@ pub(crate) fn analyse(
                 },
             ),
             FlangeOn::Line(j, line) => On::Line(usize::try_from(j).unwrap_or(usize::MAX), line.0),
+            FlangeOn::Cutout(sketch, line) => {
+                let holding = cutouts.iter().zip(&cut_sketch).position(|(c, &at)| {
+                    at == sketch && c.profile.outer.segments.iter().any(|s| s.source == line.0)
+                });
+                match holding {
+                    Some(c) => On::Cutout(c, line.0),
+                    None => {
+                        let named = doc
+                            .feature(sketch)
+                            .map_or_else(|| sketch.to_string(), |f| format!("`{}`", f.name));
+                        let off = earlier.iter().find(|r| r.id == sketch).is_some_and(|r| {
+                            matches!(
+                                r.status,
+                                crate::Status::Suppressed
+                                    | crate::Status::Inactive
+                                    | crate::Status::RolledBack
+                            )
+                        });
+                        return Err(if off {
+                            format!(
+                                "{}: the sketch {named} of its cut-out is switched off, so the cut-out is not cut and the flange has no edge; switch the flange off with it (a part of its own, or a `when` on the part)",
+                                param("cutout")
+                            )
+                        } else if sketch != made.sketch && !made.cutouts.contains(&sketch) {
+                            format!(
+                                "{}: the sketch {named} is neither the part's sketch nor one of its cutouts: list it in `cutouts`",
+                                param("cutout")
+                            )
+                        } else {
+                            format!(
+                                "{}: {line} of sketch {named} bounds no cut-out of the part (a closed profile beside the base: a flange on the base's own edge is `edge`)",
+                                param("cutout")
+                            )
+                        });
+                    }
+                }
+            }
         };
         let inset = |what: &str, e: &Option<craft3d_doc::Expr>| -> Result<f64, String> {
             match e {

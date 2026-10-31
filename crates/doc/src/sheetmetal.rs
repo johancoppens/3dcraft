@@ -79,6 +79,12 @@ pub enum FlangeOn {
     /// the list (an earlier one with `outline`), by the line's entity id
     /// in that outline's sketch (format version 51).
     Line(u32, EntityId),
+    /// A straight edge of a cut-out (a closed profile beside the base, of
+    /// the base's sketch or of one of the part's `cutouts` sketches): the
+    /// sketch and the line's entity id in it. The cut-out is a hole of the
+    /// flat it lies in, and the flange grows into it: a tab or a louvre
+    /// bent out of a wall (format version 60).
+    Cutout(FeatureId, EntityId),
 }
 
 /// Which side of a flange's flat another flange sits on: the one at the

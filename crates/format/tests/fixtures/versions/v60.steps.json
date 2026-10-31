@@ -1,0 +1,13 @@
+[
+ ["variable.set", {"name": "t", "expr": "1 mm"}],
+ ["variable.set", {"name": "ba", "expr": "pi / 2 * (1 mm + 0.4 * t)"}],
+ ["sketch.create", {"plane": "xy", "name": "Base"}],
+ ["sketch.rect", {"sketch": "Base", "from": ["0 mm", "0 mm"], "to": ["60 mm", "40 mm"]}],
+ ["sketch.create", {"plane": "xy", "name": "Vents"}],
+ ["sketch.rect", {"sketch": "Vents", "from": ["20 mm", "-ba - 20 mm"], "to": ["40 mm", "-ba - 12 mm"]}],
+ ["feature.sheetMetal", {"sketch": "Base", "name": "Panel", "thickness": "t", "radius": "1 mm", "kFactor": 0.4,
+   "cutouts": ["Vents"], "bendRelief": {"shape": "rect", "size": "0.5 mm"},
+   "flanges": [{"edge": "e5", "length": "30 mm", "angle": "90 deg"},
+               {"cutout": {"sketch": "Vents", "edge": "e7"}, "length": "4 mm", "angle": "35 deg",
+                "direction": "down", "insetStart": "2 mm", "insetEnd": "2 mm"}]}]
+]

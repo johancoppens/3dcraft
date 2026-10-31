@@ -744,7 +744,9 @@ fn bendable_with_bad_parameters_is_an_error_not_a_crash() {
     // A bound where yes or no is asked, a key it does not take: refused.
     for params in [
         json!({"name": "x", "measure": "bendable", "of": "U", "punch": punch, "die": die, "min": 1}),
-        json!({"name": "x", "measure": "bendable", "of": "U", "punch": punch, "die": die, "order": [0], "is": true}),
+        // `order` is the measure's since 2026-10-31 (an order given to
+        // check); a key it does not take is still refused.
+        json!({"name": "x", "measure": "bendable", "of": "U", "punch": punch, "die": die, "sequence": [0], "is": true}),
     ] {
         assert!(s.execute("assert.add", &params).is_err(), "{params}");
     }

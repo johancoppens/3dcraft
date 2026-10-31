@@ -1,0 +1,1328 @@
+[
+ [
+  "variable.set",
+  {
+   "name": "t",
+   "expr": "1 mm"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "r",
+   "expr": "1 mm"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "k",
+   "expr": "0.4"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "w",
+   "expr": "180 mm"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "d",
+   "expr": "160 mm"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "h1",
+   "expr": "34 mm"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "h2",
+   "expr": "8 mm"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "hem_l",
+   "expr": "6 mm"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "hem_r",
+   "expr": "0.5 mm"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "ja",
+   "expr": "45 deg"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "clr",
+   "expr": "0.3 mm"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "tl",
+   "expr": "12 mm"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "tw",
+   "expr": "24 mm"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "screw_d",
+   "expr": "3.2 mm"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "rc",
+   "expr": "2 mm"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "br",
+   "expr": "1 mm"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "jb",
+   "expr": "3 mm"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "mg",
+   "expr": "0.3 mm"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "sl",
+   "expr": "50 mm"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "sh",
+   "expr": "6 mm"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "ll",
+   "expr": "4 mm"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "la",
+   "expr": "35 deg"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "bx",
+   "expr": "40 mm"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "by",
+   "expr": "30 mm"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "bw",
+   "expr": "20 mm"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "bd",
+   "expr": "100 mm"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "bh",
+   "expr": "30 mm"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "bs",
+   "expr": "70 mm"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "blip",
+   "expr": "8 mm"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "ba90",
+   "expr": "pi / 2 * (r + k * t)"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "baj",
+   "expr": "ja / 1 rad * (r + k * t)"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "bah",
+   "expr": "pi * (hem_r + k * t)"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "off",
+   "expr": "t + clr"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "jm",
+   "expr": "(off - 2 * (r + t / 2) * (1 - cos(ja))) / sin(ja)"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "rise",
+   "expr": "2 * (r + t / 2) * sin(ja) + jm * cos(ja)"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "ztop",
+   "expr": "t + r + h1 + rise + h2 + r + t"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "hb",
+   "expr": "ztop - t - r - 0.2 mm"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "wall",
+   "expr": "ba90 + h1 + 2 * baj + jm + h2 + ba90"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "ld",
+   "expr": "d + r + t"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "lidh",
+   "expr": "ztop - r - (t + r + h1 + rise) - 0.5 mm"
+  }
+ ],
+ [
+  "sketch.create",
+  {
+   "plane": "xy",
+   "name": "Tray outline"
+  }
+ ],
+ [
+  "sketch.rect",
+  {
+   "sketch": "Tray outline",
+   "from": [
+    "0 mm",
+    "0 mm"
+   ],
+   "to": [
+    "w",
+    "d"
+   ]
+  }
+ ],
+ [
+  "sketch.circle",
+  {
+   "sketch": "Tray outline",
+   "center": [
+    "bx + 6 mm",
+    "by + bd / 4"
+   ],
+   "radius": "screw_d / 2"
+  }
+ ],
+ [
+  "sketch.circle",
+  {
+   "sketch": "Tray outline",
+   "center": [
+    "bx + 6 mm",
+    "by + 3 * bd / 4"
+   ],
+   "radius": "screw_d / 2"
+  }
+ ],
+ [
+  "sketch.create",
+  {
+   "plane": "xy",
+   "name": "Vents"
+  }
+ ],
+ [
+  "sketch.rect",
+  {
+   "sketch": "Vents",
+   "from": [
+    "-ba90 - (8 mm + sh)",
+    "25 mm"
+   ],
+   "to": [
+    "-ba90 - (8 mm)",
+    "25 mm + sl"
+   ]
+  }
+ ],
+ [
+  "sketch.rect",
+  {
+   "sketch": "Vents",
+   "from": [
+    "-ba90 - (8 mm + sh)",
+    "d - 25 mm - sl"
+   ],
+   "to": [
+    "-ba90 - (8 mm)",
+    "d - 25 mm"
+   ]
+  }
+ ],
+ [
+  "sketch.rect",
+  {
+   "sketch": "Vents",
+   "from": [
+    "-ba90 - (18 mm + sh)",
+    "25 mm"
+   ],
+   "to": [
+    "-ba90 - (18 mm)",
+    "25 mm + sl"
+   ]
+  }
+ ],
+ [
+  "sketch.rect",
+  {
+   "sketch": "Vents",
+   "from": [
+    "-ba90 - (18 mm + sh)",
+    "d - 25 mm - sl"
+   ],
+   "to": [
+    "-ba90 - (18 mm)",
+    "d - 25 mm"
+   ]
+  }
+ ],
+ [
+  "sketch.rect",
+  {
+   "sketch": "Vents",
+   "from": [
+    "w + ba90 + 8 mm",
+    "25 mm"
+   ],
+   "to": [
+    "w + ba90 + 8 mm + sh",
+    "25 mm + sl"
+   ]
+  }
+ ],
+ [
+  "sketch.rect",
+  {
+   "sketch": "Vents",
+   "from": [
+    "w + ba90 + 8 mm",
+    "d - 25 mm - sl"
+   ],
+   "to": [
+    "w + ba90 + 8 mm + sh",
+    "d - 25 mm"
+   ]
+  }
+ ],
+ [
+  "sketch.rect",
+  {
+   "sketch": "Vents",
+   "from": [
+    "w + ba90 + 18 mm",
+    "25 mm"
+   ],
+   "to": [
+    "w + ba90 + 18 mm + sh",
+    "25 mm + sl"
+   ]
+  }
+ ],
+ [
+  "sketch.rect",
+  {
+   "sketch": "Vents",
+   "from": [
+    "w + ba90 + 18 mm",
+    "d - 25 mm - sl"
+   ],
+   "to": [
+    "w + ba90 + 18 mm + sh",
+    "d - 25 mm"
+   ]
+  }
+ ],
+ [
+  "sketch.create",
+  {
+   "plane": "xy",
+   "name": "Tab holes"
+  }
+ ],
+ [
+  "sketch.circle",
+  {
+   "sketch": "Tab holes",
+   "center": [
+    "-(wall + tl / 2)",
+    "d / 4"
+   ],
+   "radius": "screw_d / 2"
+  }
+ ],
+ [
+  "sketch.circle",
+  {
+   "sketch": "Tab holes",
+   "center": [
+    "-(wall + tl / 2)",
+    "3 * d / 4"
+   ],
+   "radius": "screw_d / 2"
+  }
+ ],
+ [
+  "sketch.circle",
+  {
+   "sketch": "Tab holes",
+   "center": [
+    "w + wall + tl / 2",
+    "d / 4"
+   ],
+   "radius": "screw_d / 2"
+  }
+ ],
+ [
+  "sketch.circle",
+  {
+   "sketch": "Tab holes",
+   "center": [
+    "w + wall + tl / 2",
+    "3 * d / 4"
+   ],
+   "radius": "screw_d / 2"
+  }
+ ],
+ [
+  "sketch.create",
+  {
+   "plane": "xy",
+   "name": "Ports"
+  }
+ ],
+ [
+  "sketch.rect",
+  {
+   "sketch": "Ports",
+   "from": [
+    "30 mm",
+    "d + ba90 + 8 mm"
+   ],
+   "to": [
+    "110 mm",
+    "d + ba90 + 22 mm"
+   ]
+  }
+ ],
+ [
+  "sketch.circle",
+  {
+   "sketch": "Ports",
+   "center": [
+    "140 mm",
+    "d + ba90 + 15 mm"
+   ],
+   "radius": "4 mm"
+  }
+ ],
+ [
+  "feature.sheetMetal",
+  {
+   "sketch": "Tray outline",
+   "name": "Tray",
+   "thickness": "t",
+   "radius": "r",
+   "kFactor": "k",
+   "relief": {
+    "shape": "round",
+    "size": "rc"
+   },
+   "bendRelief": {
+    "shape": "rect",
+    "size": "br"
+   },
+   "corners": [
+    {
+     "flanges": [
+      0,
+      2
+     ],
+     "kind": "miter",
+     "gap": "mg"
+    },
+    {
+     "flanges": [
+      1,
+      2
+     ],
+     "kind": "miter",
+     "gap": "mg"
+    }
+   ],
+   "cutouts": [
+    "Vents",
+    "Tab holes",
+    "Ports"
+   ],
+   "flanges": [
+    {
+     "edge": "e8",
+     "length": "h1",
+     "angle": "90 deg"
+    },
+    {
+     "edge": "e6",
+     "length": "h1",
+     "angle": "90 deg"
+    },
+    {
+     "edge": "e7",
+     "length": "hb",
+     "angle": "90 deg"
+    },
+    {
+     "edge": "e5",
+     "length": "hem_l",
+     "angle": "180 deg",
+     "direction": "down",
+     "radius": "hem_r"
+    },
+    {
+     "tip": 0,
+     "length": "jm",
+     "angle": "ja",
+     "insetStart": "jb"
+    },
+    {
+     "tip": 4,
+     "length": "h2",
+     "angle": "ja",
+     "direction": "down"
+    },
+    {
+     "tip": 1,
+     "length": "jm",
+     "angle": "ja",
+     "insetEnd": "jb"
+    },
+    {
+     "tip": 6,
+     "length": "h2",
+     "angle": "ja",
+     "direction": "down"
+    },
+    {
+     "tip": 5,
+     "length": "tl",
+     "angle": "90 deg",
+     "insetStart": "d - rc - jb - (3 * d / 4) - tw / 2",
+     "insetEnd": "(3 * d / 4) - tw / 2 - rc"
+    },
+    {
+     "tip": 5,
+     "length": "tl",
+     "angle": "90 deg",
+     "insetStart": "d - rc - jb - (d / 4) - tw / 2",
+     "insetEnd": "(d / 4) - tw / 2 - rc"
+    },
+    {
+     "tip": 7,
+     "length": "tl",
+     "angle": "90 deg",
+     "insetStart": "(d / 4) - tw / 2 - rc",
+     "insetEnd": "d - rc - jb - (d / 4) - tw / 2"
+    },
+    {
+     "tip": 7,
+     "length": "tl",
+     "angle": "90 deg",
+     "insetStart": "(3 * d / 4) - tw / 2 - rc",
+     "insetEnd": "d - rc - jb - (3 * d / 4) - tw / 2"
+    },
+    {
+     "cutout": {
+      "sketch": "Vents",
+      "edge": "e8"
+     },
+     "length": "ll",
+     "angle": "la",
+     "direction": "down",
+     "insetStart": "2 mm",
+     "insetEnd": "2 mm"
+    },
+    {
+     "cutout": {
+      "sketch": "Vents",
+      "edge": "e16"
+     },
+     "length": "ll",
+     "angle": "la",
+     "direction": "down",
+     "insetStart": "2 mm",
+     "insetEnd": "2 mm"
+    },
+    {
+     "cutout": {
+      "sketch": "Vents",
+      "edge": "e24"
+     },
+     "length": "ll",
+     "angle": "la",
+     "direction": "down",
+     "insetStart": "2 mm",
+     "insetEnd": "2 mm"
+    },
+    {
+     "cutout": {
+      "sketch": "Vents",
+      "edge": "e32"
+     },
+     "length": "ll",
+     "angle": "la",
+     "direction": "down",
+     "insetStart": "2 mm",
+     "insetEnd": "2 mm"
+    },
+    {
+     "cutout": {
+      "sketch": "Vents",
+      "edge": "e38"
+     },
+     "length": "ll",
+     "angle": "la",
+     "direction": "down",
+     "insetStart": "2 mm",
+     "insetEnd": "2 mm"
+    },
+    {
+     "cutout": {
+      "sketch": "Vents",
+      "edge": "e46"
+     },
+     "length": "ll",
+     "angle": "la",
+     "direction": "down",
+     "insetStart": "2 mm",
+     "insetEnd": "2 mm"
+    },
+    {
+     "cutout": {
+      "sketch": "Vents",
+      "edge": "e54"
+     },
+     "length": "ll",
+     "angle": "la",
+     "direction": "down",
+     "insetStart": "2 mm",
+     "insetEnd": "2 mm"
+    },
+    {
+     "cutout": {
+      "sketch": "Vents",
+      "edge": "e62"
+     },
+     "length": "ll",
+     "angle": "la",
+     "direction": "down",
+     "insetStart": "2 mm",
+     "insetEnd": "2 mm"
+    }
+   ]
+  }
+ ],
+ [
+  "sketch.create",
+  {
+   "plane": "xy",
+   "offset": "ztop",
+   "name": "Lid outline"
+  }
+ ],
+ [
+  "sketch.rect",
+  {
+   "sketch": "Lid outline",
+   "from": [
+    "0 mm",
+    "0 mm"
+   ],
+   "to": [
+    "w",
+    "ld"
+   ]
+  }
+ ],
+ [
+  "sketch.circle",
+  {
+   "sketch": "Lid outline",
+   "center": [
+    "off + tl / 2",
+    "d / 4"
+   ],
+   "radius": "screw_d / 2"
+  }
+ ],
+ [
+  "sketch.circle",
+  {
+   "sketch": "Lid outline",
+   "center": [
+    "off + tl / 2",
+    "3 * d / 4"
+   ],
+   "radius": "screw_d / 2"
+  }
+ ],
+ [
+  "sketch.circle",
+  {
+   "sketch": "Lid outline",
+   "center": [
+    "w - off - tl / 2",
+    "d / 4"
+   ],
+   "radius": "screw_d / 2"
+  }
+ ],
+ [
+  "sketch.circle",
+  {
+   "sketch": "Lid outline",
+   "center": [
+    "w - off - tl / 2",
+    "3 * d / 4"
+   ],
+   "radius": "screw_d / 2"
+  }
+ ],
+ [
+  "sketch.create",
+  {
+   "plane": "xy",
+   "offset": "ztop",
+   "name": "Lid vents"
+  }
+ ],
+ [
+  "sketch.rect",
+  {
+   "sketch": "Lid vents",
+   "from": [
+    "-ba90 - 4 mm",
+    "40 mm + 0 * 18 mm"
+   ],
+   "to": [
+    "4 mm",
+    "40 mm + 0 * 18 mm + 6 mm"
+   ]
+  }
+ ],
+ [
+  "sketch.rect",
+  {
+   "sketch": "Lid vents",
+   "from": [
+    "w - 4 mm",
+    "40 mm + 0 * 18 mm"
+   ],
+   "to": [
+    "w + ba90 + 4 mm",
+    "40 mm + 0 * 18 mm + 6 mm"
+   ]
+  }
+ ],
+ [
+  "sketch.rect",
+  {
+   "sketch": "Lid vents",
+   "from": [
+    "-ba90 - 4 mm",
+    "40 mm + 1 * 18 mm"
+   ],
+   "to": [
+    "4 mm",
+    "40 mm + 1 * 18 mm + 6 mm"
+   ]
+  }
+ ],
+ [
+  "sketch.rect",
+  {
+   "sketch": "Lid vents",
+   "from": [
+    "w - 4 mm",
+    "40 mm + 1 * 18 mm"
+   ],
+   "to": [
+    "w + ba90 + 4 mm",
+    "40 mm + 1 * 18 mm + 6 mm"
+   ]
+  }
+ ],
+ [
+  "sketch.rect",
+  {
+   "sketch": "Lid vents",
+   "from": [
+    "-ba90 - 4 mm",
+    "40 mm + 2 * 18 mm"
+   ],
+   "to": [
+    "4 mm",
+    "40 mm + 2 * 18 mm + 6 mm"
+   ]
+  }
+ ],
+ [
+  "sketch.rect",
+  {
+   "sketch": "Lid vents",
+   "from": [
+    "w - 4 mm",
+    "40 mm + 2 * 18 mm"
+   ],
+   "to": [
+    "w + ba90 + 4 mm",
+    "40 mm + 2 * 18 mm + 6 mm"
+   ]
+  }
+ ],
+ [
+  "sketch.rect",
+  {
+   "sketch": "Lid vents",
+   "from": [
+    "-ba90 - 4 mm",
+    "40 mm + 3 * 18 mm"
+   ],
+   "to": [
+    "4 mm",
+    "40 mm + 3 * 18 mm + 6 mm"
+   ]
+  }
+ ],
+ [
+  "sketch.rect",
+  {
+   "sketch": "Lid vents",
+   "from": [
+    "w - 4 mm",
+    "40 mm + 3 * 18 mm"
+   ],
+   "to": [
+    "w + ba90 + 4 mm",
+    "40 mm + 3 * 18 mm + 6 mm"
+   ]
+  }
+ ],
+ [
+  "sketch.rect",
+  {
+   "sketch": "Lid vents",
+   "from": [
+    "-ba90 - 4 mm",
+    "40 mm + 4 * 18 mm"
+   ],
+   "to": [
+    "4 mm",
+    "40 mm + 4 * 18 mm + 6 mm"
+   ]
+  }
+ ],
+ [
+  "sketch.rect",
+  {
+   "sketch": "Lid vents",
+   "from": [
+    "w - 4 mm",
+    "40 mm + 4 * 18 mm"
+   ],
+   "to": [
+    "w + ba90 + 4 mm",
+    "40 mm + 4 * 18 mm + 6 mm"
+   ]
+  }
+ ],
+ [
+  "feature.sheetMetal",
+  {
+   "sketch": "Lid outline",
+   "name": "Lid",
+   "thickness": "t",
+   "radius": "r",
+   "kFactor": "k",
+   "cutouts": [
+    "Lid vents"
+   ],
+   "bendRelief": {
+    "shape": "rect",
+    "size": "br"
+   },
+   "flanges": [
+    {
+     "edge": "e8",
+     "length": "lidh",
+     "angle": "90 deg",
+     "direction": "down",
+     "insetStart": "r + t"
+    },
+    {
+     "edge": "e6",
+     "length": "lidh",
+     "angle": "90 deg",
+     "direction": "down",
+     "insetEnd": "r + t"
+    }
+   ]
+  }
+ ],
+ [
+  "sketch.create",
+  {
+   "plane": "xy",
+   "offset": "t",
+   "name": "Bracket outline"
+  }
+ ],
+ [
+  "sketch.rect",
+  {
+   "sketch": "Bracket outline",
+   "from": [
+    "bx",
+    "by"
+   ],
+   "to": [
+    "bx + bw",
+    "by + bd"
+   ]
+  }
+ ],
+ [
+  "sketch.circle",
+  {
+   "sketch": "Bracket outline",
+   "center": [
+    "bx + 6 mm",
+    "by + bd / 4"
+   ],
+   "radius": "screw_d / 2"
+  }
+ ],
+ [
+  "sketch.circle",
+  {
+   "sketch": "Bracket outline",
+   "center": [
+    "bx + 6 mm",
+    "by + 3 * bd / 4"
+   ],
+   "radius": "screw_d / 2"
+  }
+ ],
+ [
+  "feature.sheetMetal",
+  {
+   "sketch": "Bracket outline",
+   "name": "Drive bracket",
+   "thickness": "t",
+   "radius": "r",
+   "kFactor": "k",
+   "flanges": [
+    {
+     "edge": "e6",
+     "length": "bh",
+     "angle": "90 deg"
+    },
+    {
+     "tip": 0,
+     "length": "bs",
+     "angle": "90 deg",
+     "direction": "down"
+    },
+    {
+     "tip": 1,
+     "length": "blip",
+     "angle": "90 deg",
+     "direction": "down"
+    }
+   ]
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "die_w",
+   "expr": "6 mm"
+  }
+ ],
+ [
+  "assert.add",
+  {
+   "name": "Tray bends on a press brake",
+   "measure": "bendable",
+   "of": "Tray",
+   "punch": [
+    [
+     "-0.3 mm",
+     0
+    ],
+    [
+     "0.3 mm",
+     0
+    ],
+    [
+     "3 mm",
+     "30 mm"
+    ],
+    [
+     "3 mm",
+     "100 mm"
+    ],
+    [
+     "-3 mm",
+     "100 mm"
+    ],
+    [
+     "-3 mm",
+     "30 mm"
+    ]
+   ],
+   "die": [
+    [
+     "-die_w / 2",
+     0
+    ],
+    [
+     "die_w / 2",
+     0
+    ],
+    [
+     "die_w / 2",
+     "-30 mm"
+    ],
+    [
+     "-die_w / 2",
+     "-30 mm"
+    ]
+   ],
+   "segmented": true,
+   "formed": [
+    4,
+    5,
+    6,
+    7,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19
+   ],
+   "order": [
+    [
+     8,
+     9
+    ],
+    [
+     10,
+     11
+    ],
+    2,
+    0,
+    1,
+    3
+   ],
+   "maxWork": 100000,
+   "is": true
+  }
+ ],
+ [
+  "assert.add",
+  {
+   "name": "Lid and bracket bend on a press brake",
+   "measure": "bendable",
+   "of": [
+    "Lid",
+    "Drive bracket"
+   ],
+   "punch": [
+    [
+     "-0.3 mm",
+     0
+    ],
+    [
+     "0.3 mm",
+     0
+    ],
+    [
+     "3 mm",
+     "30 mm"
+    ],
+    [
+     "3 mm",
+     "100 mm"
+    ],
+    [
+     "-3 mm",
+     "100 mm"
+    ],
+    [
+     "-3 mm",
+     "30 mm"
+    ]
+   ],
+   "die": [
+    [
+     "-die_w / 2",
+     0
+    ],
+    [
+     "die_w / 2",
+     0
+    ],
+    [
+     "die_w / 2",
+     "-30 mm"
+    ],
+    [
+     "-die_w / 2",
+     "-30 mm"
+    ]
+   ],
+   "segmented": true,
+   "is": true
+  }
+ ],
+ [
+  "assert.add",
+  {
+   "name": "Holes keep 2.5 t + r from the bends",
+   "measure": "holeToBend",
+   "min": "2.5 * t + r"
+  }
+ ],
+ [
+  "assert.add",
+  {
+   "name": "Tray flat width",
+   "measure": "flatExtent",
+   "of": "Tray",
+   "axis": "x",
+   "eq": "w + 2 * (wall + tl)"
+  }
+ ],
+ [
+  "assert.add",
+  {
+   "name": "Tray flat height",
+   "measure": "flatExtent",
+   "of": "Tray",
+   "axis": "y",
+   "eq": "bah + hem_l + d + ba90 + hb"
+  }
+ ],
+ [
+  "assert.add",
+  {
+   "name": "Lid flat width",
+   "measure": "flatExtent",
+   "of": "Lid",
+   "axis": "x",
+   "eq": "w + 2 * (ba90 + lidh)"
+  }
+ ],
+ [
+  "assert.add",
+  {
+   "name": "Bracket flat width",
+   "measure": "flatExtent",
+   "of": "Drive bracket",
+   "axis": "x",
+   "eq": "bw + 3 * ba90 + bh + bs + blip"
+  }
+ ],
+ [
+  "assert.add",
+  {
+   "name": "Lid flat area, vents across the bends",
+   "measure": "flatArea",
+   "of": "Lid",
+   "eq": "w * ld + 2 * d * (ba90 + lidh) - 2 * br^2 - 4 * pi * (screw_d / 2)^2 - 10 * 6 mm * (ba90 + 8 mm)"
+  }
+ ],
+ [
+  "assert.add",
+  {
+   "name": "Tray, lid and bracket apart",
+   "measure": "overlap",
+   "of": [
+    "Tray",
+    "Lid",
+    "Drive bracket"
+   ],
+   "is": false
+  }
+ ],
+ [
+  "assert.add",
+  {
+   "name": "Every bend end relieved",
+   "measure": "relief",
+   "is": true
+  }
+ ],
+ [
+  "assert.add",
+  {
+   "name": "Mitre gap",
+   "measure": "cornerGap",
+   "of": "Tray",
+   "eq": "mg"
+  }
+ ],
+ [
+  "assert.add",
+  {
+   "name": "Bend radius",
+   "measure": "bendRadius",
+   "min": "hem_r"
+  }
+ ],
+ [
+  "assert.add",
+  {
+   "name": "Bracket volume",
+   "measure": "volume",
+   "of": "Drive bracket",
+   "eq": "t * (bw * bd - 2 * pi * (screw_d / 2)^2 + (bh + bs + blip) * bd) + 3 * pi / 2 * bd * t * (r + t / 2)"
+  }
+ ],
+ [
+  "material.preset",
+  {
+   "body": "Tray",
+   "preset": "aluminium-brushed"
+  }
+ ],
+ [
+  "material.preset",
+  {
+   "body": "Lid",
+   "preset": "aluminium-brushed"
+  }
+ ],
+ [
+  "material.preset",
+  {
+   "body": "Drive bracket",
+   "preset": "aluminium-brushed"
+  }
+ ],
+ [
+  "document.check",
+  {}
+ ]
+]

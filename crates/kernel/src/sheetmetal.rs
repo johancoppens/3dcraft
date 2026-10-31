@@ -120,6 +120,12 @@ pub enum On {
     /// made by the outline's sketch curve with this id (not the line on
     /// its edge, which is its bend's tangent line).
     Line(usize, u64),
+    /// The edge of the cut-out at this index of [`Spec::cutouts`] made by
+    /// its sketch curve with this id: the cut-out is a hole of the flat it
+    /// lies in (the base's or a flange's, laid out before this flange), and
+    /// the flange grows into it, as on a hole of the base: a tab or a
+    /// louvre bent out of a wall.
+    Cutout(usize, u64),
 }
 
 /// Where a flange's length is measured from.
@@ -767,6 +773,9 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
                     ));
                 }
             }
+            On::Cutout(c, curve) => {
+                cutout_edge(spec, i, c, curve)?;
+            }
         }
     }
 
@@ -949,6 +958,31 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
     // on its edge is drawn, `own_outline`).
     let mut lifts: Vec<P2> = Vec::with_capacity(1 + spec.flanges.len());
     lifts.push([0.0, 0.0]);
+    // With a flange on a cut-out's edge, a flat that holds such a cut-out
+    // takes its cut-outs as soon as it is laid out (in the order
+    // `place_cutouts` takes them), so the flange finds its edge; every
+    // other cut-out is placed after the corners are closed, as before.
+    let early = spec.flanges.iter().any(|f| matches!(f.on, On::Cutout(..)));
+    let carrying: std::collections::BTreeSet<usize> = spec
+        .flanges
+        .iter()
+        .filter_map(|f| match f.on {
+            On::Cutout(c, _) => Some(c),
+            _ => None,
+        })
+        .collect();
+    let mut placed: Vec<Option<(usize, usize)>> = vec![None; spec.cutouts.len()];
+    if early {
+        place_early(
+            &mut flats,
+            0,
+            spec,
+            &carrying,
+            &marks,
+            &mut placed,
+            tolerance,
+        )?;
+    }
     for (i, f) in spec.flanges.iter().enumerate() {
         let lost = || refuse(Some(i), "a flange lost its edge");
         let (parent, hole, k) = match f.on {
@@ -965,6 +999,25 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
             }
             On::Tip(j) => (j + 1, None, 2),
             On::Side(j, end) => (j + 1, None, if end == 0 { 1 } else { 3 }),
+            On::Cutout(c, curve) => {
+                let Some((f, h)) = placed.get(c).copied().flatten() else {
+                    return Err(refuse(
+                        Some(i),
+                        format!(
+                            "it sits on an edge of the cut-out {} (curve {curve}), which lies in no flat laid out before it (the base or an earlier flange's flat, wholly inside it): a flange on a cut-out's edge comes after the flange whose flat holds the cut-out, and a cut-out across a bend or past the pattern's edge carries none",
+                            spec.cutouts
+                                .get(c)
+                                .map_or_else(|| c.to_string(), |x| x.from.clone())
+                        ),
+                    ));
+                };
+                let k = flats
+                    .get(f)
+                    .and_then(|fl| fl.holes.get(h))
+                    .and_then(|l| l.iter().position(|s| s.source == curve))
+                    .ok_or_else(lost)?;
+                (f, Some(h), k)
+            }
             On::Line(j, curve) => {
                 let outer = flats.get(j + 1).map(|f| f.outer.as_slice()).unwrap_or(&[]);
                 let found: Vec<usize> = outer
@@ -1149,6 +1202,17 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
         seated.push((parent, hole, k));
         let below = lifts.get(parent).copied().ok_or_else(lost)?;
         lifts.push(add(below, shift));
+        if early {
+            place_early(
+                &mut flats,
+                i + 1,
+                spec,
+                &carrying,
+                &marks,
+                &mut placed,
+                tolerance,
+            )?;
+        }
     }
     let mut bend_ends = split_at_seats(&mut flats, &bends, &seated, &marks, spec.bend_relief, tol)?;
 
@@ -1167,8 +1231,9 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
         &mut bend_ends,
         tolerance,
     )?;
-    let across = place_cutouts(&mut flats, &spec.cutouts, tolerance)?;
-    pattern_clear(&flats, &bends, &[], tolerance)?;
+    let done: Vec<bool> = placed.iter().map(Option::is_some).collect();
+    let across = place_cutouts(&mut flats, &spec.cutouts, &done, tolerance)?;
+    pattern_clear(&flats, &bends, &[], &corners, tolerance)?;
     let cuts = place_cuts(&flats, &bends, &across, tolerance)?;
     let (sheet, sheet_faces, ends, edge_keys) =
         folded_sheet(spec, &flats, &bends, &cuts, tolerance, true)?;
@@ -1241,6 +1306,7 @@ fn pattern_clear(
     flats: &[Flat],
     bends: &[Bend],
     cuts: &[Cut],
+    corners: &[Corner],
     tolerance: &Tolerance,
 ) -> Result<(), KernelError> {
     use crate::profile::{SketchCurve, detect_profiles};
@@ -1276,10 +1342,27 @@ fn pattern_clear(
             [a, b] => format!("{a} and {b} cross or touch"),
             _ => format!("{} cross or touch", names.join(", ")),
         };
+        // Two flanges that meet at a closed corner: their extensions run
+        // into the same corner of the pattern (found by the chassis's
+        // range check, 2026-10-31: a mitre of walls of a thin sheet with
+        // a small radius and K-factor).
+        let closed = match owners.as_slice() {
+            [a, b] if *a > 0 => corners.iter().find(|c| {
+                c.closing.kind != CornerKind::Open
+                    && (c.bends == [a - 1, b - 1] || c.bends == [b - 1, a - 1])
+            }),
+            _ => None,
+        };
+        let hint = closed.map_or_else(String::new, |c| {
+            format!(
+                "; they meet at a closed corner ({}), whose extensions run on past their bends into the same corner of the flat pattern: the extensions reach about the outside setback (radius + thickness) past the bends' ends, more than the bend allowance angle * (radius + kFactor * thickness) leaves between them at this thickness, radius and K-factor; give the corner a larger gap (each extension ends half of it short of the corner), or open it",
+                c.closing.kind.name()
+            )
+        });
         refuse(
             flange,
             format!(
-                "the flat pattern overlaps itself: {who} in the flat, so it cannot be cut from one sheet (shorten or move the flanges, or bend them from other edges)"
+                "the flat pattern overlaps itself: {who} in the flat, so it cannot be cut from one sheet (shorten or move the flanges, or bend them from other edges){hint}"
             ),
         )
     };
@@ -1336,6 +1419,7 @@ fn curves_named(ids: &[u64]) -> String {
 fn place_cutouts(
     flats: &mut [Flat],
     cutouts: &[Cutout],
+    done: &[bool],
     tolerance: &Tolerance,
 ) -> Result<Vec<Cut>, KernelError> {
     if cutouts.len() > MAX_CUTOUTS {
@@ -1346,7 +1430,10 @@ fn place_cutouts(
     }
     let tol = tolerance.linear;
     let mut across = Vec::new();
-    for Cutout { profile: cut, from } in cutouts {
+    for (c, Cutout { profile: cut, from }) in cutouts.iter().enumerate() {
+        if done.get(c).copied().unwrap_or(false) {
+            continue;
+        }
         let named = format!("{} of {from}", curves_named(&cut.outer.sources(8)));
         if !cut.holes.is_empty() {
             return Err(refuse(
@@ -1386,6 +1473,157 @@ fn place_cutouts(
         }
     }
     Ok(across)
+}
+
+/// The edge of cut-out `c` that flange `i` sits on (`On::Cutout`): the
+/// place of the curve's one segment in the cut-out's loop as a hole runs
+/// (clockwise, the flat on its left). Refused with the reason: no such
+/// cut-out, a cut-out with a profile inside it, a curve that is not one
+/// straight segment of it.
+fn cutout_edge(spec: &Spec, i: usize, c: usize, curve: u64) -> Result<usize, KernelError> {
+    let Some(cut) = spec.cutouts.get(c) else {
+        return Err(refuse(
+            Some(i),
+            format!(
+                "it sits on an edge of cut-out {c}, and the part has {} cut-outs",
+                spec.cutouts.len()
+            ),
+        ));
+    };
+    if !cut.profile.holes.is_empty() {
+        return Err(refuse(
+            Some(i),
+            format!(
+                "the cut-out of {} it sits on has a closed profile inside it, which would be a loose piece of the sheet",
+                cut.from
+            ),
+        ));
+    }
+    let hole = cut.profile.outer.flipped().segments;
+    let found: Vec<usize> = hole
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.source == curve)
+        .map(|(k, _)| k)
+        .collect();
+    let k = match found.as_slice() {
+        [k] => *k,
+        [] => {
+            return Err(refuse(
+                Some(i),
+                format!(
+                    "the curve {curve} is no edge of the cut-out of {}",
+                    cut.from
+                ),
+            ));
+        }
+        _ => {
+            return Err(refuse(
+                Some(i),
+                format!(
+                    "the curve {curve} is cut into several edges of the cut-out of {}; a flange needs one straight edge",
+                    cut.from
+                ),
+            ));
+        }
+    };
+    if !matches!(hole.get(k).map(|s| &s.shape), Some(Shape::Line)) {
+        return Err(refuse(
+            Some(i),
+            format!(
+                "the curve {curve} of the cut-out of {} is not straight; a flange sits on a straight edge (on a curved edge it would be a stretched or shrunk flange, not a bend: not supported)",
+                cut.from
+            ),
+        ));
+    }
+    Ok(k)
+}
+
+/// When flat `f`, just laid out, holds a cut-out a flange sits on, places
+/// in it every cut-out not placed yet that lies wholly inside it ([`hole_fits`], as [`place_cutouts`] does after
+/// the corners are closed), in the cut-outs' order. A cut-out a flange
+/// sits on gets the names its segments have without the flange (by the
+/// hole's place in the flat, `[13, flat, hole, segment]`), so the pieces
+/// its edge is split into are named from them and no other name changes.
+fn place_early(
+    flats: &mut [Flat],
+    f: usize,
+    spec: &Spec,
+    carrying: &std::collections::BTreeSet<usize>,
+    marks: &[u64],
+    placed: &mut [Option<(usize, usize)>],
+    tolerance: &Tolerance,
+) -> Result<(), KernelError> {
+    if spec.cutouts.len() > MAX_CUTOUTS {
+        return Err(refuse(
+            None,
+            format!("a part takes at most {MAX_CUTOUTS} holes and cut-outs beside its base"),
+        ));
+    }
+    let tol = tolerance.linear;
+    let number = flat_number(marks, f).ok_or_else(|| refuse(f.checked_sub(1), "it has no id"))?;
+    let Some(flat) = flats.get_mut(f) else {
+        return Err(refuse(f.checked_sub(1), "a flat is missing"));
+    };
+    let fb = crate::profile::Loop2 {
+        segments: flat.outer.clone(),
+    }
+    .bbox();
+    let apart = |cb: [f64; 4]| {
+        cb[0] > fb[2] + tol || cb[2] < fb[0] - tol || cb[1] > fb[3] + tol || cb[3] < fb[1] - tol
+    };
+    // Only a flat that holds a cut-out a flange sits on takes its cut-outs
+    // now; every other flat takes them after the corners are closed, as a
+    // part without such a flange does, so a louvre added in one flat
+    // renumbers no hole of another.
+    let carries = carrying.iter().any(|&c| {
+        spec.cutouts.get(c).is_some_and(|cutout| {
+            placed.get(c).copied().flatten().is_none()
+                && cutout.profile.holes.is_empty()
+                && !apart(cutout.profile.outer.bbox())
+                && hole_fits(
+                    &flat.outer,
+                    &flat.holes,
+                    &cutout.profile.outer.flipped().segments,
+                    tolerance,
+                )
+        })
+    });
+    if !carries {
+        return Ok(());
+    }
+    for (c, cutout) in spec.cutouts.iter().enumerate() {
+        if placed.get(c).copied().flatten().is_some() || !cutout.profile.holes.is_empty() {
+            continue;
+        }
+        if apart(cutout.profile.outer.bbox()) {
+            continue;
+        }
+        let hole = cutout.profile.outer.flipped().segments;
+        if !hole_fits(&flat.outer, &flat.holes, &hole, tolerance) {
+            continue;
+        }
+        let h = flat.holes.len();
+        flat.holes.push(hole);
+        if carrying.contains(&c) {
+            // The names its segments, and every hole's before it, have
+            // without a flange on it (`edge_numbers`: by the hole's place),
+            // which the pieces of the split edge go on from.
+            while flat.hole_ids.len() <= h {
+                let at = flat.hole_ids.len();
+                let len = flat.holes.get(at).map_or(0, Vec::len);
+                flat.hole_ids.push(
+                    (0..len)
+                        .map(|j| [13, number, at as u64, j as u64])
+                        .collect(),
+                );
+            }
+        }
+        if let Some(slot) = placed.get_mut(c) {
+            *slot = Some((f, h));
+        }
+    }
+    Ok(())
 }
 
 /// The cut-outs that lie in no one flat are holes across bends when they
@@ -1815,17 +2053,14 @@ fn close_corners(
                 "a closed corner runs a flange's rectangle on past its bend; this flange has an outline of its own, so its corner cannot be closed (not supported, owed): open it",
             ));
         }
-        if flat.seats.iter().any(|s| s.hole.is_some()) {
-            return Err(refuse(
-                Some(x),
-                "a closed corner's flange has a flange on a hole of its flat; not supported",
-            ));
-        }
         for (closed, side, which) in [
             (at_start.contains_key(&x), &first, "start"),
             (at_end.contains_key(&x), &last, "end"),
         ] {
-            let carried = flat.seats.iter().find(|s| side.contains(&s.seg));
+            let carried = flat
+                .seats
+                .iter()
+                .find(|s| s.hole.is_none() && side.contains(&s.seg));
             if closed && (carried.is_some() || side.len() != 1) {
                 return Err(refuse(
                     Some(x),
@@ -1985,7 +2220,9 @@ fn close_corners(
         flat.was = was;
         flat.added = added;
         flat.tip = Some(tip_at);
-        for seat in &mut flat.seats {
+        // A bend on a hole's edge keeps its place: the holes are not
+        // touched.
+        for seat in flat.seats.iter_mut().filter(|s| s.hole.is_none()) {
             seat.seg = *remap
                 .get(&seat.seg)
                 .ok_or_else(|| refuse(Some(seat.bend), "a flange lost its edge"))?;
@@ -2125,8 +2362,18 @@ fn split_at_seats(
                 // tangent line is `id · 2³² + id` (no gap starts and ends
                 // at one bend; it is named as the bend's tangent line in
                 // any case).
-                let part =
-                    |from: u64, to: u64| [id[0], id[1], id[2], (from << 32) | (to & 0xffff_ffff)];
+                // A hole's segment named by its place (`[13, flat, hole,
+                // segment]`, a cut-out a flange sits on) keeps its place
+                // in the third number, so a piece never takes the name of
+                // another segment of the hole.
+                let part = |from: u64, to: u64| {
+                    let between = (from << 32) | (to & 0xffff_ffff);
+                    if id[0] == 13 {
+                        [16, id[1], (id[2] << 32) | (id[3] & 0xffff_ffff), between]
+                    } else {
+                        [id[0], id[1], id[2], between]
+                    }
+                };
                 let mark = |b: usize| marks.get(b).copied().unwrap_or(0);
                 let d = unit(sub(seg.end, seg.start))
                     .ok_or_else(|| refuse(list.first().copied(), "the edge has no length"))?;
@@ -2783,10 +3030,30 @@ fn folded_sheet(
     // parent edge of a later bend.
     let mut bend_loops: Vec<Vec<(EdgeId, bool)>> = Vec::with_capacity(bends.len());
     let mut bend_arcs: Vec<[EdgeId; 2]> = Vec::with_capacity(bends.len());
+    // The holes of the flanges' flats: made when a bend sits on one of
+    // them (its parent is made by then), the rest after everything a part
+    // without such a bend has, so its edges keep their places.
+    let mut flange_rings: Vec<Option<Vec<Ring>>> = vec![None; flats.len()];
     for (i, bend) in bends.iter().enumerate() {
         // The parent edge: `s → e` in the parent's loop (its outer one or
         // a hole's).
         let seat = seat_of(flats, i, bend)?;
+        if seat.hole.is_some()
+            && bend.parent > 0
+            && flange_rings.get(bend.parent).is_some_and(Option::is_none)
+        {
+            let w = w_of(bend.parent)?;
+            let mut made = Vec::new();
+            for hole in flats
+                .get(bend.parent)
+                .map_or(&[][..], |f| f.holes.as_slice())
+            {
+                made.push(b.ring(hole, &w)?);
+            }
+            if let Some(slot) = flange_rings.get_mut(bend.parent) {
+                *slot = Some(made);
+            }
+        }
         let (vs, es): (&[VertexId], &[(EdgeId, bool)]) = match seat.hole {
             None => rings
                 .get(bend.parent)
@@ -2795,7 +3062,11 @@ fn folded_sheet(
                 .get(h)
                 .zip(hole_vertices.get(h))
                 .map(|(e, v)| (v.as_slice(), e.as_slice())),
-            Some(_) => None,
+            Some(h) => flange_rings
+                .get(bend.parent)
+                .and_then(Option::as_ref)
+                .and_then(|list| list.get(h))
+                .map(|(v, e)| (v.as_slice(), e.as_slice())),
         }
         .ok_or_else(|| refuse(Some(i), "a flange's parent edge is missing"))?;
         let k = seat.seg;
@@ -2879,6 +3150,12 @@ fn folded_sheet(
     // them has, so its edges keep their places).
     let mut flange_holes: Vec<Vec<Vec<(EdgeId, bool)>>> = vec![Vec::new(); flats.len()];
     for (f, flat) in flats.iter().enumerate().skip(1) {
+        if let Some(Some(made)) = flange_rings.get_mut(f) {
+            if let Some(list) = flange_holes.get_mut(f) {
+                *list = std::mem::take(made).into_iter().map(|r| r.1).collect();
+            }
+            continue;
+        }
         let w = w_of(f)?;
         for hole in &flat.holes {
             let ring = b.ring(hole, &w)?.1;
@@ -3336,6 +3613,87 @@ pub fn outline(part: &Part, tolerance: &Tolerance) -> Vec<Vec<Segment>> {
         .into_iter()
         .map(|chain| chain.into_iter().map(|(s, _)| s).collect())
         .collect()
+}
+
+/// The box of the flat pattern in the pattern's axes, `[min x, min y, max
+/// x, max y]`, and whether it is exact: lines, arcs and circles are held
+/// by their ends and extremes (exact), a spline by its control points (a
+/// box that holds it, not exact). `None` for a pattern with no outline.
+pub fn flat_box(part: &Part, tolerance: &Tolerance) -> Option<([f64; 4], bool)> {
+    let chains = outline(part, tolerance);
+    let mut exact = true;
+    let mut b = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    for s in chains.iter().flatten() {
+        exact &= !matches!(s.shape, Shape::Spline(_));
+        let o = s.bbox();
+        b = [
+            b[0].min(o[0]),
+            b[1].min(o[1]),
+            b[2].max(o[2]),
+            b[3].max(o[3]),
+        ];
+    }
+    b.iter().all(|x| x.is_finite()).then_some((b, exact))
+}
+
+/// The strips (by bend) and the flats a hole across a bend may lie in:
+/// those whose box in the pattern the box of some cut meets (within the
+/// tolerance). A box holds its curve, so a strip or flat left out is cut
+/// by no hole across a bend: its slab, or its outline, is its material
+/// exactly. Used where a piece is stood for by its slab or outline
+/// (the press-brake check), to know where that is more than the material.
+pub fn cut_pieces(
+    part: &Part,
+    tolerance: &Tolerance,
+) -> (
+    std::collections::BTreeSet<usize>,
+    std::collections::BTreeSet<usize>,
+) {
+    let tol = tolerance.linear;
+    let meets = |a: [f64; 4], b: [f64; 4]| {
+        !(a[0] > b[2] + tol || a[2] < b[0] - tol || a[1] > b[3] + tol || a[3] < b[1] - tol)
+    };
+    let boxes: Vec<[f64; 4]> = part
+        .cuts
+        .iter()
+        .map(|c| {
+            crate::profile::Loop2 {
+                segments: c.segments.clone(),
+            }
+            .bbox()
+        })
+        .collect();
+    let mut strips = std::collections::BTreeSet::new();
+    for (i, b) in part.bends.iter().enumerate() {
+        let (f0, f1) = b.far_line();
+        let xs = [b.start[0], b.end[0], f0[0], f1[0]];
+        let ys = [b.start[1], b.end[1], f0[1], f1[1]];
+        let rect = [
+            xs.iter().copied().fold(f64::INFINITY, f64::min),
+            ys.iter().copied().fold(f64::INFINITY, f64::min),
+            xs.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+            ys.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        ];
+        if boxes.iter().any(|c| meets(*c, rect)) {
+            strips.insert(i);
+        }
+    }
+    let mut flats = std::collections::BTreeSet::new();
+    for (f, flat) in part.flats.iter().enumerate() {
+        let fb = crate::profile::Loop2 {
+            segments: flat.outer.clone(),
+        }
+        .bbox();
+        if boxes.iter().any(|c| meets(*c, fb)) {
+            flats.insert(f);
+        }
+    }
+    (strips, flats)
 }
 
 /// [`outline`] with, per segment, the flat it belongs to (0 the base,

@@ -1540,7 +1540,11 @@ impl FeatureKind {
                     .cutouts
                     .iter()
                     .copied()
-                    .chain(m.flanges.iter().filter_map(|f| f.outline));
+                    .chain(m.flanges.iter().filter_map(|f| f.outline))
+                    .chain(m.flanges.iter().filter_map(|f| match f.on {
+                        FlangeOn::Cutout(sketch, _) => Some(sketch),
+                        _ => None,
+                    }));
                 for id in more {
                     if !out.contains(&id) {
                         out.push(id);

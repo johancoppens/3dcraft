@@ -24,9 +24,10 @@ use craft3d_kernel::sheetmetal::{
 use craft3d_math::Portable;
 use serde_json::{Map, Value, json};
 
-const FLANGE_KEYS: [&str; 14] = [
+const FLANGE_KEYS: [&str; 15] = [
     "id",
     "edge",
+    "cutout",
     "tip",
     "side",
     "line",
@@ -42,8 +43,8 @@ const FLANGE_KEYS: [&str; 14] = [
 ];
 
 pub(crate) static SPECS: &[CommandSpec] = &[
-    spec!("feature.sheetMetal", "Sheet Metal", r#"{"sketch": id or name, "thickness": expr, "radius": expr (inner bend radius), "kFactor": expr (0 to 1), "flanges": [{edge: line entity id of the base (its outline or a hole's), or tip: index of an earlier flange, or side: {flange: index of an earlier flange, end: start|end}, or line: {flange: index of an earlier flange with an outline, edge: a line's entity id in that outline's sketch}, length: expr (not with outline), angle: expr (0 to 180 deg), direction: up|down = up, radius: expr = the part's, kFactor: expr = the part's, from: tangent|mould = tangent, insetStart: expr = 0, insetEnd: expr = 0, outline: sketch id or name = none, id: number = a new one}, ...] = [], "relief": {shape: rect|round|tear or expr (1 rect, 2 round, 3 tear), size: expr} or null = none, "bendRelief": {shape, size} or null = none, "corner": {kind: open|butt|overlap|miter (or mitre) or expr (1 open, 2 butt, 3 overlap, 4 miter), gap: expr} or null = open, "corners": [{flanges: [i, j], kind, gap: expr = corner's gap, over: i or j = the flange on the edge arriving at the corner}, ...] = [], "cutouts": [sketch id or name, ...] = [], "name": string = automatic, "when": expr = always on}"#,
-        "Adds a sheet-metal part: the closed profile of the sketch its flanges' edges are on (lines, arcs, circles, splines; holes allowed; the sketch's only profile when no flange is on an edge) is the base, a flat of the given thickness, and each flange is bent from a straight edge: a line of the base's outline (edge), or of a hole of the base (the flange grows into the hole: a tab bent out of a cut-out), the far edge of an earlier flange (tip, its place in the list: a Z or a U on a U), or a side of an earlier flange (side: the side at its bend's start or end, a tab that wraps round the corner). insetStart and insetEnd stand the bend back from its edge's start and end, so one edge can carry several tabs (at least 4 tolerances apart; an inset is 0, within the tolerance, or at least 4 tolerances, never a sliver between). With outline the flange's flat is the closed profile of that sketch (holes allowed), drawn in the base sketch's plane as if the bend had no width (on a flange's tip or side, as if every bend from the base to it had none, so it follows a change of thickness, radius or K-factor): one line of it on the edge's line, inside the edge, the rest beyond; the bend spans that line and the flat is laid out the bend allowance further on (no length; no tip, sides or closed corner of its own). A corner (for relief and corner) is where two flanges reach the point two edges of the base's outline share: an inset flange does not reach it. A bend turns its flange by angle, up (towards the side the sketch's normal points to) or down, about an inner radius; the K-factor places its neutral fibre at radius + kFactor * thickness from the axis, where the length is kept, so the flat pattern grows by the bend allowance angle * (radius + kFactor * thickness) per bend. A flange's length is its flat beyond the bend, measured from the bend's tangent line, or with from mould from the virtual sharp of the outside surfaces (shorter by (radius + thickness) tan(angle/2)). The material and the tooling are the caller's: the radius, the K-factor and every limit come in as expressions or tables, there is no built-in catalogue. relief cuts the base's corner where two flanged edges meet (rect: a square of the size, round: a quarter disc, tear: a disc tangent to both edges), each edge and its flange ending size from the corner; without one the two bends meet at the corner point. Its shape may be an expression that picks 1 rect, 2 round or 3 tear (a Jig's choice parameter, a table lookup). bendRelief cuts a relief at every end of a bend that lies inside its edge (an inset flange's, a tab's, where the edge runs on past the bend and would turn into the bend's end at a concave corner): a notch of its shape size deep into the parent beside the bend's end and size along the edge (rect a square, round a quarter disc about the bend's end, tear a disc tangent to the edge and to the line of the strip's end), so the edge beside the bend ends size short of it; refused when the edge left beside it (or between two bends) would be less than 4 tolerances. corner closes every such corner (corners: the corner of flanges i and j its own way): the flanges' flats run on sideways past where their bends end, the bends stay apart (the relief, if any, is the hole where they would cross), to planes of the folded walls, gap apart: overlap, the covering flange (over) to the other's outside face, flush, and the other to gap short of the covering one's inside face; butt, as overlap with the covering flange also gap short of flush; miter, both to the plane that halves the angle between the walls, gap/2 short of it each (the ends bevelled). kind may be an expression that picks 1 open, 2 butt, 3 overlap or 4 miter. For any bend angles and corner angles; refused with the reason: a gap not more than the tolerance (a butt's not less than the thickness), flanges bent opposite ways, walls leaning so far towards each other that a flange would be cut back, extensions that overlap in the flat pattern or run into each other when bent. The bends fold the part by the origami linkage (feature.fold's) with a radius at each joint, and the folded bottom skin is plated (feature.plate's method), so the bends' skins are the cylinders radius and radius + thickness exactly. Faces: F9:copy(0)/F9:face(k) the top skin of the base (k 0), of the bend of the flange with id n (k 2n-1) and of its flat (k 2n), F9:copy(1)/... the bottom skin, F9:rim(...)/... the ends. Each flange has an id (1, 2, ... in the list's order unless given, at most 2147483647; see sheetMetal.edit): every face, edge and rim name of the flange follows its id, not its place in the list, so deleting, inserting or moving a flange retargets no name. Refused, with the flange: a radius below 0 (or within the tolerance of 0: a sharp bend is not supported), a K-factor outside 0..1, an angle outside (0, 180] degrees, an edge that is not a straight line of the base's outline or has two flanges, a tip of a later flange, flanged edges that meet at a reflex corner or in line, a relief that does not fit, a flange shorter than its setback, and flanges that run into each other or into the base when bent. The sketch is drawn in the plane of the flat pattern, so its other closed profiles (beside the base) are holes and cut-outs of the flange flat each lies wholly inside in the pattern (each flange's flat starts the bend allowance beyond its edge): cut in the flat pattern and in the folded part alike; one that crosses a bend's strip is cut through the bend where the bend allowance puts it (its pieces on the strip wrapped onto the bend at the angle s / (radius + kFactor * thickness)); one past or touching the pattern's edge, touching a tangent line without crossing it, crossing one with a spline, or with a profile inside it is refused. cutouts adds the closed profiles of other sketches in the base sketch's plane (any origin and axes in it) the same way, each switched on and off with its sketch (a sketch with when, a conditional vent): a hole cut later by another feature (a boolean) through the sheet square to it is carried back onto the exported flat pattern (laterCuts); one at a slant fails the export, and a pocket, a part joined on or a notch at the edge is listed in notCarried, so a hole that must be in the part's own pattern is drawn in its sketch or a cutouts sketch. sheetMetal.bends gives the bend table; file.export with sheetMetal writes the flat pattern; the measures bendRadius, flangeLength, holeToBend, relief and cornerGap check it in assertions.", doc: true, feature_sheet_metal),
+    spec!("feature.sheetMetal", "Sheet Metal", r#"{"sketch": id or name, "thickness": expr, "radius": expr (inner bend radius), "kFactor": expr (0 to 1), "flanges": [{edge: line entity id of the base (its outline or a hole's), or tip: index of an earlier flange, or side: {flange: index of an earlier flange, end: start|end}, or line: {flange: index of an earlier flange with an outline, edge: a line's entity id in that outline's sketch}, or cutout: {sketch: id or name of the part's sketch or of one of its cutouts, edge: a line's entity id of a cut-out in it}, length: expr (not with outline), angle: expr (0 to 180 deg), direction: up|down = up, radius: expr = the part's, kFactor: expr = the part's, from: tangent|mould = tangent, insetStart: expr = 0, insetEnd: expr = 0, outline: sketch id or name = none, id: number = a new one}, ...] = [], "relief": {shape: rect|round|tear or expr (1 rect, 2 round, 3 tear), size: expr} or null = none, "bendRelief": {shape, size} or null = none, "corner": {kind: open|butt|overlap|miter (or mitre) or expr (1 open, 2 butt, 3 overlap, 4 miter), gap: expr} or null = open, "corners": [{flanges: [i, j], kind, gap: expr = corner's gap, over: i or j = the flange on the edge arriving at the corner}, ...] = [], "cutouts": [sketch id or name, ...] = [], "name": string = automatic, "when": expr = always on}"#,
+        "Adds a sheet-metal part: the closed profile of the sketch its flanges' edges are on (lines, arcs, circles, splines; holes allowed; the sketch's only profile when no flange is on an edge) is the base, a flat of the given thickness, and each flange is bent from a straight edge: a line of the base's outline (edge), or of a hole of the base (the flange grows into the hole: a tab bent out of a cut-out), the far edge of an earlier flange (tip, its place in the list: a Z or a U on a U), or a side of an earlier flange (side: the side at its bend's start or end, a tab that wraps round the corner), or an edge of a cut-out (cutout: a closed profile beside the base, in the part's sketch or a cutouts sketch, that lies in the base or in an earlier flange's flat; the flange grows into it: a tab or a louvre bent out of a wall). insetStart and insetEnd stand the bend back from its edge's start and end, so one edge can carry several tabs (at least 4 tolerances apart; an inset is 0, within the tolerance, or at least 4 tolerances, never a sliver between). With outline the flange's flat is the closed profile of that sketch (holes allowed), drawn in the base sketch's plane as if the bend had no width (on a flange's tip or side, as if every bend from the base to it had none, so it follows a change of thickness, radius or K-factor): one line of it on the edge's line, inside the edge, the rest beyond; the bend spans that line and the flat is laid out the bend allowance further on (no length; no tip, sides or closed corner of its own). A corner (for relief and corner) is where two flanges reach the point two edges of the base's outline share: an inset flange does not reach it. A bend turns its flange by angle, up (towards the side the sketch's normal points to) or down, about an inner radius; the K-factor places its neutral fibre at radius + kFactor * thickness from the axis, where the length is kept, so the flat pattern grows by the bend allowance angle * (radius + kFactor * thickness) per bend. A flange's length is its flat beyond the bend, measured from the bend's tangent line, or with from mould from the virtual sharp of the outside surfaces (shorter by (radius + thickness) tan(angle/2)). The material and the tooling are the caller's: the radius, the K-factor and every limit come in as expressions or tables, there is no built-in catalogue. relief cuts the base's corner where two flanged edges meet (rect: a square of the size, round: a quarter disc, tear: a disc tangent to both edges), each edge and its flange ending size from the corner; without one the two bends meet at the corner point. Its shape may be an expression that picks 1 rect, 2 round or 3 tear (a Jig's choice parameter, a table lookup). bendRelief cuts a relief at every end of a bend that lies inside its edge (an inset flange's, a tab's, where the edge runs on past the bend and would turn into the bend's end at a concave corner): a notch of its shape size deep into the parent beside the bend's end and size along the edge (rect a square, round a quarter disc about the bend's end, tear a disc tangent to the edge and to the line of the strip's end), so the edge beside the bend ends size short of it; refused when the edge left beside it (or between two bends) would be less than 4 tolerances. corner closes every such corner (corners: the corner of flanges i and j its own way): the flanges' flats run on sideways past where their bends end, the bends stay apart (the relief, if any, is the hole where they would cross), to planes of the folded walls, gap apart: overlap, the covering flange (over) to the other's outside face, flush, and the other to gap short of the covering one's inside face; butt, as overlap with the covering flange also gap short of flush; miter, both to the plane that halves the angle between the walls, gap/2 short of it each (the ends bevelled). kind may be an expression that picks 1 open, 2 butt, 3 overlap or 4 miter. For any bend angles and corner angles; refused with the reason: a gap not more than the tolerance (a butt's not less than the thickness), flanges bent opposite ways, walls leaning so far towards each other that a flange would be cut back, extensions that overlap in the flat pattern or run into each other when bent. The bends fold the part by the origami linkage (feature.fold's) with a radius at each joint, and the folded bottom skin is plated (feature.plate's method), so the bends' skins are the cylinders radius and radius + thickness exactly. Faces: F9:copy(0)/F9:face(k) the top skin of the base (k 0), of the bend of the flange with id n (k 2n-1) and of its flat (k 2n), F9:copy(1)/... the bottom skin, F9:rim(...)/... the ends. Each flange has an id (1, 2, ... in the list's order unless given, at most 2147483647; see sheetMetal.edit): every face, edge and rim name of the flange follows its id, not its place in the list, so deleting, inserting or moving a flange retargets no name. Refused, with the flange: a radius below 0 (or within the tolerance of 0: a sharp bend is not supported), a K-factor outside 0..1, an angle outside (0, 180] degrees, an edge that is not a straight line of the base's outline or has two flanges, a tip of a later flange, flanged edges that meet at a reflex corner or in line, a relief that does not fit, a flange shorter than its setback, and flanges that run into each other or into the base when bent. The sketch is drawn in the plane of the flat pattern, so its other closed profiles (beside the base) are holes and cut-outs of the flange flat each lies wholly inside in the pattern (each flange's flat starts the bend allowance beyond its edge): cut in the flat pattern and in the folded part alike; one that crosses a bend's strip is cut through the bend where the bend allowance puts it (its pieces on the strip wrapped onto the bend at the angle s / (radius + kFactor * thickness)); one past or touching the pattern's edge, touching a tangent line without crossing it, crossing one with a spline, or with a profile inside it is refused. cutouts adds the closed profiles of other sketches in the base sketch's plane (any origin and axes in it) the same way, each switched on and off with its sketch (a sketch with when, a conditional vent): a hole cut later by another feature (a boolean) through the sheet square to it is carried back onto the exported flat pattern (laterCuts); one at a slant fails the export, and a pocket, a part joined on or a notch at the edge is listed in notCarried, so a hole that must be in the part's own pattern is drawn in its sketch or a cutouts sketch. sheetMetal.bends gives the bend table; file.export with sheetMetal writes the flat pattern; the measures bendRadius, flangeLength, holeToBend, relief and cornerGap check it in assertions.", doc: true, feature_sheet_metal),
     spec!("sheetMetal.edit", "Edit Sheet Metal", r#"{"feature": id or name, "sketch": id or name, "thickness": expr, "radius": expr, "kFactor": expr, "flanges": [flange, ...] as feature.sheetMetal (the whole list; a flange's id keeps it the part's flange of that id), "relief": {shape, size} or null, "bendRelief": {shape, size} or null, "corner": {kind, gap} or null, "corners": [corner, ...] (the whole list), "cutouts": [sketch, ...] (the whole list)}"#,
         "Changes a sheet-metal part: what is given replaces what it had (flanges as a whole list; relief or bendRelief null removes it). One undo step. Each flange has an id (sheetMetal.bends lists them), which names its faces, edges and rims, so those names stay with the flange when others are added, deleted or moved in the list: a flange given with its id is the part's flange of that id (an id the part has no flange of, or one given twice, is refused); one given without is the part's flange it equals in every field (what it sits on read through the flanges' ids), and else a new flange with a new id, never one a deleted flange had, so a flange changed without its id loses the names of its split edges (an error where they are used) and none moves to another flange. Every face, edge and rim name of a flange follows its id. corners not given are kept and follow their flanges by id to their new places; one whose flange is gone is refused, naming it.", doc: true, sheet_metal_edit),
     spec!("sheetMetal.bends", "Bend Table", r#"{"feature": id or name}"#,
@@ -89,6 +90,33 @@ fn flange_value(
         map.get("side"),
         map.get("line"),
     ) {
+        (None, None, None, None) if map.contains_key("cutout") => {
+            let bad = || {
+                CommandError::new(format!(
+                    "{id}: flanges.{index}.cutout is {{\"sketch\": the id or name of the sketch the cut-out is drawn in (the part's sketch or one of its cutouts), \"edge\": a line's entity id of the cut-out in that sketch}}"
+                ))
+            };
+            let Some(Value::Object(cut)) = map.get("cutout") else {
+                return Err(bad());
+            };
+            if cut.keys().any(|k| k != "sketch" && k != "edge") {
+                return Err(bad());
+            }
+            let sketch = cut
+                .get("sketch")
+                .and_then(|v| sketch_ref(doc, v))
+                .ok_or_else(bad)?;
+            let edge = cut.get("edge").ok_or_else(bad)?;
+            FlangeOn::Cutout(
+                sketch,
+                crate::sketch_cmds::entity_id(id, "cutout.edge", edge)?,
+            )
+        }
+        _ if map.contains_key("cutout") => {
+            return fail(format!(
+                "{id}: flanges.{index} sits on one edge: give `cutout` without `edge`, `tip`, `side` or `line`"
+            ));
+        }
         (Some(edge), None, None, None) => {
             FlangeOn::Base(crate::sketch_cmds::entity_id(id, "edge", edge)?)
         }
@@ -134,7 +162,7 @@ fn flange_value(
         }
         _ => {
             return fail(format!(
-                "{id}: flanges.{index} sits on an `edge` of the base (a line's entity id), on the `tip` of an earlier flange, on a `side` of one or on a `line` of an earlier flange's outline: give one of them"
+                "{id}: flanges.{index} sits on an `edge` of the base (a line's entity id), on the `tip` of an earlier flange, on a `side` of one, on a `line` of an earlier flange's outline or on an edge of a `cutout`: give one of them"
             ));
         }
     };
@@ -523,6 +551,7 @@ fn check_flanges(
     doc: &Document,
     id: &str,
     sketch: FeatureId,
+    cutouts: &[FeatureId],
     flanges: &[Flange],
 ) -> Result<(), CommandError> {
     let feature = doc
@@ -592,6 +621,33 @@ fn check_flanges(
                     ));
                 }
             }
+            FlangeOn::Cutout(at, line) => {
+                if at != sketch && !cutouts.contains(&at) {
+                    return fail(format!(
+                        "{id}: flanges.{i}.cutout: the sketch {at} is neither the part's sketch nor one of its cutouts: list it in `cutouts`"
+                    ));
+                }
+                let (name, drawn) = match doc.feature(at).map(|f| (&f.name, &f.kind)) {
+                    Some((name, FeatureKind::Sketch(drawn))) => (name, drawn),
+                    _ => {
+                        return fail(format!("{id}: flanges.{i}.cutout: {at} is no sketch"));
+                    }
+                };
+                match drawn.entity(line).map(|e| &e.geometry) {
+                    Ok(Geometry::Line { .. }) => {}
+                    Ok(other) => {
+                        return fail(format!(
+                            "{id}: flanges.{i}.cutout: {line} is a {}, not a line: a flange sits on a straight edge",
+                            other.type_name()
+                        ));
+                    }
+                    Err(_) => {
+                        return fail(format!(
+                            "{id}: flanges.{i}.cutout: the sketch `{name}` has no {line}"
+                        ));
+                    }
+                }
+            }
         }
     }
     Ok(())
@@ -623,7 +679,7 @@ fn feature_sheet_metal(session: &mut Session, params: &Value) -> Run {
     let radius = Expr::new(p.expr("radius")?.ok_or_else(|| p.missing("radius"))?);
     let k_factor = Expr::new(p.expr("kFactor")?.ok_or_else(|| p.missing("kFactor"))?);
     let flanges = flanges_value(&p, doc)?.unwrap_or_default();
-    check_flanges(doc, ID, sketch, &flanges)?;
+    check_flanges(doc, ID, sketch, &cutouts, &flanges)?;
     let relief = relief_value(&p)?.flatten();
     let bend_relief = relief_named(&p, "bendRelief")?.flatten();
     let corner = corner_value(&p)?.flatten();
@@ -686,23 +742,8 @@ fn flanges_with_ids(
         }
     }
     // What a flange sits on, by the id of the flange it names.
-    let resolved = |list: &[Flange], f: &Flange| match f.on {
-        FlangeOn::Base(line) => (0, line.0, 0),
-        FlangeOn::Tip(j) => (1, u64::from(list.get(j as usize).map_or(0, |x| x.id)), 0),
-        FlangeOn::Side(j, side) => (
-            2,
-            u64::from(list.get(j as usize).map_or(0, |x| x.id)),
-            match side {
-                FlangeSide::Start => 0,
-                FlangeSide::End => 1,
-            },
-        ),
-        FlangeOn::Line(j, line) => (
-            3,
-            u64::from(list.get(j as usize).map_or(0, |x| x.id)),
-            line.0,
-        ),
-    };
+    let resolved = on_key;
+
     let highest = old
         .iter()
         .chain(new.iter())
@@ -812,9 +853,14 @@ fn check_corners(
         for f in c.flanges {
             match flanges.get(f as usize).map(|f| f.on) {
                 Some(FlangeOn::Base(_)) => {}
-                Some(FlangeOn::Tip(_) | FlangeOn::Side(..) | FlangeOn::Line(..)) => {
+                Some(
+                    FlangeOn::Tip(_)
+                    | FlangeOn::Side(..)
+                    | FlangeOn::Line(..)
+                    | FlangeOn::Cutout(..),
+                ) => {
                     return fail(format!(
-                        "{id}: corners.{i}: flange {f} sits on a tip, a side or an outline's line; a corner is where two flanges on edges of the base meet"
+                        "{id}: corners.{i}: flange {f} sits on a tip, a side, an outline's line or a cut-out's edge; a corner is where two flanges on edges of the base meet"
                     ));
                 }
                 None => {
@@ -911,6 +957,7 @@ fn sheet_metal_edit(session: &mut Session, params: &Value) -> Run {
         session.document()?.history.current(),
         ID,
         part.sketch,
+        &part.cutouts,
         &part.flanges,
     )?;
     edit(session, ID, "Edit sheet metal", |doc| {
@@ -920,12 +967,38 @@ fn sheet_metal_edit(session: &mut Session, params: &Value) -> Run {
     feature_result(session, id)
 }
 
+/// What flange `f` of `list` sits on, by the id of the flange it names:
+/// a tag per kind and its numbers, so two flanges sit on the same edge
+/// exactly when their keys are equal.
+fn on_key(list: &[Flange], f: &Flange) -> (u64, u64, u64) {
+    let id_of = |j: u32| u64::from(list.get(j as usize).map_or(0, |x| x.id));
+    match f.on {
+        FlangeOn::Base(line) => (0, line.0, 0),
+        FlangeOn::Tip(j) => (1, id_of(j), 0),
+        FlangeOn::Side(j, side) => (
+            2,
+            id_of(j),
+            match side {
+                FlangeSide::Start => 0,
+                FlangeSide::End => 1,
+            },
+        ),
+        FlangeOn::Line(j, line) => (3, id_of(j), line.0),
+        // Not `4 + sketch`: a sketch id from a file may be any u64, and a
+        // sum would overflow (a panic in a debug build) or wrap into the
+        // tags above, so two flanges on different edges could be taken for
+        // one (review 2026-10-31).
+        FlangeOn::Cutout(sketch, line) => (4, sketch.0, line.0),
+    }
+}
+
 fn on_text(made: &SheetMetal, i: usize) -> String {
     match made.flanges.get(i).map(|f| f.on) {
         Some(FlangeOn::Base(line)) => line.to_string(),
         Some(FlangeOn::Tip(j)) => format!("tip of flange {j}"),
         Some(FlangeOn::Side(j, side)) => format!("{} side of flange {j}", side.name()),
         Some(FlangeOn::Line(j, line)) => format!("{line} of flange {j}'s outline"),
+        Some(FlangeOn::Cutout(sketch, line)) => format!("{line} of the cut-out of sketch {sketch}"),
         None => "?".to_string(),
     }
 }
@@ -983,14 +1056,10 @@ fn sheet_metal_bends(session: &mut Session, params: &Value) -> Run {
             "toMould": length.zip(setback).map(|(l, s)| l + s),
         }));
     }
-    let chains = sheetmetal::outline(part, &tol);
-    let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
-    for s in chains.iter().flatten() {
-        for q in [s.start, s.end] {
-            lo = [lo[0].min(q[0]), lo[1].min(q[1])];
-            hi = [hi[0].max(q[0]), hi[1].max(q[1])];
-        }
-    }
+    // Lines, arcs and circles held by their extremes, a spline by its
+    // control points.
+    let (lo, hi) = sheetmetal::flat_box(part, &tol)
+        .map_or(([0.0; 2], [0.0; 2]), |(b, _)| ([b[0], b[1]], [b[2], b[3]]));
     let corners: Vec<Value> = part
         .corners
         .iter()
@@ -1589,6 +1658,9 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
     if name == "cornerGap" {
         return corner_gap(ctx, p);
     }
+    if name == "flatExtent" || name == "flatArea" {
+        return flat_measure(ctx, name, p);
+    }
     let keys: &[&str] = if name == "flangeLength" {
         &["of", "measured"]
     } else {
@@ -1727,6 +1799,76 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
     Ok(out)
 }
 
+/// The measures `flatExtent` (`axis` x or y: the largest width or height
+/// of the parts' flat patterns, in their sketches' axes, from the box of
+/// their outlines: lines, arcs and circles exact, a spline by its control
+/// points, which bounds it from above, so a `max` holds and a `min` is
+/// notProven there) and `flatArea` (the sum of the parts' flat areas,
+/// the pattern less its holes).
+fn flat_measure(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<Outcome, String> {
+    let keys: &[&str] = if name == "flatExtent" {
+        &["of", "axis"]
+    } else {
+        &["of"]
+    };
+    crate::verify_cmds::only(p, keys)?;
+    let axis = if name == "flatExtent" {
+        match p.get("axis").and_then(Value::as_str) {
+            Some("x") => Some(0),
+            Some("y") => Some(1),
+            _ => {
+                return Err(
+                    "`axis` is x or y: the flat pattern's width or height in its sketch's axes"
+                        .to_string(),
+                );
+            }
+        }
+    } else {
+        None
+    };
+    let mut value = if axis.is_some() {
+        f64::NEG_INFINITY
+    } else {
+        0.0
+    };
+    let mut exact = true;
+    let mut listed = Vec::new();
+    for id in parts_of(ctx, p)? {
+        let fname = ctx.feature_name(id);
+        let built = craft3d_regen::sheet_metal_part(ctx.doc, ctx.regen, id)
+            .map_err(|e| format!("`{fname}`: {e}"))?;
+        let part = &built.part;
+        match axis {
+            Some(a) => {
+                let (b, ok) = sheetmetal::flat_box(part, &built.tolerance)
+                    .ok_or_else(|| format!("`{fname}` has no flat pattern"))?;
+                let (lo, hi) = (b.get(a).copied(), b.get(a + 2).copied());
+                let size = hi.zip(lo).map(|(h, l)| h - l).unwrap_or(0.0);
+                exact &= ok;
+                value = value.max(size);
+                listed.push(json!({"part": fname, "size": size, "exact": ok}));
+            }
+            None => {
+                let area = flat_area(part);
+                value += area;
+                listed.push(json!({"part": fname, "area": area}));
+            }
+        }
+    }
+    if !value.is_finite() {
+        return Err("`of` names no sheet-metal part".to_string());
+    }
+    let mut out = Outcome::number(Dim::Length(if axis.is_some() { 1 } else { 2 }), value);
+    if !exact {
+        // The box of a spline's control points holds the spline: the
+        // extent is at most this, and proven no less than nothing.
+        out.lower = Some(0.0);
+        out.upper = Some(value);
+    }
+    out.detail.insert("parts".into(), listed.into());
+    Ok(out)
+}
+
 /// Why `holeToBend` has no value: a least distance over no holes is no
 /// number (not a pass), so it is an error that says what the part has and
 /// how an assertion written for a design without such a hole is switched
@@ -1798,4 +1940,48 @@ fn corner_gap(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> 
     listed.truncate(200);
     out.detail.insert("corners".into(), listed.into());
     Ok(out)
+}
+
+#[cfg(test)]
+mod on_key_tests {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+    use super::*;
+    use craft3d_doc::EntityId;
+
+    fn flange(on: FlangeOn) -> Flange {
+        Flange {
+            id: 1,
+            on,
+            length: Expr::new("10 mm"),
+            angle: Expr::new("90 deg"),
+            direction: BendDirection::Up,
+            radius: None,
+            k_factor: None,
+            from: FlangeFrom::Tangent,
+            inset_start: None,
+            inset_end: None,
+            outline: None,
+        }
+    }
+
+    /// A cut-out's sketch id near u64::MAX (a file may hold any id): the
+    /// key neither overflows (it did as `4 + sketch`, a panic in a debug
+    /// build) nor wraps into another kind's tag.
+    #[test]
+    fn a_cutout_on_a_sketch_id_near_the_top_keeps_its_own_key() {
+        let list = vec![flange(FlangeOn::Base(EntityId(5)))];
+        for sketch in [u64::MAX, u64::MAX - 1, u64::MAX - 3, u64::MAX - 4] {
+            let cut = flange(FlangeOn::Cutout(FeatureId(sketch), EntityId(5)));
+            let key = on_key(&list, &cut);
+            assert_eq!(key, (4, sketch, 5));
+            for other in [
+                FlangeOn::Base(EntityId(5)),
+                FlangeOn::Tip(0),
+                FlangeOn::Side(0, FlangeSide::End),
+                FlangeOn::Line(0, EntityId(5)),
+            ] {
+                assert_ne!(on_key(&list, &flange(other)), key);
+            }
+        }
+    }
 }

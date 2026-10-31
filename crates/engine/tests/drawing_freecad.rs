@@ -569,6 +569,93 @@ fn freecad_reads_a_flat_pattern() {
     }
 }
 
+/// The mini-PC chassis example's three flat patterns on one sheet
+/// (`docs/examples/chassis.json`: louvres bent out of slots, holes across
+/// the lid's bends, a hem, a jog, closed mitre corners): FreeCAD reads the
+/// DXF and the SVG with our length, our box, and as many closed wires as
+/// the export writes chains.
+#[test]
+#[ignore = "needs FreeCAD: set CRAFT3D_FREECAD and run with --ignored"]
+fn freecad_reads_the_chassis_flat_patterns_on_one_sheet() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("drawing-freecad-chassis");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = Session::new(Workspace {
+        read: Access::Root(dir.clone()),
+        write: Access::Root(dir.clone()),
+    });
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    let script: Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/examples/chassis.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    for step in script.as_array().unwrap() {
+        let id = step[0].as_str().unwrap();
+        // The checks are the example's own test's; here only the parts.
+        if id == "assert.add" || id == "document.check" {
+            continue;
+        }
+        run(&mut s, id, step[1].clone());
+    }
+    let parts = json!(["Tray", "Lid", "Drive bracket"]);
+    let mut cases = Vec::new();
+    for format in ["dxf", "svg"] {
+        let file = format!("chassis.{format}");
+        let result = run(
+            &mut s,
+            "file.export",
+            json!({"path": file, "sheetMetal": parts}),
+        );
+        cases.push((file, result));
+    }
+    let reports = freecad_reads(&dir);
+    assert_eq!(reports.len(), cases.len());
+    for (file, ours) in &cases {
+        let report = &reports[file];
+        let number = |key: &str| -> f64 { report[key].parse().unwrap() };
+        println!(
+            "{file}: length {} (ours {}), bbox {} (ours {}), wires {} (ours {})",
+            report["length"],
+            ours["length"],
+            report["bbox"],
+            ours["bbox"],
+            report.get("closed").map_or("?", String::as_str),
+            ours["closed"]
+        );
+        assert!(
+            near(number("length"), ours["length"].as_f64().unwrap(), 1e-9),
+            "{file}"
+        );
+        let bbox: Vec<f64> = report["bbox"]
+            .split(' ')
+            .map(|v| v.parse().unwrap())
+            .collect();
+        let want: Vec<f64> = ours["bbox"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
+        let size = want[2] - want[0];
+        for (got, expected) in bbox.iter().zip(&want) {
+            assert!(
+                (got - expected).abs() <= 1e-9 * size,
+                "{file}: {bbox:?} against {want:?}"
+            );
+        }
+        if let Some(closed) = report.get("closed") {
+            assert_eq!(
+                closed.parse::<u64>().unwrap(),
+                ours["closed"].as_u64().unwrap(),
+                "{file}"
+            );
+        }
+    }
+}
+
 /// The outline of a glyph with holes, from a text in each built-in font
 /// and in the single-stroke font: FreeCAD reads the DXF and SVG of the
 /// sketch, its wires the glyph's contours, its area the glyph's (outer

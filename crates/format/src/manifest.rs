@@ -1216,6 +1216,20 @@ pub struct SheetFlange {
     /// On a line of the own outline of flange `flange` (format version 51).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line: Option<SheetFlangeLine>,
+    /// On an edge of a cut-out: the cut-out's sketch (the base's or one of
+    /// the part's `cutouts`) and the line's entity id in it (format version
+    /// 60).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cutout: Option<SheetFlangeCutout>,
+}
+
+/// The edge of a cut-out a flange sits on: the sketch the cut-out is
+/// drawn in and the line's entity id in that sketch.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SheetFlangeCutout {
+    pub sketch: u64,
+    pub line: u64,
 }
 
 /// The line of an earlier flange's own outline a flange sits on: the

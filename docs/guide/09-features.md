@@ -400,7 +400,7 @@ the bend's neutral band laid flat by the unfold), the outside setback and the be
 flange's length; and the flat pattern's area and size. The **manufacturability** measures for assertions
 are `bendRadius` (the smallest inner radius), `flangeLength` (the shortest flange; `"measured": "mould"`
 from the virtual sharp), `holeToBend` (the least distance from a hole to a bend's tangent line) and
-`relief` (every corner where two bends meet, and every end of a bend inside its edge, is relieved) and `cornerGap` (the least gap at the closed corners). 3DCraft has no material catalogue: the limits
+`relief` (every corner where two bends meet, and every end of a bend inside its edge, is relieved) `cornerGap` (the least gap at the closed corners), and `flatExtent` (`axis` x or y: the width or height of the flat pattern, the blank it needs) and `flatArea`. 3DCraft has no material catalogue: the limits
 for a material and a thickness are yours, as expressions or a table, as above. `file.export` with
 `sheetMetal` writes the flat pattern (.dxf or .svg): the outline on the layer `outline`, the bend lines
 on `bendUp` (dashed) and `bendDown` (dash-dot). `sheetMetal.bendSequence` checks whether the part can be
@@ -415,6 +415,14 @@ whether no order is proven or only not found). As an assertion, `bendable` keeps
 `is` true holds when an order is found for every part named, fails when none exists (every step tried
 collides for certain), and is *notProven* otherwise, never passed: a step that is neither proven clear nor
 colliding, or a search that used up its `maxWork` (distances measured, 20000 at most, shared by the parts).
+For one part, `order` checks a sequence you give instead of searching (its `maxWork` may then be larger),
+and `formed` lists flanges made before the press brake by a tool of their own (a louvre on a punch press,
+a jog by an offset die): they are made from the start and not checked themselves. A part with a hole
+across a bend is checked too: a strip not yet bent that a hole may cross (by the boxes of the hole and
+the strip) stands as its whole slab, so a clearance to it is proven, while a collision with it is never
+counted as certain (the tool may pass through the hole): such a part is then *notProven*, never `false`.
+With an `order`, the measure may measure up to a million distances (`maxWork`; about 2500 a second, so
+some minutes), the command `sheetMetal.bendSequence` ten million.
 The tools' points may be formulas, so a Jig keeps its tools in a table and picks one with a choice:
 
 ```json
@@ -465,7 +473,11 @@ part when a `cutouts` sketch fails (fix the sketch, or switch it off). A hole cu
 (a boolean) is carried back onto the exported flat pattern when it goes through the sheet square to it
 (`laterCuts` in the export's result); one cut at a slant fails the export with the reason, and a pocket, a
 part joined on or a notch at the edge is listed in `notCarried` (the bend table and the export say which
-feature took the part as `changedBy`). A panel with a hole in its flange and an optional vent:
+feature took the part as `changedBy`). A flange can also be bent out of a cut-out: `cutout` names the
+sketch and a straight edge of a cut-out in it (`{"cutout": {"sketch": "Vents", "edge": "e7"}, ...}`), the
+flange grows into the hole, and the cut-out may lie in a wall, so a louvre or a tab is bent from a slot in
+a flange. The mini-PC chassis example (`docs/examples/chassis.json`) has eight. A panel with a hole in
+its flange and an optional vent:
 
 ```json
 [
