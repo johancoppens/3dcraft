@@ -151,19 +151,19 @@ impl Shell {
                 // Its base over the rim, so the two read as one outline.
                 let top = panel.top() + stroke;
                 let painter = ui.ctx().layer_painter(area.response.layer_id);
-                let points = vec![
+                let (a, apex, b) = (
                     pos2(x - reach, top),
                     pos2(x, top - reach),
                     pos2(x + reach, top),
-                ];
+                );
                 painter.add(egui::Shape::convex_polygon(
-                    points.clone(),
+                    vec![a, apex, b],
                     fill,
                     egui::Stroke::NONE,
                 ));
                 let line = egui::Stroke::new(stroke, rim);
-                painter.line_segment([points[0], points[1]], line);
-                painter.line_segment([points[1], points[2]], line);
+                painter.line_segment([a, apex], line);
+                painter.line_segment([apex, b], line);
             }
         }
         panel
