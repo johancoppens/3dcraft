@@ -293,22 +293,30 @@ as a network's curve) and the edges meet exactly. The start screen's mouse
 ([`mouse.json`](../examples/mouse.json), under Showcase) is built that way:
 
 1. *The flanks.* A flat side whose top edge is the seam, a live spline through points written in the
-   variables (`length`, `width`, `height`, `hump`), filled (`feature.fill`) and mirrored.
+   variables (`length`, `width`, `height`, `hump`, `taper`), filled (`feature.fill`) and turned in
+   toward the nose by `taper` (`feature.transform`). The thumb's flank is drawn lower than the pinky's,
+   so the shoulder over it is fuller, and mirrored so that it faces out.
 2. *The top.* One Gordon surface (`feature.surface.network`): the two seams and the crown as u curves,
-   the rear, three sections and the nose as v curves; both seams held in curvature (`"kind":
-   "curvature"`) to the flanks. The crown and the seams have nine points each and are crossed at the same
-   ones, so no curve is re-parametrised and the surface stays cubic. The rear and the nose leave each
-   flank along it with three control points in line, so they have no curvature across it, as the G2 seam
-   asks, and the hold leaves them as drawn.
-3. *The underside.* The flanks' feet and the same rear and nose curves in one sketch, filled.
-4. *Sewn* into a solid (three sews), rounded along its foot (`feature.fillet` with `chain`), the split
-   line between the buttons and the wheel's slot cut out, a wheel put in.
+   the rear, four sections and the nose as v curves; both seams held in curvature (`"kind":
+   "curvature"`) to the flanks. Each section is two superellipses meeting on the crown, with a smooth
+   skew toward the thumb. The crown and the seams have ten points each and are crossed at the same ones,
+   so no curve is re-parametrised and the surface stays cubic. The rear and the nose leave each flank
+   along it with three control points in line, so they have no curvature across it, as the G2 seam asks,
+   and the hold leaves them as drawn. The fourth section, just behind the nose's corners, keeps the nose
+   fair: without it the Gaussian curvature map showed a thin saddle across the top there.
+3. *The underside.* The flanks' feet and the same rear and nose curves in one sketch, filled, and
+   mirrored in its own plane so that it faces down, out of the solid (sewing takes sheets that face
+   one way).
+4. *Sewn* into a solid (three sews), rounded along its foot (`feature.fillet` with `chain`), a slim slot
+   cut down as a stadium (`feature.extrude` with `cut`), a hair-thin split line from the slot to the
+   nose, and a slim wheel.
 
-Its assertions hold both seams G2 (`measure.continuity` proves it, at the default tolerances), a closed
+Its assertions hold both seams G2 (`measure.continuity` proves it at the default tolerances), a closed
 solid of a mouse's volume and a wheel that turns free. Published (`variable.publish` with ranges),
-`craft3d-cli check-range` proves the seams G2 at every corner of length 100 to 130 mm, width 54 to 70,
-height 34 to 46 and hump 0.36 to 0.50. With zebra stripes (`ui.set {"analysis": {"mode": "zebra"}}`)
-the stripes on the top run on into the flat flank without a kink or a jump in width.
+`craft3d-cli check-range` proves the seams G2 at every corner of length 105 to 130 mm, width 56 to 70,
+height 32 to 40, hump 0.36 to 0.44 and taper 2° to 5°. With zebra stripes (`ui.set {"analysis":
+{"mode": "zebra"}}`) the stripes on the top run on into the flat flanks without a kink or a jump in width;
+with the curvature map (`"mode": "curvature"`) the curvature rises from zero at each seam.
 
 ## Plates and joints
 
