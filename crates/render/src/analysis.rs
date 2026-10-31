@@ -31,13 +31,15 @@
 //!   line runs along the plane and the sample has no phase: it is the
 //!   stripes' mean, as the filtered stripes are just above the bound.
 //! - **Band limit** (zebra and highlight lines): the square wave of the
-//!   stripes is box-filtered over the sample's footprint in phase, the
+//!   stripes is filtered over the sample's footprint in phase, the
 //!   phase's change from one sample to the next, `|∂p/∂x| + |∂p/∂y|`
-//!   ([`Resolved::footprint`]). The antiderivative of the square wave is a
-//!   ramp per period (a triangle wave less its mean slope), so the filter
-//!   is closed form ([`dark_share`]): a stripe edge is a ramp one footprint
-//!   wide, centred where the edge was, and stripes finer than a sample fade
-//!   to their mean, `width` dark. The derivatives are exact: the
+//!   ([`Resolved::footprint`]), with a tent `±footprint` wide (the box
+//!   over the footprint taken twice). The square wave's integrals are
+//!   closed form, and so is the filter ([`dark_share`]): a stripe edge is
+//!   an S-shaped ramp two footprints wide, centred where the edge was, and
+//!   stripes finer than a sample fade to their mean, `width` dark, within
+//!   `1 / footprint²` (a box leaves `1 / footprint`, a faint moiré). The
+//!   derivatives are exact: the
 //!   perspective-correct interpolation's of the normal and the point,
 //!   chained through the phase (the GPU takes the interpolants' from
 //!   `dpdxFine`/`dpdyFine` and chains them the same way).
@@ -241,11 +243,16 @@ pub struct Slopes {
 }
 
 /// The share of a sample that is dark: the square wave dark where the
-/// phase's fraction is below `width`, averaged over a box `footprint`
-/// periods wide centred on `phase`. Closed form: the wave's antiderivative
-/// is `D(t) = ⌊t⌋·width + min(t − ⌊t⌋, width)`. A footprint of zero is the
-/// point sample (`0` or `1`); one that is not a number, infinite or above
-/// [`FLAT_FOOTPRINT`] is the mean, `width`.
+/// phase's fraction is below `width`, averaged with a tent `±footprint`
+/// periods wide centred on `phase` (weights `1 − |s| / footprint`: the box
+/// over the footprint taken twice, so that what stripes finer than it leave
+/// over the mean falls as `1 / footprint²`, not as `1 / footprint`).
+/// Closed form: the wave is `width + g` with `g` periodic of mean zero; the
+/// tent's average of `width` is `width`, and that of `g` is the second
+/// difference of `G = ∫∫ g` ([`wave_integral`]) over the footprint, divided
+/// by its square. A footprint of zero is the point sample (`0` or `1`); one
+/// that is not a number, infinite or above [`FLAT_FOOTPRINT`] is the mean,
+/// `width`.
 pub fn dark_share(phase: f64, footprint: f64, width: f64) -> f64 {
     let point = if phase - phase.floor() < width {
         1.0
@@ -259,14 +266,27 @@ pub fn dark_share(phase: f64, footprint: f64, width: f64) -> f64 {
         return width;
     }
     // Relative to the period the sample is in, so that a phase of many
-    // periods loses nothing to the subtraction.
+    // periods loses nothing to the subtractions.
     let x = phase - phase.floor();
-    let antiderivative = |t: f64| {
-        let whole = t.floor();
-        whole * width + (t - whole).min(width)
+    let f = footprint;
+    let second =
+        wave_integral(x + f, width) - 2.0 * wave_integral(x, width) + wave_integral(x - f, width);
+    (width + second / (f * f)).clamp(0.0, 1.0)
+}
+
+/// `G(t) = ∫₀ᵗ ∫₀ᵘ g`, with `g(u) = [u − ⌊u⌋ < w] − w` the square wave less
+/// its mean: within a period (`u` its fraction) `∫ g` is `u(1 − w)` up to
+/// `w` and `w(1 − u)` after, back to zero at its end, and its integral over
+/// a whole period is `w(1 − w) / 2`.
+pub fn wave_integral(t: f64, w: f64) -> f64 {
+    let whole = t.floor();
+    let u = t - whole;
+    let inner = if u < w {
+        (1.0 - w) * u * u / 2.0
+    } else {
+        (1.0 - w) * w * w / 2.0 + w * ((u - w) - (u * u - w * w) / 2.0)
     };
-    let half = 0.5 * footprint;
-    ((antiderivative(x + half) - antiderivative(x - half)) / footprint).clamp(0.0, 1.0)
+    whole * w * (1.0 - w) / 2.0 + inner
 }
 
 fn finite_or(v: f64, fallback: f64) -> f64 {
@@ -355,7 +375,7 @@ impl Resolved {
         self.color_at(normal, to_viewer, rel, value, None)
     }
 
-    /// [`Resolved::color`] with the stripes box-filtered over the sample's
+    /// [`Resolved::color`] with the stripes filtered over the sample's
     /// footprint (`slopes`, see the module); `None` point samples them.
     pub fn color_at(
         &self,
@@ -639,11 +659,12 @@ mod tests {
     }
 
     #[test]
-    fn dark_share_is_the_box_filtered_square_wave() {
+    fn dark_share_is_the_tent_filtered_square_wave() {
         // A point sample without a footprint.
         assert_eq!(dark_share(3.2, 0.0, 0.3), 1.0);
         assert_eq!(dark_share(3.4, 0.0, 0.3), 0.0);
-        // A whole number of periods is the mean wherever it starts.
+        // A tent a whole number of periods wide is the mean wherever it
+        // starts.
         for p in [0.0, 0.17, 0.3, 0.71, 1234.5] {
             for f in [1.0, 2.0, 7.0] {
                 assert!((dark_share(p, f, 0.3) - 0.3).abs() < 1e-9, "{p} {f}");
@@ -653,26 +674,31 @@ mod tests {
         for f in [f64::NAN, f64::INFINITY, -1.0, 2.0 * FLAT_FOOTPRINT] {
             assert_eq!(dark_share(0.1, f, 0.3), 0.3);
         }
-        // Against the wave averaged by brute force.
+        // Against the wave averaged with the tent by brute force.
         for &(p, f, w) in &[
             (0.05, 0.2, 0.3),
             (0.29, 0.1, 0.3),
             (0.9, 0.5, 0.5),
             (2.6, 1.7, 0.25),
+            (0.4, 3.3, 0.7),
         ] {
-            let n = 100_000;
-            let brute = (0..n)
-                .filter(|k| {
-                    let t = p - 0.5 * f + f * (f64::from(*k) + 0.5) / f64::from(n);
-                    t - t.floor() < w
-                })
-                .count() as f64
-                / f64::from(n);
+            let n = 200_000;
+            let (mut dark, mut total) = (0.0, 0.0);
+            for k in 0..n {
+                let s = -1.0 + 2.0 * (f64::from(k) + 0.5) / f64::from(n);
+                let weight = 1.0 - s.abs();
+                let t = p + s * f;
+                total += weight;
+                if t - t.floor() < w {
+                    dark += weight;
+                }
+            }
+            let brute = dark / total;
             assert!((dark_share(p, f, w) - brute).abs() < 1e-4, "{p} {f} {w}");
         }
-        // Far from an edge the box sees one colour: the edge does not move.
-        assert_eq!(dark_share(0.15, 0.2, 0.3), 1.0);
-        assert_eq!(dark_share(0.65, 0.2, 0.3), 0.0);
+        // Far from an edge the tent sees one colour: the edge does not move.
+        assert!((dark_share(0.15, 0.1, 0.3) - 1.0).abs() < 1e-12);
+        assert!(dark_share(0.65, 0.2, 0.3).abs() < 1e-12);
         // At an edge, half.
         assert!((dark_share(0.3, 0.2, 0.3) - 0.5).abs() < 1e-12);
     }

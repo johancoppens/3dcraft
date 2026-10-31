@@ -58,13 +58,14 @@ fn pixel(frame: &craft3d_render::Frame, x: usize, y: usize) -> [u8; 3] {
 /// agrees with that closed form except within 0.02 of a period of a
 /// stripe's edge (the interpolated normal of a mesh within 1e-3 of the
 /// sphere is within about 1e-3 rad of the true one, 0.005 of a period at
-/// 16 stripes) widened by half the pixel's footprint in phase: the stripes
-/// are box-filtered over it, so an edge is a ramp that wide centred where
-/// the edge is (`analysis::dark_share`). The footprint is the closed form's,
-/// `dφ/dy = 2 / cos θ` per unit of height (none across, by the symmetry),
-/// and on a ramp the grey is the closed form's phase averaged over the
-/// pixel's height (sampled finely), within 0.12 (the normal's 0.005 of a
-/// period over the least footprint, 0.05). An edge is where the grey
+/// 16 stripes) widened by the pixel's footprint in phase: the stripes are
+/// filtered with a tent that wide each way (`analysis::dark_share`), so an
+/// edge is a ramp centred where the edge is. The footprint is the closed
+/// form's, `dφ/dy = 2 / cos θ` per unit of height (none across, by the
+/// symmetry), and on a ramp the grey is the closed form's square wave
+/// averaged with the tent over a pixel up and down (sampled finely), within
+/// 0.12 (the normal's 0.005 of a period over the least footprint, 0.05). An
+/// edge is where the grey
 /// crosses the middle. The picture is mirror symmetric about that vertical.
 #[test]
 fn zebra_stripes_on_a_sphere_are_evenly_spaced_and_symmetric() {
@@ -112,18 +113,22 @@ fn zebra_stripes_on_a_sphere_are_evenly_spaced_and_symmetric() {
         let size = 2.0 * half / f64::from(h);
         let footprint =
             2.0 / (1.0 - wy * wy).sqrt() * size / std::f64::consts::TAU * analysis.stripes;
-        let near_edge = f.min(1.0 - f).min((f - analysis.width).abs()) < 0.02 + 0.5 * footprint;
+        let near_edge = f.min(1.0 - f).min((f - analysis.width).abs()) < 0.02 + footprint;
         if near_edge {
-            // The closed form's square wave averaged over the pixel.
-            let n = 400;
-            let dark = (0..n)
-                .filter(|k| {
-                    let t = (f64::from(*k) + 0.5) / f64::from(n) - 0.5;
-                    let p = phase_at(wy + t * size);
-                    p - p.floor() < analysis.width
-                })
-                .count() as f64
-                / f64::from(n);
+            // The closed form's square wave averaged with the tent over a
+            // pixel up and down.
+            let n = 800;
+            let (mut dark, mut total) = (0.0, 0.0);
+            for k in 0..n {
+                let t = -1.0 + 2.0 * (f64::from(k) + 0.5) / f64::from(n);
+                let weight = 1.0 - t.abs();
+                let p = phase_at(wy + t * size);
+                total += weight;
+                if p - p.floor() < analysis.width {
+                    dark += weight;
+                }
+            }
+            let dark = dark / total;
             let share = (f64::from(colors.light[0]) - f64::from(got[0]))
                 / (f64::from(colors.light[0]) - f64::from(colors.dark[0]));
             assert!(
@@ -222,8 +227,8 @@ fn share_stats(
 /// at least 0.006 of a period per stripe of `count`: about 0.02 at 4, 1.5
 /// at 256 and 3 at 512. Resolved, the shares are dark or light (variance
 /// near `w (1 − w)`); finer than a pixel their mean is `width` and their
-/// variance falls (a box over `f` periods is within `w (1 − w) / f` of the
-/// mean). Point sampled, the variance stays near `w (1 − w)` at any count.
+/// variance falls (a tent `±f` periods wide is within `w (1 − w) / f²` of
+/// the mean, a box `f` wide within `w (1 − w) / f`). Point sampled, the variance stays near `w (1 − w)` at any count.
 #[test]
 fn stripes_finer_than_a_pixel_fade_to_their_mean() {
     let mesh = mesh_of(

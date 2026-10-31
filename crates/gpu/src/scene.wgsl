@@ -293,8 +293,19 @@ fn analysis_ramp(t_in: f32) -> vec3<f32> {
     return clamp(round(a + (b - a) * f), vec3<f32>(0.0), vec3<f32>(255.0));
 }
 
+// craft3d_render::analysis::wave_integral.
+fn analysis_wave_integral(t: f32, w: f32) -> f32 {
+    let whole = floor(t);
+    let u = t - whole;
+    var inner = (1.0 - w) * w * w / 2.0 + w * ((u - w) - (u * u - w * w) / 2.0);
+    if u < w {
+        inner = (1.0 - w) * u * u / 2.0;
+    }
+    return whole * w * (1.0 - w) / 2.0 + inner;
+}
+
 // craft3d_render::analysis::dark_share: the dark share of the stripes'
-// square wave averaged over a box `footprint` periods wide.
+// square wave averaged with a tent `±footprint` periods wide.
 fn analysis_dark_share(phase: f32, footprint: f32, width: f32) -> f32 {
     let x = phase - floor(phase);
     if footprint == 0.0 {
@@ -303,12 +314,10 @@ fn analysis_dark_share(phase: f32, footprint: f32, width: f32) -> f32 {
     if !(footprint > 0.0 && footprint <= ANALYSIS_FLAT_FOOTPRINT) {
         return width;
     }
-    let half = 0.5 * footprint;
-    let a = x - half;
-    let b = x + half;
-    let da = floor(a) * width + min(a - floor(a), width);
-    let db = floor(b) * width + min(b - floor(b), width);
-    return clamp((db - da) / footprint, 0.0, 1.0);
+    let f = footprint;
+    let second = analysis_wave_integral(x + f, width) - 2.0 * analysis_wave_integral(x, width)
+        + analysis_wave_integral(x - f, width);
+    return clamp(width + second / (f * f), 0.0, 1.0);
 }
 
 // craft3d_render::analysis::Resolved::footprint, along one of the
