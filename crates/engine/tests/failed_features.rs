@@ -2016,7 +2016,7 @@ fn pointing_a_feature_at_something_it_cannot_be_made_from_is_refused() {
             (json!({"feature": "D", "tool": "D"}), "itself"),
             (
                 json!({"feature": "D", "op": "xor"}),
-                "union, subtract or intersect",
+                "union, subtract, intersect or sew",
             ),
             (json!({"feature": "D", "op": 3}), "op"),
         ],

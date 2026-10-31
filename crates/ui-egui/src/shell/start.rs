@@ -1144,7 +1144,16 @@ mod tests {
                     let script: Value = serde_json::from_str(text).unwrap();
                     let steps = craft3d_engine::task_score::parse_script(&script).unwrap();
                     assert!(!steps.is_empty(), "{}", example.id);
-                    assert_eq!(example.section, ExampleSection::Parts);
+                    // Scripts are parts: plain ones under Parts, the
+                    // class-A and sheet-metal showcases under Showcase.
+                    assert!(
+                        matches!(
+                            example.section,
+                            ExampleSection::Parts | ExampleSection::Showcase
+                        ),
+                        "{}",
+                        example.id
+                    );
                 }
                 Source::File { name, .. } => {
                     let mut session = Session::new(craft3d_engine::Workspace::none());
