@@ -1402,6 +1402,36 @@ fn iso_track_along(
             continue;
         }
         let (a, b) = (s.min(e).max(lo), s.max(e).min(hi));
+        // An edge whose end lies within the tolerance of where the line
+        // meets the face's border runs to the border: cut there, not where
+        // the end's projection fell (a rounding of the projection short
+        // of it, which only shifted the rows' control points; 2026-10-31).
+        let line_at = |r: f64| {
+            if along_v {
+                wrapped.eval(at, r)
+            } else {
+                wrapped.eval(r, at)
+            }
+        };
+        let (first_point, last_point) = (
+            uv.first().map(|(p, _)| *p).ok_or_else(internal)?,
+            uv.last().map(|(p, _)| *p).ok_or_else(internal)?,
+        );
+        let (low_point, high_point) = if s <= e {
+            (first_point, last_point)
+        } else {
+            (last_point, first_point)
+        };
+        let a = if a - lo <= slack || line_at(lo).distance(low_point) <= tol {
+            lo
+        } else {
+            a
+        };
+        let b = if hi - b <= slack || line_at(hi).distance(high_point) <= tol {
+            hi
+        } else {
+            b
+        };
         if b - a <= SAME_KNOT * (hi - lo) {
             continue;
         }

@@ -1752,10 +1752,11 @@ mod tests {
     /// on an inner line (M2 of the class-A review, 2026-10-31): the rows
     /// are then made of the `q + 1` rows of the net whose basis functions
     /// reach the line, not of the border's first `j + 1`, and each
-    /// coefficient is still within its allowance of the exact one. Dyadic
-    /// knots and line, so the basis values and their derivatives are exact
-    /// and the reference is the double-double sum of exact multiples of
-    /// the points' exact differences.
+    /// coefficient is still within its allowance of the exact one. The
+    /// reference: the double-double sum of the basis values at the line
+    /// the rows are of (dyadic knots; the values found to a few units in
+    /// the last place, far inside the allowance) times the points' exact
+    /// differences.
     #[test]
     fn the_rows_rounding_is_within_its_allowance_on_an_inner_line() {
         let (far, _) = far_patch();
@@ -1771,10 +1772,33 @@ mod tests {
             vec![1.0; 15],
         )
         .unwrap();
-        let at = 0.25;
-        let edge = iso_curve(&s, true, at).unwrap();
+        let edge = iso_curve(&s, true, 0.25).unwrap();
         let origin = edge.control_points()[0];
         let [x0, x1, x2] = spline_rows(&s, &edge, 1e-6, origin).unwrap().unwrap();
+        // The line the rows are of: the parameter `iso_track_along` found
+        // from the edge's projections, a rounding off 0.25 (how far the
+        // edge lies from that line is the position gap, measured apart).
+        let local = NurbsSurface::new(
+            2,
+            3,
+            s.knots_u().to_vec(),
+            knots_v.clone(),
+            3,
+            5,
+            s.control_points().iter().map(|p| *p - origin).collect(),
+            vec![1.0; 15],
+        )
+        .unwrap();
+        let local_edge = NurbsCurve::new(
+            edge.degree(),
+            edge.knots().to_vec(),
+            edge.control_points().iter().map(|p| *p - origin).collect(),
+            edge.weights().to_vec(),
+        )
+        .unwrap();
+        let track = Track::new(&local_edge, 1e-6).unwrap();
+        let (_, _, at) = iso_track_along(&local, &track, 1e-6).unwrap().unwrap();
+        assert!((at - 0.25).abs() < 1e-6, "{at}");
         let p = s.control_points();
         for k in 0..3 {
             for c in 0..3 {
