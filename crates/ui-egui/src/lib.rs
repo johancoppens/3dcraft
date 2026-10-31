@@ -40,6 +40,7 @@ pub mod backend;
 pub mod camera;
 pub mod control;
 pub mod direct;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod encoder;
 pub mod files;
 pub mod fonts;
