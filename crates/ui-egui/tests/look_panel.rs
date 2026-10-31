@@ -197,7 +197,7 @@ fn every_control_of_the_studio_panel_drives_the_look_state() {
 /// In a narrow, short window the panel stays inside it (its options
 /// scroll), and its header folds it to one line and unfolds it again.
 #[test]
-fn the_studio_panel_fits_a_small_window_and_folds_away() {
+fn the_studio_panel_fits_a_small_window_and_closes_from_its_caret() {
     let mut session = Session::new(Workspace::none());
     run(&mut session, "file.new", json!({"units": "mm"}));
     run(&mut session, "feature.block", json!({"size": [20, 20, 10]}));
@@ -221,22 +221,18 @@ fn the_studio_panel_fits_a_small_window_and_folds_away() {
     assert!(screen.contains_rect(panel), "{panel:?} in {screen:?}");
     let unfolded = panel.height();
     assert!(shell.look_panel_open());
-    let at = hit(&shell, "collapse").center();
-    window.click(&mut shell, &mut session, at);
+    // The caret closes it: gone, the look still on; and opens it again
+    // to the same rect.
+    let unfolded_rect = panel;
+    let caret = shell.look_caret().unwrap().center();
+    window.click(&mut shell, &mut session, caret);
     assert!(!shell.look_panel_open());
-    let folded = hit(&shell, "panel");
-    assert!(
-        folded.height() < unfolded / 2.0,
-        "{folded:?} against {unfolded}"
-    );
-    assert!(
-        shell
-            .look_hits()
-            .iter()
-            .all(|(n, _)| n == "collapse" || n == "panel")
-    );
-    let at = hit(&shell, "collapse").center();
-    window.click(&mut shell, &mut session, at);
+    assert!(shell.look_hits().is_empty(), "{:?}", shell.look_hits());
+    assert!(shell.state.look.is_studio());
+    let caret = shell.look_caret().unwrap().center();
+    window.click(&mut shell, &mut session, caret);
     assert!(shell.look_panel_open());
+    assert_eq!(hit(&shell, "panel"), unfolded_rect);
+    assert!(unfolded > 0.0);
     assert!(screen.contains_rect(hit(&shell, "panel")));
 }

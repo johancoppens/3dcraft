@@ -1,171 +1,177 @@
-//! The popovers of the Studio and Analysis chips: a panel of options
-//! anchored under the camera plate, right-aligned against the view cube
-//! (beside it where there is room, under it where there is not), never
-//! over the cube, the plates or the display bar.
+//! The popovers of the Studio and Analysis chips: the chip's options on
+//! the camera plate's own surface, hanging from the plate with a pointer
+//! toward the chip, its right edge on the plate's right edge.
 //!
-//! One shape for both (2026-10-30, the developer: the studio panel sat
-//! loose in the viewport and came back cut off after it was folded): a
-//! header that folds the options away (a click, or Escape), a width from
-//! the tokens (`popover_width`) and a height that follows what the
-//! options hold, so folding and unfolding gives the same rect every time;
-//! the options scroll only when the viewport is too short for them.
+//! One shape for both. The chips are split buttons (2026-10-31, the
+//! developer: the panel did not flow with the view cube, and folded it
+//! was an empty bar): the chip switches the look or the analysis on and
+//! off, the caret on its right opens and closes the options. Closed is
+//! gone (the look stays as it is); switching a chip on opens them. While
+//! a popover is open the view cube moves down under it, or is left out
+//! where there is no room for it there, and comes back when it closes.
+//! The width is the tokens' (`popover_width`), the height follows what
+//! the options hold; they scroll only where the viewport is too short.
 
 use super::Shell;
 use super::controls::ControlsLayout;
-use crate::theme::{Tokens, color};
+use crate::theme::{Tokens, color_alpha};
 use egui::{Rect, pos2, vec2};
+
+/// The plates and the triad a popover, or the cube moved under it, must
+/// end above.
+fn below(layout: &ControlsLayout) -> [Option<Rect>; 4] {
+    [
+        layout.bar,
+        layout.section_plate,
+        layout.player_plate,
+        layout.triad,
+    ]
+}
+
+/// The lowest bottom in the columns `left..right` of the viewport's
+/// `area`: a gap above every plate or the triad those columns cross.
+fn bottom_in(area: Rect, layout: &ControlsLayout, gap: f32, left: f32, right: f32) -> f32 {
+    below(layout)
+        .into_iter()
+        .flatten()
+        .filter(|r| r.right() > left && r.left() < right)
+        .fold(area.bottom(), |b, r| b.min(r.top() - gap))
+}
 
 /// Where a popover may go in the viewport `rect` whose controls are laid
 /// out as `layout`: its top left corner, its width and the most height
-/// it may take. Under the camera plate, its right edge a gap left of the
-/// view cube when it fits there; else under the cube against the right
-/// margin, narrower where it would reach the triad; above the display bar
-/// and the triad where its columns cross them. `None` when there is no
-/// room for its header and a row.
+/// it may take. Hanging from the camera plate (a gap under it, the
+/// pointer in that gap), its right edge on the plate's right edge, as
+/// wide as `popover_width` or the room left of that edge; above the
+/// display bar and the triad where its columns cross them. The cube does
+/// not bound it: the cube moves out of its way ([`cube_out_of_the_way`]).
+/// `None` when there is no room for two rows.
 pub fn popover_place(rect: Rect, layout: &ControlsLayout, tokens: &Tokens) -> Option<Rect> {
     if !rect.is_finite() {
         return None;
     }
     let area = rect.shrink(tokens.nav_margin);
     let gap = tokens.nav_gap;
-    let width = tokens.popover_width.min(area.width());
-    let least = 2.0 * tokens.nav_height + 2.0 * tokens.nav_inset;
-    if !(width.is_finite() && width > 0.0) {
-        return None;
-    }
-    // The plates and the triad below it: the popover ends a gap above
-    // those its columns cross.
-    let below = [
-        layout.bar,
-        layout.section_plate,
-        layout.player_plate,
-        layout.triad,
-    ];
-    let bottom = |left: f32, right: f32| {
-        below
-            .into_iter()
-            .flatten()
-            .filter(|r| r.right() > left && r.left() < right)
-            .fold(area.bottom(), |b, r| b.min(r.top() - gap))
+    let (right, top) = match layout.camera_plate {
+        Some(plate) => (plate.right().min(area.right()), plate.bottom() + gap),
+        None => (area.right(), area.top()),
     };
-    let below_plate = layout.camera_plate.map_or(area.top(), |p| p.bottom() + gap);
-    // (right, top, width) in the order they are tried.
-    let mut places = Vec::new();
-    match layout.cube {
-        Some(cube) => {
-            // Beside the cube, under the plate.
-            let right = cube.left() - gap;
-            if right - area.left() >= width {
-                places.push((right, below_plate, width));
-            }
-            // Under the cube; then, narrower, clear of the triad.
-            places.push((area.right(), cube.bottom() + gap, width));
-            if let Some(triad) = layout.triad {
-                let narrow = (area.right() - triad.right() - gap).min(width);
-                places.push((area.right(), cube.bottom() + gap, narrow));
-            }
-        }
-        None => places.push((area.right(), below_plate, width)),
-    }
-    places.into_iter().find_map(|(right, top, width)| {
-        let left = right - width;
-        let height = bottom(left, right) - top;
-        (width.is_finite() && width >= least && height.is_finite() && height >= least)
-            .then(|| Rect::from_min_size(pos2(left, top), vec2(width, height)))
-    })
+    let width = tokens.popover_width.min(right - area.left());
+    let least = 2.0 * tokens.nav_height + 2.0 * tokens.nav_inset;
+    let left = right - width;
+    let height = bottom_in(area, layout, gap, left, right) - top;
+    (width.is_finite() && width >= least && height.is_finite() && height >= least)
+        .then(|| Rect::from_min_size(pos2(left, top), vec2(width, height)))
 }
 
-/// What a popover drew: its header (the fold) and the whole panel.
-pub(super) struct Drawn {
-    pub header: Rect,
-    pub panel: Rect,
+/// Where the view cube goes while the popover `panel` is open: where it
+/// was when the two do not meet; else a gap under the panel, against the
+/// same right edge, when it fits there above the plates and the triad;
+/// else nowhere (it is left out until the popover closes).
+pub fn cube_out_of_the_way(
+    cube: Rect,
+    panel: Rect,
+    rect: Rect,
+    layout: &ControlsLayout,
+    tokens: &Tokens,
+) -> Option<Rect> {
+    let gap = tokens.nav_gap;
+    if !cube.intersects(panel.expand(gap * 0.5)) {
+        return Some(cube);
+    }
+    let area = rect.shrink(tokens.nav_margin);
+    let moved = cube.translate(vec2(0.0, panel.bottom() + gap - cube.top()));
+    let bottom = bottom_in(area, layout, gap, moved.left(), moved.right());
+    (moved.is_finite() && moved.bottom() <= bottom && area.contains_rect(moved)).then_some(moved)
+}
+
+/// The chip of a split button and its caret: the caret is the right
+/// `nav_caret_width` of `rect`.
+pub fn split_chip(rect: Rect, tokens: &Tokens) -> (Rect, Rect) {
+    let caret = tokens.nav_caret_width.clamp(0.0, rect.width().max(0.0));
+    let x = rect.right() - caret;
+    (
+        Rect::from_min_max(rect.min, pos2(x, rect.bottom())),
+        Rect::from_min_max(pos2(x, rect.top()), rect.max),
+    )
 }
 
 impl Shell {
-    /// A popover called `title` at `place` ([`popover_place`]); `open`
-    /// unfolds its options, drawn by `options`, and is flipped by a click
-    /// on the header.
+    /// A popover at `place` ([`popover_place`]) whose pointer points at
+    /// `chip`, its options drawn by `options` on the plates' surface.
+    /// Returns the panel's rect.
     pub(super) fn popover(
         &mut self,
         ui: &mut egui::Ui,
         id: &str,
-        title: &str,
         place: Rect,
-        open: &mut bool,
+        chip: Rect,
         options: impl FnOnce(&mut Self, &mut egui::Ui),
-    ) -> Drawn {
+    ) -> Rect {
         let tokens = self.tokens;
         let stroke = 1.0;
         let inset = tokens.nav_inset;
         let inner_width = (place.width() - 2.0 * (inset + stroke)).max(0.0);
-        let mut header = Rect::NOTHING;
+        let fill = color_alpha(tokens.plate_fill, tokens.plate_opacity);
+        let rim = color_alpha(tokens.plate_rim, tokens.plate_rim_opacity);
         let area = egui::Area::new(egui::Id::new(id))
             .fixed_pos(place.min)
             .constrain(false)
             .show(ui.ctx(), |ui| {
-                // Its own room, not the size the area had last frame (folded,
-                // that would keep the options cut short once unfolded).
+                // Its own room, not the size the area had last frame.
                 let room = Rect::from_min_size(ui.max_rect().min, place.size());
                 ui.scope_builder(egui::UiBuilder::new().max_rect(room), |ui| {
+                    ui.style_mut().visuals = tokens.plate_visuals();
                     egui::Frame::new()
-                        .fill(color(tokens.panel_fill))
-                        .stroke(egui::Stroke::new(stroke, color(tokens.plate_rim)))
-                        .corner_radius(tokens.nav_control_radius)
+                        .fill(fill)
+                        .stroke(egui::Stroke::new(stroke, rim))
+                        .corner_radius(tokens.nav_radius)
                         .inner_margin(inset)
                         .show(ui, |ui| {
                             ui.set_width(inner_width);
-                            let (rect, response) = ui.allocate_exact_size(
-                                vec2(inner_width, tokens.nav_height),
-                                egui::Sense::click(),
-                            );
-                            header = rect;
-                            let ink = if response.hovered() {
-                                color(tokens.text)
-                            } else {
-                                color(tokens.text_dim)
-                            };
-                            ui.painter().text(
-                                pos2(rect.left(), rect.center().y),
-                                egui::Align2::LEFT_CENTER,
-                                title,
-                                egui::FontId::proportional(tokens.control_font),
-                                ink,
-                            );
-                            chevron(ui.painter(), rect, *open, ink, &tokens);
-                            let response = response.on_hover_text(if *open {
-                                "Fold the options away (Esc)"
-                            } else {
-                                "Show the options"
-                            });
-                            if response.clicked() {
-                                *open = !*open;
-                                ui.ctx().request_repaint();
-                            }
-                            if *open {
-                                let spacing = ui.spacing().item_spacing.y;
-                                let room = place.height()
-                                    - 2.0 * (inset + stroke)
-                                    - tokens.nav_height
-                                    - spacing
-                                    - 1.0;
-                                egui::ScrollArea::both()
-                                    .id_salt((id, "options"))
-                                    .auto_shrink([false, true])
-                                    .max_height(room.max(0.0))
-                                    .show(ui, |ui| options(self, ui));
-                            }
+                            let room = place.height() - 2.0 * (inset + stroke) - 1.0;
+                            egui::ScrollArea::both()
+                                .id_salt((id, "options"))
+                                .auto_shrink([false, true])
+                                .max_height(room.max(0.0))
+                                .show(ui, |ui| options(self, ui));
                         });
                 });
             });
-        Drawn {
-            header,
-            panel: area.response.rect,
+        let panel = area.response.rect;
+        // The pointer: a small triangle on the top edge, under the chip
+        // where the panel reaches it, else at the panel's nearer end.
+        let reach = tokens.popover_pointer;
+        if reach > 0.0 && panel.is_finite() && panel.width() > 0.0 {
+            let side = f32::from(tokens.nav_radius) + reach;
+            let lo = panel.left() + side;
+            let hi = panel.right() - side;
+            if lo <= hi {
+                let x = chip.center().x.clamp(lo, hi);
+                // Its base over the rim, so the two read as one outline.
+                let top = panel.top() + stroke;
+                let painter = ui.ctx().layer_painter(area.response.layer_id);
+                let points = vec![
+                    pos2(x - reach, top),
+                    pos2(x, top - reach),
+                    pos2(x + reach, top),
+                ];
+                painter.add(egui::Shape::convex_polygon(
+                    points.clone(),
+                    fill,
+                    egui::Stroke::NONE,
+                ));
+                let line = egui::Stroke::new(stroke, rim);
+                painter.line_segment([points[0], points[1]], line);
+                painter.line_segment([points[1], points[2]], line);
+            }
         }
+        panel
     }
 
-    /// Escape closes the narrow layout's open drawer, else folds an open
+    /// Escape closes the narrow layout's open drawer, else an open
     /// popover (the analysis', else the studio look's); `false` when
-    /// none was open.
+    /// none was open. The look or the analysis stays on.
     pub(super) fn fold_popover(&mut self) -> bool {
         if self.narrow() && self.state.panels.drawer {
             // The narrow layout's drawer first.
@@ -186,29 +192,6 @@ impl Shell {
     }
 }
 
-/// The fold's chevron at the right end of the header `rect`: pointing
-/// down while the options are open, right while folded.
-fn chevron(painter: &egui::Painter, rect: Rect, open: bool, ink: egui::Color32, tokens: &Tokens) {
-    let r = tokens.nav_icon_size * 0.22;
-    let c = pos2(rect.right() - tokens.nav_icon_size * 0.5, rect.center().y);
-    let points = if open {
-        [
-            c + vec2(-r, -r * 0.5),
-            c + vec2(0.0, r * 0.5),
-            c + vec2(r, -r * 0.5),
-        ]
-    } else {
-        [
-            c + vec2(-r * 0.5, -r),
-            c + vec2(r * 0.5, 0.0),
-            c + vec2(-r * 0.5, r),
-        ]
-    };
-    let stroke = egui::Stroke::new(tokens.nav_icon_width, ink);
-    painter.line_segment([points[0], points[1]], stroke);
-    painter.line_segment([points[1], points[2]], stroke);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,8 +199,10 @@ mod tests {
 
     /// At every size from tiny to large, with the section on and off: the
     /// place is inside the viewport less its margin and clear of the
-    /// cube, the plates and the display bar; at the sizes the window
-    /// opens at it is beside the cube.
+    /// plates and the triad; the cube, moved out of its way, is clear of
+    /// it and of every other part, or left out; at the sizes the window
+    /// opens at the popover hangs from the camera plate, right edges
+    /// aligned, and the cube still has a place under it.
     #[test]
     fn the_popover_keeps_clear_of_every_control() {
         // The desktop's sizes, and touch sizes with the compact player's
@@ -258,26 +243,71 @@ mod tests {
                     let area = rect.shrink(tokens.nav_margin);
                     assert!(area.contains_rect(place), "{place:?} in {area:?}");
                     for (name, part) in layout.parts() {
+                        if name == "cube" {
+                            continue;
+                        }
                         assert!(
                             !part.intersects(place),
                             "{w}×{h} {section}: over the {name}: {place:?} {part:?}"
                         );
                     }
+                    if let Some(plate) = layout.camera_plate {
+                        assert!(place.top() > plate.bottom(), "{w}×{h}");
+                        assert!(place.right() <= plate.right() + 1e-3, "{w}×{h}");
+                    }
+                    // The cube out of the way of the whole place (the
+                    // most the panel takes).
+                    if let Some(cube) = layout.cube
+                        && let Some(moved) =
+                            cube_out_of_the_way(cube, place, rect, &layout, &tokens)
+                    {
+                        assert!(area.contains_rect(moved), "{w}×{h}: {moved:?}");
+                        assert!(!moved.intersects(place), "{w}×{h}: {moved:?} {place:?}");
+                        for (name, part) in layout.parts() {
+                            if name != "cube" {
+                                assert!(
+                                    !part.intersects(moved),
+                                    "{w}×{h} {section}: cube over the {name}"
+                                );
+                            }
+                        }
+                    }
                 }
             }
         }
         assert!(shown > 100, "{shown}");
-        for (w, h) in [(1300.0, 850.0), (800.0, 560.0)] {
+        for (w, h) in [(1600.0, 1000.0), (1024.0, 700.0)] {
             let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(w, h));
             let layout = controls_layout(rect, &tokens, &widths, false);
             let place = popover_place(rect, &layout, &tokens).unwrap();
+            let plate = layout.camera_plate.unwrap();
+            assert_eq!(place.right(), plate.right());
+            assert_eq!(place.top(), plate.bottom() + tokens.nav_gap);
+            // A panel of a typical height (the studio look's options):
+            // the cube goes under it.
+            let panel = Rect::from_min_size(place.min, vec2(place.width(), 300.0));
             let cube = layout.cube.unwrap();
-            assert_eq!(place.right(), cube.left() - tokens.nav_gap);
-            assert_eq!(
-                place.top(),
-                layout.camera_plate.unwrap().bottom() + tokens.nav_gap
-            );
+            let moved = cube_out_of_the_way(cube, panel, rect, &layout, &tokens).unwrap();
+            assert_eq!(moved.top(), panel.bottom() + tokens.nav_gap);
+            assert_eq!(moved.right(), cube.right());
         }
+    }
+
+    #[test]
+    fn the_caret_is_the_right_end_of_the_chip() {
+        let tokens = Tokens::default();
+        let chip = Rect::from_min_size(pos2(100.0, 10.0), vec2(90.0, 28.0));
+        let (main, caret) = split_chip(chip, &tokens);
+        assert_eq!(main.left(), chip.left());
+        assert_eq!(caret.right(), chip.right());
+        assert_eq!(main.right(), caret.left());
+        assert_eq!(caret.width(), tokens.nav_caret_width);
+        // A chip narrower than the caret is all caret, never negative.
+        let (main, caret) = split_chip(
+            Rect::from_min_size(pos2(0.0, 0.0), vec2(5.0, 28.0)),
+            &tokens,
+        );
+        assert!(main.width() >= 0.0 && caret.width() <= 5.0);
     }
 
     #[test]

@@ -354,6 +354,14 @@ pub struct Tokens {
     /// points (the height follows what they hold, scrolling only where
     /// the viewport is too short).
     pub popover_width: f32,
+    /// The caret on the right of the Studio and Analysis chips, which opens
+    /// and closes their popover: its width in points (a split button).
+    pub nav_caret_width: f32,
+    /// How far the popover's pointer reaches up from its top edge toward
+    /// its chip, in points (within the gap under the camera plate).
+    pub popover_pointer: f32,
+    /// The one width of the sliders in a popover, in points.
+    pub popover_slider_width: f32,
     /// Below `narrow_width` points of window width the shell lays out for
     /// a phone or a small tablet (and a narrow desktop window alike): the
     /// side panel becomes a drawer behind a button, at most
@@ -623,6 +631,9 @@ impl Tokens {
             tree_max_share: 0.5,
             tree_split_grip: 6.0,
             popover_width: 340.0,
+            nav_caret_width: 18.0,
+            popover_pointer: 6.0,
+            popover_slider_width: 130.0,
             narrow_width: 800.0,
             drawer_share: 0.85,
             touch_target: 40.0,
@@ -701,6 +712,38 @@ impl Tokens {
         // text field's focus ring take the info ink.
         visuals.hyperlink_color = color(self.info_ink);
         visuals.selection.stroke = egui::Stroke::new(1.0, color(self.info_ink));
+        self.round(&mut visuals);
+        visuals
+    }
+
+    /// The visuals of what sits on a plate over the viewport (the Studio
+    /// and Analysis popovers): egui's dark ones in the plates' colours, so
+    /// a popover reads as part of the camera plate it hangs from: text in
+    /// `plate_text`, a chosen option filled with the accent as a chosen
+    /// segment is, widgets lit with the glass tint.
+    pub fn plate_visuals(&self) -> egui::Visuals {
+        let mut visuals = if is_light(self.plate_fill) {
+            egui::Visuals::light()
+        } else {
+            egui::Visuals::dark()
+        };
+        visuals.panel_fill = color(self.plate_fill);
+        visuals.window_fill = color(self.plate_fill);
+        visuals.override_text_color = Some(color(self.plate_text));
+        visuals.hyperlink_color = color(self.info_code);
+        visuals.selection.bg_fill = color_alpha(self.accent, self.nav_on_opacity);
+        visuals.selection.stroke = egui::Stroke::new(1.0, color(self.knob));
+        visuals.widgets.inactive.weak_bg_fill = color_alpha(self.glass, self.control_opacity);
+        visuals.widgets.inactive.bg_fill = color_alpha(self.glass, self.control_opacity);
+        visuals.widgets.hovered.weak_bg_fill =
+            color_alpha(self.glass, self.control_opacity.saturating_mul(2));
+        visuals.widgets.hovered.bg_fill =
+            color_alpha(self.glass, self.control_opacity.saturating_mul(2));
+        visuals.widgets.active.weak_bg_fill =
+            color_alpha(self.glass, self.control_opacity.saturating_mul(3));
+        visuals.widgets.active.bg_fill =
+            color_alpha(self.glass, self.control_opacity.saturating_mul(3));
+        visuals.extreme_bg_color = color_alpha(self.glass, self.control_opacity);
         self.round(&mut visuals);
         visuals
     }

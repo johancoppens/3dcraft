@@ -1,9 +1,12 @@
-//! The popovers of the Studio and Analysis chips (`shell/popover.rs`):
-//! at a large, a middling and a small window, each is inside the
-//! viewport and clear of the view cube; opened and closed twice from its
-//! chip it comes back at the very same rect; folded and unfolded (by its
-//! header, and by Escape) it keeps its size. The view cube is flush with
-//! the viewport's right margin. Driven by clicks in real frames.
+//! The popovers of the Studio and Analysis split buttons
+//! (`shell/popover.rs`): at a large, a middling, a small and a phone's
+//! window, each hangs from the camera plate, right edges aligned, inside
+//! the viewport and clear of every control, the view cube moved down
+//! under it (or out) while it is open and back where it was when it
+//! closes; switched off and on twice from its chip, and closed and opened
+//! twice from its caret (and by Escape), it comes back at the very same
+//! rect, the look or the analysis staying on while it is closed. A drag
+//! on a slider never closes it. Driven by clicks in real frames.
 
 #![allow(
     clippy::unwrap_used,
@@ -120,14 +123,34 @@ fn open(shell: &Shell, which: Which) -> bool {
 
 fn chip(shell: &Shell, which: Which) -> Pos2 {
     let layout = shell.controls_layout().unwrap();
+    let rect = match which {
+        Which::Studio => layout.studio.unwrap(),
+        Which::Analysis => layout.analysis.unwrap(),
+    };
+    craft3d_ui_egui::shell::split_chip(rect, &shell.tokens)
+        .0
+        .center()
+}
+
+fn caret(shell: &Shell, which: Which) -> Pos2 {
     match which {
-        Which::Studio => layout.studio.unwrap().center(),
-        Which::Analysis => layout.analysis.unwrap().center(),
+        Which::Studio => shell.look_caret(),
+        Which::Analysis => shell.analysis_caret(),
+    }
+    .unwrap()
+    .center()
+}
+
+fn on(shell: &Shell, which: Which) -> bool {
+    match which {
+        Which::Studio => shell.state.look.is_studio(),
+        Which::Analysis => shell.state.analysis.is_on(),
     }
 }
 
-/// The panel is inside the viewport and clear of the cube and the
-/// plates.
+/// The panel is inside the viewport, hangs from the camera plate with
+/// its right edge on the plate's, and is clear of the cube (where it
+/// went) and the plates.
 fn placed_well(shell: &Shell, which: Which, size: egui::Vec2) -> Rect {
     let panel = hit(shell, which, "panel")
         .unwrap_or_else(|| panic!("{which:?} at {size:?}: no panel: {:?}", hits(shell, which)));
@@ -143,15 +166,26 @@ fn placed_well(shell: &Shell, which: Which, size: egui::Vec2) -> Rect {
             "{which:?} at {size:?}: over the {name}: {panel:?} {part:?}"
         );
     }
+    let plate = layout.camera_plate.unwrap();
+    assert!(
+        (panel.right() - plate.right()).abs() < 0.5,
+        "{which:?} at {size:?}: {panel:?} under {plate:?}"
+    );
+    assert!(
+        panel.top() > plate.bottom() && panel.top() - plate.bottom() <= shell.tokens.nav_gap + 0.5,
+        "{which:?} at {size:?}: {panel:?} under {plate:?}"
+    );
+    assert_eq!(layout.cube, shell.view_cube_rect(), "{which:?} at {size:?}");
     panel
 }
 
 #[test]
-fn the_popovers_sit_clear_of_the_cube_and_keep_their_size() {
+fn the_popovers_hang_from_the_plate_and_keep_their_size() {
     for size in [
         vec2(1600.0, 1000.0),
         vec2(1024.0, 700.0),
         vec2(640.0, 420.0),
+        vec2(390.0, 844.0),
     ] {
         let mut session = part();
         let mut shell = Shell::with_renderer(RendererChoice::Cpu);
@@ -165,7 +199,8 @@ fn the_popovers_sit_clear_of_the_cube_and_keep_their_size() {
         // camera plate.
         let viewport = shell.viewport_rect().unwrap();
         let tokens = shell.tokens;
-        if let Some(cube) = shell.view_cube_rect() {
+        let home = shell.view_cube_rect();
+        if let Some(cube) = home {
             assert!(
                 (viewport.right() - tokens.nav_margin - cube.right()).abs() < 0.5,
                 "{size:?}: {cube:?} in {viewport:?}"
@@ -176,54 +211,118 @@ fn the_popovers_sit_clear_of_the_cube_and_keep_their_size() {
         for which in [Which::Studio, Which::Analysis] {
             // Off: no popover.
             assert!(hits(&shell, which).is_empty(), "{which:?} at {size:?}");
-            // The chip opens it, unfolded.
+            // The chip switches it on, its popover open.
             let at = chip(&shell, which);
             window.click(&mut shell, &mut session, at);
-            assert!(open(&shell, which), "{which:?} at {size:?}");
+            assert!(
+                on(&shell, which) && open(&shell, which),
+                "{which:?} at {size:?}"
+            );
             let first = placed_well(&shell, which, size);
-            // Closed and opened from the chip, twice: the same rect.
+            // At the desktop's sizes the cube has a place under it.
+            if size.x >= 1000.0 {
+                let cube = shell.view_cube_rect().unwrap();
+                assert!(cube.top() >= first.bottom(), "{which:?} at {size:?}");
+                assert_eq!(cube.right(), home.unwrap().right());
+            }
+            // Off and on from the chip, twice: the same rect.
             for cycle in 0..2 {
                 let at = chip(&shell, which);
                 window.click(&mut shell, &mut session, at);
+                assert!(!on(&shell, which), "{which:?} at {size:?}, cycle {cycle}");
                 assert!(
                     hits(&shell, which).is_empty(),
                     "{which:?} at {size:?}, cycle {cycle}: still shown"
                 );
+                assert_eq!(shell.view_cube_rect(), home, "{which:?} at {size:?}");
                 let at = chip(&shell, which);
                 window.click(&mut shell, &mut session, at);
                 let again = placed_well(&shell, which, size);
                 assert_eq!(again, first, "{which:?} at {size:?}, cycle {cycle}");
             }
-            // Folded by its header and unfolded: the same rect each time.
+            // Closed from the caret and opened again: gone while closed,
+            // the look or the analysis still on, the cube back; the same
+            // rect each time.
             for cycle in 0..2 {
-                let header = hit(&shell, which, "collapse").unwrap();
-                window.click(&mut shell, &mut session, header.center());
+                let at = caret(&shell, which);
+                window.click(&mut shell, &mut session, at);
                 assert!(!open(&shell, which), "{which:?} at {size:?}");
-                let folded = placed_well(&shell, which, size);
-                assert_eq!(folded.min, first.min, "{which:?} at {size:?}");
-                assert_eq!(folded.width(), first.width(), "{which:?} at {size:?}");
                 assert!(
-                    folded.height() < first.height(),
-                    "{which:?} at {size:?}: {folded:?} against {first:?}"
+                    on(&shell, which),
+                    "{which:?} at {size:?}: closing switched it off"
                 );
-                let header = hit(&shell, which, "collapse").unwrap();
-                window.click(&mut shell, &mut session, header.center());
+                assert!(hits(&shell, which).is_empty(), "{which:?} at {size:?}");
+                assert_eq!(shell.view_cube_rect(), home, "{which:?} at {size:?}");
+                let at = caret(&shell, which);
+                window.click(&mut shell, &mut session, at);
                 assert!(open(&shell, which), "{which:?} at {size:?}");
-                let unfolded = placed_well(&shell, which, size);
-                assert_eq!(unfolded, first, "{which:?} at {size:?}, cycle {cycle}");
+                let reopened = placed_well(&shell, which, size);
+                assert_eq!(reopened, first, "{which:?} at {size:?}, cycle {cycle}");
             }
-            // Escape folds it; the header unfolds it to the same rect.
+            // Escape closes it, the look stays; the caret opens it to the
+            // same rect.
             window.escape(&mut shell, &mut session);
             assert!(!open(&shell, which), "{which:?} at {size:?}: Escape");
-            let header = hit(&shell, which, "collapse").unwrap();
-            window.click(&mut shell, &mut session, header.center());
+            assert!(on(&shell, which), "{which:?} at {size:?}: Escape");
+            assert!(hits(&shell, which).is_empty(), "{which:?} at {size:?}");
+            let at = caret(&shell, which);
+            window.click(&mut shell, &mut session, at);
             assert_eq!(placed_well(&shell, which, size), first);
-            // Off again from the chip.
+            // Off again from the chip; the cube is back.
             let at = chip(&shell, which);
             window.click(&mut shell, &mut session, at);
             assert!(hits(&shell, which).is_empty(), "{which:?} at {size:?}");
+            assert_eq!(shell.view_cube_rect(), home, "{which:?} at {size:?}");
         }
+        // The caret of a chip that is off switches it on, open.
+        let at = caret(&shell, Which::Studio);
+        window.click(&mut shell, &mut session, at);
+        assert!(on(&shell, Which::Studio) && open(&shell, Which::Studio));
+        placed_well(&shell, Which::Studio, size);
     }
+}
+
+/// A drag along a slider of the studio popover changes its value and
+/// never closes the popover, also when it ends outside it.
+#[test]
+fn dragging_a_slider_keeps_the_popover_open() {
+    let mut session = part();
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window {
+        ctx: egui::Context::default(),
+        size: vec2(1024.0, 700.0),
+        time: 0.0,
+    };
+    window.frames(&mut shell, &mut session, 4);
+    let at = chip(&shell, Which::Studio);
+    window.click(&mut shell, &mut session, at);
+    let track = hit(&shell, Which::Studio, "exposure").unwrap();
+    let before = shell.state.look.exposure;
+    let from = track.center();
+    let to = from - vec2(track.width() * 0.4 + 300.0, -200.0);
+    let button = |pos, pressed| Event::PointerButton {
+        pos,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let mut steps = vec![vec![Event::PointerMoved(from)], vec![button(from, true)]];
+    for k in 1..=8 {
+        let p = from + (to - from) * (k as f32 / 8.0);
+        steps.push(vec![Event::PointerMoved(p)]);
+    }
+    steps.push(vec![button(to, false)]);
+    for events in steps {
+        window.frame(&mut shell, &mut session, events);
+    }
+    window.frames(&mut shell, &mut session, 3);
+    assert!(
+        shell.state.look.exposure < before,
+        "{}",
+        shell.state.look.exposure
+    );
+    assert!(shell.look_panel_open());
+    assert!(hit(&shell, Which::Studio, "panel").is_some());
 }
 
 /// Escape with no popover open still clears the selection over the

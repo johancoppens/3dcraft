@@ -1,7 +1,8 @@
 //! Pictures of the whole window for a UX audit (docs/development.md ›
 //! *The view cube and the controls over the viewport*): the start
 //! screen, a part, an assembly playing, the studio look with its panel
-//! (and again after the panel was folded and unfolded), an analysis, a
+//! (and again after its popover was closed from the Studio caret and
+//! opened again), an analysis, a
 //! section, the drawer of the narrow layout, the Parameters tab and an
 //! error in the status bar, each at 1600 × 1000 and 1024 × 700 points and
 //! on a phone (390 × 844) and a tablet (820 × 1180). Painted by egui's own wgpu renderer
@@ -334,14 +335,6 @@ fn set(shell: &mut Shell, session: &mut Session, params: Value) {
         .unwrap_or_else(|e| panic!("ui.set {params}: {e}"));
 }
 
-fn hit(shell: &Shell, name: &str) -> Option<egui::Rect> {
-    shell
-        .look_hits()
-        .iter()
-        .find(|(n, _)| n == name)
-        .map(|(_, r)| *r)
-}
-
 // Pictures only, 48 PNGs in the log: run on demand with
 // `cargo test -p craft3d-ui-egui --test ui_audit_evidence -- --ignored --nocapture`.
 #[test]
@@ -412,18 +405,19 @@ fn the_window_in_pictures_for_a_ux_audit() {
             setup(&mut shell, &mut session);
             w.frames(&mut shell, &mut session, 12);
             w.show(name);
-            // The studio panel folded and unfolded again.
+            // The studio popover closed from its caret (the look stays on,
+            // the cube comes back) and opened again.
             if name == "studio"
-                && let Some(fold) = hit(&shell, "collapse")
+                && let Some(caret) = shell.look_caret()
             {
-                w.click(&mut shell, &mut session, fold.center());
+                w.click(&mut shell, &mut session, caret.center());
                 w.frames(&mut shell, &mut session, 3);
-                w.show("studio-folded");
-                if let Some(fold) = hit(&shell, "collapse") {
-                    w.click(&mut shell, &mut session, fold.center());
+                w.show("studio-closed");
+                if let Some(caret) = shell.look_caret() {
+                    w.click(&mut shell, &mut session, caret.center());
                 }
                 w.frames(&mut shell, &mut session, 3);
-                w.show("studio-unfolded");
+                w.show("studio-reopened");
             }
             // The pointer over the Studio chip.
             if name == "part"

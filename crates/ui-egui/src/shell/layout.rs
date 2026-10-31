@@ -4,7 +4,8 @@
 //!   (*Fit* and *Iso*, actions; a divider; *Persp* | *Ortho*, a choice) and
 //!   under it, against the same right margin, the view cube (2026-10-21;
 //!   it was above; flush right since 2026-10-30). The Studio and Analysis
-//!   chips open their options as popovers (`popover.rs`).
+//!   chips are split buttons whose caret opens their options in a popover
+//!   hanging from the plate; the cube moves under it (`popover.rs`).
 //! - **The display bar** at the bottom centre: *Sketches*, *Datums* and
 //!   *Edges* (toggles) and the *See-through* field, a divider, the *Section*
 //!   toggle. While the section is on its options open inline to the right
@@ -356,8 +357,10 @@ impl Nav<'_> {
         // The Studio look beside the projection: how the view is drawn,
         // on the plate with room to spare (the display bar is full at a
         // window of 1280 × 800 with the section's options open).
-        let studio = self.chip(self.w.studio);
-        let analysis = self.chip(self.w.analysis);
+        // Split buttons: the chip, and a caret on its right that opens
+        // and closes the popover of its options.
+        let studio = self.chip(self.w.studio) + t.nav_caret_width;
+        let analysis = self.chip(self.w.analysis) + t.nav_caret_width;
         let camera_w = pad + fit + sp + iso + gap + projection + gap + studio + sp + analysis + pad;
         let side = t.nav_cube_size;
         // Both flush against the right margin, the cube under the plate
@@ -703,6 +706,63 @@ fn toggle(
     }
 }
 
+/// The caret of a split button: on the accent with the chip while it is
+/// `on`, a divider on its left; a chevron that points down while the
+/// popover is closed and up while it is `open`.
+fn caret(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    id: &str,
+    on: bool,
+    open: bool,
+    tokens: &Tokens,
+) -> egui::Response {
+    let response = ui.interact(rect, ui.id().with(("nav-caret", id)), egui::Sense::click());
+    let painter = ui.painter();
+    let radius = egui::CornerRadius::same(tokens.nav_control_radius);
+    if on {
+        painter.rect_filled(
+            rect,
+            radius,
+            color_alpha(tokens.accent, tokens.nav_on_opacity),
+        );
+    } else {
+        painter.rect_stroke(
+            rect.shrink(0.5),
+            radius,
+            egui::Stroke::new(
+                1.0,
+                color_alpha(tokens.nav_off_text, tokens.nav_off_rim_opacity),
+            ),
+            egui::StrokeKind::Inside,
+        );
+    }
+    if response.hovered() || open {
+        painter.rect_filled(
+            rect,
+            radius,
+            color_alpha(tokens.glass, tokens.control_opacity),
+        );
+    }
+    let ink = color(if on { tokens.knob } else { tokens.nav_off_text });
+    // The divider between the chip and its caret.
+    let inset = rect.height() * tokens.divider_inset;
+    painter.line_segment(
+        [
+            pos2(rect.left(), rect.top() + inset),
+            pos2(rect.left(), rect.bottom() - inset),
+        ],
+        egui::Stroke::new(tokens.divider_width, ink.gamma_multiply(0.45)),
+    );
+    let r = tokens.nav_icon_size * 0.2;
+    let c = rect.center();
+    let dy = if open { -r * 0.5 } else { r * 0.5 };
+    let stroke = egui::Stroke::new(tokens.nav_icon_width, ink);
+    painter.line_segment([c + vec2(-r, -dy), c + vec2(0.0, dy)], stroke);
+    painter.line_segment([c + vec2(0.0, dy), c + vec2(r, -dy)], stroke);
+    response
+}
+
 /// An action: an icon and a name on no fill, lit under the pointer.
 fn button(
     ui: &mut egui::Ui,
@@ -917,6 +977,17 @@ impl Shell {
         self.nav_analysis(ui, &layout, named, popover);
         self.nav_show(ui, &layout, named);
         self.nav_section(ui, &layout, named, scene);
+        // An open popover has the corner: the cube moves down under it,
+        // or out until it closes.
+        let panel = [&self.look_hits, &self.analysis_hits]
+            .into_iter()
+            .flat_map(|hits| hits.iter())
+            .find(|(name, _)| name == "panel")
+            .map(|(_, r)| *r);
+        if let (Some(cube), Some(panel)) = (layout.cube, panel) {
+            layout.cube = super::cube_out_of_the_way(cube, panel, rect, &layout, &tokens);
+            self.controls_layout = Some(layout);
+        }
         match layout.cube {
             Some(place) => {
                 self.view_cube_rect = Some(place);
@@ -981,7 +1052,8 @@ impl Shell {
         self.camera_clicks(ui, fit, iso, projection, scene);
     }
 
-    /// The Studio look's toggle, on the camera plate.
+    /// The Studio look's split button, on the camera plate: the chip
+    /// switches the look, the caret opens and closes its options.
     fn nav_look(
         &mut self,
         ui: &mut egui::Ui,
@@ -990,12 +1062,16 @@ impl Shell {
         popover: Option<Rect>,
     ) {
         let Some(studio) = layout.studio else {
+            self.look_caret = None;
+            self.look_hits.clear();
             return;
         };
+        let (main, caret_rect) = super::split_chip(studio, &self.tokens);
         let lit = self.state.look.is_studio();
+        let open = lit && self.look_panel_open && !self.state.analysis.is_on();
         if toggle(
             ui,
-            studio,
+            main,
             Chip {
                 id: "studio",
                 icon: Icon::Studio,
@@ -1012,16 +1088,33 @@ impl Shell {
         {
             self.state.look.mode = if lit { "plain" } else { "studio" }.to_string();
             // Switched on, its options open.
-            if !lit {
+            self.look_panel_open = !lit;
+            ui.ctx().request_repaint();
+        }
+        self.look_caret = Some(caret_rect);
+        if caret(ui, caret_rect, "studio", lit, open, &self.tokens)
+            .on_hover_text(if open {
+                "Close the studio look's options (Esc)"
+            } else {
+                "The studio look's options"
+            })
+            .clicked()
+        {
+            if open {
+                self.look_panel_open = false;
+            } else {
+                // The options are the look's: asking for them switches it on.
+                self.state.look.mode = "studio".to_string();
                 self.look_panel_open = true;
             }
             ui.ctx().request_repaint();
         }
-        self.look_panel(ui, popover);
+        self.look_panel(ui, popover, studio);
     }
 
-    /// The Analysis toggle beside Studio, and while an analysis is on its
-    /// options and the legend in the chip's popover.
+    /// The Analysis split button beside Studio: the chip switches an
+    /// analysis on and off, the caret opens and closes its options and
+    /// the legend in the popover.
     fn nav_analysis(
         &mut self,
         ui: &mut egui::Ui,
@@ -1030,13 +1123,15 @@ impl Shell {
         popover: Option<Rect>,
     ) {
         let Some(place) = layout.analysis else {
+            self.analysis_caret = None;
             self.analysis_hits.clear();
             return;
         };
+        let (main, caret_rect) = super::split_chip(place, &self.tokens);
         let on = self.state.analysis.is_on();
         if toggle(
             ui,
-            place,
+            main,
             Chip {
                 id: "analysis",
                 icon: Icon::Analysis,
@@ -1052,19 +1147,37 @@ impl Shell {
         .clicked()
         {
             if on {
-                if self.state.analysis.mode != "none" {
-                    self.analysis_last.clone_from(&self.state.analysis.mode);
-                }
-                self.state.analysis.mode = "none".to_string();
-                self.state.analysis.combs = None;
+                self.analysis_off();
             } else {
-                self.state.analysis.mode.clone_from(&self.analysis_last);
-                // Switched on, its options open.
+                self.analysis_on();
+            }
+            ui.ctx().request_repaint();
+        }
+        let on = self.state.analysis.is_on();
+        let open = on && self.analysis_panel_open;
+        self.analysis_caret = Some(caret_rect);
+        if caret(ui, caret_rect, "analysis", on, open, &self.tokens)
+            .on_hover_text(if open {
+                "Close the analysis' options (Esc)"
+            } else {
+                "The analysis' options"
+            })
+            .clicked()
+        {
+            if open {
+                self.analysis_panel_open = false;
+            } else {
+                if !on {
+                    self.analysis_on();
+                }
                 self.analysis_panel_open = true;
             }
             ui.ctx().request_repaint();
         }
-        let (true, Some(popover)) = (self.state.analysis.is_on(), popover) else {
+        let (true, Some(popover)) = (
+            self.state.analysis.is_on() && self.analysis_panel_open,
+            popover,
+        ) else {
             self.analysis_hits.clear();
             return;
         };
@@ -1072,36 +1185,39 @@ impl Shell {
         let tokens = self.tokens;
         let legend = self.analysis_view.clone();
         let problem = self.analysis_problem.clone();
-        let mut open = self.analysis_panel_open;
-        let drawn = self.popover(
-            ui,
-            "analysis-options",
-            "Analysis",
-            popover,
-            &mut open,
-            |shell, ui| {
-                analysis_options(ui, &mut shell.state.analysis);
-                if let Some(view) = legend.as_deref() {
-                    analysis_legend(ui, view, &tokens);
-                }
-                if let Some(problem) = &problem {
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(problem).color(color(tokens.draft_shallow)),
-                        )
-                        .wrap(),
-                    );
-                }
-            },
-        );
-        self.analysis_panel_open = open;
-        self.analysis_hits = vec![
-            ("collapse".to_string(), drawn.header),
-            ("panel".to_string(), drawn.panel),
-        ];
+        let panel = self.popover(ui, "analysis-options", popover, place, |shell, ui| {
+            analysis_options(ui, &mut shell.state.analysis);
+            if let Some(view) = legend.as_deref() {
+                analysis_legend(ui, view, &tokens);
+            }
+            if let Some(problem) = &problem {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(problem).color(color(tokens.draft_shallow)),
+                    )
+                    .wrap(),
+                );
+            }
+        });
+        self.analysis_hits = vec![("panel".to_string(), panel)];
         if self.state.analysis != before {
             ui.ctx().request_repaint();
         }
+    }
+
+    /// Switches the last analysis on, its options open.
+    fn analysis_on(&mut self) {
+        self.state.analysis.mode.clone_from(&self.analysis_last);
+        self.analysis_panel_open = true;
+    }
+
+    /// Switches the analysis off, remembering which it was.
+    fn analysis_off(&mut self) {
+        if self.state.analysis.mode != "none" {
+            self.analysis_last.clone_from(&self.state.analysis.mode);
+        }
+        self.state.analysis.mode = "none".to_string();
+        self.state.analysis.combs = None;
     }
 
     /// Sketches, Datums, Edges and See-through.

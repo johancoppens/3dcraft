@@ -54,7 +54,7 @@ pub use params::{
     DEBOUNCE, Faults, NOTE_SECONDS, Pacer, Param, ParamAsk, ParamKind, ParamList, Settled,
     ShellCommand, Verdict, reported_faults, settle, verdict,
 };
-pub use popover::popover_place;
+pub use popover::{cube_out_of_the_way, popover_place, split_chip};
 pub use recent::{MAX_RECENT, RecentEntry, RecentFiles};
 pub use start::{AgentSetup, EXAMPLES, Example, ExampleSection, run_example};
 pub use tabs::{
@@ -690,11 +690,15 @@ pub struct Shell {
     show_hits: Vec<(&'static str, egui::Rect)>,
     /// Where the studio look's options were drawn ([`look_panel::LookHits`]).
     look_hits: look_panel::LookHits,
-    /// The studio look's panel is unfolded (view state of the window).
+    /// The studio look's popover is open (view state of the window).
     look_panel_open: bool,
-    /// The Analysis popover's options are unfolded, and where its header
-    /// and panel were drawn (`collapse`, `panel`).
+    /// The Analysis popover is open, and where its panel was drawn
+    /// (`panel`).
     analysis_panel_open: bool,
+    /// Where the carets of the Studio and Analysis split buttons were
+    /// drawn (they open and close the popovers).
+    look_caret: Option<egui::Rect>,
+    analysis_caret: Option<egui::Rect>,
     analysis_hits: Vec<(String, egui::Rect)>,
     /// Where Fit, iso and the projection's two halves were drawn.
     camera_hits: Vec<(&'static str, egui::Rect)>,
@@ -1134,6 +1138,8 @@ impl Shell {
             look_hits: Vec::new(),
             look_panel_open: true,
             analysis_panel_open: true,
+            look_caret: None,
+            analysis_caret: None,
             analysis_hits: Vec::new(),
             camera_hits: Vec::new(),
             controls_layout: None,

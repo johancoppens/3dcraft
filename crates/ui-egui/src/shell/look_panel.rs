@@ -1,6 +1,6 @@
-//! The studio look's options, in the Studio chip's popover
-//! (`shell/popover.rs`) while the chip is on (and no analysis, which is
-//! drawn in the plain look, is shown): the environment and its rotation, the exposure, the
+//! The studio look's options, in the Studio split button's popover
+//! (`shell/popover.rs`) while the look is on and the popover open (and no
+//! analysis, which is drawn in the plain look, is shown): the environment and its rotation, the exposure, the
 //! background, the ground and its reflection, the tone curve, the
 //! shadows, ambient occlusion and reflections, bloom and a lens. Every
 //! control drives a field of `state.look` (the fields `ui.set {"look":
@@ -30,46 +30,49 @@ const FSTOP: f64 = 2.8;
 /// `background.<v>` and `tonemap.<v>` for the choices, `rotation`,
 /// `exposure`, `groundReflection` and `bloom` for the sliders (their
 /// track only), `ground`, `shadows`, `ao`, `reflections` and `lens`
-/// for the toggles, `collapse` for the header that folds the panel, and
-/// `panel` for the whole panel.
+/// for the toggles, and `panel` for the whole panel.
 pub type LookHits = Vec<(String, Rect)>;
 
 impl Shell {
-    /// Draws the panel as the Studio chip's popover at `place`
-    /// ([`super::popover_place`]) while the studio look is on.
-    pub(super) fn look_panel(&mut self, ui: &mut egui::Ui, place: Option<Rect>) {
+    /// Draws the panel as the popover of the Studio split button `chip`
+    /// at `place` ([`super::popover_place`]) while the studio look is on
+    /// and its popover open.
+    pub(super) fn look_panel(&mut self, ui: &mut egui::Ui, place: Option<Rect>, chip: Rect) {
         let Some(place) = place else {
             self.look_hits.clear();
             return;
         };
-        if !self.state.look.is_studio() || self.state.analysis.is_on() {
+        if !self.state.look.is_studio() || self.state.analysis.is_on() || !self.look_panel_open {
             self.look_hits.clear();
             return;
         }
         let tokens = self.tokens;
         let before = self.state.look.clone();
         let mut hits = LookHits::new();
-        let mut open = self.look_panel_open;
-        let drawn = self.popover(
-            ui,
-            "studio-options",
-            "Studio look",
-            place,
-            &mut open,
-            |shell, ui| look_options(ui, &mut shell.state.look, &tokens, &mut hits),
-        );
-        self.look_panel_open = open;
-        hits.push(("collapse".to_string(), drawn.header));
-        hits.push(("panel".to_string(), drawn.panel));
+        let panel = self.popover(ui, "studio-options", place, chip, |shell, ui| {
+            look_options(ui, &mut shell.state.look, &tokens, &mut hits);
+        });
+        hits.push(("panel".to_string(), panel));
         self.look_hits = hits;
         if self.state.look != before {
             ui.ctx().request_repaint();
         }
     }
 
-    /// Whether the studio look's panel is unfolded (its header folds it).
+    /// Whether the studio look's popover is open (the Studio caret opens
+    /// and closes it; it shows while the look is on).
     pub fn look_panel_open(&self) -> bool {
         self.look_panel_open
+    }
+
+    /// Where the caret of the Studio split button was drawn.
+    pub fn look_caret(&self) -> Option<Rect> {
+        self.look_caret
+    }
+
+    /// Where the caret of the Analysis split button was drawn.
+    pub fn analysis_caret(&self) -> Option<Rect> {
+        self.analysis_caret
     }
 
     /// Where the controls of the studio look's panel are, in points, once
@@ -78,13 +81,14 @@ impl Shell {
         &self.look_hits
     }
 
-    /// Whether the Analysis popover's options are unfolded.
+    /// Whether the Analysis popover is open (it shows while an analysis
+    /// is on).
     pub fn analysis_panel_open(&self) -> bool {
         self.analysis_panel_open
     }
 
-    /// Where the Analysis popover's header (`collapse`) and whole panel
-    /// (`panel`) were drawn, in points; empty while it is not shown.
+    /// Where the Analysis popover's panel (`panel`) was drawn, in points;
+    /// empty while it is not shown.
     pub fn analysis_hits(&self) -> &[(String, Rect)] {
         &self.analysis_hits
     }
@@ -92,6 +96,8 @@ impl Shell {
 
 /// The controls, in a grid of a label and a control a row.
 fn look_options(ui: &mut egui::Ui, look: &mut LookState, tokens: &Tokens, hits: &mut LookHits) {
+    // One width for every slider, from the tokens.
+    ui.spacing_mut().slider_width = tokens.popover_slider_width;
     egui::Grid::new("studio-options-grid")
         .num_columns(2)
         .spacing([tokens.nav_spacing, tokens.nav_inset * 0.5])
@@ -135,29 +141,19 @@ fn look_options(ui: &mut egui::Ui, look: &mut LookState, tokens: &Tokens, hits: 
             ui.label("Ground");
             ui.horizontal(|ui| {
                 toggle(ui, "ground", "On", &mut look.ground, hits);
-                // The slider takes the room the value's text leaves, so the
-                // row stays inside the popover whatever the font.
-                let text = format!("reflection {:.2}", look.ground_reflection);
-                let text_width = egui::WidgetText::from(text.as_str())
-                    .into_galley(
-                        ui,
-                        Some(egui::TextWrapMode::Extend),
-                        f32::INFINITY,
-                        egui::TextStyle::Body,
-                    )
-                    .size()
-                    .x;
-                let room = ui.available_width() - text_width - 2.0 * ui.spacing().item_spacing.x;
-                let widest = ui.spacing().slider_width;
-                ui.spacing_mut().slider_width = room.max(24.0).min(widest);
-                let response = ui.add_enabled(
-                    look.ground,
-                    egui::Slider::new(&mut look.ground_reflection, 0.0..=1.0)
-                        .clamping(egui::SliderClamping::Edits)
-                        .show_value(false),
-                );
-                hits.push(("groundReflection".to_string(), response.rect));
-                ui.label(text);
+            });
+            ui.end_row();
+            ui.label("Reflection");
+            ui.add_enabled_ui(look.ground, |ui| {
+                ui.horizontal(|ui| {
+                    let response = ui.add(
+                        egui::Slider::new(&mut look.ground_reflection, 0.0..=1.0)
+                            .clamping(egui::SliderClamping::Edits)
+                            .show_value(false),
+                    );
+                    hits.push(("groundReflection".to_string(), response.rect));
+                    ui.label(format!("{:.2}", look.ground_reflection));
+                });
             });
             ui.end_row();
             choice_row(
