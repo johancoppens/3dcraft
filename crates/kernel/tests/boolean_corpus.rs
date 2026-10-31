@@ -1114,7 +1114,9 @@ fn run_case(case: &Value, snap: Option<&Value>, verbose: bool) -> Vec<Outcome> {
                 digest(&result);
                 booleans_ms = started.elapsed().as_secs_f64() * 1e3;
                 // The cost of `topo::check`'s region rule on the result,
-                // against the whole check (docs/design/topology.md).
+                // against the whole check (docs/design/topology.md); the
+                // boolean checked the result already, so this reads mostly
+                // the faces it remembered.
                 let timed = std::time::Instant::now();
                 let _ = craft3d_topo::regionless(&result.body, &tolerance);
                 let region = timed.elapsed().as_secs_f64();
