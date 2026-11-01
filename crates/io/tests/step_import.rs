@@ -635,6 +635,20 @@ const TAIL: &str = "ENDSEC;\nEND-ISO-10303-21;\n";
 /// quadratic B-spline) in the plane: five samples of the polyline (at
 /// its even points) see nothing.
 fn zigzag_sheet(lift: f64) -> String {
+    zigzag_sheet_of(lift, "POLYLINE('',({}))")
+}
+
+/// [`zigzag_sheet`] with the 9 points the control points of a cubic
+/// B-spline (uniform inner knots): a curve that rises and falls off the
+/// plane smoothly, by about a third of `lift`.
+fn wavy_sheet(lift: f64) -> String {
+    zigzag_sheet_of(
+        lift,
+        "B_SPLINE_CURVE_WITH_KNOTS('',3,({}),.UNSPECIFIED.,.F.,.F.,(4,1,1,1,1,1,4),(0.,1.,2.,3.,4.,5.,6.),.UNSPECIFIED.)",
+    )
+}
+
+fn zigzag_sheet_of(lift: f64, curve: &str) -> String {
     let mut text = String::from(HEAD);
     let mut ids = Vec::new();
     for k in 0..9 {
@@ -659,13 +673,13 @@ fn zigzag_sheet(lift: f64) -> String {
          #18=EDGE_CURVE('',#31,#30,#41,.T.);\n\
          #30=VERTEX_POINT('',#100);\n\
          #31=VERTEX_POINT('',#108);\n\
-         #40=POLYLINE('',({}));\n\
+         #40={};\n\
          #41=B_SPLINE_CURVE_WITH_KNOTS('',2,(#108,#50,#100),.UNSPECIFIED.,.F.,.F.,(3,3),(0.,1.),.UNSPECIFIED.);\n\
          #50=CARTESIAN_POINT('',(40.,30.,0.));\n\
          #20=PLANE('',#21);\n\
          #21=AXIS2_PLACEMENT_3D('',#22,$,$);\n\
          #22=CARTESIAN_POINT('',(0.,0.,0.));\n{TAIL}",
-        ids.join(",")
+        curve.replace("{}", &ids.join(","))
     ));
     text
 }
@@ -693,6 +707,64 @@ fn an_edge_off_its_face_between_the_samples_is_refused() {
     let sheet = small.build(0, &options).unwrap();
     assert_eq!(sheet.report.loose_edges, 1, "{:?}", sheet.report);
     assert!(sheet.report.largest_tolerance >= 2e-4, "{:?}", sheet.report);
+}
+
+/// An edge off its face by 0.6 to 0.95 of the cap reads, its tolerance
+/// within the cap: the first proof that held may bound the gap by more
+/// than the cap (anything up to its target), and a last proof at the cap
+/// holds it (2026-11-01; ABC models were refused so). At 1.5 times the
+/// cap it is refused. In millimetres, metres and micrometres.
+#[test]
+fn an_edge_off_its_face_within_the_cap_reads_within_the_cap() {
+    // How far the wavy curve rises per millimetre of lift: its largest
+    // z (the plane is z = 0), densely sampled, read in millimetres.
+    let rise = {
+        let options = Options {
+            metres_per_unit: 1e-3,
+            tolerance: tolerance(1.0),
+            loosest: 2.0,
+        };
+        let read = parse(wavy_sheet(1.0).as_bytes())
+            .unwrap()
+            .build(0, &options)
+            .unwrap();
+        read.body
+            .edges
+            .iter()
+            .map(|e| {
+                (0..=4000)
+                    .map(|k| {
+                        let t = e.range.0 + (e.range.1 - e.range.0) * f64::from(k) / 4000.0;
+                        e.curve.eval(t).z.abs()
+                    })
+                    .fold(0.0, f64::max)
+            })
+            .fold(0.0, f64::max)
+    };
+    for (unit, per) in [(1e-3, 1.0), (1.0, 1e-3), (1e-6, 1e3)] {
+        // The file is in millimetres; the document in `unit` metres, its
+        // tolerance and cap scaled with it.
+        let options = Options {
+            metres_per_unit: unit,
+            tolerance: Tolerance::new(1e-6 * 1e-3 / unit, 1e-9).unwrap(),
+            loosest: 1e-3 * 1e-3 / unit,
+        };
+        let cap = options.loosest;
+        for share in [0.6, 0.8, 0.95] {
+            let parsed = parse(wavy_sheet(share * 1e-3 / rise).as_bytes()).unwrap();
+            let sheet = parsed
+                .build(0, &options)
+                .unwrap_or_else(|e| panic!("{per} {share}: {e}"));
+            assert_eq!(sheet.report.loose_edges, 1, "{:?}", sheet.report);
+            let t = sheet.report.largest_tolerance;
+            assert!(t >= share * cap && t <= cap, "{per} {share}: {t:e}");
+            let defects = craft3d_topo::check_capped(&sheet.body, &options.tolerance, cap);
+            assert!(defects.is_empty(), "{per} {share}: {defects:?}");
+        }
+        let far = parse(wavy_sheet(1.5e-3 / rise).as_bytes()).unwrap();
+        let error = far.build(0, &options).unwrap_err().to_string();
+        assert!(error.contains("edge #17"), "{error}");
+    }
 }
 
 #[test]
