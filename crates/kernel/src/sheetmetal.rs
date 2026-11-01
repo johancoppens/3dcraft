@@ -425,6 +425,13 @@ pub struct Flat {
     /// were one segment, so a flange on the tip renumbers none (empty:
     /// none added).
     pub added: Vec<Option<usize>>,
+    /// Per segment of `outer`, for a piece of a bend relief's notch that
+    /// a closed corner's extension carries (a tip flange whose bend
+    /// reaches the tip's end the extension runs on past), the bend, its
+    /// end (0 at its start, 1 at its end) and the piece's place in the
+    /// notch: named `[11, b, end, j]` as a notch cut by
+    /// [`split_at_seats`] is (empty: none).
+    pub notches: Vec<Option<[usize; 3]>>,
 }
 
 /// What an edge of the folded sheet is, the same whether the part's
@@ -443,6 +450,13 @@ pub enum EdgeKey {
     },
     /// The arc at the start (0) or the end (1) of bend `bend`.
     Arc { bend: usize, end: usize },
+    /// Piece `piece` of the bend relief's notch at the start (0) or the
+    /// end (1) of bend `bend`, cut into a closed corner's extension.
+    Notch {
+        bend: usize,
+        end: usize,
+        piece: usize,
+    },
     /// Piece `piece` of segment `seg` of flat `flat`'s outline: a tangent
     /// line a hole across its bend crosses.
     Split {
@@ -949,6 +963,7 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
         outlined: false,
         pieces: (0..=n_base).collect(),
         added: Vec::new(),
+        notches: Vec::new(),
     });
     // Per flange, the edge it sits on before the edges are split at the
     // insets: its flat, loop and segment.
@@ -1198,6 +1213,7 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
             outlined: f.outline.is_some(),
             pieces: (0..=m).collect(),
             added: Vec::new(),
+            notches: Vec::new(),
         });
         seated.push((parent, hole, k));
         let below = lifts.get(parent).copied().ok_or_else(lost)?;
@@ -1231,6 +1247,7 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
         &mut bend_ends,
         tolerance,
     )?;
+    bend_reliefs_fit(&flats, &bends, &bend_ends, tolerance)?;
     let done: Vec<bool> = placed.iter().map(Option::is_some).collect();
     let across = place_cutouts(&mut flats, &spec.cutouts, &done, tolerance)?;
     pattern_clear(&flats, &bends, &[], &corners, tolerance)?;
@@ -1763,6 +1780,131 @@ fn reliefs_fit(
     }
 }
 
+/// Every flat a bend relief's notch is cut into keeps one closed outline
+/// that crosses and touches nothing of itself, with its holes and its
+/// outline's area: the flat's outer loop and holes, run through the
+/// profile detection of the sketch, are one profile (as `reliefs_fit`
+/// holds the base's corner reliefs). A notch reaches `r` along the edge
+/// and into the flat for rect and round, and `2r` both ways for tear (the
+/// disc of radius `r` tangent to the edge and to the strip's end): on a
+/// short flat (a wall whose flat is short beside a large bend radius) or
+/// beside a closed corner's short extension the disc runs out of the flat
+/// across its other edges, which would make a flat that crosses itself
+/// and an invalid body, so it is refused here, naming the flange whose
+/// bend's notch it is (docs/design/sheetmetal.md › *Bend reliefs*).
+fn bend_reliefs_fit(
+    flats: &[Flat],
+    bends: &[Bend],
+    bend_ends: &[BendEnd],
+    tolerance: &Tolerance,
+) -> Result<(), KernelError> {
+    use crate::profile::{SketchCurve, detect_profiles};
+    let mut seen: Vec<usize> = Vec::new();
+    for e in bend_ends {
+        let Some(relief) = e.relief else { continue };
+        let Some(f) = bends.get(e.bend).map(|b| b.parent) else {
+            continue;
+        };
+        if seen.contains(&f) {
+            continue;
+        }
+        seen.push(f);
+        let Some(flat) = flats.get(f) else { continue };
+        let segs: Vec<&Segment> = flat
+            .outer
+            .iter()
+            .chain(flat.holes.iter().flatten())
+            .collect();
+        let curves: Vec<SketchCurve> = segs
+            .iter()
+            .enumerate()
+            .map(|(i, seg)| SketchCurve {
+                id: i as u64 + 1,
+                curve: sketch_curve(seg),
+            })
+            .collect();
+        // The bend end with a relief in this flat nearest the curves the
+        // detection names (the first end when it names none).
+        let blame = |ids: &[u64]| -> &BendEnd {
+            let mine = || {
+                bend_ends.iter().filter(|x| {
+                    x.relief.is_some() && bends.get(x.bend).map(|b| b.parent) == Some(f)
+                })
+            };
+            let at: Vec<P2> = ids
+                .iter()
+                .filter_map(|&id| {
+                    let i = usize::try_from(id).ok()?.checked_sub(1)?;
+                    segs.get(i).map(|s| s.start)
+                })
+                .collect();
+            let near = |x: &BendEnd| {
+                at.iter()
+                    .map(|&p| distance(p, x.point))
+                    .fold(f64::INFINITY, f64::min)
+            };
+            mine()
+                .min_by(|a, b| near(a).total_cmp(&near(b)))
+                .unwrap_or(e)
+        };
+        let refused = |ids: &[u64]| {
+            let x = blame(ids);
+            let reach = match relief.kind {
+                ReliefKind::Tear => format!(
+                    "a tear relief's circle, of radius {0}, reaches {1} along the edge and {1} into the flat",
+                    relief.size,
+                    2.0 * relief.size
+                ),
+                _ => format!(
+                    "a {} relief reaches {} along the edge and into the flat",
+                    relief.kind.name(),
+                    relief.size
+                ),
+            };
+            let parent = match f.checked_sub(1) {
+                None => "the base".to_string(),
+                Some(p) => format!("flange {p}"),
+            };
+            refuse(
+                Some(x.bend),
+                format!(
+                    "its bend relief at its {} cuts across another edge of {parent}'s flat ({reach}), so the flat would cross itself: make the bend relief smaller, use a smaller shape (round or rect reach half as far as tear), or inset the flange further from the flat's other edges",
+                    if x.end == 0 { "start" } else { "end" },
+                ),
+            )
+        };
+        let profiles = match detect_profiles(&curves, tolerance) {
+            Ok(p) => p,
+            Err(KernelError::CrossingCurves { curves }) => return Err(refused(&curves)),
+            Err(KernelError::BranchingProfile { curves }) => return Err(refused(&curves)),
+            Err(other) => {
+                return Err(refuse(
+                    Some(e.bend),
+                    format!(
+                        "its bend relief's flat ({}) could not be checked for crossing itself: {other}",
+                        match f.checked_sub(1) {
+                            None => "the base".to_string(),
+                            Some(p) => format!("flange {p}'s"),
+                        }
+                    ),
+                ));
+            }
+        };
+        let area = crate::profile::Loop2 {
+            segments: flat.outer.clone(),
+        }
+        .signed_area();
+        match profiles.as_slice() {
+            [one]
+                if one.holes.len() == flat.holes.len()
+                    && (one.outer.signed_area() - area).abs()
+                        <= tolerance.linear * area.abs().sqrt() * 8.0 => {}
+            _ => return Err(refused(&[])),
+        }
+    }
+    Ok(())
+}
+
 fn check_flange(i: usize, f: &FlangeSpec, tol: f64) -> Result<(), KernelError> {
     if let Some(x) = f.inset.iter().find(|x| !(x.is_finite() && **x >= 0.0)) {
         return Err(refuse(
@@ -1933,7 +2075,7 @@ fn close_corners(
     flats: &mut [Flat],
     bends: &[Bend],
     corners: &[Corner],
-    t: f64,
+    thickness: f64,
     bend_relief: Option<Relief>,
     bend_ends: &mut Vec<BendEnd>,
     tolerance: &Tolerance,
@@ -1959,7 +2101,10 @@ fn close_corners(
                         ),
                     ));
                 }
-                let (wa, wb) = (wall(flats, bends, fa, t)?, wall(flats, bends, fb, t)?);
+                let (wa, wb) = (
+                    wall(flats, bends, fa, thickness)?,
+                    wall(flats, bends, fb, thickness)?,
+                );
                 match kind {
                     CornerKind::Miter => {
                         let (oa, ob) = (-wa.inward, -wb.inward);
@@ -2151,6 +2296,133 @@ fn close_corners(
                 .map(|s| s.bend)
         };
         let mut inside: Vec<(usize, usize, P2)> = Vec::new();
+        // Per segment of the new outline, a piece of a bend relief's
+        // notch cut into an extension (`Flat::notches`).
+        let mut notched: Vec<(usize, [usize; 3])> = Vec::new();
+        // The piece of the extension along the tip from its far end `far`
+        // to the tip's end `p` (`which` 0, at the start) or from `p` to
+        // `far` (1, at the end), in the outline's order: with a bend
+        // relief at the end of tip flange `t` there, the plain piece ends
+        // the relief's size short of `p` and the notch is cut between it
+        // and the strip's end, as `split_at_seats` cuts one into an edge
+        // (docs/design/sheetmetal.md › *Bend reliefs*). Each piece with
+        // its place in the notch, `None` for the plain piece.
+        let floor = SLIVER_TOLERANCES * tolerance.linear;
+        let along_tip = |tf: Option<usize>,
+                         which: usize,
+                         p: P2,
+                         far: P2,
+                         plane: Option<(Vec3, Vec3)>|
+         -> Result<Vec<(Segment, Option<usize>)>, KernelError> {
+            let plain = |a: P2, b: P2| vec![(line(a, b), None)];
+            let (Some(t), Some(relief)) = (tf, bend_relief) else {
+                return Ok(if which == 0 {
+                    plain(far, p)
+                } else {
+                    plain(p, far)
+                });
+            };
+            let into = scale(
+                bends
+                    .get(t)
+                    .ok_or_else(|| refuse(Some(t), "a bend is missing"))?
+                    .across,
+                -1.0,
+            );
+            // How far the extension runs on past `p` along the tip on the
+            // bottom skin: to `far`. The notch must leave a sliver of it
+            // there (the rest of the bottom skin, a slanted end across
+            // the flat included, is held exactly by `bend_reliefs_fit`).
+            let bottom = distance(far, p);
+            let left = bottom - relief.size;
+            if !(left >= floor) {
+                return Err(refuse(
+                    Some(t),
+                    format!(
+                        "its bend reaches the {} of flange {x}'s tip, which the closed corner there runs on past by {bottom}: its bend relief of size {} there leaves {left} of the extension beside it (at least {floor}, {SLIVER_TOLERANCES} tolerances, must stay); make the relief smaller, give the corner a smaller gap or inset the flange",
+                        if which == 0 { "start" } else { "end" },
+                        relief.size
+                    ),
+                ));
+            }
+            // On the top skin the end plane may lie nearer (a mitre's end
+            // is slanted across the thickness, and any end may slant
+            // across the flat): the least run-on there over the box the
+            // notch lies in (`reach` along the tip and as deep: `r` for
+            // rect and round, `2r` for tear's disc), the plane being
+            // linear, at its two corners on the tip's side of the box.
+            let reach = match relief.kind {
+                ReliefKind::Tear => 2.0 * relief.size,
+                _ => relief.size,
+            };
+            if let (Some((q, n)), Some(e)) = (plane, unit(sub(far, p))) {
+                let (q, n) = (back.point(q), back.vector(n));
+                let den = n.dot(lift(e));
+                if den.abs() > n.length() * tolerance.angular {
+                    let top = [0.0, reach]
+                        .iter()
+                        .map(|&depth| {
+                            let at = add(p, scale(into, depth));
+                            n.dot(q - Vec3::new(at[0], at[1], thickness)) / den
+                        })
+                        .fold(f64::INFINITY, f64::min);
+                    let left = top - reach;
+                    if !(left >= floor) {
+                        return Err(refuse(
+                            Some(t),
+                            format!(
+                                "its bend reaches the {} of flange {x}'s tip, which the closed corner there runs on past by {top} (the least on either skin, over the notch's depth: the corner's end plane slants across the thickness or the flat): its {} bend relief of size {} reaches {reach} along it, which leaves {left} of the extension beside it on the top skin (at least {floor}, {SLIVER_TOLERANCES} tolerances, must stay); make the relief smaller or rect or round, give the corner a smaller gap or inset the flange",
+                                if which == 0 { "start" } else { "end" },
+                                relief.kind.name(),
+                                relief.size
+                            ),
+                        ));
+                    }
+                }
+            }
+            let deep = add(p, scale(into, relief.size));
+            let numbered = |pieces: Vec<Segment>| {
+                pieces
+                    .into_iter()
+                    .enumerate()
+                    .map(|(j, seg)| (seg, Some(j)))
+                    .collect::<Vec<_>>()
+            };
+            Ok(if which == 0 {
+                let stop = sub(p, scale(d, relief.size));
+                let mut pieces = notch(p, scale(d, -1.0), into, relief)?;
+                pieces.push(line(deep, p));
+                let mut out = plain(far, stop);
+                out.extend(numbered(pieces));
+                out
+            } else {
+                let stop = add(p, scale(d, relief.size));
+                let mut pieces = vec![line(p, deep)];
+                pieces.extend(notch(p, into, d, relief)?);
+                let mut out = numbered(pieces);
+                out.extend(plain(stop, far));
+                out
+            })
+        };
+        let mut lay = |outer: &mut Vec<Segment>,
+                       was: &mut Vec<Option<usize>>,
+                       added: &mut Vec<Option<usize>>,
+                       t: Option<usize>,
+                       which: usize,
+                       pieces: Vec<(Segment, Option<usize>)>,
+                       number: usize| {
+            for (seg, j) in pieces {
+                match (t, j) {
+                    (Some(t), Some(j)) => {
+                        notched.push((outer.len(), [t, which, j]));
+                        added.push(None);
+                    }
+                    _ => added.push(Some(number)),
+                }
+                outer.push(seg);
+                was.push(None);
+            }
+        };
         match start {
             Some((a0e, b0e)) => {
                 outer.push(line(a0, a0e));
@@ -2160,10 +2432,10 @@ fn close_corners(
                 outer.push(line(a0e, b0e));
                 was.push(Some(first.start));
                 added.push(None);
-                outer.push(line(b0e, b0));
-                was.push(None);
-                added.push(Some(3));
-                if let Some(t) = touching(tip_range.start) {
+                let t = touching(tip_range.start);
+                let pieces = along_tip(t, 0, b0, b0e, at_start.get(&x).copied())?;
+                lay(&mut outer, &mut was, &mut added, t, 0, pieces, 3);
+                if let Some(t) = t {
                     inside.push((t, 0, b0));
                 }
             }
@@ -2180,12 +2452,20 @@ fn close_corners(
         )?;
         match end {
             Some((a1e, b1e)) => {
-                if let Some(t) = touching(tip_range.end.saturating_sub(1)) {
+                let t = touching(tip_range.end.saturating_sub(1));
+                if let Some(t) = t {
                     inside.push((t, 1, b1));
                 }
-                outer.push(line(b1, b1e));
-                was.push(None);
-                added.push(Some(tip_place + 1));
+                let pieces = along_tip(t, 1, b1, b1e, at_end.get(&x).copied())?;
+                lay(
+                    &mut outer,
+                    &mut was,
+                    &mut added,
+                    t,
+                    1,
+                    pieces,
+                    tip_place + 1,
+                );
                 ends.push((outer.len(), at_end.get(&x).copied()));
                 outer.push(line(b1e, a1e));
                 was.push(Some(last.start));
@@ -2197,21 +2477,21 @@ fn close_corners(
             None => keep(&mut outer, &mut was, &mut added, &mut remap, last.clone())?,
         }
         for &(t, which, point) in &inside {
-            if bend_relief.is_some() {
-                return Err(refuse(
-                    Some(t),
-                    format!(
-                        "its bend reaches the {} of flange {x}'s tip, which the closed corner there runs on past, so the bend ends inside its edge: a bend relief there is not built (owed); inset the flange",
-                        if which == 0 { "start" } else { "end" }
-                    ),
-                ));
-            }
             bend_ends.push(BendEnd {
                 bend: t,
                 end: which,
                 point,
-                relief: None,
+                relief: bend_relief,
             });
+        }
+        let mut notches: Vec<Option<[usize; 3]>> = Vec::new();
+        if !notched.is_empty() {
+            notches = vec![None; outer.len()];
+            for (at, key) in notched {
+                if let Some(slot) = notches.get_mut(at) {
+                    *slot = Some(key);
+                }
+            }
         }
         let flat = flats
             .get_mut(x + 1)
@@ -2219,6 +2499,7 @@ fn close_corners(
         flat.outer = outer;
         flat.was = was;
         flat.added = added;
+        flat.notches = notches;
         flat.tip = Some(tip_at);
         // A bend on a hole's edge keeps its place: the holes are not
         // touched.
@@ -2244,11 +2525,28 @@ fn close_corners(
 
 /// The number the piece at place `seg` of flat `flat`'s outline that a
 /// closed corner's extension adds is named by ([`Flat::added`]).
-pub(crate) fn added_number(flats: &[Flat], flat: usize, seg: usize) -> usize {
+fn added_number(flats: &[Flat], flat: usize, seg: usize) -> usize {
     flats
         .get(flat)
         .and_then(|f| f.added.get(seg).copied().flatten())
         .unwrap_or(seg)
+}
+
+/// What the segment at place `seg` of flat `flat`'s outline is: its
+/// place with every corner open, a piece a closed corner's extension
+/// adds, or a piece of a bend relief's notch cut into an extension.
+pub(crate) fn outline_key(flats: &[Flat], flat: usize, seg: usize) -> EdgeKey {
+    let f = flats.get(flat);
+    if let Some([bend, end, piece]) = f.and_then(|f| f.notches.get(seg).copied().flatten()) {
+        return EdgeKey::Notch { bend, end, piece };
+    }
+    match f.and_then(|f| f.was.get(seg).copied().flatten()) {
+        Some(open) => EdgeKey::Outline { flat, seg: open },
+        None => EdgeKey::Piece {
+            flat,
+            seg: added_number(flats, flat, seg),
+        },
+    }
 }
 
 /// The seat of bend `i`: the edge of its parent flat it starts from.
@@ -2754,6 +3052,12 @@ pub fn edge_numbers(part: &Part, key: EdgeKey) -> Option<Vec<u64>> {
             }
         }
         EdgeKey::Arc { bend, end } => Some(vec![8, part.flange_number(bend)?, end as u64]),
+        EdgeKey::Notch { bend, end, piece } => Some(vec![
+            11,
+            part.flange_number(bend)?,
+            end as u64,
+            piece as u64,
+        ]),
         EdgeKey::Split { flat, seg, piece } => {
             let mut out = vec![9];
             out.extend(outline(flat, seg)?);
@@ -3218,18 +3522,8 @@ fn folded_sheet(
         }
     };
     for (flat, (_, edges)) in rings.iter().enumerate() {
-        let was = flats.get(flat).map(|f| f.was.as_slice()).unwrap_or(&[]);
         for (seg, (edge, _)) in edges.iter().enumerate() {
-            put(
-                *edge,
-                match was.get(seg).copied().flatten() {
-                    Some(open) => EdgeKey::Outline { flat, seg: open },
-                    None => EdgeKey::Piece {
-                        flat,
-                        seg: added_number(flats, flat, seg),
-                    },
-                },
-            );
+            put(*edge, outline_key(flats, flat, seg));
         }
     }
     for (hole, edges) in hole_rings.iter().enumerate() {

@@ -578,7 +578,11 @@ along the edge it is bent from. Corner reliefs and closed corners are for flange
 the base; a corner with an inset flange is not one. Where a bend ends inside its edge (an inset flange, a
 tab), `bendRelief` (`{"shape": "rect", "size": "1.5 mm"}`, the shapes of `relief`) cuts a notch beside the
 bend's end, `size` along the edge and `size` deep into the flat it is bent from, so the sheet does not tear
-there; the bend table lists each bend's `ends` inside its edge with their relief, and its `length`. A
+there (a tear, the disc tangent to the edge and the bend's end, reaches twice `size` both ways); the
+bend table lists each bend's `ends` inside its edge with their relief, and its `length`. A flange on a
+wall's tip that spans the tip, where a closed corner runs the wall on past it, gets its notch in that
+extension. A notch that would cut across another edge of its flat (a tear on a short wall with a large
+bend radius) is refused, naming the flange: make it smaller or use round or rect. A
 wall whose tip carries tabs (screw tabs) closes its corners like any other; a side that carries a flange
 cannot be closed at that end (it would be the corner's end). A cover with an inset wall, a tab on its side, an ear
 of its own outline with a hole, and a tab bent down out of a cut-out:

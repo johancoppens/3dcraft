@@ -1188,18 +1188,7 @@ pub(super) fn folded_sheet(
     let mut keys: Vec<Option<EdgeKey>> = vec![None; b.body.edges.len()];
     for (eref, (edge, _)) in &edges {
         let key = match *eref {
-            ERef::Outline(flat, seg) => match flats
-                .get(flat)
-                .and_then(|f| f.was.get(seg))
-                .copied()
-                .flatten()
-            {
-                Some(open) => EdgeKey::Outline { flat, seg: open },
-                None => EdgeKey::Piece {
-                    flat,
-                    seg: super::added_number(flats, flat, seg),
-                },
-            },
+            ERef::Outline(flat, seg) => super::outline_key(flats, flat, seg),
             ERef::Sub(flat, seg, piece) => EdgeKey::Split { flat, seg, piece },
             ERef::Hole(flat, hole, seg) => EdgeKey::Hole { flat, hole, seg },
             ERef::Arc(bend, end) => EdgeKey::Arc { bend, end },
