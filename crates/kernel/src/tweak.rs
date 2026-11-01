@@ -244,25 +244,9 @@ fn meet_with(
 ) -> Option<Vec3> {
     let kept: Vec<Option<(f64, f64)>> = guesses.to_vec();
     if let Some(found) = meet_steps(surfaces, start, tol, guesses, sideways, None) {
-        return Some(found);
+        return Some(on_seam(surfaces, found, tol, guesses, sideways));
     }
-    // The pairs of surfaces tangent where the iteration starts.
-    let mut normals: Vec<Option<Vec3>> = Vec::with_capacity(surfaces.len());
-    for (surface, guess) in surfaces.iter().zip(kept.iter()) {
-        let mut near = *guess;
-        normals.push(distance_near(surface, start, &mut near).map(|(_, n)| n));
-    }
-    let mut pairs: Vec<(usize, usize)> = Vec::new();
-    for (i, a) in normals.iter().enumerate() {
-        for (j, b) in normals.iter().enumerate().skip(i + 1) {
-            if let (Some(a), Some(b)) = (a, b)
-                && a.cross(*b).length() <= TANGENT
-                && a.dot(*b) > 0.0
-            {
-                pairs.push((i, j));
-            }
-        }
-    }
+    let pairs = tangent_pairs(surfaces, start, &kept);
     // Bounded: a pair per two surfaces at the vertex (a handful), each try
     // at most `MEET_STEPS` steps and `SLIDES` slides of eight halvings of
     // those; each try is counted against the operation's work bound too, so
@@ -275,12 +259,146 @@ fn meet_with(
             }
             guesses.copy_from_slice(&kept);
             if let Some(found) = meet_steps(surfaces, start, tol, guesses, sideways, Some(silent)) {
-                return Some(found);
+                return Some(on_seam(surfaces, found, tol, guesses, sideways));
             }
         }
     }
     guesses.copy_from_slice(&kept);
     None
+}
+
+/// The pairs of `surfaces` tangent at `at` ([`TANGENT`], their normals
+/// the same way), the feet found from `guesses`.
+fn tangent_pairs(
+    surfaces: &[&Surface],
+    at: Vec3,
+    guesses: &[Option<(f64, f64)>],
+) -> Vec<(usize, usize)> {
+    let mut normals: Vec<Option<Vec3>> = Vec::with_capacity(surfaces.len());
+    for (surface, guess) in surfaces.iter().zip(guesses.iter()) {
+        let mut near = *guess;
+        normals.push(distance_near(surface, at, &mut near).map(|(_, n)| n));
+    }
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    for (i, a) in normals.iter().enumerate() {
+        for (j, b) in normals.iter().enumerate().skip(i + 1) {
+            if let (Some(a), Some(b)) = (a, b)
+                && a.cross(*b).length() <= TANGENT
+                && a.dot(*b) > 0.0
+            {
+                pairs.push((i, j));
+            }
+        }
+    }
+    pairs
+}
+
+/// A vertex `found` where two surfaces tangent along their seam meet a
+/// third, moved onto the seam ([`turn_onto_seam`]). Within the tolerance
+/// of both is not enough there: the pair's distance grows with the square
+/// of the way along the seam, so a point within `tol` of both may lie
+/// `√(2 r tol)` along it (`r` the radius the pair part at), far beyond the
+/// tolerance (2026-11-01: the fuel tank's tunnel, a plane tangent to a
+/// cylinder of 48.8 mm, its shell's vertices at the two ends of their seam
+/// 3 µm below and 4 µm above it at a tolerance of 1e-6 mm, and the edge
+/// between them dipping past the cylinder's own border, where points
+/// beside it could not be told apart). Each of the pair is tried as the one
+/// the others' curve turns onto; the first that moves the point is kept.
+fn on_seam(
+    surfaces: &[&Surface],
+    found: Vec3,
+    tol: f64,
+    guesses: &mut [Option<(f64, f64)>],
+    sideways: bool,
+) -> Vec3 {
+    for (i, j) in tangent_pairs(surfaces, found, guesses) {
+        for silent in [j, i] {
+            if let Some(moved) = turn_onto_seam(surfaces, found, tol, guesses, sideways, silent) {
+                return moved;
+            }
+        }
+    }
+    found
+}
+
+/// Most secant steps of [`turn_onto_seam`].
+const SECANTS: usize = 8;
+
+/// The point where the curve the surfaces but `silent` meet in touches
+/// `silent`, from `start` on that curve: where its tangent lies in the
+/// tangent plane of `silent`. The distance there is a minimum, flat to
+/// first order, so a distance within rounding of zero leaves the point
+/// `√(2 r ε)` along the seam; the rate at which the distance grows along
+/// the curve (`n · t`, of the normals, accurate to rounding) is linear in
+/// the way along, and its root is found by secant steps to rounding of
+/// the way itself. Taken where it lies on every surface within `tol` and
+/// the rate fell; `None` otherwise, `guesses` then unchanged.
+fn turn_onto_seam(
+    surfaces: &[&Surface],
+    start: Vec3,
+    tol: f64,
+    guesses: &mut [Option<(f64, f64)>],
+    sideways: bool,
+    silent: usize,
+) -> Option<Vec3> {
+    let surface = surfaces.get(silent)?;
+    // The rate along the curve at the point the steps put `at` on it.
+    let rate_at = |at: Vec3, trial: &mut [Option<(f64, f64)>]| -> Option<(f64, f64, Vec3, Vec3)> {
+        let (on, basis) = meet_iterate(surfaces, at, tol, trial, sideways, Some(silent))?;
+        let [first, second] = basis.as_slice() else {
+            return None;
+        };
+        let along = first.cross(*second).normalized()?;
+        let mut near = trial.get(silent).copied().flatten();
+        let (value, normal) = distance_near(surface, on, &mut near)?;
+        let rate = normal.dot(along);
+        (rate.is_finite() && value.is_finite()).then_some((rate, value, along, on))
+    };
+    let mut trial = guesses.to_vec();
+    let (r0, v0, a0, p0) = rate_at(start, &mut trial)?;
+    let mut best = (r0.abs(), p0, trial.clone());
+    let mut last = (r0, a0, p0);
+    // The first step: the distance is about `k e²` and its rate `2 k e`, so
+    // the seam is `−2 v / r` away; then secant steps on the rate.
+    let mut step = if r0 != 0.0 { -2.0 * v0 / r0 } else { 0.0 };
+    for _ in 0..SECANTS {
+        if !(step.is_finite() && step != 0.0) || craft3d_geom::allowance::pass() {
+            break;
+        }
+        let (r, a, p) = last;
+        let Some((r1, _, a1, p1)) = rate_at(p + a * step, &mut trial) else {
+            break;
+        };
+        if r1.abs() < best.0 {
+            best = (r1.abs(), p1, trial.clone());
+        }
+        let moved = (p1 - p).dot(a);
+        last = (r1, a1, p1);
+        let change = r1 - r;
+        step = if change != 0.0 {
+            -r1 * moved / change
+        } else {
+            0.0
+        };
+        if r1 == 0.0 {
+            break;
+        }
+    }
+    let (rate, point, found) = best;
+    // A rate that is not a number never counts as fallen.
+    if rate.partial_cmp(&r0.abs()) != Some(std::cmp::Ordering::Less) {
+        return None;
+    }
+    let mut check = found.clone();
+    let on_all = surfaces
+        .iter()
+        .zip(check.iter_mut())
+        .all(|(s, g)| distance_near(s, point, g).is_some_and(|(value, _)| value.abs() <= tol));
+    if !(on_all && point.is_finite()) {
+        return None;
+    }
+    guesses.copy_from_slice(&found);
+    Some(point)
 }
 
 /// Most slides along the curve where the other surfaces meet, toward the
@@ -1640,4 +1758,42 @@ pub(crate) fn face_vertices(body: &Body, face: FaceId) -> BTreeSet<VertexId> {
         .filter_map(|c| body.edge(c.edge))
         .flat_map(|e| [e.start, e.end])
         .collect()
+}
+
+#[cfg(test)]
+mod seam_tests {
+    use super::*;
+    use craft3d_geom::Cylinder;
+
+    /// A vertex where a plane tangent to a cylinder (a tunnel's wall and
+    /// its arch) meets a third face is put on the pair's seam, not merely
+    /// within the tolerance of both: from a point 5 µm along the seam
+    /// (within 2.6e-7 mm of the cylinder, inside a tolerance of 1e-6 mm)
+    /// it moved nowhere before (2026-11-01, the fuel tank's shell at its
+    /// default tolerance), and the edge between two such vertices dipped
+    /// past the cylinder's border.
+    #[test]
+    fn a_vertex_where_a_plane_tangent_to_a_cylinder_meets_a_third_face_lies_on_their_seam() {
+        let (tol, r, z0) = (1e-6, 48.8, 18.4);
+        let frame = |origin: Vec3, z: Vec3| Frame::new(origin, z, Vec3::Z).unwrap();
+        let cylinder =
+            Surface::Cylinder(Cylinder::new(frame(Vec3::new(0.0, 0.0, z0), Vec3::X), r).unwrap());
+        let wall = Surface::Plane(Plane::new(frame(Vec3::new(0.0, r, 0.0), Vec3::Y)));
+        let end = Surface::Plane(Plane::new(
+            Frame::new(Vec3::new(100.0, 0.0, z0), Vec3::new(1.0, 0.0, 0.3), Vec3::Y).unwrap(),
+        ));
+        for dz in [5e-3, -4e-3, 1e-7] {
+            let start = Vec3::new(100.0, r, z0 + dz);
+            let found = meet(&[&wall, &cylinder, &end], start, tol).unwrap();
+            assert!(
+                (found.z - z0).abs() <= 1e-9,
+                "from {dz:e}: {found:?} is {:e} along the seam",
+                found.z - z0
+            );
+            for s in [&wall, &cylinder, &end] {
+                let (d, _) = distance(s, found).unwrap();
+                assert!(d.abs() <= tol, "{d:e} off a surface");
+            }
+        }
+    }
 }

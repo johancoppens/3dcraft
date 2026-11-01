@@ -1491,6 +1491,64 @@ struct Cross {
     jump: f64,
 }
 
+/// What is kept of a break between two pieces, for both ways across:
+/// where `b`'s rows are not C¹ through it, the [`Cross`] terms; where they
+/// are, `b` at the corresponding point in the neighbour is reached by the
+/// piece's own expansion along `b` (`G(s, s*) = G(s, s) + Δ ∂_τ G(s, s) +
+/// ∫ (s* − τ) ∂²_τ G(s, τ) dτ`, which needs `G(s, ·)` C¹ through the
+/// break and `∂²_τ G` bounded on each side), so all that is kept is the
+/// bound on `∂²_τ G` with `a` in the one piece and `b` in the other
+/// ([`remainder_across`]), in the edge's parameter: the first for `a` in
+/// the left piece, the second for `a` in the right.
+#[derive(Clone, Copy, Debug)]
+enum Between {
+    Rough(Cross, Cross),
+    Smooth([f64; 3], [f64; 3]),
+}
+
+/// `sup |∂²_τ G|` for each second-order gap `G` with `a` anywhere in `p`
+/// and `b` anywhere in `n`, in the edge's parameter: the remainder of
+/// [`piece_info`] (its `s2`), from the sizes of `a`'s rows over `p` and
+/// `b`'s over `n`, `|W_b|²` bounded below over `n` and `a`'s speeds over
+/// `p`. Sizes bound each factor over its own piece, so the product holds
+/// over `p × n`.
+fn remainder_across(p: &Piece, n: &Piece) -> Result<[f64; 3], NetworkError> {
+    let hn = n.b - n.a;
+    let (xp, _) = split_rows(&p.rows)?;
+    let (_, yn) = split_rows(&n.rows)?;
+    let yn = yn.ok_or_else(internal)?;
+    let size = |rows: &[P4; 6], b: bool| rows.clone().map(|r| r.map(|q| sizes_of(&q, b)));
+    let sz = spline_parts(&size(&xp, false), &size(&yn, true));
+    let geo = geo_lo(&xp);
+    let [y0, y0d, _, y1, _, _] = &yn;
+    let (om, om_d, om1) = (&y0[3], &y0d[3], &y1[3]);
+    let (q0, q0d, q1) = (xyz4(y0), xyz4(y0d), xyz4(y1));
+    let ub = minus(&times(&q0d, om), &times(&q0, om_d));
+    let vb = minus(&times(&q1, om), &times(&q0, om1));
+    let wb = cross(&ub, &vb);
+    let m_lo = dot(&wb, &wb).lo().max(0.0);
+    let (mu, muu) = (sz.m.u, sz.m.uu);
+    let mut out = [f64::INFINITY; 3];
+    for (k, slot) in out.iter_mut().enumerate() {
+        let (Some(ns), Some(&g)) = (sz.nums.get(k), geo.get(k)) else {
+            return Err(internal());
+        };
+        let den = m_lo * m_lo * m_lo.sqrt() * g;
+        if den > 0.0 {
+            *slot = room(ns.k.max(sz.m.k))
+                * (ns.uu
+                    + 5.0 * ns.u * mu / m_lo
+                    + ns.v * (16.25 * mu * mu / (m_lo * m_lo) + 2.5 * muu / m_lo))
+                / den
+                / (hn * hn);
+        }
+        if slot.is_nan() {
+            *slot = f64::INFINITY;
+        }
+    }
+    Ok(out)
+}
+
 /// [`Cross`] of `a` in `p` at its local parameter `ta` (its end at the
 /// break) and `b` in `n` at `tb`; `b`'s normal on `p`'s side from `p`'s
 /// own rows at `ta`.
@@ -1701,7 +1759,8 @@ fn implicit_terms(rows: &[P4], other: &Other, position: f64) -> Result<[f64; GAP
 fn combine(
     work: &[(Piece, Info)],
     other: &Other,
-    crosses: &mut std::collections::BTreeMap<(u64, u64), (Cross, Cross)>,
+    crosses: &mut std::collections::BTreeMap<(u64, u64), Between>,
+    smooth: &dyn Fn(f64) -> bool,
 ) -> Result<Vec<([f64; GAPS], f64)>, NetworkError> {
     let mut out = Vec::with_capacity(work.len());
     for (i, (piece, info)) in work.iter().enumerate() {
@@ -1756,15 +1815,44 @@ fn combine(
             if let std::collections::btree_map::Entry::Vacant(slot) = crosses.entry(key) {
                 let (lp, rp) = if here_first { (piece, n) } else { (n, piece) };
                 // `a` in the left piece against `b` in the right, and back.
-                slot.insert((
-                    break_cross(lp, 1.0, rp, 0.0)?,
-                    break_cross(rp, 0.0, lp, 1.0)?,
-                ));
+                slot.insert(if smooth(lp.b) {
+                    Between::Smooth(remainder_across(lp, rp)?, remainder_across(rp, lp)?)
+                } else {
+                    Between::Rough(
+                        break_cross(lp, 1.0, rp, 0.0)?,
+                        break_cross(rp, 0.0, lp, 1.0)?,
+                    )
+                });
             }
             let Some(pair) = crosses.get(&key) else {
                 return Err(internal());
             };
-            let c = if here_first { pair.0 } else { pair.1 };
+            let c = match pair {
+                Between::Rough(left, right) => {
+                    if here_first {
+                        *left
+                    } else {
+                        *right
+                    }
+                }
+                Between::Smooth(left, right) => {
+                    // `b` is C¹ along the seam through the break: the
+                    // piece's own expansion holds into the neighbour,
+                    // with the neighbour's second derivative.
+                    let s2n = if here_first { left } else { right };
+                    for (k, slot) in second.iter_mut().enumerate() {
+                        let (Some(s1), Some(s2), Some(s2n), Some(p)) =
+                            (info.s1.get(k), info.s2.get(k), s2n.get(k), hi.get(2 + k))
+                        else {
+                            return Err(internal());
+                        };
+                        let bound = p + r * (d * s1 + 0.5 * d * d * upper(*s2, *s2n));
+                        *slot = upper(*slot, bound);
+                    }
+                    angle = upper(angle, hi[1] + r * d * upper(info.nb, ninfo.nb));
+                    continue;
+                }
+            };
             for (k, slot) in second.iter_mut().enumerate() {
                 let (Some(c0), Some(dt), Some(ds), Some(mx)) =
                     (c.c0.get(k), c.dtau.get(k), c.ds.get(k), c.mixed.get(k))
@@ -1785,6 +1873,44 @@ fn combine(
         out.push((unknown_infinite(hi), d));
     }
     Ok(out)
+}
+
+/// `b`'s rows' knots in the edge's parameter, with each row's degree
+/// ([`b_smooth_at`]).
+fn b_knots_of(line: &Line) -> Vec<(usize, Vec<(f64, usize)>)> {
+    line.rows
+        .iter()
+        .map(|(raw, _)| {
+            let runs = raw
+                .knot_runs()
+                .into_iter()
+                .map(|(k, m)| (line.to_edge(k), m))
+                .collect();
+            (raw.degree, runs)
+        })
+        .collect()
+}
+
+/// Whether every row of `b` is C¹ through the edge's parameter `x`: the
+/// knots within twice [`SAME_KNOT`] of it (the breaks are merged that
+/// close) add up to less than the row's degree. A knot or a place that is
+/// not a number, or no rows of `b` at all, is not smooth.
+fn b_smooth_at(rows: &[(usize, Vec<(f64, usize)>)], x: f64) -> bool {
+    if rows.is_empty() || !x.is_finite() {
+        return false;
+    }
+    rows.iter().all(|(degree, runs)| {
+        let mut m = 0usize;
+        for &(e, k) in runs {
+            if !e.is_finite() {
+                return false;
+            }
+            if (e - x).abs() <= 2.0 * SAME_KNOT {
+                m = m.saturating_add(k);
+            }
+        }
+        m < *degree
+    })
 }
 
 /// The larger of two upper bounds; a NaN (nothing known) is infinite, so
@@ -2324,9 +2450,13 @@ fn gaps(rows: &[P4], other: &Other) -> Result<Gaps, NetworkError> {
 /// gaps is bounded and added ([`piece_info`], [`combine`]): within a piece
 /// a first-order term from the derivative of the residual along `b`, kept
 /// as a polynomial so its terms cancel, and a second-order remainder from
-/// sizes; across a break into the neighbour, the gaps of `a` at the break
-/// against `b`'s other side and their derivatives ([`Cross`]), so a knot
-/// where `b` is not C² is counted. A quadric face is a surface given
+/// sizes; across a break into the neighbour, where `b`'s rows are C¹
+/// through it (every break between halves of a piece, and a knot of `b`
+/// that leaves its rows a first derivative), the same expansion with the
+/// neighbour's second derivatives ([`Between`]), and elsewhere the gaps of
+/// `a` at the break against `b`'s other side and their derivatives
+/// ([`Cross`]), so a knot that leaves a row of `b` without a first
+/// derivative is counted. A quadric face is a surface given
 /// whole, with no boundary curve of its own in the measure: `a`'s point
 /// corresponds to its foot point on the face, and the change from the
 /// level surface through `a`'s point (which the rows compare with) to the
@@ -2686,6 +2816,10 @@ fn measure(
             per_row.push(row_pieces(row, line, &breaks)?);
         }
     }
+    // `b`'s rows' knots in the edge's parameter, with their degrees: where
+    // none of them loses its first derivative, `b` is C¹ along the seam
+    // through a break ([`Between`]).
+    let b_knots = ys.as_ref().map(b_knots_of).unwrap_or_default();
     let mut spent = first;
     let mut exhausted = false;
     // Every gap but the position's gains what comparing at corresponding
@@ -2715,7 +2849,8 @@ fn measure(
         let info = piece_info(&piece, &other, f64::INFINITY)?;
         work.push((piece, info));
     }
-    let mut his = combine(&work, &other, &mut crosses)?;
+    let smooth = |x: f64| b_smooth_at(&b_knots, x);
+    let mut his = combine(&work, &other, &mut crosses, &smooth)?;
     let mut found = [(0.0_f64, 0.0_f64, origin); GAPS];
     // The values found are lower bounds, less what comparing at
     // corresponding points may take off, so a gap found beyond its
@@ -2832,7 +2967,7 @@ fn measure(
             }
         }
         work = next;
-        his = combine(&work, &other, &mut crosses)?;
+        his = combine(&work, &other, &mut crosses, &smooth)?;
         for (((piece, info), (_, window)), new) in work.iter().zip(&his).zip(&fresh) {
             if *new {
                 look(piece, info, *window, &[0.25, 0.5, 0.75], &mut found)?;
@@ -3584,7 +3719,12 @@ mod tests {
             ),
         ];
         let mut crosses = std::collections::BTreeMap::new();
-        let his = combine(&work, &Other::Spline, &mut crosses).unwrap();
+        // `b`'s rows are not C¹ through the double knot: the break is rough.
+        let knots = b_knots_of(&lb);
+        assert!(!b_smooth_at(&knots, 0.5));
+        assert!(b_smooth_at(&knots, 0.25));
+        let smooth = |x: f64| b_smooth_at(&knots, x);
+        let his = combine(&work, &Other::Spline, &mut crosses, &smooth).unwrap();
         let (bound, window) = his[0];
         let info = &work[0].1;
         let r = room(0);
@@ -3653,40 +3793,44 @@ mod tests {
                 piece_info(&n, &Other::Spline, f64::INFINITY).unwrap(),
             ),
         ];
-        let base = combine(
-            &clean,
-            &Other::Spline,
-            &mut std::collections::BTreeMap::new(),
-        )
-        .unwrap();
-        assert!(
-            base.iter().all(|(hi, _)| hi.iter().all(|x| x.is_finite())),
-            "{base:?}"
-        );
-        // Each place a NaN can enter: the plain bounds (the angle's too),
-        // the derivative terms, the normal's rate.
-        let poisons: [fn(&mut Info); 4] = [
-            |i| i.plain[1] = f64::NAN,
-            |i| i.plain[3] = f64::NAN,
-            |i| i.s1[0] = f64::NAN,
-            |i| i.nb = f64::NAN,
-        ];
-        for (which, poison) in poisons.iter().enumerate() {
-            let mut work = clean.clone();
-            poison(&mut work[1].1);
-            let his = combine(
-                &work,
+        for smooth in [false, true] {
+            let base = combine(
+                &clean,
                 &Other::Spline,
                 &mut std::collections::BTreeMap::new(),
+                &|_| smooth,
             )
             .unwrap();
-            let worst = |q: usize| his.iter().map(|(hi, _)| hi[q]).fold(0.0, upper);
-            let any = (1..GAPS).any(|q| worst(q) == f64::INFINITY);
-            assert!(any, "poison {which}: {his:?}");
             assert!(
-                his.iter().all(|(hi, _)| hi.iter().all(|x| !x.is_nan())),
-                "poison {which}"
+                base.iter().all(|(hi, _)| hi.iter().all(|x| x.is_finite())),
+                "{base:?}"
             );
+            // Each place a NaN can enter: the plain bounds (the angle's too),
+            // the derivative terms, the normal's rate.
+            let poisons: [fn(&mut Info); 4] = [
+                |i| i.plain[1] = f64::NAN,
+                |i| i.plain[3] = f64::NAN,
+                |i| i.s1[0] = f64::NAN,
+                |i| i.nb = f64::NAN,
+            ];
+            for (which, poison) in poisons.iter().enumerate() {
+                let mut work = clean.clone();
+                poison(&mut work[1].1);
+                let his = combine(
+                    &work,
+                    &Other::Spline,
+                    &mut std::collections::BTreeMap::new(),
+                    &|_| smooth,
+                )
+                .unwrap();
+                let worst = |q: usize| his.iter().map(|(hi, _)| hi[q]).fold(0.0, upper);
+                let any = (1..GAPS).any(|q| worst(q) == f64::INFINITY);
+                assert!(any, "poison {which}: {his:?}");
+                assert!(
+                    his.iter().all(|(hi, _)| hi.iter().all(|x| !x.is_nan())),
+                    "poison {which}"
+                );
+            }
         }
     }
 }
