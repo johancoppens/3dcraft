@@ -3300,7 +3300,22 @@ struct PartBound {
     /// Bézier net `Q` of that derivative ([`patch_travel`]). Infinite for
     /// a rational patch.
     travel: (f64, f64),
+    /// Whether the knot span the part is of is slim in `u`, in `v`
+    /// ([`SLIM`]): only there are the B-spline's nets and the travel
+    /// asked.
+    slim: (bool, bool),
 }
+
+/// A knot span narrower than this part of the surface's range in a
+/// parameter is slim: the differences of its Bézier net's control points
+/// are near rounding (their second differences are about `w²` times the
+/// second derivative against rounding of the coordinates, so at a
+/// millionth of the range rounding is already a few ten-thousandths of
+/// what they bound), and its bounds are asked of what keeps its digits
+/// (`net_second_bounds`, `PartBound::travel`). The spans of ordinary
+/// splines, a hundredth or a thousandth of the range, are not, and keep
+/// the grid they had.
+const SLIM: f64 = 1e-6;
 
 /// Bounds on the second derivatives of a spline surface over the parts
 /// of the box `low..high`, as `spline_second_bounds` describes (a test
@@ -3366,11 +3381,18 @@ fn spline_parts(
                 );
                 let travel = patch_travel(&patch, width);
                 let (mut uu, mut uv, mut vv) = patch_second_bounds(patch, width)?;
-                // The bound of the B-spline's own derivative nets over the
-                // whole span, where it is lower: on a span far narrower
-                // than its neighbours the Bézier net's differences are
-                // rounding (`net_second_bounds`).
-                if let Some((nu, nuv, nv)) = net_second_bounds(surface, span.u, span.v) {
+                // A span slim beside the surface's range (`SLIM`): its
+                // Bézier net's differences are rounding, so the bound of
+                // the B-spline's own derivative nets over the whole span
+                // is taken where it is lower (`net_second_bounds`). Other
+                // spans keep their Bézier bounds, and their grids.
+                let slim = (
+                    span.u.1 - span.u.0 < SLIM * (domain_u.1 - domain_u.0),
+                    span.v.1 - span.v.0 < SLIM * (domain_v.1 - domain_v.0),
+                );
+                if (slim.0 || slim.1)
+                    && let Some((nu, nuv, nv)) = net_second_bounds(surface, span.u, span.v)
+                {
                     (uu, uv, vv) = (uu.min(nu), uv.min(nuv), vv.min(nv));
                 }
                 parts.push(PartBound {
@@ -3383,6 +3405,7 @@ fn spline_parts(
                     ),
                     width,
                     travel,
+                    slim,
                 });
             }
         }
@@ -3446,7 +3469,9 @@ fn patch_travel(patch: &craft3d_geom::RationalBezierPatch, width: (f64, f64)) ->
 ///
 /// `h²/8 × (2 Muu(wide) + 2 Σ travel(narrow parts in the cell) / h)`
 ///
-/// is within its share of the tolerance. A narrow part that meets a cell
+/// is within its share of the tolerance. Narrow parts are those narrower
+/// than the cell and of a slim span ([`SLIM`]); every other part counts as
+/// wide. A narrow part that meets a cell
 /// starts less than `h` before it, so the sum is at most the largest sum
 /// over the narrow parts that start within `2h` of each other (the parts
 /// of every row of `v` together, wherever the cell lies), which is what
@@ -3457,8 +3482,9 @@ fn patch_travel(patch: &craft3d_geom::RationalBezierPatch, width: (f64, f64)) ->
 /// pieces of a loft's sections, reparametrised to degree twelve, that
 /// nearly meet: the wavy-vase Jig, 2026-10-31), while how far its
 /// derivative travels is a difference of first differences, which keeps
-/// its digits. When no part is narrower than the step the bounds are the
-/// largest, as before.
+/// its digits. Where no part is narrow the bounds are the largest, as
+/// before 2026-10-31: the grids of surfaces without slim spans are the
+/// ones they were.
 fn bounds_for_step(
     parts: &[PartBound],
     step: (f64, f64),
@@ -3468,13 +3494,14 @@ fn bounds_for_step(
                  start: fn(&PartBound) -> f64,
                  width: fn(&PartBound) -> f64,
                  travel: fn(&PartBound) -> f64,
+                 slim: fn(&PartBound) -> bool,
                  h: f64,
                  period: Option<f64>| {
         let (mut all, mut wide) = (0.0_f64, 0.0_f64);
         let mut narrow: Vec<(f64, f64)> = Vec::new();
         for part in parts {
             all = all.max(second(part));
-            if width(part) < h {
+            if width(part) < h && slim(part) {
                 narrow.push((start(part), travel(part)));
             } else {
                 wide = wide.max(second(part));
@@ -3513,6 +3540,7 @@ fn bounds_for_step(
         |p| p.start.0,
         |p| p.width.0,
         |p| p.travel.0,
+        |p| p.slim.0,
         step.0,
         periods.0,
     );
@@ -3521,6 +3549,7 @@ fn bounds_for_step(
         |p| p.start.1,
         |p| p.width.1,
         |p| p.travel.1,
+        |p| p.slim.1,
         step.1,
         periods.1,
     );
