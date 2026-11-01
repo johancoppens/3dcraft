@@ -80,7 +80,7 @@ pub(crate) type GridJob = Box<dyn FnOnce() -> Worked + Send>;
 
 /// What a worker is given.
 enum Job {
-    Part(PartJob),
+    Part(Box<PartJob>),
     /// A run, and whether it is the grid's.
     Grid(GridJob, bool),
 }
@@ -169,7 +169,10 @@ impl Builder {
             self.in_flight.insert(job.key.clone());
         }
         let n = fresh.len();
-        let jobs = fresh.into_iter().map(Job::Part).collect();
+        let jobs = fresh
+            .into_iter()
+            .map(|job| Job::Part(Box::new(job)))
+            .collect();
         if !self.push(jobs, urgent) {
             // No thread: nothing is built here; the moments are made
             // where they are asked for.
@@ -483,7 +486,7 @@ mod native {
                 cached_for = now;
             }
             let done = match job {
-                Job::Part(job) => Done::Part(build(job, &mut caches)),
+                Job::Part(job) => Done::Part(build(*job, &mut caches)),
                 Job::Grid(job, grid) => Done::Grid(
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).unwrap_or_default(),
                     grid,
