@@ -11,7 +11,7 @@
 
 // `!(x > 0.0)` is deliberate: unlike `x <= 0.0` it is also true for NaN.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
-use crate::spindle::{Sheet, Spindle, flipped};
+use crate::spindle::{Normal, Sheet, Spindle, flipped};
 use crate::{ImportError, Parsed, err, keywords, real};
 use craft3d_geom::{
     Circle, Cone, Curve3, Cylinder, Ellipse, Line, NurbsCurve, NurbsSurface, Plane, Sphere,
@@ -564,7 +564,7 @@ impl<'a> Reader<'a> {
             } else {
                 None
             };
-            return Spindle::toroidal(frame, major, minor, select, false)
+            return Spindle::toroidal(frame, major, minor, select, Normal::Iso)
                 .and_then(Spindle::read)
                 .or_else(|e| self.bad(id, &e));
         }
@@ -906,9 +906,15 @@ impl<'a> Reader<'a> {
                                     "cannot tell which way the swept surface's normal points",
                                 );
                             };
-                            return Spindle::toroidal(frame, major, circle.radius(), None, flip)
-                                .and_then(Spindle::read)
-                                .or_else(|e| self.bad(id, &e));
+                            return Spindle::toroidal(
+                                frame,
+                                major,
+                                circle.radius(),
+                                None,
+                                Normal::Swept { flip },
+                            )
+                            .and_then(Spindle::read)
+                            .or_else(|e| self.bad(id, &e));
                         }
                     }
                 }

@@ -34,6 +34,8 @@ struct Builder<'a, 'r> {
     body: Body,
     /// The distance within which two vertices of the file are one.
     merge: f64,
+    /// The document's linear tolerance.
+    tolerance: f64,
     vertices: BTreeMap<u64, VertexId>,
     /// Vertices by cell of a grid `2 merge` wide.
     grid: BTreeMap<(i64, i64, i64), Vec<VertexId>>,
@@ -398,7 +400,7 @@ impl Builder<'_, '_> {
             }
         }
         spindle
-            .sheet_of(&points)
+            .sheet_of(&points, self.tolerance)
             .and_then(|outer| spindle.surface(outer))
             .or_else(|e| self.bad(surface, &e))
     }
@@ -876,6 +878,7 @@ pub(crate) fn build(
         reader,
         body: Body::new(kind),
         merge,
+        tolerance,
         vertices: BTreeMap::new(),
         grid: BTreeMap::new(),
         edges: BTreeMap::new(),

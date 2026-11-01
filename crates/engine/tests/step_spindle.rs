@@ -26,10 +26,12 @@ const TAIL: &str = "ENDSEC;\nEND-ISO-10303-21;\n";
 /// The part below `z = 0` of the sheet of the torus `(major, minor)` about
 /// z (the apple, `outer`, or the lemon), closed by a disc: in millimetres.
 fn half(major: f64, minor: f64, outer: bool) -> String {
+    // ISO 10303-42's normal points away from the tube's centre circle on
+    // both parts: out of the apple and out of the lemon.
     let (radius, sense) = if outer {
         (major + minor, ".T.")
     } else {
-        (minor - major, ".F.")
+        (minor - major, ".T.")
     };
     format!(
         "{HEAD}#1=( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.) );\n\
@@ -80,10 +82,22 @@ fn volume(s: &mut Session) -> f64 {
     bodies.iter().map(|b| b["volume"].as_f64().unwrap()).sum()
 }
 
+/// The centroid's height: below the rim for the half the file meant (the
+/// halves above and below are mirror images, of one volume).
+fn centroid_z(s: &mut Session) -> f64 {
+    run(s, "document.measure", json!({}))["centroid"][2]
+        .as_f64()
+        .unwrap()
+}
+
 fn imported(dir: &std::path::Path, file: &str) -> Session {
     let mut s = session_in(dir);
     run(&mut s, "file.new", json!({"units": "mm"}));
-    run(&mut s, "file.import", json!({"path": file}));
+    let result = run(&mut s, "file.import", json!({"path": file}));
+    assert_eq!(
+        result["bodies"][0]["import"]["turnedShells"], 0,
+        "{file}: {result}"
+    );
     s
 }
 
@@ -101,6 +115,8 @@ fn a_spindle_torus_solid_imports_measures_and_takes_booleans() {
         let want = half_volume(major, minor, outer);
         let mut s = imported(&dir, file);
         deep_ok(&mut s, file);
+        let z = centroid_z(&mut s);
+        assert!(z < 0.0, "{file}: the half above the rim (centroid z {z})");
         let whole = volume(&mut s);
         assert!(
             (whole - want).abs() <= 1e-7 * want,
@@ -123,6 +139,8 @@ fn a_spindle_torus_solid_imports_measures_and_takes_booleans() {
                 json!({"target": "F1", "tool": "Cutter", "op": op}),
             );
             deep_ok(&mut s, op);
+            let z = centroid_z(&mut s);
+            assert!(z < 0.0, "{file} {op}: centroid z {z}");
             let part = volume(&mut s);
             assert!(
                 (part - want / 2.0).abs() <= 1e-7 * want,

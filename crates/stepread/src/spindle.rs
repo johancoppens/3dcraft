@@ -23,13 +23,18 @@
 //! `DEGENERATE_TOROIDAL_SURFACE` names it (`select_outer`), and edges on
 //! the other one are refused.
 //!
-//! **The file's normal** is taken as `∂u × ∂v` of the standard's
-//! parametrisation `σ(u, v) = C + (R + r cos v)(cos u x + sin u y) + r sin v
-//! z`, as for every other surface this crate reads: away from the tube's
-//! centre circle on the apple (where `R + r cos v > 0`), towards it on the
-//! lemon (where it is negative). An offset of such a surface moves each
-//! sheet along that normal: the apple and the lemon then lie on tori of
-//! different minor radii, so each sheet keeps its own.
+//! **The file's normal.** ISO 10303-42 defines the normal of a
+//! `toroidal_surface` explicitly, `N(u, v) = cos v (cos u x + sin u y) +
+//! sin v z`: away from the tube's centre circle at the same `u`, on both
+//! sheets. That is `∂u × ∂v` of `σ(u, v) = C + (R + r cos v)(cos u x +
+//! sin u y) + r sin v z` where `R + r cos v > 0` (the apple) and its
+//! opposite where it is negative (the lemon): so on the lemon the normal
+//! points out of the lemon, not into it ([`Normal::Iso`]). A
+//! `SURFACE_OF_REVOLUTION` has no such definition: its normal is `∂u × ∂v`
+//! of its own parametrisation, which turns over between the two sheets
+//! ([`Normal::Swept`]). An offset moves each sheet along the file's
+//! normal: the apple and the lemon may then lie on tori of different minor
+//! radii, so each sheet keeps its own.
 
 // `!(x > 0.0)` is deliberate: unlike `x <= 0.0` it is also true for NaN.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
@@ -69,19 +74,37 @@ pub(crate) struct Spindle {
 /// other sheet's circle votes for its sheet.
 const VOTE: f64 = 0.25;
 
+/// Which normal the file gives a toroidal surface whose tube reaches its
+/// axis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Normal {
+    /// ISO 10303-42's `N` of a `toroidal_surface`: away from the tube's
+    /// centre circle on both sheets.
+    Iso,
+    /// `∂u × ∂v` of a surface of revolution of the circle, which runs the
+    /// way of the standard torus's `v` unless `flip`: away from the tube's
+    /// centre on the apple, towards it on the lemon (turned over by
+    /// `flip`).
+    Swept { flip: bool },
+}
+
 impl Spindle {
-    /// A `TOROIDAL_SURFACE` or `DEGENERATE_TOROIDAL_SURFACE` with
-    /// `major ≤ minor` (both positive and finite), its normal the
-    /// standard's (`flip` turns it over, for a surface of revolution whose
-    /// own parametrisation runs the other way); `select` keeps only the
-    /// apple (`Some(true)`) or the lemon (`Some(false)`).
+    /// A `TOROIDAL_SURFACE` or `DEGENERATE_TOROIDAL_SURFACE` (normal
+    /// [`Normal::Iso`]) or a circle turned across its axis
+    /// ([`Normal::Swept`]) with `major ≤ minor` (both positive and
+    /// finite); `select` keeps only the apple (`Some(true)`) or the lemon
+    /// (`Some(false)`).
     pub fn toroidal(
         frame: Frame,
         major: f64,
         minor: f64,
         select: Option<bool>,
-        flip: bool,
+        normal: Normal,
     ) -> Result<Self, String> {
+        let (apple_out, lemon_out) = match normal {
+            Normal::Iso => (true, true),
+            Normal::Swept { flip } => (!flip, flip),
+        };
         if !(major > 0.0 && minor > 0.0 && major.is_finite() && minor.is_finite()) {
             return Err(format!(
                 "torus radii must be positive and finite (major {major:e}, minor {minor:e})"
@@ -92,11 +115,11 @@ impl Spindle {
             major,
             apple: Sheet {
                 minor,
-                outward: !flip,
+                outward: apple_out,
             },
             lemon: Sheet {
                 minor,
-                outward: flip,
+                outward: lemon_out,
             },
             select,
         };
@@ -159,11 +182,43 @@ impl Spindle {
         }
     }
 
+    /// Why there is no apple (`outer`) or lemon: not selected, or empty.
+    fn missing(&self, outer: bool) -> String {
+        let (part, sheet) = if outer {
+            ("outer part (apple)", self.apple)
+        } else {
+            ("inner part (lemon)", self.lemon)
+        };
+        if self.select == Some(!outer) {
+            format!(
+                "the surface is only its {} (select_outer {})",
+                if outer {
+                    "inner part (lemon)"
+                } else {
+                    "outer part (apple)"
+                },
+                if outer { ".F." } else { ".T." }
+            )
+        } else if outer {
+            format!(
+                "its {part} is empty: its minor radius {:e} is not positive (an offset through the axis)",
+                sheet.minor
+            )
+        } else {
+            format!(
+                "its {part} is empty: its minor radius {:e} is no larger than the major radius {:e} (a horn torus, or an offset that leaves none)",
+                sheet.minor, self.major
+            )
+        }
+    }
+
     /// Which sheet the points (along a face's edges) lie on: `true` the
-    /// apple. Points near the axis, where both sheets meet, do not count;
-    /// points on both sheets, or none that tells, are refused (unless
-    /// there is only one sheet).
-    pub fn sheet_of(&self, points: &[Vec3]) -> Result<bool, String> {
+    /// apple. A point votes for a sheet when it lies on that sheet's
+    /// circle and further than `tolerance` and four times as far from the
+    /// other's; points near the axis, where both sheets meet, do not
+    /// count. Points on both sheets, or none that tells, are refused
+    /// (unless there is only one sheet).
+    pub fn sheet_of(&self, points: &[Vec3], tolerance: f64) -> Result<bool, String> {
         let only = match (self.apple(), self.lemon()) {
             (Some(_), None) => Some(true),
             (None, Some(_)) => Some(false),
@@ -171,7 +226,6 @@ impl Spindle {
         };
         // Both circles vote, kept or not: a point on a sheet that is not
         // kept is refused, not taken for the other.
-        let size = self.major + self.apple.minor.abs().max(self.lemon.minor.abs());
         let (mut apples, mut lemons) = (0usize, 0usize);
         for &p in points {
             let (x, y, h) = self.frame.local(p);
@@ -187,9 +241,9 @@ impl Spindle {
             if !(a.is_finite() || l.is_finite()) {
                 continue;
             }
-            if a < VOTE * l && l > 1e-9 * size {
+            if a < VOTE * l && l > tolerance {
                 apples += 1;
-            } else if l < VOTE * a && a > 1e-9 * size {
+            } else if l < VOTE * a && a > tolerance {
                 lemons += 1;
             }
         }
@@ -197,14 +251,14 @@ impl Spindle {
             (true, true, _) => Err(format!(
                 "the face's edges lie on both the outer part (apple, {apples} points) and the inner part (lemon, {lemons} points) of the self-intersecting torus; a face lies on one"
             )),
-            (true, false, Some(false)) => Err(
-                "the face's edges lie on the outer part (apple) of the torus, but the surface is its inner part (select_outer .F.)"
-                    .into(),
-            ),
-            (false, true, Some(true)) => Err(
-                "the face's edges lie on the inner part (lemon) of the torus, but the surface is its outer part (select_outer .T.)"
-                    .into(),
-            ),
+            (true, false, Some(false)) => Err(format!(
+                "the face's edges lie on the outer part (apple) of the torus, but {}",
+                self.missing(true)
+            )),
+            (false, true, Some(true)) => Err(format!(
+                "the face's edges lie on the inner part (lemon) of the torus, but {}",
+                self.missing(false)
+            )),
             (true, false, _) => Ok(true),
             (false, true, _) => Ok(false),
             (false, false, Some(only)) => Ok(only),
@@ -219,16 +273,7 @@ impl Spindle {
     /// whether the file's normal is opposite to its own.
     pub fn surface(&self, outer: bool) -> Result<(Surface, bool), String> {
         let (major, frame) = (self.major, self.frame);
-        let missing = || {
-            format!(
-                "the surface has no {} part",
-                if outer {
-                    "outer (apple)"
-                } else {
-                    "inner (lemon)"
-                }
-            )
-        };
+        let missing = || format!("the surface has no such part: {}", self.missing(outer));
         let sheet = if outer { self.apple() } else { self.lemon() }.ok_or_else(missing)?;
         let r = sheet.minor;
         if outer && r < major {
