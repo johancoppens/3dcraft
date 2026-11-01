@@ -16,6 +16,10 @@
 //! In the browser (one thread) there is no builder: [`Builder::available`]
 //! is false and every moment is made where it is asked for, as before.
 
+// In the browser nothing is built in the background: the jobs are made
+// and never run.
+#![cfg_attr(target_arch = "wasm32", allow(dead_code))]
+
 use crate::asm::Built;
 use craft3d_doc::Document;
 use craft3d_regen::RegenCache;
