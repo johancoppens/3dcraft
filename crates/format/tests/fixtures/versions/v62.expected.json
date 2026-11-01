@@ -1,7 +1,7 @@
 {
   "format_version": 62,
-  "written_by": "30d6337323cd13f0728f0db8d6efd18868238aac",
-  "how": "craft3d-cli (release) built from that commit (r1-c3-crown on r1-hollow 21357450, on main 1eb6634d) on the developer's laptop: craft3d-cli run --new '{\"units\": \"mm\"}' --script v62.steps.json --out v62.3dcraft, then document.inspect of the file opened again; a network of two u curves along x and six v curves across them, interpolated across with degree 5 (acrossDegree): the field of format 62",
+  "written_by": "f8393c9f260767185b7320a20909dc20b2787cbc",
+  "how": "craft3d-cli (release) built from that commit (r1-c3-crown on r1-hollow 21357450 and its review nits, on main 1eb6634d; the same bytes as the build of 30d63373 before the nits were put first) on the developer's laptop: craft3d-cli run --new '{\"units\": \"mm\"}' --script v62.steps.json --out v62.3dcraft, then document.inspect of the file opened again; a network of two u curves along x and six v curves across them, interpolated across with degree 5 (acrossDegree): the field of format 62",
   "rollback": null,
   "features": [
     {
