@@ -3473,13 +3473,15 @@ fn spread(
 /// on the control points across within the reach of `next`, spread by the
 /// fair profile (`fair`: `G(0) = G′(0) = 0`, `G″(0) = 1`; its third
 /// coefficient is `1 / c2`, the one-row change's).
+#[allow(clippy::too_many_arguments)]
 fn put_on_third_row(
     net: &mut Net,
     delta: &Raw,
     o: Vec3,
     c2: f64,
     next: f64,
-    tol: f64,
+    (tol, angular): (f64, f64),
+    at: &[f64],
     label: &str,
 ) -> Result<(), NetworkError> {
     let mut delta = mapped(delta, |h| {
@@ -3509,6 +3511,41 @@ fn put_on_third_row(
         fair::Order::Curvature,
         fair::End::Kept,
     )?;
+    let why = |change: f64, ribbon: f64, u: usize| {
+        if change.is_finite() {
+            format!(
+                "{label}: holding it in curvature would move the surface's third row of control points by {change:.3e} at control point {u}, more than the {ribbon:.3e} between it and the edge: the face's curvature is not followed well enough there"
+            )
+        } else {
+            format!(
+                "{label}: holding it in curvature would make a weight of the surface not positive"
+            )
+        }
+    };
+    if let Some((smooth, rest, band)) = kinks_apart(net, &delta, &shape, next, angular, at)? {
+        // The kinks on a band of their own beside the edge (`kinks_apart`).
+        let mut v = net.v_raw();
+        fair::localize(&mut v, band)?;
+        let runs = v.knot_runs();
+        within_budget(net.rows.len(), count(net.pv, &runs))?;
+        net.refine_v(net.pv, &runs)?;
+        let wide = fair::profile(
+            &net.kv,
+            net.pv,
+            next,
+            fair::Order::Curvature,
+            fair::End::Kept,
+        )?;
+        let narrow = fair::profile(
+            &net.kv,
+            net.pv,
+            band,
+            fair::Order::Curvature,
+            fair::End::Kept,
+        )?;
+        spread(net, &smooth, &wide, 2, tol, why)?;
+        return spread(net, &rest, &narrow, 2, tol, why);
+    }
     spread(net, &delta, &shape, 2, tol, |change, ribbon, u| {
         if change.is_finite() {
             format!(
@@ -3520,6 +3557,165 @@ fn put_on_third_row(
             )
         }
     })
+}
+
+/// The share of the angular tolerance a held edge's change may crease the
+/// surface by inside (`kinks_apart`).
+const KINK_SHARE: f64 = 0.25;
+
+/// Most halvings of the band the kinks of a curvature hold's change are
+/// put on (`kinks_apart`): a band of 1/4096 of the reach at least.
+const KINK_HALVINGS: u32 = 12;
+
+/// A curvature hold's change of the second derivative across, `delta(u)`,
+/// is put on the third row and spread across by a fair profile `G(v)`
+/// over the reach. Along a spline face the change is only continuous at
+/// some knots (it holds the face's second order, `b² C″` of a cubic line
+/// among it, whose derivative jumps at every simple knot), and spread by
+/// `G` that kink becomes one in the surface's derivative along the edge
+/// at every `v` the profile reaches: a crease inside the sheet, of the
+/// angle `|Δδ′| G(v) / |S_u|` (2026-11-01: 2.6e-3 across the middle of
+/// the fuel tank's side, whose offset then tears by that angle times the
+/// distance). No surface can avoid it altogether: the edge asks for a
+/// second derivative across whose derivative along it jumps, and a sheet
+/// whose derivative along stays continuous inside has `S_uvv` continuous
+/// for every `v > 0`. What can be done is to keep it within the angular
+/// tolerance: the change is split into a twice differentiable cubic,
+/// spread over the whole reach as before, and what is left, which holds
+/// the kinks and is small, spread over a band beside the edge narrow
+/// enough that the crease it leaves (the band's profile is `O(band²)`)
+/// is within [`KINK_SHARE`] of the angular tolerance. The sum at the edge
+/// is the change asked, exactly: the seam is as before.
+///
+/// `None` when the change spread as it is creases the sheet by no more
+/// than that already (every analytic face, and spline faces of degree
+/// four and more), else the cubic, the rest (both on `delta`'s knots) and
+/// the band's reach.
+fn kinks_apart(
+    net: &Net,
+    delta: &Raw,
+    shape: &[f64],
+    next: f64,
+    angular: f64,
+    at: &[f64],
+) -> Result<Option<(Raw, Raw, f64)>, NetworkError> {
+    let p = delta.degree;
+    let (lo, hi) = delta.domain().map_err(|_| internal())?;
+    // The knots at which the change may lose its second derivative.
+    let kinks: Vec<f64> = delta
+        .knot_runs()
+        .into_iter()
+        .filter(|(_, m)| m + 2 > p)
+        .map(|(k, _)| k)
+        .collect();
+    if kinks.is_empty() || p < 3 || !(angular > 0.0 && angular.is_finite()) {
+        return Ok(None);
+    }
+    // The jump of the change's derivative along at each such knot, over
+    // the edge's speed there: the crease a profile of height one makes.
+    let edge = net.column(0)?;
+    let d_edge = derivative(&edge)?;
+    let d_delta = derivative(delta)?;
+    let mut crease = 0.0_f64;
+    for &k in &kinks {
+        let side = 1e-9 * (hi - lo);
+        let (before, after) = (eval(&d_delta, k - side)?, eval(&d_delta, k + side)?);
+        let h = eval(&edge, k)?;
+        let dh = eval(&d_edge, k)?;
+        let w = h[3];
+        if !(w > 0.0) {
+            continue;
+        }
+        // The jump of the change's derivative in space: of `D / w` with
+        // the weight `w` of the surface there, continuous.
+        let jump = Vec3::new(
+            after[0] - before[0],
+            after[1] - before[1],
+            after[2] - before[2],
+        ) * (1.0 / w);
+        let speed = (Vec3::new(dh[0], dh[1], dh[2]) - Vec3::new(h[0], h[1], h[2]) * (dh[3] / w))
+            .length()
+            / w;
+        if speed > 0.0 && speed.is_finite() {
+            crease = crease.max(jump.length() / speed);
+        }
+    }
+    let height = |c: &[f64]| c.iter().fold(0.0_f64, |m, x| m.max(x.abs()));
+    let allowed = KINK_SHARE * angular;
+    if !(crease.is_finite()) || crease * height(shape) <= allowed {
+        return Ok(None);
+    }
+    // The band: the widest of the reach halved that is within the share.
+    let mut band = next;
+    for _ in 0..KINK_HALVINGS {
+        band *= 0.5;
+        let mut v = net.v_raw();
+        fair::localize(&mut v, band)?;
+        let narrow = fair::profile(
+            &v.knots,
+            net.pv,
+            band,
+            fair::Order::Curvature,
+            fair::End::Kept,
+        )?;
+        if crease * height(&narrow) <= allowed {
+            break;
+        }
+    }
+    // The cubic: on the kinks (each once), through the change at the
+    // Greville points of its knots, each crossing in place of the one
+    // nearest it, so the rest vanishes where the network's curves cross
+    // the edge and they stay as they were.
+    let mut knots = vec![lo; 4];
+    knots.extend(kinks.iter().copied());
+    knots.extend([hi; 4]);
+    let n = knots.len() - 4;
+    let mut params: Vec<f64> = (0..n)
+        .map(|i| knots.iter().skip(i + 1).take(3).sum::<f64>() / 3.0)
+        .collect();
+    let greville = params.clone();
+    for &c in at {
+        let nearest = greville
+            .iter()
+            .enumerate()
+            .min_by(|a, b| (a.1 - c).abs().total_cmp(&(b.1 - c).abs()))
+            .map(|(i, _)| i);
+        if let Some(slot) = nearest.and_then(|i| params.get_mut(i)) {
+            *slot = c.clamp(lo, hi);
+        }
+    }
+    let ordered = |ps: &[f64]| ps.windows(2).all(|w| matches!(w, [a, b] if a < b));
+    let fit = |ps: &[f64]| -> Option<Vec<Vec<f64>>> {
+        if !ordered(ps) {
+            return None;
+        }
+        let values: Vec<Vec<f64>> = ps
+            .iter()
+            .map(|t| eval(delta, *t).map(|h| h.to_vec()))
+            .collect::<Result<_, _>>()
+            .ok()?;
+        crate::refine::interpolate_on(ps, 3, &knots, &values).ok()
+    };
+    let Some(ctrl) = fit(&params).or_else(|| fit(&greville)) else {
+        return Ok(None);
+    };
+    let mut smooth = Raw {
+        degree: 3,
+        knots: knots.clone(),
+        points: ctrl
+            .iter()
+            .map(|c| {
+                let g = |i: usize| c.get(i).copied().unwrap_or(0.0);
+                [g(0), g(1), g(2), g(3)]
+            })
+            .collect(),
+    };
+    refine_to(&mut smooth, p, &delta.knot_runs())?;
+    let rest = combined(delta, &smooth, 1.0, -1.0)?;
+    if smooth.points.len() != delta.points.len() || rest.points.len() != delta.points.len() {
+        return Ok(None);
+    }
+    Ok(Some((smooth, rest, band)))
 }
 
 /// Curvature along a spline face's line (after `hold_tangent`, whose
@@ -3629,7 +3825,16 @@ fn hold_curvature_fields(
         target = combined(&target, &times(&scalar, field)?, 1.0, 1.0)?;
     }
     let delta = combined(&target, &rows.x2, 1.0, -1.0)?;
-    put_on_third_row(net, &delta, origin, rows.c2, next, tol, label)
+    put_on_third_row(
+        net,
+        &delta,
+        origin,
+        rows.c2,
+        next,
+        (tol, angular),
+        at,
+        label,
+    )
 }
 
 /// Most floating-point work (multiplications) one curvature hold along an
@@ -3904,7 +4109,16 @@ fn hold_curvature_implicit(
             })
             .collect(),
     };
-    put_on_third_row(net, &delta, origin, rows.c2, next, tol, label)
+    put_on_third_row(
+        net,
+        &delta,
+        origin,
+        rows.c2,
+        next,
+        (tol, angular),
+        at,
+        label,
+    )
 }
 
 /// The solution of least norm of `A x = b` (rows of `A`): every equation

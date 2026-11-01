@@ -938,15 +938,34 @@ pub(crate) fn spans(surface: &Surface) -> u64 {
     }
 }
 
+/// How much dearer the offset of a span of `surface` is than that of a
+/// bicubic span: the square of its count of control points per span over
+/// sixteen (at least one). The proof that an offset does not fold works on
+/// forms of about four times the degrees each way, and the fit on as many
+/// samples as the span's polynomial asks for; measured, a span of the
+/// mouse's top (degrees 14 and 5) cost 30 to 70 times a bicubic span of
+/// the fuel tank's crown (2026-11-01), and `((15 · 6) / 16)²` is 32. A
+/// shell of such a face was held to what bicubic spans may cost and ran
+/// out of work on its first tries.
+fn degree_weight(surface: &Surface) -> u64 {
+    let (p, q) = match surface {
+        Surface::Nurbs(s) => s.degrees(),
+        Surface::Bezier(b) => (b.degree_u(), b.degree_v()),
+        _ => return 0,
+    };
+    let per = (p as u64 + 1).saturating_mul(q as u64 + 1);
+    (per.saturating_mul(per) / 256).max(1)
+}
+
 /// The work bound of a face operation on `body` that moves `moved`:
-/// [`FACE_OP_WORK`], and more the more freeform spans and edges the faces
-/// that move have, so that a shell of many faces is not held to what one
+/// [`FACE_OP_WORK`], and more the more freeform spans (each weighed by its
+/// degrees, [`degree_weight`]) and edges the faces that move have, so that a shell of many faces is not held to what one
 /// offset may do.
 pub(crate) fn face_op_work(body: &Body, moved: &[FaceId]) -> u64 {
     let moved_spans: u64 = moved
         .iter()
         .filter_map(|f| body.face(*f))
-        .map(|f| spans(&f.surface))
+        .map(|f| spans(&f.surface).saturating_mul(degree_weight(&f.surface)))
         .sum();
     let body_spans: u64 = body.faces.iter().map(|f| spans(&f.surface)).sum();
     let moved_edges: usize = moved

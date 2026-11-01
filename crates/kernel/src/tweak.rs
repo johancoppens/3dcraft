@@ -222,6 +222,19 @@ fn meet_near(
 }
 
 /// [`meet_near`]; with `sideways`, as [`meet_foreseen`] says.
+///
+/// Where that does not end on every surface, it is tried again for every
+/// pair of surfaces tangent where it starts ([`TANGENT`]), with one of the
+/// pair left out of the steps: at a vertex where two faces tangent along
+/// their edge meet a third (a seam held G1 or G2 ending on a flat face),
+/// the pair's normals agree there, so they fix one direction between them
+/// and the point is left to slide along the seam; the one whose foot is
+/// past its border (the seam is the border of both) asks for steps along
+/// the wrong direction, and the iteration runs off (2026-11-01: the fuel
+/// tank's crown and side meeting its floor, offset 1.2 mm inward, sent
+/// 900 mm away). The one left out is held at the end, as every surface is:
+/// the point must lie on it within `tol`, which near the seam the pair's
+/// agreement gives.
 fn meet_with(
     surfaces: &[&Surface],
     start: Vec3,
@@ -229,7 +242,130 @@ fn meet_with(
     guesses: &mut [Option<(f64, f64)>],
     sideways: bool,
 ) -> Option<Vec3> {
+    let kept: Vec<Option<(f64, f64)>> = guesses.to_vec();
+    if let Some(found) = meet_steps(surfaces, start, tol, guesses, sideways, None) {
+        return Some(found);
+    }
+    // The pairs of surfaces tangent where the iteration starts.
+    let mut normals: Vec<Option<Vec3>> = Vec::with_capacity(surfaces.len());
+    for (surface, guess) in surfaces.iter().zip(kept.iter()) {
+        let mut near = *guess;
+        normals.push(distance_near(surface, start, &mut near).map(|(_, n)| n));
+    }
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    for (i, a) in normals.iter().enumerate() {
+        for (j, b) in normals.iter().enumerate().skip(i + 1) {
+            if let (Some(a), Some(b)) = (a, b)
+                && a.cross(*b).length() <= TANGENT
+                && a.dot(*b) > 0.0
+            {
+                pairs.push((i, j));
+            }
+        }
+    }
+    for (i, j) in pairs {
+        for silent in [j, i] {
+            guesses.copy_from_slice(&kept);
+            if let Some(found) = meet_steps(surfaces, start, tol, guesses, sideways, Some(silent)) {
+                return Some(found);
+            }
+        }
+    }
+    guesses.copy_from_slice(&kept);
+    None
+}
+
+/// Most slides along the curve where the other surfaces meet, toward the
+/// one left out ([`meet_steps`]).
+const SLIDES: usize = 32;
+
+/// The iteration of [`meet_with`]. With `silent`, that surface adds no
+/// direction to the steps, and once the point lies on the others it slides
+/// along the curve where they meet (two of them, the pair's other one and
+/// the third face) toward the one left out, by Newton's steps on its
+/// distance along that curve, each halved until the distance falls: its
+/// distance from the one it is tangent to is that of the seam, which the
+/// slide reaches. It is held at the end, as every surface is.
+fn meet_steps(
+    surfaces: &[&Surface],
+    start: Vec3,
+    tol: f64,
+    guesses: &mut [Option<(f64, f64)>],
+    sideways: bool,
+    silent: Option<usize>,
+) -> Option<Vec3> {
+    let (mut point, mut basis) = meet_iterate(surfaces, start, tol, guesses, sideways, silent)?;
+    if let Some(left) = silent
+        && let Some(surface) = surfaces.get(left)
+    {
+        let mut foot: Option<(f64, f64)> = None;
+        for _ in 0..SLIDES {
+            let (value, gradient) = distance_toward(surface, point, &mut foot)?;
+            if value.abs() <= tol {
+                break;
+            }
+            let [first, second] = basis.as_slice() else {
+                break;
+            };
+            let Some(along) = first.cross(*second).normalized() else {
+                break;
+            };
+            let rate = gradient.dot(along);
+            if !(rate.abs() > 1e-12) {
+                break;
+            }
+            let mut length = -value / rate;
+            let mut better = None;
+            for _ in 0..8 {
+                let mut trial = guesses.to_vec();
+                if let Some((moved, axes)) = meet_iterate(
+                    surfaces,
+                    point + along * length,
+                    tol,
+                    &mut trial,
+                    sideways,
+                    silent,
+                ) {
+                    let mut near = foot;
+                    if let Some((after, _)) = distance_toward(surface, moved, &mut near)
+                        && after.abs() < value.abs()
+                    {
+                        better = Some((moved, axes, trial, near));
+                        break;
+                    }
+                }
+                length *= 0.5;
+            }
+            let Some((moved, axes, trial, near)) = better else {
+                break;
+            };
+            point = moved;
+            basis = axes;
+            guesses.copy_from_slice(&trial);
+            foot = near;
+        }
+    }
+    let on_all = surfaces
+        .iter()
+        .zip(guesses.iter_mut())
+        .all(|(surface, guess)| {
+            distance_near(surface, point, guess).is_some_and(|(value, _)| value.abs() <= tol)
+        });
+    (point.is_finite() && on_all).then_some(point)
+}
+
+/// The steps of [`meet_steps`] onto every surface but `silent`, and the
+/// directions the last of them was taken along.
+fn meet_iterate(
+    surfaces: &[&Surface],
+    start: Vec3,
+    tol: f64,
+    guesses: &mut [Option<(f64, f64)>],
+    sideways: bool,
+    silent: Option<usize>,
+) -> Option<(Vec3, Vec<Vec3>)> {
     let mut point = start;
+    let mut last: Vec<Vec3> = Vec::new();
     for _ in 0..MEET_STEPS {
         // An orthonormal basis of the normals, and for each surface that
         // adds a direction the step along it that brings the point onto
@@ -243,7 +379,10 @@ fn meet_with(
         // residuals of rounding.
         let mut basis: Vec<Vec3> = Vec::with_capacity(3);
         let mut solved: Vec<f64> = Vec::with_capacity(3);
-        for (surface, guess) in surfaces.iter().zip(guesses.iter_mut()) {
+        for (index, (surface, guess)) in surfaces.iter().zip(guesses.iter_mut()).enumerate() {
+            if silent == Some(index) {
+                continue;
+            }
             let (value, normal) = if sideways {
                 distance_toward(surface, point, guess)?
             } else {
@@ -279,17 +418,12 @@ fn meet_with(
             return None;
         }
         point += step;
+        last = basis;
         if step.length() <= 1e-15 * (1.0 + point.length()) {
             break;
         }
     }
-    let on_all = surfaces
-        .iter()
-        .zip(guesses.iter_mut())
-        .all(|(surface, guess)| {
-            distance_near(surface, point, guess).is_some_and(|(value, _)| value.abs() <= tol)
-        });
-    (point.is_finite() && on_all).then_some(point)
+    point.is_finite().then_some((point, last))
 }
 
 /// The angle nearest `near` that is `angle` up to whole turns.
