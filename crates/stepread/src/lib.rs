@@ -24,7 +24,9 @@
 //!   dropped, as faces here need no such loop), `ORIENTED_EDGE`,
 //!   `EDGE_CURVE`, `VERTEX_POINT`.
 //! - **Surfaces**: `PLANE`, `CYLINDRICAL_SURFACE`, `CONICAL_SURFACE`,
-//!   `SPHERICAL_SURFACE`, `TOROIDAL_SURFACE`, `B_SPLINE_SURFACE_WITH_KNOTS`
+//!   `SPHERICAL_SURFACE`, `TOROIDAL_SURFACE` (a spindle or horn torus too)
+//!   and `DEGENERATE_TOROIDAL_SURFACE`, each face on one sheet
+//!   (`spindle`), `B_SPLINE_SURFACE_WITH_KNOTS`
 //!   (polynomial, or rational as the complex instance with
 //!   `RATIONAL_B_SPLINE_SURFACE`) and the B-splines whose knots their type
 //!   implies (`UNIFORM_SURFACE`, `QUASI_UNIFORM_SURFACE`,
