@@ -124,7 +124,7 @@ fn periodic_splines_and_a_spindle_torus_read_as_freecad_makes_them() {
             assert!(d < 1e-9, "{name} at {t}: {ours:?} against {q:?} ({d:e})");
         }
     }
-    assert_eq!(curves, 7, "{oracles}");
+    assert_eq!(curves, 8, "{oracles}");
     let apple = &oracles["apple.brp"];
     assert_eq!(apple["valid"], true, "{oracles}");
     let bytes = std::fs::read(out.join("apple.brp")).unwrap();
