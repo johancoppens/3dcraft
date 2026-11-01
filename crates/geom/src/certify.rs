@@ -35,7 +35,12 @@
 //!   the error of the fitted curve does, so a few halvings prove a curve
 //!   that holds.
 //! - **Where the box crosses a knot line** of the surface (whose
-//!   derivatives jump there) the bound is the Lipschitz one,
+//!   derivatives may jump there) the derivatives are bounded patch by
+//!   patch, and a bound of order `j` holds over the whole piece where the
+//!   surface is `C^(j−1)` across the lines crossed (degree less the
+//!   knot's multiplicity): the cubic Hermite bound across `C³` lines, the
+//!   linear one, `max |e(end)| + max |e''| / 8`, across `C¹` lines (a
+//!   cubic surface's simple knots), and otherwise the Lipschitz one,
 //!   `(|e(0)| + |e(1)| + max |e'|) / 2`, which holds for a continuous
 //!   surface; the piece is halved until that is within the target too.
 //! - **Adaptive and bounded.** The pieces start at the curve's knots and
@@ -430,9 +435,12 @@ enum Form {
         /// u by u, v by v within each).
         us: Vec<(f64, f64)>,
         vs: Vec<(f64, f64)>,
-        /// No interior knot of a multiplicity above the degree: the
-        /// surface is continuous across its knot lines.
-        continuous: bool,
+        /// How smooth the surface is across the line between span `i`
+        /// and span `i + 1` along u (and along v): the degree less the
+        /// knot's multiplicity, so `Some(k)` for `C^k`; `None` where the
+        /// surface may jump (a multiplicity above the degree).
+        joins_u: Vec<Option<usize>>,
+        joins_v: Vec<Option<usize>>,
     },
 }
 
@@ -683,22 +691,34 @@ fn spans_reached(ranges: &[(f64, f64)], lo: f64, hi: f64) -> Option<(usize, usiz
     Some((first, until.max(first)))
 }
 
-/// Whether every interior knot has a multiplicity of at most `degree`.
-fn continuous(knots: &[f64], degree: usize) -> bool {
-    let count = knots.len().saturating_sub(degree + 1);
-    let (Some(&start), Some(&end)) = (knots.get(degree), knots.get(count)) else {
-        return false;
-    };
-    let mut run = 0;
-    let mut previous = f64::NAN;
-    for &k in knots {
-        run = if k == previous { run + 1 } else { 1 };
-        previous = k;
-        if k > start && k < end && run > degree {
-            return false;
-        }
+/// How smooth a spline is across the line between each span of `spans`
+/// and the next: `Some(degree − multiplicity)` of the knot there (`C^k`),
+/// `None` where the multiplicity is above the degree (the spline may
+/// jump) or the knot is not found.
+fn joins(spans: &[(f64, f64)], knots: &[f64], degree: usize) -> Vec<Option<usize>> {
+    spans
+        .windows(2)
+        .map(|pair| {
+            let [(_, end), _] = pair else {
+                return None;
+            };
+            let multiplicity = knots.iter().filter(|k| **k == *end).count();
+            if multiplicity == 0 {
+                return None;
+            }
+            degree.checked_sub(multiplicity)
+        })
+        .collect()
+}
+
+/// The least smoothness across the lines between spans `first` to
+/// `last` (`usize::MAX` within one span; `None` if any may jump).
+fn smoothness(joins: &[Option<usize>], first: usize, last: usize) -> Option<usize> {
+    let mut least = usize::MAX;
+    for i in first..last {
+        least = least.min((*joins.get(i)?)?);
     }
-    true
+    Some(least)
 }
 
 impl<'a> SurfaceBound<'a> {
@@ -719,7 +739,8 @@ impl<'a> SurfaceBound<'a> {
                 }],
                 us: vec![(0.0, 1.0)],
                 vs: vec![(0.0, 1.0)],
-                continuous: true,
+                joins_u: Vec::new(),
+                joins_v: Vec::new(),
             },
             Surface::Nurbs(s) => {
                 let spans = s.bezier_spans().ok()?;
@@ -737,11 +758,14 @@ impl<'a> SurfaceBound<'a> {
                     return None;
                 }
                 let (du, dv) = s.degrees();
+                let joins_u = joins(&us, s.knots_u(), du);
+                let joins_v = joins(&vs, s.knots_v(), dv);
                 Form::Patches {
                     spans,
                     us,
                     vs,
-                    continuous: continuous(s.knots_u(), du) && continuous(s.knots_v(), dv),
+                    joins_u,
+                    joins_v,
                 }
             }
         };
@@ -917,31 +941,32 @@ impl<'a> SurfaceBound<'a> {
     }
 
     /// Bounds on the derivatives in `τ` (orders 0 to 4; order 0 about
-    /// `origin`) of `S(σ(τ))`, and whether they hold as derivatives of a
-    /// smooth function (the path's box lies in one patch); where it does
-    /// not, only order 1 holds, piece by piece, as a Lipschitz bound.
-    /// `None` where no bound comes out.
-    fn jets(&self, path: &Path, origin: Vec3) -> Option<(Jet, bool)> {
+    /// `origin`) of `S(σ(τ))`, patch by patch where the path's box
+    /// crosses knot lines, and how smooth `S(σ(τ))` is across them: `k`
+    /// for `C^k` (`usize::MAX` within one patch). A bound on the
+    /// derivative of order `j ≤ k + 1` taken patch by patch holds for the
+    /// whole path (the derivative of order `j − 1` is continuous and
+    /// piecewise differentiable). `None` where no bound comes out or the
+    /// surface may jump within the box.
+    fn jets(&self, path: &Path, origin: Vec3) -> Option<(Jet, usize)> {
         let range = path.range();
         let [x, y] = path.jets();
         match &self.form {
             Form::Analytic => {
                 let table = analytic_table(self.surface, range)?;
-                Some((compose(&table, &x, &y), true))
+                Some((compose(&table, &x, &y), usize::MAX))
             }
             Form::Patches {
                 spans,
                 us,
                 vs,
-                continuous,
+                joins_u,
+                joins_v,
             } => {
                 let [(u0, u1), (v0, v1)] = range;
                 let (iu0, iu1) = spans_reached(us, u0, u1)?;
                 let (iv0, iv1) = spans_reached(vs, v0, v1)?;
-                let smooth = iu0 == iu1 && iv0 == iv1;
-                if !smooth && !continuous {
-                    return None;
-                }
+                let smooth = smoothness(joins_u, iu0, iu1)?.min(smoothness(joins_v, iv0, iv1)?);
                 let last_u = us.len().checked_sub(1)?;
                 let last_v = vs.len().checked_sub(1)?;
                 let mut all = [0.0_f64; N];
@@ -1042,16 +1067,23 @@ impl<'a> SurfaceBound<'a> {
         let path = Path::new(fa, fb, ta, tb);
         let cj = curve.jets(a, b, ca)?;
         let (sj, smooth) = self.jets(&path, ca)?;
+        // The curve is one Bézier piece over `[a, b]`; `S(σ(τ))` is
+        // `C^smooth` across the knot lines the path crosses.
         // Each distance at an end is off by the rounding of both points.
         let rounding =
             (curve.rounding(a) + self.rounding(fa)).max(curve.rounding(b) + self.rounding(fb));
         let (na, nb) = (ea.length(), eb.length());
         // Lipschitz: holds for any continuous surface.
         let mut bound = 0.5 * (na + nb + get(&cj, 1) + get(&sj, 1));
-        if smooth {
-            // Linear interpolation, with the second derivative.
+        if smooth >= 1 {
+            // Linear interpolation, with the second derivative: its
+            // Peano kernel needs `e` in `C¹` with `e''` bounded piece by
+            // piece (2026-11-01: across the simple knots of a cubic
+            // surface, where only the Lipschitz bound was used before).
             bound = bound.min(na.max(nb) + (get(&cj, 2) + get(&sj, 2)) / 8.0);
-            // Cubic Hermite interpolation, with the fourth.
+        }
+        if smooth >= 3 {
+            // Cubic Hermite interpolation, with the fourth (`e` in `C³`).
             bound = bound.min(
                 na.max(nb)
                     + 0.25 * off_a.length().max(off_b.length())
@@ -1922,6 +1954,80 @@ mod tests {
                             format!("{method:?}"),
                             "{name} at {d}, target {target}"
                         );
+                    }
+                }
+            }
+        }
+    }
+
+    /// A bicubic surface of 16 x 16 spans whose interior knots have
+    /// multiplicity `m` (so it is `C^(3 − m)` across them), wavy.
+    fn many_spans(k: f64, m: usize) -> Surface {
+        let spans = 16;
+        let mut knots = vec![0.0; 4];
+        for i in 1..spans {
+            knots.extend(std::iter::repeat_n(i as f64 / spans as f64, m));
+        }
+        knots.extend([1.0; 4]);
+        let count = knots.len() - 4;
+        let mut ctrl = Vec::new();
+        for i in 0..count {
+            for j in 0..count {
+                let (x, y) = (i as f64 / count as f64, j as f64 / count as f64);
+                ctrl.push(Vec3::new(
+                    x * k,
+                    y * k,
+                    0.1 * k * (7.0 * x + 3.0 * y).psin() * (5.0 * y).pcos(),
+                ));
+            }
+        }
+        let weights = vec![1.0; ctrl.len()];
+        Surface::Nurbs(
+            NurbsSurface::new(3, 3, knots.clone(), knots, count, count, ctrl, weights).unwrap(),
+        )
+    }
+
+    /// Curves that cross many knot lines of a spline surface, or run
+    /// along one, are proven with bounds of the second (across `C¹` and
+    /// `C²` lines) or fourth order (2026-11-01: only the Lipschitz bound,
+    /// first order, was used across a knot line, so a curve along one
+    /// needed pieces shorter than the target; ABC models from Parasolid
+    /// were refused for it), and the bounds stay above what is seen.
+    #[test]
+    fn curves_across_and_along_knot_lines_are_proven() {
+        let paths: Vec<(&str, Along)> = vec![
+            ("across", Box::new(|t| (0.05 + 0.9 * t, 0.1 + 0.8 * t * t))),
+            ("along", Box::new(|t| (0.5, 0.05 + 0.9 * t))),
+            ("near", Box::new(|t| (0.5 + 1e-9 * t, 0.05 + 0.9 * t))),
+        ];
+        for k in [1e-3, 1.0, 1e6] {
+            for m in [1, 2] {
+                let surface = many_spans(k, m);
+                let sb = SurfaceBound::new(&surface).unwrap();
+                for (name, path) in &paths {
+                    let (curve, params) = curve_on(&surface, path, 64, 0.0, k);
+                    let cb = CurveBound::nurbs(&curve);
+                    let seen = sampled(&sb, &cb, (0.0, 1.0), path(0.0));
+                    let proven = sb
+                        .curve_within(&cb, (0.0, 1.0), path(0.0), &[], 1e-6 * k, 1 << 12)
+                        .unwrap_or_else(|e| panic!("{name}, multiplicity {m}, at {k}: {e:?}"));
+                    // The Lipschitz bound alone took 1700 to 3200 pieces
+                    // along the line at a tenfold target.
+                    assert!(proven.pieces <= 2048, "{name}, {m}: {proven:?}");
+                    assert!(proven.bound >= seen, "{name}: {proven:?} below {seen}");
+                    // Lifted between the fit points: never proven below
+                    // what is seen, and above it the bound holds it.
+                    let (lifted, _) = curve_on(&surface, path, 64, 1e-4, k);
+                    let lb = CurveBound::nurbs(&lifted);
+                    let seen = sampled(&sb, &lb, (0.0, 1.0), path(0.0));
+                    assert!(seen > 2e-5 * k, "{name}: {seen}");
+                    let refused =
+                        sb.curve_within(&lb, (0.0, 1.0), path(0.0), &params, 0.9 * seen, 1 << 12);
+                    assert!(refused.is_err(), "{name}, {m}: {refused:?} below {seen}");
+                    if let Ok(p) =
+                        sb.curve_within(&lb, (0.0, 1.0), path(0.0), &params, 2.0 * seen, 1 << 14)
+                    {
+                        assert!(p.bound >= seen, "{name}: {p:?} below {seen}");
                     }
                 }
             }

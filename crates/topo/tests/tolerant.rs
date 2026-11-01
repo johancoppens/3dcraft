@@ -313,3 +313,46 @@ fn bad_tolerances_and_entities_are_refused_not_panicked_on() {
             .any(|d| matches!(d, Defect::DanglingReference { .. }))
     );
 }
+
+/// A gap within the cap is measured within the cap: the first proof, at
+/// twice what five samples see, may bound it by anything up to that
+/// target, so a gap of 0.6 to 0.95 of the cap came out above it and was
+/// refused (ABC models, 2026-11-01); a last proof at the cap holds it.
+/// Above the cap it is still refused.
+#[test]
+fn a_gap_within_the_cap_is_measured_within_it() {
+    use craft3d_geom::{Circle, Cylinder, Surface};
+    for scale in [1e-3, 1.0, 1e3] {
+        let t = tolerance(scale);
+        let cap = 1000.0 * t.linear;
+        let frame = Frame::new(
+            Vec3::new(0.3, -0.2, 0.1) * scale,
+            Vec3::new(0.2, 0.3, 1.0),
+            Vec3::new(1.0, -0.1, 0.0),
+        )
+        .unwrap();
+        let radius = 10.0 * scale;
+        let cylinder = Surface::Cylinder(Cylinder::new(frame, radius).unwrap());
+        for share in [0.6, 0.8, 0.95, 1.2] {
+            let gap = share * cap;
+            let circle = Curve3::Circle(Circle::new(frame, radius + gap).unwrap());
+            let measured = craft3d_topo::measure_curve(&circle, (0.3, 2.9), &cylinder, &t, cap);
+            match measured {
+                Ok(d) => {
+                    assert!(
+                        d >= gap * (1.0 - 1e-9),
+                        "{scale} {share}: {d:e} below {gap:e}"
+                    );
+                    if share < 1.0 {
+                        assert!(d <= cap, "{scale} {share}: {d:e} above the cap {cap:e}");
+                    } else {
+                        assert!(d > cap, "{scale} {share}: {d:e}");
+                    }
+                }
+                // Above the cap the ladder may not try at all.
+                Err(_) if share > 1.0 => {}
+                Err(at) => panic!("{scale} {share}: not measured (at {at})"),
+            }
+        }
+    }
+}

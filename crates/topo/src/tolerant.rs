@@ -341,7 +341,23 @@ pub fn measure_curve(
                 most: PROOF_PIECES,
             },
         ) {
-            Ok(proven) => return Ok(proven.bound.max(sampled)),
+            Ok(proven) => {
+                let bound = proven.bound.max(sampled);
+                // A proof at a target above the cap may bound a gap
+                // within it by more than the cap (the bound lies
+                // anywhere up to the target): once more at the cap,
+                // which a gap within it can meet (2026-11-01, ABC).
+                if bound > cap && target > cap && sampled < cap {
+                    let tighter = Within {
+                        target: cap,
+                        most: PROOF_PIECES,
+                    };
+                    if let Ok(p) = curve_on_surface(&bounded, range, surface, None, &[], tighter) {
+                        return Ok(p.bound.max(sampled));
+                    }
+                }
+                return Ok(bound);
+            }
             Err(not) => stopped = not.at,
         }
         target *= 2.0;
