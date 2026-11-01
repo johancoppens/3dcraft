@@ -347,6 +347,27 @@ pub fn finish(
     options: &Options,
     report: &mut Report,
 ) -> Result<Imported, ImportError> {
+    finish_described(assembled, name, merge, options, report, &|_| None)
+}
+
+/// An entity of the file, by its id, for a refusal's message.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Entity {
+    Edge(u64),
+    Face(u64),
+}
+
+/// [`finish`], with `describe` naming the file's entity behind an edge's
+/// curve or a face's surface in a refusal's message (a STEP file's
+/// keywords; `None` for the kind the body holds).
+pub(crate) fn finish_described(
+    assembled: Assembled,
+    name: String,
+    merge: f64,
+    options: &Options,
+    report: &mut Report,
+    describe: &dyn Fn(Entity) -> Option<String>,
+) -> Result<Imported, ImportError> {
     let tolerance = options.tolerance.linear;
     let cap = options.loosest;
     let Assembled {
@@ -419,9 +440,19 @@ pub fn finish(
                     }
                     other => other.to_string(),
                 };
+                let step = step_id(&finisher.edge_ids, edge.0);
+                let why = crate::diagnose::edge(
+                    &finisher.body,
+                    edge,
+                    step,
+                    &finisher.face_ids,
+                    &options.tolerance,
+                    cap,
+                    finisher.report.uncertainty,
+                    describe,
+                );
                 return err(format!(
-                    "`{name}`: edge #{} {what}, more than the cap {cap:e} on an entity's own tolerance (the document's `loosest`); the body is refused rather than moved",
-                    step_id(&finisher.edge_ids, edge.0)
+                    "`{name}`: edge #{step} {what}, more than the cap {cap:e} on an entity's own tolerance (the document's `loosest`); the body is refused rather than moved ({why})"
                 ));
             }
         }

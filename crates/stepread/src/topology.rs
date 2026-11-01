@@ -524,7 +524,8 @@ pub(crate) fn build(
         vertex_ids,
         ..
     } = builder;
-    crate::finish::finish(
+    let describe = |entity| crate::diagnose::step_entity(reader, entity);
+    crate::finish::finish_described(
         crate::finish::Assembled {
             body,
             cavities,
@@ -536,5 +537,6 @@ pub(crate) fn build(
         merge,
         options,
         report,
+        &describe,
     )
 }

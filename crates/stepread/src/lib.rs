@@ -85,6 +85,7 @@
 
 mod assembly;
 mod budget;
+mod diagnose;
 pub mod finish;
 pub mod geometry;
 pub mod spindle;
