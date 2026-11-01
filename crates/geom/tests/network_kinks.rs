@@ -97,9 +97,6 @@ fn side_from(r: f64, edge: NurbsCurve) -> (Vec<NurbsCurve>, Vec<NurbsCurve>) {
     (vec![edge, floor], vs)
 }
 
-/// The largest angle between the sheet's normals on either side of each
-/// of its knots along u that is held only in position (multiplicity at
-/// least its degree less one), at 41 places across.
 /// The largest angle between the sheet's normals on either side of every
 /// distinct knot along u inside its domain, at 41 places across, and how
 /// many knots that was.
@@ -148,6 +145,9 @@ fn rough_knots(s: &NurbsSurface) -> usize {
     count
 }
 
+/// The largest angle between the sheet's normals on either side of each
+/// of its knots along u that is held only in position (multiplicity at
+/// least its degree less one), at 41 places across.
 fn creases(s: &NurbsSurface) -> f64 {
     let (pu, _) = s.degrees();
     let knots = s.knots_u();
