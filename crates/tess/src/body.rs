@@ -86,6 +86,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 /// No more threads than this by default; faces are small jobs.
 const MAX_AUTOMATIC_THREADS: usize = 16;
 
+/// How long [`in_order`] works on its own before it starts helpers.
+const SPAWN_AFTER: std::time::Duration = std::time::Duration::from_micros(300);
+
 /// The threads tessellation takes when it is not told: the machine's, up
 /// to [`MAX_AUTOMATIC_THREADS`] (1 on wasm).
 pub(crate) fn automatic_threads() -> usize {
@@ -128,6 +131,41 @@ fn in_order<T: Send>(
         }
     };
     let mut slots: Vec<Option<T>> = (0..count).map(|_| None).collect();
+    // Small jobs are done here before any thread is started: starting
+    // one costs tens of microseconds, more than a plane's face or a
+    // straight edge takes, and a small body (a tool's prism measured at
+    // every step of a bend's stroke) would spend most of its time
+    // starting threads. Helpers are started once this thread has worked
+    // for `SPAWN_AFTER` with indices left. Which indices this thread
+    // takes first changes nothing in the results, which are put back in
+    // order, nor in the work counted.
+    let mut early: Vec<(usize, T)> = Vec::new();
+    {
+        let started = std::time::Instant::now();
+        loop {
+            if started.elapsed() >= SPAWN_AFTER {
+                break;
+            }
+            let n = next.fetch_add(1, Ordering::Relaxed);
+            let Some(result) = one(n) else {
+                break;
+            };
+            early.push((n, result));
+        }
+    }
+    if next.load(Ordering::Relaxed) >= count {
+        for (n, result) in early {
+            if let Some(slot) = slots.get_mut(n) {
+                *slot = Some(result);
+            }
+        }
+        return slots
+            .into_iter()
+            .map(|slot| {
+                slot.ok_or_else(|| TessError::Internal("a face was not tessellated".into()))
+            })
+            .collect();
+    }
     let mut panicked = false;
     std::thread::scope(|scope| {
         let mut workers = Vec::new();
@@ -139,6 +177,7 @@ fn in_order<T: Send>(
             }
         }
         let (mut done, _) = work();
+        done.extend(early);
         for worker in workers {
             match worker.join() {
                 Ok((more, spent)) => {
