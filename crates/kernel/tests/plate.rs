@@ -1370,3 +1370,74 @@ fn a_plate_whose_edge_is_a_spline_with_short_end_spans_is_its_area_times_the_thi
         );
     }
 }
+
+/// The unit square (times `k`) as a sheet whose surface is the plane
+/// `z = 0` parametrised by the cubic `x(u) = ½ + a (u − ½) − b (u − ½)³`
+/// (`a = 1 + b/4`, so `x(0) = 0`, `x(1) = 1`) and `y = v`: regular over the
+/// square, but continued past `u = 0` and `u = 1` its speed along u falls
+/// to nothing at `|u − ½| = √(a / 3b)`, where the continuation has no
+/// normal.
+fn slowing_square(b: f64, k: f64) -> Body {
+    let mut body = sheet([0.0, 0.0], [1.0, 1.0], None, &Frame::WORLD, k);
+    let speed = 1.0 - b / 2.0;
+    let xs = [0.0, speed / 3.0, 1.0 - speed / 3.0, 1.0];
+    let mut ctrl = Vec::new();
+    for x in xs {
+        for y in [0.0, 1.0] {
+            ctrl.push(Vec3::new(x * k, y * k, 0.0));
+        }
+    }
+    let nurbs = craft3d_geom::NurbsSurface::new(
+        3,
+        1,
+        vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+        vec![0.0, 0.0, 1.0, 1.0],
+        4,
+        2,
+        ctrl,
+        vec![1.0; 8],
+    )
+    .unwrap();
+    let face = &mut body.faces[0];
+    let probe = Vec3::new(0.5 * k, 0.5 * k, 0.0);
+    let outward = |s: &Surface, reversed: bool| {
+        let (u, v) = s.project(probe).unwrap();
+        s.normal(u, v).unwrap() * if reversed { -1.0 } else { 1.0 }
+    };
+    let was = outward(&face.surface, face.reversed);
+    let surface = Surface::Nurbs(nurbs);
+    let reversed = outward(&surface, false).dot(was) < 0.0;
+    face.surface = surface;
+    face.reversed = reversed;
+    assert_eq!(
+        check(&body, &tolerance(k)),
+        [],
+        "the square is a valid sheet"
+    );
+    body
+}
+
+/// A face whose surface continued by the plate's full reach loses its
+/// normal, but by half of it does not: the plate takes the shorter
+/// continuation (`layered_within`) and is the square's area times the
+/// thickness. Without the shorter tries it was refused ("a pole or a
+/// border or corner drawn into a point").
+#[test]
+fn a_face_whose_full_continuation_loses_its_normal_plates_on_a_shorter_one() {
+    for k in SCALES {
+        let body = slowing_square(0.5, k);
+        let tol = tolerance(k);
+        let t = 0.05 * k;
+        let made = plate(
+            &body,
+            &all_faces(&body),
+            t,
+            Side::Mid,
+            &BTreeMap::new(),
+            &tol,
+        )
+        .unwrap_or_else(|e| panic!("at scale {k}: {e}"));
+        assert_eq!(check(&made.body, &tol), [], "a valid solid");
+        near(volume(&made.body), k * k * t, 1e-9, "the square's plate");
+    }
+}

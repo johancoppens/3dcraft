@@ -19,6 +19,7 @@ pub mod refine;
 pub mod support;
 mod surface;
 mod transform;
+pub mod trim;
 
 pub use curve::{Circle, Curve3, Ellipse, Line};
 pub use nurbs::{

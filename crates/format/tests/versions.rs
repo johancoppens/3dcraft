@@ -98,6 +98,7 @@ const FROZEN: &[(u32, usize, u64)] = &[
     // A sheet-metal louvre bent out of a slot in a wall (a flange on a
     // cut-out's edge).
     (60, 8707, 0xd984_dc57_24bf_bf33),
+    (61, 11079, 0x56dd_6431_5f65_3682),
 ];
 
 fn dir() -> PathBuf {

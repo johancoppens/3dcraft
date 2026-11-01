@@ -92,6 +92,23 @@ use std::f64::consts::FRAC_PI_2;
 
 const OPERATION: &str = "plate";
 
+/// The work a plate may do before it is refused ([`plate_work`]). Units
+/// run at 1 to 3 million a second on most surfaces, about 0.2 million on
+/// the biquintic patches of an N-sided fill (whose evaluations are dear):
+/// so a plate is refused within a minute or so, never after minutes on
+/// the engine's thread. The plates of the tests take at most 0.2 million;
+/// the five patches of a pentagon's fill 9 million (2026-11-01).
+pub const PLATE_WORK: u64 = 12_000_000;
+
+/// What each Bézier span of a chosen face adds to [`PLATE_WORK`].
+pub const PLATE_WORK_PER_SPAN: u64 = 250_000;
+
+/// The work of one try of a face's skins in the continuation ladder
+/// ([`layered_within`]) while a shorter continuation is still to come.
+/// The tries that succeed take about 0.4 million units on a fill's
+/// patches; one that is going to fail would take 20 million and more.
+const LADDER_TRY_WORK: u64 = 1_000_000;
+
 /// The share of the tolerance a traced curve or a fitted rim may be off
 /// the true one by.
 const SHARE: f64 = 0.25;
@@ -265,6 +282,69 @@ struct Layered<'a> {
     /// How far from the face, as a length along its surface, its skins
     /// are held to the tolerance ([`Layered::new`]); infinite for a probe.
     held: f64,
+}
+
+/// [`Layered::new`] with the surface continued past its vertices by
+/// `reach`, or, where a surface continued that far loses its normal or
+/// folds or is not fitted within the tolerance (a spline of high degree
+/// continued past its border by more than
+/// its own size: its polynomial turns over out there), by half and then a
+/// quarter of it (the continuation never below `least`, the furthest the
+/// plate's corners lie with a thickness beyond; the length the skins are
+/// held to the tolerance by the same share). What the skins then reach is checked as
+/// before: every vertex and edge of the plate must lie within them
+/// (`held_by`), so a shorter continuation is either enough or refused
+/// there. Found on an N-sided fill of degree-8 patches, continued 7 mm past
+/// 8 mm patches for a plate 1 mm thick.
+fn layered_within<'a>(
+    body: &Body,
+    face: &'a Face,
+    levels: (f64, f64),
+    reach: f64,
+    held: f64,
+    least: f64,
+    tolerance: &Tolerance,
+) -> Result<Layered<'a>, &'static str> {
+    let mut last = None;
+    let shares = [1.0, 0.5, 0.25];
+    for (k, share) in shares.into_iter().enumerate() {
+        let r = (reach * share).max(least);
+        let h = held * share;
+        let make = || {
+            Layered::new(
+                face,
+                levels,
+                reach_past_vertices(body, face, r, tolerance.linear),
+                h,
+                tolerance,
+            )
+        };
+        // A try with a shorter one still to come is bounded on its own: a
+        // fit that refines towards "not fitted" on a continuation that
+        // turns over is the dearest way to fail (a degree-8 fill patch: a
+        // single patch's half-length try took 115 s to fail, its quarter
+        // 0.16 s to succeed), so past its bound it counts as not fitted
+        // and the shorter one is tried.
+        let shorter_left = k + 1 < shares.len() && r > least;
+        let tried = if shorter_left {
+            craft3d_geom::allowance::within(LADDER_TRY_WORK, make)
+        } else {
+            make()
+        };
+        match tried {
+            Err(why) if shorter_left && why == crate::offset_face::SPENT => {
+                last = Some(NO_FIT);
+                continue;
+            }
+            Ok(made) => return Ok(made),
+            Err(why) if why == NO_NORMAL || why == FOLDS || why == NO_FIT => last = Some(why),
+            Err(why) => return Err(why),
+        }
+        if r <= least {
+            break;
+        }
+    }
+    Err(last.unwrap_or(NO_NORMAL))
 }
 
 impl<'a> Layered<'a> {
@@ -1016,9 +1096,26 @@ pub fn plate(
             });
         }
     }
-    build(
-        body, &chosen, thickness, side, joints, HELD_REACH, tolerance,
-    )
+    let units = plate_work(body, &chosen);
+    craft3d_geom::allowance::within(units, || {
+        build(
+            body, &chosen, thickness, side, joints, HELD_REACH, tolerance,
+        )
+    })
+}
+
+/// The work a plate may do, in [`craft3d_geom::allowance`] units: a base
+/// and a share per Bézier span of each chosen face, so that a plate on
+/// many spans may do more, but none runs on the engine's thread for
+/// minutes: past it the offsets' fits stop and the plate is refused with
+/// the reason (`offset_face::SPENT`), at the same point on every run.
+fn plate_work(body: &Body, chosen: &[FaceId]) -> u64 {
+    let spans: u64 = chosen
+        .iter()
+        .filter_map(|f| body.face(*f))
+        .map(|f| crate::offset_face::spans(&f.surface))
+        .sum();
+    PLATE_WORK.saturating_add(spans.saturating_mul(PLATE_WORK_PER_SPAN))
 }
 
 /// How the faces use an edge.
@@ -1174,9 +1271,16 @@ fn build(
     let surface_reach = SURFACE_REACH * furthest + thickness;
     let held = held_reach * (furthest + thickness);
     for (made, id) in layered.iter_mut().zip(chosen) {
-        let reach = reach_past_vertices(body, made.face, surface_reach, tolerance.linear);
-        *made = Layered::new(made.face, levels, reach, held, tolerance)
-            .map_err(|why| refuse(None, format!("face {}: {why}", id.0)))?;
+        *made = layered_within(
+            body,
+            made.face,
+            levels,
+            surface_reach,
+            held,
+            furthest + thickness,
+            tolerance,
+        )
+        .map_err(|why| refuse(None, format!("face {}: {why}", id.0)))?;
     }
     for boundary in &mut boundaries {
         // A surface an end lies on is continued as the skins are: the

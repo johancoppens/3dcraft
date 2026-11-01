@@ -1,0 +1,23 @@
+[
+ ["feature.block", {"size": [100, 100, 20], "name": "Plate"}],
+ ["sketch.create", {"plane": "xy", "offset": "40 mm", "name": "Disc"}],
+ ["sketch.circle", {"sketch": "Disc", "center": [50, 50], "radius": "30 mm"}],
+ ["sketch.create", {"plane": "xy", "offset": "40 mm", "name": "Hole"}],
+ ["sketch.circle", {"sketch": "Hole", "center": [50, 55], "radius": "10 mm"}],
+ ["feature.surface.trim", {"face": "F1:face(1)", "outer": "Disc", "holes": [["Hole"]], "name": "Ring"}],
+ ["feature.sphere", {"radius": "20 mm", "position": ["150 mm", "0 mm", "0 mm"], "name": "Ball"}],
+ ["sketch.create", {"plane": "zx", "offset": "60 mm", "name": "Spot"}],
+ ["sketch.circle", {"sketch": "Spot", "center": [0, 150], "radius": "8 mm"}],
+ ["feature.surface.trim", {"face": "F5:face(0)", "outer": "Spot", "along": [0, -1, 0], "name": "Cap"}],
+ ["sketch.create", {"plane": "xy", "name": "Side 1"}],
+ ["sketch.line", {"sketch": "Side 1", "from": [20.0, -100.0], "to": [6.18034, -80.97887]}],
+ ["sketch.create", {"plane": "xy", "name": "Side 2"}],
+ ["sketch.line", {"sketch": "Side 2", "from": [6.18034, -80.97887], "to": [-16.18034, -88.244295]}],
+ ["sketch.create", {"plane": "xy", "name": "Side 3"}],
+ ["sketch.line", {"sketch": "Side 3", "from": [-16.18034, -88.244295], "to": [-16.18034, -111.755705]}],
+ ["sketch.create", {"plane": "xy", "name": "Side 4"}],
+ ["sketch.line", {"sketch": "Side 4", "from": [-16.18034, -111.755705], "to": [6.18034, -119.02113]}],
+ ["sketch.create", {"plane": "xy", "name": "Side 5"}],
+ ["sketch.line", {"sketch": "Side 5", "from": [6.18034, -119.02113], "to": [20.0, -100.0]}],
+ ["feature.surface.nsided", {"curves": ["Side 1", "Side 2", "Side 3", "Side 4", "Side 5"], "inner": "curvature", "rise": "4 mm", "name": "Dome"}]
+]

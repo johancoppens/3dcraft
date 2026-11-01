@@ -916,7 +916,7 @@ pub(crate) fn fitting_with(
 }
 
 /// The spans of a freeform surface (its Bézier pieces); none for another.
-fn spans(surface: &Surface) -> u64 {
+pub(crate) fn spans(surface: &Surface) -> u64 {
     let distinct = |knots: &[f64], (lo, hi): (f64, f64)| -> u64 {
         let mut count = 0_u64;
         let mut last = f64::NAN;

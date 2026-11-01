@@ -41,6 +41,8 @@ mod loft;
 mod move_face;
 mod network;
 pub use network::{Networked, edge_spline};
+mod trimfill;
+pub use trimfill::{Filled, FilledEdge, FilledSeam, Trimmed};
 mod offset_face;
 mod offset_profile;
 mod pass;
@@ -1240,6 +1242,12 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
         FeatureKind::SurfaceNetwork(_) => {
             return Err("a network surface needs its curves".to_string());
         }
+        FeatureKind::SurfaceTrim(_) => {
+            return Err("a trimmed face needs its face and curves".to_string());
+        }
+        FeatureKind::SurfaceNsided(_) => {
+            return Err("an N-sided fill needs its curves".to_string());
+        }
         // Placed in `features`; reference geometry is not a body.
         FeatureKind::DatumPlane(_)
         | FeatureKind::DatumAxis(_)
@@ -1769,6 +1777,28 @@ fn build_feature(
             Ok((body, made_names, report)) => {
                 names = Some(Arc::new(made_names));
                 developed = Some(Developed::Network(report));
+                (Status::Ok, Some(Arc::new(body)))
+            }
+            Err(reason) => (Status::Failed(reason), None),
+        }
+    } else if let FeatureKind::SurfaceNsided(fill) = &feature.kind {
+        match trimfill::build_nsided(doc, variables, feature.id, fill, earlier)
+            .and_then(|(body, names, report)| checked(doc, body).map(|body| (body, names, report)))
+        {
+            Ok((body, made_names, report)) => {
+                names = Some(Arc::new(made_names));
+                developed = Some(Developed::Fill(report));
+                (Status::Ok, Some(Arc::new(body)))
+            }
+            Err(reason) => (Status::Failed(reason), None),
+        }
+    } else if let FeatureKind::SurfaceTrim(trimmed) = &feature.kind {
+        match trimfill::build_trim(doc, variables, feature.id, trimmed, earlier)
+            .and_then(|(body, names, report)| checked(doc, body).map(|body| (body, names, report)))
+        {
+            Ok((body, made_names, report)) => {
+                names = Some(Arc::new(made_names));
+                developed = Some(Developed::Trim(report));
                 (Status::Ok, Some(Arc::new(body)))
             }
             Err(reason) => (Status::Failed(reason), None),

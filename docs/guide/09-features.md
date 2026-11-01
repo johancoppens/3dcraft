@@ -318,6 +318,33 @@ height 32 to 40, hump 0.36 to 0.44 and taper 2° to 5°. With zebra stripes (`ui
 {"mode": "zebra"}}`) the stripes on the top run on into the flat flanks without a kink or a jump in width;
 with the curvature map (`"mode": "curvature"`) the curvature rises from zero at each seam.
 
+## Trimmed faces and N-sided fills
+
+`feature.surface.trim` makes a face on the surface of a face you already have, the surface itself, bounded by
+curves on it: an opening, a flank, a label area. `outer` is a loop of curves end to end (a sketch's closed
+loop or chains, or edges), `holes` more loops inside it. Curves drawn in space are taken onto the surface,
+to their closest points or, with `along`, along a direction (a sketch on a side plane projected onto a
+curved body); with `"space": "parameter"` a sketch is read as the surface's own parameters, its x and y in
+percent of the surface's domain. Every edge lies on the surface exactly, on spline surfaces, planes,
+cylinders, cones, spheres and tori. A window
+projected onto the quarter cylinder made above:
+
+```json
+[
+ ["sketch.create", {"plane": "yz", "offset": "40 mm", "name": "Window"}],
+ ["sketch.circle", {"sketch": "Window", "center": [9, 15], "radius": "6 mm"}],
+ ["feature.surface.trim", {"face": "F5:side(e1,e2,e3,e4)", "outer": "Window", "along": [-1, 0, 0], "name": "Patch"}]
+]
+```
+
+`feature.surface.nsided` fills a closed loop of 3 to 6 curves with a smooth sheet: one four-sided patch per
+curve around a centre point, so no corner is pinched. `edges` holds each curve as a network holds its
+edges: `tangent` to a face makes the fill meet it with one tangent plane, `curvature` with its curvature
+too. `"inner": "curvature"` makes the patches meet each other in curvature as well, so zebra stripes run
+on without a kink. The result says how every seam and curve was proven (`fill.seams`, `fill.edges`, as
+`measure.continuity` measures); where one asked in curvature cannot be proven, the fill is built tangent
+and says why.
+
 ## Plates and joints
 
 `feature.plate` gives faces a thickness: a sheet (a fill, a loft of open sections, a developable) becomes a

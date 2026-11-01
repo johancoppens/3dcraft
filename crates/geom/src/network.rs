@@ -82,6 +82,7 @@ use std::fmt;
 mod border_snap_tests;
 mod continuity;
 mod fair;
+pub mod nsided;
 pub use continuity::{
     Continuity, Gap, MAX_SEAM_DEGREE, MAX_SEAM_PIECES, MAX_SEAM_WORK, Order, continuity, describe,
     thresholds,

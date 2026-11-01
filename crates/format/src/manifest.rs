@@ -1065,6 +1065,34 @@ pub enum FeatureKind {
         #[serde(default, skip_serializing_if = "NetworkEdges::is_free")]
         edges: NetworkEdges,
     },
+    /// A face on the surface of the face `face` of an earlier body,
+    /// bounded by loops of rails (format version 61): `outer`, `holes`
+    /// (written when there are some), `space` (`model` or `parameter`,
+    /// written when `parameter`), `along` (a projection direction,
+    /// written when set).
+    SurfaceTrim {
+        face: Name,
+        outer: Vec<Rail>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        holes: Vec<Vec<Rail>>,
+        #[serde(default, skip_serializing_if = "TrimSpace::is_model")]
+        space: TrimSpace,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        along: Option<[String; 3]>,
+    },
+    /// A patch inside a closed loop of 3 to 6 rails (format version 61):
+    /// `edges` one hold per rail (written when one is held), `inner` the
+    /// continuity of the inner seams (written when `curvature`), `rise` how far
+    /// its centre is moved along its normal (written when set).
+    SurfaceNsided {
+        curves: Vec<Rail>,
+        #[serde(default, skip_serializing_if = "all_free")]
+        edges: Vec<EdgeHold>,
+        #[serde(default, skip_serializing_if = "InnerSeams::is_tangent")]
+        inner: InnerSeams,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rise: Option<String>,
+    },
     /// Faces of an earlier body laid flat as one piece (format version
     /// 39), placed at `at` and turned by `angle` about +z.
     Unfold {
@@ -1400,6 +1428,41 @@ impl NetworkEdges {
             && self.v_first.is_free()
             && self.v_last.is_free()
     }
+}
+
+/// How a trimmed face's curves are taken onto its surface (format
+/// version 61).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TrimSpace {
+    #[default]
+    Model,
+    Parameter,
+}
+
+impl TrimSpace {
+    fn is_model(&self) -> bool {
+        *self == TrimSpace::Model
+    }
+}
+
+/// The continuity of an N-sided fill's inner seams (format version 61).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum InnerSeams {
+    #[default]
+    Tangent,
+    Curvature,
+}
+
+impl InnerSeams {
+    fn is_tangent(&self) -> bool {
+        *self == InnerSeams::Tangent
+    }
+}
+
+fn all_free(holds: &[EdgeHold]) -> bool {
+    holds.iter().all(EdgeHold::is_free)
 }
 
 /// A rail of a developable (format version 39).

@@ -103,6 +103,7 @@ mod table_cmds;
 pub mod task_score;
 mod text_cmds;
 mod tolerance_cmds;
+mod trimfill_cmds;
 mod typed;
 mod unit_cmds;
 mod verify;
@@ -603,6 +604,7 @@ impl Session {
                 develop_cmds::SPECS,
                 analysis_cmds::SPECS,
                 surface_cmds::SPECS,
+                trimfill_cmds::SPECS,
                 continuity_cmds::SPECS,
                 plate_cmds::SPECS,
                 sweep_path_cmds::SPECS,

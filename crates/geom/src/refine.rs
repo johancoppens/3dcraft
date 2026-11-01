@@ -463,7 +463,7 @@ pub(crate) fn bernstein_product(a: &[f64], b: &[f64]) -> Vec<f64> {
 /// The Bernstein coefficients of the polynomial `c` (Bernstein, on
 /// [0, 1]) restricted to `[lo, hi]` and run over [0, 1] there (de
 /// Casteljau's subdivision at `hi`, then at `lo / hi` of what is left).
-fn restricted(c: &[f64], lo: f64, hi: f64) -> Vec<f64> {
+pub(crate) fn restricted(c: &[f64], lo: f64, hi: f64) -> Vec<f64> {
     let split = |c: &[f64], t: f64| -> (Vec<f64>, Vec<f64>) {
         let mut row = c.to_vec();
         let n = row.len();

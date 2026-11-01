@@ -297,6 +297,10 @@ pub enum Developed {
     /// A network surface: how closely its curves crossed and how its held
     /// edges meet their faces.
     Network(crate::network::Networked),
+    /// A trimmed face: how closely its edges follow their curves.
+    Trim(crate::trimfill::Trimmed),
+    /// An N-sided fill: how its seams meet.
+    Fill(crate::trimfill::Filled),
 }
 
 /// The faces of an unfold in its source's body, in the order given.

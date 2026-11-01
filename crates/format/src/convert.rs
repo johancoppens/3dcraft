@@ -1378,6 +1378,39 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                     },
                 }
             }
+            doc::FeatureKind::SurfaceTrim(doc::SurfaceTrim {
+                face,
+                outer,
+                holes,
+                space,
+                along,
+            }) => manifest::FeatureKind::SurfaceTrim {
+                face: name_to_manifest(face),
+                outer: outer.iter().map(rail_to_manifest).collect(),
+                holes: holes
+                    .iter()
+                    .map(|h| h.iter().map(rail_to_manifest).collect())
+                    .collect(),
+                space: match space {
+                    doc::TrimSpace::Model => manifest::TrimSpace::Model,
+                    doc::TrimSpace::Parameter => manifest::TrimSpace::Parameter,
+                },
+                along: along.clone().map(|a| a.map(|e| expr_to_manifest(&e))),
+            },
+            doc::FeatureKind::SurfaceNsided(doc::SurfaceNsided {
+                curves,
+                edges,
+                inner,
+                rise,
+            }) => manifest::FeatureKind::SurfaceNsided {
+                rise: rise.as_ref().map(expr_to_manifest),
+                curves: curves.iter().map(rail_to_manifest).collect(),
+                edges: edges.iter().map(hold_to_manifest).collect(),
+                inner: match inner {
+                    doc::InnerSeams::Tangent => manifest::InnerSeams::Tangent,
+                    doc::InnerSeams::Curvature => manifest::InnerSeams::Curvature,
+                },
+            },
             doc::FeatureKind::Unfold(doc::Unfold { faces, at, angle }) => {
                 manifest::FeatureKind::Unfold {
                     faces: faces.iter().map(name_to_manifest).collect(),
@@ -3300,6 +3333,39 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
                     },
                 })
             }
+            manifest::FeatureKind::SurfaceTrim {
+                face,
+                outer,
+                holes,
+                space,
+                along,
+            } => doc::FeatureKind::SurfaceTrim(doc::SurfaceTrim {
+                face: name_to_doc(face),
+                outer: outer.into_iter().map(rail_to_doc).collect(),
+                holes: holes
+                    .into_iter()
+                    .map(|h| h.into_iter().map(rail_to_doc).collect())
+                    .collect(),
+                space: match space {
+                    manifest::TrimSpace::Model => doc::TrimSpace::Model,
+                    manifest::TrimSpace::Parameter => doc::TrimSpace::Parameter,
+                },
+                along: along.map(exprs_to_doc),
+            }),
+            manifest::FeatureKind::SurfaceNsided {
+                curves,
+                edges,
+                inner,
+                rise,
+            } => doc::FeatureKind::SurfaceNsided(doc::SurfaceNsided {
+                rise: rise.map(doc::Expr),
+                curves: curves.into_iter().map(rail_to_doc).collect(),
+                edges: edges.into_iter().map(hold_to_doc).collect(),
+                inner: match inner {
+                    manifest::InnerSeams::Tangent => doc::InnerSeams::Tangent,
+                    manifest::InnerSeams::Curvature => doc::InnerSeams::Curvature,
+                },
+            }),
             manifest::FeatureKind::Unfold { faces, at, angle } => {
                 doc::FeatureKind::Unfold(doc::Unfold {
                     faces: faces.into_iter().map(name_to_doc).collect(),

@@ -162,6 +162,8 @@ pub(crate) fn report_json(map: &mut Map<String, Value>, made: &craft3d_regen::De
         }
         craft3d_regen::Developed::SheetMetal(_) | craft3d_regen::Developed::FlatFold(_) => {}
         craft3d_regen::Developed::Network(made) => crate::surface_cmds::report_json(map, made),
+        craft3d_regen::Developed::Trim(made) => crate::trimfill_cmds::trim_json(map, made),
+        craft3d_regen::Developed::Fill(made) => crate::trimfill_cmds::fill_json(map, made),
         craft3d_regen::Developed::Pattern(dev) => {
             let e = dev.error();
             map.insert(

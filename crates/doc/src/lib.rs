@@ -765,6 +765,104 @@ impl SurfaceNetwork {
     }
 }
 
+/// How the curves of a trimmed face's loops are taken onto its surface.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TrimSpace {
+    /// Curves in space, taken to the surface (closest points, or along
+    /// `along`).
+    #[default]
+    Model,
+    /// Sketches read as the surface's parameter square: `x` as `u`, `y` as
+    /// `v`, in percent of its domain (`[0, 100]²`).
+    Parameter,
+}
+
+/// Most curves round an N-sided fill.
+pub const MAX_NSIDED_CURVES: usize = 6;
+
+/// Most loops (the outer one and holes) of a trimmed face.
+pub const MAX_TRIM_LOOPS: usize = 64;
+
+/// A face on the surface of a face of an earlier body, bounded by loops
+/// of curves on it: the surface itself, exactly, trimmed
+/// (docs/design/surfacing.md › *A face on a surface, bounded by curves on
+/// it*). Each loop is curves end to end, closed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfaceTrim {
+    pub face: PersistentName,
+    pub outer: Vec<Rail>,
+    #[serde(default)]
+    pub holes: Vec<Vec<Rail>>,
+    #[serde(default)]
+    pub space: TrimSpace,
+    /// The direction curves are projected along; `None`: to their
+    /// closest points.
+    #[serde(default)]
+    pub along: Option<[Expr; 3]>,
+}
+
+impl SurfaceTrim {
+    /// The features it is made from, in order, each once.
+    pub fn inputs(&self) -> Vec<FeatureId> {
+        let mut out: Vec<FeatureId> = vec![self.face.feature];
+        let rails = self.outer.iter().chain(self.holes.iter().flatten());
+        for id in rails.flat_map(Rail::inputs) {
+            if !out.contains(&id) {
+                out.push(id);
+            }
+        }
+        out
+    }
+}
+
+/// How the inner seams of an N-sided fill meet.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum InnerSeams {
+    /// One tangent plane (G1).
+    #[default]
+    Tangent,
+    /// One tangent plane and one curvature (G2).
+    Curvature,
+}
+
+/// A smooth patch inside a closed loop of 3 to 6 curves, made of one
+/// four-sided patch per curve around a centre point
+/// (docs/design/surfacing.md › *The N-sided fill*). `edges` holds each
+/// curve's edge as a network holds one (empty: all free).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfaceNsided {
+    pub curves: Vec<Rail>,
+    #[serde(default)]
+    pub edges: Vec<EdgeHold>,
+    #[serde(default)]
+    pub inner: InnerSeams,
+    /// How far the fill's centre is moved along its normal (the side its
+    /// curves run counter-clockwise about) from where the curves put it:
+    /// a dome or a scoop. `None`: not moved.
+    #[serde(default)]
+    pub rise: Option<Expr>,
+}
+
+impl SurfaceNsided {
+    /// The features it is made from, in order, each once.
+    pub fn inputs(&self) -> Vec<FeatureId> {
+        let mut out: Vec<FeatureId> = Vec::new();
+        let rails = self.curves.iter().flat_map(Rail::inputs);
+        let faces = self
+            .edges
+            .iter()
+            .filter_map(|h| h.face().map(|f| f.feature));
+        for id in rails.chain(faces) {
+            if !out.contains(&id) {
+                out.push(id);
+            }
+        }
+        out
+    }
+}
+
 /// Faces of an earlier body laid flat as one piece, a flat sheet of its
 /// own in the plane `z = at.z`: the first face's first vertex at `at`,
 /// that vertex's first edge along +x turned by `angle` about +z. The
@@ -1316,6 +1414,8 @@ pub enum FeatureKind {
     Developable(Developable),
     Unfold(Unfold),
     SurfaceNetwork(SurfaceNetwork),
+    SurfaceTrim(SurfaceTrim),
+    SurfaceNsided(SurfaceNsided),
 }
 
 impl FeatureKind {
@@ -1355,6 +1455,8 @@ impl FeatureKind {
             FeatureKind::Split(_) => "split",
             FeatureKind::Developable(_) => "developable",
             FeatureKind::SurfaceNetwork(_) => "surfaceNetwork",
+            FeatureKind::SurfaceTrim(_) => "surfaceTrim",
+            FeatureKind::SurfaceNsided(_) => "surfaceNsided",
             FeatureKind::Unfold(_) => "unfold",
             FeatureKind::Import(_) => "import",
             FeatureKind::Fold(_) => "fold",
@@ -1502,6 +1604,8 @@ impl FeatureKind {
             | FeatureKind::SheetMetal(_)
             | FeatureKind::Developable(_)
             | FeatureKind::SurfaceNetwork(_)
+            | FeatureKind::SurfaceTrim(_)
+            | FeatureKind::SurfaceNsided(_)
             | FeatureKind::Import(_) => None,
         }
     }
@@ -1553,6 +1657,8 @@ impl FeatureKind {
                 out
             }
             FeatureKind::SurfaceNetwork(n) => n.inputs(),
+            FeatureKind::SurfaceTrim(t) => t.inputs(),
+            FeatureKind::SurfaceNsided(n) => n.inputs(),
             FeatureKind::Developable(d) => {
                 let mut out = d.a.inputs();
                 for id in d.b.inputs() {
@@ -1674,6 +1780,28 @@ impl FeatureKind {
             FeatureKind::Unfold(u) => {
                 out = triple("at", &u.at);
                 out.push(named("angle", &u.angle));
+            }
+            FeatureKind::SurfaceTrim(t) => {
+                out = match &t.along {
+                    Some(along) => triple("along", along),
+                    None => Vec::new(),
+                };
+            }
+            FeatureKind::SurfaceNsided(n) => {
+                out = n
+                    .edges
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, hold)| match hold {
+                        EdgeHold::Tangent { weight, .. } | EdgeHold::Curvature { weight, .. } => {
+                            Some((format!("edges[{i}].weight"), weight))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                if let Some(rise) = &n.rise {
+                    out.push(named("rise", rise));
+                }
             }
             FeatureKind::SurfaceNetwork(n) => {
                 out = n
@@ -1830,6 +1958,21 @@ impl FeatureKind {
             | FeatureKind::Developable(_)
             | FeatureKind::Import(_) => Vec::new(),
             FeatureKind::Unfold(u) => u.at.iter_mut().chain([&mut u.angle]).collect(),
+            FeatureKind::SurfaceTrim(t) => match &mut t.along {
+                Some(along) => along.iter_mut().collect(),
+                None => Vec::new(),
+            },
+            FeatureKind::SurfaceNsided(n) => n
+                .edges
+                .iter_mut()
+                .filter_map(|hold| match hold {
+                    EdgeHold::Tangent { weight, .. } | EdgeHold::Curvature { weight, .. } => {
+                        Some(weight)
+                    }
+                    _ => None,
+                })
+                .chain(n.rise.as_mut())
+                .collect(),
             FeatureKind::SurfaceNetwork(n) => n
                 .edges
                 .all_mut()
@@ -2343,6 +2486,52 @@ impl Document {
                         }
                     }
                     names.extend(n.edges.all().into_iter().filter_map(|(_, h)| h.face()));
+                    names
+                }
+                FeatureKind::SurfaceTrim(t) => {
+                    let count = t.outer.len() + t.holes.iter().map(Vec::len).sum::<usize>();
+                    if t.holes.len() + 1 > MAX_TRIM_LOOPS
+                        || count > MAX_NETWORK_CURVES * MAX_TRIM_LOOPS
+                    {
+                        return Err(DocError::Invalid(format!(
+                            "`{}` has more than {MAX_TRIM_LOOPS} loops or too many curves",
+                            feature.name
+                        )));
+                    }
+                    let mut names = vec![&t.face];
+                    for rail in t.outer.iter().chain(t.holes.iter().flatten()) {
+                        if let Rail::Edges(edges) = rail {
+                            if edges.len() > MAX_RAIL_EDGES {
+                                return Err(DocError::Invalid(format!(
+                                    "`{}` has a curve of more than {MAX_RAIL_EDGES} edges",
+                                    feature.name
+                                )));
+                            }
+                            names.extend(edges.iter());
+                        }
+                    }
+                    names
+                }
+                FeatureKind::SurfaceNsided(n) => {
+                    if n.curves.len() > MAX_NSIDED_CURVES || n.edges.len() > MAX_NSIDED_CURVES {
+                        return Err(DocError::Invalid(format!(
+                            "`{}` has more than {MAX_NSIDED_CURVES} curves",
+                            feature.name
+                        )));
+                    }
+                    let mut names = Vec::new();
+                    for rail in &n.curves {
+                        if let Rail::Edges(edges) = rail {
+                            if edges.len() > MAX_RAIL_EDGES {
+                                return Err(DocError::Invalid(format!(
+                                    "`{}` has a curve of more than {MAX_RAIL_EDGES} edges",
+                                    feature.name
+                                )));
+                            }
+                            names.extend(edges.iter());
+                        }
+                    }
+                    names.extend(n.edges.iter().filter_map(EdgeHold::face));
                     names
                 }
                 FeatureKind::Loft(loft) => {

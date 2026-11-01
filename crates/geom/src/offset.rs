@@ -1700,6 +1700,10 @@ fn held_lattice(nurbs: &NurbsSurface, held: &Held, us: &[f64], vs: &[f64]) -> Ve
     us.iter()
         .enumerate()
         .map(|(i, &u)| {
+            // Past a bound the rest is not measured (the caller refuses).
+            if crate::allowance::exhausted() {
+                return vec![false; vs.len()];
+            }
             let along_v = inside_u(u).then(|| {
                 outward(vs, (b0, b1), reach, &|v: f64| {
                     nurbs.derivatives(u, v).2.length()
@@ -1810,6 +1814,12 @@ fn fit(
             let vs: Vec<f64> = at_v.iter().map(|(v, _)| *v).collect();
             held_lattice(nurbs, h, &us, &vs)
         });
+        // The held region measured point by point past the box's corners
+        // is the dearest part of a pass on a large lattice: a bound
+        // reached there ends the fit (what it marked is not trusted).
+        if crate::allowance::exhausted() {
+            return Err(OffsetError::Spent);
+        }
         for (i, &(u, step_u)) in at_u.iter().enumerate() {
             for (j, &(v, step_v)) in at_v.iter().enumerate() {
                 // Not used: not held to the limit (`Held`).

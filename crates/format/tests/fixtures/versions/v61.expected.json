@@ -1,0 +1,665 @@
+{
+  "format_version": 61,
+  "written_by": "5509b9a952c688c5c218da706dd41904ceae499a",
+  "how": "craft3d-cli (release) built from that commit (r1-trimfill rebased onto main 4d32f6ba) on the developer's laptop: craft3d-cli run --new '{\"units\": \"mm\"}' --script v61.steps.json --out v61.3dcraft, then document.inspect of the file opened again; a block's top trimmed to a ring by a projected circle and a hole, a sphere trimmed to a cap along -y (its rational form), and a pentagon of five lines filled by an N-sided fill in curvature with its centre risen 4 mm: the surfaceTrim and surfaceNsided kinds of format 61",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Plate",
+      "params": {
+        "orientation": {
+          "angle": "0 deg",
+          "axis": [
+            "0",
+            "0",
+            "1"
+          ]
+        },
+        "position": [
+          "0",
+          "0",
+          "0"
+        ],
+        "size": [
+          "100",
+          "100",
+          "20"
+        ],
+        "type": "block"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "dof": 2,
+      "id": "F2",
+      "name": "Disc",
+      "params": {
+        "constraints": [
+          {
+            "id": 1,
+            "kind": {
+              "curve": 2,
+              "type": "radius",
+              "value": "30 mm"
+            }
+          }
+        ],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 50.0,
+              "y": 50.0
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "center": 1,
+              "radius": 30.0,
+              "type": "circle"
+            },
+            "id": 2
+          }
+        ],
+        "next_constraint_id": 2,
+        "next_entity_id": 3,
+        "plane": {
+          "offset": "40 mm",
+          "plane": "xy",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "dof": 2,
+      "id": "F3",
+      "name": "Hole",
+      "params": {
+        "constraints": [
+          {
+            "id": 1,
+            "kind": {
+              "curve": 2,
+              "type": "radius",
+              "value": "10 mm"
+            }
+          }
+        ],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 50.0,
+              "y": 55.0
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "center": 1,
+              "radius": 10.0,
+              "type": "circle"
+            },
+            "id": 2
+          }
+        ],
+        "next_constraint_id": 2,
+        "next_entity_id": 3,
+        "plane": {
+          "offset": "40 mm",
+          "plane": "xy",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "id": "F4",
+      "name": "Ring",
+      "params": {
+        "along": null,
+        "face": "F1:face(1)",
+        "holes": [
+          [
+            {
+              "sketch": 3
+            }
+          ]
+        ],
+        "outer": [
+          {
+            "sketch": 2
+          }
+        ],
+        "space": "model",
+        "type": "surfaceTrim"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "id": "F5",
+      "name": "Ball",
+      "params": {
+        "position": [
+          "150 mm",
+          "0 mm",
+          "0 mm"
+        ],
+        "radius": "20 mm",
+        "type": "sphere"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "dof": 2,
+      "id": "F6",
+      "name": "Spot",
+      "params": {
+        "constraints": [
+          {
+            "id": 1,
+            "kind": {
+              "curve": 2,
+              "type": "radius",
+              "value": "8 mm"
+            }
+          }
+        ],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 0.0,
+              "y": 150.0
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "center": 1,
+              "radius": 8.0,
+              "type": "circle"
+            },
+            "id": 2
+          }
+        ],
+        "next_constraint_id": 2,
+        "next_entity_id": 3,
+        "plane": {
+          "offset": "60 mm",
+          "plane": "zx",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "id": "F7",
+      "name": "Cap",
+      "params": {
+        "along": [
+          "0",
+          "-1",
+          "0"
+        ],
+        "face": "F5:face(0)",
+        "holes": [],
+        "outer": [
+          {
+            "sketch": 6
+          }
+        ],
+        "space": "model",
+        "type": "surfaceTrim"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "dof": 4,
+      "id": "F8",
+      "name": "Side 1",
+      "params": {
+        "constraints": [],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 20.0,
+              "y": -100.0
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 6.18034,
+              "y": -80.97887
+            },
+            "id": 2
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 2,
+              "start": 1,
+              "type": "line"
+            },
+            "id": 3
+          }
+        ],
+        "next_constraint_id": 1,
+        "next_entity_id": 4,
+        "plane": {
+          "offset": "0",
+          "plane": "xy",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "dof": 4,
+      "id": "F9",
+      "name": "Side 2",
+      "params": {
+        "constraints": [],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 6.18034,
+              "y": -80.97887
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": -16.18034,
+              "y": -88.244295
+            },
+            "id": 2
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 2,
+              "start": 1,
+              "type": "line"
+            },
+            "id": 3
+          }
+        ],
+        "next_constraint_id": 1,
+        "next_entity_id": 4,
+        "plane": {
+          "offset": "0",
+          "plane": "xy",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "dof": 4,
+      "id": "F10",
+      "name": "Side 3",
+      "params": {
+        "constraints": [],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": -16.18034,
+              "y": -88.244295
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": -16.18034,
+              "y": -111.755705
+            },
+            "id": 2
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 2,
+              "start": 1,
+              "type": "line"
+            },
+            "id": 3
+          }
+        ],
+        "next_constraint_id": 1,
+        "next_entity_id": 4,
+        "plane": {
+          "offset": "0",
+          "plane": "xy",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "dof": 4,
+      "id": "F11",
+      "name": "Side 4",
+      "params": {
+        "constraints": [],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": -16.18034,
+              "y": -111.755705
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 6.18034,
+              "y": -119.02113
+            },
+            "id": 2
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 2,
+              "start": 1,
+              "type": "line"
+            },
+            "id": 3
+          }
+        ],
+        "next_constraint_id": 1,
+        "next_entity_id": 4,
+        "plane": {
+          "offset": "0",
+          "plane": "xy",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "dof": 4,
+      "id": "F12",
+      "name": "Side 5",
+      "params": {
+        "constraints": [],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 6.18034,
+              "y": -119.02113
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 20.0,
+              "y": -100.0
+            },
+            "id": 2
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 2,
+              "start": 1,
+              "type": "line"
+            },
+            "id": 3
+          }
+        ],
+        "next_constraint_id": 1,
+        "next_entity_id": 4,
+        "plane": {
+          "offset": "0",
+          "plane": "xy",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "id": "F13",
+      "name": "Dome",
+      "params": {
+        "curves": [
+          {
+            "sketch": 8
+          },
+          {
+            "sketch": 9
+          },
+          {
+            "sketch": 10
+          },
+          {
+            "sketch": 11
+          },
+          {
+            "sketch": 12
+          }
+        ],
+        "edges": [],
+        "inner": "curvature",
+        "rise": "4 mm",
+        "type": "surfaceNsided"
+      },
+      "status": "ok",
+      "suppressed": false
+    }
+  ],
+  "bodies": [
+    {
+      "area": 28000.000000000007,
+      "bbox": [
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          100.0,
+          100.0,
+          20.0
+        ]
+      ],
+      "bboxTolerance": 0.19171853917689766,
+      "centroid": [
+        49.99999999999999,
+        50.00000000000001,
+        10.0
+      ],
+      "edges": 12,
+      "faceNames": [
+        "F1:face(0)",
+        "F1:face(1)",
+        "F1:face(2)",
+        "F1:face(3)",
+        "F1:face(4)",
+        "F1:face(5)"
+      ],
+      "faces": 6,
+      "feature": "F1",
+      "kind": "solid",
+      "name": "Plate",
+      "shells": 1,
+      "valid": true,
+      "vertices": 8,
+      "volume": 200000.00000000006
+    },
+    {
+      "area": 2513.274122871835,
+      "bbox": [
+        [
+          20.0,
+          20.0,
+          19.999999999999996
+        ],
+        [
+          80.0,
+          80.0,
+          20.000000000000004
+        ]
+      ],
+      "bboxTolerance": 0.19171853917689766,
+      "centroid": null,
+      "edges": 2,
+      "faceNames": [
+        "F4:face(0)"
+      ],
+      "faces": 1,
+      "feature": "F4",
+      "kind": "sheet",
+      "name": "Ring",
+      "shells": 1,
+      "valid": true,
+      "vertices": 2,
+      "volume": 0.0
+    },
+    {
+      "area": 5026.5482457436765,
+      "bbox": [
+        [
+          130.1754917030371,
+          -19.892126944188107,
+          -20.0
+        ],
+        [
+          169.9146835259007,
+          19.892126944188107,
+          20.0
+        ]
+      ],
+      "bboxTolerance": 0.19171853917689766,
+      "centroid": [
+        150.0,
+        9.350000362716546e-16,
+        1.8913142063786945e-16
+      ],
+      "edges": 0,
+      "faceNames": [
+        "F5:face(0)"
+      ],
+      "faces": 1,
+      "feature": "F5",
+      "kind": "solid",
+      "name": "Ball",
+      "shells": 1,
+      "valid": true,
+      "vertices": 0,
+      "volume": 33510.321638291156
+    },
+    {
+      "area": 209.82034082524868,
+      "bbox": [
+        [
+          142.00000000000827,
+          18.330302776414875,
+          -7.999999999999889
+        ],
+        [
+          157.99999999999173,
+          19.946463564367885,
+          7.999999999996542
+        ]
+      ],
+      "bboxTolerance": 0.19171853917689766,
+      "centroid": null,
+      "edges": 1,
+      "faceNames": [
+        "F7:face(0)"
+      ],
+      "faces": 1,
+      "feature": "F7",
+      "kind": "sheet",
+      "name": "Cap",
+      "shells": 1,
+      "valid": true,
+      "vertices": 1,
+      "volume": 0.0
+    },
+    {
+      "area": 1006.3555546828727,
+      "bbox": [
+        [
+          -16.18034,
+          -119.02113,
+          -0.23253550909576315
+        ],
+        [
+          20.0,
+          -80.97887,
+          4.0
+        ]
+      ],
+      "bboxTolerance": 0.19171853917689766,
+      "centroid": null,
+      "edges": 15,
+      "faceNames": [
+        "F13:side(e8,e9)",
+        "F13:side(e9,e10)",
+        "F13:side(e10,e11)",
+        "F13:side(e11,e12)",
+        "F13:side(e12,e8)"
+      ],
+      "faces": 5,
+      "feature": "F13",
+      "kind": "sheet",
+      "name": "Dome",
+      "shells": 1,
+      "valid": true,
+      "vertices": 11,
+      "volume": 0.0
+    }
+  ]
+}

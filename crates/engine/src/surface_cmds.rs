@@ -82,7 +82,7 @@ fn edges_value(p: &Params, command: &'static str) -> Result<NetworkEdges, Comman
     Ok(edges)
 }
 
-fn hold_value(command: &str, key: &str, item: &Value) -> Result<EdgeHold, CommandError> {
+pub(crate) fn hold_value(command: &str, key: &str, item: &Value) -> Result<EdgeHold, CommandError> {
     let Some(obj) = item.as_object() else {
         return fail(format!(
             "{command}: `edges.{key}` must be {{\"kind\": \"free|position|tangent|curvature\", \"face\": face name, \"weight\": expr}}"

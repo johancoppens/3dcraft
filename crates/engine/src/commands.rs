@@ -2428,7 +2428,7 @@ fn symmetric_fits(end: &ExtrudeEnd, symmetric: bool, command: &str) -> Result<()
 /// The parameters of a thread that `feature.edit` takes as null.
 const THREAD_NULLS: [&str; 2] = ["size", "pitch"];
 
-const EDITABLE: [&str; 53] = [
+const EDITABLE: [&str; 61] = [
     "sketch",
     "sections",
     "ruled",
@@ -2482,6 +2482,14 @@ const EDITABLE: [&str; 53] = [
     "joints",
     "u",
     "v",
+    "face",
+    "outer",
+    "holes",
+    "space",
+    "along",
+    "curves",
+    "inner",
+    "rise",
 ];
 
 fn feature_edit(session: &mut Session, params: &Value) -> Run {
@@ -2811,6 +2819,25 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
                 ("u", Slot::Elsewhere),
                 ("v", Slot::Elsewhere),
                 ("edges", Slot::Elsewhere),
+            ],
+        ),
+        FeatureKind::SurfaceTrim(_) => (
+            "trimmed face",
+            vec![
+                ("face", Slot::Elsewhere),
+                ("outer", Slot::Elsewhere),
+                ("holes", Slot::Elsewhere),
+                ("space", Slot::Elsewhere),
+                ("along", Slot::Elsewhere),
+            ],
+        ),
+        FeatureKind::SurfaceNsided(_) => (
+            "N-sided fill",
+            vec![
+                ("curves", Slot::Elsewhere),
+                ("edges", Slot::Elsewhere),
+                ("inner", Slot::Elsewhere),
+                ("rise", Slot::Elsewhere),
             ],
         ),
         FeatureKind::Unfold(u) => (
@@ -3203,6 +3230,14 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
         FeatureKind::SurfaceNetwork(sheet) => {
             let doc = session.document()?.history.current();
             crate::surface_cmds::edit(doc, &p, sheet)?;
+        }
+        FeatureKind::SurfaceTrim(trim) => {
+            let doc = session.document()?.history.current();
+            crate::trimfill_cmds::edit_trim(doc, &p, trim)?;
+        }
+        FeatureKind::SurfaceNsided(fill) => {
+            let doc = session.document()?.history.current();
+            crate::trimfill_cmds::edit_nsided(doc, &p, fill)?;
         }
         FeatureKind::Unfold(pattern) => {
             if let Some(value) = p.get("faces") {
