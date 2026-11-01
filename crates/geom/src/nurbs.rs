@@ -922,7 +922,14 @@ pub struct NurbsSurface {
     /// The samples a projection onto the surface starts from, once made
     /// (`Surface::project_grid`). Not part of the value either.
     pub(crate) project_grid: GridCache,
+    /// The surface's Bézier spans, once made ([`Self::bezier_spans_shared`]):
+    /// derived from its numbers alone, so not part of its value either.
+    spans: SpansCache,
 }
+
+/// Where a NURBS surface keeps its Bézier spans once made.
+#[derive(Clone, Default)]
+struct SpansCache(std::sync::OnceLock<Result<std::sync::Arc<Vec<BezierSpan>>, GeomError>>);
 
 impl PartialEq for NurbsSurface {
     fn eq(&self, o: &Self) -> bool {
@@ -984,6 +991,7 @@ impl NurbsSurface {
             weights,
             homogeneous,
             project_grid: GridCache::default(),
+            spans: SpansCache::default(),
         })
     }
 
@@ -1913,6 +1921,22 @@ impl NurbsSurface {
     /// direction (*The NURBS Book* A5.7 by repeated knot insertion), each
     /// with the part of the domain it covers.
     pub fn bezier_spans(&self) -> Result<Vec<BezierSpan>, GeomError> {
+        self.bezier_spans_shared()
+            .map(|spans| spans.as_ref().clone())
+    }
+
+    /// [`Self::bezier_spans`], made once per surface and shared: the
+    /// intersection of two spline surfaces asks for them at every chart
+    /// it makes.
+    pub fn bezier_spans_shared(&self) -> Result<std::sync::Arc<Vec<BezierSpan>>, GeomError> {
+        self.spans
+            .0
+            .get_or_init(|| self.make_bezier_spans().map(std::sync::Arc::new))
+            .clone()
+    }
+
+    /// The spans of [`Self::bezier_spans`], made afresh.
+    fn make_bezier_spans(&self) -> Result<Vec<BezierSpan>, GeomError> {
         let (count_u, count_v) = self.counts();
         let (du, dv) = (self.degree_u, self.degree_v);
         // Along u first: one curve per column j.
@@ -2187,6 +2211,7 @@ impl Bits for NurbsSurface {
             weights,
             homogeneous: _,
             project_grid: _,
+            spans: _,
         } = self;
         degree_u.push_bits(out);
         degree_v.push_bits(out);

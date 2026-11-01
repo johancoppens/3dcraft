@@ -3151,7 +3151,7 @@ fn uneven_weights(surface: &Surface) -> Option<f64> {
     }
     let (m, n) = s.degrees();
     let mut worst = 0.0_f64;
-    for span in s.bezier_spans().ok()? {
+    for span in s.bezier_spans_shared().ok()?.iter() {
         let logs: Vec<f64> = span.patch.weights().iter().map(|w| w.pln()).collect();
         let at = |i: usize, j: usize| logs.get(i * (n + 1) + j).copied();
         let (w00, w0n, wm0, wmn) = (at(0, 0)?, at(0, n)?, at(m, 0)?, at(m, n)?);

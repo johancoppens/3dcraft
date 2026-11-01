@@ -794,7 +794,7 @@ impl Pieces {
                 v: (0.0, 1.0),
                 patch: crate::RationalBezierPatch::from_bezier(b),
             }],
-            Surface::Nurbs(s) => s.bezier_spans().ok()?,
+            Surface::Nurbs(s) => s.bezier_spans_shared().ok()?.as_ref().clone(),
             _ => return None,
         };
         let (u, v) = surface.domain();
@@ -1731,7 +1731,7 @@ fn nurbs_bounds(
     count_v: usize,
 ) -> Bounds {
     let estimate = || sampled_bounds(surface, u, v, count_u, count_v);
-    let Ok(spans) = s.bezier_spans() else {
+    let Ok(spans) = s.bezier_spans_shared() else {
         return estimate();
     };
     if !spans.iter().all(|span| span.patch.is_polynomial()) {
@@ -1744,7 +1744,7 @@ fn nurbs_bounds(
         muv: 0.0,
         mvv: 0.0,
     };
-    for span in &spans {
+    for span in spans.iter() {
         let (m, n) = span.patch.degrees();
         let Ok(patch) = BezierPatch::new(m, n, span.patch.control_points()) else {
             return estimate();

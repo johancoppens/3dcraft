@@ -395,9 +395,9 @@ pub fn regular_over(surface: &Surface, distance: f64, over: Domain) -> Result<()
         };
         return Err(OffsetError::NoNormal { at });
     }
-    let spans = nurbs.bezier_spans()?;
+    let spans = nurbs.bezier_spans_shared()?;
     let mut budget = MAX_PIECES;
-    for span in &spans {
+    for span in spans.iter() {
         if crate::allowance::pass() {
             return Err(OffsetError::Spent);
         }

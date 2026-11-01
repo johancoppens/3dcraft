@@ -401,11 +401,11 @@ impl BezierNet {
             b.push(v1);
             b
         };
-        let spans = surface.bezier_spans()?;
+        let spans = surface.bezier_spans_shared()?;
         let columns = kv.len().saturating_sub(1);
         let rows = ku.len().saturating_sub(1);
         let mut patches: Vec<Option<Vec<H>>> = vec![None; rows * columns];
-        for span in &spans {
+        for span in spans.iter() {
             let i = span_of(&ku, 0.5 * (span.u.0 + span.u.1));
             let j = span_of(&kv, 0.5 * (span.v.0 + span.v.1));
             if let Some(slot) = patches.get_mut(i * columns + j) {

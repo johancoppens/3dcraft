@@ -3327,7 +3327,7 @@ fn spline_parts(
     low: (f64, f64),
     high: (f64, f64),
 ) -> Option<Vec<PartBound>> {
-    let spans = surface.bezier_spans().ok()?;
+    let spans = surface.bezier_spans_shared().ok()?;
     let (domain_u, domain_v) = surface.domain();
     let [wrap_u, wrap_v] = closure.wrap;
     let across_u = stretches(low.0, high.0, domain_u, wrap_u);
@@ -3352,7 +3352,7 @@ fn spline_parts(
         ))
     };
     let mut parts = Vec::new();
-    for span in &spans {
+    for span in spans.iter() {
         for &stretch_u in &across_u {
             let Some((s0, s1)) = part(span.u, stretch_u) else {
                 continue;
