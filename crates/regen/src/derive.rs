@@ -1024,4 +1024,37 @@ mod tests {
             assert!((m.area - w.area).abs() <= 1e-9 * w.area, "{what}: area");
         }
     }
+
+    #[test]
+    fn in_order_gives_every_result_in_order_and_counts_the_helpers_work() {
+        let items: Vec<u64> = (0..37).collect();
+        let before = craft3d_geom::allowance::spent();
+        let got = in_order(items.clone(), |i| {
+            craft3d_geom::allowance::charge(i + 1);
+            i * i
+        })
+        .unwrap();
+        assert_eq!(got, items.iter().map(|i| i * i).collect::<Vec<_>>());
+        // 1 + 2 + … + 37, wherever it was done.
+        assert_eq!(craft3d_geom::allowance::spent() - before, 37 * 38 / 2);
+    }
+
+    #[test]
+    fn in_order_under_a_bound_works_on_this_thread() {
+        let here = std::thread::current().id();
+        craft3d_geom::allowance::within(1_000_000, || {
+            let got = in_order((0..8).collect::<Vec<u32>>(), |i| {
+                assert_eq!(std::thread::current().id(), here, "item {i}");
+                i + 1
+            })
+            .unwrap();
+            assert_eq!(got, (1..=8).collect::<Vec<_>>());
+        });
+    }
+
+    #[test]
+    fn in_order_of_nothing_and_of_one() {
+        assert_eq!(in_order(Vec::<u8>::new(), |i| i), Some(vec![]));
+        assert_eq!(in_order(vec![5_u8], |i| i * 2), Some(vec![10]));
+    }
 }
