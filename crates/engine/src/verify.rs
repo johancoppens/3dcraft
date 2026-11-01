@@ -1194,6 +1194,10 @@ fn thickness_at(
         limit.to_bits(),
     );
     use craft3d_geom::allowance;
+    // Under a bound nothing is read or kept (see `thickness_to`).
+    if allowance::scope().is_some() {
+        return cast_into(part, face, p, tol, limit);
+    }
     // A line found kept charges the work its casting took, as any cache
     // that skips counted work does, so that what a bound in force sees
     // does not depend on what was measured before. (No measure runs under
@@ -1815,7 +1819,14 @@ const MAX_BOUND_PAIRS: usize = 200_000;
 /// No more than `stop` is proven (what an assertion asks: the work of
 /// proving beyond it is not spent; infinite for as close as it can).
 pub(crate) fn thickness_to(part: &Part<'_>, tol: f64, stop: f64) -> Answer<Option<Thin>> {
-    let id = part.kept_id();
+    // Under a bound (`craft3d_geom::allowance::scope`) nothing is read or
+    // kept: what a line costs there must not depend on what was measured
+    // before (a kept line's stored cost can differ from a cold cast's).
+    let id = if craft3d_geom::allowance::scope().is_some() {
+        None
+    } else {
+        part.kept_id()
+    };
     if let Some(id) = &id {
         part.take_kept_lines(id);
     }
@@ -2620,6 +2631,35 @@ mod tests {
         let (_, after, cast) = measure(&tube(3.0), &tolerance);
         assert!(cast > 100, "{cast}");
         assert_eq!(after, first);
+
+        // Under a bound nothing is read or kept: the same measure casts
+        // every line again, twice, with the same answer and the same work
+        // as the first, and keeps nothing for later.
+        forget_kept_lines();
+        let bounded = || {
+            craft3d_geom::allowance::within(u64::MAX / 2, || {
+                let (before, spent) = (
+                    CAST.with(std::cell::Cell::get),
+                    craft3d_geom::allowance::spent(),
+                );
+                let m = measure(&tube(3.0), &tolerance);
+                (
+                    m,
+                    CAST.with(std::cell::Cell::get) - before,
+                    craft3d_geom::allowance::spent() - spent,
+                )
+            })
+        };
+        measure(&tube(3.0), &tolerance); // kept outside a bound
+        let ((_, one, _), cast_one, work_one) = bounded();
+        let ((_, two, _), cast_two, work_two) = bounded();
+        assert_eq!(one, first);
+        assert_eq!(two, first);
+        assert!(
+            cast_one > 100 && cast_one == cast_two,
+            "{cast_one} {cast_two}"
+        );
+        assert_eq!(work_one, work_two);
     }
 
     #[test]
