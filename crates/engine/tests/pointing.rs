@@ -744,7 +744,7 @@ fn a_name_is_looked_up_in_the_scene_with_the_feature_when_it_is_ambiguous() {
             .iter()
             .map(|n| n.as_str().unwrap())
             .collect();
-        assert_eq!(scene_body.face_names, names);
+        assert_eq!(*scene_body.face_names, names);
         for face in &names {
             let places: Vec<u32> = (0..names.len())
                 .filter(|&k| names[k] == *face)

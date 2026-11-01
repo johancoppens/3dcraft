@@ -359,6 +359,9 @@ impl Desk {
             self.refiner = Some(Refiner::new(wake));
             self.host.session.set_refine_elsewhere(true);
         }
+        // The window's thread never waits for a bake: it is made in the
+        // background, cancellable (docs/design/motion.md).
+        self.host.session.set_bake_in_background(true);
         self
     }
 

@@ -2849,23 +2849,66 @@ pub struct ScenePartsOf<'a> {
 
 /// What a scene's parts were uploaded from: the source meshes (held, so
 /// that no other mesh can be where one was), where each body's face ids
-/// start, and the face colours. Two scenes with the same key differ only
-/// in their poses.
+/// start and how many it has, and the face colours. Two scenes with the
+/// same key differ only in their poses (and in what of the colours does
+/// not go into the parts' vertices: the material table, uploaded anew).
 #[derive(Clone, Debug)]
 pub struct PartsKey {
-    meshes: Vec<(std::sync::Arc<craft3d_tess::Mesh>, u32)>,
+    meshes: Vec<(std::sync::Arc<craft3d_tess::Mesh>, u32, u32)>,
     colors: craft3d_render::FaceColors,
 }
 
+impl PartsKey {
+    /// True when the faces `first..first + faces` look the same in both
+    /// keys' colours: what a part's uploaded vertices hold of them (colour,
+    /// finish, the row of its layers and whether light passes). The rows'
+    /// contents (a brushed finish's direction, which follows the part's
+    /// pose) are the material table's, not the vertices'.
+    fn same_looks(&self, old: &PartsKey, first: u32, faces: u32) -> bool {
+        (first..first.saturating_add(faces)).all(|f| {
+            self.colors.look(f) == old.colors.look(f)
+                && self.colors.optics_slot(f) == old.colors.optics_slot(f)
+                && self.colors.is_transmissive(f) == old.colors.is_transmissive(f)
+        })
+    }
+
+    /// For each part of this key, the place of the same part in `old`
+    /// (the same mesh at the same first face id, its faces looking the
+    /// same): its uploaded vertices can be taken as they are
+    /// (`Onscreen::upload_parts_from`).
+    pub fn reuse_from(&self, old: &PartsKey) -> Vec<Option<usize>> {
+        let at: std::collections::BTreeMap<(usize, u32), usize> = old
+            .meshes
+            .iter()
+            .enumerate()
+            .map(|(i, (mesh, first, _))| ((std::sync::Arc::as_ptr(mesh) as usize, *first), i))
+            .collect();
+        self.meshes
+            .iter()
+            .map(|(mesh, first, faces)| {
+                at.get(&(std::sync::Arc::as_ptr(mesh) as usize, *first))
+                    .copied()
+                    .filter(|_| self.same_looks(old, *first, *faces))
+            })
+            .collect()
+    }
+}
+
 impl PartialEq for PartsKey {
+    /// The same parts, each looking the same: drawn by moving them.
     fn eq(&self, other: &Self) -> bool {
         self.meshes.len() == other.meshes.len()
             && self
                 .meshes
                 .iter()
                 .zip(&other.meshes)
-                .all(|((a, fa), (b, fb))| std::sync::Arc::ptr_eq(a, b) && fa == fb)
-            && self.colors == other.colors
+                .all(|((a, fa, na), (b, fb, nb))| {
+                    std::sync::Arc::ptr_eq(a, b) && fa == fb && na == nb
+                })
+            && self
+                .meshes
+                .iter()
+                .all(|(_, first, faces)| self.same_looks(other, *first, *faces))
     }
 }
 
@@ -2890,7 +2933,13 @@ pub fn scene_parts(scene: &Scene) -> Option<ScenePartsOf<'_>> {
             pose,
         });
         poses.push(pose);
-        meshes.push((std::sync::Arc::clone(mesh), body.first_face_id));
+        let faces = mesh
+            .face_ids
+            .iter()
+            .copied()
+            .max()
+            .map_or(0, |f| f.saturating_add(1));
+        meshes.push((std::sync::Arc::clone(mesh), body.first_face_id, faces));
     }
     Some(ScenePartsOf {
         parts,

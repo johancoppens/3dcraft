@@ -39,8 +39,24 @@ impl Drop for Lease {
     }
 }
 
+std::thread_local! {
+    /// This thread takes no extra threads ([`work_alone`]).
+    static ALONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// From now on this thread takes no threads from the pool: background
+/// work (a motion's builder, `motion_build.rs`) leaves them to the work
+/// someone waits for, which would otherwise find none free and run on
+/// one thread.
+pub fn work_alone() {
+    ALONE.with(|alone| alone.set(true));
+}
+
 /// Up to `wanted` extra threads, as many as are free now (none is fine).
 pub fn lease(wanted: usize) -> Lease {
+    if ALONE.with(std::cell::Cell::get) {
+        return Lease(0);
+    }
     let mut free = FREE.load(Ordering::Acquire);
     loop {
         let take = wanted.min(free);

@@ -56,6 +56,7 @@ mod measure_pieces;
 mod memory_files;
 mod meshes;
 mod motion;
+mod motion_build;
 mod name_refs;
 mod offset_cmds;
 mod open_bytes;
@@ -449,6 +450,8 @@ pub struct Session {
     body_budget: Option<usize>,
     /// [`Session::set_lean_sampling`].
     pub(crate) lean_sampling: bool,
+    /// [`Session::set_bake_in_background`].
+    pub(crate) bake_in_background: bool,
     /// The files of a session without a file system (`memory_files.rs`).
     pub(crate) memory: memory_files::MemoryFiles,
     /// The last command that failed, for the bug report (`report.rs`).
@@ -509,6 +512,7 @@ impl Session {
             trees_held_for: Vec::new(),
             body_budget: None,
             lean_sampling: false,
+            bake_in_background: false,
             memory: memory_files::MemoryFiles::default(),
             last_failure: None,
             host_details: Vec::new(),
@@ -679,6 +683,15 @@ impl Session {
     /// document's answers stay warm meanwhile). No result changes.
     pub fn set_lean_sampling(&mut self, lean: bool) {
         self.lean_sampling = lean;
+    }
+
+    /// Whether `motion.bake` without `background` bakes in the background
+    /// (a window: its thread must never wait seconds for a bake, and the
+    /// bake stays cancellable) rather than in the command (the default:
+    /// a script waits for it). Natively only; a browser bakes in the
+    /// command.
+    pub fn set_bake_in_background(&mut self, background: bool) {
+        self.bake_in_background = background;
     }
 
     /// Sets, for every open document and those opened later, the most

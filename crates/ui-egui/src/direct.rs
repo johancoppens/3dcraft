@@ -116,6 +116,11 @@ pub struct Direct {
     egui: Arc<egui::mutex::RwLock<egui_wgpu::Renderer>>,
     adapter: String,
     uploaded: Option<Uploaded>,
+    /// The parts uploaded before the current ones, of an assembly: while a
+    /// motion plays the quick first picture and the display scene of each
+    /// moment take turns, so each takes over the parts of the last one of
+    /// its own kind (the instances that did not change shape) from here.
+    spare: Option<(GpuMesh, crate::viewport::PartsKey)>,
     /// The egui texture over the shown view, and the view's size.
     texture: Option<(egui::TextureId, [u32; 2])>,
     shown: Option<Shown>,
@@ -472,6 +477,7 @@ impl Direct {
             egui: Arc::clone(&state.renderer),
             adapter,
             uploaded: None,
+            spare: None,
             texture: None,
             shown: None,
             largest,
@@ -671,6 +677,14 @@ impl Direct {
                     craft3d_gpu::drawn_bounds(&scene.mesh),
                 )
                 .map_err(classify)?;
+            // The faces look the same; what their layers' rows hold moves
+            // with the parts.
+            if !scene.face_colors.optics_table().is_empty() {
+                self.onscreen
+                    .set_optics(&mut uploaded.mesh, &scene.face_colors)
+                    .map_err(classify)?;
+            }
+            uploaded.parts = Some(parts.key.clone());
             moved = Some(scene.mesh.triangles.len());
             same_mesh = true;
         }
@@ -711,8 +725,43 @@ impl Direct {
                 uploaded.marks.clone_from(&wanted.marks);
             } else {
                 // The old copy goes first: twice the model would not fit
-                // a small device.
-                self.uploaded = None;
+                // a small device. Of an assembly's parts the ones that are
+                // the same (another moment in which one instance changed
+                // shape) are taken over, the others let go of.
+                let current = self
+                    .uploaded
+                    .take()
+                    .and_then(|old| old.parts.map(|key| (old.mesh, key)));
+                let spare = self.spare.take();
+                let (old_mesh, reuse) = match &parts {
+                    Some(parts) if wanted.values == 0 => {
+                        let score = |key: &crate::viewport::PartsKey| {
+                            let reuse = parts.key.reuse_from(key);
+                            let n = reuse.iter().filter(|r| r.is_some()).count();
+                            (n, reuse)
+                        };
+                        let a = current.as_ref().map(|(_, key)| score(key));
+                        let b = spare.as_ref().map(|(_, key)| score(key));
+                        let a_n = a.as_ref().map_or(0, |(n, _)| *n);
+                        let b_n = b.as_ref().map_or(0, |(n, _)| *n);
+                        // The better one is taken over, the other kept as
+                        // the spare.
+                        if b_n > a_n {
+                            self.spare = current;
+                            match (spare, b) {
+                                (Some((mesh, _)), Some((_, reuse))) => (Some(mesh), reuse),
+                                _ => (None, Vec::new()),
+                            }
+                        } else {
+                            self.spare = spare;
+                            match (current, a) {
+                                (Some((mesh, _)), Some((_, reuse))) => (Some(mesh), reuse),
+                                _ => (None, Vec::new()),
+                            }
+                        }
+                    }
+                    _ => (None, Vec::new()),
+                };
                 let empty = craft3d_tess::Mesh::default();
                 let mesh = scene.map_or(&empty, |s| &s.mesh);
                 // The curvature map's own mesh, when it has one.
@@ -729,10 +778,12 @@ impl Direct {
                     .map(|a| Arc::clone(&a.values))
                     .unwrap_or_default();
                 let uploaded = match &parts {
-                    Some(parts) => self.onscreen.upload_parts(
+                    Some(parts) => self.onscreen.upload_parts_from(
                         &parts.parts,
                         colors,
                         craft3d_gpu::drawn_bounds(mesh),
+                        old_mesh,
+                        &reuse,
                     ),
                     None => self.onscreen.upload_analysed(mesh, colors, &values),
                 }

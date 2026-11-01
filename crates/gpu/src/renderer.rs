@@ -1159,6 +1159,32 @@ impl Renderer {
         })?
     }
 
+    /// [`Self::upload_parts`] taking the uploaded vertices of the parts of
+    /// `old` that `reuse` names for each new part, by its place in `old`
+    /// (`Onscreen::upload_parts_from`).
+    pub fn upload_parts_from(
+        &self,
+        parts: &[MeshPart<'_>],
+        colors: &FaceColors,
+        bounds: Bbox3,
+        old: Option<GpuMesh>,
+        reuse: &[Option<usize>],
+    ) -> Result<GpuMesh, GpuError> {
+        let old = old.filter(|o| Arc::ptr_eq(&o.owner, &self.token));
+        guarded(&self.device, || {
+            GpuMesh::upload_parts_from(
+                &self.device,
+                &self.queue,
+                parts,
+                colors,
+                bounds,
+                &self.token,
+                old,
+                reuse,
+            )
+        })?
+    }
+
     /// Moves the parts of a mesh uploaded by [`Self::upload_parts`] to
     /// `poses` (one per part, in order) with `bounds` the box of the
     /// triangles as now placed: a few matrices are written, no geometry.

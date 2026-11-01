@@ -121,29 +121,42 @@ fn a_motion_through_configurations() {
         .unwrap();
     s.scene_with(SceneQuality::display()).unwrap().unwrap();
     println!(
-        "opened and shown in {:.0} ms",
-        opened.elapsed().as_secs_f64() * 1000.0
+        "opened and shown in {:.0} ms; resident {:.0} MB",
+        opened.elapsed().as_secs_f64() * 1000.0,
+        resident_mb()
     );
+    if let Some(mb) = std::env::var("CRAFT3D_CONFIG_BUDGET_MB")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+    {
+        s.set_config_budget(mb << 20);
+    }
     if std::env::var_os("CRAFT3D_MOTION_BAKE").is_some() {
         let start = Instant::now();
         let baked = s
             .execute("motion.bake", &json!({ "frames": frames }))
             .unwrap();
         println!(
-            "motion.bake in {:.0} ms: {baked}; resident {:.0} MB",
+            "motion.bake in {:.0} ms: {baked}; resident {:.0} MB; patch trees {:.0} MB, projections {:.0} MB",
             start.elapsed().as_secs_f64() * 1000.0,
-            resident_mb()
+            resident_mb(),
+            craft3d_kernel::shelf_size().1 as f64 / 1e6,
+            craft3d_geom::kept_projections().1 as f64 / 1e6
         );
     }
     for pass in 1..=2 {
         let mut motion_ms = Vec::new();
         let mut frame_ms = Vec::new();
+        let mut preview_ms = Vec::new();
         let whole = Instant::now();
         for k in 0..frames {
             let t = f64::from(k) / f64::from(frames);
             let start = Instant::now();
             s.execute("view.motion", &json!({ "t": t })).unwrap();
             motion_ms.push(start.elapsed().as_secs_f64() * 1000.0);
+            let before_preview = Instant::now();
+            s.scene_with(SceneQuality::Preview).unwrap().unwrap();
+            preview_ms.push(before_preview.elapsed().as_secs_f64() * 1000.0);
             s.scene_with(SceneQuality::display()).unwrap().unwrap();
             frame_ms.push(start.elapsed().as_secs_f64() * 1000.0);
         }
@@ -161,6 +174,14 @@ fn a_motion_through_configurations() {
             stats(&motion_ms),
             stats(&frame_ms),
             resident_mb()
+        );
+        println!(
+            "pass {pass}: of which the quick picture {}; meshes kept {:.0} MB, scenes kept {:.0} MB, patch trees {:.0} MB, projections {:.0} MB",
+            stats(&preview_ms),
+            s.mesh_bytes() as f64 / 1e6,
+            s.scene_bytes() as f64 / 1e6,
+            craft3d_kernel::shelf_size().1 as f64 / 1e6,
+            craft3d_geom::kept_projections().1 as f64 / 1e6
         );
     }
 }

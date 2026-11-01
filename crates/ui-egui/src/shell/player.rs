@@ -43,6 +43,10 @@ pub(crate) const ORBIT_DEGREES_PER_SECOND: f64 = 12.0;
 /// The frames a second the orbit asks for.
 const ORBIT_FPS: f64 = 30.0;
 
+/// The frames a motion is baked at in the background when it builds as it
+/// plays: 30 a second over the [`MOTION_SECONDS`] of a play at speed 1.
+const PLAY_FRAMES: u64 = 120;
+
 /// A turn per frame above this many degrees is drawn as a moving camera
 /// (coarser, `MOVING_DIVISOR`); a slower orbit is drawn sharp.
 const ORBIT_MOVING_DEGREES: f64 = 1.0;
@@ -81,6 +85,27 @@ pub(crate) struct Player {
     moved: Option<f64>,
     /// The motion runs from 1 back to 0 (back and forth).
     backwards: bool,
+    /// Where the motion's clock is while it plays: `t` before it is
+    /// rounded to the frames of a bake ([`rounded_to_frames`]), so a play
+    /// at frame rate goes on at its speed whatever the rounding.
+    clock: Option<f64>,
+    /// A bake in the background was asked for the motion shown (once per
+    /// play of a document state).
+    asked_bake: bool,
+}
+
+/// `t` rounded to the nearest frame `k / frames` of a bake: a baked
+/// motion played so asks for nothing that is not made ahead
+/// (docs/design/motion.md › *The player*). Unchanged without a bake, or
+/// when `t` is not a number.
+pub(crate) fn rounded_to_frames(t: f64, frames: Option<u64>) -> f64 {
+    match frames {
+        Some(n) if n > 0 && t.is_finite() => {
+            let n = n as f64;
+            ((t.clamp(0.0, 1.0) * n).round() / n).clamp(0.0, 1.0)
+        }
+        _ => t,
+    }
 }
 
 /// What the motion does next ([`motion_step`]).
@@ -144,6 +169,8 @@ impl Player {
         self.turned = None;
         self.moved = None;
         self.backwards = false;
+        self.clock = None;
+        self.asked_bake = false;
     }
 
     /// No scrub waits to be run and the view's scene is built: the step
@@ -317,8 +344,13 @@ impl Shell {
             0.0
         };
         let collisions = self.state.timeline.collisions;
-        self.timeline
-            .queue("view.motion", json!({"t": t, "collisions": collisions}));
+        // At once with what is built, the rest built in the background:
+        // the window never waits for a configuration
+        // (docs/design/motion.md › *Shapes in the background*).
+        self.timeline.queue(
+            "view.motion",
+            json!({"t": t, "collisions": collisions, "shapes": "ready"}),
+        );
     }
 
     /// One frame of the motion while it plays: the next moment once the
@@ -333,11 +365,35 @@ impl Shell {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(1.0 / ORBIT_FPS));
             return;
         }
-        let Some(t) = self.timeline.motion_t() else {
+        let Some(shown) = self.timeline.motion_t() else {
             self.player.moved = Some(now);
+            self.player.clock = Some(0.0);
             self.go_to_t(0.0);
             ctx.request_repaint();
             return;
+        };
+        let frames = self.timeline.motion.as_ref().and_then(|m| m.baked);
+        // A motion whose moments are built as it plays (a configuration
+        // per moment) is baked in the background, once, for the next pass.
+        if !self.player.asked_bake
+            && frames.is_none()
+            && self
+                .timeline
+                .motion
+                .as_ref()
+                .is_some_and(|m| !m.exact || !m.stale.is_empty() || m.building > 0)
+        {
+            self.player.asked_bake = true;
+            self.timeline.queue(
+                "motion.bake",
+                json!({"frames": PLAY_FRAMES, "background": true}),
+            );
+        }
+        // The clock goes on from where it was, unless something else moved
+        // the moment shown (the slider, an agent).
+        let t = match self.player.clock {
+            Some(clock) if rounded_to_frames(clock, frames) == shown => clock,
+            _ => shown,
         };
         let starting = self.player.moved.is_none();
         let last = self.player.moved.replace(now).unwrap_or(now);
@@ -352,8 +408,10 @@ impl Shell {
         match step {
             MotionStep::Go(next, backwards) => {
                 self.player.backwards = backwards;
-                if next != t {
-                    self.go_to_t(next);
+                self.player.clock = Some(next);
+                let asked = rounded_to_frames(next, frames);
+                if asked != shown {
+                    self.go_to_t(asked);
                 }
                 ctx.request_repaint_after(std::time::Duration::from_secs_f64(1.0 / ORBIT_FPS));
             }
@@ -896,6 +954,40 @@ mod tests {
             playing: true,
             ..Playback::default()
         }
+    }
+
+    /// A baked motion is asked for at its frames only, and a clock that
+    /// moves less than a frame a tick still gets there: the clock runs
+    /// unrounded, only what is asked for is rounded.
+    #[test]
+    fn a_baked_motion_plays_its_frames_at_its_speed() {
+        use super::{MotionStep, motion_step, rounded_to_frames};
+        assert_eq!(rounded_to_frames(0.26, None), 0.26);
+        assert_eq!(rounded_to_frames(0.26, Some(4)), 0.25);
+        assert_eq!(rounded_to_frames(0.38, Some(4)), 0.5);
+        assert_eq!(rounded_to_frames(1.7, Some(120)), 1.0);
+        assert_eq!(rounded_to_frames(-0.2, Some(120)), 0.0);
+        assert!(rounded_to_frames(f64::NAN, Some(120)).is_nan());
+        assert_eq!(rounded_to_frames(0.3, Some(0)), 0.3);
+        // Every value asked for is a frame k / 120.
+        let play = playing();
+        let (mut clock, mut asked) = (0.0, Vec::new());
+        // 100 ticks of 10 ms: a third of a frame each at speed 1.
+        for _ in 0..100 {
+            let MotionStep::Go(next, false) = motion_step(clock, false, 0.01, play) else {
+                panic!("plays on");
+            };
+            clock = next;
+            let t = rounded_to_frames(clock, Some(120));
+            assert_eq!((t * 120.0).round() / 120.0, t);
+            if asked.last() != Some(&t) {
+                asked.push(t);
+            }
+        }
+        // A second at 4 s a play: a quarter of the way, frame by frame.
+        assert!((clock - 0.25).abs() < 1e-9, "{clock}");
+        assert_eq!(asked.len(), 31);
+        assert_eq!(asked.last(), Some(&0.25));
     }
 
     #[test]

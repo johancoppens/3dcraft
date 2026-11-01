@@ -181,24 +181,27 @@ impl Limit {
 /// edges and vertices as text, which faces each edge lies between and
 /// which meet in each vertex, and its vertices. A function of the body
 /// and its names, worked out once per body ([`MeshStore::facts`]) and
-/// shared by the scenes that have the body.
+/// shared by the scenes that have the body. The names and lists are
+/// shared too: a body placed as a rigid copy of another has the facts of
+/// its source with only the vertices moved, so a moment of a motion copies
+/// its vertices and not its names.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct BodyFacts {
     /// The persistent name of every face, as `document.inspect` lists
     /// them under `faceNames`. Empty when the body's faces have no names.
-    pub face_names: Vec<String>,
+    pub face_names: Arc<Vec<String>>,
     /// Per face, the other names it answers to (`faceAliases` of
     /// `document.inspect`). Empty when no face of the body has any.
-    pub face_aliases: Vec<Vec<String>>,
+    pub face_aliases: Arc<Vec<Vec<String>>>,
     /// The persistent name of every edge, in the order of the B-rep, as
     /// `document.edges` gives it under `name`. Empty when the body's
     /// edges have no names of their own (after a boolean): an edge is
     /// then referred to by the faces it lies between.
-    pub edge_names: Vec<String>,
+    pub edge_names: Arc<Vec<String>>,
     /// Per edge, the faces it lies between, as their places among the
     /// faces of the body, ascending: two for an edge of a solid, one for
     /// a seam. What `document.edges` lists under `faces`.
-    pub edge_faces: Vec<Vec<usize>>,
+    pub edge_faces: Arc<Vec<Vec<usize>>>,
     /// The body's vertices, in the order of the B-rep.
     pub vertices: Vec<Vec3>,
     /// The persistent name of every vertex, in the order of
@@ -206,11 +209,11 @@ pub struct BodyFacts {
     /// Empty when the body's vertices have no names of their own (after
     /// a boolean): a vertex is then referred to by the faces that meet
     /// in it.
-    pub vertex_names: Vec<String>,
+    pub vertex_names: Arc<Vec<String>>,
     /// Per vertex, the faces that meet in it (the faces of the edges
     /// that end there), as their places among the faces of the body,
     /// ascending.
-    pub vertex_faces: Vec<Vec<usize>>,
+    pub vertex_faces: Arc<Vec<Vec<usize>>>,
 }
 
 impl BodyFacts {
@@ -262,13 +265,13 @@ impl BodyFacts {
             list.sort_unstable();
         }
         Self {
-            face_names,
-            face_aliases,
-            edge_names,
-            edge_faces,
+            face_names: Arc::new(face_names),
+            face_aliases: Arc::new(face_aliases),
+            edge_names: Arc::new(edge_names),
+            edge_faces: Arc::new(edge_faces),
             vertices,
-            vertex_names,
-            vertex_faces,
+            vertex_names: Arc::new(vertex_names),
+            vertex_faces: Arc::new(vertex_faces),
         }
     }
 

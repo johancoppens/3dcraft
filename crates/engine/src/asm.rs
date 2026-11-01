@@ -85,11 +85,101 @@ pub(crate) struct AsmState {
     /// `assembly.inspect` and the tests: two instances of one
     /// configuration cost one).
     pub builds: u64,
+    /// The bodies the last placements placed, by the address of their
+    /// source body ([`PlacedCopies`]): a body whose source and pose did
+    /// not change since is the same `Arc`, not a new copy.
+    placed_copies: PlacedCopies,
+    /// Configurations of instances mated by their datums alone are kept
+    /// slim ([`slimmed`]): set in a motion's own copy of the state, whose
+    /// many configurations are shown and solved, never measured or
+    /// selected in.
+    pub slim: bool,
+    /// Configurations a bake in pieces needs together (the batch it is
+    /// building, `motion.bake {limit}`): never let go of by the budget
+    /// until the batch is done, so a batch larger than the budget still
+    /// completes (it is held one batch beyond the budget, then let go of).
+    pinned: BTreeSet<String>,
+    /// Configurations being built elsewhere (a motion's builder): a
+    /// placement neither works them out nor builds them; one made at
+    /// once ([`Self::place_ready`]) shows another of the instance's.
+    pub deferred: BTreeSet<String>,
     /// The folder the sources of an assembly without a file were read
     /// from (`Session::read_sources`: the current folder with access to
     /// every file, the read root's top otherwise): its sources are
     /// placed from there until it is saved, as they were read.
     pub unsaved_base: String,
+}
+
+/// The bodies the last two placements placed (`build_shown`), by the
+/// address of the source body each is a copy of: the source (held, so its
+/// address is not reused), the pose and the copy, with the placement that
+/// used it last. A body placed again by the same pose is taken from here:
+/// a copy is a function of its source and its pose, so it is the same
+/// body either way, and a moment of a motion that leaves most instances
+/// where they were copies, meshes and describes only those that moved
+/// (docs/design/motion.md › *Costs*). Bounded by what two placements
+/// place.
+#[derive(Clone, Default)]
+struct PlacedCopies {
+    by_source: BTreeMap<usize, Vec<PlacedCopy>>,
+    /// Counts the placements of the top assembly.
+    placement: u64,
+}
+
+#[derive(Clone)]
+struct PlacedCopy {
+    source: Arc<Body>,
+    pose: Transform,
+    placed: Arc<Body>,
+    used: u64,
+}
+
+impl PlacedCopies {
+    /// `body` placed by `pose`: the copy kept when there is one, else a
+    /// new one, noted for the meshes (`meshes::note_placed`) and kept.
+    fn place(&mut self, body: &Arc<Body>, pose: &Transform) -> Result<Arc<Body>, String> {
+        let used = self.placement;
+        let copies = self
+            .by_source
+            .entry(Arc::as_ptr(body) as usize)
+            .or_default();
+        // Each copy once per placement: two instances placed alike are
+        // two bodies, as they would be without this.
+        if let Some(copy) = copies
+            .iter_mut()
+            .find(|c| c.used != used && Arc::ptr_eq(&c.source, body) && c.pose == *pose)
+        {
+            copy.used = used;
+            return Ok(Arc::clone(&copy.placed));
+        }
+        let placed = Arc::new(body.transformed(pose).map_err(|e| e.to_string())?);
+        // Meshed as its source's mesh moved (`meshes.rs`): a moment of a
+        // motion meshes nothing.
+        crate::meshes::note_placed(&placed, body, pose);
+        copies.push(PlacedCopy {
+            source: Arc::clone(body),
+            pose: *pose,
+            placed: Arc::clone(&placed),
+            used,
+        });
+        Ok(placed)
+    }
+
+    /// A placement of the top assembly begins.
+    fn begin(&mut self) {
+        self.placement = self.placement.wrapping_add(1);
+    }
+
+    /// A placement of the top assembly ended: what neither it nor the one
+    /// before it used is let go of.
+    fn end(&mut self) {
+        let last = self.placement.wrapping_sub(1);
+        let now = self.placement;
+        for copies in self.by_source.values_mut() {
+            copies.retain(|c| c.used == now || c.used == last);
+        }
+        self.by_source.retain(|_, copies| !copies.is_empty());
+    }
 }
 
 /// A configuration kept: what was built (or why it could not be), about
@@ -103,6 +193,11 @@ struct Config {
     /// at rest), not only solved: a grid point of a motion needs its
     /// configurations for its solve alone, once, so those go first.
     shown: bool,
+    /// Kept without the bodies that went into later features
+    /// ([`slimmed`]): enough for an instance mated by its datums alone.
+    slim: bool,
+    /// Used by a solve without bodies (a motion's grid point).
+    solved: bool,
 }
 
 /// What [`AsmState::prebuild`] did.
@@ -229,6 +324,7 @@ pub(crate) struct CouplingState {
 }
 
 /// An assembly placed.
+#[derive(Clone)]
 pub(crate) struct Placed {
     /// A part with one feature per placed body: what is drawn, picked,
     /// exported and measured.
@@ -262,6 +358,11 @@ pub(crate) struct Placed {
     /// in between) and was solved from the placements instead: why. It
     /// may then lie on another branch than the motion's.
     pub solve_note: Option<String>,
+    /// The instances shown with another configuration of theirs than
+    /// the one their parameters ask for, which is being built elsewhere
+    /// (`view.motion {shapes: "ready"}`, `motion_build.rs`); empty for an
+    /// exact placement.
+    pub stale: Vec<String>,
 }
 
 /// A solved state of an assembly's motion: the poses of the instances
@@ -606,6 +707,42 @@ struct Job {
     /// it is built in, under which the regeneration cache of its last
     /// configuration is kept ([`AsmState::regen_caches`]).
     source: Option<String>,
+    /// Kept slim ([`slimmed`]): no mate needs more of it than its datums.
+    slim: bool,
+}
+
+/// `regen` without the bodies (and their names) that went into later
+/// features: what is left is what an instance shows ([`bodies_of`]), its
+/// datums and its sketches, which is all a placement needs of a
+/// configuration whose instances are mated by their datums alone (a
+/// mate on a face or an edge resolves its name through the bodies that
+/// went into the body, `selection::Resolver`). A motion's configurations
+/// are kept so (`AsmState::slim`): a belt whose loop follows `t` keeps
+/// 0.74 MB of bodies instead of 1.97 MB (docs/design/motion.md › *Memory*).
+pub(crate) fn slimmed(mut regen: Regen) -> Regen {
+    for feature in &mut regen.features {
+        if feature.consumed_by.is_some() {
+            feature.body = None;
+            feature.names = None;
+        }
+    }
+    regen
+}
+
+/// True when every mate of `assembly` on the instance `name` holds to a
+/// datum of its source `source` (no face, edge or vertex), so a slim
+/// configuration of it places it as a whole one does.
+fn mated_by_datums(assembly: &Assembly, name: &str, source: &Document) -> bool {
+    assembly
+        .mates
+        .iter()
+        .flat_map(|mate| [&mate.a, &mate.b])
+        .filter(|side| side.instance == name)
+        .all(|side| {
+            crate::selection::feature_named(source, &side.name)
+                .and_then(|id| source.feature(id))
+                .is_some_and(|f| crate::selection::is_datum(&f.kind))
+        })
 }
 
 /// The placement of `doc` (an assembly) with the files read for it.
@@ -617,14 +754,19 @@ pub(crate) fn place(
     state: &mut AsmState,
     chain: &mut Vec<String>,
 ) -> Placed {
-    place_from(doc, base, state, chain, None, true)
+    place_from(doc, base, state, chain, None, true, None)
 }
 
 /// [`place`], its solve carried from `from` when given: the instances
 /// start where `from` left them and the drives move from `from`'s values
 /// to the document's along the motion's branch (`Solver::advance`).
 /// Without `bodies` the bodies are not placed (a grid point of a motion
-/// needs the solve alone): the placed part is empty.
+/// needs the solve alone): the placed part is empty. With `ready` the
+/// configurations of parts that are not kept are not built: each instance
+/// that asks for one is shown with the configuration `ready` gives for it
+/// by its name when that is kept (else it is left out, its configuration
+/// being built), and is listed in [`Placed::stale`]
+/// (`view.motion {shapes: "ready"}`).
 fn place_from(
     doc: &Document,
     base: &str,
@@ -632,14 +774,47 @@ fn place_from(
     chain: &mut Vec<String>,
     from: Option<&Carried>,
     bodies: bool,
+    ready: Option<&BTreeMap<String, String>>,
 ) -> Placed {
     let Some(assembly) = doc.assembly.as_ref() else {
         return empty(doc, Some("the document is not an assembly".to_string()));
     };
     let values = evaluation(doc);
+    if chain.is_empty() && bodies {
+        state.placed_copies.begin();
+    }
     // 1. Sources and configurations.
     let mut wanted: BTreeSet<String> = BTreeSet::new();
-    let (mut instances, jobs) = gather(doc, assembly, base, state, chain, &mut wanted);
+    let (mut instances, mut jobs) = gather(doc, assembly, base, state, chain, &mut wanted);
+    let mut stale = Vec::new();
+    if let Some(ready) = ready {
+        let mut later: BTreeSet<String> = jobs
+            .iter()
+            .filter(|job| job.doc.as_ref().is_ok_and(|d| !d.is_assembly()))
+            .map(|job| job.key.clone())
+            .collect();
+        jobs.retain(|job| !later.contains(&job.key));
+        // And those being built elsewhere already (`AsmState::deferred`).
+        later.extend(
+            instances
+                .iter()
+                .filter_map(|st| st.config.clone())
+                .filter(|key| state.deferred.contains(key) && !state.configs.contains_key(key)),
+        );
+        for st in &mut instances {
+            if !st.config.as_ref().is_some_and(|key| later.contains(key)) {
+                continue;
+            }
+            match ready
+                .get(&st.name)
+                .filter(|key| state.configs.contains_key(*key))
+            {
+                Some(key) => st.config = Some(key.clone()),
+                None => st.error = Some("its configuration is being built".to_string()),
+            }
+            stale.push(st.name.clone());
+        }
+    }
     // 2. Build what is not cached.
     build(state, chain, jobs);
     state.tick = state.tick.saturating_add(1);
@@ -654,10 +829,12 @@ fn place_from(
                 built: Ok(built),
                 used,
                 shown,
+                solved,
                 ..
             }) => {
                 *used = tick;
                 *shown |= bodies;
+                *solved |= !bodies;
                 st.built = Some(Arc::clone(built));
                 // A subassembly whose own sources changed has changed too.
                 if let Built::Assembly(sub) = &**built
@@ -698,7 +875,11 @@ fn place_from(
         solve_mates(doc, assembly, values.as_ref(), &mut instances, &extra, from);
     // 5. Placed bodies.
     let mut placed = if bodies {
-        build_shown(doc, assembly, &mut instances)
+        let placed = build_shown(doc, assembly, &mut instances, &mut state.placed_copies);
+        if chain.is_empty() {
+            state.placed_copies.end();
+        }
+        placed
     } else {
         let mut placed = empty(doc, None);
         placed.instances = instances;
@@ -712,6 +893,7 @@ fn place_from(
     placed.dof = dof;
     placed.carried = carried;
     placed.solve_note = solve_note;
+    placed.stale = stale;
     placed
 }
 
@@ -730,6 +912,7 @@ fn gather(
     let files = state.files.clone();
     let mut instances: Vec<InstanceState> = Vec::with_capacity(assembly.instances.len());
     let mut jobs: Vec<Job> = Vec::new();
+    let mut slim_keys: BTreeMap<String, bool> = BTreeMap::new();
     for instance in &assembly.instances {
         let mut st = InstanceState {
             name: instance.name.clone(),
@@ -783,7 +966,19 @@ fn gather(
                 }
                 st.hash = Some(hash.clone());
                 st.config = Some(key.clone());
-                if !state.configs.contains_key(&key) && wanted.insert(key.clone()) {
+                // Slim only in a motion's own state, at the top (a parent's
+                // mate may reach into a subassembly's instances), for an
+                // instance mated by its datums alone.
+                let slim = state.slim
+                    && chain.is_empty()
+                    && !source.is_assembly()
+                    && mated_by_datums(assembly, &instance.name, &source);
+                let all_slim = slim_keys.entry(key.clone()).or_insert(true);
+                *all_slim &= slim;
+                let kept = state.configs.get(&key).is_some_and(|c| slim || !c.slim);
+                // Being built elsewhere: not worked out again here.
+                let deferred = !state.configs.contains_key(&key) && state.deferred.contains(&key);
+                if !kept && !deferred && wanted.insert(key.clone()) {
                     let source_key = (!params.is_empty() && !source.is_assembly())
                         .then(|| format!("{hash}#{}", doc.units.length.symbol()));
                     jobs.push(Job {
@@ -791,12 +986,17 @@ fn gather(
                         doc: configured(&source, &params, doc.units.length),
                         base: sub_base,
                         source: source_key,
+                        slim,
                     });
                 }
             }
             Err(why) => st.error = Some(why),
         }
         instances.push(st);
+    }
+    // Slim only when every instance that shares it may have it slim.
+    for job in &mut jobs {
+        job.slim &= slim_keys.get(&job.key).copied().unwrap_or(false);
     }
     (instances, jobs)
 }
@@ -826,11 +1026,14 @@ fn build(state: &mut AsmState, chain: &mut Vec<String>, jobs: Vec<Job>) {
                     .and_then(|source| caches.get(source))
                     .cloned()
                     .unwrap_or_default();
-                let regen = craft3d_regen::regenerate_cached_needing(
+                let mut regen = craft3d_regen::regenerate_cached_needing(
                     doc,
                     &mut cache,
                     craft3d_regen::Need::All,
                 );
+                if job.slim {
+                    regen = slimmed(regen);
+                }
                 let built = Ok(Arc::new(Built::Part {
                     doc: Arc::new(doc.clone()),
                     regen: Arc::new(regen),
@@ -851,7 +1054,7 @@ fn build(state: &mut AsmState, chain: &mut Vec<String>, jobs: Vec<Job>) {
         if let (Some(source), Some(cache)) = (&job.source, cache) {
             state.regen_caches.insert(source.clone(), cache);
         }
-        state.keep(job.key.clone(), result, tick);
+        state.keep(job.key.clone(), result, tick, job.slim);
     }
     for job in subs {
         let result = match &job.doc {
@@ -870,7 +1073,7 @@ fn build(state: &mut AsmState, chain: &mut Vec<String>, jobs: Vec<Job>) {
             }
             Err(why) => Err(why.clone()),
         };
-        state.keep(job.key, result, tick);
+        state.keep(job.key, result, tick, false);
     }
 }
 
@@ -1051,6 +1254,7 @@ fn empty(doc: &Document, error: Option<String>) -> Placed {
         coupling_specs: Vec::new(),
         carried: None,
         solve_note: None,
+        stale: Vec::new(),
     }
 }
 
@@ -1118,7 +1322,12 @@ pub(crate) fn bodies_of(st: &InstanceState) -> Vec<ShownBody> {
 }
 
 /// The part that shows the placed bodies.
-fn build_shown(doc: &Document, assembly: &Assembly, instances: &mut [InstanceState]) -> Placed {
+fn build_shown(
+    doc: &Document,
+    assembly: &Assembly,
+    instances: &mut [InstanceState],
+    copies: &mut PlacedCopies,
+) -> Placed {
     let mut shown = doc.clone();
     shown.assembly = None;
     shown.features.clear();
@@ -1144,7 +1353,7 @@ fn build_shown(doc: &Document, assembly: &Assembly, instances: &mut [InstanceSta
             Source::Packed { hash } => format!("packed {hash}"),
         };
         for (name, body, names, props) in bodies {
-            let placed = match body.transformed(&st.pose) {
+            let placed = match copies.place(&body, &st.pose) {
                 Ok(placed) => placed,
                 Err(e) => {
                     st.error = Some(format!("its body `{name}` cannot be placed: {e}"));
@@ -1197,10 +1406,6 @@ fn build_shown(doc: &Document, assembly: &Assembly, instances: &mut [InstanceSta
                 });
             }
             st.bodies.push(id);
-            let placed = Arc::new(placed);
-            // Meshed as its source's mesh moved (`meshes.rs`): a moment of
-            // a motion meshes nothing.
-            crate::meshes::note_placed(&placed, &body, &st.pose);
             results.push(FeatureResult {
                 id,
                 status: Status::Ok,
@@ -1247,6 +1452,7 @@ fn build_shown(doc: &Document, assembly: &Assembly, instances: &mut [InstanceSta
         coupling_specs: Vec::new(),
         carried: None,
         solve_note: None,
+        stale: Vec::new(),
     }
 }
 
@@ -2080,7 +2286,230 @@ impl AsmState {
     ) -> Placed {
         let mut chain = Vec::new();
         let base = self.base(path);
-        place_from(doc, &base, self, &mut chain, from, true)
+        place_from(doc, &base, self, &mut chain, from, true, None)
+    }
+
+    /// [`Self::place_moment`] without building a part's configuration
+    /// that is not kept: such an instance is shown with the configuration
+    /// `substitutes` gives for its name when that is kept, and is listed
+    /// in [`Placed::stale`]. A provisional moment, made at once while the
+    /// configurations it lacks are built elsewhere (`motion_build.rs`).
+    pub(crate) fn place_ready(
+        &mut self,
+        doc: &Document,
+        path: Option<&str>,
+        from: Option<&Carried>,
+        substitutes: &BTreeMap<String, String>,
+    ) -> Placed {
+        let mut chain = Vec::new();
+        let base = self.base(path);
+        place_from(doc, &base, self, &mut chain, from, true, Some(substitutes))
+    }
+
+    /// The parts' configurations `docs` (states of this assembly) ask for
+    /// that are not kept, as jobs to build elsewhere, in the order asked
+    /// for (each once); and whether a subassembly's is missing too (built
+    /// where it is asked for, never elsewhere).
+    pub(crate) fn missing_parts(
+        &mut self,
+        docs: &[Document],
+        path: Option<&str>,
+    ) -> (Vec<crate::motion_build::PartJob>, bool) {
+        let base = self.base(path);
+        let mut wanted: BTreeSet<String> = BTreeSet::new();
+        let chain: Vec<String> = Vec::new();
+        let mut parts = Vec::new();
+        let mut subs = false;
+        for doc in docs {
+            let Some(assembly) = doc.assembly.as_ref() else {
+                continue;
+            };
+            let (_, jobs) = gather(doc, assembly, &base, self, &chain, &mut wanted);
+            for job in jobs {
+                match job.doc {
+                    Ok(source) if !source.is_assembly() => {
+                        let cache = job
+                            .source
+                            .as_ref()
+                            .and_then(|s| self.regen_caches.get(s))
+                            .cloned();
+                        parts.push(crate::motion_build::PartJob {
+                            key: job.key,
+                            doc: source,
+                            source: job.source,
+                            cache,
+                            slim: job.slim,
+                        });
+                    }
+                    Ok(_) => subs = true,
+                    // A source that cannot be configured fails where it
+                    // is asked for, at once.
+                    Err(_) => subs = true,
+                }
+            }
+        }
+        (parts, subs)
+    }
+
+    /// The instances of `doc` (a state of this assembly) with the key of
+    /// the configuration each asks for, in the assembly's order; nothing
+    /// is built.
+    pub(crate) fn instance_keys(
+        &mut self,
+        doc: &Document,
+        path: Option<&str>,
+    ) -> Vec<(String, String)> {
+        let Some(assembly) = doc.assembly.as_ref() else {
+            return Vec::new();
+        };
+        let base = self.base(path);
+        let mut wanted: BTreeSet<String> = BTreeSet::new();
+        let (instances, _) = gather(doc, assembly, &base, self, &[], &mut wanted);
+        instances
+            .into_iter()
+            .filter_map(|st| Some((st.name, st.config?)))
+            .collect()
+    }
+
+    /// Lets configurations go until within the budget, none protected for
+    /// having been used last (a bake asking what of it the budget keeps).
+    pub(crate) fn settle_budget(&mut self) {
+        self.tick = self.tick.saturating_add(1);
+        self.evict();
+    }
+
+    /// Pins `keys` ([`Self::pinned`]) in place of what was pinned.
+    pub(crate) fn pin(&mut self, keys: BTreeSet<String>) {
+        self.pinned = keys;
+    }
+
+    /// The keys of the configurations kept.
+    pub(crate) fn config_keys(&self) -> BTreeSet<String> {
+        self.configs.keys().cloned().collect()
+    }
+
+    /// The parts' configurations kept now that `before` did not hold, as
+    /// configurations built elsewhere (for [`Self::take_built`]).
+    pub(crate) fn configs_since(
+        &self,
+        before: &BTreeSet<String>,
+    ) -> Vec<crate::motion_build::PartDone> {
+        self.configs
+            .iter()
+            .filter(|(key, c)| {
+                !before.contains(*key)
+                    && !matches!(&c.built, Ok(b) if matches!(**b, Built::Assembly(_)))
+            })
+            .map(|(key, c)| crate::motion_build::PartDone {
+                key: key.clone(),
+                built: c.built.clone(),
+                slim: c.slim,
+                solved: c.solved && !c.shown,
+            })
+            .collect()
+    }
+
+    /// True when the configuration `key` is kept (built, or known to
+    /// fail).
+    pub(crate) fn has_config(&self, key: &str) -> bool {
+        self.configs.contains_key(key)
+    }
+
+    /// Keeps configurations built elsewhere (`motion_build.rs`), in the
+    /// order given (sorted by key), as [`build`] keeps those it builds;
+    /// then keeps within the budget. One that is kept already stays as it
+    /// is (the same, bit for bit).
+    pub(crate) fn take_built(&mut self, done: Vec<crate::motion_build::PartDone>) -> usize {
+        self.tick = self.tick.saturating_add(1);
+        let tick = self.tick;
+        let mut taken = 0usize;
+        for d in done {
+            if self.configs.contains_key(&d.key) {
+                continue;
+            }
+            if d.built.is_ok() {
+                self.builds = self.builds.saturating_add(1);
+            }
+            let solved = d.solved;
+            let key = d.key.clone();
+            self.keep(d.key, d.built, tick, d.slim);
+            if solved && let Some(c) = self.configs.get_mut(&key) {
+                c.solved = true;
+            }
+            taken = taken.saturating_add(1);
+        }
+        self.evict();
+        taken
+    }
+
+    /// The solve of a moment as `placed` holds it (a placement of `doc`
+    /// with bodies, [`Self::place_moment`]), with its bodies placed again:
+    /// the same placement, made without solving. `None` when it cannot be
+    /// made so (a configuration it used is no longer kept, a flexible
+    /// subassembly): then the moment is placed as usual.
+    pub(crate) fn show_solved(&mut self, doc: &Document, solved: &Placed) -> Option<Placed> {
+        let assembly = doc.assembly.as_ref()?;
+        if solved
+            .instances
+            .iter()
+            .any(|st| st.flexed || st.flex_of.is_some())
+        {
+            return None;
+        }
+        self.tick = self.tick.saturating_add(1);
+        let tick = self.tick;
+        let mut instances = solved.instances.clone();
+        for st in &mut instances {
+            st.bodies.clear();
+            st.built = None;
+            let Some(key) = &st.config else { continue };
+            match self.configs.get_mut(key) {
+                Some(Config {
+                    built, used, shown, ..
+                }) => {
+                    *used = tick;
+                    *shown = true;
+                    st.built = built.as_ref().ok().cloned();
+                }
+                None => return None,
+            }
+        }
+        self.placed_copies.begin();
+        let mut placed = build_shown(doc, assembly, &mut instances, &mut self.placed_copies);
+        self.placed_copies.end();
+        placed.specs = solved.specs.clone();
+        placed.coupling_specs = solved.coupling_specs.clone();
+        placed.mates = solved.mates.clone();
+        placed.couplings = solved.couplings.clone();
+        placed.solve_error = solved.solve_error.clone();
+        placed.floating = solved.floating;
+        placed.dof = solved.dof.clone();
+        placed.carried = solved.carried.clone();
+        placed.solve_note = solved.solve_note.clone();
+        Some(placed)
+    }
+
+    /// `placed` (a moment placed with its bodies) as a solve to keep for
+    /// [`Self::show_solved`]: without its bodies and without holding its
+    /// configurations (they are found again by their keys). `None` for one
+    /// that cannot be shown so.
+    pub(crate) fn solved_of(placed: &Placed) -> Option<Placed> {
+        if !placed.stale.is_empty()
+            || placed
+                .instances
+                .iter()
+                .any(|st| st.flexed || st.flex_of.is_some())
+        {
+            return None;
+        }
+        let mut solved = placed.clone();
+        solved.doc = Arc::new(Document::default());
+        solved.regen = Arc::new(Regen::default());
+        for st in &mut solved.instances {
+            st.bodies.clear();
+            st.built = None;
+        }
+        Some(solved)
     }
 
     /// [`Self::place_moment`] solved only, its bodies not placed: a grid
@@ -2093,7 +2522,7 @@ impl AsmState {
     ) -> Placed {
         let mut chain = Vec::new();
         let base = self.base(path);
-        place_from(doc, &base, self, &mut chain, from, false)
+        place_from(doc, &base, self, &mut chain, from, false, None)
     }
 
     /// Takes `placed` as the placement of the document at `revision`
@@ -2116,7 +2545,7 @@ impl AsmState {
 
     /// Keeps a configuration built at `tick` (one built again replaces
     /// the one kept).
-    fn keep(&mut self, key: String, built: Result<Arc<Built>, String>, tick: u64) {
+    fn keep(&mut self, key: String, built: Result<Arc<Built>, String>, tick: u64, slim: bool) {
         let bytes = built_bytes(&built);
         self.config_bytes = self.config_bytes.saturating_add(bytes);
         if let Some(old) = self.configs.insert(
@@ -2126,6 +2555,8 @@ impl AsmState {
                 bytes,
                 used: tick,
                 shown: false,
+                slim,
+                solved: false,
             },
         ) {
             self.config_bytes = self.config_bytes.saturating_sub(old.bytes);
@@ -2145,7 +2576,7 @@ impl AsmState {
             let mut order: Vec<(bool, u64, String, usize)> = self
                 .configs
                 .iter()
-                .filter(|(_, c)| c.used < self.tick)
+                .filter(|(k, c)| c.used < self.tick && !self.pinned.contains(*k))
                 .map(|(k, c)| (c.shown, c.used, k.clone(), c.bytes))
                 .collect();
             order.sort();
@@ -2171,6 +2602,24 @@ impl AsmState {
             .collect();
         self.regen_caches
             .retain(|source, _| sources.contains(source));
+    }
+
+    /// Lets go of the configurations only ever used by solves without
+    /// bodies (a motion's grid points, each solved once and kept as poses)
+    /// that `keep` does not hold (the frames of a bake, the grid point
+    /// just solved): they would only wait for the budget to push them out.
+    pub(crate) fn drop_solved_only(&mut self, keep: &BTreeSet<String>) {
+        let gone: Vec<String> = self
+            .configs
+            .iter()
+            .filter(|(key, c)| c.solved && !c.shown && !keep.contains(*key))
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in gone {
+            if let Some(c) = self.configs.remove(&key) {
+                self.config_bytes = self.config_bytes.saturating_sub(c.bytes);
+            }
+        }
     }
 
     /// Most bytes of configurations kept.
@@ -2358,6 +2807,7 @@ mod tests {
                 doc: Ok(doc.clone()),
                 base: String::new(),
                 source: Some("src#mm".to_string()),
+                slim: false,
             };
             build(&mut state, &mut Vec::new(), vec![job]);
             let Some(Config {
@@ -2416,6 +2866,7 @@ mod tests {
                 doc: configured(&holed, &params, holed.units.length),
                 base: String::new(),
                 source: Some("src#mm".to_string()),
+                slim: false,
             };
             build(&mut state, &mut Vec::new(), vec![job]);
             keys.push(key);

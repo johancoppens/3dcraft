@@ -166,3 +166,69 @@ fn parts_moved_by_poses_match_the_cpu_renderer() {
     }
     assert!(compared > 0);
 }
+
+fn part_list<'a>(meshes: [&'a Mesh; 3], at: &[Transform], firsts: &[u32]) -> Vec<MeshPart<'a>> {
+    meshes
+        .into_iter()
+        .zip(at)
+        .zip(firsts)
+        .map(|((mesh, pose), first)| MeshPart {
+            mesh,
+            first_face_id: *first,
+            pose: *pose,
+        })
+        .collect()
+}
+
+/// Parts taken over from an earlier upload (`upload_parts_from`: another
+/// moment in which one part changed shape) draw what a fresh upload of the
+/// new parts draws, pixel for pixel.
+#[test]
+fn parts_taken_over_draw_what_a_fresh_upload_draws() {
+    for mut offscreen in offscreens() {
+        let adapter = offscreen.adapter().clone();
+        let parts = bodies(1.0);
+        let other = bodies(1.3);
+        let firsts: Vec<u32> = {
+            let mut next = 0;
+            parts
+                .iter()
+                .map(|p| {
+                    let first = next;
+                    next += p.face_ids.iter().copied().max().map_or(0, |m| m + 1);
+                    first
+                })
+                .collect()
+        };
+        let colors = FaceColors::new();
+        let at = poses(1, 1.0, Vec3::ZERO);
+        let before = part_list([&parts[0], &parts[1], &parts[2]], &at, &firsts);
+        // The cylinder changes shape: the block and the torus stay.
+        let after = part_list([&parts[0], &other[1], &parts[2]], &at, &firsts);
+        let placed = joined(
+            &[parts[0].clone(), other[1].clone(), parts[2].clone()],
+            &at,
+            &firsts,
+        );
+        let bounds = drawn_bounds(&placed);
+        let renderer = offscreen.renderer();
+        let old = renderer.upload_parts(&before, &colors, bounds).unwrap();
+        let taken = renderer
+            .upload_parts_from(
+                &after,
+                &colors,
+                bounds,
+                Some(old),
+                &[Some(0), None, Some(2)],
+            )
+            .unwrap_or_else(|e| panic!("on {adapter}: {e}"));
+        let fresh = renderer.upload_parts(&after, &colors, bounds).unwrap();
+        assert_eq!(taken.part_count(), 3);
+        assert_eq!(taken.triangle_count(), fresh.triangle_count());
+        let p = params(320, 240, 2);
+        let camera = perspective(&placed, Vec3::new(1.0, -1.3, 0.9), 40.0, &p);
+        let a = offscreen.render_uploaded(&taken, &camera, &p).unwrap();
+        let b = offscreen.render_uploaded(&fresh, &camera, &p).unwrap();
+        assert!(a == b, "on {adapter}: parts taken over draw otherwise");
+    }
+}

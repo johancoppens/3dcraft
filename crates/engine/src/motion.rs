@@ -51,8 +51,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!(
         "view.motion",
         "Show Motion",
-        r#"{"t": number from 0 to 1 or null, "collisions": boolean = as before (false)}"#,
-        "Shows the model in the view at a moment t of its motion, without changing the document: not its variables, its undo history or its dirty state (view state, as view.scrub). The timeline is the document's variable t when it is a plain number (no unit): formulas of t drive the motion (a crank angle 360 deg * t). Only the features that depend on t are regenerated, and only their bodies are meshed again; each state is a function of t alone: its sketches are carried from the document's own solution to t in fixed steps of t (1/128), so a linkage solved in a sketch stays on its branch, and a moment reached by a jump is the one a play reaches. collisions: true draws the bodies that overlap at t red (in the scene, so view.render, the window and view.replay show it) and lists the pairs. t null shows the document as it is again. The viewport, view.render, view.pick and screenshots show the state; document.inspect, measures and exports still see the document itself. An edit keeps the motion (the state is made again from the edited document); a document whose t is gone or has a unit lets go of it. Without parameters it changes nothing. Returns t (null when not shown), the timeline (its variable and its value in the document), rebuilt (the features whose bodies differ from the document's at this t) and collisions ([{a, aName, b, bName, volume}], or unknown pairs with a reason) when asked for. An assembly plays t too: drivers are formulas of t for its joint variables (Drive_angle = 360 deg * t), each moment is a solve carried along the branch from the assembly at rest (never a regeneration), and where the mechanism cannot go further the result has deadPoint {t, why}: the t it stopped at, the parts shown where they stopped.",
+        r#"{"t": number from 0 to 1 or null, "collisions": boolean = as before (false), "shapes": "exact" or "ready" = as before ("exact")}"#,
+        "Shows the model in the view at a moment t of its motion, without changing the document: not its variables, its undo history or its dirty state (view state, as view.scrub). The timeline is the document's variable t when it is a plain number (no unit): formulas of t drive the motion (a crank angle 360 deg * t). Only the features that depend on t are regenerated, and only their bodies are meshed again; each state is a function of t alone: its sketches are carried from the document's own solution to t in fixed steps of t (1/128), so a linkage solved in a sketch stays on its branch, and a moment reached by a jump is the one a play reaches. collisions: true draws the bodies that overlap at t red (in the scene, so view.render, the window and view.replay show it) and lists the pairs. t null shows the document as it is again. The viewport, view.render, view.pick and screenshots show the state; document.inspect, measures and exports still see the document itself. An edit keeps the motion (the state is made again from the edited document); a document whose t is gone or has a unit lets go of it. Without parameters it changes nothing. Returns t (null when not shown), the timeline (its variable and its value in the document), rebuilt (the features whose bodies differ from the document's at this t) and collisions ([{a, aName, b, bName, volume}], or unknown pairs with a reason) when asked for. An assembly plays t too: drivers are formulas of t for its joint variables (Drive_angle = 360 deg * t), each moment is a solve carried along the branch from the assembly at rest (never a regeneration), and where the mechanism cannot go further the result has deadPoint {t, why}: the t it stopped at, the parts shown where they stopped. shapes: \"ready\" (for a viewer that plays the motion; it stays until shapes: \"exact\") answers an assembly's moment at once: an instance whose parameters follow t and whose configuration at t is not built yet is shown with the configuration of its own built nearest in t (listed in stale), the solve carried from the nearest fixed step that is solved, while the configurations it lacks are built in the background (natively; in a browser the moment is made exactly, as without it); the result then has exact: false, and the moment settles, the same as with shapes: \"exact\", once what it lacks is built (the next view.motion, or a viewer's poll, takes it in). Also returned: exact, stale (the instances shown with another configuration of theirs), building (configurations being built in the background) and baked (the frames of the last motion.bake, which a player rounds its t to, or null).",
         doc: true,
         view_motion
     ),
@@ -217,6 +217,9 @@ pub(crate) struct Sweep {
     /// regenerated (kept or not, the budget full), an assembly's
     /// configurations built (kept until the budget lets them go).
     baked: BTreeSet<u64>,
+    /// The frames of the last bake asked for (`motion.bake {frames}`): a
+    /// player rounds its `t` to them, so playing asks for nothing new.
+    bake_frames: Option<u64>,
 }
 
 /// The motion of an assembly over `t` (docs/design/motion.md ›
@@ -234,6 +237,52 @@ struct AsmSweep {
     /// open document's, so a sweep never changes what it shows.
     asm: AsmState,
     grid: BTreeMap<i64, Arc<GridState>>,
+    /// The solves of the frames of a bake (by the bits of their `t`), once
+    /// each was placed exactly: the `t` it was placed at (a dead point's
+    /// when it stopped there), the solve without bodies
+    /// ([`AsmState::solved_of`]) and the dead point. Showing such a frame
+    /// again places its bodies without solving (the same placement).
+    solves: BTreeMap<u64, (f64, Arc<Placed>, Option<Stuck>)>,
+    /// The `t` of the frames baked (`motion.bake`), whose solves are kept.
+    bake_ts: BTreeSet<u64>,
+    /// Per instance, the configurations it was seen to ask for and at
+    /// which `t`, in the order seen: a provisional moment shows an
+    /// instance whose configuration is not built yet with the kept one
+    /// nearest in `t` ([`Sweep::placed_ready`]).
+    seen: BTreeMap<String, Vec<(f64, String)>>,
+    /// The configurations the frames of a bake ask for: kept when the
+    /// configurations only grid points used are let go of.
+    frame_keys: BTreeSet<String>,
+    /// The grid point the background solves toward: the farthest a bake's
+    /// frames reach, else the last provisional moment's.
+    grid_target: Option<i64>,
+    /// Frames of a bake in the background whose configurations are not
+    /// asked for yet ([`Sweep::queue_baked`]).
+    bake_queue: std::collections::VecDeque<f64>,
+    /// The state the last moment made at once reached, and its `t`: a
+    /// provisional moment near it is carried from there (a short step)
+    /// rather than from a grid point far behind.
+    last_carried: Option<(f64, Carried)>,
+}
+
+/// Most frames whose solves a motion keeps: a bake asks for at most 1001.
+const MAX_SOLVES: usize = 4_096;
+
+/// Most `(t, configuration)` pairs a motion remembers per instance, for
+/// the substitutes of provisional moments.
+const MAX_SEEN: usize = 8_192;
+
+/// Most grid points one background run solves before it hands them in.
+const GRID_RUN: usize = 16;
+
+/// A moment of an assembly made at once ([`Sweep::placed_ready`]).
+pub(crate) struct Ready {
+    pub placed: Arc<Placed>,
+    pub stuck: Option<Stuck>,
+    /// True when it is the moment [`Sweep::placed_at`] makes; false for a
+    /// provisional one (an instance shown with another configuration of
+    /// its own, or the solve carried from a grid point short of its own).
+    pub exact: bool,
 }
 
 /// A solved grid point of an assembly's motion.
@@ -279,6 +328,7 @@ impl Sweep {
             kept_bytes: 0,
             collided: BTreeMap::new(),
             baked: BTreeSet::new(),
+            bake_frames: None,
         }
     }
 
@@ -288,10 +338,19 @@ impl Sweep {
     pub(crate) fn of(open: &mut OpenDocument, base: &Document) -> Self {
         if base.is_assembly() {
             let mut sweep = Self::new(base, RegenCache::default());
+            let mut asm = open.asm.clone();
+            asm.slim = true;
             sweep.assembly = Some(AsmSweep {
                 path: open.path.clone(),
-                asm: open.asm.clone(),
+                asm,
                 grid: BTreeMap::new(),
+                solves: BTreeMap::new(),
+                bake_ts: BTreeSet::new(),
+                seen: BTreeMap::new(),
+                frame_keys: BTreeSet::new(),
+                grid_target: None,
+                bake_queue: std::collections::VecDeque::new(),
+                last_carried: None,
             });
             return sweep;
         }
@@ -353,6 +412,7 @@ impl Sweep {
             }
             at -= step;
         };
+        let mut solved = false;
         while at != k {
             at += step;
             let made = if from.stuck.is_some() {
@@ -384,6 +444,22 @@ impl Sweep {
             };
             sweep.grid.insert(at, Arc::clone(&made));
             from = made;
+            solved = true;
+        }
+        if solved {
+            // The grid points solved now need their configurations no
+            // more, unless a frame of a bake or the last one asks for them
+            // (a moment on the grid).
+            let mut keep = sweep.frame_keys.clone();
+            let last = at_t(reference, t0 + k as f64 * MOTION_STEP)?;
+            keep.extend(
+                sweep
+                    .asm
+                    .instance_keys(&last, sweep.path.as_deref())
+                    .into_iter()
+                    .map(|(_, key)| key),
+            );
+            sweep.asm.drop_solved_only(&keep);
         }
         Ok(from)
     }
@@ -393,33 +469,548 @@ impl Sweep {
     /// instances stay where it stopped).
     pub(crate) fn placed_at(&mut self, t: f64) -> Result<(Arc<Placed>, Option<Stuck>), String> {
         timeline(&self.reference)?;
+        // Exact: everything it asks for is built here if it must be.
+        if let Some(sweep) = self.assembly.as_mut() {
+            sweep.asm.deferred.clear();
+        }
+        let bits = t.to_bits();
+        // A frame of a bake solved before: its bodies placed again.
+        if let Some(sweep) = self.assembly.as_mut()
+            && let Some((at, solved, stuck)) = sweep.solves.get(&bits).cloned()
+        {
+            let doc = at_t(&self.reference, at)?;
+            if let Some(placed) = sweep.asm.show_solved(&doc, &solved) {
+                return Ok((Arc::new(placed), stuck));
+            }
+            sweep.solves.remove(&bits);
+        }
         let k = self.grid_index(t)?;
         let from = self.asm_grid_point(k)?;
+        let (at, placed, stuck) = {
+            let sweep = self
+                .assembly
+                .as_mut()
+                .ok_or("the motion is not an assembly's")?;
+            if let Some(stuck) = &from.stuck {
+                let doc = at_t(&self.reference, stuck.t)?;
+                let placed =
+                    sweep
+                        .asm
+                        .place_moment(&doc, sweep.path.as_deref(), Some(&from.carried));
+                (stuck.t, placed, Some(stuck.clone()))
+            } else {
+                let doc = at_t(&self.reference, t)?;
+                let placed =
+                    sweep
+                        .asm
+                        .place_moment(&doc, sweep.path.as_deref(), Some(&from.carried));
+                let stuck = match (&placed.carried, &placed.solve_error) {
+                    (None, why) => Some(Stuck {
+                        t: self.t0 + k as f64 * MOTION_STEP,
+                        why: why
+                            .clone()
+                            .unwrap_or_else(|| "it does not solve".to_string()),
+                    }),
+                    _ => None,
+                };
+                (t, placed, stuck)
+            }
+        };
+        self.note_configs(t, &placed);
+        if let (Some(sweep), Some(carried)) = (self.assembly.as_mut(), placed.carried.clone()) {
+            sweep.last_carried = Some((t, carried));
+        }
+        if let Some(sweep) = self.assembly.as_mut()
+            && sweep.bake_ts.contains(&bits)
+            && sweep.solves.len() < MAX_SOLVES
+            && let Some(solved) = AsmState::solved_of(&placed)
+        {
+            sweep
+                .solves
+                .insert(bits, (at, Arc::new(solved), stuck.clone()));
+        }
+        Ok((Arc::new(placed), stuck))
+    }
+
+    /// Remembers which configuration each instance of `placed` (a moment
+    /// at `t`) asked for, for the substitutes of provisional moments.
+    fn note_configs(&mut self, t: f64, placed: &Placed) {
+        let pairs: Vec<(String, String)> = placed
+            .instances
+            .iter()
+            .filter(|st| !placed.stale.contains(&st.name))
+            .filter_map(|st| Some((st.name.clone(), st.config.clone()?)))
+            .collect();
+        self.note_pairs(t, pairs);
+    }
+
+    fn note_pairs(&mut self, t: f64, pairs: Vec<(String, String)>) {
+        let Some(sweep) = self.assembly.as_mut() else {
+            return;
+        };
+        for (name, key) in pairs {
+            let seen = sweep.seen.entry(name).or_default();
+            if seen.len() < MAX_SEEN && !seen.iter().any(|(at, k)| *k == key && *at == t) {
+                seen.push((t, key));
+            }
+        }
+    }
+
+    /// For each instance seen, the kept configuration of its own nearest
+    /// in `t` to `t` (ties: the smaller `t`, then the order seen).
+    fn substitutes(&self, t: f64) -> BTreeMap<String, String> {
+        let Some(sweep) = self.assembly.as_ref() else {
+            return BTreeMap::new();
+        };
+        sweep
+            .seen
+            .iter()
+            .filter_map(|(name, seen)| {
+                let best = seen
+                    .iter()
+                    .filter(|(_, key)| sweep.asm.has_config(key))
+                    .min_by(|(a, _), (b, _)| {
+                        (a - t).abs().total_cmp(&(b - t).abs()).then(a.total_cmp(b))
+                    })?;
+                Some((name.clone(), best.1.clone()))
+            })
+            .collect()
+    }
+
+    /// An assembly's moment at `t` made at once (`view.motion {shapes:
+    /// "ready"}`): the moment [`Self::placed_at`] makes when everything it
+    /// needs is kept; else a provisional one, whose instances lacking their
+    /// configuration show the kept one of their own nearest in `t` and
+    /// whose solve is carried from the grid point nearest `t` that is
+    /// solved, while `builder` builds what is missing. On the way it solves
+    /// at most [`READY_GRID_SOLVES`] grid points whose configurations are
+    /// kept; a provisional moment is never kept in the grid, so the grid
+    /// stays exact (seek = play) and the moment settles to the exact one.
+    /// Without a builder (the browser) it is [`Self::placed_at`].
+    pub(crate) fn placed_ready(
+        &mut self,
+        t: f64,
+        builder: &mut crate::motion_build::Builder,
+    ) -> Result<Ready, String> {
+        timeline(&self.reference)?;
+        let exact = |(placed, stuck): (Arc<Placed>, Option<Stuck>)| Ready {
+            placed,
+            stuck,
+            exact: true,
+        };
+        if !crate::motion_build::Builder::available()
+            || self
+                .assembly
+                .as_ref()
+                .is_some_and(|a| a.solves.contains_key(&t.to_bits()))
+        {
+            return self.placed_at(t).map(exact);
+        }
+        let k = self.grid_index(t)?;
+        let t0 = self.t0;
+        // Grid point 0, the assembly at rest, is made where it is asked
+        // for: its configurations are those shown at rest, the
+        // substitutes of last resort.
+        if !self.asm_grid_solved(0) {
+            self.asm_grid_point(0)?;
+            let doc = at_t(&self.reference, t0)?;
+            let pairs = {
+                let sweep = self
+                    .assembly
+                    .as_mut()
+                    .ok_or("the motion is not an assembly's")?;
+                sweep.asm.instance_keys(&doc, sweep.path.as_deref())
+            };
+            self.note_pairs(t0, pairs);
+        }
+        let step = k.signum();
+        let j = self.nearest_solved(k);
+        if self.asm_grid_stuck(j) {
+            // Past a dead point nothing is solved: placed as usual.
+            return self.placed_at(t).map(exact);
+        }
         let doc = at_t(&self.reference, t)?;
+        // What the builder has already is neither worked out nor built
+        // here again.
+        if let Some(sweep) = self.assembly.as_mut() {
+            sweep.asm.deferred = builder.in_flight().clone();
+        }
+        let (own, subs) = self.asm_missing(std::slice::from_ref(&doc))?;
+        let waiting = self.asm_waiting(&doc)?;
+        if j == k && own.is_empty() && !waiting {
+            if let Some(sweep) = self.assembly.as_mut() {
+                sweep.asm.deferred.clear();
+            }
+            return self.placed_at(t).map(exact);
+        }
+        // Asked for first: this moment's configurations (the grid's are
+        // built by the run that solves it).
+        let _ = step;
+        builder.queue(own, true);
+        // The grid is solved in the background, toward this moment unless
+        // a bake reaches farther.
+        if let Some(sweep) = self.assembly.as_mut()
+            && sweep
+                .grid_target
+                .is_none_or(|g| g.signum() != k.signum() || g.abs() < k.abs())
+        {
+            sweep.grid_target = Some(k);
+        }
+        self.queue_grid(builder)?;
+        if subs {
+            // A subassembly's configuration is built where it is asked
+            // for: placed as usual.
+            if let Some(sweep) = self.assembly.as_mut() {
+                sweep.asm.deferred.clear();
+            }
+            return self.placed_at(t).map(exact);
+        }
+        let substitutes = self.substitutes(t);
+        let grid_t = t0 + j as f64 * MOTION_STEP;
+        let from = self
+            .assembly
+            .as_ref()
+            .and_then(|a| match &a.last_carried {
+                Some((at, carried)) if (at - t).abs() < (grid_t - t).abs() => Some(carried.clone()),
+                _ => a.grid.get(&j).map(|g| g.carried.clone()),
+            })
+            .ok_or("the motion lost its grid")?;
         let sweep = self
             .assembly
             .as_mut()
             .ok_or("the motion is not an assembly's")?;
-        if let Some(stuck) = &from.stuck {
-            let doc = at_t(&self.reference, stuck.t)?;
-            let placed = sweep
-                .asm
-                .place_moment(&doc, sweep.path.as_deref(), Some(&from.carried));
-            return Ok((Arc::new(placed), Some(stuck.clone())));
-        }
+        sweep.asm.deferred = builder.in_flight().clone();
         let placed = sweep
             .asm
-            .place_moment(&doc, sweep.path.as_deref(), Some(&from.carried));
-        let stuck = match (&placed.carried, &placed.solve_error) {
-            (None, why) => Some(Stuck {
-                t: self.t0 + k as f64 * MOTION_STEP,
-                why: why
-                    .clone()
-                    .unwrap_or_else(|| "it does not solve".to_string()),
-            }),
-            _ => None,
+            .place_ready(&doc, sweep.path.as_deref(), Some(&from), &substitutes);
+        sweep.asm.deferred.clear();
+        self.note_configs(t, &placed);
+        if let (Some(sweep), Some(carried)) = (self.assembly.as_mut(), placed.carried.clone()) {
+            sweep.last_carried = Some((t, carried));
+        }
+        Ok(Ready {
+            placed: Arc::new(placed),
+            stuck: None,
+            exact: false,
+        })
+    }
+
+    /// The grid point nearest `k` on the way from 0 that is solved (0,
+    /// the assembly at rest, at worst).
+    fn nearest_solved(&self, k: i64) -> i64 {
+        let step = k.signum();
+        let mut j = k;
+        while j != 0 && !self.asm_grid_solved(j) {
+            j -= step;
+        }
+        j
+    }
+
+    /// Starts a run of grid points solved in the background toward the
+    /// sweep's grid target (one run at a time), from the nearest solved
+    /// one, as far as their configurations are kept: on a copy of the
+    /// motion's state, each solved as [`Self::asm_grid_point`] solves it
+    /// (the same state, bit for bit), taken in by [`Self::take_built`].
+    fn queue_grid(&mut self, builder: &mut crate::motion_build::Builder) -> Result<(), String> {
+        if builder.grid_busy() || !crate::motion_build::Builder::available() {
+            return Ok(());
+        }
+        let Some(target) = self.assembly.as_ref().and_then(|a| a.grid_target) else {
+            return Ok(());
         };
-        Ok((Arc::new(placed), stuck))
+        if !self.asm_grid_solved(0) {
+            return Ok(());
+        }
+        let j = self.nearest_solved(target);
+        if j == target || self.asm_grid_stuck(j) {
+            return Ok(());
+        }
+        let step = target.signum();
+        let t0 = self.t0;
+        let reference = self.reference.clone();
+        let sweep = self
+            .assembly
+            .as_ref()
+            .ok_or("the motion is not an assembly's")?;
+        let from = sweep
+            .grid
+            .get(&j)
+            .map(|g| g.carried.clone())
+            .ok_or("the motion lost its grid")?;
+        let mut asm = sweep.asm.clone();
+        asm.deferred.clear();
+        let path = sweep.path.clone();
+        builder.queue_grid(Box::new(move || {
+            let before = asm.config_keys();
+            let mut out = Vec::new();
+            let mut from = from;
+            let mut at = j;
+            while at != target && out.len() < GRID_RUN {
+                at += step;
+                let t = t0 + at as f64 * MOTION_STEP;
+                let Ok(doc) = at_t(&reference, t) else { break };
+                let placed = asm.solve_moment(&doc, path.as_deref(), Some(&from));
+                match placed.carried.clone() {
+                    Some(carried) => {
+                        out.push(crate::motion_build::GridStep {
+                            k: at,
+                            carried: carried.clone(),
+                            stuck: None,
+                        });
+                        from = carried;
+                    }
+                    None => {
+                        out.push(crate::motion_build::GridStep {
+                            k: at,
+                            carried: from.clone(),
+                            stuck: Some(Stuck {
+                                t: t - step as f64 * MOTION_STEP,
+                                why: placed
+                                    .solve_error
+                                    .clone()
+                                    .unwrap_or_else(|| "it does not solve".to_string()),
+                            }),
+                        });
+                        break;
+                    }
+                }
+            }
+            let built = asm.configs_since(&before);
+            crate::motion_build::Worked {
+                steps: out,
+                built,
+                seen: Vec::new(),
+            }
+        }));
+        Ok(())
+    }
+
+    /// Queues the configurations of a few more frames of a bake in the
+    /// background (`motion.bake {background: true}`), a few at a time so
+    /// no call takes long: what each instance asks for at each frame is
+    /// worked out here, the building is the builder's.
+    fn queue_baked(&mut self, builder: &mut crate::motion_build::Builder) -> Result<(), String> {
+        // Frames per run, and runs at once: the frames' configurations are
+        // worked out and built on copies of the motion's state, off the
+        // thread that asked.
+        const PER_RUN: usize = 8;
+        const RUNS: usize = 1;
+        while builder.frames_busy() < RUNS {
+            let ts: Vec<f64> = match self.assembly.as_mut() {
+                Some(sweep) => {
+                    let n = sweep.bake_queue.len().min(PER_RUN);
+                    sweep.bake_queue.drain(..n).collect()
+                }
+                None => return Ok(()),
+            };
+            if ts.is_empty() {
+                return Ok(());
+            }
+            let reference = self.reference.clone();
+            let sweep = self
+                .assembly
+                .as_ref()
+                .ok_or("the motion is not an assembly's")?;
+            let mut asm = sweep.asm.clone();
+            asm.deferred.clear();
+            let path = sweep.path.clone();
+            let queued = builder.queue_frames(Box::new(move || {
+                let before = asm.config_keys();
+                let mut seen = Vec::new();
+                let mut docs = Vec::new();
+                for &t in &ts {
+                    let Ok(doc) = at_t(&reference, t) else {
+                        continue;
+                    };
+                    seen.push((t, asm.instance_keys(&doc, path.as_deref())));
+                    docs.push(doc);
+                }
+                asm.prebuild(&docs, path.as_deref(), usize::MAX);
+                crate::motion_build::Worked {
+                    steps: Vec::new(),
+                    built: asm.configs_since(&before),
+                    seen,
+                }
+            }));
+            if !queued {
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
+    /// Frames of a bake in the background not looked at yet.
+    pub(crate) fn bake_queued(&self) -> usize {
+        self.assembly.as_ref().map_or(0, |a| a.bake_queue.len())
+    }
+
+    /// True when the assembly's grid point `k` is solved and stopped at a
+    /// dead point.
+    fn asm_grid_stuck(&self, k: i64) -> bool {
+        self.assembly
+            .as_ref()
+            .and_then(|a| a.grid.get(&k))
+            .is_some_and(|g| g.stuck.is_some())
+    }
+
+    /// Pins the configurations `docs` ask for (a batch of a bake), in
+    /// place of what was pinned; `&[]` lets go of the pins.
+    fn asm_pin(&mut self, docs: &[Document]) -> Result<(), String> {
+        let sweep = self
+            .assembly
+            .as_mut()
+            .ok_or("the motion is not an assembly's")?;
+        let mut keys = BTreeSet::new();
+        for doc in docs {
+            keys.extend(
+                sweep
+                    .asm
+                    .instance_keys(doc, sweep.path.as_deref())
+                    .into_iter()
+                    .map(|(_, key)| key),
+            );
+        }
+        sweep.asm.pin(keys);
+        Ok(())
+    }
+
+    /// True when a configuration `doc` asks for is being built by the
+    /// builder ([`AsmState::deferred`]) and not kept yet.
+    fn asm_waiting(&mut self, doc: &Document) -> Result<bool, String> {
+        let sweep = self
+            .assembly
+            .as_mut()
+            .ok_or("the motion is not an assembly's")?;
+        let keys = sweep.asm.instance_keys(doc, sweep.path.as_deref());
+        Ok(keys
+            .iter()
+            .any(|(_, key)| sweep.asm.deferred.contains(key) && !sweep.asm.has_config(key)))
+    }
+
+    /// [`AsmState::missing_parts`] in the sweep's own state.
+    fn asm_missing(
+        &mut self,
+        docs: &[Document],
+    ) -> Result<(Vec<crate::motion_build::PartJob>, bool), String> {
+        let sweep = self
+            .assembly
+            .as_mut()
+            .ok_or("the motion is not an assembly's")?;
+        Ok(sweep.asm.missing_parts(docs, sweep.path.as_deref()))
+    }
+
+    /// Takes in what `builder` built for this motion. True when anything
+    /// was taken.
+    pub(crate) fn take_built(&mut self, builder: &mut crate::motion_build::Builder) -> bool {
+        let done = builder.take();
+        let steps = builder.take_grid();
+        for (t, pairs) in builder.take_seen() {
+            if let Some(sweep) = self.assembly.as_mut() {
+                sweep
+                    .frame_keys
+                    .extend(pairs.iter().map(|(_, key)| key.clone()));
+            }
+            self.note_pairs(t, pairs);
+        }
+        let Some(sweep) = self.assembly.as_mut() else {
+            return false;
+        };
+        let taken = !done.is_empty() || !steps.is_empty();
+        if !done.is_empty() {
+            sweep.asm.take_built(done);
+        }
+        let mut solved = false;
+        for step in steps {
+            let before = step.k - step.k.signum();
+            if !sweep.grid.contains_key(&step.k) && sweep.grid.contains_key(&before) {
+                sweep.grid.insert(
+                    step.k,
+                    Arc::new(GridState {
+                        carried: step.carried,
+                        stuck: step.stuck,
+                    }),
+                );
+                solved = true;
+            }
+        }
+        if solved || taken {
+            // As after grid points solved here: their configurations go,
+            // but those the frames of a bake ask for.
+            let keep = sweep.frame_keys.clone();
+            sweep.asm.drop_solved_only(&keep);
+        }
+        // Whatever came in, the grid goes on, and the frames of a bake.
+        let _ = self.queue_grid(builder);
+        let _ = self.queue_baked(builder);
+        taken
+    }
+
+    /// Queues every configuration a play at `ts` asks for (the grid points
+    /// the frames are carried through, outward from the reference, then
+    /// the frames') with `builder`, behind what is asked for at once
+    /// (`motion.bake {background: true}`). Returns how many were queued
+    /// now; 0 without a builder or for a part.
+    pub(crate) fn bake_background(
+        &mut self,
+        ts: &[f64],
+        builder: &mut crate::motion_build::Builder,
+    ) -> Result<usize, String> {
+        timeline(&self.reference)?;
+        if self.assembly.is_none() {
+            return Ok(0);
+        }
+        let mut farthest = 0i64;
+        for &t in ts {
+            let k = self.grid_index(t)?;
+            if k.abs() > farthest.abs() {
+                farthest = k;
+            }
+        }
+        // The rest, grid point 0, is solved here (its configurations are
+        // those at rest); the grid beyond it by runs in the background,
+        // which build what it asks for, and the frames' configurations a
+        // few at a time as the session polls.
+        self.asm_grid_point(0)?;
+        if let Some(sweep) = self.assembly.as_mut() {
+            sweep.bake_ts.extend(ts.iter().map(|t| t.to_bits()));
+            sweep.grid_target = Some(farthest);
+            sweep.bake_queue.extend(ts.iter().copied());
+        }
+        self.queue_grid(builder)?;
+        self.queue_baked(builder)?;
+        Ok(ts.len())
+    }
+
+    /// Notes what each instance asks for at the frames `ts` of a bake:
+    /// kept as substitutes and as configurations the grid does not let go
+    /// of.
+    fn note_frames(&mut self, ts: &[f64]) -> Result<(), String> {
+        for &t in ts {
+            let doc = at_t(&self.reference, t)?;
+            let pairs = {
+                let sweep = self
+                    .assembly
+                    .as_mut()
+                    .ok_or("the motion is not an assembly's")?;
+                let pairs = sweep.asm.instance_keys(&doc, sweep.path.as_deref());
+                sweep
+                    .frame_keys
+                    .extend(pairs.iter().map(|(_, key)| key.clone()));
+                pairs
+            };
+            self.note_pairs(t, pairs);
+        }
+        Ok(())
+    }
+
+    /// The frames of the last bake, if any.
+    pub(crate) fn bake_frames(&self) -> Option<u64> {
+        self.bake_frames
+    }
+
+    /// Says that a bake at `frames` frames was asked for.
+    pub(crate) fn set_bake_frames(&mut self, frames: u64) {
+        self.bake_frames = Some(frames);
     }
 
     /// True when this is the motion of an assembly.
@@ -554,6 +1145,9 @@ impl Sweep {
         budget: usize,
     ) -> Result<Baked, String> {
         timeline(&self.reference)?;
+        if let Some(sweep) = self.assembly.as_mut() {
+            sweep.bake_ts.extend(ts.iter().map(|t| t.to_bits()));
+        }
         let mut baked = if self.assembly.is_some() {
             self.bake_assembly(ts, limit)?
         } else {
@@ -574,6 +1168,9 @@ impl Sweep {
     }
 
     fn bake_assembly(&mut self, ts: &[f64], limit: usize) -> Result<Baked, String> {
+        // What each instance asks for at each frame: the substitutes of
+        // provisional moments, and what the grid lets go of keeps.
+        self.note_frames(ts)?;
         let t0 = self.t0;
         let mut left = limit;
         let mut configs = crate::asm::Prebuilt::default();
@@ -608,6 +1205,7 @@ impl Sweep {
                 // As `asm_grid_point` writes a grid point's t.
                 .map(|&k| at_t(&self.reference, t0 + k as f64 * MOTION_STEP))
                 .collect::<Result<Vec<_>, _>>()?;
+            self.asm_pin(&docs)?;
             let pre = self.asm_prebuild(&docs, left)?;
             configs.add(&pre);
             left = left.saturating_sub(pre.built);
@@ -617,6 +1215,7 @@ impl Sweep {
             for &k in batch {
                 self.asm_grid_point(k)?;
             }
+            self.asm_pin(&[])?;
             unsolved = unsolved.saturating_sub(batch.len());
         }
         // 2. The frames' own configurations, kept for the play.
@@ -638,6 +1237,7 @@ impl Sweep {
                     .iter()
                     .map(|&t| at_t(&self.reference, t))
                     .collect::<Result<Vec<_>, _>>()?;
+                self.asm_pin(&docs)?;
                 let pre = self.asm_prebuild(&docs, left)?;
                 configs.add(&pre);
                 left = left.saturating_sub(pre.built);
@@ -645,12 +1245,16 @@ impl Sweep {
                     frames_left = frames_left.saturating_add(batch.len());
                     continue;
                 }
+                self.asm_pin(&[])?;
                 self.baked.extend(batch.iter().map(|t| t.to_bits()));
             }
         } else {
             frames_left = frames.len();
         }
         // What the frames ask for that is not kept now (the budget full).
+        if let Some(sweep) = self.assembly.as_mut() {
+            sweep.asm.settle_budget();
+        }
         let docs = ts
             .iter()
             .map(|&t| at_t(&self.reference, t))
@@ -704,35 +1308,49 @@ impl Sweep {
             .collect();
         let remaining = todo.len().saturating_sub(limit);
         todo.truncate(limit);
-        // The sketches are carried along the grid one after the other; the
-        // regenerations then go side by side.
-        let mut docs = Vec::with_capacity(todo.len());
-        for &t in &todo {
-            docs.push(self.settled(t)?);
-        }
-        let cache = &self.cache;
-        let indices: Vec<usize> = (0..docs.len()).collect();
-        let made = crate::interference_cmds::in_order(&indices, |i| {
-            let doc = docs.get(i)?;
-            let mut cache = cache.clone();
-            Some(craft3d_regen::regenerate_cached(doc, &mut cache))
-        });
         let mut baked = Baked {
             remaining,
             ..Baked::default()
         };
-        for ((t, doc), regen) in todo.iter().zip(docs).zip(made) {
-            self.baked.insert(t.to_bits());
-            let Some(regen) = regen else { continue };
-            let bytes = crate::asm::regen_bytes(&regen);
-            if self.kept_bytes.saturating_add(bytes) > budget {
-                baked.over_budget = baked.over_budget.saturating_add(1);
+        // A batch at a time, so what is held at once is a batch beyond the
+        // budget, never every moment; once the budget is full the moments
+        // left are not made (they would not be kept: made when shown).
+        let mut full = false;
+        for batch in todo.chunks(BAKE_BATCH) {
+            if full {
+                for t in batch {
+                    self.baked.insert(t.to_bits());
+                }
+                baked.over_budget = baked.over_budget.saturating_add(batch.len());
                 continue;
             }
-            self.kept_bytes = self.kept_bytes.saturating_add(bytes);
-            self.kept
-                .insert(t.to_bits(), (Arc::new(doc), Arc::new(regen), bytes));
-            baked.moments = baked.moments.saturating_add(1);
+            // The sketches are carried along the grid one after the other;
+            // the regenerations then go side by side.
+            let mut docs = Vec::with_capacity(batch.len());
+            for &t in batch {
+                docs.push(self.settled(t)?);
+            }
+            let cache = &self.cache;
+            let indices: Vec<usize> = (0..docs.len()).collect();
+            let made = crate::interference_cmds::in_order(&indices, |i| {
+                let doc = docs.get(i)?;
+                let mut cache = cache.clone();
+                Some(craft3d_regen::regenerate_cached(doc, &mut cache))
+            });
+            for ((t, doc), regen) in batch.iter().zip(docs).zip(made) {
+                self.baked.insert(t.to_bits());
+                let Some(regen) = regen else { continue };
+                let bytes = crate::asm::regen_bytes(&regen);
+                if full || self.kept_bytes.saturating_add(bytes) > budget {
+                    full = true;
+                    baked.over_budget = baked.over_budget.saturating_add(1);
+                    continue;
+                }
+                self.kept_bytes = self.kept_bytes.saturating_add(bytes);
+                self.kept
+                    .insert(t.to_bits(), (Arc::new(doc), Arc::new(regen), bytes));
+                baked.moments = baked.moments.saturating_add(1);
+            }
         }
         baked.kept = self.kept.len();
         baked.bytes = self.kept_bytes;
@@ -952,6 +1570,9 @@ struct State {
     stuck: Option<Stuck>,
     /// An assembly's moment as placed: its instances, mates and solve.
     placed: Option<Arc<Placed>>,
+    /// False for a provisional moment (`view.motion {shapes: "ready"}`):
+    /// made again, exact, once what it lacks is built.
+    exact: bool,
 }
 
 /// A trace of a point over the motion: view state of one document state.
@@ -983,6 +1604,11 @@ pub(crate) struct Motion {
     state: Option<State>,
     memo: PairMemo,
     traces: Vec<Trace>,
+    /// Moments are answered at once with what is kept, the rest built in
+    /// the background (`view.motion {shapes: "ready"}`).
+    ready: bool,
+    /// What builds the configurations of the sweep in the background.
+    builder: crate::motion_build::Builder,
 }
 
 /// The features whose bodies differ between two regenerations: what a
@@ -1015,6 +1641,7 @@ impl OpenDocument {
             && state.generation == self.asm.generation
             && state.t == t
             && state.collisions_asked == self.motion.collisions
+            && (state.exact || self.motion.ready)
         {
             return Some(state.clone());
         }
@@ -1026,8 +1653,10 @@ impl OpenDocument {
             Err(_) => {
                 self.motion = Motion {
                     traces: std::mem::take(&mut self.motion.traces),
+                    builder: std::mem::take(&mut self.motion.builder),
                     ..Motion::default()
                 };
+                self.motion.builder.reset();
                 None
             }
         }
@@ -1039,6 +1668,73 @@ impl OpenDocument {
         self.motion.sweep = None;
         self.motion.state = None;
         self.motion.memo = PairMemo::default();
+        self.motion.builder.reset();
+    }
+
+    /// How much the background has left: configurations queued or being
+    /// built, frames of a bake not asked for yet and a run of the grid.
+    pub(crate) fn motion_building(&self) -> usize {
+        let queued = self
+            .motion
+            .sweep
+            .as_ref()
+            .map_or(0, |(_, _, sweep)| sweep.bake_queued());
+        self.motion
+            .builder
+            .pending()
+            .saturating_add(queued)
+            .saturating_add(usize::from(self.motion.builder.grid_busy()))
+            .saturating_add(self.motion.builder.frames_busy())
+    }
+
+    /// Drops what the background builder has queued (`motion.bake
+    /// {cancel: true}`); returns how many configurations were waiting.
+    pub(crate) fn motion_cancel_background(&mut self) -> usize {
+        let dropped = self.motion_building();
+        self.motion.builder.reset();
+        if let Some((_, _, sweep)) = self.motion.sweep.as_mut()
+            && let Some(asm) = sweep.assembly.as_mut()
+        {
+            asm.bake_queue.clear();
+            asm.grid_target = None;
+        }
+        dropped
+    }
+
+    /// The background builder of the motion's configurations, and its
+    /// sweep over `base`.
+    pub(crate) fn motion_sweep_and_builder(
+        &mut self,
+        base: &Arc<Document>,
+    ) -> Result<(&mut Sweep, &mut crate::motion_build::Builder), String> {
+        self.motion_sweep(base)?;
+        let Motion { sweep, builder, .. } = &mut self.motion;
+        let (_, _, sweep) = sweep.as_mut().ok_or("the motion lost its states")?;
+        Ok((sweep, builder))
+    }
+
+    /// Takes in the configurations built in the background for the
+    /// motion shown. True when the moment shown may change: something was
+    /// taken, or the moment is provisional and can go further now (its
+    /// grid is solved a little at a time). A provisional moment is then
+    /// made again, at once, the next time it is shown.
+    pub(crate) fn poll_motion(&mut self) -> bool {
+        let Motion {
+            sweep,
+            builder,
+            state,
+            ..
+        } = &mut self.motion;
+        let Some((_, _, sweep)) = sweep.as_mut() else {
+            return false;
+        };
+        let taken = sweep.take_built(builder);
+        let provisional = state.as_ref().is_some_and(|s| !s.exact);
+        if provisional && (taken || (builder.pending() == 0 && !builder.grid_busy())) {
+            *state = None;
+            return true;
+        }
+        taken && provisional
     }
 
     /// The answers about pairs of bodies kept from the last state's
@@ -1062,6 +1758,8 @@ impl OpenDocument {
             self.motion.sweep = Some((Arc::clone(base), generation, sweep));
             // The answers were about the bodies of another base.
             self.motion.memo = PairMemo::default();
+            // What was being built was for another base.
+            self.motion.builder.reset();
         }
         let (_, _, sweep) = self
             .motion
@@ -1076,21 +1774,32 @@ impl OpenDocument {
         let base_regen = self.scrubbed_regen();
         let generation = self.asm.generation;
         let asked = self.motion.collisions;
-        let sweep = self.motion_sweep(base)?;
+        let ready = self.motion.ready;
+        let (sweep, builder) = self.motion_sweep_and_builder(base)?;
         let baked = asked
             .then(|| sweep.collided.get(&t.to_bits()).cloned())
             .flatten();
-        let (plain, regen, stuck, placed) = if sweep.is_assembly() {
-            let (placed, stuck) = sweep.placed_at(t)?;
+        let (plain, regen, stuck, placed, exact) = if sweep.is_assembly() {
+            let made = if ready {
+                sweep.placed_ready(t, builder)?
+            } else {
+                let (placed, stuck) = sweep.placed_at(t)?;
+                Ready {
+                    placed,
+                    stuck,
+                    exact: true,
+                }
+            };
             (
-                Arc::clone(&placed.doc),
-                Arc::clone(&placed.regen),
-                stuck,
-                Some(placed),
+                Arc::clone(&made.placed.doc),
+                Arc::clone(&made.placed.regen),
+                made.stuck,
+                Some(made.placed),
+                made.exact,
             )
         } else {
             let (plain, regen) = sweep.at(t)?;
-            (plain, regen, None, None)
+            (plain, regen, None, None, true)
         };
         // An assembly's moment places its parts by transforms: nothing is
         // regenerated.
@@ -1118,6 +1827,7 @@ impl OpenDocument {
             collisions,
             stuck,
             placed,
+            exact,
         })
     }
 
@@ -1180,6 +1890,18 @@ pub struct MotionView {
     /// For an assembly: the `t` of the dead point the motion stopped at on
     /// the way to `t`, when it did (the state shown is where it stopped).
     pub dead_point: Option<f64>,
+    /// False while the moment shown is provisional (`view.motion {shapes:
+    /// "ready"}`): an instance shown with another configuration of its own
+    /// while its own is built, or the solve carried from short of `t`.
+    /// [`Session::poll_motion`] says when it may have changed.
+    pub exact: bool,
+    /// The instances shown with another configuration of their own.
+    pub stale: Vec<String>,
+    /// How many configurations are being built in the background.
+    pub building: usize,
+    /// The frames of the last bake (`motion.bake {frames}`): a player that
+    /// rounds its `t` to `k / frames` asks for nothing new.
+    pub baked: Option<u64>,
 }
 
 /// A trace as a viewer draws it ([`Session::traces`]).
@@ -1250,12 +1972,37 @@ impl Session {
                 .collect(),
             _ => Vec::new(),
         };
+        let building = open.motion_building();
+        let baked = open
+            .motion
+            .sweep
+            .as_ref()
+            .and_then(|(_, _, sweep)| sweep.bake_frames());
         Some(MotionView {
             t: state.t,
             collisions,
             rebuilt: state.rebuilt.len(),
             dead_point: state.stuck.as_ref().map(|stuck| stuck.t),
+            exact: state.exact,
+            stale: state
+                .placed
+                .as_ref()
+                .map(|p| p.stale.clone())
+                .unwrap_or_default(),
+            building,
+            baked,
         })
+    }
+
+    /// Takes in what was built in the background for the motion of the
+    /// active document (`view.motion {shapes: "ready"}`): true when the
+    /// moment shown may have changed (it was provisional), so a viewer
+    /// shows it again ([`Self::motion`], the scene). A viewer that shows a
+    /// provisional moment calls this every frame or so.
+    pub fn poll_motion(&mut self) -> bool {
+        self.documents
+            .get_mut(self.active)
+            .is_some_and(OpenDocument::poll_motion)
     }
 
     /// The value of the timeline of the active document, or why it has
@@ -1288,8 +2035,19 @@ impl Session {
 
 fn view_motion(session: &mut Session, params: &Value) -> Run {
     const ID: &str = "view.motion";
-    let p = Params::new(ID, params, &["t", "collisions"])?;
+    let p = Params::new(ID, params, &["t", "collisions", "shapes"])?;
     let collisions = p.bool("collisions")?;
+    let shapes = match p.get("shapes") {
+        None => None,
+        Some(Value::String(s)) if s == "ready" => Some(true),
+        Some(Value::String(s)) if s == "exact" => Some(false),
+        Some(other) => {
+            return Err(CommandError::new(format!(
+                "{ID}: shapes is \"ready\" or \"exact\", not {}",
+                short(other)
+            )));
+        }
+    };
     // Null is asked for (the document as it is), not absent.
     let t = match (p.has("t"), p.get("t")) {
         (false, _) => None,
@@ -1307,24 +2065,32 @@ fn view_motion(session: &mut Session, params: &Value) -> Run {
         if t.is_none() {
             open.motion.state = None;
             open.motion.sweep = None;
+            open.motion.builder.reset();
             open.motion.memo = PairMemo::default();
         }
     }
     if let Some(collisions) = collisions {
         open.motion.collisions = collisions;
     }
+    if let Some(ready) = shapes {
+        open.motion.ready = ready;
+    }
+    // What the background built since: kept before the moment is made.
+    open.poll_motion();
     if open.motion.t.is_some() {
         // Made now, so the state's errors are this command's.
         let base = open.scrubbed();
         let t = open.motion.t.unwrap_or(0.0);
         let generation = open.asm.generation;
-        let stale = open.motion.state.as_ref().is_none_or(|s| {
+        let ready = open.motion.ready;
+        let outdated = open.motion.state.as_ref().is_none_or(|s| {
             !Arc::ptr_eq(&s.base, &base)
                 || s.generation != generation
                 || s.t != t
                 || s.collisions_asked != open.motion.collisions
+                || (!s.exact && !ready)
         });
-        if stale {
+        if outdated {
             let state = open
                 .make_motion_state(&base, t)
                 .map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
@@ -1377,6 +2143,10 @@ fn view_motion(session: &mut Session, params: &Value) -> Run {
         "volumeUnit": format!("{}^3", length_unit(doc)),
         "deadPoint": state.stuck.as_ref().map_or(Value::Null, |stuck| json!({"t": stuck.t, "why": stuck.why})),
         "solveNote": state.placed.as_ref().and_then(|p| p.solve_note.clone()),
+        "exact": state.exact,
+        "stale": state.placed.as_ref().map_or_else(Vec::new, |p| p.stale.clone()),
+        "building": open.motion_building(),
+        "baked": open.motion.sweep.as_ref().and_then(|(_, _, sweep)| sweep.bake_frames()),
     }))
 }
 

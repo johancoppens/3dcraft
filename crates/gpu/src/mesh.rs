@@ -422,6 +422,9 @@ pub struct GpuMesh {
     /// What each part's vertices are relative to, in its own
     /// coordinates; one entry for a mesh uploaded whole.
     pub(crate) part_origins: Vec<Vec3>,
+    /// How many triangles each part draws (one entry for a mesh uploaded
+    /// whole).
+    pub(crate) part_triangles: Vec<usize>,
     /// One identity pose: what a triangle given relative to
     /// [`Self::origin`] (the section's cap) is drawn with.
     pub(crate) identity: wgpu::Buffer,
@@ -504,6 +507,7 @@ impl GpuMesh {
             poses: pose_buffer(device, queue, &identity),
             identity: pose_buffer(device, queue, &identity),
             part_origins: vec![Vec3::ZERO],
+            part_triangles: vec![packed.triangles],
             origin: packed.origin,
             bounds: packed.bounds,
             triangles: packed.triangles,
@@ -524,6 +528,49 @@ impl GpuMesh {
         bounds: Bbox3,
         owner: &Arc<()>,
     ) -> Result<GpuMesh, GpuError> {
+        Self::upload_parts_from(device, queue, parts, colors, bounds, owner, None, &[])
+    }
+
+    /// [`Self::upload_parts`], taking the vertex buffers of the parts of
+    /// `old` that `reuse` names for each new part (by its place in `old`)
+    /// instead of packing and uploading them again: the caller says a part
+    /// is the same (the same mesh at the same first face id, the same face
+    /// colours), so its bytes would be the same. A moment of a motion in
+    /// which one instance changed shape uploads that instance alone.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn upload_parts_from(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        parts: &[MeshPart<'_>],
+        colors: &FaceColors,
+        bounds: Bbox3,
+        owner: &Arc<()>,
+        old: Option<GpuMesh>,
+        reuse: &[Option<usize>],
+    ) -> Result<GpuMesh, GpuError> {
+        // The old chunks by part, to be taken once each.
+        let mut old_parts: Vec<Option<(Vec<Chunk>, Vec3, usize)>> = match old {
+            Some(old) if old.part_triangles.len() == old.part_origins.len() => {
+                let mut by_part: Vec<Vec<Chunk>> =
+                    (0..old.part_origins.len()).map(|_| Vec::new()).collect();
+                for chunk in old.chunks {
+                    if let Some(list) = by_part.get_mut(chunk.part as usize) {
+                        list.push(chunk);
+                    }
+                }
+                by_part
+                    .into_iter()
+                    .zip(
+                        old.part_origins
+                            .iter()
+                            .copied()
+                            .zip(old.part_triangles.iter().copied()),
+                    )
+                    .map(|(chunks, (origin, triangles))| Some((chunks, origin, triangles)))
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
         let total = parts
             .iter()
             .fold(0usize, |n, p| n.saturating_add(p.mesh.triangles.len()));
@@ -537,14 +584,34 @@ impl GpuMesh {
             .unwrap_or(Vec3::ZERO);
         let mut chunks = Vec::new();
         let mut part_origins = Vec::with_capacity(parts.len());
+        let mut part_triangles = Vec::with_capacity(parts.len());
         let mut triangles = 0usize;
         for (k, part) in parts.iter().enumerate() {
-            let packed = pack_part(part.mesh, part.first_face_id, colors, &[], per_chunk)?;
             let index =
                 u32::try_from(k).map_err(|_| GpuError::MeshTooLarge { triangles: total })?;
-            push_chunks(device, queue, &packed, index, part.mesh, &mut chunks)?;
-            part_origins.push(packed.origin);
-            triangles = triangles.saturating_add(packed.triangles);
+            let taken = reuse
+                .get(k)
+                .copied()
+                .flatten()
+                .and_then(|i| old_parts.get_mut(i))
+                .and_then(Option::take);
+            let (origin, drawn) = match taken {
+                Some((old_chunks, origin, drawn)) => {
+                    chunks.extend(old_chunks.into_iter().map(|mut c| {
+                        c.part = index;
+                        c
+                    }));
+                    (origin, drawn)
+                }
+                None => {
+                    let packed = pack_part(part.mesh, part.first_face_id, colors, &[], per_chunk)?;
+                    push_chunks(device, queue, &packed, index, part.mesh, &mut chunks)?;
+                    (packed.origin, packed.triangles)
+                }
+            };
+            part_origins.push(origin);
+            part_triangles.push(drawn);
+            triangles = triangles.saturating_add(drawn);
         }
         let identity =
             pose_bytes(&Transform::IDENTITY, Vec3::ZERO, Vec3::ZERO).ok_or_else(|| {
@@ -560,6 +627,7 @@ impl GpuMesh {
             poses: pose_buffer(device, queue, &identity),
             identity: pose_buffer(device, queue, &identity),
             part_origins,
+            part_triangles,
             origin,
             bounds,
             triangles,
@@ -569,6 +637,20 @@ impl GpuMesh {
         let poses: Vec<Transform> = parts.iter().map(|p| p.pose).collect();
         mesh.set_poses(device, queue, &poses, bounds)?;
         Ok(mesh)
+    }
+
+    /// Uploads the material table of `colors` again (its rows hold
+    /// directions in the scene's coordinates, which follow the parts'
+    /// poses), for a mesh whose vertices already have `colors`' rows.
+    pub(crate) fn set_optics(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        colors: &FaceColors,
+    ) -> Result<(), GpuError> {
+        self.optics = optics_view(device, queue, &optics_table(colors, self.origin))?;
+        self.transmission = colors.has_transmission();
+        Ok(())
     }
 
     /// Moves the parts to `poses` (one per part, in the order uploaded):

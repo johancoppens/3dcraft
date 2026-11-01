@@ -1452,6 +1452,14 @@ impl Shell {
     /// scene the shell shows, and `ui.screenshot` renders, is
     /// `session.scene_with(shell.scene_quality())`.
     pub fn scene_quality(&self) -> SceneQuality {
+        // While a motion plays, each moment is shown as the quick first
+        // picture: one scene per moment instead of two, no display meshes
+        // made and kept for moments that are gone the next frame
+        // (docs/design/motion.md › *The player*). Paused, the moment
+        // shown is refined as any picture is.
+        if self.state.timeline.playing && self.playing_motion() {
+            return SceneQuality::Preview;
+        }
         self.state.quality.scene_quality()
     }
 
@@ -2447,6 +2455,10 @@ impl Shell {
             && self.apply_timeline_requests(session)
         {
             ui.ctx().request_repaint();
+        }
+        if self.motion_settling() {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(33));
         }
         // What the mouse selected, now that the session is here.
         if let Some(session) = session

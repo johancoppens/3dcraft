@@ -1657,6 +1657,49 @@ impl Onscreen {
         })?
     }
 
+    /// [`Self::upload_parts`] that takes the uploaded vertices of the parts
+    /// of `old` (a mesh this renderer uploaded in parts) that `reuse`
+    /// names for each new part, by its place in `old`: the caller vouches
+    /// that such a part is the same mesh at the same first face id with
+    /// the same colours. `old` is consumed; one of another renderer is
+    /// not reused.
+    pub fn upload_parts_from(
+        &self,
+        parts: &[MeshPart<'_>],
+        colors: &FaceColors,
+        bounds: Bbox3,
+        old: Option<GpuMesh>,
+        reuse: &[Option<usize>],
+    ) -> Result<GpuMesh, GpuError> {
+        let old = old.filter(|o| Arc::ptr_eq(&o.owner, &self.token));
+        guarded(&self.device, || {
+            GpuMesh::upload_parts_from(
+                &self.device,
+                &self.queue,
+                parts,
+                colors,
+                bounds,
+                &self.token,
+                old,
+                reuse,
+            )
+        })?
+    }
+
+    /// The material table of a mesh this renderer uploaded, from
+    /// `colors` again: the same faces with the same rows, whose contents
+    /// moved (a brushed finish's direction follows its part's pose).
+    pub fn set_optics(&self, mesh: &mut GpuMesh, colors: &FaceColors) -> Result<(), GpuError> {
+        if !Arc::ptr_eq(&mesh.owner, &self.token) {
+            return Err(GpuError::Device(
+                "the mesh was uploaded by another renderer".to_string(),
+            ));
+        }
+        guarded(&self.device, || {
+            mesh.set_optics(&self.device, &self.queue, colors)
+        })?
+    }
+
     /// Moves the parts of a mesh uploaded by [`Self::upload_parts`] to
     /// `poses` (one per part, in order) with `bounds` the box of the
     /// triangles as now placed: a few matrices are written, no geometry.

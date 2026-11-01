@@ -182,6 +182,29 @@ fn a_bake_in_pieces_builds_what_one_bake_builds() {
     assert_eq!(played(&mut s, 8), played(&mut whole, 8));
 }
 
+/// A bake in pieces whose batch holds more than the budget keeps (each
+/// call builds a few configurations, the budget would let the earlier
+/// ones go): the batch being built is held until it is done, so the bake
+/// gets there, and plays what an unbaked motion plays.
+#[test]
+fn a_bake_in_pieces_over_a_tiny_budget_gets_done() {
+    let mut plain = assembly_session("tiny-plain");
+    let unbaked = played(&mut plain, 8);
+    let mut s = assembly_session("tiny");
+    s.set_config_budget(1);
+    let mut calls = 0;
+    loop {
+        let baked = run(&mut s, "motion.bake", json!({ "frames": 8, "limit": 5 }));
+        calls += 1;
+        if baked["done"] == true {
+            break;
+        }
+        assert!(calls < 100, "never done: {baked}");
+    }
+    assert!(calls >= 20, "{calls}");
+    assert_eq!(played(&mut s, 8), unbaked);
+}
+
 /// A part whose block grows with `t` into a fixed one.
 fn growing(s: &mut Session) {
     run(s, "file.new", json!({}));

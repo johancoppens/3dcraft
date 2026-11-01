@@ -148,6 +148,20 @@ moments of the same motion, never other ones. All of it is view state in
 `UiState::timeline` (`motion`, `bounce`, `collisions`), so `ui.set` plays the motion for whoever watches. It is
 offered only for a document with a timeline.
 
+Since 2026-11-01 the player asks with `shapes: "ready"` (*Shapes in the background*): a moment never waits for a
+configuration, so its clock runs at real time and the window's thread does a solve and a placement per moment (or
+only a placement, for a baked frame), never a regeneration. It keeps its clock unrounded and asks for `t` rounded to
+the frames of the last bake (`rounded_to_frames`, `MotionView::baked`), so a baked motion asks for nothing that is
+not made ahead; a motion that builds as it plays (a moment provisional, configurations building) is baked in the
+background at 120 frames, once. While it plays the viewport shows each moment as the quick first picture
+(`Shell::scene_quality`): one scene per moment instead of two, and no display meshes made and kept for moments gone
+the next frame; paused, the moment is refined as any picture is. While a moment is provisional or the builder works
+the window polls (`Session::poll_motion`) every 33 ms, so a paused provisional moment settles by itself. The GPU
+viewport takes over the uploaded vertices of the parts that did not change (`Onscreen::upload_parts_from`,
+`PartsKey::reuse_from`: the same mesh at the same first face id, its faces looking the same; the material table,
+whose brushed directions follow the poses, is uploaded anew, also when only poses moved), and keeps the parts of
+the last upload of the other quality as a spare, so a moment in which one belt changed uploads that belt.
+
 ### Assemblies (phase 2)
 
 An assembly has a timeline as a part has: its own variable `t`. Its drivers are formulas of `t` for the variables
@@ -216,7 +230,8 @@ solved, and the solve reads the instance's geometry). What keeps that affordable
   sources given parameters), so only the features its changed parameters reach are rebuilt
   (`regenerate_cached_needing` with `Need::All`: the result is that of `regenerate`, body for body). Several
   configurations of one source built side by side each start from a copy of that cache; the cache kept afterwards
-  is the last job's in key order (which one changes only the time). How much this saves depends on the part: a
+  is the last job's in the order the jobs were gathered (the instances' order, state after state), which changes
+  only the time. How much this saves depends on the part: a
   hole driven by `t` at the end of a history rebuilds two features; the belt's `xc` reaches every feature but one
   tooth, so the belt gains nothing from it (findings).
 - **Kept by memory, not by count.** Configurations are kept within a byte budget (`DEFAULT_CONFIG_BUDGET`: 1 GiB
@@ -246,19 +261,51 @@ solved, and the solve reads the instance's geometry). What keeps that affordable
   a host that bakes between its frames (the browser), which calls again until `done`; `overBudget` says how much of
   what the frames ask for the budget could not keep (those are built again when shown). The player asks for
   moments at frame timing, not at `k / frames`: a moment between the frames baked costs its own configurations,
-  so a player that wants a baked motion to play without building rounds `t` to the baked frames (for the UI
-  agent).
-- **Owed: answering at once while the rest is built** (proposed, not built). `view.motion {t, shapes: "ready"}`
-  would show the poses at `t` with, for each instance whose configuration is not kept, the kept configuration of
-  the same instance nearest in `t` (the previous frame's when none is nearer), and list those instances
-  (`stale: [names]`); such a moment is provisional: its solve is not kept in the grid (grid points stay exact, so
-  seek = play still holds once built), and it is made again when its configurations arrive. The building goes on
-  in the background: natively a worker the session owns, started by `motion.bake {background: true}`, given the
-  jobs (configured documents and copies of the regeneration caches, which are `Send`), its results taken in at the
-  start of the next command in key order (`Session::poll_motion`, which says whether a provisional moment shown
-  became exact, so the window redraws); in the browser (one thread) the same API degrades to the window calling
-  `motion.bake {limit: 1..4}` between its frames, which is what `limit` is for, and `shapes: "ready"` answering
-  with what is kept.
+  so the player rounds `t` to the baked frames (*The player*).
+- **Shapes in the background** (`view.motion {shapes: "ready"}`, `crates/engine/src/motion_build.rs`,
+  2026-11-01). A viewer that plays asks for each moment with `shapes: "ready"` (it stays until `"exact"`) and is
+  answered at once (`Sweep::placed_ready`): when the grid point of `t` is solved and every configuration `t` asks
+  for is kept, it is the exact moment (`placed_at`); otherwise a **provisional** one: each instance whose
+  configuration is not kept is shown with the kept configuration of its own nearest in `t` (`AsmSweep::seen`
+  remembers which configuration each instance asked for at which `t`; the configurations at rest are the last
+  resort) and listed in `stale`, and the solve is carried from the solved grid point nearest `t` straight to `t`
+  (`Solver::advance` cuts its steps). A provisional moment is never kept in the grid, so the grid stays exact (seek
+  = play) and the moment, made again once what it lacked is in, is the exact one bit for bit
+  (`crates/engine/tests/motion_ready.rs`). The rest is built by the session's **builder**, a few threads of its own
+  (half the machine, at most 4; `Builder::available` is false in the browser, where `"ready"` is `"exact"`, made
+  where it is asked for): the configurations a provisional moment lacks (urgent, at the front), **runs of the
+  grid** (16 grid points solved one after the other on a copy of the motion's state, building what they ask for
+  as a placement does, one run at a time toward the grid target: the last provisional moment's grid point or the
+  farthest a bake reaches) and **runs of a bake's frames** (8 frames each, two at a time). Results are taken in by
+  `Session::poll_motion` (at the start of `view.motion` and `motion.bake`, and every frame of a window while a
+  moment is provisional or the builder busy), configurations sorted by key, grid points only next to a solved one;
+  what arrives only changes when a moment becomes exact, never what it is. Nothing a run does is shared with the
+  session until it is taken in (a copy of `AsmState` and of the document), and a new sweep (an edit, a reload,
+  `{t: null}`, `motion.bake {cancel: true}`) moves the builder to a new epoch: what it is still doing for the old
+  one is let go of when it comes.
+- **A bake in the window never blocks it.** `motion.bake {background: true}` (the window's default,
+  `Session::set_bake_in_background`) only hands the bake to the builder and returns within milliseconds (the
+  rest grid point solved; the grid and the frames in runs); `building` in `view.motion` says what is left;
+  `cancel: true` drops it. The window bakes a motion that builds as it plays by itself, once, at 120 frames
+  (`PLAY_FRAMES`, 30 a second over a play at speed 1). A bake in the command (scripts, tests) is as before, its
+  batches pinned while they are built (`AsmState::pinned`) so a batch larger than the budget still completes with
+  `limit` (before 2026-11-01 each call's pieces were let go of by the next and the bake never finished); a part's
+  bake regenerates a batch at a time and stops once the budget is full.
+- **Baked frames are placed without solving.** The solve of each frame of a bake (`AsmSweep::bake_ts`) is kept
+  once it was placed exactly (`AsmState::solved_of`: the instances and mates as solved, without bodies and without
+  holding the configurations, which are found again by key); showing the frame again places its bodies by those
+  poses (`AsmState::show_solved`, the same placement), or solves as usual when a configuration it used is gone.
+- **Placed copies are reused.** A body placed by the same source and the same pose as in the last placement is
+  the same `Arc` (`PlacedCopies`): no copy, no moved mesh, no moved facts; the facts' names are shared between a
+  source and its copies (`BodyFacts`' lists are `Arc`s). In the router most poses move a little with every moment,
+  so this saves a quarter; the shared names saved more (a moment's quick scene 38 → 15 ms).
+- **Slim configurations.** A motion's own state keeps the configurations of instances mated by their datums
+  alone without the bodies (and names) that went into later features (`asm::slimmed`): a placement needs only
+  what an instance shows, its datums and sketches; a mate on a face or an edge resolves its name through those
+  bodies, so an instance mated so keeps its configurations whole (decided per placement; a slim one asked for
+  whole is built again). At the top level only (a parent's mate may reach into a subassembly). The belt: 5.6 →
+  2.1 MB estimated per configuration. The configurations only grid points used go as soon as their grid point is
+  solved, except those a frame of a bake asks for (`AsmSweep::frame_keys`).
 
 ## Tests
 

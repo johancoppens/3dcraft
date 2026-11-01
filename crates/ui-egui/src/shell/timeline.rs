@@ -369,10 +369,25 @@ impl Shell {
                 }
             }
         }
-        if !pending.is_empty() {
+        // What the background built for a provisional moment: shown as it
+        // comes (docs/design/motion.md › *Shapes in the background*).
+        // Not in a pass that showed a moment just now: that one took in
+        // what was there.
+        let polled = pending.is_empty() && self.timeline.motion.is_some() && session.poll_motion();
+        if !pending.is_empty() || polled {
             self.sync_timeline(session);
         }
-        !pending.is_empty()
+        !pending.is_empty() || polled
+    }
+
+    /// True while the moment of the motion shown is provisional or
+    /// configurations are built for it in the background: the window
+    /// comes back now and then to take them in.
+    pub(crate) fn motion_settling(&self) -> bool {
+        self.timeline
+            .motion
+            .as_ref()
+            .is_some_and(|m| !m.exact || m.building > 0)
     }
 
     /// The timeline at the foot of the feature panel: a slider over the

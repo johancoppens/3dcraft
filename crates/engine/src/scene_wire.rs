@@ -628,7 +628,7 @@ impl Writer {
     fn facts(&mut self, facts: &BodyFacts) {
         self.texts(&facts.face_names);
         self.len(facts.face_aliases.len());
-        for aliases in &facts.face_aliases {
+        for aliases in facts.face_aliases.iter() {
             self.texts(aliases);
         }
         self.texts(&facts.edge_names);
@@ -894,13 +894,13 @@ impl Reader<'_> {
             face_aliases.push(self.texts()?);
         }
         Ok(BodyFacts {
-            face_names,
-            face_aliases,
-            edge_names: self.texts()?,
-            edge_faces: self.places()?,
+            face_names: Arc::new(face_names),
+            face_aliases: Arc::new(face_aliases),
+            edge_names: Arc::new(self.texts()?),
+            edge_faces: Arc::new(self.places()?),
             vertices: self.points()?,
-            vertex_names: self.texts()?,
-            vertex_faces: self.places()?,
+            vertex_names: Arc::new(self.texts()?),
+            vertex_faces: Arc::new(self.places()?),
         })
     }
     fn bbox(&mut self) -> Result<Bbox3, String> {
