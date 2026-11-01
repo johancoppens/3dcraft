@@ -213,6 +213,18 @@ fn sign_changes(c: &[f64], floor: f64, cap: usize) -> Result<Vec<f64>, TrimError
         stack.push((mid, hi, right, depth + 1));
         stack.push((lo, mid, left, depth + 1));
     }
+    // A root within rounding of an end of the curve is that end: where the
+    // curve from the root to its end stays on the line within rounding
+    // (it ends on a knot line, as a curve recovered from an edge along a
+    // face's knot does), no sliver is cut there. Cut, it left a piece of
+    // 2.5e-10 of the curve's parameter before its end, whose derivatives
+    // a seam's measure then read as G0 (the ribbon's oracles, 2026-11-01).
+    // The stretch is held to twice the rounding: a piece of the zero run
+    // is told from its neighbour by its hull, whose coefficients at the
+    // run's edge reach the rounding itself (1.5001e-12 against 1.5e-12
+    // there).
+    let within = |a: f64, b: f64| restricted(c, a, b).iter().all(|x| x.abs() <= 2.0 * tiny);
+    out.retain(|r| !(within(*r, 1.0) || within(0.0, *r)));
     out.sort_by(f64::total_cmp);
     // A root on a subdivision's midpoint is found from both sides: places
     // closer than this are one (a cut that far from a crossing reaches
@@ -1394,6 +1406,34 @@ mod tests {
         )
         .unwrap();
         assert!(compose(&s, &touching).is_ok());
+    }
+
+    #[test]
+    fn a_root_within_rounding_of_the_end_is_the_end() {
+        // `a (1 − t) + δ` as a cubic in Bernstein form (its coefficients
+        // fall linearly): with δ the size of the rounding floor the root
+        // lies 1.7e-10 before the end, which is the end; a millionth of
+        // the slope further in it is a root.
+        let cubic = |a: f64, d: f64| -> Vec<f64> {
+            (0..4).map(|k| a * (1.0 - k as f64 / 3.0) + d).collect()
+        };
+        let floor = 1.5e-12;
+        assert!(
+            sign_changes(&cubic(6e-3, -1e-12), floor, 10)
+                .unwrap()
+                .is_empty()
+        );
+        // And at the start.
+        let rising =
+            |a: f64, d: f64| -> Vec<f64> { (0..4).map(|k| a * k as f64 / 3.0 + d).collect() };
+        assert!(
+            sign_changes(&rising(6e-3, -1e-12), floor, 10)
+                .unwrap()
+                .is_empty()
+        );
+        let inside = sign_changes(&cubic(6e-3, -6e-9), floor, 10).unwrap();
+        assert_eq!(inside.len(), 1, "{inside:?}");
+        assert!((inside[0] - (1.0 - 1e-6)).abs() < 1e-12, "{inside:?}");
     }
 
     #[test]

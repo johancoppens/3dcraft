@@ -619,6 +619,7 @@ An agent checks a design by asking it questions, not by looking at a picture: th
 
 #### Open
 - [ ] Queries: a section as geometry with its measures (area, outline, the widths across it); the least inside radius; thickness by the sphere method and a map of thin places
+- [ ] A proven thickness of a freeform wall: `measure.thickness` finds the hollow tank's 1.2 mm wall (1.19997 mm) but proves at least 0 (the bound pairs a face with its neighbours and the exact branch and bound runs out on two surfaces a wall apart), so a wall assertion stays not proven ([`design/face-operations.md`](design/face-operations.md) › *Hollow freeform bodies*)
 - [ ] The acceptance: the morning's models (the aircraft, the M10 screw, the villa) with a set of assertions that a deliberate error breaks; assertions in the task set's scoring
 
 #### Acceptance
