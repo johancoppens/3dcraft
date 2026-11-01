@@ -4372,10 +4372,14 @@ impl Warp {
 /// and the grid it is seeded with, where the surface turns its normal
 /// unevenly; `None` where the chordal grid (`cells` over `low..high`)
 /// meets the angle everywhere already, where the surface has no normal
-/// at a sample, or where the grid would have more cells than a square
-/// grid of `max_segments` a side (the limit of the chordal grid,
-/// `grid_within`); the face then keeps its chordal grid, and the
-/// refinement holds every side to the angle as it does without a warp.
+/// at a sample, or where the grid would need more than `max_segments`
+/// cells a parameter. That is not the limit of the chordal grid, which is
+/// on its cells (`grid_within`, since 2026-10-31): a face whose chordal
+/// grid is longer than `max_segments` one way gets no warp and keeps its
+/// chordal grid, and the refinement holds every side to the angle as it
+/// does on any face without a warp (kept so, as the warp's grids of
+/// faces near the limit changed export meshes: the rotor's 20 000
+/// triangles became 29 000).
 ///
 /// A spline face can turn its normal very unevenly, and its parameters
 /// can run very unevenly over it: a side of an aerofoil turns half a turn
@@ -4422,8 +4426,6 @@ fn angle_warp(
     let most = f64::from(params.max_segments);
     let mut found: Vec<(Warp, Vec<f64>)> = Vec::with_capacity(2);
     let mut finer = false;
-    // The cells of the warped grid, both ways.
-    let mut counts = 1.0_f64;
     for k in 0..2 {
         let (from, to) = (get2(low, k), get2(high, k));
         let span = to - from;
@@ -4508,10 +4510,9 @@ fn angle_warp(
         }
         let total: f64 = density.iter().map(|&(_, w, d)| w * d).sum();
         let count = (total - 1e-9).ceil().max(uniform);
-        if !(count <= most * most && total > 0.0) {
+        if !(count <= most && total > 0.0) {
             return None;
         }
-        counts *= count;
         // One unit of the plane per cell: the measure times `count / total`.
         let unit = count / total;
         let mut warp = Warp {
@@ -4536,7 +4537,7 @@ fn angle_warp(
         }
         found.push((warp, lines));
     }
-    if !finer || counts.is_nan() || counts > most * most {
+    if !finer {
         return None;
     }
     let [(wa, la), (wb, lb)]: [(Warp, Vec<f64>); 2] = found.try_into().ok()?;
