@@ -894,3 +894,60 @@ fn knots_within_rounding_of_each_other_are_refused() {
         }
     }
 }
+
+/// Against a quadric the measure compares with the level surface through
+/// the patch's point, not with the face itself: a quarter cylinder of
+/// radius `R + δ` along a cylinder of radius `R` (a position gap `δ`
+/// within the tolerance) is that level surface exactly, while its
+/// curvature across differs from the face's by `δ / (R (R + δ))`, 500
+/// curvature thresholds here. The bound must cover that difference
+/// (2026-11-01: `shift_terms`, `H · H B / (G (G − H B))`), so the seam is
+/// not G2; before, it was "proven" G2.
+#[test]
+fn a_cylinder_one_tolerance_out_is_not_g2_to_the_cylinder() {
+    for scale in SCALES {
+        let (r, h) = (scale, scale);
+        let delta = 0.5e-6 * scale;
+        let rp = r + delta;
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let mut points = Vec::new();
+        let mut weights = Vec::new();
+        for z in [0.0, h] {
+            for (p, w) in [
+                (v(rp, 0.0, z), 1.0),
+                (v(rp, rp, z), s),
+                (v(0.0, rp, z), 1.0),
+            ] {
+                points.push(p);
+                weights.push(w);
+            }
+        }
+        let patch = NurbsSurface::new(
+            1,
+            2,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            2,
+            3,
+            points,
+            weights,
+        )
+        .unwrap();
+        let edge = craft3d_geom::network::iso_curve(&patch, true, 0.0).unwrap();
+        let frame = Frame::new(v(0.0, 0.0, 0.0), v(0.0, 0.0, 1.0), v(1.0, 0.0, 0.0)).unwrap();
+        let cylinder = Surface::Cylinder(Cylinder::new(frame, r).unwrap());
+        let (tol, ang) = (1e-6 * scale, 1e-9);
+        let c = continuity(&Surface::Nurbs(patch), &cylinder, &edge, tol, ang).unwrap();
+        let mismatch = delta / (r * rp);
+        assert!(
+            c.position.within() && c.angle.within(),
+            "scale {scale}: {c:?}"
+        );
+        assert_eq!(c.order, Order::G1, "scale {scale}: {c:?}");
+        assert!(
+            c.curvature.bound >= mismatch,
+            "scale {scale}: the bound {:e} is below the curvature difference {mismatch:e}",
+            c.curvature.bound
+        );
+    }
+}

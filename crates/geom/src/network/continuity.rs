@@ -445,29 +445,6 @@ fn dot4(a: &P4, b: &P4) -> Poly {
         .add(&a[3].mul(&b[3]))
 }
 
-/// `det[a, b, c, d]` of four homogeneous columns (Laplace along the first
-/// two).
-fn det4(a: &P4, b: &P4, c: &P4, d: &P4) -> Poly {
-    let zero = Poly::konst(0.0);
-    let m = |x: &P4, y: &P4, i: usize, j: usize| {
-        let at = |h: &P4, k: usize| h.get(k).unwrap_or(&zero).clone();
-        at(x, i).mul(&at(y, j)).sub(&at(x, j).mul(&at(y, i)))
-    };
-    let pairs = [
-        (0, 1, 2, 3, 1.0),
-        (0, 2, 1, 3, -1.0),
-        (0, 3, 1, 2, 1.0),
-        (1, 2, 0, 3, 1.0),
-        (1, 3, 0, 2, -1.0),
-        (2, 3, 0, 1, 1.0),
-    ];
-    let mut out = Poly::konst(0.0);
-    for (i, j, k, l, s) in pairs {
-        out = out.lin(1.0, &m(a, b, i, j).mul(&m(c, d, k, l)), s);
-    }
-    out
-}
-
 /// The largest norm over the piece of a vector polynomial (an upper
 /// bound), with its rounding.
 fn norm_hi(v: &V3) -> f64 {
@@ -1274,12 +1251,546 @@ fn quadric_second(
         .add(&wx.mul(wy).scale(6.0).sub(&w.mul(wxy).scale(2.0)).mul(h))
 }
 
+/// The derivative in the piece's own parameter of a polynomial, with its
+/// rounding: `n (c_{i+1} − c_i)`, so what the coefficients carried twice
+/// over `n`, and two roundings of the result.
+fn derivative_poly(p: &Poly) -> Poly {
+    let n = p.degree();
+    if n == 0 {
+        return Poly {
+            c: vec![0.0],
+            e: 0.0,
+        };
+    }
+    let c: Vec<f64> =
+        p.c.windows(2)
+            .map(|w| match w {
+                [a, b] => n as f64 * (b - a),
+                _ => 0.0,
+            })
+            .collect();
+    let size = c.iter().fold(0.0_f64, |m, x| m.max(x.abs()));
+    Poly {
+        c,
+        e: 2.0 * n as f64 * p.e + gamma(3) * size,
+    }
+}
+
+/// How far, in the piece's own parameter (`[0, 1]`), the point of the
+/// spline face `b`'s boundary that corresponds to `a`'s at `t` may lie
+/// from `t`, given the piece's proven position bound `B`.
+///
+/// **The correspondence** (the coordinator's decision, 2026-11-01): a
+/// point of `a`'s boundary corresponds to a point of `b`'s own boundary,
+/// each face's derivatives taken at its own boundary, as continuity is
+/// defined in CAD. How far the two boundaries lie apart, in any direction,
+/// is the position gap (G0); it is not carried into the second order as
+/// if `b` were evaluated off its boundary. What is carried is the shift
+/// along the seam: the rows compare `a` at `X_a(t)` with `b` at `X_b(t)`
+/// (the same local parameter), and the point of `b`'s piece that is the
+/// same seam point as `X_a(t)` (its nearest, `t*`) is no farther from
+/// `X_a(t)` than `X_b(t)` is, so `|X_b(t*) − X_b(t)| ≤ 2B`. With `m` a
+/// lower bound on `|X_b′|` and `M₂` an upper bound on `|X_b″|` over the
+/// piece, `|X_b(t*) − X_b(t)| ≥ m Δ − M₂ Δ² / 2` for `Δ = |t* − t|`; where
+/// `M₂ ≤ m` that is increasing over the whole piece, so if `m − M₂ / 2 >
+/// 2B` then `Δ ≤ (m − √(m² − 4 M₂ B)) / M₂ = 4B / (m + √(m² − 4 M₂ B))`,
+/// about `2B / m`; otherwise only
+/// `Δ ≤ 1` (`t*` lies in the piece), and halving the piece narrows it.
+fn shift_window(rows: &[P4], position: f64) -> f64 {
+    let Some(y0) = rows.get(6) else {
+        return 1.0;
+    };
+    let (q0, om) = (xyz4(y0), &y0[3]);
+    let d = |v: &V3| {
+        [
+            derivative_poly(&v[0]),
+            derivative_poly(&v[1]),
+            derivative_poly(&v[2]),
+        ]
+    };
+    let (dq, dom) = (d(&q0), derivative_poly(om));
+    let (ddq, ddom) = (d(&dq), derivative_poly(&dom));
+    let (om_lo, om_hi) = (om.lo().max(0.0), om.hi());
+    // `X′ ω²` and `X″ ω³`.
+    let v1 = minus(&times(&dq, om), &times(&q0, &dom));
+    let v2 = add3(
+        &minus(
+            &minus(
+                &times(&ddq, &om.mul(om)),
+                &times(&dq, &dom.mul(om).scale(2.0)),
+            ),
+            &times(&q0, &ddom.mul(om)),
+        ),
+        &times(&q0, &dom.mul(&dom).scale(2.0)),
+    );
+    let m = (1.0 - gamma(4)) * ratio_lo(norm_lo(&v1), om_hi * om_hi);
+    let m2 = (1.0 + gamma(4)) * ratio(norm_hi(&v2), om_lo * om_lo * om_lo);
+    let b = position;
+    if b.is_finite()
+        && m.is_finite()
+        && m2.is_finite()
+        && m > 0.0
+        && m2 <= m
+        && m - 0.5 * m2 > 2.0 * b * (1.0 + gamma(2))
+    {
+        // `(m − √(m² − 4 M₂ B)) / M₂ = 4B / (m + √(m² − 4 M₂ B))`, about
+        // `2B / m`; the root rounded down.
+        let root = ((1.0 - gamma(4)) * (m * m - 4.0 * m2 * b * (1.0 + gamma(4))))
+            .max(0.0)
+            .sqrt();
+        ((1.0 + gamma(8)) * 4.0 * b / (m + (1.0 - gamma(2)) * root)).min(1.0)
+    } else {
+        1.0
+    }
+}
+
+/// What each gap's bound must add (and each value found must give up) for
+/// the faces to be compared at corresponding points rather than at the
+/// points the rows put side by side, given the piece's proven position
+/// bound `B` (`position`). Zero for the position gap and against a plane.
+///
+/// *Against a spline face* (the shift along the seam, [`shift_window`]):
+/// a second-order gap is `R(t, τ) = N / D`, `a` at `t` and `b` at `τ`,
+/// `D = m^{5/2} g` (`m = |W_b|²` of `b` alone, `g = |X| |Y|` of `a`
+/// alone). By Taylor in `τ` about `t`,
+/// `|R(t, t*) − R(t, t)| ≤ Δ sup |∂_τ R(t, t)| + Δ²/2 sup |∂²_τ R|`. The
+/// first is a polynomial in `t` (both faces at `t`), formed by forward
+/// differentiation of `N` and `m` along `b`'s rows ([`Dual`]), so its terms
+/// cancel as `N`'s do: `|∂R| ≤ |∂N| / (m^{5/2} g) + 5/2 |N| |∂m| / (m^{7/2} g)`.
+/// The second holds for `a` and `b` anywhere in the piece and is bounded
+/// from sizes alone ([`Sizes`]): `|∂²R| ≤ (|∂²N| + 5 |∂N| |∂m| / m +
+/// |N| (65/4 |∂m|² / m² + 5/2 |∂²m| / m)) / (m^{5/2} g)`. The angle's sine
+/// gains `Δ sup |∂n_b| ≤ Δ sup |∂W_b| / inf |W_b|` (`n_b` depends on `b`
+/// alone).
+///
+/// *Against a quadric* `g = 0` (sphere, cylinder, cone; Hessian `2A`, of
+/// norm `H`: 2, or `2 max(1, tan² α)` for a cone): the rows compare `a`
+/// with the level surface of `g` through `a`'s point `x`, whose normal and
+/// form are `∇g(x) / |∇g(x)|` and `2A / |∇g(x)|`; `b`'s own at its
+/// nearest point `y` (`|x − y| ≤ B`) are those at `y`, and
+/// `|∇g(x) − ∇g(y)| ≤ H B`. The form's part changes by at most
+/// `H · H B / (G (G − H B))` (`G` a lower bound on `|∇g(x)|`); the
+/// normal's part by `|n_x − n_y| |S_xy| / (|S_x| |S_y|)`, `|n_x − n_y| ≤
+/// 2 H B / G`, which is zero for a sphere and a cylinder (`y` is the
+/// radial projection of `x`, the normals one) and is added for a cone,
+/// with `a`'s `|S_xy| / (|S_x| |S_y|)` bounded on the piece; the cone's
+/// angle gains `2 H B / G` too. A plane's level surfaces are parallel
+/// planes: nothing changes.
+fn shift_terms(rows: &[P4], other: &Other, position: f64) -> Result<[f64; GAPS], NetworkError> {
+    let mut out = [0.0; GAPS];
+    if matches!(other, Other::Plane { .. }) {
+        return Ok(out);
+    }
+    if !position.is_finite() {
+        for x in out.iter_mut().skip(1) {
+            *x = f64::INFINITY;
+        }
+        return Ok(out);
+    }
+    let x: [P4; 6] = rows
+        .get(..6)
+        .ok_or_else(internal)?
+        .to_vec()
+        .try_into()
+        .map_err(|_| internal())?;
+    let w0 = &x[0][3];
+    let w0_hi = w0.hi();
+    let AParts { v0d, v1, seconds } = a_parts(&x);
+    let (nu_lo, nv_lo) = (norm_lo(&v0d), norm_lo(&v1));
+    let geo = [nv_lo * nv_lo, nu_lo * nv_lo, nu_lo * nu_lo];
+    let room = 1.0 + gamma(256);
+    let b = position;
+    match other {
+        Other::Plane { .. } => {}
+        Other::Round { q, .. } | Other::Cone { q, .. } => {
+            let h = match other {
+                Other::Cone { tan, .. } => 2.0 * (tan * tan).max(1.0),
+                _ => 2.0,
+            };
+            let g = xyz4(&apply(q, &x[0]));
+            let big_g = (1.0 - gamma(4)) * ratio_lo(2.0 * norm_lo(&g), w0_hi);
+            let hb = room * h * b;
+            if big_g.partial_cmp(&hb) != Some(std::cmp::Ordering::Greater) {
+                for x in out.iter_mut().skip(1) {
+                    *x = f64::INFINITY;
+                }
+                return Ok(out);
+            }
+            let form = room * h * hb / (big_g * (big_g - hb));
+            let normal = if matches!(other, Other::Cone { .. }) {
+                room * 2.0 * hb / big_g
+            } else {
+                0.0
+            };
+            out[1] = normal;
+            for (k, (slot, a)) in out.iter_mut().skip(2).zip(&seconds).enumerate() {
+                let ratio_xy = if normal > 0.0 {
+                    ratio(norm_hi(a) * w0_hi, geo.get(k).copied().unwrap_or(0.0))
+                } else {
+                    0.0
+                };
+                *slot = form + if normal > 0.0 { normal * ratio_xy } else { 0.0 };
+            }
+        }
+        Other::Spline => {
+            let y: [P4; 6] = rows
+                .get(6..12)
+                .ok_or_else(internal)?
+                .to_vec()
+                .try_into()
+                .map_err(|_| internal())?;
+            let window = shift_window(rows, b);
+            let dual = |p: &Poly, of_b: bool| Dual {
+                v: p.clone(),
+                d: if of_b {
+                    derivative_poly(p)
+                } else {
+                    Poly::konst(0.0)
+                },
+            };
+            let sizes = |p: &Poly, of_b: bool| {
+                if of_b {
+                    let d1 = derivative_poly(p);
+                    let d2 = derivative_poly(&d1);
+                    Sizes {
+                        v: abs_hi(p),
+                        d1: abs_hi(&d1),
+                        d2: abs_hi(&d2),
+                    }
+                } else {
+                    Sizes {
+                        v: abs_hi(p),
+                        d1: 0.0,
+                        d2: 0.0,
+                    }
+                }
+            };
+            let lift = |rows: &[P4; 6], of_b: bool| -> [G4<Dual>; 6] {
+                rows.clone().map(|r| r.map(|p| dual(&p, of_b)))
+            };
+            let size_up = |rows: &[P4; 6], of_b: bool| -> [G4<Sizes>; 6] {
+                rows.clone().map(|r| r.map(|p| sizes(&p, of_b)))
+            };
+            let d = spline_parts(&lift(&x, false), &lift(&y, true));
+            let sz = spline_parts(&size_up(&x, false), &size_up(&y, true));
+            let m_lo = d.m.v.lo().max(0.0);
+            let dm = abs_hi(&d.m.d);
+            let (ms1, ms2) = (sz.m.d1, sz.m.d2);
+            for (k, slot) in out.iter_mut().skip(2).enumerate() {
+                let (Some(n), Some(ns), Some(&g)) = (d.nums.get(k), sz.nums.get(k), geo.get(k))
+                else {
+                    return Err(internal());
+                };
+                let root = m_lo.sqrt();
+                let den = m_lo * m_lo * root * g;
+                if den.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
+                    *slot = f64::INFINITY;
+                    continue;
+                }
+                let first = abs_hi(&n.d) / den + 2.5 * abs_hi(&n.v) * dm / (den * m_lo);
+                let second = (ns.d2
+                    + 5.0 * ns.d1 * ms1 / m_lo
+                    + ns.v * (16.25 * ms1 * ms1 / (m_lo * m_lo) + 2.5 * ms2 / m_lo))
+                    / den;
+                *slot = room * (window * first + 0.5 * window * window * second);
+            }
+            let dwb = [d.wb[0].d.clone(), d.wb[1].d.clone(), d.wb[2].d.clone()];
+            let wb = [d.wb[0].v.clone(), d.wb[1].v.clone(), d.wb[2].v.clone()];
+            out[1] = room * window * ratio(norm_hi(&dwb), norm_lo(&wb));
+        }
+    }
+    for x in &mut out {
+        if x.is_nan() {
+            *x = f64::INFINITY;
+        }
+    }
+    Ok(out)
+}
+
+/// `num / den` rounded down, 0 where it is not a positive finite number.
+fn ratio_lo(num: f64, den: f64) -> f64 {
+    let r = num / den;
+    if r.is_finite() && r > 0.0 { r } else { 0.0 }
+}
+
+// ---------------------------------------------------------------------------
+// The spline face's second-order numerators, written once for any
+// arithmetic: polynomials with their rounding (`Poly`), polynomials with
+// their derivative along `b`'s parameter (`Dual`), and upper bounds on
+// sizes with their first two derivatives (`Sizes`).
+
+trait Ring: Clone {
+    fn zero() -> Self;
+    fn r_add(&self, o: &Self) -> Self;
+    fn r_sub(&self, o: &Self) -> Self;
+    fn r_mul(&self, o: &Self) -> Self;
+    fn r_scale(&self, f: f64) -> Self;
+}
+
+impl Ring for Poly {
+    fn zero() -> Self {
+        Poly::konst(0.0)
+    }
+    fn r_add(&self, o: &Self) -> Self {
+        self.add(o)
+    }
+    fn r_sub(&self, o: &Self) -> Self {
+        self.sub(o)
+    }
+    fn r_mul(&self, o: &Self) -> Self {
+        self.mul(o)
+    }
+    fn r_scale(&self, f: f64) -> Self {
+        self.scale(f)
+    }
+}
+
+/// A polynomial and its derivative along `b`'s parameter (forward-mode
+/// differentiation; `a`'s rows have none): the derivative is itself a
+/// polynomial in Bernstein form, so its terms cancel as the numerator's
+/// do, and its bound carries its rounding.
+#[derive(Clone, Debug)]
+struct Dual {
+    v: Poly,
+    d: Poly,
+}
+
+impl Ring for Dual {
+    fn zero() -> Self {
+        Dual {
+            v: Poly::konst(0.0),
+            d: Poly::konst(0.0),
+        }
+    }
+    fn r_add(&self, o: &Self) -> Self {
+        Dual {
+            v: self.v.add(&o.v),
+            d: self.d.add(&o.d),
+        }
+    }
+    fn r_sub(&self, o: &Self) -> Self {
+        Dual {
+            v: self.v.sub(&o.v),
+            d: self.d.sub(&o.d),
+        }
+    }
+    fn r_mul(&self, o: &Self) -> Self {
+        Dual {
+            v: self.v.mul(&o.v),
+            d: self.v.mul(&o.d).add(&self.d.mul(&o.v)),
+        }
+    }
+    fn r_scale(&self, f: f64) -> Self {
+        Dual {
+            v: self.v.scale(f),
+            d: self.d.scale(f),
+        }
+    }
+}
+
+/// Upper bounds on `|f|`, `|∂f|` and `|∂²f|` over a piece, the derivatives
+/// along `b`'s parameter, each factor bounded on its own: they hold for
+/// `a` at any point of the piece and `b` at any other (no cancellation is
+/// kept; this is for the second-order remainder only). Sums and products
+/// by the triangle inequality and Leibniz's rule; the rounding of these
+/// few operations is taken up by the caller's factor.
+#[derive(Clone, Copy, Debug)]
+struct Sizes {
+    v: f64,
+    d1: f64,
+    d2: f64,
+}
+
+impl Ring for Sizes {
+    fn zero() -> Self {
+        Sizes {
+            v: 0.0,
+            d1: 0.0,
+            d2: 0.0,
+        }
+    }
+    fn r_add(&self, o: &Self) -> Self {
+        Sizes {
+            v: self.v + o.v,
+            d1: self.d1 + o.d1,
+            d2: self.d2 + o.d2,
+        }
+    }
+    fn r_sub(&self, o: &Self) -> Self {
+        self.r_add(o)
+    }
+    fn r_mul(&self, o: &Self) -> Self {
+        Sizes {
+            v: self.v * o.v,
+            d1: self.v * o.d1 + self.d1 * o.v,
+            d2: self.v * o.d2 + 2.0 * self.d1 * o.d1 + self.d2 * o.v,
+        }
+    }
+    fn r_scale(&self, f: f64) -> Self {
+        let f = f.abs();
+        Sizes {
+            v: f * self.v,
+            d1: f * self.d1,
+            d2: f * self.d2,
+        }
+    }
+}
+
+type G3<T> = [T; 3];
+type G4<T> = [T; 4];
+
+fn g_dot<T: Ring>(a: &G3<T>, b: &G3<T>) -> T {
+    let [a0, a1, a2] = a;
+    let [b0, b1, b2] = b;
+    a0.r_mul(b0).r_add(&a1.r_mul(b1)).r_add(&a2.r_mul(b2))
+}
+
+fn g_cross<T: Ring>(a: &G3<T>, b: &G3<T>) -> G3<T> {
+    let [a0, a1, a2] = a;
+    let [b0, b1, b2] = b;
+    [
+        a1.r_mul(b2).r_sub(&a2.r_mul(b1)),
+        a2.r_mul(b0).r_sub(&a0.r_mul(b2)),
+        a0.r_mul(b1).r_sub(&a1.r_mul(b0)),
+    ]
+}
+
+fn g_times<T: Ring>(a: &G3<T>, f: &T) -> G3<T> {
+    let [a0, a1, a2] = a;
+    [a0.r_mul(f), a1.r_mul(f), a2.r_mul(f)]
+}
+
+fn g_minus<T: Ring>(a: &G3<T>, b: &G3<T>) -> G3<T> {
+    let [a0, a1, a2] = a;
+    let [b0, b1, b2] = b;
+    [a0.r_sub(b0), a1.r_sub(b1), a2.r_sub(b2)]
+}
+
+fn g_add3<T: Ring>(a: &G3<T>, b: &G3<T>) -> G3<T> {
+    let [a0, a1, a2] = a;
+    let [b0, b1, b2] = b;
+    [a0.r_add(b0), a1.r_add(b1), a2.r_add(b2)]
+}
+
+fn g_xyz<T: Ring>(h: &G4<T>) -> G3<T> {
+    let [x, y, z, _] = h;
+    [x.clone(), y.clone(), z.clone()]
+}
+
+/// `det[a, b, c, d]` of four homogeneous columns (Laplace along the first
+/// two).
+fn g_det4<T: Ring>(a: &G4<T>, b: &G4<T>, c: &G4<T>, d: &G4<T>) -> T {
+    let at = |h: &G4<T>, k: usize| h.get(k).cloned().unwrap_or_else(T::zero);
+    let m = |x: &G4<T>, y: &G4<T>, i: usize, j: usize| {
+        at(x, i).r_mul(&at(y, j)).r_sub(&at(x, j).r_mul(&at(y, i)))
+    };
+    let pairs = [
+        (0, 1, 2, 3, 1.0),
+        (0, 2, 1, 3, -1.0),
+        (0, 3, 1, 2, 1.0),
+        (1, 2, 0, 3, 1.0),
+        (1, 3, 0, 2, -1.0),
+        (2, 3, 0, 1, 1.0),
+    ];
+    let mut out = T::zero();
+    for (i, j, k, l, s) in pairs {
+        let term = m(a, b, i, j).r_mul(&m(c, d, k, l));
+        out = if s > 0.0 {
+            out.r_add(&term)
+        } else {
+            out.r_sub(&term)
+        };
+    }
+    out
+}
+
+/// What the second order needs of the spline faces `a` (rows `x`) and `b`
+/// (rows `y`): the numerators of the across, twist and along gaps
+/// (`n_b·S_xy − II_b(S_x, S_y)` times `w ω⁴ |W_b|⁴ |X| |Y|`-ish factors, see
+/// `gaps`), `m = |W_b|²` and `W_b` itself.
+struct SplineParts<T> {
+    nums: [T; 3],
+    m: T,
+    wb: G3<T>,
+}
+
+/// `a`'s `S_u`, `S_v` times `w²` and `S_vv`, `S_uv`, `S_uu` times `w³`.
+struct AParts<T> {
+    v0d: G3<T>,
+    v1: G3<T>,
+    seconds: [G3<T>; 3],
+}
+
+fn a_parts<T: Ring>(x: &[G4<T>; 6]) -> AParts<T> {
+    let [x0, x0d, x0dd, x1, x1d, x2] = x;
+    let (w0, w0d, w0dd, w1, w1d, w2) = (&x0[3], &x0d[3], &x0dd[3], &x1[3], &x1d[3], &x2[3]);
+    let (p0, p0d, p0dd) = (g_xyz(x0), g_xyz(x0d), g_xyz(x0dd));
+    let (p1, p1d, p2) = (g_xyz(x1), g_xyz(x1d), g_xyz(x2));
+    let v0d = g_minus(&g_times(&p0d, w0), &g_times(&p0, w0d));
+    let v1 = g_minus(&g_times(&p1, w0), &g_times(&p0, w1));
+    let a_vv = g_minus(
+        &g_times(&g_minus(&g_times(&p2, w0), &g_times(&p0, w2)), w0),
+        &g_times(&v1, &w1.r_scale(2.0)),
+    );
+    let v1u = g_minus(
+        &g_add3(&g_times(&p1d, w0), &g_times(&p1, w0d)),
+        &g_add3(&g_times(&p0d, w1), &g_times(&p0, w1d)),
+    );
+    let a_uv = g_minus(&g_times(&v1u, w0), &g_times(&v1, &w0d.r_scale(2.0)));
+    let a_uu = g_minus(
+        &g_times(&g_minus(&g_times(&p0dd, w0), &g_times(&p0, w0dd)), w0),
+        &g_times(&v0d, &w0d.r_scale(2.0)),
+    );
+    AParts {
+        v0d,
+        v1,
+        seconds: [a_vv, a_uv, a_uu],
+    }
+}
+
+fn spline_parts<T: Ring>(x: &[G4<T>; 6], y: &[G4<T>; 6]) -> SplineParts<T> {
+    let w0 = &x[0][3];
+    let [y0, y0d, y0dd, y1, y1d, y2] = y;
+    let AParts {
+        v0d,
+        v1,
+        seconds: [a_vv, a_uv, a_uu],
+    } = a_parts(x);
+    let (om, om_d, om1) = (&y0[3], &y0d[3], &y1[3]);
+    let (q0, q0d, q1) = (g_xyz(y0), g_xyz(y0d), g_xyz(y1));
+    let ub = g_minus(&g_times(&q0d, om), &g_times(&q0, om_d));
+    let vb = g_minus(&g_times(&q1, om), &g_times(&q0, om1));
+    let wb = g_cross(&ub, &vb);
+    let m = g_dot(&wb, &wb);
+    let coeffs = |x: &G3<T>| (g_dot(&g_cross(x, &vb), &wb), g_dot(&g_cross(&ub, x), &wb));
+    let (au, bu) = coeffs(&v0d);
+    let (av, bv) = coeffs(&v1);
+    let duu = g_det4(y0, y0d, y1, y0dd);
+    let dut = g_det4(y0, y0d, y1, y1d);
+    let dtt = g_det4(y0, y0d, y1, y2);
+    let form = |ax: &T, bx: &T, ay: &T, by: &T| {
+        ax.r_mul(ay)
+            .r_mul(&duu)
+            .r_add(&ax.r_mul(by).r_add(&bx.r_mul(ay)).r_mul(&dut))
+            .r_add(&bx.r_mul(by).r_mul(&dtt))
+    };
+    let om2 = om.r_mul(om);
+    let om4 = om2.r_mul(&om2);
+    let m2 = m.r_mul(&m);
+    let num = |a: &G3<T>, q: T| g_dot(&wb, a).r_mul(w0).r_mul(&m2).r_add(&om4.r_mul(&q));
+    let nums = [
+        num(&a_vv, form(&av, &bv, &av, &bv)),
+        num(&a_uv, form(&au, &bu, &av, &bv)),
+        num(&a_uu, form(&au, &bu, &au, &bu)),
+    ];
+    SplineParts { nums, m, wb }
+}
+
 fn gaps(rows: &[P4], other: &Other) -> Result<Gaps, NetworkError> {
     let row = |k: usize| rows.get(k).cloned().ok_or_else(internal);
     let (x0, x0d, x0dd, x1, x1d, x2) = (row(0)?, row(1)?, row(2)?, row(3)?, row(4)?, row(5)?);
     let (w0, w0d, w0dd, w1, w1d, w2) = (&x0[3], &x0d[3], &x0dd[3], &x1[3], &x1d[3], &x2[3]);
-    let (p0, p0d, p0dd) = (xyz4(&x0), xyz4(&x0d), xyz4(&x0dd));
-    let (p1, p1d, p2) = (xyz4(&x1), xyz4(&x1d), xyz4(&x2));
+    let (p0, p0d, p1) = (xyz4(&x0), xyz4(&x0d), xyz4(&x1));
     // S_u, S_v times w².
     let v0d = minus(&times(&p0d, w0), &times(&p0, w0d));
     let v1 = minus(&times(&p1, w0), &times(&p0, w1));
@@ -1384,59 +1895,30 @@ fn gaps(rows: &[P4], other: &Other) -> Result<Gaps, NetworkError> {
         Other::Spline => {
             let r = |k: usize| rows.get(6 + k).cloned().ok_or_else(internal);
             let (y0, y0d, y0dd, y1, y1d, y2) = (r(0)?, r(1)?, r(2)?, r(3)?, r(4)?, r(5)?);
-            let (om, om_d, om1) = (&y0[3], &y0d[3], &y1[3]);
-            let (q0, q0d, q1) = (xyz4(&y0), xyz4(&y0d), xyz4(&y1));
+            let om = &y0[3];
+            let q0 = xyz4(&y0);
             // Position.
             let e0 = minus(&times(&p0, om), &times(&q0, w0));
             let (om_lo, om_hi) = (om.lo().max(0.0), om.hi());
             hi[0] = ratio(norm_hi(&e0), w0_lo * om_lo);
             lo[0] = norm_value_lo(&e0) / (w0_hi * om_hi);
-            // Angle.
-            let ub = minus(&times(&q0d, om), &times(&q0, om_d));
-            let vb = minus(&times(&q1, om), &times(&q0, om1));
-            let wb = cross(&ub, &vb);
+            // Angle, and the second order: `n_b·S_xy − II_b(X, Y)`, `X`, `Y`
+            // put into b's tangent plane by Cramer's rule in `(U_b, V_b)`
+            // ([`spline_parts`]).
+            let ys = [y0.clone(), y0d, y0dd, y1, y1d, y2];
+            let xs = [
+                x0.clone(),
+                x0d.clone(),
+                x0dd.clone(),
+                x1.clone(),
+                x1d.clone(),
+                x2.clone(),
+            ];
+            let SplineParts { nums, m, wb } = spline_parts(&xs, &ys);
             let z = cross(&w, &wb);
             let (wb_lo, wb_hi) = (norm_lo(&wb), norm_value_hi(&wb));
             hi[1] = ratio(norm_hi(&z), w_lo * wb_lo);
             lo[1] = norm_value_lo(&z) / (w_hi * wb_hi);
-            // The second order: `n_b·S_xy − II_b(X, Y)`, `X`, `Y` put into
-            // b's tangent plane by Cramer's rule in `(U_b, V_b)`.
-            // S_vv, S_uv, S_uu times w³.
-            let a_vv = minus(
-                &times(&minus(&times(&p2, w0), &times(&p0, w2)), w0),
-                &times(&v1, &w1.scale(2.0)),
-            );
-            let v1u = minus(
-                &add3(&times(&p1d, w0), &times(&p1, w0d)),
-                &add3(&times(&p0d, w1), &times(&p0, w1d)),
-            );
-            let a_uv = minus(&times(&v1u, w0), &times(&v1, &w0d.scale(2.0)));
-            let a_uu = minus(
-                &times(&minus(&times(&p0dd, w0), &times(&p0, w0dd)), w0),
-                &times(&v0d, &w0d.scale(2.0)),
-            );
-            let m = dot(&wb, &wb);
-            let coeffs = |x: &V3| (dot(&cross(x, &vb), &wb), dot(&cross(&ub, x), &wb));
-            let (au, bu) = coeffs(&v0d);
-            let (av, bv) = coeffs(&v1);
-            let duu = det4(&y0, &y0d, &y1, &y0dd);
-            let dut = det4(&y0, &y0d, &y1, &y1d);
-            let dtt = det4(&y0, &y0d, &y1, &y2);
-            let form = |ax: &Poly, bx: &Poly, ay: &Poly, by: &Poly| {
-                ax.mul(ay)
-                    .mul(&duu)
-                    .add(&ax.mul(by).add(&bx.mul(ay)).mul(&dut))
-                    .add(&bx.mul(by).mul(&dtt))
-            };
-            let om2 = om.mul(om);
-            let om4 = om2.mul(&om2);
-            let m2 = m.mul(&m);
-            let num = |a: &V3, q: Poly| dot(&wb, a).mul(w0).mul(&m2).add(&om4.mul(&q));
-            let nums = [
-                num(&a_vv, form(&av, &bv, &av, &bv)),
-                num(&a_uv, form(&au, &bu, &av, &bv)),
-                num(&a_uu, form(&au, &bu, &au, &bu)),
-            ];
             let (m_lo, m_hi) = (m.lo().max(0.0), m.hi());
             (nums, m_lo * m_lo * wb_lo, m_hi * m_hi * wb_hi)
         }
@@ -1466,6 +1948,23 @@ fn gaps(rows: &[P4], other: &Other) -> Result<Gaps, NetworkError> {
 /// of them must be a spline face the edge runs along a parameter line of;
 /// the other a plane, cylinder, cone or sphere, or a spline face the edge
 /// runs along a parameter line of in the same parametrisation.
+///
+/// **Which points are compared.** A point of `a`'s boundary corresponds
+/// to a point of `b`'s own boundary, and each face's derivatives are taken
+/// at its own boundary, as continuity is defined in CAD (the coordinator's
+/// decision, 2026-11-01). How far apart the two boundaries lie, in any
+/// direction, is the position gap (G0): it is not carried into the higher
+/// orders as if `b` were evaluated off its boundary, so a variation of
+/// `b` across the seam does not enter. What does enter is the shift along
+/// the seam: the rows put `a` and `b` side by side at the same local
+/// parameter, and the point of `b` that is the same seam point may lie
+/// along the seam by up to twice the position bound. Its effect on the
+/// angle and the second-order gaps is bounded and added ([`shift_terms`]:
+/// for a spline face a first-order term from the derivative of the
+/// residual along `b`, kept as a polynomial so its terms cancel, and a
+/// second-order remainder from sizes; for a quadric, compared through
+/// its level surface at `a`'s point, the change of its normal and form to
+/// the face's own at the nearest point; nothing for a plane).
 pub fn continuity(
     a: &Surface,
     b: &Surface,
@@ -1743,7 +2242,11 @@ fn measure(
         .saturating_mul(pieces)
         .saturating_mul((p.max(spline_degree.unwrap_or(0)) as u64 + 1).saturating_pow(3));
     let first = cost
-        .saturating_mul(6)
+        .saturating_mul(if matches!(other, Other::Spline) {
+            12
+        } else {
+            6
+        })
         .saturating_mul(bounds.len() as u64)
         .saturating_add(cutting);
     if first > MAX_SEAM_WORK {
@@ -1759,6 +2262,25 @@ fn measure(
     }
     let mut spent = first;
     let mut exhausted = false;
+    // Against a spline face the second-order gaps (and the angle) are
+    // bounded with `b`'s rows moved along the seam by as much as the
+    // correspondence may be off ([`shifted`]); the position gap is that
+    // of the rows as they are.
+    // Every gap but the position's gains what comparing at corresponding
+    // points may add ([`shift_terms`]).
+    let shifts = !matches!(other, Other::Plane { .. });
+    // A piece's position bound holds on its halves too, so each half keeps
+    // the least of its own and its parent's (the halving's rounding would
+    // otherwise widen the window it sets).
+    let bounds_of = |rows: &[P4], parent: f64| -> Result<[f64; GAPS], NetworkError> {
+        let mut hi = gaps(rows, &other)?.hi;
+        hi[0] = hi[0].min(parent);
+        let add = shift_terms(rows, &other, hi[0])?;
+        for (h, a) in hi.iter_mut().zip(add) {
+            *h += a;
+        }
+        Ok(hi)
+    };
     let mut work: Vec<(Piece, [f64; GAPS])> = Vec::with_capacity(bounds.len());
     for (k, w) in bounds.windows(2).enumerate() {
         let [a, b] = w else { return Err(internal()) };
@@ -1772,17 +2294,25 @@ fn measure(
             rows,
             depth: 0,
         };
-        let hi = gaps(&piece.rows, &other)?.hi;
+        let hi = bounds_of(&piece.rows, f64::INFINITY)?;
         work.push((piece, hi));
     }
     let mut found = [(0.0_f64, 0.0_f64, origin); GAPS];
+    // The values found are lower bounds, less what comparing at
+    // corresponding points may take off, so a gap found beyond its
+    // threshold is beyond it at the corresponding point.
     let look = |piece: &Piece,
+                position: f64,
                 ts: &[f64],
                 found: &mut [(f64, f64, Vec3); GAPS]|
      -> Result<(), NetworkError> {
+        let less = shift_terms(&piece.rows, &other, position)?;
         for &t in ts {
             let at = piece.at(t);
-            let lo = gaps(&at, &other)?.lo;
+            let mut lo = gaps(&at, &other)?.lo;
+            for (l, x) in lo.iter_mut().zip(less) {
+                *l = (*l - x).max(0.0);
+            }
             let place = at
                 .first()
                 .map(|x| {
@@ -1800,9 +2330,12 @@ fn measure(
         }
         Ok(())
     };
-    for (piece, _) in &work {
-        look(piece, &[0.0, 0.25, 0.5, 0.75, 1.0], &mut found)?;
+    for (piece, hi) in &work {
+        look(piece, hi[0], &[0.0, 0.25, 0.5, 0.75, 1.0], &mut found)?;
     }
+    // A halving costs two bounds and six looks, twice that where the
+    // correspondence adds its terms (as much again, the dual numerators).
+    let halving = cost.saturating_mul(if shifts { 16 } else { 8 });
     loop {
         let decided: Vec<bool> = (0..GAPS)
             .map(|q| {
@@ -1829,16 +2362,16 @@ fn measure(
                     && hi.get(q).copied().unwrap_or(0.0) > limit.get(q).copied().unwrap_or(0.0)
             });
             let room = next.len() + (total - index) < MAX_SEAM_PIECES;
-            let affordable = spent.saturating_add(cost.saturating_mul(8)) <= MAX_SEAM_WORK;
+            let affordable = spent.saturating_add(halving) <= MAX_SEAM_WORK;
             if open && !affordable {
                 exhausted = true;
             }
             if open && room && affordable && piece.depth < 52 {
-                spent = spent.saturating_add(cost.saturating_mul(8));
+                spent = spent.saturating_add(halving);
                 let (l, r) = piece.halves();
                 for half in [l, r] {
-                    look(&half, &[0.25, 0.5, 0.75], &mut found)?;
-                    let h = gaps(&half.rows, &other)?.hi;
+                    let h = bounds_of(&half.rows, hi[0])?;
+                    look(&half, h[0], &[0.25, 0.5, 0.75], &mut found)?;
                     next.push((half, h));
                 }
                 split = true;
@@ -2393,5 +2926,110 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A doubly curved cubic patch `b` and its continuation `a` across
+    /// `v = 0` (the blossoms `b(0, …, 0, −1, …, −1)` of each column, so the
+    /// two are one cubic surface), `a` moved by `delta` along the seam.
+    fn continued_pair(delta: f64) -> (NurbsSurface, NurbsSurface) {
+        let mut b_pts = Vec::new();
+        for k in 0..4 {
+            for j in 0..4 {
+                let (fk, fj) = (f64::from(k), f64::from(j));
+                b_pts.push(Vec3::new(
+                    fk / 3.0 + 0.05 * fj * fk,
+                    0.4 * fj / 3.0,
+                    0.2 * (fk - 1.5) * (fk - 1.5) / 3.0
+                        + 0.15 * fj * fj / 9.0
+                        + 0.07 * fk * fj / 9.0,
+                ));
+            }
+        }
+        let blossom = |col: &[Vec3], args: &[f64]| -> Vec3 {
+            let mut d = col.to_vec();
+            for &u in args {
+                d = d.windows(2).map(|w| w[0] * (1.0 - u) + w[1] * u).collect();
+            }
+            d[0]
+        };
+        let mut a_pts = Vec::new();
+        for k in 0..4 {
+            let col: Vec<Vec3> = (0..4).map(|j| b_pts[k * 4 + j]).collect();
+            for j in 0..4 {
+                let mut args = vec![0.0; 3 - j];
+                args.extend(vec![-1.0; j]);
+                a_pts.push(blossom(&col, &args) + Vec3::new(delta, 0.0, 0.0));
+            }
+        }
+        let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+        let make = |pts: Vec<Vec3>| {
+            NurbsSurface::new(3, 3, knots.clone(), knots.clone(), 4, 4, pts, vec![1.0; 16]).unwrap()
+        };
+        (make(a_pts), make(b_pts))
+    }
+
+    /// The correspondence term covers `b` moved along its window: with `a`
+    /// moved along the seam (a position gap of `delta`), every gap found
+    /// with `a` at `t` and `b` at any `τ` within the window of `t` (the
+    /// rows evaluated apart, a lower bound) is within the bound at equal
+    /// parameters plus the term; and without the term some are not.
+    #[test]
+    fn the_shift_term_covers_b_anywhere_in_its_window() {
+        let tol = 1e-3;
+        let (a, b) = continued_pair(2e-4);
+        let edge = iso_curve(&b, true, 0.0).unwrap();
+        let origin = edge.control_points()[1];
+        let la = spline_rows(&a, &edge, tol, origin).unwrap().unwrap();
+        let lb = spline_rows(&b, &edge, tol, origin).unwrap().unwrap();
+        let mut rows: Vec<P4> = Vec::new();
+        for line in [&la, &lb] {
+            for row in &line.rows {
+                rows.push(row_pieces(row, line, &[]).unwrap().remove(0));
+            }
+        }
+        let plain = gaps(&rows, &Other::Spline).unwrap().hi;
+        let terms = shift_terms(&rows, &Other::Spline, plain[0]).unwrap();
+        let window = shift_window(&rows, plain[0]);
+        assert!(
+            plain[0] >= 2e-4 * 0.99 && window < 0.05,
+            "{plain:?} {window}"
+        );
+        let piece = Piece {
+            a: 0.0,
+            b: 1.0,
+            rows: rows.clone(),
+            depth: 0,
+        };
+        let mut needed = 0;
+        for i in 0..=20 {
+            let t = f64::from(i) / 20.0;
+            for f in [-1.0, -0.5, 0.5, 1.0] {
+                let tau = (t + f * window).clamp(0.0, 1.0);
+                let (at_t, at_tau) = (piece.at(t), piece.at(tau));
+                let mixed: Vec<P4> = at_t
+                    .iter()
+                    .take(6)
+                    .chain(at_tau.iter().skip(6))
+                    .cloned()
+                    .collect();
+                let lo = gaps(&mixed, &Other::Spline).unwrap().lo;
+                for k in 1..GAPS {
+                    assert!(
+                        lo[k] <= plain[k] + terms[k],
+                        "gap {k} at t {t}, τ {tau}: {:e} beyond {:e} + {:e}",
+                        lo[k],
+                        plain[k],
+                        terms[k]
+                    );
+                    if lo[k] > plain[k] {
+                        needed += 1;
+                    }
+                }
+            }
+        }
+        assert!(
+            needed > 0,
+            "the term is not needed here: {plain:?} {terms:?}"
+        );
     }
 }

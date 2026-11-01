@@ -155,7 +155,8 @@ fn sewing_what_is_not_two_sheets_sharing_an_edge_fails_with_the_reason() {
 /// times that threshold (the rows along differentiated after the
 /// positions were rounded), so the side was refused and the example set
 /// 1 µm and 1e-6 rad first; with the rows formed from the stored net's
-/// differences the bounds are 6.4e-13 across, 2.7e-13 twist and 1.3e-13
+/// differences, and the shift along the seam between corresponding points
+/// counted, the bounds are 1.015e-12 across, 5.1e-13 twist and 1.6e-13
 /// along (`docs/design/surfacing.md`, the tank's finding 1). The
 /// expectation is pinned apart from this test by the closed-form long
 /// seam of `geom/tests/network_g2.rs` (G2 proven at half a threshold, G1
