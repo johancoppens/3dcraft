@@ -651,22 +651,103 @@ fn joined(doc: &Document, placed: &[Body]) -> Result<(Body, Contributors, Kept, 
         })
     };
     // Level by level: each pass halves the parts (an odd one out goes on
-    // as it is), so there are about log₂ n passes.
+    // as it is), so there are about log₂ n passes. The unions of one pass
+    // share no instance, so they are made at once on several threads
+    // (`in_order`); the pairs, and so the bodies, are the same.
     while parts.len() > 1 {
-        let mut next = Vec::with_capacity(parts.len().div_ceil(2));
+        let odd = if parts.len() % 2 == 1 {
+            parts.pop()
+        } else {
+            None
+        };
+        let mut pairs = Vec::with_capacity(parts.len() / 2);
         let mut pending = parts.into_iter();
-        while let Some(a) = pending.next() {
-            match pending.next() {
-                Some(b) => next.push(join(a, b)?),
-                None => next.push(a),
-            }
+        while let (Some(a), Some(b)) = (pending.next(), pending.next()) {
+            pairs.push((a, b));
         }
+        let mut next = Vec::with_capacity(pairs.len() + 1);
+        let made = in_order(pairs, |(a, b)| join(a, b))
+            .ok_or("a thread joining the instances stopped unexpectedly".to_string())?;
+        for joined in made {
+            next.push(joined?);
+        }
+        next.extend(odd);
         parts = next;
     }
     let Some(whole) = parts.pop() else {
         return Err("there is no instance".to_string());
     };
     Ok((whole.body, whole.sources, whole.edges, whole.vertices))
+}
+
+/// Most threads [`in_order`] runs unions on: each holds the patch trees of
+/// both its operands while it works, so more at once would take more
+/// memory than they save time.
+const MAX_JOIN_THREADS: usize = 8;
+
+/// `job` for every item, the results in the items' order, on several
+/// threads when there is more than one item and no bound on the work is
+/// in force (`craft3d_geom::allowance`: a bound, and what it has counted
+/// once, belong to this thread, so bounded work stays here). Each
+/// helper's work is added to this thread's count when it is joined, so
+/// the count is the same however the items were shared out. A helper
+/// that cannot be started leaves more for the others; one that panics
+/// loses the item it was working on, and then there is no answer
+/// (`None`). One item at a time on wasm.
+fn in_order<I: Send, T: Send>(items: Vec<I>, job: impl Fn(I) -> T + Sync) -> Option<Vec<T>> {
+    let count = items.len();
+    let threads = craft3d_math::available_threads()
+        .min(MAX_JOIN_THREADS)
+        .min(count);
+    if threads <= 1 || cfg!(target_arch = "wasm32") || craft3d_geom::allowance::scope().is_some() {
+        return Some(items.into_iter().map(job).collect());
+    }
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Mutex, PoisonError};
+    let items: Vec<Mutex<Option<I>>> = items.into_iter().map(|i| Mutex::new(Some(i))).collect();
+    let slots: Vec<Mutex<Option<T>>> = (0..count).map(|_| Mutex::new(None)).collect();
+    let next = AtomicUsize::new(0);
+    let run = || {
+        let before = craft3d_geom::allowance::spent();
+        loop {
+            let n = next.fetch_add(1, Ordering::Relaxed);
+            let (Some(item), Some(slot)) = (items.get(n), slots.get(n)) else {
+                break;
+            };
+            let taken = item.lock().unwrap_or_else(PoisonError::into_inner).take();
+            if let Some(taken) = taken {
+                let result = job(taken);
+                *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(result);
+            }
+        }
+        craft3d_geom::allowance::spent().saturating_sub(before)
+    };
+    std::thread::scope(|scope| {
+        let helpers: Vec<_> = (1..threads)
+            .filter_map(|_| std::thread::Builder::new().spawn_scoped(scope, run).ok())
+            .collect();
+        let _ = run();
+        for helper in helpers {
+            if let Ok(spent) = helper.join() {
+                craft3d_geom::allowance::charge(spent);
+            }
+        }
+    });
+    slots
+        .into_iter()
+        .zip(items)
+        .map(|(slot, item)| {
+            match slot.into_inner().unwrap_or_else(PoisonError::into_inner) {
+                Some(done) => Some(done),
+                // Not taken by a helper (none could be started), or
+                // taken by one that panicked (gone: `None`).
+                None => item
+                    .into_inner()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .map(&job),
+            }
+        })
+        .collect()
 }
 
 pub(crate) fn build(
