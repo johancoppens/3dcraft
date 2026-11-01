@@ -418,6 +418,16 @@ const SEAM_PAIR: f64 = 1e-2;
 /// measures it, and stays as it was found.
 const SEAM_KEEP: f64 = 1e-2;
 
+/// How much, in tolerances, the distance to the surface a vertex is
+/// turned onto may grow at a step of [`turn_onto_seam`] and the step still
+/// count: rounding only (distances are found to a few units in the last
+/// place of the coordinates, far below this at any scale the tolerance
+/// is meant for). A step that leaves the seam grows it by the way squared
+/// over the radius the pair part at (2.6e-9 mm 4.5 µm along the seam of a
+/// wrapped glyph's rims), and a vertex moved so is off the edges found on
+/// the seam beside it.
+const SEAM_RISE: f64 = 1e-4;
+
 /// Most secant steps of [`turn_onto_seam`].
 const SECANTS: usize = 8;
 
@@ -428,8 +438,16 @@ const SECANTS: usize = 8;
 /// `√(2 r ε)` along the seam; the rate at which the distance grows along
 /// the curve (`n · t`, of the normals, accurate to rounding) is linear in
 /// the way along, and its root is found by secant steps to rounding of
-/// the way itself. Taken where it lies on every surface within `tol` and
-/// the rate fell; `None` otherwise, `guesses` then unchanged.
+/// the way itself. Taken where it lies on every surface within `tol`, the
+/// rate fell and the distance to `silent` did not grow (by more than
+/// [`SEAM_RISE`] of `tol`); `None` otherwise, `guesses` then unchanged.
+/// A vertex on the seam already stays there: 2026-11-01, the corner of a
+/// wrapped glyph where two curved rims are tangent (an oval of four
+/// quadratic spans on a cylinder) lay on their seam to 1e-15 mm, and the
+/// secant steps took it 1e-3 mm along the plate's front skin, past the
+/// end of one rim, where the distance to it (4.4e-7 mm) was still within
+/// the tolerance and its rate smaller; the edge across the corner, its
+/// points found on the seam, could then not be traced to it.
 fn turn_onto_seam(
     surfaces: &[&Surface],
     start: Vec3,
@@ -463,10 +481,15 @@ fn turn_onto_seam(
             break;
         }
         let (r, a, p) = last;
-        let Some((r1, _, a1, p1)) = rate_at(p + a * step, &mut trial) else {
+        let Some((r1, v1, a1, p1)) = rate_at(p + a * step, &mut trial) else {
             break;
         };
-        if r1.abs() < best.0 {
+        // The curve touches `silent` at the seam: the distance there is the
+        // least along it, so a point further from `silent` than the start
+        // is no seam, whatever its rate (past the border of a bounded
+        // spline the distance is to the border and its rate falls too).
+        let nearer = v1.abs() <= v0.abs() + SEAM_RISE * tol;
+        if nearer && r1.abs() < best.0 {
             best = (r1.abs(), p1, trial.clone());
         }
         let moved = (p1 - p).dot(a);
