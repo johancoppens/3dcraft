@@ -1555,7 +1555,12 @@ fn break_cross(p: &Piece, ta: f64, n: &Piece, tb: f64) -> Result<Cross, NetworkE
     };
     let ((su, sdu), (sv, sdv)) = (norm_s(&sa.v0d), norm_s(&sa.v1));
     let gt_sizes = [2.0 * sv * sdv, sdu * sv + su * sdv, 2.0 * su * sdu];
-    let k_sizes = sz.m.k.max(sa.v0d[0].k).max(sa.v1[0].k);
+    let k_sizes = sa
+        .v0d
+        .iter()
+        .chain(sa.v1.iter())
+        .map(|x| x.k)
+        .fold(sz.m.k, usize::max);
     for k in 0..3 {
         let (Some(c), Some(nt), Some(ns_), Some(nsz)) = (
             c0.get(2 + k),
@@ -1703,14 +1708,14 @@ fn combine(
         let mut hi = info.plain;
         match other {
             Other::Plane { .. } => {
-                out.push((hi, 0.0));
+                out.push((unknown_infinite(hi), 0.0));
                 continue;
             }
             Other::Round { .. } | Other::Cone { .. } => {
                 for (h, a) in hi.iter_mut().zip(info.implicit) {
                     *h += a;
                 }
-                out.push((hi, 0.0));
+                out.push((unknown_infinite(hi), 0.0));
                 continue;
             }
             Other::Spline => {}
@@ -1767,19 +1772,39 @@ fn combine(
                     return Err(internal());
                 };
                 let bound = r * (c0 + d * (dt + ds + d * mx));
-                *slot = slot.max(bound);
+                *slot = upper(*slot, bound);
             }
-            angle = angle.max(hi[1] + r * (d * (info.nb + ninfo.nb) + c.jump));
+            angle = upper(angle, hi[1] + r * (d * (info.nb + ninfo.nb) + c.jump));
         }
         hi[1] = angle;
         for (k, v) in second.iter().enumerate() {
             if let Some(slot) = hi.get_mut(2 + k) {
-                *slot = if v.is_nan() { f64::INFINITY } else { *v };
+                *slot = *v;
             }
         }
-        out.push((hi, d));
+        out.push((unknown_infinite(hi), d));
     }
     Ok(out)
+}
+
+/// The larger of two upper bounds; a NaN (nothing known) is infinite, so
+/// it can never be passed over (`f64::max` returns the other operand).
+fn upper(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::INFINITY
+    } else {
+        a.max(b)
+    }
+}
+
+/// Bounds with every NaN made infinite.
+fn unknown_infinite(mut hi: [f64; GAPS]) -> [f64; GAPS] {
+    for x in &mut hi {
+        if x.is_nan() {
+            *x = f64::INFINITY;
+        }
+    }
+    hi
 }
 
 /// `num / den` rounded down, 0 where it is not a positive finite number.
@@ -2760,7 +2785,7 @@ fn measure(
     let bound = |q: usize| {
         his.iter()
             .map(|(hi, _)| hi.get(q).copied().unwrap_or(f64::INFINITY))
-            .fold(0.0_f64, f64::max)
+            .fold(0.0_f64, upper)
     };
     let gap = |q: usize, as_angle: bool| {
         let (f, param, at) = found.get(q).copied().unwrap_or((0.0, 0.0, origin));
@@ -3515,5 +3540,83 @@ mod tests {
         assert!(seen, "no jump at the break: {lo:?} {:?}", info.plain);
         let c = continuity(&Surface::Nurbs(a), &Surface::Nurbs(b), &edge, tol, 1e-9).unwrap();
         assert!(c.order < Order::G2, "{c:?}");
+    }
+
+    /// A NaN anywhere in a piece's bounds means nothing is known there: it
+    /// must come out infinite from the combination with the neighbours and
+    /// from the fold over the pieces, never be passed over as `f64::max`
+    /// would, so the seam is not proven G2.
+    #[test]
+    fn a_nan_bound_is_never_passed_over() {
+        assert_eq!(upper(f64::NAN, 1.0), f64::INFINITY);
+        assert_eq!(upper(1.0, f64::NAN), f64::INFINITY);
+        assert_eq!(
+            [1.0, f64::NAN, 2.0].into_iter().fold(0.0, upper),
+            f64::INFINITY
+        );
+        let (a, b) = continued_pair(0.0);
+        let edge = iso_curve(&b, true, 0.0).unwrap();
+        let origin = edge.control_points()[1];
+        let la = spline_rows(&a, &edge, 1e-6, origin).unwrap().unwrap();
+        let lb = spline_rows(&b, &edge, 1e-6, origin).unwrap().unwrap();
+        let mut per: Vec<Vec<P4>> = Vec::new();
+        for line in [&la, &lb] {
+            for row in &line.rows {
+                per.push(row_pieces(row, line, &[0.5]).unwrap());
+            }
+        }
+        let piece = |k: usize, a: f64, b: f64, id: u64| Piece {
+            a,
+            b,
+            rows: per.iter().map(|r| r[k].clone()).collect(),
+            depth: 0,
+            id,
+        };
+        let (p, n) = (piece(0, 0.0, 0.5, 1), piece(1, 0.5, 1.0, 2));
+        let clean = vec![
+            (
+                p.clone(),
+                piece_info(&p, &Other::Spline, f64::INFINITY).unwrap(),
+            ),
+            (
+                n.clone(),
+                piece_info(&n, &Other::Spline, f64::INFINITY).unwrap(),
+            ),
+        ];
+        let base = combine(
+            &clean,
+            &Other::Spline,
+            &mut std::collections::BTreeMap::new(),
+        )
+        .unwrap();
+        assert!(
+            base.iter().all(|(hi, _)| hi.iter().all(|x| x.is_finite())),
+            "{base:?}"
+        );
+        // Each place a NaN can enter: the plain bounds (the angle's too),
+        // the derivative terms, the normal's rate.
+        let poisons: [fn(&mut Info); 4] = [
+            |i| i.plain[1] = f64::NAN,
+            |i| i.plain[3] = f64::NAN,
+            |i| i.s1[0] = f64::NAN,
+            |i| i.nb = f64::NAN,
+        ];
+        for (which, poison) in poisons.iter().enumerate() {
+            let mut work = clean.clone();
+            poison(&mut work[1].1);
+            let his = combine(
+                &work,
+                &Other::Spline,
+                &mut std::collections::BTreeMap::new(),
+            )
+            .unwrap();
+            let worst = |q: usize| his.iter().map(|(hi, _)| hi[q]).fold(0.0, upper);
+            let any = (1..GAPS).any(|q| worst(q) == f64::INFINITY);
+            assert!(any, "poison {which}: {his:?}");
+            assert!(
+                his.iter().all(|(hi, _)| hi.iter().all(|x| !x.is_nan())),
+                "poison {which}"
+            );
+        }
     }
 }

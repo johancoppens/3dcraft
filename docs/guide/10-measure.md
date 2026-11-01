@@ -305,6 +305,13 @@ work allowed ran out first). One of the faces must be a spline face the edge run
 edge is); the other a plane, cylinder, cone or sphere, or a spline face in the same parametrisation along the
 seam. Two analytic faces and a torus are refused, with the reason.
 
+The faces are compared at corresponding points, and the correspondence is local. A point of the first
+face's edge corresponds to the nearest point of the second face's own edge, looked for only near it (in
+the stretch of the edge being bounded and as far again into its neighbours) and only within the edge (never
+past its ends). How far apart the two edges lie is the position gap; the second order counts how far along
+the seam the corresponding point may have moved, never a point of the second face off its edge. Against a
+plane, cylinder, cone or sphere the corresponding point is the face's foot point.
+
 ```json
 [
  ["assert.add", {"name": "fin is G2", "measure": "continuity", "edge": "F7:startEdge(0,2)", "face": "F1:side(0)", "min": 2}]
