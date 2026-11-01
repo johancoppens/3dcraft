@@ -289,8 +289,8 @@ default, so where a sheet is held in curvature to a network sheet made of cubic 
 across the seam has a kink at each of its knots, and the held sheet has to take that kink somewhere: it puts
 it on a narrow band beside the seam (a crease there, within the tolerances). Give the face's network
 `"acrossDegree": 5` and draw its curves with `"degree": 5` (`sketch.spline`), and the face is smooth enough
-that the held sheet needs no band. A family of fewer than six curves is interpolated with one degree fewer
-than it has curves, whatever is asked; `feature.edit` with `"acrossDegree": null` goes back to the default, 3.
+that the held sheet needs no band. The degree used is the one asked, but never more than the family's number of
+curves less one (with five curves: 3 by default, 4 when 5 is asked); `feature.edit` with `"acrossDegree": null` goes back to the default, 3.
 
 ### A class-A mouse
 

@@ -100,6 +100,54 @@ fn side_from(r: f64, edge: NurbsCurve) -> (Vec<NurbsCurve>, Vec<NurbsCurve>) {
 /// The largest angle between the sheet's normals on either side of each
 /// of its knots along u that is held only in position (multiplicity at
 /// least its degree less one), at 41 places across.
+/// The largest angle between the sheet's normals on either side of every
+/// distinct knot along u inside its domain, at 41 places across, and how
+/// many knots that was.
+fn creases_at_every_knot(s: &NurbsSurface) -> (f64, usize) {
+    let knots = s.knots_u();
+    let ((u0, u1), (v0, v1)) = s.domain();
+    let mut worst = 0.0_f64;
+    let mut visited = 0;
+    let mut last = f64::NAN;
+    for &k in knots {
+        if !(k > u0 && k < u1) || k == last {
+            continue;
+        }
+        last = k;
+        visited += 1;
+        let e = 1e-9 * (u1 - u0);
+        for j in 0..=40 {
+            let t = v0 + (v1 - v0) * f64::from(j) / 40.0;
+            let normal = |u: f64| {
+                let (_, du, dv) = s.derivatives(u, t);
+                du.cross(dv).normalized().unwrap()
+            };
+            worst = worst.max(normal(k - e).cross(normal(k + e)).length());
+        }
+    }
+    (worst, visited)
+}
+
+/// The distinct knots along u inside the domain held only in position or
+/// once differentiable by the representation (multiplicity at least the
+/// degree less one).
+fn rough_knots(s: &NurbsSurface) -> usize {
+    let (pu, _) = s.degrees();
+    let knots = s.knots_u();
+    let ((u0, u1), _) = s.domain();
+    let mut count = 0;
+    let mut i = 0;
+    while i < knots.len() {
+        let k = knots[i];
+        let m = knots[i..].iter().take_while(|x| **x == k).count();
+        i += m;
+        if k > u0 && k < u1 && m + 1 >= pu {
+            count += 1;
+        }
+    }
+    count
+}
+
 fn creases(s: &NurbsSurface) -> f64 {
     let (pu, _) = s.degrees();
     let knots = s.knots_u();
@@ -250,7 +298,6 @@ fn far_edge(r: f64, crown: &NurbsSurface) -> NurbsCurve {
             let (a, b) = c.domain();
             let (p, q) = (c.eval(a), c.eval(b));
             if (p.y - 0.6 * r).abs() < 1e-9 * r && (q.y - 0.6 * r).abs() < 1e-9 * r {
-                let _ = q;
                 return c;
             }
         }
@@ -311,9 +358,20 @@ fn a_side_held_in_curvature_to_a_quintic_crown_needs_no_band_and_is_smooth_insid
                     !banded(&patch.surface),
                     "scale {scale}: a band on a quintic crown"
                 );
-                let crease = creases(&patch.surface);
+                // Measured at every knot along u inside (the side's
+                // representation joins its pieces only in position there:
+                // five such knots, degree 11), not only at those `creases`
+                // picks.
+                let (crease, visited) = creases_at_every_knot(&patch.surface);
+                assert!(
+                    visited > 0 && rough_knots(&patch.surface) > 0,
+                    "scale {scale}: no knot measured"
+                );
                 assert!(crease <= ANGULAR, "scale {scale}: creased by {crease:e}");
             } else {
+                // The band keeps the cubic crown's side within the angular
+                // tolerance too (2.9e-8): what tells them apart is that the
+                // cubic one needs it.
                 assert!(
                     banded(&patch.surface),
                     "scale {scale}: no band on a cubic crown"
