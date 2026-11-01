@@ -156,6 +156,12 @@ A Jig (a document with public parameters, [`document.md`](document.md) › *Publ
 
 - **2026-10-31, adaptive proofs** (r1-proofs). Three measures were notProven on simple models although the true bound held: the planetary gearbox's planet 1 in its ring (found 0.0466, proven 0.0199, needed 0.0282: the end faces cut down to the backlash, *A flat face and what lies in or beside its plane*), the shelled case at a 2 mm wall (proven 1.46: rounds against rounds by the mesh) and a clamp with chamfered bore mouths (proven 0: a cone with itself and a cone against the plane it meets). Now 0.04638, 1.9988 and 6.49999997 (*The proven thickness*), in 3.2/4.3 s (the assembly opened and measured; noise of the Strix), 0.05/0.37 s and 0.03/0.34 s before/after (release, Strix, tests in parallel). Oracles (`crates/engine/tests/adaptive_proofs.rs`): a hollow ball, a countersunk plate and a spline hump's thickness, a shaft in a bore 0.01 wider coaxial and 0.004 off, at three scales; the clamp at a 7 mm bound and the case at a 1 mm wall fail.
 
+### Measuring the mass once (2026-11-01)
+
+- A measure (`volume`, `area`, `cavity`, `extent`, `centerOfMass`) of a body with a material measures it with its inertia at once (`measure_ahead`, as `document.inspect` does): both in about the time of one, each the value it is alone.
+- `measure_ahead` is only ahead: a body whose mass properties are known already is left as it is and its inertia measured when asked for. Before, `document.check` (which needs only the mass) integrated every face again for the inertia of a body measured before it had a material: 28 s of the hollow tank's 30 s check.
+- `clearance` asks the kernel only whether two bodies are clear, touch or overlap (`boolean::contact`), not the area faces on one surface share (a union and three boundaries integrated): the tank's cap in its recess 58 s → 1.6 s. Motion asks only for the common volume.
+
 ## Open
 
 - A section as geometry with its measures (area, outline, the widths across it), the least inside radius.

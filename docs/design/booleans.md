@@ -706,3 +706,7 @@ Not kept: a crossing's root by false position instead of halving (fewer looks, r
 Not kept: stopping the patch tree's Newton walk at a step that moves neither parameter (7 % more on the ring) could end a walk an ulp from where it ends now.
 
 *Held to:* `hits.rs` › `closed_forms_find_what_the_root_isolation_finds` (1200 random lines and circles against balls and cones at three scales), `a_line_through_a_ball_is_settled_in_fewer_evaluations` (new: both crossings to 1e-9 of the scale with an index's bound given; 198 distances and 51 bounds before, 157–159 and 60 now), the kernel and engine suites and the corpus.
+
+### Contact without its area (2026-11-01, `contact.rs` › `contact`)
+
+`contact(a, b, tolerance)` answers clear, touch or overlap as `interference` does, without the area faces on one surface share, which `interference` measures as half of (boundary of a + boundary of b − boundary of their union): a union and three bodies integrated. A touch whose area only that union could measure, and which the union refuses, is a touch here rather than an error. Test: `contact_alone_agrees_with_interference`.

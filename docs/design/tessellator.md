@@ -138,3 +138,7 @@ Held by:
 - `crates/kernel/tests/loft.rs` › `a_loft_with_a_wall_of_many_waves_is_checked_and_proven`: 320 waves, 1278 segments along the sections at the check's chord, where the old tessellator refused 1534 per side. Proven clean at 1e-3, 1 and 1e6. A mesh beyond the cells is refused as too fine. The same wall wound into a bend that runs into its own beginning is found crossing.
 
 Measured (release, `craft3d-cli check-range dist/wavy-vase.3dcraftjig --samples 16 --seed 1`): 79 of 81 → 81 of 81. On a quiet machine (load 4.8), the base took a median of 102.6 ms, 10.6 s in total and 31.3 s of wall time; the branch before the slim-span rule took 91.7 ms, 10.1 s and 28.5 s. The two points that were refused at about 0.24 s now pass in 0.16 to 0.36 s.
+
+### Helper threads only for work that lasts (2026-11-01, `body.rs` › `in_order`)
+
+`in_order` works on its own for `SPAWN_AFTER` (300 µs) before it starts helper threads, and starts none when the work is done by then. Starting a thread costs tens of microseconds, more than a plane's face takes: the press-brake proof meshes a tool's prism at every step of a stroke, and spent 15 % of the chassis example in `pthread_create`. Which thread takes which face changes nothing (results in face order, work charged as before). Chassis example 10.9 s → 8.4 s, outputs identical.
