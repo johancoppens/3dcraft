@@ -452,6 +452,8 @@ pub struct Session {
     pub(crate) lean_sampling: bool,
     /// [`Session::set_bake_in_background`].
     pub(crate) bake_in_background: bool,
+    /// [`Session::set_motion_live`].
+    motion_live: bool,
     /// The files of a session without a file system (`memory_files.rs`).
     pub(crate) memory: memory_files::MemoryFiles,
     /// The last command that failed, for the bug report (`report.rs`).
@@ -513,6 +515,7 @@ impl Session {
             body_budget: None,
             lean_sampling: false,
             bake_in_background: false,
+            motion_live: false,
             memory: memory_files::MemoryFiles::default(),
             last_failure: None,
             host_details: Vec::new(),
@@ -694,6 +697,23 @@ impl Session {
         self.bake_in_background = background;
     }
 
+    /// Says whether the window's own viewport is what asks for the scene
+    /// now (true) or something that needs the exact picture (false, the
+    /// default: a screenshot, a frame-exact recording, a script). While it
+    /// is true, the moment of a playing motion may be shown provisionally
+    /// (docs/design/motion.md › *Shapes in the background*) and settles
+    /// as the viewer polls ([`Self::poll_motion`]); while it is false,
+    /// every picture is of the exact moment, made where it is asked for if
+    /// it must be. Commands always see it false: [`Self::execute`] turns
+    /// it off while one runs, so `view.render`, exports and assertions
+    /// never show a provisional moment.
+    pub fn set_motion_live(&mut self, live: bool) {
+        self.motion_live = live;
+        for open in &mut self.documents {
+            open.motion.live = live;
+        }
+    }
+
     /// Sets, for every open document and those opened later, the most
     /// bytes of bodies that went into later features that are kept
     /// between commands ([`craft3d_regen::RegenCache::set_body_budget`]).
@@ -794,6 +814,19 @@ impl Session {
     }
 
     fn execute_unrecorded(&mut self, id: &str, params: &Value) -> Result<Value, CommandError> {
+        // A command never sees a provisional moment (`set_motion_live`).
+        let live = self.motion_live;
+        if live {
+            self.set_motion_live(false);
+        }
+        let outcome = self.execute_exact(id, params);
+        if live {
+            self.set_motion_live(true);
+        }
+        outcome
+    }
+
+    fn execute_exact(&mut self, id: &str, params: &Value) -> Result<Value, CommandError> {
         let Some(spec) = Self::command(id) else {
             let hint = commands::closest(id)
                 .map(|c| format!("; did you mean `{c}`?"))

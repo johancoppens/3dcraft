@@ -346,10 +346,17 @@ impl Shell {
         let collisions = self.state.timeline.collisions;
         // At once with what is built, the rest built in the background:
         // the window never waits for a configuration
-        // (docs/design/motion.md › *Shapes in the background*).
+        // (docs/design/motion.md › *Shapes in the background*). Recorded
+        // frame by frame or captured, each moment is the exact one, so the
+        // frames do not depend on how far the builder got.
+        let shapes = if self.exact_pictures() {
+            "exact"
+        } else {
+            "ready"
+        };
         self.timeline.queue(
             "view.motion",
-            json!({"t": t, "collisions": collisions, "shapes": "ready"}),
+            json!({"t": t, "collisions": collisions, "shapes": shapes}),
         );
     }
 

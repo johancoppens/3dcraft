@@ -314,3 +314,129 @@ fn without_a_timeline_the_motion_is_not_offered() {
     assert_eq!(got["timeline"]["playsMotion"], false);
     assert_eq!(got["timeline"]["t"], Value::Null);
 }
+
+/// A bar part with a published length (`bar.3dcraft`), and an assembly of
+/// a crank turned by `360 deg * t` and a bar whose length follows `t`: a
+/// configuration of its own at every moment, built in the background
+/// while the window plays.
+fn stretching(name: &str) -> Session {
+    use craft3d_engine::Access;
+    let dir =
+        std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("ui-motion-{name}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = Session::new(Workspace {
+        read: Access::Root(dir.clone()),
+        write: Access::Root(dir),
+    });
+    run(&mut s, "file.new", json!({}));
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "len", "expr": "24 mm"}),
+    );
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "len", "min": "10 mm", "max": "500 mm"}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Bar", "size": ["len", 4, 2]}),
+    );
+    run(
+        &mut s,
+        "datum.axis",
+        json!({"name": "End1", "through": [[2, 2, 0], [2, 2, 1]]}),
+    );
+    run(&mut s, "file.save", json!({"path": "bar.3dcraft"}));
+    run(&mut s, "file.close", json!({}));
+    run(&mut s, "assembly.new", json!({}));
+    let bar = |name: &str, len: &str, y: f64| {
+        json!({"source": "bar.3dcraft", "name": name, "body": "Bar",
+               "params": {"len": len}, "position": [0, y, 0]})
+    };
+    run(&mut s, "instance.add", bar("Ground", "64 mm", 0.0));
+    run(&mut s, "instance.add", bar("Crank", "24 mm", 0.0));
+    run(
+        &mut s,
+        "instance.add",
+        bar("Belt", "30 mm + 20 mm * t", 20.0),
+    );
+    run(&mut s, "variable.set", json!({"name": "t", "expr": "0"}));
+    for (name, kind, a, b) in [
+        ("Base", "fixed", "world/z", "Ground/End1"),
+        ("Drive", "revolute", "Ground/End1", "Crank/End1"),
+        ("Hold", "fixed", "world/z", "Belt/End1"),
+    ] {
+        run(
+            &mut s,
+            "mate.add",
+            json!({"kind": kind, "a": a, "b": b, "name": name, "flip": true}),
+        );
+    }
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "Drive_angle", "expr": "360 deg * t"}),
+    );
+    s
+}
+
+/// A picture of the window (`ui.screenshot`) and the frames of a
+/// frame-exact recording show the exact moment of a playing motion, never
+/// the provisional one the viewport may show while the builder works (an
+/// independent review of 2026-11-02): the same picture as a window that
+/// asked for the moment exactly.
+#[test]
+fn pictures_and_recorded_frames_of_a_provisional_moment_are_the_exact_one() {
+    let mut window = Window {
+        ctx: egui::Context::default(),
+        time: 0.0,
+    };
+    let mut exact = stretching("exact");
+    let mut exact_shell = Shell::new();
+    window.frame(&mut exact_shell, &mut exact, 0.0);
+    run(&mut exact, "view.motion", json!({"t": 0.5}));
+    window.frame(&mut exact_shell, &mut exact, 0.0);
+    let wanted = screenshot(&mut exact_shell, &mut exact, "motion-exact");
+
+    let mut s = stretching("ready");
+    let mut shell = Shell::new();
+    window.frame(&mut shell, &mut s, 0.0);
+    let answer = run(&mut s, "view.motion", json!({"t": 0.5, "shapes": "ready"}));
+    window.frame(&mut shell, &mut s, 0.0);
+    if craft3d_math::available_threads() >= 2 {
+        assert_eq!(answer["exact"], false, "{answer}");
+        // The live viewport shows it provisionally.
+        assert!(!s.motion().unwrap().exact);
+    }
+    assert_eq!(screenshot(&mut shell, &mut s, "motion-ready"), wanted);
+
+    // Recorded frame by frame: the viewport is not live, the moment exact.
+    let mut r = stretching("recorded");
+    let mut shell = Shell::new();
+    window.frame(&mut shell, &mut r, 0.0);
+    run(&mut r, "view.motion", json!({"t": 0.5, "shapes": "ready"}));
+    shell.set_frame_exact(true);
+    assert!(shell.exact_pictures());
+    window.frame(&mut shell, &mut r, 0.0);
+    assert!(r.motion().unwrap().exact);
+    assert_eq!(screenshot(&mut shell, &mut r, "motion-recorded"), wanted);
+    // And the player asks for exact moments at full quality.
+    call(
+        &mut shell,
+        &mut r,
+        "ui.set",
+        json!({"timeline": {"motion": true, "playing": true, "speed": 2}}),
+    );
+    assert!(!matches!(
+        shell.scene_quality(),
+        craft3d_engine::SceneQuality::Preview
+    ));
+    for _ in 0..6 {
+        window.frame(&mut shell, &mut r, 0.05);
+        assert!(r.motion().is_none_or(|m| m.exact));
+    }
+}

@@ -3,7 +3,9 @@
 //! (`interference_cmds::in_order`, which also builds an assembly's
 //! configurations and bakes a motion), its assertions measured side by
 //! side (`assert_check`), and the regeneration's unions of a pattern
-//! (`craft3d_regen` › `derive::in_order`). Kept here, at the bottom of the
+//! (`craft3d_regen` › `derive::in_order`), and the threads of a motion's
+//! background builder (`craft3d_engine` › `motion_build.rs`), each of
+//! which works only while it holds one ([`lease_for_worker`]). Kept here, at the bottom of the
 //! layers, so the threads that may each run a freeform boolean come from
 //! the same pool (the tessellator's and the mass integrator's lighter
 //! threads keep bounds of their own) (an independent review of 2026-11-01 found the pattern's
@@ -52,11 +54,31 @@ pub fn work_alone() {
     ALONE.with(|alone| alone.set(true));
 }
 
+/// True on a thread that called [`work_alone`]: background work, which
+/// also takes fewer of the slots of the kernel's freeform operations
+/// (`craft3d_kernel` › `freeform::holding`).
+pub fn alone() -> bool {
+    ALONE.with(std::cell::Cell::get)
+}
+
+/// One thread of the pool for a background worker itself (a motion's
+/// builder, `craft3d_engine` › `motion_build.rs`), when one is free: the
+/// worker holds it while it works, so the threads of the work someone
+/// waits for and the background's stay within [`SHARED_THREADS`] together.
+/// Unlike [`lease`] it is taken also on a thread that works alone.
+pub fn lease_for_worker() -> Lease {
+    take(1)
+}
+
 /// Up to `wanted` extra threads, as many as are free now (none is fine).
 pub fn lease(wanted: usize) -> Lease {
     if ALONE.with(std::cell::Cell::get) {
         return Lease(0);
     }
+    take(wanted)
+}
+
+fn take(wanted: usize) -> Lease {
     let mut free = FREE.load(Ordering::Acquire);
     loop {
         let take = wanted.min(free);

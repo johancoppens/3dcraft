@@ -1895,6 +1895,70 @@ pub(super) const HELD_BYTES: usize = 512 << 20;
 /// [`HELD_BYTES`].
 pub(super) const TOO_MUCH_HELD: Reason = "the freeform faces it meets need more memory for their indexes than one operation may take (too many freeform faces, or faces of too many pieces)";
 
+/// Freeform operations (outermost [`holding`]s) that run at once in the
+/// whole process, at most; a thread that works in the background
+/// (`craft3d_math::pool::alone`: a motion's builder) takes one fewer, so
+/// the work someone waits for always finds a slot. [`HELD_BYTES`] bounds
+/// one operation's trees, deterministically (it refuses the same whatever
+/// else runs); this bounds how many such budgets are held at once, so
+/// the trees of the whole process stay below `OPERATIONS_AT_ONCE ×
+/// HELD_BYTES` plus the shelf ([`SHELF_BYTES`]): 6.75 GiB natively. An
+/// operation beyond it waits for a slot, which changes when it runs,
+/// never what it answers. Before 2026-11-02 the budget was per thread
+/// only: a motion's three builder threads, the window's thread and the
+/// pattern unions' helpers could each hold 2 GiB (an independent review).
+/// No freeform operation waits for another thread while it holds a slot
+/// (none starts threads), so the slots cannot deadlock.
+pub const OPERATIONS_AT_ONCE: usize = 3;
+
+struct Gate {
+    running: Mutex<usize>,
+    freed: std::sync::Condvar,
+}
+
+static GATE: Gate = Gate {
+    running: Mutex::new(0),
+    freed: std::sync::Condvar::new(),
+};
+
+/// A slot of [`OPERATIONS_AT_ONCE`], given back when dropped.
+struct Slot;
+
+impl Slot {
+    /// Waits for a slot.
+    fn take() -> Self {
+        let limit = if craft3d_math::pool::alone() {
+            OPERATIONS_AT_ONCE.saturating_sub(1).max(1)
+        } else {
+            OPERATIONS_AT_ONCE
+        };
+        let mut running = GATE.running.lock().unwrap_or_else(PoisonError::into_inner);
+        while *running >= limit {
+            running = GATE
+                .freed
+                .wait(running)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        *running = running.saturating_add(1);
+        Slot
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        let mut running = GATE.running.lock().unwrap_or_else(PoisonError::into_inner);
+        *running = running.saturating_sub(1);
+        drop(running);
+        GATE.freed.notify_all();
+    }
+}
+
+/// How many freeform operations run now in the whole process (for tests
+/// of [`OPERATIONS_AT_ONCE`]).
+pub fn operations_running() -> usize {
+    *GATE.running.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 thread_local! {
     /// The trees the operation running on this thread asked for
     /// ([`holding`]), by their numbers, and the bytes they take; `None`
@@ -1960,6 +2024,9 @@ fn holding_within<T>(
         d.set(was.saturating_add(1));
         was
     });
+    // Taken before `Leave`, so it is given back after the trees are let
+    // go of.
+    let _slot = (depth == 0).then(Slot::take);
     let _leave = Leave;
     if depth == 0 {
         HELD.with(|held| {
@@ -3430,6 +3497,48 @@ mod tests {
     use super::*;
     use craft3d_geom::BezierPatch;
     use craft3d_math::Frame;
+
+    /// At most [`OPERATIONS_AT_ONCE`] freeform operations run at once in
+    /// the whole process, and one fewer of those of background threads;
+    /// the others wait and then run (2026-11-02).
+    #[test]
+    fn freeform_operations_at_once_are_bounded_process_wide() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        for background in [false, true] {
+            let inside = AtomicUsize::new(0);
+            let most = AtomicUsize::new(0);
+            let most_anywhere = AtomicUsize::new(0);
+            let done = AtomicUsize::new(0);
+            std::thread::scope(|scope| {
+                for _ in 0..8 {
+                    scope.spawn(|| {
+                        if background {
+                            craft3d_math::pool::work_alone();
+                        }
+                        let ran = holding(|| {
+                            let now = inside.fetch_add(1, Ordering::SeqCst) + 1;
+                            most.fetch_max(now, Ordering::SeqCst);
+                            most_anywhere.fetch_max(operations_running(), Ordering::SeqCst);
+                            std::thread::sleep(std::time::Duration::from_millis(20));
+                            inside.fetch_sub(1, Ordering::SeqCst);
+                            Ok(())
+                        });
+                        assert!(ran.is_ok());
+                        done.fetch_add(1, Ordering::SeqCst);
+                    });
+                }
+            });
+            assert_eq!(done.load(Ordering::SeqCst), 8);
+            let limit = if background {
+                OPERATIONS_AT_ONCE - 1
+            } else {
+                OPERATIONS_AT_ONCE
+            };
+            assert!(most.load(Ordering::SeqCst) <= limit, "{background}");
+            assert!(most.load(Ordering::SeqCst) >= 1);
+            assert!(most_anywhere.load(Ordering::SeqCst) <= OPERATIONS_AT_ONCE);
+        }
+    }
 
     fn dome() -> Surface {
         let roof = craft3d_testkit::trimmed::domed_block(&Frame::WORLD, 4.0, 3.0, 2.0, false)

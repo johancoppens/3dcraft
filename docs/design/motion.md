@@ -149,12 +149,14 @@ moments of the same motion, never other ones. All of it is view state in
 offered only for a document with a timeline.
 
 Since 2026-11-01 the player asks with `shapes: "ready"` (*Shapes in the background*): a moment never waits for a
-configuration, so its clock runs at real time and the window's thread does a solve and a placement per moment (or
+configuration (except while the window is recorded frame by frame or captured, `Shell::exact_pictures`: then it asks
+with `"exact"`, the viewport is not live and the scene is of full quality, so the frames never depend on how far the
+builder got), so its clock runs at real time and the window's thread does a solve and a placement per moment (or
 only a placement, for a baked frame), never a regeneration. It keeps its clock unrounded and asks for `t` rounded to
 the frames of the last bake (`rounded_to_frames`, `MotionView::baked`), so a baked motion asks for nothing that is
 not made ahead; a motion that builds as it plays (a moment provisional, configurations building) is baked in the
 background at 120 frames, once. While it plays the viewport shows each moment as the quick first picture
-(`Shell::scene_quality`): one scene per moment instead of two, and no display meshes made and kept for moments gone
+(`Shell::scene_quality`, not while recorded frame by frame or captured): one scene per moment instead of two, and no display meshes made and kept for moments gone
 the next frame; paused, the moment is refined as any picture is. While a moment is provisional or the builder works
 the window polls (`Session::poll_motion`) every 33 ms, so a paused provisional moment settles by itself. The GPU
 viewport takes over the uploaded vertices of the parts that did not change (`Onscreen::upload_parts_from`,
@@ -263,7 +265,7 @@ solved, and the solve reads the instance's geometry). What keeps that affordable
   moments at frame timing, not at `k / frames`: a moment between the frames baked costs its own configurations,
   so the player rounds `t` to the baked frames (*The player*).
 - **Shapes in the background** (`view.motion {shapes: "ready"}`, `crates/engine/src/motion_build.rs`,
-  2026-11-01). A viewer that plays asks for each moment with `shapes: "ready"` (it stays until `"exact"`) and is
+  2026-11-01). A viewer that plays asks for each moment with `shapes: "ready"` (for that call only) and is
   answered at once (`Sweep::placed_ready`): when the grid point of `t` is solved and every configuration `t` asks
   for is kept, it is the exact moment (`placed_at`); otherwise a **provisional** one: each instance whose
   configuration is not kept is shown with the kept configuration of its own nearest in `t` (`AsmSweep::seen`
@@ -272,17 +274,40 @@ solved, and the solve reads the instance's geometry). What keeps that affordable
   (`Solver::advance` cuts its steps). A provisional moment is never kept in the grid, so the grid stays exact (seek
   = play) and the moment, made again once what it lacked is in, is the exact one bit for bit
   (`crates/engine/tests/motion_ready.rs`). The rest is built by the session's **builder**, a few threads of its own
-  (half the machine, at most 4; `Builder::available` is false in the browser, where `"ready"` is `"exact"`, made
-  where it is asked for): the configurations a provisional moment lacks (urgent, at the front), **runs of the
-  grid** (16 grid points solved one after the other on a copy of the motion's state, building what they ask for
-  as a placement does, one run at a time toward the grid target: the last provisional moment's grid point or the
-  farthest a bake reaches) and **runs of a bake's frames** (8 frames each, two at a time). Results are taken in by
+  (a quarter of the machine, at most 3; `Builder::available` is false in the browser, where `"ready"` is
+  `"exact"`, made where it is asked for): the configurations a provisional moment lacks (urgent, at the front),
+  **runs of the grid** (16 grid points solved one after the other on a copy of the motion's state, building what
+  they ask for as a placement does, one run at a time toward the grid target: the last provisional moment's grid
+  point or the farthest a bake reaches) and **runs of a bake's frames** (8 frames each, one run at a time). Results are taken in by
   `Session::poll_motion` (at the start of `view.motion` and `motion.bake`, and every frame of a window while a
   moment is provisional or the builder busy), configurations sorted by key, grid points only next to a solved one;
   what arrives only changes when a moment becomes exact, never what it is. Nothing a run does is shared with the
   session until it is taken in (a copy of `AsmState` and of the document), and a new sweep (an edit, a reload,
-  `{t: null}`, `motion.bake {cancel: true}`) moves the builder to a new epoch: what it is still doing for the old
-  one is let go of when it comes.
+  `{t: null}`, `motion.bake {cancel: true}`) moves the builder to a new epoch: a run asks between its grid points
+  and frames whether it was let go of and stops there, a configuration being built is let go of when it comes,
+  and dropping the builder (closing the document) tells its threads to stop without waiting for them. A grid run
+  that panics or cannot make a moment is recorded (`AsmSweep::grid_stopped`) and not started again for that
+  sweep, and a provisional moment is made again only when something was taken in (or once the builder, busy when
+  it was made, is idle), so nothing is asked for every poll.
+- **Provisional only on screen** (2026-11-02, after an independent review). Only the answer of a `view.motion
+  {shapes: "ready"}` and the window's own viewport (`Session::set_motion_live`, which the shell sets each frame)
+  show a provisional moment. Every command runs with it off (`Session::execute`), so `view.render`, `view.pick`,
+  exports, assertions and a `view.motion` without `"ready"` see the exact moment, made where it is asked for if it
+  must be; so do `ui.screenshot` and a frame-exact recording (`ui.record {step: true}`), during which the shell
+  keeps it off and the player asks with `"exact"`. Before, `"ready"` stayed on once the player had set it, and a
+  render or a recorded frame showed whatever the builder had reached.
+- **The builder's budget** (2026-11-02). Its threads take their place from the process-wide pool
+  (`craft3d_math::pool`): a worker builds only while it holds one of the pool's `SHARED_THREADS` (7) and takes no
+  helpers (`work_alone`), so a regeneration it runs (a pattern's unions, `derive::in_order`) runs on that one
+  thread, and the background and the work someone waits for stay within the pool together. Freeform booleans
+  are bounded process-wide: at most `OPERATIONS_AT_ONCE` (3) hold their trees at once, two of them from
+  background threads (`craft3d_kernel` › `freeform::holding`); each holds at most `HELD_BYTES` (2 GiB), so the
+  trees of the whole process stay below 6 GiB plus the shelf (768 MiB), whatever the builder does (before, the
+  2 GiB were per thread: three builder threads, the window's and the unions' helpers could each hold them). An
+  operation beyond the slots waits, which changes when it runs, never its answer. The builder's own memory: at
+  most `MAX_QUEUED` (256) configurations queued, each with a copy of its source document and of its source's
+  regeneration cache (bodies shared); per worker the regeneration caches of at most 4 sources (`MAX_CACHES`); the
+  configurations themselves within the configuration budget once taken in.
 - **A bake in the window never blocks it.** `motion.bake {background: true}` (the window's default,
   `Session::set_bake_in_background`) only hands the bake to the builder and returns within milliseconds (the
   rest grid point solved; the grid and the frames in runs); `building` in `view.motion` says what is left;

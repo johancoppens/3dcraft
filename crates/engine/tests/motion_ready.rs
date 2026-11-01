@@ -85,6 +85,9 @@ fn assembly_session(name: &str) -> Session {
     let mut s = session_in(&dir);
     bar_part(&mut s);
     stretching(&mut s);
+    // As the window's viewport: provisional moments are shown, and settle
+    // by polling.
+    s.set_motion_live(true);
     s
 }
 
@@ -247,6 +250,137 @@ fn a_bake_in_the_background_plays_what_a_bake_in_the_command_plays() {
         got.push(shown(&mut s));
     }
     assert_eq!(got, wanted);
+}
+
+/// The picture `view.render` draws in the session of
+/// [`assembly_session`]`(session)`, as bytes.
+fn rendered(s: &mut Session, session: &str) -> Vec<u8> {
+    run(
+        s,
+        "view.render",
+        json!({ "path": "moment.png", "width": 96, "height": 64 }),
+    );
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("motion-ready-{session}"));
+    std::fs::read(dir.join("moment.png")).unwrap()
+}
+
+/// What an agent, a test or an export sees is the exact moment, also while
+/// the window's viewport shows a provisional one: a command's picture, and
+/// the scene a picture of the window (a screenshot, a frame-exact
+/// recording) is drawn from when the viewport is not live (an independent
+/// review of 2026-11-02 found them showing the stale belt).
+#[test]
+fn a_picture_during_a_provisional_moment_is_the_exact_one() {
+    let mut exact = assembly_session("picture-exact");
+    exact.set_motion_live(false);
+    run(&mut exact, "view.motion", json!({ "t": 0.5 }));
+    let wanted = shown(&mut exact);
+    let wanted_png = rendered(&mut exact, "picture-exact");
+
+    let mut s = assembly_session("picture-ready");
+    let answer = run(
+        &mut s,
+        "view.motion",
+        json!({ "t": 0.5, "shapes": "ready" }),
+    );
+    if craft3d_math::available_threads() >= 2 {
+        assert_eq!(answer["exact"], false, "{answer}");
+        assert_ne!(shown(&mut s), wanted, "the viewport shows it provisionally");
+    }
+    // A command's picture, while the viewport would still be provisional.
+    assert_eq!(rendered(&mut s, "picture-ready"), wanted_png);
+    // view.motion without shapes answers the exact moment.
+    let mut again = assembly_session("picture-again");
+    run(
+        &mut again,
+        "view.motion",
+        json!({ "t": 0.5, "shapes": "ready" }),
+    );
+    let answer = run(&mut again, "view.motion", json!({ "t": 0.5 }));
+    assert_eq!(answer["exact"], true, "{answer}");
+    assert_eq!(answer["stale"], json!([]), "{answer}");
+    // The window's picture: the viewport not live, the scene is exact.
+    let mut window = assembly_session("picture-window");
+    run(
+        &mut window,
+        "view.motion",
+        json!({ "t": 0.5, "shapes": "ready" }),
+    );
+    window.set_motion_live(false);
+    assert_eq!(shown(&mut window), wanted);
+    assert!(window.motion().unwrap().exact);
+}
+
+/// An edit or a cancel while the builder works lets go of what it was
+/// building for the motion before: the moment settles to the exact one of
+/// the edited assembly.
+#[test]
+fn an_edit_or_a_cancel_while_building_discards_the_stale_work() {
+    let edit = |s: &mut Session| {
+        run(
+            s,
+            "variable.set",
+            json!({ "name": "Drive_angle", "expr": "180 deg * t" }),
+        );
+        run(
+            s,
+            "instance.edit",
+            json!({ "name": "Belt", "params": { "len": "40 mm + 20 mm * t" } }),
+        );
+    };
+    let mut exact = assembly_session("edit-exact");
+    edit(&mut exact);
+    let mut wanted = Vec::new();
+    for t in [0.5, 0.75] {
+        run(&mut exact, "view.motion", json!({ "t": t }));
+        wanted.push(shown(&mut exact));
+    }
+
+    let mut s = assembly_session("edit-ready");
+    // The background busy with the motion as it was: a bake and a moment.
+    run(
+        &mut s,
+        "motion.bake",
+        json!({ "frames": 16, "background": true }),
+    );
+    run(
+        &mut s,
+        "view.motion",
+        json!({ "t": 0.75, "shapes": "ready" }),
+    );
+    edit(&mut s);
+    let mut got = Vec::new();
+    for t in [0.5, 0.75] {
+        run(&mut s, "view.motion", json!({ "t": t, "shapes": "ready" }));
+        settle(&mut s);
+        got.push(shown(&mut s));
+    }
+    assert_eq!(got, wanted);
+
+    // Cancelled while building: what was dropped is asked for again by
+    // the next moment, which settles to the exact one.
+    let mut c = assembly_session("cancel-ready");
+    edit(&mut c);
+    run(
+        &mut c,
+        "motion.bake",
+        json!({ "frames": 16, "background": true }),
+    );
+    run(
+        &mut c,
+        "view.motion",
+        json!({ "t": 0.75, "shapes": "ready" }),
+    );
+    let cancelled = run(&mut c, "motion.bake", json!({ "cancel": true }));
+    assert!(cancelled.is_object(), "{cancelled}");
+    run(
+        &mut c,
+        "view.motion",
+        json!({ "t": 0.5, "shapes": "ready" }),
+    );
+    settle(&mut c);
+    assert_eq!(shown(&mut c), wanted[0]);
 }
 
 #[test]

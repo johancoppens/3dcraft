@@ -727,7 +727,13 @@ impl Direct {
                 // The old copy goes first: twice the model would not fit
                 // a small device. Of an assembly's parts the ones that are
                 // the same (another moment in which one instance changed
-                // shape) are taken over, the others let go of.
+                // shape) are taken over, the others let go of. Then the
+                // copy taken over lives until the new one is made (its
+                // parts are copied on the device), and the parts of the
+                // other quality are kept as the spare: while an
+                // assembly's moment uploads, the device holds up to three
+                // copies (the spare, the one taken over and the new one);
+                // anything else uploads with nothing but the new one.
                 let current = self
                     .uploaded
                     .take()
@@ -760,7 +766,13 @@ impl Direct {
                             }
                         }
                     }
-                    _ => (None, Vec::new()),
+                    _ => {
+                        // Nothing to take over: both go before the new
+                        // copy is made.
+                        drop(current);
+                        drop(spare);
+                        (None, Vec::new())
+                    }
                 };
                 let empty = craft3d_tess::Mesh::default();
                 let mesh = scene.map_or(&empty, |s| &s.mesh);

@@ -614,6 +614,10 @@ pub struct Shell {
     /// measured on the wall clock is drawn (a picture's milliseconds in
     /// the status bar), so the same requests give the same window.
     frame_exact: bool,
+    /// A picture of the window is being taken (`ui.screenshot`): like a
+    /// frame-exact recording, it shows the exact moment of a motion at
+    /// full quality ([`Self::exact_pictures`]).
+    pub(crate) capturing: bool,
     pub tokens: Tokens,
     pub last_command: Option<CommandReport>,
     /// The work indicator and the texts of the status bar, held so they
@@ -1147,6 +1151,7 @@ impl Shell {
         Self {
             state: UiState::default(),
             frame_exact: false,
+            capturing: false,
             tokens: Tokens::default(),
             last_command: None,
             calm: Calm::default(),
@@ -1400,6 +1405,23 @@ impl Shell {
         self.frame_exact = exact;
     }
 
+    /// A picture of the window is being taken (`ui.screenshot`) while
+    /// `capturing` is true ([`Self::exact_pictures`]).
+    pub fn set_capturing(&mut self, capturing: bool) {
+        self.capturing = capturing;
+    }
+
+    /// True while what the viewport draws is recorded or captured (a
+    /// frame-exact recording, a picture of the window): a playing motion
+    /// then shows each moment exactly (`Session::set_motion_live` off, the
+    /// player asks with `shapes: "exact"`) and at the full quality, never
+    /// the provisional moment or the quick first picture a play shows on
+    /// screen, so the frames do not depend on timing
+    /// (docs/design/motion.md › *The player*).
+    pub fn exact_pictures(&self) -> bool {
+        self.frame_exact || self.capturing
+    }
+
     /// Whether the viewport, drawn directly, is still averaging the frames
     /// of a still picture (`Look::accumulate`): a picture of the window
     /// taken now would be half done.
@@ -1457,7 +1479,7 @@ impl Shell {
         // made and kept for moments that are gone the next frame
         // (docs/design/motion.md › *The player*). Paused, the moment
         // shown is refined as any picture is.
-        if self.state.timeline.playing && self.playing_motion() {
+        if self.state.timeline.playing && self.playing_motion() && !self.exact_pictures() {
             return SceneQuality::Preview;
         }
         self.state.quality.scene_quality()
@@ -2294,6 +2316,11 @@ impl Shell {
     fn ui_with(&mut self, ui: &mut egui::Ui, mut session: Option<&mut Session>) {
         // Set again where the drawer is drawn.
         self.drawer_sliding = false;
+        // The viewport may show a provisional moment of a playing motion,
+        // a picture that is recorded or captured may not.
+        if let Some(session) = session.as_deref_mut() {
+            session.set_motion_live(!self.exact_pictures());
+        }
         // The appearance: the panels' colours follow the state's choice,
         // or the system's (`Appearance::System`), from this frame on.
         self.system_theme = ui.ctx().system_theme();

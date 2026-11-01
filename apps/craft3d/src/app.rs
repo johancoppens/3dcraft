@@ -401,6 +401,7 @@ impl Desk {
     /// asked for in the last frame and what a dialog answered since.
     /// Needs no frame and no window.
     pub fn turn(&mut self) -> Turn {
+        self.sync_exact_pictures();
         if self.worker.is_none() {
             let mut answered = self.settle_capture();
             while let Ok(request) = self.requests.try_recv() {
@@ -1170,6 +1171,7 @@ impl Desk {
                     since: Instant::now(),
                     image: None,
                 });
+                self.sync_exact_pictures();
                 self.ring_at_deadline();
                 None
             }
@@ -1484,8 +1486,24 @@ impl Desk {
         Ok((frame, settled))
     }
 
+    /// Tells the shell, and the session when it is here, whether what the
+    /// window draws is captured (a picture of the window asked for; a
+    /// frame-exact recording tells the shell itself): then a playing
+    /// motion is drawn at its exact moments and full quality
+    /// ([`Shell::exact_pictures`]), so a capture or a recording never
+    /// depends on how far the motion's background builder got.
+    fn sync_exact_pictures(&mut self) {
+        self.host.shell.set_capturing(self.capture.is_some());
+        if !self.away() {
+            let live = !self.host.shell.exact_pictures();
+            self.host.session.set_motion_live(live);
+        }
+    }
+
     /// Whether the window has settled for the next frame of a frame-exact
-    /// recording: no command running, the scene built and refined.
+    /// recording: no command running, the scene built and refined. The
+    /// moment of a motion is exact by then: while a recording or a capture
+    /// runs, nothing provisional is shown ([`Self::sync_exact_pictures`]).
     fn settled(&mut self) -> bool {
         !self.away() && self.capture.is_none() && self.scene_ready() && !self.refining()
     }
@@ -1499,6 +1517,7 @@ impl Desk {
         if self.rec.recorder.is_none() {
             return false;
         }
+        self.sync_exact_pictures();
         let mut changed = false;
         // A picture of the window, painted offscreen: it needs no frame
         // of the compositor. It shows the display scene, as one taken

@@ -61,8 +61,6 @@ pub(crate) struct GridStep {
     pub stuck: Option<crate::motion::Stuck>,
 }
 
-/// Solves grid points one after the other on a copy of the motion's
-/// state (`Sweep::grid_job`).
 /// What a run on a copy of the motion's state hands in: grid points
 /// solved, the configurations it built (as a placement builds them) and
 /// what each instance asks for at the frames it looked at.
@@ -71,12 +69,19 @@ pub(crate) struct Worked {
     pub steps: Vec<GridStep>,
     pub built: Vec<PartDone>,
     pub seen: Vec<(f64, Vec<(String, String)>)>,
+    /// The run stopped short: it panicked, or a moment of it could not be
+    /// made. A grid run that failed is not started again for this sweep
+    /// (it would fail again, and the session would ask for it every
+    /// poll); the moments it was for are made where they are asked for.
+    pub failed: bool,
 }
 
 /// A run on a copy of the motion's state: the grid solved a stretch
 /// further (`Sweep::queue_grid`), or frames of a bake built
-/// (`Sweep::queue_baked`).
-pub(crate) type GridJob = Box<dyn FnOnce() -> Worked + Send>;
+/// (`Sweep::queue_baked`). It is given a test of whether it was let go
+/// of (a new sweep, the builder dropped), which it asks between its grid
+/// points and frames, and then hands in what it has.
+pub(crate) type GridJob = Box<dyn FnOnce(&dyn Fn() -> bool) -> Worked + Send>;
 
 /// What a worker is given.
 enum Job {
@@ -91,9 +96,13 @@ enum Done {
     Grid(Worked, bool),
 }
 
-/// Most jobs waiting at once: a bake of a thousand frames through the
-/// grid asks for about two thousand configurations of one instance.
-const MAX_QUEUED: usize = 16_384;
+/// Most configurations queued or being built at once. Each job holds a
+/// copy of its source document and of the regeneration cache of its
+/// source (whose bodies are shared), so this bounds the queue's memory
+/// (docs/design/motion.md › *Shapes in the background*, the budget); the
+/// configurations not queued are asked for again by the next moment that
+/// lacks them, and a bake's frames are built by runs, not queued here.
+pub(crate) const MAX_QUEUED: usize = 256;
 
 /// The background builder of one open document's motion. A clone has
 /// none: background work stays with the session that asked for it.
@@ -111,6 +120,8 @@ pub(crate) struct Builder {
     grid_done: Vec<GridStep>,
     /// What runs saw the instances ask for, not taken yet.
     seen_done: Vec<(f64, Vec<(String, String)>)>,
+    /// A grid run of this epoch failed ([`Worked::failed`]), not taken yet.
+    grid_failed: bool,
     #[cfg(not(target_arch = "wasm32"))]
     running: Option<native::Running>,
 }
@@ -144,6 +155,7 @@ impl Builder {
         self.frames_busy = 0;
         self.grid_done.clear();
         self.seen_done.clear();
+        self.grid_failed = false;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(running) = &self.running {
             running.reset(self.epoch);
@@ -244,6 +256,11 @@ impl Builder {
         }
     }
 
+    /// True once when a grid run failed since the last call.
+    pub(crate) fn take_grid_failed(&mut self) -> bool {
+        std::mem::take(&mut self.grid_failed)
+    }
+
     /// The grid points solved since the last call, in order.
     pub(crate) fn take_grid(&mut self) -> Vec<GridStep> {
         self.collect();
@@ -268,6 +285,7 @@ impl Builder {
                     Done::Grid(worked, grid) => {
                         if grid {
                             self.grid_busy = false;
+                            self.grid_failed |= worked.failed;
                         } else {
                             self.frames_busy = self.frames_busy.saturating_sub(1);
                         }
@@ -309,8 +327,38 @@ impl Builder {
     }
 }
 
+/// Most sources a worker keeps a regeneration cache of: the caches hold
+/// the bodies of every feature of a configuration, so a worker that went
+/// through many sources does not keep them all (part of the builder's
+/// budget, docs/design/motion.md).
+const MAX_CACHES: usize = 4;
+
+/// A worker's regeneration caches by source, the one used last at the
+/// back.
+#[derive(Default)]
+struct Caches(Vec<(String, RegenCache)>);
+
+impl Caches {
+    fn take(&mut self, source: &str) -> Option<RegenCache> {
+        let at = self.0.iter().position(|(s, _)| s == source)?;
+        Some(self.0.remove(at).1)
+    }
+
+    fn put(&mut self, source: String, cache: RegenCache) {
+        self.0.retain(|(s, _)| *s != source);
+        self.0.push((source, cache));
+        let over = self.0.len().saturating_sub(MAX_CACHES);
+        self.0.drain(..over);
+    }
+
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
 /// Builds one part's configuration as `asm` builds it.
-fn build(job: PartJob, caches: &mut std::collections::BTreeMap<String, RegenCache>) -> PartDone {
+fn build(job: PartJob, caches: &mut Caches) -> PartDone {
     let PartJob {
         key,
         doc,
@@ -320,7 +368,7 @@ fn build(job: PartJob, caches: &mut std::collections::BTreeMap<String, RegenCach
     } = job;
     let mut cache = source
         .as_ref()
-        .and_then(|s| caches.remove(s))
+        .and_then(|s| caches.take(s))
         .or(cache)
         .unwrap_or_default();
     let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -338,7 +386,7 @@ fn build(job: PartJob, caches: &mut std::collections::BTreeMap<String, RegenCach
         Err(_) => Err("its regeneration stopped".to_string()),
     };
     if let Some(source) = source {
-        caches.insert(source, cache);
+        caches.put(source, cache);
     }
     PartDone {
         key,
@@ -350,34 +398,45 @@ fn build(job: PartJob, caches: &mut std::collections::BTreeMap<String, RegenCach
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
-    use super::{Done, Job, build};
-    use craft3d_regen::RegenCache;
-    use std::collections::{BTreeMap, VecDeque};
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use super::{Caches, Done, Job, build};
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::mpsc::{self, Receiver, Sender};
     use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
-    /// Most threads the builder starts (each build may take more from the
-    /// shared pool, `pool.rs`).
+    /// Most threads the builder starts. Each works only while it holds a
+    /// thread of the shared pool (`craft3d_math::pool::lease_for_worker`)
+    /// and takes no more from it (`work_alone`): the builder's threads
+    /// count against the pool's limit with everyone else's, and a
+    /// regeneration a build runs (a pattern's unions) gets no helpers.
     const MAX_WORKERS: usize = 3;
+
+    /// How long a worker waits before it asks the pool again for a thread
+    /// when none was free.
+    const NO_THREAD_WAIT: std::time::Duration = std::time::Duration::from_millis(25);
 
     struct Queue {
         jobs: VecDeque<(u64, Job)>,
-        stop: bool,
     }
 
     struct Shared {
         queue: Mutex<Queue>,
         ready: Condvar,
         epoch: AtomicU64,
+        /// The builder was dropped: workers end, runs stop at their next
+        /// point.
+        stop: AtomicBool,
     }
 
     fn lock(shared: &Shared) -> MutexGuard<'_, Queue> {
         shared.queue.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The threads and the way to and from them. Dropped, the threads end
-    /// after the job they are on (they are not waited for).
+    /// The threads and the way to and from them. Dropped, the threads are
+    /// told to stop and are not waited for (detached, so dropping a
+    /// session never waits for a regeneration): a run stops at its next
+    /// grid point or frame, a configuration's build ends with the build,
+    /// and then the thread ends, its results let go of.
     pub(super) struct Running {
         shared: Arc<Shared>,
         /// Behind a lock so that a session stays `Sync`.
@@ -389,15 +448,16 @@ mod native {
             let shared = Arc::new(Shared {
                 queue: Mutex::new(Queue {
                     jobs: VecDeque::new(),
-                    stop: false,
                 }),
                 ready: Condvar::new(),
                 epoch: AtomicU64::new(epoch),
+                stop: AtomicBool::new(false),
             });
             let (send, done) = mpsc::channel();
-            // Half the machine at most: the window's thread, the engine
-            // thread, the refiner and the GPU driver keep the rest, so a
-            // play stays smooth while the builder works.
+            // A quarter of the machine, at most three: the window's
+            // thread, the engine thread, the refiner and the GPU driver
+            // keep the rest, so a play stays smooth while the builder
+            // works.
             let workers = (craft3d_math::available_threads() / 4).clamp(1, MAX_WORKERS);
             let mut started = 0;
             for n in 0..workers {
@@ -449,32 +509,48 @@ mod native {
 
     impl Drop for Running {
         fn drop(&mut self) {
-            lock(&self.shared).stop = true;
+            self.shared.stop.store(true, Ordering::Release);
+            lock(&self.shared).jobs.clear();
             self.shared.ready.notify_all();
         }
     }
 
-    /// A worker: takes the next job of the current epoch and builds it,
-    /// keeping the regeneration cache of the last configuration of each
-    /// source it built (let go of when the epoch changes).
+    /// A worker: takes the next job of the current epoch and builds it
+    /// while it holds a thread of the shared pool, keeping the
+    /// regeneration caches of the last configurations it built
+    /// ([`Caches`], let go of when the epoch changes).
     fn work(shared: &Shared, send: &Sender<(u64, Done)>) {
         craft3d_math::pool::work_alone();
-        let mut caches: BTreeMap<String, RegenCache> = BTreeMap::new();
+        let mut caches = Caches::default();
         let mut cached_for = shared.epoch.load(Ordering::Acquire);
         loop {
-            let (epoch, job) = {
+            let (epoch, job, _thread) = {
                 let mut queue = lock(shared);
                 loop {
-                    if queue.stop {
+                    if shared.stop.load(Ordering::Acquire) {
                         return;
                     }
-                    if let Some(next) = queue.jobs.pop_front() {
-                        break next;
+                    if queue.jobs.is_empty() {
+                        queue = shared
+                            .ready
+                            .wait(queue)
+                            .unwrap_or_else(PoisonError::into_inner);
+                        continue;
                     }
-                    queue = shared
-                        .ready
-                        .wait(queue)
-                        .unwrap_or_else(PoisonError::into_inner);
+                    let thread = craft3d_math::pool::lease_for_worker();
+                    if thread.threads() == 0 {
+                        // Every thread of the pool works for someone:
+                        // asked again in a moment.
+                        queue = shared
+                            .ready
+                            .wait_timeout(queue, NO_THREAD_WAIT)
+                            .map(|(queue, _)| queue)
+                            .unwrap_or_else(|e| e.into_inner().0);
+                        continue;
+                    }
+                    if let Some((epoch, job)) = queue.jobs.pop_front() {
+                        break (epoch, job, thread);
+                    }
                 }
             };
             let now = shared.epoch.load(Ordering::Acquire);
@@ -485,10 +561,17 @@ mod native {
                 caches.clear();
                 cached_for = now;
             }
+            let let_go = || {
+                shared.stop.load(Ordering::Acquire) || shared.epoch.load(Ordering::Acquire) != epoch
+            };
             let done = match job {
                 Job::Part(job) => Done::Part(build(*job, &mut caches)),
                 Job::Grid(job, grid) => Done::Grid(
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).unwrap_or_default(),
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&let_go)))
+                        .unwrap_or_else(|_| super::Worked {
+                            failed: true,
+                            ..super::Worked::default()
+                        }),
                     grid,
                 ),
             };
@@ -496,5 +579,112 @@ mod native {
                 return;
             }
         }
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn job(n: usize) -> PartJob {
+        PartJob {
+            key: format!("job-{n:05}"),
+            doc: Document::default(),
+            source: None,
+            cache: None,
+            slim: false,
+        }
+    }
+
+    /// Waits until `builder` has taken in `n` configurations.
+    fn take_all(builder: &mut Builder, n: usize) -> Vec<PartDone> {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut done = Vec::new();
+        while done.len() < n {
+            done.extend(builder.take());
+            assert!(Instant::now() < deadline, "{} of {n} built", done.len());
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        done
+    }
+
+    /// The queue holds at most [`MAX_QUEUED`] configurations (each with a
+    /// copy of its document), and the builder's threads work only while
+    /// they hold a thread of the shared pool (2026-11-02).
+    #[test]
+    fn the_queue_is_bounded_and_workers_take_threads_from_the_pool() {
+        if !Builder::available() {
+            return;
+        }
+        // Every thread of the pool taken (others' leases come back and
+        // are taken too): the builder's workers get none and build nothing.
+        let mut held = Vec::new();
+        let mut have = 0;
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while have < craft3d_math::pool::SHARED_THREADS {
+            let lease = craft3d_math::pool::lease(craft3d_math::pool::SHARED_THREADS);
+            have += lease.threads();
+            held.push(lease);
+            assert!(Instant::now() < deadline, "the pool never came back");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let mut builder = Builder::default();
+        let queued = builder.queue((0..1000).map(job).collect(), false);
+        assert_eq!(queued, MAX_QUEUED);
+        assert_eq!(builder.pending(), MAX_QUEUED);
+        // Asked again: nothing more fits.
+        assert_eq!(builder.queue(vec![job(5000)], true), 0);
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(
+            builder.take().is_empty(),
+            "built without a thread of the pool"
+        );
+        drop(held);
+        let done = take_all(&mut builder, MAX_QUEUED);
+        assert_eq!(done.len(), MAX_QUEUED);
+        assert_eq!(builder.pending(), 0);
+    }
+
+    /// A new epoch lets go of what was queued and of what a run was doing:
+    /// the run is told between its points and its results are not taken.
+    #[test]
+    fn a_reset_stops_a_run_between_its_points_and_drops_its_results() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        if !Builder::available() {
+            return;
+        }
+        let mut builder = Builder::default();
+        let points = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&points);
+        assert!(
+            builder.queue_grid(Box::new(move |let_go: &dyn Fn() -> bool| {
+                let mut steps = 0;
+                while !let_go() && steps < 10_000 {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(1));
+                    steps += 1;
+                }
+                Worked::default()
+            }))
+        );
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while points.load(Ordering::SeqCst) == 0 {
+            assert!(Instant::now() < deadline, "the run never started");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        builder.reset();
+        assert!(!builder.grid_busy());
+        // The run stops at its next point, far short of its 10 000.
+        std::thread::sleep(Duration::from_millis(100));
+        let stopped = points.load(Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(points.load(Ordering::SeqCst), stopped);
+        assert!(stopped < 5_000, "{stopped}");
+        assert!(builder.take_grid().is_empty());
+        assert!(!builder.take_grid_failed());
     }
 }

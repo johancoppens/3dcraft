@@ -204,7 +204,18 @@ impl Shell {
             "ui.get" => self.ui_get(session, params),
             "ui.set" => self.ui_set(session, params),
             "ui.fit" => self.ui_fit(session, params),
-            "ui.screenshot" => self.ui_screenshot(session, params),
+            "ui.screenshot" => {
+                // The exact moment of a playing motion, at full quality:
+                // never the provisional moment or the quick picture the
+                // viewport shows while it plays.
+                let capturing = self.capturing;
+                self.set_capturing(true);
+                session.set_motion_live(false);
+                let shot = self.ui_screenshot(session, params);
+                self.set_capturing(capturing);
+                session.set_motion_live(!self.exact_pictures());
+                shot
+            }
             "ui.pick" => self.ui_pick(session, params),
             "ui.highlight" => self.ui_highlight(session, params),
             "ui.select" => self.ui_select(session, params),

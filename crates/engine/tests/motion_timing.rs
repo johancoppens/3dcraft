@@ -99,7 +99,10 @@ fn a_moment_of_an_assembly_motion() {
 /// instances take parameters driven by `t` builds a configuration per
 /// frame (docs/design/motion.md › *Configurations over a motion*); the
 /// second pass shows what the kept configurations save. Without the
-/// variable the test prints that and passes.
+/// variable the test prints that and passes. `CRAFT3D_MOTION_PASSES` sets
+/// the passes (2); `CRAFT3D_MOTION_READY` plays as the window does
+/// (`shapes: "ready"`, the viewport live, polled every frame), and then
+/// each pass also reports how many moments were provisional.
 #[test]
 #[ignore = "prints timings only"]
 fn a_motion_through_configurations() {
@@ -144,7 +147,15 @@ fn a_motion_through_configurations() {
             craft3d_geom::kept_projections().1 as f64 / 1e6
         );
     }
-    for pass in 1..=2 {
+    let passes: u32 = std::env::var("CRAFT3D_MOTION_PASSES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2);
+    let ready = std::env::var_os("CRAFT3D_MOTION_READY").is_some();
+    s.set_motion_live(ready);
+    let shapes = if ready { "ready" } else { "exact" };
+    for pass in 1..=passes {
+        let mut provisional = 0;
         let mut motion_ms = Vec::new();
         let mut frame_ms = Vec::new();
         let mut preview_ms = Vec::new();
@@ -152,7 +163,15 @@ fn a_motion_through_configurations() {
         for k in 0..frames {
             let t = f64::from(k) / f64::from(frames);
             let start = Instant::now();
-            s.execute("view.motion", &json!({ "t": t })).unwrap();
+            if ready {
+                s.poll_motion();
+            }
+            let answer = s
+                .execute("view.motion", &json!({ "t": t, "shapes": shapes }))
+                .unwrap();
+            if answer["exact"] == false {
+                provisional += 1;
+            }
             motion_ms.push(start.elapsed().as_secs_f64() * 1000.0);
             let before_preview = Instant::now();
             s.scene_with(SceneQuality::Preview).unwrap().unwrap();
@@ -169,11 +188,12 @@ fn a_motion_through_configurations() {
             format!("mean {mean:.1} ms, median {median:.1} ms, max {max:.1} ms")
         };
         println!(
-            "pass {pass}: {frames} frames in {:.2} s; view.motion {}; with the scene {}; resident {:.0} MB",
+            "pass {pass}: {frames} frames in {:.2} s ({provisional} provisional); view.motion {}; with the scene {}; resident {:.0} MB, peak {:.0} MB",
             whole.elapsed().as_secs_f64(),
             stats(&motion_ms),
             stats(&frame_ms),
-            resident_mb()
+            resident_mb(),
+            peak_mb()
         );
         println!(
             "pass {pass}: of which the quick picture {}; meshes kept {:.0} MB, scenes kept {:.0} MB, patch trees {:.0} MB, projections {:.0} MB",
@@ -226,12 +246,21 @@ fn the_size_of_a_configuration() {
 
 /// The resident memory of this process in MB (Linux; 0 elsewhere).
 fn resident_mb() -> f64 {
+    status_mb("VmRSS:")
+}
+
+/// The most resident memory this process had so far, in MB.
+fn peak_mb() -> f64 {
+    status_mb("VmHWM:")
+}
+
+fn status_mb(field: &str) -> f64 {
     std::fs::read_to_string("/proc/self/status")
         .ok()
         .and_then(|status| {
             status
                 .lines()
-                .find(|l| l.starts_with("VmRSS:"))
+                .find(|l| l.starts_with(field))
                 .and_then(|l| l.split_whitespace().nth(1))
                 .and_then(|kb| kb.parse::<f64>().ok())
         })
