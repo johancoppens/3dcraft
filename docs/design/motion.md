@@ -331,7 +331,12 @@ mesh, its mesh that mesh moved bit for bit. `crates/gpu/tests/parts.rs`: parts u
 against the CPU renderer drawing them moved, near the origin and 1e7 away. `crates/ui-egui/tests/assembly.rs`: the
 player plays an assembly forward and back and forth. `crates/engine/tests/motion_timing.rs` (ignored) times a
 moment of an assembly, a whole motion through configurations twice (`CRAFT3D_MOTION_ASM`, baked first with
-`CRAFT3D_MOTION_BAKE`) and the size of a configuration (`CRAFT3D_CONFIG_PART`). `crates/engine/tests/motion_bake.rs`:
+`CRAFT3D_MOTION_BAKE`) and the size of a configuration (`CRAFT3D_CONFIG_PART`). `crates/engine/tests/motion_ready.rs`: a provisional moment shows the stale belt (the one at rest) and settles to
+the exact one bit for bit; a play with `shapes: "ready"` settles frame by frame to the exact play; a bake in the
+background plays what a bake in the command plays, its frames shown again from their kept solves the same; bad
+`shapes` and `background`. `crates/engine/tests/motion_bake.rs` also: a bake in pieces over a budget of one byte
+gets done (the batch pinned). `crates/gpu/tests/parts.rs`: parts taken over from an earlier upload draw what a fresh
+upload draws, pixel for pixel. The player's rounding to baked frames in `shell/player.rs`. `crates/engine/tests/motion_bake.rs`:
 a baked assembly motion whose instance takes a parameter of `t` plays what an unbaked one plays, bit for bit, also
 with a budget of one byte; a bake in pieces builds what one bake builds; a baked part shows its moments, `rebuilt`
 and collisions as unbaked; the refusals. In `asm.rs`: configurations built one after the other from the last
@@ -394,3 +399,25 @@ go and the caches of sources with nothing kept.
   scenes and meshes kept besides the configurations). Still owed: the display scene of a moment (75 to 175 ms of a
   frame here: the joined mesh copied together, and the configurations' meshes made on first show, which a bake
   could make too), and answering at once while configurations are built (proposed above).
+- 2026-11-01 (motion-play): playback that does not wait for shapes (*Shapes in the background*, *The player*).
+  The router (176 bodies, four belts whose `xc` follows `t`), on the developer's laptop (Intel iGPU, release):
+  before, the window ran `view.motion` on its own thread and built each moment's configurations there (286 ms
+  unbaked, "not responding" during a 17 s bake), and a baked frame cost `view.motion` 16 ms plus 75-175 ms of
+  scenes (two per moment, each uploaded whole: the face colours' material table holds brushed directions that
+  follow the poses, so parts were never moved, always uploaded). Measured in the window
+  (`ui.get` sampled every 20 ms while it plays; the window draws only while the compositor shows it):
+  first play, unbaked, 10 moments a second with the window's thread answering within 75 ms at worst (before: 1-3
+  a second, 300-700 ms); headless (`view.motion {shapes: "ready"}` + the quick scene at 30 a second, the bake in
+  the background): `view.motion` median 58-64 ms while the builder works, 44 ms once baked (35 ms on an idle
+  machine, a baked frame from its kept solve less), a moment's quick scene 8-15 ms (was 38-51), a display scene
+  10-20 ms (was 20-23; the shared facts' names). The background bake of 120 frames takes about 50 s with the
+  builder's 3 threads (no extra threads from the pool, so the window's solve keeps them: without that the window's
+  `view.motion` took 100-250 ms). Memory (resident, headless play as the window plays): before 3.0 GB after a bake
+  and 3.9 GB while playing; after, 1.0 GB after the first pass, 2.1 GB after four (live: 1.4 GB, of which slim
+  configurations about 0.4 GB for the frames, quick-picture meshes 0.35 GB, scenes 0.1 GB, the rest the open
+  router and the allocator; a synchronous bake: 0.77 GB live after it, was 1.33 GB). Still owed: a moment of the
+  window still takes three passes of its thread (the moment, the quick scene's upload, its edges as lines: 40-65
+  ms together), so 30 a second needs the edges kept per part and moved like the parts (`segments_marked` rebuilds
+  all 176 bodies' edges each moment) and the moment's solve off the window's thread; resident memory is twice
+  the live (glibc keeps what the builds freed); `built_bytes` counts bodies only (regeneration caches, meshes per
+  configuration and the open assembly's own `AsmState` beside the sweep's are not in the budget).

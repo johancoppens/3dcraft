@@ -137,7 +137,10 @@ through an instance, as a mate does: `view.trace {"point": "Coupler/End2"}`.
 An instance whose parameters are formulas of `t` (a belt whose loop follows the carriage) is a new configuration at
 every moment, built when the moment is first shown. `motion.bake` builds them all ahead, side by side, so the motion
 then plays smoothly: `["motion.bake", {"frames": 120}]` makes the moments `t = k / 120` (add `"collisions": true` to
-find the collisions too). It changes nothing in the document; an edit lets go of what it made.
+find the collisions too). It changes nothing in the document; an edit lets go of what it made. In the window the
+player does not wait for these shapes: it shows the parts where they are at once, a belt for a moment with the
+shape it had nearest, and bakes the motion in the background by itself, so the second play is exact and smooth
+(over the control channel too, `motion.bake` returns at once in the window; `{"cancel": true}` stops it).
 
 ## Subassemblies
 
