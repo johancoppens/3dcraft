@@ -297,17 +297,35 @@ fn tangent_pairs(
     guesses: &[Option<(f64, f64)>],
     within: f64,
 ) -> Vec<(usize, usize)> {
-    let mut normals: Vec<Option<Vec3>> = Vec::with_capacity(surfaces.len());
-    for (surface, guess) in surfaces.iter().zip(guesses.iter()) {
-        let mut near = *guess;
-        normals.push(distance_near(surface, at, &mut near).map(|(_, n)| n));
-    }
+    pairs_within(&normals_at(surfaces, at, guesses), within, true)
+}
+
+/// The normals of `surfaces` at their feet from `at`, found from
+/// `guesses`; `None` where a surface has none there.
+fn normals_at(
+    surfaces: &[&Surface],
+    at: Vec3,
+    guesses: &[Option<(f64, f64)>],
+) -> Vec<Option<Vec3>> {
+    surfaces
+        .iter()
+        .zip(guesses.iter())
+        .map(|(surface, guess)| {
+            let mut near = *guess;
+            distance_near(surface, at, &mut near).map(|(_, n)| n)
+        })
+        .collect()
+}
+
+/// The pairs of `normals` within the sine `within` of each other; with
+/// `same_way`, only those that point the same way.
+fn pairs_within(normals: &[Option<Vec3>], within: f64, same_way: bool) -> Vec<(usize, usize)> {
     let mut pairs: Vec<(usize, usize)> = Vec::new();
     for (i, a) in normals.iter().enumerate() {
         for (j, b) in normals.iter().enumerate().skip(i + 1) {
             if let (Some(a), Some(b)) = (a, b)
                 && a.cross(*b).length() <= within
-                && a.dot(*b) > 0.0
+                && (!same_way || a.dot(*b) > 0.0)
             {
                 pairs.push((i, j));
             }
@@ -334,6 +352,15 @@ fn tangent_pairs(
 /// taken. Each of the pair is tried as the one the others' curve turns
 /// onto; the first that moves the point is kept, if it moves it by more
 /// than [`SEAM_KEEP`] of the tolerance.
+///
+/// The others must meet across each other, in a curve: where two of them
+/// are tangent as well (either way round) their curve is not defined
+/// better than the pair's own seam, and the rate along it is noise
+/// (2026-11-01: a channel's plate, a plane tangent to a cylinder with the
+/// two rims at the corner on one plane to rounding; those rims were
+/// taken for a pair and the exact corner was moved 26 tolerances along
+/// the plane and cylinder's seam). Such a pair is not tried that way
+/// round; one surface given twice is no seam at all.
 fn on_seam(
     surfaces: &[&Surface],
     found: Vec3,
@@ -341,8 +368,13 @@ fn on_seam(
     guesses: &mut [Option<(f64, f64)>],
     sideways: bool,
 ) -> Vec3 {
-    for (i, j) in tangent_pairs(surfaces, found, guesses, SEAM_PAIR) {
+    let normals = normals_at(surfaces, found, guesses);
+    let touching = pairs_within(&normals, SEAM_PAIR, false);
+    for (i, j) in pairs_within(&normals, SEAM_PAIR, true) {
         for silent in [j, i] {
+            if touching.iter().any(|&(k, l)| k != silent && l != silent) {
+                continue;
+            }
             let mut trial = guesses.to_vec();
             if let Some(moved) = turn_onto_seam(surfaces, found, tol, &mut trial, sideways, silent)
             {
@@ -1843,5 +1875,58 @@ mod seam_tests {
                 assert!(d.abs() <= tol, "{d:e} off a surface");
             }
         }
+    }
+
+    /// A corner where a plane tangent to a cylinder meets one plane given
+    /// twice (two rims that continue each other) keeps its place: the
+    /// rims are no pair, and the plane and cylinder's curve with one rim
+    /// is no curve to slide along (2026-11-01: the exact corner of a
+    /// channel's plate at scale 1e-3 was moved 2.6e-8 mm, 26 tolerances,
+    /// along the seam, past the traced back edge).
+    #[test]
+    fn a_corner_on_one_plane_given_twice_keeps_its_place() {
+        // The channel's plate at scale 1e-3, at the middle, as the plate
+        // asks for its corner: the cylinder's skin (0.3 less half of 0.05,
+        // about the axis at y = z = 0.3), the plane's (z = 0.025) and the
+        // two rims at the end, x = 0.8, one of them a rounding off it.
+        let v = Vec3::new;
+        let cylinder = Surface::Cylinder(
+            Cylinder::new(
+                Frame::new(v(0.0, 3e-4, 3e-4), Vec3::X, -Vec3::Y).unwrap(),
+                0.00027499999999999996,
+            )
+            .unwrap(),
+        );
+        let floor = Surface::Plane(Plane::new(
+            Frame::new(v(4e-4, 7.5e-4, 2.5e-5), -Vec3::Z, Vec3::Y).unwrap(),
+        ));
+        let rim = Surface::Plane(Plane::new(
+            Frame::new(
+                v(8e-4, -7.111007552289563e-6, 0.00040633827645874973),
+                v(-1.0, 4.176665418462424e-16, 4.176665418462421e-16),
+                v(
+                    4.1173070568495747e-32,
+                    0.7071067811865472,
+                    -0.7071067811865477,
+                ),
+            )
+            .unwrap(),
+        ));
+        let next = Surface::Plane(Plane::new(
+            Frame::new(
+                v(8e-4, 2e-4, -2.5e-5),
+                -Vec3::X,
+                v(0.0, 0.9989685402102996, 0.04540766091864999),
+            )
+            .unwrap(),
+        ));
+        let (corner, tol) = (v(8e-4, 3e-4, 2.5e-5), 5e-10);
+        let start = v(0.0008000000000000001, 0.0003, 2.500000000000001e-5);
+        let found = meet(&[&cylinder, &floor, &rim, &next], start, tol).unwrap();
+        assert!(
+            found.distance(corner) <= 1e-2 * tol,
+            "{found:?} moved {:e} from the corner",
+            found.distance(corner)
+        );
     }
 }
