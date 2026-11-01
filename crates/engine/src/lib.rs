@@ -26,6 +26,7 @@ mod asm_outline;
 mod asm_solve;
 mod assert_check;
 mod assert_cmds;
+mod bake_cmds;
 mod base64;
 mod below_cmds;
 mod bendseq_cmds;
@@ -649,6 +650,7 @@ impl Session {
                 when_cmds::SPECS,
                 scrub::SPECS,
                 motion::SPECS,
+                bake_cmds::SPECS,
                 report::SPECS,
                 unit_cmds::SPECS,
                 tolerance_cmds::SPECS,
@@ -687,6 +689,18 @@ impl Session {
         self.body_budget = Some(bytes);
         for document in &mut self.documents {
             document.cache.set_body_budget(bytes);
+        }
+    }
+
+    /// Sets, for every open document, the most bytes of an assembly's
+    /// configurations kept between commands, and of a part's moments made
+    /// ahead (`motion.bake`); beyond it the least recently used go first
+    /// (`asm::DEFAULT_CONFIG_BUDGET` unless set). A motion made after this
+    /// takes the budget with it; documents opened later have the default.
+    pub fn set_config_budget(&mut self, bytes: usize) {
+        for document in &mut self.documents {
+            document.asm.set_config_budget(bytes);
+            document.motion_forget_sweep();
         }
     }
 

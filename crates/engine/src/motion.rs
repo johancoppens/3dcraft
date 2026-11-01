@@ -44,7 +44,7 @@ use craft3d_math::{Tolerance, Vec3};
 use craft3d_regen::{Regen, RegenCache};
 use craft3d_topo::Body;
 use serde_json::{Map, Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
@@ -204,6 +204,19 @@ pub(crate) struct Sweep {
     cache: RegenCache,
     /// For an assembly: its moments, solved rather than regenerated.
     assembly: Option<AsmSweep>,
+    /// A part's moments made ahead (`motion.bake`), by the bits of their
+    /// `t`: the state and its regeneration, as [`Sweep::at`] makes them,
+    /// and about how many bytes the regeneration's bodies take.
+    kept: BTreeMap<u64, (Arc<Document>, Arc<Regen>, usize)>,
+    kept_bytes: usize,
+    /// The collisions of moments found ahead (`motion.bake`), by the bits
+    /// of their `t`: what [`collisions`] finds of that moment (the memo of
+    /// answers only saves time, so they are the same).
+    collided: BTreeMap<u64, Result<Vec<Collision>, String>>,
+    /// The moments `motion.bake` made (by the bits of their `t`): a part's
+    /// regenerated (kept or not, the budget full), an assembly's
+    /// configurations built (kept until the budget lets them go).
+    baked: BTreeSet<u64>,
 }
 
 /// The motion of an assembly over `t` (docs/design/motion.md ›
@@ -262,6 +275,10 @@ impl Sweep {
             grid,
             cache,
             assembly: None,
+            kept: BTreeMap::new(),
+            kept_bytes: 0,
+            collided: BTreeMap::new(),
+            baked: BTreeSet::new(),
         }
     }
 
@@ -464,6 +481,9 @@ impl Sweep {
             let (placed, _) = self.placed_at(t)?;
             return Ok((Arc::clone(&placed.doc), Arc::clone(&placed.regen)));
         }
+        if let Some((doc, regen, _)) = self.kept.get(&t.to_bits()) {
+            return Ok((Arc::clone(doc), Arc::clone(regen)));
+        }
         let doc = self.settled(t)?;
         let regen = craft3d_regen::regenerate_cached(&doc, &mut self.cache);
         Ok((Arc::new(doc), Arc::new(regen)))
@@ -484,6 +504,239 @@ impl Sweep {
         let mut doc = self.with(&from, t)?;
         craft3d_regen::settle_sketches_cached(&mut doc, &mut self.cache);
         Ok(doc)
+    }
+}
+
+/// How many states (grid points or frames) a bake builds the
+/// configurations of side by side at a time: their configurations are
+/// held together, so this bounds what a bake holds beyond the budget.
+const BAKE_BATCH: usize = 32;
+
+/// What [`Sweep::bake`] made ahead.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Baked {
+    /// For an assembly: the configurations its moments (and the grid
+    /// points they are carried through) ask for.
+    pub configs: Option<crate::asm::Prebuilt>,
+    /// For a part: the moments made now and kept.
+    pub moments: usize,
+    /// Moments made but not kept, the budget being full (a part), or
+    /// configurations the frames ask for that are not kept (an assembly).
+    pub over_budget: usize,
+    /// Frames whose collisions were found now.
+    pub collisions: usize,
+    /// Configurations (assembly) or moments (part) left for a next call,
+    /// beyond the limit; 0 when the motion is baked.
+    pub remaining: usize,
+    /// Configurations (assembly) or moments (part) kept, and about how many
+    /// bytes they take.
+    pub kept: usize,
+    pub bytes: usize,
+}
+
+impl Sweep {
+    /// Makes the moments `ts` ahead, so that showing them later only
+    /// places (an assembly) or looks them up (a part): for an assembly
+    /// every configuration they and their grid points ask for, built side
+    /// by side ([`AsmState::prebuild`], at most `limit` this call), then
+    /// the grid solved up to each; for a part the moments themselves,
+    /// regenerated side by side from copies of the sweep's cache (at most
+    /// `limit` this call), kept within the budget of configurations. With
+    /// `collisions`, once nothing is left, each frame's collisions too. A
+    /// moment made ahead is the moment [`Sweep::at`] makes: nothing here
+    /// changes what is shown, only when it is made.
+    pub(crate) fn bake(
+        &mut self,
+        ts: &[f64],
+        limit: usize,
+        collisions_too: bool,
+        memo: &mut PairMemo,
+        budget: usize,
+    ) -> Result<Baked, String> {
+        timeline(&self.reference)?;
+        let mut baked = if self.assembly.is_some() {
+            self.bake_assembly(ts, limit)?
+        } else {
+            self.bake_part(ts, limit, budget)?
+        };
+        if collisions_too && baked.remaining == 0 {
+            for &t in ts {
+                if self.collided.contains_key(&t.to_bits()) {
+                    continue;
+                }
+                let (doc, regen) = self.at(t)?;
+                let found = collisions(&doc, &regen, memo);
+                self.collided.insert(t.to_bits(), found);
+                baked.collisions = baked.collisions.saturating_add(1);
+            }
+        }
+        Ok(baked)
+    }
+
+    fn bake_assembly(&mut self, ts: &[f64], limit: usize) -> Result<Baked, String> {
+        let t0 = self.t0;
+        let mut left = limit;
+        let mut configs = crate::asm::Prebuilt::default();
+        // 1. The grid, outward from the reference as the frames reach it,
+        // a batch at a time: its configurations built side by side, then
+        // its points solved one after the other. A grid point's
+        // configurations are needed for its solve alone, so they are the
+        // first to go when the budget is full (`AsmState::evict`).
+        let mut seen: BTreeSet<i64> = BTreeSet::new();
+        let mut grid: Vec<i64> = Vec::new();
+        for &t in ts {
+            let k = self.grid_index(t)?;
+            let step = k.signum();
+            let mut at = 0i64;
+            loop {
+                if seen.insert(at) && !self.asm_grid_solved(at) {
+                    grid.push(at);
+                }
+                if at == k {
+                    break;
+                }
+                at += step;
+            }
+        }
+        let mut unsolved = grid.len();
+        for batch in grid.chunks(BAKE_BATCH) {
+            if left == 0 {
+                break;
+            }
+            let docs = batch
+                .iter()
+                // As `asm_grid_point` writes a grid point's t.
+                .map(|&k| at_t(&self.reference, t0 + k as f64 * MOTION_STEP))
+                .collect::<Result<Vec<_>, _>>()?;
+            let pre = self.asm_prebuild(&docs, left)?;
+            configs.add(&pre);
+            left = left.saturating_sub(pre.built);
+            if pre.remaining > 0 {
+                break;
+            }
+            for &k in batch {
+                self.asm_grid_point(k)?;
+            }
+            unsolved = unsolved.saturating_sub(batch.len());
+        }
+        // 2. The frames' own configurations, kept for the play.
+        let mut frames_left: usize = 0;
+        let mut frames: Vec<f64> = Vec::new();
+        let mut kept: BTreeSet<u64> = BTreeSet::new();
+        for &t in ts {
+            if !self.baked.contains(&t.to_bits()) && kept.insert(t.to_bits()) {
+                frames.push(t);
+            }
+        }
+        if unsolved == 0 {
+            for batch in frames.chunks(BAKE_BATCH) {
+                if left == 0 {
+                    frames_left = frames_left.saturating_add(batch.len());
+                    continue;
+                }
+                let docs = batch
+                    .iter()
+                    .map(|&t| at_t(&self.reference, t))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let pre = self.asm_prebuild(&docs, left)?;
+                configs.add(&pre);
+                left = left.saturating_sub(pre.built);
+                if pre.remaining > 0 {
+                    frames_left = frames_left.saturating_add(batch.len());
+                    continue;
+                }
+                self.baked.extend(batch.iter().map(|t| t.to_bits()));
+            }
+        } else {
+            frames_left = frames.len();
+        }
+        // What the frames ask for that is not kept now (the budget full).
+        let docs = ts
+            .iter()
+            .map(|&t| at_t(&self.reference, t))
+            .collect::<Result<Vec<_>, _>>()?;
+        let now = self.asm_prebuild(&docs, 0)?;
+        configs.wanted = now.wanted;
+        let (kept, bytes) = self
+            .assembly
+            .as_ref()
+            .map_or((0, 0), |a| a.asm.configs_held());
+        Ok(Baked {
+            remaining: unsolved.saturating_add(frames_left),
+            over_budget: if unsolved == 0 && frames_left == 0 {
+                now.remaining
+            } else {
+                0
+            },
+            configs: Some(configs),
+            kept,
+            bytes,
+            ..Baked::default()
+        })
+    }
+
+    /// True when the assembly's grid point `k` is solved.
+    fn asm_grid_solved(&self, k: i64) -> bool {
+        self.assembly
+            .as_ref()
+            .is_some_and(|a| a.grid.contains_key(&k))
+    }
+
+    /// [`AsmState::prebuild`] in the sweep's own state.
+    fn asm_prebuild(
+        &mut self,
+        docs: &[Document],
+        limit: usize,
+    ) -> Result<crate::asm::Prebuilt, String> {
+        let sweep = self
+            .assembly
+            .as_mut()
+            .ok_or("the motion is not an assembly's")?;
+        Ok(sweep.asm.prebuild(docs, sweep.path.as_deref(), limit))
+    }
+
+    fn bake_part(&mut self, ts: &[f64], limit: usize, budget: usize) -> Result<Baked, String> {
+        let mut seen: BTreeSet<u64> = BTreeSet::new();
+        let mut todo: Vec<f64> = ts
+            .iter()
+            .copied()
+            .filter(|t| !self.baked.contains(&t.to_bits()) && seen.insert(t.to_bits()))
+            .collect();
+        let remaining = todo.len().saturating_sub(limit);
+        todo.truncate(limit);
+        // The sketches are carried along the grid one after the other; the
+        // regenerations then go side by side.
+        let mut docs = Vec::with_capacity(todo.len());
+        for &t in &todo {
+            docs.push(self.settled(t)?);
+        }
+        let cache = &self.cache;
+        let indices: Vec<usize> = (0..docs.len()).collect();
+        let made = crate::interference_cmds::in_order(&indices, |i| {
+            let doc = docs.get(i)?;
+            let mut cache = cache.clone();
+            Some(craft3d_regen::regenerate_cached(doc, &mut cache))
+        });
+        let mut baked = Baked {
+            remaining,
+            ..Baked::default()
+        };
+        for ((t, doc), regen) in todo.iter().zip(docs).zip(made) {
+            self.baked.insert(t.to_bits());
+            let Some(regen) = regen else { continue };
+            let bytes = crate::asm::regen_bytes(&regen);
+            if self.kept_bytes.saturating_add(bytes) > budget {
+                baked.over_budget = baked.over_budget.saturating_add(1);
+                continue;
+            }
+            self.kept_bytes = self.kept_bytes.saturating_add(bytes);
+            self.kept
+                .insert(t.to_bits(), (Arc::new(doc), Arc::new(regen), bytes));
+            baked.moments = baked.moments.saturating_add(1);
+        }
+        baked.kept = self.kept.len();
+        baked.bytes = self.kept_bytes;
+        Ok(baked)
     }
 }
 
@@ -780,9 +1033,24 @@ impl OpenDocument {
         }
     }
 
-    fn make_motion_state(&mut self, base: &Arc<Document>, t: f64) -> Result<State, String> {
-        timeline(base)?;
-        let base_regen = self.scrubbed_regen();
+    /// Lets go of the motion's sweep and its state (what was made ahead
+    /// with it too); the next moment shown makes them again.
+    pub(crate) fn motion_forget_sweep(&mut self) {
+        self.motion.sweep = None;
+        self.motion.state = None;
+        self.motion.memo = PairMemo::default();
+    }
+
+    /// The answers about pairs of bodies kept from the last state's
+    /// collisions.
+    pub(crate) fn motion_memo(&mut self) -> &mut PairMemo {
+        &mut self.motion.memo
+    }
+
+    /// The sweep the motion over `base` (the state the view shows below
+    /// the motion) is made with: the one kept when it is of `base` and of
+    /// the files as they are, a new one otherwise.
+    pub(crate) fn motion_sweep(&mut self, base: &Arc<Document>) -> Result<&mut Sweep, String> {
         let generation = self.asm.generation;
         let reuse = self
             .motion
@@ -800,6 +1068,18 @@ impl OpenDocument {
             .sweep
             .as_mut()
             .ok_or("the motion lost its states")?;
+        Ok(sweep)
+    }
+
+    fn make_motion_state(&mut self, base: &Arc<Document>, t: f64) -> Result<State, String> {
+        timeline(base)?;
+        let base_regen = self.scrubbed_regen();
+        let generation = self.asm.generation;
+        let asked = self.motion.collisions;
+        let sweep = self.motion_sweep(base)?;
+        let baked = asked
+            .then(|| sweep.collided.get(&t.to_bits()).cloned())
+            .flatten();
         let (plain, regen, stuck, placed) = if sweep.is_assembly() {
             let (placed, stuck) = sweep.placed_at(t)?;
             (
@@ -819,10 +1099,10 @@ impl OpenDocument {
         } else {
             rebuilt(&base_regen, &regen)
         };
-        let collisions = self
-            .motion
-            .collisions
-            .then(|| collisions(&plain, &regen, &mut self.motion.memo));
+        let collisions = match baked {
+            Some(found) => Some(found),
+            None => asked.then(|| collisions(&plain, &regen, &mut self.motion.memo)),
+        };
         let doc = match &collisions {
             Some(Ok(found)) if !found.is_empty() => Arc::new(marked(&plain, found)),
             _ => plain,

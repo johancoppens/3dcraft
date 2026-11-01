@@ -204,6 +204,62 @@ cached by its parameters' values like any configuration).
   which is the moved meshes. Still uploaded per moment: the lines over the viewport (the bodies' edges), and the
   scene's joined mesh is still copied together on the CPU (no meshing).
 
+### Configurations over a motion (`motion.bake`)
+
+An instance whose parameters are formulas of `t` (the router's four belts: `xc = X_Travel_distance + 150 mm`) is a
+new configuration at nearly every moment, and so is every grid point the moment is carried through (a grid point is
+solved, and the solve reads the instance's geometry). What keeps that affordable (`crates/engine/src/asm.rs`,
+`crates/engine/src/bake_cmds.rs`, 2026-11-01):
+
+- **Incremental builds.** A part given parameters is regenerated from the regeneration cache of the last
+  configuration built of its source (`AsmState::regen_caches`, one per source hash and length unit, only for
+  sources given parameters), so only the features its changed parameters reach are rebuilt
+  (`regenerate_cached_needing` with `Need::All`: the result is that of `regenerate`, body for body). Several
+  configurations of one source built side by side each start from a copy of that cache; the cache kept afterwards
+  is the last job's in key order (which one changes only the time). How much this saves depends on the part: a
+  hole driven by `t` at the end of a history rebuilds two features; the belt's `xc` reaches every feature but one
+  tooth, so the belt gains nothing from it (findings).
+- **Kept by memory, not by count.** Configurations are kept within a byte budget (`DEFAULT_CONFIG_BUDGET`: 1 GiB
+  native, 128 MiB in the browser; `Session::set_config_budget`). Beyond it, first those only ever solved go (a
+  grid point needs its configurations for its solve alone, once per sweep), then those placed with their bodies
+  (`Config::shown`), each least recently used first, ties in key order, never one the placement just made uses;
+  eviction runs at the top of a placement only, so a subassembly placed while its parent builds does not let go of
+  what the parent has just built. A configuration's size is estimated (`built_bytes`) as every distinct body of
+  its regeneration (`craft3d_regen::body_bytes`) and as much again for names and records: the router's belt (940
+  faces; 0.74 MB of its own bodies and 1.23 MB of bodies later features took) is estimated at 4.0 MB and measured
+  at 4.4 MB resident per regeneration kept. Before, at most 64 configurations beyond the last placement's were
+  kept and then all of them were dropped at once, so the router's 120 frames rebuilt on every play. A motion's
+  sweep holds its own copy of the files and configurations (`AsmSweep::asm`), so what a play builds stays with the
+  sweep until an edit or `assembly.reload` makes a new one. The session's store of meshes keeps meshes by body
+  within its own byte budget (held weakly: a mesh lives as long as its body), so a configuration kept is a mesh
+  kept.
+- **Made ahead.** `motion.bake {frames, collisions, limit}` makes the moments `k / frames` (both ends) ahead in the
+  motion's sweep (the one `view.motion` then uses). For an assembly: first the grid points the frames are carried
+  through, outward from the reference, 32 at a time (`BAKE_BATCH`): their configurations built side by side
+  (`AsmState::prebuild`: the first step of a placement for each state, then every missing configuration in one
+  batch), then the points solved one after the other; then the frames' own configurations, side by side, kept for
+  the play. For a part: the moments themselves, regenerated side by side from copies of the sweep's cache and kept
+  (`Sweep::kept`) within the same budget. With `collisions` each moment's collisions are found too and kept by `t`
+  (`Sweep::collided`), which `view.motion {collisions: true}` takes instead of asking the kernel. A moment made
+  ahead is the one `view.motion` would make (unbaked = baked, bit for bit, also with a budget of one byte:
+  `crates/engine/tests/motion_bake.rs`). `limit` builds at most that many configurations or moments per call, for
+  a host that bakes between its frames (the browser), which calls again until `done`; `overBudget` says how much of
+  what the frames ask for the budget could not keep (those are built again when shown). The player asks for
+  moments at frame timing, not at `k / frames`: a moment between the frames baked costs its own configurations,
+  so a player that wants a baked motion to play without building rounds `t` to the baked frames (for the UI
+  agent).
+- **Owed: answering at once while the rest is built** (proposed, not built). `view.motion {t, shapes: "ready"}`
+  would show the poses at `t` with, for each instance whose configuration is not kept, the kept configuration of
+  the same instance nearest in `t` (the previous frame's when none is nearer), and list those instances
+  (`stale: [names]`); such a moment is provisional: its solve is not kept in the grid (grid points stay exact, so
+  seek = play still holds once built), and it is made again when its configurations arrive. The building goes on
+  in the background: natively a worker the session owns, started by `motion.bake {background: true}`, given the
+  jobs (configured documents and copies of the regeneration caches, which are `Send`), its results taken in at the
+  start of the next command in key order (`Session::poll_motion`, which says whether a provisional moment shown
+  became exact, so the window redraws); in the browser (one thread) the same API degrades to the window calling
+  `motion.bake {limit: 1..4}` between its frames, which is what `limit` is for, and `shapes: "ready"` answering
+  with what is kept.
+
 ## Tests
 
 `crates/engine/tests/motion.rs`: a crank's corner traced against its closed-form circle (every sample within 1e-9,
@@ -227,7 +283,14 @@ once when the quick picture's tolerance steps to another rung), every body place
 mesh, its mesh that mesh moved bit for bit. `crates/gpu/tests/parts.rs`: parts uploaded once and moved by poses
 against the CPU renderer drawing them moved, near the origin and 1e7 away. `crates/ui-egui/tests/assembly.rs`: the
 player plays an assembly forward and back and forth. `crates/engine/tests/motion_timing.rs` (ignored) times a
-moment of an assembly.
+moment of an assembly, a whole motion through configurations twice (`CRAFT3D_MOTION_ASM`, baked first with
+`CRAFT3D_MOTION_BAKE`) and the size of a configuration (`CRAFT3D_CONFIG_PART`). `crates/engine/tests/motion_bake.rs`:
+a baked assembly motion whose instance takes a parameter of `t` plays what an unbaked one plays, bit for bit, also
+with a budget of one byte; a bake in pieces builds what one bake builds; a baked part shows its moments, `rebuilt`
+and collisions as unbaked; the refusals. In `asm.rs`: configurations built one after the other from the last
+one's cache equal a regeneration from nothing, feature for feature in their `Debug` (a hole driven by a parameter,
+two features rebuilt per configuration; the belt's pattern and unions), and the budget lets the least recently used
+go and the caches of sources with nothing kept.
 
 ## Findings and history
 
@@ -270,3 +333,17 @@ moment of an assembly.
   an overlap and a volume, peak resident memory after 9 and after 129 more moments, debug build on the Strix):
   before +60 MiB (35 → 95 MiB, about half a megabyte a moment, growing until 256 answers are kept), after +13 MiB
   (34 → 47 MiB, what the allocator keeps; the test holds it under 24 MiB).
+- 2026-11-01 (motion-cache): motion through configurations (*Configurations over a motion* above). The router of
+  `demo03-beltdrive` (49 instances, four belts of 940 faces whose `xc` follows `t`), 120 frames of `view.motion`
+  plus the display scene, twice, release, on the developer's laptop (`motion_timing.rs`): before, pass 1 56.9 s
+  (`view.motion` mean 324 ms), pass 2 35.4 s (151 ms: at most 64 configurations kept, then all dropped). After,
+  without a bake: pass 1 56.8 s (286 ms; incremental builds do not help the belt, whose `xc` reaches every feature
+  but one tooth), pass 2 23.4 s (`view.motion` mean 20.3 ms, max 32 ms; the rest of a frame is the scene). With
+  `motion.bake {frames: 120}` first: the bake 14.5 s (323 configurations built side by side: the belt at the 129
+  grid points and the 120 frames; 177 asked for by the frames, 4 of them over the 1 GiB budget), then pass 1 16.7 s
+  (`view.motion` mean 20.0 ms, max 262 ms for the four not kept) and pass 2 10.8 s (`view.motion` mean 15.9 ms,
+  max 21 ms; with the scene mean 90 ms). A bake before the grid was done in batches held every configuration at
+  once (36.8 s, 99 of 341 kept within 512 MB). Resident memory after the bake 3.1 GB, during the play 4.0 GB (the
+  scenes and meshes kept besides the configurations). Still owed: the display scene of a moment (75 to 175 ms of a
+  frame here: the joined mesh copied together, and the configurations' meshes made on first show, which a bake
+  could make too), and answering at once while configurations are built (proposed above).

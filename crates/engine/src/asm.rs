@@ -39,8 +39,18 @@ use std::sync::Arc;
 pub(crate) const MAX_DEPTH: usize = 8;
 /// Most source files one assembly reads, its subassemblies' included.
 pub(crate) const MAX_SOURCE_FILES: usize = 1_000;
-/// Configurations kept beyond those the last placement used.
-const MAX_KEPT_CONFIGS: usize = 64;
+/// Most bytes of configurations an [`AsmState`] keeps by default
+/// (estimated by [`built_bytes`]): beyond it the least recently used are
+/// let go of, never one the last placement used. Enough for the frames of
+/// a motion through two hundred configurations of a part of a thousand
+/// faces (a belt whose loop follows `t`: 4.4 MB resident each, measured;
+/// the router's 120 frames ask for 170), so a motion played again builds
+/// nothing. Less in the browser, whose memory is smaller and shared with
+/// the page.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) const DEFAULT_CONFIG_BUDGET: usize = 1 << 30;
+#[cfg(target_arch = "wasm32")]
+pub(crate) const DEFAULT_CONFIG_BUDGET: usize = 128 << 20;
 /// Most variable names a drive's dependencies are followed through.
 const MAX_DEPENDS: usize = 10_000;
 
@@ -53,7 +63,20 @@ pub(crate) struct AsmState {
     /// Source documents, by the SHA-256 of their bytes.
     parsed: BTreeMap<String, Result<Arc<Document>, String>>,
     /// Configurations built, by [`config_key`].
-    configs: BTreeMap<String, Result<Arc<Built>, String>>,
+    configs: BTreeMap<String, Config>,
+    /// Per source that is given parameters (its hash and the length unit
+    /// it is built in, [`Job::source`]): the regeneration cache of the
+    /// last configuration built of it, so the next configuration of that
+    /// source rebuilds only the features its changed parameters reach.
+    regen_caches: BTreeMap<String, craft3d_regen::RegenCache>,
+    /// Counts placements and builds, for which configuration was used
+    /// least recently.
+    tick: u64,
+    /// About how many bytes the configurations kept take ([`built_bytes`]).
+    config_bytes: usize,
+    /// Most bytes of configurations kept; `None` for
+    /// [`DEFAULT_CONFIG_BUDGET`].
+    config_budget: Option<usize>,
     /// Raised whenever `files` changes, so the placement is redone.
     pub generation: u64,
     /// The last placement: for the document revision and the generation.
@@ -67,6 +90,75 @@ pub(crate) struct AsmState {
     /// every file, the read root's top otherwise): its sources are
     /// placed from there until it is saved, as they were read.
     pub unsaved_base: String,
+}
+
+/// A configuration kept: what was built (or why it could not be), about
+/// how many bytes it holds, and when it was last used ([`AsmState::tick`]).
+#[derive(Clone)]
+struct Config {
+    built: Result<Arc<Built>, String>,
+    bytes: usize,
+    used: u64,
+    /// Placed with its bodies at least once (a moment shown, the assembly
+    /// at rest), not only solved: a grid point of a motion needs its
+    /// configurations for its solve alone, once, so those go first.
+    shown: bool,
+}
+
+/// What [`AsmState::prebuild`] did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Prebuilt {
+    /// Distinct configurations the states ask for.
+    pub wanted: usize,
+    /// Of those, built now (failed ones included).
+    pub built: usize,
+    /// Of those, that failed.
+    pub failed: usize,
+    /// Not built because of the limit: asked for again, they are built.
+    pub remaining: usize,
+}
+
+impl Prebuilt {
+    /// Adds what another call built (`wanted` is left as it is).
+    pub(crate) fn add(&mut self, other: &Prebuilt) {
+        self.built = self.built.saturating_add(other.built);
+        self.failed = self.failed.saturating_add(other.failed);
+        self.remaining = other.remaining;
+    }
+}
+
+/// About how many bytes a configuration holds: every distinct body of its
+/// regeneration ([`craft3d_regen::body_bytes`]) and as much again for
+/// their names and the regeneration's own records (a measured belt of 940
+/// faces: see docs/design/motion.md › *Configurations over a motion*).
+fn built_bytes(built: &Result<Arc<Built>, String>) -> usize {
+    let Ok(built) = built else {
+        return RECORDS;
+    };
+    regen_bytes(match &**built {
+        Built::Part { regen, .. } => regen,
+        Built::Assembly(placed) => &placed.regen,
+    })
+}
+
+/// What a kept state is counted as beyond its bodies: its document and
+/// the records around it.
+const RECORDS: usize = 4096;
+
+/// About how many bytes a regeneration holds: every distinct body
+/// ([`craft3d_regen::body_bytes`]) and as much again for their names and
+/// the regeneration's own records.
+pub(crate) fn regen_bytes(regen: &Regen) -> usize {
+    let mut seen: BTreeSet<usize> = BTreeSet::new();
+    let mut bytes = 0usize;
+    for feature in &regen.features {
+        if let Some(body) = &feature.body
+            && seen.insert(Arc::as_ptr(body) as usize)
+        {
+            bytes = bytes.saturating_add(craft3d_regen::body_bytes(body));
+        }
+    }
+    bytes.saturating_mul(2).saturating_add(RECORDS)
 }
 
 /// A configuration built: a part regenerated with its parameters set, or
@@ -510,6 +602,10 @@ struct Job {
     key: String,
     doc: Result<Document, String>,
     base: String,
+    /// For a part given parameters: its source's hash and the length unit
+    /// it is built in, under which the regeneration cache of its last
+    /// configuration is kept ([`AsmState::regen_caches`]).
+    source: Option<String>,
 }
 
 /// The placement of `doc` (an assembly) with the files read for it.
@@ -541,11 +637,99 @@ fn place_from(
         return empty(doc, Some("the document is not an assembly".to_string()));
     };
     let values = evaluation(doc);
-    let files = state.files.clone();
     // 1. Sources and configurations.
+    let mut wanted: BTreeSet<String> = BTreeSet::new();
+    let (mut instances, jobs) = gather(doc, assembly, base, state, chain, &mut wanted);
+    // 2. Build what is not cached.
+    build(state, chain, jobs);
+    state.tick = state.tick.saturating_add(1);
+    let tick = state.tick;
+    for (st, instance) in instances.iter_mut().zip(&assembly.instances) {
+        if st.error.is_some() {
+            continue;
+        }
+        let Some(key) = &st.config else { continue };
+        match state.configs.get_mut(key) {
+            Some(Config {
+                built: Ok(built),
+                used,
+                shown,
+                ..
+            }) => {
+                *used = tick;
+                *shown |= bodies;
+                st.built = Some(Arc::clone(built));
+                // A subassembly whose own sources changed has changed too.
+                if let Built::Assembly(sub) = &**built
+                    && sub.instances.iter().any(|i| i.changed)
+                {
+                    st.changed = true;
+                }
+                if let Some(body) = &instance.body {
+                    match pick(built, body) {
+                        Ok(id) => st.picked = Some(id),
+                        Err(why) => st.error = Some(why),
+                    }
+                }
+            }
+            Some(Config {
+                built: Err(why),
+                used,
+                shown,
+                ..
+            }) => {
+                *used = tick;
+                *shown |= bodies;
+                st.error = Some(format!("its configuration failed: {why}"));
+            }
+            None => st.error = Some("its configuration was not built".to_string()),
+        }
+    }
+    // Within the budget, keeping what this placement uses; only at the
+    // top, so a subassembly placed while its parent builds does not let go
+    // of what the parent has just built and not yet taken.
+    if chain.is_empty() {
+        state.evict();
+    }
+    // A flexible subassembly gives its instances and mates to the solve.
+    let extra = flex(doc, assembly, &mut instances);
+    // 3. and 4. Frames and the solve.
+    let (mates, couplings, solve_error, floating, dof, specs, carried, solve_note) =
+        solve_mates(doc, assembly, values.as_ref(), &mut instances, &extra, from);
+    // 5. Placed bodies.
+    let mut placed = if bodies {
+        build_shown(doc, assembly, &mut instances)
+    } else {
+        let mut placed = empty(doc, None);
+        placed.instances = instances;
+        placed
+    };
+    (placed.specs, placed.coupling_specs) = specs;
+    placed.mates = mates;
+    placed.couplings = couplings;
+    placed.solve_error = solve_error;
+    placed.floating = floating;
+    placed.dof = dof;
+    placed.carried = carried;
+    placed.solve_note = solve_note;
+    placed
+}
+
+/// Step 1 of a placement: each instance as far as its source and its
+/// configuration's key, and the configurations to build that are neither
+/// kept nor in `wanted` already (each added to it).
+fn gather(
+    doc: &Document,
+    assembly: &Assembly,
+    base: &str,
+    state: &mut AsmState,
+    chain: &[String],
+    wanted: &mut BTreeSet<String>,
+) -> (Vec<InstanceState>, Vec<Job>) {
+    let values = evaluation(doc);
+    let files = state.files.clone();
     let mut instances: Vec<InstanceState> = Vec::with_capacity(assembly.instances.len());
     let mut jobs: Vec<Job> = Vec::new();
-    let mut wanted: BTreeSet<String> = BTreeSet::new();
     for instance in &assembly.instances {
         let mut st = InstanceState {
             name: instance.name.clone(),
@@ -600,10 +784,13 @@ fn place_from(
                 st.hash = Some(hash.clone());
                 st.config = Some(key.clone());
                 if !state.configs.contains_key(&key) && wanted.insert(key.clone()) {
+                    let source_key = (!params.is_empty() && !source.is_assembly())
+                        .then(|| format!("{hash}#{}", doc.units.length.symbol()));
                     jobs.push(Job {
                         key,
                         doc: configured(&source, &params, doc.units.length),
                         base: sub_base,
+                        source: source_key,
                     });
                 }
             }
@@ -611,31 +798,60 @@ fn place_from(
         }
         instances.push(st);
     }
-    // 2. Build what is not cached: the parts side by side, subassemblies
-    // one after the other (each builds its own parts side by side).
+    (instances, jobs)
+}
+
+/// Step 2 of a placement: builds `jobs` and keeps them, the parts side by
+/// side, subassemblies one after the other (each builds its own parts
+/// side by side). A part given parameters is regenerated from the
+/// regeneration cache of the last configuration built of its source, so
+/// only the features its changed parameters reach are rebuilt; the result
+/// is that of a regeneration from nothing, body for body
+/// (`craft3d_regen::regenerate_cached_needing` with `Need::All`).
+fn build(state: &mut AsmState, chain: &mut Vec<String>, jobs: Vec<Job>) {
+    state.tick = state.tick.saturating_add(1);
+    let tick = state.tick;
     let (subs, parts): (Vec<Job>, Vec<Job>) = jobs
         .into_iter()
         .partition(|job| job.doc.as_ref().is_ok_and(Document::is_assembly));
     let indices: Vec<usize> = (0..parts.len()).collect();
+    let caches = &state.regen_caches;
     let built = crate::interference_cmds::in_order(&indices, |i| {
         let job = parts.get(i)?;
         Some(match &job.doc {
             Ok(doc) => {
-                let regen = craft3d_regen::regenerate(doc);
-                Ok(Arc::new(Built::Part {
+                let mut cache = job
+                    .source
+                    .as_ref()
+                    .and_then(|source| caches.get(source))
+                    .cloned()
+                    .unwrap_or_default();
+                let regen = craft3d_regen::regenerate_cached_needing(
+                    doc,
+                    &mut cache,
+                    craft3d_regen::Need::All,
+                );
+                let built = Ok(Arc::new(Built::Part {
                     doc: Arc::new(doc.clone()),
                     regen: Arc::new(regen),
-                }))
+                }));
+                (built, job.source.is_some().then_some(cache))
             }
-            Err(why) => Err(why.clone()),
+            Err(why) => (Err(why.clone()), None),
         })
     });
     for (job, result) in parts.iter().zip(built) {
         if job.doc.is_ok() {
             state.builds = state.builds.saturating_add(1);
         }
-        let result = result.unwrap_or_else(|| Err("its regeneration stopped".to_string()));
-        state.configs.insert(job.key.clone(), result);
+        let (result, cache) =
+            result.unwrap_or_else(|| (Err("its regeneration stopped".to_string()), None));
+        // The cache of the last configuration built of each source, in the
+        // order of the jobs (which cache is kept changes only the time).
+        if let (Some(source), Some(cache)) = (&job.source, cache) {
+            state.regen_caches.insert(source.clone(), cache);
+        }
+        state.keep(job.key.clone(), result, tick);
     }
     for job in subs {
         let result = match &job.doc {
@@ -654,64 +870,8 @@ fn place_from(
             }
             Err(why) => Err(why.clone()),
         };
-        state.configs.insert(job.key, result);
+        state.keep(job.key, result, tick);
     }
-    for (st, instance) in instances.iter_mut().zip(&assembly.instances) {
-        if st.error.is_some() {
-            continue;
-        }
-        let Some(key) = &st.config else { continue };
-        match state.configs.get(key) {
-            Some(Ok(built)) => {
-                st.built = Some(Arc::clone(built));
-                // A subassembly whose own sources changed has changed too.
-                if let Built::Assembly(sub) = &**built
-                    && sub.instances.iter().any(|i| i.changed)
-                {
-                    st.changed = true;
-                }
-                if let Some(body) = &instance.body {
-                    match pick(built, body) {
-                        Ok(id) => st.picked = Some(id),
-                        Err(why) => st.error = Some(why),
-                    }
-                }
-            }
-            Some(Err(why)) => st.error = Some(format!("its configuration failed: {why}")),
-            None => st.error = Some("its configuration was not built".to_string()),
-        }
-    }
-    // A flexible subassembly gives its instances and mates to the solve.
-    let extra = flex(doc, assembly, &mut instances);
-    // 3. and 4. Frames and the solve.
-    let (mates, couplings, solve_error, floating, dof, specs, carried, solve_note) =
-        solve_mates(doc, assembly, values.as_ref(), &mut instances, &extra, from);
-    // 5. Placed bodies.
-    let mut placed = if bodies {
-        build_shown(doc, assembly, &mut instances)
-    } else {
-        let mut placed = empty(doc, None);
-        placed.instances = instances;
-        placed
-    };
-    (placed.specs, placed.coupling_specs) = specs;
-    placed.mates = mates;
-    placed.couplings = couplings;
-    placed.solve_error = solve_error;
-    placed.floating = floating;
-    placed.dof = dof;
-    placed.carried = carried;
-    placed.solve_note = solve_note;
-    // Keep the cache to what this placement used and a few more.
-    if state.configs.len() > MAX_KEPT_CONFIGS {
-        let used: BTreeSet<String> = placed
-            .instances
-            .iter()
-            .filter_map(|i| i.config.clone())
-            .collect();
-        state.configs.retain(|k, _| used.contains(k));
-    }
-    placed
 }
 
 /// What the flexible subassemblies give their parent's solve: their
@@ -1950,7 +2110,129 @@ impl AsmState {
         self.generation = self.generation.wrapping_add(1);
         self.placed = None;
         self.configs
-            .retain(|_, built| !matches!(built, Ok(b) if matches!(**b, Built::Assembly(_))));
+            .retain(|_, c| !matches!(&c.built, Ok(b) if matches!(**b, Built::Assembly(_))));
+        self.config_bytes = self.configs.values().map(|c| c.bytes).sum();
+    }
+
+    /// Keeps a configuration built at `tick` (one built again replaces
+    /// the one kept).
+    fn keep(&mut self, key: String, built: Result<Arc<Built>, String>, tick: u64) {
+        let bytes = built_bytes(&built);
+        self.config_bytes = self.config_bytes.saturating_add(bytes);
+        if let Some(old) = self.configs.insert(
+            key,
+            Config {
+                built,
+                bytes,
+                used: tick,
+                shown: false,
+            },
+        ) {
+            self.config_bytes = self.config_bytes.saturating_sub(old.bytes);
+        }
+    }
+
+    /// Lets configurations go until those kept are within the budget:
+    /// first those only ever solved (a motion's grid points, which need
+    /// them once), then those placed with their bodies, each the least
+    /// recently used first, ties in the order of their keys; never one
+    /// used at the latest tick (what the placement just made uses). The
+    /// regeneration caches of sources none of whose configurations is kept
+    /// go with them.
+    fn evict(&mut self) {
+        let budget = self.config_budget();
+        if self.config_bytes > budget {
+            let mut order: Vec<(bool, u64, String, usize)> = self
+                .configs
+                .iter()
+                .filter(|(_, c)| c.used < self.tick)
+                .map(|(k, c)| (c.shown, c.used, k.clone(), c.bytes))
+                .collect();
+            order.sort();
+            for (_, _, key, bytes) in order {
+                if self.config_bytes <= budget {
+                    break;
+                }
+                self.configs.remove(&key);
+                self.config_bytes = self.config_bytes.saturating_sub(bytes);
+            }
+        }
+        if self.regen_caches.is_empty() {
+            return;
+        }
+        let sources: BTreeSet<String> = self
+            .configs
+            .keys()
+            .filter_map(|k| {
+                let hash = k.split(['|', '#']).next()?;
+                let unit = k.rsplit_once('#').map(|(_, u)| u)?;
+                Some(format!("{hash}#{unit}"))
+            })
+            .collect();
+        self.regen_caches
+            .retain(|source, _| sources.contains(source));
+    }
+
+    /// Most bytes of configurations kept.
+    pub(crate) fn config_budget(&self) -> usize {
+        self.config_budget.unwrap_or(DEFAULT_CONFIG_BUDGET)
+    }
+
+    /// Keeps at most `bytes` of configurations from now on.
+    pub(crate) fn set_config_budget(&mut self, bytes: usize) {
+        self.config_budget = Some(bytes);
+        self.tick = self.tick.saturating_add(1);
+        self.evict();
+    }
+
+    /// How many configurations are kept and about how many bytes they take.
+    pub(crate) fn configs_held(&self) -> (usize, usize) {
+        (self.configs.len(), self.config_bytes)
+    }
+
+    /// Builds, side by side, every configuration the assembly states
+    /// `docs` ask for that is not kept, at most `limit` of them (in the
+    /// order the states ask for them), as a placement of each would build
+    /// them; nothing is solved or placed. The motion's bake
+    /// (`motion.bake`) builds a whole motion's configurations this way.
+    pub(crate) fn prebuild(
+        &mut self,
+        docs: &[Document],
+        path: Option<&str>,
+        limit: usize,
+    ) -> Prebuilt {
+        let base = self.base(path);
+        let mut wanted: BTreeSet<String> = BTreeSet::new();
+        let mut jobs: Vec<Job> = Vec::new();
+        let mut asked: BTreeSet<String> = BTreeSet::new();
+        let chain: Vec<String> = Vec::new();
+        for doc in docs {
+            let Some(assembly) = doc.assembly.as_ref() else {
+                continue;
+            };
+            let (instances, more) = gather(doc, assembly, &base, self, &chain, &mut wanted);
+            asked.extend(instances.into_iter().filter_map(|i| i.config));
+            jobs.extend(more);
+        }
+        let remaining = jobs.len().saturating_sub(limit);
+        jobs.truncate(limit);
+        let built = jobs.len();
+        let keys: Vec<String> = jobs.iter().map(|j| j.key.clone()).collect();
+        let mut chain = Vec::new();
+        build(self, &mut chain, jobs);
+        let failed = keys
+            .iter()
+            .filter(|k| matches!(self.configs.get(*k), Some(Config { built: Err(_), .. })))
+            .count();
+        // What was just built is held (the states asked for it), the rest
+        // goes beyond the budget: a bake in batches holds one batch more.
+        self.evict();
+        Prebuilt {
+            wanted: asked.len(),
+            built,
+            failed,
+            remaining,
+        }
     }
 }
 
@@ -1979,5 +2261,183 @@ mod tests {
         });
         let p = pose.point(Vec3::X);
         assert!(p.distance(Vec3::new(1.0, 1.0, 0.0)) < 1e-12, "{p:?}");
+    }
+
+    /// A part made by commands, as its document.
+    fn part(commands: &[(&str, Value)]) -> Document {
+        let mut s = crate::Session::new(crate::Workspace::none());
+        s.execute("file.new", &serde_json::json!({})).unwrap();
+        for (id, params) in commands {
+            s.execute(id, params).unwrap();
+        }
+        s.document().unwrap().history.current().as_ref().clone()
+    }
+
+    /// A small part: `w` reaches only its last feature, a hole.
+    fn holed() -> Document {
+        use serde_json::json;
+        part(&[
+            ("variable.set", json!({"name": "w", "expr": "10 mm"})),
+            ("variable.publish", json!({"name": "w"})),
+            (
+                "feature.block",
+                json!({"name": "Plate", "size": [60, 30, 5]}),
+            ),
+            ("feature.block", json!({"name": "Rib", "size": [60, 3, 12]})),
+            (
+                "feature.boolean",
+                json!({"op": "union", "target": "Plate", "tool": "Rib", "name": "Ribbed"}),
+            ),
+            (
+                "feature.cylinder",
+                json!({"name": "Pin", "radius": 2, "height": 20, "position": ["w", 15, -5]}),
+            ),
+            (
+                "feature.boolean",
+                json!({"op": "subtract", "target": "Ribbed", "tool": "Pin", "name": "Holed"}),
+            ),
+        ])
+    }
+
+    /// The belt's pattern: `xc` moves a run and sets how many teeth a
+    /// pattern has, and everything is united; one tooth does not depend
+    /// on it.
+    fn belt_like() -> Document {
+        use serde_json::json;
+        part(&[
+            ("variable.set", json!({"name": "xc", "expr": "30 mm"})),
+            ("variable.publish", json!({"name": "xc"})),
+            (
+                "variable.set",
+                json!({"name": "n", "expr": "floor(xc / 7 mm) + 1"}),
+            ),
+            (
+                "feature.block",
+                json!({"name": "Back", "size": ["xc + 10 mm", 4, 1.5]}),
+            ),
+            (
+                "feature.block",
+                json!({"name": "Run", "size": [20, 4, 1.5], "position": ["xc + 12 mm", 0, 0]}),
+            ),
+            (
+                "feature.block",
+                json!({"name": "Tooth", "size": [2, 4, 1.2], "position": [1, 0, -1]}),
+            ),
+            (
+                "feature.pattern",
+                json!({"name": "Teeth", "source": "Tooth", "count": "n", "step": ["5 mm", 0, 0]}),
+            ),
+            (
+                "feature.boolean",
+                json!({"op": "union", "target": "Back", "tool": "Teeth", "name": "U0"}),
+            ),
+            (
+                "feature.boolean",
+                json!({"op": "union", "target": "U0", "tool": "Run", "name": "Belt"}),
+            ),
+        ])
+    }
+
+    /// The configurations of `source` for `name` = each of `values`, built
+    /// one after the other as a motion builds them (each from the
+    /// regeneration cache of the one before), against a regeneration from
+    /// nothing of the same configuration: the same results, feature for
+    /// feature and bit for bit (their `Debug`, which writes every number
+    /// so that it reads back to the same bits). Returns how many features
+    /// were rebuilt in all.
+    fn built_as_fresh(source: &Document, name: &str, values: &[&str]) -> usize {
+        let mut state = AsmState::default();
+        let mut rebuilt = 0;
+        for value in values {
+            let params: BTreeMap<String, String> =
+                [(name.to_string(), (*value).to_string())].into();
+            let doc = configured(source, &params, source.units.length).unwrap();
+            let key = format!("{}#mm", config_key("src", &params));
+            let job = Job {
+                key: key.clone(),
+                doc: Ok(doc.clone()),
+                base: String::new(),
+                source: Some("src#mm".to_string()),
+            };
+            build(&mut state, &mut Vec::new(), vec![job]);
+            let Some(Config {
+                built: Ok(built), ..
+            }) = state.configs.get(&key)
+            else {
+                panic!("{value}: not built");
+            };
+            let Built::Part { regen, .. } = &**built else {
+                panic!("{value}: not a part");
+            };
+            let fresh = craft3d_regen::regenerate(&doc);
+            assert!(fresh.is_ok(), "{value}: {:?}", fresh.features);
+            assert_eq!(regen.features.len(), fresh.features.len());
+            for (a, b) in regen.features.iter().zip(&fresh.features) {
+                assert_eq!(format!("{a:?}"), format!("{b:?}"), "{value}: {}", a.id);
+            }
+            assert_eq!(
+                format!("{:?}", regen.variables),
+                format!("{:?}", fresh.variables)
+            );
+            let cache = state.regen_caches.get("src#mm").unwrap();
+            rebuilt += cache.last_run().0;
+        }
+        rebuilt
+    }
+
+    #[test]
+    fn a_configuration_built_from_the_last_one_is_a_fresh_regeneration_bit_for_bit() {
+        let holed = holed();
+        let features = holed.features.len();
+        let values = ["10 mm", "12.5 mm", "40 mm", "12.5 mm", "10 mm"];
+        let rebuilt = built_as_fresh(&holed, "w", &values);
+        // The first from nothing, then only the hole and the cut.
+        assert_eq!(rebuilt, features + 2 * (values.len() - 1), "{rebuilt}");
+        let belt = belt_like();
+        let values = ["30 mm", "31 mm", "44.5 mm", "29 mm", "30 mm", "57 mm"];
+        let rebuilt = built_as_fresh(&belt, "xc", &values);
+        // The tooth is never built again.
+        assert!(
+            rebuilt <= belt.features.len() + (belt.features.len() - 1) * (values.len() - 1),
+            "{rebuilt}"
+        );
+    }
+
+    #[test]
+    fn configurations_are_kept_within_a_byte_budget_least_recently_used_first() {
+        let holed = holed();
+        let mut state = AsmState::default();
+        let mut keys = Vec::new();
+        for (i, value) in ["10 mm", "20 mm", "30 mm", "40 mm"].iter().enumerate() {
+            let params: BTreeMap<String, String> = [("w".to_string(), (*value).to_string())].into();
+            let key = format!("{}#mm", config_key("src", &params));
+            let job = Job {
+                key: key.clone(),
+                doc: configured(&holed, &params, holed.units.length),
+                base: String::new(),
+                source: Some("src#mm".to_string()),
+            };
+            build(&mut state, &mut Vec::new(), vec![job]);
+            keys.push(key);
+            assert_eq!(state.configs.len(), i + 1);
+        }
+        let (count, bytes) = state.configs_held();
+        assert_eq!(count, 4);
+        let each = bytes / 4;
+        assert!(each > RECORDS, "{each}");
+        // Use the first again, then keep room for two and a bit: the second
+        // and third (least recently used) go.
+        state.tick = state.tick.saturating_add(1);
+        let tick = state.tick;
+        state.configs.get_mut(&keys[0]).unwrap().used = tick;
+        state.set_config_budget(each * 2 + each / 2);
+        let kept: Vec<&String> = state.configs.keys().collect();
+        assert_eq!(kept, vec![&keys[0], &keys[3]], "{kept:?}");
+        assert!(state.configs_held().1 <= each * 2 + each / 2);
+        assert!(state.regen_caches.contains_key("src#mm"));
+        // Nothing left of a source: its regeneration cache goes too.
+        state.set_config_budget(0);
+        assert!(state.configs.is_empty());
+        assert!(state.regen_caches.is_empty());
     }
 }
