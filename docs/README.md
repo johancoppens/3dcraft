@@ -20,6 +20,7 @@
 | [`roadmap.md`](roadmap.md) | Current focus, one line per milestone, a section per milestone (Goal, Done, Open, Acceptance), the boolean checklist, ideas, projects on 3DCraft |
 | [`decisions.md`](decisions.md) | Decisions taken and open |
 | [`tasks/`](tasks/) | The task set: 22 ordinary parts with descriptions in English and Dutch, closed-form expectations and reference solutions, scored by `craft3d-cli score` ([`testing.md`](testing.md) › *The task set*) |
+| [`abc-scorecard.md`](abc-scorecard.md) | The latest scorecard of real-world STEP models (one chunk of the ABC dataset): ids and results only, made by `cargo xtask abc` ([`testing.md`](testing.md) › *Real-world models*) |
 | [`showcase/`](showcase/) | Larger models built by agents as stress tests of the kernel (`.3dcraft` files, their build steps and pictures); several tests open them |
 | [`field-test/2026-10-12/`](field-test/2026-10-12/README.md) | What an agent that only used 3DCraft over MCP built, and what it ran into |
 | [`field-test/2026-10-22/`](field-test/2026-10-22/README.md) | The second field test: history, conflicting sketches, every constraint kind, negative values, units, a change request and the guide taken literally; what was fixed and what is open |
