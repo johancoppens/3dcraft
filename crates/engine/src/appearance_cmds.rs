@@ -697,8 +697,13 @@ fn material_json(values: &Values, regen: &Regen, at: FeatureId) -> Option<Value>
 /// properties: with a material its mass and inertia are measured at once,
 /// in about the time of the inertia alone, which a measure of its mass
 /// properties first would not leave room for.
+///
+/// Only ahead: a body whose mass properties are known already is left as
+/// it is, its inertia measured when it is asked for. Measured now it
+/// would integrate every face again, also for a command that only needs
+/// the mass properties (`document.check`).
 pub(crate) fn measure_ahead(doc: &Document, regen: &Regen, at: FeatureId, body: &Arc<Body>) {
-    if body_material(doc, regen, at).is_some() {
+    if crate::mass::mass_known(body).is_none() && body_material(doc, regen, at).is_some() {
         let _measured = mass_and_inertia_of(body);
     }
 }
@@ -721,7 +726,13 @@ pub(crate) fn measure_all_ahead<'a>(
                 return;
             }
             plain.clear();
-            if mass_and_inertia_of(body).0.is_err() {
+            // Known already: its inertia is left until asked for
+            // ([`measure_ahead`]).
+            let measured = match crate::mass::mass_known(body) {
+                Some(known) => known,
+                None => mass_and_inertia_of(body).0,
+            };
+            if measured.is_err() {
                 return;
             }
         } else {
@@ -800,5 +811,44 @@ pub(crate) fn physical_fields(
         Err(e) => {
             entry.insert("inertiaError".into(), e.to_string().into());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use crate::{Session, Workspace};
+    use serde_json::json;
+
+    /// A body measured before it had a material is not integrated again
+    /// for its inertia by a command that needs only its mass properties
+    /// (`document.check`); `document.inspect`, which gives the inertia,
+    /// measures it then, once.
+    #[test]
+    fn inertia_is_measured_when_asked_for_not_ahead_of_a_known_mass() {
+        let mut s = Session::new(Workspace::none());
+        for (id, params) in [
+            ("file.new", json!({"units": "mm"})),
+            (
+                "feature.sphere",
+                json!({"name": "Ball", "position": [0, 0, 0], "radius": 10}),
+            ),
+            ("document.measure", json!({})),
+            (
+                "body.material",
+                json!({"body": "Ball", "name": "Steel", "density": 7850}),
+            ),
+        ] {
+            s.execute(id, &params).unwrap();
+        }
+        let fresh = |s: &mut Session, id: &str, params: serde_json::Value| {
+            let before = crate::mass::fresh_measures();
+            s.execute(id, &params).unwrap();
+            crate::mass::fresh_measures() - before
+        };
+        assert_eq!(fresh(&mut s, "document.check", json!({})), 0);
+        assert_eq!(fresh(&mut s, "document.inspect", json!({})), 1);
+        assert_eq!(fresh(&mut s, "document.inspect", json!({})), 0);
     }
 }

@@ -270,6 +270,12 @@ pub(crate) fn mass_of(body: &Arc<Body>) -> Measured {
     measured
 }
 
+/// [`mass_of`] of `body` if it has been measured (and is still
+/// remembered); nothing is measured.
+pub(crate) fn mass_known(body: &Arc<Body>) -> Option<Measured> {
+    recall(&REMEMBERED, body)
+}
+
 /// What each shell of `body` encloses (`craft3d_topo::mass_with_shells`),
 /// remembered with the body's measure: the faces are integrated once for
 /// both, when the body was first measured.
