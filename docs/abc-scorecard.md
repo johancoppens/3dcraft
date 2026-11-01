@@ -1,6 +1,6 @@
 # ABC scorecard: chunk 0000
 
-Made by `cargo xtask abc` in Heavy run 41347412557 (import 1304 s, booleans 1433 s on the Strix). Model ids are the ABC dataset's (`<id>/<n>`: the model's file `<id>_<hash>_step_<n>`); the models themselves are never committed (their licence: [testing.md](testing.md) › *Real-world models*). A timeout is a model that gave no verdict in time: slow or hanging, not yet told apart.
+Made by `cargo xtask abc` in Heavy run 41347412557 (import 1304 s, booleans 1433 s on the Strix). Model ids are the ABC dataset's (`<id>/<n>`: the model's file `<id>_<hash>_step_<n>`); the models themselves are never committed (their licence: [testing.md](testing.md) › *Real-world models*). A timeout is a model that gave no verdict in time: slow or hanging, not yet told apart. Reasons re-derived on 2026-11-01 (`cargo xtask abc --rescore`) with the bodies' names taken out.
 
 Commit 9aca23b396, 2026-11-01 22:18; 10000 of the chunk's 10000 STEP files run, 6 at once, 60 s and 3G per model (docs/testing.md › Real-world models).
 
@@ -33,18 +33,18 @@ Read as valid solids (ready for stage 2): 7548.
 | EDGE_CURVE: an edge that starts where it ends, on a curve that does not close | 66 | 00000991/14, 00001160/1, 00001359/2 |
 | data: the imported body cannot be meshed to see whether it passes through itself | 52 | 00000277, 00000808/2, 00000980/3 |
 | B_SPLINE_CURVE_WITH_KNOTS: invalid geometry: the knot vector leaves an empty parameter domain | 30 | 00000647, 00001122, 00001123/1 |
+| face # cannot be tessellated: its refinement cannot go on: a triangle #.#e-# across, far within | 28 | 00000082, 00000569, 00001653 |
 | vertex # lies #.#e-# from the ends of its edges, more than the cap #e-# on | 25 | 00000196, 00000232, 00000612 |
 | is not a valid body : shell # of the sheet is closed : a closed | 22 | 00001369/12, 00001570, 00001573/3 |
 | EDGE_CURVE: the edge runs against its curve although same_sense says it runs with it | 21 | 00000434, 00001076, 00001315 |
 | data: whether the imported body passes through itself could not be looked at within the work | 18 | 00000323/18, 00000945/4, 00001373/16 |
 | ADVANCED_FACE: a face without an edge loop on a nurbs surface, which does not close all | 17 | 00000149/2, 00000193/2, 00000204/2 |
-| file.export: Part #: face # cannot be tessellated: its refinement cannot go on: a triangle #.#e-# | 13 | 00000082, 00003161, 00003724 |
 | is # bytes; at most # are read | 11 | 00000414, 00001075, 00005586 |
 | B_SPLINE_CURVE_WITH_KNOTS: invalid geometry: knots must be finite and non-decreasing | 9 | 00000225, 00000436/2, 00000681 |
+| patch # asks for a tolerance finer than its coordinates can resolve; use a larger tolerance | 9 | 00000195/1, 00000950, 00001018 |
 | is not a valid body : loop # of face # does not lie where the | 7 | 00003691, 00004453/7, 00004456/10 |
 | is not a valid body : the loops of face # do not bound a region: | 7 | 00000411, 00000964/3, 00002815 |
-| file.export: Part #: patch # asks for a tolerance finer than its coordinates can resolve; use | 6 | 00000950, 00001018, 00001550 |
-| file.export: M# Socket head cap screw-#: face # cannot be tessellated: its refinement cannot go on: | 4 | 00000569, 00001761, 00003254 |
+| is not a valid body : Euler-Poincaré fails: V - E + F - R = | 4 | 00002152, 00004560/4, 00008432/9 |
 
 ### Top problems of invalid imports
 

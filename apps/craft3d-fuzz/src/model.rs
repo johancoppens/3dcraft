@@ -93,22 +93,56 @@ pub struct ModelRun {
     out: Map<String, Value>,
     options: ModelOptions,
     scratch: std::path::PathBuf,
+    /// The names the file gave its bodies, longest first: taken out of
+    /// every reason, as `<body>` (no model data in what is kept).
+    names: Vec<String>,
+}
+
+/// The solid the booleans cut: its feature, box, volume, area and the
+/// integrator's bound on its volume.
+#[derive(Clone, Debug)]
+struct Target {
+    feature: String,
+    bbox: [[f64; 3]; 2],
+    volume: f64,
+    area: f64,
+    bound: f64,
+}
+
+/// The verdict of a step that went wrong: a crash stays a crash, anything
+/// else is a refusal.
+fn refused_or_crash(verdict: &str) -> &'static str {
+    if verdict == "crash" {
+        "crash"
+    } else {
+        "refused"
+    }
 }
 
 impl ModelRun {
+    /// `text` with the bodies' names taken out.
+    fn scrub(&self, text: &str) -> String {
+        let mut out = text.to_string();
+        for name in &self.names {
+            out = out.replace(name.as_str(), "<body>");
+        }
+        out
+    }
+
     fn set(&mut self, key: &str, value: impl Into<Value>) {
         self.out.insert(key.to_string(), value.into());
     }
 
     fn stop(&mut self, at: &str, verdict: &str, reason: &str) {
+        let reason = cut(&self.scrub(reason));
         self.set("verdict", verdict);
         self.set("at", at);
-        self.set("reason", cut(reason));
+        self.set("reason", reason);
     }
 
-    /// Stage 1: import, check, mesh, measure. `Some((feature, bbox))` of
-    /// the largest solid when the model was read as valid solids.
-    fn import_stage(&mut self, file: &Path) -> Option<(String, [[f64; 3]; 2], f64, f64)> {
+    /// Stage 1: import, check, mesh, measure. The largest solid when the
+    /// model was read as valid solids.
+    fn import_stage(&mut self, file: &Path) -> Option<Target> {
         let path = file.to_string_lossy().to_string();
         let mut times = Map::new();
         let started = Instant::now();
@@ -125,6 +159,20 @@ impl ModelRun {
         if let Some(sha) = imported.get("sha256") {
             self.set("sha256", sha.clone());
         }
+        let mut names: Vec<String> = imported
+            .get("bodies")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|b| b.get("name").and_then(Value::as_str))
+            // A name of one or two characters would take out the same
+            // letters or digits anywhere in a reason.
+            .filter(|n| n.chars().count() >= 3)
+            .map(str::to_string)
+            .collect();
+        names.sort_by(|a, b| b.len().cmp(&a.len()).then(a.cmp(b)));
+        names.dedup();
+        self.names = names;
         let reports: Vec<Value> = imported
             .get("bodies")
             .and_then(Value::as_array)
@@ -158,16 +206,9 @@ impl ModelRun {
         times.insert("check".into(), ms(started).into());
         self.set("ms", Value::Object(times.clone()));
         match check {
+            // The check could not run: not a fault it found.
             Err((verdict, reason)) => {
-                self.stop(
-                    "check",
-                    if verdict == "crash" {
-                        "crash"
-                    } else {
-                        "invalid"
-                    },
-                    &reason,
-                );
+                self.stop("check", refused_or_crash(verdict), &reason);
                 return None;
             }
             Ok(check) => {
@@ -275,6 +316,7 @@ impl ModelRun {
                     .find(|m| m.get("feature").and_then(Value::as_str) == Some(feature.as_str()))?;
                 let volume = m.get("volume")?.as_f64()?;
                 let area = m.get("area")?.as_f64()?;
+                let bound = m.get("volumeBound")?.as_f64()?;
                 let bbox = b.get("bbox")?.as_array()?;
                 let corner = |i: usize| -> Option<[f64; 3]> {
                     let p = bbox.get(i)?.as_array()?;
@@ -285,17 +327,25 @@ impl ModelRun {
                     ])
                 };
                 let bbox = [corner(0)?, corner(1)?];
-                (volume.is_finite() && volume > 0.0).then_some((feature, bbox, volume, area))
+                let fine =
+                    volume.is_finite() && volume > 0.0 && area.is_finite() && bound.is_finite();
+                fine.then_some(Target {
+                    feature,
+                    bbox,
+                    volume,
+                    area,
+                    bound,
+                })
             })
-            .max_by(|a, b| a.2.total_cmp(&b.2));
+            .max_by(|a, b| a.volume.total_cmp(&b.volume));
         self.set("booleanReady", solid.is_some());
         solid
     }
 
     /// Stage 2: three tools sized to the part, each with union, subtract
     /// and intersect, held to the identities and to `document.check`.
-    fn boolean_stage(&mut self, target: &str, bbox: [[f64; 3]; 2], va: f64, sa: f64) {
-        let [lo, hi] = bbox;
+    fn boolean_stage(&mut self, target: &Target) {
+        let [lo, hi] = target.bbox;
         let size = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
         let centre = [
             (lo[0] + hi[0]) / 2.0,
@@ -359,7 +409,11 @@ impl ModelRun {
         for (label, command, params) in tools {
             let mut entry = Map::new();
             entry.insert("tool".into(), label.into());
-            let verdict = self.one_tool(target, command, &params, va, sa, &mut entry);
+            let verdict = self.one_tool(target, command, &params, &mut entry);
+            if let Some(Value::String(reason)) = entry.get("reason") {
+                let scrubbed = self.scrub(reason);
+                entry.insert("reason".into(), scrubbed.into());
+            }
             entry.insert("verdict".into(), verdict.into());
             if rank(verdict) > rank(worst) {
                 worst = verdict;
@@ -373,13 +427,12 @@ impl ModelRun {
     /// what it found goes into `entry`.
     fn one_tool(
         &mut self,
-        target: &str,
+        a: &Target,
         command: &str,
         params: &Value,
-        va: f64,
-        sa: f64,
         entry: &mut Map<String, Value>,
     ) -> &'static str {
+        let target = a.feature.as_str();
         let mut base = self.session.clone();
         let started = Instant::now();
         if let Err((verdict, reason)) = step(&mut base, command, params) {
@@ -391,21 +444,29 @@ impl ModelRun {
                 "refused"
             };
         }
+        // The tool's measure: one that fails is a refusal (or a crash) of
+        // the measure, never a broken identity.
         let tool_measure = step(
             &mut base,
             "document.measure",
             &json!({"feature": "__tool", "bound": true}),
         );
-        let (vb, sb, bound_b) = match &tool_measure {
-            Ok(m) => (
-                number(m, "volume"),
-                number(m, "area"),
-                number(m, "volumeBound"),
-            ),
-            Err(_) => (f64::NAN, f64::NAN, 0.0),
+        let tool_measured = match tool_measure {
+            Ok(m) => measured(&m),
+            Err((verdict, reason)) => Err((refused_or_crash(verdict), reason)),
+        };
+        let (vb, sb, bound_b) = match tool_measured {
+            Ok(v) => v,
+            Err((verdict, reason)) => {
+                entry.insert("at".into(), "tool measure".into());
+                entry.insert("reason".into(), reason.into());
+                return verdict;
+            }
         };
         let mut volumes = Map::new();
-        let mut bounds = bound_b;
+        // Every measured volume's bound: A's (from stage 1), B's and the
+        // three results'.
+        let mut bounds = a.bound + bound_b;
         let mut got = [0.0_f64; 3];
         for (k, op) in ["union", "subtract", "intersect"].into_iter().enumerate() {
             let mut side = base.clone();
@@ -425,14 +486,11 @@ impl ModelRun {
             }
             let check = step(&mut side, "document.check", &json!({"feature": "__result"}));
             match check {
+                // The check could not run: not a fault it found.
                 Err((verdict, reason)) => {
                     entry.insert("at".into(), format!("{op} check").into());
                     entry.insert("reason".into(), reason.into());
-                    return if verdict == "crash" {
-                        "crash"
-                    } else {
-                        "invalid"
-                    };
+                    return refused_or_crash(verdict);
                 }
                 Ok(c) => {
                     if let Some((_, text)) = first_problem(&c) {
@@ -442,14 +500,18 @@ impl ModelRun {
                     }
                 }
             }
-            match step(
+            let result = step(
                 &mut side,
                 "document.measure",
                 &json!({"feature": "__result", "bound": true}),
-            ) {
-                Ok(m) => {
-                    let v = number(&m, "volume");
-                    bounds += number(&m, "volumeBound");
+            );
+            let result = match result {
+                Ok(m) => measured(&m),
+                Err((verdict, reason)) => Err((refused_or_crash(verdict), reason)),
+            };
+            match result {
+                Ok((v, _, bound)) => {
+                    bounds += bound;
                     if let Some(slot) = got.get_mut(k) {
                         *slot = v;
                     }
@@ -458,17 +520,18 @@ impl ModelRun {
                 Err((verdict, reason)) => {
                     entry.insert("at".into(), format!("{op} measure").into());
                     entry.insert("reason".into(), reason.into());
-                    return if verdict == "crash" {
-                        "crash"
-                    } else {
-                        "refused"
-                    };
+                    return verdict;
                 }
             }
         }
         entry.insert("ms".into(), ms(started).into());
         entry.insert("volumes".into(), Value::Object(volumes));
-        let operands = Operands { va, sa, vb, sb };
+        let operands = Operands {
+            va: a.volume,
+            sa: a.area,
+            vb,
+            sb,
+        };
         if let Some(gap) = gaps(operands, got, TOLERANCE, bounds) {
             entry.insert("at".into(), "identity".into());
             entry.insert("reason".into(), gap.into());
@@ -478,19 +541,30 @@ impl ModelRun {
     }
 }
 
-fn number(v: &Value, key: &str) -> f64 {
-    v.get(key).and_then(Value::as_f64).unwrap_or(f64::NAN)
+/// Volume, area and volume bound of a `document.measure` result; a result
+/// without finite numbers is a refusal of the measure.
+fn measured(m: &Value) -> Result<(f64, f64, f64), (&'static str, String)> {
+    let get = |key: &str| m.get(key).and_then(Value::as_f64).filter(|v| v.is_finite());
+    match (get("volume"), get("area"), get("volumeBound")) {
+        (Some(v), Some(a), Some(b)) => Ok((v, a, b)),
+        _ => Err((
+            "refused",
+            "document.measure gave no finite volume, area and bound".to_string(),
+        )),
+    }
 }
 
 /// [`crate::runner::identity_gaps`] with the integrator's own estimate of
-/// how far the measured volumes can be off added to the allowance: a real
-/// model's spline faces are measured less closely than the fuzz's
-/// analytic ones.
+/// how far the measured volumes can be off added to the allowance:
+/// `volume_bounds` is the sum of the bounds of all five measured volumes
+/// (A, B and the three results); each identity sums at most four of them,
+/// once each, so the sum covers either. A real model's spline faces are
+/// measured less closely than the fuzz's analytic ones.
 pub fn gaps(o: Operands, [u, s, i]: [f64; 3], t: f64, volume_bounds: f64) -> Option<String> {
     let base = crate::runner::identity_gaps(o, [u, s, i], t)?;
     let Operands { va, sa, vb, sb } = o;
     let allowance =
-        2.0 * (2.0 * t * (sa + sb)) + 1e-9 * (va.abs() + vb.abs()) + 2.0 * volume_bounds.abs();
+        2.0 * (2.0 * t * (sa + sb)) + 1e-9 * (va.abs() + vb.abs()) + volume_bounds.abs();
     let holds = |gap: f64| gap.is_finite() && gap.abs() <= allowance;
     if holds((u + i) - (va + vb)) && holds((s + i) - va) {
         return None;
@@ -512,12 +586,13 @@ pub fn run_model(file: &Path, options: ModelOptions, scratch: &Path) -> Result<V
         out: Map::new(),
         options,
         scratch: scratch.to_path_buf(),
+        names: Vec::new(),
     };
     run.set("file", file.to_string_lossy().to_string());
     let solid = run.import_stage(file);
     if options.booleans {
         match solid {
-            Some((target, bbox, va, sa)) => run.boolean_stage(&target, bbox, va, sa),
+            Some(target) => run.boolean_stage(&target),
             None => run.set("booleans", Value::Null),
         }
     }
@@ -541,6 +616,41 @@ mod tests {
         assert!(gaps(o, [1.49, 0.5, 0.5], 1e-6, 0.0).is_some());
         assert_eq!(gaps(o, [1.49, 0.5, 0.5], 1e-6, 0.01), None);
         assert!(gaps(o, [f64::NAN, 0.5, 0.5], 1e-6, 1.0).is_some());
+    }
+
+    #[test]
+    fn a_measure_without_numbers_is_a_refusal_not_a_broken_identity() {
+        assert_eq!(
+            measured(&json!({"volume": 1.0, "area": 6.0, "volumeBound": 1e-12})),
+            Ok((1.0, 6.0, 1e-12))
+        );
+        for m in [
+            json!({}),
+            json!({"volume": 1.0, "area": 6.0}),
+            json!({"volume": null, "area": 6.0, "volumeBound": 0.0}),
+        ] {
+            assert_eq!(measured(&m).map_err(|e| e.0), Err("refused"), "{m}");
+        }
+        assert_eq!(refused_or_crash("crash"), "crash");
+        assert_eq!(refused_or_crash("invalid"), "refused");
+    }
+
+    #[test]
+    fn the_bodies_names_are_taken_out_of_reasons() {
+        let run = ModelRun {
+            session: Session::new(Workspace::unrestricted()),
+            out: Map::new(),
+            options: ModelOptions {
+                booleans: false,
+                deep: false,
+            },
+            scratch: std::env::temp_dir(),
+            names: vec!["M5 Socket head cap screw-3".into(), "Part 1".into()],
+        };
+        assert_eq!(
+            run.scrub("file.export: M5 Socket head cap screw-3: face 4; Part 1 too"),
+            "file.export: <body>: face 4; <body> too"
+        );
     }
 
     #[test]
