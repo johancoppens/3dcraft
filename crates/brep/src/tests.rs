@@ -143,3 +143,51 @@ fn every_cut_and_change_is_an_error_or_a_shape() {
         }
     }
 }
+
+#[test]
+fn a_count_from_the_file_reserves_little() {
+    // Review of 2026-11-02: "Curves 8000000" in a 16 MB file reserved
+    // 960 MB (room for every record the count names before one was
+    // read), and some 40 MB overflowed the capacity on wasm32.
+    assert!(reserve::<Curve>(8_000_000).capacity() <= RESERVE);
+    assert!(reserve::<TShape>(usize::MAX).capacity() <= RESERVE);
+    for (count, section) in [
+        (8_000_000usize, "Curves"),
+        (8_000_000, "Surfaces"),
+        (10_000_000, "TShapes"),
+    ] {
+        let mut text =
+            format!("CASCADE Topology V1, (c) Matra-Datavision\nLocations 0\n{section} {count}\n");
+        // 40 MB of a record that is never complete.
+        text.push_str(&"0".repeat(40 << 20));
+        let started = std::time::Instant::now();
+        assert!(read(text.as_bytes()).is_err());
+        assert!(started.elapsed().as_secs() < 20);
+    }
+    let poles = format!(
+        "CASCADE Topology V1, (c) Matra-Datavision\nLocations 0\nCurves 1\n7 0 0 3 6000000 2\n{}",
+        "1 ".repeat(18 << 20)
+    );
+    assert!(read(poles.as_bytes()).is_err());
+}
+
+#[test]
+fn multiplicities_that_do_not_add_up_are_refused_before_anything_expands() {
+    let head = "CASCADE Topology V1, (c) Matra-Datavision\nLocations 0\nCurves 1\n";
+    // Four poles of degree 3 need multiplicities adding up to 8.
+    let poles = "0 0 0 1 0 0 2 0 0 3 0 0 ";
+    for (curve, ok) in [
+        (format!("7 0 0 3 4 2 {poles} 0 4 1 4"), true),
+        (format!("7 0 0 3 4 2 {poles} 0 26 1 26"), false),
+        (format!("7 0 0 3 4 2 {poles} 0 4 1 3"), false),
+        (format!("7 0 0 3 4 3 {poles} 0 4 1 1 2 4"), false),
+        // Periodic: all but the last count the poles; first and last equal.
+        (format!("7 0 1 3 4 5 {poles} 0 1 1 1 2 1 3 1 4 1"), true),
+        (format!("7 0 1 3 4 4 {poles} 0 2 1 1 2 1 3 2"), true),
+        (format!("7 0 1 3 4 4 {poles} 0 2 1 1 2 2 3 2"), false),
+        (format!("7 0 1 3 4 4 {poles} 0 1 1 1 2 1 3 2"), false),
+    ] {
+        let text = format!("{head}{curve}\nTShapes 0\n");
+        assert_eq!(read(text.as_bytes()).is_ok(), ok, "{curve}");
+    }
+}

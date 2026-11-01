@@ -1,7 +1,8 @@
 //! DEFLATE decompression (RFC 1951), for reading the compressed entries of
 //! archives other programs write (FreeCAD's `.FCStd`). Written from the
-//! RFC: stored, fixed-Huffman and dynamic-Huffman blocks, canonical codes
-//! decoded one bit at a time against the count of codes per length.
+//! RFC: stored, fixed-Huffman and dynamic-Huffman blocks, the canonical
+//! codes assigned as its §3.2.2 assigns them and decoded one bit at a
+//! time.
 //!
 //! Hostile input: every code, length and distance is checked; the output
 //! never grows past the limit the caller gives (the size the archive
@@ -73,81 +74,99 @@ impl Bits<'_> {
     }
 }
 
-/// A canonical Huffman code: how many codes each length has, and the
-/// symbols in code order.
+/// A canonical Huffman code as RFC 1951 §3.2.2 assigns it: the codes of
+/// each bit length are consecutive, starting at `next_code[len]`
+/// (computed from the count of codes of every shorter length), given to
+/// the symbols of that length in symbol order. Decoding reads one bit at
+/// a time and, at each length, asks whether the code read so far falls
+/// in that length's run of codes.
 struct Huffman {
-    counts: [u16; MAX_BITS + 1],
+    /// Per length: the first code of that length and how many there are.
+    first: [u32; MAX_BITS + 1],
+    count: [u32; MAX_BITS + 1],
+    /// Per length: where its symbols begin in `symbols`.
+    start: [usize; MAX_BITS + 1],
+    /// The symbols, by length and then symbol order.
     symbols: Vec<u16>,
 }
 
 impl Huffman {
-    /// The code of `lengths` (0 for a symbol without a code). An
-    /// over-subscribed set of lengths is refused; an incomplete one is
-    /// allowed (RFC 1951 permits one distance code), its unused codes
-    /// refused when met.
+    /// The code of `lengths` (0 for a symbol without a code). A set of
+    /// lengths that would need more codes than a length allows is
+    /// refused; an incomplete one is allowed (RFC 1951 permits one
+    /// distance code), its unused codes refused when met.
     fn new(lengths: &[u8]) -> Result<Huffman, InflateError> {
-        let mut counts = [0u16; MAX_BITS + 1];
+        let mut count = [0u32; MAX_BITS + 1];
         for &l in lengths {
-            let slot = counts
-                .get_mut(usize::from(l))
-                .ok_or(InflateError::Invalid("a code length above 15"))?;
-            *slot += 1;
+            if l != 0 {
+                let slot = count
+                    .get_mut(usize::from(l))
+                    .ok_or(InflateError::Invalid("a code length above 15"))?;
+                *slot += 1;
+            }
         }
-        if let Some(zero) = counts.get_mut(0) {
-            *zero = 0;
-        }
-        let mut left: i32 = 1;
-        for &c in counts.iter().skip(1) {
-            left = left * 2 - i32::from(c);
-            if left < 0 {
+        // RFC 1951 §3.2.2, step 2: the first code of each length.
+        let mut first = [0u32; MAX_BITS + 1];
+        let mut code = 0u32;
+        for len in 1..=MAX_BITS {
+            // `count[0]` is 0: lengths of 0 are no codes.
+            code = (code + count.get(len - 1).copied().unwrap_or(0)) << 1;
+            let here = count.get(len).copied().unwrap_or(0);
+            if code + here > (1u32 << len) {
                 return Err(InflateError::Invalid("an over-subscribed set of codes"));
             }
-        }
-        let mut offsets = [0u16; MAX_BITS + 2];
-        for len in 1..=MAX_BITS {
-            let (Some(&o), Some(&c)) = (offsets.get(len), counts.get(len)) else {
-                continue;
-            };
-            if let Some(next) = offsets.get_mut(len + 1) {
-                *next = o + c;
+            if let Some(slot) = first.get_mut(len) {
+                *slot = code;
             }
         }
-        let total = offsets.get(MAX_BITS + 1).copied().unwrap_or(0);
-        let mut symbols = vec![0u16; usize::from(total)];
+        let mut start = [0usize; MAX_BITS + 1];
+        let mut at = 0usize;
+        for len in 1..=MAX_BITS {
+            if let Some(slot) = start.get_mut(len) {
+                *slot = at;
+            }
+            at += count.get(len).copied().unwrap_or(0) as usize;
+        }
+        let mut symbols = vec![0u16; at];
+        let mut filled = start;
         for (symbol, &l) in lengths.iter().enumerate() {
             if l == 0 {
                 continue;
             }
-            let Some(o) = offsets.get_mut(usize::from(l)) else {
+            let Some(next) = filled.get_mut(usize::from(l)) else {
                 continue;
             };
-            if let Some(slot) = symbols.get_mut(usize::from(*o)) {
+            if let Some(slot) = symbols.get_mut(*next) {
                 *slot = u16::try_from(symbol).unwrap_or(u16::MAX);
             }
-            *o += 1;
+            *next += 1;
         }
-        Ok(Huffman { counts, symbols })
+        Ok(Huffman {
+            first,
+            count,
+            start,
+            symbols,
+        })
     }
 
     fn decode(&self, bits: &mut Bits<'_>) -> Result<u16, InflateError> {
-        let mut code: i32 = 0;
-        let mut first: i32 = 0;
-        let mut index: i32 = 0;
+        let mut code = 0u32;
         for len in 1..=MAX_BITS {
-            code |= bits.bit()? as i32;
-            let count = i32::from(self.counts.get(len).copied().unwrap_or(0));
-            if code - count < first {
-                let at = usize::try_from(index + (code - first))
-                    .map_err(|_| InflateError::Invalid("a code"))?;
+            code = (code << 1) | bits.bit()?;
+            let (Some(&first), Some(&count), Some(&start)) = (
+                self.first.get(len),
+                self.count.get(len),
+                self.start.get(len),
+            ) else {
+                break;
+            };
+            if code >= first && code - first < count {
                 return self
                     .symbols
-                    .get(at)
+                    .get(start + (code - first) as usize)
                     .copied()
                     .ok_or(InflateError::Invalid("a code without a symbol"));
             }
-            index += count;
-            first = (first + count) << 1;
-            code <<= 1;
         }
         Err(InflateError::Invalid("a code that is not in the table"))
     }

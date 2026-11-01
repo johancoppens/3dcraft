@@ -176,3 +176,253 @@ fn hand_written_brep_edge_cases() {
     let e = parsed.build(0, &options()).unwrap_err();
     assert!(e.0.contains("no 3D curve"), "{e}");
 }
+
+#[test]
+fn a_wire_of_many_edges_is_put_in_order_in_about_its_length() {
+    use craft3d_topo::{Coedge, EdgeId, VertexId};
+    // Review of 2026-11-02: the order was found by scanning every coedge
+    // at every step. A polygon of 100 000 edges, listed backwards and
+    // interleaved, in well under a second.
+    let n = 100_000u32;
+    let mut uses: Vec<(Coedge, VertexId, VertexId)> = (0..n)
+        .map(|i| {
+            (
+                Coedge {
+                    edge: EdgeId(i),
+                    reversed: false,
+                },
+                VertexId(i),
+                VertexId((i + 1) % n),
+            )
+        })
+        .collect();
+    uses.reverse();
+    let (even, odd): (Vec<_>, Vec<_>) = uses.iter().enumerate().partition(|(k, _)| k % 2 == 0);
+    let uses: Vec<_> = even.into_iter().chain(odd).map(|(_, u)| *u).collect();
+    let started = std::time::Instant::now();
+    let loops = shape::tests_chain(&uses).unwrap();
+    assert!(started.elapsed().as_secs_f64() < 2.0);
+    assert_eq!(loops.len(), 1);
+    assert_eq!(loops[0].len(), n as usize);
+    // A cylinder's wire as FreeCAD lists it: seam, seam reversed, bottom
+    // circle reversed, top circle: one loop that crosses the seam twice.
+    let c = |e: u32, r: bool| Coedge {
+        edge: EdgeId(e),
+        reversed: r,
+    };
+    let (b, t) = (VertexId(0), VertexId(1));
+    let wire = [
+        (c(0, false), b, t),
+        (c(0, true), t, b),
+        (c(1, true), b, b),
+        (c(2, false), t, t),
+    ];
+    let loops = shape::tests_chain(&wire).unwrap();
+    assert_eq!(loops.len(), 1);
+    let edges: Vec<u32> = loops[0].iter().map(|c| c.edge.0).collect();
+    assert_eq!(edges.len(), 4);
+    assert_ne!(edges[0], edges[1]);
+    // An open wire is no loop.
+    assert!(shape::tests_chain(&wire[..1]).is_none());
+}
+
+/// An object of a test document: name, type, visible, shape file, links
+/// as (property, targets), placement x.
+type TestObject<'a> = (
+    &'a str,
+    &'a str,
+    bool,
+    Option<&'a str>,
+    &'a [(&'a str, &'a [&'a str])],
+    f64,
+);
+
+/// A FreeCAD document of objects `(name, type, label, visible, shape file,
+/// links as (property, targets), placement x)`, with `files` beside it,
+/// as a stored archive.
+fn document(objects: &[TestObject<'_>], files: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut list = String::new();
+    let mut data = String::new();
+    for (name, kind, visible, file, links, x) in objects {
+        list.push_str(&format!("<Object type=\"{kind}\" name=\"{name}\"/>\n"));
+        let mut props = format!(
+            "<Property name=\"Label\" type=\"App::PropertyString\"><String value=\"{name} label\"/></Property>\n<Property name=\"Visibility\" type=\"App::PropertyBool\"><Bool value=\"{visible}\"/></Property>\n<Property name=\"Placement\" type=\"App::PropertyPlacement\"><PropertyPlacement Px=\"{x}\" Py=\"0\" Pz=\"0\" Q0=\"0\" Q1=\"0\" Q2=\"0\" Q3=\"1\"/></Property>\n"
+        );
+        if let Some(f) = file {
+            props.push_str(&format!(
+                "<Property name=\"Shape\" type=\"Part::PropertyPartShape\"><Part file=\"{f}\"/></Property>\n"
+            ));
+        }
+        for (prop, targets) in links.iter() {
+            props.push_str(&format!(
+                "<Property name=\"{prop}\" type=\"App::PropertyLinkList\"><LinkList count=\"{}\">",
+                targets.len()
+            ));
+            for t in targets.iter() {
+                props.push_str(&format!("<Link value=\"{t}\"/>"));
+            }
+            props.push_str("</LinkList></Property>\n");
+        }
+        data.push_str(&format!(
+            "<Object name=\"{name}\"><Properties>{props}</Properties></Object>\n"
+        ));
+    }
+    let xml = format!(
+        "<?xml version='1.0' encoding='utf-8'?>\n<Document SchemaVersion=\"4\"><Objects>{list}</Objects><ObjectData>{data}</ObjectData></Document>"
+    );
+    let mut entries: Vec<(&str, &[u8])> = vec![("Document.xml", xml.as_bytes())];
+    entries.extend_from_slice(files);
+    craft3d_zipstore::write_stored(&entries).unwrap()
+}
+
+#[test]
+fn only_consuming_links_make_an_object_a_step() {
+    let shape = data("moved.brp");
+    let s = shape.as_slice();
+    let files: [(&str, &[u8]); 1] = [("S.brp", s)];
+    // A sketch in a second body refers to the first (ExternalGeometry):
+    // the first is still a result. A hidden cut leaves its operands seen.
+    let bytes = document(
+        &[
+            ("Body1", "PartDesign::Body", true, Some("S.brp"), &[], 0.0),
+            (
+                "Sketch",
+                "Sketcher::SketchObject",
+                true,
+                None,
+                &[("ExternalGeometry", &["Body1"])],
+                0.0,
+            ),
+            (
+                "Body2",
+                "PartDesign::Body",
+                true,
+                Some("S.brp"),
+                &[("Group", &["Sketch"])],
+                50.0,
+            ),
+            ("A", "Part::Box", true, Some("S.brp"), &[], 100.0),
+            ("B", "Part::Box", true, Some("S.brp"), &[], 200.0),
+            (
+                "Cut",
+                "Part::Cut",
+                false,
+                Some("S.brp"),
+                &[("Base", &["A"]), ("Tool", &["B"])],
+                0.0,
+            ),
+            ("C", "Part::Box", true, Some("S.brp"), &[], 300.0),
+            (
+                "Fillet",
+                "Part::Fillet",
+                true,
+                Some("S.brp"),
+                &[("Base", &["C"])],
+                0.0,
+            ),
+        ],
+        &files,
+    );
+    let parsed = parse(&bytes).unwrap();
+    let objects: Vec<&str> = parsed.items().iter().map(|i| i.object.as_str()).collect();
+    assert_eq!(objects, ["Body1", "Body2", "A", "B", "Fillet"]);
+    let skipped = parsed.skipped().join("; ");
+    assert!(
+        skipped.contains("Cut") && skipped.contains("hidden"),
+        "{skipped}"
+    );
+    assert!(
+        skipped.contains("`C label` (C): used by `Fillet label`"),
+        "{skipped}"
+    );
+}
+
+#[test]
+fn a_group_inside_a_part_is_placed_by_the_part() {
+    let shape = data("moved.brp");
+    let files: [(&str, &[u8]); 1] = [("S.brp", shape.as_slice())];
+    let bytes = document(
+        &[
+            (
+                "Part",
+                "App::Part",
+                true,
+                None,
+                &[("Group", &["Folder"])],
+                100.0,
+            ),
+            (
+                "Folder",
+                "App::DocumentObjectGroup",
+                true,
+                None,
+                &[("Group", &["Box"])],
+                0.0,
+            ),
+            ("Box", "Part::Feature", true, Some("S.brp"), &[], 0.0),
+        ],
+        &files,
+    );
+    let parsed = parse(&bytes).unwrap();
+    let placed = parsed.build(0, &options()).unwrap();
+    let alone = parse(&shape).unwrap().build(0, &options()).unwrap();
+    let (a, _) = placed.body.bbox().unwrap().corners().unwrap();
+    let (b, _) = alone.body.bbox().unwrap().corners().unwrap();
+    assert!((a.x - b.x - 100.0).abs() < 1e-9, "{a:?} {b:?}");
+}
+
+#[test]
+fn an_entry_many_objects_use_is_decompressed_once_within_a_budget() {
+    // Review of 2026-11-02: each object decompressed and parsed its entry
+    // again, with no bound on the whole: 1000 objects on one entry. Here
+    // within a budget of twice the entry, which only one decompression
+    // and one parse keep to.
+    let mut shape = data("moved.brp");
+    shape.extend(std::iter::repeat_n(b' ', 50_000));
+    let files: [(&str, &[u8]); 1] = [("S.brp", shape.as_slice())];
+    let names: Vec<String> = (0..1000).map(|k| format!("O{k}")).collect();
+    let objects: Vec<TestObject<'_>> = names
+        .iter()
+        .map(|n| {
+            (
+                n.as_str(),
+                "Part::Feature",
+                true,
+                Some("S.brp"),
+                &[][..],
+                0.0,
+            )
+        })
+        .collect();
+    let bytes = document(&objects, &files);
+    let started = std::time::Instant::now();
+    let parsed = parse_within(&bytes, 2 * shape.len() + 1_000_000).unwrap();
+    assert_eq!(parsed.items().len(), 1000);
+    assert!(started.elapsed().as_secs() < 30);
+    // And a budget below what the entries need is refused, named.
+    let e = parse_within(&bytes, shape.len() / 2).unwrap_err();
+    assert!(e.0.contains("decompress to more than"), "{e}");
+}
+
+#[test]
+fn a_torus_whose_tube_reaches_its_axis_is_read_by_the_spindle_code() {
+    let axes = craft3d_brep::Axes {
+        origin: [0.0; 3],
+        n: [0.0, 0.0, 1.0],
+        x: [1.0, 0.0, 0.0],
+        y: [0.0, 1.0, 0.0],
+    };
+    let torus = |major, minor| craft3d_brep::Surface::Torus { axes, major, minor };
+    assert_eq!(
+        shape::tests_surface_kind(&torus(3.0, 1.0)).unwrap(),
+        "torus"
+    );
+    assert_eq!(
+        shape::tests_surface_kind(&torus(2.0, 3.0)).unwrap(),
+        "spindle"
+    );
+    assert_eq!(
+        shape::tests_surface_kind(&torus(2.0, 2.0)).unwrap(),
+        "spindle"
+    );
+}

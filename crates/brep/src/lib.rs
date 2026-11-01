@@ -51,6 +51,17 @@ use std::fmt;
 pub const MAX_NESTING: usize = 8;
 /// The highest B-spline or Bézier degree read (the format's own limit).
 pub const MAX_DEGREE: usize = 25;
+/// The most records, poles or knots reserved room for before they are
+/// read: counts come from the file, so room beyond this grows only as
+/// records are actually parsed (each takes some bytes of the file), and
+/// what a file costs stays a small multiple of its size.
+const RESERVE: usize = 4096;
+
+/// An empty vector with room for `n` items, at most [`RESERVE`].
+fn reserve<T>(n: usize) -> Vec<T> {
+    Vec::with_capacity(n.min(RESERVE))
+}
+
 /// The largest power a composite location may raise another to.
 pub const MAX_POWER: i64 = 1 << 20;
 
@@ -664,7 +675,7 @@ pub fn read(bytes: &[u8]) -> Result<Brep, BrepError> {
 
 fn locations(c: &mut Cursor<'_>) -> Result<Vec<Location>, BrepError> {
     let n = c.count("the number of locations", c.left() / 2)?;
-    let mut out = Vec::with_capacity(n);
+    let mut out = reserve(n);
     for k in 1..=n {
         c.context = format!("location {k}");
         match c.integer("the kind of location")? {
@@ -736,8 +747,8 @@ fn poles(
             "{count} poles, more than the rest of the file holds"
         ));
     }
-    let mut points = Vec::with_capacity(count);
-    let mut weights = Vec::with_capacity(if rational { count } else { 0 });
+    let mut points = reserve(count);
+    let mut weights = reserve(if rational { count } else { 0 });
     for _ in 0..count {
         points.push(c.xyz("a pole")?);
         if rational {
@@ -752,8 +763,8 @@ fn knots(c: &mut Cursor<'_>, count: usize) -> Result<(Vec<f64>, Vec<usize>), Bre
     if count > c.left() / 4 || count < 2 {
         return c.fail(&format!("{count} knots"));
     }
-    let mut knots = Vec::with_capacity(count);
-    let mut mults = Vec::with_capacity(count);
+    let mut knots = reserve(count);
+    let mut mults = reserve(count);
     for _ in 0..count {
         let k = c.real("a knot")?;
         if knots.last().is_some_and(|&last| k <= last) {
@@ -769,9 +780,43 @@ fn knots(c: &mut Cursor<'_>, count: usize) -> Result<(Vec<f64>, Vec<usize>), Bre
     Ok((knots, mults))
 }
 
+/// Whether a B-spline's multiplicities add up to its poles, checked here
+/// so that nothing downstream expands knots that do not: `poles + degree
+/// + 1` in all, or for a periodic one the poles of one period (all but
+/// the last, which repeats the first), each at most `degree + 1`.
+fn add_up(
+    c: &Cursor<'_>,
+    degree: usize,
+    periodic: bool,
+    poles: usize,
+    mults: &[usize],
+    which: &str,
+) -> Result<(), BrepError> {
+    if mults.iter().any(|&m| m > degree + 1) {
+        return c.fail(&format!("a {which}multiplicity above the degree + 1"));
+    }
+    let (sum, want) = if periodic {
+        let sum: usize = mults.iter().take(mults.len().saturating_sub(1)).sum();
+        if mults.first() != mults.last() {
+            return c.fail(&format!(
+                "a periodic B-spline whose first and last {which}multiplicities differ"
+            ));
+        }
+        (sum, poles)
+    } else {
+        (mults.iter().sum(), poles.saturating_add(degree + 1))
+    };
+    if sum != want || poles <= degree && !periodic || poles == 0 {
+        return c.fail(&format!(
+            "the {which}multiplicities add up to {sum}, where {poles} poles of degree {degree} need {want}"
+        ));
+    }
+    Ok(())
+}
+
 fn curves(c: &mut Cursor<'_>) -> Result<Vec<Curve>, BrepError> {
     let n = c.count("the number of curves", c.left() / 2)?;
-    let mut out = Vec::with_capacity(n);
+    let mut out = reserve(n);
     for k in 1..=n {
         c.context = format!("curve {k}");
         out.push(curve(c, 0)?);
@@ -834,6 +879,7 @@ fn curve(c: &mut Cursor<'_>, depth: usize) -> Result<Curve, BrepError> {
             let nknots = c.count("the number of knots", c.left() / 4)?;
             let (poles, weights) = poles(c, count, rational)?;
             let (knots, mults) = knots(c, nknots)?;
+            add_up(c, degree, periodic, poles.len(), &mults, "")?;
             Curve::BSpline(BSplineCurve {
                 degree,
                 periodic,
@@ -867,7 +913,7 @@ fn curve(c: &mut Cursor<'_>, depth: usize) -> Result<Curve, BrepError> {
 
 fn surfaces(c: &mut Cursor<'_>) -> Result<Vec<Surface>, BrepError> {
     let n = c.count("the number of surfaces", c.left() / 2)?;
-    let mut out = Vec::with_capacity(n);
+    let mut out = reserve(n);
     for k in 1..=n {
         c.context = format!("surface {k}");
         out.push(surface(c, 0)?);
@@ -974,6 +1020,8 @@ fn surface(c: &mut Cursor<'_>, depth: usize) -> Result<Surface, BrepError> {
             let (poles, weights) = grid(c, count_u, count_v, ru || rv)?;
             let (knots_u, mults_u) = knots(c, nku)?;
             let (knots_v, mults_v) = knots(c, nkv)?;
+            add_up(c, du, pu, count_u, &mults_u, "u ")?;
+            add_up(c, dv, pv, count_v, &mults_v, "v ")?;
             Surface::BSpline(Box::new(BSplineSurface {
                 degree_u: du,
                 degree_v: dv,
@@ -1016,7 +1064,7 @@ fn is_flags(token: &str) -> bool {
 
 fn shapes(c: &mut Cursor<'_>, brep: &mut Brep) -> Result<(), BrepError> {
     let n = c.count("the number of shapes", c.left() / 4)?;
-    let mut out: Vec<TShape> = Vec::with_capacity(n);
+    let mut out: Vec<TShape> = reserve(n);
     for written in 0..n {
         // The number the file gives this shape: n for the first written.
         let number = n - written;

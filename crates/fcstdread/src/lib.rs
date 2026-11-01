@@ -173,26 +173,59 @@ impl Budget {
     }
 }
 
-fn entry<'a>(
-    entries: &'a [craft3d_zipstore::RawEntry<'a>],
-    name: &str,
-) -> Result<Option<std::borrow::Cow<'a, [u8]>>, ImportError> {
-    let Some(e) = entries.iter().find(|e| e.name == name) else {
-        return Ok(None);
-    };
-    if e.size > MAX_ENTRY_BYTES {
-        return err(format!(
-            "`{name}` is {} bytes once decompressed; at most {MAX_ENTRY_BYTES} are read",
-            e.size
-        ));
-    }
-    e.data()
-        .map(Some)
-        .map_err(|e| ImportError(format!("not a readable FreeCAD document: {e}")))
+/// The most bytes all entries of one document may decompress to
+/// together: each entry is decompressed once, however many objects use
+/// it.
+pub const MAX_INFLATED_BYTES: usize = 2 * MAX_IMPORT_BYTES;
+
+/// The entries of an archive, each decompressed at most once and all
+/// within [`MAX_INFLATED_BYTES`].
+struct Archive<'a> {
+    entries: Vec<craft3d_zipstore::RawEntry<'a>>,
+    inflated: BTreeMap<String, Arc<Vec<u8>>>,
+    total: usize,
+    budget: usize,
 }
 
-/// The placement of the containers (`App::Part`) around an object,
-/// outermost first, multiplied out.
+impl Archive<'_> {
+    fn get(&mut self, name: &str) -> Result<Option<Arc<Vec<u8>>>, ImportError> {
+        if let Some(data) = self.inflated.get(name) {
+            return Ok(Some(Arc::clone(data)));
+        }
+        let Some(e) = self.entries.iter().find(|e| e.name == name) else {
+            return Ok(None);
+        };
+        if e.size > MAX_ENTRY_BYTES {
+            return err(format!(
+                "`{name}` is {} bytes once decompressed; at most {MAX_ENTRY_BYTES} are read",
+                e.size
+            ));
+        }
+        self.total = self.total.saturating_add(e.size);
+        if self.total > self.budget {
+            return err(format!(
+                "the document's entries decompress to more than {} bytes together",
+                self.budget
+            ));
+        }
+        let data = Arc::new(
+            e.data()
+                .map_err(|e| ImportError(format!("not a readable FreeCAD document: {e}")))?
+                .into_owned(),
+        );
+        self.inflated.insert(name.to_string(), Arc::clone(&data));
+        Ok(Some(data))
+    }
+}
+
+/// Containers whose placement places their children (the children's
+/// shapes hold only their own).
+fn places_children(type_name: &str) -> bool {
+    type_name == "App::Part" || type_name.ends_with("AssemblyObject")
+}
+
+/// The placement of the containers (`App::Part`, also through groups
+/// inside one) around an object, outermost first, multiplied out.
 fn outer_placement(
     objects: &[document::Object],
     parents: &BTreeMap<&str, &str>,
@@ -207,7 +240,7 @@ fn outer_placement(
         }
         if let Some(p) = objects
             .iter()
-            .find(|o| o.name == parent)
+            .find(|o| o.name == parent && places_children(&o.type_name))
             .and_then(|o| o.placement)
         {
             chain.push(p);
@@ -224,6 +257,11 @@ fn outer_placement(
 /// Reads a document (or a plain BRep file, [`is_brep`]) and finds its
 /// items.
 pub fn parse(bytes: &[u8]) -> Result<Parsed, ImportError> {
+    parse_within(bytes, MAX_INFLATED_BYTES)
+}
+
+/// [`parse`] with the entries decompressing to at most `budget` bytes.
+fn parse_within(bytes: &[u8], budget: usize) -> Result<Parsed, ImportError> {
     if bytes.len() > MAX_IMPORT_BYTES {
         return err(format!(
             "the file is {} bytes; at most {MAX_IMPORT_BYTES} are read",
@@ -233,9 +271,14 @@ pub fn parse(bytes: &[u8]) -> Result<Parsed, ImportError> {
     if is_brep(bytes) {
         return parse_brep(bytes);
     }
-    let entries = craft3d_zipstore::read(bytes)
-        .map_err(|e| ImportError(format!("not a readable FreeCAD document: {e}")))?;
-    let Some(doc) = entry(&entries, "Document.xml")? else {
+    let mut archive = Archive {
+        entries: craft3d_zipstore::read(bytes)
+            .map_err(|e| ImportError(format!("not a readable FreeCAD document: {e}")))?,
+        inflated: BTreeMap::new(),
+        total: 0,
+        budget,
+    };
+    let Some(doc) = archive.get("Document.xml")? else {
         return err("not a FreeCAD document: the archive has no Document.xml");
     };
     let text = std::str::from_utf8(&doc)
@@ -244,7 +287,7 @@ pub fn parse(bytes: &[u8]) -> Result<Parsed, ImportError> {
     let objects =
         document::objects(&root).map_err(|e| ImportError(format!("Document.xml: {e}")))?;
     drop(root);
-    let views = match entry(&entries, "GuiDocument.xml")? {
+    let views = match archive.get("GuiDocument.xml")? {
         Some(gui) => match std::str::from_utf8(&gui)
             .ok()
             .and_then(|t| xml::parse(t).ok())
@@ -255,22 +298,28 @@ pub fn parse(bytes: &[u8]) -> Result<Parsed, ImportError> {
         },
         None => BTreeMap::new(),
     };
-    // What uses what: only an object with a shape uses (an App::Part
-    // groups, it does not consume).
-    let mut used: BTreeSet<&str> = BTreeSet::new();
+    let visible = |o: &document::Object| {
+        o.visible
+            .or_else(|| views.get(&o.name).and_then(|v| v.visible))
+            .unwrap_or(true)
+    };
+    // What consumes what: only a visible object with a shape consumes (an
+    // App::Part groups, it does not consume; a hidden cut leaves its
+    // operands to be what is seen).
+    let mut used_by: BTreeMap<&str, &str> = BTreeMap::new();
     for o in &objects {
-        if o.shape_file.is_some() {
+        if o.shape_file.is_some() && visible(o) {
             for u in &o.uses {
                 if u != &o.name {
-                    used.insert(u.as_str());
+                    used_by.entry(u.as_str()).or_insert(o.label.as_str());
                 }
             }
         }
     }
     let mut parents: BTreeMap<&str, &str> = BTreeMap::new();
     for o in &objects {
-        if o.type_name == "App::Part" {
-            for child in &o.group {
+        for child in &o.group {
+            if child != &o.name {
                 parents.entry(child.as_str()).or_insert(o.name.as_str());
             }
         }
@@ -281,51 +330,63 @@ pub fn parse(bytes: &[u8]) -> Result<Parsed, ImportError> {
         items: Vec::new(),
         skipped: Vec::new(),
     };
+    // Each shape entry read once, however many objects use it; the walks
+    // over all objects' shapes within one bound.
+    let mut breps: BTreeMap<String, Arc<craft3d_brep::Brep>> = BTreeMap::new();
+    let mut walks = shape::MAX_USES.saturating_mul(2);
     for o in &objects {
         let Some(file) = &o.shape_file else {
             continue;
         };
-        if used.contains(o.name.as_str()) {
+        if let Some(by) = used_by.get(o.name.as_str()) {
+            parsed
+                .skipped
+                .push(format!("`{}` ({}): used by `{by}`", o.label, o.name));
             continue;
         }
         let view = views.get(&o.name);
-        let visible = o
-            .visible
-            .or_else(|| view.and_then(|v| v.visible))
-            .unwrap_or(true);
-        if !visible {
+        if !visible(o) {
             parsed
                 .skipped
                 .push(format!("`{}` ({}): hidden", o.label, o.name));
             continue;
         }
-        let Some(bytes) = entry(&entries, file)? else {
-            return err(format!(
-                "`{}` ({}): its shape `{file}` is not in the archive",
-                o.label, o.name
-            ));
+        let brep = match breps.get(file) {
+            Some(b) => Arc::clone(b),
+            None => {
+                let Some(bytes) = archive.get(file)? else {
+                    return err(format!(
+                        "`{}` ({}): its shape `{file}` is not in the archive",
+                        o.label, o.name
+                    ));
+                };
+                if !file.ends_with(".brp") && !bytes.trim_ascii_start().starts_with(b"CASCADE") {
+                    return err(format!(
+                        "`{}` ({}): its shape `{file}` is in binary BRep (FreeCAD's option to save shapes as binary), which is not read; save the document with that option off",
+                        o.label, o.name
+                    ));
+                }
+                let b = Arc::new(craft3d_brep::read(&bytes).map_err(|e| {
+                    ImportError(format!("`{}` ({}), `{file}`: {e}", o.label, o.name))
+                })?);
+                breps.insert(file.clone(), Arc::clone(&b));
+                b
+            }
         };
-        let name = |e: craft3d_brep::BrepError| {
-            ImportError(format!("`{}` ({}), `{file}`: {e}", o.label, o.name))
-        };
-        if !file.ends_with(".brp") && !bytes.trim_ascii_start().starts_with(b"CASCADE") {
-            return err(format!(
-                "`{}` ({}): its shape `{file}` is in binary BRep (FreeCAD's option to save shapes as binary), which is not read; save the document with that option off",
-                o.label, o.name
-            ));
-        }
-        let brep = craft3d_brep::read(&bytes).map_err(name)?;
         let outer = outer_placement(&objects, &parents, &o.name);
         let shape = Shape::new(brep, outer);
         let at = |e: ImportError| ImportError(format!("`{}` ({}): {}", o.label, o.name, e.0));
-        let parts = shape.parts().map_err(at)?;
+        let parts = shape.parts(&mut walks).map_err(at)?;
         if parts.solids.is_empty() && parts.sheet.is_empty() {
+            parsed
+                .skipped
+                .push(format!("`{}` ({}): no faces", o.label, o.name));
             continue;
         }
-        let numbering = shape.numbering().map_err(at)?;
+        let numbering = shape.numbering(&mut walks).map_err(at)?;
         let colors = view
             .and_then(|v| v.materials.as_ref())
-            .map(|f| entry(&entries, f))
+            .map(|f| archive.get(f))
             .transpose()?
             .flatten()
             .map(|b| document::diffuse_colors(&b))
@@ -387,9 +448,10 @@ pub fn parse(bytes: &[u8]) -> Result<Parsed, ImportError> {
 /// A plain BRep file: one object, `shape`, without colour.
 fn parse_brep(bytes: &[u8]) -> Result<Parsed, ImportError> {
     let brep = craft3d_brep::read(bytes).map_err(|e| ImportError(e.to_string()))?;
-    let shape = Shape::new(brep, craft3d_brep::IDENTITY);
-    let parts = shape.parts()?;
-    let numbering = shape.numbering()?;
+    let shape = Shape::new(Arc::new(brep), craft3d_brep::IDENTITY);
+    let mut walks = shape::MAX_USES;
+    let parts = shape.parts(&mut walks)?;
+    let numbering = shape.numbering(&mut walks)?;
     let mut parsed = Parsed {
         objects: Vec::new(),
         at: Vec::new(),

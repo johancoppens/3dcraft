@@ -38,9 +38,11 @@ use craft3d_geom::{
 };
 use craft3d_math::{Frame, Vec3};
 use craft3d_stepread::ImportError;
-use craft3d_stepread::swept::{self, Swept};
+use craft3d_stepread::spindle::{Normal, Spindle};
+use craft3d_stepread::swept;
 use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, LoopId, VertexId};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// A use of a shape where it ends up: its number, its place (the scale
 /// not yet applied) and its orientation, all holders composed.
@@ -65,7 +67,7 @@ fn key(u: &Use) -> Key {
 /// A shape read: the file, its locations multiplied out, and where the
 /// object puts it.
 pub(crate) struct Shape {
-    pub brep: Brep,
+    pub brep: Arc<Brep>,
     matrices: Vec<Option<Matrix>>,
     /// The object's placement outside the shape (its containers').
     pub outer: Matrix,
@@ -92,7 +94,7 @@ pub(crate) enum SheetPart {
 pub const MAX_USES: usize = 2_000_000;
 
 impl Shape {
-    pub fn new(brep: Brep, outer: Matrix) -> Shape {
+    pub fn new(brep: Arc<Brep>, outer: Matrix) -> Shape {
         let matrices = brep.matrices();
         let root = brep.root;
         Shape {
@@ -147,7 +149,7 @@ impl Shape {
     }
 
     /// The solids, and the shells and faces in no solid, of the shape.
-    pub fn parts(&self) -> Result<Parts, ImportError> {
+    pub fn parts(&self, walks: &mut usize) -> Result<Parts, ImportError> {
         let mut parts = Parts::default();
         let Some(root) = self.root_use()? else {
             return Ok(parts);
@@ -156,6 +158,9 @@ impl Shape {
         let mut seen = 0usize;
         while let Some(u) = stack.pop() {
             seen += 1;
+            *walks = walks.checked_sub(1).ok_or_else(|| {
+                ImportError("the document's shapes place their parts too many times".to_string())
+            })?;
             if seen > MAX_USES {
                 return err(format!(
                     "the shape places its parts more than {MAX_USES} times"
@@ -179,7 +184,7 @@ impl Shape {
     /// FreeCAD's numbers of the faces, edges and vertices of the whole
     /// shape (`Face3` is 3): each distinct use in the order a depth-first
     /// walk meets it, orientation aside.
-    pub fn numbering(&self) -> Result<Numbering, ImportError> {
+    pub fn numbering(&self, walks: &mut usize) -> Result<Numbering, ImportError> {
         let mut n = Numbering::default();
         let Some(root) = self.root_use()? else {
             return Ok(n);
@@ -188,6 +193,9 @@ impl Shape {
         let mut seen = 0usize;
         while let Some(u) = stack.pop() {
             seen += 1;
+            *walks = walks.checked_sub(1).ok_or_else(|| {
+                ImportError("the document's shapes place their parts too many times".to_string())
+            })?;
             if seen > MAX_USES {
                 return err(format!(
                     "the shape places its parts more than {MAX_USES} times"
@@ -566,11 +574,9 @@ fn basis_curve(c: &brep::Curve, place: &Place) -> Result<Curve3, ImportError> {
 }
 
 /// A surface read: done, with whether the file's normal is opposite to
-/// ours; or an extrusion that waits for its face's edges.
-enum Read {
-    Done(Surface, bool),
-    Extrusion { curve: NurbsCurve, along: Vec3 },
-}
+/// ours; an extrusion that waits for its face's edges; or a horn or
+/// spindle torus whose part its face's edges choose (`stepread::swept`).
+use craft3d_stepread::swept::Swept as Read;
 
 fn surface(s: &brep::Surface, place: &Place, depth: usize) -> Result<Read, ImportError> {
     if depth > brep::MAX_NESTING {
@@ -619,9 +625,12 @@ fn surface(s: &brep::Surface, place: &Place, depth: usize) -> Result<Read, Impor
         brep::Surface::Torus { axes, major, minor } => {
             let (f, flip) = elementary(axes)?;
             if major <= minor {
-                return err(
-                    "a torus whose tube reaches its axis (a horn or spindle torus) is not read",
-                );
+                // A horn or spindle torus: its normal is `∂u × ∂v` of the
+                // format's torus, the standard one's on a right-handed
+                // frame (the same code as a STEP revolution's).
+                return Spindle::toroidal(f, major * k, minor * k, None, Normal::Swept { flip })
+                    .and_then(Spindle::read)
+                    .map_err(ImportError);
             }
             Read::Done(
                 Surface::Torus(Torus::new(f, major * k, minor * k).map_err(geom)?),
@@ -634,10 +643,7 @@ fn surface(s: &brep::Surface, place: &Place, depth: usize) -> Result<Read, Impor
                 .direction(*direction)
                 .normalized()
                 .ok_or_else(|| ImportError("an extrusion without a direction".to_string()))?;
-            match swept::extrusion(&c, along).map_err(ImportError)? {
-                Swept::Done(s, flip) => Read::Done(s, flip),
-                Swept::Unbounded { curve, along } => Read::Extrusion { curve, along },
-            }
+            swept::extrusion(&c, along).map_err(ImportError)?
         }
         brep::Surface::Revolution {
             origin,
@@ -649,9 +655,7 @@ fn surface(s: &brep::Surface, place: &Place, depth: usize) -> Result<Read, Impor
                 .direction(*direction)
                 .normalized()
                 .ok_or_else(|| ImportError("a revolution without an axis".to_string()))?;
-            let (s, flip) =
-                swept::revolution(&c, place.point(*origin), axis).map_err(ImportError)?;
-            Read::Done(s, flip)
+            swept::revolution(&c, place.point(*origin), axis).map_err(ImportError)?
         }
         brep::Surface::Bezier {
             count_u,
@@ -761,11 +765,9 @@ fn surface(s: &brep::Surface, place: &Place, depth: usize) -> Result<Read, Impor
         }
         brep::Surface::Trimmed { basis, .. } => surface(basis, place, depth + 1)?,
         brep::Surface::Offset { distance, basis } => match surface(basis, place, depth + 1)? {
-            Read::Done(s, flip) => Read::Done(
-                swept::offset(&s, flip, distance * k).map_err(ImportError)?,
-                flip,
-            ),
-            Read::Extrusion { .. } => {
+            Read::Done(s, flip) => swept::offset(&s, flip, distance * k).map_err(ImportError)?,
+            Read::Spindle(spindle) => spindle.offset(distance * k).map_err(ImportError)?,
+            Read::Unbounded { .. } => {
                 return err("an offset of an extruded curve is not read");
             }
         },
@@ -992,11 +994,13 @@ impl<'a> Builder<'a> {
             .map_err(|e| ImportError(format!("face {}: {e}", f.number)))?
         {
             Read::Done(s, flip) => (s, flip),
-            Read::Extrusion { curve, along } => (
+            Read::Unbounded { curve, along } => (
                 swept::bounded_extrusion(&self.body, &curve, along, &loops)
                     .map_err(|e| ImportError(format!("face {}: {e}", f.number)))?,
                 false,
             ),
+            Read::Spindle(spindle) => swept::spindle_part(&self.body, &spindle, &loops, self.merge)
+                .map_err(|e| ImportError(format!("face {}: {e}", f.number)))?,
         };
         let closed = match &surface {
             Surface::Sphere(_) | Surface::Torus(_) => true,
@@ -1111,18 +1115,61 @@ impl<'a> Builder<'a> {
 /// set that joins up (an Euler circuit, so a seam crossed twice and a
 /// closed edge in the middle stay in one loop), never turning straight
 /// back along the edge just used while another way is open. `None` when
-/// some coedge cannot be part of a closed loop.
+/// some coedge cannot be part of a closed loop. The coedges are indexed
+/// by the vertex they start at, so a wire of many edges costs about its
+/// length.
 fn chain(uses: &[(Coedge, VertexId, VertexId)]) -> Option<Vec<Vec<Coedge>>> {
+    // Unused coedges by start vertex, in the wire's order (the last
+    // entry of each list is the next to take, so they are reversed).
+    let mut from: BTreeMap<VertexId, Vec<usize>> = BTreeMap::new();
+    for (i, u) in uses.iter().enumerate().rev() {
+        from.entry(u.1).or_default().push(i);
+    }
     let mut used = vec![false; uses.len()];
+    let mut next_first = 0usize;
     let mut loops = Vec::new();
-    while let Some(first) = used.iter().position(|u| !u) {
-        let mut stack: Vec<usize> = Vec::new();
-        let mut circuit: Vec<usize> = Vec::new();
-        // Begin with the first unused coedge, in the wire's order.
+    // Takes an unused coedge from `vertex`, not along `avoid` if another
+    // is open.
+    let take = |from: &mut BTreeMap<VertexId, Vec<usize>>,
+                used: &mut [bool],
+                vertex: VertexId,
+                avoid: Option<EdgeId>|
+     -> Option<usize> {
+        let list = from.get_mut(&vertex)?;
+        while list
+            .last()
+            .is_some_and(|&i| used.get(i).copied().unwrap_or(true))
+        {
+            list.pop();
+        }
+        let pick = list
+            .iter()
+            .rev()
+            .take(4)
+            .position(|&i| {
+                !used.get(i).copied().unwrap_or(true) && uses.get(i).map(|u| u.0.edge) != avoid
+            })
+            .map(|k| list.len() - 1 - k)
+            .or_else(|| list.len().checked_sub(1))?;
+        let i = list.remove(pick);
+        if let Some(u) = used.get_mut(i) {
+            *u = true;
+        }
+        Some(i)
+    };
+    loop {
+        while used.get(next_first).copied() == Some(true) {
+            next_first += 1;
+        }
+        if next_first >= uses.len() {
+            break;
+        }
+        let first = next_first;
         if let Some(u) = used.get_mut(first) {
             *u = true;
         }
-        stack.push(first);
+        let mut stack: Vec<usize> = vec![first];
+        let mut circuit: Vec<usize> = Vec::new();
         let mut current = uses.get(first)?.2;
         let mut steps = 0usize;
         loop {
@@ -1131,19 +1178,7 @@ fn chain(uses: &[(Coedge, VertexId, VertexId)]) -> Option<Vec<Vec<Coedge>>> {
                 return None;
             }
             let last_edge = stack.last().and_then(|&i| uses.get(i)).map(|u| u.0.edge);
-            let candidates: Vec<usize> = (0..uses.len())
-                .filter(|&i| !used.get(i).copied().unwrap_or(true))
-                .filter(|&i| uses.get(i).is_some_and(|u| u.1 == current))
-                .collect();
-            let pick = candidates
-                .iter()
-                .copied()
-                .find(|&i| uses.get(i).map(|u| u.0.edge) != last_edge)
-                .or_else(|| candidates.first().copied());
-            if let Some(i) = pick {
-                if let Some(u) = used.get_mut(i) {
-                    *u = true;
-                }
+            if let Some(i) = take(&mut from, &mut used, current, last_edge) {
                 stack.push(i);
                 current = uses.get(i)?.2;
             } else if let Some(i) = stack.pop() {
@@ -1186,4 +1221,18 @@ pub(crate) fn tests_curve(
     range: (f64, f64),
 ) -> Result<(Curve3, (f64, f64)), ImportError> {
     curve(c, place, range, 0)
+}
+
+#[cfg(test)]
+pub(crate) fn tests_chain(uses: &[(Coedge, VertexId, VertexId)]) -> Option<Vec<Vec<Coedge>>> {
+    chain(uses)
+}
+
+#[cfg(test)]
+pub(crate) fn tests_surface_kind(s: &brep::Surface) -> Result<&'static str, ImportError> {
+    Ok(match surface(s, &tests_place(), 0)? {
+        Read::Done(s, _) => s.kind(),
+        Read::Unbounded { .. } => "extrusion",
+        Read::Spindle(_) => "spindle",
+    })
 }

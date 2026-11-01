@@ -12,10 +12,10 @@
 // `!(x > 0.0)` is deliberate: unlike `x <= 0.0` it is also true for NaN.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 use crate::geometry::{as_nurbs, extruded, revolved};
+use crate::spindle::{Normal, Sheet, Spindle, flipped};
 use craft3d_geom::{Cone, Curve3, Cylinder, NurbsCurve, Plane, Sphere, Surface, Torus};
 use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
-use crate::spindle::{Normal, Sheet, Spindle, flipped};
 use craft3d_topo::{Body, LoopId};
 
 /// An extrusion as read: done, with whether the file's normal is
@@ -183,8 +183,8 @@ pub fn revolution(curve: &Curve3, at: Vec3, axis: Vec3) -> Result<Swept, String>
                         Sphere::new(frame, circle.radius()).map_err(geom)?,
                     ))
                 } else {
-                    let frame =
-                        Frame::new(foot, axis, centre - foot).ok_or_else(|| "no axis".to_string())?;
+                    let frame = Frame::new(foot, axis, centre - foot)
+                        .ok_or_else(|| "no axis".to_string())?;
                     if major > circle.radius() {
                         Some(Surface::Torus(
                             Torus::new(frame, major, circle.radius()).map_err(geom)?,
@@ -198,10 +198,8 @@ pub fn revolution(curve: &Curve3, at: Vec3, axis: Vec3) -> Result<Swept, String>
                             flipped(&frame, major, point, normal)
                         });
                         let Some(flip) = flip else {
-                            return Err(
-                                "cannot tell which way the swept surface's normal points"
-                                    .to_string(),
-                            );
+                            return Err("cannot tell which way the swept surface's normal points"
+                                .to_string());
                         };
                         return Spindle::toroidal(
                             frame,

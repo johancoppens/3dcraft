@@ -25,8 +25,8 @@ pub struct Object {
     pub placement: Option<Matrix>,
     /// The ZIP entry that holds the `Shape` property, if any.
     pub shape_file: Option<String>,
-    /// Objects it uses through its link properties (not through its
-    /// attachment): a cut uses its base and tool, a body its features.
+    /// Objects it consumes through its link properties ([`CONSUMES`]): a
+    /// cut its base and tool, a body its features.
     pub uses: Vec<String>,
     /// The objects of its `Group` (an `App::Part`'s children).
     pub group: Vec<String>,
@@ -43,13 +43,30 @@ pub struct View {
     pub color: Option<u32>,
 }
 
-/// Link properties that place an object rather than use it.
-const NOT_USES: [&str; 5] = [
-    "AttachmentSupport",
-    "Support",
-    "MapSupport",
-    "ExpressionEngine",
-    "AttacherEngine",
+/// Link properties through which an object consumes others, so that they
+/// are steps towards it rather than results of their own: a boolean's
+/// `Base` and `Tool` (or `Shapes`), a compound's `Links`, a feature's
+/// `Source`, `Base` or `BaseFeature`, a body's `Group` and `Tip`, a loft's
+/// or a sweep's `Sections` and `Spine`, a pattern's `Originals`. Links that
+/// only refer (a sketch's `ExternalGeometry`, an attachment, a pad's
+/// `UpToFace`, a revolution's `ReferenceAxis`) consume nothing.
+const CONSUMES: [&str; 16] = [
+    "Base",
+    "Tool",
+    "Tools",
+    "Shapes",
+    "Links",
+    "Group",
+    "BaseFeature",
+    "Tip",
+    "Source",
+    "Sources",
+    "Objects",
+    "Profile",
+    "Sections",
+    "Spine",
+    "Original",
+    "Originals",
 ];
 
 /// A rotation `(x, y, z, w)` and a translation as a matrix.
@@ -169,7 +186,9 @@ pub fn objects(root: &Element) -> Result<Vec<Object>, String> {
                 }
                 _ => {}
             }
-            if kind.starts_with("App::PropertyLink") && !NOT_USES.contains(&name) {
+            if kind.starts_with("App::PropertyLink")
+                && (CONSUMES.contains(&name) || name == "Group")
+            {
                 let mut targets = Vec::new();
                 for e in p.descendants() {
                     for key in ["value", "obj"] {
@@ -184,7 +203,9 @@ pub fn objects(root: &Element) -> Result<Vec<Object>, String> {
                 if name == "Group" {
                     object.group.extend(targets.iter().cloned());
                 }
-                object.uses.extend(targets);
+                if CONSUMES.contains(&name) {
+                    object.uses.extend(targets);
+                }
             }
         }
     }

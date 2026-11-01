@@ -711,3 +711,34 @@ fn damaged_deflated_archives_never_panic() {
         let _ = inflate::inflate(&LEVEL0[..at], TEXT.len());
     }
 }
+
+// Raw streams from zlib (level 9): a dynamic-Huffman block and a
+// fixed-Huffman block of the same text.
+const DYNAMIC: &[u8] = include_bytes!("../testdata/dynamic.deflate");
+const FIXED: &[u8] = include_bytes!("../testdata/fixed.deflate");
+
+#[test]
+fn dynamic_and_fixed_huffman_blocks_read_back_exactly() {
+    assert_eq!(DYNAMIC[0] & 7, 0b101, "a last block of the dynamic kind");
+    assert_eq!(FIXED[0] & 7, 0b011, "a last block of the fixed kind");
+    assert_eq!(inflate::inflate(DYNAMIC, TEXT.len()).unwrap(), TEXT);
+    assert_eq!(inflate::inflate(FIXED, TEXT.len()).unwrap(), TEXT);
+}
+
+#[test]
+fn damaged_huffman_streams_never_panic() {
+    // Every byte of both streams changed three ways, and every cut: an
+    // error, or (rarely) some bytes within the limit.
+    for stream in [DYNAMIC, FIXED] {
+        for at in 0..stream.len() {
+            for delta in [1u8, 0x10, 0x80] {
+                let mut bytes = stream.to_vec();
+                bytes[at] = bytes[at].wrapping_add(delta);
+                if let Ok(out) = inflate::inflate(&bytes, TEXT.len()) {
+                    assert!(out.len() <= TEXT.len());
+                }
+            }
+            let _ = inflate::inflate(&stream[..at], TEXT.len());
+        }
+    }
+}
