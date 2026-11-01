@@ -11,7 +11,7 @@
 )]
 
 use craft3d_geom::{Curve3, NurbsCurve};
-use craft3d_math::{Bits, Frame, Tolerance, Transform, Vec3, bits_of};
+use craft3d_math::{Bits, Frame, Portable, Tolerance, Transform, Vec3, bits_of};
 use craft3d_testkit::solids;
 use craft3d_topo::{
     Body, Defect, EdgeId, FaceId, RECORD_MARGIN, ToleranceError, VertexId, check, check_capped,
@@ -367,7 +367,7 @@ fn ribbon(turns: usize, scale: f64) -> (craft3d_geom::Surface, Curve3) {
         (0..n)
             .map(|j| {
                 let a = j as f64 / per as f64 * std::f64::consts::TAU;
-                Vec3::new(r * a.cos(), r * a.sin(), 0.5 * a) * scale
+                Vec3::new(r * a.pcos(), r * a.psin(), 0.5 * a) * scale
             })
             .collect()
     };
