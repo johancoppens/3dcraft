@@ -356,3 +356,73 @@ fn a_gap_within_the_cap_is_measured_within_it() {
         }
     }
 }
+
+/// A ribbon wound `turns` times round a helix, `scale` across, and the
+/// line along its middle (exact: the surface is of degree one across).
+fn ribbon(turns: usize, scale: f64) -> (craft3d_geom::Surface, Curve3) {
+    use craft3d_geom::{NurbsSurface, Surface};
+    let per = 16;
+    let n = turns * per + 3;
+    let row = |r: f64| -> Vec<Vec3> {
+        (0..n)
+            .map(|j| {
+                let a = j as f64 / per as f64 * std::f64::consts::TAU;
+                Vec3::new(r * a.cos(), r * a.sin(), 0.5 * a) * scale
+            })
+            .collect()
+    };
+    let mut knots = vec![0.0; 4];
+    knots.extend((1..n - 3).map(|i| i as f64));
+    knots.extend([(n - 3) as f64; 4]);
+    let mut points = row(9.0);
+    points.extend(row(11.0));
+    let weights = vec![1.0; points.len()];
+    let surface = Surface::Nurbs(
+        NurbsSurface::new(
+            1,
+            3,
+            vec![0.0, 0.0, 1.0, 1.0],
+            knots.clone(),
+            2,
+            n,
+            points,
+            weights,
+        )
+        .unwrap(),
+    );
+    let middle = Curve3::Nurbs(NurbsCurve::polynomial(3, knots, row(10.0)).unwrap());
+    (surface, middle)
+}
+
+/// An edge on a spline surface of many spans whose own projection lands
+/// in another dip of the distance (a ribbon wound round a helix: a point
+/// on one turn projects onto the next, three units away) is measured
+/// from feet walked along it, not left unmeasured (2026-11-01: one far
+/// foot among the five made the first target larger than the cap, and
+/// the edge was never tried; ABC models on rational surfaces).
+#[test]
+fn an_edge_whose_projection_lands_on_another_turn_is_measured() {
+    for scale in [1.0, 1e3, 1e-3] {
+        let t = tolerance(scale);
+        let cap = 1000.0 * t.linear;
+        let (surface, middle) = ribbon(16, scale);
+        // At one of the five places the measure starts from (its end)
+        // the projection is three units off.
+        let (lo, hi) = middle.domain();
+        let range = (lo + 0.37, hi - 0.61);
+        let wrong = (0..=4).any(|k| {
+            let p = middle.eval(range.0 + (range.1 - range.0) * f64::from(k) / 4.0);
+            let (u, v) = surface.project(p).unwrap();
+            surface.eval(u, v).distance(p) > scale
+        });
+        assert!(
+            wrong,
+            "{scale}: the probe needs a projection that goes wrong"
+        );
+        let measured = craft3d_topo::measure_curve(&middle, range, &surface, &t, cap);
+        assert!(
+            measured.is_ok_and(|d| d <= t.linear),
+            "{scale}: {measured:?}"
+        );
+    }
+}

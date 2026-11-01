@@ -34,7 +34,7 @@
 use crate::{Body, EdgeId, VertexId};
 use craft3d_geom::certify::{CurveBound, Within, curve_on_surface};
 use craft3d_geom::{Curve3, Surface};
-use craft3d_math::{Bits, Tolerance};
+use craft3d_math::{Bits, Tolerance, Vec3};
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -315,26 +315,15 @@ pub fn measure_curve(
     cap: f64,
 ) -> Result<f64, f64> {
     let bounded = CurveBound::new(curve);
-    let (t0, t1) = range;
-    let sampled = (0..=4)
-        .map(|k| {
-            let p = curve.eval(t0 + (t1 - t0) * f64::from(k) / 4.0);
-            surface
-                .project(p)
-                .ok()
-                .map(|(u, v)| surface.eval(u, v).distance(p))
-                .filter(|d| d.is_finite())
-                .unwrap_or(f64::INFINITY)
-        })
-        .fold(0.0, f64::max);
+    let (sampled, start) = walk(curve, range, surface);
     let mut target = (2.0 * sampled).max(tolerance.linear);
-    let mut stopped = 0.5 * (t0 + t1);
+    let mut stopped = 0.5 * (range.0 + range.1);
     while target.is_finite() && target <= 2.0 * cap {
         match curve_on_surface(
             &bounded,
             range,
             surface,
-            None,
+            start,
             &[],
             Within {
                 target,
@@ -352,7 +341,7 @@ pub fn measure_curve(
                         target: cap,
                         most: PROOF_PIECES,
                     };
-                    if let Ok(p) = curve_on_surface(&bounded, range, surface, None, &[], tighter) {
+                    if let Ok(p) = curve_on_surface(&bounded, range, surface, start, &[], tighter) {
                         return Ok(p.bound.max(sampled));
                     }
                 }
@@ -363,6 +352,76 @@ pub fn measure_curve(
         target *= 2.0;
     }
     Err(stopped)
+}
+
+/// Places per quarter of a curve where its feet on a surface are walked
+/// from one to the next: at least eight, two per span of a spline curve,
+/// at most 1024.
+fn walk_steps(curve: &Curve3) -> u32 {
+    let spans = match curve {
+        Curve3::Nurbs(n) => {
+            let mut k = n.knots().to_vec();
+            k.dedup();
+            k.len()
+        }
+        _ => 0,
+    };
+    u32::try_from(spans / 2).unwrap_or(u32::MAX).clamp(8, 1024)
+}
+
+/// The farthest of five places along `curve` over `range` from
+/// `surface`, and where the proof should start. Each foot is the nearer
+/// of the surface's own projection and the foot walked on from the place
+/// before (`project_from`): the projection searches the whole surface
+/// from a grid and on a spline of many spans may settle in another dip
+/// of the distance, far from the curve, and one such foot among the five
+/// made the first target larger than the cap, so the edge was never
+/// tried (2026-11-01, 140 ABC models on rational surfaces of 60 to 128
+/// spans). The start is `None` (the proof projects it, and steps off a
+/// seam or pole from there) unless the foot walked back from the end
+/// along the curve is nearer than the projection of the start.
+fn walk(curve: &Curve3, range: (f64, f64), surface: &Surface) -> (f64, Option<(f64, f64)>) {
+    let (t0, t1) = range;
+    let quarter = walk_steps(curve);
+    let all = 4 * quarter;
+    let at = |k: u32| curve.eval(t0 + (t1 - t0) * f64::from(k) / f64::from(all));
+    let off = |p: Vec3, f: (f64, f64)| {
+        let d = surface.eval(f.0, f.1).distance(p);
+        if d.is_finite() { d } else { f64::INFINITY }
+    };
+    let nearer = |p: Vec3, a: Option<(f64, f64)>, b: Option<(f64, f64)>| match (a, b) {
+        (Some(a), Some(b)) => Some(if off(p, b) < off(p, a) { b } else { a }),
+        (a, b) => a.or(b),
+    };
+    let mut sampled = 0.0_f64;
+    let mut last: Option<(f64, f64)> = None;
+    for k in 0..=all {
+        let p = at(k);
+        let walked = last.and_then(|l| surface.project_from(p, l).ok());
+        // The surface's own projection (a search of the whole surface)
+        // only at the five places.
+        if k % quarter == 0 {
+            let foot = nearer(p, surface.project(p).ok(), walked);
+            sampled = sampled.max(foot.map_or(f64::INFINITY, |f| off(p, f)));
+            last = foot;
+        } else {
+            last = walked.or(last);
+        }
+    }
+    // Back from the end's foot to the start, a place at a time.
+    let mut back = last;
+    for k in (0..all).rev() {
+        let p = at(k);
+        back = back.and_then(|b| surface.project_from(p, b).ok());
+    }
+    let p = at(0);
+    let own = surface.project(p).ok();
+    let start = match (own, back) {
+        (Some(o), Some(b)) if off(p, b) < off(p, o) => Some(b),
+        (None, b) => b,
+        _ => None,
+    };
+    (sampled, start)
 }
 
 /// How far the ends of the edges at the vertex are from it, and at least
