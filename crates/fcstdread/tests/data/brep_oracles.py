@@ -43,12 +43,14 @@ try:
     # the z axis, turned about it: the apple of a spindle torus (major 2,
     # minor 3), a valid solid.
     h = math.sqrt(9.0 - 4.0)
-    arc = Part.ArcOfCircle(Part.Circle(V(2, 0, 0), V(0, 1, 0), 3), -math.acos(-2.0 / 3.0), math.acos(-2.0 / 3.0))
-    e1 = arc.toShape()
-    p0, p1 = e1.Vertexes[0].Point, e1.Vertexes[-1].Point
-    face = Part.Face(Part.Wire([e1, Part.LineSegment(p1, p0).toShape()]))
-    apple = face.revolve(V(0, 0, 0), V(0, 0, 1), 360)
-    solid = Part.Solid(Part.Shell(apple.Faces)) if apple.ShapeType != "Solid" else apple
+    p0, p1 = V(0, 0, -h), V(0, 0, h)
+    # The arc through the circle's far point (2 + 3, 0, 0), from the axis
+    # to the axis, closed by the axis.
+    arc = Part.Arc(p0, V(5, 0, 0), p1).toShape()
+    face = Part.Face(Part.Wire([arc, Part.LineSegment(p1, p0).toShape()]))
+    solid = face.revolve(V(0, 0, 0), V(0, 0, 1), 360)
+    if solid.ShapeType != "Solid" and solid.Solids:
+        solid = solid.Solids[0]
     solid.exportBrep(os.path.join(OUT, "apple.brp"))
     result["apple.brp"] = {"volume": solid.Volume, "area": solid.Area, "h": h, "valid": solid.isValid()}
 except Exception as e:
