@@ -112,4 +112,12 @@ fn an_across_degree_other_than_3_or_5_is_refused() {
     let three = body(&mut s, "Quintic");
     assert_ne!(before["area"], three["area"]);
     assert_eq!(three["area"], body(&mut session(None), "Quintic")["area"]);
+    // Null is the default again, as 3 is.
+    let mut s = session(Some(json!(5)));
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Quintic", "acrossDegree": null}),
+    );
+    assert_eq!(body(&mut s, "Quintic")["area"], three["area"]);
 }

@@ -284,6 +284,14 @@ sides of the seam share one parametrisation; where both edges of a family are he
 faces, the crossing curves must cross both lines at the same parameters. The sheet is refused unless the
 measure proves G2, with the gaps it found; a torus is refused as for tangency.
 
+**A smoother face to hold to.** A network interpolates each family across the other with cubics by
+default, so where a sheet is held in curvature to a network sheet made of cubic curves, the face's curvature
+across the seam has a kink at each of its knots, and the held sheet has to take that kink somewhere: it puts
+it on a narrow band beside the seam (a crease there, within the tolerances). Give the face's network
+`"acrossDegree": 5` and draw its curves with `"degree": 5` (`sketch.spline`), and the face is smooth enough
+that the held sheet needs no band. A family of fewer than six curves is interpolated with one degree fewer
+than it has curves, whatever is asked; `feature.edit` with `"acrossDegree": null` goes back to the default, 3.
+
 ### A class-A mouse
 
 Sheets whose edges meet are joined by `feature.boolean` with `"op": "sew"`: their edges are sewn where

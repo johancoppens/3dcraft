@@ -17,8 +17,9 @@
 // Test code: a failure in a helper is a failed test.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
-use craft3d_geom::network::{Condition, Network, Order, gordon, iso_curve};
+use craft3d_geom::network::{Condition, Network, Order, gordon, gordon_across, iso_curve};
 use craft3d_geom::{NurbsCurve, NurbsSurface, Surface};
+use craft3d_math::Portable;
 use craft3d_math::Vec3;
 
 const SCALES: [f64; 3] = [1e-3, 1.0, 1e6];
@@ -64,7 +65,11 @@ fn crown(r: f64) -> NurbsSurface {
 /// The side: from the crown's border `y = 0.6 r` (its line v = 1) out and
 /// down to a floor line, crossed by four cubics; the floor edge free.
 fn side(r: f64, crown: &NurbsSurface) -> (Vec<NurbsCurve>, Vec<NurbsCurve>) {
-    let edge = iso_curve(crown, true, 1.0).unwrap();
+    side_from(r, iso_curve(crown, true, 1.0).unwrap())
+}
+
+/// [`side`] from the crown's edge `edge` (along x at y = 0.6 r).
+fn side_from(r: f64, edge: NurbsCurve) -> (Vec<NurbsCurve>, Vec<NurbsCurve>) {
     let floor = NurbsCurve::new(
         edge.degree(),
         edge.knots().to_vec(),
@@ -170,6 +175,149 @@ fn a_sheet_held_in_curvature_to_a_cubic_crown_is_smooth_inside_and_offsets() {
                 let exact = craft3d_geom::offset::exact(&sheet, distance, a, b).unwrap();
                 let off = fitted.eval(a, b).distance(exact);
                 assert!(off <= 0.25 * tol * 1.01, "scale {scale}: off by {off:e}");
+            }
+        }
+    }
+}
+
+/// The crown of a network: six sections across x and three lines along it,
+/// each of `degree` through points of `z = √(4r² − x² − y²) − 2r` with a
+/// ripple along x, crossing exactly; interpolated across with `across`.
+fn network_crown(r: f64, degree: usize, across: usize) -> NurbsSurface {
+    let f = |x: f64, y: f64| {
+        let big = 2.0 * r;
+        (big * big - x * x - y * y).sqrt() - big + 0.1 * r * (6.0 * x / r).psin() * (1.0 + y / r)
+    };
+    let curve = |pts: Vec<Vec3>| -> NurbsCurve {
+        let n = pts.len() - 1;
+        let params: Vec<f64> = (0..=n).map(|k| k as f64 / n as f64).collect();
+        let values: Vec<Vec<f64>> = pts.iter().map(|p| vec![p.x, p.y, p.z]).collect();
+        let (knots, ctrl) = craft3d_geom::refine::interpolate(&params, degree, &values).unwrap();
+        NurbsCurve::polynomial(
+            degree,
+            knots,
+            ctrl.iter().map(|c| v(c[0], c[1], c[2])).collect(),
+        )
+        .unwrap()
+    };
+    // Sections at x = −r, −0.6 r, …, r (along y, seven points each, the
+    // three lines' y among them); lines at y = −0.6 r, 0, 0.6 r (along x,
+    // eleven points each, the sections' x among them).
+    let us: Vec<NurbsCurve> = (0..6)
+        .map(|i| {
+            let x = -r + 0.4 * r * f64::from(i);
+            curve(
+                (0..7)
+                    .map(|j| {
+                        let y = -0.6 * r + 0.2 * r * f64::from(j);
+                        v(x, y, f(x, y))
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    let vs: Vec<NurbsCurve> = [-0.6 * r, 0.0, 0.6 * r]
+        .iter()
+        .map(|&y| {
+            curve(
+                (0..11)
+                    .map(|k| {
+                        let x = -r + 0.2 * r * f64::from(k);
+                        v(x, y, f(x, y))
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    gordon_across(
+        &Network {
+            u: &us,
+            v: &vs,
+            edges: [Condition::Free; 4],
+            tolerance: 1e-6 * r,
+            angular: ANGULAR,
+        },
+        across,
+    )
+    .unwrap()
+    .surface
+}
+
+/// The crown's parameter line along x at y = 0.6 r.
+fn far_edge(r: f64, crown: &NurbsSurface) -> NurbsCurve {
+    for (along_u, at) in [(true, 1.0), (true, 0.0), (false, 1.0), (false, 0.0)] {
+        if let Ok(c) = iso_curve(crown, along_u, at) {
+            let (a, b) = c.domain();
+            let (p, q) = (c.eval(a), c.eval(b));
+            if (p.y - 0.6 * r).abs() < 1e-9 * r && (q.y - 0.6 * r).abs() < 1e-9 * r {
+                let _ = q;
+                return c;
+            }
+        }
+    }
+    panic!("the crown has no line at y = 0.6 r")
+}
+
+/// Whether the sheet has knots across close to its held edge (`v` near 0):
+/// the band a curvature hold puts the kinks of its change on.
+fn banded(s: &NurbsSurface) -> bool {
+    let (_, (v0, v1)) = s.domain();
+    s.knots_v()
+        .iter()
+        .any(|k| *k > v0 && *k < v0 + 0.1 * (v1 - v0))
+}
+
+/// A crown interpolated across with degree 5 from curves of degree 5 is
+/// four times differentiable along its lines: a side held in curvature to
+/// it needs no band for kinks and has no crease inside (`acrossDegree` 5,
+/// format 62; the fuel tank with quintic shoulders and spine measured so by
+/// hand). Made of cubics interpolated across with degree 3, the crown's
+/// line kinks and the side's change is put onto a band. The seam is held at a tolerance of 1e-6 of the size
+/// and an angular tolerance of 1e-6 (at the fuel tank's default 1e-9 rad
+/// its quintic seam is not proven G2 yet: docs/design/surfacing.md).
+#[test]
+fn a_side_held_in_curvature_to_a_quintic_crown_needs_no_band_and_is_smooth_inside() {
+    for scale in SCALES {
+        let r = scale;
+        let tol = 1e-6 * scale;
+        for across in [5, 3] {
+            let crown = network_crown(r, across, across);
+            let wrapped = Surface::Nurbs(crown.clone());
+            let (us, vs) = side_from(r, far_edge(r, &crown));
+            let patch = gordon(&Network {
+                u: &us,
+                v: &vs,
+                edges: [
+                    Condition::Curvature {
+                        surface: &wrapped,
+                        weight: 1.0,
+                    },
+                    Condition::Free,
+                    Condition::Free,
+                    Condition::Free,
+                ],
+                tolerance: tol,
+                angular: ANGULAR,
+            })
+            .unwrap();
+            let seam = patch.seams[0].expect("the seam is measured");
+            assert_eq!(
+                seam.order,
+                Order::G2,
+                "scale {scale}, across {across}: {seam:?}"
+            );
+            if across == 5 {
+                assert!(
+                    !banded(&patch.surface),
+                    "scale {scale}: a band on a quintic crown"
+                );
+                let crease = creases(&patch.surface);
+                assert!(crease <= ANGULAR, "scale {scale}: creased by {crease:e}");
+            } else {
+                assert!(
+                    banded(&patch.surface),
+                    "scale {scale}: no band on a cubic crown"
+                );
             }
         }
     }
