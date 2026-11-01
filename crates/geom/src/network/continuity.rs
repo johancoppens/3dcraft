@@ -114,6 +114,13 @@ pub const MAX_SEAM_DEGREE: usize = 384;
 
 const EPS: f64 = f64::EPSILON;
 
+/// The unit roundoff of `f64` arithmetic, `2⁻⁵³`: an operation rounded to
+/// nearest (IEEE 754 binary64, as Rust's `f64` operations are, none fused
+/// or contracted) is within `u` of the exact result relative to it
+/// (Higham §2.2), half the spacing `ε` of the numbers at 1. Every count
+/// of roundings below is in this `u`.
+const UNIT: f64 = EPS / 2.0;
+
 /// The order of continuity proven along an edge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Order {
@@ -284,7 +291,7 @@ impl Poly {
     /// with a margin of 4.
     fn mul_gamma(m: usize, n: usize) -> f64 {
         let k = (4 * (m + n) + m.min(n) + 8) as f64;
-        let ke = k * EPS;
+        let ke = k * UNIT;
         ke / (1.0 - ke).max(0.5)
     }
 
@@ -332,7 +339,7 @@ impl Poly {
             c,
             e: fa.abs() * a.e
                 + fb.abs() * b.e
-                + 2.0 * EPS * (fa.abs() * a.mag() + fb.abs() * b.mag()),
+                + gamma(2) * (fa.abs() * a.mag() + fb.abs() * b.mag()),
         }
     }
 
@@ -347,50 +354,69 @@ impl Poly {
     fn scale(&self, f: f64) -> Poly {
         Poly {
             c: self.c.iter().map(|x| x * f).collect(),
-            e: f.abs() * self.e + EPS * f.abs() * self.mag(),
+            e: f.abs() * self.e + UNIT * f.abs() * self.mag(),
         }
     }
 
-    /// The two halves (de Casteljau at ½).
-    fn halves(&self) -> (Poly, Poly) {
-        let mut row = self.c.clone();
-        let n = row.len();
-        let mut left = Vec::with_capacity(n);
-        let mut right = Vec::with_capacity(n);
-        for _ in 0..n {
-            if let Some(f) = row.first() {
-                left.push(*f);
-            }
-            if let Some(l) = row.last() {
-                right.push(*l);
-            }
-            row = row
-                .windows(2)
-                .map(|w| match w {
-                    [x, y] => 0.5 * (x + y),
-                    _ => 0.0,
-                })
-                .collect();
+    /// The polynomial over `[t0, t1]` of its piece (`0 ≤ t0 < t1 ≤ 1`), as
+    /// Bernstein coefficients: the blossom at `(t0, …, t0, t1, …, t1)`, by
+    /// de Casteljau's levels `(1 − t) x + t y` from the coefficients as they
+    /// are (Ramshaw). A level's `1 − t` is within `u` of the exact weight
+    /// (exact for the dyadic parameters of halvings), its two products and
+    /// their sum add a rounding each, so a level adds at most `4u` of the
+    /// largest value, which grows by at most `1 + 4u` a level: `γ_{4n}` of
+    /// the magnitude over `n` levels, whatever `[t0, t1]` is. What the
+    /// coefficients carried passes on as a convex combination of it.
+    ///
+    /// A piece halved again and again is cut so from the piece it came
+    /// from, not from its parent: halving the halves (each de Casteljau at
+    /// ½ adding its own rounding) piled up the rounding with the depth,
+    /// and 21 halvings near the end of a long seam (the fuel tank's sewn
+    /// sheet, 887 mm, 2026-11-01) put the curvature bound's floor above
+    /// the threshold, where cutting from the first piece does not.
+    fn piece_of(&self, t0: f64, t1: f64) -> Poly {
+        if t0 == 0.0 && t1 == 1.0 {
+            return self.clone();
         }
-        right.reverse();
-        let e = self.e + 2.0 * n as f64 * EPS * self.mag();
-        (Poly { c: left, e }, Poly { c: right, e })
+        let n = self.degree();
+        let mut out = Vec::with_capacity(n + 1);
+        for k in 0..=n {
+            let mut d = self.c.clone();
+            for level in 1..=n {
+                let t = if level <= n - k { t0 } else { t1 };
+                for j in (level..=n).rev() {
+                    let (Some(&x), Some(&y)) = (d.get(j - 1), d.get(j)) else {
+                        continue;
+                    };
+                    if let Some(slot) = d.get_mut(j) {
+                        *slot = (1.0 - t) * x + t * y;
+                    }
+                }
+            }
+            out.push(d.get(n).copied().unwrap_or(f64::NAN));
+        }
+        Poly {
+            c: out,
+            e: self.e + gamma(4 * n) * self.mag(),
+        }
     }
 
+    /// The value at `t` in `[0, 1]`, as a constant: de Casteljau's levels
+    /// as in [`Poly::piece_of`], `γ_{4n}` of the magnitude added.
     fn at(&self, t: f64) -> Poly {
         let mut row = self.c.clone();
         while row.len() > 1 {
             row = row
                 .windows(2)
                 .map(|w| match w {
-                    [x, y] => x + t * (y - x),
+                    [x, y] => (1.0 - t) * x + t * y,
                     _ => 0.0,
                 })
                 .collect();
         }
         Poly {
             c: vec![row.first().copied().unwrap_or(0.0)],
-            e: self.e + 2.0 * self.c.len() as f64 * EPS * self.mag(),
+            e: self.e + gamma(4 * self.degree()) * self.mag(),
         }
     }
 }
@@ -680,10 +706,10 @@ impl ImplicitForm {
     }
 }
 
-/// `γ_k = k ε / (1 − k ε)` (Higham, lemma 3.1): `k` roundings, each
-/// within `ε` relative, compound to within `γ_k` relative.
+/// `γ_k = k u / (1 − k u)` (Higham, lemma 3.1): `k` roundings, each
+/// within `u` ([`UNIT`]) relative, compound to within `γ_k` relative.
 fn gamma(k: usize) -> f64 {
-    let ke = k as f64 * EPS;
+    let ke = k as f64 * UNIT;
     ke / (1.0 - ke).max(0.5)
 }
 
@@ -1145,6 +1171,12 @@ struct Piece {
     a: f64,
     b: f64,
     rows: Vec<P4>,
+    /// The rows of the piece of the edge this one was halved from, and
+    /// where this one lies in it (`[t0, t1]` of its `[0, 1]`): halves are
+    /// cut from those ([`Poly::piece_of`]).
+    root: std::sync::Arc<Vec<P4>>,
+    t0: f64,
+    t1: f64,
     depth: usize,
     /// Distinct among the pieces of one measure (the breaks' [`Cross`]
     /// are kept by the pair).
@@ -1152,32 +1184,48 @@ struct Piece {
 }
 
 impl Piece {
-    fn halves(&self, ids: (u64, u64)) -> (Piece, Piece) {
-        let mut left = Vec::with_capacity(self.rows.len());
-        let mut right = Vec::with_capacity(self.rows.len());
-        for row in &self.rows {
-            let hs: Vec<(Poly, Poly)> = row.iter().map(Poly::halves).collect();
-            let get = |k: usize, first: bool| {
-                hs.get(k)
-                    .map(|(l, r)| if first { l.clone() } else { r.clone() })
-                    .unwrap_or_else(|| Poly::konst(0.0))
-            };
-            left.push([get(0, true), get(1, true), get(2, true), get(3, true)]);
-            right.push([get(0, false), get(1, false), get(2, false), get(3, false)]);
+    /// A piece of the edge from `a` to `b` with its rows as cut.
+    fn new(a: f64, b: f64, rows: Vec<P4>, id: u64) -> Piece {
+        Piece {
+            a,
+            b,
+            root: std::sync::Arc::new(rows.clone()),
+            rows,
+            t0: 0.0,
+            t1: 1.0,
+            depth: 0,
+            id,
         }
+    }
+
+    fn halves(&self, ids: (u64, u64)) -> (Piece, Piece) {
+        let (t0, t1) = (self.t0, self.t1);
+        let tm = 0.5 * (t0 + t1);
+        let cut = |from: f64, to: f64| -> Vec<P4> {
+            self.root
+                .iter()
+                .map(|r| r.clone().map(|q| q.piece_of(from, to)))
+                .collect()
+        };
         let m = 0.5 * (self.a + self.b);
         (
             Piece {
                 a: self.a,
                 b: m,
-                rows: left,
+                rows: cut(t0, tm),
+                root: self.root.clone(),
+                t0,
+                t1: tm,
                 depth: self.depth + 1,
                 id: ids.0,
             },
             Piece {
                 a: m,
                 b: self.b,
-                rows: right,
+                rows: cut(tm, t1),
+                root: self.root.clone(),
+                t0: tm,
+                t1,
                 depth: self.depth + 1,
                 id: ids.1,
             },
@@ -2839,13 +2887,7 @@ fn measure(
             .iter()
             .map(|r| r.get(k).cloned().ok_or_else(internal))
             .collect::<Result<_, _>>()?;
-        let piece = Piece {
-            a: *a,
-            b: *b,
-            rows,
-            depth: 0,
-            id: id(),
-        };
+        let piece = Piece::new(*a, *b, rows, id());
         let info = piece_info(&piece, &other, f64::INFINITY)?;
         work.push((piece, info));
     }
@@ -3586,13 +3628,7 @@ mod tests {
                 rows.push(row_pieces(row, line, &[]).unwrap().remove(0));
             }
         }
-        let piece = Piece {
-            a: 0.0,
-            b: 1.0,
-            rows: rows.clone(),
-            depth: 0,
-            id: 1,
-        };
+        let piece = Piece::new(0.0, 1.0, rows.clone(), 1);
         // One piece, the whole edge: the window reaches no neighbour.
         let info = piece_info(&piece, &Other::Spline, f64::INFINITY).unwrap();
         let plain = info.plain;
@@ -3700,12 +3736,8 @@ mod tests {
                 per.push(row_pieces(row, line, &[0.5]).unwrap());
             }
         }
-        let piece = |k: usize, a: f64, b: f64, id: u64| Piece {
-            a,
-            b,
-            rows: per.iter().map(|r| r[k].clone()).collect(),
-            depth: 0,
-            id,
+        let piece = |k: usize, a: f64, b: f64, id: u64| {
+            Piece::new(a, b, per.iter().map(|r| r[k].clone()).collect(), id)
         };
         let (p, n) = (piece(0, 0.0, 0.5, 1), piece(1, 0.5, 1.0, 2));
         let work = vec![
@@ -3775,12 +3807,8 @@ mod tests {
                 per.push(row_pieces(row, line, &[0.5]).unwrap());
             }
         }
-        let piece = |k: usize, a: f64, b: f64, id: u64| Piece {
-            a,
-            b,
-            rows: per.iter().map(|r| r[k].clone()).collect(),
-            depth: 0,
-            id,
+        let piece = |k: usize, a: f64, b: f64, id: u64| {
+            Piece::new(a, b, per.iter().map(|r| r[k].clone()).collect(), id)
         };
         let (p, n) = (piece(0, 0.0, 0.5, 1), piece(1, 0.5, 1.0, 2));
         let clean = vec![
@@ -3831,6 +3859,57 @@ mod tests {
                     "poison {which}"
                 );
             }
+        }
+    }
+
+    /// A piece halved forty times carries the rounding of one cut from the
+    /// piece it came from, not forty: each half is the blossom of the first
+    /// piece's coefficients ([`Poly::piece_of`]), and every coefficient is
+    /// within that allowance of the exact one (double-double). Halving the
+    /// halves added `2n ε` of the magnitude at every level (2026-11-01: 21
+    /// levels near the end of the fuel tank's sewn sheet, 887 mm, put the
+    /// curvature bound's floor at 1.35e-12 over a threshold of 1.13e-12 and
+    /// spent the measure's work; cut from the first piece the seam is
+    /// proven G2 in 45 pieces).
+    #[test]
+    fn a_piece_halved_forty_times_carries_one_cut_of_rounding() {
+        let n: usize = 11;
+        let c: Vec<f64> = (0..=n as u32)
+            .map(|k| 300.0 + 37.0 * (1.7 * f64::from(k)).psin() + 1e-3 * f64::from(k * k))
+            .collect();
+        let root = Poly {
+            c: c.clone(),
+            e: 0.0,
+        };
+        let mag = root.mag();
+        let zero = || Poly::konst(0.0);
+        let mut piece = Piece::new(0.0, 1.0, vec![[root, zero(), zero(), zero()]], 1);
+        for level in 0..40u64 {
+            let (l, r) = piece.halves((2 * level + 2, 2 * level + 3));
+            piece = if level % 3 == 1 { l } else { r };
+        }
+        let (t0, t1) = (piece.t0, piece.t1);
+        assert!(t1 - t0 == 2f64.ppowi(-40), "[{t0}, {t1}]");
+        let cut = &piece.rows[0][0];
+        assert!(
+            cut.e <= gamma(4 * n) * mag,
+            "{:e} > one cut {:e}",
+            cut.e,
+            gamma(4 * n) * mag
+        );
+        // The exact blossom, in double-double (the parameters are dyadic,
+        // so `1 − t` is exact).
+        for k in 0..=n {
+            let mut d: Vec<Dd> = c.iter().map(|x| (*x, 0.0)).collect();
+            for level in 1..=n {
+                let t = if level <= n - k { t0 } else { t1 };
+                for j in (level..=n).rev() {
+                    d[j] = add(mul(d[j - 1], 1.0 - t), mul(d[j], t));
+                }
+            }
+            let exact = d[n];
+            let off = (cut.c[k] - exact.0) - exact.1;
+            assert!(off.abs() <= cut.e, "coefficient {k}: {off:e} > {:e}", cut.e);
         }
     }
 }
