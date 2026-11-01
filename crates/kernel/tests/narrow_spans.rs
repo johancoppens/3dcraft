@@ -59,14 +59,15 @@ fn narrow_cubic() -> (usize, Vec<f64>, Vec<P>) {
     (3, knots, points)
 }
 
-/// Degree twelve, every inner knot eleven times: twelve even pieces, the
-/// middle one cut `NARROW` after its start, each the Hermite cubic of the
-/// wave raised to degree twelve, joined with their tangents (so the joint
-/// point drops out and the curve is one spline: a profile is cut at a
-/// knot repeated twelve times, and a piece 1e-10 long is no curve).
-/// `tess` holds the same pieces with every knot repeated twelve times,
-/// which the sections of a loft get, as a surface of its own.
-fn narrow_twelve() -> (usize, Vec<f64>, Vec<P>) {
+/// Degree twelve, twelve even pieces, the middle one cut `NARROW` after
+/// its start, each the Hermite cubic of the wave raised to degree twelve
+/// and joined with their tangents; every inner knot `times` times. Twelve
+/// times (every joint a knot a profile cuts at, as the sections of a loft
+/// get them) the piece 1e-10 long is shorter than the tolerance, and is
+/// kept inside its neighbours, which meet it in tangents (until
+/// 2026-11-01 it failed as a branching profile); eleven times the joint
+/// point drops out and the curve is one spline.
+fn narrow_twelve(times: usize) -> (usize, Vec<f64>, Vec<P>) {
     let mut breaks: Vec<f64> = (0..=12).map(|i| f64::from(i) / 12.0).collect();
     breaks.push(0.5 + NARROW);
     breaks.sort_by(f64::total_cmp);
@@ -95,14 +96,14 @@ fn narrow_twelve() -> (usize, Vec<f64>, Vec<P>) {
             raised.push(*piece.last().unwrap());
             piece = raised;
         }
-        // The joint point lies between its neighbours (the pieces are
-        // tangent in the parameter): it is no control point of the spline.
-        if n > 0 {
+        // Eleven times, the joint point lies between its neighbours (the
+        // pieces are tangent in the parameter): no control point.
+        if n > 0 && times == 11 {
             points.pop();
         }
         points.extend(piece.into_iter().skip(usize::from(n > 0)));
         if n + 2 < breaks.len() {
-            knots.extend([b; 11]);
+            knots.extend(std::iter::repeat_n(b, times));
         }
     }
     knots.extend([1.0; 13]);
@@ -112,9 +113,11 @@ fn narrow_twelve() -> (usize, Vec<f64>, Vec<P>) {
 #[test]
 fn a_wall_with_a_span_far_narrower_than_its_neighbours_meshes_within_the_tolerance() {
     for k in [1e-3, 1.0, 1e6] {
-        for (name, (degree, knots, points)) in
-            [("cubic", narrow_cubic()), ("twelve", narrow_twelve())]
-        {
+        for (name, (degree, knots, points)) in [
+            ("cubic", narrow_cubic()),
+            ("twelve, knots eleven times", narrow_twelve(11)),
+            ("twelve, knots twelve times", narrow_twelve(12)),
+        ] {
             let scaled: Vec<P> = points.iter().map(|p| [p[0] * k, p[1] * k]).collect();
             let (first, last) = (scaled[0], scaled[scaled.len() - 1]);
             let curves = vec![
@@ -189,4 +192,69 @@ fn a_wall_with_a_span_far_narrower_than_its_neighbours_meshes_within_the_toleran
             );
         }
     }
+}
+
+/// A spline whose piece shorter than the tolerance turns a corner (its
+/// neighbours leave it at right angles) is refused by name, with the knot
+/// it starts at, at three scales: no smooth piece can hold it.
+#[test]
+fn a_piece_shorter_than_the_tolerance_at_a_corner_is_refused_by_name() {
+    for k in [1e-3, 1.0, 1e6] {
+        let s = |p: P| [p[0] * k, p[1] * k];
+        // Along x to the origin, a step of 1e-10 up, then up to y = 6.
+        let control: Vec<P> = [
+            [-6.0, 0.0],
+            [-4.0, 0.0],
+            [-2.0, 0.0],
+            [0.0, 0.0],
+            [0.0, 1e-11],
+            [0.0, 2e-11],
+            [0.0, 3e-11],
+            [0.0, 2.0],
+            [0.0, 4.0],
+            [0.0, 6.0],
+        ]
+        .iter()
+        .map(|p| s(*p))
+        .collect();
+        let knots = vec![
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.5,
+            0.5,
+            0.5,
+            0.5 + NARROW,
+            0.5 + NARROW,
+            0.5 + NARROW,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+        ];
+        let curves = vec![
+            SketchCurve {
+                id: 7,
+                curve: Curve2::Spline(Spline2 {
+                    degree: 3,
+                    knots,
+                    control,
+                }),
+            },
+            line(2, s([0.0, 6.0]), s([-6.0, 6.0])),
+            line(3, s([-6.0, 6.0]), s([-6.0, 0.0])),
+        ];
+        match detect_profiles(&curves, &tolerance(k)) {
+            Err(craft3d_kernel::KernelError::ShortSplinePiece { id: 7, knot }) => {
+                assert_eq!(knot, 0.5, "at {k}");
+            }
+            other => panic!("at {k}: {other:?}"),
+        }
+    }
+    let message = craft3d_kernel::KernelError::ShortSplinePiece { id: 7, knot: 0.5 }.to_string();
+    assert!(
+        message.contains("a piece of spline 7 shorter than the tolerance at knot 0.5"),
+        "{message}"
+    );
 }

@@ -1424,7 +1424,10 @@ fn detect(
             (spline.control.first(), spline.control.last()),
             (Some(first), Some(last)) if distance(*first, *last) <= tol
         );
-        for (piece, part) in spline.profile_pieces(closed).into_iter().enumerate() {
+        let parts = spline
+            .profile_pieces_within(closed, tolerance)
+            .map_err(|knot| KernelError::ShortSplinePiece { id: curve.id, knot })?;
+        for (piece, part) in parts.into_iter().enumerate() {
             if cut.len() >= MAX_CURVES {
                 return Err(KernelError::TooManyCurves {
                     count: cut.len().saturating_add(1),
@@ -1725,7 +1728,10 @@ pub fn open_chain(curves: &[SketchCurve], tolerance: &Tolerance) -> Result<Loop2
                         reason: "a spline that closes on itself: an open chain has two free ends",
                     });
                 }
-                for (piece, part) in spline.profile_pieces(false).into_iter().enumerate() {
+                let parts = spline
+                    .profile_pieces_within(false, tolerance)
+                    .map_err(|knot| KernelError::ShortSplinePiece { id: curve.id, knot })?;
+                for (piece, part) in parts.into_iter().enumerate() {
                     if cut.len() >= MAX_CHAIN_CURVES {
                         return Err(too_many(cut.len()));
                     }

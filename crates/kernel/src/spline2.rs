@@ -17,6 +17,7 @@
 //! cannot meet itself.
 
 use craft3d_math::Portable;
+use craft3d_math::Tolerance;
 use std::f64::consts::{PI, TAU};
 
 type P2 = [f64; 2];
@@ -61,6 +62,33 @@ const SAFE_TURN: f64 = 3.0;
 
 fn sub(a: P2, b: P2) -> P2 {
     [a[0] - b[0], a[1] - b[1]]
+}
+
+/// The length of the polygon through `points`: at least that of a
+/// Bézier or B-spline curve with them as control points.
+fn polygon_length(points: &[P2]) -> f64 {
+    points
+        .windows(2)
+        .map(|w| match w {
+            [a, b] => (b[0] - a[0]).phypot(b[1] - a[1]),
+            _ => 0.0,
+        })
+        .sum()
+}
+
+/// The direction a curve with control points `points` leaves its start
+/// in (`at_end` false) or arrives at its end in (`at_end` true), from the
+/// first control point apart from that end; `None` when all coincide.
+fn end_tangent(points: &[P2], at_end: bool) -> Option<P2> {
+    let ordered: Vec<P2> = if at_end {
+        points.iter().rev().copied().collect()
+    } else {
+        points.to_vec()
+    };
+    let (&first, rest) = ordered.split_first()?;
+    let other = rest.iter().find(|q| q[0] != first[0] || q[1] != first[1])?;
+    let d = [other[0] - first[0], other[1] - first[1]];
+    Some(if at_end { [-d[0], -d[1]] } else { d })
 }
 
 fn lerp(a: P2, b: P2, t: f64) -> P2 {
@@ -227,15 +255,97 @@ impl Spline2 {
     /// (`closed`) without a corner in two, at the inner knot nearest the
     /// middle of its domain or at the middle itself. Each piece sweeps a
     /// smooth surface that does not close on itself. One piece, the spline
-    /// as it is, when there is nothing to cut.
+    /// as it is, when there is nothing to cut. Pieces are not merged: see
+    /// [`Spline2::profile_pieces_within`].
+    #[cfg(test)]
     pub(crate) fn profile_pieces(&self, closed: bool) -> Vec<Spline2> {
-        let (p, n) = (self.degree, self.control.len());
+        let cuts = self.corner_cuts(closed);
+        self.cut_at(&cuts).unwrap_or_else(|| vec![self.clone()])
+    }
+
+    /// [`Spline2::profile_pieces`] for a profile at `tolerance`: a piece
+    /// between two corners that is shorter than the linear tolerance (its
+    /// control polygon is, so the curve is) has ends a profile cannot tell
+    /// apart, and would fail as a branching profile. Where the pieces on
+    /// either side of it meet it in tangents within the angular tolerance
+    /// (the joints of a formula curve's pieces that nearly meet), its two
+    /// corners are no corners: they are not cut, and it stays inside one
+    /// piece with its neighbours, which then sweeps one surface, smooth to
+    /// within the tolerances. Otherwise (a corner at it, or a short piece
+    /// at an end of the spline) the knot at its start is returned as the
+    /// error, to be refused by name.
+    pub(crate) fn profile_pieces_within(
+        &self,
+        closed: bool,
+        tolerance: &Tolerance,
+    ) -> Result<Vec<Spline2>, f64> {
         let whole = || vec![self.clone()];
+        let mut cuts = self.corner_cuts(closed);
+        // A polyline's pieces are its segments, each a corner: a short
+        // one is two control points that coincide, refused as such.
+        if self.degree == 1 {
+            return Ok(self.cut_at(&cuts).unwrap_or_else(whole));
+        }
+        // Each round removes two cuts or ends: bounded by their number.
+        loop {
+            let Some(pieces) = self.cut_at(&cuts) else {
+                return Ok(whole());
+            };
+            let Some(short) = pieces
+                .iter()
+                .position(|piece| polygon_length(&piece.control) <= tolerance.linear)
+            else {
+                return Ok(pieces);
+            };
+            // A short piece only between two corners can go; one the
+            // closed rule cut off, or at an end, is refused.
+            let corners = self.corner_cuts(false);
+            let (Some(&before), Some(&after)) = (
+                short.checked_sub(1).and_then(|i| cuts.get(i)),
+                cuts.get(short),
+            ) else {
+                let at = short
+                    .checked_sub(1)
+                    .and_then(|i| cuts.get(i))
+                    .or(cuts.first())
+                    .copied()
+                    .unwrap_or_default();
+                return Err(at);
+            };
+            let tangent_in = pieces
+                .get(short - 1)
+                .and_then(|piece| end_tangent(&piece.control, true));
+            let tangent_out = pieces
+                .get(short + 1)
+                .and_then(|piece| end_tangent(&piece.control, false));
+            let smooth = match (tangent_in, tangent_out) {
+                (Some(a), Some(b)) => {
+                    let (cross, dot) = (a[0] * b[1] - a[1] * b[0], a[0] * b[0] + a[1] * b[1]);
+                    dot > 0.0 && cross.patan2(dot).abs() <= tolerance.angular
+                }
+                _ => false,
+            };
+            if !smooth || !corners.contains(&before) || !corners.contains(&after) {
+                return Err(before);
+            }
+            cuts.retain(|&u| u != before && u != after);
+            // A closed spline whose last corners went is cut in two as
+            // one without corners is.
+            if closed && cuts.is_empty() {
+                cuts.extend(self.middle_cut());
+            }
+        }
+    }
+
+    /// The knots a profile cuts the spline at ([`Spline2::profile_pieces`]),
+    /// ascending; none for a spline with a [`Spline2::fault`].
+    fn corner_cuts(&self, closed: bool) -> Vec<f64> {
+        let (p, n) = (self.degree, self.control.len());
         if self.fault().is_some() {
-            return whole();
+            return Vec::new();
         }
         let (Some(&start), Some(&end)) = (self.knots.get(p), self.knots.get(n)) else {
-            return whole();
+            return Vec::new();
         };
         let inner = self.knots.get(p + 1..n).unwrap_or(&[]);
         let mut cuts: Vec<f64> = Vec::new();
@@ -246,25 +356,38 @@ impl Spline2 {
             }
         }
         if cuts.is_empty() && closed {
-            let middle = start + (end - start) / 2.0;
-            let nearest = inner
-                .iter()
-                .copied()
-                .filter(|knot| *knot > start && *knot < end)
-                .min_by(|a, b| (a - middle).abs().total_cmp(&(b - middle).abs()));
-            cuts.push(nearest.unwrap_or(middle));
+            cuts.extend(self.middle_cut());
         }
+        cuts
+    }
+
+    /// Where a spline that closes on itself without a corner is cut in
+    /// two: the inner knot nearest the middle of its domain, or the middle.
+    fn middle_cut(&self) -> Option<f64> {
+        let (p, n) = (self.degree, self.control.len());
+        let (&start, &end) = (self.knots.get(p)?, self.knots.get(n)?);
+        let inner = self.knots.get(p + 1..n).unwrap_or(&[]);
+        let middle = start + (end - start) / 2.0;
+        let nearest = inner
+            .iter()
+            .copied()
+            .filter(|knot| *knot > start && *knot < end)
+            .min_by(|a, b| (a - middle).abs().total_cmp(&(b - middle).abs()));
+        Some(nearest.unwrap_or(middle))
+    }
+
+    /// The spline cut at `cuts` (ascending, inside its domain), or `None`
+    /// where a cut cannot be made.
+    fn cut_at(&self, cuts: &[f64]) -> Option<Vec<Spline2>> {
         let mut pieces = Vec::with_capacity(cuts.len() + 1);
         let mut rest = self.clone();
-        for u in cuts {
-            let Some((left, right)) = rest.cut(u) else {
-                return whole();
-            };
+        for &u in cuts {
+            let (left, right) = rest.cut(u)?;
             pieces.push(left);
             rest = right;
         }
         pieces.push(rest);
-        pieces
+        Some(pieces)
     }
 
     /// The blossom of the span that starts at knot `k`, at the arguments

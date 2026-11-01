@@ -64,6 +64,7 @@ pub(crate) fn build(
                     made.solved.curve_ids.rename_in(reason)
                 ),
                 KernelError::DegenerateCurve { .. }
+                | KernelError::ShortSplinePiece { .. }
                 | KernelError::DuplicateCurveId { .. }
                 | KernelError::TooManyCurves { .. } => {
                     format!(
@@ -99,6 +100,7 @@ pub(crate) fn build(
                     format!("path: sketch `{along}`: {}", joint.rename_in(reason))
                 }
                 KernelError::DegenerateCurve { .. }
+                | KernelError::ShortSplinePiece { .. }
                 | KernelError::DuplicateCurveId { .. }
                 | KernelError::TooManyCurves { .. } => {
                     format!("path: sketch `{along}`: {}", profile_error(&error, joint))

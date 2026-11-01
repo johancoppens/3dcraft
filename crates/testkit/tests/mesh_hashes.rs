@@ -478,3 +478,28 @@ fn freeform_meshes_against_their_surfaces() {
         }
     }
 }
+
+/// The deviation of the meshes of the vases of revolution that turn three
+/// quarters, at a tolerance of 1e-4 of their size, which the cell limit
+/// of 2026-10-31 changed (their grids were held at 1024 cells along one
+/// parameter): over every triangle, without the cap of
+/// [`freeform_meshes_against_their_surfaces`]. One line per vase:
+/// `vase <name> <triangles> <deviation / tolerance>`.
+#[test]
+#[ignore = "prints deviations of million-triangle meshes; run in release with --ignored --nocapture"]
+fn vases_near_the_cell_limit_against_their_surfaces() {
+    for (name, body) in bodies(1.0) {
+        if !name.contains("three quarters turn") {
+            continue;
+        }
+        let tolerance = 1e-4;
+        match tessellate_body_with_threads(&body, &params(tolerance), 0) {
+            Ok(mesh) => println!(
+                "vase {name:42} {:>8} {:>8.4}",
+                mesh.triangles.len(),
+                deviation(&body, &mesh) / tolerance
+            ),
+            Err(error) => println!("vase {name:42} error: {error}"),
+        }
+    }
+}

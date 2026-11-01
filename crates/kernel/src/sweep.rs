@@ -413,7 +413,14 @@ fn chain(curves: &[SketchCurve], tol: f64) -> Result<Chain, KernelError> {
                     (spline.control.first(), spline.control.last()),
                     (Some(first), Some(last)) if distance(*first, *last) <= tol
                 );
-                for part in spline.profile_pieces(closes) {
+                let within = craft3d_math::Tolerance {
+                    linear: tol,
+                    ..craft3d_math::Tolerance::default()
+                };
+                let parts = spline
+                    .profile_pieces_within(closes, &within)
+                    .map_err(|knot| KernelError::ShortSplinePiece { id, knot })?;
+                for part in parts {
                     let (Some(&start), Some(&end)) = (part.control.first(), part.control.last())
                     else {
                         return Err(internal());

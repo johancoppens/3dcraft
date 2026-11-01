@@ -115,6 +115,14 @@ pub enum KernelError {
         id: u64,
         reason: &'static str,
     },
+    /// A piece of spline `id` between two corners (inner knots repeated to
+    /// the full degree), starting at `knot`, is shorter than the tolerance
+    /// and cannot be kept inside its neighbours: they meet it at a corner,
+    /// or it ends the spline.
+    ShortSplinePiece {
+        id: u64,
+        knot: f64,
+    },
     /// These curves have an end that meets no other curve (at most
     /// [`MAX_REPORTED`] of them, ascending).
     OpenProfile {
@@ -432,6 +440,10 @@ impl fmt::Display for KernelError {
             KernelError::DegenerateCurve { id, reason } => {
                 write!(f, "curve {id} cannot bound a profile: {reason}")
             }
+            KernelError::ShortSplinePiece { id, knot } => write!(
+                f,
+                "a piece of spline {id} shorter than the tolerance at knot {knot}: its ends cannot be told apart, and the curve turns a corner there or ends with it; remove the repeated knot, or make the curve run on smoothly (tangent) across it"
+            ),
             KernelError::OpenProfile { curves } => write!(
                 f,
                 "the profile is not closed: an end of curve {} meets no other curve; \

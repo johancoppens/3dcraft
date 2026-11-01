@@ -80,6 +80,10 @@ pub(crate) fn profile_error(error: &KernelError, ids: &CurveIds) -> String {
             format!("the loop of {} encloses no area", list(curves))
         }
         KernelError::DegenerateCurve { id, reason } => format!("{}: {reason}", curve_name(*id)),
+        KernelError::ShortSplinePiece { id, knot } => format!(
+            "a piece of spline {} shorter than the tolerance at knot {knot}: its ends cannot be told apart, and the curve turns a corner there or ends with it; remove the repeated knot, or make the curve run on smoothly (tangent) across it",
+            curve_name(*id)
+        ),
         KernelError::CrowdedCurves { curves, limit } => format!(
             "the curves lie too close together for profile detection: more than {limit} pairs of curves, curve ends or loops are near one another (about {}); remove curves drawn on top of each other or loops stacked inside each other",
             list(curves)
