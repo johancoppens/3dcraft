@@ -666,7 +666,7 @@ fn joined(doc: &Document, placed: &[Body]) -> Result<(Body, Contributors, Kept, 
             pairs.push((a, b));
         }
         let mut next = Vec::with_capacity(pairs.len() + 1);
-        let made = in_order(pairs, |(a, b)| join(a, b))
+        let made = in_order(pairs, |(a, b)| join(a, b), Result::is_err)
             .ok_or("a thread joining the instances stopped unexpectedly".to_string())?;
         for joined in made {
             next.push(joined?);
@@ -686,21 +686,37 @@ fn joined(doc: &Document, placed: &[Body]) -> Result<(Body, Contributors, Kept, 
 const MAX_JOIN_THREADS: usize = 8;
 
 /// `job` for every item, the results in the items' order, on several
-/// threads when there is more than one item and no bound on the work is
+/// threads (as many as the process's pool lends, `craft3d_math::pool`)
+/// when there is more than one item and no bound on the work is
 /// in force (`craft3d_geom::allowance`: a bound, and what it has counted
 /// once, belong to this thread, so bounded work stays here). Each
 /// helper's work is added to this thread's count when it is joined, so
 /// the count is the same however the items were shared out. A helper
 /// that cannot be started leaves more for the others; one that panics
 /// loses the item it was working on, and then there is no answer
-/// (`None`). One item at a time on wasm.
-fn in_order<I: Send, T: Send>(items: Vec<I>, job: impl Fn(I) -> T + Sync) -> Option<Vec<T>> {
+/// (`None`). One item at a time on wasm. Done one by one (on wasm, under a
+/// bound, or with no thread free) the work ends at the first result `stop`
+/// accepts; on several threads every item is done (no bound counts it).
+fn in_order<I: Send, T: Send>(
+    items: Vec<I>,
+    job: impl Fn(I) -> T + Sync,
+    stop: impl Fn(&T) -> bool,
+) -> Option<Vec<T>> {
     let count = items.len();
     let threads = craft3d_math::available_threads()
         .min(MAX_JOIN_THREADS)
         .min(count);
     if threads <= 1 || cfg!(target_arch = "wasm32") || craft3d_geom::allowance::scope().is_some() {
-        return Some(items.into_iter().map(job).collect());
+        return Some(one_by_one(items, &job, &stop));
+    }
+    // The helpers come from the process's one pool of threads for heavy
+    // work (`craft3d_math::pool`), shared with the engine's: each may run
+    // a freeform boolean with a budget of its own, so threads started
+    // here beside the engine's (a pattern regenerated inside a bake)
+    // would multiply them. None free: this thread does every union.
+    let lease = craft3d_math::pool::lease(threads - 1);
+    if lease.threads() == 0 {
+        return Some(one_by_one(items, &job, &stop));
     }
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Mutex, PoisonError};
@@ -723,7 +739,7 @@ fn in_order<I: Send, T: Send>(items: Vec<I>, job: impl Fn(I) -> T + Sync) -> Opt
         craft3d_geom::allowance::spent().saturating_sub(before)
     };
     std::thread::scope(|scope| {
-        let helpers: Vec<_> = (1..threads)
+        let helpers: Vec<_> = (0..lease.threads())
             .filter_map(|_| std::thread::Builder::new().spawn_scoped(scope, run).ok())
             .collect();
         let _ = run();
@@ -748,6 +764,22 @@ fn in_order<I: Send, T: Send>(items: Vec<I>, job: impl Fn(I) -> T + Sync) -> Opt
             }
         })
         .collect()
+}
+
+/// The items' results one after the other on this thread, up to and
+/// including the first that `stop` says ends the work (a union refused:
+/// nothing after it is made, and nothing more is counted under a bound).
+fn one_by_one<I, T>(items: Vec<I>, job: &impl Fn(I) -> T, stop: &impl Fn(&T) -> bool) -> Vec<T> {
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let result = job(item);
+        let last = stop(&result);
+        out.push(result);
+        if last {
+            break;
+        }
+    }
+    out
 }
 
 pub(crate) fn build(
@@ -1029,10 +1061,14 @@ mod tests {
     fn in_order_gives_every_result_in_order_and_counts_the_helpers_work() {
         let items: Vec<u64> = (0..37).collect();
         let before = craft3d_geom::allowance::spent();
-        let got = in_order(items.clone(), |i| {
-            craft3d_geom::allowance::charge(i + 1);
-            i * i
-        })
+        let got = in_order(
+            items.clone(),
+            |i| {
+                craft3d_geom::allowance::charge(i + 1);
+                i * i
+            },
+            |_| false,
+        )
         .unwrap();
         assert_eq!(got, items.iter().map(|i| i * i).collect::<Vec<_>>());
         // 1 + 2 + … + 37, wherever it was done.
@@ -1043,18 +1079,35 @@ mod tests {
     fn in_order_under_a_bound_works_on_this_thread() {
         let here = std::thread::current().id();
         craft3d_geom::allowance::within(1_000_000, || {
-            let got = in_order((0..8).collect::<Vec<u32>>(), |i| {
-                assert_eq!(std::thread::current().id(), here, "item {i}");
-                i + 1
-            })
+            let got = in_order(
+                (0..8).collect::<Vec<u32>>(),
+                |i| {
+                    assert_eq!(std::thread::current().id(), here, "item {i}");
+                    i + 1
+                },
+                |_| false,
+            )
             .unwrap();
             assert_eq!(got, (1..=8).collect::<Vec<_>>());
+            // A refusal ends the work here: nothing after it is done.
+            let done = std::sync::atomic::AtomicU32::new(0);
+            let got = in_order(
+                (0..8).collect::<Vec<u32>>(),
+                |i| {
+                    done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if i == 3 { Err(i) } else { Ok(i) }
+                },
+                Result::is_err,
+            )
+            .unwrap();
+            assert_eq!(got, vec![Ok(0), Ok(1), Ok(2), Err(3)]);
+            assert_eq!(done.load(std::sync::atomic::Ordering::Relaxed), 4);
         });
     }
 
     #[test]
     fn in_order_of_nothing_and_of_one() {
-        assert_eq!(in_order(Vec::<u8>::new(), |i| i), Some(vec![]));
-        assert_eq!(in_order(vec![5_u8], |i| i * 2), Some(vec![10]));
+        assert_eq!(in_order(Vec::<u8>::new(), |i| i, |_| false), Some(vec![]));
+        assert_eq!(in_order(vec![5_u8], |i| i * 2, |_| false), Some(vec![10]));
     }
 }

@@ -65,7 +65,6 @@ mod params;
 mod pick_cmds;
 pub mod pictures;
 mod plate_cmds;
-mod pool;
 mod query_cmds;
 mod recovery;
 mod recovery_cmds;

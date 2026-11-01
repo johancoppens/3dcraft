@@ -73,7 +73,7 @@ fn alive(held: &[Weak<Body>]) -> bool {
 }
 
 /// How many threads measure the assertions of one job at most (the extra
-/// ones from the process's pool, `crate::pool`). Two: a
+/// ones from the process's pool, `craft3d_math::pool`). Two: a
 /// Jig's assertions are mostly quick with one or two that take long (the
 /// gear reducer's flank clearances, 10 and 16 s), which then run side by
 /// side (the reducer's 22 took 29 s one after the other, 15 s so). More
@@ -409,7 +409,7 @@ fn run(job: &Job) {
             .min(job.work.len());
         // From the process's one pool of threads for heavy work: what the
         // measures start of their own comes from it too.
-        let lease = crate::pool::lease(threads.saturating_sub(1));
+        let lease = craft3d_math::pool::lease(threads.saturating_sub(1));
         std::thread::scope(|scope| {
             let workers: Vec<_> = (0..lease.threads())
                 .filter_map(|_| {

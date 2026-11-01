@@ -6,6 +6,7 @@
 
 mod bits;
 mod frame;
+pub mod pool;
 mod portable;
 pub mod quadrature;
 mod threads;

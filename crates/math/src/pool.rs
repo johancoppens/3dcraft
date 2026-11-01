@@ -1,7 +1,12 @@
-//! One limit, for the whole process, on the extra threads the engine
-//! starts for heavy kernel work: the pairs of an overlap or an
-//! interference (`interference_cmds::in_order`) and the assertions of a
-//! job measured side by side (`assert_check`). Each such thread may run
+//! One limit, for the whole process, on the extra threads started for
+//! heavy kernel work: the engine's pairs of an overlap or an interference
+//! (`interference_cmds::in_order`, which also builds an assembly's
+//! configurations and bakes a motion), its assertions measured side by
+//! side (`assert_check`), and the regeneration's unions of a pattern
+//! (`craft3d_regen` › `derive::in_order`). Kept here, at the bottom of the
+//! layers, so every crate that starts such threads takes them from the
+//! same pool (an independent review of 2026-11-01 found the pattern's
+//! unions starting their own threads on top of the engine's). Each such thread may run
 //! a freeform boolean with its own budget of trees (`craft3d_kernel` ›
 //! `freeform::HELD_BYTES`, 2 GiB), and the work nests (an assertion job
 //! measures overlaps, each with its pairs): without one limit the threads
@@ -13,16 +18,16 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Extra threads for heavy work, at most, in the whole process.
-pub(crate) const SHARED_THREADS: usize = 7;
+pub const SHARED_THREADS: usize = 7;
 
 static FREE: AtomicUsize = AtomicUsize::new(SHARED_THREADS);
 
 /// Threads taken from the pool, given back when dropped.
-pub(crate) struct Lease(usize);
+pub struct Lease(usize);
 
 impl Lease {
     /// How many extra threads the holder may start.
-    pub(crate) fn threads(&self) -> usize {
+    pub fn threads(&self) -> usize {
         self.0
     }
 }
@@ -34,7 +39,7 @@ impl Drop for Lease {
 }
 
 /// Up to `wanted` extra threads, as many as are free now (none is fine).
-pub(crate) fn lease(wanted: usize) -> Lease {
+pub fn lease(wanted: usize) -> Lease {
     let mut free = FREE.load(Ordering::Acquire);
     loop {
         let take = wanted.min(free);

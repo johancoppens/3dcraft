@@ -972,9 +972,15 @@ fn extent(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<Outcome, 
     let mut any = false;
     let mut meshed_at: Option<f64> = None;
     for (id, body) in whole_bodies(ctx, &found, name)? {
-        // The area sets the mesh's tolerance: measured as the mass
-        // properties are everywhere ([`mass_of_in`]).
-        let _measured = mass_of_in(ctx, id, &body);
+        // A freeform body is boxed on a mesh whose tolerance its area
+        // sets: measured as the mass properties are everywhere
+        // ([`mass_of_in`]). Any other body's box is exact, measuring
+        // nothing.
+        let freeform = body.faces.iter().any(|f| f.surface.is_freeform())
+            || body.edges.iter().any(|e| e.curve.is_freeform());
+        if freeform {
+            let _measured = mass_of_in(ctx, id, &body);
+        }
         let boxed = body_box(&body, ctx.doc.tolerance.linear, ctx.refine, ctx.box_budget)
             .map_err(|e| format!("`{}` has no box: {e}", ctx.feature_name(id)))?;
         let Some(boxed) = boxed else {
