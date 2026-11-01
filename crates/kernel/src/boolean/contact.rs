@@ -81,7 +81,7 @@ pub fn interference(
     b: &Body,
     tolerance: &Tolerance,
 ) -> Result<Interference, KernelError> {
-    super::freeform::holding(|| interference_held(a, b, tolerance))
+    super::freeform::holding(|| interference_held(a, b, tolerance, true))
 }
 
 /// The common volume of `a` and `b`, if they have one: the first step of
@@ -140,12 +140,39 @@ fn touching() -> BooleanOptions {
     }
 }
 
+/// Whether `a` and `b` are clear, touch or overlap, and nothing more:
+/// [`interference`] without the area two faces on one surface share,
+/// which takes the union of the two and the boundaries of all three
+/// integrated (for a body of spline faces, most of the time of the
+/// whole). The answer is the one [`interference`] gives, its kind of
+/// touch aside; a touch whose shared area only that union could measure,
+/// and which the union refuses, is a touch here rather than an error.
+pub fn contact(a: &Body, b: &Body, tolerance: &Tolerance) -> Result<Contact, KernelError> {
+    super::freeform::holding(|| {
+        Ok(match interference_held(a, b, tolerance, false)? {
+            Interference::Clear => Contact::Clear,
+            Interference::Touch { .. } => Contact::Touch,
+            Interference::Overlap(_) => Contact::Overlap,
+        })
+    })
+}
+
+/// What [`contact`] tells.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Contact {
+    Clear,
+    Touch,
+    Overlap,
+}
+
 /// [`interference`], its trees held to a budget
-/// ([`super::freeform::holding`]).
+/// ([`super::freeform::holding`]); without `shared_area` the area that
+/// faces on one surface share is not measured ([`contact`]).
 fn interference_held(
     a: &Body,
     b: &Body,
     tolerance: &Tolerance,
+    shared_area: bool,
 ) -> Result<Interference, KernelError> {
     // The checks of the tolerance and of the kinds, the box test and the
     // intersection: a common volume is the overlap.
@@ -173,7 +200,7 @@ fn interference_held(
         return Ok(Interference::Clear);
     };
     let mut area = 0.0;
-    if found.facing {
+    if found.facing && shared_area {
         // Faces of both on one surface, facing each other. Where they share
         // an area, that area is inside the union: its boundary is smaller
         // than both boundaries together by twice the area. That holds for a
@@ -478,6 +505,62 @@ mod tests {
                 ..tolerance
             };
             assert!(common_volume(&a, &b, &bad).is_err());
+        }
+    }
+
+    /// `contact` answers clear, touch or overlap as `interference` does,
+    /// for a face, an edge and a corner in common, a block in a pocket it
+    /// fills (faces on one surface facing each other, whose shared area
+    /// `interference` measures with a union), an overlap and apart; at
+    /// three scales. Its refusals are the boolean's.
+    #[test]
+    fn contact_alone_agrees_with_interference() {
+        for s in [1e-3, 1.0, 1e4] {
+            let tolerance = Tolerance {
+                linear: 1e-7 * s,
+                ..Tolerance::default()
+            };
+            let v = |x: f64, y: f64, z: f64| Vec3::new(x * s, y * s, z * s);
+            let a = block(Vec3::ZERO, 2.0 * s, 2.0 * s, 2.0 * s);
+            let pocket = crate::boolean::boolean(
+                &a,
+                &block(v(0.5, 0.5, 1.0), s, s, 2.0 * s),
+                crate::boolean::BooleanOp::Subtract,
+                &tolerance,
+            )
+            .unwrap()
+            .body;
+            let cases = [
+                (
+                    a.clone(),
+                    block(v(1.0, 0.5, 0.0), 2.0 * s, 2.0 * s, 2.0 * s),
+                    Contact::Overlap,
+                ),
+                (a.clone(), block(v(2.0, 0.5, 0.5), s, s, s), Contact::Touch),
+                (
+                    a.clone(),
+                    block(v(2.0, 2.0, 0.0), s, s, 2.0 * s),
+                    Contact::Touch,
+                ),
+                (a.clone(), block(v(2.0, 2.0, 2.0), s, s, s), Contact::Touch),
+                (pocket, block(v(0.5, 0.5, 1.0), s, s, s), Contact::Touch),
+                (a.clone(), block(v(3.0, 0.0, 0.0), s, s, s), Contact::Clear),
+            ];
+            for (n, (x, y, want)) in cases.iter().enumerate() {
+                let got = contact(x, y, &tolerance).unwrap();
+                assert_eq!(got, *want, "case {n} at scale {s}");
+                let full = match interference(x, y, &tolerance).unwrap() {
+                    Interference::Clear => Contact::Clear,
+                    Interference::Touch { .. } => Contact::Touch,
+                    Interference::Overlap(_) => Contact::Overlap,
+                };
+                assert_eq!(got, full, "case {n} at scale {s}");
+            }
+            let bad = Tolerance {
+                linear: 0.0,
+                ..tolerance
+            };
+            assert!(contact(&a, &a, &bad).is_err());
         }
     }
 

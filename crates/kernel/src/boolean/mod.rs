@@ -70,7 +70,9 @@ mod sew;
 mod two_sheets;
 mod verify;
 
-pub use contact::{ContactKind, Interference, MAX_CONTACT_POINTS, common_volume, interference};
+pub use contact::{
+    Contact, ContactKind, Interference, MAX_CONTACT_POINTS, common_volume, contact, interference,
+};
 pub use freeform::{release_unused, shelf_size};
 pub(crate) use hits::speed_bound;
 pub use knit::sew_sheets;

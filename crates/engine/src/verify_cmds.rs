@@ -15,7 +15,7 @@ use crate::selection::SelectionKind;
 use crate::verify::{self, Part};
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::{Document, FeatureId};
-use craft3d_kernel::boolean::{Interference, common_volume, interference};
+use craft3d_kernel::boolean::{Contact, common_volume};
 use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Tolerance, Vec3};
 use craft3d_regen::Regen;
@@ -879,7 +879,7 @@ fn mass_measure(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<Out
                 ));
             }
             (_, None) => {
-                let mass = crate::mass::mass_of(&body)
+                let mass = mass_of_in(ctx, id, &body)
                     .map_err(|e| format!("`{fname}` cannot be measured: {e}"))?;
                 match name {
                     "volume" => mass.volume,
@@ -972,6 +972,9 @@ fn extent(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<Outcome, 
     let mut any = false;
     let mut meshed_at: Option<f64> = None;
     for (id, body) in whole_bodies(ctx, &found, name)? {
+        // The area sets the mesh's tolerance: measured as the mass
+        // properties are everywhere ([`mass_of_in`]).
+        let _measured = mass_of_in(ctx, id, &body);
         let boxed = body_box(&body, ctx.doc.tolerance.linear, ctx.refine, ctx.box_budget)
             .map_err(|e| format!("`{}` has no box: {e}", ctx.feature_name(id)))?;
         let Some(boxed) = boxed else {
@@ -1133,6 +1136,21 @@ fn body_box(
     }))
 }
 
+/// The mass properties of the body `id` made, as `crate::mass::mass_of`
+/// gives them; a body with a material is measured with its inertia
+/// (`crate::appearance_cmds::measure_ahead`): both at once take about the
+/// time of one, and a body with a material is asked for its inertia
+/// sooner or later (`document.check`, `document.inspect`), which measured
+/// on its own would integrate every face again.
+fn mass_of_in(
+    ctx: &Ctx<'_>,
+    id: craft3d_doc::FeatureId,
+    body: &Arc<Body>,
+) -> Result<craft3d_topo::MassProperties, craft3d_topo::MassError> {
+    crate::appearance_cmds::measure_ahead(ctx.doc, ctx.regen, id, body);
+    crate::mass::mass_of(body)
+}
+
 /// `axis` of a measure: 0, 1 or 2.
 fn axis_param(p: &Map<String, Value>) -> Result<usize, String> {
     match p.get("axis").and_then(Value::as_str) {
@@ -1164,8 +1182,8 @@ fn center_of_mass(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, Stri
                 "`{fname}` has no material, so no mass; give it one with body.material"
             ));
         };
-        let props = crate::mass::mass_of(&body)
-            .map_err(|e| format!("`{fname}` cannot be measured: {e}"))?;
+        let props =
+            mass_of_in(ctx, id, &body).map_err(|e| format!("`{fname}` cannot be measured: {e}"))?;
         let centroid = props
             .centroid
             .ok_or_else(|| format!("`{fname}` has no volume, so no centre of mass"))?;
@@ -1295,10 +1313,11 @@ fn clearance_pair<'b>(
     )?;
     let mut status = "clear";
     if near.distance <= 2.0 * tol {
-        match interference(body_a, body_b, &ctx.tolerance) {
-            Ok(Interference::Clear) => {}
-            Ok(Interference::Touch { .. }) => status = "touch",
-            Ok(Interference::Overlap(_)) => status = "overlap",
+        // Only whether they touch or overlap: not the area they share.
+        match craft3d_kernel::boolean::contact(body_a, body_b, &ctx.tolerance) {
+            Ok(Contact::Clear) => {}
+            Ok(Contact::Touch) => status = "touch",
+            Ok(Contact::Overlap) => status = "overlap",
             Err(e) => {
                 return Err(format!(
                     "whether `{}` and `{}` overlap cannot be told: {e}",

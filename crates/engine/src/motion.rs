@@ -39,7 +39,7 @@ use crate::params::Params;
 use crate::selection::{Resolver, SelectionKind, feature_named};
 use crate::{CommandError, CommandSpec, OpenDocument, Session, Workspace};
 use craft3d_doc::{Appearance, Document, EntityId, FeatureId, FeatureKind};
-use craft3d_kernel::boolean::{Interference, interference};
+use craft3d_kernel::boolean::common_volume;
 use craft3d_math::{Tolerance, Vec3};
 use craft3d_regen::{Regen, RegenCache};
 use craft3d_topo::Body;
@@ -610,11 +610,13 @@ fn collisions_kept(
     let found = crate::interference_cmds::in_order(&indices, |n| {
         let (i, j) = ask.get(n).copied()?;
         let (a, b) = (bodies.get(i)?.1, bodies.get(j)?.1);
-        Some(match interference(a, b, &tolerance) {
-            Ok(Interference::Overlap(common)) => craft3d_topo::mass_properties(&common.body)
+        // The common volume alone: how two bodies that do not overlap
+        // touch is not asked (`common_volume`, not `interference`).
+        Some(match common_volume(a, b, &tolerance) {
+            Ok(Some(common)) => craft3d_topo::mass_properties(&common.body)
                 .map(|mass| mass.volume)
                 .map_err(|e| format!("the common volume could not be measured: {e}")),
-            Ok(_) => Ok(0.0),
+            Ok(None) => Ok(0.0),
             Err(e) => Err(e.to_string()),
         })
     });
