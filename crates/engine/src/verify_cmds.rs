@@ -700,8 +700,9 @@ impl Outcome {
 }
 
 /// The measures, by name: what `assert.add` takes under `measure`.
-pub(crate) const MEASURES: [&str; 50] = [
+pub(crate) const MEASURES: [&str; 51] = [
     "volume",
+    "cavity",
     "area",
     "mass",
     "count",
@@ -756,7 +757,7 @@ pub(crate) const MEASURES: [&str; 50] = [
 /// Takes the measure `name` with the parameters `p`.
 pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<Outcome, String> {
     match name {
-        "volume" | "area" | "mass" => mass_measure(ctx, name, p),
+        "volume" | "cavity" | "area" | "mass" => mass_measure(ctx, name, p),
         "count" => count(ctx, p),
         "extent" | "boxMin" | "boxMax" => extent(ctx, name, p),
         "centerOfMass" => center_of_mass(ctx, p),
@@ -882,6 +883,21 @@ fn mass_measure(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<Out
                     .map_err(|e| format!("`{fname}` cannot be measured: {e}"))?;
                 match name {
                     "volume" => mass.volume,
+                    // What the body's cavities hold: the shells that enclose
+                    // a negative volume (their faces point into the hollow,
+                    // craft3d_topo::ShellVolume), so that a shell's capacity
+                    // is measured on the shell itself.
+                    "cavity" => {
+                        let mut held = 0.0;
+                        for shell in crate::mass::shells_of(&body) {
+                            let shell =
+                                shell.map_err(|e| format!("`{fname}` cannot be measured: {e}"))?;
+                            if shell.volume < 0.0 {
+                                held -= shell.volume;
+                            }
+                        }
+                        held
+                    }
                     "area" => mass.area,
                     _ => {
                         let mut entry = Map::new();
@@ -904,7 +920,7 @@ fn mass_measure(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<Out
         listed.push(json!({"feature": id.to_string(), "name": fname, name: value}));
     }
     let dim = match name {
-        "volume" => Dim::Length(3),
+        "volume" | "cavity" => Dim::Length(3),
         "area" => Dim::Length(2),
         _ => Dim::Mass,
     };
