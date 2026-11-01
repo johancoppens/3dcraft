@@ -24,7 +24,7 @@ use std::time::Instant;
 const INTERNAL: &str = "internal error (a bug in 3DCraft";
 
 /// Longest reason kept, in characters.
-const KEPT: usize = 400;
+const KEPT: usize = 2000;
 
 /// The document's tolerance (`file.new`'s default), in mm.
 const TOLERANCE: f64 = 1e-6;
