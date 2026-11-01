@@ -458,7 +458,11 @@ pub(super) fn ribbon(
             .and_then(|h| point(*h))
             .ok_or_else(internal)?;
         let first = rows.first().ok_or_else(internal)?;
-        let gap = distance_bound(first, raw, o)?;
+        // A bound that cannot be formed (the curves' knots not brought to
+        // one description) declines the ribbon, as a bound too large does.
+        let Ok(gap) = distance_bound(first, raw, o) else {
+            return Ok(None);
+        };
         if gap.is_nan() || gap > 0.5 * tol {
             return Ok(None);
         }

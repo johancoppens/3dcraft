@@ -1343,6 +1343,11 @@ fn resurface_with(
                 None => meet(&meeting, was, tol),
             };
         let Some(point) = found else {
+            // Cut short by the work bound (`meet_with` stops when it is
+            // spent): say so, not that the faces do not meet.
+            if craft3d_geom::allowance::exhausted() {
+                return Err(spent());
+            }
             if meeting
                 .iter()
                 .any(|s| matches!(s, Surface::Bezier(_) | Surface::Nurbs(_)))
@@ -1486,6 +1491,9 @@ fn resurface_with(
             // when the kind is one this builds. The caller tells the two
             // apart by trying a smaller move.
             Remade::OffSurface => return Err(fail(true, OFF_SURFACE)),
+            // A search cut short by the work bound says so, not that the
+            // edge was lost.
+            Remade::Lost if craft3d_geom::allowance::exhausted() => return Err(spent()),
             Remade::Lost => return Err(fail(true, LOST)),
         }
         remade.insert(id);

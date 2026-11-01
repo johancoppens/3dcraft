@@ -408,7 +408,7 @@ impl Scalar {
         self.pts
             .iter()
             .flatten()
-            .fold(0.0_f64, |m, x| m.max(x.abs()))
+            .fold(0.0_f64, |m, x| super::nan_max(m, x.abs()))
     }
 
     fn times(&self, other: &Scalar) -> Scalar {
