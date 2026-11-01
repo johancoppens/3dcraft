@@ -332,7 +332,8 @@ fn tangent_pairs(
 /// within the tolerance over the angle of where they cross, and the
 /// secant steps either stay there or leave the surfaces and are not
 /// taken. Each of the pair is tried as the one the others' curve turns
-/// onto; the first that moves the point is kept.
+/// onto; the first that moves the point is kept, if it moves it by more
+/// than [`SEAM_KEEP`] of the tolerance.
 fn on_seam(
     surfaces: &[&Surface],
     found: Vec3,
@@ -342,7 +343,15 @@ fn on_seam(
 ) -> Vec3 {
     for (i, j) in tangent_pairs(surfaces, found, guesses, SEAM_PAIR) {
         for silent in [j, i] {
-            if let Some(moved) = turn_onto_seam(surfaces, found, tol, guesses, sideways, silent) {
+            let mut trial = guesses.to_vec();
+            if let Some(moved) = turn_onto_seam(surfaces, found, tol, &mut trial, sideways, silent)
+            {
+                // A vertex the seam is already as good as reached keeps
+                // its place, bit for bit.
+                if moved.distance(found) <= SEAM_KEEP * tol {
+                    return found;
+                }
+                guesses.copy_from_slice(&trial);
                 return moved;
             }
         }
@@ -353,6 +362,11 @@ fn on_seam(
 /// The sine within which two surfaces' normals at a vertex make them a
 /// pair [`on_seam`] puts the vertex onto the seam of.
 const SEAM_PAIR: f64 = 1e-2;
+
+/// How far, in tolerances, [`on_seam`] must move a vertex for the move to
+/// be taken: closer than this the vertex is on the seam for anything that
+/// measures it, and stays as it was found.
+const SEAM_KEEP: f64 = 1e-2;
 
 /// Most secant steps of [`turn_onto_seam`].
 const SECANTS: usize = 8;
