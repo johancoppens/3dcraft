@@ -311,7 +311,7 @@ fn meet_steps(
                 break;
             };
             let rate = gradient.dot(along);
-            if !(rate.abs() > 1e-12) {
+            if rate.abs() <= 1e-12 || rate.is_nan() {
                 break;
             }
             let mut length = -value / rate;

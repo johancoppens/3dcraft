@@ -660,6 +660,7 @@ pub(crate) fn compose_net(
 /// knot lines (and, for [`Composed::Positive`], the subdivisions for
 /// positive weights), so nets of one surface and its derivatives
 /// composed with one curve (not `Positive`) share them.
+#[allow(clippy::type_complexity)]
 pub(crate) fn compose_net_pieces(
     net: &BezierNet,
     uv: &NurbsCurve,

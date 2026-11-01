@@ -593,7 +593,10 @@ fn scalar(uv: &NurbsCurve, k: usize, order: usize, bounds: &[f64]) -> Result<Sca
         if t1.is_nan() || t1 <= t0 {
             return Err(internal());
         }
-        let coefficients: Vec<f64> = piece.iter().map(|h| h[k]).collect();
+        let coefficients: Vec<f64> = piece
+            .iter()
+            .map(|h| h.get(k).copied().unwrap_or(0.0))
+            .collect();
         let (lo, hi) = (
             ((b0 - t0) / (t1 - t0)).clamp(0.0, 1.0),
             ((b1 - t0) / (t1 - t0)).clamp(0.0, 1.0),

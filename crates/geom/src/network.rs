@@ -3623,7 +3623,7 @@ fn kinks_apart(
         let h = eval(&edge, k)?;
         let dh = eval(&d_edge, k)?;
         let w = h[3];
-        if !(w > 0.0) {
+        if w.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
             continue;
         }
         // The jump of the change's derivative in space: of `D / w` with

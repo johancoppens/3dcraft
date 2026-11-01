@@ -201,7 +201,7 @@ fn a_band_held_in_curvature_along_a_slanted_ellipse_on_a_cylinder_drum_takes_its
             // The cylinder bends away from its outward normal by cos²φ / R
             // in a direction at φ from its circles.
             let around = v(0.0, 0.0, 1.0).cross(outward);
-            let closed = -(d.dot(around)).powi(2) / r;
+            let closed = -(d.dot(around)).ppowi(2) / r;
             let k_out = k * n.dot(outward).signum();
             assert!(
                 (k_out - closed).abs() <= 1e-7 / r,

@@ -646,3 +646,94 @@ fn the_same_operation_counts_the_same_whatever_ran_before() {
     assert_eq!(first, second);
     assert_eq!(first, third);
 }
+
+/// Half the ball zone (y at least 0) made of two quarters with their
+/// sphere faces rational each on its own (`rationalized`), so that the
+/// half has two spline faces on the sphere, tangent along the meridian
+/// x = 0, and at each end of that seam a vertex where they meet a flat
+/// face (z = ±1): the fuel tank's crown and side meeting its floor
+/// (2026-11-01). At scale `k`.
+fn tangent_halves(k: f64) -> Body {
+    let (a, _) = rationalized(&ball_zone(k), 0.0, false);
+    let turn = Transform::rotation(Vec3::new(0.0, 0.0, 1.0), 0.5 * PI).unwrap();
+    let b = a.transformed(&turn).unwrap();
+    solve(&a, &b, craft3d_kernel::boolean::BooleanOp::Union, k).body
+}
+
+/// The hollow of the half ball zone at the wall `t` (at scale 1): the
+/// ball of radius `2 − t` between the heights `±(1 − t)`, y at least `t`.
+fn half_hollow(t: f64) -> f64 {
+    let rho_ball = 2.0 - t;
+    integral(-(1.0 - t), 1.0 - t, |z| {
+        let rho = (rho_ball * rho_ball - z * z).sqrt();
+        2.0 * (under_circle(rho, rho) - under_circle(rho, t))
+    })
+}
+
+/// A body whose two spline faces are tangent along a seam that ends on a
+/// flat face is made hollow: the volume of the exact shell (the half ball
+/// zone less its hollow, in closed form), the same as the solid less its
+/// faces all moved inward (the identity of the sets), a wall thicker than
+/// the sphere's radius refused as a fold, and the work within the bound.
+/// The vertices at the seam's ends ran off before (`tweak::meet_with`).
+#[test]
+fn spline_faces_tangent_along_a_seam_that_ends_on_a_flat_face_are_made_hollow() {
+    for k in SCALES {
+        let tol = tolerance(k);
+        let t = 0.3;
+        let body = tangent_halves(k);
+        assert_eq!(freeform(&body).len(), 2, "two spline faces at {k}");
+        let outer = 2.0 * zone(2.0).0 * k.ppowi(3);
+        within(mass(&body).volume, outer, 1e-6 * outer, "the half zone");
+        let expected = outer - half_hollow(t) * k.ppowi(3);
+        let before = craft3d_geom::allowance::spent();
+        let made = shell(&body, t * k, &[], &tol).unwrap_or_else(|e| panic!("at {k}: {e}"));
+        let work = craft3d_geom::allowance::spent() - before;
+        assert!(
+            work < craft3d_kernel::offset_face::FACE_OP_WORK,
+            "at {k}: {work} units"
+        );
+        assert_eq!(check(&made.body, &tol), [], "at {k}");
+        assert_eq!(made.body.shells.len(), 2, "skin and cavity at {k}");
+        let m = mass(&made.body);
+        within(
+            m.volume,
+            expected,
+            m.area * 0.25 * tol.linear,
+            &format!("shell at {k}"),
+        );
+        // The identity: the shell is the solid less its hollow, and the
+        // hollow is every face moved inward by the wall.
+        let all: Vec<FaceOffset> = (0..body.faces.len() as u32)
+            .map(|f| FaceOffset {
+                face: FaceId(f),
+                distance: -t * k,
+            })
+            .collect();
+        let hollow = offset_faces(&body, &all, &tol).unwrap();
+        let h = mass(&hollow.body);
+        within(
+            mass(&body).volume - h.volume,
+            m.volume,
+            (m.area + h.area) * 0.25 * tol.linear,
+            &format!("outer − inner at {k}"),
+        );
+        // Deeper than the sphere's radius of curvature: a fold, refused by
+        // its name, and soon.
+        let sphere: Vec<FaceOffset> = freeform(&body)
+            .into_iter()
+            .map(|face| FaceOffset {
+                face,
+                distance: -2.2 * k,
+            })
+            .collect();
+        let before = craft3d_geom::allowance::spent();
+        let refused = offset_faces(&body, &sphere, &tol).unwrap_err();
+        let work = craft3d_geom::allowance::spent() - before;
+        assert!(refused.to_string().contains("fold"), "at {k}: {refused}");
+        assert!(
+            work < craft3d_kernel::offset_face::FACE_OP_WORK,
+            "at {k}: {work} units"
+        );
+    }
+}
