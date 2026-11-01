@@ -726,7 +726,15 @@ pub(super) struct Pieces {
     roots: Vec<usize>,
     u: (f64, f64),
     v: (f64, f64),
+    /// The roots' spans along u and along v when the roots are their grid
+    /// (root `i · vs.len() + j` over `us[i] × vs[j]`, both in increasing
+    /// order), as a surface's Bézier spans are: [`Pieces::over`] then looks
+    /// only at the roots that meet the part asked about.
+    grid: Option<RootGrid>,
 }
+
+/// The spans along u and along v of [`Pieces::grid`].
+type RootGrid = (Vec<(f64, f64)>, Vec<(f64, f64)>);
 
 /// A gain ordered by `total_cmp`, for a heap.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -811,6 +819,7 @@ impl Pieces {
             roots: Vec::new(),
             u,
             v,
+            grid: None,
         };
         // The split of a piece that gains more (its halves along u, along
         // v, or its quarters), and how much.
@@ -920,6 +929,7 @@ impl Pieces {
                 node.children = Some(kids);
             }
         }
+        pieces.grid = pieces.root_grid();
         // Children come after their parents: from the last node back, each
         // parent takes the largest of its children's bounds where that is
         // tighter than its own.
@@ -948,8 +958,31 @@ impl Pieces {
             return None;
         }
         let mut most: Option<Bounds> = None;
-        let mut stack: Vec<usize> = self.roots.clone();
-        let mut looks = 0_usize;
+        // Every root counts as looked at, as when each is taken in turn and
+        // those that do not meet the part are passed over: so the part
+        // looks at too many pieces exactly when it did before.
+        let (mut stack, mut looks) = match &self.grid {
+            Some((us, vs)) => {
+                let meeting = |spans: &[(f64, f64)], (lo, hi): (f64, f64)| {
+                    let first = spans.partition_point(|s| s.1 < lo);
+                    let end = spans.partition_point(|s| s.0 <= hi);
+                    first..end.max(first)
+                };
+                let (is, js) = (meeting(us, u), meeting(vs, v));
+                let mut stack = Vec::with_capacity(is.len().saturating_mul(js.len()));
+                for i in is {
+                    for j in js.clone() {
+                        stack.extend(self.roots.get(i * vs.len() + j));
+                    }
+                }
+                let passed_over = self.roots.len().saturating_sub(stack.len());
+                (stack, passed_over)
+            }
+            None => (self.roots.clone(), 0),
+        };
+        if looks > PIECE_LOOKS {
+            return None;
+        }
         while let Some(index) = stack.pop() {
             looks += 1;
             if looks > PIECE_LOOKS {
@@ -966,6 +999,44 @@ impl Pieces {
             }
         }
         most
+    }
+
+    /// The roots' grid ([`Pieces::grid`]), if they form one: every root
+    /// over the span of its row along u and of its column along v, each
+    /// row and column a span of its own in increasing order.
+    fn root_grid(&self) -> Option<RootGrid> {
+        let span = |r: &usize| self.nodes.get(*r).map(|n| (n.u, n.v));
+        let first_u = span(self.roots.first()?)?.0;
+        let vs: Vec<(f64, f64)> = self
+            .roots
+            .iter()
+            .map_while(|r| span(r).filter(|(u, _)| *u == first_u).map(|(_, v)| v))
+            .collect();
+        if vs.is_empty() || !self.roots.len().is_multiple_of(vs.len()) {
+            return None;
+        }
+        let us: Vec<(f64, f64)> = self
+            .roots
+            .iter()
+            .step_by(vs.len())
+            .map(|r| span(r).map(|(u, _)| u))
+            .collect::<Option<_>>()?;
+        let increasing = |spans: &[(f64, f64)]| {
+            spans.iter().all(|s| s.0 < s.1)
+                && spans.windows(2).all(|w| matches!(w, [a, b] if a.1 <= b.0))
+        };
+        let fits = self.roots.iter().enumerate().all(|(k, r)| {
+            span(r)
+                == Some((
+                    us.get(k / vs.len())
+                        .copied()
+                        .unwrap_or((f64::NAN, f64::NAN)),
+                    vs.get(k % vs.len())
+                        .copied()
+                        .unwrap_or((f64::NAN, f64::NAN)),
+                ))
+        });
+        (fits && increasing(&us) && increasing(&vs)).then_some((us, vs))
     }
 }
 
@@ -1784,8 +1855,99 @@ fn nurbs_bounds(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
     use crate::BezierPatch;
+
+    /// A rational NURBS surface of degrees (5, 3) with uneven knots and
+    /// weights far apart in places: many Bézier spans, and pieces split
+    /// under them.
+    fn many_spans() -> Surface {
+        let (nu, nv, du, dv) = (14, 11, 5, 3);
+        let knots = |d: usize, n: usize| {
+            let mut k = vec![0.0; d + 1];
+            let inner = n - d - 1;
+            for i in 1..=inner {
+                let t = i as f64 / (inner + 1) as f64;
+                k.push(t + 0.2 * (t * 7.0).psin() / (inner + 1) as f64);
+            }
+            k.extend(std::iter::repeat_n(1.0, d + 1));
+            k
+        };
+        let mut ctrl = Vec::new();
+        let mut weights = Vec::new();
+        for i in 0..nu {
+            for j in 0..nv {
+                let (x, y) = (i as f64, j as f64);
+                ctrl.push(Vec3::new(x, y, (0.7 * x).psin() + 0.3 * (1.1 * y).pcos()));
+                weights.push(if (i + 2 * j) % 7 == 0 {
+                    30.0
+                } else {
+                    1.0 + 0.1 * x
+                });
+            }
+        }
+        Surface::Nurbs(
+            crate::NurbsSurface::new(du, dv, knots(du, nu), knots(dv, nv), nu, nv, ctrl, weights)
+                .unwrap(),
+        )
+    }
+
+    /// `Pieces::over` with the roots found on their grid gives what it
+    /// gives looking at every root, for parts of every size and place
+    /// (inside, on span borders, reaching outside the domain, empty).
+    #[test]
+    fn pieces_over_their_grid_give_what_every_root_gives() {
+        let pieces = Pieces::new(&many_spans()).unwrap();
+        assert!(pieces.grid.is_some(), "the spans are a grid");
+        assert!(pieces.roots.len() > 40, "{} roots", pieces.roots.len());
+        let plain = Pieces {
+            nodes: pieces
+                .nodes
+                .iter()
+                .map(|n| PieceNode {
+                    u: n.u,
+                    v: n.v,
+                    bounds: n.bounds,
+                    children: n.children.clone(),
+                })
+                .collect(),
+            roots: pieces.roots.clone(),
+            u: pieces.u,
+            v: pieces.v,
+            grid: None,
+        };
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let mut unit = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut found = 0;
+        for n in 0..4000 {
+            let (a, b, c, d) = (unit(), unit(), unit(), unit());
+            let scale = [1.0, 0.1, 0.01, 1e-4][n % 4];
+            let u = (a, (a + scale * b).min(if n % 9 == 0 { 1.2 } else { 1.0 }));
+            let v = (c, (c + scale * d).min(1.0));
+            let (got, want) = (pieces.over(u, v), plain.over(u, v));
+            assert_eq!(got.is_some(), want.is_some(), "part {u:?} x {v:?}");
+            if let (Some(g), Some(w)) = (got, want) {
+                found += 1;
+                for (x, y) in [
+                    (g.lu, w.lu),
+                    (g.lv, w.lv),
+                    (g.muu, w.muu),
+                    (g.muv, w.muv),
+                    (g.mvv, w.mvv),
+                ] {
+                    assert_eq!(x.to_bits(), y.to_bits(), "part {u:?} x {v:?}");
+                }
+            }
+        }
+        assert!(found > 3000, "{found}");
+    }
 
     /// A wavy bicubic patch; with `pole`, its first row is one point, so
     /// that a row of the projector's grid is one node many times over.
