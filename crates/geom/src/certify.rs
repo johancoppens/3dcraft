@@ -427,6 +427,15 @@ type Piece = (f64, f64, (f64, f64), (f64, f64));
 type Box2 = [(f64, f64); 2];
 
 /// What the proof knows of a surface: its kind, or its Bézier patches.
+/// How a spline surface goes on across the line between two spans: `C^k`
+/// with `smooth` = k, and by how much it may jump there (zero but where
+/// a full knot leaves two borders that differ by rounding).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Join {
+    smooth: usize,
+    jump: f64,
+}
+
 enum Form {
     Analytic,
     Patches {
@@ -439,8 +448,8 @@ enum Form {
         /// and span `i + 1` along u (and along v): the degree less the
         /// knot's multiplicity, so `Some(k)` for `C^k`; `None` where the
         /// surface may jump (a multiplicity above the degree).
-        joins_u: Vec<Option<usize>>,
-        joins_v: Vec<Option<usize>>,
+        joins_u: Vec<Option<Join>>,
+        joins_v: Vec<Option<Join>>,
     },
 }
 
@@ -695,7 +704,7 @@ fn spans_reached(ranges: &[(f64, f64)], lo: f64, hi: f64) -> Option<(usize, usiz
 /// and the next: `Some(degree − multiplicity)` of the knot there (`C^k`),
 /// `None` where the multiplicity is above the degree (the spline may
 /// jump) or the knot is not found.
-fn joins(spans: &[(f64, f64)], knots: &[f64], degree: usize) -> Vec<Option<usize>> {
+fn joins(spans: &[(f64, f64)], knots: &[f64], degree: usize) -> Vec<Option<Join>> {
     spans
         .windows(2)
         .map(|pair| {
@@ -706,19 +715,115 @@ fn joins(spans: &[(f64, f64)], knots: &[f64], degree: usize) -> Vec<Option<usize
             if multiplicity == 0 {
                 return None;
             }
-            degree.checked_sub(multiplicity)
+            degree
+                .checked_sub(multiplicity)
+                .map(|smooth| Join { smooth, jump: 0.0 })
         })
         .collect()
 }
 
-/// The least smoothness across the lines between spans `first` to
-/// `last` (`usize::MAX` within one span; `None` if any may jump).
-fn smoothness(joins: &[Option<usize>], first: usize, last: usize) -> Option<usize> {
-    let mut least = usize::MAX;
-    for i in first..last {
-        least = least.min((*joins.get(i)?)?);
+/// Lines between spans where a knot of a multiplicity above the degree
+/// lets the surface jump, but the patches on both sides end in the same
+/// border curve up to rounding (a writer that ends every span with a full
+/// knot, as some write rational surfaces): continuous there, `C⁰`, with
+/// the jump bounded from the two border rows. Where the rows are rational
+/// curves `A / a` and `B / b` (homogeneous control points), the borders
+/// differ by at most `(max |A − B| + max |B| / min b · max |a − b|) /
+/// min a` (Bernstein forms are convex combinations); any jump is added to
+/// the bounds across that line, so a border that is not shared is never
+/// taken as one.
+fn seal(
+    spans: &[BezierSpan],
+    count_v: usize,
+    joins_u: &mut [Option<Join>],
+    joins_v: &mut [Option<Join>],
+) {
+    let patch = |iu: usize, iv: usize| {
+        iu.checked_mul(count_v)
+            .and_then(|k| k.checked_add(iv))
+            .and_then(|k| spans.get(k))
+            .map(|s| &s.patch)
+    };
+    // The jump between the rows `ia` of `a` and `ib` of `b` (indices of
+    // control points), `None` when it cannot be bounded.
+    let jump = |a: &RationalBezierPatch, ia: &[usize], b: &RationalBezierPatch, ib: &[usize]| {
+        let (wa, wb) = (a.weights(), b.weights());
+        let (mut dh, mut dw, mut big, mut light_a, mut light_b) =
+            (0.0_f64, 0.0_f64, 0.0_f64, f64::INFINITY, f64::INFINITY);
+        if ia.len() != ib.len() || ia.is_empty() {
+            return None;
+        }
+        for (&i, &j) in ia.iter().zip(ib) {
+            let (pa, pb) = (a.control_point(i)?, b.control_point(j)?);
+            let (xa, xb) = (*wa.get(i)?, *wb.get(j)?);
+            dh = dh.max((pa * xa - pb * xb).length());
+            dw = dw.max((xa - xb).abs());
+            big = big.max((pb * xb).length());
+            light_a = light_a.min(xa);
+            light_b = light_b.min(xb);
+        }
+        if !(light_a > 0.0 && light_b > 0.0) {
+            return None;
+        }
+        let d = (dh + big / light_b * dw) / light_a;
+        // Plus the rounding of both evaluations.
+        let d = d + ROUNDING_ULPS * f64::EPSILON * big / light_b;
+        d.is_finite().then_some(d)
+    };
+    let count_u = spans.len().checked_div(count_v).unwrap_or(0);
+    for (iu, join) in joins_u.iter_mut().enumerate() {
+        if join.is_some() {
+            continue;
+        }
+        let mut worst = Some(0.0_f64);
+        for iv in 0..count_v {
+            let d = match (patch(iu, iv), patch(iu + 1, iv)) {
+                (Some(a), Some(b)) if a.degrees().1 == b.degrees().1 => {
+                    let (m, n) = a.degrees();
+                    let ia: Vec<usize> = (0..=n).map(|j| m * (n + 1) + j).collect();
+                    let ib: Vec<usize> = (0..=n).collect();
+                    jump(a, &ia, b, &ib)
+                }
+                _ => None,
+            };
+            worst = worst.zip(d).map(|(w, d)| w.max(d));
+        }
+        *join = worst.map(|jump| Join { smooth: 0, jump });
     }
-    Some(least)
+    for (iv, join) in joins_v.iter_mut().enumerate() {
+        if join.is_some() {
+            continue;
+        }
+        let mut worst = Some(0.0_f64);
+        for iu in 0..count_u {
+            let d = match (patch(iu, iv), patch(iu, iv + 1)) {
+                (Some(a), Some(b)) if a.degrees().0 == b.degrees().0 => {
+                    let (m, n) = a.degrees();
+                    let n2 = b.degrees().1;
+                    let ia: Vec<usize> = (0..=m).map(|i| i * (n + 1) + n).collect();
+                    let ib: Vec<usize> = (0..=m).map(|i| i * (n2 + 1)).collect();
+                    jump(a, &ia, b, &ib)
+                }
+                _ => None,
+            };
+            worst = worst.zip(d).map(|(w, d)| w.max(d));
+        }
+        *join = worst.map(|jump| Join { smooth: 0, jump });
+    }
+}
+
+/// The least smoothness across the lines between spans `first` to
+/// `last` (`usize::MAX` within one span), and the sum of their jumps;
+/// `None` if any may jump by more than can be bounded.
+fn smoothness(joins: &[Option<Join>], first: usize, last: usize) -> Option<(usize, f64)> {
+    let mut least = usize::MAX;
+    let mut jumps = 0.0;
+    for i in first..last {
+        let join = (*joins.get(i)?)?;
+        least = least.min(join.smooth);
+        jumps += join.jump;
+    }
+    Some((least, jumps))
 }
 
 impl<'a> SurfaceBound<'a> {
@@ -758,8 +863,9 @@ impl<'a> SurfaceBound<'a> {
                     return None;
                 }
                 let (du, dv) = s.degrees();
-                let joins_u = joins(&us, s.knots_u(), du);
-                let joins_v = joins(&vs, s.knots_v(), dv);
+                let mut joins_u = joins(&us, s.knots_u(), du);
+                let mut joins_v = joins(&vs, s.knots_v(), dv);
+                seal(&spans, vs.len(), &mut joins_u, &mut joins_v);
                 Form::Patches {
                     spans,
                     us,
@@ -946,15 +1052,16 @@ impl<'a> SurfaceBound<'a> {
     /// for `C^k` (`usize::MAX` within one patch). A bound on the
     /// derivative of order `j ≤ k + 1` taken patch by patch holds for the
     /// whole path (the derivative of order `j − 1` is continuous and
-    /// piecewise differentiable). `None` where no bound comes out or the
-    /// surface may jump within the box.
-    fn jets(&self, path: &Path, origin: Vec3) -> Option<(Jet, usize)> {
+    /// piecewise differentiable); and the sum of the jumps of the lines
+    /// crossed (`seal`). `None` where no bound comes out or the surface
+    /// may jump within the box by more than can be bounded.
+    fn jets(&self, path: &Path, origin: Vec3) -> Option<(Jet, usize, f64)> {
         let range = path.range();
         let [x, y] = path.jets();
         match &self.form {
             Form::Analytic => {
                 let table = analytic_table(self.surface, range)?;
-                Some((compose(&table, &x, &y), usize::MAX))
+                Some((compose(&table, &x, &y), usize::MAX, 0.0))
             }
             Form::Patches {
                 spans,
@@ -966,7 +1073,10 @@ impl<'a> SurfaceBound<'a> {
                 let [(u0, u1), (v0, v1)] = range;
                 let (iu0, iu1) = spans_reached(us, u0, u1)?;
                 let (iv0, iv1) = spans_reached(vs, v0, v1)?;
-                let smooth = smoothness(joins_u, iu0, iu1)?.min(smoothness(joins_v, iv0, iv1)?);
+                let (su, ju) = smoothness(joins_u, iu0, iu1)?;
+                let (sv, jv) = smoothness(joins_v, iv0, iv1)?;
+                let smooth = su.min(sv);
+                let jumps = ju + jv;
                 let last_u = us.len().checked_sub(1)?;
                 let last_v = vs.len().checked_sub(1)?;
                 let mut all = [0.0_f64; N];
@@ -1022,7 +1132,8 @@ impl<'a> SurfaceBound<'a> {
                         }
                     }
                 }
-                all.iter().all(|x| x.is_finite()).then_some((all, smooth))
+                (all.iter().all(|x| x.is_finite()) && jumps.is_finite())
+                    .then_some((all, smooth, jumps))
             }
         }
     }
@@ -1066,7 +1177,7 @@ impl<'a> SurfaceBound<'a> {
         let off_b = db * h - (sub * tb.0 + svb * tb.1);
         let path = Path::new(fa, fb, ta, tb);
         let cj = curve.jets(a, b, ca)?;
-        let (sj, smooth) = self.jets(&path, ca)?;
+        let (sj, smooth, jumps) = self.jets(&path, ca)?;
         // The curve is one Bézier piece over `[a, b]`; `S(σ(τ))` is
         // `C^smooth` across the knot lines the path crosses.
         // Each distance at an end is off by the rounding of both points.
@@ -1074,7 +1185,9 @@ impl<'a> SurfaceBound<'a> {
             (curve.rounding(a) + self.rounding(fa)).max(curve.rounding(b) + self.rounding(fb));
         let (na, nb) = (ea.length(), eb.length());
         // Lipschitz: holds for any continuous surface.
-        let mut bound = 0.5 * (na + nb + get(&cj, 1) + get(&sj, 1));
+        // Where the surface may jump across a line the path crosses (a
+        // cubic path crosses one at most three times), by the jumps.
+        let mut bound = 0.5 * (na + nb + get(&cj, 1) + get(&sj, 1)) + 3.0 * jumps;
         if smooth >= 1 {
             // Linear interpolation, with the second derivative: its
             // Peano kernel needs `e` in `C¹` with `e''` bounded piece by
@@ -2030,6 +2143,119 @@ mod tests {
                         assert!(p.bound >= seen, "{name}: {p:?} below {seen}");
                     }
                 }
+            }
+        }
+    }
+
+    /// A ruled surface between two circles, each of `n` rational quadratic
+    /// arcs ending in a knot of multiplicity `m` (3: a full knot, so the
+    /// surface could jump at every arc's end), radius `10 k`, the second
+    /// half of the arcs moved out by `jump`; and the line on it at `u`.
+    fn arcs(n: usize, m: usize, k: f64, jump: f64, u: f64) -> (Surface, Curve3) {
+        let half = std::f64::consts::PI / n as f64;
+        let w = half.pcos();
+        let mut ring: Vec<(f64, f64, f64, f64)> = Vec::new();
+        for i in 0..n {
+            let r = if i >= n / 2 {
+                10.0 * k + jump
+            } else {
+                10.0 * k
+            };
+            let a0 = 2.0 * half * i as f64;
+            let am = a0 + half;
+            // Each arc's start from its own angle: at a full knot it
+            // differs from the end of the arc before by rounding.
+            if i == 0 || m == 3 {
+                ring.push((r * a0.pcos(), r * a0.psin(), 1.0, 1.0));
+            }
+            ring.push((r * am.pcos() / w, r * am.psin() / w, w, 0.0));
+            let a1 = a0 + 2.0 * half;
+            ring.push((r * a1.pcos(), r * a1.psin(), 1.0, 1.0));
+        }
+        let mut knots = vec![0.0; 3];
+        for i in 1..n {
+            knots.extend(std::iter::repeat_n(i as f64, m));
+        }
+        knots.extend([n as f64; 3]);
+        let count = ring.len();
+        let mut points = Vec::new();
+        let mut weights = Vec::new();
+        for z in [0.0, 5.0 * k] {
+            for (x, y, wt, _) in &ring {
+                points.push(Vec3::new(*x, *y, z));
+                weights.push(*wt);
+            }
+        }
+        let surface = Surface::Nurbs(
+            NurbsSurface::new(
+                1,
+                2,
+                vec![0.0, 0.0, 1.0, 1.0],
+                knots.clone(),
+                2,
+                count,
+                points,
+                weights,
+            )
+            .unwrap(),
+        );
+        let line: Vec<Vec3> = ring
+            .iter()
+            .map(|(x, y, _, _)| Vec3::new(*x, *y, u * 5.0 * k))
+            .collect();
+        let lw = ring.iter().map(|p| p.2).collect();
+        (
+            surface,
+            Curve3::Nurbs(NurbsCurve::new(2, knots, line, lw).unwrap()),
+        )
+    }
+
+    /// A curve on a spline surface whose spans each end in a knot of
+    /// multiplicity above the degree is proven when the spans share their
+    /// borders up to rounding (2026-11-01: never proven before, the
+    /// surface "may jump" at every such knot; ABC models from Parasolid
+    /// write rational surfaces so), and a real jump is never taken for a
+    /// shared border.
+    #[test]
+    fn full_knots_with_shared_borders_are_crossed() {
+        for k in [1e-3, 1.0, 1e3] {
+            for m in [2, 3] {
+                let (surface, line) = arcs(96, m, k, 0.0, 0.43);
+                let range = (0.1, 95.7);
+                let proven = curve_on_surface(
+                    &CurveBound::new(&line),
+                    range,
+                    &surface,
+                    None,
+                    &[],
+                    Within {
+                        target: 1e-6 * k,
+                        most: 1 << 14,
+                    },
+                );
+                assert!(
+                    proven.is_ok_and(|p| p.bound <= 1e-6 * k),
+                    "{m} at {k}: {proven:?}"
+                );
+            }
+            // The second half moved out by 1e-4: the line of the first
+            // half's radius is that far off it, and a bound below that
+            // is never proven, whatever the joins say.
+            let (surface, _) = arcs(96, 3, k, 1e-4 * k, 0.43);
+            let (_, line) = arcs(96, 3, k, 0.0, 0.43);
+            for target in [1e-6 * k, 0.9e-4 * k] {
+                let refused = curve_on_surface(
+                    &CurveBound::new(&line),
+                    (0.1, 95.7),
+                    &surface,
+                    None,
+                    &[],
+                    Within {
+                        target,
+                        most: 1 << 14,
+                    },
+                );
+                assert!(refused.is_err(), "{target:e} at {k}: {refused:?}");
             }
         }
     }
