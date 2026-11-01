@@ -11,6 +11,7 @@
 
 // `!(x > 0.0)` is deliberate: unlike `x <= 0.0` it is also true for NaN.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
+use crate::spindle::{Sheet, Spindle, flipped};
 use crate::{ImportError, Parsed, err, keywords, real};
 use craft3d_geom::{
     Circle, Cone, Curve3, Cylinder, Ellipse, Line, NurbsCurve, NurbsSurface, Plane, Sphere,
@@ -534,15 +535,38 @@ impl<'a> Reader<'a> {
                 false,
             ));
         }
-        if entity.is("TOROIDAL_SURFACE") && !entity.is("DEGENERATE_TOROIDAL_SURFACE") {
-            let record = self.named(id, "TOROIDAL_SURFACE", 3)?;
+        if entity.is("TOROIDAL_SURFACE") || entity.is("DEGENERATE_TOROIDAL_SURFACE") {
+            // A `DEGENERATE_TOROIDAL_SURFACE` (a subtype) has one more
+            // attribute: which of its two parts it is.
+            let degenerate = entity.is("DEGENERATE_TOROIDAL_SURFACE");
+            let keyword = if degenerate {
+                "DEGENERATE_TOROIDAL_SURFACE"
+            } else {
+                "TOROIDAL_SURFACE"
+            };
+            let record = self.named(id, keyword, if degenerate { 4 } else { 3 })?;
             let frame = self.placement(self.reference(id, record.params.get(1), "position")?)?;
             let major = self.length(id, record.params.get(2), "major_radius")?;
             let minor = self.length(id, record.params.get(3), "minor_radius")?;
-            return Ok(Read::Done(
-                Surface::Torus(Torus::new(frame, major, minor).map_err(geom)?),
-                false,
-            ));
+            if major > minor || !(major > 0.0 && minor > 0.0) {
+                // A ring torus (a degenerate one that is not degenerate is
+                // read as what it is), or radii that are refused.
+                return Ok(Read::Done(
+                    Surface::Torus(Torus::new(frame, major, minor).map_err(geom)?),
+                    false,
+                ));
+            }
+            let select = if degenerate {
+                match record.params.get(4).and_then(crate::boolean) {
+                    Some(outer) => Some(outer),
+                    None => return self.bad(id, "select_outer is not .T. or .F."),
+                }
+            } else {
+                None
+            };
+            return Spindle::toroidal(frame, major, minor, select, false)
+                .and_then(Spindle::read)
+                .or_else(|e| self.bad(id, &e));
         }
         if entity.is("B_SPLINE_SURFACE_WITH_KNOTS") || Implicit::of_surface(entity).is_some() {
             return Ok(Read::Done(self.bspline_surface(id, entity)?, false));
@@ -551,7 +575,7 @@ impl<'a> Reader<'a> {
             return self.extrusion(id);
         }
         if entity.is("SURFACE_OF_REVOLUTION") {
-            return self.revolution(id).map(|(s, o)| Read::Done(s, o));
+            return self.revolution(id);
         }
         if entity.is("OFFSET_SURFACE") {
             return self.offset(id, depth);
@@ -781,9 +805,10 @@ impl<'a> Reader<'a> {
     /// `∂u × ∂v`, where `∂u = a × (C(v) − L)` at `u = 0`. A line or a
     /// circle in a plane through the axis turns into one of the elementary
     /// surfaces; any other curve (a B-spline, an ellipse, a circle out of
-    /// such a plane or one whose torus would reach the axis) into the
-    /// exact rational B-spline surface ([`revolved`]).
-    fn revolution(&self, id: u64) -> Result<(Surface, bool), ImportError> {
+    /// such a plane) into the exact rational B-spline surface
+    /// ([`revolved`]). A circle whose torus reaches the axis is a spindle
+    /// or horn torus ([`Spindle`]), whose part a face chooses.
+    fn revolution(&self, id: u64) -> Result<Read, ImportError> {
         let record = self.named(id, "SURFACE_OF_REVOLUTION", 2)?;
         let curve = self.curve_at(self.reference(id, record.params.get(1), "swept_curve")?, 1)?;
         let (at, axis) =
@@ -857,11 +882,34 @@ impl<'a> Reader<'a> {
                             Sphere::new(frame, circle.radius()).map_err(geom)?,
                         ))
                     } else {
-                        // A ring torus; one whose tube reaches the axis
-                        // (a horn or spindle torus) is no kind here.
-                        Frame::new(foot, axis, centre - foot)
-                            .and_then(|frame| Torus::new(frame, major, circle.radius()).ok())
-                            .map(Surface::Torus)
+                        let frame = Frame::new(foot, axis, centre - foot).ok_or_else(|| {
+                            ImportError(format!("{}: no axis", self.describe(id)))
+                        })?;
+                        if major > circle.radius() {
+                            Some(Surface::Torus(
+                                Torus::new(frame, major, circle.radius()).map_err(geom)?,
+                            ))
+                        } else {
+                            // A horn or spindle torus: the file's normal
+                            // against the standard torus's, at a point of
+                            // the circle clear of the axis.
+                            let flip =
+                                Self::samples(&curve)
+                                    .into_iter()
+                                    .find_map(|(point, tangent)| {
+                                        let normal = axis.cross(point - at).cross(tangent);
+                                        flipped(&frame, major, point, normal)
+                                    });
+                            let Some(flip) = flip else {
+                                return self.bad(
+                                    id,
+                                    "cannot tell which way the swept surface's normal points",
+                                );
+                            };
+                            return Spindle::toroidal(frame, major, circle.radius(), None, flip)
+                                .and_then(Spindle::read)
+                                .or_else(|e| self.bad(id, &e));
+                        }
                     }
                 }
             }
@@ -880,14 +928,17 @@ impl<'a> Reader<'a> {
                 // the file's normal, whatever the parametrisation of u.
                 let surface = revolved(&nurbs, at, axis)
                     .map_err(|e| ImportError(format!("{}: {e}", self.describe(id))))?;
-                return Ok((Surface::Nurbs(surface), false));
+                return Ok(Read::Done(Surface::Nurbs(surface), false));
             }
         };
         for (point, tangent) in Self::samples(&curve) {
             let du = axis.cross(point - at);
             let normal = du.cross(tangent);
             if normal.length() > 1e-9 * scale(point) * tangent.length() {
-                return Ok((surface.clone(), self.opposite(id, &surface, point, normal)?));
+                return Ok(Read::Done(
+                    surface.clone(),
+                    self.opposite(id, &surface, point, normal)?,
+                ));
             }
         }
         self.bad(
@@ -910,6 +961,9 @@ impl<'a> Reader<'a> {
         let distance = self.length(id, record.params.get(2), "distance")?;
         let (surface, opposite) = match self.surface_at(basis, depth + 1)? {
             Read::Done(surface, opposite) => (surface, opposite),
+            Read::Spindle(spindle) => {
+                return spindle.offset(distance).or_else(|e| self.bad(id, &e));
+            }
             Read::Extrusion { .. } => {
                 return self.bad(
                     id,
@@ -971,6 +1025,24 @@ impl<'a> Reader<'a> {
                 if !(minor > 0.0) {
                     return Err(gone());
                 }
+                if minor >= major {
+                    // The tube now reaches the axis: a horn or spindle
+                    // torus, both of whose parts are where the ring's
+                    // points went, along the same normal.
+                    let sheet = Sheet {
+                        minor,
+                        outward: sign > 0.0,
+                    };
+                    return Spindle {
+                        frame: *t.frame(),
+                        major,
+                        apple: sheet,
+                        lemon: sheet,
+                        select: None,
+                    }
+                    .offset(0.0)
+                    .or_else(|e| self.bad(id, &e));
+                }
                 Surface::Torus(Torus::new(*t.frame(), major, minor).map_err(geom)?)
             }
             Surface::Cone(c) => {
@@ -1013,6 +1085,9 @@ pub(crate) enum Read {
         curve: NurbsCurve,
         along: Vec3,
     },
+    /// A horn or spindle torus: which of its parts a face is on, its edges
+    /// tell ([`Spindle::sheet_of`]).
+    Spindle(Spindle),
 }
 
 /// The B-spline types whose knots are implied by their type

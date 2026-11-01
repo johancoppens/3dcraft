@@ -13,6 +13,7 @@
 //! or shell with `.F.` turns its faces over (the normal and every loop).
 
 use crate::geometry::{Read, Reader, extruded};
+use crate::spindle::Spindle;
 use crate::{ImportError, Imported, Item, ItemKind, Options, Report, boolean, err, keywords};
 use craft3d_geom::{Curve3, Surface};
 use craft3d_math::Vec3;
@@ -341,6 +342,7 @@ impl Builder<'_, '_> {
                 curve,
                 along,
             } => (self.extrusion_over(swept, &curve, along, &loops)?, false),
+            Read::Spindle(spindle) => self.spindle_part(surface_id, &spindle, &loops)?,
         };
         // A face without an edge loop is its whole surface: only a surface
         // that closes all around is one (a sphere, a torus, a spline
@@ -363,6 +365,42 @@ impl Builder<'_, '_> {
         self.faces.insert(id, face);
         self.face_ids.push(id);
         Ok(face)
+    }
+
+    /// The part of a horn or spindle torus a face is on, measured on its
+    /// edges (33 points along each), and whether the file's normal is
+    /// opposite to its surface's.
+    fn spindle_part(
+        &self,
+        surface: u64,
+        spindle: &Spindle,
+        loops: &[LoopId],
+    ) -> Result<(Surface, bool), ImportError> {
+        if loops.is_empty() {
+            return self.bad(
+                surface,
+                "a face without an edge loop on a torus whose tube reaches its axis (a spindle or horn torus) is not read",
+            );
+        }
+        let mut points = Vec::new();
+        for l in loops {
+            let Some(l) = self.body.loop_(*l) else {
+                continue;
+            };
+            for c in &l.coedges {
+                let Some(edge) = self.body.edge(c.edge) else {
+                    continue;
+                };
+                let (t0, t1) = edge.range;
+                for k in 0..=32 {
+                    points.push(edge.curve.eval(t0 + (t1 - t0) * f64::from(k) / 32.0));
+                }
+            }
+        }
+        spindle
+            .sheet_of(&points)
+            .and_then(|outer| spindle.surface(outer))
+            .or_else(|e| self.bad(surface, &e))
     }
 
     /// The B-spline surface of an extrusion over as much of its direction

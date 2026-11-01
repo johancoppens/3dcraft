@@ -84,6 +84,7 @@
 mod assembly;
 mod budget;
 mod geometry;
+mod spindle;
 mod style;
 mod topology;
 mod units;
@@ -554,5 +555,7 @@ impl Parsed {
     }
 }
 
+#[cfg(test)]
+mod spindle_tests;
 #[cfg(test)]
 mod tests;
