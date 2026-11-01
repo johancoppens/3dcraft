@@ -1146,10 +1146,13 @@ struct Piece {
     b: f64,
     rows: Vec<P4>,
     depth: usize,
+    /// Distinct among the pieces of one measure (the breaks' [`Cross`]
+    /// are kept by the pair).
+    id: u64,
 }
 
 impl Piece {
-    fn halves(&self) -> (Piece, Piece) {
+    fn halves(&self, ids: (u64, u64)) -> (Piece, Piece) {
         let mut left = Vec::with_capacity(self.rows.len());
         let mut right = Vec::with_capacity(self.rows.len());
         for row in &self.rows {
@@ -1169,12 +1172,14 @@ impl Piece {
                 b: m,
                 rows: left,
                 depth: self.depth + 1,
+                id: ids.0,
             },
             Piece {
                 a: m,
                 b: self.b,
                 rows: right,
                 depth: self.depth + 1,
+                id: ids.1,
             },
         )
     }
@@ -1276,29 +1281,19 @@ fn derivative_poly(p: &Poly) -> Poly {
     }
 }
 
-/// How far, in the piece's own parameter (`[0, 1]`), the point of the
-/// spline face `b`'s boundary that corresponds to `a`'s at `t` may lie
-/// from `t`, given the piece's proven position bound `B`.
-///
-/// **The correspondence** (the coordinator's decision, 2026-11-01): a
-/// point of `a`'s boundary corresponds to a point of `b`'s own boundary,
-/// each face's derivatives taken at its own boundary, as continuity is
-/// defined in CAD. How far the two boundaries lie apart, in any direction,
-/// is the position gap (G0); it is not carried into the second order as
-/// if `b` were evaluated off its boundary. What is carried is the shift
-/// along the seam: the rows compare `a` at `X_a(t)` with `b` at `X_b(t)`
-/// (the same local parameter), and the point of `b`'s piece that is the
-/// same seam point as `X_a(t)` (its nearest, `t*`) is no farther from
-/// `X_a(t)` than `X_b(t)` is, so `|X_b(t*) − X_b(t)| ≤ 2B`. With `m` a
-/// lower bound on `|X_b′|` and `M₂` an upper bound on `|X_b″|` over the
-/// piece, `|X_b(t*) − X_b(t)| ≥ m Δ − M₂ Δ² / 2` for `Δ = |t* − t|`; where
-/// `M₂ ≤ m` that is increasing over the whole piece, so if `m − M₂ / 2 >
-/// 2B` then `Δ ≤ (m − √(m² − 4 M₂ B)) / M₂ = 4B / (m + √(m² − 4 M₂ B))`,
-/// about `2B / m`; otherwise only
-/// `Δ ≤ 1` (`t*` lies in the piece), and halving the piece narrows it.
-fn shift_window(rows: &[P4], position: f64) -> f64 {
+/// The rounding the final few operations of a bound may add, beyond what
+/// its factors carry: every closing formula below is at most 32 roundings
+/// deep.
+fn room(k: usize) -> f64 {
+    1.0 + gamma(k + 32)
+}
+
+/// `b`'s speed along its line and its acceleration over a piece, in the
+/// piece's own parameter: a lower bound on `|X_b′|` and an upper bound on
+/// `|X_b″|` (from `X′ ω² = q′ω − qω′` and `X″ ω³`).
+fn b_speed(rows: &[P4]) -> (f64, f64) {
     let Some(y0) = rows.get(6) else {
-        return 1.0;
+        return (0.0, f64::INFINITY);
     };
     let (q0, om) = (xyz4(y0), &y0[3]);
     let d = |v: &V3| {
@@ -1311,7 +1306,6 @@ fn shift_window(rows: &[P4], position: f64) -> f64 {
     let (dq, dom) = (d(&q0), derivative_poly(om));
     let (ddq, ddom) = (d(&dq), derivative_poly(&dom));
     let (om_lo, om_hi) = (om.lo().max(0.0), om.hi());
-    // `X′ ω²` and `X″ ω³`.
     let v1 = minus(&times(&dq, om), &times(&q0, &dom));
     let v2 = add3(
         &minus(
@@ -1325,184 +1319,465 @@ fn shift_window(rows: &[P4], position: f64) -> f64 {
     );
     let m = (1.0 - gamma(4)) * ratio_lo(norm_lo(&v1), om_hi * om_hi);
     let m2 = (1.0 + gamma(4)) * ratio(norm_hi(&v2), om_lo * om_lo * om_lo);
-    let b = position;
+    (m, m2)
+}
+
+/// How far along the edge (in the edge's parameter, 0 to 1) the point of
+/// the spline face `b`'s boundary that corresponds to `a`'s at `s` may lie
+/// from `s`.
+///
+/// **The correspondence** (the coordinator's decision, 2026-11-01): a
+/// point of `a`'s boundary corresponds to a point of `b`'s own boundary,
+/// each face's derivatives taken at its own boundary, as continuity is
+/// defined in CAD. How far the two boundaries lie apart, in any direction,
+/// is the position gap (G0); it is not carried into the second order as
+/// if `b` were evaluated off its boundary. What is carried is the shift
+/// along the seam: the rows compare `a` at `X_a(s)` with `b` at `X_b(s)`
+/// (the same parameter), and the point of `b` that is the same seam point
+/// as `X_a(s)` is its nearest point on `b`'s boundary within the edge and
+/// within `U`: the piece and as much of each neighbouring piece as the
+/// piece is long (the edge's ends clamp it: no point past them is
+/// considered). That point `s*` is no farther from `X_a(s)` than `X_b(s)`
+/// is, so `|X_b(s*) − X_b(s)| ≤ 2B`, `B` the piece's position bound. With
+/// `m` a lower bound on `|X_b′|` and `M₂` an upper bound on `|X_b″|` over
+/// the pieces `U` touches and `ℓ` the length of `U`,
+/// `|X_b(s*) − X_b(s)| ≥ m Δ − M₂ Δ² / 2` for `Δ = |s* − s| ≤ ℓ`; where
+/// `M₂ ℓ ≤ m` that is increasing up to `ℓ`, so if `m ℓ − M₂ ℓ² / 2 > 2B`
+/// then `Δ ≤ (m − √(m² − 4 M₂ B)) / M₂ = 4B / (m + √(m² − 4 M₂ B))`, about
+/// `2B / m`; otherwise only `Δ ≤ ℓ`, and halving narrows it.
+fn shift_window(position: f64, speed: f64, accel: f64, reach: f64) -> f64 {
+    let (b, m, m2, l) = (position, speed, accel, reach);
     if b.is_finite()
         && m.is_finite()
         && m2.is_finite()
         && m > 0.0
-        && m2 <= m
-        && m - 0.5 * m2 > 2.0 * b * (1.0 + gamma(2))
+        && m2 * l <= m * (1.0 - gamma(4))
+        && m * l - 0.5 * m2 * l * l > 2.0 * b * (1.0 + gamma(8))
     {
-        // `(m − √(m² − 4 M₂ B)) / M₂ = 4B / (m + √(m² − 4 M₂ B))`, about
-        // `2B / m`; the root rounded down.
+        // The root rounded down.
         let root = ((1.0 - gamma(4)) * (m * m - 4.0 * m2 * b * (1.0 + gamma(4))))
             .max(0.0)
             .sqrt();
-        ((1.0 + gamma(8)) * 4.0 * b / (m + (1.0 - gamma(2)) * root)).min(1.0)
+        ((1.0 + gamma(8)) * 4.0 * b / (m + (1.0 - gamma(2)) * root)).min(l)
     } else {
-        1.0
+        l
     }
 }
 
-/// What each gap's bound must add (and each value found must give up) for
-/// the faces to be compared at corresponding points rather than at the
-/// points the rows put side by side, given the piece's proven position
-/// bound `B` (`position`). Zero for the position gap and against a plane.
-///
-/// *Against a spline face* (the shift along the seam, [`shift_window`]):
-/// a second-order gap is `R(t, τ) = N / D`, `a` at `t` and `b` at `τ`,
-/// `D = m^{5/2} g` (`m = |W_b|²` of `b` alone, `g = |X| |Y|` of `a`
-/// alone). By Taylor in `τ` about `t`,
-/// `|R(t, t*) − R(t, t)| ≤ Δ sup |∂_τ R(t, t)| + Δ²/2 sup |∂²_τ R|`. The
-/// first is a polynomial in `t` (both faces at `t`), formed by forward
-/// differentiation of `N` and `m` along `b`'s rows ([`Dual`]), so its terms
-/// cancel as `N`'s do: `|∂R| ≤ |∂N| / (m^{5/2} g) + 5/2 |N| |∂m| / (m^{7/2} g)`.
-/// The second holds for `a` and `b` anywhere in the piece and is bounded
-/// from sizes alone ([`Sizes`]): `|∂²R| ≤ (|∂²N| + 5 |∂N| |∂m| / m +
-/// |N| (65/4 |∂m|² / m² + 5/2 |∂²m| / m)) / (m^{5/2} g)`. The angle's sine
-/// gains `Δ sup |∂n_b| ≤ Δ sup |∂W_b| / inf |W_b|` (`n_b` depends on `b`
-/// alone).
-///
-/// *Against a quadric* `g = 0` (sphere, cylinder, cone; Hessian `2A`, of
-/// norm `H`: 2, or `2 max(1, tan² α)` for a cone): the rows compare `a`
-/// with the level surface of `g` through `a`'s point `x`, whose normal and
-/// form are `∇g(x) / |∇g(x)|` and `2A / |∇g(x)|`; `b`'s own at its
-/// nearest point `y` (`|x − y| ≤ B`) are those at `y`, and
-/// `|∇g(x) − ∇g(y)| ≤ H B`. The form's part changes by at most
-/// `H · H B / (G (G − H B))` (`G` a lower bound on `|∇g(x)|`); the
-/// normal's part by `|n_x − n_y| |S_xy| / (|S_x| |S_y|)`, `|n_x − n_y| ≤
-/// 2 H B / G`, which is zero for a sphere and a cylinder (`y` is the
-/// radial projection of `x`, the normals one) and is added for a cone,
-/// with `a`'s `|S_xy| / (|S_x| |S_y|)` bounded on the piece; the cone's
-/// angle gains `2 H B / G` too. A plane's level surfaces are parallel
-/// planes: nothing changes.
-fn shift_terms(rows: &[P4], other: &Other, position: f64) -> Result<[f64; GAPS], NetworkError> {
-    let mut out = [0.0; GAPS];
-    if matches!(other, Other::Plane { .. }) {
-        return Ok(out);
-    }
-    if !position.is_finite() {
-        for x in out.iter_mut().skip(1) {
-            *x = f64::INFINITY;
-        }
-        return Ok(out);
-    }
+/// What a piece knows of itself for the correspondence terms, in the
+/// edge's parameter (each derivative along a piece divided by its length).
+#[derive(Clone, Debug)]
+struct Info {
+    /// The gaps' bounds with the faces side by side (the position's the
+    /// least of its own and its parent's: it holds on a half too).
+    plain: [f64; GAPS],
+    /// Against a quadric: what each gap adds ([`implicit_terms`]).
+    implicit: [f64; GAPS],
+    /// Against a spline face: `b`'s speed and acceleration bounds, and
+    /// `sup |∂_τ R(s, s)|`, `sup |∂²_τ R|` (`R` a second-order gap, `a` at
+    /// `s`, `b` at `τ`, both in the piece) and `sup |∂n_b|`.
+    speed: f64,
+    accel: f64,
+    s1: [f64; 3],
+    s2: [f64; 3],
+    nb: f64,
+}
+
+/// The rows of a piece split into `a`'s six and `b`'s six.
+fn split_rows(rows: &[P4]) -> Result<([P4; 6], Option<[P4; 6]>), NetworkError> {
     let x: [P4; 6] = rows
         .get(..6)
         .ok_or_else(internal)?
         .to_vec()
         .try_into()
         .map_err(|_| internal())?;
-    let w0 = &x[0][3];
-    let w0_hi = w0.hi();
-    let AParts { v0d, v1, seconds } = a_parts(&x);
-    let (nu_lo, nv_lo) = (norm_lo(&v0d), norm_lo(&v1));
-    let geo = [nv_lo * nv_lo, nu_lo * nv_lo, nu_lo * nu_lo];
-    let room = 1.0 + gamma(256);
-    let b = position;
+    let y: Option<[P4; 6]> = match rows.get(6..12) {
+        Some(y) => Some(y.to_vec().try_into().map_err(|_| internal())?),
+        None => None,
+    };
+    Ok((x, y))
+}
+
+/// `|X| |Y|` of `a`'s tangent vectors (times `w⁴`) for the three
+/// second-order gaps, lower bounds over the piece.
+fn geo_lo(x: &[P4; 6]) -> [f64; 3] {
+    let AParts { v0d, v1, .. } = a_parts(x);
+    let (nu, nv) = (norm_lo(&v0d), norm_lo(&v1));
+    [nv * nv, nu * nv, nu * nu]
+}
+
+/// A piece's own information ([`Info`]).
+fn piece_info(piece: &Piece, other: &Other, parent: f64) -> Result<Info, NetworkError> {
+    let mut plain = gaps(&piece.rows, other)?.hi;
+    plain[0] = plain[0].min(parent);
+    let mut info = Info {
+        plain,
+        implicit: [0.0; GAPS],
+        speed: 0.0,
+        accel: f64::INFINITY,
+        s1: [f64::INFINITY; 3],
+        s2: [f64::INFINITY; 3],
+        nb: f64::INFINITY,
+    };
     match other {
         Other::Plane { .. } => {}
-        Other::Round { q, .. } | Other::Cone { q, .. } => {
-            let h = match other {
-                Other::Cone { tan, .. } => 2.0 * (tan * tan).max(1.0),
-                _ => 2.0,
-            };
-            let g = xyz4(&apply(q, &x[0]));
-            let big_g = (1.0 - gamma(4)) * ratio_lo(2.0 * norm_lo(&g), w0_hi);
-            let hb = room * h * b;
-            if big_g.partial_cmp(&hb) != Some(std::cmp::Ordering::Greater) {
-                for x in out.iter_mut().skip(1) {
-                    *x = f64::INFINITY;
-                }
-                return Ok(out);
-            }
-            let form = room * h * hb / (big_g * (big_g - hb));
-            let normal = if matches!(other, Other::Cone { .. }) {
-                room * 2.0 * hb / big_g
-            } else {
-                0.0
-            };
-            out[1] = normal;
-            for (k, (slot, a)) in out.iter_mut().skip(2).zip(&seconds).enumerate() {
-                let ratio_xy = if normal > 0.0 {
-                    ratio(norm_hi(a) * w0_hi, geo.get(k).copied().unwrap_or(0.0))
-                } else {
-                    0.0
-                };
-                *slot = form + if normal > 0.0 { normal * ratio_xy } else { 0.0 };
-            }
+        Other::Round { .. } | Other::Cone { .. } => {
+            info.implicit = implicit_terms(&piece.rows, other, plain[0])?;
         }
         Other::Spline => {
-            let y: [P4; 6] = rows
-                .get(6..12)
-                .ok_or_else(internal)?
-                .to_vec()
-                .try_into()
-                .map_err(|_| internal())?;
-            let window = shift_window(rows, b);
-            let dual = |p: &Poly, of_b: bool| Dual {
-                v: p.clone(),
-                d: if of_b {
-                    derivative_poly(p)
-                } else {
-                    Poly::konst(0.0)
-                },
-            };
-            let sizes = |p: &Poly, of_b: bool| {
-                if of_b {
-                    let d1 = derivative_poly(p);
-                    let d2 = derivative_poly(&d1);
-                    Sizes {
-                        v: abs_hi(p),
-                        d1: abs_hi(&d1),
-                        d2: abs_hi(&d2),
-                    }
-                } else {
-                    Sizes {
-                        v: abs_hi(p),
-                        d1: 0.0,
-                        d2: 0.0,
-                    }
-                }
-            };
-            let lift = |rows: &[P4; 6], of_b: bool| -> [G4<Dual>; 6] {
-                rows.clone().map(|r| r.map(|p| dual(&p, of_b)))
-            };
-            let size_up = |rows: &[P4; 6], of_b: bool| -> [G4<Sizes>; 6] {
-                rows.clone().map(|r| r.map(|p| sizes(&p, of_b)))
-            };
+            let h = piece.b - piece.a;
+            let (x, y) = split_rows(&piece.rows)?;
+            let y = y.ok_or_else(internal)?;
+            let (m, m2) = b_speed(&piece.rows);
+            info.speed = m / h;
+            info.accel = m2 / (h * h);
+            let lift = |rows: &[P4; 6], d: bool| rows.clone().map(|r| r.map(|p| dual_of(&p, d)));
+            let size = |rows: &[P4; 6], b: bool| rows.clone().map(|r| r.map(|p| sizes_of(&p, b)));
             let d = spline_parts(&lift(&x, false), &lift(&y, true));
-            let sz = spline_parts(&size_up(&x, false), &size_up(&y, true));
+            let sz = spline_parts(&size(&x, false), &size(&y, true));
+            let geo = geo_lo(&x);
             let m_lo = d.m.v.lo().max(0.0);
             let dm = abs_hi(&d.m.d);
-            let (ms1, ms2) = (sz.m.d1, sz.m.d2);
-            for (k, slot) in out.iter_mut().skip(2).enumerate() {
+            let (mu, muu) = (sz.m.u, sz.m.uu);
+            for k in 0..3 {
                 let (Some(n), Some(ns), Some(&g)) = (d.nums.get(k), sz.nums.get(k), geo.get(k))
                 else {
                     return Err(internal());
                 };
-                let root = m_lo.sqrt();
-                let den = m_lo * m_lo * root * g;
-                if den.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
-                    *slot = f64::INFINITY;
-                    continue;
+                let den = m_lo * m_lo * m_lo.sqrt() * g;
+                let (first, second) = if den > 0.0 {
+                    (
+                        room(0) * (abs_hi(&n.d) / den + 2.5 * abs_hi(&n.v) * dm / (den * m_lo)),
+                        room(ns.k.max(sz.m.k))
+                            * (ns.uu
+                                + 5.0 * ns.u * mu / m_lo
+                                + ns.v * (16.25 * mu * mu / (m_lo * m_lo) + 2.5 * muu / m_lo))
+                            / den,
+                    )
+                } else {
+                    (f64::INFINITY, f64::INFINITY)
+                };
+                if let (Some(a), Some(b)) = (info.s1.get_mut(k), info.s2.get_mut(k)) {
+                    *a = first / h;
+                    *b = second / (h * h);
                 }
-                let first = abs_hi(&n.d) / den + 2.5 * abs_hi(&n.v) * dm / (den * m_lo);
-                let second = (ns.d2
-                    + 5.0 * ns.d1 * ms1 / m_lo
-                    + ns.v * (16.25 * ms1 * ms1 / (m_lo * m_lo) + 2.5 * ms2 / m_lo))
-                    / den;
-                *slot = room * (window * first + 0.5 * window * window * second);
             }
             let dwb = [d.wb[0].d.clone(), d.wb[1].d.clone(), d.wb[2].d.clone()];
             let wb = [d.wb[0].v.clone(), d.wb[1].v.clone(), d.wb[2].v.clone()];
-            out[1] = room * window * ratio(norm_hi(&dwb), norm_lo(&wb));
+            info.nb = room(0) * ratio(norm_hi(&dwb), norm_lo(&wb)) / h;
         }
+    }
+    Ok(info)
+}
+
+/// Where `a` at a break of the edge meets `b` in the neighbouring piece
+/// (`s` in the piece `P`, `s*` in its neighbour `N`, `k` the break, so
+/// `|s − k|, |s* − k| ≤ Δ`): `|R(s, s*)| ≤ |R(k_P, k_N)| + |s* − k| D_τ +
+/// |s − k| (D_s + |s* − k| C)`, with `R(k_P, k_N)` the gap of `a`'s rows
+/// of `P` and `b`'s of `N` at the break (constants, `c0`), `D_τ = sup_τ
+/// |∂_τ R(k_P, τ)|` over `N` and `D_s = sup_s |∂_s R(s, k_N)|` over `P`
+/// (polynomials, by [`Dual`]: their terms cancel), and `C` the sizes'
+/// bound on `|∂_s ∂_τ R|` over `P × N`. `b`'s rows may jump at the break
+/// (a knot where `b` is not C², or only C⁰ in its parameter): each side
+/// is taken from its own piece, so nothing assumes they agree. The normal
+/// of `b` changes from `P`'s side to `N`'s by `jump` (from the two `W_b`
+/// at the break).
+#[derive(Clone, Copy, Debug)]
+struct Cross {
+    c0: [f64; 3],
+    dtau: [f64; 3],
+    ds: [f64; 3],
+    mixed: [f64; 3],
+    jump: f64,
+}
+
+/// [`Cross`] of `a` in `p` at its local parameter `ta` (its end at the
+/// break) and `b` in `n` at `tb`; `b`'s normal on `p`'s side from `p`'s
+/// own rows at `ta`.
+fn break_cross(p: &Piece, ta: f64, n: &Piece, tb: f64) -> Result<Cross, NetworkError> {
+    let (hp, hn) = (p.b - p.a, n.b - n.a);
+    let (xp, _) = split_rows(&p.rows)?;
+    let (_, yn) = split_rows(&n.rows)?;
+    let yn = yn.ok_or_else(internal)?;
+    let (xp_at, yp_at) = split_rows(&p.at(ta))?;
+    let (_, yn_at) = split_rows(&n.at(tb))?;
+    let (yp_at, yn_at) = (yp_at.ok_or_else(internal)?, yn_at.ok_or_else(internal)?);
+    let lift = |rows: &[P4; 6], d: bool| rows.clone().map(|r| r.map(|q| dual_of(&q, d)));
+    let size = |rows: &[P4; 6], b: bool| rows.clone().map(|r| r.map(|q| sizes_of(&q, b)));
+    let mut out = Cross {
+        c0: [f64::INFINITY; 3],
+        dtau: [f64::INFINITY; 3],
+        ds: [f64::INFINITY; 3],
+        mixed: [f64::INFINITY; 3],
+        jump: f64::INFINITY,
+    };
+    // The gaps of `a` at the break against `b`'s other side.
+    let mut both: Vec<P4> = xp_at.to_vec();
+    both.extend(yn_at.iter().cloned());
+    let c0 = gaps(&both, &Other::Spline)?.hi;
+    // `a` fixed at the break, `b` along `N`.
+    let dt = spline_parts(&lift(&xp_at, false), &lift(&yn, true));
+    let geo_at = geo_lo(&xp_at);
+    let m_n = dt.m.v.lo().max(0.0);
+    let dm_n = abs_hi(&dt.m.d);
+    // `a` along `P`, `b` fixed at the break.
+    let ds = spline_parts(&lift(&xp, true), &lift(&yn_at, false));
+    let m_at = ds.m.v.lo().max(0.0);
+    let AParts { v0d, v1, .. } = a_parts(&lift(&xp, true));
+    let part = |v: &G3<Dual>, d: bool| -> V3 {
+        let pick = |x: &Dual| if d { x.d.clone() } else { x.v.clone() };
+        [pick(&v[0]), pick(&v[1]), pick(&v[2])]
+    };
+    let (nu, nu_hi, dnu) = (
+        norm_lo(&part(&v0d, false)),
+        norm_hi(&part(&v0d, false)),
+        norm_hi(&part(&v0d, true)),
+    );
+    let (nv, nv_hi, dnv) = (
+        norm_lo(&part(&v1, false)),
+        norm_hi(&part(&v1, false)),
+        norm_hi(&part(&v1, true)),
+    );
+    let geo_p = [nv * nv, nu * nv, nu * nu];
+    let geo_p_d = [
+        2.0 * nv_hi * dnv,
+        dnu * nv_hi + nu_hi * dnv,
+        2.0 * nu_hi * dnu,
+    ];
+    // Sizes: `a` over `P`, `b` over `N`.
+    let sz = spline_parts(&size(&xp, false), &size(&yn, true));
+    let sa = a_parts(&size(&xp, false));
+    let norm_s = |v: &G3<Sizes>| {
+        (
+            room(0) * (v[0].v * v[0].v + v[1].v * v[1].v + v[2].v * v[2].v).sqrt(),
+            room(0) * (v[0].t * v[0].t + v[1].t * v[1].t + v[2].t * v[2].t).sqrt(),
+        )
+    };
+    let ((su, sdu), (sv, sdv)) = (norm_s(&sa.v0d), norm_s(&sa.v1));
+    let gt_sizes = [2.0 * sv * sdv, sdu * sv + su * sdv, 2.0 * su * sdu];
+    let k_sizes = sz.m.k.max(sa.v0d[0].k).max(sa.v1[0].k);
+    for k in 0..3 {
+        let (Some(c), Some(nt), Some(ns_), Some(nsz)) = (
+            c0.get(2 + k),
+            dt.nums.get(k),
+            ds.nums.get(k),
+            sz.nums.get(k),
+        ) else {
+            return Err(internal());
+        };
+        let (Some(&g_at), Some(&g_p), Some(&g_pd), Some(&g_t)) =
+            (geo_at.get(k), geo_p.get(k), geo_p_d.get(k), gt_sizes.get(k))
+        else {
+            return Err(internal());
+        };
+        let pow = |m: f64| m * m * m.sqrt();
+        let den_t = pow(m_n) * g_at;
+        let dtau = if den_t > 0.0 {
+            room(0) * (abs_hi(&nt.d) / den_t + 2.5 * abs_hi(&nt.v) * dm_n / (den_t * m_n)) / hn
+        } else {
+            f64::INFINITY
+        };
+        let den_s = pow(m_at) * g_p;
+        let dsv = if den_s > 0.0 {
+            room(0) * (abs_hi(&ns_.d) / den_s + abs_hi(&ns_.v) * g_pd / (den_s * g_p)) / hp
+        } else {
+            f64::INFINITY
+        };
+        let den_m = pow(m_n) * g_p;
+        let (mu, gt_g) = (sz.m.u / m_n, g_t / g_p);
+        let mixed = if den_m > 0.0 {
+            room(k_sizes.max(nsz.k))
+                * (nsz.tu + 2.5 * nsz.t * mu + nsz.u * gt_g + 7.5 * nsz.v * mu * gt_g)
+                / den_m
+                / (hp * hn)
+        } else {
+            f64::INFINITY
+        };
+        if let (Some(a), Some(b), Some(cc), Some(d)) = (
+            out.dtau.get_mut(k),
+            out.ds.get_mut(k),
+            out.mixed.get_mut(k),
+            out.c0.get_mut(k),
+        ) {
+            *a = dtau;
+            *b = dsv;
+            *cc = mixed;
+            *d = *c;
+        }
+    }
+    // The normals of `b` on the two sides of the break: `|n₁ − n₂| =
+    // 2 sin(θ/2) ≤ √2 sin θ` while they point the same way.
+    let wb = |y: &[P4; 6]| {
+        let [y0, y0d, _, y1, _, _] = y;
+        let (om, om_d, om1) = (&y0[3], &y0d[3], &y1[3]);
+        let (q0, q0d, q1) = (xyz4(y0), xyz4(y0d), xyz4(y1));
+        let ub = minus(&times(&q0d, om), &times(&q0, om_d));
+        let vb = minus(&times(&q1, om), &times(&q0, om1));
+        cross(&ub, &vb)
+    };
+    let (w1, w2) = (wb(&yp_at), wb(&yn_at));
+    let same_way = dot(&w1, &w2).lo() > 0.0;
+    let sin = ratio(norm_hi(&cross(&w1, &w2)), norm_lo(&w1) * norm_lo(&w2));
+    out.jump = if same_way {
+        room(0) * std::f64::consts::SQRT_2 * sin
+    } else {
+        f64::INFINITY
+    };
+    Ok(out)
+}
+
+/// What each gap adds against a quadric `g = 0` (sphere, cylinder, cone;
+/// Hessian `2A`, of norm `H`: 2, or `2 max(1, tan² α)` for a cone), given
+/// the piece's position bound `B`. The rows compare `a` with the level
+/// surface of `g` through `a`'s point `x`, whose normal and form are
+/// `∇g(x) / |∇g(x)|` and `2A / |∇g(x)|`. A quadric face has no boundary
+/// curve of its own in the measure (it is a surface given whole), so the
+/// point `a`'s corresponds to is the face's foot point, its nearest point
+/// `y` to `x` (`|x − y| ≤ B`, the position bound being a distance to the
+/// face); its normal and form are those at `y`, and `|∇g(x) − ∇g(y)| ≤
+/// H B`. The form's part changes by at most `H · H B / (G (G − H B))`
+/// (`G` a lower bound on `|∇g(x)|`: for a sphere or cylinder `B / (r (r −
+/// B))`, `r` the level surface's radius); the normal's part by `|n_x −
+/// n_y| |S_xy| / (|S_x| |S_y|)`, `|n_x − n_y| ≤ 2 H B / G`, which is zero
+/// for a sphere and a cylinder (`y` is the radial projection of `x`, the
+/// normals one) and is added for a cone, with `a`'s `|S_xy| / (|S_x|
+/// |S_y|)` bounded on the piece; the cone's angle gains `2 H B / G` too.
+/// A plane's level surfaces are parallel planes: nothing changes.
+fn implicit_terms(rows: &[P4], other: &Other, position: f64) -> Result<[f64; GAPS], NetworkError> {
+    let mut out = [0.0; GAPS];
+    let (x, _) = split_rows(rows)?;
+    let w0_hi = x[0][3].hi();
+    let AParts { v0d, v1, seconds } = a_parts(&x);
+    let (nu_lo, nv_lo) = (norm_lo(&v0d), norm_lo(&v1));
+    let geo = [nv_lo * nv_lo, nu_lo * nv_lo, nu_lo * nu_lo];
+    let b = position;
+    let (q, h) = match other {
+        Other::Round { q, .. } => (q, 2.0),
+        Other::Cone { q, tan, .. } => (q, 2.0 * (tan * tan).max(1.0)),
+        _ => return Ok(out),
+    };
+    let g = xyz4(&apply(q, &x[0]));
+    let big_g = (1.0 - gamma(4)) * ratio_lo(2.0 * norm_lo(&g), w0_hi);
+    let hb = room(0) * h * b;
+    if !b.is_finite() || big_g.partial_cmp(&hb) != Some(std::cmp::Ordering::Greater) {
+        for x in out.iter_mut().skip(1) {
+            *x = f64::INFINITY;
+        }
+        return Ok(out);
+    }
+    let form = room(0) * h * hb / (big_g * (big_g - hb));
+    let normal = if matches!(other, Other::Cone { .. }) {
+        room(0) * 2.0 * hb / big_g
+    } else {
+        0.0
+    };
+    out[1] = normal;
+    for (k, (slot, a)) in out.iter_mut().skip(2).zip(&seconds).enumerate() {
+        let ratio_xy = if normal > 0.0 {
+            ratio(norm_hi(a) * w0_hi, geo.get(k).copied().unwrap_or(0.0))
+        } else {
+            0.0
+        };
+        *slot = form + if normal > 0.0 { normal * ratio_xy } else { 0.0 };
     }
     for x in &mut out {
         if x.is_nan() {
             *x = f64::INFINITY;
         }
+    }
+    Ok(out)
+}
+
+/// Each piece's bounds with the correspondence counted, and its window
+/// (in the edge's parameter; 0 where there is no shift), from the pieces
+/// in order along the edge: against a spline face the window reaches into
+/// the neighbours ([`shift_window`]), and where it does the break's
+/// [`Cross`] bounds the gaps (computed once per pair of pieces).
+fn combine(
+    work: &[(Piece, Info)],
+    other: &Other,
+    crosses: &mut std::collections::BTreeMap<(u64, u64), (Cross, Cross)>,
+) -> Result<Vec<([f64; GAPS], f64)>, NetworkError> {
+    let mut out = Vec::with_capacity(work.len());
+    for (i, (piece, info)) in work.iter().enumerate() {
+        let mut hi = info.plain;
+        match other {
+            Other::Plane { .. } => {
+                out.push((hi, 0.0));
+                continue;
+            }
+            Other::Round { .. } | Other::Cone { .. } => {
+                for (h, a) in hi.iter_mut().zip(info.implicit) {
+                    *h += a;
+                }
+                out.push((hi, 0.0));
+                continue;
+            }
+            Other::Spline => {}
+        }
+        let h = piece.b - piece.a;
+        let left = i.checked_sub(1).and_then(|j| work.get(j));
+        let right = work.get(i + 1);
+        let (mut speed, mut accel, mut reach) = (info.speed, info.accel, h);
+        for (n, ninfo) in left.iter().chain(right.iter()).map(|(p, x)| (p, x)) {
+            speed = speed.min(ninfo.speed);
+            accel = accel.max(ninfo.accel);
+            reach += (n.b - n.a).min(h);
+        }
+        let d = shift_window(info.plain[0], speed, accel, reach);
+        let r = room(0);
+        let mut second = [0.0; 3];
+        for (k, slot) in second.iter_mut().enumerate() {
+            let (Some(s1), Some(s2), Some(p)) = (info.s1.get(k), info.s2.get(k), hi.get(2 + k))
+            else {
+                return Err(internal());
+            };
+            *slot = p + r * (d * s1 + 0.5 * d * d * s2);
+        }
+        let mut angle = hi[1] + r * d * info.nb;
+        // The breaks with the neighbours: `s` in this piece, `s*` across.
+        for (n, ninfo, here_first) in [
+            left.map(|(p, x)| (p, x, false)),
+            right.map(|(p, x)| (p, x, true)),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let key = if here_first {
+                (piece.id, n.id)
+            } else {
+                (n.id, piece.id)
+            };
+            if let std::collections::btree_map::Entry::Vacant(slot) = crosses.entry(key) {
+                let (lp, rp) = if here_first { (piece, n) } else { (n, piece) };
+                // `a` in the left piece against `b` in the right, and back.
+                slot.insert((
+                    break_cross(lp, 1.0, rp, 0.0)?,
+                    break_cross(rp, 0.0, lp, 1.0)?,
+                ));
+            }
+            let Some(pair) = crosses.get(&key) else {
+                return Err(internal());
+            };
+            let c = if here_first { pair.0 } else { pair.1 };
+            for (k, slot) in second.iter_mut().enumerate() {
+                let (Some(c0), Some(dt), Some(ds), Some(mx)) =
+                    (c.c0.get(k), c.dtau.get(k), c.ds.get(k), c.mixed.get(k))
+                else {
+                    return Err(internal());
+                };
+                let bound = r * (c0 + d * (dt + ds + d * mx));
+                *slot = slot.max(bound);
+            }
+            angle = angle.max(hi[1] + r * (d * (info.nb + ninfo.nb) + c.jump));
+        }
+        hi[1] = angle;
+        for (k, v) in second.iter().enumerate() {
+            if let Some(slot) = hi.get_mut(2 + k) {
+                *slot = if v.is_nan() { f64::INFINITY } else { *v };
+            }
+        }
+        out.push((hi, d));
     }
     Ok(out)
 }
@@ -1588,32 +1863,47 @@ impl Ring for Dual {
     }
 }
 
-/// Upper bounds on `|f|`, `|∂f|` and `|∂²f|` over a piece, the derivatives
-/// along `b`'s parameter, each factor bounded on its own: they hold for
-/// `a` at any point of the piece and `b` at any other (no cancellation is
-/// kept; this is for the second-order remainder only). Sums and products
-/// by the triangle inequality and Leibniz's rule; the rounding of these
-/// few operations is taken up by the caller's factor.
+/// Upper bounds on `|f|` and its derivatives `∂_t f` (along `a`'s
+/// parameter), `∂_τ f`, `∂²_τ f` (along `b`'s) and `∂_t ∂_τ f`, each factor
+/// bounded on its own over its piece: they hold for `a` anywhere in its
+/// piece and `b` anywhere in its (no cancellation is kept; this is for
+/// the remainders only, which a window's width multiplies once more).
+/// Sums and products by the triangle inequality and Leibniz's rule. `k`
+/// counts the roundings on the longest chain: every quantity is a sum of
+/// products of nonnegative numbers, so each is within `γ_k` relative of
+/// its exact value (a sum takes the larger count and one more, a product
+/// the sum of the counts and three more for its derivative's terms); the
+/// caller multiplies by `1 + γ_k`, the room derived from the arithmetic
+/// actually done (about 150 for the spline numerators).
 #[derive(Clone, Copy, Debug)]
 struct Sizes {
     v: f64,
-    d1: f64,
-    d2: f64,
+    t: f64,
+    u: f64,
+    uu: f64,
+    tu: f64,
+    k: usize,
 }
 
 impl Ring for Sizes {
     fn zero() -> Self {
         Sizes {
             v: 0.0,
-            d1: 0.0,
-            d2: 0.0,
+            t: 0.0,
+            u: 0.0,
+            uu: 0.0,
+            tu: 0.0,
+            k: 0,
         }
     }
     fn r_add(&self, o: &Self) -> Self {
         Sizes {
             v: self.v + o.v,
-            d1: self.d1 + o.d1,
-            d2: self.d2 + o.d2,
+            t: self.t + o.t,
+            u: self.u + o.u,
+            uu: self.uu + o.uu,
+            tu: self.tu + o.tu,
+            k: self.k.max(o.k) + 1,
         }
     }
     fn r_sub(&self, o: &Self) -> Self {
@@ -1622,17 +1912,62 @@ impl Ring for Sizes {
     fn r_mul(&self, o: &Self) -> Self {
         Sizes {
             v: self.v * o.v,
-            d1: self.v * o.d1 + self.d1 * o.v,
-            d2: self.v * o.d2 + 2.0 * self.d1 * o.d1 + self.d2 * o.v,
+            t: self.t * o.v + self.v * o.t,
+            u: self.u * o.v + self.v * o.u,
+            uu: self.uu * o.v + 2.0 * self.u * o.u + self.v * o.uu,
+            tu: self.tu * o.v + self.t * o.u + self.u * o.t + self.v * o.tu,
+            k: self.k + o.k + 3,
         }
     }
     fn r_scale(&self, f: f64) -> Self {
         let f = f.abs();
         Sizes {
             v: f * self.v,
-            d1: f * self.d1,
-            d2: f * self.d2,
+            t: f * self.t,
+            u: f * self.u,
+            uu: f * self.uu,
+            tu: f * self.tu,
+            k: self.k + 1,
         }
+    }
+}
+
+/// The sizes of a row's coefficient over its piece: of `a` (with its
+/// derivative along `a`) or of `b` (with its first two along `b`).
+fn sizes_of(p: &Poly, of_b: bool) -> Sizes {
+    let d1 = derivative_poly(p);
+    if of_b {
+        let d2 = derivative_poly(&d1);
+        Sizes {
+            v: abs_hi(p),
+            t: 0.0,
+            u: abs_hi(&d1),
+            uu: abs_hi(&d2),
+            tu: 0.0,
+            k: 1,
+        }
+    } else {
+        Sizes {
+            v: abs_hi(p),
+            t: abs_hi(&d1),
+            u: 0.0,
+            uu: 0.0,
+            tu: 0.0,
+            k: 1,
+        }
+    }
+}
+
+/// A row's coefficient as a [`Dual`], differentiated along its own
+/// piece's parameter or not.
+fn dual_of(p: &Poly, differentiated: bool) -> Dual {
+    Dual {
+        v: p.clone(),
+        d: if differentiated {
+            derivative_poly(p)
+        } else {
+            Poly::konst(0.0)
+        },
     }
 }
 
@@ -1956,15 +2291,21 @@ fn gaps(rows: &[P4], other: &Other) -> Result<Gaps, NetworkError> {
 /// direction, is the position gap (G0): it is not carried into the higher
 /// orders as if `b` were evaluated off its boundary, so a variation of
 /// `b` across the seam does not enter. What does enter is the shift along
-/// the seam: the rows put `a` and `b` side by side at the same local
-/// parameter, and the point of `b` that is the same seam point may lie
-/// along the seam by up to twice the position bound. Its effect on the
-/// angle and the second-order gaps is bounded and added ([`shift_terms`]:
-/// for a spline face a first-order term from the derivative of the
-/// residual along `b`, kept as a polynomial so its terms cancel, and a
-/// second-order remainder from sizes; for a quadric, compared through
-/// its level surface at `a`'s point, the change of its normal and form to
-/// the face's own at the nearest point; nothing for a plane).
+/// the seam: the rows put `a` and `b` side by side at the same parameter,
+/// and the point of `b`'s boundary that is the same seam point (its
+/// nearest within the edge, in the piece or as far into each neighbour as
+/// the piece is long, [`shift_window`]) may lie along the seam by up to
+/// twice the position bound. Its effect on the angle and the second-order
+/// gaps is bounded and added ([`piece_info`], [`combine`]): within a piece
+/// a first-order term from the derivative of the residual along `b`, kept
+/// as a polynomial so its terms cancel, and a second-order remainder from
+/// sizes; across a break into the neighbour, the gaps of `a` at the break
+/// against `b`'s other side and their derivatives ([`Cross`]), so a knot
+/// where `b` is not C² is counted. A quadric face is a surface given
+/// whole, with no boundary curve of its own in the measure: `a`'s point
+/// corresponds to its foot point on the face, and the change from the
+/// level surface through `a`'s point (which the rows compare with) to the
+/// face there is added ([`implicit_terms`]); nothing for a plane.
 pub fn continuity(
     a: &Surface,
     b: &Surface,
@@ -2262,26 +2603,17 @@ fn measure(
     }
     let mut spent = first;
     let mut exhausted = false;
-    // Against a spline face the second-order gaps (and the angle) are
-    // bounded with `b`'s rows moved along the seam by as much as the
-    // correspondence may be off ([`shifted`]); the position gap is that
-    // of the rows as they are.
     // Every gap but the position's gains what comparing at corresponding
-    // points may add ([`shift_terms`]).
-    let shifts = !matches!(other, Other::Plane { .. });
-    // A piece's position bound holds on its halves too, so each half keeps
-    // the least of its own and its parent's (the halving's rounding would
-    // otherwise widen the window it sets).
-    let bounds_of = |rows: &[P4], parent: f64| -> Result<[f64; GAPS], NetworkError> {
-        let mut hi = gaps(rows, &other)?.hi;
-        hi[0] = hi[0].min(parent);
-        let add = shift_terms(rows, &other, hi[0])?;
-        for (h, a) in hi.iter_mut().zip(add) {
-            *h += a;
-        }
-        Ok(hi)
+    // points may add ([`piece_info`], [`combine`]); `his` are the bounds
+    // with it and each piece's window.
+    let spline_other = matches!(other, Other::Spline);
+    let mut next_id: u64 = 0;
+    let mut id = || {
+        next_id += 1;
+        next_id
     };
-    let mut work: Vec<(Piece, [f64; GAPS])> = Vec::with_capacity(bounds.len());
+    let mut crosses = std::collections::BTreeMap::new();
+    let mut work: Vec<(Piece, Info)> = Vec::with_capacity(bounds.len());
     for (k, w) in bounds.windows(2).enumerate() {
         let [a, b] = w else { return Err(internal()) };
         let rows: Vec<P4> = per_row
@@ -2293,25 +2625,47 @@ fn measure(
             b: *b,
             rows,
             depth: 0,
+            id: id(),
         };
-        let hi = bounds_of(&piece.rows, f64::INFINITY)?;
-        work.push((piece, hi));
+        let info = piece_info(&piece, &other, f64::INFINITY)?;
+        work.push((piece, info));
     }
+    let mut his = combine(&work, &other, &mut crosses)?;
     let mut found = [(0.0_f64, 0.0_f64, origin); GAPS];
     // The values found are lower bounds, less what comparing at
     // corresponding points may take off, so a gap found beyond its
-    // threshold is beyond it at the corresponding point.
+    // threshold is beyond it at the corresponding point. Against a spline
+    // face a place within the window of the piece's ends (where the
+    // corresponding point may be in the neighbour) claims nothing.
     let look = |piece: &Piece,
-                position: f64,
+                info: &Info,
+                window: f64,
                 ts: &[f64],
                 found: &mut [(f64, f64, Vec3); GAPS]|
      -> Result<(), NetworkError> {
-        let less = shift_terms(&piece.rows, &other, position)?;
+        let h = piece.b - piece.a;
         for &t in ts {
             let at = piece.at(t);
             let mut lo = gaps(&at, &other)?.lo;
-            for (l, x) in lo.iter_mut().zip(less) {
-                *l = (*l - x).max(0.0);
+            if spline_other {
+                let inside = t * h > window && (1.0 - t) * h > window;
+                let r = room(0);
+                for (k, l) in lo.iter_mut().enumerate().skip(1) {
+                    let less = if k == 1 {
+                        r * window * info.nb
+                    } else {
+                        let (s1, s2) = (
+                            info.s1.get(k - 2).copied().unwrap_or(f64::INFINITY),
+                            info.s2.get(k - 2).copied().unwrap_or(f64::INFINITY),
+                        );
+                        r * (window * s1 + 0.5 * window * window * s2)
+                    };
+                    *l = if inside { (*l - less).max(0.0) } else { 0.0 };
+                }
+            } else {
+                for (l, x) in lo.iter_mut().zip(info.implicit) {
+                    *l = (*l - x).max(0.0);
+                }
             }
             let place = at
                 .first()
@@ -2330,19 +2684,29 @@ fn measure(
         }
         Ok(())
     };
-    for (piece, hi) in &work {
-        look(piece, hi[0], &[0.0, 0.25, 0.5, 0.75, 1.0], &mut found)?;
+    for ((piece, info), (_, window)) in work.iter().zip(&his) {
+        look(
+            piece,
+            info,
+            *window,
+            &[0.0, 0.25, 0.5, 0.75, 1.0],
+            &mut found,
+        )?;
     }
-    // A halving costs two bounds and six looks, twice that where the
-    // correspondence adds its terms (as much again, the dual numerators).
-    let halving = cost.saturating_mul(if shifts { 16 } else { 8 });
+    // A halving costs two bounds and six looks; where the correspondence
+    // adds its terms, the dual numerators and two breaks' crosses more.
+    let halving = cost.saturating_mul(match other {
+        Other::Plane { .. } => 8,
+        Other::Spline => 40,
+        _ => 16,
+    });
     loop {
         let decided: Vec<bool> = (0..GAPS)
             .map(|q| {
                 let lim = limit.get(q).copied().unwrap_or(0.0);
-                let all_within = work
+                let all_within = his
                     .iter()
-                    .all(|(_, hi)| hi.get(q).is_some_and(|h| *h <= lim));
+                    .all(|(hi, _)| hi.get(q).is_some_and(|h| *h <= lim));
                 all_within || found.get(q).is_some_and(|f| f.0 > lim)
             })
             .collect();
@@ -2353,40 +2717,49 @@ fn measure(
             exhausted = true;
             break;
         }
-        let mut next: Vec<(Piece, [f64; GAPS])> = Vec::with_capacity(work.len() * 2);
+        let mut next: Vec<(Piece, Info)> = Vec::with_capacity(work.len() * 2);
+        let mut fresh: Vec<bool> = Vec::with_capacity(work.len() * 2);
         let mut split = false;
         let total = work.len();
-        for (index, (piece, hi)) in work.into_iter().enumerate() {
+        for (index, ((piece, info), (hi, _))) in work.into_iter().zip(&his).enumerate() {
             let open = (0..GAPS).any(|q| {
                 !decided.get(q).copied().unwrap_or(true)
                     && hi.get(q).copied().unwrap_or(0.0) > limit.get(q).copied().unwrap_or(0.0)
             });
-            let room = next.len() + (total - index) < MAX_SEAM_PIECES;
+            let room_left = next.len() + (total - index) < MAX_SEAM_PIECES;
             let affordable = spent.saturating_add(halving) <= MAX_SEAM_WORK;
             if open && !affordable {
                 exhausted = true;
             }
-            if open && room && affordable && piece.depth < 52 {
+            if open && room_left && affordable && piece.depth < 52 {
                 spent = spent.saturating_add(halving);
-                let (l, r) = piece.halves();
+                let ids = (id(), id());
+                let (l, r) = piece.halves(ids);
                 for half in [l, r] {
-                    let h = bounds_of(&half.rows, hi[0])?;
-                    look(&half, h[0], &[0.25, 0.5, 0.75], &mut found)?;
-                    next.push((half, h));
+                    let half_info = piece_info(&half, &other, info.plain[0])?;
+                    next.push((half, half_info));
+                    fresh.push(true);
                 }
                 split = true;
             } else {
-                next.push((piece, hi));
+                next.push((piece, info));
+                fresh.push(false);
             }
         }
         work = next;
+        his = combine(&work, &other, &mut crosses)?;
+        for (((piece, info), (_, window)), new) in work.iter().zip(&his).zip(&fresh) {
+            if *new {
+                look(piece, info, *window, &[0.25, 0.5, 0.75], &mut found)?;
+            }
+        }
         if !split {
             break;
         }
     }
     let bound = |q: usize| {
-        work.iter()
-            .map(|(_, hi)| hi.get(q).copied().unwrap_or(f64::INFINITY))
+        his.iter()
+            .map(|(hi, _)| hi.get(q).copied().unwrap_or(f64::INFINITY))
             .fold(0.0_f64, f64::max)
     };
     let gap = |q: usize, as_angle: bool| {
@@ -2987,19 +3360,27 @@ mod tests {
                 rows.push(row_pieces(row, line, &[]).unwrap().remove(0));
             }
         }
-        let plain = gaps(&rows, &Other::Spline).unwrap().hi;
-        let terms = shift_terms(&rows, &Other::Spline, plain[0]).unwrap();
-        let window = shift_window(&rows, plain[0]);
-        assert!(
-            plain[0] >= 2e-4 * 0.99 && window < 0.05,
-            "{plain:?} {window}"
-        );
         let piece = Piece {
             a: 0.0,
             b: 1.0,
             rows: rows.clone(),
             depth: 0,
+            id: 1,
         };
+        // One piece, the whole edge: the window reaches no neighbour.
+        let info = piece_info(&piece, &Other::Spline, f64::INFINITY).unwrap();
+        let plain = info.plain;
+        let window = shift_window(plain[0], info.speed, info.accel, 1.0);
+        let r = room(0);
+        let mut terms = [0.0; GAPS];
+        terms[1] = r * window * info.nb;
+        for k in 0..3 {
+            terms[2 + k] = r * (window * info.s1[k] + 0.5 * window * window * info.s2[k]);
+        }
+        assert!(
+            plain[0] >= 2e-4 * 0.99 && window < 0.05,
+            "{plain:?} {window}"
+        );
         let mut needed = 0;
         for i in 0..=20 {
             let t = f64::from(i) / 20.0;
@@ -3031,5 +3412,108 @@ mod tests {
             needed > 0,
             "the term is not needed here: {plain:?} {terms:?}"
         );
+    }
+
+    /// `b` only C¹ at a knot inside the edge (degree 3, the knot twice):
+    /// its curvature jumps there, and so does `a`'s (the same surface
+    /// continued across). For `a` at the break the corresponding point of
+    /// `b` may lie on the other side within the window, so the gaps of
+    /// `a`'s rows at the end of the left piece against `b`'s at the start
+    /// of the right one (evaluated apart, a lower bound) must be within the
+    /// left piece's bound; they are beyond what the piece alone bounds
+    /// (its rows side by side and the shift within it), so the break's
+    /// cross term is what covers them. The seam is then not proven G2.
+    #[test]
+    fn a_knot_where_b_is_only_c1_is_covered_across_the_break() {
+        let tol = 1e-6;
+        let knots_u = vec![0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0];
+        // Along: at the Greville abscissae (an even speed), with heights
+        // that bend the edge itself, so its curvature along jumps at the
+        // double knot.
+        let greville = [0.0, 1.0 / 6.0, 1.0 / 3.0, 2.0 / 3.0, 5.0 / 6.0, 1.0];
+        let lift = [0.0, 0.01, 0.0, 0.03, 0.01, 0.0];
+        let mut b_pts = Vec::new();
+        for k in 0..6 {
+            for j in 0..4 {
+                let fj = f64::from(j);
+                b_pts.push(Vec3::new(
+                    greville[k],
+                    0.3 * fj / 3.0,
+                    lift[k] + 0.1 * fj * fj / 9.0 + 0.02 * greville[k] * fj / 3.0,
+                ));
+            }
+        }
+        let blossom = |col: &[Vec3], args: &[f64]| -> Vec3 {
+            let mut d = col.to_vec();
+            for &u in args {
+                d = d.windows(2).map(|w| w[0] * (1.0 - u) + w[1] * u).collect();
+            }
+            d[0]
+        };
+        let mut a_pts = Vec::new();
+        for k in 0..6 {
+            let col: Vec<Vec3> = (0..4).map(|j| b_pts[k * 4 + j]).collect();
+            for j in 0..4 {
+                let mut args = vec![0.0; 3 - j];
+                args.extend(vec![-1.0; j]);
+                a_pts.push(blossom(&col, &args));
+            }
+        }
+        let kv = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+        let make = |pts: Vec<Vec3>| {
+            NurbsSurface::new(3, 3, knots_u.clone(), kv.clone(), 6, 4, pts, vec![1.0; 24]).unwrap()
+        };
+        let (a, b) = (make(a_pts), make(b_pts));
+        let edge = iso_curve(&b, true, 0.0).unwrap();
+        let origin = edge.control_points()[2];
+        let la = spline_rows(&a, &edge, tol, origin).unwrap().unwrap();
+        let lb = spline_rows(&b, &edge, tol, origin).unwrap().unwrap();
+        let mut per: Vec<Vec<P4>> = Vec::new();
+        for line in [&la, &lb] {
+            for row in &line.rows {
+                per.push(row_pieces(row, line, &[0.5]).unwrap());
+            }
+        }
+        let piece = |k: usize, a: f64, b: f64, id: u64| Piece {
+            a,
+            b,
+            rows: per.iter().map(|r| r[k].clone()).collect(),
+            depth: 0,
+            id,
+        };
+        let (p, n) = (piece(0, 0.0, 0.5, 1), piece(1, 0.5, 1.0, 2));
+        let work = vec![
+            (
+                p.clone(),
+                piece_info(&p, &Other::Spline, f64::INFINITY).unwrap(),
+            ),
+            (
+                n.clone(),
+                piece_info(&n, &Other::Spline, f64::INFINITY).unwrap(),
+            ),
+        ];
+        let mut crosses = std::collections::BTreeMap::new();
+        let his = combine(&work, &Other::Spline, &mut crosses).unwrap();
+        let (bound, window) = his[0];
+        let info = &work[0].1;
+        let r = room(0);
+        let mut mixed: Vec<P4> = p.at(1.0).into_iter().take(6).collect();
+        mixed.extend(n.at(0.0).into_iter().skip(6));
+        let lo = gaps(&mixed, &Other::Spline).unwrap().lo;
+        let mut seen = false;
+        for k in 0..3 {
+            let alone =
+                info.plain[2 + k] + r * (window * info.s1[k] + 0.5 * window * window * info.s2[k]);
+            assert!(
+                lo[2 + k] <= bound[2 + k],
+                "gap {k}: {:e} beyond the bound {:e}",
+                lo[2 + k],
+                bound[2 + k]
+            );
+            seen |= lo[2 + k] > alone;
+        }
+        assert!(seen, "no jump at the break: {lo:?} {:?}", info.plain);
+        let c = continuity(&Surface::Nurbs(a), &Surface::Nurbs(b), &edge, tol, 1e-9).unwrap();
+        assert!(c.order < Order::G2, "{c:?}");
     }
 }
