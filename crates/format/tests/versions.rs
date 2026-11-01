@@ -99,6 +99,8 @@ const FROZEN: &[(u32, usize, u64)] = &[
     // cut-out's edge).
     (60, 8707, 0xd984_dc57_24bf_bf33),
     (61, 11079, 0x56dd_6431_5f65_3682),
+    // A network quintic across (acrossDegree 5).
+    (62, 13537, 0x7926_09b8_a310_cc27),
 ];
 
 fn dir() -> PathBuf {

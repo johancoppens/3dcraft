@@ -1,0 +1,631 @@
+{
+  "format_version": 62,
+  "written_by": "30d6337323cd13f0728f0db8d6efd18868238aac",
+  "how": "craft3d-cli (release) built from that commit (r1-c3-crown on r1-hollow 21357450, on main 1eb6634d) on the developer's laptop: craft3d-cli run --new '{\"units\": \"mm\"}' --script v62.steps.json --out v62.3dcraft, then document.inspect of the file opened again; a network of two u curves along x and six v curves across them, interpolated across with degree 5 (acrossDegree): the field of format 62",
+  "rollback": null,
+  "features": [
+    {
+      "dof": 6,
+      "id": "F1",
+      "name": "Near",
+      "params": {
+        "constraints": [],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 0.0,
+              "y": 0.0
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 50.0,
+              "y": 0.0
+            },
+            "id": 2
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 100.0,
+              "y": 0.0
+            },
+            "id": 3
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "control": [
+                1,
+                2,
+                3
+              ],
+              "degree": 2,
+              "type": "spline"
+            },
+            "id": 4
+          }
+        ],
+        "next_constraint_id": 1,
+        "next_entity_id": 5,
+        "plane": {
+          "offset": "0",
+          "plane": "xy",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "dof": 6,
+      "id": "F2",
+      "name": "Far",
+      "params": {
+        "constraints": [],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 0.0,
+              "y": 60.0
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 50.0,
+              "y": 60.0
+            },
+            "id": 2
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 100.0,
+              "y": 60.0
+            },
+            "id": 3
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "control": [
+                1,
+                2,
+                3
+              ],
+              "degree": 2,
+              "type": "spline"
+            },
+            "id": 4
+          }
+        ],
+        "next_constraint_id": 1,
+        "next_entity_id": 5,
+        "plane": {
+          "offset": "0",
+          "plane": "xy",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "dof": 8,
+      "id": "F3",
+      "name": "Across 0",
+      "params": {
+        "constraints": [],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 0.0,
+              "y": 0.0
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 19.999999999999996,
+              "y": 2.9999999999999996
+            },
+            "id": 2
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 40.0,
+              "y": 3.0
+            },
+            "id": 3
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 60.0,
+              "y": 0.0
+            },
+            "id": 4
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "control": [
+                1,
+                2,
+                3,
+                4
+              ],
+              "degree": 3,
+              "type": "spline"
+            },
+            "id": 5
+          }
+        ],
+        "next_constraint_id": 1,
+        "next_entity_id": 6,
+        "plane": {
+          "offset": "0 mm",
+          "plane": "yz",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "dof": 8,
+      "id": "F4",
+      "name": "Across 1",
+      "params": {
+        "constraints": [],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 0.0,
+              "y": 0.0
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 19.999999999999996,
+              "y": 8.999999999999998
+            },
+            "id": 2
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 40.0,
+              "y": 9.0
+            },
+            "id": 3
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 60.0,
+              "y": 0.0
+            },
+            "id": 4
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "control": [
+                1,
+                2,
+                3,
+                4
+              ],
+              "degree": 3,
+              "type": "spline"
+            },
+            "id": 5
+          }
+        ],
+        "next_constraint_id": 1,
+        "next_entity_id": 6,
+        "plane": {
+          "offset": "20 mm",
+          "plane": "yz",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "dof": 8,
+      "id": "F5",
+      "name": "Across 2",
+      "params": {
+        "constraints": [],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 0.0,
+              "y": 0.0
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 19.999999999999996,
+              "y": 4.499999999999999
+            },
+            "id": 2
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 40.0,
+              "y": 4.5
+            },
+            "id": 3
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 60.0,
+              "y": 0.0
+            },
+            "id": 4
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "control": [
+                1,
+                2,
+                3,
+                4
+              ],
+              "degree": 3,
+              "type": "spline"
+            },
+            "id": 5
+          }
+        ],
+        "next_constraint_id": 1,
+        "next_entity_id": 6,
+        "plane": {
+          "offset": "40 mm",
+          "plane": "yz",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "dof": 8,
+      "id": "F6",
+      "name": "Across 3",
+      "params": {
+        "constraints": [],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 0.0,
+              "y": 0.0
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 19.999999999999996,
+              "y": 11.999999999999998
+            },
+            "id": 2
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 40.0,
+              "y": 12.0
+            },
+            "id": 3
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 60.0,
+              "y": 0.0
+            },
+            "id": 4
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "control": [
+                1,
+                2,
+                3,
+                4
+              ],
+              "degree": 3,
+              "type": "spline"
+            },
+            "id": 5
+          }
+        ],
+        "next_constraint_id": 1,
+        "next_entity_id": 6,
+        "plane": {
+          "offset": "60 mm",
+          "plane": "yz",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "dof": 8,
+      "id": "F7",
+      "name": "Across 4",
+      "params": {
+        "constraints": [],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 0.0,
+              "y": 0.0
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 19.999999999999996,
+              "y": 5.999999999999999
+            },
+            "id": 2
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 40.0,
+              "y": 6.0
+            },
+            "id": 3
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 60.0,
+              "y": 0.0
+            },
+            "id": 4
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "control": [
+                1,
+                2,
+                3,
+                4
+              ],
+              "degree": 3,
+              "type": "spline"
+            },
+            "id": 5
+          }
+        ],
+        "next_constraint_id": 1,
+        "next_entity_id": 6,
+        "plane": {
+          "offset": "80 mm",
+          "plane": "yz",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "dof": 8,
+      "id": "F8",
+      "name": "Across 5",
+      "params": {
+        "constraints": [],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 0.0,
+              "y": 0.0
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 19.999999999999996,
+              "y": 7.499999999999999
+            },
+            "id": 2
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 40.0,
+              "y": 7.5
+            },
+            "id": 3
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 60.0,
+              "y": 0.0
+            },
+            "id": 4
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "control": [
+                1,
+                2,
+                3,
+                4
+              ],
+              "degree": 3,
+              "type": "spline"
+            },
+            "id": 5
+          }
+        ],
+        "next_constraint_id": 1,
+        "next_entity_id": 6,
+        "plane": {
+          "offset": "100 mm",
+          "plane": "yz",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "id": "F9",
+      "name": "Quintic",
+      "params": {
+        "across_degree": 5,
+        "edges": {
+          "uFirst": {
+            "kind": "free"
+          },
+          "uLast": {
+            "kind": "free"
+          },
+          "vFirst": {
+            "kind": "free"
+          },
+          "vLast": {
+            "kind": "free"
+          }
+        },
+        "type": "surfaceNetwork",
+        "u": [
+          {
+            "sketch": 1
+          },
+          {
+            "sketch": 2
+          }
+        ],
+        "v": [
+          {
+            "sketch": 3
+          },
+          {
+            "sketch": 4
+          },
+          {
+            "sketch": 5
+          },
+          {
+            "sketch": 6
+          },
+          {
+            "sketch": 7
+          },
+          {
+            "sketch": 8
+          }
+        ]
+      },
+      "status": "ok",
+      "suppressed": false
+    }
+  ],
+  "bodies": [
+    {
+      "area": 6482.329266960302,
+      "bbox": [
+        [
+          0.0,
+          0.0,
+          -0.08539016728602308
+        ],
+        [
+          100.0,
+          60.0,
+          9.871073901083435
+        ]
+      ],
+      "bboxTolerance": 0.08051291366582322,
+      "centroid": null,
+      "edges": 4,
+      "faceNames": [
+        "F9:side(e1,e2,e3,e8)"
+      ],
+      "faces": 1,
+      "feature": "F9",
+      "kind": "sheet",
+      "name": "Quintic",
+      "shells": 1,
+      "valid": true,
+      "vertices": 4,
+      "volume": 0.0
+    }
+  ]
+}
