@@ -6,16 +6,19 @@
 //! with references by name, which the shrinker in `cargo xtask fuzz`
 //! cuts down to a minimal reproducer.
 //!
-//! The binary `craft3d-fuzz` runs one seed or one design file per process;
+//! The binary `craft3d-fuzz` runs one seed or one design file per process
+//! (and, for `cargo xtask abc`, one real-world STEP model: [`model`]);
 //! `cargo xtask fuzz` runs many of them, each in its own process with a
 //! timeout and a memory cap, shrinks what fails and writes the summary the
 //! morning health report reads.
 
 pub mod generate;
+pub mod model;
 pub mod rng;
 pub mod runner;
 pub mod steps;
 
 pub use generate::{Generator, run_seed};
+pub use model::{ModelOptions, run_model};
 pub use runner::{Deep, Options, Report, Runner, run_design};
 pub use steps::{Design, Group, Setup};

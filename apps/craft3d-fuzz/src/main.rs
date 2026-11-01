@@ -5,7 +5,9 @@
 //! line on stdout, also when it is a crash or a wrong result), 1 when it
 //! could not run, 2 for a usage error.
 
-use craft3d_fuzz::{Deep, Design, Generator, Options, Runner, Setup, run_design, run_seed};
+use craft3d_fuzz::{
+    Deep, Design, Generator, ModelOptions, Options, Runner, Setup, run_design, run_model, run_seed,
+};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -16,6 +18,11 @@ craft3d-fuzz: random multi-step designs held to the oracles
 
 Usage: craft3d-fuzz seed N [options]     generate and run the design of seed N
        craft3d-fuzz check FILE [options] run the design in FILE (a reproducer)
+       craft3d-fuzz step FILE [--booleans] [--deep] [--scratch DIR]
+                                         import a real-world STEP model, check,
+                                         mesh and measure it, and with
+                                         --booleans cut it with three tools
+                                         (cargo xtask abc)
 
 Prints one line of JSON: the verdict (ok, crash, wrong), the finding, the
 groups run, accepted and refused (with their reasons).
@@ -98,6 +105,28 @@ fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
     std::fs::rename(&tmp, path).map_err(|e| format!("cannot write {}: {e}", path.display()))
 }
 
+/// `craft3d-fuzz step FILE [--booleans] [--deep] [--scratch DIR]`.
+fn run_step(args: &[String]) -> Result<(), String> {
+    let mut it = args.iter();
+    let file = it.next().ok_or("no STEP file")?;
+    let mut options = ModelOptions {
+        booleans: false,
+        deep: false,
+    };
+    let mut scratch = std::env::temp_dir().join("craft3d-abc");
+    while let Some(flag) = it.next() {
+        match flag.as_str() {
+            "--booleans" => options.booleans = true,
+            "--deep" => options.deep = true,
+            "--scratch" => scratch = PathBuf::from(it.next().ok_or("--scratch needs a value")?),
+            other => return Err(format!("unknown option {other}")),
+        }
+    }
+    let report = run_model(Path::new(file), options, &scratch)?;
+    println!("{report}");
+    Ok(())
+}
+
 fn run(args: Args) -> Result<(), String> {
     let start = Instant::now();
     let runner: Runner = match args.mode.as_str() {
@@ -143,6 +172,17 @@ fn run(args: Args) -> Result<(), String> {
 }
 
 fn main() -> ExitCode {
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    if raw.first().map(String::as_str) == Some("step") {
+        return match run_step(raw.get(1..).unwrap_or_default()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(message) => {
+                eprintln!("craft3d-fuzz: {message}");
+                eprintln!("{HELP}");
+                ExitCode::from(2)
+            }
+        };
+    }
     let args = match parse() {
         Ok(args) => args,
         Err(message) => {

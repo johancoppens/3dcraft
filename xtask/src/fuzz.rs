@@ -106,14 +106,14 @@ fn parse(args: &[String]) -> Result<Config, String> {
     Ok(c)
 }
 
-fn workspace_root() -> PathBuf {
+pub(crate) fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
 }
 
 /// Builds `craft3d-fuzz` in release and returns where it is.
-fn build() -> Result<PathBuf, String> {
+pub(crate) fn build() -> Result<PathBuf, String> {
     crate::cargo(&["build", "--release", "-p", "craft3d-fuzz"])?;
     let target = std::env::var_os("CARGO_TARGET_DIR")
         .map_or_else(|| workspace_root().join("target"), PathBuf::from);
@@ -127,16 +127,16 @@ fn build() -> Result<PathBuf, String> {
 
 /// How one process is started: under a memory cap when systemd can give
 /// one, always under `timeout`.
-struct Launcher {
-    bin: PathBuf,
-    timeout: u64,
-    memory: String,
-    capped: Cap,
+pub(crate) struct Launcher {
+    pub(crate) bin: PathBuf,
+    pub(crate) timeout: u64,
+    pub(crate) memory: String,
+    pub(crate) capped: Cap,
 }
 
 /// How a process's memory is capped.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Cap {
+pub(crate) enum Cap {
     /// A systemd scope with `MemoryMax` (no swap): the whole process.
     Systemd,
     /// `prlimit --as`, where there is no user systemd (a CI runner): the
@@ -148,7 +148,7 @@ enum Cap {
 }
 
 /// `2G`, `512M`, `100K` or a number of bytes.
-fn bytes(size: &str) -> Option<u64> {
+pub(crate) fn bytes(size: &str) -> Option<u64> {
     let size = size.trim();
     let (digits, unit) = match size.char_indices().last()? {
         (i, c) if c.is_ascii_alphabetic() => (size.get(..i)?, c.to_ascii_uppercase()),
@@ -167,15 +167,15 @@ fn bytes(size: &str) -> Option<u64> {
 }
 
 /// What became of one process.
-struct Ran {
+pub(crate) struct Ran {
     /// The report, when the process ran to a verdict.
-    report: Option<Value>,
+    pub(crate) report: Option<Value>,
     /// `timeout`, `oom` or `crash` when it did not.
-    died: Option<(&'static str, String)>,
+    pub(crate) died: Option<(&'static str, String)>,
 }
 
 impl Launcher {
-    fn run(&self, args: &[String]) -> Ran {
+    pub(crate) fn run(&self, args: &[String]) -> Ran {
         let timeout = self.timeout.to_string();
         let mut command = match self.capped {
             Cap::Systemd => {
@@ -584,7 +584,7 @@ fn one_seed(launcher: &Launcher, seed: u64, out: &Path, tally: &Mutex<Tally>, st
     }
 }
 
-fn commit() -> String {
+pub(crate) fn commit() -> String {
     Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
         .output()
@@ -596,7 +596,7 @@ fn commit() -> String {
         )
 }
 
-fn now() -> String {
+pub(crate) fn now() -> String {
     Command::new("date")
         .arg("+%Y-%m-%d %H:%M")
         .output()
@@ -607,29 +607,34 @@ fn now() -> String {
         )
 }
 
-pub fn run(args: &[String]) -> Result<(), String> {
-    let config = parse(args)?;
-    let bin = match &config.bin {
-        Some(b) => b.clone(),
-        None => build()?,
-    };
+/// How processes capped at `memory` can be capped on this machine.
+pub(crate) fn cap_for(memory: &str) -> Cap {
     let works = |program: &str, args: &[&str]| {
         Command::new(program)
             .args(args)
             .output()
             .is_ok_and(|o| o.status.success())
     };
-    let capped = if works("systemd-run", &["--user", "--scope", "-q", "true"]) {
+    if works("systemd-run", &["--user", "--scope", "-q", "true"]) {
         Cap::Systemd
-    } else if let Some(limit) = bytes(&config.memory).and_then(|b| b.checked_mul(2))
+    } else if let Some(limit) = bytes(memory).and_then(|b| b.checked_mul(2))
         && works("prlimit", &[&format!("--as={limit}"), "--", "true"])
     {
-        eprintln!("fuzz: no user systemd; the seeds' address space is capped by prlimit");
+        eprintln!("xtask: no user systemd; each process's address space is capped by prlimit");
         Cap::AddressSpace(limit)
     } else {
-        eprintln!("fuzz: systemd-run is not available; the seeds run without a memory cap");
+        eprintln!("xtask: systemd-run is not available; the processes run without a memory cap");
         Cap::None
+    }
+}
+
+pub fn run(args: &[String]) -> Result<(), String> {
+    let config = parse(args)?;
+    let bin = match &config.bin {
+        Some(b) => b.clone(),
+        None => build()?,
     };
+    let capped = cap_for(&config.memory);
     let launcher = Launcher {
         bin,
         timeout: config.timeout,
