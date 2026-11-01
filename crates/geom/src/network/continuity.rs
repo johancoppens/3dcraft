@@ -77,8 +77,9 @@
 //! ch. 3). The rows are formed from the stored net by differences first
 //! (`spline_rows`): the net differentiated across and along as B-spline
 //! derivative nets, the first difference each way taken of the points as
-//! stored (one rounding relative to the difference, not to the points'
-//! distance from anything), then combined at the line with basis values
+//! stored (for equal weights one rounding relative to the difference,
+//! not to the points' distance from anything; for unequal weights a term
+//! `(P_a − o)(w_b − w_a)` adds `γ₄ |P_a − o| |w_b − w_a|`), then combined at the line with basis values
 //! that are nonnegative and sum to 1 (on a clamped border, one of them 1
 //! and the others 0, exactly). So every row, including the derivatives
 //! along the edge, carries the rounding of its own size, coefficient by
@@ -778,12 +779,14 @@ fn local_point(p: Vec3, w: f64, o: Vec3) -> Ep {
 /// `h(b) − h(a)` of two control points in the homogeneous coordinates about
 /// `o`, formed from the points as stored, not from their local
 /// coordinates: `(P_b − P_a) w_b + (P_a − o)(w_b − w_a)`, each difference of
-/// stored numbers one rounding relative to itself. So its rounding is of
-/// the difference's size, not of the points' distance from `o`: a
-/// derivative formed from these carries the rounding of the derivative,
-/// where one formed from rounded local points would carry the rounding of
-/// the positions divided by the knot span. Equal weights (every
-/// polynomial face) make the second term vanish exactly.
+/// stored numbers one rounding relative to itself. With equal weights
+/// (every polynomial face) the second term vanishes exactly and the
+/// rounding is `γ₃` of the difference: a derivative formed from these
+/// carries the rounding of the derivative, where one formed from rounded
+/// local points would carry the rounding of the positions divided by the
+/// knot span. With unequal weights the second term adds
+/// `γ₄ |P_a − o| |w_b − w_a|`: of the positions' size, but times the
+/// difference of the weights, which is itself a derivative's worth.
 fn stored_difference(pa: Vec3, wa: f64, pb: Vec3, wb: f64, o: Vec3) -> Ep {
     let (a, b, oc) = ([pa.x, pa.y, pa.z], [pb.x, pb.y, pb.z], [o.x, o.y, o.z]);
     let dw = wb - wa;
@@ -921,6 +924,17 @@ fn net_line(net: &Net, at: f64) -> Result<(Raw, Vec<[f64; 4]>), NetworkError> {
     } else if clamped_at(&mut knots.iter().rev()) {
         vec![(n.checked_sub(1).ok_or_else(internal)?, 1.0)]
     } else {
+        // The bound on the computed basis values holds where every
+        // quantity of the recursion is nonnegative: `at` inside the
+        // domain `[t_q, t_n]`.
+        let (Some(&first), Some(&last)) = (knots.get(q), knots.get(n)) else {
+            return Err(internal());
+        };
+        if !(first <= at && at <= last) {
+            return refuse(format!(
+                "the edge's line lies at {at}, outside its face's domain [{first}, {last}] across"
+            ));
+        }
         super::basis(knots, q, n, at)?
             .into_iter()
             .enumerate()
@@ -1074,11 +1088,13 @@ fn blossom_piece(
 /// straight from the knot span of the row it lies in ([`blossom_piece`]),
 /// so its rounding is that of one blossom, however many breaks the span
 /// holds. Running the edge's way reverses the pieces and their
-/// coefficients, exactly; the parameter along each face is its own (the
-/// gaps do not depend on it: each is a ratio of the same order in the
-/// derivatives along on both sides, and the second fundamental form is
-/// taken on the face's own derivatives), so the rows are not
-/// reparametrised and no knot is rounded.
+/// coefficients, exactly; the parameter along each face is its own, up to
+/// an affine change per piece (the gaps are invariant under it: each is a
+/// ratio of the same order in the derivatives along on both sides, and
+/// the second fundamental form is taken on the face's own derivatives),
+/// so the rows are not reparametrised and no knot is rounded. The points
+/// compared are those at the same local parameter of a piece on both
+/// faces; how far apart they are is the position gap.
 fn row_pieces(row: &Row, line: &Line, breaks: &[f64]) -> Result<Vec<P4>, NetworkError> {
     let (raw, err) = row;
     let (lo, hi) = raw.domain()?;
@@ -1113,10 +1129,16 @@ fn row_pieces(row: &Row, line: &Line, breaks: &[f64]) -> Result<Vec<P4>, Network
             .ok_or_else(internal)?
             .min(raw.points.len().saturating_sub(1));
         let end = raw.knots.get(s + 1).copied().ok_or_else(internal)?;
-        if *y > end + snap {
-            return Err(internal());
+        // A piece that reaches past its span would leave `[end, y]` of the
+        // face unmeasured if cut at `end`: that happens only where two
+        // distinct knots of the face lie within rounding of each other
+        // (the breaks are one there), so it is refused, not truncated.
+        if *y > end {
+            return refuse(format!(
+                "a face has two distinct knots within {snap:e} of each other along the edge (near {end}), closer than the measure can tell apart; the seam is not measured"
+            ));
         }
-        let (h, e) = blossom_piece(raw, err, s, *x, y.min(end))?;
+        let (h, e) = blossom_piece(raw, err, s, *x, *y)?;
         pieces.push((h, e));
     }
     if line.reversed {
@@ -1544,8 +1566,9 @@ pub fn continuity(
 /// times, whose values are nonnegative and sum to 1 ([`net_line`]). The
 /// first difference each way is taken of the points as stored
 /// ([`stored_difference`]): one rounding of a difference of two stored
-/// numbers is relative to the difference, so a derivative carries the
-/// rounding of the derivative's own size. Formed the other way round (the
+/// numbers is relative to the difference, so with equal weights a
+/// derivative carries the rounding of the derivative's own size (with
+/// unequal weights, a further `γ₄ |P_a − o| |w_b − w_a|`). Formed the other way round (the
 /// row first, of points rounded about `origin`, then differentiated
 /// along) every derivative multiplied the rounding of the positions by
 /// `2p / Δ` (`Δ` the shortest knot span along): on the tank's 0.69 m seam,
@@ -1705,25 +1728,34 @@ fn measure(
     breaks.retain(|s| *s > SAME_KNOT && *s < 1.0 - SAME_KNOT);
     breaks.sort_by(f64::total_cmp);
     breaks.dedup_by(|x, y| (*x - *y).abs() <= SAME_KNOT);
+    let mut bounds = vec![0.0];
+    bounds.extend(breaks.iter().copied());
+    bounds.push(1.0);
+    // The work, counted before any of it is done: each bound of a piece
+    // costs about the square of the polynomials' degree (their products),
+    // each piece looked at in 5 or 3 places as well; cutting the rows into
+    // pieces costs a blossom of `p + 1` coefficients, each `p²` levels'
+    // worth, per row and piece.
+    let cost = (degree as u64 + 1).saturating_pow(2);
+    let pieces = bounds.len() as u64 - 1;
+    let rows_count = lines.iter().map(|l| l.rows.len() as u64).sum::<u64>();
+    let cutting = rows_count
+        .saturating_mul(pieces)
+        .saturating_mul((p.max(spline_degree.unwrap_or(0)) as u64 + 1).saturating_pow(3));
+    let first = cost
+        .saturating_mul(6)
+        .saturating_mul(bounds.len() as u64)
+        .saturating_add(cutting);
+    if first > MAX_SEAM_WORK {
+        return refuse(format!(
+            "the edge's faces have too many knot spans along it to bound how they meet ({pieces} pieces of degree {degree})"
+        ));
+    }
     let mut per_row: Vec<Vec<P4>> = Vec::with_capacity(12);
     for line in &lines {
         for row in &line.rows {
             per_row.push(row_pieces(row, line, &breaks)?);
         }
-    }
-    let mut bounds = vec![0.0];
-    bounds.extend(breaks.iter().copied());
-    bounds.push(1.0);
-    // The work: each bound of a piece costs about the square of the
-    // polynomials' degree (their products), each piece looked at in 5 or
-    // 3 places as well.
-    let cost = (degree as u64 + 1).saturating_pow(2);
-    let first = cost.saturating_mul(6).saturating_mul(bounds.len() as u64);
-    if first > MAX_SEAM_WORK {
-        return refuse(format!(
-            "the edge's faces have too many knot spans along it to bound how they meet ({} pieces of degree {degree})",
-            bounds.len() - 1
-        ));
     }
     let mut spent = first;
     let mut exhausted = false;
@@ -2165,6 +2197,199 @@ mod tests {
                         row.1[k][c]
                     );
                     assert!(row.1[k][c] > 0.0, "an inner row has rounding to allow for");
+                }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // A rational net: the reference rows and pieces in double-double.
+
+    fn dd_mul(x: Dd, y: Dd) -> Dd {
+        let a = mul(x, y.0);
+        add(a, mul((x.0, 0.0), y.1))
+    }
+
+    fn dd_div(x: Dd, y: Dd) -> Dd {
+        let q = x.0 / y.0;
+        let r = add(x, neg(dd_mul((q, 0.0), y)));
+        add((q, 0.0), (r.0 / y.0, 0.0))
+    }
+
+    /// `b − a` of two doubles, exactly.
+    fn dd_sub(b: f64, a: f64) -> Dd {
+        two_sum(b, -a)
+    }
+
+    type DdH = [Dd; 4];
+
+    /// The B-spline derivative of a net of homogeneous points in one
+    /// direction (`p (P_{k+1} − P_k) / (t_{k+p+1} − t_{k+1})`), in
+    /// double-double, the knots' differences exact.
+    fn dd_derivative(points: &[DdH], knots: &[f64], p: usize) -> Vec<DdH> {
+        (0..points.len() - 1)
+            .map(|k| {
+                let d = dd_sub(knots[k + p + 1], knots[k + 1]);
+                let f = dd_div((p as f64, 0.0), d);
+                std::array::from_fn(|c| dd_mul(f, add(points[k + 1][c], neg(points[k][c]))))
+            })
+            .collect()
+    }
+
+    /// The Bézier coefficients of a spline over `[x, y]` inside its span
+    /// `s`, by de Boor's blossom in double-double.
+    fn dd_blossom(points: &[DdH], knots: &[f64], p: usize, s: usize, x: f64, y: f64) -> Vec<DdH> {
+        (0..=p)
+            .map(|k| {
+                let mut d: Vec<DdH> = points[s - p..=s].to_vec();
+                for level in 1..=p {
+                    let u = if level <= p - k { x } else { y };
+                    for j in (level..=p).rev() {
+                        let i = s - p + j;
+                        let alpha = dd_div(
+                            dd_sub(u, knots[i]),
+                            dd_sub(knots[i + p + 1 - level], knots[i]),
+                        );
+                        let beta = add((1.0, 0.0), neg(alpha));
+                        d[j] = std::array::from_fn(|c| {
+                            add(dd_mul(beta, d[j - 1][c]), dd_mul(alpha, d[j][c]))
+                        });
+                    }
+                }
+                d[p]
+            })
+            .collect()
+    }
+
+    /// A rational patch far from the origin, of degree 2 along u on
+    /// uneven knots (three spans) and 3 across v, its weights changing both
+    /// ways: the differences of homogeneous points then have unequal
+    /// weights (`stored_difference`'s second term), and the pieces are
+    /// blossomed from uneven spans with breaks of another face inside.
+    fn rational_far_patch() -> NurbsSurface {
+        let o = Vec3::new(1_234_567.891, -2_345_678.912, 3_456_789.123);
+        let mut points = Vec::new();
+        let mut weights = Vec::new();
+        for i in 0..5 {
+            for j in 0..4 {
+                let (fi, fj) = (f64::from(i), f64::from(j));
+                points.push(
+                    o + Vec3::new(
+                        0.37 * fi + 0.11 * fj * fj,
+                        0.29 * fj + 0.07 * fi * fi,
+                        0.13 * fi * fj + 0.05 * fj,
+                    ),
+                );
+                weights.push(1.0 + 0.3 * (1.3 * fi).psin() + 0.17 * (0.9 * fj).pcos());
+            }
+        }
+        NurbsSurface::new(
+            2,
+            3,
+            vec![0.0, 0.0, 0.0, 0.3, 0.7, 1.0, 1.0, 1.0],
+            vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            5,
+            4,
+            points,
+            weights,
+        )
+        .unwrap()
+    }
+
+    /// Every row of a rational patch far from the origin, and every Bézier
+    /// piece cut from it (breaks of the face's own and of another face's
+    /// inside its spans), is within its allowance of the exact one,
+    /// computed in double-double from the stored points: `((P − o) w, w)`,
+    /// the derivative nets each way, the row at the clamped border, and
+    /// de Boor's blossom of each piece.
+    #[test]
+    fn a_rational_patch_rows_and_pieces_are_within_their_allowance() {
+        let s = rational_far_patch();
+        let edge = iso_curve(&s, true, 0.0).unwrap();
+        let origin = edge.control_points()[2];
+        let line = spline_rows(&s, &edge, 1e-6, origin).unwrap().unwrap();
+        assert!(!line.reversed && line.from == 0.0 && line.to == 1.0);
+        let (ku, kv) = (s.knots_u().to_vec(), s.knots_v().to_vec());
+        // The net in double-double, `[i along][j across]`.
+        let net: Vec<Vec<DdH>> = (0..5)
+            .map(|i| {
+                (0..4)
+                    .map(|j| {
+                        let p = s.control_points()[i * 4 + j];
+                        let w = s.weights()[i * 4 + j];
+                        let d = |a: f64, b: f64| mul(dd_sub(a, b), w);
+                        [
+                            d(p.x, origin.x),
+                            d(p.y, origin.y),
+                            d(p.z, origin.z),
+                            (w, 0.0),
+                        ]
+                    })
+                    .collect()
+            })
+            .collect();
+        // Across at the border v = 0: the first one, two and three points.
+        let across = |i: usize, order: usize| -> DdH {
+            let mut col: Vec<DdH> = net[i].clone();
+            let mut knots = kv.clone();
+            for k in 0..order {
+                col = dd_derivative(&col, &knots, 3 - k);
+                knots = knots[1..knots.len() - 1].to_vec();
+            }
+            col[0]
+        };
+        let row =
+            |order_across: usize| -> Vec<DdH> { (0..5).map(|i| across(i, order_across)).collect() };
+        let x0 = row(0);
+        let x1 = row(1);
+        let x2 = row(2);
+        let x0d = dd_derivative(&x0, &ku, 2);
+        let x0dd = dd_derivative(&x0d, &ku[1..ku.len() - 1], 1);
+        let x1d = dd_derivative(&x1, &ku, 2);
+        let exact = [&x0, &x0d, &x0dd, &x1, &x1d, &x2];
+        let names = ["X0", "X0'", "X0''", "X1", "X1'", "X2"];
+        for ((computed, reference), name) in line.rows.iter().zip(exact).zip(names) {
+            assert_eq!(computed.0.points.len(), reference.len(), "{name}");
+            for (k, (h, r)) in computed.0.points.iter().zip(reference).enumerate() {
+                for c in 0..4 {
+                    let want = r[c].0 + r[c].1;
+                    let e = computed.1[k][c];
+                    assert!(
+                        (h[c] - want).abs() <= e,
+                        "{name}, point {k}, coordinate {c}: {:e} is {:e} off {want:e}, the allowance {e:e}",
+                        h[c],
+                        (h[c] - want).abs()
+                    );
+                }
+            }
+        }
+        // The weights differ along, so the rows along carry rounding.
+        assert!(line.rows[1].1.iter().any(|e| e[3] > 0.0));
+        // The pieces: the face's own knots 0.3 and 0.7, and breaks of
+        // another face at 0.15 and 0.5 inside its spans.
+        let breaks = [0.15, 0.3, 0.5, 0.7];
+        let cuts = [0.0, 0.15, 0.3, 0.5, 0.7, 1.0];
+        for ((computed, reference), name) in line.rows.iter().zip(exact).zip(names) {
+            let pieces = row_pieces(computed, &line, &breaks).unwrap();
+            let (knots, p) = (&computed.0.knots, computed.0.degree);
+            assert_eq!(pieces.len(), 5, "{name}");
+            for (n, (piece, w)) in pieces.iter().zip(cuts.windows(2)).enumerate() {
+                let span = knots
+                    .iter()
+                    .rposition(|k| *k <= w[0])
+                    .unwrap()
+                    .min(reference.len() - 1);
+                let want = dd_blossom(reference, knots, p, span, w[0], w[1]);
+                for (c, poly) in piece.iter().enumerate() {
+                    for (k, got) in poly.c.iter().enumerate() {
+                        let r = want[k][c].0 + want[k][c].1;
+                        assert!(
+                            (got - r).abs() <= poly.e,
+                            "{name}, piece {n}, coefficient {k}, coordinate {c}: {got:e} is {:e} off, the allowance {:e}",
+                            (got - r).abs(),
+                            poly.e
+                        );
+                    }
                 }
             }
         }

@@ -724,7 +724,12 @@ fn a_plane_seam_with_its_second_row_lifted_is_g1_by_its_curvature() {
 /// third row is lifted by `delta` along the seam's unit normal, which
 /// changes its normal curvature across by `2 delta / |S_v|²` and nothing
 /// of its position and tangent plane along the seam.
-fn long_seam(l: f64, delta: f64) -> (NurbsSurface, NurbsSurface, NurbsCurve, f64) {
+///
+/// `rational`: the weights change along the seam (the same for every row
+/// across), which leaves every cross-section as it is (`S = x(u) +
+/// Σⱼ Bⱼ(v) rⱼ`, the rational part only in `x(u)`), so the closed form
+/// holds, while the differences along have unequal weights.
+fn long_seam(l: f64, delta: f64, rational: bool) -> (NurbsSurface, NurbsSurface, NurbsCurve, f64) {
     let (p, spans) = (5, 48);
     let mut lengths = Vec::new();
     for k in 0..spans {
@@ -758,12 +763,26 @@ fn long_seam(l: f64, delta: f64) -> (NurbsSurface, NurbsSurface, NurbsCurve, f64
         .cross(rows_a[1] - rows_a[0])
         .normalized()
         .unwrap();
+    // Smooth in the parameter (of the Greville abscissae), so the weight's
+    // derivatives along are of the curve's own size.
+    let greville: Vec<f64> = (0..nu)
+        .map(|i| knots[i + 1..=i + p].iter().sum::<f64>() / p as f64)
+        .collect();
+    let weight = |k: usize| {
+        if rational {
+            1.0 + 0.4 * (std::f64::consts::PI * greville[k]).psin()
+        } else {
+            1.0
+        }
+    };
     let sheet = |rows: [Vec3; 3], lift: Vec3| {
         let mut points = Vec::new();
-        for x in &xs {
+        let mut weights = Vec::new();
+        for (k, x) in xs.iter().enumerate() {
             for (j, r) in rows.iter().enumerate() {
                 let lifted = if j == 2 { lift } else { v(0.0, 0.0, 0.0) };
                 points.push(v(*x, 0.0, 0.0) + *r + lifted);
+                weights.push(weight(k));
             }
         }
         NurbsSurface::new(
@@ -774,7 +793,7 @@ fn long_seam(l: f64, delta: f64) -> (NurbsSurface, NurbsSurface, NurbsCurve, f64
             nu,
             3,
             points,
-            vec![1.0; nu * 3],
+            weights,
         )
         .unwrap()
     };
@@ -790,15 +809,16 @@ fn long_seam(l: f64, delta: f64) -> (NurbsSurface, NurbsSurface, NurbsCurve, f64
 /// default tolerances, and still refuse one that is not G2: lifted to
 /// 1.5 curvature thresholds it is G1 by its curvature (seen beyond the
 /// threshold, the bound covering the closed form), lifted to half a
-/// threshold it is proven G2. Before, the rows along were the cut row
+/// threshold it is proven G2; polynomial and rational (weights changing
+/// along the seam). Before, the rows along were the cut row
 /// differentiated, which multiplied the positions' rounding by `2p / Δ`
 /// each time, and the G2 seam stayed unproven at every scale.
 #[test]
 fn a_long_seam_of_many_spans_lifted_just_past_the_threshold_is_g1() {
-    for scale in SCALES {
+    for (scale, rational) in SCALES.iter().flat_map(|s| [(*s, false), (*s, true)]) {
         let (tol, ang) = (1e-6 * scale, 1e-9);
         for (times, order) in [(1.5, Order::G1), (0.5, Order::G2)] {
-            let (_, _, probe, sv2) = long_seam(scale, 0.0);
+            let (_, _, probe, sv2) = long_seam(scale, 0.0, rational);
             let length = probe
                 .control_points()
                 .windows(2)
@@ -806,9 +826,12 @@ fn a_long_seam_of_many_spans_lifted_just_past_the_threshold_is_g1() {
                 .sum::<f64>();
             let threshold = (ang / length).min(2.0 * tol / (length * length));
             let delta = 0.5 * times * threshold * sv2;
-            let (a, b, edge, _) = long_seam(scale, delta);
+            let (a, b, edge, _) = long_seam(scale, delta, rational);
             let c = continuity(&Surface::Nurbs(a), &Surface::Nurbs(b), &edge, tol, ang).unwrap();
-            assert_eq!(c.order, order, "scale {scale}, {times} thresholds: {c:?}");
+            assert_eq!(
+                c.order, order,
+                "scale {scale}, rational {rational}, {times} thresholds: {c:?}"
+            );
             let exact = times * threshold;
             assert!(
                 c.curvature.bound >= exact * (1.0 - 1e-6),
@@ -822,6 +845,52 @@ fn a_long_seam_of_many_spans_lifted_just_past_the_threshold_is_g1() {
                     "{c:?}"
                 );
             }
+        }
+    }
+}
+
+/// Two distinct knots of a face within rounding of each other along the
+/// edge are one break for the measure; the piece after them would reach
+/// past its knot span, so the measure refuses the seam rather than leave
+/// the sliver between the knots unmeasured (2026-11-01, review of
+/// r1-g2long).
+#[test]
+fn knots_within_rounding_of_each_other_are_refused() {
+    for scale in SCALES {
+        let knots = vec![0.0, 0.0, 0.0, 0.0, 0.5, 0.5 + 2e-13, 1.0, 1.0, 1.0, 1.0];
+        let rows_b = [v(0.0, 0.0, 0.0), v(0.0, 0.25, 0.1), v(0.0, 0.5, 0.0)];
+        let rows_a = [
+            rows_b[0],
+            rows_b[0] * 2.0 - rows_b[1],
+            rows_b[0] * 4.0 - rows_b[1] * 4.0 + rows_b[2],
+        ];
+        let sheet = |rows: [Vec3; 3]| {
+            let mut points = Vec::new();
+            for k in 0..6 {
+                for r in rows {
+                    points.push((v(f64::from(k) / 5.0, 0.0, 0.0) + r) * scale);
+                }
+            }
+            NurbsSurface::new(
+                3,
+                2,
+                knots.clone(),
+                vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                6,
+                3,
+                points,
+                vec![1.0; 18],
+            )
+            .unwrap()
+        };
+        let (a, b) = (sheet(rows_a), sheet(rows_b));
+        let edge = craft3d_geom::network::iso_curve(&b, true, 0.0).unwrap();
+        let tol = 1e-6 * scale;
+        match continuity(&Surface::Nurbs(a), &Surface::Nurbs(b), &edge, tol, 1e-9) {
+            Err(NetworkError::Refused(why)) => {
+                assert!(why.contains("two distinct knots"), "scale {scale}: {why}")
+            }
+            other => panic!("scale {scale}: {other:?}"),
         }
     }
 }

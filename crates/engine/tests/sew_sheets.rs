@@ -179,3 +179,29 @@ fn the_tank_is_proven_g2_at_the_default_tolerances() {
         assert_eq!(feature["status"], "ok", "{feature}");
     }
 }
+
+/// The whole tank at the default tolerances: both of its seams, measured
+/// on the finished solid through `measure.continuity` (the edges its
+/// assertions name), are proven G2.
+#[test]
+fn the_finished_tank_measures_g2_along_both_seams() {
+    let steps = tank_until("no such step");
+    let mut s = common::session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    let mut edges = Vec::new();
+    for (id, params) in steps {
+        if id == "assert.add" && params["measure"] == "continuity" {
+            edges.push(params.clone());
+        }
+        run(&mut s, &id, params);
+    }
+    assert_eq!(edges.len(), 2);
+    for assertion in edges {
+        let out = run(
+            &mut s,
+            "measure.continuity",
+            json!({"edge": assertion["edge"]}),
+        );
+        assert_eq!(out["order"], "G2", "{out}");
+    }
+}
