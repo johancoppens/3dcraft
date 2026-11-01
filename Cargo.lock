@@ -434,6 +434,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft3d-brep"
+version = "0.1.0"
+
+[[package]]
 name = "craft3d-buildinfo"
 version = "0.1.0"
 
@@ -475,6 +479,7 @@ dependencies = [
  "craft3d-doc",
  "craft3d-drawing",
  "craft3d-expr",
+ "craft3d-fcstdread",
  "craft3d-font",
  "craft3d-format",
  "craft3d-geom",
@@ -500,6 +505,20 @@ name = "craft3d-expr"
 version = "0.1.0"
 dependencies = [
  "craft3d-math",
+]
+
+[[package]]
+name = "craft3d-fcstdread"
+version = "0.1.0"
+dependencies = [
+ "craft3d-brep",
+ "craft3d-geom",
+ "craft3d-math",
+ "craft3d-stepread",
+ "craft3d-tess",
+ "craft3d-topo",
+ "craft3d-zipstore",
+ "serde_json",
 ]
 
 [[package]]
@@ -609,6 +628,7 @@ version = "0.1.0"
 dependencies = [
  "craft3d-doc",
  "craft3d-expr",
+ "craft3d-fcstdread",
  "craft3d-font",
  "craft3d-geom",
  "craft3d-kernel",

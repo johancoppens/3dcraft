@@ -21,9 +21,11 @@ pub const ASSEMBLY_EXTENSION: &str = "3dcraftasm";
 /// assembly.
 pub const OPEN_EXTENSIONS: [&str; 3] = [EXTENSION, JIG_EXTENSION, ASSEMBLY_EXTENSION];
 
-/// The extensions `file.import` reads (STEP), in both cases for the
-/// dialogs that filter by case.
-pub const IMPORT_EXTENSIONS: [&str; 4] = ["step", "stp", "STEP", "STP"];
+/// The extensions `file.import` reads (STEP, FreeCAD documents and BRep
+/// files), in the cases dialogs that filter by case meet them in.
+pub const IMPORT_EXTENSIONS: [&str; 12] = [
+    "step", "stp", "STEP", "STP", "FCStd", "fcstd", "FCSTD", "brep", "brp", "BREP", "BRP", "Fcstd",
+];
 
 /// The formats `file.export` writes, as the export dialog offers them: a
 /// name and its extensions. The format follows the extension of the file

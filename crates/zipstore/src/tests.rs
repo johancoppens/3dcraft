@@ -592,6 +592,14 @@ fn every_error_has_a_message() {
         ZipError::HeaderMismatch { name: "a".into() },
         ZipError::NameNotUtf8,
         ZipError::DuplicateName("a".into()),
+        ZipError::Method {
+            name: "a".into(),
+            method: 12,
+        },
+        ZipError::Inflate {
+            name: "a".into(),
+            error: InflateError::Truncated,
+        },
     ];
     for error in errors {
         let text = error.to_string();
@@ -602,4 +610,104 @@ fn every_error_has_a_message() {
             .to_string()
             .contains("5000")
     );
+}
+
+// Deflated archives (`read`), from Python's zipfile and zlib
+// (testdata/, made by a few lines of Python: a compressible text, a short
+// text, 3000 random bytes, a stored entry and an empty one).
+const DEFLATED: &[u8] = include_bytes!("../testdata/deflated.zip");
+const TEXT: &[u8] = include_bytes!("../testdata/deflated.text");
+const NOISE: &[u8] = include_bytes!("../testdata/noise.bin");
+const LEVEL0: &[u8] = include_bytes!("../testdata/level0.deflate");
+
+#[test]
+fn deflated_entries_read_back_exactly() {
+    let entries = read(DEFLATED).unwrap();
+    let names: Vec<&str> = entries.iter().map(|e| e.name).collect();
+    assert_eq!(
+        names,
+        [
+            "Document.xml",
+            "short.txt",
+            "noise.bin",
+            "stored.txt",
+            "empty"
+        ]
+    );
+    let data: Vec<Vec<u8>> = entries
+        .iter()
+        .map(|e| e.data().unwrap().into_owned())
+        .collect();
+    assert_eq!(data[0], TEXT);
+    assert_eq!(data[1], b"Hello, Document.xml!");
+    assert_eq!(data[2], NOISE);
+    assert_eq!(data[3], b"stored as is");
+    assert!(data[4].is_empty());
+    assert_eq!(entries[0].method, 8);
+    assert_eq!(entries[3].method, 0);
+    // The stored-only reader still refuses them, saying so.
+    assert!(matches!(
+        read_stored(DEFLATED),
+        Err(ZipError::Compressed { method: 8, .. })
+    ));
+}
+
+#[test]
+fn stored_deflate_blocks_and_the_limit() {
+    assert_eq!(inflate::inflate(LEVEL0, TEXT.len()).unwrap(), TEXT);
+    assert_eq!(
+        inflate::inflate(LEVEL0, TEXT.len() - 1),
+        Err(InflateError::TooLong)
+    );
+    // Reserved block type 3.
+    assert!(matches!(
+        inflate::inflate(&[0x07], 10),
+        Err(InflateError::Invalid(_))
+    ));
+    assert_eq!(inflate::inflate(&[], 10), Err(InflateError::Truncated));
+}
+
+#[test]
+fn a_small_stream_cannot_expand_past_its_limit() {
+    // A megabyte of zeros in about a kilobyte (zlib, level 9).
+    let zeros: &[u8] = include_bytes!("../testdata/zeros.deflate");
+    assert!(zeros.len() < 2048);
+    assert_eq!(inflate::inflate(zeros, 1000), Err(InflateError::TooLong));
+    let all = inflate::inflate(zeros, 1 << 20).unwrap();
+    assert_eq!(all.len(), 1 << 20);
+    assert!(all.iter().all(|&b| b == 0));
+}
+
+#[test]
+fn damaged_deflated_archives_never_panic() {
+    // Every byte flipped, and every cut: an error or the right data.
+    for at in 0..DEFLATED.len() {
+        let mut bytes = DEFLATED.to_vec();
+        bytes[at] ^= 0x5a;
+        if let Ok(entries) = read(&bytes) {
+            for e in entries {
+                if let Ok(data) = e.data() {
+                    let expected: &[u8] = match e.name {
+                        "Document.xml" => TEXT,
+                        "noise.bin" => NOISE,
+                        "short.txt" => b"Hello, Document.xml!",
+                        "stored.txt" => b"stored as is",
+                        _ => &[],
+                    };
+                    // A changed name or size may make another entry; data
+                    // that comes back under a known name is that data.
+                    if !expected.is_empty() && data.len() == expected.len() {
+                        assert_eq!(&data[..], expected, "flip at {at}");
+                    }
+                }
+            }
+        }
+        let _ = read(&DEFLATED[..at]);
+    }
+    for at in 0..LEVEL0.len().min(400) {
+        let mut bytes = LEVEL0.to_vec();
+        bytes[at] ^= 0xff;
+        let _ = inflate::inflate(&bytes, TEXT.len());
+        let _ = inflate::inflate(&LEVEL0[..at], TEXT.len());
+    }
 }

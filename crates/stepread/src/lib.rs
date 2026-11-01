@@ -85,9 +85,11 @@
 
 mod assembly;
 mod budget;
-mod geometry;
-mod spindle;
+pub mod finish;
+pub mod geometry;
+pub mod spindle;
 mod style;
+pub mod swept;
 mod topology;
 mod units;
 

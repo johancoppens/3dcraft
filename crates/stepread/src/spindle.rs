@@ -38,7 +38,8 @@
 
 // `!(x > 0.0)` is deliberate: unlike `x <= 0.0` it is also true for NaN.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
-use crate::geometry::{Read, revolved};
+use crate::geometry::revolved;
+use crate::swept::Swept as Read;
 use craft3d_geom::{NurbsCurve, Surface, Torus};
 use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
@@ -49,7 +50,7 @@ use craft3d_math::{Frame, Vec3};
 /// apple is the point of the centre circle on the same side of the axis,
 /// for a point of the lemon the one on the opposite side.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Sheet {
+pub struct Sheet {
     pub minor: f64,
     pub outward: bool,
 }
@@ -62,7 +63,7 @@ pub(crate) struct Sheet {
 /// only the apple (`Some(true)`) or the lemon (`Some(false)`); the other
 /// sheet is still known, so that edges on it are refused by name.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Spindle {
+pub struct Spindle {
     pub frame: Frame,
     pub major: f64,
     pub apple: Sheet,
@@ -77,7 +78,7 @@ const VOTE: f64 = 0.25;
 /// Which normal the file gives a toroidal surface whose tube reaches its
 /// axis.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Normal {
+pub enum Normal {
     /// ISO 10303-42's `N` of a `toroidal_surface`: away from the tube's
     /// centre circle on both sheets.
     Iso,
@@ -345,7 +346,7 @@ fn lemon_exists(major: f64, minor: f64) -> bool {
 /// `u = 0`: whether it is turned over (`flip` of [`Spindle::toroidal`]).
 /// `point` is on the circle, `normal` the file's normal there; `None`
 /// where the point is too near the axis or the normal too small to tell.
-pub(crate) fn flipped(frame: &Frame, major: f64, point: Vec3, normal: Vec3) -> Option<bool> {
+pub fn flipped(frame: &Frame, major: f64, point: Vec3, normal: Vec3) -> Option<bool> {
     let (x, _, h) = frame.local(point);
     // `σ`'s normal is `(R + r cos v)` times the direction away from the
     // tube's centre (at `u = 0`, the frame's x axis at `major`); `x` is

@@ -916,8 +916,11 @@ pub struct Split {
     pub number: Option<u64>,
 }
 
-/// A solid or a sheet read from a STEP file (ISO 10303-21) that the
-/// document holds: the file's bytes, and which of its solids this is.
+/// A solid or a sheet read from a STEP file (ISO 10303-21), a FreeCAD
+/// document (`.FCStd`) or a BRep file that the document holds: the file's
+/// bytes, and which of its solids this is (the reader is chosen by the
+/// bytes: `craft3d-fcstdread` for a ZIP archive or BRep text, else
+/// `craft3d-stepread`).
 /// The document regenerates the body from the bytes, without the file
 /// on disk (AGENTS.md rule 2); `craft3d-format` stores the bytes once per
 /// content beside the manifest. `file_name` is the name the file had,
@@ -927,7 +930,8 @@ pub struct Split {
 pub struct Import {
     pub file_name: String,
     /// The solid's position among the file's placed solids and sheets
-    /// (`craft3d-stepread`'s `Parsed::placed`): the solids and sheets in
+    /// (`craft3d-fcstdread`'s `Parsed::items` for a FreeCAD document;
+    /// `craft3d-stepread`'s `Parsed::placed` for STEP): the solids and sheets in
     /// the order of their instances in the file, each where an assembly
     /// first places it, then their further placements. For a file without
     /// assemblies that is the order of the instances, as in format 25.

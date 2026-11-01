@@ -12,13 +12,13 @@
 //! start vertex, used the other way round by every loop. An oriented face
 //! or shell with `.F.` turns its faces over (the normal and every loop).
 
-use crate::geometry::{Read, Reader, extruded};
-use crate::spindle::Spindle;
+use crate::finish::reverse;
+use crate::geometry::{Read, Reader};
 use crate::{ImportError, Imported, Item, ItemKind, Options, Report, boolean, err, keywords};
 use craft3d_geom::{Curve3, Surface};
 use craft3d_math::Vec3;
 use craft3d_step::Param;
-use craft3d_topo::{Body, BodyKind, Coedge, Defect, EdgeId, FaceId, LoopId, VertexId};
+use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, FaceId, LoopId, VertexId};
 use std::collections::BTreeMap;
 
 /// The edge of the body a file's `EDGE_CURVE` is, and whether it runs
@@ -343,8 +343,15 @@ impl Builder<'_, '_> {
                 id: swept,
                 curve,
                 along,
-            } => (self.extrusion_over(swept, &curve, along, &loops)?, false),
-            Read::Spindle(spindle) => self.spindle_part(surface_id, &spindle, &loops)?,
+            } => (
+                crate::swept::bounded_extrusion(&self.body, &curve, along, &loops)
+                    .or_else(|e| self.bad(swept, &e))?,
+                false,
+            ),
+            Read::Spindle(spindle) => {
+                crate::swept::spindle_part(&self.body, &spindle, &loops, self.tolerance)
+                    .or_else(|e| self.bad(surface_id, &e))?
+            }
         };
         // A face without an edge loop is its whole surface: only a surface
         // that closes all around is one (a sphere, a torus, a spline
@@ -367,94 +374,6 @@ impl Builder<'_, '_> {
         self.faces.insert(id, face);
         self.face_ids.push(id);
         Ok(face)
-    }
-
-    /// The part of a horn or spindle torus a face is on, measured on its
-    /// edges (33 points along each), and whether the file's normal is
-    /// opposite to its surface's.
-    fn spindle_part(
-        &self,
-        surface: u64,
-        spindle: &Spindle,
-        loops: &[LoopId],
-    ) -> Result<(Surface, bool), ImportError> {
-        if loops.is_empty() {
-            return self.bad(
-                surface,
-                "a face without an edge loop on a torus whose tube reaches its axis (a spindle or horn torus) is not read",
-            );
-        }
-        let mut points = Vec::new();
-        for l in loops {
-            let Some(l) = self.body.loop_(*l) else {
-                continue;
-            };
-            for c in &l.coedges {
-                let Some(edge) = self.body.edge(c.edge) else {
-                    continue;
-                };
-                let (t0, t1) = edge.range;
-                for k in 0..=32 {
-                    points.push(edge.curve.eval(t0 + (t1 - t0) * f64::from(k) / 32.0));
-                }
-            }
-        }
-        spindle
-            .sheet_of(&points, self.tolerance)
-            .and_then(|outer| spindle.surface(outer))
-            .or_else(|e| self.bad(surface, &e))
-    }
-
-    /// The B-spline surface of an extrusion over as much of its direction
-    /// as the face's edges reach: `v` of a point `X = C(u) + v V` lies
-    /// between `(X·V − max P·V) / |V|²` and `(X·V − min P·V) / |V|²` over
-    /// the control points `P` of the curve (their hull holds the curve),
-    /// taken over points along every edge and widened by a quarter and
-    /// one unit of `V` each way (past its ends the surface goes on as the
-    /// straight lines it is, so the width only keeps projections inside).
-    fn extrusion_over(
-        &self,
-        swept: u64,
-        curve: &craft3d_geom::NurbsCurve,
-        along: Vec3,
-        loops: &[LoopId],
-    ) -> Result<Surface, ImportError> {
-        let length = along.length_squared();
-        let (mut low, mut high) = (f64::INFINITY, f64::NEG_INFINITY);
-        for p in curve.control_points() {
-            let x = p.dot(along);
-            (low, high) = (low.min(x), high.max(x));
-        }
-        let (mut v0, mut v1) = (f64::INFINITY, f64::NEG_INFINITY);
-        for l in loops {
-            let Some(l) = self.body.loop_(*l) else {
-                continue;
-            };
-            for c in &l.coedges {
-                let Some(edge) = self.body.edge(c.edge) else {
-                    continue;
-                };
-                let (t0, t1) = edge.range;
-                for k in 0..=32 {
-                    let x = edge
-                        .curve
-                        .eval(t0 + (t1 - t0) * f64::from(k) / 32.0)
-                        .dot(along);
-                    v0 = v0.min((x - high) / length);
-                    v1 = v1.max((x - low) / length);
-                }
-            }
-        }
-        if !(v0.is_finite() && v1.is_finite() && v1 >= v0 && length > 0.0) {
-            return self.bad(
-                swept,
-                "an extrusion without bounding edges, or edges that are not finite",
-            );
-        }
-        let margin = 0.25 * (v1 - v0) + 1.0;
-        extruded(curve, along, (v0 - margin, v1 + margin))
-            .map(Surface::Nurbs)
-            .map_err(|e| ImportError(format!("{}: {e}", self.describe(swept))))
     }
 
     /// A shell's faces; `turned` when the shell is used turned over.
@@ -494,285 +413,6 @@ impl Builder<'_, '_> {
         }
         self.body.add_shell(faces);
         Ok(())
-    }
-
-    /// Joins edges used once each that run between the same two vertices
-    /// with their midpoints within the merge distance.
-    fn sew_edges(&mut self) {
-        let mut uses = vec![0usize; self.body.edges.len()];
-        for l in &self.body.loops {
-            for c in &l.coedges {
-                if let Some(n) = uses.get_mut(c.edge.0 as usize) {
-                    *n += 1;
-                }
-            }
-        }
-        // Open edges by the pair of vertices they join.
-        let mut open: BTreeMap<(u32, u32), Vec<EdgeId>> = BTreeMap::new();
-        for (i, edge) in self.body.edges.iter().enumerate() {
-            if uses.get(i) == Some(&1) {
-                let pair = (edge.start.0.min(edge.end.0), edge.start.0.max(edge.end.0));
-                open.entry(pair).or_default().push(EdgeId(i as u32));
-            }
-        }
-        let mid = |body: &Body, e: EdgeId| {
-            body.edge(e)
-                .map(|edge| edge.curve.eval(0.5 * (edge.range.0 + edge.range.1)))
-        };
-        // Edge → (edge it becomes, whether it then runs the other way).
-        let mut into: BTreeMap<u32, (EdgeId, bool)> = BTreeMap::new();
-        for group in open.values() {
-            let mut taken = vec![false; group.len()];
-            for (i, &first) in group.iter().enumerate() {
-                if taken.get(i).copied().unwrap_or(true) {
-                    continue;
-                }
-                for (j, &second) in group.iter().enumerate().skip(i + 1) {
-                    if taken.get(j).copied().unwrap_or(true) {
-                        continue;
-                    }
-                    let (Some(a), Some(b)) = (mid(&self.body, first), mid(&self.body, second))
-                    else {
-                        continue;
-                    };
-                    let gap = a.distance(b);
-                    if gap <= self.merge {
-                        let same_way = self
-                            .body
-                            .edge(first)
-                            .zip(self.body.edge(second))
-                            .is_some_and(|(x, y)| {
-                                if x.start != x.end {
-                                    return x.start == y.start;
-                                }
-                                // A closed edge: by the way the curves run
-                                // at the midpoint.
-                                let along = |e: &craft3d_topo::Edge| {
-                                    e.curve.derivatives(0.5 * (e.range.0 + e.range.1)).1
-                                };
-                                along(x).dot(along(y)) > 0.0
-                            });
-                        into.insert(second.0, (first, !same_way));
-                        if let Some(t) = taken.get_mut(j) {
-                            *t = true;
-                        }
-                        if let Some(t) = taken.get_mut(i) {
-                            *t = true;
-                        }
-                        self.report.merged_edges += 1;
-                        self.report.edge_gap = self.report.edge_gap.max(gap);
-                        break;
-                    }
-                }
-            }
-        }
-        if into.is_empty() {
-            return;
-        }
-        for l in &mut self.body.loops {
-            for c in &mut l.coedges {
-                if let Some(&(edge, flip)) = into.get(&c.edge.0) {
-                    c.edge = edge;
-                    c.reversed ^= flip;
-                }
-            }
-        }
-        // Drop the edges that went into others, keeping the order.
-        let mut renumber = vec![u32::MAX; self.body.edges.len()];
-        let mut kept = Vec::with_capacity(self.body.edges.len());
-        let mut kept_ids = Vec::with_capacity(self.body.edges.len());
-        for (i, edge) in std::mem::take(&mut self.body.edges).into_iter().enumerate() {
-            if into.contains_key(&(i as u32)) {
-                continue;
-            }
-            if let Some(slot) = renumber.get_mut(i) {
-                *slot = kept.len() as u32;
-            }
-            kept.push(edge);
-            kept_ids.push(self.edge_ids.get(i).copied().unwrap_or(0));
-        }
-        self.body.edges = kept;
-        self.edge_ids = kept_ids;
-        for l in &mut self.body.loops {
-            for c in &mut l.coedges {
-                if let Some(&n) = renumber.get(c.edge.0 as usize) {
-                    c.edge = EdgeId(n);
-                }
-            }
-        }
-    }
-
-    /// Sews the edges still used once to free edges that run within the
-    /// cap of them (`topo::sew`: faces the file does not join, or joins
-    /// only within a gap): the file's own sharing first (`sew_edges`),
-    /// then this, at the document's cap on an entity's tolerance. Nothing
-    /// is moved; what it joins is measured and recorded. A solid left
-    /// with an edge used once is refused naming it and how far the
-    /// nearest free edge is.
-    fn sew_loose(
-        &mut self,
-        name: &str,
-        tolerance: &craft3d_math::Tolerance,
-        cap: f64,
-    ) -> Result<(), ImportError> {
-        let step_id = |ids: &[u64], k: u32| ids.get(k as usize).copied().unwrap_or(0);
-        let sewn = match craft3d_topo::sew(&self.body, tolerance, cap, cap) {
-            Ok(sewn) => sewn,
-            Err(craft3d_topo::SewError::Gap {
-                edge,
-                vertex,
-                measured,
-                cap,
-            }) => {
-                let what = match (edge, vertex) {
-                    (Some(e), _) => format!("a sewn edge (from edge {})", e.0),
-                    (None, Some(v)) => format!("a sewn vertex (from vertex {})", v.0),
-                    (None, None) => "an entity".to_string(),
-                };
-                let how = measured.map_or_else(
-                    || "could not be proven within".to_string(),
-                    |m| format!("lies {m:e} off what it joins, more than"),
-                );
-                return err(format!(
-                    "`{name}`: {what} {how} the cap {cap:e} on an entity's own tolerance (the document's `loosest`); the body is refused rather than moved"
-                ));
-            }
-            Err(e) => return err(format!("`{name}`: the faces could not be sewn: {e}")),
-        };
-        if sewn.joined > 0 {
-            // The file's ids of the entities kept: the first that became
-            // each (the lowest, kept with its curve or point).
-            let mut edge_ids = vec![0u64; sewn.body.edges.len()];
-            let mut edge_seen = vec![false; sewn.body.edges.len()];
-            for (old, (new, _)) in sewn.edges.iter().enumerate() {
-                let k = new.0 as usize;
-                if let Some(slot) = edge_seen.get_mut(k)
-                    && !*slot
-                {
-                    *slot = true;
-                    if let Some(id) = edge_ids.get_mut(k) {
-                        *id = step_id(&self.edge_ids, u32::try_from(old).unwrap_or(u32::MAX));
-                    }
-                }
-            }
-            let mut vertex_ids = vec![0u64; sewn.body.vertices.len()];
-            let mut seen = vec![false; sewn.body.vertices.len()];
-            for (old, new) in sewn.vertices.iter().enumerate() {
-                let k = new.0 as usize;
-                if let Some(slot) = seen.get_mut(k)
-                    && !*slot
-                {
-                    *slot = true;
-                    if let Some(id) = vertex_ids.get_mut(k) {
-                        *id = step_id(&self.vertex_ids, u32::try_from(old).unwrap_or(u32::MAX));
-                    }
-                }
-            }
-            // The pieces of an edge split at a T-junction carry the
-            // file's id of the edge they are part of, where no edge of the
-            // file became them already.
-            for (old, pieces) in &sewn.split {
-                for (new, _) in pieces {
-                    let k = new.0 as usize;
-                    if let Some(slot) = edge_seen.get_mut(k)
-                        && !*slot
-                    {
-                        *slot = true;
-                        if let Some(id) = edge_ids.get_mut(k) {
-                            *id = step_id(&self.edge_ids, old.0);
-                        }
-                    }
-                }
-            }
-            self.edge_ids = edge_ids;
-            self.vertex_ids = vertex_ids;
-            self.report.split_edges += sewn.split.len();
-            self.report.sewn_edges += sewn.joined;
-            self.report.sewn_vertices += sewn.merged_vertices;
-            self.report.sewn_gap = self.report.sewn_gap.max(sewn.largest_gap);
-        }
-        let open = sewn.worst_open();
-        self.body = sewn.body;
-        if self.body.kind == BodyKind::Solid
-            && let Some((edge, nearest)) = open
-        {
-            let id = step_id(&self.edge_ids, edge.0);
-            let nearest = nearest.map_or_else(
-                || "no other free edge".to_string(),
-                |d| format!("the nearest free edge is {d:e} away"),
-            );
-            return err(format!(
-                "`{name}`: edge #{id} bounds only one face and no free edge runs within the cap {cap:e} of it ({nearest}; the document's `loosest`): the solid is not closed and is refused rather than moved"
-            ));
-        }
-        Ok(())
-    }
-
-    /// Turns a shell over: every face's normal and every loop.
-    fn turn_shell(&mut self, shell: usize) {
-        let faces = self
-            .body
-            .shells
-            .get(shell)
-            .map(|s| s.faces.clone())
-            .unwrap_or_default();
-        for face in faces {
-            let loops = match self.body.faces.get_mut(face.0 as usize) {
-                Some(f) => {
-                    f.reversed = !f.reversed;
-                    f.loops.clone()
-                }
-                None => continue,
-            };
-            for l in loops {
-                if let Some(l) = self.body.loops.get_mut(l.0 as usize) {
-                    reverse(&mut l.coedges);
-                }
-            }
-        }
-    }
-}
-
-/// Points along an edge, per face that uses it, all within `tolerance` of
-/// the face's surface: 1025 places along the edge (the ends included).
-fn densely_within(body: &Body, edge: EdgeId, tolerance: f64) -> bool {
-    const PLACES: u32 = 1024;
-    let Some(e) = body.edge(edge) else {
-        return false;
-    };
-    let (t0, t1) = e.range;
-    let mut any = false;
-    for face in &body.faces {
-        let uses = face.loops.iter().any(|l| {
-            body.loop_(*l)
-                .is_some_and(|l| l.coedges.iter().any(|c| c.edge == edge))
-        });
-        if !uses {
-            continue;
-        }
-        any = true;
-        for k in 0..=PLACES {
-            let p = e
-                .curve
-                .eval(t0 + (t1 - t0) * f64::from(k) / f64::from(PLACES));
-            let near = face
-                .surface
-                .project(p)
-                .ok()
-                .map(|(u, v)| face.surface.eval(u, v).distance(p));
-            if !near.is_some_and(|d| d <= tolerance) {
-                return false;
-            }
-        }
-    }
-    any
-}
-
-/// A loop run the other way.
-fn reverse(coedges: &mut [Coedge]) {
-    coedges.reverse();
-    for c in coedges {
-        c.reversed = !c.reversed;
     }
 }
 
@@ -832,29 +472,6 @@ fn shells_of(reader: &Reader<'_>, item: &Item) -> Result<Vec<(u64, bool, bool)>,
     }
 }
 
-/// The worst distance among the defects that say an entity lies off
-/// another (a gap a tolerance per entity would hold), with the defect.
-fn worst_gap(defects: &[Defect]) -> Option<(f64, &Defect)> {
-    let mut worst: Option<(f64, &Defect)> = None;
-    for defect in defects {
-        let distance = match defect {
-            Defect::VertexOffEdge { distance, .. } | Defect::EdgeOffSurface { distance, .. } => {
-                *distance
-            }
-            _ => continue,
-        };
-        let distance = if distance.is_finite() {
-            distance
-        } else {
-            f64::INFINITY
-        };
-        if worst.is_none_or(|(d, _)| distance > d) {
-            worst = Some((distance, defect));
-        }
-    }
-    worst
-}
-
 pub(crate) fn build(
     reader: &Reader<'_>,
     item: &Item,
@@ -888,160 +505,18 @@ pub(crate) fn build(
         face_ids: Vec::new(),
         edge_ids: Vec::new(),
         vertex_ids: Vec::new(),
-        report,
+        report: &mut *report,
     };
     let mut cavities = Vec::new();
     for (shell, turned, cavity) in shells {
         builder.shell(shell, turned)?;
         cavities.push(cavity);
     }
-    builder.sew_edges();
     let name = if item.name.is_empty() {
         format!("#{}", item.id)
     } else {
         item.name.clone()
     };
-    builder.sew_loose(&name, &options.tolerance, cap)?;
-    // A solid's outside encloses a positive volume and a cavity a
-    // negative one; a shell the other way round is turned over (a cavity
-    // the file gives as a plain closed shell).
-    if kind == BodyKind::Solid {
-        let volumes = craft3d_topo::shell_volumes(&builder.body);
-        for (shell, (measured, cavity)) in volumes.iter().zip(&cavities).enumerate() {
-            if let Ok(measured) = measured
-                && measured.volume.abs() > measured.bound
-                && (measured.volume < 0.0) != *cavity
-            {
-                builder.turn_shell(shell);
-                builder.report.turned_shells += 1;
-            }
-        }
-    }
-    // Every edge proven on the surfaces of its faces over its whole
-    // length (not sampled), and every vertex measured against the ends of
-    // its edges: what lies off by more than the tolerance gets what was
-    // proven as its own tolerance, up to the cap; beyond it, or when no
-    // proof within the cap is found, the body is refused naming the
-    // entity. Geometry is never moved.
-    let step_id = |ids: &[u64], k: u32| ids.get(k as usize).copied().unwrap_or(0);
-    for k in 0..builder.body.edges.len() {
-        let edge = EdgeId(u32::try_from(k).unwrap_or(u32::MAX));
-        match craft3d_topo::record_edge(&mut builder.body, edge, &options.tolerance, cap) {
-            Ok(Some(t)) => {
-                builder.report.loose_edges += 1;
-                builder.report.largest_tolerance = builder.report.largest_tolerance.max(t);
-            }
-            Ok(None) => {}
-            // No proof within the cap was found. Where the prover gives
-            // out on an edge that is exact (an arc through a sphere's
-            // pole), a dense sampling within the tolerance accepts it,
-            // counted; anything sampled off by more is refused.
-            Err(craft3d_topo::ToleranceError::EdgeNotMeasured { .. })
-                if densely_within(&builder.body, edge, tolerance) =>
-            {
-                builder.report.unproven_edges += 1;
-            }
-            Err(e) => {
-                let what = match e {
-                    craft3d_topo::ToleranceError::AboveCap { measured, .. } => {
-                        format!(
-                            "lies {:e} off the surfaces of its faces",
-                            measured / craft3d_topo::RECORD_MARGIN
-                        )
-                    }
-                    craft3d_topo::ToleranceError::EdgeNotMeasured { .. } => {
-                        "could not be proven within the cap of its faces' surfaces".to_string()
-                    }
-                    other => other.to_string(),
-                };
-                return err(format!(
-                    "`{name}`: edge #{} {what}, more than the cap {cap:e} on an entity's own tolerance (the document's `loosest`); the body is refused rather than moved",
-                    step_id(&builder.edge_ids, edge.0)
-                ));
-            }
-        }
-    }
-    // Every vertex, with one pass over the edges.
-    let every: Vec<VertexId> = (0..builder.body.vertices.len())
-        .map(|k| VertexId(u32::try_from(k).unwrap_or(u32::MAX)))
-        .collect();
-    match craft3d_topo::record_vertices(&mut builder.body, &every, &options.tolerance, cap) {
-        Ok(recorded) => {
-            for t in recorded.into_iter().filter_map(|(_, t)| t) {
-                builder.report.loose_vertices += 1;
-                builder.report.largest_tolerance = builder.report.largest_tolerance.max(t);
-            }
-        }
-        Err((vertex, e)) => {
-            let what = match e {
-                craft3d_topo::ToleranceError::AboveCap { measured, .. } => {
-                    format!(
-                        "lies {:e} from the ends of its edges",
-                        measured / craft3d_topo::RECORD_MARGIN
-                    )
-                }
-                other => other.to_string(),
-            };
-            return err(format!(
-                "`{name}`: vertex #{} {what}, more than the cap {cap:e} on an entity's own tolerance (the document's `loosest`); the body is refused rather than moved",
-                step_id(&builder.vertex_ids, vertex.0)
-            ));
-        }
-    }
-    let defects = craft3d_topo::check_capped(&builder.body, &options.tolerance, cap);
-    let face_of = |f: FaceId| {
-        builder
-            .face_ids
-            .get(f.0 as usize)
-            .map_or_else(|| format!("face {}", f.0), |id| format!("face #{id}"))
-    };
-    let edge_of = |e: EdgeId| {
-        builder
-            .edge_ids
-            .get(e.0 as usize)
-            .map_or_else(|| format!("edge {}", e.0), |id| format!("edge #{id}"))
-    };
-    let vertex_of = |v: VertexId| {
-        builder
-            .vertex_ids
-            .get(v.0 as usize)
-            .map_or_else(|| format!("vertex {}", v.0), |id| format!("vertex #{id}"))
-    };
-    if let Some((distance, defect)) = worst_gap(&defects) {
-        let what = match defect {
-            Defect::VertexOffEdge { edge, vertex, .. } => format!(
-                "{} lies {distance:e} from the end of {}",
-                vertex_of(*vertex),
-                edge_of(*edge)
-            ),
-            Defect::EdgeOffSurface { face, edge, .. } => format!(
-                "{} lies {distance:e} off the surface of {}",
-                edge_of(*edge),
-                face_of(*face)
-            ),
-            other => other.to_string(),
-        };
-        let gaps = defects
-            .iter()
-            .filter(|d| {
-                matches!(
-                    d,
-                    Defect::VertexOffEdge { .. } | Defect::EdgeOffSurface { .. }
-                )
-            })
-            .count();
-        return err(format!(
-            "`{name}`: {what}, more than its tolerance ({gaps} such gaps, this the largest); the body is refused rather than moved"
-        ));
-    }
-    if let Some(first) = defects.first() {
-        let shown: Vec<String> = defects.iter().take(4).map(ToString::to_string).collect();
-        return err(format!(
-            "`{name}` is not a valid body ({} defects): {}; faces, edges and vertices are numbered in the order the file's shells reach them (first: {first})",
-            defects.len(),
-            shown.join("; ")
-        ));
-    }
     let Builder {
         body,
         face_ids,
@@ -1049,14 +524,17 @@ pub(crate) fn build(
         vertex_ids,
         ..
     } = builder;
-    Ok(Imported {
-        body,
+    crate::finish::finish(
+        crate::finish::Assembled {
+            body,
+            cavities,
+            face_ids,
+            edge_ids,
+            vertex_ids,
+        },
         name,
-        path: String::new(),
-        color: None,
-        report: report.clone(),
-        face_ids,
-        edge_ids,
-        vertex_ids,
-    })
+        merge,
+        options,
+        report,
+    )
 }

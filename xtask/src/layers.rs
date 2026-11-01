@@ -9,6 +9,7 @@ pub const LAYERS: &[(&str, u32)] = &[
     ("math", 0),
     ("geom", 0),
     ("step", 0),
+    ("brep", 0),
     ("meshio", 0),
     ("drawing", 0),
     ("zipstore", 0),
@@ -23,6 +24,7 @@ pub const LAYERS: &[(&str, u32)] = &[
     ("kernel", 3),
     ("tess", 3),
     ("stepread", 3),
+    ("fcstdread", 3),
     ("regen", 4),
     ("render", 4),
     ("gpu", 4),
@@ -67,14 +69,30 @@ const SAME_LAYER: &[(&str, &str)] = &[
     // constants from the CPU reference renderer, so the two share one
     // projection and can be compared pixel by pixel (docs/design/rendering.md).
     ("gpu", "render"),
+    // FreeCAD documents become bodies by the same sewing, edge proofs and
+    // checks as STEP files, and with the same options, report and result
+    // (docs/design/step-import.md › FreeCAD documents).
+    ("fcstdread", "stepread"),
 ];
 
 /// Dev-dependencies allowed inside one layer, for tests only: (crate,
 /// depends on). The kernel's tests mesh the bodies it makes.
-const SAME_LAYER_DEV: &[(&str, &str)] = &[("kernel", "tess")];
+const SAME_LAYER_DEV: &[(&str, &str)] = &[
+    ("kernel", "tess"),
+    // The FreeCAD import's tests take a body's tight box from its mesh.
+    ("fcstdread", "tess"),
+];
 
 /// Format crates that must not depend on any workspace crate.
-const STANDALONE: &[&str] = &["step", "meshio", "zipstore", "drawing", "buildinfo", "font"];
+const STANDALONE: &[&str] = &[
+    "step",
+    "brep",
+    "meshio",
+    "zipstore",
+    "drawing",
+    "buildinfo",
+    "font",
+];
 
 /// The documented exceptions to that: (crate, depends on), both standalone.
 const STANDALONE_EXCEPTIONS: &[(&str, &str)] = &[("meshio", "zipstore")];

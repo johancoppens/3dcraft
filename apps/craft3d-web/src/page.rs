@@ -361,7 +361,7 @@ fn choose(ask: Ask, inbox: &Inbox, ctx: &egui::Context) -> Result<(), String> {
     input.set_type("file");
     input.set_accept(match ask {
         Ask::Open => ".3dcraft,.3dcraftjig",
-        Ask::Import => ".step,.stp,.STEP,.STP",
+        Ask::Import => ".step,.stp,.STEP,.STP,.FCStd,.fcstd,.brep,.brp",
     });
     let (inbox, ctx) = (Rc::clone(inbox), ctx.clone());
     let chosen = input.clone();
@@ -1047,7 +1047,7 @@ impl eframe::App for Page {
             // running out of it ends the page.
             let refused = if received_kind(&name).is_none() {
                 Some(format!(
-                    "`{name}` is not a 3DCraft document (.3dcraft), a Jig (.3dcraftjig) or a STEP file (.step, .stp)"
+                    "`{name}` is not a 3DCraft document (.3dcraft), a Jig (.3dcraftjig), a STEP file (.step, .stp) or a FreeCAD document (.FCStd)"
                 ))
             } else {
                 match file.web_file().map(|f| f.size()) {

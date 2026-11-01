@@ -16,10 +16,20 @@
 //!   archives) is refused with an error that says so. It never panics and
 //!   never allocates more than a small multiple of the entry count.
 //!
-//! Not supported, by design: compression, ZIP64 (sizes and offsets must fit
+//! - [`read`] reads archives other programs write (FreeCAD's `.FCStd`):
+//!   stored and deflated entries (RFC 1951, [`inflate`]), each entry
+//!   decompressed only when asked for, into at most the size the archive
+//!   records for it.
+//!
+//! Not supported, by design: compression when writing, ZIP64 (sizes and offsets must fit
 //! 32 bits), encryption, archives split over several disks, and data before
 //! the first entry (self-extracting archives).
 
+pub mod inflate;
+
+pub use inflate::InflateError;
+
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::fmt;
 
@@ -75,6 +85,16 @@ pub enum ZipError {
         reason: &'static str,
     },
     DuplicateName(String),
+    /// [`read`]: the entry is compressed with a method other than deflate.
+    Method {
+        name: String,
+        method: u16,
+    },
+    /// [`RawEntry::data`]: the deflated data does not decompress.
+    Inflate {
+        name: String,
+        error: InflateError,
+    },
 }
 
 impl fmt::Display for ZipError {
@@ -132,6 +152,12 @@ impl fmt::Display for ZipError {
             ZipError::DuplicateName(name) => {
                 write!(f, "the ZIP archive has two entries named `{name}`")
             }
+            ZipError::Method { name, method } => write!(
+                f,
+                "ZIP entry `{name}` is compressed with method {method}; only stored (0) and \
+                 deflated (8) entries are read"
+            ),
+            ZipError::Inflate { name, error } => write!(f, "ZIP entry `{name}`: {error}"),
         }
     }
 }
@@ -335,6 +361,69 @@ fn find_end_record(bytes: &[u8]) -> Option<usize> {
 /// exceeding the file size, so entries that overlap each other cannot make
 /// a small file cost more CRC work than its own length.
 pub fn read_stored(bytes: &[u8]) -> Result<Vec<Entry<'_>>, ZipError> {
+    let raw = walk(bytes, false)?;
+    Ok(raw
+        .into_iter()
+        .map(|r| Entry {
+            name: r.name,
+            data: r.raw,
+        })
+        .collect())
+}
+
+/// One entry of an archive [`read`] read: its name, and its data as the
+/// archive holds it (stored or deflated), decompressed by
+/// [`RawEntry::data`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RawEntry<'a> {
+    pub name: &'a str,
+    /// 0 stored, 8 deflated.
+    pub method: u16,
+    /// The size of the data once decompressed, as the archive records it.
+    pub size: usize,
+    crc: u32,
+    raw: &'a [u8],
+}
+
+impl<'a> RawEntry<'a> {
+    /// The entry's data: borrowed when stored (its CRC-32 checked by
+    /// [`read`]), decompressed into at most [`RawEntry::size`] bytes and
+    /// checked against its CRC-32 when deflated.
+    pub fn data(&self) -> Result<Cow<'a, [u8]>, ZipError> {
+        if self.method == 0 {
+            return Ok(Cow::Borrowed(self.raw));
+        }
+        let out = inflate::inflate(self.raw, self.size).map_err(|error| ZipError::Inflate {
+            name: self.name.to_string(),
+            error,
+        })?;
+        if out.len() != self.size {
+            return Err(ZipError::Corrupt(
+                "a deflated entry decompresses to another size than the archive records",
+            ));
+        }
+        let actual = crc32(&out);
+        if actual != self.crc {
+            return Err(ZipError::CrcMismatch {
+                name: self.name.to_string(),
+                expected: self.crc,
+                actual,
+            });
+        }
+        Ok(Cow::Owned(out))
+    }
+}
+
+/// Reads an archive whose entries are stored or deflated (method 8), as
+/// other programs write them; the same checks as [`read_stored`]
+/// otherwise. Nothing is decompressed until [`RawEntry::data`] is asked
+/// for, so a caller reads only the entries it needs and can refuse one
+/// whose recorded size is above what it accepts first.
+pub fn read(bytes: &[u8]) -> Result<Vec<RawEntry<'_>>, ZipError> {
+    walk(bytes, true)
+}
+
+fn walk(bytes: &[u8], deflate: bool) -> Result<Vec<RawEntry<'_>>, ZipError> {
     let end = find_end_record(bytes).ok_or(ZipError::NoEndRecord)?;
     let field16 = |at: usize| {
         end.checked_add(at)
@@ -423,8 +512,14 @@ pub fn read_stored(bytes: &[u8]) -> Result<Vec<Entry<'_>>, ZipError> {
         if flags & FLAG_ENCRYPTED != 0 {
             return Err(ZipError::Encrypted { name: owned() });
         }
-        if method != 0 {
+        if method != 0 && !deflate {
             return Err(ZipError::Compressed {
+                name: owned(),
+                method,
+            });
+        }
+        if method != 0 && method != 8 {
+            return Err(ZipError::Method {
                 name: owned(),
                 method,
             });
@@ -435,7 +530,7 @@ pub fn read_stored(bytes: &[u8]) -> Result<Vec<Entry<'_>>, ZipError> {
         if disk != 0 {
             return Err(ZipError::MultiDisk);
         }
-        if compressed_size != size {
+        if method == 0 && compressed_size != size {
             return Err(ZipError::Corrupt(
                 "a stored entry has different compressed and uncompressed sizes",
             ));
@@ -460,11 +555,14 @@ pub fn read_stored(bytes: &[u8]) -> Result<Vec<Entry<'_>>, ZipError> {
         if local_flags & FLAG_ENCRYPTED != 0 {
             return Err(ZipError::Encrypted { name: owned() });
         }
-        if local_method != 0 {
-            return Err(ZipError::Compressed {
-                name: owned(),
-                method: local_method,
-            });
+        if local_method != method {
+            if !deflate {
+                return Err(ZipError::Compressed {
+                    name: owned(),
+                    method: local_method,
+                });
+            }
+            return Err(ZipError::HeaderMismatch { name: owned() });
         }
         let local_name_at = local_at.checked_add(LOCAL_LEN).ok_or(LOCAL)?;
         let local_name = slice(bytes, local_name_at, local_name_len).ok_or(LOCAL)?;
@@ -472,37 +570,50 @@ pub fn read_stored(bytes: &[u8]) -> Result<Vec<Entry<'_>>, ZipError> {
         // central directory is the only place that has them.
         let sizes_agree = local_flags & FLAG_DATA_DESCRIPTOR != 0
             || (u32_at(local, 14) == Some(crc)
-                && u32_at(local, 18) == Some(size)
+                && u32_at(local, 18) == Some(compressed_size)
                 && u32_at(local, 22) == Some(size));
         if local_name != name_bytes || !sizes_agree {
             return Err(ZipError::HeaderMismatch { name: owned() });
         }
 
         const DATA: ZipError = ZipError::OutOfBounds("the data of an entry");
+        let stored_size = index(compressed_size).ok_or(DATA)?;
         let size = index(size).ok_or(DATA)?;
         let data_at = local_name_at
             .checked_add(local_name_len)
             .and_then(|at| at.checked_add(local_extra_len))
             .ok_or(DATA)?;
-        let data = slice(bytes, data_at, size).ok_or(DATA)?;
+        let data = slice(bytes, data_at, stored_size).ok_or(DATA)?;
         // Data belongs before the central directory; and entries that share
         // bytes would let a small file demand unbounded CRC work.
-        if data_at.checked_add(size).is_none_or(|e| e > central_offset) {
+        if data_at
+            .checked_add(stored_size)
+            .is_none_or(|e| e > central_offset)
+        {
             return Err(DATA);
         }
-        total = total.saturating_add(size);
+        total = total.saturating_add(stored_size);
         if total > bytes.len() {
             return Err(ZipError::Corrupt("entries overlap"));
         }
-        let actual = crc32(data);
-        if actual != crc {
-            return Err(ZipError::CrcMismatch {
-                name: owned(),
-                expected: crc,
-                actual,
-            });
+        // A deflated entry's CRC is checked once it is decompressed.
+        if method == 0 {
+            let actual = crc32(data);
+            if actual != crc {
+                return Err(ZipError::CrcMismatch {
+                    name: owned(),
+                    expected: crc,
+                    actual,
+                });
+            }
         }
-        entries.push(Entry { name, data });
+        entries.push(RawEntry {
+            name,
+            method,
+            size,
+            crc,
+            raw: data,
+        });
     }
     if at != central.len() {
         return Err(ZipError::Corrupt(

@@ -73,6 +73,9 @@ fn freecad() -> Result<(), String> {
         ("craft3d-engine", "step_freecad"),
         // STEP import: the showcase read back, and files FreeCAD makes.
         ("craft3d-engine", "step_import"),
+        // FreeCAD documents: FreeCAD agrees with the numbers their tests
+        // hold the reader to.
+        ("craft3d-fcstdread", "freecad"),
     ] {
         cargo(&[
             "test",

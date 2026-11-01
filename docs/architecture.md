@@ -37,13 +37,13 @@ These are the invariants. Every part is built so that they hold by construction,
  L6  engine        Session: open documents, commands, undo, scenes
  L5  io            bodies and meshes <-> STEP, STL, 3MF, OBJ, DXF, SVG
  L4  derivation    regen (history -> bodies), render (CPU oracle), gpu (wgpu), format (.3dcraft)
- L3  algorithms    kernel (operations on bodies), tess (meshes), solve (sketch solver), assembly (assembly solver), ops (undo history), stepread (STEP -> bodies)
+ L3  algorithms    kernel (operations on bodies), tess (meshes), solve (sketch solver), assembly (assembly solver), ops (undo history), stepread (STEP -> bodies), fcstdread (FreeCAD documents -> bodies)
  L2  document      doc (pure data: the recipe)
  L1  model data    topo (B-rep, checks, measures), expr (units, formulas)
- L0  foundation    math, geom (curves, surfaces, intersections); step, meshio, drawing, zipstore (standalone formats); buildinfo (the programs' build scripts); font (font files, layout, the single-stroke font)
+ L0  foundation    math, geom (curves, surfaces, intersections); step, brep, meshio, drawing, zipstore (standalone formats); buildinfo (the programs' build scripts); font (font files, layout, the single-stroke font)
 ```
 
-`cargo xtask layers` enforces this from `xtask/src/layers.rs`: a crate depends only on lower layers, except the same-layer pairs listed there (`geom` → `math`; `gpu` → `render`, whose camera and frame it shares so the two compare pixel by pixel; `kernel`'s tests mesh with `tess`); the standalone format crates depend on no workspace crate (except `meshio` → `zipstore`, for 3MF); nothing below L7 uses egui, eframe, winit or rfd; `testkit` is a dev-dependency only; every crate opts into the workspace lints. L0 to L7 and the web app `apps/craft3d-web` build for `wasm32-unknown-unknown` (`cargo xtask wasm`).
+`cargo xtask layers` enforces this from `xtask/src/layers.rs`: a crate depends only on lower layers, except the same-layer pairs listed there (`geom` → `math`; `gpu` → `render`, whose camera and frame it shares so the two compare pixel by pixel; `fcstdread` → `stepread`, whose sewing, proofs and checks it shares; `kernel`'s and `fcstdread`'s tests mesh with `tess`); the standalone format crates depend on no workspace crate (except `meshio` → `zipstore`, for 3MF); nothing below L7 uses egui, eframe, winit or rfd; `testkit` is a dev-dependency only; every crate opts into the workspace lints. L0 to L7 and the web app `apps/craft3d-web` build for `wasm32-unknown-unknown` (`cargo xtask wasm`).
 
 | Crate | Layer | Owns | Never |
 |---|---|---|---|
@@ -53,7 +53,8 @@ These are the invariants. Every part is built so that they hold by construction,
 | `meshio` | L0 | STL, 3MF and OBJ writers with their own mesh model | depends on a workspace crate but `zipstore` |
 | `drawing` | L0 | DXF and SVG writers with their own 2D model | depends on a workspace crate |
 | `font` | L0 | font files read into exact outlines, kerning, layout, the nonzero fill rule, the single-stroke font as data ([`design/text.md`](design/text.md)) | depends on a workspace crate; reads files (the engine finds the built-in fonts) |
-| `zipstore` | L0 | a stored (uncompressed) ZIP container with a hardened reader | depends on a workspace crate |
+| `zipstore` | L0 | a stored (uncompressed) ZIP container with a hardened reader, and reading of deflated entries | depends on a workspace crate |
+| `brep` | L0 | Open CASCADE's text BRep format read into its own records | depends on a workspace crate |
 | `buildinfo` | L0 | for the programs' build scripts: the commit they are built from, embedded in the program and handed to the engine at start (`set_build_commit`) | is a dependency of a library (a value that changes with every commit would rebuild everything above it) |
 | `topo` | L1 | the B-rep (`Body`), `check`, genus, rigid transforms, boxes, mass properties and inertia by boundary integrals | builds geometry by a modelling operation |
 | `expr` | L1 | dimensions and units, the formula parser and evaluator, `VariableTable` | knows features |

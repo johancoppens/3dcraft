@@ -30,6 +30,8 @@ craft3d-testkit = { path = "crates/testkit" }
 craft3d-meshio = { path = "crates/meshio" }
 craft3d-drawing = { path = "crates/drawing" }
 craft3d-step = { path = "crates/step" }
+craft3d-brep = { path = "crates/brep" }
+craft3d-fcstdread = { path = "crates/fcstdread" }
 craft3d-stepread = { path = "crates/stepread" }
 craft3d-zipstore = { path = "crates/zipstore" }
 craft3d-buildinfo = { path = "crates/buildinfo" }
@@ -138,6 +140,10 @@ opt-level = 3
 [profile.web.package.craft3d-render]
 opt-level = 3
 [profile.web.package.craft3d-stepread]
+opt-level = 3
+[profile.web.package.craft3d-fcstdread]
+opt-level = 3
+[profile.web.package.craft3d-brep]
 opt-level = 3
 [profile.web.package.craft3d-step]
 opt-level = 3

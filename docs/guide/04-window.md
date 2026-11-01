@@ -69,7 +69,7 @@ The **File** menu:
 | **Open for editing** | | For a Jig in use: a new untitled model of it, to change as you like ([chapter 5](05-jigs.md)) |
 | **Save** | Ctrl+S | Saves to the document's file (asks for a name the first time) |
 | **Save As…** | Ctrl+Shift+S | Saves under a new name |
-| **Import…** | Ctrl+I | Reads a STEP file into the document |
+| **Import…** | Ctrl+I | Reads a STEP file or a FreeCAD document into the document |
 | **Export…** | Ctrl+E | Writes STEP, STL, 3MF, OBJ, DXF or SVG ([chapter 12](12-files.md)) |
 | **Export as Jig…** | | Publishes a document with parameters as a `.3dcraftjig` ([chapter 5](05-jigs.md)) |
 | **Recent files** | | The last ten files opened or saved, by you or by an agent, newest first; **Clear recent** empties the list |

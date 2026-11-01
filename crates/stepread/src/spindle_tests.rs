@@ -220,7 +220,7 @@ fn an_offset_of_a_spindle_moves_each_part_its_own_way() {
         .expect("spindle");
     assert!(matches!(
         iso.offset(-0.75),
-        Ok(geometry::Read::Done(craft3d_geom::Surface::Torus(t), false)) if t.radii() == (1.0, 0.75)
+        Ok(crate::swept::Swept::Done(craft3d_geom::Surface::Torus(t), false)) if t.radii() == (1.0, 0.75)
     ));
     // Swept, the lemon's normal points to the tube's centre: offset back
     // below the axis, its apple is a ring torus (whose face needs both its
@@ -233,7 +233,7 @@ fn an_offset_of_a_spindle_moves_each_part_its_own_way() {
         spindle::Normal::Swept { flip: false },
     )
     .expect("spindle");
-    let Ok(geometry::Read::Spindle(moved)) = swept.offset(-0.75) else {
+    let Ok(crate::swept::Swept::Spindle(moved)) = swept.offset(-0.75) else {
         panic!("not a spindle");
     };
     assert_eq!(moved.apple().map(|s| s.minor), Some(0.75));
@@ -314,7 +314,7 @@ fn edges_on_the_wrong_part_are_refused_by_name() {
     // as a select_outer the file does not have.
     let horn = spindle::Spindle::toroidal(Frame::WORLD, 1.0, 1.5, None, spindle::Normal::Iso)
         .expect("spindle");
-    let Ok(geometry::Read::Spindle(horn)) = horn.offset(-0.5) else {
+    let Ok(crate::swept::Swept::Spindle(horn)) = horn.offset(-0.5) else {
         panic!("not a spindle");
     };
     assert!(horn.lemon().is_none());

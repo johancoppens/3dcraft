@@ -314,7 +314,7 @@ pub enum Received {
 pub fn received_kind(name: &str) -> Option<Received> {
     match extension_of(name)?.as_str() {
         EXTENSION | JIG_EXTENSION | ASSEMBLY_EXTENSION => Some(Received::Document),
-        "step" | "stp" => Some(Received::Step),
+        "step" | "stp" | "fcstd" | "brep" | "brp" => Some(Received::Step),
         _ => None,
     }
 }
@@ -843,7 +843,7 @@ impl WebHost {
             return Err(format!("`{name}` is not a file name"));
         };
         let kind = received_kind(&name).ok_or_else(|| {
-            format!("`{name}` is not a 3DCraft document (.3dcraft), a Jig (.3dcraftjig) or a STEP file (.step, .stp)")
+            format!("`{name}` is not a 3DCraft document (.3dcraft), a Jig (.3dcraftjig), a STEP file (.step, .stp) or a FreeCAD document (.FCStd)")
         })?;
         match (wanted, kind) {
             (Some(Ask::Open), Received::Step) => {
@@ -2471,6 +2471,7 @@ mod tests {
             file: Download::export("a.step".to_string(), vec![1]),
         };
         assert!(step.accepts("a.stp") && step.accepts("a.step"));
+        assert_eq!(received_kind("bracket.FCStd"), Some(Received::Step));
         assert_eq!(export_types(None)[0].extensions, ["step", "stp"]);
         assert_eq!(export_types(Some("svg"))[0].description, "SVG");
         assert_eq!(open_types(Ask::Import)[0].extensions, ["step", "stp"]);

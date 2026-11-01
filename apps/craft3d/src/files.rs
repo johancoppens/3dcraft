@@ -107,7 +107,7 @@ impl Dialogs for SystemDialogs {
     fn import(&self) -> Option<PathBuf> {
         rfd::FileDialog::new()
             .set_title("Import")
-            .add_filter("STEP", &IMPORT_EXTENSIONS)
+            .add_filter("STEP, FreeCAD, BRep", &IMPORT_EXTENSIONS)
             .add_filter("All files", &["*"])
             .pick_file()
     }

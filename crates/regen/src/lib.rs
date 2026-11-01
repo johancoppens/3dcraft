@@ -1297,8 +1297,8 @@ pub fn metres_per_unit(unit: craft3d_doc::LengthUnit) -> f64 {
     }
 }
 
-/// One solid or sheet of an imported STEP file, read from the bytes the
-/// document holds, in the document's unit and checked with its tolerance
+/// One solid or sheet of an imported STEP file or FreeCAD document
+/// (`craft3d-fcstdread`), read from the bytes the document holds, in the document's unit and checked with its tolerance
 /// (`craft3d-stepread`, docs/design/step-import.md). The file is parsed
 /// once for all the features that read solids of it.
 ///
@@ -1313,17 +1313,22 @@ fn imported(
     let tolerance = Tolerance::new(doc.tolerance.linear, doc.tolerance.angular)
         .ok_or("the document's tolerance is not positive and finite".to_string())?;
     let file = &import.file_name;
-    let parsed = craft3d_stepread::parse_shared(import.data.bytes(), &import.data.sha256())
-        .map_err(|e| format!("`{file}`: {e}"))?;
     let options = craft3d_stepread::Options {
         metres_per_unit: metres_per_unit(doc.units.length),
         tolerance,
         loosest: doc.tolerance.loosest_linear(),
     };
     let index = usize::try_from(import.solid).unwrap_or(usize::MAX);
-    let read = parsed
-        .build(index, &options)
-        .map_err(|e| format!("`{file}`: {e}"))?;
+    // A FreeCAD document (or a BRep file) by its first bytes; else STEP.
+    let bytes = import.data.bytes();
+    let read = if craft3d_fcstdread::reads(bytes) {
+        craft3d_fcstdread::parse_shared(bytes, &import.data.sha256())
+            .and_then(|parsed| parsed.build(index, &options))
+    } else {
+        craft3d_stepread::parse_shared(bytes, &import.data.sha256())
+            .and_then(|parsed| parsed.build(index, &options))
+    }
+    .map_err(|e| format!("`{file}`: {e}"))?;
     let body = checked(doc, read.body)?;
     let names = Names::numbered(feature, &body);
     selfcheck::crossing(&body, &names.faces, tolerance.linear).refused(

@@ -8,6 +8,7 @@ other CAD programs and drawings.*
 | `.3dcraft` | **Open…** (`file.open`) | **Save** (`file.save`) | Your design: its history, variables, sketches, features, checks, sets, colours |
 | `.3dcraftjig` | **Open…** (`file.open`) | **Export as Jig…** (`jig.export`) | A design to be set by its parameters, with its info and a picture ([chapter 5](05-jigs.md)) |
 | STEP (`.step`, `.stp`) | **Import…** (`file.import`) | **Export…** (`file.export`) | Exact solids, units, names, colours; no history. For other CAD programs |
+| FreeCAD (`.FCStd`), BRep (`.brep`) | **Import…** (`file.import`) | no | The finished objects as exact solids, with their names, places and colours; no history |
 | STL, 3MF, OBJ | no | **Export…** | Triangle meshes, for 3D printing and rendering |
 | DXF, SVG | no | **Export…** | Flat outlines at true size, for laser cutting; or a drawing of the model as seen |
 
@@ -105,6 +106,11 @@ too (one feature per placed solid, with their colours), and converts the units. 
 document, so it rebuilds without it. An imported body is a feature like any other: cut it, round it,
 measure it. Its faces are named by their order in the file (`F5:face(0)`). What cannot be read is refused,
 naming the part of the file at fault.
+
+A **FreeCAD document** (`.FCStd`) imports the same way: one body per finished, visible object (a cut, not
+the two shapes it was cut from; a PartDesign body, not its pads and pockets), named after its label, where
+FreeCAD placed it and in its colour. Hidden objects are left out and listed in the result. FreeCAD's history
+does not come along: the bodies are exact solids, edited here like any other.
 
 ## Laser cutting: flat outlines in DXF and SVG
 

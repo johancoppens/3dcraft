@@ -11,13 +11,13 @@
 
 // `!(x > 0.0)` is deliberate: unlike `x <= 0.0` it is also true for NaN.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
-use crate::spindle::{Normal, Sheet, Spindle, flipped};
+use crate::spindle::{Normal, Spindle};
+use crate::swept::{self, Swept};
 use crate::{ImportError, Parsed, err, keywords, real};
 use craft3d_geom::{
     Circle, Cone, Curve3, Cylinder, Ellipse, Line, NurbsCurve, NurbsSurface, Plane, Sphere,
     Surface, Torus,
 };
-use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
 use craft3d_step::{Entity, Param, Record};
 
@@ -566,6 +566,7 @@ impl<'a> Reader<'a> {
             };
             return Spindle::toroidal(frame, major, minor, select, Normal::Iso)
                 .and_then(Spindle::read)
+                .map(|s| self.read_of(id, s))
                 .or_else(|e| self.bad(id, &e));
         }
         if entity.is("B_SPLINE_SURFACE_WITH_KNOTS") || Implicit::of_surface(entity).is_some() {
@@ -708,43 +709,6 @@ impl<'a> Reader<'a> {
         .map_err(|e| ImportError(format!("{}: {e}", self.describe(id))))
     }
 
-    /// Whether `normal`, the file's normal at `point`, is opposite to
-    /// `surface`'s normal there.
-    fn opposite(
-        &self,
-        id: u64,
-        surface: &Surface,
-        point: Vec3,
-        normal: Vec3,
-    ) -> Result<bool, ImportError> {
-        let ours = surface
-            .project(point)
-            .ok()
-            .and_then(|(u, v)| surface.normal(u, v));
-        match ours {
-            Some(ours) if ours.dot(normal).abs() > 1e-9 * normal.length() => {
-                Ok(ours.dot(normal) < 0.0)
-            }
-            _ => self.bad(
-                id,
-                "cannot tell which way the swept surface's normal points",
-            ),
-        }
-    }
-
-    /// Points along a curve where its derivative is not zero, for the
-    /// normal of a surface swept from it.
-    fn samples(curve: &Curve3) -> Vec<(Vec3, Vec3)> {
-        let (t0, t1) = match curve.domain() {
-            (a, b) if a.is_finite() && b.is_finite() => (a, b),
-            _ => (0.0, 1.0),
-        };
-        [0.37, 0.61, 0.13, 0.89]
-            .iter()
-            .map(|s| curve.derivatives(t0 + (t1 - t0) * s))
-            .collect()
-    }
-
     /// `SURFACE_OF_LINEAR_EXTRUSION(name, swept_curve, extrusion_axis)`:
     /// `C(u) + v V`, normal `C'(u) × V`. A line extruded is a plane, a
     /// circle along its axis a cylinder; any other curve (a circle
@@ -755,202 +719,32 @@ impl<'a> Reader<'a> {
         let record = self.named(id, "SURFACE_OF_LINEAR_EXTRUSION", 2)?;
         let curve = self.curve_at(self.reference(id, record.params.get(1), "swept_curve")?, 1)?;
         let along = self.vector(self.reference(id, record.params.get(2), "extrusion_axis")?)?;
-        let surface = match &curve {
-            Curve3::Line(line) => {
-                let normal = line.direction().cross(along);
-                let frame = Frame::new(line.origin(), normal, line.direction());
-                match frame {
-                    Some(frame) => Surface::Plane(Plane::new(frame)),
-                    None => return self.bad(id, "a line extruded along itself"),
-                }
-            }
-            Curve3::Circle(circle)
-                if circle.frame().z().cross(along).length() <= 1e-9 * along.length() =>
-            {
-                let cylinder = Cylinder::new(*circle.frame(), circle.radius())
-                    .map_err(|e| ImportError(format!("{}: {e}", self.describe(id))))?;
-                Surface::Cylinder(cylinder)
-            }
-            other => {
-                let Some(nurbs) = as_nurbs(other) else {
-                    return self.bad(
-                        id,
-                        &format!("an extrusion of a {} is not read", other.kind()),
-                    );
-                };
-                // The B-spline's own parametrisation is the file's (u
-                // along the curve, v along V), so its normal is the
-                // file's.
-                return Ok(Read::Extrusion {
-                    id,
-                    curve: nurbs,
-                    along,
-                });
-            }
-        };
-        for (point, tangent) in Self::samples(&curve) {
-            let normal = tangent.cross(along);
-            if normal.length() > 0.0 && normal.length().is_finite() {
-                return Ok(Read::Done(
-                    surface.clone(),
-                    self.opposite(id, &surface, point, normal)?,
-                ));
-            }
-        }
-        self.bad(id, "the swept curve has no direction")
+        swept::extrusion(&curve, along)
+            .map(|s| self.read_of(id, s))
+            .or_else(|e| self.bad(id, &e))
     }
 
-    /// `SURFACE_OF_REVOLUTION(name, swept_curve, axis_position)`: the curve
-    /// turned by `u` about the axis, `v` the curve's parameter; normal
-    /// `∂u × ∂v`, where `∂u = a × (C(v) − L)` at `u = 0`. A line or a
-    /// circle in a plane through the axis turns into one of the elementary
-    /// surfaces; any other curve (a B-spline, an ellipse, a circle out of
-    /// such a plane) into the exact rational B-spline surface
-    /// ([`revolved`]). A circle whose torus reaches the axis is a spindle
-    /// or horn torus ([`Spindle`]), whose part a face chooses.
+    /// A swept read as this reader's [`Read`]: an unbounded extrusion
+    /// keeps the instance it comes from, for its messages.
+    fn read_of(&self, id: u64, swept: Swept) -> Read {
+        match swept {
+            Swept::Done(surface, opposite) => Read::Done(surface, opposite),
+            Swept::Unbounded { curve, along } => Read::Extrusion { id, curve, along },
+            Swept::Spindle(spindle) => Read::Spindle(spindle),
+        }
+    }
+
+    /// `SURFACE_OF_REVOLUTION(name, swept_curve, axis_position)`
+    /// ([`swept::revolution`]; a circle whose torus reaches the axis is a
+    /// spindle or horn torus, [`Spindle`]).
     fn revolution(&self, id: u64) -> Result<Read, ImportError> {
         let record = self.named(id, "SURFACE_OF_REVOLUTION", 2)?;
         let curve = self.curve_at(self.reference(id, record.params.get(1), "swept_curve")?, 1)?;
         let (at, axis) =
             self.axis1(self.reference(id, record.params.get(2), "axis_position")?)?;
-        let geom = |e: craft3d_geom::GeomError| ImportError(format!("{}: {e}", self.describe(id)));
-        // Small compared with the size of what is turned.
-        let scale = |p: Vec3| (p - at).length().max(1e-300);
-        let elementary = match &curve {
-            Curve3::Line(line) => {
-                let d = line.direction();
-                let p = line.origin();
-                let off = p - at;
-                if off.dot(axis.cross(d)).abs() > 1e-9 * scale(p) {
-                    return self.bad(
-                        id,
-                        "a line turned about an axis it does not meet (a hyperboloid) is not read",
-                    );
-                }
-                let radial = off - axis * off.dot(axis);
-                if axis.cross(d).length() <= 1e-12 {
-                    let radius = radial.length();
-                    let frame = Frame::new(at, axis, radial).ok_or_else(|| {
-                        ImportError(format!("{}: a line on its axis", self.describe(id)))
-                    })?;
-                    Some(Surface::Cylinder(
-                        Cylinder::new(frame, radius).map_err(geom)?,
-                    ))
-                } else if axis.dot(d).abs() <= 1e-12 {
-                    let frame = Frame::from_z(at + axis * off.dot(axis), axis)
-                        .ok_or_else(|| ImportError(format!("{}: no plane", self.describe(id))))?;
-                    Some(Surface::Plane(Plane::new(frame)))
-                } else {
-                    // The apex: where the line meets the axis.
-                    let along = d.dot(axis);
-                    let t = -radial.dot(d - axis * along) / (d - axis * along).length_squared();
-                    let apex_on_line = p + d * t;
-                    let apex = at + axis * (apex_on_line - at).dot(axis);
-                    // The nappe the line's own point is on (a cone here
-                    // ends at its apex).
-                    let far = if (p - apex_on_line).length() > 1e-9 * scale(p) {
-                        p
-                    } else {
-                        p + d * scale(p).max(1.0)
-                    };
-                    let height = (far - apex).dot(axis);
-                    let reach = (far - apex - axis * height).length();
-                    let half_angle = (reach / height).patan();
-                    let frame = Frame::from_z(apex, axis)
-                        .ok_or_else(|| ImportError(format!("{}: no axis", self.describe(id))))?;
-                    Some(Surface::Cone(
-                        Cone::new(frame, 0.0, half_angle).map_err(geom)?,
-                    ))
-                }
-            }
-            Curve3::Circle(circle) => {
-                let frame = circle.frame();
-                let centre = frame.origin();
-                let off = centre - at;
-                let size = circle.radius() + off.length();
-                if frame.z().dot(axis).abs() > 1e-9 || off.dot(frame.z()).abs() > 1e-9 * size {
-                    // Out of every plane through the axis.
-                    None
-                } else {
-                    let foot = at + axis * off.dot(axis);
-                    let major = (centre - foot).length();
-                    if major <= 1e-12 * size {
-                        let frame = Frame::from_z(centre, axis).ok_or_else(|| {
-                            ImportError(format!("{}: no axis", self.describe(id)))
-                        })?;
-                        Some(Surface::Sphere(
-                            Sphere::new(frame, circle.radius()).map_err(geom)?,
-                        ))
-                    } else {
-                        let frame = Frame::new(foot, axis, centre - foot).ok_or_else(|| {
-                            ImportError(format!("{}: no axis", self.describe(id)))
-                        })?;
-                        if major > circle.radius() {
-                            Some(Surface::Torus(
-                                Torus::new(frame, major, circle.radius()).map_err(geom)?,
-                            ))
-                        } else {
-                            // A horn or spindle torus: the file's normal
-                            // against the standard torus's, at a point of
-                            // the circle clear of the axis.
-                            let flip =
-                                Self::samples(&curve)
-                                    .into_iter()
-                                    .find_map(|(point, tangent)| {
-                                        let normal = axis.cross(point - at).cross(tangent);
-                                        flipped(&frame, major, point, normal)
-                                    });
-                            let Some(flip) = flip else {
-                                return self.bad(
-                                    id,
-                                    "cannot tell which way the swept surface's normal points",
-                                );
-                            };
-                            return Spindle::toroidal(
-                                frame,
-                                major,
-                                circle.radius(),
-                                None,
-                                Normal::Swept { flip },
-                            )
-                            .and_then(Spindle::read)
-                            .or_else(|e| self.bad(id, &e));
-                        }
-                    }
-                }
-            }
-            _ => None,
-        };
-        let surface = match elementary {
-            Some(surface) => surface,
-            None => {
-                let Some(nurbs) = as_nurbs(&curve) else {
-                    return self.bad(
-                        id,
-                        &format!("a revolution of a {} is not read", curve.kind()),
-                    );
-                };
-                // u round the axis as the angle runs, v along the curve:
-                // the file's normal, whatever the parametrisation of u.
-                let surface = revolved(&nurbs, at, axis)
-                    .map_err(|e| ImportError(format!("{}: {e}", self.describe(id))))?;
-                return Ok(Read::Done(Surface::Nurbs(surface), false));
-            }
-        };
-        for (point, tangent) in Self::samples(&curve) {
-            let du = axis.cross(point - at);
-            let normal = du.cross(tangent);
-            if normal.length() > 1e-9 * scale(point) * tangent.length() {
-                return Ok(Read::Done(
-                    surface.clone(),
-                    self.opposite(id, &surface, point, normal)?,
-                ));
-            }
-        }
-        self.bad(
-            id,
-            "cannot tell which way the swept surface's normal points",
-        )
+        swept::revolution(&curve, at, axis)
+            .map(|s| self.read_of(id, s))
+            .or_else(|e| self.bad(id, &e))
     }
 
     /// `OFFSET_SURFACE(name, basis_surface, distance, self_intersect)`:
@@ -968,7 +762,10 @@ impl<'a> Reader<'a> {
         let (surface, opposite) = match self.surface_at(basis, depth + 1)? {
             Read::Done(surface, opposite) => (surface, opposite),
             Read::Spindle(spindle) => {
-                return spindle.offset(distance).or_else(|e| self.bad(id, &e));
+                return spindle
+                    .offset(distance)
+                    .map(|s| self.read_of(id, s))
+                    .or_else(|e| self.bad(id, &e));
             }
             Read::Extrusion { .. } => {
                 return self.bad(
@@ -977,104 +774,9 @@ impl<'a> Reader<'a> {
                 );
             }
         };
-        let geom = |e: craft3d_geom::GeomError| ImportError(format!("{}: {e}", self.describe(id)));
-        // The file's normal at a point of the basis, and whether it points
-        // away from the axis or centre (`outward` of that point).
-        let file_normal = |u: f64, v: f64| -> Result<Vec3, ImportError> {
-            let ours = surface.normal(u, v).ok_or_else(|| {
-                ImportError(format!("{}: the basis has no normal", self.describe(id)))
-            })?;
-            Ok(if opposite { -ours } else { ours })
-        };
-        let gone = || {
-            ImportError(format!(
-                "{}: the offset goes through the basis's axis or centre; it is not read",
-                self.describe(id)
-            ))
-        };
-        let moved = match &surface {
-            Surface::Plane(plane) => {
-                let n = file_normal(0.0, 0.0)?;
-                let frame = plane.frame();
-                let frame = frame.at(frame.origin() + n * distance).ok_or_else(gone)?;
-                Surface::Plane(Plane::new(frame))
-            }
-            Surface::Cylinder(c) => {
-                let p = surface.eval(0.0, 0.0);
-                let radial = p
-                    - c.frame().origin()
-                    - c.frame().z() * (p - c.frame().origin()).dot(c.frame().z());
-                let sign = file_normal(0.0, 0.0)?.dot(radial).signum();
-                let radius = c.radius() + sign * distance;
-                if !(radius > 0.0) {
-                    return Err(gone());
-                }
-                Surface::Cylinder(Cylinder::new(*c.frame(), radius).map_err(geom)?)
-            }
-            Surface::Sphere(s) => {
-                let p = surface.eval(0.0, 0.0);
-                let sign = file_normal(0.0, 0.0)?.dot(p - s.frame().origin()).signum();
-                let radius = s.radius() + sign * distance;
-                if !(radius > 0.0) {
-                    return Err(gone());
-                }
-                Surface::Sphere(Sphere::new(*s.frame(), radius).map_err(geom)?)
-            }
-            Surface::Torus(t) => {
-                let (major, minor) = t.radii();
-                // The tube's centre line at u = 0 is the frame's x axis
-                // at the major radius.
-                let p = surface.eval(0.0, 0.0);
-                let centre = t.frame().point(major, 0.0, 0.0);
-                let sign = file_normal(0.0, 0.0)?.dot(p - centre).signum();
-                let minor = minor + sign * distance;
-                if !(minor > 0.0) {
-                    return Err(gone());
-                }
-                if minor >= major {
-                    // The tube now reaches the axis: a horn or spindle
-                    // torus, both of whose parts are where the ring's
-                    // points went, along the same normal.
-                    let sheet = Sheet {
-                        minor,
-                        outward: sign > 0.0,
-                    };
-                    return Spindle {
-                        frame: *t.frame(),
-                        major,
-                        apple: sheet,
-                        lemon: sheet,
-                        select: None,
-                    }
-                    .offset(0.0)
-                    .or_else(|e| self.bad(id, &e));
-                }
-                Surface::Torus(Torus::new(*t.frame(), major, minor).map_err(geom)?)
-            }
-            Surface::Cone(c) => {
-                // A point of the cone's own nappe (where its radius is
-                // positive: past the apex in the direction it opens), its
-                // normal's part away from the axis: the radius at v = 0
-                // grows by d / cos α.
-                let v = c.apex_v() + c.half_angle().ptan().signum();
-                let p = surface.eval(0.0, v);
-                let o = c.frame().origin();
-                let radial = p - o - c.frame().z() * (p - o).dot(c.frame().z());
-                let sign = file_normal(0.0, v)?.dot(radial).signum();
-                let radius = c.radius() + sign * distance / c.half_angle().pcos();
-                if !(radius >= 0.0) {
-                    return Err(gone());
-                }
-                Surface::Cone(Cone::new(*c.frame(), radius, c.half_angle()).map_err(geom)?)
-            }
-            Surface::Bezier(_) | Surface::Nurbs(_) => {
-                return self.bad(
-                    id,
-                    "an offset of a B-spline surface is not read (no exact surface of that kind)",
-                );
-            }
-        };
-        Ok(Read::Done(moved, opposite))
+        swept::offset(&surface, opposite, distance)
+            .map(|s| self.read_of(id, s))
+            .or_else(|e| self.bad(id, &e))
     }
 }
 
@@ -1178,7 +880,7 @@ fn ring_weight(corner: bool) -> f64 {
 /// as the rational quadratic of four quarters (starting on its x axis, as
 /// its own parameter does), a B-spline as itself. `None` for a line,
 /// which has no ends.
-fn as_nurbs(curve: &Curve3) -> Option<NurbsCurve> {
+pub fn as_nurbs(curve: &Curve3) -> Option<NurbsCurve> {
     let (frame, a, b) = match curve {
         Curve3::Nurbs(n) => return Some(n.clone()),
         Curve3::Line(_) => return None,
@@ -1202,7 +904,7 @@ fn as_nurbs(curve: &Curve3) -> Option<NurbsCurve> {
 /// quarters, counter-clockwise seen from the axis's tip, v the curve's
 /// own parameter. A control point on the axis gives a row that is one
 /// point (a pole).
-pub(crate) fn revolved(
+pub fn revolved(
     curve: &NurbsCurve,
     at: Vec3,
     axis: Vec3,
@@ -1237,7 +939,7 @@ pub(crate) fn revolved(
 /// of `along`), as the exact B-spline of degree one across: u the curve's
 /// own parameter, v along `along`, so the normal is `C'(u) × V` as the
 /// file's is.
-pub(crate) fn extruded(
+pub fn extruded(
     curve: &NurbsCurve,
     along: Vec3,
     (v0, v1): (f64, f64),

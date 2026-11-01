@@ -1,4 +1,5 @@
-//! STEP files read into the document (docs/design/step-import.md).
+//! STEP files and FreeCAD documents read into the document
+//! (docs/design/step-import.md).
 //!
 //! `file.import` adds one `import` feature per solid or sheet of the file,
 //! all in one undo step. Each holds the file's bytes (shared, not copied:
@@ -15,7 +16,7 @@ use serde_json::{Value, json};
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("file.import", "Import", r#"{"path": string, "names": [string] = automatic}"#,
-        "Reads a STEP file (.step, .stp; AP203, AP214 or AP242 B-rep) from the read root into the active document: one import feature per placed solid (MANIFOLD_SOLID_BREP, BREP_WITH_VOIDS with its cavities) or sheet (SHELL_BASED_SURFACE_MODEL) of the file, as one undo step: an assembly (NEXT_ASSEMBLY_USAGE_OCCURRENCE with its transformations, MAPPED_ITEM) gives one feature per placement, moved where the assembly puts it, named after its place (bracket/bolt#2, also in the result's `instance`); the solids' colours (STYLED_ITEM) become the bodies' appearances, and a face styled in another colour than its solid keeps it as a face colour (face.appearance, by its name F5:face(i)). The document keeps the file's bytes (saved once in the .3dcraft file), so it regenerates without the file. Lengths are converted from the file's unit to the document's; the file's uncertainty is reported and used to join vertices the file repeats (topology only: geometry is never moved, the largest gap joined is reported). Faces, edges and vertices are named by their order in the file (F5:face(0), F5:edge(3)), so importing the same file again gives the same names. Read: planes, cylinders, cones, spheres, tori, B-spline surfaces (rational, uniform, quasi-uniform and Bézier too), surfaces of revolution and linear extrusion of any of the curves read (exact B-spline surfaces where no elementary kind is), offsets of the elementary surfaces, lines, circles, ellipses, polylines, B-spline curves. Refused, naming the entity: other kinds, placements that scale or mirror, assemblies that contain themselves, files without a length unit, and a solid whose edges or vertices lie off their faces by more than the document's cap on an entity's tolerance. The features take the names the file gives its solids where the document can, or names gives them, one per solid.", doc: true, file_import),
+        "Reads a STEP file (.step, .stp; AP203, AP214 or AP242 B-rep) or a FreeCAD document (.FCStd; also a plain text BRep file, .brep or .brp) from the read root into the active document. A FreeCAD document gives one import feature per solid (and one sheet for its loose faces) of each visible object that no other object uses (a cut, not its base and tool; a PartDesign body, not its features; objects in an App::Part placed by it), named after the object's label and coloured as its view is (ShapeAppearance or ShapeColor, per face where it has one per face); hidden objects are listed under skipped; shapes saved as binary BRep, parabolas, hyperbolas, offset curves and locations that scale or mirror are refused, naming the object. For a STEP file: one import feature per placed solid (MANIFOLD_SOLID_BREP, BREP_WITH_VOIDS with its cavities) or sheet (SHELL_BASED_SURFACE_MODEL) of the file, as one undo step: an assembly (NEXT_ASSEMBLY_USAGE_OCCURRENCE with its transformations, MAPPED_ITEM) gives one feature per placement, moved where the assembly puts it, named after its place (bracket/bolt#2, also in the result's `instance`); the solids' colours (STYLED_ITEM) become the bodies' appearances, and a face styled in another colour than its solid keeps it as a face colour (face.appearance, by its name F5:face(i)). The document keeps the file's bytes (saved once in the .3dcraft file), so it regenerates without the file. Lengths are converted from the file's unit to the document's; the file's uncertainty is reported and used to join vertices the file repeats (topology only: geometry is never moved, the largest gap joined is reported). Faces, edges and vertices are named by their order in the file (F5:face(0), F5:edge(3)), so importing the same file again gives the same names. Read: planes, cylinders, cones, spheres, tori, B-spline surfaces (rational, uniform, quasi-uniform and Bézier too), surfaces of revolution and linear extrusion of any of the curves read (exact B-spline surfaces where no elementary kind is), offsets of the elementary surfaces, lines, circles, ellipses, polylines, B-spline curves. Refused, naming the entity: other kinds, placements that scale or mirror, assemblies that contain themselves, files without a length unit, and a solid whose edges or vertices lie off their faces by more than the document's cap on an entity's tolerance. The features take the names the file gives its solids where the document can, or names gives them, one per solid.", doc: true, file_import),
 ];
 
 fn file_import(session: &mut Session, params: &Value) -> Run {
@@ -57,6 +58,9 @@ pub(crate) fn import_bytes(
     given: Option<Vec<String>>,
 ) -> Run {
     let blob = Blob::new(bytes);
+    if craft3d_fcstdread::reads(blob.bytes()) {
+        return import_document(session, id, blob, file_name, given);
+    }
     let parsed = craft3d_stepread::parse_shared(blob.bytes(), &blob.sha256())
         .map_err(|e| CommandError::new(format!("{id}: `{file_name}`: {e}")))?;
     let items = parsed.items();
@@ -75,20 +79,7 @@ pub(crate) fn import_bytes(
             placed.len()
         ));
     }
-    let options = {
-        let doc = session.document()?.history.current();
-        let tolerance = craft3d_math::Tolerance::new(doc.tolerance.linear, doc.tolerance.angular)
-            .ok_or_else(|| {
-            CommandError::new(format!(
-                "{id}: the document's tolerance is not positive and finite"
-            ))
-        })?;
-        craft3d_stepread::Options {
-            metres_per_unit: craft3d_regen::metres_per_unit(doc.units.length),
-            tolerance,
-            loosest: doc.tolerance.loosest_linear(),
-        }
-    };
+    let options = options(session, id)?;
     let mut reports = Vec::with_capacity(placed.len());
     let mut colors = Vec::with_capacity(placed.len());
     let mut face_colors: Vec<Vec<Option<[u8; 3]>>> = Vec::with_capacity(placed.len());
@@ -143,11 +134,39 @@ pub(crate) fn import_bytes(
             "largestTolerance": r.largest_tolerance,
         }));
     }
-    let count = placed.len();
+    add_features(
+        session,
+        id,
+        &blob,
+        file_name,
+        given,
+        &step_names,
+        &colors,
+        &face_colors,
+        reports,
+    )
+}
+
+/// Adds one import feature per read solid or sheet, in one undo step,
+/// named (`names`, where the document can take them) and coloured as the
+/// file says, each with its report in the result.
+#[allow(clippy::too_many_arguments)]
+fn add_features(
+    session: &mut Session,
+    id: &'static str,
+    blob: &Blob,
+    file_name: &str,
+    given: Option<Vec<String>>,
+    names: &[String],
+    colors: &[Option<[u8; 3]>],
+    face_colors: &[Vec<Option<[u8; 3]>>],
+    reports: Vec<Value>,
+) -> Run {
+    let count = names.len();
     // The document must still save to a file that opens again.
     {
         let doc = session.document()?.history.current();
-        let size = craft3d_format::size_with(doc, &blob, count)
+        let size = craft3d_format::size_with(doc, blob, count)
             .map_err(|e| CommandError::new(format!("{id}: {e}")))?;
         if size > craft3d_format::MAX_FILE_BYTES {
             return fail(format!(
@@ -169,7 +188,7 @@ pub(crate) fn import_bytes(
                 Some(name) => insert_feature(doc, Some(name), kind)?,
                 // The name the file gives the solid, when the document
                 // can take it; else the automatic one.
-                None => match step_names.get(index).filter(|n| !n.is_empty()) {
+                None => match names.get(index).filter(|n| !n.is_empty()) {
                     Some(name) => match insert_feature(doc, Some(name), kind.clone()) {
                         Ok(added) => added,
                         Err(
@@ -221,6 +240,109 @@ pub(crate) fn import_bytes(
         "sha256": blob.sha256(),
         "bodies": bodies,
     }))
+}
+
+/// A FreeCAD document (or a BRep file): one feature per solid or sheet
+/// of its final objects (`craft3d-fcstdread`), named after the object's
+/// label, coloured as its view is.
+fn import_document(
+    session: &mut Session,
+    id: &'static str,
+    blob: Blob,
+    file_name: &str,
+    given: Option<Vec<String>>,
+) -> Run {
+    let parsed = craft3d_fcstdread::parse_shared(blob.bytes(), &blob.sha256())
+        .map_err(|e| CommandError::new(format!("{id}: `{file_name}`: {e}")))?;
+    let items = parsed.items();
+    if items.is_empty() {
+        let skipped = parsed.skipped();
+        return fail(format!(
+            "{id}: `{file_name}` has no visible solids or sheets{}",
+            if skipped.is_empty() {
+                String::new()
+            } else {
+                format!(" (left out: {})", skipped.join(", "))
+            }
+        ));
+    }
+    if let Some(names) = &given
+        && names.len() != items.len()
+    {
+        return fail(format!(
+            "{id}: `names` has {} names for the {} solids and sheets of `{file_name}`",
+            names.len(),
+            items.len()
+        ));
+    }
+    let options = options(session, id)?;
+    let mut reports = Vec::with_capacity(items.len());
+    let mut colors = Vec::with_capacity(items.len());
+    let mut face_colors = Vec::with_capacity(items.len());
+    let mut names = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let read = parsed.build(index, &options).map_err(|e| {
+            CommandError::new(format!(
+                "{id}: `{file_name}`, object `{}` ({}): {e}",
+                item.label, item.object
+            ))
+        })?;
+        colors.push(read.color);
+        face_colors.push(parsed.face_colors(index, &read.face_ids));
+        names.push(item.name.clone());
+        let r = &read.report;
+        reports.push(json!({
+            "solid": index,
+            "object": item.object,
+            "label": item.label,
+            "color": read.color.map(|[r, g, b]| format!("#{r:02x}{g:02x}{b:02x}")),
+            "kind": match item.kind {
+                craft3d_stepread::ItemKind::Solid => "solid",
+                craft3d_stepread::ItemKind::Sheet => "sheet",
+            },
+            "fileUnit": r.length_unit,
+            "scale": r.scale,
+            "mergedEdges": r.merged_edges,
+            "sewnEdges": r.sewn_edges,
+            "sewnGap": r.sewn_gap,
+            "turnedShells": r.turned_shells,
+            "looseEdges": r.loose_edges,
+            "looseVertices": r.loose_vertices,
+            "unprovenEdges": r.unproven_edges,
+            "largestTolerance": r.largest_tolerance,
+        }));
+    }
+    let mut result = add_features(
+        session,
+        id,
+        &blob,
+        file_name,
+        given,
+        &names,
+        &colors,
+        &face_colors,
+        reports,
+    )?;
+    if let Some(map) = result.as_object_mut() {
+        map.insert("skipped".into(), json!(parsed.skipped()));
+    }
+    Ok(result)
+}
+
+/// The document's units and tolerance, as the readers take them.
+fn options(session: &Session, id: &str) -> Result<craft3d_stepread::Options, CommandError> {
+    let doc = session.document()?.history.current();
+    let tolerance = craft3d_math::Tolerance::new(doc.tolerance.linear, doc.tolerance.angular)
+        .ok_or_else(|| {
+            CommandError::new(format!(
+                "{id}: the document's tolerance is not positive and finite"
+            ))
+        })?;
+    Ok(craft3d_stepread::Options {
+        metres_per_unit: craft3d_regen::metres_per_unit(doc.units.length),
+        tolerance,
+        loosest: doc.tolerance.loosest_linear(),
+    })
 }
 
 /// The name of a placed solid: the last step of its path in the assembly,

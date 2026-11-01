@@ -1,0 +1,21 @@
+[package]
+name = "craft3d-fcstdread"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+craft3d-math.workspace = true
+craft3d-geom.workspace = true
+craft3d-topo.workspace = true
+craft3d-brep.workspace = true
+craft3d-zipstore.workspace = true
+craft3d-stepread.workspace = true
+
+[dev-dependencies]
+craft3d-tess.workspace = true
+serde_json.workspace = true
