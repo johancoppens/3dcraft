@@ -156,8 +156,14 @@ fn sewing_what_is_not_two_sheets_sharing_an_edge_fails_with_the_reason() {
 /// positions were rounded), so the side was refused and the example set
 /// 1 µm and 1e-6 rad first; with the rows formed from the stored net's
 /// differences, and the shift along the seam between corresponding points
-/// counted, the bounds are 1.021e-12 across, 5.7e-13 twist and 1.4e-13
-/// along (`docs/design/surfacing.md`, the tank's finding 1). The
+/// counted, the bounds were 1.021e-12 across, 5.7e-13 twist and 1.4e-13
+/// along. With the crown quintic (spine and shoulders of degree 5,
+/// `acrossDegree` 5, 2026-11-01) the bound across was 1.36e-12,
+/// undecided, until the expansion along `b` went on through every break
+/// where `b`'s rows are C¹ instead of counting the shift once on each side
+/// of it (`continuity.rs` › `Between`): now 1.046e-12 on the left seam and
+/// 1.181e-12 on the right (`docs/design/surfacing.md`, the tank's finding
+/// 1). The
 /// expectation is pinned apart from this test by the closed-form long
 /// seam of `geom/tests/network_g2.rs` (G2 proven at half a threshold, G1
 /// at 1.5), at three scales.
@@ -182,8 +188,11 @@ fn the_tank_is_proven_g2_at_the_default_tolerances() {
 }
 
 /// The whole tank at the default tolerances: both of its seams, measured
-/// on the finished solid through `measure.continuity` (the edges its
-/// assertions name), are proven G2.
+/// on the finished shell through `measure.continuity` (the edges its
+/// assertions name), are proven G2, and it is hollow: `feature.shell`
+/// builds (the sides free of creases on the C⁴ crown, and the vertices
+/// where the tunnel's wall and arch meet a side put on their seam,
+/// `tweak::on_seam`), its capacity 24.8 L.
 #[test]
 fn the_finished_tank_measures_g2_along_both_seams() {
     let steps = tank_until("no such step");
@@ -205,4 +214,16 @@ fn the_finished_tank_measures_g2_along_both_seams() {
         );
         assert_eq!(out["order"], "G2", "{out}");
     }
+    let doc = inspect(&mut s);
+    for feature in doc["features"].as_array().unwrap() {
+        assert_eq!(feature["status"], "ok", "{feature}");
+    }
+    let capacity = doc["outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["name"] == "capacity")
+        .unwrap();
+    let litres = capacity["value"].as_f64().unwrap();
+    assert!((24.0..26.0).contains(&litres), "{capacity}");
 }

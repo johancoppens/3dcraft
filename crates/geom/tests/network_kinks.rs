@@ -317,11 +317,11 @@ fn banded(s: &NurbsSurface) -> bool {
 /// A crown interpolated across with degree 5 from curves of degree 5 is
 /// four times differentiable along its lines: a side held in curvature to
 /// it needs no band for kinks and has no crease inside (`acrossDegree` 5,
-/// format 62; the fuel tank with quintic shoulders and spine measured so by
-/// hand). Made of cubics interpolated across with degree 3, the crown's
-/// line kinks and the side's change is put onto a band. The seam is held at a tolerance of 1e-6 of the size
-/// and an angular tolerance of 1e-6 (at the fuel tank's default 1e-9 rad
-/// its quintic seam is not proven G2 yet: docs/design/surfacing.md).
+/// format 62; the fuel tank, `docs/examples/tank.json`, is made so).
+/// Made of cubics interpolated across with degree 3, the crown's line
+/// kinks and the side's change is put onto a band. The seam is held at a
+/// tolerance of 1e-6 of the size and an angular tolerance of 1e-6 (the
+/// tank's seams at its default 1e-9 rad: `engine/tests/sew_sheets.rs`).
 #[test]
 fn a_side_held_in_curvature_to_a_quintic_crown_needs_no_band_and_is_smooth_inside() {
     for scale in SCALES {
