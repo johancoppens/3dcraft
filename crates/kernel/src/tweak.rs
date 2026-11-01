@@ -207,7 +207,14 @@ pub(crate) fn meet(surfaces: &[&Surface], start: Vec3, tol: f64) -> Option<Vec3>
 ///   residual over the sine, which from a point away from curved faces
 ///   throws the point far off.
 fn meet_foreseen(surfaces: &[&Surface], start: Vec3, tol: f64) -> Option<Vec3> {
-    meet_with(surfaces, start, tol, &mut vec![None; surfaces.len()], true)
+    meet_with(
+        surfaces,
+        start,
+        tol,
+        &mut vec![None; surfaces.len()],
+        true,
+        true,
+    )
 }
 
 /// [`meet`], with the feet on the freeform surfaces found from `guesses`
@@ -218,7 +225,7 @@ fn meet_near(
     tol: f64,
     guesses: &mut [Option<(f64, f64)>],
 ) -> Option<Vec3> {
-    meet_with(surfaces, start, tol, guesses, false)
+    meet_with(surfaces, start, tol, guesses, false, true)
 }
 
 /// [`meet_near`]; with `sideways`, as [`meet_foreseen`] says.
@@ -235,18 +242,32 @@ fn meet_near(
 /// 900 mm away). The one left out is held at the end, as every surface is:
 /// the point must lie on it within `tol`, which near the seam the pair's
 /// agreement gives.
+///
+/// With `seam`, a point found where two of the surfaces are tangent is
+/// put on their seam ([`on_seam`]): for vertices. The points of an edge
+/// found again ([`fitted`]) are held to a plane across it and do not ask
+/// for it (most of the calls; the search for pairs alone costs a
+/// nearest point on every surface).
 fn meet_with(
     surfaces: &[&Surface],
     start: Vec3,
     tol: f64,
     guesses: &mut [Option<(f64, f64)>],
     sideways: bool,
+    seam: bool,
 ) -> Option<Vec3> {
+    let settle = |found: Vec3, guesses: &mut [Option<(f64, f64)>]| {
+        if seam {
+            on_seam(surfaces, found, tol, guesses, sideways)
+        } else {
+            found
+        }
+    };
     let kept: Vec<Option<(f64, f64)>> = guesses.to_vec();
     if let Some(found) = meet_steps(surfaces, start, tol, guesses, sideways, None) {
-        return Some(on_seam(surfaces, found, tol, guesses, sideways));
+        return Some(settle(found, guesses));
     }
-    let pairs = tangent_pairs(surfaces, start, &kept);
+    let pairs = tangent_pairs(surfaces, start, &kept, TANGENT);
     // Bounded: a pair per two surfaces at the vertex (a handful), each try
     // at most `MEET_STEPS` steps and `SLIDES` slides of eight halvings of
     // those; each try is counted against the operation's work bound too, so
@@ -259,7 +280,7 @@ fn meet_with(
             }
             guesses.copy_from_slice(&kept);
             if let Some(found) = meet_steps(surfaces, start, tol, guesses, sideways, Some(silent)) {
-                return Some(on_seam(surfaces, found, tol, guesses, sideways));
+                return Some(settle(found, guesses));
             }
         }
     }
@@ -267,12 +288,14 @@ fn meet_with(
     None
 }
 
-/// The pairs of `surfaces` tangent at `at` ([`TANGENT`], their normals
-/// the same way), the feet found from `guesses`.
+/// The pairs of `surfaces` whose normals at `at` are within the sine
+/// `within` of each other and point the same way, the feet found from
+/// `guesses`.
 fn tangent_pairs(
     surfaces: &[&Surface],
     at: Vec3,
     guesses: &[Option<(f64, f64)>],
+    within: f64,
 ) -> Vec<(usize, usize)> {
     let mut normals: Vec<Option<Vec3>> = Vec::with_capacity(surfaces.len());
     for (surface, guess) in surfaces.iter().zip(guesses.iter()) {
@@ -283,7 +306,7 @@ fn tangent_pairs(
     for (i, a) in normals.iter().enumerate() {
         for (j, b) in normals.iter().enumerate().skip(i + 1) {
             if let (Some(a), Some(b)) = (a, b)
-                && a.cross(*b).length() <= TANGENT
+                && a.cross(*b).length() <= within
                 && a.dot(*b) > 0.0
             {
                 pairs.push((i, j));
@@ -302,8 +325,14 @@ fn tangent_pairs(
 /// cylinder of 48.8 mm, its shell's vertices at the two ends of their seam
 /// 3 µm below and 4 µm above it at a tolerance of 1e-6 mm, and the edge
 /// between them dipping past the cylinder's own border, where points
-/// beside it could not be told apart). Each of the pair is tried as the one
-/// the others' curve turns onto; the first that moves the point is kept.
+/// beside it could not be told apart). The pair's normals there are apart
+/// by up to `√(2 tol / r)` (2e-4 at the tank's nose), beyond [`TANGENT`],
+/// so a pair is any two whose normals are within [`SEAM_PAIR`]: where two
+/// surfaces cross instead, a point within the tolerance of both lies
+/// within the tolerance over the angle of where they cross, and the
+/// secant steps either stay there or leave the surfaces and are not
+/// taken. Each of the pair is tried as the one the others' curve turns
+/// onto; the first that moves the point is kept.
 fn on_seam(
     surfaces: &[&Surface],
     found: Vec3,
@@ -311,7 +340,7 @@ fn on_seam(
     guesses: &mut [Option<(f64, f64)>],
     sideways: bool,
 ) -> Vec3 {
-    for (i, j) in tangent_pairs(surfaces, found, guesses) {
+    for (i, j) in tangent_pairs(surfaces, found, guesses, SEAM_PAIR) {
         for silent in [j, i] {
             if let Some(moved) = turn_onto_seam(surfaces, found, tol, guesses, sideways, silent) {
                 return moved;
@@ -320,6 +349,10 @@ fn on_seam(
     }
     found
 }
+
+/// The sine within which two surfaces' normals at a vertex make them a
+/// pair [`on_seam`] puts the vertex onto the seam of.
+const SEAM_PAIR: f64 = 1e-2;
 
 /// Most secant steps of [`turn_onto_seam`].
 const SECANTS: usize = 8;
@@ -822,7 +855,7 @@ fn fitted(
         held.push(&across);
         let mut feet: Vec<Option<(f64, f64)>> = guesses.get(..count)?.to_vec();
         feet.push(None);
-        let point = meet_with(&held, from, tol, &mut feet, sideways)?;
+        let point = meet_with(&held, from, tol, &mut feet, sideways, false)?;
         for (slot, foot) in guesses.iter_mut().zip(feet) {
             *slot = foot;
         }
@@ -1782,7 +1815,8 @@ mod seam_tests {
         let end = Surface::Plane(Plane::new(
             Frame::new(Vec3::new(100.0, 0.0, z0), Vec3::new(1.0, 0.0, 0.3), Vec3::Y).unwrap(),
         ));
-        for dz in [5e-3, -4e-3, 1e-7] {
+        // 9 µm along: the pair's normals 1.8e-4 apart, beyond `TANGENT`.
+        for dz in [5e-3, -4e-3, 9e-3, 1e-7] {
             let start = Vec3::new(100.0, r, z0 + dz);
             let found = meet(&[&wall, &cylinder, &end], start, tol).unwrap();
             assert!(
