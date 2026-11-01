@@ -1360,7 +1360,12 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                     b: rail_to_manifest(b),
                 }
             }
-            doc::FeatureKind::SurfaceNetwork(doc::SurfaceNetwork { u, v, edges }) => {
+            doc::FeatureKind::SurfaceNetwork(doc::SurfaceNetwork {
+                u,
+                v,
+                edges,
+                across_degree,
+            }) => {
                 let doc::NetworkEdges {
                     u_first,
                     u_last,
@@ -1376,6 +1381,7 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                         v_first: hold_to_manifest(v_first),
                         v_last: hold_to_manifest(v_last),
                     },
+                    across_degree: *across_degree,
                 }
             }
             doc::FeatureKind::SurfaceTrim(doc::SurfaceTrim {
@@ -3315,7 +3321,12 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
                     b: rail_to_doc(b),
                 })
             }
-            manifest::FeatureKind::SurfaceNetwork { u, v, edges } => {
+            manifest::FeatureKind::SurfaceNetwork {
+                u,
+                v,
+                edges,
+                across_degree,
+            } => {
                 let manifest::NetworkEdges {
                     u_first,
                     u_last,
@@ -3331,6 +3342,7 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
                         v_first: hold_to_doc(v_first),
                         v_last: hold_to_doc(v_last),
                     },
+                    across_degree,
                 })
             }
             manifest::FeatureKind::SurfaceTrim {

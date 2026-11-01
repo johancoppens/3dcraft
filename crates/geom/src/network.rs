@@ -2075,6 +2075,31 @@ fn tangency(
 /// rounds each control point by at most `|c| ε`, far below any tolerance
 /// such coordinates can carry.
 pub fn gordon(net: &Network<'_>) -> Result<Patch, NetworkError> {
+    gordon_across(net, DEFAULT_ACROSS_DEGREE)
+}
+
+/// The degree each family of curves is interpolated across with by
+/// default (fewer curves less one where there are fewer).
+pub const DEFAULT_ACROSS_DEGREE: usize = 3;
+
+/// The degrees a network may be interpolated across with
+/// ([`gordon_across`]).
+pub const ACROSS_DEGREES: [usize; 2] = [3, 5];
+
+/// [`gordon`] with each family interpolated across with splines of
+/// `across` (3 or 5; fewer curves less one where there are fewer). A
+/// quintic across is four times differentiable at the crossings where a
+/// cubic is twice: a face held in curvature (G2) along the sheet then
+/// sees a second derivative across whose own derivative along the edge
+/// does not jump at the sheet's knots (the kink a curvature hold to a
+/// cubic face has to put on a band of its own, `kinks_apart`), where its
+/// curves are of degree five too.
+pub fn gordon_across(net: &Network<'_>, across: usize) -> Result<Patch, NetworkError> {
+    if !ACROSS_DEGREES.contains(&across) {
+        return refuse(format!(
+            "a network is interpolated across its curves with degree 3 (the default) or 5, not {across}"
+        ));
+    }
     let points = || {
         net.u
             .iter()
@@ -2091,7 +2116,7 @@ pub fn gordon(net: &Network<'_>) -> Result<Patch, NetworkError> {
     let centre = (lo + hi) * 0.5;
     let extent = (hi - lo).length();
     if !(centre.is_finite() && extent.is_finite()) || centre.length() <= extent {
-        return gordon_here(net);
+        return gordon_here(net, across);
     }
     let there = craft3d_math::Transform::translation(-centre);
     let back = craft3d_math::Transform::translation(centre);
@@ -2133,13 +2158,16 @@ pub fn gordon(net: &Network<'_>) -> Result<Patch, NetworkError> {
             }
         };
     }
-    let mut patch = gordon_here(&Network {
-        u: &u,
-        v: &v,
-        edges,
-        tolerance: net.tolerance,
-        angular: net.angular,
-    })?;
+    let mut patch = gordon_here(
+        &Network {
+            u: &u,
+            v: &v,
+            edges,
+            tolerance: net.tolerance,
+            angular: net.angular,
+        },
+        across,
+    )?;
     patch.surface = patch.surface.transformed(&back)?;
     for b in patch.boundary.iter_mut() {
         if let Some(c) = b.take() {
@@ -2149,7 +2177,7 @@ pub fn gordon(net: &Network<'_>) -> Result<Patch, NetworkError> {
     Ok(patch)
 }
 
-fn gordon_here(net: &Network<'_>) -> Result<Patch, NetworkError> {
+fn gordon_here(net: &Network<'_>, across: usize) -> Result<Patch, NetworkError> {
     let (m, n) = (net.u.len(), net.v.len());
     if !(2..=MAX_NETWORK_CURVES).contains(&m) || !(2..=MAX_NETWORK_CURVES).contains(&n) {
         return refuse(format!(
@@ -2525,8 +2553,8 @@ fn gordon_here(net: &Network<'_>) -> Result<Patch, NetworkError> {
             own.saturating_add(other).saturating_add(d + 1)
         };
         within_budget(
-            size(du, &tu, (n - 1).min(3), n),
-            size(dv, &tv, (m - 1).min(3), m),
+            size(du, &tu, (n - 1).min(across), n),
+            size(dv, &tv, (m - 1).min(across), m),
         )?;
     }
     compatible_tracks(&mut us)?;
@@ -2550,8 +2578,8 @@ fn gordon_here(net: &Network<'_>) -> Result<Patch, NetworkError> {
                 .ok_or_else(internal)?;
         }
     }
-    let du_across = (n - 1).min(3);
-    let dv_across = (m - 1).min(3);
+    let du_across = (n - 1).min(across);
+    let dv_across = (m - 1).min(across);
     let raws_u: Vec<Raw> = us.iter().map(|t| t.raw.clone()).collect();
     let raws_v: Vec<Raw> = vs.iter().map(|t| t.raw.clone()).collect();
     let a = skin(&raws_u, &common_v, dv_across)?;

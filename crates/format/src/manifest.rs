@@ -1058,12 +1058,16 @@ pub enum FeatureKind {
     /// A sheet through a network of curves that cross (format version
     /// 53): `u` and `v` are rails as a developable's,
     /// `edges` the conditions of its four edges (written only when one is
-    /// held).
+    /// held), `across_degree` the degree each family is interpolated
+    /// across with (format version 62; written only when not the default,
+    /// 3).
     SurfaceNetwork {
         u: Vec<Rail>,
         v: Vec<Rail>,
         #[serde(default, skip_serializing_if = "NetworkEdges::is_free")]
         edges: NetworkEdges,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        across_degree: Option<u8>,
     },
     /// A face on the surface of the face `face` of an earlier body,
     /// bounded by loops of rails (format version 61): `outer`, `holes`

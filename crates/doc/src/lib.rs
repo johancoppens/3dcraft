@@ -744,6 +744,12 @@ pub struct SurfaceNetwork {
     pub v: Vec<Rail>,
     #[serde(default)]
     pub edges: NetworkEdges,
+    /// The degree each family is interpolated across with: 3 (`None`, the
+    /// default) or 5, which keeps a face held in curvature along the sheet
+    /// free of kinks at its knots where the curves are quintic too
+    /// (docs/design/surfacing.md › *Kinks of a curvature hold*).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub across_degree: Option<u8>,
 }
 
 impl SurfaceNetwork {

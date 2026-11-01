@@ -202,13 +202,19 @@ pub(crate) fn build(
             _ => Condition::Free,
         }
     };
-    let made = network::gordon(&Network {
-        u: &us,
-        v: &vs,
-        edges: [condition(0), condition(1), condition(2), condition(3)],
-        tolerance: tol.linear,
-        angular: tol.angular,
-    })
+    let across = feature
+        .across_degree
+        .map_or(network::DEFAULT_ACROSS_DEGREE, usize::from);
+    let made = network::gordon_across(
+        &Network {
+            u: &us,
+            v: &vs,
+            edges: [condition(0), condition(1), condition(2), condition(3)],
+            tolerance: tol.linear,
+            angular: tol.angular,
+        },
+        across,
+    )
     .map_err(|e| {
         // The geometry numbers curves from 1 as the feature lists them.
         let text = e.to_string();

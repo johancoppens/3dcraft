@@ -1,0 +1,19 @@
+[
+ ["sketch.create", {"plane": "xy", "name": "Near"}],
+ ["sketch.spline", {"sketch": "Near", "through": [[0, 0], [50, 0], [100, 0]], "degree": 2}],
+ ["sketch.create", {"plane": "xy", "name": "Far"}],
+ ["sketch.spline", {"sketch": "Far", "through": [[0, 60], [50, 60], [100, 60]], "degree": 2}],
+ ["sketch.create", {"plane": "yz", "offset": "0 mm", "name": "Across 0"}],
+ ["sketch.spline", {"sketch": "Across 0", "through": [[0, 0], [20, 2], [40, 2], [60, 0]]}],
+ ["sketch.create", {"plane": "yz", "offset": "20 mm", "name": "Across 1"}],
+ ["sketch.spline", {"sketch": "Across 1", "through": [[0, 0], [20, 6], [40, 6], [60, 0]]}],
+ ["sketch.create", {"plane": "yz", "offset": "40 mm", "name": "Across 2"}],
+ ["sketch.spline", {"sketch": "Across 2", "through": [[0, 0], [20, 3], [40, 3], [60, 0]]}],
+ ["sketch.create", {"plane": "yz", "offset": "60 mm", "name": "Across 3"}],
+ ["sketch.spline", {"sketch": "Across 3", "through": [[0, 0], [20, 8], [40, 8], [60, 0]]}],
+ ["sketch.create", {"plane": "yz", "offset": "80 mm", "name": "Across 4"}],
+ ["sketch.spline", {"sketch": "Across 4", "through": [[0, 0], [20, 4], [40, 4], [60, 0]]}],
+ ["sketch.create", {"plane": "yz", "offset": "100 mm", "name": "Across 5"}],
+ ["sketch.spline", {"sketch": "Across 5", "through": [[0, 0], [20, 5], [40, 5], [60, 0]]}],
+ ["feature.surface.network", {"u": ["Near", "Far"], "v": ["Across 0", "Across 1", "Across 2", "Across 3", "Across 4", "Across 5"], "acrossDegree": 5, "name": "Quintic"}]
+]

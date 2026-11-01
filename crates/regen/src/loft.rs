@@ -50,6 +50,7 @@ fn guided(
             .collect(),
         v: feature.guides.clone(),
         edges: craft3d_doc::NetworkEdges::default(),
+        across_degree: None,
     };
     let (body, names, _) = crate::network::build(doc, variables, id, &network, earlier)
         .map_err(|e| guided_words(&e))?;
