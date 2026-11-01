@@ -4,8 +4,9 @@
 //! configurations and bakes a motion), its assertions measured side by
 //! side (`assert_check`), and the regeneration's unions of a pattern
 //! (`craft3d_regen` › `derive::in_order`). Kept here, at the bottom of the
-//! layers, so every crate that starts such threads takes them from the
-//! same pool (an independent review of 2026-11-01 found the pattern's
+//! layers, so the threads that may each run a freeform boolean come from
+//! the same pool (the tessellator's and the mass integrator's lighter
+//! threads keep bounds of their own) (an independent review of 2026-11-01 found the pattern's
 //! unions starting their own threads on top of the engine's). Each such thread may run
 //! a freeform boolean with its own budget of trees (`craft3d_kernel` ›
 //! `freeform::HELD_BYTES`, 2 GiB), and the work nests (an assertion job
@@ -70,5 +71,11 @@ mod tests {
         assert!(a.threads() + b.threads() + c.threads() <= SHARED_THREADS);
         drop((a, b, c));
         assert_eq!(lease(0).threads(), 0);
+        // Everything came back: nothing else in this crate leases.
+        let all = lease(SHARED_THREADS);
+        assert_eq!(all.threads(), SHARED_THREADS);
+        assert_eq!(lease(1).threads(), 0, "none left while all are out");
+        drop(all);
+        assert_eq!(lease(SHARED_THREADS).threads(), SHARED_THREADS);
     }
 }

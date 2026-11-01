@@ -694,9 +694,9 @@ const MAX_JOIN_THREADS: usize = 8;
 /// the count is the same however the items were shared out. A helper
 /// that cannot be started leaves more for the others; one that panics
 /// loses the item it was working on, and then there is no answer
-/// (`None`). One item at a time on wasm. Done one by one (on wasm, under a
-/// bound, or with no thread free) the work ends at the first result `stop`
-/// accepts; on several threads every item is done (no bound counts it).
+/// (`None`). One item at a time on wasm. Under a bound (one by one) the
+/// work ends at the first result `stop` accepts; without one every item is
+/// done, whatever the threads, so the work counted is the same.
 fn in_order<I: Send, T: Send>(
     items: Vec<I>,
     job: impl Fn(I) -> T + Sync,
@@ -706,8 +706,16 @@ fn in_order<I: Send, T: Send>(
     let threads = craft3d_math::available_threads()
         .min(MAX_JOIN_THREADS)
         .min(count);
-    if threads <= 1 || cfg!(target_arch = "wasm32") || craft3d_geom::allowance::scope().is_some() {
+    // Under a bound the work is counted against it, so it ends at the
+    // first refusal; without one every item is done, one by one or not,
+    // so the work counted (`allowance::measured`, the benchmark) does not
+    // depend on how many threads were free.
+    let bounded = craft3d_geom::allowance::scope().is_some();
+    if bounded {
         return Some(one_by_one(items, &job, &stop));
+    }
+    if threads <= 1 || cfg!(target_arch = "wasm32") {
+        return Some(one_by_one(items, &job, &|_: &T| false));
     }
     // The helpers come from the process's one pool of threads for heavy
     // work (`craft3d_math::pool`), shared with the engine's: each may run
@@ -716,7 +724,7 @@ fn in_order<I: Send, T: Send>(
     // would multiply them. None free: this thread does every union.
     let lease = craft3d_math::pool::lease(threads - 1);
     if lease.threads() == 0 {
-        return Some(one_by_one(items, &job, &stop));
+        return Some(one_by_one(items, &job, &|_: &T| false));
     }
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Mutex, PoisonError};
@@ -1103,6 +1111,39 @@ mod tests {
             assert_eq!(got, vec![Ok(0), Ok(1), Ok(2), Err(3)]);
             assert_eq!(done.load(std::sync::atomic::Ordering::Relaxed), 4);
         });
+    }
+
+    /// Without a bound every item is done and counted, also after a
+    /// refusal, however many threads the pool lends: the work counted is
+    /// the same with all of them out.
+    #[test]
+    fn in_order_without_a_bound_counts_every_item_whatever_the_threads() {
+        let run = || {
+            let done = std::sync::atomic::AtomicU32::new(0);
+            let before = craft3d_geom::allowance::spent();
+            let got = in_order(
+                (0..8).collect::<Vec<u64>>(),
+                |i| {
+                    done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    craft3d_geom::allowance::charge(i + 1);
+                    if i == 3 { Err(i) } else { Ok(i) }
+                },
+                Result::is_err,
+            )
+            .unwrap();
+            let spent = craft3d_geom::allowance::spent() - before;
+            (
+                got.len(),
+                done.load(std::sync::atomic::Ordering::Relaxed),
+                spent,
+            )
+        };
+        let lent = run();
+        let all_out = craft3d_math::pool::lease(craft3d_math::pool::SHARED_THREADS);
+        let alone = run();
+        drop(all_out);
+        assert_eq!(lent, (8, 8, 36));
+        assert_eq!(alone, lent);
     }
 
     #[test]

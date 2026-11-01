@@ -976,9 +976,7 @@ fn extent(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<Outcome, 
         // sets: measured as the mass properties are everywhere
         // ([`mass_of_in`]). Any other body's box is exact, measuring
         // nothing.
-        let freeform = body.faces.iter().any(|f| f.surface.is_freeform())
-            || body.edges.iter().any(|e| e.curve.is_freeform());
-        if freeform {
+        if is_freeform_body(&body) {
             let _measured = mass_of_in(ctx, id, &body);
         }
         let boxed = body_box(&body, ctx.doc.tolerance.linear, ctx.refine, ctx.box_budget)
@@ -1096,9 +1094,7 @@ fn body_box(
     let Some((hlo, hhi)) = held.corners() else {
         return Ok(None);
     };
-    let freeform = body.faces.iter().any(|f| f.surface.is_freeform())
-        || body.edges.iter().any(|e| e.curve.is_freeform());
-    if !freeform {
+    if !is_freeform_body(body) {
         return Ok(Some(BodyBox {
             inner: Some((hlo, hhi)),
             outer: (hlo, hhi),
@@ -1155,6 +1151,13 @@ fn mass_of_in(
 ) -> Result<craft3d_topo::MassProperties, craft3d_topo::MassError> {
     crate::appearance_cmds::measure_ahead(ctx.doc, ctx.regen, id, body);
     crate::mass::mass_of(body)
+}
+
+/// Whether `body` has a freeform face or edge: then its box comes from a
+/// mesh ([`body_box`]), else it is exact.
+fn is_freeform_body(body: &Body) -> bool {
+    body.faces.iter().any(|f| f.surface.is_freeform())
+        || body.edges.iter().any(|e| e.curve.is_freeform())
 }
 
 /// `axis` of a measure: 0, 1 or 2.
