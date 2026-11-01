@@ -65,9 +65,9 @@
 //! anything that large is made); a curve crossing a tangent edge square
 //! to its face or along it, or curves leaving it to opposite sides; a
 //! corner where two held edges ask different tangent planes or twists; a
-//! tangent edge along a torus or along a spline face's curve that is not
-//! one of its parameter lines (owed: a tangent ribbon fitted with a
-//! proven bound); weights that would not stay positive.
+//! tangent edge along a torus, or along a curve of a spline face that is
+//! neither one of its parameter lines nor a curve the face can be written
+//! across (the ribbon); weights that would not stay positive.
 
 use crate::refine::{
     MAX_INTERPOLATED_BANDED, Raw, SAME_KNOT, basis, bernstein_product, bezier_pieces_batched,
@@ -626,26 +626,42 @@ struct Track {
     reversed: bool,
 }
 
+/// `max` for bounds: a term that is not a number makes the result
+/// infinite (`f64::max` would pass over it, and a NaN shift would read as
+/// none).
+pub(crate) fn nan_max(m: f64, x: f64) -> f64 {
+    if x.is_nan() || m.is_nan() {
+        f64::INFINITY
+    } else {
+        m.max(x)
+    }
+}
+
 /// A bound on the speed `|d/dt (X / w)|` of a homogeneous spline: by the
 /// convex hulls, `(max |X′| + R max |w′|) / min w`, `R` the farthest of
 /// its points from the origin (infinite where a weight is not positive).
 fn speed(raw: &Raw) -> Result<f64, NetworkError> {
     let d = derivative(raw)?;
-    let lightest = raw
-        .points
-        .iter()
-        .map(|h| h[3])
-        .fold(f64::INFINITY, f64::min);
+    // A term that is not a number makes the bound infinite (`max` and
+    // `min` would pass over it).
+    let lightest = raw.points.iter().map(|h| h[3]).fold(f64::INFINITY, |m, w| {
+        if w.is_nan() {
+            f64::NEG_INFINITY
+        } else {
+            m.min(w)
+        }
+    });
     let reach = raw
         .points
         .iter()
-        .filter_map(|h| point(*h))
-        .fold(0.0_f64, |m, p| m.max(p.length()));
+        .map(|h| point(*h).map_or(f64::INFINITY, |p| p.length()))
+        .fold(0.0_f64, nan_max);
     let lead = d
         .points
         .iter()
-        .fold(0.0_f64, |m, h| m.max(xyz(*h).length() + reach * h[3].abs()));
-    Ok(if lightest > 0.0 {
+        .map(|h| xyz(*h).length() + reach * h[3].abs())
+        .fold(0.0_f64, nan_max);
+    Ok(if lightest > 0.0 && lead.is_finite() {
         lead / lightest
     } else {
         f64::INFINITY
@@ -753,7 +769,8 @@ impl Track {
         let shift = own
             .iter()
             .zip(common)
-            .fold(0.0_f64, |m, (a, b)| m.max((a - b).abs()));
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f64, nan_max);
         let speed = speed(&self.raw)?;
         if (speed * shift).is_finite() && speed * shift <= 0.1 * tol {
             return Ok(());
@@ -2271,7 +2288,7 @@ fn gordon_here(net: &Network<'_>) -> Result<Patch, NetworkError> {
         })?
         else {
             return refuse(format!(
-                "{label}: it does not run along one of its face's parameter lines; curvature to a spline face along any other curve is not supported yet (owed: a ribbon fitted with a proven bound)"
+                "{label}: it lies on its face neither along one of its parameter lines nor as a curve the face can be written across (the ribbon: its curve in the face's parameters recovered, or projected and proven within half the tolerance of the edge), so the face's curvature across it is not known"
             ));
         };
         let line = Track {
@@ -2313,7 +2330,8 @@ fn gordon_here(net: &Network<'_>) -> Result<Patch, NetworkError> {
             let shift = own
                 .iter()
                 .zip(common.iter())
-                .fold(0.0_f64, |m, (a, b)| m.max((a - b).abs()));
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0_f64, nan_max);
             let moved = speed(&line.raw)? * shift;
             if moved.is_finite() && moved <= 0.1 * tol {
                 continue;
@@ -2385,7 +2403,7 @@ fn gordon_here(net: &Network<'_>) -> Result<Patch, NetworkError> {
         })?;
         let Some([iso, field, second]) = found else {
             return refuse(format!(
-                "{}: it does not run along one of its face's parameter lines; tangency to a spline face along any other curve is not supported yet (owed: a tangent ribbon fitted with a proven bound)",
+                "{}: it lies on its face neither along one of its parameter lines nor as a curve the face can be written across (the ribbon: its curve in the face's parameters recovered, or projected and proven within half the tolerance of the edge), so the face's tangent planes along it are not known",
                 EDGE_NAMES.get(e).copied().unwrap_or("an edge")
             ));
         };
@@ -3573,7 +3591,8 @@ const KINK_HALVINGS: u32 = 12;
 /// of the rows' points, over the square of the band's spans, reaches a
 /// quarter of the curvature threshold of the continuity measure
 /// (`min(angular / L, 2 tol / L²)`, `L` the edge's control polygon), at
-/// the slowest speed across the edge.
+/// the slowest speed across the edge (the first knot span across, from
+/// `kv[pv]` to `kv[pv + 1]`). Infinite where it cannot be told.
 fn rounding_floor(net: &Net, edge: &Raw, tol: f64, angular: f64) -> f64 {
     let points: Vec<Vec3> = edge.points.iter().filter_map(|h| point(*h)).collect();
     let length: f64 = points
@@ -3587,12 +3606,14 @@ fn rounding_floor(net: &Net, edge: &Raw, tol: f64, angular: f64) -> f64 {
         .rows
         .iter()
         .flatten()
-        .filter_map(|h| point(*h))
-        .fold(0.0_f64, |m, p| m.max(p.length()));
-    let (Some(&k1), Ok(second)) = (net.kv.get(net.pv + 1), net.column(1)) else {
-        return 0.0;
+        .map(|h| point(*h).map_or(f64::INFINITY, |p| p.length()))
+        .fold(0.0_f64, nan_max);
+    let (Some(&k0), Some(&k1), Ok(second)) =
+        (net.kv.get(net.pv), net.kv.get(net.pv + 1), net.column(1))
+    else {
+        return f64::INFINITY;
     };
-    let factor = net.pv as f64 / k1;
+    let factor = net.pv as f64 / (k1 - k0);
     let (lo, hi) = edge.domain().unwrap_or((0.0, 1.0));
     let mut slowest = f64::INFINITY;
     for k in 0..=32 {
@@ -3600,12 +3621,21 @@ fn rounding_floor(net: &Net, edge: &Raw, tol: f64, angular: f64) -> f64 {
         if let (Ok(a), Ok(b)) = (eval(edge, u), eval(&second, u))
             && let (Some(a), Some(b)) = (point(a), point(b))
         {
-            slowest = slowest.min(a.distance(b) * factor);
+            let speed = a.distance(b) * factor;
+            // A speed that is not a number leaves the floor unknown.
+            slowest = if speed.is_nan() {
+                0.0
+            } else {
+                slowest.min(speed)
+            };
         }
     }
     let threshold = (angular / length).min(2.0 * tol / (length * length));
+    // Where the floor cannot be told, no band narrower than the reach is
+    // taken (the kinks stay where they were: the seam's proof is not put
+    // at risk for the crease).
     if !(threshold > 0.0 && slowest > 0.0 && slowest.is_finite() && size.is_finite()) {
-        return 0.0;
+        return f64::INFINITY;
     }
     // Curvature from the rows: `|ΔP| / h² / |S_v|²`, `ΔP` of the rounding
     // of the points (8 ε of their size: measured on the tank's corner, a
@@ -3686,7 +3716,7 @@ fn kinks_apart(
             .length()
             / w;
         if speed > 0.0 && speed.is_finite() {
-            crease = crease.max(jump.length() / speed);
+            crease = nan_max(crease, jump.length() / speed);
         }
     }
     let height = |c: &[f64]| c.iter().fold(0.0_f64, |m, x| m.max(x.abs()));

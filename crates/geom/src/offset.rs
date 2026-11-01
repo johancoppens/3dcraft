@@ -1959,6 +1959,75 @@ fn fit(
 mod tests {
     use super::*;
 
+    /// A sheet `(u, v, h (v − a)⁵)` over `[0, 1]²`, a quintic across, gently
+    /// curved inside (its curvature at most `20 h (1 − a)³`) and sharply
+    /// past its border `v = 1`, where the quintic goes on turning.
+    fn quintic_sheet(h: f64, a: f64, scale: f64) -> Surface {
+        // The Bézier points of `(v − a)⁵` are its polar form at 0 and 1:
+        // `(1 − a)ᵏ (−a)⁵⁻ᵏ`.
+        let z = |k: i32| h * (1.0 - a).ppowi(k) * (-a).ppowi(5 - k);
+        let mut ctrl = Vec::new();
+        for i in 0..2 {
+            for k in 0..6 {
+                ctrl.push(Vec3::new(f64::from(i), f64::from(k) / 5.0, z(k)) * scale);
+            }
+        }
+        Surface::Nurbs(
+            NurbsSurface::new(
+                1,
+                5,
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+                2,
+                6,
+                ctrl,
+                vec![1.0; 12],
+            )
+            .unwrap(),
+        )
+    }
+
+    /// Where a surface's offset folds only past its domain, as its end
+    /// span's polynomial goes on there, it is continued by its Taylor
+    /// expansion instead (offset_held): the offset over a box past the
+    /// border is fitted within the limit inside the domain, over the box
+    /// asked for.
+    #[test]
+    fn an_offset_that_folds_only_past_the_border_is_made_over_the_taylor_continuation() {
+        for scale in [1e-3, 1.0, 1e6] {
+            let sheet = quintic_sheet(1.0, 0.9, scale);
+            let (d, limit) = (1.0 * scale, 1e-6 * scale);
+            let over = ((0.0, 1.0), (0.0, 1.35));
+            // The plain continuation folds past the border (the curvature
+            // reaches 1 / d near v = 1.3), and only there.
+            assert!(regular_over(&sheet, d, ((0.0, 1.0), (0.0, 1.0))).is_ok());
+            assert!(
+                matches!(
+                    regular_over(&sheet, d, over),
+                    Err(OffsetError::Folds { .. } | OffsetError::Unproven { .. })
+                ),
+                "scale {scale}"
+            );
+            let fitted = offset_over(&sheet, d, limit, over)
+                .unwrap_or_else(|e| panic!("scale {scale}: {e:?}"));
+            // Over the box asked for, which the Taylor continuation spans.
+            let ((u0, u1), (v0, v1)) = fitted.domain();
+            assert!(u0 <= 0.0 && u1 >= 1.0 && v0 <= 0.0, "{:?}", fitted.domain());
+            assert!((v1 - 1.35).abs() <= 1e-12, "{:?}", fitted.domain());
+            for i in 0..=8 {
+                for j in 0..=8 {
+                    let (u, v) = (f64::from(i) / 8.0, f64::from(j) / 8.0);
+                    let exact = exact(&sheet, d, u, v).unwrap();
+                    let off = fitted.eval(u, v).distance(exact);
+                    assert!(
+                        off <= 1.01 * limit,
+                        "scale {scale}: off by {off:e} at ({u}, {v})"
+                    );
+                }
+            }
+        }
+    }
+
     /// A fit that would need more evaluations of the exact offset than
     /// its budget stops and says so, rather than going on.
     #[test]

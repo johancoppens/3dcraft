@@ -263,8 +263,16 @@ fn meet_with(
             }
         }
     }
+    // Bounded: a pair per two surfaces at the vertex (a handful), each try
+    // at most `MEET_STEPS` steps and `SLIDES` slides of eight halvings of
+    // those; each try is counted against the operation's work bound too, so
+    // a search of many vertices ends where its bound says.
     for (i, j) in pairs {
         for silent in [j, i] {
+            if craft3d_geom::allowance::pass() {
+                guesses.copy_from_slice(&kept);
+                return None;
+            }
             guesses.copy_from_slice(&kept);
             if let Some(found) = meet_steps(surfaces, start, tol, guesses, sideways, Some(silent)) {
                 return Some(found);
@@ -300,6 +308,9 @@ fn meet_steps(
     {
         let mut foot: Option<(f64, f64)> = None;
         for _ in 0..SLIDES {
+            if craft3d_geom::allowance::pass() {
+                break;
+            }
             let (value, gradient) = distance_toward(surface, point, &mut foot)?;
             if value.abs() <= tol {
                 break;

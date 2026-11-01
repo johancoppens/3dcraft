@@ -293,10 +293,19 @@ fn end_jet(degree: usize, knots: &[f64], row: &[W], high: bool) -> Option<[W; 3]
 fn raised(points: Vec<W>, degree: usize) -> Vec<W> {
     let mut pts = points;
     if degree == 1 {
-        return pts.into_iter().take(2).collect();
+        // A line: the Taylor expansion's own ends (its second derivative
+        // is nothing for degree 1). Its middle point is no control point
+        // of the line: taken as the end, it stopped the continuation at
+        // half its length past the upper end.
+        let (Some(&a), Some(&b)) = (pts.first(), pts.get(2)) else {
+            return pts.into_iter().take(2).collect();
+        };
+        return vec![a, b];
     }
     while pts.len() < degree + 1 {
-        let n = pts.len() - 1;
+        let Some(n) = pts.len().checked_sub(1) else {
+            return pts;
+        };
         let mut next = Vec::with_capacity(n + 2);
         for i in 0..=n + 1 {
             let a = i as f64 / (n + 1) as f64;
@@ -932,6 +941,81 @@ mod tests {
             // the raised quadratics.
             let (_, nv) = e.counts();
             assert_eq!(nv, 6 + 3 + 3);
+        }
+    }
+
+    #[test]
+    fn a_surface_of_degree_one_or_two_across_is_continued_by_its_taylor_expansion() {
+        for scale in [1e-3, 1.0, 1e6] {
+            for dv in [1_usize, 2] {
+                // Cubic in u (a Bézier), degree `dv` in v with an inner knot.
+                let nv = dv + 2;
+                let mut knots_v = vec![0.0; dv + 1];
+                knots_v.push(0.5);
+                knots_v.extend(std::iter::repeat_n(1.0, dv + 1));
+                let mut ctrl = Vec::new();
+                for i in 0..4 {
+                    for j in 0..nv {
+                        let (x, y) = (i as f64, j as f64);
+                        let z = 0.3 * (0.9 * x).psin() + 0.2 * y * y - 0.1 * x * y;
+                        ctrl.push(Vec3::new(x, y, z) * scale);
+                    }
+                }
+                let s = NurbsSurface::new(
+                    3,
+                    dv,
+                    vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                    knots_v,
+                    4,
+                    nv,
+                    ctrl,
+                    vec![1.0; 4 * nv],
+                )
+                .unwrap();
+                let e = s
+                    .extended_taylor((0.0, 1.0), (-0.2, 1.4), 1e-9 * scale)
+                    .unwrap();
+                assert_eq!(e.domain(), ((0.0, 1.0), (-0.2, 1.4)), "degree {dv}");
+                for k in 0..=10 {
+                    let u = f64::from(k) / 10.0;
+                    // The whole expansion, to the box's ends: for degree
+                    // one the line `C + s C′` of the end span exactly.
+                    let (_, _, d_hi) = s.derivatives(u, 1.0);
+                    let (_, _, d_lo) = s.derivatives(u, 0.0);
+                    if dv == 1 {
+                        let hi = s.eval(u, 1.0) + d_hi * 0.4;
+                        let lo = s.eval(u, 0.0) - d_lo * 0.2;
+                        assert!(
+                            e.eval(u, 1.4).distance(hi) < 1e-12 * scale,
+                            "degree 1 high, u {u}"
+                        );
+                        assert!(
+                            e.eval(u, -0.2).distance(lo) < 1e-12 * scale,
+                            "degree 1 low, u {u}"
+                        );
+                    }
+                    // C1 across both borders (and C2 for degree two).
+                    let h = 1e-4;
+                    for (v_end, sign) in [(1.0, 1.0), (0.0, -1.0)] {
+                        let at = |t: f64| e.eval(u, v_end + sign * t);
+                        let out1 = (at(h) - at(0.0)) * (1.0 / h);
+                        let in1 = (at(0.0) - at(-h)) * (1.0 / h);
+                        let size = in1.length().max(1e-30);
+                        assert!(
+                            out1.distance(in1) < 1e-2 * size,
+                            "first, degree {dv}, u {u}, {v_end}"
+                        );
+                        if dv == 2 {
+                            let out2 = (at(2.0 * h) - at(h) * 2.0 + at(0.0)) * (1.0 / (h * h));
+                            let in2 = (at(0.0) - at(-h) * 2.0 + at(-2.0 * h)) * (1.0 / (h * h));
+                            assert!(
+                                out2.distance(in2) < 2e-2 * in2.length().max(size),
+                                "second, degree 2, u {u}, {v_end}"
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
 

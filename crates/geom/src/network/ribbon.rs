@@ -274,10 +274,19 @@ fn distance_bound(a: &Raw, b: &Raw, o: Vec3) -> Result<f64, NetworkError> {
         }
         if let [n0, n1, n2] = n.as_slice() {
             for ((p, q), r) in n0.iter().zip(n1).zip(n2) {
-                lead = lead.max((p * p + q * q + r * r).sqrt());
+                let size = (p * p + q * q + r * r).sqrt();
+                // A term that is not a number proves nothing (`max` would
+                // pass over it).
+                if !size.is_finite() {
+                    return Ok(f64::INFINITY);
+                }
+                lead = lead.max(size);
             }
         }
         for w in bernstein_product(&xw, &yw) {
+            if !w.is_finite() {
+                return Ok(f64::INFINITY);
+            }
             lightest = lightest.min(w);
         }
     }
@@ -336,8 +345,11 @@ fn recovered(
 }
 
 /// Whether the ribbon runs across along u: the axis whose least sine with
-/// the curve's direction (sampled at 16 places per piece) is the larger,
-/// refused below [`LEAST_ACROSS_SINE`].
+/// the curve's direction is the larger, refused below
+/// [`LEAST_ACROSS_SINE`]. The sine is sampled at 16 places per piece, not
+/// proven: the floor keeps the ribbon away from running along an axis,
+/// and what the ribbon then gives is proven where it is used (the
+/// distance bound, the continuity measure).
 fn across_axis(uv: &NurbsCurve) -> Result<bool, NetworkError> {
     let raw = Raw::of(uv);
     let d = super::derivative(&raw)?;
@@ -435,6 +447,22 @@ pub(super) fn ribbon(
     };
     let across_u = across_axis(&uv)?;
     let rows = rows(&net, &uv, across_u)?;
+    // A projected curve was checked at its samples only: it replaces the
+    // edge (holds compare against the ribbon's first row) only where the
+    // face written across it is proven within half the tolerance of the
+    // edge everywhere, as a recovered one is.
+    if !exact {
+        let o = raw
+            .points
+            .first()
+            .and_then(|h| point(*h))
+            .ok_or_else(internal)?;
+        let first = rows.first().ok_or_else(internal)?;
+        let gap = distance_bound(first, raw, o)?;
+        if gap.is_nan() || gap > 0.5 * tol {
+            return Ok(None);
+        }
+    }
     Ok(Some(Ribbon {
         uv,
         across_u,

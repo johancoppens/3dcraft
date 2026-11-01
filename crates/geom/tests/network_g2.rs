@@ -954,3 +954,87 @@ fn a_cylinder_one_tolerance_out_is_not_g2_to_the_cylinder() {
         );
     }
 }
+
+/// A flat bicubic patch over x in [0, 1] and y in [y0, y0 + 0.5] (z = 0),
+/// its control points along x at `xs` (uniform: x is its parameter; else
+/// the same line run at another pace).
+fn flat(xs: [f64; 4], y0: f64) -> NurbsSurface {
+    let mut ctrl = Vec::new();
+    for x in xs {
+        for j in 0..4 {
+            ctrl.push(v(x, y0 + 0.5 * f64::from(j) / 3.0, 0.0));
+        }
+    }
+    let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+    NurbsSurface::new(3, 3, knots.clone(), knots, 4, 4, ctrl, vec![1.0; 16]).unwrap()
+}
+
+/// Both edges of one family held in curvature to spline faces whose lines
+/// the crossing curves cross at different parameters: one line can give
+/// the family its crossing parameters, not two, so it is refused, naming
+/// how far apart they are.
+#[test]
+fn two_curvature_edges_whose_lines_are_crossed_at_different_parameters_are_refused() {
+    let third = [0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0];
+    // The face below y = 0 runs along x evenly; the one above y = 1 at
+    // another pace (its points along x crowded at the start).
+    let below = Surface::Nurbs(flat(third, -0.5));
+    let above = Surface::Nurbs(flat([0.0, 0.05, 0.3, 1.0], 1.0));
+    let us = vec![
+        bezier([
+            v(0.0, 0.0, 0.0),
+            v(1.0 / 3.0, 0.0, 0.0),
+            v(2.0 / 3.0, 0.0, 0.0),
+            v(1.0, 0.0, 0.0),
+        ]),
+        bezier([
+            v(0.0, 1.0, 0.0),
+            v(1.0 / 3.0, 1.0, 0.0),
+            v(2.0 / 3.0, 1.0, 0.0),
+            v(1.0, 1.0, 0.0),
+        ]),
+    ];
+    let vs: Vec<NurbsCurve> = [0.0, 0.5, 1.0]
+        .iter()
+        .map(|&x| {
+            bezier([
+                v(x, 0.0, 0.0),
+                v(x, 1.0 / 3.0, 0.1),
+                v(x, 2.0 / 3.0, 0.1),
+                v(x, 1.0, 0.0),
+            ])
+        })
+        .collect();
+    let both = [
+        Condition::Curvature {
+            surface: &below,
+            weight: 1.0,
+        },
+        Condition::Curvature {
+            surface: &above,
+            weight: 1.0,
+        },
+        Condition::Free,
+        Condition::Free,
+    ];
+    let err = gordon(&net(&us, &vs, both, 1.0)).unwrap_err();
+    assert!(
+        matches!(&err, NetworkError::Refused(w) if w.contains("different parameters")),
+        "{err}"
+    );
+    // Held to the evenly run face on both sides, the same network is built.
+    let even = Surface::Nurbs(flat(third, 1.0));
+    let agreeing = [
+        Condition::Curvature {
+            surface: &below,
+            weight: 1.0,
+        },
+        Condition::Curvature {
+            surface: &even,
+            weight: 1.0,
+        },
+        Condition::Free,
+        Condition::Free,
+    ];
+    assert!(gordon(&net(&us, &vs, agreeing, 1.0)).is_ok());
+}

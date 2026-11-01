@@ -892,6 +892,11 @@ fn mass_measure(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<Out
                         for shell in crate::mass::shells_of(&body) {
                             let shell =
                                 shell.map_err(|e| format!("`{fname}` cannot be measured: {e}"))?;
+                            if !shell.volume.is_finite() {
+                                return Err(format!(
+                                    "`{fname}` cannot be measured: a shell's volume is not a number"
+                                ));
+                            }
                             if shell.volume < 0.0 {
                                 held -= shell.volume;
                             }

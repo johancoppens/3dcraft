@@ -292,7 +292,7 @@ impl Pieces {
     fn magnitude(&self) -> [f64; 4] {
         self.pts.iter().flatten().fold([0.0; 4], |mut m, h| {
             for (m, x) in m.iter_mut().zip(h) {
-                *m = m.max(x.abs());
+                *m = super::nan_max(*m, x.abs());
             }
             m
         })
@@ -303,7 +303,9 @@ impl Pieces {
         let mut pts = self.pts.clone();
         for piece in &mut pts {
             while piece.len() < degree + 1 {
-                let n = piece.len() - 1;
+                let Some(n) = piece.len().checked_sub(1) else {
+                    break;
+                };
                 let mut next = Vec::with_capacity(n + 2);
                 for i in 0..=n + 1 {
                     let a = i as f64 / (n + 1) as f64;
@@ -378,7 +380,7 @@ fn composed(net: &TNet, uv: &NurbsCurve) -> Result<Pieces, NetworkError> {
     let largest = |pieces: &[Vec<H>]| -> [f64; 4] {
         pieces.iter().flatten().fold([0.0; 4], |mut m, h| {
             for (m, x) in m.iter_mut().zip(h) {
-                *m = m.max(x.abs());
+                *m = super::nan_max(*m, x.abs());
             }
             m
         })
