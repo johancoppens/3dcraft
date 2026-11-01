@@ -21,12 +21,12 @@
 //! derivatives) is linear in the nets with known coefficient sums, and
 //! carries each coefficient's bound alongside it.
 
-use super::{H, NetworkError, Raw, derivative, internal, reverse};
+use super::{H, NetworkError, Raw, derivative, internal};
 use crate::NurbsCurve;
 use crate::NurbsSurface;
-use crate::refine::{basis, bernstein_product, piece_raw, restricted};
+use crate::refine::{bernstein_product, restricted};
 use crate::trim::{BezierNet, Composed, TrimError, compose_net_pieces};
-use craft3d_math::{Portable, Vec3};
+use craft3d_math::Vec3;
 
 const EPS: f64 = f64::EPSILON;
 
@@ -262,56 +262,6 @@ impl TNet {
         })
     }
 
-    /// The net's parameter line at `at` across (along v when `along_v`,
-    /// so u is fixed): `Σ Nᵢ(at) vᵢ` with the basis values (nonnegative,
-    /// summing to one), each coefficient within `Σ Nᵢ eᵢ` plus the
-    /// rounding of the values (Cox–de Boor, `3 ε` a level) and of the sum:
-    /// `(3 q + q + 4) ε Σ Nᵢ |vᵢ|`. On a clamped border the values are
-    /// exactly one and zeros, and nothing is added.
-    fn iso(&self, along_v: bool, at: f64) -> Result<(Raw, Vec<H>), NetworkError> {
-        let (p, q) = self.degrees;
-        let (knots, deg, n, count, other_knots, other_degree) = if along_v {
-            (&self.ku, p, self.nu, self.nv, &self.kv, q)
-        } else {
-            (&self.kv, q, self.nv, self.nu, &self.ku, p)
-        };
-        let values = basis(knots, deg, n, at)?;
-        let gamma = (4 * deg + 4) as f64 * EPS;
-        let mut points = Vec::with_capacity(count);
-        let mut errs = Vec::with_capacity(count);
-        for k in 0..count {
-            let (mut sum, mut err, mut mag) = ([0.0; 4], [0.0; 4], [0.0; 4]);
-            for (i, b) in values.iter().enumerate() {
-                if *b == 0.0 {
-                    continue;
-                }
-                let (vi, ei) = if along_v {
-                    self.at(i, k)
-                } else {
-                    self.at(k, i)
-                }
-                .ok_or_else(internal)?;
-                sum = zip4(sum, vi, |s, x| s + b * x);
-                err = zip4(err, ei, |s, x| s + b.abs() * x);
-                mag = zip4(mag, vi, |s, x| s + b.abs() * x.abs());
-            }
-            let exact = values.iter().filter(|b| **b != 0.0).count() == 1 && values.contains(&1.0);
-            if !exact {
-                err = zip4(err, mag, |e, m| e + gamma * m);
-            }
-            points.push(sum);
-            errs.push(err);
-        }
-        Ok((
-            Raw {
-                degree: other_degree,
-                knots: other_knots.clone(),
-                points,
-            },
-            errs,
-        ))
-    }
-
     /// The net's Bézier patches, with the patches of its bounds and of its
     /// values' magnitudes beside them (the same extraction).
     fn patches(&self) -> Result<[BezierNet; 3], NetworkError> {
@@ -325,100 +275,6 @@ impl TNet {
             make(self.v.iter().map(|h| h_abs(*h)).collect())?,
         ])
     }
-}
-
-/// The largest coefficient of each coordinate.
-fn magnitude(raw: &Raw) -> [f64; 4] {
-    raw.points.iter().fold([0.0; 4], |mut m, h| {
-        for (m, x) in m.iter_mut().zip(h) {
-            *m = m.max(x.abs());
-        }
-        m
-    })
-}
-
-fn max4(errs: &[H]) -> [f64; 4] {
-    errs.iter().fold([0.0; 4], |mut m, h| {
-        for (m, x) in m.iter_mut().zip(h) {
-            *m = m.max(*x);
-        }
-        m
-    })
-}
-
-/// The line of a net cut to `[from, to]` of its running parameter (over
-/// `[0, 1]`, reversed when asked) and its derivatives along brought to
-/// that parameter (`order` of them: times `±(to − from)` each): the cut's
-/// knot insertions are convex combinations, `16 (p + 2) ε` of the row's
-/// magnitude where a cut is made; the scaling one rounding.
-fn cut(
-    net: &TNet,
-    along_v: bool,
-    at: f64,
-    range: (f64, f64),
-    reversed: bool,
-    order: i32,
-) -> Result<Row, NetworkError> {
-    let (raw, errs) = net.iso(along_v, at)?;
-    let (lo, hi) = raw.domain()?;
-    let mut allow = max4(&errs);
-    let (from, to) = range;
-    let whole = from <= lo && to >= hi;
-    let mut raw = if whole {
-        let mut r = raw;
-        r.normalize()?;
-        r
-    } else {
-        let mag = magnitude(&raw);
-        for (a, m) in allow.iter_mut().zip(mag) {
-            *a += 16.0 * (raw.degree + 2) as f64 * EPS * m;
-        }
-        piece_raw(raw, from.max(lo), to.min(hi))?
-    };
-    if reversed {
-        raw = reverse(&raw);
-    }
-    let sign = if reversed { -1.0 } else { 1.0 };
-    let scale = (sign * (to - from)).ppowi(order);
-    if order != 0 {
-        for h in &mut raw.points {
-            for x in h.iter_mut() {
-                *x *= scale;
-            }
-        }
-        let mag = magnitude(&raw);
-        for (a, m) in allow.iter_mut().zip(mag) {
-            *a = *a * scale.abs() + 2.0 * EPS * m;
-        }
-    }
-    Ok((raw, allow))
-}
-
-/// The six rows of a spline face along its parameter line (`along_v`,
-/// `at`, the edge's range on it and its direction), about `o`:
-/// `[X₀, X₀′, X₀″, X₁, X₁′, X₂]`.
-pub(super) fn line_rows(
-    s: &NurbsSurface,
-    o: Vec3,
-    along_v: bool,
-    at: f64,
-    range: (f64, f64),
-    reversed: bool,
-) -> Result<[Row; 6], NetworkError> {
-    // Along v: the running direction is v, across is u.
-    let along_u = !along_v;
-    let base = TNet::of(s, o);
-    let d_along = TNet::first(s, o, along_u)?;
-    let d_across = TNet::first(s, o, along_v)?;
-    let r = |net: &TNet, order: i32| cut(net, along_v, at, range, reversed, order);
-    Ok([
-        r(&base, 0)?,
-        r(&d_along, 1)?,
-        r(&d_along.diff(along_u)?, 2)?,
-        r(&d_across, 0)?,
-        r(&d_across.diff(along_u)?, 1)?,
-        r(&d_across.diff(along_v)?, 0)?,
-    ])
 }
 
 /// A row as Bézier pieces over shared bounds (each piece its own: rows

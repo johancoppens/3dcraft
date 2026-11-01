@@ -3003,7 +3003,9 @@ mod tests {
         let (s, _) = far_patch();
         let edge = iso_curve(&s, true, 0.0).unwrap();
         let origin = edge.control_points()[0];
-        let line = spline_rows(&s, &edge, 1e-6, origin, false).unwrap().unwrap();
+        let line = spline_rows(&s, &edge, 1e-6, origin, false)
+            .unwrap()
+            .unwrap();
         assert!(!line.reversed && line.from == 0.0 && line.to == 1.0);
         let [x0, x0d, x0dd, x1, x1d, x2] = &line.rows;
         let t = s.knots_v()[4];
@@ -3133,7 +3135,9 @@ mod tests {
         .unwrap();
         let edge = iso_curve(&s, true, 0.25).unwrap();
         let origin = edge.control_points()[0];
-        let line = spline_rows(&s, &edge, 1e-6, origin, false).unwrap().unwrap();
+        let line = spline_rows(&s, &edge, 1e-6, origin, false)
+            .unwrap()
+            .unwrap();
         let [x0, _, _, x1, _, x2] = &line.rows;
         // The line the rows are of: the parameter `iso_track_along` found
         // from the edge's projections, a rounding off 0.25 (how far the
@@ -3298,7 +3302,9 @@ mod tests {
         let s = rational_far_patch();
         let edge = iso_curve(&s, true, 0.0).unwrap();
         let origin = edge.control_points()[2];
-        let line = spline_rows(&s, &edge, 1e-6, origin, false).unwrap().unwrap();
+        let line = spline_rows(&s, &edge, 1e-6, origin, false)
+            .unwrap()
+            .unwrap();
         assert!(!line.reversed && line.from == 0.0 && line.to == 1.0);
         let (ku, kv) = (s.knots_u().to_vec(), s.knots_v().to_vec());
         // The net in double-double, `[i along][j across]`.
@@ -3617,8 +3623,12 @@ mod tests {
         let (a, b) = continued_pair(0.0);
         let edge = iso_curve(&b, true, 0.0).unwrap();
         let origin = edge.control_points()[1];
-        let la = spline_rows(&a, &edge, 1e-6, origin, false).unwrap().unwrap();
-        let lb = spline_rows(&b, &edge, 1e-6, origin, false).unwrap().unwrap();
+        let la = spline_rows(&a, &edge, 1e-6, origin, false)
+            .unwrap()
+            .unwrap();
+        let lb = spline_rows(&b, &edge, 1e-6, origin, false)
+            .unwrap()
+            .unwrap();
         let mut per: Vec<Vec<P4>> = Vec::new();
         for line in [&la, &lb] {
             for row in &line.rows {
