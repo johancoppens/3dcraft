@@ -102,6 +102,8 @@
  ["feature.cylinder", {"radius": "cap_r - 7 mm", "height": "9 mm", "position": ["cap_x", 0, "cap_z"], "name": "Cap"}],
  ["variable.set", {"name": "wall", "expr": "1.2 mm"}],
  ["feature.shell", {"source": "Tank", "thickness": "wall", "name": "Tank shell"}],
+ ["variable.measure", {"name": "skin", "measure": "area", "of": "Tank shell"}],
+ ["assert.add", {"name": "its wall is half its skin times the wall", "measure": "volume", "of": "Tank shell", "min": "0.999 * skin / 2 * wall", "max": "1.001 * skin / 2 * wall"}],
  ["variable.measure", {"name": "capacity", "measure": "cavity", "of": "Tank shell", "label": "Capacity", "unit": "L"}],
  ["assert.add", {"name": "left side meets the crown in G2", "measure": "continuity", "edge": "F55:between[F55:copy(0)/F46:copy(1)/F22:side(e14,e21,e12,e13),F55:copy(0)/F46:copy(1)/F44:copy(0)/F43:copy(1)/F32:side(e22,e23,e24,e31)]", "min": 2}],
  ["assert.add", {"name": "right side meets the crown in G2", "measure": "continuity", "edge": "F55:between[F55:copy(0)/F46:copy(1)/F22:side(e14,e21,e12,e13),F55:copy(0)/F46:copy(1,1)/F42:side(e22,e33,e41,e34)]", "min": 2}],
