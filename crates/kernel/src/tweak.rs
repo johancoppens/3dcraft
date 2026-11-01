@@ -193,6 +193,24 @@ pub(crate) fn meet(surfaces: &[&Surface], start: Vec3, tol: f64) -> Option<Vec3>
     meet_near(surfaces, start, tol, &mut vec![None; surfaces.len()])
 }
 
+/// [`meet`] for a point of an edge rather than a vertex: not put on a seam
+/// ([`on_seam`]). Along an edge two of the surfaces may continue each other
+/// (the rims on either side of a plate's corner, one an exact cylinder and
+/// the other a spline fitted to it): tangent everywhere, they part nowhere,
+/// and the rate [`turn_onto_seam`] follows is the fit's noise (2026-11-01:
+/// the edge across a sheet's corner on a bend's tangent line, its points
+/// moved 40 tolerances along it and no spline through them held).
+pub(crate) fn meet_along(surfaces: &[&Surface], start: Vec3, tol: f64) -> Option<Vec3> {
+    meet_with(
+        surfaces,
+        start,
+        tol,
+        &mut vec![None; surfaces.len()],
+        false,
+        false,
+    )
+}
+
 /// [`meet`] next to a rebuilt fillet, from a point foreseen close to where
 /// it goes (a vertex started on the new fillet), `sideways`:
 /// - where the nearest point of a bounded freeform surface is on its

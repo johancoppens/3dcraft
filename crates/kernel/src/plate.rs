@@ -81,7 +81,7 @@ use crate::offset_face::{
     offset_surface_each,
 };
 use crate::offset_normal::TURN_SHARE;
-use crate::tweak::meet;
+use crate::tweak::{meet, meet_along};
 use craft3d_geom::refine::interpolate;
 use craft3d_geom::{Circle, Curve3, Line, NurbsCurve, NurbsSurface, Plane, Surface};
 use craft3d_math::Portable;
@@ -1521,7 +1521,7 @@ fn build(
                 .ok_or_else(|| refuse(None, "the plate is thinner than a point at a corner"))?;
             let mut list = surfaces.clone();
             list.push(&plane);
-            meet(&list, start, SHARE * tol)
+            meet_along(&list, start, SHARE * tol)
                 .map(|p| vec![p])
                 .ok_or_else(|| {
                     refuse(
