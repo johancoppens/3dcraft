@@ -345,8 +345,11 @@ fn reason_key(reason: &str) -> String {
             c => out.push(c),
         }
     }
-    let words: Vec<&str> = out.split_whitespace().take(12).collect();
-    words.join(" ").chars().take(110).collect()
+    // What the stripping leaves in front: a `: ` or the `#` of an entity.
+    let out =
+        out.trim_start_matches(|c: char| c == ':' || c == '#' || c == ',' || c.is_whitespace());
+    let words: Vec<&str> = out.split_whitespace().take(16).collect();
+    words.join(" ").chars().take(140).collect()
 }
 
 /// One model's line in a stage's `.jsonl`: its report from the process,
@@ -530,8 +533,11 @@ fn freecad(c: &Config, files: &[PathBuf], import: &[Value]) -> Result<Vec<Value>
     if accepted.is_empty() || c.freecad == 0 {
         return Ok(Vec::new());
     }
-    let step = accepted.len().div_ceil(c.freecad).max(1);
-    let sample: Vec<&(&PathBuf, &Value)> = accepted.iter().step_by(step).take(c.freecad).collect();
+    // N spread evenly over them (all of them when there are fewer).
+    let n = c.freecad.min(accepted.len());
+    let sample: Vec<&(&PathBuf, &Value)> = (0..n)
+        .filter_map(|i| accepted.get(i.saturating_mul(accepted.len()) / n))
+        .collect();
     let work = c.out.join("freecad-work");
     std::fs::create_dir_all(&work).map_err(|e| format!("cannot make {}: {e}", work.display()))?;
     let script = work.join("volumes.py");
