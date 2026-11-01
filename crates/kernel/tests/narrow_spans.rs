@@ -21,9 +21,11 @@ mod common;
 
 use common::line;
 use craft3d_geom::Surface;
+use craft3d_kernel::KernelError;
 use craft3d_kernel::extrude::extrude;
-use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2, detect_profiles};
-use craft3d_math::{Frame, Tolerance};
+use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2, detect_profiles, open_chain};
+use craft3d_kernel::sweep::sweep;
+use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_tess::{TessParams, tessellate_body};
 use craft3d_topo::check;
 
@@ -257,4 +259,205 @@ fn a_piece_shorter_than_the_tolerance_at_a_corner_is_refused_by_name() {
         message.contains("a piece of spline 7 shorter than the tolerance at knot 0.5"),
         "{message}"
     );
+}
+
+/// A cubic spline through the curve `f` (with derivative `df`) over
+/// `0..1`, one Hermite cubic per stretch between `breaks`, each inner
+/// break a knot three times (a corner to a profile, where the pieces are
+/// tangent all the same), scaled by `k`; `bend` replaces the two inner
+/// control points of the piece starting at break `bend.0` (its control
+/// points 1 and 2) to turn it.
+fn hermite(
+    f: impl Fn(f64) -> P,
+    df: impl Fn(f64) -> P,
+    breaks: &[f64],
+    k: f64,
+    bend: Option<(usize, [P; 2])>,
+) -> Spline2 {
+    let mut control: Vec<P> = Vec::new();
+    let mut knots = vec![0.0; 4];
+    for (n, pair) in breaks.windows(2).enumerate() {
+        let (a, b) = (pair[0], pair[1]);
+        let (pa, da, pb, db) = (f(a), df(a), f(b), df(b));
+        let h = (b - a) / 3.0;
+        let mut piece = [
+            pa,
+            [pa[0] + h * da[0], pa[1] + h * da[1]],
+            [pb[0] - h * db[0], pb[1] - h * db[1]],
+            pb,
+        ];
+        if let Some((at, inner)) = bend
+            && at == n
+        {
+            piece[1] = inner[0];
+            piece[2] = inner[1];
+        }
+        control.extend(
+            piece
+                .iter()
+                .skip(usize::from(n > 0))
+                .map(|p| [p[0] * k, p[1] * k]),
+        );
+        if n + 2 < breaks.len() {
+            knots.extend([b; 3]);
+        }
+    }
+    knots.extend([1.0; 4]);
+    Spline2 {
+        degree: 3,
+        knots,
+        control,
+    }
+}
+
+/// A gentle wave up the y axis from the origin, leaving it along +y.
+fn up(t: f64) -> P {
+    [0.5 * (2.0 * std::f64::consts::PI * t).psin() * t, 10.0 * t]
+}
+
+fn up_d(t: f64) -> P {
+    let w = 2.0 * std::f64::consts::PI;
+    [0.5 * ((w * t).psin() + w * t * (w * t).pcos()), 10.0]
+}
+
+fn spline_curve(id: u64, spline: Spline2) -> SketchCurve {
+    SketchCurve {
+        id,
+        curve: Curve2::Spline(spline),
+    }
+}
+
+/// The middle of the three stretches 1e-10 long.
+const MIDDLE: [f64; 4] = [0.0, 0.5, 0.5 + NARROW, 1.0];
+
+/// The piece 1e-10 long between tangent pieces, through `open_chain` and
+/// as a sweep's path (`sweep`'s chain), is kept inside its neighbours;
+/// one at a corner, one that turns back in itself, and one at the start
+/// of the spline are refused by name, at the knot they start at (the
+/// start of the domain for the first), at three scales.
+#[test]
+fn short_pieces_of_a_chain_and_of_a_sweeps_path_are_kept_or_refused_by_name() {
+    for k in [1e-3, 1.0, 1e6] {
+        let tol = tolerance(k);
+        let smooth = hermite(up, up_d, &MIDDLE, k, None);
+        let chain = open_chain(&[spline_curve(5, smooth.clone())], &tol).unwrap();
+        assert!(!chain.segments.is_empty(), "at {k}");
+        let section = detect_profiles(&[common::circle(1, [0.0, 0.0], 0.3 * k)], &tol).unwrap();
+        let front = Frame::new(Vec3::ZERO, -Vec3::Y, Vec3::X).unwrap();
+        let swept = sweep(
+            &section[0],
+            &front,
+            &[spline_curve(5, smooth)],
+            &Frame::WORLD,
+            &tol,
+        );
+        let swept = swept.unwrap_or_else(|e| panic!("at {k}: {e}"));
+        assert_eq!(craft3d_topo::check(&swept.body, &tol), vec![], "at {k}");
+
+        // Refused, through both, with the knot each starts at.
+        let at = |p: P| [p[0] * k, p[1] * k];
+        let start = up(0.5);
+        let cases = [
+            // The piece leaves at right angles to the way it is entered.
+            (
+                "corner",
+                hermite(
+                    |t| {
+                        if t > 0.5 {
+                            [up(t)[0] + (t - 0.5) * 40.0, up(t)[1] - (t - 0.5) * 10.0]
+                        } else {
+                            up(t)
+                        }
+                    },
+                    |t| {
+                        if t > 0.5 {
+                            [up_d(t)[0] + 40.0, 0.0]
+                        } else {
+                            up_d(t)
+                        }
+                    },
+                    &MIDDLE,
+                    1.0,
+                    None,
+                ),
+                0.5,
+            ),
+            // Its control polygon runs back down the y axis and up again.
+            (
+                "turns back",
+                hermite(
+                    up,
+                    up_d,
+                    &MIDDLE,
+                    1.0,
+                    Some((
+                        1,
+                        [[start[0], start[1] - 1e-11], [start[0], start[1] - 2e-11]],
+                    )),
+                ),
+                0.5,
+            ),
+            // The first piece, at the start of the spline.
+            (
+                "at the start",
+                hermite(up, up_d, &[0.0, NARROW, 1.0], 1.0, None),
+                0.0,
+            ),
+        ];
+        for (name, unscaled, knot) in cases {
+            let spline = Spline2 {
+                control: unscaled.control.iter().map(|p| at(*p)).collect(),
+                ..unscaled
+            };
+            match open_chain(&[spline_curve(5, spline.clone())], &tol) {
+                Err(KernelError::ShortSplinePiece { id: 5, knot: found }) => {
+                    assert_eq!(found, knot, "{name} at {k}");
+                }
+                other => panic!("{name} at {k}: open chain {other:?}"),
+            }
+            match sweep(
+                &section[0],
+                &front,
+                &[spline_curve(5, spline)],
+                &Frame::WORLD,
+                &tol,
+            ) {
+                Err(KernelError::ShortSplinePiece { id: 5, knot: found }) => {
+                    assert_eq!(found, knot, "{name} at {k}");
+                }
+                other => panic!("{name} at {k}: sweep {:?}", other.map(|_| ())),
+            }
+        }
+    }
+}
+
+/// A closed spline whose only corners are the two around a piece 1e-10
+/// long between tangent pieces: they go, and the spline is cut in two as
+/// one without corners is (`middle_cut`), so the loop is a profile that
+/// extrudes into a valid solid, at three scales.
+#[test]
+fn a_closed_spline_whose_only_corners_go_is_cut_in_two() {
+    let w = 2.0 * std::f64::consts::PI;
+    let round = |t: f64| [3.0 * (w * t).pcos(), 2.0 * (w * t).psin()];
+    let round_d = |t: f64| [-3.0 * w * (w * t).psin(), 2.0 * w * (w * t).pcos()];
+    for k in [1e-3, 1.0, 1e6] {
+        let tol = tolerance(k);
+        let mut spline = hermite(round, round_d, &MIDDLE, k, None);
+        // Closed exactly: the last control point is the first.
+        let first = spline.control[0];
+        *spline.control.last_mut().unwrap() = first;
+        let profiles = detect_profiles(&[spline_curve(9, spline)], &tol)
+            .unwrap_or_else(|e| panic!("at {k}: {e}"));
+        assert_eq!(profiles.len(), 1);
+        let made = extrude(&profiles, &Frame::WORLD, 0.0, k, &tol).unwrap();
+        assert_eq!(check(&made.body, &tol), vec![], "at {k}");
+        // Two sides: the halves of the cut loop.
+        let sides = made
+            .body
+            .faces
+            .iter()
+            .filter(|f| matches!(f.surface, Surface::Nurbs(_)))
+            .count();
+        assert_eq!(sides, 2, "at {k}");
+    }
 }

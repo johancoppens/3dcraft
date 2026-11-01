@@ -267,57 +267,60 @@ impl Spline2 {
     /// between two corners that is shorter than the linear tolerance (its
     /// control polygon is, so the curve is) has ends a profile cannot tell
     /// apart, and would fail as a branching profile. Where the pieces on
-    /// either side of it meet it in tangents within the angular tolerance
-    /// (the joints of a formula curve's pieces that nearly meet), its two
-    /// corners are no corners: they are not cut, and it stays inside one
-    /// piece with its neighbours, which then sweeps one surface, smooth to
-    /// within the tolerances. Otherwise (a corner at it, or a short piece
-    /// at an end of the spline) the knot at its start is returned as the
-    /// error, to be refused by name.
+    /// either side meet it in tangents within the angular tolerance (the
+    /// joints of a formula curve's pieces that nearly meet), and its own
+    /// control polygon runs on along the tangent it is entered by (no leg
+    /// turns back), it is dropped: the neighbours are joined at the middle
+    /// of its two ends into one piece, so the curve moves there by at most
+    /// half the linear tolerance (moving an end control point by `d` moves
+    /// a spline by at most `d`), and the joint is smooth to the angular
+    /// tolerance. Kept inside the piece instead, its control points, within
+    /// rounding of each other, made a curvature of rounding there that a
+    /// sweep along it took for a bend tighter than its profile.
+    /// Otherwise (a corner at it, a piece that turns back, a short piece at
+    /// an end of the spline) the knot it starts at is returned as the error
+    /// (the start of the domain for the first piece), to be refused by
+    /// name. A spline that closes on itself and has no corner left after
+    /// that is cut in two as one without corners is.
     pub(crate) fn profile_pieces_within(
         &self,
         closed: bool,
         tolerance: &Tolerance,
     ) -> Result<Vec<Spline2>, f64> {
         let whole = || vec![self.clone()];
-        let mut cuts = self.corner_cuts(closed);
+        let cuts = self.corner_cuts(closed);
         // A polyline's pieces are its segments, each a corner: a short
         // one is two control points that coincide, refused as such.
         if self.degree == 1 {
             return Ok(self.cut_at(&cuts).unwrap_or_else(whole));
         }
-        // Each round removes two cuts or ends: bounded by their number.
-        loop {
-            let Some(pieces) = self.cut_at(&cuts) else {
-                return Ok(whole());
-            };
-            let Some(short) = pieces
-                .iter()
-                .position(|piece| polygon_length(&piece.control) <= tolerance.linear)
-            else {
-                return Ok(pieces);
-            };
-            // A short piece only between two corners can go; one the
-            // closed rule cut off, or at an end, is refused.
-            let corners = self.corner_cuts(false);
-            let (Some(&before), Some(&after)) = (
-                short.checked_sub(1).and_then(|i| cuts.get(i)),
-                cuts.get(short),
+        let Some(mut pieces) = self.cut_at(&cuts) else {
+            return Ok(whole());
+        };
+        let corners = self.corner_cuts(false);
+        // Per joint between pieces: a corner (not the closed rule's cut).
+        let mut corner: Vec<bool> = cuts.iter().map(|u| corners.contains(u)).collect();
+        // Per piece: the knot it starts at.
+        let domain_start = self.knots.get(self.degree).copied().unwrap_or_default();
+        let mut starts: Vec<f64> = std::iter::once(domain_start).chain(cuts).collect();
+        // Each round joins three pieces into one: bounded by their number.
+        while let Some(short) = pieces
+            .iter()
+            .position(|piece| polygon_length(&piece.control) <= tolerance.linear)
+        {
+            let at = starts.get(short).copied().unwrap_or(domain_start);
+            let (Some(before), Some(after)) = (
+                short.checked_sub(1).and_then(|i| pieces.get(i)),
+                pieces.get(short + 1),
             ) else {
-                let at = short
-                    .checked_sub(1)
-                    .and_then(|i| cuts.get(i))
-                    .or(cuts.first())
-                    .copied()
-                    .unwrap_or_default();
                 return Err(at);
             };
-            let tangent_in = pieces
-                .get(short - 1)
-                .and_then(|piece| end_tangent(&piece.control, true));
-            let tangent_out = pieces
-                .get(short + 1)
-                .and_then(|piece| end_tangent(&piece.control, false));
+            let corners_around = short
+                .checked_sub(1)
+                .and_then(|i| corner.get(i..=short))
+                .is_some_and(|pair| pair.iter().all(|c| *c));
+            let tangent_in = end_tangent(&before.control, true);
+            let tangent_out = end_tangent(&after.control, false);
             let smooth = match (tangent_in, tangent_out) {
                 (Some(a), Some(b)) => {
                     let (cross, dot) = (a[0] * b[1] - a[1] * b[0], a[0] * b[0] + a[1] * b[1]);
@@ -325,16 +328,63 @@ impl Spline2 {
                 }
                 _ => false,
             };
-            if !smooth || !corners.contains(&before) || !corners.contains(&after) {
-                return Err(before);
+            // A leg of no length runs nowhere and is passed over.
+            let runs_on = tangent_in.is_some_and(|t| {
+                pieces.get(short).is_some_and(|piece| {
+                    piece.control.windows(2).all(|w| match w {
+                        [a, b] => {
+                            let leg = [b[0] - a[0], b[1] - a[1]];
+                            (leg[0] == 0.0 && leg[1] == 0.0) || leg[0] * t[0] + leg[1] * t[1] > 0.0
+                        }
+                        _ => true,
+                    })
+                })
+            });
+            if !(corners_around && smooth && runs_on) {
+                return Err(at);
             }
-            cuts.retain(|&u| u != before && u != after);
-            // A closed spline whose last corners went is cut in two as
-            // one without corners is.
-            if closed && cuts.is_empty() {
-                cuts.extend(self.middle_cut());
-            }
+            let Some(joined) = before.joined(after) else {
+                return Err(at);
+            };
+            pieces.splice(short - 1..=short + 1, [joined]);
+            corner.drain(short - 1..=short);
+            starts.drain(short..=short + 1);
         }
+        // A closed spline whose corners all went is cut in two.
+        if closed
+            && let [only] = pieces.as_slice()
+            && let Some(halves) = only.middle_cut().and_then(|m| only.cut(m))
+        {
+            return Ok(vec![halves.0, halves.1]);
+        }
+        Ok(pieces)
+    }
+
+    /// This piece and `next` (of the same degree, `next` starting near
+    /// where this one ends) as one spline: both meet at the middle of the
+    /// two ends, the knot there repeated `degree` times, `next`'s knots
+    /// moved to follow on. `None` for pieces that cannot be joined.
+    fn joined(&self, next: &Spline2) -> Option<Spline2> {
+        let p = self.degree;
+        if next.degree != p || p == 0 {
+            return None;
+        }
+        let (&end, &start) = (self.control.last()?, next.control.first()?);
+        let joint = [0.5 * (end[0] + start[0]), 0.5 * (end[1] + start[1])];
+        let mut control = self.control.clone();
+        *control.last_mut()? = joint;
+        control.extend(next.control.iter().skip(1));
+        let here = *self.knots.get(self.control.len())?;
+        let there = *next.knots.get(p)?;
+        let mut knots: Vec<f64> = self.knots.get(..self.control.len())?.to_vec();
+        knots.extend(std::iter::repeat_n(here, p));
+        knots.extend(next.knots.get(p + 1..)?.iter().map(|k| k - there + here));
+        let joined = Spline2 {
+            degree: p,
+            knots,
+            control,
+        };
+        joined.fault().is_none().then_some(joined)
     }
 
     /// The knots a profile cuts the spline at ([`Spline2::profile_pieces`]),

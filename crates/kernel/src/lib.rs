@@ -390,6 +390,14 @@ fn face_op_entities(
     Ok(())
 }
 
+/// The text of [`KernelError::ShortSplinePiece`] with the spline named
+/// `name` (its id here, its name in the sketch where regeneration says it).
+pub fn short_spline_piece(name: &str, knot: f64) -> String {
+    format!(
+        "a piece of spline {name} shorter than the tolerance at knot {knot}: its ends cannot be told apart, and the curve turns a corner there, turns back in it or ends with it; remove the repeated knot, or make the curve run on smoothly (tangent) across it"
+    )
+}
+
 impl fmt::Display for KernelError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -440,10 +448,9 @@ impl fmt::Display for KernelError {
             KernelError::DegenerateCurve { id, reason } => {
                 write!(f, "curve {id} cannot bound a profile: {reason}")
             }
-            KernelError::ShortSplinePiece { id, knot } => write!(
-                f,
-                "a piece of spline {id} shorter than the tolerance at knot {knot}: its ends cannot be told apart, and the curve turns a corner there or ends with it; remove the repeated knot, or make the curve run on smoothly (tangent) across it"
-            ),
+            KernelError::ShortSplinePiece { id, knot } => {
+                f.write_str(&short_spline_piece(&id.to_string(), *knot))
+            }
             KernelError::OpenProfile { curves } => write!(
                 f,
                 "the profile is not closed: an end of curve {} meets no other curve; \

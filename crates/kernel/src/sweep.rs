@@ -340,7 +340,8 @@ struct Chain {
 }
 
 /// Joins the curves of the path's sketch into one chain.
-fn chain(curves: &[SketchCurve], tol: f64) -> Result<Chain, KernelError> {
+fn chain(curves: &[SketchCurve], tolerance: &Tolerance) -> Result<Chain, KernelError> {
+    let tol = tolerance.linear;
     if curves.is_empty() {
         return Err(refuse(
             &[],
@@ -413,12 +414,8 @@ fn chain(curves: &[SketchCurve], tol: f64) -> Result<Chain, KernelError> {
                     (spline.control.first(), spline.control.last()),
                     (Some(first), Some(last)) if distance(*first, *last) <= tol
                 );
-                let within = craft3d_math::Tolerance {
-                    linear: tol,
-                    ..craft3d_math::Tolerance::default()
-                };
                 let parts = spline
-                    .profile_pieces_within(closes, &within)
+                    .profile_pieces_within(closes, tolerance)
                     .map_err(|knot| KernelError::ShortSplinePiece { id, knot })?;
                 for part in parts {
                     let (Some(&start), Some(&end)) = (part.control.first(), part.control.last())
@@ -2008,7 +2005,7 @@ pub fn sweep(
     let lift = |p: P2| path_plane.point(p[0], p[1], 0.0);
     let direction = |d: P2| path_plane.vector(d[0], d[1], 0.0);
     let b_axis = path_plane.z();
-    let chain = chain(path, tol)?;
+    let chain = chain(path, tolerance)?;
     let height = |p: P2| (lift(p) - profile_plane.origin()).dot(profile_plane.z());
     let away = |p: P2| lift(p).distance(center);
     let Start {
