@@ -3522,7 +3522,8 @@ fn put_on_third_row(
             )
         }
     };
-    if let Some((smooth, rest, band)) = kinks_apart(net, &delta, &shape, next, angular, at)? {
+    if let Some((smooth, rest, band)) = kinks_apart(net, &delta, &shape, next, (tol, angular), at)?
+    {
         // The kinks on a band of their own beside the edge (`kinks_apart`).
         let mut v = net.v_raw();
         fair::localize(&mut v, band)?;
@@ -3567,6 +3568,54 @@ const KINK_SHARE: f64 = 0.25;
 /// put on (`kinks_apart`): a band of 1/4096 of the reach at least.
 const KINK_HALVINGS: u32 = 12;
 
+/// The narrowest band (in the parameter across, from the edge) the kinks
+/// of a curvature hold may be put on (`kinks_apart`) before the rounding
+/// of the rows' points, over the square of the band's spans, reaches a
+/// quarter of the curvature threshold of the continuity measure
+/// (`min(angular / L, 2 tol / L²)`, `L` the edge's control polygon), at
+/// the slowest speed across the edge.
+fn rounding_floor(net: &Net, edge: &Raw, tol: f64, angular: f64) -> f64 {
+    let points: Vec<Vec3> = edge.points.iter().filter_map(|h| point(*h)).collect();
+    let length: f64 = points
+        .windows(2)
+        .map(|w| match w {
+            [a, b] => a.distance(*b),
+            _ => 0.0,
+        })
+        .sum();
+    let size = net
+        .rows
+        .iter()
+        .flatten()
+        .filter_map(|h| point(*h))
+        .fold(0.0_f64, |m, p| m.max(p.length()));
+    let (Some(&k1), Ok(second)) = (net.kv.get(net.pv + 1), net.column(1)) else {
+        return 0.0;
+    };
+    let factor = net.pv as f64 / k1;
+    let (lo, hi) = edge.domain().unwrap_or((0.0, 1.0));
+    let mut slowest = f64::INFINITY;
+    for k in 0..=32 {
+        let u = lo + (hi - lo) * f64::from(k) / 32.0;
+        if let (Ok(a), Ok(b)) = (eval(edge, u), eval(&second, u))
+            && let (Some(a), Some(b)) = (point(a), point(b))
+        {
+            slowest = slowest.min(a.distance(b) * factor);
+        }
+    }
+    let threshold = (angular / length).min(2.0 * tol / (length * length));
+    if !(threshold > 0.0 && slowest > 0.0 && slowest.is_finite() && size.is_finite()) {
+        return 0.0;
+    }
+    // Curvature from the rows: `|ΔP| / h² / |S_v|²`, `ΔP` of the rounding
+    // of the points (8 ε of their size: measured on the tank's corner, a
+    // band of 1/256 gave 1.4e-9 per mm where 5 ε was foreseen), `h` the
+    // band over its spans, held to a quarter of the threshold.
+    let rounding = 8.0 * f64::EPSILON * size;
+    let h = (rounding / (0.25 * threshold * slowest * slowest)).sqrt();
+    h * fair::FAIR_SPANS as f64
+}
+
 /// A curvature hold's change of the second derivative across, `delta(u)`,
 /// is put on the third row and spread across by a fair profile `G(v)`
 /// over the reach. Along a spline face the change is only continuous at
@@ -3596,7 +3645,7 @@ fn kinks_apart(
     delta: &Raw,
     shape: &[f64],
     next: f64,
-    angular: f64,
+    (tol, angular): (f64, f64),
     at: &[f64],
 ) -> Result<Option<(Raw, Raw, f64)>, NetworkError> {
     let p = delta.degree;
@@ -3645,10 +3694,24 @@ fn kinks_apart(
     if !(crease.is_finite()) || crease * height(shape) <= allowed {
         return Ok(None);
     }
-    // The band: the widest of the reach halved that is within the share.
+    // The band: the widest of the reach halved that is within the share,
+    // but no narrower than the rounding of the seam's second derivative
+    // allows: across a band of spans `h` it is the rows' points over `h²`,
+    // and their rounding (a few ε of their size) grows the same way, which
+    // the curvature measure would see (2026-11-01: the tank at its corner
+    // H 190, L 680, W 300, with a band of 1/256, measured a curvature gap
+    // of 1.4e-9 per mm against a threshold of 1.1e-9). Where that floor
+    // stops the halving, the crease is what the band there leaves (about
+    // 4e-6 on the tank's sides: its offset at 1.2 mm tears by 5e-6 mm,
+    // far within the fit's quarter of the tolerance).
+    let floor = rounding_floor(net, &edge, tol, angular);
     let mut band = next;
     for _ in 0..KINK_HALVINGS {
-        band *= 0.5;
+        let half = 0.5 * band;
+        if half < floor {
+            break;
+        }
+        band = half;
         let mut v = net.v_raw();
         fair::localize(&mut v, band)?;
         let narrow = fair::profile(
@@ -3661,6 +3724,9 @@ fn kinks_apart(
         if crease * height(&narrow) <= allowed {
             break;
         }
+    }
+    if band >= next {
+        return Ok(None);
     }
     // The cubic: on the kinks (each once), through the change at the
     // Greville points of its knots, each crossing in place of the one

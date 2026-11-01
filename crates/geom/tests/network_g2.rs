@@ -628,11 +628,14 @@ fn refusals_name_their_reasons() {
         Condition::Free,
         Condition::Free,
     ];
-    let err = gordon(&net(&us, &vs, both, scale)).unwrap_err();
-    assert!(
-        matches!(&err, NetworkError::Refused(w) if w.contains("both edges")),
-        "{err}"
-    );
+    // Built since 2026-11-01 (the modern mouse's top, G2 to both its
+    // flanks; docs/design/surfacing.md): the crossings of the two edges
+    // agree, and both seams are proven G2 against the face they lie on.
+    let held = gordon(&net(&us, &vs, both, scale)).unwrap();
+    for seam in [held.seams[0], held.seams[1]] {
+        let seam = seam.expect("both seams are measured");
+        assert_eq!(seam.order, Order::G2, "{seam:?}");
+    }
     // Bad tolerances.
     assert!(continuity(&s, &a, &us[0], 0.0, 1e-9).is_err());
     assert!(continuity(&s, &a, &us[0], 1e-6, f64::NAN).is_err());
