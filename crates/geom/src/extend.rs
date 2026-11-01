@@ -248,6 +248,137 @@ impl NurbsCurve {
     }
 }
 
+/// The value and the first two derivatives of the spline of `degree` on
+/// `knots` with the weighted points `row` at its first (`high` false) or
+/// last end (clamped): the derivative splines' end points.
+fn end_jet(degree: usize, knots: &[f64], row: &[W], high: bool) -> Option<[W; 3]> {
+    let d = degree;
+    let n = row.len();
+    if d == 0 || n < 2 {
+        return None;
+    }
+    let diff = |pts: &[W], deg: usize, off: usize| -> Option<Vec<W>> {
+        pts.windows(2)
+            .enumerate()
+            .map(|(i, w)| {
+                let (a, b) = (*w.first()?, *w.get(1)?);
+                let span = knots.get(i + deg + 1 + off)? - knots.get(i + 1 + off)?;
+                let f = if span > 0.0 { deg as f64 / span } else { 0.0 };
+                Some([
+                    f * (b[0] - a[0]),
+                    f * (b[1] - a[1]),
+                    f * (b[2] - a[2]),
+                    f * (b[3] - a[3]),
+                ])
+            })
+            .collect()
+    };
+    let first = diff(row, d, 0)?;
+    let second = if d >= 2 {
+        diff(&first, d - 1, 1)?
+    } else {
+        vec![[0.0; 4]]
+    };
+    let pick = |v: &[W]| {
+        if high {
+            v.last().copied()
+        } else {
+            v.first().copied()
+        }
+    };
+    Some([pick(row)?, pick(&first)?, pick(&second).unwrap_or([0.0; 4])])
+}
+
+/// The quadratic Bézier `c0, c1, c2` raised to `degree` (at least 1).
+fn raised(points: Vec<W>, degree: usize) -> Vec<W> {
+    let mut pts = points;
+    if degree == 1 {
+        return pts.into_iter().take(2).collect();
+    }
+    while pts.len() < degree + 1 {
+        let n = pts.len() - 1;
+        let mut next = Vec::with_capacity(n + 2);
+        for i in 0..=n + 1 {
+            let a = i as f64 / (n + 1) as f64;
+            let lo = if i > 0 { pts.get(i - 1).copied() } else { None };
+            let hi = pts.get(i).copied();
+            let z = [0.0; 4];
+            next.push(lerp(hi.unwrap_or(z), lo.unwrap_or(z), a));
+        }
+        pts = next;
+    }
+    pts
+}
+
+/// Every row (a spline of `degree` on `knots` along this direction)
+/// continued past its ends to `to` by its *second-order Taylor
+/// expansion* there, `C + s C′ + ½ s² C″`, as one more Bézier span joined
+/// to the old end exactly (the end knot left `degree` times: the join is
+/// in position by the representation, and in the first two derivatives by
+/// construction). Unlike [`extend`], which goes on with the end span's
+/// whole polynomial, the continued part bends no more than the surface
+/// does at its border: a span of high degree that turns sharply past its
+/// end (a G2-held network sheet's last span, its rows changed close to
+/// the edge) continues gently.
+fn extend_taylor(
+    degree: usize,
+    knots: &mut Vec<f64>,
+    rows: &mut [Vec<W>],
+    to: (f64, f64),
+) -> Option<()> {
+    let d = degree;
+    if d == 0 {
+        return None;
+    }
+    clamp(d, knots, rows)?;
+    let (Some(&start), Some(&end)) = (knots.first(), knots.last()) else {
+        return None;
+    };
+    let jets_hi: Vec<[W; 3]> = rows
+        .iter()
+        .map(|r| end_jet(d, knots, r, true))
+        .collect::<Option<_>>()?;
+    let jets_lo: Vec<[W; 3]> = rows
+        .iter()
+        .map(|r| end_jet(d, knots, r, false))
+        .collect::<Option<_>>()?;
+    let add = |a: W, b: W, f: f64| {
+        [
+            a[0] + f * b[0],
+            a[1] + f * b[1],
+            a[2] + f * b[2],
+            a[3] + f * b[3],
+        ]
+    };
+    if to.1 > end {
+        let h = to.1 - end;
+        for (row, [c, c1, c2]) in rows.iter_mut().zip(&jets_hi) {
+            let p1 = add(*c, *c1, 0.5 * h);
+            let p2 = add(add(*c, *c1, h), *c2, 0.5 * h * h);
+            let piece = raised(vec![*c, p1, p2], d);
+            row.extend(piece.into_iter().skip(1));
+        }
+        knots.truncate(knots.len().saturating_sub(1));
+        knots.extend(std::iter::repeat_n(to.1, d + 1));
+    }
+    if to.0 < start {
+        let h = to.0 - start;
+        for (row, [c, c1, c2]) in rows.iter_mut().zip(&jets_lo) {
+            let p0 = add(add(*c, *c1, h), *c2, 0.5 * h * h);
+            let p1 = add(*c, *c1, 0.5 * h);
+            let piece = raised(vec![p0, p1, *c], d);
+            let mut new: Vec<W> = piece.into_iter().take(d).collect();
+            new.extend(row.iter().copied());
+            *row = new;
+        }
+        knots.remove(0);
+        let mut new = vec![to.0; d + 1];
+        new.extend(knots.iter().copied());
+        *knots = new;
+    }
+    Some(())
+}
+
 impl NurbsSurface {
     /// Whether the surface closes on itself along u (`along_u`) or v: its
     /// two ends in that direction meet within `tol` (checked at nine
@@ -352,6 +483,76 @@ impl NurbsSurface {
             .collect();
         let mut knots_v = self.knots_v().to_vec();
         extend(dv, &mut knots_v, &mut rows, (v.0.min(v0), v.1.max(v1))).ok_or_else(refused)?;
+        let new_v = rows.first().map_or(0, Vec::len);
+        let mut ctrl = Vec::with_capacity(new_u * new_v);
+        let mut weights = Vec::with_capacity(new_u * new_v);
+        for row in &rows {
+            for p in row {
+                let w = p[3];
+                if !(w > 0.0 && w.is_finite()) {
+                    return Err(refused());
+                }
+                ctrl.push(Vec3::new(p[0] / w, p[1] / w, p[2] / w));
+                weights.push(w);
+            }
+        }
+        NurbsSurface::new(du, dv, knots_u, knots_v, new_u, new_v, ctrl, weights)
+    }
+
+    /// [`NurbsSurface::extended`] with each end continued by its
+    /// second-order Taylor expansion across the border instead of its end
+    /// span's whole polynomial ([`extend_taylor`]): the same surface inside
+    /// the old domain, twice continuously differentiable across its old
+    /// borders, and past them no more curved than it is there.
+    pub fn extended_taylor(
+        &self,
+        u: (f64, f64),
+        v: (f64, f64),
+        tol: f64,
+    ) -> Result<NurbsSurface, GeomError> {
+        let refused = || GeomError::InvalidParameter("the surface cannot be continued that far");
+        let (du, dv) = self.degrees();
+        let (count_u, count_v) = self.counts();
+        let ((u0, u1), (v0, v1)) = self.domain();
+        let grows_u = u.0 < u0 || u.1 > u1;
+        let grows_v = v.0 < v0 || v.1 > v1;
+        if (grows_u && self.closes(true, tol)) || (grows_v && self.closes(false, tol)) {
+            return Err(GeomError::InvalidParameter(
+                "a surface that closes on itself cannot be continued past its seam",
+            ));
+        }
+        let weighted: Vec<W> = self
+            .control_points()
+            .iter()
+            .zip(self.weights())
+            .map(|(p, w)| [p.x * w, p.y * w, p.z * w, *w])
+            .collect();
+        let mut columns: Vec<Vec<W>> = (0..count_v)
+            .map(|j| {
+                (0..count_u)
+                    .map(|i| weighted.get(i * count_v + j).copied().unwrap_or([0.0; 4]))
+                    .collect()
+            })
+            .collect();
+        let mut knots_u = self.knots_u().to_vec();
+        if grows_u {
+            extend_taylor(du, &mut knots_u, &mut columns, (u.0.min(u0), u.1.max(u1)))
+                .ok_or_else(refused)?;
+        }
+        let new_u = columns.first().map_or(0, Vec::len);
+        let mut rows: Vec<Vec<W>> = (0..new_u)
+            .map(|i| {
+                columns
+                    .iter()
+                    .map(|c| c.get(i).copied().unwrap_or([0.0; 4]))
+                    .collect()
+            })
+            .collect();
+        let mut knots_v = self.knots_v().to_vec();
+        if grows_v {
+            extend_taylor(dv, &mut knots_v, &mut rows, (v.0.min(v0), v.1.max(v1)))
+                .ok_or_else(refused)?;
+        }
         let new_v = rows.first().map_or(0, Vec::len);
         let mut ctrl = Vec::with_capacity(new_u * new_v);
         let mut weights = Vec::with_capacity(new_u * new_v);
@@ -679,6 +880,61 @@ mod tests {
     /// weights: the continued surface is the end spans' own functions,
     /// evaluated directly past the domain; the tail knots and points
     /// past the domain shape nothing of it.
+    /// Continued by its Taylor expansion: the same surface inside, and
+    /// across each old border its point and first two derivatives (one
+    /// sided, by differences a hair either side) go on; past the border it
+    /// is one more span at each end, at three scales.
+    #[test]
+    fn a_surface_continued_by_its_taylor_expansion_is_c2_across_its_borders() {
+        for scale in [1e-3, 1.0, 1e6] {
+            let base = patch();
+            let s = NurbsSurface::new(
+                3,
+                3,
+                base.knots_u().to_vec(),
+                base.knots_v().to_vec(),
+                5,
+                6,
+                base.control_points().iter().map(|p| *p * scale).collect(),
+                base.weights().to_vec(),
+            )
+            .unwrap();
+            let e = s
+                .extended_taylor((-0.3, 1.25), (-0.2, 1.4), 1e-9 * scale)
+                .unwrap();
+            assert_eq!(e.domain(), ((-0.3, 1.25), (-0.2, 1.4)));
+            for i in 0..=10 {
+                for j in 0..=10 {
+                    let (u, v) = (f64::from(i) / 10.0, f64::from(j) / 10.0);
+                    assert!(s.eval(u, v).distance(e.eval(u, v)) < 1e-12 * scale);
+                }
+            }
+            let h = 1e-4;
+            for k in 1..10 {
+                let u = f64::from(k) / 10.0;
+                for (v_end, sign) in [(1.0, 1.0), (0.0, -1.0)] {
+                    let at = |t: f64| e.eval(u, v_end + sign * t);
+                    // One-sided first and second differences outside
+                    // against inside.
+                    let out1 = (at(h) - at(0.0)) * (1.0 / h);
+                    let in1 = (at(0.0) - at(-h)) * (1.0 / h);
+                    let out2 = (at(2.0 * h) - at(h) * 2.0 + at(0.0)) * (1.0 / (h * h));
+                    let in2 = (at(0.0) - at(-h) * 2.0 + at(-2.0 * h)) * (1.0 / (h * h));
+                    let size = in1.length().max(1e-30);
+                    assert!(out1.distance(in1) < 1e-2 * size, "first {u} {v_end}");
+                    assert!(
+                        out2.distance(in2) < 2e-2 * in2.length().max(size),
+                        "second {u} {v_end}"
+                    );
+                }
+            }
+            // One more span at each end in v (and in u): the old net and
+            // the raised quadratics.
+            let (_, nv) = e.counts();
+            assert_eq!(nv, 6 + 3 + 3);
+        }
+    }
+
     #[test]
     fn an_unclamped_rational_surface_is_continued_from_its_last_spans() {
         // Cubic in u over knots 0..=9 (domain [3, 6]), quadratic in v

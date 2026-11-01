@@ -26,12 +26,16 @@ use crate::NurbsCurve;
 use crate::NurbsSurface;
 use crate::refine::{basis, bernstein_product, piece_raw, restricted};
 use crate::trim::{BezierNet, Composed, TrimError, compose_net_pieces};
-use craft3d_math::Vec3;
+use craft3d_math::{Portable, Vec3};
 
 const EPS: f64 = f64::EPSILON;
 
-/// A row with the bound on its coefficients' rounding, coordinate by
-/// coordinate (`x w`, `y w`, `z w`, `w`).
+/// A row as it enters the measure, with the bound on its coefficients'
+/// rounding, coordinate by coordinate (`x w`, `y w`, `z w`, `w`): each is
+/// formed from that coordinate alone, so its rounding is of that
+/// coordinate's size (an edge along a plane has its coordinate across the
+/// plane at zero, and its rounding there with it: 2026-10-31, the
+/// class-A mouse's seams).
 pub(super) type Row = (Raw, [f64; 4]);
 
 fn from_trim(e: TrimError) -> NetworkError {
@@ -53,6 +57,15 @@ pub(super) struct TNet {
     nv: usize,
     v: Vec<H>,
     e: Vec<H>,
+}
+
+/// `f` of the two 4-vectors coordinate by coordinate.
+fn zip4(a: H, b: H, f: impl Fn(f64, f64) -> f64) -> H {
+    let mut out = [0.0; 4];
+    for ((o, x), y) in out.iter_mut().zip(a).zip(b) {
+        *o = f(x, y);
+    }
+    out
 }
 
 fn h_abs(h: H) -> H {
@@ -167,24 +180,21 @@ impl TNet {
                 };
                 let f = base.factor(in_u, index);
                 let dw = wb - wa;
-                let mut h = [0.0; 4];
-                let mut err = [0.0; 4];
-                for c in 0..3 {
-                    let (xa, xb, oc) = match c {
-                        0 => (pa.x, pb.x, o.x),
-                        1 => (pa.y, pb.y, o.y),
-                        _ => (pa.z, pb.z, o.z),
-                    };
+                let term = |xa: f64, xb: f64, oc: f64| -> (f64, f64) {
                     let t1 = wb * (xb - xa);
                     let t2 = (xa - oc) * dw;
                     let value = f * (t1 + t2);
-                    h[c] = value;
-                    err[c] = f * 6.0 * EPS * (t1.abs() + t2.abs()) + 2.0 * EPS * value.abs();
-                }
-                h[3] = f * dw;
-                err[3] = 3.0 * EPS * h[3].abs();
-                v.push(h);
-                e.push(err);
+                    (
+                        value,
+                        f * 6.0 * EPS * (t1.abs() + t2.abs()) + 2.0 * EPS * value.abs(),
+                    )
+                };
+                let (hx, ex) = term(pa.x, pb.x, o.x);
+                let (hy, ey) = term(pa.y, pb.y, o.y);
+                let (hz, ez) = term(pa.z, pb.z, o.z);
+                let hw = f * dw;
+                v.push([hx, hy, hz, hw]);
+                e.push([ex, ey, ez, 3.0 * EPS * hw.abs()]);
             }
         }
         Ok(TNet {
@@ -233,12 +243,10 @@ impl TNet {
                     return Err(internal());
                 };
                 let f = self.factor(in_u, index);
-                let mut h = [0.0; 4];
-                let mut err = [0.0; 4];
-                for c in 0..4 {
-                    h[c] = f * (vb[c] - va[c]);
-                    err[c] = f * (ea[c] + eb[c]) + 3.0 * EPS * h[c].abs();
-                }
+                let h = zip4(vb, va, |b, a| f * (b - a));
+                let err = zip4(zip4(ea, eb, |a, b| f * (a + b)), h, |x, y| {
+                    x + 3.0 * EPS * y.abs()
+                });
                 v.push(h);
                 e.push(err);
             }
@@ -283,18 +291,13 @@ impl TNet {
                     self.at(k, i)
                 }
                 .ok_or_else(internal)?;
-                for c in 0..4 {
-                    sum[c] += b * vi[c];
-                    err[c] += b.abs() * ei[c];
-                    mag[c] += b.abs() * vi[c].abs();
-                }
+                sum = zip4(sum, vi, |s, x| s + b * x);
+                err = zip4(err, ei, |s, x| s + b.abs() * x);
+                mag = zip4(mag, vi, |s, x| s + b.abs() * x.abs());
             }
-            let exact = values.iter().filter(|b| **b != 0.0).count() == 1
-                && values.iter().any(|b| *b == 1.0);
-            for c in 0..4 {
-                if !exact {
-                    err[c] += gamma * mag[c];
-                }
+            let exact = values.iter().filter(|b| **b != 0.0).count() == 1 && values.contains(&1.0);
+            if !exact {
+                err = zip4(err, mag, |e, m| e + gamma * m);
             }
             points.push(sum);
             errs.push(err);
@@ -376,7 +379,7 @@ fn cut(
         raw = reverse(&raw);
     }
     let sign = if reversed { -1.0 } else { 1.0 };
-    let scale = (sign * (to - from)).powi(order);
+    let scale = (sign * (to - from)).ppowi(order);
     if order != 0 {
         for h in &mut raw.points {
             for x in h.iter_mut() {
@@ -454,11 +457,10 @@ impl Pieces {
                         None
                     };
                     let hi = piece.get(i).copied();
-                    let mut h = [0.0; 4];
-                    for (c, slot) in h.iter_mut().enumerate() {
-                        *slot = a * lo.map_or(0.0, |x| x[c]) + (1.0 - a) * hi.map_or(0.0, |x| x[c]);
-                    }
-                    next.push(h);
+                    let zero = [0.0; 4];
+                    next.push(zip4(lo.unwrap_or(zero), hi.unwrap_or(zero), |x, y| {
+                        a * x + (1.0 - a) * y
+                    }));
                 }
                 *piece = next;
             }
@@ -526,10 +528,7 @@ fn composed(net: &TNet, uv: &NurbsCurve) -> Result<Pieces, NetworkError> {
         })
     };
     let (pm, mm) = (largest(&propagated), largest(&magnitudes));
-    let mut allow = [0.0; 4];
-    for c in 0..4 {
-        allow[c] = pm[c] * (1.0 + 64.0 * EPS) + gamma * mm[c];
-    }
+    let allow = zip4(pm, mm, |p, m| p * (1.0 + 64.0 * EPS) + gamma * m);
     Ok(Pieces {
         degree,
         bounds: cuts,
@@ -591,7 +590,7 @@ fn scalar(uv: &NurbsCurve, k: usize, order: usize, bounds: &[f64]) -> Result<Sca
         else {
             return Err(internal());
         };
-        if !(t1 > t0) {
+        if t1.is_nan() || t1 <= t0 {
             return Err(internal());
         }
         let coefficients: Vec<f64> = piece.iter().map(|h| h[k]).collect();
@@ -625,19 +624,21 @@ fn scaled(s: &Scalar, r: &Pieces) -> Result<Pieces, NetworkError> {
     for (a, piece) in s.pts.iter().zip(&r.pts) {
         let mut out = vec![[0.0; 4]; degree + 1];
         for c in 0..4 {
-            let column: Vec<f64> = piece.iter().map(|h| h[c]).collect();
+            let column: Vec<f64> = piece
+                .iter()
+                .map(|h| h.get(c).copied().unwrap_or(0.0))
+                .collect();
             for (slot, x) in out.iter_mut().zip(bernstein_product(a, &column)) {
-                slot[c] = x;
+                if let Some(v) = slot.get_mut(c) {
+                    *v = x;
+                }
             }
         }
         pts.push(out);
     }
     let (ms, mr) = (s.max(), r.magnitude());
     let k = 4.0 * (degree + 2) as f64 * EPS;
-    let mut allow = [0.0; 4];
-    for c in 0..4 {
-        allow[c] = ms * r.allow[c] + (s.relative + k) * ms * mr[c];
-    }
+    let allow = zip4(r.allow, mr, |a, m| ms * a + (s.relative + k) * ms * m);
     Ok(Pieces {
         degree,
         bounds: r.bounds.clone(),
@@ -674,10 +675,11 @@ fn sum(a: &Pieces, b: &Pieces, f: f64) -> Result<Pieces, NetworkError> {
         .collect();
     let (ma, mb) = (a.magnitude(), b.magnitude());
     let k = (2 * degree + 4) as f64 * EPS;
-    let mut allow = [0.0; 4];
-    for c in 0..4 {
-        allow[c] = a.allow[c] + f.abs() * b.allow[c] + k * (ma[c] + f.abs() * mb[c]);
-    }
+    let allow = zip4(
+        zip4(a.allow, b.allow, |x, y| x + f.abs() * y),
+        zip4(ma, mb, |x, y| k * (x + f.abs() * y)),
+        |x, y| x + y,
+    );
     Ok(Pieces {
         degree,
         bounds: a.bounds.clone(),

@@ -31,7 +31,7 @@ use super::{
 use crate::refine::bernstein_product;
 use crate::trim::{self, BezierNet, Composed, TrimError, compose_net};
 use crate::{Curve3, NurbsCurve, NurbsSurface, Surface};
-use craft3d_math::Vec3;
+use craft3d_math::{Portable, Vec3};
 
 /// Most pieces of an edge a curve in parameter space is recovered over.
 const MAX_RECOVERED_PIECES: usize = 1 << 13;
@@ -71,7 +71,11 @@ pub(super) struct Ribbon {
 /// Bernstein basis value `B_j^k(s)`.
 fn bernstein(k: usize, j: usize, s: f64) -> f64 {
     let binom = (0..j.min(k)).fold(1.0, |acc, i| acc * (k - i) as f64 / (i + 1) as f64);
-    binom * s.powi(j as i32) * (1.0 - s).powi((k - j) as i32)
+    let (j32, rest) = (
+        i32::try_from(j).unwrap_or(i32::MAX),
+        i32::try_from(k.saturating_sub(j)).unwrap_or(i32::MAX),
+    );
+    binom * s.ppowi(j32) * (1.0 - s).ppowi(rest)
 }
 
 /// The Bernstein coefficients of the polynomial of degree `k` through
@@ -145,7 +149,7 @@ fn polished(surface: &Surface, p: Vec3, start: (f64, f64)) -> (f64, f64) {
         let (du, dv) = ((x * c - y * b) / det, (y * a - x * b) / det);
         let (nu, nv) = ((u + du).clamp(u0, u1), (v + dv).clamp(v0, v1));
         let next = surface.eval(nu, nv).distance(p);
-        if !(next < gap) {
+        if next.is_nan() || next >= gap {
             break;
         }
         (u, v, gap) = (nu, nv, next);
@@ -258,7 +262,9 @@ fn distance_bound(a: &Raw, b: &Raw, o: Vec3) -> Result<f64, NetworkError> {
     }
     let (mut lead, mut lightest) = (0.0_f64, f64::INFINITY);
     for (x, y) in pa.iter().zip(&pb) {
-        let coord = |h: &[H], c: usize| -> Vec<f64> { h.iter().map(|p| p[c]).collect() };
+        let coord = |h: &[H], c: usize| -> Vec<f64> {
+            h.iter().map(|p| p.get(c).copied().unwrap_or(0.0)).collect()
+        };
         let (xw, yw) = (coord(x, 3), coord(y, 3));
         let mut n = Vec::with_capacity(3);
         for c in 0..3 {
@@ -306,7 +312,7 @@ fn recovered(
     // a cubic is the same curve of a higher degree (and its composition
     // too).
     let mut degrees = vec![1usize, 2, 3];
-    if p + q > 0 && raw.degree % (p + q) == 0 {
+    if p + q > 0 && raw.degree.is_multiple_of(p + q) {
         let k = raw.degree / (p + q);
         if k > 3 && k <= 5 {
             degrees.push(k);
@@ -342,8 +348,8 @@ fn across_axis(uv: &NurbsCurve) -> Result<bool, NetworkError> {
         for i in 0..=16 {
             let t = a + (b - a) * f64::from(i) / 16.0;
             let h = eval(&d, t)?;
-            let len = h[0].hypot(h[1]);
-            if !(len > 0.0) {
+            let len = h[0].phypot(h[1]);
+            if len.is_nan() || len <= 0.0 {
                 return refuse(
                     "the curve stands still in its face's parameters, so the face cannot be written across it".to_string(),
                 );
@@ -369,8 +375,8 @@ pub(super) fn rows(
     uv: &NurbsCurve,
     across_u: bool,
 ) -> Result<[Raw; 3], NetworkError> {
-    let first = net.derivative(across_u, false).map_err(from_trim)?;
-    let second = first.derivative(across_u, false).map_err(from_trim)?;
+    let first = net.derivative(across_u).map_err(from_trim)?;
+    let second = first.derivative(across_u).map_err(from_trim)?;
     Ok([
         compose_net(net, uv, Composed::Positive).map_err(from_trim)?,
         compose_net(&first, uv, Composed::Any).map_err(from_trim)?,

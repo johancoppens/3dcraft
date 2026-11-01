@@ -438,3 +438,37 @@ fn an_edge_only_within_the_tolerance_of_the_drum_is_projected_held_and_proven() 
         assert!(e.to_string().contains("not proven"), "{e}");
     }
 }
+
+#[test]
+fn a_band_with_a_middle_curve_crossed_at_other_parameters_is_g2() {
+    for scale in SCALES {
+        let r = 2.0 * scale;
+        let tol = 1e-6 * scale;
+        let drum = cylinder_drum(r);
+        let face = Surface::Nurbs(drum.clone());
+        let (_, edge) = on_drum(&drum, &ellipse_points(r));
+        let (us, vs) = band(&edge, 0.8 * r, 0.7);
+        // A middle curve through the v-curves' midpoints (other knots).
+        let mids: Vec<Vec3> = vs.iter().map(|c| c.eval(0.5)).collect();
+        let n = mids.len() - 1;
+        let params: Vec<f64> = vec![0.0, 0.25, 0.7, 1.0];
+        assert_eq!(n, 3);
+        let values: Vec<Vec<f64>> = mids.iter().map(|p| vec![p.x, p.y, p.z]).collect();
+        let (knots, ctrl) = craft3d_geom::refine::interpolate(&params, 3, &values).unwrap();
+        let mid =
+            NurbsCurve::polynomial(3, knots, ctrl.iter().map(|c| v(c[0], c[1], c[2])).collect())
+                .unwrap();
+        let us = vec![us[0].clone(), mid, us[1].clone()];
+        let r2 = gordon(&net(
+            &us,
+            &vs,
+            Condition::Curvature {
+                surface: &face,
+                weight: 1.0,
+            },
+            tol,
+        ));
+        let patch = r2.unwrap();
+        assert_eq!(patch.seams[0].unwrap().order, Order::G2, "scale {scale}");
+    }
+}

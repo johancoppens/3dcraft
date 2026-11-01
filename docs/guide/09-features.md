@@ -238,8 +238,8 @@ An edge can be held: `"edges": {"uFirst": {"kind": "tangent", "face": "F7:face(0
 makes the sheet meet that face with one tangent plane all along the edge (G1, no crease; `tangency` in the
 result is the largest angle found between the two), the curves crossing the edge bent to leave it along
 the face, their speed there times `weight` (larger is fuller). `"kind": "position"` only checks that the
-edge lies on the face. The face may be a plane, cylinder, cone or sphere, or a spline face along one of
-its parameter lines, such as the edge of another network sheet: two sheets then join smoothly.
+edge lies on the face. The face may be a plane, cylinder, cone or sphere, or a spline face along any
+curve on it, such as the edge of another network sheet or of a trimmed face: two sheets then join smoothly.
 `feature.loft` with `guides` lays a sheet through open sections along guide curves the same way (its
 sections take no `start`).
 
@@ -277,11 +277,12 @@ sheet's second derivative across the edge is put exactly where the face asks it,
 
 The result says under `network` › `continuity` how the seam was proven to meet the face, and
 `measure.continuity` measures any such seam (below). The face may be a plane, cylinder, cone or sphere, or a
-spline face along one of its parameter lines, such as another network sheet's edge: two sheets then join in
-curvature. Along a spline face the curves crossing the edge take their crossing parameters from the face's
-line, so that both sides of the seam share one parametrisation; only one edge of a family can be held that
-way. The sheet is refused unless the measure proves G2, with the gaps it found; a torus, or a spline face
-along a curve that is not one of its parameter lines, is refused as for tangency.
+spline face along any curve on it: another network sheet's edge, or a trimmed face's edge (a flank cut from a
+larger spline surface by `feature.surface.trim`), where the face is written across the curve exactly. Along a
+spline face the curves crossing the edge take their crossing parameters from the face's line, so that both
+sides of the seam share one parametrisation; where both edges of a family are held in curvature to spline
+faces, the crossing curves must cross both lines at the same parameters. The sheet is refused unless the
+measure proves G2, with the gaps it found; a torus is refused as for tangency.
 
 ### A class-A mouse
 

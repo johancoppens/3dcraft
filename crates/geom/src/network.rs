@@ -626,6 +626,32 @@ struct Track {
     reversed: bool,
 }
 
+/// A bound on the speed `|d/dt (X / w)|` of a homogeneous spline: by the
+/// convex hulls, `(max |X′| + R max |w′|) / min w`, `R` the farthest of
+/// its points from the origin (infinite where a weight is not positive).
+fn speed(raw: &Raw) -> Result<f64, NetworkError> {
+    let d = derivative(raw)?;
+    let lightest = raw
+        .points
+        .iter()
+        .map(|h| h[3])
+        .fold(f64::INFINITY, f64::min);
+    let reach = raw
+        .points
+        .iter()
+        .filter_map(|h| point(*h))
+        .fold(0.0_f64, |m, p| m.max(p.length()));
+    let lead = d
+        .points
+        .iter()
+        .fold(0.0_f64, |m, h| m.max(xyz(*h).length() + reach * h[3].abs()));
+    Ok(if lightest > 0.0 {
+        lead / lightest
+    } else {
+        f64::INFINITY
+    })
+}
+
 impl Track {
     fn new(curve: &NurbsCurve, tol: f64) -> Result<Track, NetworkError> {
         let mut raw = of(curve);
@@ -728,30 +754,7 @@ impl Track {
             .iter()
             .zip(common)
             .fold(0.0_f64, |m, (a, b)| m.max((a - b).abs()));
-        let speed = {
-            let d = derivative(&self.raw)?;
-            let lightest = self
-                .raw
-                .points
-                .iter()
-                .map(|h| h[3])
-                .fold(f64::INFINITY, f64::min);
-            let reach = self
-                .raw
-                .points
-                .iter()
-                .filter_map(|h| point(*h))
-                .fold(0.0_f64, |m, p| m.max(p.length()));
-            let lead = d
-                .points
-                .iter()
-                .fold(0.0_f64, |m, h| m.max(xyz(*h).length() + reach * h[3].abs()));
-            if lightest > 0.0 {
-                lead / lightest
-            } else {
-                f64::INFINITY
-            }
-        };
+        let speed = speed(&self.raw)?;
         if (speed * shift).is_finite() && speed * shift <= 0.1 * tol {
             return Ok(());
         }
@@ -980,6 +983,22 @@ impl Net {
                 .map(|r| r.get(j).copied().ok_or_else(internal))
                 .collect::<Result<_, _>>()?,
         })
+    }
+
+    /// Column `j` replaced by `curve` where it has the net's degree, knots
+    /// and count in u (else left as it is).
+    fn set_column(&mut self, j: usize, curve: &Raw) {
+        if curve.degree != self.pu
+            || curve.knots != self.ku
+            || curve.points.len() != self.rows.len()
+        {
+            return;
+        }
+        for (row, h) in self.rows.iter_mut().zip(&curve.points) {
+            if let Some(slot) = row.get_mut(j) {
+                *slot = *h;
+            }
+        }
     }
 
     /// Every column brought to `degree` and `target` in u.
@@ -1560,6 +1579,34 @@ fn iso_line(
     Ok(None)
 }
 
+/// The spline of `degree` through `values` at the crossings `at`, for a
+/// hold's scalars. A cubic through five crossings or more takes its inner
+/// knots at the crossings themselves (the third to the third last: the
+/// not-a-knot conditions), not at averages of them: an average falls a
+/// little past a crossing (0.3633 beside 0.36 for crossings at 0.17, 0.36,
+/// 0.56), and that short span, at the degree the products of the scalars
+/// reach (24 along a mouse's seam), amplified the rounding of the stored
+/// control points into a curvature gap of 1e-10 per mm beyond the G2
+/// threshold (2026-11-01). Fewer crossings, or other degrees, as before.
+fn crossing_interpolate(
+    at: &[f64],
+    degree: usize,
+    values: &[Vec<f64>],
+) -> Result<(Vec<f64>, Vec<Vec<f64>>), NetworkError> {
+    let n = at.len();
+    if degree == 3 && n >= 5 {
+        let (Some(&a), Some(&b)) = (at.first(), at.last()) else {
+            return Err(internal());
+        };
+        let mut knots = vec![a; 4];
+        knots.extend(at.get(2..n - 2).ok_or_else(internal)?.iter().copied());
+        knots.extend([b; 4]);
+        let ctrl = crate::refine::interpolate_on(at, degree, &knots, values)?;
+        return Ok((knots, ctrl));
+    }
+    Ok(interpolate(at, degree, values)?)
+}
+
 /// The coefficients of `y` in the columns `a`, in the least-squares
 /// sense, and what is left of `y` (in the homogeneous coordinates given).
 ///
@@ -1767,6 +1814,7 @@ fn hold_tangent(
     tol: f64,
     edge: usize,
     rows: usize,
+    edge_curve: Option<&Raw>,
 ) -> Result<Vec<Raw>, NetworkError> {
     let label = EDGE_NAMES.get(edge).copied().unwrap_or("an edge");
     // At least cubic across, so the change blends in smoothly.
@@ -1799,9 +1847,17 @@ fn hold_tangent(
             .map(|(b, a)| h_add(*b, *a, q as f64 / span, -(q as f64) / span))
             .collect(),
     };
+    // The edge's own curve where it is known, at its own degree: the net's
+    // column is the same curve raised to the net's degree, and the
+    // products below would carry that degree on (a second hold along the
+    // far edge then compounded it: degree 24 along a mouse's seams).
+    let (dc, c_low) = match edge_curve {
+        Some(curve) => (derivative(curve)?, curve.clone()),
+        None => (dc, c.clone()),
+    };
     let mut columns: Vec<Raw> = fields.to_vec();
     columns.push(dc);
-    columns.push(c.clone());
+    columns.push(c_low);
     // Lengths about the edge's first point: the extent of the first two
     // rows (what the change moves).
     let centre = c
@@ -1856,7 +1912,7 @@ fn hold_tangent(
     let mut scalars = Vec::with_capacity(columns.len());
     for (field, row) in columns.iter().zip(&table) {
         let values: Vec<Vec<f64>> = row.iter().map(|x| vec![*x, 0.0, 0.0, 0.0]).collect();
-        let (knots, ctrl) = interpolate(at, degree, &values)?;
+        let (knots, ctrl) = crossing_interpolate(at, degree, &values)?;
         let scalar = Raw {
             degree,
             knots,
@@ -2197,11 +2253,7 @@ fn gordon_here(net: &Network<'_>) -> Result<Patch, NetworkError> {
         let label = EDGE_NAMES.get(e).copied().unwrap_or("an edge");
         let (family, index) = edge_track(e, m, n);
         let slot = usize::from(family == 'v');
-        if dictated.get(slot).copied().unwrap_or(true) {
-            return refuse(format!(
-                "{label}: both edges of one family are held in curvature to spline faces; only one face's line can give the family its crossing parameters (owed: comparing the seam through a change of parameter)"
-            ));
-        }
+        let second = dictated.get(slot).copied().unwrap_or(true);
         if let Some(d) = dictated.get_mut(slot) {
             *d = true;
         }
@@ -2253,6 +2305,23 @@ fn gordon_here(net: &Network<'_>) -> Result<Patch, NetworkError> {
         } else {
             (&mut common_v, &mut tt, &vs)
         };
+        // The other edge of the family already gave it its parameters:
+        // this one's line must be crossed at the same ones (within what
+        // moves it a tenth of the tolerance, as `Track::align` leaves a
+        // curve as it is), so that both seams keep one parametrisation.
+        if second {
+            let shift = own
+                .iter()
+                .zip(common.iter())
+                .fold(0.0_f64, |m, (a, b)| m.max((a - b).abs()));
+            let moved = speed(&line.raw)? * shift;
+            if moved.is_finite() && moved <= 0.1 * tol {
+                continue;
+            }
+            return refuse(format!(
+                "{label}: both edges of one family are held in curvature to spline faces, and the curves crossing them cross the two lines at different parameters (by up to {shift:.3e}, which moves this line {moved:.3e}, the tolerance is {tol:.3e}); only one line can give the family its crossing parameters: cross both where their own parameters agree (owed: comparing the seam through a change of parameter)"
+            ));
+        }
         for (r, t) in rows.iter_mut().zip(tracks.iter()) {
             if t.point {
                 *r = own.clone();
@@ -2541,6 +2610,30 @@ fn gordon_here(net: &Network<'_>) -> Result<Patch, NetworkError> {
             2 => sum.transposed(),
             _ => sum.transposed().reversed_v(),
         };
+        // The edge row is the edge's curve exactly: the sum reproduces it,
+        // but as `A + B − T` of values the size of the coordinates, whose
+        // rounding the second derivative along the edge amplifies by the
+        // square of the knot factor (a seam along a spline face measured
+        // a curvature gap of 1e-10 per mm from it, beyond the threshold,
+        // 2026-11-01). The curve refined to the net's knots replaces it.
+        let mut edge_curve: Option<Raw> = None;
+        if let Some(track) = edge_track_ref
+            && !track.point
+        {
+            let mut exact = track.raw.clone();
+            let target = Raw {
+                degree: work.pu,
+                knots: work.ku.clone(),
+                points: Vec::new(),
+            }
+            .knot_runs();
+            if exact.degree <= work.pu && refine_to(&mut exact, work.pu, &target).is_ok() {
+                work.set_column(0, &exact);
+                // Its own description, in the edge's frame (the net's
+                // column 0 runs the way the edge does in `work`).
+                edge_curve = Some(track.raw.clone());
+            }
+        }
         let far_held = net.edges.get(e ^ 1).and_then(Condition::held).is_some();
         let next = if g2 {
             fair::limit(next, far_held)
@@ -2563,6 +2656,7 @@ fn gordon_here(net: &Network<'_>) -> Result<Patch, NetworkError> {
             tol,
             e,
             if g2 { 3 } else { 2 },
+            edge_curve.as_ref(),
         )?;
         if g2 {
             match (spline_face, &second, fields.first()) {
@@ -2577,6 +2671,7 @@ fn gordon_here(net: &Network<'_>) -> Result<Patch, NetworkError> {
                     net.angular,
                     tol,
                     e,
+                    edge_curve.as_ref(),
                 )?,
                 (false, _, _) => {
                     hold_curvature_implicit(&mut work, surface, &at, next, net.angular, tol, e)?;
@@ -3446,6 +3541,7 @@ fn hold_curvature_fields(
     angular: f64,
     tol: f64,
     edge: usize,
+    edge_curve: Option<&Raw>,
 ) -> Result<(), NetworkError> {
     let label = EDGE_NAMES.get(edge).copied().unwrap_or("an edge");
     let (Some(a), Some(b)) = (scalars.first(), scalars.get(1)) else {
@@ -3459,7 +3555,10 @@ fn hold_curvature_fields(
         .and_then(point)
         .ok_or_else(internal)?;
     let rows = edge_rows(net, origin)?;
-    let c = mapped(&net.column(0)?, |h| h_about(h, origin));
+    let c = match edge_curve {
+        Some(curve) => mapped(curve, |h| h_about(h, origin)),
+        None => mapped(&net.column(0)?, |h| h_about(h, origin)),
+    };
     let (f, g) = (
         mapped(f, |h| h_about(h, origin)),
         mapped(g, |h| h_about(h, origin)),
@@ -3518,7 +3617,7 @@ fn hold_curvature_fields(
     let mut target = t;
     for (field, row) in columns.iter().zip(&table) {
         let values: Vec<Vec<f64>> = row.iter().map(|x| vec![*x, 0.0, 0.0, 0.0]).collect();
-        let (knots, ctrl) = interpolate(at, degree, &values)?;
+        let (knots, ctrl) = crossing_interpolate(at, degree, &values)?;
         let scalar = Raw {
             degree,
             knots,

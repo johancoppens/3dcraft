@@ -235,7 +235,30 @@ pub fn offset_held(
         )));
     }
     let over = wide(&nurbs, over)?;
-    regular_over(surface, distance, over)?;
+    match regular_over(surface, distance, over) {
+        Ok(()) => {}
+        // Folded, or not proven not to, only where the surface goes on past
+        // its domain: there it goes on as its end spans' whole polynomials,
+        // which a span of high degree changed close to its border (a sheet
+        // held G2 to its neighbour) turns sharply. Continued instead by its
+        // second-order Taylor expansion across each border (the same surface
+        // inside, as curved past the border as at it), whose domain is
+        // `over` (2026-11-01: a mouse's top, shelled 1.8 mm, folded 0.04 of
+        // its parameter past a corner with a radius of 0.3 mm).
+        Err(OffsetError::Folds { at, .. } | OffsetError::Unproven { at })
+            if !inside(nurbs.domain(), at) =>
+        {
+            let tol = 0.25 * limit;
+            let taylor = nurbs
+                .extended_taylor(over.0, over.1, tol)
+                .map_err(|_| OffsetError::Unproven { at })?;
+            if taylor.domain() == nurbs.domain() {
+                return Err(OffsetError::Unproven { at });
+            }
+            return offset_held(&Surface::Nurbs(taylor), distance, limit, over, turn, held);
+        }
+        Err(error) => return Err(error),
+    }
     // Fitted a step past every end that is not a seam, and cut back to
     // `over`: the borders of the face then lie inside the fit, where its
     // derivatives (the normal, which a face tangent to it across a border
@@ -272,6 +295,12 @@ pub fn offset_held(
         held,
         MAX_EVALUATIONS,
     )
+}
+
+/// Whether `at` lies inside `domain` (its border included).
+fn inside(domain: Domain, at: (f64, f64)) -> bool {
+    let ((u0, u1), (v0, v1)) = domain;
+    at.0 >= u0 && at.0 <= u1 && at.1 >= v0 && at.1 <= v1
 }
 
 /// `over` with a step of the fit's first samples added past each end in a

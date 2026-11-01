@@ -498,9 +498,7 @@ impl BezierNet {
 
     /// The homogeneous partial derivative in u (`in_u`) or v, patch by
     /// patch in the surface's own parameters: `p (H_{a+1,b} − H_{a,b}) / Δu`.
-    /// With `magnitude`, the bound `p (|H_{a+1,b}| + |H_{a,b}|) / Δu` on
-    /// each coordinate instead (for rounding allowances).
-    pub(crate) fn derivative(&self, in_u: bool, magnitude: bool) -> Result<BezierNet, TrimError> {
+    pub(crate) fn derivative(&self, in_u: bool) -> Result<BezierNet, TrimError> {
         let (p, q) = self.degrees;
         let columns = self.kv.len().saturating_sub(1);
         let along = if in_u { p } else { q };
@@ -526,7 +524,7 @@ impl BezierNet {
                 self.kv.get(j + 1).zip(self.kv.get(j)).map(|(b, a)| b - a)
             }
             .ok_or_else(internal)?;
-            if !(width > 0.0) {
+            if width.is_nan() || width <= 0.0 {
                 return Err(internal());
             }
             let f = along as f64 / width;
@@ -542,12 +540,8 @@ impl BezierNet {
                         return Err(internal());
                     };
                     let mut h = [0.0; 4];
-                    for (c, slot) in h.iter_mut().enumerate() {
-                        *slot = if magnitude {
-                            f * (x[c].abs() + y[c].abs())
-                        } else {
-                            f * (y[c] - x[c])
-                        };
+                    for ((slot, a), b) in h.iter_mut().zip(x).zip(y) {
+                        *slot = f * (b - a);
                     }
                     out.push(h);
                 }
