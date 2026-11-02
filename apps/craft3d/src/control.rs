@@ -152,8 +152,9 @@ impl Shared {
 /// characters; anything else is no name.
 fn client_name(params: Option<&Value>) -> Option<String> {
     let name = params?.get("client")?.as_str()?.trim();
-    let fits =
-        !name.is_empty() && name.chars().count() <= 80 && name.chars().all(|c| !c.is_control());
+    let fits = !name.is_empty()
+        && name.chars().count() <= 80
+        && !name.chars().any(crate::consent::deceptive);
     fits.then(|| name.to_string())
 }
 

@@ -188,13 +188,17 @@ watching**.
 
 **3DCraft asks you first.** When your AI tool connects from a project folder (Claude Code opened in
 `~/projects/bracket`, say), 3DCraft asks: *"Claude Code is connected and works in ~/projects/bracket.
-May it read and write files there?"*. **Allow** remembers that folder (it appears in the panel, where
-**Remove** takes it back), **This session only** allows it until you close 3DCraft, **No** keeps it out.
+May it read and write files there?"*, with the folder underneath. **Always allow (all agents)** remembers that
+folder for every agent (it appears in the panel, where **Remove** takes it back), **This session only**
+allows it until you close 3DCraft, **No** keeps it out. The buttons wait a moment before they take a click,
+so a click meant for something else never answers.
 Then "make a new document with a 10 mm cube and save it in our folder" just works. When the agent wants
-a file anywhere else, 3DCraft shows the full path, *"Claude Code wants to save to …"*, with **Allow
-once**, **Allow this folder** and **Deny**; the agent waits for you (up to two minutes) and is told when
+a file anywhere else, 3DCraft shows the folder and the file's name, *"Claude Code wants to save a file"*,
+with **Deny**, **Allow this file once** (that file, for that one request) and **Always allow this folder
+(all agents)**; the agent waits for you (up to two minutes) and is told when
 you say no. Only you can answer these questions: the agent cannot answer them for itself. 3DCraft never
-offers your home folder itself, the folders of your keys and settings, or the system's folders.
+offers your home folder itself, the folders of your keys, settings and programs, or the system's folders.
+The folder of the document you have open counts only for a document you opened or saved yourself.
 
 If no window allows agents, the agent's requests get an answer that says to turn on **Allow AI agents**,
 and it can carry on as soon as you do. With several 3DCraft windows open, the agent works in the one you

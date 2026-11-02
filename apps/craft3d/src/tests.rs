@@ -405,6 +405,55 @@ fn an_http_request_is_closed_before_its_body_is_read() {
     );
 }
 
+/// The challenge (2026-11-02): the window proves it holds the token, the
+/// client proves it too, and the token never crosses the socket.
+#[test]
+fn the_window_and_the_client_prove_the_token_to_each_other() {
+    use craft3d_automation::proof;
+    let rig = Rig::start(Workspace::none());
+    let ours = "1".repeat(64);
+    let mut client = rig.connect();
+    let answer = client.ok("challenge", json!({"nonce": ours}));
+    let theirs = answer["nonce"].as_str().unwrap().to_string();
+    assert!(proof::is_nonce(&theirs));
+    assert_eq!(
+        answer["proof"],
+        proof::proof(TOKEN, proof::WINDOW, &ours, &theirs),
+        "the window's proof"
+    );
+    let reply = client.call(
+        "auth",
+        json!({"proof": proof::proof(TOKEN, proof::CLIENT, &theirs, &ours), "client": "test"}),
+    );
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(client.ok("ui.get", json!({}))["document"], Value::Null);
+    // A wrong proof, a proof without a challenge, a bad nonce, two
+    // challenges: refused and closed, nothing dispatched.
+    let before = rig.dispatched.load(Ordering::SeqCst);
+    let mut wrong = rig.connect();
+    let answer = wrong.ok("challenge", json!({"nonce": ours}));
+    let theirs = answer["nonce"].as_str().unwrap().to_string();
+    let reply = wrong.call(
+        "auth",
+        json!({"proof": proof::proof(&"0".repeat(64), proof::CLIENT, &theirs, &ours)}),
+    );
+    assert_eq!(reply["ok"], false);
+    assert_eq!(wrong.read(), None);
+    let mut early = rig.connect();
+    let reply = early.call("auth", json!({"proof": "00".repeat(32)}));
+    assert!(
+        reply["error"].as_str().unwrap().contains("challenge first"),
+        "{reply}"
+    );
+    let mut bad = rig.connect();
+    assert_eq!(bad.call("challenge", json!({"nonce": "12"}))["ok"], false);
+    assert_eq!(bad.read(), None);
+    let mut twice = rig.connect();
+    twice.ok("challenge", json!({"nonce": ours}));
+    assert_eq!(twice.call("challenge", json!({"nonce": ours}))["ok"], false);
+    assert_eq!(rig.dispatched.load(Ordering::SeqCst), before);
+}
+
 #[test]
 fn a_script_builds_a_part_and_measures_the_closed_form_volume() {
     let rig = Rig::start(Workspace::none());

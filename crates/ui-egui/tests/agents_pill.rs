@@ -238,3 +238,103 @@ fn the_pill_and_the_popover_fit_small_windows() {
         }
     }
 }
+
+/// A question takes no click for a moment after it appears (a click or a
+/// double click meant for something else never answers it), offers "no"
+/// first, and says folder and file on lines of their own.
+#[test]
+fn a_question_takes_no_click_at_first_and_offers_no_first() {
+    use craft3d_ui_egui::{AgentPrompt, PromptAnswer};
+    let mut session = Session::new(Workspace::none());
+    session.execute("file.new", &json!({})).unwrap();
+    let mut shell = Shell::new();
+    let mut status = on(Vec::new());
+    status.prompts = vec![AgentPrompt {
+        id: 7,
+        kind: "write".to_string(),
+        client: "Claude Code".to_string(),
+        path: "/home/me/out/part.stl".to_string(),
+        folder: "/home/me/out".to_string(),
+        file_name: "part.stl".to_string(),
+        command: Some("file.export".to_string()),
+    }];
+    shell.set_agents_status(status);
+    let mut window = Window::sized(1400.0, 900.0);
+    // A few frames (a twentieth of a second): the window has its size.
+    for _ in 0..3 {
+        window.frame(&mut shell, &mut session, Vec::new());
+    }
+    let hits = shell.agent_prompt_hits().to_vec();
+    let labels: Vec<&str> = hits.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(
+        labels,
+        [
+            "Deny",
+            "Allow this file once",
+            "Always allow this folder (all agents)"
+        ]
+    );
+    // At once: the click does nothing.
+    let once = hits[1].1.center();
+    window.click(&mut shell, &mut session, once);
+    assert_eq!(shell.take_agent_prompt_answer(), None, "taken too early");
+    // After the moment: it answers.
+    for _ in 0..60 {
+        window.frame(&mut shell, &mut session, Vec::new());
+    }
+    assert_eq!(
+        shell.agent_prompt_hits()[1].1.center(),
+        once,
+        "the same place"
+    );
+    window.click(&mut shell, &mut session, once);
+    assert_eq!(
+        shell.take_agent_prompt_answer(),
+        Some((7, PromptAnswer::Once))
+    );
+}
+
+/// `ui.get` over the control channel shows an agent its own entry: not
+/// other agents' folders or questions.
+#[test]
+fn an_agent_sees_its_own_entry_only() {
+    use craft3d_ui_egui::AgentPrompt;
+    let mut session = Session::new(Workspace::none());
+    let mut shell = Shell::new();
+    let client = |name: &str| AgentClient {
+        name: name.to_string(),
+        since_ms: 1,
+        last_command: None,
+        last_ms: 0,
+        cwd: Some(format!("/home/{name}")),
+    };
+    let mut status = on(vec![client("Claude Code"), client("Other")]);
+    status.prompts = vec![AgentPrompt {
+        id: 1,
+        kind: "connect".to_string(),
+        client: "Other".to_string(),
+        path: "/home/Other".to_string(),
+        folder: "/home/Other".to_string(),
+        ..AgentPrompt::default()
+    }];
+    shell.set_agents_status(status);
+    let get = |shell: &mut Shell, session: &mut Session| {
+        shell
+            .handle_method(session, "ui.get", None)
+            .unwrap()
+            .unwrap()["agents"]
+            .clone()
+    };
+    let all = get(&mut shell, &mut session);
+    assert_eq!(
+        all["clients"].as_array().unwrap().len(),
+        2,
+        "the person sees all"
+    );
+    shell.set_agents_viewer(Some("Claude Code"));
+    let own = get(&mut shell, &mut session);
+    assert_eq!(own["clients"].as_array().unwrap().len(), 1);
+    assert_eq!(own["clients"][0]["name"], "Claude Code");
+    assert!(own["prompts"].as_array().unwrap().is_empty());
+    shell.set_agents_viewer(None);
+}

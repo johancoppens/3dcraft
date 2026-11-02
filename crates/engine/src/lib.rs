@@ -892,7 +892,7 @@ impl Session {
             self.document().ok().map(|open| open.id),
         );
         let outcome = self.logged(id, |session| session.execute_unrecorded(id, params));
-        self.track_who_opened(before);
+        self.track_who_opened(id, before);
         // The report itself is not what a report is about.
         if let Err(error) = &outcome
             && id != "session.report"
@@ -1012,13 +1012,16 @@ impl Session {
     /// Notes, after a command, who made the active document active and who
     /// gave it its file: the person (no actor) or an agent. `before` is
     /// every open document's id and file, and the active one's id.
-    fn track_who_opened(&mut self, before: (Vec<(u64, Option<String>)>, Option<u64>)) {
+    fn track_who_opened(&mut self, id: &str, before: (Vec<(u64, Option<String>)>, Option<u64>)) {
         let by_agent = self.actor.is_some();
         let (documents, active_before) = before;
         let Some(open) = self.documents.get_mut(self.active) else {
             return;
         };
-        if active_before != Some(open.id) {
+        // A change of the active document is whoever made it; the person
+        // activating the document already active (a click on its tab)
+        // makes it theirs again.
+        if active_before != Some(open.id) || (!by_agent && id == "file.activate") {
             self.agent_activated = by_agent;
         }
         let file_before = documents

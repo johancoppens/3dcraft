@@ -84,6 +84,11 @@ pub fn clean_intent(text: &str) -> Option<String> {
     let mut out = String::new();
     let mut space = false;
     for c in text.chars() {
+        // No direction override or invisible character: it could make the
+        // intent read otherwise where it is shown.
+        if invisible(c) {
+            continue;
+        }
         let c = if c.is_control() || c.is_whitespace() {
             ' '
         } else {
@@ -478,5 +483,58 @@ mod tests {
             1,
             "file.new itself, in the new document"
         );
+    }
+
+    /// Who opened the active document (security review, 2026-11-02): only
+    /// a file the person opened or saved, and made active, is theirs.
+    #[test]
+    fn the_person_document_file_is_the_persons_only() {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/tmp/craft3d-person-file");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = |name: &str| dir.join(name).to_str().unwrap().to_string();
+        let mut session = Session::new(Workspace::unrestricted());
+        session.execute("file.new", &json!({})).unwrap();
+        assert_eq!(session.person_document_file(), None, "a new document");
+        session
+            .execute("file.save", &json!({"path": path("mine.3dcraft")}))
+            .unwrap();
+        let mine = session.person_document_file().unwrap();
+        assert!(mine.ends_with("mine.3dcraft"), "{mine}");
+        // An agent saves it elsewhere: not the person's file any more.
+        session.set_actor(Some("bot"));
+        session
+            .execute("file.save", &json!({"path": path("moved.3dcraft")}))
+            .unwrap();
+        session.set_actor(None);
+        assert_eq!(session.person_document_file(), None);
+        // The person saves it again: theirs.
+        session
+            .execute("file.save", &json!({"path": path("mine.3dcraft")}))
+            .unwrap();
+        assert!(session.person_document_file().is_some());
+        // An agent opens another file: neither it nor (while active) any.
+        session.set_actor(Some("bot"));
+        session
+            .execute("file.open", &json!({"path": path("moved.3dcraft")}))
+            .unwrap();
+        assert_eq!(session.person_document_file(), None);
+        // An agent makes the person's document active: still none.
+        session
+            .execute("file.activate", &json!({"document": 0}))
+            .unwrap();
+        session.set_actor(None);
+        assert_eq!(
+            session.person_document_file(),
+            None,
+            "made active by an agent"
+        );
+        // The person activates it: theirs again.
+        session
+            .execute("file.activate", &json!({"document": 0}))
+            .unwrap();
+        assert!(session.person_document_file().is_some());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

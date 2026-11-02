@@ -1260,7 +1260,7 @@ mod tests {
         use crate::files::{Picker, SystemDialogs};
         let state = workdir("desk");
         let work = state.join("Documents").join("3DCraft");
-        let mut config = config(&state);
+        let mut config = config(&state.join("craft"));
         config.work_folder = Some(work.clone());
         let (requests, incoming) = mpsc::channel();
         let agents = Agents::new(config, requests, Arc::new(|| {}));
@@ -1326,7 +1326,7 @@ mod tests {
         let (one, two) = (state.join("one"), state.join("two"));
         std::fs::create_dir_all(&one).unwrap();
         std::fs::create_dir_all(&two).unwrap();
-        let mut config = config(state);
+        let mut config = config(&state.join("craft"));
         config.work_folder = Some(chosen.to_path_buf());
         let (requests, incoming) = mpsc::channel();
         let agents = Agents::new(config, requests, Arc::new(|| {}));
@@ -1424,7 +1424,7 @@ mod tests {
         desk.host.shell.request_agents_document_folder(false);
         desk.turn();
         assert_eq!(roots_from(&desk).len(), 1);
-        assert!(!discovery::read_preferences(&state).document_folder);
+        assert!(!discovery::read_preferences(&state.join("craft")).document_folder);
         desk.host.shell.request_agents_document_folder(true);
         desk.turn();
         assert_eq!(roots_from(&desk).len(), 2);
@@ -1442,13 +1442,13 @@ mod tests {
     #[test]
     fn the_chosen_folder_is_remembered_and_a_bad_one_refused() {
         let state = workdir("chosen-folder");
-        let (mut agents, _pump) = agents(config(&state));
+        let (mut agents, _pump) = agents(config(&state.join("craft")));
         agents.allow(true);
         let mine = state.join("mine").join("agents");
         agents.choose_folder(&mine).unwrap();
         assert!(mine.is_dir(), "made when missing");
         assert_eq!(
-            discovery::read_preferences(&state).folder,
+            discovery::read_preferences(&state.join("craft")).folder,
             Some(mine.clone())
         );
         let status = agents.status();
@@ -1465,7 +1465,7 @@ mod tests {
         assert!(agents.choose_folder(&file).is_err());
         drop(agents);
         // The next start: the remembered folder.
-        let (mut again, _pump) = super::tests::agents(config(&state));
+        let (mut again, _pump) = super::tests::agents(config(&state.join("craft")));
         again.start().unwrap();
         assert!(again.address().is_some(), "remembered on");
         assert_eq!(again.status().work_folder.as_deref(), mine.to_str());
@@ -1489,7 +1489,7 @@ mod tests {
         let given = state.join("given");
         std::fs::create_dir_all(&given).unwrap();
         let given = craft3d_engine::canonical(&given).unwrap();
-        let mut config = config(&state);
+        let mut config = config(&state.join("craft"));
         config.work_folder = Some(state.join("unused"));
         config.command_line = Some((Access::Root(given.clone()), Access::Root(given.clone())));
         let (mut agents, _pump) = agents(config);
@@ -1524,7 +1524,7 @@ mod tests {
         let chosen = state.join("chosen");
         let outside = state.join("outside");
         std::fs::create_dir_all(&outside).unwrap();
-        let mut config = config(&state);
+        let mut config = config(&state.join("craft"));
         config.work_folder = Some(chosen.clone());
         let (mut agents, _pump) = agents(config);
         agents.allow(true);
@@ -2071,9 +2071,9 @@ mod tests {
         config.work_folder = Some(state.join("chosen"));
         let (mut agents, _pump) = agents(config);
         agents.allow(true);
-        let origin = Origin {
-            key: "k".to_string(),
-            name: "Claude Code".to_string(),
+        let origin = |n: usize| Origin {
+            key: format!("k{n}"),
+            name: format!("Agent {n}"),
             cwd: None,
             grant: None,
         };
@@ -2087,15 +2087,180 @@ mod tests {
             write: true,
             folder: false,
         };
-        for n in 0..MAX_PROMPTS {
+        // One client: at most MAX_PROMPTS_PER_CLIENT.
+        for n in 0..MAX_PROMPTS_PER_CLIENT {
             assert!(
-                matches!(agents.screen(&origin, &[want(n)]), Ok(Some(_))),
+                matches!(agents.screen(&origin(0), &[want(n)]), Ok(Some(_))),
                 "{n}"
             );
         }
-        let error = agents.screen(&origin, &[want(99)]).unwrap_err();
+        let error = agents.screen(&origin(0), &[want(50)]).unwrap_err();
+        assert!(error.contains("wait for the person"), "{error}");
+        // All clients: at most MAX_PROMPTS.
+        let mut asked = MAX_PROMPTS_PER_CLIENT;
+        let mut client = 1;
+        while asked < MAX_PROMPTS {
+            assert!(matches!(
+                agents.screen(&origin(client), &[want(100 + asked)]),
+                Ok(Some(_))
+            ));
+            asked += 1;
+            if asked % MAX_PROMPTS_PER_CLIENT == 0 {
+                client += 1;
+            }
+        }
+        let error = agents.screen(&origin(99), &[want(999)]).unwrap_err();
         assert!(error.contains("wait for the person"), "{error}");
         assert_eq!(agents.status().prompts.len(), MAX_PROMPTS);
+        let _ = std::fs::remove_dir_all(&state);
+    }
+
+    /// M1 (security review, 2026-11-02): the window built by `app::control`
+    /// protects the home folder, its keys and settings and its own state
+    /// folder, from the environment.
+    #[test]
+    fn the_window_protects_home_keys_and_its_own_folder() {
+        let root = workdir("protected-wired");
+        let home = root.join("home");
+        std::fs::create_dir_all(home.join(".ssh")).unwrap();
+        std::fs::create_dir_all(home.join("projects")).unwrap();
+        let state = root.join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        let options = crate::args::Options {
+            state_dir: Some(state.clone()),
+            agent_port: Some(0),
+            ..crate::args::Options::default()
+        };
+        let text = home.to_str().unwrap().to_string();
+        let env = move |name: &str| (name == "HOME" || name == "USERPROFILE").then(|| text.clone());
+        let (mut agents, _incoming) = crate::app::control(&options, Arc::new(|| {}), &env).unwrap();
+        agents.allow(true);
+        let origin = Origin {
+            key: "k".to_string(),
+            name: "Claude Code".to_string(),
+            cwd: None,
+            grant: None,
+        };
+        let want = |path: PathBuf| Wanted {
+            command: "file.export".to_string(),
+            path: path.to_str().unwrap().to_string(),
+            write: true,
+            folder: false,
+        };
+        for refused in [
+            home.join(".ssh").join("authorized_keys"),
+            home.join(".bashrc"),
+            state.join("x.stl"),
+        ] {
+            let error = agents
+                .screen(&origin, &[want(refused.clone())])
+                .unwrap_err();
+            assert!(error.contains("never gives"), "{refused:?}: {error}");
+        }
+        assert!(matches!(
+            agents.screen(&origin, &[want(home.join("projects").join("x.stl"))]),
+            Ok(Some(_))
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// M5: a path that could read as something else in the dialog is
+    /// refused, never asked about.
+    #[test]
+    fn a_path_with_a_line_break_or_a_direction_mark_is_refused() {
+        let state = workdir("deceptive");
+        let outside = state.join("elsewhere");
+        std::fs::create_dir_all(&outside).unwrap();
+        let mut config = config(&state.join("craft"));
+        config.work_folder = Some(state.join("chosen"));
+        let (mut agents, _pump) = agents(config);
+        agents.allow(true);
+        let origin = Origin {
+            key: "k".to_string(),
+            name: "Claude Code".to_string(),
+            cwd: None,
+            grant: None,
+        };
+        for name in [
+            "a\nAllow this: /home/me.stl",
+            "safe\u{202E}lts.exe",
+            "x\u{200B}.stl",
+        ] {
+            let want = Wanted {
+                command: "file.export".to_string(),
+                path: outside.join(name).to_str().unwrap().to_string(),
+                write: true,
+                folder: false,
+            };
+            let error = agents.screen(&origin, &[want]).unwrap_err();
+            assert!(error.contains("does not ask"), "{name:?}: {error}");
+        }
+        assert!(agents.status().prompts.is_empty());
+        let _ = std::fs::remove_dir_all(&state);
+    }
+
+    /// M2: the open document's folder is a root only for a file the person
+    /// opened themselves and made active; one the agent opened, or made
+    /// active, gives nothing.
+    #[test]
+    fn an_agent_cannot_steer_the_document_folder() {
+        let state = workdir("doc-steer");
+        let chosen = state.join("Documents").join("3DCraft");
+        let (mut desk, one, two) = desk_with_two_documents(&state, &chosen);
+        let has = |desk: &crate::app::Desk, dir: &Path| {
+            desk.host
+                .shell
+                .agents_status()
+                .roots
+                .iter()
+                .any(|r| r.from == "document" && Path::new(&r.path) == dir)
+        };
+        assert!(has(&desk, &two), "the person's own document");
+        // An agent makes the other document active: no document folder.
+        desk.host.session.set_actor(Some("Claude Code"));
+        desk.host
+            .session
+            .execute("file.activate", &json!({"document": 0}))
+            .unwrap();
+        desk.host.session.set_actor(None);
+        desk.turn();
+        assert!(
+            !has(&desk, &one) && !has(&desk, &two),
+            "made active by an agent"
+        );
+        // The person clicks the tab: it is theirs again.
+        desk.host
+            .session
+            .execute("file.activate", &json!({"document": 0}))
+            .unwrap();
+        desk.turn();
+        assert!(has(&desk, &one));
+        // An agent opens a file itself: nothing.
+        let third = state.join("three");
+        std::fs::create_dir_all(&third).unwrap();
+        let copy = third.join("part.3dcraft");
+        std::fs::copy(one.join("part.3dcraft"), &copy).unwrap();
+        desk.host.session.set_workspace(Workspace::unrestricted());
+        desk.host.session.set_actor(Some("Claude Code"));
+        desk.host
+            .session
+            .execute("file.open", &json!({"path": copy.to_str().unwrap()}))
+            .unwrap();
+        desk.host.session.set_actor(None);
+        desk.turn();
+        let third = craft3d_engine::canonical(&third).unwrap();
+        assert!(!has(&desk, &third), "opened by an agent");
+        // Clicking its tab later does not make it the person's either.
+        desk.host
+            .session
+            .execute("file.activate", &json!({"document": 0}))
+            .unwrap();
+        desk.host
+            .session
+            .execute("file.activate", &json!({"document": 2}))
+            .unwrap();
+        desk.turn();
+        assert!(!has(&desk, &third), "an agent's file stays the agent's");
         let _ = std::fs::remove_dir_all(&state);
     }
 }
