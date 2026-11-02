@@ -417,6 +417,19 @@ fn freeze_pool() -> (
     (one, held)
 }
 
+/// A trace asked for in the background, once it is there: in a window
+/// `wait: true` waits only briefly, so it is asked again.
+fn wait_trace(s: &mut Session, name: &Value) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        let got = run(s, "view.trace", json!({ "name": name, "wait": true }));
+        if got["pending"] != true {
+            return got;
+        }
+        assert!(Instant::now() < deadline, "the trace never came");
+    }
+}
+
 /// The trace a fresh session works out in the command: the reference.
 fn trace_here(name: &str) -> Value {
     let mut s = assembly_session(name);
@@ -462,7 +475,7 @@ fn a_trace_in_a_window_is_worked_out_in_the_background() {
             assert_eq!(states.len(), 1);
             assert!(states[0].pending || states[0].length.is_some());
         }
-        let got = run(&mut s, "view.trace", json!({ "name": "End", "wait": true }));
+        let got = wait_trace(&mut s, &json!("End"));
         assert_eq!(got, wanted, "budget {budget:?}");
         assert!(!s.traces_pending());
         let states = s.trace_states();
@@ -541,11 +554,7 @@ fn pending_traces_are_cancelled_cleared_and_named_as_asked() {
         json!({ "name": "Twice", "wait": true }),
     );
     assert_eq!(twice["samples"], 7, "{twice}");
-    let other = run(
-        &mut s,
-        "view.trace",
-        json!({ "name": b["name"].clone(), "wait": true }),
-    );
+    let other = wait_trace(&mut s, &b["name"]);
     assert_eq!(other["samples"], 9, "{other}");
     // The cleared one has not come back, nor will it.
     let deadline = Instant::now() + Duration::from_millis(300);
@@ -558,4 +567,97 @@ fn pending_traces_are_cancelled_cleared_and_named_as_asked() {
         !names.contains(&a["name"].as_str().unwrap().to_string()),
         "{names:?}"
     );
+}
+
+/// A trace asked for in the background while the motion's sweep is of an
+/// earlier state (an edit while no moment is shown) is not let go of when
+/// the play starts on the state it was asked in: it is worked out on the
+/// sweep the play goes on with.
+#[test]
+fn a_trace_asked_after_an_edit_survives_the_play_that_follows() {
+    if craft3d_math::available_threads() < 2 {
+        return;
+    }
+    let mut s = assembly_session("trace-stale-sweep");
+    s.set_bake_in_background(true);
+    // A sweep of the state before the edit, kept until a moment is shown.
+    run(&mut s, "view.motion", json!({ "t": 0.25 }));
+    run(
+        &mut s,
+        "variable.set",
+        json!({ "name": "Drive_angle", "expr": "180 deg * t" }),
+    );
+    let frozen = freeze_pool();
+    let asked = run(
+        &mut s,
+        "view.trace",
+        json!({ "point": "Crank/F1:vertex(6)", "samples": 17, "name": "After" }),
+    );
+    assert_eq!(asked["pending"], true, "{asked}");
+    // The play starts.
+    run(
+        &mut s,
+        "view.motion",
+        json!({ "t": 0.5, "shapes": "ready" }),
+    );
+    drop(frozen);
+    let got = wait_trace(&mut s, &json!("After"));
+    assert!(got["points"].is_array(), "{got}");
+    let mut here = assembly_session("trace-stale-here");
+    run(
+        &mut here,
+        "variable.set",
+        json!({ "name": "Drive_angle", "expr": "180 deg * t" }),
+    );
+    let wanted = run(
+        &mut here,
+        "view.trace",
+        json!({ "point": "Crank/F1:vertex(6)", "samples": 17, "name": "After" }),
+    );
+    assert_eq!(got, wanted);
+}
+
+/// A part scrubbed to an earlier step: the trace is taken in the state
+/// the view shows below the motion (the scrubbed one, as the player
+/// plays it), worked out in the background or here alike, and a play of
+/// that state does not let go of it.
+#[test]
+fn a_trace_of_a_scrubbed_part_is_of_the_scrubbed_state() {
+    let part = |s: &mut Session| {
+        run(s, "file.new", json!({}));
+        run(s, "variable.set", json!({ "name": "t", "expr": "0" }));
+        run(
+            s,
+            "feature.block",
+            json!({ "name": "Mover", "size": [2, 2, 2],
+                    "position": ["10 mm * cos(360 deg * t)", "10 mm * sin(360 deg * t)", 0] }),
+        );
+        // A later step that moves it again: the scrub leaves it out.
+        run(
+            s,
+            "feature.transform",
+            json!({ "name": "Lift", "source": "Mover", "translate": [0, 0, 5] }),
+        );
+        run(s, "view.scrub", json!({ "step": 1 }));
+    };
+    let trace = json!({ "point": "F1:vertex(0)", "samples": 9, "name": "Round" });
+    let mut here = common::session();
+    part(&mut here);
+    let wanted = run(&mut here, "view.trace", trace.clone());
+    // Not lifted: the state before the move.
+    assert!(wanted["box"][0][2].as_f64().unwrap() < 4.0, "{wanted}");
+    let mut s = common::session();
+    part(&mut s);
+    s.set_bake_in_background(true);
+    let asked = run(&mut s, "view.trace", trace);
+    if craft3d_math::available_threads() >= 2 {
+        assert_eq!(asked["pending"], true, "{asked}");
+    }
+    run(
+        &mut s,
+        "view.motion",
+        json!({ "t": 0.5, "shapes": "ready" }),
+    );
+    let got = wait_trace(&mut s, &json!("Round"));
+    assert_eq!(got, wanted);
 }

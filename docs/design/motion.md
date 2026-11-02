@@ -96,10 +96,14 @@ name with a serial, so only the last asked for a name is taken, a cleared one is
 when asked, and the 32-trace limit counts pending ones. A reset of the builder (`motion.bake {cancel}`,
 `view.motion {t: null}`, a new sweep, a motion that cannot be shown, an edit: `check_trace_base`) fails the pending
 traces with `let go of: …`. `view.trace {name, wait?}` reads one (its full answer, the error, or pending; `wait`
-waits up to 600 s), `ui.get` lists them (`traces: [{name, pending, error, length, closed}]`), and the window says a
+waits up to 2 s in a window, whose engine thread it holds, 600 s elsewhere, and not at all in a browser, which has
+no clock in `std` and works nothing out in the background: `cargo xtask layers` refuses a clock of `std` where the
+browser build gets, 2026-11-02), `ui.get` lists them (`traces: [{name, pending, error, length, closed}]`), and the window says a
 failed one in the timeline's problem line. Worked out in the command, a trace uses the motion's own sweep when it
 runs over the state the view shows below the motion (the scrubbed one), else a sweep of its own, never replacing the
-motion's. A trace's points are the same bit for bit whichever way it was worked out
+motion's. A background trace's job goes on by itself (each chunk queues the next from the worker), so a script that waits
+for it needs no poll. A trace is always worked out on the motion's own sweep of that state (made so if it was of
+another), so the play that follows does not reset the builder under it. A trace's points are the same bit for bit whichever way it was worked out
 (`crates/engine/tests/motion_ready.rs`, also after a bake and with a budget of one byte).
 
 The window draws a trace as a polyline over the picture, tested against the depth buffer like a sketch (dimmed

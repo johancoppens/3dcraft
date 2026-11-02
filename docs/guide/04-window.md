@@ -190,7 +190,8 @@ An agent does the same with `view.motion {"t": 0.5, "collisions": true}`, draws 
 `view.trace` (`"grow": true` draws it only as far as the moment shown, so it grows while the motion plays;
 exported with `file.export {"path": "path.svg", "trace": "Trace 1"}`; in the window a trace is worked out in
 the background so the motion keeps playing: the answer says `"pending": true`, `view.trace {"name": "Trace 1",
-"wait": true}` gives the points once they are there, or why they could not be made, and `ui.get` lists every trace
+"wait": true}` gives the points once they are there (it waits at most 2 s in the window: ask again), or why they
+could not be made, and `ui.get` lists every trace
 under `traces` with `pending` or `error`; `"background": false` works it out in the command), checks assertions over the
 motion with `motion.check` ([Measure and check](10-measure.md#over-a-motion)), and makes a video of it with
 `view.replay {"dir": "frames", "motion": {"frames": 120}}`.

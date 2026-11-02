@@ -137,6 +137,7 @@ struct Clock(std::time::Instant);
 #[cfg(not(target_arch = "wasm32"))]
 impl Clock {
     fn start() -> Self {
+        // native clock: `Clock` is cfg(not(target_arch = "wasm32")).
         Clock(std::time::Instant::now())
     }
     fn past(&self, ms: f64) -> bool {

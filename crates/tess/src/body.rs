@@ -141,6 +141,7 @@ fn in_order<T: Send>(
     // order, nor in the work counted.
     let mut early: Vec<(usize, T)> = Vec::new();
     {
+        // native clock: the browser returned above (`cfg!(target_arch = "wasm32")`).
         let started = std::time::Instant::now();
         loop {
             if started.elapsed() >= SPAWN_AFTER {

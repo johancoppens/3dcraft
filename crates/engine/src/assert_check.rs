@@ -717,6 +717,7 @@ impl Session {
                 Wait::All => true,
                 #[cfg(not(target_arch = "wasm32"))]
                 Wait::For(d) => {
+                    // native clock: this arm is cfg(not(target_arch = "wasm32")).
                     let end = *deadline.get_or_insert_with(|| std::time::Instant::now() + d);
                     std::time::Instant::now() < end
                 }

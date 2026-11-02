@@ -602,6 +602,7 @@ fn epoch_now() -> Option<u64> {
     use std::time::{SystemTime, UNIX_EPOCH};
     #[cfg(target_arch = "wasm32")]
     use web_time::{SystemTime, UNIX_EPOCH};
+    // native clock: `web_time`'s in the browser (the `use` above).
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .ok()
@@ -1014,6 +1015,7 @@ fn status_text(state: FeatureState, is_sketch: bool, dof: Option<usize>) -> Stri
 /// `std::time::Instant` has none there).
 fn stopwatch() -> impl FnOnce() -> Option<f64> {
     #[cfg(not(target_arch = "wasm32"))]
+    // native clock: the line above is cfg(not(target_arch = "wasm32")).
     let start = std::time::Instant::now();
     #[cfg(target_arch = "wasm32")]
     let start = web_time::Instant::now();
@@ -1515,9 +1517,11 @@ impl Shell {
         let Some(worker) = &self.worker else {
             return false;
         };
+        // native clock: `wait_for_sharp` is cfg(not(target_arch = "wasm32")).
         let deadline = std::time::Instant::now().checked_add(timeout);
         loop {
             let left = deadline.map_or(timeout, |deadline| {
+                // native clock: as above.
                 deadline.saturating_duration_since(std::time::Instant::now())
             });
             let Some(done) = worker.wait(left) else {

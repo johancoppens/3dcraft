@@ -197,6 +197,10 @@ pub fn check() -> Result<(), String> {
             errors.push(format!("{name} is not registered in xtask/src/layers.rs"));
             continue;
         };
+        if layer <= UI_LAYER && short != "testkit" {
+            let src = std::path::Path::new(manifest_path).with_file_name("src");
+            errors.extend(browser_clocks(&src));
+        }
         checked += 1;
         let deps = package.get("dependencies").and_then(|d| d.as_array());
         for dep in deps.into_iter().flatten() {
@@ -249,9 +253,154 @@ pub fn check() -> Result<(), String> {
     }
 }
 
+/// The browser has no clock in `std`: `std::time::Instant::now` and
+/// `SystemTime::now` panic on `wasm32-unknown-unknown` (a review of
+/// 2026-11-02 found `view.trace {name}` reaching one). Every call in a
+/// crate the browser build compiles (L0 to L7) must be where the browser
+/// never gets: in a module declared `#[cfg(not(target_arch = "wasm32"))]`,
+/// in a test module, in a file that takes `Instant` from `web_time` for
+/// the browser, or with a `// native clock:` comment on it or on one of
+/// the three lines above saying why the browser does not get there.
+/// Returns what breaks the rule under `src`.
+fn browser_clocks(src: &std::path::Path) -> Vec<String> {
+    let mut files = Vec::new();
+    rust_files(src, &mut files);
+    // Files of modules declared for native builds only.
+    let mut native: Vec<std::path::PathBuf> = Vec::new();
+    for (path, text) in &files {
+        let lines: Vec<&str> = text.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            let line = line.trim();
+            let declared = line
+                .strip_prefix("pub mod ")
+                .or_else(|| line.strip_prefix("pub(crate) mod "))
+                .or_else(|| line.strip_prefix("mod "))
+                .and_then(|rest| rest.strip_suffix(';'));
+            let Some(module) = declared else { continue };
+            // Its own attributes: the lines right above it.
+            let gated = lines
+                .get(..i)
+                .unwrap_or_default()
+                .iter()
+                .rev()
+                .take_while(|l| {
+                    let l = l.trim();
+                    l.starts_with("#[") || l.starts_with("//")
+                })
+                .any(|l| l.contains("not(target_arch = \"wasm32\")"));
+            if gated {
+                let dir = module_dir(path);
+                native.push(dir.join(format!("{module}.rs")));
+                native.push(dir.join(module).join("mod.rs"));
+                native.push(dir.join(module));
+            }
+        }
+    }
+    let mut errors = Vec::new();
+    for (path, text) in &files {
+        if native.iter().any(|n| path.starts_with(n)) {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        if name == "tests.rs" || name.ends_with("_tests.rs") {
+            continue;
+        }
+        // `Instant` taken from `web_time` in the browser: its `now` is safe.
+        let web_time = text.contains("web_time::Instant");
+        let lines: Vec<&str> = text.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if line.starts_with("#[cfg(")
+                && line.contains("test")
+                && lines.get(i + 1).is_some_and(|l| l.starts_with("mod "))
+            {
+                break;
+            }
+            let std_clock = line.contains("std::time::Instant::now()")
+                || line.contains("SystemTime::now()")
+                || (!web_time && line.contains("Instant::now()"));
+            if !std_clock {
+                continue;
+            }
+            let said = lines
+                .get(i.saturating_sub(3)..=i)
+                .unwrap_or_default()
+                .iter()
+                .any(|l| l.contains("// native clock:"));
+            if !said {
+                errors.push(format!(
+                    "{}:{}: a clock of `std` where the browser may get (it panics there): put it under #[cfg(not(target_arch = \"wasm32\"))], or say why the browser does not get there with `// native clock: ...`",
+                    path.display(),
+                    i + 1
+                ));
+            }
+        }
+    }
+    errors
+}
+
+/// The directory the submodules of the module in `path` live in.
+fn module_dir(path: &std::path::Path) -> std::path::PathBuf {
+    let parent = path
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_default();
+    match path.file_name().and_then(|n| n.to_str()) {
+        Some("lib.rs" | "main.rs" | "mod.rs") | None => parent,
+        Some(file) => parent.join(file.trim_end_matches(".rs")),
+    }
+}
+
+/// Every `.rs` file under `dir`, with its text, in a fixed order.
+fn rust_files(dir: &std::path::Path, out: &mut Vec<(std::path::PathBuf, String)>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut paths: Vec<std::path::PathBuf> =
+        entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
+    paths.sort();
+    for path in paths {
+        if path.is_dir() {
+            rust_files(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs")
+            && let Ok(text) = std::fs::read_to_string(&path)
+        {
+            out.push((path, text));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_clock_of_std_where_the_browser_gets_is_refused() {
+        let dir = std::env::temp_dir().join(format!("xtask-clocks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("lib")).unwrap();
+        std::fs::write(
+            dir.join("lib.rs"),
+            "#[cfg(not(target_arch = \"wasm32\"))]\nmod native;\nmod shared;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("native.rs"),
+            "fn f() { let _ = std::time::Instant::now(); }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("shared.rs"),
+            "fn f() {\n    let _ = std::time::Instant::now();\n}\n// native clock: never in the browser\nfn g() { let _ = std::time::Instant::now(); }\n#[cfg(test)]\nmod tests {\n    fn h() { let _ = std::time::Instant::now(); }\n}\n",
+        )
+        .unwrap();
+        let errors = browser_clocks(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("shared.rs:2"), "{errors:?}");
+    }
 
     #[test]
     fn a_placeholder_migration_step_is_refused() {

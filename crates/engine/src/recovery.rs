@@ -100,6 +100,7 @@ pub struct SystemClock {
 impl SystemClock {
     pub fn new() -> Self {
         Self {
+            // native clock: `SystemClock` is cfg(not(target_arch = "wasm32")).
             start: std::time::Instant::now(),
         }
     }
@@ -119,6 +120,7 @@ impl Clock for SystemClock {
     }
 
     fn epoch_seconds(&self) -> u64 {
+        // native clock: `SystemClock` is cfg(not(target_arch = "wasm32")).
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs())

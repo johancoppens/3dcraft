@@ -359,15 +359,6 @@ impl Builder {
                                 self.frames_busy = self.frames_busy.saturating_sub(1);
                             }
                             Run::Trace(name, serial) => {
-                                if let Some(next) = worked.next {
-                                    // The rest, behind what waits now.
-                                    running.push(
-                                        self.epoch,
-                                        vec![Job::Grid(next, Run::Trace(name, serial))],
-                                        false,
-                                    );
-                                    continue;
-                                }
                                 self.traces_busy = self.traces_busy.saturating_sub(1);
                                 let result = worked.trace.unwrap_or_else(|| {
                                     Err(match &worked.panicked {
@@ -748,8 +739,8 @@ mod native {
                         continue;
                     }
                 },
-                Job::Grid(job, run) => Done::Grid(
-                    Box::new(
+                Job::Grid(job, run) => {
+                    let mut worked =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(let_go)))
                             .unwrap_or_else(|payload| super::Worked {
                                 failed: true,
@@ -761,10 +752,19 @@ mod native {
                                         .unwrap_or_else(|| "it panicked".to_string()),
                                 ),
                                 ..super::Worked::default()
-                            }),
-                    ),
-                    run,
-                ),
+                            });
+                    if let Some(next) = worked.next.take() {
+                        // The rest of the run, behind what waits now:
+                        // queued here, so it goes on without a poll (a
+                        // script that waits for it).
+                        drop(_thread);
+                        lock(&shared).jobs.push_back((epoch, Job::Grid(next, run)));
+                        shared.ready.notify_all();
+                        held_change(&shared, before, caches.len());
+                        continue;
+                    }
+                    Done::Grid(Box::new(worked), run)
+                }
             };
             held_change(&shared, before, caches.len());
             if send.send((epoch, done)).is_err() {
