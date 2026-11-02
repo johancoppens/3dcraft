@@ -620,6 +620,9 @@ pub struct Tokens {
     /// Analysis on a phone, m4 and m5), and of the window's for the Jig's
     /// parameters (m8).
     pub sheet_share: f32,
+    /// A sheet's grabber: its size and how strong its ink is.
+    pub grabber_size: [f32; 2],
+    pub grabber_opacity: u8,
     pub half_sheet_share: f32,
     /// The side panel docked beside a Jig's model on a tablet (t2), and
     /// the narrowest window that docks it.
@@ -1072,6 +1075,8 @@ impl Tokens {
             log_rail_width: 2.0,
             banner_button_room: 170.0,
             sheet_share: 0.5,
+            grabber_size: [36.0, 4.0],
+            grabber_opacity: 160,
             half_sheet_share: 0.5,
             docked_panel_width: 300.0,
             docked_min_window: 600.0,

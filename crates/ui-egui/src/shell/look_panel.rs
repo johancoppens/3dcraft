@@ -429,7 +429,7 @@ fn look_options(
     let shown = if sheet {
         let id = egui::Id::new("craft3d-studio-sheet-tab");
         let mut tab = ui.data(|d| d.get_temp::<usize>(id)).unwrap_or(0);
-        let choice = kit.segmented(
+        let choice = kit.segmented_full(
             ui,
             &mut tab,
             &[

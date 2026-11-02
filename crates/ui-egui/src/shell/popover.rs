@@ -38,14 +38,6 @@ fn bottom_in(area: Rect, layout: &ControlsLayout, gap: f32, left: f32, right: f3
         .fold(area.bottom(), |b, r| b.min(r.top() - gap))
 }
 
-/// Where a popover may go in the viewport `rect` whose controls are laid
-/// out as `layout`: its top left corner, its width and the most height
-/// it may take. Hanging from the camera plate (a gap under it, the
-/// pointer in that gap), its right edge on the plate's right edge, as
-/// wide as `popover_width` or the room left of that edge; above the
-/// display bar and the triad where its columns cross them. The cube does
-/// not bound it: the cube moves out of its way ([`cube_out_of_the_way`]).
-/// `None` when there is no room for two rows.
 /// Where a popover goes as a bottom sheet in the narrow layout: across
 /// the viewport `rect`, its lower `sheet_share` (at least room for a few
 /// rows), never over the camera plate, whose chips open and close it.
@@ -61,6 +53,14 @@ pub fn sheet_place(rect: Rect, layout: &ControlsLayout, tokens: &Tokens) -> Opti
         .then(|| Rect::from_min_max(pos2(rect.left(), top), rect.max))
 }
 
+/// Where a popover may go in the viewport `rect` whose controls are laid
+/// out as `layout`: its top left corner, its width and the most height
+/// it may take. Hanging from the camera plate (a gap under it, the
+/// pointer in that gap), its right edge on the plate's right edge, as
+/// wide as `popover_width` or the room left of that edge; above the
+/// display bar and the triad where its columns cross them. The cube does
+/// not bound it: the cube moves out of its way ([`cube_out_of_the_way`]).
+/// `None` when there is no room for two rows.
 pub fn popover_place(rect: Rect, layout: &ControlsLayout, tokens: &Tokens) -> Option<Rect> {
     if !rect.is_finite() {
         return None;
@@ -241,16 +241,7 @@ impl Shell {
                     .inner_margin(egui::Margin::same(pad.clamp(0.0, 32.0) as i8))
                     .show(ui, |ui| {
                         ui.set_width((place.width() - 2.0 * pad).max(0.0));
-                        // The grabber.
-                        let (grab, _) = ui.allocate_exact_size(
-                            vec2(ui.available_width(), tokens.nav_spacing * 2.0),
-                            egui::Sense::hover(),
-                        );
-                        ui.painter().rect_filled(
-                            Rect::from_center_size(grab.center(), vec2(36.0, 4.0)),
-                            egui::CornerRadius::same(2),
-                            color_alpha(tokens.plate_text_dim, 160),
-                        );
+                        kit.grabber(ui);
                         ui.horizontal(|ui| {
                             ui.label(
                                 egui::RichText::new(title)

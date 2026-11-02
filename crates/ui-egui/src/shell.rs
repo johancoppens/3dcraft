@@ -5135,8 +5135,6 @@ fn mates_ui(
     statuses
 }
 
-/// The "Assertions" heading of the feature panel, always there; with the
-/// hint while there are none.
 /// The room of a row's name and of its dim status after it, in a row
 /// with `room` points left: the status keeps its own width (at most half
 /// the row), the name the rest, so a long name is cut and the status
@@ -5170,6 +5168,8 @@ fn in_room<R>(ui: &mut egui::Ui, width: f32, add: impl FnOnce(&mut egui::Ui) -> 
     .inner
 }
 
+/// The "Assertions" heading of the feature panel, always there; with the
+/// hint while there are none.
 fn assertions_heading(ui: &mut egui::Ui, tokens: &Tokens, empty: bool) {
     ui.add_space(tokens.inset * 0.5);
     ui.label(egui::RichText::new("Assertions").strong());

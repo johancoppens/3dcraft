@@ -359,7 +359,8 @@ impl Shell {
         let kit = Kit::panel(&tokens);
         // On a phone a bottom sheet with the answers one under the other,
         // the amber one first (board m7).
-        let phone = ctx.content_rect().width() < tokens.narrow_width;
+        // The narrow layout's rule, as for the other sheets.
+        let phone = self.narrow();
         let dialog = Dialog::new(egui::Id::new("craft3d-agent-prompt"), &title)
             .icon(icon.0, icon.1)
             .width(tokens.dialog_wide_width)

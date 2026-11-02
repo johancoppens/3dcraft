@@ -4,7 +4,7 @@
 
 use super::glyphs::{self, Glyph};
 use super::{Choice, Ground, Kit, centred_left, sane};
-use crate::theme::{Rgb, blend, color};
+use crate::theme::{Rgb, blend, color, color_alpha};
 use egui::epaint::RectShape;
 use egui::{
     Align, CornerRadius, Frame, Id, Margin, Rect, Response, Sense, Shape, Stroke, StrokeKind, Ui,
@@ -388,11 +388,40 @@ impl Kit {
 
     /// A segmented control: one of `segments`, the chosen one amber.
     pub fn segmented(&self, ui: &mut Ui, chosen: &mut usize, segments: &[Segment<'_>]) -> Choice {
+        self.segmented_in(ui, chosen, segments, false)
+    }
+
+    /// [`Self::segmented`] across the width there is, the segments
+    /// sharing it (a sheet's tabs, board m4).
+    pub fn segmented_full(
+        &self,
+        ui: &mut Ui,
+        chosen: &mut usize,
+        segments: &[Segment<'_>],
+    ) -> Choice {
+        self.segmented_in(ui, chosen, segments, true)
+    }
+
+    fn segmented_in(
+        &self,
+        ui: &mut Ui,
+        chosen: &mut usize,
+        segments: &[Segment<'_>],
+        full: bool,
+    ) -> Choice {
         let t = &self.t;
         let s = &self.skin;
         let font = self.font();
-        let widths = self.segment_widths(ui, segments);
+        let mut widths = self.segment_widths(ui, segments);
         let inset = t.nav_segment_inset;
+        let natural: f32 = widths.iter().sum::<f32>() + 2.0 * inset;
+        let room = ui.available_width();
+        if full && room.is_finite() && room > natural && !widths.is_empty() {
+            let more = (room - natural) / widths.len() as f32;
+            for w in &mut widths {
+                *w += more;
+            }
+        }
         let total: f32 = widths.iter().sum::<f32>() + 2.0 * inset;
         let (outer, mut response) = ui.allocate_exact_size(
             sane(vec2(total, self.hit(t.control_height))),
@@ -482,6 +511,21 @@ impl Kit {
             }
         }
         Choice { response, items }
+    }
+
+    /// A sheet's grabber: a short rounded bar across the middle of a row.
+    pub fn grabber(&self, ui: &mut Ui) {
+        let t = &self.t;
+        let (row, _) = ui.allocate_exact_size(
+            sane(vec2(ui.available_width(), t.nav_spacing * 2.0)),
+            Sense::hover(),
+        );
+        let [w, h] = t.grabber_size;
+        ui.painter().rect_filled(
+            Rect::from_center_size(row.center(), vec2(w, h)),
+            CornerRadius::same(radius_of(h)),
+            color_alpha(self.skin.text_dim, t.grabber_opacity),
+        );
     }
 
     /// A check box with its label.

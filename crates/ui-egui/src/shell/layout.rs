@@ -1434,6 +1434,55 @@ impl Shell {
 /// The analysis' options (board s1): *Surface analysis* with its kind as
 /// a segmented control and its rows, then *Combs*. A row is a label and
 /// the kit's control; the numbers are drag fields on the plate.
+/// A number of the analysis' options: a drag field at a desk, steppers a
+/// finger hits (−, the value, +) in a phone's sheet (board m5). `step` is
+/// what a stepper adds, `digits` how the value is written.
+#[allow(clippy::too_many_arguments)]
+fn number(
+    ui: &mut egui::Ui,
+    kit: &crate::kit::Kit,
+    sheet: bool,
+    value: &mut f64,
+    step: f64,
+    range: std::ops::RangeInclusive<f64>,
+    suffix: &str,
+    digits: usize,
+) {
+    if !sheet {
+        let speed = if digits == 0 { 0.5 } else { step * 0.2 };
+        ui.add(
+            egui::DragValue::new(value)
+                .range(range)
+                .speed(speed)
+                .suffix(suffix),
+        );
+        return;
+    }
+    let (lo, hi) = (*range.start(), *range.end());
+    let minus = kit.button(ui, crate::kit::Button::secondary("−").enabled(*value > lo));
+    let text = format!("{:.*}{suffix}", digits, *value);
+    let galley = kit.galley(ui, text, kit.font(), kit.skin.text);
+    let (place, _) = ui.allocate_exact_size(
+        egui::vec2(
+            galley.size().x.max(kit.t.popover_value_width),
+            kit.hit(kit.t.control_height),
+        ),
+        egui::Sense::hover(),
+    );
+    ui.painter().galley(
+        place.center() - galley.size() * 0.5,
+        galley,
+        color(kit.skin.text),
+    );
+    let plus = kit.button(ui, crate::kit::Button::secondary("+").enabled(*value < hi));
+    if minus.clicked() {
+        *value = (*value - step).max(lo);
+    }
+    if plus.clicked() {
+        *value = (*value + step).min(hi);
+    }
+}
+
 fn analysis_options(
     ui: &mut egui::Ui,
     tokens: &crate::theme::Tokens,
@@ -1490,33 +1539,25 @@ fn analysis_options(
     match a.mode.as_str() {
         "zebra" | "highlight" => {
             row(ui, "Stripes", &mut |ui| {
-                ui.add(
-                    egui::DragValue::new(&mut a.stripes)
-                        .range(1.0..=512.0)
-                        .speed(0.5)
-                        .suffix(" / turn"),
+                number(
+                    ui,
+                    &kit,
+                    sheet,
+                    &mut a.stripes,
+                    1.0,
+                    1.0..=512.0,
+                    " / turn",
+                    0,
                 );
             });
             row(ui, "Direction", &mut |ui| {
-                ui.add(
-                    egui::DragValue::new(&mut a.direction)
-                        .range(0.0..=360.0)
-                        .suffix("°"),
-                );
+                number(ui, &kit, sheet, &mut a.direction, 5.0, 0.0..=360.0, "°", 0);
             });
             row(ui, "Width", &mut |ui| {
-                ui.add(
-                    egui::DragValue::new(&mut a.width)
-                        .range(0.0..=1.0)
-                        .speed(0.01),
-                );
+                number(ui, &kit, sheet, &mut a.width, 0.05, 0.0..=1.0, "", 2);
             });
             row(ui, "Offset", &mut |ui| {
-                ui.add(
-                    egui::DragValue::new(&mut a.offset)
-                        .range(0.0..=1.0)
-                        .speed(0.01),
-                );
+                number(ui, &kit, sheet, &mut a.offset, 0.05, 0.0..=1.0, "", 2);
             });
             ui.label(
                 egui::RichText::new("Stripes kink at a G1 seam, run on at G2")
@@ -1571,12 +1612,7 @@ fn analysis_options(
                 }
             });
             row(ui, "Least draft", &mut |ui| {
-                ui.add(
-                    egui::DragValue::new(&mut a.min_draft)
-                        .range(0.0..=90.0)
-                        .speed(0.1)
-                        .suffix("°"),
-                );
+                number(ui, &kit, sheet, &mut a.min_draft, 0.5, 0.0..=90.0, "°", 1);
             });
         }
         _ => {}

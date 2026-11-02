@@ -651,14 +651,14 @@ fn a_jig_on_a_phone_and_a_tablet() {
         sheet.height() < viewport.height() * 0.75,
         "the model stays in view above: {sheet:?}"
     );
-    // Its form is the Parameters tab's: Reset all is there.
-    let reset = shell
-        .parameter_hits()
-        .iter()
-        .find(|(n, _)| n == "Reset all")
-        .map(|(_, r)| *r)
-        .expect("Reset all");
-    assert!(sheet.contains_rect(reset), "{reset:?} in {sheet:?}");
+    // The fields come first: the first one is in view without scrolling,
+    // inside the sheet.
+    let first = first_field(&shell);
+    assert!(sheet.contains_rect(first), "{first:?} in {sheet:?}");
+    assert!(
+        first.top() < sheet.top() + sheet.height() * 0.4,
+        "the first field near the sheet's top: {first:?} in {sheet:?}"
+    );
     // A tablet: docked, no drawer and no sheet.
     let mut session = open();
     let mut shell = Shell::new();
@@ -677,6 +677,26 @@ fn a_jig_on_a_phone_and_a_tablet() {
         viewport.left() >= panel.right() - 0.5,
         "{viewport:?} beside {panel:?}"
     );
+    // There too the first field is in view at once, in the panel's upper
+    // part.
+    let first = first_field(&shell);
+    assert!(panel.contains_rect(first), "{first:?} in {panel:?}");
+    assert!(window.inside(first), "{first:?}");
+    assert!(
+        first.top() < panel.top() + panel.height() * 0.4,
+        "the first field near the panel's top: {first:?} in {panel:?}"
+    );
+}
+
+/// Where the Parameters form drew its first field (not its header's
+/// buttons).
+fn first_field(shell: &Shell) -> egui::Rect {
+    shell
+        .parameter_hits()
+        .into_iter()
+        .find(|(name, _)| !["Reset all", "about", "Open for editing"].contains(&name.as_str()))
+        .map(|(_, rect)| rect)
+        .expect("a parameter's field")
 }
 
 /// On a phone the questions about access are a bottom sheet with the

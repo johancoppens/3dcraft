@@ -1400,7 +1400,6 @@ impl Shell {
         );
         let pad = tokens.dialog_padding;
         let r = tokens.dialog_radius.saturating_mul(2);
-        let kit = crate::kit::Kit::panel(&tokens);
         let shown = egui::Area::new(egui::Id::new("craft3d-params-sheet"))
             .order(egui::Order::Middle)
             .fixed_pos(place.min)
@@ -1422,27 +1421,10 @@ impl Shell {
                     .show(ui, |ui| {
                         ui.set_width((place.width() - 2.0 * pad).max(0.0));
                         ui.set_height((place.height() - 2.0 * pad).max(0.0));
-                        let (grab, _) = ui.allocate_exact_size(
-                            egui::vec2(ui.available_width(), tokens.nav_spacing * 2.0),
-                            egui::Sense::hover(),
-                        );
-                        ui.painter().rect_filled(
-                            egui::Rect::from_center_size(grab.center(), egui::vec2(36.0, 4.0)),
-                            egui::CornerRadius::same(2),
-                            color(tokens.field_stroke),
-                        );
-                        ui.label(
-                            egui::RichText::new("Parameters")
-                                .font(egui::FontId::new(
-                                    tokens.dialog_title_font,
-                                    kit.medium_font(ui).family,
-                                ))
-                                .color(color(tokens.text)),
-                        );
-                        egui::ScrollArea::vertical()
-                            .id_salt("craft3d-params-sheet-scroll")
-                            .auto_shrink([false, false])
-                            .show(ui, |ui| self.parameters_tab(ui));
+                        crate::kit::Kit::panel(&tokens).grabber(ui);
+                        // The tab's own header says Parameters; its
+                        // fields scroll under it.
+                        self.parameters_tab(ui);
                     });
             });
         self.params_sheet_rect = Some(shown.response.rect.intersect(place));
@@ -1452,6 +1434,79 @@ impl Shell {
     /// (a phone), `None` without it.
     pub fn parameters_sheet_rect(&self) -> Option<egui::Rect> {
         self.params_sheet_rect
+    }
+
+    /// The compact form's header: "Parameters", whether the model built
+    /// with them (Valid) or not, the Jig's title and description behind
+    /// an (i), Reset all, and the spinner while a value is applied.
+    fn compact_parameters_header(&mut self, ui: &mut egui::Ui, list: &ParamList) {
+        let kit = crate::kit::Kit::panel(&self.tokens);
+        let s = kit.skin;
+        let broke = self.params.trouble.as_ref().is_some_and(|t| t.broke);
+        let busy = self.params.busy();
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("Parameters")
+                    .font(kit.medium_font(ui))
+                    .color(color(s.text)),
+            );
+            let (state, ink) = if busy {
+                ("· applying…", s.text_dim)
+            } else if broke {
+                ("· breaks the model", s.failed)
+            } else {
+                ("· Valid", s.ok)
+            };
+            ui.label(
+                egui::RichText::new(state)
+                    .font(kit.font())
+                    .color(color(ink)),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let any_off = list.params.iter().any(|p| !p.at_default);
+                let reset = kit
+                    .icon_button_enabled(ui, crate::kit::Glyph::Undo, false, "Reset all", any_off)
+                    .on_hover_text(
+                        "Reset all: every parameter back to its default (param.set reset)",
+                    );
+                self.params.hits.push(("Reset all".to_string(), reset.rect));
+                if reset.clicked() {
+                    self.params.ask(json!({ "reset": true }), None);
+                }
+                let about = [list.info.title.as_str(), list.info.description.as_str()]
+                    .into_iter()
+                    .filter(|t| !t.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                if !about.is_empty() {
+                    let info = kit
+                        .icon_button(ui, crate::kit::Glyph::Info, false, "About this Jig")
+                        .on_hover_text(about);
+                    self.params.hits.push(("about".to_string(), info.rect));
+                }
+            });
+        });
+        if let Some(trouble) = self.params.trouble.clone()
+            && trouble.name.is_none()
+        {
+            self.trouble_line(ui, &trouble);
+        }
+    }
+
+    /// Open for editing: a model of its own of the Jig in use.
+    fn open_for_editing_button(&mut self, ui: &mut egui::Ui) {
+        let kit = crate::kit::Kit::panel(&self.tokens);
+        let label = crate::shell::FileAction::OpenForEditing.label();
+        let edit = kit
+            .button(
+                ui,
+                crate::kit::Button::quiet(label).icon(crate::kit::Glyph::External),
+            )
+            .on_hover_text("A new untitled model of it, as it is set, to edit (jig.edit)");
+        self.params.hits.push((label.to_string(), edit.rect));
+        if edit.clicked() {
+            self.request_file_action(crate::shell::FileAction::OpenForEditing);
+        }
     }
 
     pub(super) fn parameters_tab(&mut self, ui: &mut egui::Ui) {
@@ -1470,7 +1525,18 @@ impl Shell {
         // The form keeps clear of the split on its right as it does of
         // the panel's edge on its left.
         let room = crate::shell::side_inset(&tokens);
+        // On a phone's half sheet and a tablet's docked panel (boards m8,
+        // t2) the fields come first: one header line with the state, the
+        // description behind (i) and Reset all, Open for editing after
+        // the fields.
+        let compact = self.narrow();
+        if compact {
+            self.compact_parameters_header(ui, &list);
+        }
         ui.scope(|ui| {
+            if compact {
+                return;
+            }
             ui.set_max_width((ui.available_width() - f32::from(room)).max(40.0));
             if !list.info.title.is_empty() {
                 ui.label(egui::RichText::new(&list.info.title).heading());
@@ -1594,6 +1660,10 @@ impl Shell {
                                     ui.colored_label(tint, shown).on_hover_text(&o.message);
                                 });
                             }
+                        }
+                        if compact && self.jig_in_use() {
+                            ui.add_space(tokens.inset * 0.5);
+                            self.open_for_editing_button(ui);
                         }
                         let footer: Vec<&str> =
                             [list.info.author.as_str(), list.info.licence.as_str()]

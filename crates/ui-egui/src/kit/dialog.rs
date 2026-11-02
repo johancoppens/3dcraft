@@ -144,16 +144,7 @@ impl Kit {
         let content = |ui: &mut Ui| {
             ui.set_width((width - 2.0 * pad).max(0.0));
             if dialog.sheet {
-                // The grabber.
-                let (grab, _) = ui.allocate_exact_size(
-                    sane(vec2(ui.available_width(), t.nav_spacing * 2.0)),
-                    Sense::hover(),
-                );
-                ui.painter().rect_filled(
-                    Rect::from_center_size(grab.center(), vec2(36.0, 4.0)),
-                    CornerRadius::same(2),
-                    color(s.field_stroke),
-                );
+                kit.grabber(ui);
             }
             ui.spacing_mut().item_spacing.y = t.nav_spacing * 2.0;
             // The title row: icon, title, ×.

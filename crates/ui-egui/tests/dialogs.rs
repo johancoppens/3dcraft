@@ -349,6 +349,9 @@ fn a_click_on_the_export_dialog_does_not_reach_the_viewport() {
     let selection = session.execute("select.get", &json!({})).unwrap();
     assert_eq!(selection["items"], json!([]), "{at:?} {selection}");
     let chosen = (shell.state.export.what == set).then_some(at);
+    assert!(chosen.is_some(), "no click chose the set");
+    assert_eq!(shell.state.export.format, ExportFormat::Dxf);
+    assert_eq!(shell.state.export.name, "untitled.dxf");
     // A sweep down the dialog's body: whatever a click there hits (a
     // label, a control, the margin), it never reaches the model under it.
     for y in (20..240).step_by(10) {
@@ -371,9 +374,6 @@ fn a_click_on_the_export_dialog_does_not_reach_the_viewport() {
         let selection = session.execute("select.get", &json!({})).unwrap();
         assert_eq!(selection["items"], json!([]), "{at:?} {selection}");
     }
-    assert!(chosen.is_some(), "no click chose the set");
-    assert_eq!(shell.state.export.format, ExportFormat::Dxf);
-    assert_eq!(shell.state.export.name, "untitled.dxf");
 }
 
 /// A document with named sets offers a sheet of each: with its width and
