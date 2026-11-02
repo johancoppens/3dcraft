@@ -434,7 +434,7 @@ fn planar_image(surface: &Surface, outward: bool, p: P2, q: P2) -> P2 {
                 if *x >= hi {
                     break;
                 }
-                cuts.push((x - from) / step);
+                cuts.push(((x - from) / step).clamp(0.0, 1.0));
             }
         }
     }
