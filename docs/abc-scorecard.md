@@ -1,8 +1,8 @@
 # ABC scorecard: chunk 0000
 
-Made by `cargo xtask abc` in Heavy run 41385400230 on the Strix (the run before the fixes of 2026-11-02 to proving imported edges, at the same commit otherwise: 41358670915, 7699 imported; the first scorecard, at 9aca23b396 before spindle tori were read: 41347412557, 7574). Model ids are the ABC dataset's (`<id>/<n>`: the model's file `<id>_<hash>_step_<n>`); the models themselves are never committed (their licence: [testing.md](testing.md) › *Real-world models*). A timeout is a model that gave no verdict in time: slow or hanging, not yet told apart. Why an edge is refused (the distances at samples, what the prover reaches): [design/step-import.md](design/step-import.md) › *Edges the ABC corpus refused*.
+Made by `cargo xtask abc` in Heavy run 41402275303 on the Strix; the same chunk at the commit this branch starts from (main 91e156d5 with the same report), Heavy run 41397009712: 7699 imported, 36 invalid (the first scorecard, at 9aca23b396 before spindle tori were read, Heavy run 41347412557: 7574 and 34). Model ids are the ABC dataset's (`<id>/<n>`: the model's file `<id>_<hash>_step_<n>`); the models themselves are never committed (their licence: [testing.md](testing.md) › *Real-world models*). A timeout is a model that gave no verdict in time: slow or hanging, not yet told apart. Why an edge is refused (the distances at samples, what the prover reaches): [design/step-import.md](design/step-import.md) › *Edges the ABC corpus refused*.
 
-Commit 5275ca0f3a, 2026-11-02 05:42; 10000 of the chunk's 10000 STEP files run, 6 at once, 60 s and 3G per model (docs/testing.md › Real-world models).
+Commit 186bde4601, 2026-11-02 08:51; 10000 of the chunk's 10000 STEP files run, 6 at once, 60 s and 3G per model (docs/testing.md › Real-world models).
 
 ## Stage 1: import, check, mesh, measure
 
@@ -10,15 +10,15 @@ Commit 5275ca0f3a, 2026-11-02 05:42; 10000 of the chunk's 10000 STEP files run, 
 |---|---:|---:|
 | invalid | 39 | 0.4 |
 | ok | 8007 | 80.1 |
-| refused | 1948 | 19.5 |
-| timeout | 6 | 0.1 |
+| refused | 1947 | 19.5 |
+| timeout | 7 | 0.1 |
 
 Read as valid solids (ready for stage 2): 7979.
 
 | Where | Models |
 |---|---:|
 | invalid at check | 39 |
-| refused at import | 1890 |
+| refused at import | 1889 |
 | refused at mesh | 58 |
 
 ### Top refusal reasons
@@ -34,7 +34,7 @@ Read as valid solids (ready for stage 2): 7979.
 | data: the imported body cannot be meshed to see whether it passes through itself | 65 | 00000277, 00000558/9, 00000808/2 |
 | edge # lies #.#e-# off the surface of face #, more than its tolerance ; the | 58 | 00000387/8, 00000775, 00000777/2 |
 | face # cannot be tessellated: its refinement cannot go on: a triangle #.#e-# across, far within | 40 | 00000082, 00000514, 00000569 |
-| vertex # lies #.#e-# from the ends of its edges, more than the cap #e-# on | 40 | 00000044/7, 00000196, 00000218/5 |
+| vertex # lies #.#e-# from the ends of its edges, more than the cap #e-# on | 39 | 00000044/7, 00000196, 00000218/5 |
 | B_SPLINE_CURVE_WITH_KNOTS: invalid geometry: the knot vector leaves an empty parameter domain | 38 | 00000647, 00000754/1, 00001122 |
 | data: whether the imported body passes through itself could not be looked at within the work | 26 | 00000323/18, 00000945/4, 00001373/16 |
 | is not a valid body : shell # of the sheet is closed : a closed | 24 | 00000402, 00001369/12, 00001570 |
@@ -63,6 +63,7 @@ Read as valid solids (ready for stage 2): 7979.
 | 00001054 | timeout | no verdict within 60 s |
 | 00001760 | timeout | no verdict within 60 s |
 | 00002501/3 | timeout | no verdict within 60 s |
+| 00006380/3 | timeout | no verdict within 60 s |
 | 00007501/6 | timeout | no verdict within 60 s |
 | 00008058 | timeout | no verdict within 60 s |
 | 00008460 | timeout | no verdict within 60 s |
@@ -72,21 +73,21 @@ Read as valid solids (ready for stage 2): 7979.
 | Verdict | Models | % |
 |---|---:|---:|
 | invalid | 4 | 0.1 |
-| ok | 7784 | 97.6 |
-| refused | 186 | 2.3 |
-| timeout | 5 | 0.1 |
+| ok | 7788 | 97.6 |
+| refused | 180 | 2.3 |
+| timeout | 7 | 0.1 |
 
 | Tool | Verdict | Models |
 |---|---|---:|
 | corner | invalid | 3 |
-| corner | ok | 7919 |
-| corner | refused | 52 |
+| corner | ok | 7916 |
+| corner | refused | 53 |
 | drill | invalid | 2 |
-| drill | ok | 7884 |
-| drill | refused | 88 |
+| drill | ok | 7883 |
+| drill | refused | 87 |
 | slab | invalid | 2 |
-| slab | ok | 7841 |
-| slab | refused | 131 |
+| slab | ok | 7845 |
+| slab | refused | 125 |
 
 ### Top boolean refusals
 
@@ -98,7 +99,6 @@ Read as valid solids (ready for stage 2): 7979.
 | drill union: boolean does not support this: a freeform face that closes on itself and into | 17 | 00000407/4, 00001144, 00002192/1 |
 | drill union: boolean does not support this: two points closer together than the tolerance can tell | 13 | 00000245, 00000857, 00001482/66 |
 | drill union: the result would have zero thickness at : two of its parts touch there | 9 | 00001356, 00002306/6, 00002364/7 |
-| slab union: boolean does not support this: a piece of a face lies within tolerance of | 9 | 00000111/3, 00000574/3, 00000597/3 |
 | slab union: boolean produced an invalid body: edge # is #.#e# away from the surface of | 6 | 00000530/2, 00003174, 00003938 |
 | corner union: boolean does not support this: a freeform face that closes on itself and into | 5 | 00000826/2, 00005401/5, 00007946 |
 | slab union: boolean does not support this: two points closer together than the tolerance can tell | 5 | 00005016/1, 00005378/19, 00006603/3 |
@@ -108,10 +108,11 @@ Read as valid solids (ready for stage 2): 7979.
 | drill union: boolean produced an invalid body: edge # could not be proven within its tolerance | 3 | 00001927, 00003348/1, 00007474 |
 | drill union: boolean produced an invalid body: edge # is #.#e-# away from the surface of | 3 | 00000143/6, 00002833/18, 00002976 |
 | slab union: boolean does not support this: an intersection curve could not be fitted within the | 3 | 00009287/5, 00009288/6, 00009780/5 |
+| slab union: boolean does not support this: imprint lost: a curve in which two faces cross | 3 | 00002928, 00004655/6, 00005460/14 |
 | corner union: boolean does not support this: two curves leave a point in the same direction | 2 | 00006696, 00009956/91 |
 | corner union: boolean does not support this: two points closer together than the tolerance can tell | 2 | 00007724, 00008805/1 |
-| drill union: boolean does not support this: a curve that is partly on and partly off | 2 | 00000033/13, 00008919/1 |
 | drill union: boolean does not support this: a piece of a face too thin to find | 2 | 00004207, 00007346/1 |
+| drill union: boolean does not support this: two faces that go through each other by between | 2 | 00001444/28, 00008642 |
 
 ### Wrong booleans (identity or check)
 
@@ -124,6 +125,8 @@ Read as valid solids (ready for stage 2): 7979.
 
 | Model | Verdict | Detail |
 |---|---|---|
+| 00000644 | timeout | no verdict within 180 s |
+| 00001678/5 | timeout | no verdict within 180 s |
 | 00003163/2 | timeout | no verdict within 180 s |
 | 00003662/1 | timeout | no verdict within 180 s |
 | 00003663/2 | timeout | no verdict within 180 s |
