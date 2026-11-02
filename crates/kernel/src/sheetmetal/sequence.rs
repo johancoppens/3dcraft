@@ -596,3 +596,287 @@ pub fn piece_lowest(part: &Part, piece: PieceOf, height: impl Fn(Vec3) -> f64) -
     }
     least.is_finite().then_some(least)
 }
+
+/// The least of the affine function `height` over the material of
+/// `piece` as built that lies where the affine function `side` is at
+/// least 0: a lower bound, exact for lines and arcs when `side`'s level
+/// planes are square to the piece's flat (a flat or a strip cut along a
+/// line of its plane) or, for a built bend, square to its axis (cut
+/// along its length). `side` is a plane through the material: for a
+/// flat or a strip it is taken at the middle of the thickness and the
+/// half kept widened by how far the plane leans across the thickness
+/// (`|∂side/∂z| T / 2`), so the region kept holds every point of the
+/// material where `side ≥ 0`; for a bend the range along its axis is
+/// widened by the most `side` takes across its ring sector. The least is
+/// then over the outline's pieces in that region (lines at their ends
+/// and where they cross the cut, an arc or circle also at the one angle
+/// where `height`'s gradient points into it, a spline over its control
+/// points: a lower bound), at both skins. `Some(∞)` when no material
+/// lies there; `None` for a piece the part does not have or a value
+/// that is not a number.
+pub fn piece_lowest_within(
+    part: &Part,
+    piece: PieceOf,
+    height: impl Fn(Vec3) -> f64,
+    side: impl Fn(Vec3) -> f64,
+) -> Option<f64> {
+    use std::f64::consts::TAU;
+    let t = part.thickness;
+    let carrier = match piece {
+        PieceOf::Flat(f) => f,
+        PieceOf::Bend(i) | PieceOf::Strip(i) => part.bends.get(i)?.parent,
+    };
+    let w = part.flats.get(carrier).map(|f| world(&part.plane, f))?;
+    let f = |p: Vec3| height(w.point(p));
+    let s = |p: Vec3| side(w.point(p));
+    let o = f(Vec3::ZERO);
+    let g = [f(Vec3::X) - o, f(Vec3::Y) - o, f(Vec3::Z) - o];
+    let skins = |x: f64, y: f64| f(Vec3::new(x, y, 0.0)).min(f(Vec3::new(x, y, t)));
+    if !g.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    // A flat's or a strip's outline cut by `side` at the middle of the
+    // thickness, the half widened by the plane's lean.
+    let cut_outline = |outline: &[Segment]| -> Option<f64> {
+        let mid = 0.5 * t;
+        let lean = 0.5 * (s(Vec3::new(0.0, 0.0, t)) - s(Vec3::ZERO)).abs();
+        let v = |p: [f64; 2]| s(Vec3::new(p[0], p[1], mid)) + lean;
+        let sv = v([0.0, 0.0]);
+        let gs = [v([1.0, 0.0]) - sv, v([0.0, 1.0]) - sv];
+        if !(sv.is_finite() && gs[0].is_finite() && gs[1].is_finite() && lean.is_finite()) {
+            return None;
+        }
+        let mut least = f64::INFINITY;
+        let mut take = |p: [f64; 2]| least = least.min(skins(p[0], p[1]));
+        for seg in outline {
+            let (a, b) = (seg.start, seg.end);
+            let (va, vb) = (v(a), v(b));
+            if va >= 0.0 {
+                take(a);
+            }
+            if vb >= 0.0 {
+                take(b);
+            }
+            match &seg.shape {
+                Shape::Line => {
+                    if (va < 0.0) != (vb < 0.0) {
+                        let k = va / (va - vb);
+                        if k.is_finite() {
+                            take([a[0] + k * (b[0] - a[0]), a[1] + k * (b[1] - a[1])]);
+                        }
+                    }
+                }
+                Shape::Arc { center, radius } | Shape::Circle { center, radius } => {
+                    let (from, sweep) =
+                        arc_span(seg, *center, matches!(seg.shape, Shape::Circle { .. }));
+                    let on = |angle: f64| (angle - from).rem_euclid(TAU) <= sweep;
+                    let at = |angle: f64| {
+                        [
+                            center[0] + radius * angle.pcos(),
+                            center[1] + radius * angle.psin(),
+                        ]
+                    };
+                    // Where the circle crosses the cut's line.
+                    let gl = gs[0].phypot(gs[1]);
+                    if gl > 0.0 {
+                        let d = v(*center) / gl;
+                        let towards = (-gs[1]).patan2(-gs[0]);
+                        if d.abs() <= *radius {
+                            let spread = (d / radius).clamp(-1.0, 1.0).pacos();
+                            for angle in [towards - spread, towards + spread] {
+                                if on(angle) {
+                                    take(at(angle));
+                                }
+                            }
+                        }
+                    }
+                    let down = (-g[1]).patan2(-g[0]);
+                    if on(down) && v(at(down)) >= 0.0 {
+                        take(at(down));
+                    }
+                }
+                Shape::Spline(spline) => {
+                    for p in &spline.control {
+                        take(*p);
+                    }
+                }
+            }
+        }
+        Some(least)
+    };
+    let least = match piece {
+        PieceOf::Flat(i) => cut_outline(&part.flats.get(i)?.outer)?,
+        PieceOf::Strip(i) => {
+            let b = part.bends.get(i)?;
+            let far = |p: [f64; 2]| {
+                [
+                    p[0] + b.allowance * b.across[0],
+                    p[1] + b.allowance * b.across[1],
+                ]
+            };
+            let corners = [b.end, b.start, far(b.start), far(b.end)];
+            let rect: Vec<Segment> = (0..4)
+                .filter_map(|k| {
+                    let (a, c) = (corners.get(k)?, corners.get((k + 1) % 4)?);
+                    Some(super::line(*a, *c))
+                })
+                .collect();
+            cut_outline(&rect)?
+        }
+        PieceOf::Bend(i) => {
+            let b = part.bends.get(i)?;
+            let len = distance(b.start, b.end);
+            if !(len > 0.0) {
+                return None;
+            }
+            let d = [(b.end[0] - b.start[0]) / len, (b.end[1] - b.start[1]) / len];
+            let up = b.angle > 0.0;
+            let zc = if up { t + b.radius } else { -b.radius };
+            let sign = if up { -1.0 } else { 1.0 };
+            let theta = b.theta();
+            // A point of the ring sector `a` along the axis from the
+            // bend's start, at radius `r` and angle `phi`.
+            let point = |a: f64, r: f64, phi: f64| {
+                let (u, wv) = (r * phi.psin(), sign * r * phi.pcos());
+                Vec3::new(
+                    b.start[0] + a * d[0] + u * b.across[0],
+                    b.start[1] + a * d[1] + u * b.across[1],
+                    zc + wv,
+                )
+            };
+            // The angles where an affine function of the cross-section is
+            // least or most: the arcs' ends and its stationary angle.
+            let extreme_angles = |fun: &dyn Fn(Vec3) -> f64| -> Vec<f64> {
+                let c0 = fun(point(0.0, 0.0, 0.0));
+                let gu = fun(Vec3::new(
+                    b.start[0] + b.across[0],
+                    b.start[1] + b.across[1],
+                    zc,
+                )) - c0;
+                let gw = (fun(Vec3::new(b.start[0], b.start[1], zc + 1.0)) - c0) * sign;
+                let mut angles = vec![0.0, theta];
+                for stationary in [(-gu).patan2(-gw), gu.patan2(gw)] {
+                    let a = stationary.rem_euclid(TAU);
+                    if a > 0.0 && a < theta {
+                        angles.push(a);
+                    }
+                }
+                angles
+            };
+            // The range along the axis that holds every point where
+            // `side ≥ 0`: `side` at `a` is at most its value at the
+            // sector's point where it is most, plus its slope along `a`.
+            let cross: Vec<(f64, f64)> = extreme_angles(&s)
+                .into_iter()
+                .flat_map(|phi| [(b.radius, phi), (b.radius + t, phi)])
+                .collect();
+            let most = cross
+                .iter()
+                .map(|&(r, phi)| s(point(0.0, r, phi)))
+                .fold(f64::NEG_INFINITY, f64::max);
+            let slope = (s(point(len, 0.0, 0.0)) - s(point(0.0, 0.0, 0.0))) / len;
+            if !(most.is_finite() && slope.is_finite()) {
+                return None;
+            }
+            let (mut lo, mut hi) = (0.0_f64, len);
+            if slope > 0.0 {
+                lo = lo.max(-most / slope);
+            } else if slope < 0.0 {
+                hi = hi.min(-most / slope);
+            } else if most < 0.0 {
+                return Some(f64::INFINITY);
+            }
+            if !(lo <= hi) {
+                return Some(f64::INFINITY);
+            }
+            let mut least = f64::INFINITY;
+            for phi in extreme_angles(&f) {
+                for r in [b.radius, b.radius + t] {
+                    for a in [lo, hi] {
+                        least = least.min(f(point(a, r, phi)));
+                    }
+                }
+            }
+            least
+        }
+    };
+    (!least.is_nan()).then_some(least)
+}
+
+/// The closed polygon `points` (either way round, no three points
+/// repeated) cut into triangles by clipping ears: convex pieces whose
+/// union is the polygon. `None` when it is not one simple polygon the
+/// clipping can cut (a polygon that crosses itself, or a degenerate one).
+pub fn triangles(points: &[[f64; 2]]) -> Option<Vec<[[f64; 2]; 3]>> {
+    let n = points.len();
+    if n < 3 {
+        return None;
+    }
+    let area: f64 = (0..n)
+        .filter_map(|i| {
+            let (a, b) = (points.get(i)?, points.get((i + 1) % n)?);
+            Some(a[0] * b[1] - b[0] * a[1])
+        })
+        .sum();
+    if !(area.abs() > 0.0) {
+        return None;
+    }
+    // Counter-clockwise indices.
+    let mut idx: Vec<usize> = (0..n).collect();
+    if area < 0.0 {
+        idx.reverse();
+    }
+    let cross = |o: [f64; 2], a: [f64; 2], b: [f64; 2]| {
+        (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+    };
+    let mut out = Vec::with_capacity(n - 2);
+    let mut guard = 0usize;
+    while idx.len() > 3 {
+        guard += 1;
+        if guard > n.saturating_mul(n).saturating_add(8) {
+            return None;
+        }
+        let m = idx.len();
+        let mut clipped = false;
+        for k in 0..m {
+            let (Some(&ia), Some(&ib), Some(&ic)) =
+                (idx.get((k + m - 1) % m), idx.get(k), idx.get((k + 1) % m))
+            else {
+                return None;
+            };
+            let (a, b, c) = (*points.get(ia)?, *points.get(ib)?, *points.get(ic)?);
+            if !(cross(a, b, c) > 0.0) {
+                continue;
+            }
+            // No other point inside or on the ear.
+            let blocked = idx.iter().any(|&j| {
+                if j == ia || j == ib || j == ic {
+                    return false;
+                }
+                let Some(&p) = points.get(j) else {
+                    return true;
+                };
+                cross(a, b, p) >= 0.0 && cross(b, c, p) >= 0.0 && cross(c, a, p) >= 0.0
+            });
+            if blocked {
+                continue;
+            }
+            out.push([a, b, c]);
+            idx.remove(k);
+            clipped = true;
+            break;
+        }
+        if !clipped {
+            return None;
+        }
+    }
+    let (Some(&a), Some(&b), Some(&c)) = (idx.first(), idx.get(1), idx.get(2)) else {
+        return None;
+    };
+    let tri = [*points.get(a)?, *points.get(b)?, *points.get(c)?];
+    if !(cross(tri[0], tri[1], tri[2]) > 0.0) {
+        return None;
+    }
+    out.push(tri);
+    Some(out)
+}

@@ -28,7 +28,7 @@ use crate::{CommandError, CommandSpec, Session};
 use craft3d_kernel::boolean::contains_points;
 use craft3d_kernel::sheetmetal::sequence::{
     PieceOf, bend_faces, bend_frame, final_worlds, from_axis, inside_piece, piece_lowest,
-    piece_points, prism, stage_worlds, strip_slab, stroke_speed,
+    piece_lowest_within, piece_points, prism, stage_worlds, strip_slab, stroke_speed,
 };
 use craft3d_kernel::sheetmetal::{self, cut_pieces, flange_length, flat_faces};
 use craft3d_math::Portable;
@@ -41,7 +41,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[spec!(
     "sheetMetal.bendSequence",
     "Bend Sequence",
     r#"{"feature": id or name, "punch": [[x, y], ...], "die": [[x, y], ...], "length": number or [number or null, ...] (one per flange) = the part's reach, "segmented": boolean = false, "clearance": number = the document's tolerance, "order": [flange or [flange, ...], ...] = searched, "formed": [flange, ...] = none, "maxWork": number = 20000}"#,
-    "Checks whether a sheet-metal part (feature.sheetMetal) can be bent on a press brake with the punch and die given, and finds an order of its bends (changes nothing). punch and die are closed polygons (at least 3 points, in the document's length unit) in the plane square to a bend: the punch's with the centre of its tip at the origin and its body along +y, the die's with the point under the bend on the part's outer skin at the origin and its body below (y < 0); each is extruded along the bend: one piece length long centred on the middle of the bends made in the stroke (default: long enough to cover the whole part), or, with segmented true or a list of lengths, segmented tooling set up per bend, a segment per bend centred on its middle, as long as length gives for it (one number for every bend, or a list of one per flange with null for the bend's own) or else as long as the bend; unchecked states which. Bends on one line of one flat with the same angle, direction, radius and K-factor (tabs on one edge) are made in one stroke. At every bend both stand in the bend's frame: origin on the bend's axis (the die's R + T further out), y along the bisector of the two flats towards the inside (as on a press brake where both legs rise half the angle), z along the axis. A step, a bend made with some others already made and the rest still flat, clears when the proven distance (its lower bound) between the punch and every piece of the part but that bend's own strip and its two flats, and between the die counted lowered (moved away from the punch) by clearance plus the document's tolerance and every piece but the bend's own strip, is at least clearance over the whole stroke from 0 to the bend's angle (so the sheet may rest on the die's top, but not go into it by more than the tolerance nor come nearer than clearance from any other side), with the part as it lies or turned end for end (about the tools' y, as an operator turns it: the tools mirrored in x; segments stay at their bends), unless both tools are their own mirror image (the same polygon, compared as a cyclic list of points): proven at eight stroke angles, and between two of them less how far any point of the part can move against the tools in between (half its distance from the bend's axis, the farthest at either end of the stroke, plus the bend's neutral radius, per radian), the interval halved (to 1/1024 of the stroke) until that holds, or, for a die wholly below its top (y <= 0), by the piece's lowest point staying above the die's top less the tolerance between them (its height bounded by its heights there and how fast it can bend, halved as needed: what proves a piece lifting off the die); a piece and a tool wholly inside one another count as 0. formed lists flanges made before the press brake by a tool of their own (a louvre on a punch press, a jog by an offset die, a hem closed by a flattening tool): they are made from the start, are no step of the order and are not checked themselves (said in unchecked). With order (a list of strokes, each a flange or a list of flanges on one line; every flange once) that order is checked step by step, every step, instead of a search. Otherwise the order is searched depth first over all orders of the strokes (with one-piece tools a stroke is every bend on its line, and an order given must keep them together; with segmented tooling the bends of a line are tried together and one by one), the bends whose flanges carry the fewest others first (then the shorter flange, then the lower index), every set of bends made that leads nowhere remembered. Returns feasible, given (whether the order was given), order (the strokes, first bent first: a flange by index, or a list for a stroke of several; null when none clears), steps (per stroke of the order, also those that cleared of an order given that does not: flange (its first), flanges, segments (with segmented tooling: the tools' length at each of its bends), done (the flanges made before it), least (the least distance to the punch proven at the stroke angles measured), at (the stroke angle of it, degrees), proven (the least distance to the punch proven over the whole stroke, between the angles measured too) die (least, at and proven for the lowered die) and turned (whether the part is turned end for end for it)), collisions (every step tried that did not clear, per orientation tried: flange, flanges, done, tool (punch or die), piece (the base, flange i, or the strip of flange i, bent or flat), angle (degrees), distance and lower (the distance found and what is proven below it; to the lowered die for the die), or notProven with the stroke interval no halving could prove; certain: whether this failure is certain, a tool and a piece found nearer than the clearance at a real place or wholly inside one another, where a collision only not proven clear is not; stepCertain: whether the step fails for certain, both as the part lies and turned; turned: whether this failure is the turned one), infeasibleProven (with feasible false: whether every step tried that failed failed for certain, so that no order exists with these tools, or for an order given whether a step of it fails for certain; false means no order was found but one may exist), unchecked (what is not looked at) and work (distances measured). A part with a hole across a bend is checked with each strip not yet bent as its whole slab (more material than it has, so a clearance proven is proven; a collision with such a strip, or found inside a flat by its outline, is not certain). Refused: a polygon that crosses itself, a clearance that is not more than 0, and more distances and heights measured than maxWork (default 20000, at most 10000000; give the order, or raise it). Not looked at (said in unchecked): a bend's own strip during its stroke, and its own two flats against the punch (an acute bend with a punch of a wider angle closing its flats onto it is not found).",
+    "Checks whether a sheet-metal part (feature.sheetMetal) can be bent on a press brake with the punch and die given, and finds an order of its bends (changes nothing). punch and die are closed polygons (at least 3 points, in the document's length unit) in the plane square to a bend: the punch's with the centre of its tip at the origin and its body along +y, the die's with the point under the bend on the part's outer skin at the origin and its body below (y < 0); each is extruded along the bend: one piece length long centred on the middle of the bends made in the stroke (default: long enough to cover the whole part), or, with segmented true or a list of lengths, segmented tooling set up per bend, a segment per bend centred on its middle, as long as length gives for it (one number for every bend, or a list of one per flange with null for the bend's own) or else as long as the bend; unchecked states which. Bends on one line of one flat with the same angle, direction, radius and K-factor (tabs on one edge) are made in one stroke. At every bend both stand in the bend's frame: origin on the bend's axis (the die's R + T further out), y along the bisector of the two flats towards the inside (as on a press brake where both legs rise half the angle), z along the axis. A step, a bend made with some others already made and the rest still flat, clears when the proven distance (its lower bound) between the punch and every piece of the part but that bend's own strip and its two flats, and between the die counted lowered (moved away from the punch) by clearance plus the document's tolerance and every piece but the bend's own strip, is at least clearance over the whole stroke from 0 to the bend's angle (so the sheet may rest on the die's top, but not go into it by more than the tolerance nor come nearer than clearance from any other side), with the part as it lies or turned end for end (about the tools' y, as an operator turns it: the tools mirrored in x; segments stay at their bends), unless both tools are their own mirror image (the same polygon, compared as a cyclic list of points): proven at eight stroke angles, and between two of them less how far any point of the part can move against the tools in between (half its distance from the bend's axis, the farthest at either end of the stroke, plus the bend's neutral radius, per radian), the interval halved (to 1/1024 of the stroke) until that holds, or, for a die wholly below its top (y <= 0), by the piece's lowest point staying above the die's top less the tolerance between them (its height bounded by its heights there and how fast it can bend, halved as needed: what proves a piece lifting off the die), or by the piece cut at its bend line (material past it beside the bend's ends, such as ears or a closed corner's extension, goes down into the die's opening) with each half kept apart from each triangle of the die (a die of at most 200 points) along the tools' y or a side's outward normal, bounded and halved the same way; a piece and a tool wholly inside one another count as 0. formed lists flanges made before the press brake by a tool of their own (a louvre on a punch press, a jog by an offset die, a hem closed by a flattening tool): they are made from the start, are no step of the order and are not checked themselves (said in unchecked). With order (a list of strokes, each a flange or a list of flanges on one line; every flange once) that order is checked step by step, every step, instead of a search. Otherwise the order is searched depth first over all orders of the strokes (with one-piece tools a stroke is every bend on its line, and an order given must keep them together; with segmented tooling the bends of a line are tried together and one by one), the bends whose flanges carry the fewest others first (then the shorter flange, then the lower index), every set of bends made that leads nowhere remembered. Returns feasible, given (whether the order was given), order (the strokes, first bent first: a flange by index, or a list for a stroke of several; null when none clears), steps (per stroke of the order, also those that cleared of an order given that does not: flange (its first), flanges, segments (with segmented tooling: the tools' length at each of its bends), done (the flanges made before it), least (the least distance to the punch proven at the stroke angles measured), at (the stroke angle of it, degrees), proven (the least distance to the punch proven over the whole stroke, between the angles measured too) die (least, at and proven for the lowered die) and turned (whether the part is turned end for end for it)), collisions (every step tried that did not clear, per orientation tried: flange, flanges, done, tool (punch or die), piece (the base, flange i, or the strip of flange i, bent or flat), angle (degrees), distance and lower (the distance found and what is proven below it; to the lowered die for the die), or notProven with the stroke interval no halving could prove; certain: whether this failure is certain, a tool and a piece found nearer than the clearance at a real place or wholly inside one another, where a collision only not proven clear is not; stepCertain: whether the step fails for certain, both as the part lies and turned; turned: whether this failure is the turned one), infeasibleProven (with feasible false: whether every step tried that failed failed for certain, so that no order exists with these tools, or for an order given whether a step of it fails for certain; false means no order was found but one may exist), unchecked (what is not looked at) and work (distances measured). A part with a hole across a bend is checked with each strip not yet bent as its whole slab (more material than it has, so a clearance proven is proven; a collision with such a strip, or found inside a flat by its outline, is not certain). Refused: a polygon that crosses itself, a clearance that is not more than 0, and more distances and heights measured than maxWork (default 20000, at most 10000000; give the order, or raise it). Not looked at (said in unchecked): a bend's own strip during its stroke, and its own two flats against the punch (an acute bend with a punch of a wider angle closing its flats onto it is not found).",
     doc: true,
     names: ["feature"],
     bend_sequence
@@ -328,8 +328,28 @@ type Lowers = BTreeMap<(usize, Kind), f64>;
 /// sampling and halving).
 const MAX_REST_DEPTH: u32 = 40;
 
+/// Directions per half of a piece and piece of the die in
+/// [`Check::apart_values`]: the tools' `y` and the die piece's three
+/// sides' outward normals.
+const DIRECTIONS: usize = 4;
+
 /// A tool's outline in the plane square to a bend.
 type Polygon = Vec<[f64; 2]>;
+
+/// A convex piece of a tool's outline, counter-clockwise.
+type Triangle = [[f64; 2]; 3];
+
+/// Most points of a die cut into convex pieces for the proof of pieces
+/// cut at their bend line (the cutting is quadratic or worse in them).
+const MAX_CUT_POINTS: usize = 200;
+
+/// The die cut into triangles, `None` when it has too many points or
+/// cannot be cut.
+fn die_pieces(die: &[[f64; 2]]) -> Option<Vec<Triangle>> {
+    (die.len() <= MAX_CUT_POINTS)
+        .then(|| sheetmetal::sequence::triangles(die))
+        .flatten()
+}
 
 struct Check<'a> {
     part: &'a sheetmetal::Part,
@@ -340,6 +360,11 @@ struct Check<'a> {
     /// the part turned end for end; `None` when both are their own
     /// mirror image (`symmetric`), so turning changes nothing.
     turned_tools: Option<(Polygon, Polygon)>,
+    /// The die cut into convex pieces (`sequence::triangles`), as given
+    /// and mirrored for the part turned end for end: what the proof of a
+    /// piece cut at its bend line keeps apart ([`Check::apart`]); `None`
+    /// when the die could not be cut (that proof is then not tried).
+    die_pieces: [Option<Vec<Triangle>>; 2],
     tooling: Tooling,
     clearance: f64,
     pieces: Vec<Piece<'a>>,
@@ -659,6 +684,18 @@ impl Check<'_> {
                         lower = low + self.clearance + self.tol.linear;
                     }
                 }
+                // Or cut at its bend line, each half kept apart from each
+                // convex piece of the die along a direction of its own.
+                if !inside && lower < self.clearance && tool == DIE && self.can_part(stroke) {
+                    let v = self.apart_values(done, g, rho, &[piece.what], stroke)?;
+                    let apart = v
+                        .chunks(DIRECTIONS)
+                        .map(|d| d.iter().copied().fold(f64::NEG_INFINITY, f64::max))
+                        .fold(f64::INFINITY, f64::min);
+                    if apart >= self.clearance {
+                        lower = apart;
+                    }
+                }
                 if lower < self.clearance {
                     let failure = Failure::Collision {
                         tool: name,
@@ -771,7 +808,7 @@ impl Check<'_> {
                 if let Some(p) = proven.get_mut(key.0) {
                     *p = p.min(lo);
                 }
-            } else if key.0 == DIE && stroke.die_below {
+            } else if key.0 == DIE && (stroke.die_below || self.can_part(stroke)) {
                 resting.push(key.1);
             } else {
                 resting.clear();
@@ -780,13 +817,24 @@ impl Check<'_> {
             }
         }
         if proven.iter().all(|p| *p >= self.clearance) {
-            let rested = if resting.is_empty() {
+            let mut rested = if resting.is_empty() {
                 Some(f64::INFINITY)
-            } else {
+            } else if stroke.die_below {
                 let ya = self.heights(done, g, a, &resting)?;
                 let yc = self.heights(done, g, c, &resting)?;
                 self.rest(done, g, &resting, (a, &ya), (c, &yc), stroke, 0)?
+            } else {
+                None
             };
+            // Material past the bend line beside its ends goes down into
+            // the die's opening while the rest lies on its shoulder: the
+            // pieces cut at the bend line, each half kept apart from each
+            // convex piece of the die (`Check::apart`).
+            if rested.is_none() && self.can_part(stroke) {
+                let va = self.apart_values(done, g, a, &resting, stroke)?;
+                let vc = self.apart_values(done, g, c, &resting, stroke)?;
+                rested = self.apart(done, g, &resting, (a, &va), (c, &vc), stroke, 0)?;
+            }
             if let Some(r) = rested {
                 for (best, p) in best.proven.iter_mut().zip(proven) {
                     *best = best.min(p);
@@ -902,6 +950,203 @@ impl Check<'_> {
         Ok(self
             .rest(done, g, kinds, (m, &ym), (c, yc), stroke, depth + 1)?
             .map(|right| left.min(right)))
+    }
+
+    /// Per piece of `kinds` at stroke angle `rho`, how far apart along a
+    /// direction it lies from each convex piece of the die (lowered by
+    /// the clearance and the tolerance, as [`Check::at`] counts it): the
+    /// piece cut in two at its bend line, the half behind it and the half
+    /// past it, and per half and per piece of the die [`DIRECTIONS`]
+    /// values, one per direction (the tools' `y`, then the outward normal
+    /// of each side of the die's piece), each the least of the direction
+    /// over the half's material (`sequence::piece_lowest_within`, a lower
+    /// bound) less the most of it over the die's piece. A half kept that
+    /// far apart from every piece of the die along some direction keeps
+    /// at least that from the die (the prisms of the die along the axis
+    /// are no nearer than their sections, whatever their length).
+    ///
+    /// The cut is the plane through the axis square to the flat each
+    /// piece moves with: the parent's tangent line for a piece carried by
+    /// the parent's side, the child's for one carried by a child of the
+    /// stroke (its far tangent line, fixed on the child). Each half is
+    /// rigid, so the bound between two stroke angles holds for it
+    /// ([`Check::apart`]); the half behind the line rises from the die as
+    /// the leg rises, the half past it (material beside the bend's ends:
+    /// a rack panel's ears, a closed corner's extension) goes down into
+    /// the die's opening.
+    fn apart_values(
+        &self,
+        done: &BTreeSet<usize>,
+        g: &[usize],
+        rho: f64,
+        kinds: &[Kind],
+        stroke: &Stroke,
+    ) -> Result<Vec<f64>, String> {
+        let part = self.part;
+        self.count()?;
+        let die = self
+            .die_pieces
+            .get(usize::from(stroke.turned))
+            .and_then(Option::as_ref)
+            .ok_or("the die is not cut into convex pieces")?;
+        let b = *g.first().ok_or("a stroke has no bend")?;
+        let first = part.bends.get(b).ok_or("a bend is missing")?;
+        let worlds =
+            stage_worlds(part, &self.angles(done, g, rho), &self.tol).map_err(|e| e.to_string())?;
+        let frame = bend_frame(part, b, rho, &worlds).map_err(|e| e.to_string())?;
+        let below = frame.radius + frame.thickness + self.clearance + self.tol.linear;
+        let tool = frame.tool(below).ok_or("a tool's frame is not finite")?;
+        let (origin, ex, ey) = (tool.origin(), tool.x(), tool.y());
+        let lift = |p: [f64; 2]| Vec3::new(p[0], p[1], 0.0);
+        // The cut of the parent's side, and of each child's.
+        let cut_of = |flat: usize, at: [f64; 2], across: [f64; 2], sign: f64| {
+            worlds
+                .get(flat)
+                .map(|w| (w.point(lift(at)), w.vector(lift(across)) * sign))
+        };
+        let parent_cut = cut_of(first.parent, first.start, first.across, 1.0)
+            .ok_or("a bend's parent is missing")?;
+        // Per flat, the stroke's bend whose child's side carries it.
+        let side_of = |mut flat: usize| -> Option<usize> {
+            for _ in 0..=part.flats.len() {
+                let (i, x) = part
+                    .bends
+                    .iter()
+                    .enumerate()
+                    .find(|(_, x)| x.child == flat)?;
+                if g.contains(&i) {
+                    return Some(i);
+                }
+                flat = x.parent;
+            }
+            None
+        };
+        let mut values = Vec::new();
+        for kind in kinds {
+            let piece = self
+                .pieces
+                .iter()
+                .find(|p| p.what == *kind)
+                .ok_or("a piece is missing")?;
+            let moved = self
+                .built
+                .get(piece.carrier)
+                .and_then(Transform::inverse)
+                .zip(worlds.get(piece.carrier))
+                .map(|(back, stage)| back.then(stage))
+                .ok_or("a flat's place is missing")?;
+            let (point, normal) = match side_of(piece.carrier) {
+                Some(i) => {
+                    let x = part.bends.get(i).ok_or("a bend is missing")?;
+                    // Past the child's tangent line is back towards the
+                    // parent.
+                    cut_of(x.child, x.far_line().0, x.across, -1.0)
+                        .ok_or("a flange's flat is missing")?
+                }
+                None => parent_cut,
+            };
+            for half in [-1.0, 1.0] {
+                let side = |p: Vec3| half * (moved.point(p) - point).dot(normal);
+                for tri in die {
+                    let mut directions = vec![[0.0, 1.0]];
+                    for k in 0..3 {
+                        let (Some(a), Some(c)) = (tri.get(k), tri.get((k + 1) % 3)) else {
+                            return Err("a piece of the die has no corners".into());
+                        };
+                        let (dx, dy) = (c[0] - a[0], c[1] - a[1]);
+                        let len = dx.phypot(dy);
+                        // Outward of a counter-clockwise side: its right.
+                        directions.push(if len > 0.0 {
+                            [dy / len, -dx / len]
+                        } else {
+                            [0.0, 1.0]
+                        });
+                    }
+                    for n in directions {
+                        let most = tri
+                            .iter()
+                            .map(|q| n[0] * q[0] + n[1] * q[1])
+                            .fold(f64::NEG_INFINITY, f64::max);
+                        let along = ex * n[0] + ey * n[1];
+                        let least = piece_lowest_within(
+                            part,
+                            kind.piece(),
+                            |p| (moved.point(p) - origin).dot(along),
+                            side,
+                        )
+                        .ok_or_else(|| format!("{} has no lowest point", kind.text()))?;
+                        values.push(least - most);
+                    }
+                }
+            }
+        }
+        Ok(values)
+    }
+
+    /// The proof of pieces cut at their bend line (values from
+    /// [`Check::apart_values`] at both ends of `[a, c]`): every half kept
+    /// apart from every piece of the die along one of its directions by
+    /// at least the clearance over the whole interval. Along a fixed
+    /// direction of the tools' frame each point of a half moves with its
+    /// second derivative at most `bow` (as for the rest proof), so the
+    /// least over the half is at least the lower of its values at the
+    /// ends less `bow h² / 8`; where that is not enough the interval is
+    /// halved while the values at its ends are. The least distance proven,
+    /// or `None`.
+    #[allow(clippy::too_many_arguments)]
+    fn apart(
+        &self,
+        done: &BTreeSet<usize>,
+        g: &[usize],
+        kinds: &[Kind],
+        (a, va): (f64, &[f64]),
+        (c, vc): (f64, &[f64]),
+        stroke: &Stroke,
+        depth: u32,
+    ) -> Result<Option<f64>, String> {
+        let h = c - a;
+        let sag = stroke.bow * h * h / 8.0;
+        if va.len() != vc.len() || va.is_empty() {
+            return Ok(None);
+        }
+        let mut least = f64::INFINITY;
+        let mut halve = false;
+        for (ga, gc) in va.chunks(DIRECTIONS).zip(vc.chunks(DIRECTIONS)) {
+            let best = ga
+                .iter()
+                .zip(gc)
+                .map(|(x, y)| x.min(*y))
+                .fold(f64::NEG_INFINITY, f64::max);
+            if !(best >= self.clearance) {
+                return Ok(None);
+            }
+            if best - sag >= self.clearance {
+                least = least.min(best - sag);
+            } else {
+                halve = true;
+            }
+        }
+        if !halve {
+            return Ok(Some(least));
+        }
+        if depth >= MAX_REST_DEPTH {
+            return Ok(None);
+        }
+        let m = 0.5 * (a + c);
+        let vm = self.apart_values(done, g, m, kinds, stroke)?;
+        let Some(left) = self.apart(done, g, kinds, (a, va), (m, &vm), stroke, depth + 1)? else {
+            return Ok(None);
+        };
+        Ok(self
+            .apart(done, g, kinds, (m, &vm), (c, vc), stroke, depth + 1)?
+            .map(|right| left.min(right).min(least)))
+    }
+
+    /// Whether the die's convex pieces are there for [`Check::apart`].
+    fn can_part(&self, stroke: &Stroke) -> bool {
+        self.die_pieces
+            .get(usize::from(stroke.turned))
+            .is_some_and(Option::is_some)
     }
 }
 
@@ -1503,12 +1748,17 @@ fn prove(
                 .collect(),
         ),
     };
+    let die_cut = [
+        die_pieces(&tools.die),
+        turned_tools.as_ref().and_then(|(_, die)| die_pieces(die)),
+    ];
     let check = Check {
         part,
         tol,
         punch: tools.punch,
         die: tools.die,
         turned_tools,
+        die_pieces: die_cut,
         tooling,
         clearance,
         pieces,
@@ -2144,6 +2394,7 @@ mod tests {
                 punch: vec![[-k, 0.0], [k, 0.0], [k, 100.0 * k], [-k, 100.0 * k]],
                 die: vec![[-k, -k], [k, -k], [k, 0.0], [-k, 0.0]],
                 turned_tools: None,
+                die_pieces: [None, None],
                 tooling: Tooling::Whole(None),
                 clearance: tol.linear,
                 pieces: pieces_of(part, &slabs, &tol).unwrap(),
@@ -2268,6 +2519,7 @@ mod tests {
             punch: vec![[-k, 0.0], [k, 0.0], [k, 100.0 * k], [-k, 100.0 * k]],
             die: vec![[-k, -k], [k, -k], [k, 0.0], [-k, 0.0]],
             turned_tools: None,
+            die_pieces: [None, None],
             tooling: Tooling::Whole(None),
             clearance: tol.linear,
             pieces: pieces_of(part, &slabs, &tol).unwrap(),
