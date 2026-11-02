@@ -404,6 +404,9 @@ pub(crate) fn build_trim(
     };
     let mut deviation = 0.0_f64;
     let mut sampled = 0.0_f64;
+    // One allowance of proof work for the whole face; an analytic face's
+    // rational form joins C1 across its knot lines by construction.
+    let mut budget = craft3d_geom::projection_proof::MAX_TRIM_PROOF_WORK;
     let mut degree = 0usize;
     // Each loop: its pieces, and its points in the surface's parameters
     // (for its turning).
@@ -458,6 +461,8 @@ pub(crate) fn build_trim(
                                     how,
                                     0.5 * tol.linear,
                                     tol.linear,
+                                    analytic,
+                                    &mut budget,
                                 )
                                 .map_err(|e| format!("{what}: {e}"))?;
                                 deviation = deviation.max(made.proven);

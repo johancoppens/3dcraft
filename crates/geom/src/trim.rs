@@ -1064,17 +1064,24 @@ pub const MAX_PROJECTED_PIECES: usize = 4096;
 /// [`MAX_PROJECTED_SAMPLES`]) until both the distance at the midpoints
 /// and the proven bound on the distance between `S(c(t))` and the true
 /// projection, at every `t` ([`crate::projection_proof::projection_bound`]),
-/// are within `within`. The pieces meet at exactly the same parameters and
-/// are joined into one curve over the curve's own parameter. Refused,
-/// with both numbers, when no number of samples allowed gets there, or
-/// where the projection cannot be proven at all.
+/// are within `within`; a proof that fails (it does not contract, or
+/// passes its pieces) counts as no bound and the samples keep doubling.
+/// The pieces meet at exactly the same parameters and are joined into one
+/// curve over the curve's own parameter, which is proven once more as it
+/// is stored. `smooth_lines` and `budget` are
+/// [`crate::projection_proof::projection_bound`]'s: every proof takes
+/// from the one allowance, and spending it refuses. Refused, with both
+/// numbers or the reason, when no number of samples allowed gets there.
 pub fn project_proven(
     spline: &NurbsSurface,
     curve: &NurbsCurve,
     how: Projection,
     within: f64,
     tolerance: f64,
+    smooth_lines: bool,
+    budget: &mut usize,
 ) -> Result<ProvenProjection, TrimError> {
+    use crate::projection_proof::{Proof, projection_bound};
     let surface = Surface::Nurbs(spline.clone());
     let (a, b) = curve.domain();
     let p = curve.degree();
@@ -1086,13 +1093,24 @@ pub fn project_proven(
         }
     }
     breaks.push(b);
+    // Where the projection crosses a crease of the face (a knot line where
+    // it is only C0), its parameters turn a corner: cut there too.
+    if !smooth_lines {
+        breaks.extend(crease_crossings(spline, curve, how, tolerance)?);
+        breaks.sort_by(f64::total_cmp);
+        breaks.dedup();
+    }
     if breaks.len() > MAX_PROJECTED_PIECES + 1 {
         return refuse(format!(
-            "a curve projected onto the surface has more than {MAX_PROJECTED_PIECES} pieces that meet with less than C2"
+            "a curve projected onto the surface has more than {MAX_PROJECTED_PIECES} pieces that meet with less than C2 (a polyline or arc chain that long: split it into several curves)"
         ));
     }
+    let describe = |best: &Result<f64, String>| match best {
+        Ok(b) => format!("proven bound {b:e}"),
+        Err(why) => format!("not proven: {why}"),
+    };
     let mut fitted: Vec<(NurbsCurve, f64, f64)> = Vec::with_capacity(breaks.len());
-    let (mut proven, mut sampled, mut samples, mut pieces) = (0.0_f64, 0.0_f64, 0usize, 0usize);
+    let (mut sampled, mut samples, mut pieces) = (0.0_f64, 0usize, 0usize);
     let mut joint: Option<(f64, f64)> = None;
     for w in breaks.windows(2) {
         let (Some(&from), Some(&to)) = (w.first(), w.get(1)) else {
@@ -1101,20 +1119,32 @@ pub fn project_proven(
         let piece = crate::refine::piece(curve, from, to)?;
         let curve3 = crate::Curve3::Nurbs(piece.clone());
         let mut count = 16usize;
-        let mut best = f64::INFINITY;
+        let mut best: Result<f64, String> = Err("the samples never came within reach".into());
         let made = loop {
             let (c, worst) =
                 fit_projection(&surface, &curve3, (0.0, 1.0), how, count, tolerance, joint)?;
             if worst <= within {
-                let gap = crate::projection_proof::projection_bound(spline, &piece, &c, how)?;
-                best = gap.bound;
-                if gap.bound <= within {
-                    break (c, worst, gap);
+                // A proof that fails here may hold with more samples:
+                // only the work allowance ends the search early.
+                match projection_bound(spline, &piece, &c, how, smooth_lines, budget)? {
+                    Proof::Proven(gap) => {
+                        best = Ok(gap.bound);
+                        if gap.bound <= within {
+                            break (c, worst, gap);
+                        }
+                    }
+                    Proof::NotProven(why) => best = Err(why),
+                    Proof::Unprovable(why) => {
+                        return refuse(format!(
+                            "a curve projected onto the surface between t = {from} and {to}: {why}"
+                        ));
+                    }
                 }
             }
             if count * 2 > MAX_PROJECTED_SAMPLES {
                 return refuse(format!(
-                    "a curve projected onto the surface is not proven within {within:e} by {MAX_PROJECTED_SAMPLES} samples between t = {from} and {to} (proven bound {best:e}, off by {worst:e} at the midpoints)"
+                    "a curve projected onto the surface is not proven within {within:e} by {MAX_PROJECTED_SAMPLES} samples between t = {from} and {to} ({}; off by {worst:e} at the midpoints)",
+                    describe(&best)
                 ));
             }
             count *= 2;
@@ -1122,19 +1152,107 @@ pub fn project_proven(
         let (c, worst, gap) = made;
         let end = c.eval(1.0);
         joint = Some((end.x, end.y));
-        proven = proven.max(gap.bound);
         sampled = sampled.max(worst);
         samples += count;
         pieces += gap.pieces;
         fitted.push((c, from, to));
     }
+    // The proof again on the curve as it is stored: the pieces joined
+    // over the curve's own parameter, against the curve itself (not its
+    // pieces cut out), so the bound is of the edge that is made.
+    let uv = joined(&fitted)?;
+    let proven = match projection_bound(spline, curve, &uv, how, smooth_lines, budget)? {
+        Proof::Proven(gap) if gap.bound <= within => {
+            pieces += gap.pieces;
+            gap.bound
+        }
+        Proof::Proven(gap) => {
+            return refuse(format!(
+                "a curve projected onto the surface is proven within {within:e} piece by piece but not once joined (bound {:e})",
+                gap.bound
+            ));
+        }
+        Proof::NotProven(why) | Proof::Unprovable(why) => {
+            return refuse(format!(
+                "a curve projected onto the surface is proven piece by piece but not once joined: {why}"
+            ));
+        }
+    };
     Ok(ProvenProjection {
-        uv: joined(&fitted)?,
+        uv,
         proven,
         sampled,
         samples,
         pieces,
     })
+}
+
+/// The parameters of `curve` where its projection onto `spline` crosses
+/// a crease: a knot line inside the domain whose multiplicity is at least
+/// the degree. Found between 256 evenly spaced projections (a sign change
+/// of the parameter less the line's), then by 60 bisections. A crossing
+/// that goes there and back between two places is not found; the fit then
+/// does not settle there, and the curve is refused.
+fn crease_crossings(
+    spline: &NurbsSurface,
+    curve: &NurbsCurve,
+    how: Projection,
+    tolerance: f64,
+) -> Result<Vec<f64>, TrimError> {
+    let (p, q) = spline.degrees();
+    let ((u0, u1), (v0, v1)) = spline.domain();
+    let creases = |knots: &[f64], degree: usize, lo: f64, hi: f64| -> Vec<f64> {
+        inner_breaks(knots, lo, hi)
+            .into_iter()
+            .filter(|k| knots.iter().filter(|x| *x == k).count() >= degree)
+            .collect()
+    };
+    let lines: Vec<(bool, f64)> = creases(spline.knots_u(), p, u0, u1)
+        .into_iter()
+        .map(|k| (true, k))
+        .chain(
+            creases(spline.knots_v(), q, v0, v1)
+                .into_iter()
+                .map(|k| (false, k)),
+        )
+        .collect();
+    if lines.is_empty() {
+        return Ok(Vec::new());
+    }
+    let surface = Surface::Nurbs(spline.clone());
+    let (a, b) = curve.domain();
+    let n = 256usize;
+    let mut out = Vec::new();
+    let mut last: Option<(f64, (f64, f64))> = None;
+    for i in 0..=n {
+        let t = a + (b - a) * i as f64 / n as f64;
+        let at = project_point(&surface, curve.eval(t), how, last.map(|l| l.1), tolerance)?;
+        if let Some((t0, uv0)) = last {
+            for &(in_u, line) in &lines {
+                let side = |uv: (f64, f64)| (if in_u { uv.0 } else { uv.1 }) - line;
+                if (side(uv0) < 0.0) == (side(at) < 0.0) {
+                    continue;
+                }
+                let (mut lo, mut hi, mut start) = (t0, t, uv0);
+                for _ in 0..60 {
+                    let m = 0.5 * (lo + hi);
+                    let here = project_point(&surface, curve.eval(m), how, Some(start), tolerance)?;
+                    if (side(here) < 0.0) == (side(uv0) < 0.0) {
+                        lo = m;
+                        start = here;
+                    } else {
+                        hi = m;
+                    }
+                }
+                let m = 0.5 * (lo + hi);
+                if m > a && m < b {
+                    out.push(m);
+                }
+            }
+        }
+        last = Some((t, at));
+    }
+    Ok(out)
 }
 
 /// Polynomial pieces over `[0, 1]` each, of one degree, meeting end to
