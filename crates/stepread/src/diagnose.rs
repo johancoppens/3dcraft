@@ -13,8 +13,18 @@ use std::fmt::Write as _;
 
 /// Places along the edge where its distance to each face is sampled.
 const PLACES: u32 = 1024;
-/// How far past the cap the prover is asked to go for the message.
-const PAST_CAP: f64 = 64.0;
+/// How far past the cap the prover is asked to go for the message: at
+/// two, eight and sixty-four times the cap, each in at most
+/// [`DIAGNOSE_PIECES`] pieces, so that a refusal costs a bounded amount
+/// of work beyond what the import spent (review of 2026-11-02).
+const PAST_CAP: [f64; 3] = [2.0, 8.0, 64.0];
+/// The pieces each of those proofs may take.
+const DIAGNOSE_PIECES: usize = 4096;
+/// Every so many places the surface's own projection is asked (between
+/// them the foot is walked from the last), and every so many more the
+/// search by the surface's spans.
+const PROJECT_EVERY: u32 = 16;
+const SEED_EVERY: u32 = 256;
 
 /// The largest sampled distance of `curve` over `range` from `surface`,
 /// and where along the range it is (0 to 1): the foot followed from the
@@ -29,14 +39,17 @@ pub(crate) fn sampled(curve: &Curve3, range: (f64, f64), surface: &Surface) -> (
         let mut best = f64::INFINITY;
         let mut foot = None;
         // The surface's own projection may land in another dip of the
-        // distance on a spline of many spans: a search by its spans
-        // every 64 places.
-        let seeded = (k % 64 == 0)
+        // distance on a spline of many spans: a search by its spans at
+        // five places.
+        let projected = (k % PROJECT_EVERY == 0 || last.is_none())
+            .then(|| surface.project(p).ok())
+            .flatten();
+        let seeded = (k % SEED_EVERY == 0)
             .then(|| craft3d_topo::nearest_foot(surface, p))
             .flatten();
         for at in [
             last.and_then(|l| surface.project_from(p, l).ok()),
-            surface.project(p).ok(),
+            projected,
             seeded,
         ]
         .into_iter()
@@ -143,10 +156,44 @@ fn surface_shape(surface: &Surface) -> String {
     }
 }
 
+/// What the prover proves of `curve` on `surface` past the cap, in a
+/// bounded number of pieces: the first of [`PAST_CAP`] times the cap it
+/// proves, or where the last proof stopped.
+fn past_cap(
+    curve: &Curve3,
+    range: (f64, f64),
+    surface: &Surface,
+    tolerance: &craft3d_math::Tolerance,
+    cap: f64,
+) -> String {
+    use craft3d_geom::certify::{CurveBound, Within, curve_on_surface};
+    let bounded = CurveBound::new(curve);
+    let mut stopped = 0.5 * (range.0 + range.1);
+    let mut last = cap;
+    for times in PAST_CAP {
+        last = (times * cap).max(tolerance.linear);
+        let within = Within {
+            target: last,
+            most: DIAGNOSE_PIECES,
+        };
+        match curve_on_surface(&bounded, range, surface, None, &[], within) {
+            Ok(p) => return format!("proven within {:.2e}", p.bound),
+            Err(not) => stopped = not.at,
+        }
+    }
+    let (t0, t1) = range;
+    let s = if t1 > t0 {
+        (stopped - t0) / (t1 - t0)
+    } else {
+        0.0
+    };
+    format!("not proven within {last:.0e} in {DIAGNOSE_PIECES} pieces (stopped at {s:.3} of it)")
+}
+
 /// What the faces of `edge` and the samples say about it, for the
 /// message of a refusal: per face its sampled distance and where, the
 /// file's surface entity (`describe`, else the surface's kind) and what
-/// the prover proves with the cap raised sixty-four times; the edge's
+/// the prover proves past the cap ([`past_cap`]); the edge's
 /// curve entity (likewise) and its length.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn edge(
@@ -189,27 +236,7 @@ pub(crate) fn edge(
         let surface =
             describe(Entity::Face(face_step)).unwrap_or_else(|| face.surface.kind().to_string());
         let (distance, at) = sampled(&e.curve, e.range, &face.surface);
-        let proven = match craft3d_topo::measure_curve(
-            &e.curve,
-            e.range,
-            &face.surface,
-            tolerance,
-            cap * PAST_CAP,
-        ) {
-            Ok(b) => format!("proven within {b:.2e}"),
-            Err(stop) => {
-                let (t0, t1) = e.range;
-                let s = if t1 > t0 {
-                    (stop - t0) / (t1 - t0)
-                } else {
-                    0.0
-                };
-                format!(
-                    "not proven within {:.0e} (stopped at {s:.3} of it)",
-                    cap * PAST_CAP
-                )
-            }
-        };
+        let proven = past_cap(&e.curve, e.range, &face.surface, tolerance, cap);
         let _ = write!(
             out,
             "{}face #{face_step} ({surface}{}): sampled up to {distance:.2e} off at {at:.3} of it, {proven}",

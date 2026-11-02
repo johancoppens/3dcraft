@@ -333,7 +333,7 @@ fn a_gap_within_the_cap_is_measured_within_it() {
         .unwrap();
         let radius = 10.0 * scale;
         let cylinder = Surface::Cylinder(Cylinder::new(frame, radius).unwrap());
-        for share in [0.6, 0.8, 0.95, 1.2] {
+        for share in [0.01, 0.3, 0.6, 0.8, 0.95, 1.2] {
             let gap = share * cap;
             let circle = Curve3::Circle(Circle::new(frame, radius + gap).unwrap());
             let measured = craft3d_topo::measure_curve(&circle, (0.3, 2.9), &cylinder, &t, cap);
@@ -345,6 +345,13 @@ fn a_gap_within_the_cap_is_measured_within_it() {
                     );
                     if share < 1.0 {
                         assert!(d <= cap, "{scale} {share}: {d:e} above the cap {cap:e}");
+                        // Recorded near the gap, not anywhere up to the
+                        // first target (twice the gap): review of
+                        // 2026-11-02.
+                        assert!(
+                            d <= 1.25 * gap,
+                            "{scale} {share}: {d:e} for a gap of {gap:e}"
+                        );
                     } else {
                         assert!(d > cap, "{scale} {share}: {d:e}");
                     }
@@ -467,5 +474,47 @@ fn a_short_edge_whose_every_projection_is_wrong_is_measured() {
             measured.is_ok_and(|d| d <= t.linear),
             "{scale}: {measured:?}"
         );
+    }
+}
+
+/// A gap is recorded near its size, not anywhere up to the first
+/// proof's target (twice the gap five samples see): a cubic that rises
+/// and falls off a plane between its control points, at gaps of a
+/// hundredth to a third of the cap, is measured within a quarter above
+/// its largest rise (review of 2026-11-02: tighter bounds per piece let
+/// proofs stop earlier, and a recorded tolerance rose towards twice the
+/// gap, which an ABC model's boolean then refused).
+#[test]
+fn a_gap_is_recorded_near_its_size() {
+    use craft3d_geom::{Plane, Surface};
+    for scale in [1e-3, 1.0, 1e3] {
+        let t = tolerance(scale);
+        let cap = 1000.0 * t.linear;
+        let plane = Surface::Plane(Plane::new(Frame::WORLD));
+        for share in [0.01, 0.1, 0.3] {
+            let lift = share * cap;
+            let points: Vec<Vec3> = (0..9)
+                .map(|k| {
+                    let z = if k % 2 == 1 { 3.0 * lift } else { 0.0 };
+                    Vec3::new(f64::from(k) * 10.0 * scale, 0.0, z)
+                })
+                .collect();
+            let knots = vec![
+                0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 6.0, 6.0, 6.0,
+            ];
+            let curve = Curve3::Nurbs(NurbsCurve::polynomial(3, knots, points).unwrap());
+            let gap = (0..=6000)
+                .map(|k| curve.eval(6.0 * f64::from(k) / 6000.0).z.abs())
+                .fold(0.0, f64::max);
+            let d = craft3d_topo::measure_curve(&curve, (0.0, 6.0), &plane, &t, cap).unwrap();
+            assert!(
+                d >= gap * (1.0 - 1e-9),
+                "{scale} {share}: {d:e} below {gap:e}"
+            );
+            assert!(
+                d <= 1.25 * gap,
+                "{scale} {share}: {d:e} for a gap of {gap:e}"
+            );
+        }
     }
 }

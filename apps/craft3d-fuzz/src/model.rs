@@ -181,6 +181,18 @@ impl ModelRun {
         if let Some(unit) = reports.first().and_then(|r| r.get("fileUnit")) {
             self.set("fileUnit", unit.clone());
         }
+        // The loosest entity any solid recorded, and how many edges are
+        // loose, so that two runs can be held to each other per model.
+        let largest = reports
+            .iter()
+            .filter_map(|r| r.get("largestTolerance").and_then(Value::as_f64))
+            .fold(0.0, f64::max);
+        let loose: u64 = reports
+            .iter()
+            .filter_map(|r| r.get("looseEdges").and_then(Value::as_u64))
+            .sum();
+        self.set("largestTolerance", largest);
+        self.set("looseEdges", loose);
         // A feature the import added that failed when regenerated.
         if let Some(failed) = imported
             .get("bodies")

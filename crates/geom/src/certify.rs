@@ -426,7 +426,6 @@ type Piece = (f64, f64, (f64, f64), (f64, f64));
 /// A box in a surface's parameters, as `(u range, v range)`.
 type Box2 = [(f64, f64); 2];
 
-/// What the proof knows of a surface: its kind, or its Bézier patches.
 /// How a spline surface goes on across the line between two spans: `C^k`
 /// with `smooth` = k, and by how much it may jump there (zero but where
 /// a full knot leaves two borders that differ by rounding).
@@ -436,6 +435,7 @@ struct Join {
     jump: f64,
 }
 
+/// What the proof knows of a surface: its kind, or its Bézier patches.
 enum Form {
     Analytic,
     Patches {
@@ -775,6 +775,12 @@ fn seal(
         if !(light_a > 0.0 && light_b > 0.0) {
             return None;
         }
+        // Rows equal bit for bit: one border, as at any knot line (its
+        // evaluation from either patch is held by the rounding the
+        // bounds already carry), and so past the domain too.
+        if dh == 0.0 && dw == 0.0 {
+            return Some(0.0);
+        }
         let d = (dh + big / light_b * dw) / light_a;
         // Plus the rounding of both evaluations.
         let d = d + ROUNDING_ULPS * f64::EPSILON * big / light_b;
@@ -999,7 +1005,11 @@ impl<'a> SurfaceBound<'a> {
             let width = (hi - lo).abs();
             (x - lo).abs() <= 1e-9 * width || (x - hi).abs() <= 1e-9 * width
         };
-        let meet = |a: Vec3, b: Vec3| !seams_only || a.distance(b) <= 1e-9 * (1.0 + a.length());
+        // Scale-free: against the size of what enters the evaluation
+        // (`size`, the net's largest control point times the spread of
+        // its weights), never an absolute unit.
+        let meet =
+            |a: Vec3, b: Vec3| !seams_only || a.distance(b) <= 1e-9 * self.size.max(a.length());
         let across_u = ends(us).is_some_and(|e| {
             near(u, e) && meet(self.surface.eval(e.0, v), self.surface.eval(e.1, v))
         });
@@ -1107,6 +1117,24 @@ impl<'a> SurfaceBound<'a> {
                 let (sv, jv) = smoothness(joins_v, iv0, iv1)?;
                 let smooth = su.min(sv);
                 let jumps = ju + jv;
+                // A sealed line's jump is bounded from its border rows by
+                // the convex hull of the Bernstein forms, which holds
+                // only over the domain of the other direction: past it
+                // (the end patches go on as their polynomials) the
+                // borders may part further, so a box that crosses a
+                // sealed line and leaves the domain across it gets no
+                // bound (review of 2026-11-02). A line whose rows agree
+                // bit for bit has no jump anywhere.
+                let outside = |(lo, hi): (f64, f64), ranges: &[(f64, f64)]| match (
+                    ranges.first(),
+                    ranges.last(),
+                ) {
+                    (Some(first), Some(last)) => lo < first.0 || hi > last.1,
+                    _ => true,
+                };
+                if (ju > 0.0 && outside((v0, v1), vs)) || (jv > 0.0 && outside((u0, u1), us)) {
+                    return None;
+                }
                 let last_u = us.len().checked_sub(1)?;
                 let last_v = vs.len().checked_sub(1)?;
                 let mut all = [0.0_f64; N];
@@ -2325,6 +2353,65 @@ mod tests {
                     "{u} at {k}: {proven:?}"
                 );
             }
+        }
+    }
+
+    /// A line sealed at a full knot is crossed with the jump its border
+    /// rows bound only within the other direction's domain: past it the
+    /// end patches go on as polynomials whose borders part further (here
+    /// four times the rows' difference at `v = −1`, where the hull gives
+    /// the difference itself), so a box that crosses the line out there
+    /// gets no bound at all (review of 2026-11-02: before, it got the
+    /// jump of the rows, and a curve out there could be proven nearer
+    /// than it is).
+    #[test]
+    fn a_sealed_line_is_not_crossed_past_the_domain() {
+        for k in [1e-3, 1.0, 1e3] {
+            let d = 1e-6 * k;
+            let mut points = Vec::new();
+            for (i, x) in [0.0, 0.5, 0.5, 1.0].iter().enumerate() {
+                for j in 0..3 {
+                    let lift = if i == 2 && j == 1 { d } else { 0.0 };
+                    points.push(Vec3::new(x * k, j as f64 * 0.5 * k, lift));
+                }
+            }
+            let weights = vec![1.0; points.len()];
+            let surface = Surface::Nurbs(
+                NurbsSurface::new(
+                    1,
+                    2,
+                    vec![0.0, 0.0, 0.5, 0.5, 1.0, 1.0],
+                    vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                    4,
+                    3,
+                    points,
+                    weights,
+                )
+                .unwrap(),
+            );
+            let sb = SurfaceBound::new(&surface).unwrap();
+            let Form::Patches { joins_u, .. } = &sb.form else {
+                panic!("a spline surface has patches");
+            };
+            let jump = joins_u[0].unwrap().jump;
+            assert!(jump >= d && jump < 1.01 * d, "{jump:e}");
+            // Within the domain the borders part by at most the jump;
+            // at v = −1 by four times the rows' difference.
+            let apart = |v: f64| {
+                surface
+                    .eval(0.5 - 1e-12, v)
+                    .distance(surface.eval(0.5 + 1e-12, v))
+            };
+            assert!(apart(0.5) <= jump);
+            assert!(apart(-1.0) > 3.9 * d, "{:e}", apart(-1.0));
+            // A box across the line within the domain is bounded, with
+            // the jump; one across it past the domain is not.
+            let inside = Path::new((0.45, 0.4), (0.55, 0.6), (0.1, 0.2), (0.1, 0.2));
+            let (_, smooth, jumps) = sb.jets(&inside, Vec3::ZERO).unwrap();
+            assert_eq!(smooth, 0);
+            assert!(jumps >= jump);
+            let past = Path::new((0.45, -1.1), (0.55, -0.9), (0.1, 0.2), (0.1, 0.2));
+            assert!(sb.jets(&past, Vec3::ZERO).is_none());
         }
     }
 

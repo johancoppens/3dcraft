@@ -331,7 +331,8 @@ pub fn measure_curve(
             },
         ) {
             Ok(proven) => {
-                let bound = proven.bound.max(sampled);
+                let mut bound = proven.bound.max(sampled);
+                let mut pieces = proven.pieces;
                 // A proof at a target above the cap may bound a gap
                 // within it by more than the cap (the bound lies
                 // anywhere up to the target): once more at the cap,
@@ -342,16 +343,77 @@ pub fn measure_curve(
                         most: PROOF_PIECES,
                     };
                     if let Ok(p) = curve_on_surface(&bounded, range, surface, start, &[], tighter) {
-                        return Ok(p.bound.max(sampled));
+                        bound = p.bound.max(sampled);
+                        pieces = p.pieces;
                     }
                 }
-                return Ok(bound);
+                return Ok(tighten(
+                    bound,
+                    pieces,
+                    sampled,
+                    tolerance.linear,
+                    |t, most| {
+                        curve_on_surface(
+                            &bounded,
+                            range,
+                            surface,
+                            start,
+                            &[],
+                            Within { target: t, most },
+                        )
+                        .ok()
+                        .map(|p| (p.bound.max(sampled), p.pieces))
+                    },
+                ));
             }
             Err(not) => stopped = not.at,
         }
         target *= 2.0;
     }
     Err(stopped)
+}
+
+/// How many times a bound that will be recorded is proven again nearer
+/// the gap.
+const TIGHTEN: usize = 3;
+
+/// A bound brought nearer the gap it holds before it is recorded: a
+/// proof's bound lies anywhere up to its target (twice the sampled gap
+/// at first), and the tighter a piece's bound the earlier the proof stops
+/// halving it, so better bounds alone could record a looser tolerance
+/// (review of 2026-11-02: an ABC model's tolerance rose and tripped the
+/// boolean's tolerance rule). Up to [`TIGHTEN`] proofs at targets halfway
+/// (geometrically) between the bound and a tenth above the sampled gap,
+/// each allowed four times the pieces of the last that held; a failed one
+/// raises the floor. Not for a bound within the document's tolerance,
+/// which records nothing.
+fn tighten(
+    mut bound: f64,
+    mut pieces: usize,
+    sampled: f64,
+    linear: f64,
+    prove: impl Fn(f64, usize) -> Option<(f64, usize)>,
+) -> f64 {
+    if bound.is_nan() || bound <= linear {
+        return bound;
+    }
+    let mut floor = (1.1 * sampled).max(linear);
+    for _ in 0..TIGHTEN {
+        if bound.is_nan() || bound <= 1.01 * floor {
+            break;
+        }
+        let target = (floor * bound).sqrt().max(floor);
+        let most = pieces.saturating_mul(4).clamp(64, PROOF_PIECES);
+        match prove(target, most) {
+            Some((b, p)) if b < bound => {
+                bound = b;
+                pieces = p;
+            }
+            Some(_) => break,
+            None => floor = target,
+        }
+    }
+    bound
 }
 
 /// Places per quarter of a curve where its feet on a surface are walked
