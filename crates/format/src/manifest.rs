@@ -1168,7 +1168,28 @@ pub enum FeatureKind {
         /// version 51).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bend_relief: Option<SheetRelief>,
+        /// Jogs across its flats (format version 64).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        jogs: Vec<SheetJog>,
     },
+}
+
+/// A jog across a flat of a sheet-metal part: the line of the part's
+/// sketch it is drawn as, its offset and angle, which way its first bend
+/// turns, its radius and K-factor (absent: the part's), and its id (its
+/// second bend's is `id + 1`) (format version 64).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SheetJog {
+    pub line: u64,
+    pub offset: String,
+    pub angle: String,
+    pub direction: BendDirection,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub radius: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub k_factor: Option<String>,
+    pub id: u32,
 }
 
 /// A choice among names: one of them (`"tear"`), or an expression whose

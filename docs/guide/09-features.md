@@ -428,6 +428,25 @@ outside surfaces. `relief` cuts the base's corners where two flanged edges meet 
 ]
 ```
 
+A **jog** (`jogs`) steps a flat: draw a construction line across the base (or across a flange's flat,
+where it lies beside its edge as if its bend had no width) and give the step's `offset`, the bends'
+`angle` and which way the first turns (`direction`). The flat is cut along the line; the side on the
+line's left (on a flange, the side its own bend is on) stays, and the other side becomes a flat of its
+own, lifted `offset` by two opposite bends with a web between them, keeping its holes, its flanges and
+its edges' names. The press-brake check takes a jog as made by an offset die (`formed`).
+
+```json
+[
+ ["sketch.create", {"plane": "xy", "name": "StepBase"}],
+ ["sketch.rect", {"sketch": "StepBase", "from": [0, 0], "to": [100, 40]}],
+ ["sketch.line", {"sketch": "StepBase", "from": [50, -5], "to": [50, 45], "construction": true}],
+ ["feature.sheetMetal", {"sketch": "StepBase", "name": "Step", "thickness": "1 mm", "radius": "1 mm",
+   "kFactor": 0.4, "flanges": [{"edge": "e6", "length": "12 mm", "angle": "90 deg"}],
+   "jogs": [{"line": "e11", "offset": "8 mm", "angle": "60 deg"}]}],
+ ["sheetMetal.bends", {"feature": "Step"}]
+]
+```
+
 The bends are folded by the same mechanism as `feature.fold` (a joint with a radius), and the folded sheet
 is given its thickness as `feature.plate` does, so a bend's skins are the cylinders of the inner radius and
 of the inner radius plus the thickness. `sheetMetal.bends` is the **bend table**: per bend its angle and

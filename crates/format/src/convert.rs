@@ -1246,7 +1246,33 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 corners,
                 next_flange_id,
                 bend_relief,
+                jogs,
             }) => manifest::FeatureKind::SheetMetal {
+                jogs: jogs
+                    .iter()
+                    .map(
+                        |doc::Jog {
+                             line,
+                             offset,
+                             angle,
+                             direction,
+                             radius,
+                             k_factor,
+                             id,
+                         }| manifest::SheetJog {
+                            line: line.0,
+                            offset: expr_to_manifest(offset),
+                            angle: expr_to_manifest(angle),
+                            direction: match direction {
+                                doc::BendDirection::Up => manifest::BendDirection::Up,
+                                doc::BendDirection::Down => manifest::BendDirection::Down,
+                            },
+                            radius: radius.as_ref().map(expr_to_manifest),
+                            k_factor: k_factor.as_ref().map(expr_to_manifest),
+                            id: *id,
+                        },
+                    )
+                    .collect(),
                 bend_relief: bend_relief
                     .as_ref()
                     .map(|doc::CornerRelief { shape, size }| manifest::SheetRelief {
@@ -3210,9 +3236,35 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
                 corners,
                 next_flange_id,
                 bend_relief,
+                jogs,
             } => doc::FeatureKind::SheetMetal({
                 let mut part = doc::SheetMetal {
                     next_flange_id: 0,
+                    jogs: jogs
+                        .into_iter()
+                        .map(
+                            |manifest::SheetJog {
+                                 line,
+                                 offset,
+                                 angle,
+                                 direction,
+                                 radius,
+                                 k_factor,
+                                 id,
+                             }| doc::Jog {
+                                line: doc::EntityId(line),
+                                offset: doc::Expr(offset),
+                                angle: doc::Expr(angle),
+                                direction: match direction {
+                                    manifest::BendDirection::Up => doc::BendDirection::Up,
+                                    manifest::BendDirection::Down => doc::BendDirection::Down,
+                                },
+                                radius: radius.map(doc::Expr),
+                                k_factor: k_factor.map(doc::Expr),
+                                id,
+                            },
+                        )
+                        .collect(),
                     bend_relief: bend_relief.map(|manifest::SheetRelief { shape, size }| {
                         doc::CornerRelief {
                             shape: pick_to_doc(shape, relief_shape_to_doc),

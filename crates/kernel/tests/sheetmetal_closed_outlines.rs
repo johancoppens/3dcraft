@@ -82,6 +82,7 @@ fn spec(k: f64, t: f64, flanges: Vec<FlangeSpec>, corner: Closing) -> Spec {
         corner,
         corners: Vec::new(),
         cutouts: Vec::new(),
+        jogs: Vec::new(),
         ids: Vec::new(),
     }
 }

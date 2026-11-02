@@ -1458,12 +1458,17 @@ fn prove(
     let clearance = tools.clearance.unwrap_or(tol.linear);
     let n = part.bends.len();
     let tooling = tooling_of(&tools.length, tools.segmented, n).map_err(Stopped::Error)?;
-    if let Some(&b) = tools.formed.iter().find(|&&b| b >= n) {
+    if let Some(&b) = tools.formed.iter().find(|&&b| b >= part.flanges) {
         return Err(Stopped::Error(format!(
             "`formed` names flanges by their index, 0 to {}; got {b}",
-            n.saturating_sub(1)
+            part.flanges.saturating_sub(1)
         )));
     }
+    // A jog's two bends (after the flanges') are made in one hit by an
+    // offset die before the press brake: formed (docs/design/sheetmetal.md
+    // › *Jogs across a flat*).
+    let mut tools = tools;
+    tools.formed.extend(part.flanges..n);
     let given = match &tools.order {
         Some(order) => Some(
             checked_order(part, &tol, order, tooling.segmented(), &tools.formed)

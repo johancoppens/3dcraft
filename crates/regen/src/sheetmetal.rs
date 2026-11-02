@@ -58,8 +58,14 @@ pub fn sheet_face_name(feature: FeatureId, part: &Part, face: SheetFace) -> Opti
     Some(PersistentName::new(feature, NameRole::Face, vec![number]))
 }
 
-fn explain(error: KernelError) -> String {
+/// A kernel error as the feature's: a flange's under its parameter, a
+/// jog's bends (`flanges` and on, two per jog) under the jog's.
+fn explain(error: KernelError, flanges: usize) -> String {
     match error {
+        KernelError::SheetMetal {
+            flange: Some(i),
+            reason,
+        } if i >= flanges => format!("jogs.{}: {reason}", (i - flanges) / 2),
         KernelError::SheetMetal {
             flange: Some(i),
             reason,
@@ -358,6 +364,49 @@ pub(crate) fn analyse(
             closing: closing(&format!("corners.{i}"), &c.kind, gap, c.over)?,
         });
     }
+    // The jogs: each line's ends as the sketch solved them, in the base's
+    // axes (the part's own sketch), drawn as if every bend had no width.
+    let mut jogs = Vec::with_capacity(made.jogs.len());
+    for (g, j) in made.jogs.iter().enumerate() {
+        let param = |what: &str| format!("jogs.{g}.{what}");
+        let entity = drawn
+            .sketch
+            .entity(j.line)
+            .map_err(|_| format!("{}: sketch `{name}` has no {}", param("line"), j.line))?;
+        let craft3d_doc::Geometry::Line { start, end } = entity.geometry else {
+            return Err(format!(
+                "{}: {} of sketch `{name}` is not a line; a jog is drawn as a line across a flat",
+                param("line"),
+                j.line
+            ));
+        };
+        let point = |p| {
+            drawn
+                .solved
+                .point(p)
+                .map(|(x, y)| [x, y])
+                .ok_or_else(|| format!("{}: {p} has no solved position", param("line")))
+        };
+        let jog = sheetmetal::JogSpec {
+            line: [point(start)?, point(end)?],
+            offset: length(doc, variables, &param("offset"), &j.offset)?,
+            angle: angle(doc, variables, &param("angle"), &j.angle)?,
+            direction: match j.direction {
+                BendDirection::Up => Direction::Up,
+                BendDirection::Down => Direction::Down,
+            },
+            radius: match &j.radius {
+                Some(expr) => length(doc, variables, &param("radius"), expr)?,
+                None => radius,
+            },
+            k: match &j.k_factor {
+                Some(expr) => number(variables, &param("kFactor"), expr)?,
+                None => k,
+            },
+            ids: [u64::from(j.id), u64::from(j.id) + 1],
+        };
+        jogs.push(jog);
+    }
     let spec = Spec {
         base,
         plane: drawn.plane,
@@ -369,8 +418,9 @@ pub(crate) fn analyse(
         corners,
         cutouts,
         ids: made.flanges.iter().map(|f| u64::from(f.id)).collect(),
+        jogs,
     };
-    let part = sheetmetal::build(&spec, &tol).map_err(explain)?;
+    let part = sheetmetal::build(&spec, &tol).map_err(|e| explain(e, made.flanges.len()))?;
     Ok(SheetMetalPart {
         part,
         tolerance: tol,

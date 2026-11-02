@@ -63,10 +63,12 @@ use std::collections::BTreeMap;
 use std::f64::consts::{PI, TAU};
 
 mod cuts;
+mod jog;
 mod later;
 pub mod sequence;
 mod trim;
 pub use cuts::Cut;
+pub use jog::{JogSpec, web_length};
 pub use later::{LaterCuts, later_cuts};
 pub use trim::Trim;
 
@@ -281,6 +283,11 @@ pub struct Spec {
     /// each closed profile becomes a hole of the one flat (a flange's; the
     /// base's holes are its own) it lies wholly inside in the flat pattern.
     pub cutouts: Vec<Cutout>,
+    /// Jogs across flats (docs/design/sheetmetal.md › *Jogs across a
+    /// flat*): jog `g`'s bends are the part's bends `F + 2g` and
+    /// `F + 2g + 1` (`F` the flanges' count), after every flange's, and its
+    /// web and far side the flats after them.
+    pub jogs: Vec<JogSpec>,
 }
 
 /// A hole or cut-out drawn beside the base: a closed profile in the
@@ -556,6 +563,9 @@ pub struct Part {
     /// numbered by ([`Part::flange_number`]), so deleting, inserting or
     /// moving a flange in the list retargets no name.
     pub marks: Vec<u64>,
+    /// How many of the bends are flanges' (the spec's flanges, in their
+    /// order); the rest are jogs', two per jog ([`Spec::jogs`]).
+    pub flanges: usize,
 }
 
 /// The highest flange id: a flange's faces are numbered `2 · id − 1` and
@@ -954,10 +964,22 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
     }
 
     // The bends and the flanges' flats, in order: a parent comes first.
-    let mut bends: Vec<Bend> = Vec::with_capacity(spec.flanges.len());
-    let mut flats: Vec<Flat> = Vec::with_capacity(1 + spec.flanges.len());
+    // Then the jogs' (two bends, a web and a far side each), laid out as
+    // soon as the flat each crosses is: a flange may sit on a far side's
+    // edge, so its parent may come after it in the list.
+    let nf = spec.flanges.len();
+    let total = nf + 2 * spec.jogs.len();
+    let mut bends: Vec<Bend> = vec![PLACEHOLDER_BEND; total];
+    let mut flats: Vec<Flat> = vec![empty_flat(); 1 + total];
+    let mut laid: Vec<bool> = vec![false; 1 + total];
+    // Per flat, the flat it was cut from by jogs (itself if none): where
+    // the edges a flange names are looked for.
+    let mut root: Vec<usize> = (0..=total).collect();
     let n_base = base_outer.len();
-    flats.push(Flat {
+    if let Some(slot) = laid.first_mut() {
+        *slot = true;
+    }
+    let base_flat = Flat {
         outer: base_outer,
         holes: base_holes,
         transform: Transform::IDENTITY,
@@ -981,15 +1003,43 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
         pieces: (0..=n_base).collect(),
         added: Vec::new(),
         notches: Vec::new(),
-    });
-    // Per flange, the edge it sits on before the edges are split at the
+    };
+    // What the flanges on the base name its edges by, before a jog cuts
+    // it.
+    let base_ids_drawn = base_flat.ids.clone();
+    let base_hole_ids_drawn = base_flat.hole_ids.clone();
+    if let Some(slot) = flats.first_mut() {
+        *slot = base_flat;
+    }
+    // Per bend, the edge it sits on before the edges are split at the
     // insets: its flat, loop and segment.
-    let mut seated: Vec<(usize, Option<usize>, usize)> = Vec::with_capacity(spec.flanges.len());
+    let mut seated: Vec<(usize, Option<usize>, usize)> = vec![(0, None, 0); total];
     // Per flat, how far it lies from where it would with every bend
     // between the base and it of no width (where an outline of a flange
-    // on its edge is drawn, `own_outline`).
-    let mut lifts: Vec<P2> = Vec::with_capacity(1 + spec.flanges.len());
-    lifts.push([0.0, 0.0]);
+    // on its edge is drawn, `own_outline`, and a jog's line).
+    let mut lifts: Vec<P2> = vec![[0.0, 0.0]; 1 + total];
+    for (g, jog) in spec.jogs.iter().enumerate() {
+        jog::check(g, jog, tol, tolerance.angular).map_err(|e| refuse(Some(nf + 2 * g), e))?;
+    }
+    let mut pending: Vec<bool> = vec![true; spec.jogs.len()];
+    let mut jogged: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    let mut jogs = Jogs {
+        spec,
+        marks: &marks,
+        nf,
+        thickness: t,
+        tolerance,
+    };
+    jogs.apply(
+        &mut flats,
+        &mut laid,
+        &mut root,
+        &mut bends,
+        &mut seated,
+        &mut lifts,
+        &mut pending,
+        &mut jogged,
+    )?;
     // With a flange on a cut-out's edge, a flat that holds such a cut-out
     // takes its cut-outs as soon as it is laid out (in the order
     // `place_cutouts` takes them), so the flange finds its edge; every
@@ -1017,6 +1067,46 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
     }
     for (i, f) in spec.flanges.iter().enumerate() {
         let lost = || refuse(Some(i), "a flange lost its edge");
+        // The edge with id `id` (of an outer loop, or of a hole) among the
+        // flats cut from flat `from` by jogs.
+        let seek = |from: usize,
+                    id: SegId,
+                    in_hole: bool|
+         -> Result<(usize, Option<usize>, usize), KernelError> {
+            let mut found = Vec::new();
+            for (q, flat) in flats.iter().enumerate() {
+                if !laid.get(q).copied().unwrap_or(false) || root.get(q) != Some(&from) {
+                    continue;
+                }
+                if in_hole {
+                    for (h, ids) in flat.hole_ids.iter().enumerate() {
+                        for (k, x) in ids.iter().enumerate() {
+                            if *x == id {
+                                found.push((q, Some(h), k));
+                            }
+                        }
+                    }
+                } else {
+                    for (k, x) in flat.ids.iter().enumerate() {
+                        if *x == id {
+                            found.push((q, None, k));
+                        }
+                    }
+                }
+            }
+            match found.as_slice() {
+                [one] => Ok(*one),
+                [] if jogged.iter().any(|&q| root.get(q) == Some(&from)) => Err(refuse(
+                    Some(i),
+                    "the edge it sits on is cut by a jog's line (a flange sits on an edge wholly on one side of a jog): move the jog's line or the flange",
+                )),
+                _ => Err(lost()),
+            }
+        };
+        let rect_id = |j: usize, side: u64| -> Result<SegId, KernelError> {
+            let number = flange_number(&marks, j).ok_or_else(|| refuse(Some(i), "it has no id"))?;
+            Ok([3, number, side, 0])
+        };
         let (parent, hole, k) = match f.on {
             On::Base(_) => {
                 let &(h, k) = on_base
@@ -1025,12 +1115,22 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
                     .map(|(key, _)| key)
                     .ok_or_else(lost)?;
                 match h {
-                    None => (0, None, *base_edge.get(&k).ok_or_else(lost)?),
-                    Some(h) => (0, Some(h), k),
+                    None => {
+                        let at = *base_edge.get(&k).ok_or_else(lost)?;
+                        let id = *base_ids_drawn.get(at).ok_or_else(lost)?;
+                        seek(0, id, false)?
+                    }
+                    Some(h) => {
+                        let id = *base_hole_ids_drawn
+                            .get(h)
+                            .and_then(|ids| ids.get(k))
+                            .ok_or_else(lost)?;
+                        seek(0, id, true)?
+                    }
                 }
             }
-            On::Tip(j) => (j + 1, None, 2),
-            On::Side(j, end) => (j + 1, None, if end == 0 { 1 } else { 3 }),
+            On::Tip(j) => seek(j + 1, rect_id(j, 2)?, false)?,
+            On::Side(j, end) => seek(j + 1, rect_id(j, if end == 0 { 1 } else { 3 })?, false)?,
             On::Cutout(c, curve) => {
                 let Some((f, h)) = placed.get(c).copied().flatten() else {
                     return Err(refuse(
@@ -1051,15 +1151,25 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
                 (f, Some(h), k)
             }
             On::Line(j, curve) => {
-                let outer = flats.get(j + 1).map(|f| f.outer.as_slice()).unwrap_or(&[]);
-                let found: Vec<usize> = outer
+                // Among the flats cut from the flange's by jogs: a piece of
+                // a curve a jog cuts has the curve's source too, so such a
+                // curve is several edges.
+                let found: Vec<(usize, usize)> = flats
                     .iter()
                     .enumerate()
-                    .filter(|(_, s)| s.source == curve)
-                    .map(|(k, _)| k)
+                    .filter(|(q, _)| {
+                        laid.get(*q).copied().unwrap_or(false) && root.get(*q) == Some(&(j + 1))
+                    })
+                    .flat_map(|(q, fl)| {
+                        fl.outer
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, s)| s.source == curve)
+                            .map(move |(k, _)| (q, k))
+                    })
                     .collect();
-                let k = match found.as_slice() {
-                    [k] => *k,
+                let (q, k) = match found.as_slice() {
+                    [one] => *one,
                     [] => {
                         return Err(refuse(
                             Some(i),
@@ -1077,7 +1187,7 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
                         ));
                     }
                 };
-                if k == 0 {
+                if q == j + 1 && k == 0 {
                     return Err(refuse(
                         Some(i),
                         format!(
@@ -1085,6 +1195,7 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
                         ),
                     ));
                 }
+                let outer = flats.get(q).map(|f| f.outer.as_slice()).unwrap_or(&[]);
                 if !matches!(outer.get(k).map(|s| &s.shape), Some(Shape::Line)) {
                     return Err(refuse(
                         Some(i),
@@ -1093,7 +1204,7 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
                         ),
                     ));
                 }
-                (j + 1, None, k)
+                (q, None, k)
             }
         };
         let edge = flats
@@ -1203,7 +1314,8 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
             Direction::Up => theta,
             Direction::Down => -theta,
         };
-        bends.push(Bend {
+        let slot = bends.get_mut(i).ok_or_else(lost)?;
+        *slot = Bend {
             parent,
             child: i + 1,
             angle: signed,
@@ -1216,9 +1328,10 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
             across,
             flat_length,
             trim: [None; 2],
-        });
+        };
         let m = outer.len();
-        flats.push(Flat {
+        let slot = flats.get_mut(i + 1).ok_or_else(lost)?;
+        *slot = Flat {
             outer,
             holes,
             transform: Transform::IDENTITY,
@@ -1232,10 +1345,27 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
             pieces: (0..=m).collect(),
             added: Vec::new(),
             notches: Vec::new(),
-        });
-        seated.push((parent, hole, k));
+        };
+        if let Some(slot) = laid.get_mut(i + 1) {
+            *slot = true;
+        }
+        if let Some(slot) = seated.get_mut(i) {
+            *slot = (parent, hole, k);
+        }
         let below = lifts.get(parent).copied().ok_or_else(lost)?;
-        lifts.push(add(below, shift));
+        if let Some(slot) = lifts.get_mut(i + 1) {
+            *slot = add(below, shift);
+        }
+        jogs.apply(
+            &mut flats,
+            &mut laid,
+            &mut root,
+            &mut bends,
+            &mut seated,
+            &mut lifts,
+            &mut pending,
+            &mut jogged,
+        )?;
         if early {
             place_early(
                 &mut flats,
@@ -1246,6 +1376,27 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
                 &mut placed,
                 tolerance,
             )?;
+        }
+    }
+    if let Some(g) = pending.iter().position(|&p| p) {
+        return Err(refuse(
+            Some(nf + 2 * g),
+            format!(
+                "jog {g}: the middle of its line lies in no flat (drawn as if every bend had no width: on the base, or where a flange's flat lies beside its edge), or on an outline or in a hole; draw the line across one flat"
+            ),
+        ));
+    }
+    // A flat a jog cuts is no longer its rectangle: a closed corner of its
+    // flange (which runs the rectangle on) is not built.
+    for c in &corners {
+        if c.closing.kind == CornerKind::Open {
+            continue;
+        }
+        if let Some(&x) = c.bends.iter().find(|&&x| jogged.contains(&(x + 1))) {
+            return Err(refuse(
+                Some(x),
+                "its corner is closed, but a jog crosses its flat; closing the corner of a jogged flange is not built (owed): open the corner, or jog the flange's tip instead (two flanges on it)",
+            ));
         }
     }
     let mut bend_ends = split_at_seats(&mut flats, &bends, &seated, &marks, spec.bend_relief, tol)?;
@@ -1304,7 +1455,200 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
         sheet_faces,
         solid,
         marks,
+        flanges: spec.flanges.len(),
     })
+}
+
+/// A bend that is not laid out yet: [`build`] fills every slot before
+/// anything reads it (a flange's when its turn comes, a jog's when the
+/// flat it crosses is laid out), and refuses the part otherwise.
+const PLACEHOLDER_BEND: Bend = Bend {
+    parent: 0,
+    child: 0,
+    angle: 0.0,
+    radius: 0.0,
+    k: 0.0,
+    thickness: 0.0,
+    allowance: 0.0,
+    start: [0.0, 0.0],
+    end: [0.0, 0.0],
+    across: [0.0, 0.0],
+    flat_length: 0.0,
+    trim: [None, None],
+};
+
+/// A flat that is not laid out yet (see [`PLACEHOLDER_BEND`]).
+fn empty_flat() -> Flat {
+    Flat {
+        outer: Vec::new(),
+        holes: Vec::new(),
+        transform: Transform::IDENTITY,
+        tip: None,
+        ends: Vec::new(),
+        was: Vec::new(),
+        seats: Vec::new(),
+        ids: Vec::new(),
+        hole_ids: Vec::new(),
+        outlined: false,
+        pieces: vec![0],
+        added: Vec::new(),
+        notches: Vec::new(),
+    }
+}
+
+/// The bends in the order the folded sheet makes them: in the list's
+/// order, each as soon as its parent flat is made (the base at once, a
+/// flat when the bend it hangs from is). A part without jogs has every
+/// parent before its child, so this is the list's order and its sheet is
+/// made as before, bit for bit; a jog's far side comes after the flanges
+/// on its edges in the list.
+fn parents_first(bends: &[Bend]) -> Result<Vec<usize>, KernelError> {
+    let mut made = vec![false; bends.len() + 1];
+    if let Some(slot) = made.first_mut() {
+        *slot = true;
+    }
+    let mut done = vec![false; bends.len()];
+    let mut order = Vec::with_capacity(bends.len());
+    // Each pass makes at least one bend or stops: at most one per bend.
+    for _ in 0..=bends.len() {
+        let mut any = false;
+        for (i, b) in bends.iter().enumerate() {
+            if done.get(i).copied().unwrap_or(true) || !made.get(b.parent).copied().unwrap_or(false)
+            {
+                continue;
+            }
+            order.push(i);
+            if let Some(slot) = done.get_mut(i) {
+                *slot = true;
+            }
+            if let Some(slot) = made.get_mut(b.child) {
+                *slot = true;
+            }
+            any = true;
+        }
+        if !any {
+            break;
+        }
+    }
+    if order.len() != bends.len() {
+        return Err(refuse(None, "a bend hangs from a flat no bend reaches"));
+    }
+    Ok(order)
+}
+
+/// The jogs of a part, laid out as the flats they cross are.
+struct Jogs<'a> {
+    spec: &'a Spec,
+    marks: &'a [u64],
+    nf: usize,
+    thickness: f64,
+    tolerance: &'a Tolerance,
+}
+
+impl Jogs<'_> {
+    /// Lays out every jog still pending whose line's middle lies in a flat
+    /// laid out (the near side keeps the flat's place, the web and the far
+    /// side take theirs), in the jogs' order, until none is left that
+    /// does: a jog across an earlier jog's far side follows it.
+    #[allow(clippy::too_many_arguments)]
+    fn apply(
+        &mut self,
+        flats: &mut [Flat],
+        laid: &mut [bool],
+        root: &mut [usize],
+        bends: &mut [Bend],
+        seated: &mut [(usize, Option<usize>, usize)],
+        lifts: &mut [P2],
+        pending: &mut [bool],
+        jogged: &mut std::collections::BTreeSet<usize>,
+    ) -> Result<(), KernelError> {
+        let tol = self.tolerance.linear;
+        // Each round lays out at least one jog or stops: at most one round
+        // per jog.
+        for _ in 0..=pending.len() {
+            let mut any = false;
+            for (g, jog) in self.spec.jogs.iter().enumerate() {
+                if !pending.get(g).copied().unwrap_or(false) {
+                    continue;
+                }
+                let first = self.nf + 2 * g;
+                let [a, b] = jog.line;
+                let middle = scale(add(a, b), 0.5);
+                // The flats it may cross: laid out, not a web.
+                let webs = |q: usize| q > self.nf && (q - self.nf) % 2 == 1;
+                let holding: Vec<usize> = flats
+                    .iter()
+                    .enumerate()
+                    .filter(|(q, flat)| {
+                        laid.get(*q).copied().unwrap_or(false)
+                            && !webs(*q)
+                            && lifts
+                                .get(*q)
+                                .is_some_and(|&lift| jog::holds(flat, lift, middle, tol))
+                    })
+                    .map(|(q, _)| q)
+                    .collect();
+                let q = match holding.as_slice() {
+                    [] => continue,
+                    [q] => *q,
+                    _ => {
+                        return Err(refuse(
+                            Some(first),
+                            format!(
+                                "jog {g}: the middle of its line lies in several flats as drawn (with every bend of no width): {holding:?}; draw it where one flat lies alone"
+                            ),
+                        ));
+                    }
+                };
+                let unmarked = || refuse(Some(first), format!("jog {g} has no id"));
+                let numbers = [
+                    flange_number(self.marks, first).ok_or_else(unmarked)?,
+                    flange_number(self.marks, first + 1).ok_or_else(unmarked)?,
+                ];
+                let flat = flats.get(q).ok_or_else(unmarked)?;
+                let lift = lifts.get(q).copied().ok_or_else(unmarked)?;
+                let made = jog::split(
+                    g,
+                    jog,
+                    q,
+                    flat,
+                    lift,
+                    first,
+                    numbers,
+                    self.thickness,
+                    self.tolerance,
+                )?;
+                let from = root.get(q).copied().unwrap_or(q);
+                let lost = || {
+                    refuse(
+                        Some(first),
+                        format!("jog {g}: a slot of the part is missing"),
+                    )
+                };
+                *flats.get_mut(q).ok_or_else(lost)? = made.near;
+                *flats.get_mut(first + 1).ok_or_else(lost)? = made.web;
+                *flats.get_mut(first + 2).ok_or_else(lost)? = made.far;
+                let [b1, b2] = made.bends;
+                *bends.get_mut(first).ok_or_else(lost)? = b1;
+                *bends.get_mut(first + 1).ok_or_else(lost)? = b2;
+                *seated.get_mut(first).ok_or_else(lost)? = (q, None, made.chord);
+                *seated.get_mut(first + 1).ok_or_else(lost)? = (first + 1, None, 2);
+                *lifts.get_mut(first + 1).ok_or_else(lost)? = made.web_lift;
+                *lifts.get_mut(first + 2).ok_or_else(lost)? = made.far_lift;
+                *laid.get_mut(first + 1).ok_or_else(lost)? = true;
+                *laid.get_mut(first + 2).ok_or_else(lost)? = true;
+                *root.get_mut(first + 2).ok_or_else(lost)? = from;
+                *pending.get_mut(g).ok_or_else(lost)? = false;
+                jogged.insert(q);
+                jogged.insert(first + 2);
+                any = true;
+            }
+            if !any {
+                break;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A segment of an outline as the sketch curve the profile detection
@@ -2909,6 +3253,25 @@ fn seat_of(flats: &[Flat], i: usize, bend: &Bend) -> Result<Seat, KernelError> {
 /// Per flange, the number the pieces of a split edge name its bend by:
 /// its id ([`Spec::ids`]), or its place plus 1 when none are given.
 fn flange_marks(spec: &Spec) -> Result<Vec<u64>, KernelError> {
+    let mut marks = flange_ids(spec)?;
+    // The jogs' bends after the flanges', each named by its own id.
+    let mut seen: std::collections::BTreeSet<u64> = marks.iter().copied().collect();
+    let n = spec.flanges.len();
+    for (g, jog) in spec.jogs.iter().enumerate() {
+        for id in jog.ids {
+            if id == 0 || id > MAX_FLANGE_ID || !seen.insert(id) {
+                return Err(refuse(
+                    Some(n + 2 * g),
+                    format!("jog {g}: its id {id} is 0, too large or a flange's or another jog's"),
+                ));
+            }
+            marks.push(id);
+        }
+    }
+    Ok(marks)
+}
+
+fn flange_ids(spec: &Spec) -> Result<Vec<u64>, KernelError> {
     let n = spec.flanges.len();
     if spec.ids.is_empty() {
         return Ok((1..=n as u64).collect());
@@ -3689,12 +4052,14 @@ fn folded_sheet(
             .ok_or_else(|| refuse(None, "a flat is missing"))
     };
     // Per flat: its outer loop's vertices and edges.
-    let mut rings: Vec<Ring> = Vec::with_capacity(flats.len());
+    let mut made_rings: Vec<Option<Ring>> = vec![None; flats.len()];
     let mut hole_rings: Vec<Vec<(EdgeId, bool)>> = Vec::new();
     let mut hole_vertices: Vec<Vec<VertexId>> = Vec::new();
     let base = flats.first().ok_or_else(|| refuse(None, "no base"))?;
     let w0 = w_of(0)?;
-    rings.push(b.ring(&base.outer, &w0)?);
+    if let Some(slot) = made_rings.first_mut() {
+        *slot = Some(b.ring(&base.outer, &w0)?);
+    }
     for hole in &base.holes {
         let (v, e) = b.ring(hole, &w0)?;
         hole_rings.push(e);
@@ -3703,7 +4068,7 @@ fn folded_sheet(
     // The bends' arcs, and the flanges' flats in order. Flange i's flat
     // shares its tangent edge with bend i's face; its tip may be the
     // parent edge of a later bend.
-    let mut bend_loops: Vec<Vec<(EdgeId, bool)>> = Vec::with_capacity(bends.len());
+    let mut bend_loops: Vec<Vec<(EdgeId, bool)>> = vec![Vec::new(); bends.len()];
     // Every bend's end edges, with what each is and the plane a trimmed
     // one's rim lies on.
     let mut bend_edges: Vec<(EdgeId, EdgeKey, Option<Surface>)> = Vec::new();
@@ -3711,7 +4076,11 @@ fn folded_sheet(
     // them (its parent is made by then), the rest after everything a part
     // without such a bend has, so its edges keep their places.
     let mut flange_rings: Vec<Option<Vec<Ring>>> = vec![None; flats.len()];
-    for (i, bend) in bends.iter().enumerate() {
+    for i in parents_first(bends)? {
+        let bend = bends
+            .get(i)
+            .ok_or_else(|| refuse(Some(i), "a bend is missing"))?;
+        let rings = &made_rings;
         // The parent edge: `s → e` in the parent's loop (its outer one or
         // a hole's).
         let seat = seat_of(flats, i, bend)?;
@@ -3734,6 +4103,7 @@ fn folded_sheet(
         let (vs, es): (&[VertexId], &[(EdgeId, bool)]) = match seat.hole {
             None => rings
                 .get(bend.parent)
+                .and_then(Option::as_ref)
                 .map(|(v, e)| (v.as_slice(), e.as_slice())),
             Some(h) if bend.parent == 0 => hole_rings
                 .get(h)
@@ -3853,10 +4223,18 @@ fn folded_sheet(
         lp.push((tangent.0, !tangent.1));
         lp.extend(end_side.iter().rev().map(|e| (e.0, true)));
         lp.push((parent_edge.0, !parent_edge.1));
-        bend_loops.push(lp);
+        if let Some(slot) = bend_loops.get_mut(i) {
+            *slot = lp;
+        }
         bend_edges.extend(start_side.into_iter().chain(end_side));
-        rings.push(ring);
+        if let Some(slot) = made_rings.get_mut(bend.child) {
+            *slot = Some(ring);
+        }
     }
+    let rings: Vec<Ring> = made_rings
+        .into_iter()
+        .collect::<Option<_>>()
+        .ok_or_else(|| refuse(None, "a flat of the part hangs from no bend"))?;
 
     // The extensions' ends, with their planes in the world.
     let to_world = Transform::from_frame(plane);
@@ -4574,6 +4952,7 @@ mod tests {
                 corner: Closing::OPEN,
                 corners: Vec::new(),
                 cutouts: Vec::new(),
+                jogs: Vec::new(),
                 ids: Vec::new(),
             },
             tol,
