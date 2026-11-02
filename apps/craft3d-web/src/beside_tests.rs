@@ -220,11 +220,9 @@ fn model() -> Vec<u8> {
 ///
 /// It does what the page does without its workers (`?pageregen`): the
 /// long work a piece at a time, all of it done before the click. The
-/// drawing of the model as seen depends on what was meshed in the
-/// session before it, in its last bits (2026-11-02: a fresh session's
-/// differs from one that drew a quick first picture or exported meshes
-/// first, a determinism fault of its own, docs/design/engine.md), so the
-/// page is compared with the same steps on a session of its own.
+/// drawing of the model as seen is drawn from the window's camera, which
+/// follows the model once a scene is there (`Shell::sync`), so each case
+/// starts from a fresh session on both sides: the same camera.
 fn in_process(bytes: &[u8]) -> WebHost {
     let mut host = WebHost::new(Shell::new());
     host.set_stepwise(true);
