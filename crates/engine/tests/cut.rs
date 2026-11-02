@@ -203,7 +203,7 @@ fn plates_have_their_thickness_size_and_area_in_closed_form() {
             json!({"geometry": true, "bodies": ["Ell"]}),
         );
         let (_, ell) = part(&geometry, "Ell");
-        let outline = &ell["outline"];
+        let outline = &ell["geometry"]["outline"];
         let mut lo = [f64::INFINITY; 2];
         let mut hi = [f64::NEG_INFINITY; 2];
         for seg in outline["segments"].as_array().unwrap() {
@@ -374,9 +374,10 @@ fn a_sheet_metal_part_is_listed_by_its_flat_pattern() {
         assert_eq!(bracket["top"], Value::Null);
         let geometry = run(&mut s, "cut.list", json!({"geometry": true}));
         let (_, bracket) = part(&geometry, "Bracket");
-        let marks = bracket["marks"].as_array().unwrap();
+        let marks = bracket["geometry"]["marks"].as_array().unwrap();
         assert_eq!(marks.len(), 1, "{bracket}");
-        assert_eq!(marks[0]["kind"], "BendUp");
+        assert_eq!(marks[0]["kind"], "bendUp");
+        assert_eq!(bracket["holes"], 0, "{bracket}");
         // Exported: the bend line on its own layer, the outline on the
         // part's.
         let out = run(&mut s, "cut.export", json!({"path": "bracket.dxf"}));

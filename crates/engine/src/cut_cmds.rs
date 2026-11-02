@@ -29,7 +29,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "cut.list",
         "Cut List",
         r#"{"bodies": [id or name of the feature that made the body] = every body, "format": "json|csv" = "json", "geometry": boolean = false}"#,
-        "The cut list of the document (changes nothing): every body that is cut from sheet stock, grouped by thickness and material. A body is a plate when it is a prism of constant thickness: two parallel flat faces facing away from each other (its top and bottom, one face each), every other face square to them (side walls, holes through: a plane square to them, a cylinder along their normal, a freeform wall square to them), every vertex in the top's plane or the bottom's; of the directions in which a body is such a prism the thinnest is its thickness (a box is a plate of its smallest side). The body of a sheet-metal part (feature.sheetMetal, also after a boolean drilled it) is a part by its flat pattern, as file.export with sheetMetal draws it (holes cut later carried back). Each part has name (of the feature that made the body), kind (plate or sheetMetal), thickness, material (body.material's name, or null), length and width (of the rectangle of least area around its outline, length the longer side), area (of the material: outline less holes), cutLength (outline, holes and cut marks), holes, count (how many bodies are this part: identical outline, holes and marks up to a rigid motion of the sheet, turned over included, where a bend up is then a bend down), bodies and features (their names and ids), frame (where the part's own 2D frame lies in the model: origin, xAxis along the length, yAxis, normal; its outline lies in [0, length] x [0, width] there), top (the face it is seen from; null for sheet metal, seen from its sketch's side) and notes. With geometry, each part also has outline and holes in its own frame: {start, segments: [{line: [x, y]} | {arc: [x, y], center, radius, ccw} | {ellipse: [x, y], center, major, ratio, ccw} | {spline: {degree, knots, control, weights}}]}, or {circle: [x, y], radius}, or {ellipse: [x, y], major, ratio}. groups lists per thickness and material the parts, their count and total area; notPlates lists every other body with the reason, named by face (a pocket's floor, a chamfer, a round, a face at a slant). With format csv the result is {format, csv, parts, distinct, notPlates}: csv has the header row material,thickness (u),name,count,length (u),width (u),area (u^2),cut length (u),holes,kind,bodies,reason in the document's unit u, a row per distinct part, then a row per body that is not a plate (kind not a plate, the reason in the last column). Not for an assembly: list the parts of its part documents.",
+        "The cut list of the document (changes nothing): every body that is cut from sheet stock, grouped by thickness and material. A body is a plate when it is a prism of constant thickness: two parallel flat faces facing away from each other (its top and bottom, one face each), every other face square to them (side walls, holes through: a plane square to them, a cylinder along their normal, a freeform wall square to them), every vertex in the top's plane or the bottom's; of the directions in which a body is such a prism the thinnest is its thickness (a box is a plate of its smallest side). The body of a sheet-metal part (feature.sheetMetal, also after a boolean drilled it) is a part by its flat pattern, as file.export with sheetMetal draws it (holes cut later carried back). Each part has name (of the feature that made the body), kind (plate or sheetMetal), thickness, material (body.material's name, or null), length and width (of the rectangle of least area around its outline, length the longer side), area (of the material: outline less holes), cutLength (outline, holes and cut marks), holes, count (how many bodies are this part: identical outline, holes and marks up to a rigid motion of the sheet, turned over included, where a bend up is then a bend down), bodies and features (their names and ids), frame (where the part's own 2D frame lies in the model: origin, xAxis along the length, yAxis, normal; its outline lies in [0, length] x [0, width] there), top (the face it is seen from; null for sheet metal, seen from its sketch's side) and notes. With geometry, each part also has geometry {outline, holes, marks} in its own frame: a path is {start, segments: [{line: [x, y]} | {arc: [x, y], center, radius, ccw} | {ellipse: [x, y], center, major, ratio, ccw} | {spline: {degree, knots, control, weights}}], closed}, {circle: [x, y], radius} or {ellipse: [x, y], major, ratio}; a mark is {kind: cut|bendUp|bendDown|form, path}. groups lists per thickness and material the parts, their count and total area; notPlates lists every other body with the reason, named by face (a pocket's floor, a chamfer, a round, a face at a slant). With format csv the result is {format, csv, parts, distinct, notPlates}: csv has the header row material,thickness (u),name,count,length (u),width (u),area (u^2),cut length (u),holes,kind,bodies,reason in the document's unit u, a row per distinct part, then a row per body that is not a plate (kind not a plate, the reason in the last column). Not for an assembly: list the parts of its part documents.",
         doc: true,
         cut_list
     ),
@@ -429,21 +429,27 @@ fn part_json(found: &Found, d: &Distinct, geometry: bool) -> Option<Value> {
         "notes": part.notes,
     });
     if geometry && let Some(map) = json.as_object_mut() {
-        map.insert("outline".into(), path_json(&part.shape.outline));
+        let marks: Vec<Value> = part
+            .shape
+            .marks
+            .iter()
+            .map(|m| {
+                let kind = match m.kind {
+                    MarkKind::Cut => "cut",
+                    MarkKind::BendUp => "bendUp",
+                    MarkKind::BendDown => "bendDown",
+                    MarkKind::Form => "form",
+                };
+                json!({"kind": kind, "path": path_json(&m.path)})
+            })
+            .collect();
         map.insert(
-            "holes".into(),
-            Value::Array(part.shape.holes.iter().map(path_json).collect()),
-        );
-        map.insert("holeCount".into(), part.shape.holes.len().into());
-        map.insert(
-            "marks".into(),
-            Value::Array(
-                part.shape
-                    .marks
-                    .iter()
-                    .map(|m| json!({"kind": format!("{:?}", m.kind), "path": path_json(&m.path)}))
-                    .collect(),
-            ),
+            "geometry".into(),
+            json!({
+                "outline": path_json(&part.shape.outline),
+                "holes": part.shape.holes.iter().map(path_json).collect::<Vec<_>>(),
+                "marks": marks,
+            }),
         );
     }
     Some(json)
