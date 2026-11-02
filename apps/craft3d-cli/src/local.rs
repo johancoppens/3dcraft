@@ -490,7 +490,14 @@ pub(crate) fn render(args: Args) -> Result<Parsed<()>, CliError> {
                     let lens = look
                         .entry("dof")
                         .or_insert_with(|| Value::Object(Map::new()));
-                    let focus = if name == "--focus" {
+                    let word = value.trim().to_ascii_lowercase();
+                    let focus = if name == "--focus" && (word == "centre" || word == "center") {
+                        Value::from("centre")
+                    } else if name == "--focus" && (word == "selection" || word == "picked") {
+                        return Err(CliError::Usage(format!(
+                            "--focus {word}: render has no window, so nothing is selected or clicked; give the point X,Y,Z to focus on (select.get or ui.pick give one), a distance, or centre"
+                        )));
+                    } else if name == "--focus" {
                         let parts: Vec<&str> = value.split(',').collect();
                         if parts.len() == 3 {
                             let xyz: Result<Vec<f64>, CliError> =

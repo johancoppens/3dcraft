@@ -135,7 +135,7 @@ Usage: craft3d-cli render FILE --out PNG [--size WxH] [--view V] [--mode M]
                           [--ground on|off] [--ao on|off] [--shadows on|off]
                           [--reflections on|off] [--contact-shadows on|off]
                           [--specular-shadow on|off] [--ground-reflection G]
-                          [--bloom B] [--fstop N] [--focus D|X,Y,Z]
+                          [--bloom B] [--fstop N] [--focus D|X,Y,Z|centre]
                           [--accumulate N]
                           [--backdrop environment|plain]
                           [--renderer auto|cpu|gpu]
@@ -173,9 +173,12 @@ Options:
                   (apart from --reflections). Default 0
   --bloom B       The share of the light spread around bright parts, 0 to
                   1. Default 0.04
-  --fstop N, --focus D|X,Y,Z  Depth of field of a thin lens: its f-number
-                  (default 2.8) and the distance along the view or the
-                  point it focuses on (default the model's centre)
+  --fstop N, --focus D|X,Y,Z|centre  Depth of field of a thin lens: its
+                  f-number (default 2.8; smaller blurs more) and the
+                  distance along the view or the point it focuses on
+                  (default centre, the model's centre). There is no
+                  selection or click here: focus on a part by its point
+                  (select.get or ui.pick in the window give one)
   --accumulate N  Frames averaged into the picture, 1 to 256; on the CPU
                   as long as all frames' samples stay within its limit
                   (64 Mi). Default 1

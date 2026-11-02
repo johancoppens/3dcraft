@@ -1056,10 +1056,18 @@ impl Shell {
             .shown_scene
             .as_ref()
             .map_or(craft3d_math::Bbox3::EMPTY, |scene| scene.bbox);
-        let picked = self.state.picked.as_ref().and_then(|p| p.point);
         craft3d_gpu::Studio {
             env,
-            look: spec.resolved(&model, self.length_mm, picked, frames),
+            look: spec.resolved(&model, self.length_mm, &self.focus_at(), frames),
+        }
+    }
+
+    /// The points the lens may focus on: the last click and the centre
+    /// of the selection ([`craft3d_engine::look::FocusAt`]).
+    pub fn focus_at(&self) -> craft3d_engine::look::FocusAt {
+        craft3d_engine::look::FocusAt {
+            picked: self.state.picked.as_ref().and_then(|p| p.point),
+            selection: self.select.focus,
         }
     }
 

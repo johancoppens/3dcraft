@@ -164,10 +164,48 @@ fn every_control_of_the_studio_panel_drives_the_look_state() {
             "{control}"
         );
     }
-    // The lens: on with the default f-number, off again.
+    // The lens: on with the default f-number, focused on the selection.
     let at = hit(&shell, "lens").center();
     window.click(&mut shell, &mut session, at);
     assert_eq!(look(&mut shell, &mut session)["dof"]["fstop"], 2.8);
+    assert_eq!(look(&mut shell, &mut session)["dof"]["focus"], "selection");
+    window.frame(&mut shell, &mut session, Vec::new());
+    // The aperture slider stops at the full stops, f/1.4 at its left end
+    // and f/22 at its right.
+    for (fraction, want) in [(0.0, 1.4), (1.0, 22.0), (0.5, 5.6)] {
+        let at = along(hit(&shell, "fstop"), fraction);
+        window.click(&mut shell, &mut session, at);
+        assert_eq!(
+            look(&mut shell, &mut session)["dof"]["fstop"],
+            want,
+            "{fraction}"
+        );
+    }
+    // The focus choices; a distance starts where the lens focuses now
+    // and gets a slider of its own.
+    for (control, want) in [
+        ("focus.picked", json!("picked")),
+        ("focus.centre", json!("centre")),
+        ("focus.selection", json!("selection")),
+    ] {
+        let at = hit(&shell, control).center();
+        window.click(&mut shell, &mut session, at);
+        assert_eq!(look(&mut shell, &mut session)["dof"]["focus"], want);
+    }
+    assert!(!shell.look_hits().iter().any(|(n, _)| n == "focusDistance"));
+    let at = hit(&shell, "focus.distance").center();
+    window.click(&mut shell, &mut session, at);
+    let distance = look(&mut shell, &mut session)["dof"]["focus"]
+        .as_f64()
+        .unwrap();
+    assert!(distance > 0.0, "{distance}");
+    assert_eq!(look(&mut shell, &mut session)["dof"]["fstop"], 5.6);
+    let at = along(hit(&shell, "focusDistance"), 0.95);
+    window.click(&mut shell, &mut session, at);
+    let farther = look(&mut shell, &mut session)["dof"]["focus"]
+        .as_f64()
+        .unwrap();
+    assert!(farther > distance, "{farther} {distance}");
     let at = hit(&shell, "lens").center();
     window.click(&mut shell, &mut session, at);
     assert_eq!(look(&mut shell, &mut session)["dof"], Value::Null);

@@ -184,6 +184,24 @@ impl Scene {
         self.items_points(items, &mut |p| bbox.add(p));
         bbox
     }
+
+    /// Where a lens focused on `items` focuses (`look.dof.focus`
+    /// `selection`): the centre of [`Self::items_box`], the box F frames.
+    /// The centre of the box rather than the mean of the mesh's points,
+    /// so it does not lean towards where the mesh is fine, and rather than
+    /// the surface point under the view, so it stays put while the camera
+    /// turns: a lens focuses on a plane square to the view, so only how
+    /// far it lies along the view matters, and a body's middle is what
+    /// keeps all of it most nearly sharp. `None` when none of the items
+    /// is shown.
+    pub fn items_focus(&self, items: &[SelectionItem]) -> Option<[f64; 3]> {
+        let (lo, hi) = self.items_box(items).corners()?;
+        let c = (lo + hi) * 0.5;
+        [c.x, c.y, c.z]
+            .iter()
+            .all(|v| v.is_finite())
+            .then_some([c.x, c.y, c.z])
+    }
 }
 
 #[cfg(test)]

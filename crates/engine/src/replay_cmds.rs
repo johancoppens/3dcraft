@@ -556,7 +556,8 @@ mod native {
                 None => crate::look::VIEWPORT_ACCUMULATE.min(cap),
             };
             Ok(Some((
-                self.look.resolved(model, mm_per_unit, None, frames),
+                self.look
+                    .resolved(model, mm_per_unit, &crate::look::FocusAt::default(), frames),
                 env,
             )))
         }

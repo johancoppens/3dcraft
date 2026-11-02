@@ -55,6 +55,10 @@ pub(crate) struct Selecting {
     pub(crate) marks: Marks,
     /// Moves whenever what is drawn for the selection changes.
     pub(crate) drawn: u64,
+    /// Where a lens focused on the selection focuses
+    /// ([`craft3d_engine::Scene::items_focus`]), worked out with `faces`;
+    /// `None` while nothing of it is shown.
+    pub(crate) focus: Option<[f64; 3]>,
     /// `select.set` requests made by the mouse, run when the session is
     /// here (at the end of the frame).
     pending: Vec<Value>,
@@ -326,6 +330,7 @@ impl Shell {
             self.select.marks = marks;
             self.select.drawn = self.select.drawn.wrapping_add(1);
             self.select.drawn_for = Some(key);
+            self.select.focus = scene.items_focus(&self.select.view.items);
             // A list of the faces of another state of the model.
             self.select.menu = None;
             self.select.hover = None;

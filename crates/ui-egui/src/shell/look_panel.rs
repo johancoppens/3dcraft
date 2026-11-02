@@ -2,7 +2,9 @@
 //! (`shell/popover.rs`) while the look is on and the popover open (and no
 //! analysis, which is drawn in the plain look, is shown): the environment and its rotation, the exposure, the
 //! background, the ground and its reflection, the tone curve, the
-//! shadows, ambient occlusion and reflections, bloom and a lens. Every
+//! shadows, ambient occlusion and reflections, bloom and a lens (its
+//! f-number on a slider of full stops, and where it focuses: the
+//! selection, the last click, the model's centre or a distance). Every
 //! control drives a field of `state.look` (the fields `ui.set {"look":
 //! ...}` takes and `ui.get` gives), so a change is drawn at once and an
 //! agent sees it.
@@ -24,14 +26,42 @@ pub const BACKGROUNDS: [(&str, &str); 2] = [("environment", "Environment"), ("pl
 pub const TONEMAPS: [(&str, &str); 3] = [("agx", "AgX"), ("aces", "ACES"), ("linear", "Linear")];
 /// The f-number a lens is switched on with (`look.dof`), the engine's
 /// default.
-const FSTOP: f64 = 2.8;
+const FSTOP: f64 = craft3d_engine::look::DEFAULT_FSTOP;
+/// The f-numbers the aperture slider stops at: the full stops of a
+/// camera lens, each letting in half the light of the one before, so the
+/// slider is logarithmic in the f-number. `ui.set` takes any f-number
+/// from 0.5 to 64.
+pub const FSTOPS: [f64; 9] = [1.4, 2.0, 2.8, 4.0, 5.6, 8.0, 11.0, 16.0, 22.0];
+/// Where a lens can focus (`look.dof.focus`), as the panel offers it:
+/// the selection, the last click, the model's centre, or a distance
+/// along the view.
+pub const FOCUSES: [(&str, &str); 4] = [
+    ("selection", "Selection"),
+    ("picked", "Click"),
+    ("centre", "Centre"),
+    ("distance", "Distance"),
+];
+/// The range of the focus distance slider, as factors of the camera's
+/// distance to its target.
+const DISTANCE_RANGE: [f64; 2] = [0.05, 4.0];
 
 /// Where each control of the panel was drawn, by name: `environment.<v>`,
-/// `background.<v>` and `tonemap.<v>` for the choices, `rotation`,
-/// `exposure`, `groundReflection` and `bloom` for the sliders (their
-/// track only), `ground`, `shadows`, `ao`, `reflections` and `lens`
-/// for the toggles, and `panel` for the whole panel.
+/// `background.<v>`, `tonemap.<v>` and `focus.<v>` ([`FOCUSES`]) for the
+/// choices, `rotation`, `exposure`, `groundReflection`, `bloom`, `fstop`
+/// and `focusDistance` for the sliders (their track only), `ground`,
+/// `shadows`, `ao`, `reflections` and `lens` for the toggles, and `panel`
+/// for the whole panel.
 pub type LookHits = Vec<(String, Rect)>;
+
+/// What the lens rows need to know besides the look: where the lens
+/// focuses now, and the camera's distance to its target (the scale of
+/// the focus distance slider).
+struct LensContext {
+    at: craft3d_engine::look::FocusAt,
+    /// The focus distance along the view now, if there is a lens.
+    distance: Option<f64>,
+    camera_distance: f64,
+}
 
 impl Shell {
     /// Draws the panel as the popover of the Studio split button `chip`
@@ -52,14 +82,50 @@ impl Shell {
         let tokens = self.tokens;
         let before = self.state.look.clone();
         let mut hits = LookHits::new();
+        let lens = LensContext {
+            at: self.focus_at(),
+            distance: self.lens_focus().and_then(|focus| focus.distance),
+            camera_distance: self.state.camera.distance,
+        };
         let panel = self.popover(ui, "studio-options", place, chip, |shell, ui| {
-            look_options(ui, &mut shell.state.look, &tokens, &mut hits);
+            look_options(ui, &mut shell.state.look, &tokens, &lens, &mut hits);
         });
         hits.push(("panel".to_string(), panel));
         self.look_hits = hits;
         if self.state.look != before {
             ui.ctx().request_repaint();
         }
+    }
+
+    /// Where the studio look's lens focuses as the viewport draws it now
+    /// (`ui.get`'s `lens`), or `None` without a lens.
+    pub fn lens_focus(&self) -> Option<LensFocus> {
+        if !self.state.look.is_studio() {
+            return None;
+        }
+        let spec = self.state.look.spec().ok()?;
+        let asked = spec.dof?.focus;
+        let model = self
+            .shown_scene
+            .as_ref()
+            .map_or(craft3d_math::Bbox3::EMPTY, |scene| scene.bbox);
+        let at = self.focus_at();
+        let dof = spec.resolved(&model, self.length_mm, &at, 1).dof?;
+        let camera = self.state.camera.to_render();
+        let point = match dof.focus {
+            craft3d_render::studio::polish::Focus::Point(p) => Some(p),
+            craft3d_render::studio::polish::Focus::Distance(_) => None,
+        };
+        let distance = camera
+            .axes()
+            .ok()
+            .and_then(|axes| dof.focus_distance(axes.eye, axes.forward));
+        Some(LensFocus {
+            focus: asked,
+            point,
+            distance,
+            fallback: asked.fallback(&at),
+        })
     }
 
     /// Whether the studio look's popover is open (the Studio caret opens
@@ -97,8 +163,214 @@ impl Shell {
     }
 }
 
+/// Where the lens focuses ([`Shell::lens_focus`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LensFocus {
+    /// Where it was asked to focus (`look.dof.focus`).
+    pub focus: craft3d_engine::look::FocusSpec,
+    /// The point it focuses on (the plane square to the view through
+    /// it), `None` for a focus given as a distance.
+    pub point: Option<[f64; 3]>,
+    /// How far along the view from the eye it focuses, `None` where that
+    /// is not ahead of the eye.
+    pub distance: Option<f64>,
+    /// Why it focuses on the model's centre rather than where it was
+    /// asked to ([`craft3d_engine::look::FocusSpec::fallback`]).
+    pub fallback: Option<&'static str>,
+}
+
+impl LensFocus {
+    /// As `ui.get` gives it.
+    pub fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "focus": self.focus.json(),
+            "point": self.point,
+            "distance": self.distance,
+            "fallback": self.fallback,
+        })
+    }
+}
+
+/// The f-number as a lens's ring says it: `f/2.8`, `f/11`.
+pub fn fstop_text(fstop: f64) -> String {
+    if fstop >= 10.0 {
+        format!("f/{fstop:.0}")
+    } else {
+        let text = format!("{fstop:.1}");
+        format!("f/{}", text.strip_suffix(".0").unwrap_or(&text))
+    }
+}
+
+/// The full stop ([`FSTOPS`]) nearest to `fstop` on the slider's
+/// logarithmic scale, as its index.
+pub fn nearest_stop(fstop: f64) -> usize {
+    let log = fstop.max(1e-3).ln();
+    FSTOPS
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| (a.ln() - log).abs().total_cmp(&(b.ln() - log).abs()))
+        .map_or(0, |(i, _)| i)
+}
+
+/// The lens's rows: switched on and off, its f-number, where it focuses.
+fn lens_rows(
+    ui: &mut egui::Ui,
+    look: &mut LookState,
+    tokens: &Tokens,
+    lens: &LensContext,
+    hits: &mut LookHits,
+) {
+    use craft3d_engine::look::{FocusSpec, LookSpec};
+    let dim = crate::theme::color(tokens.text_dim);
+    // The lens as the engine reads it: a value it refuses is shown as
+    // the default and replaced only once a control is moved.
+    let dof = look.dof.as_ref().and_then(|value| {
+        LookSpec::patched(&LookSpec::default(), &serde_json::json!({ "dof": value }))
+            .ok()?
+            .dof
+    });
+    ui.label("Lens");
+    let mut on = look.dof.is_some();
+    ui.horizontal(|ui| {
+        toggle(ui, "lens", "Depth of field", &mut on, hits);
+    });
+    ui.end_row();
+    if on != look.dof.is_some() {
+        look.dof = on.then(|| serde_json::json!({ "fstop": FSTOP, "focus": "selection" }));
+        return;
+    }
+    let mut fstop = dof.map_or(FSTOP, |d| d.fstop);
+    let mut focus = dof.map_or(FocusSpec::Centre, |d| d.focus);
+    let mut changed = false;
+    ui.label("Aperture");
+    ui.add_enabled_ui(on, |ui| {
+        ui.horizontal(|ui| {
+            let mut stop = nearest_stop(fstop) as f64;
+            let last = (FSTOPS.len() - 1) as f64;
+            let response = ui
+                .add(
+                    egui::Slider::new(&mut stop, 0.0..=last)
+                        .step_by(1.0)
+                        .show_value(false),
+                )
+                .on_hover_text(
+                    "The f-number: a smaller one opens the lens wider and blurs more of what is out of focus",
+                );
+            hits.push(("fstop".to_string(), response.rect));
+            if response.changed()
+                && let Some(f) = FSTOPS.get(stop.round().clamp(0.0, last) as usize)
+            {
+                fstop = *f;
+                changed = true;
+            }
+            ui.label(fstop_text(fstop));
+        });
+    });
+    ui.end_row();
+    ui.label("");
+    ui.label(
+        egui::RichText::new("smaller f-number: more blur")
+            .small()
+            .color(dim),
+    );
+    ui.end_row();
+    ui.label("Focus");
+    ui.add_enabled_ui(on, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = tokens.nav_spacing;
+            for (name, shown) in FOCUSES {
+                let chosen = matches!(
+                    (name, focus),
+                    ("selection", FocusSpec::Selection)
+                        | ("picked", FocusSpec::Picked)
+                        | ("centre", FocusSpec::Centre)
+                        | ("distance", FocusSpec::Distance(_))
+                );
+                let tip = match name {
+                    "selection" => "Focus on what is selected, in the viewport or the feature list",
+                    "picked" => "Focus on the point of the last click in the viewport",
+                    "centre" => "Focus on the centre of the model",
+                    _ => "Focus at a distance along the view",
+                };
+                let response = ui.selectable_label(chosen, shown).on_hover_text(tip);
+                if response.clicked() && !chosen {
+                    focus = match name {
+                        "selection" => FocusSpec::Selection,
+                        "picked" => FocusSpec::Picked,
+                        "centre" => FocusSpec::Centre,
+                        // From where it focuses now, so the picture
+                        // does not jump.
+                        _ => FocusSpec::Distance(
+                            lens.distance
+                                .filter(|d| d.is_finite() && *d > 0.0)
+                                .unwrap_or(lens.camera_distance),
+                        ),
+                    };
+                    changed = true;
+                }
+                hits.push((format!("focus.{name}"), response.rect));
+            }
+        });
+    });
+    ui.end_row();
+    if let FocusSpec::Distance(mut d) = focus {
+        ui.label("");
+        ui.add_enabled_ui(on, |ui| {
+            ui.horizontal(|ui| {
+                let scale = lens.camera_distance.max(f64::MIN_POSITIVE);
+                let range = scale * DISTANCE_RANGE[0]..=scale * DISTANCE_RANGE[1];
+                let response = ui.add(
+                    egui::Slider::new(&mut d, range)
+                        .logarithmic(true)
+                        .clamping(egui::SliderClamping::Edits)
+                        .show_value(false),
+                );
+                hits.push(("focusDistance".to_string(), response.rect));
+                if response.changed() && d.is_finite() && d > 0.0 {
+                    focus = FocusSpec::Distance(d);
+                    changed = true;
+                }
+                ui.label(format!("{}", significant(d)));
+            });
+        });
+        ui.end_row();
+    }
+    let note = match focus {
+        FocusSpec::Point(p) => Some(format!(
+            "on the point [{}, {}, {}]",
+            significant(p[0]),
+            significant(p[1]),
+            significant(p[2])
+        )),
+        _ => focus.fallback(&lens.at).map(str::to_string),
+    };
+    if let Some(note) = note {
+        ui.label("");
+        ui.add(egui::Label::new(egui::RichText::new(note).small().color(dim)).wrap());
+        ui.end_row();
+    }
+    if changed {
+        look.dof = Some(serde_json::json!({ "fstop": fstop, "focus": focus.json() }));
+    }
+}
+
+/// A number to four significant digits, as the panel writes lengths.
+fn significant(x: f64) -> String {
+    if !x.is_finite() || x == 0.0 {
+        return format!("{x}");
+    }
+    let digits = (3 - x.abs().log10().floor() as i32).clamp(0, 6) as usize;
+    format!("{x:.digits$}")
+}
+
 /// The controls, in a grid of a label and a control a row.
-fn look_options(ui: &mut egui::Ui, look: &mut LookState, tokens: &Tokens, hits: &mut LookHits) {
+fn look_options(
+    ui: &mut egui::Ui,
+    look: &mut LookState,
+    tokens: &Tokens,
+    lens: &LensContext,
+    hits: &mut LookHits,
+) {
     // One width for every slider, from the tokens.
     ui.spacing_mut().slider_width = tokens.popover_slider_width;
     egui::Grid::new("studio-options-grid")
@@ -182,15 +454,7 @@ fn look_options(ui: &mut egui::Ui, look: &mut LookState, tokens: &Tokens, hits: 
             });
             ui.end_row();
             slider_row(ui, "Bloom", "bloom", &mut look.bloom, 0.0..=1.0, "", hits);
-            ui.label("Lens");
-            let mut lens = look.dof.is_some();
-            ui.horizontal(|ui| {
-                toggle(ui, "lens", "Depth of field", &mut lens, hits);
-            });
-            if lens != look.dof.is_some() {
-                look.dof = lens.then(|| serde_json::json!({ "fstop": FSTOP }));
-            }
-            ui.end_row();
+            lens_rows(ui, look, tokens, lens, hits);
         });
 }
 

@@ -39,7 +39,7 @@ pub const DEFAULT_FSTOP: f64 = 2.8;
 pub const VIEWPORT_ACCUMULATE: u32 = 16;
 
 /// The params text of a look, for the commands' documentation.
-pub const LOOK_PARAMS: &str = r#"{"mode": "plain|studio" = "studio", "environment": "studio|outdoor|workshop" = "studio", "exposure": stops from -10 to 10 = 0, "rotation": degrees = 0, "ground": boolean = true, "ao": boolean = true, "shadows": boolean = true, "tonemap": "agx|aces|linear" = "agx", "light": [azimuth, elevation] in degrees = the environment's brightest direction, "background": "environment|plain" = "environment", "reflections": boolean = true, "contactShadows": boolean = true, "specularShadow": boolean = true, "groundReflection": 0 to 1 = 0, "bloom": 0 to 1 = 0.04, "dof": {"fstop": number = 2.8, "focus": distance | [x, y, z] | "picked" = the centre of the model} | null = null, "accumulate": frames from 1 to 256 = 1 (the window and view.replay: 16)}"#;
+pub const LOOK_PARAMS: &str = r#"{"mode": "plain|studio" = "studio", "environment": "studio|outdoor|workshop" = "studio", "exposure": stops from -10 to 10 = 0, "rotation": degrees = 0, "ground": boolean = true, "ao": boolean = true, "shadows": boolean = true, "tonemap": "agx|aces|linear" = "agx", "light": [azimuth, elevation] in degrees = the environment's brightest direction, "background": "environment|plain" = "environment", "reflections": boolean = true, "contactShadows": boolean = true, "specularShadow": boolean = true, "groundReflection": 0 to 1 = 0, "bloom": 0 to 1 = 0.04, "dof": {"fstop": number = 2.8, "focus": distance | [x, y, z] | "picked" (the window's last click) | "selection" (the centre of the box of what is selected; the model's centre when nothing is) | "centre" = "centre"} | null = null, "accumulate": frames from 1 to 256 = 1 (the window and view.replay: 16)}"#;
 
 /// A look: plain (the default) or studio with its options.
 #[derive(Clone, Debug, PartialEq)]
@@ -74,6 +74,49 @@ pub enum FocusSpec {
     Point([f64; 3]),
     /// The point of the window's last pick (the centre without one).
     Picked,
+    /// The centre of the box of what the selection shows
+    /// ([`crate::Scene::items_focus`]): it follows the selection, and is
+    /// the model's centre while nothing (shown) is selected.
+    Selection,
+}
+
+impl FocusSpec {
+    /// The word or value `look.dof.focus` gives it as.
+    pub fn json(self) -> Value {
+        match self {
+            FocusSpec::Centre => json!("centre"),
+            FocusSpec::Distance(z) => json!(z),
+            FocusSpec::Point(p) => json!(p),
+            FocusSpec::Picked => json!("picked"),
+            FocusSpec::Selection => json!("selection"),
+        }
+    }
+
+    /// Why the lens focuses on the model's centre instead of where this
+    /// says, given the points it may focus on: no click yet for
+    /// `picked`, nothing (shown) selected for `selection`; `None` when it
+    /// focuses where it says.
+    pub fn fallback(self, at: &FocusAt) -> Option<&'static str> {
+        match self {
+            FocusSpec::Picked if at.picked.is_none() => {
+                Some("no point clicked yet: focused on the model's centre")
+            }
+            FocusSpec::Selection if at.selection.is_none() => {
+                Some("nothing selected: focused on the model's centre")
+            }
+            _ => None,
+        }
+    }
+}
+
+/// The points a lens may focus on besides the model's centre: the point of
+/// the window's last click (`picked`) and the centre of the selection
+/// (`selection`, [`crate::Scene::items_focus`]). Without them a focus on
+/// either is a focus on the model's centre.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FocusAt {
+    pub picked: Option<[f64; 3]>,
+    pub selection: Option<[f64; 3]>,
 }
 
 impl Default for LookSpec {
@@ -248,6 +291,9 @@ impl LookSpec {
                     None => {}
                     Some(Value::Null) => dof.focus = FocusSpec::Centre,
                     Some(Value::String(s)) if s == "picked" => dof.focus = FocusSpec::Picked,
+                    Some(Value::String(s)) if s == "selection" => {
+                        dof.focus = FocusSpec::Selection;
+                    }
                     Some(Value::String(s)) if s == "centre" || s == "center" => {
                         dof.focus = FocusSpec::Centre;
                     }
@@ -272,7 +318,7 @@ impl LookSpec {
                         dof.focus = FocusSpec::Point([*x, *y, *z]);
                     }
                     Some(_) => {
-                        return Err("`look.dof.focus` must be a distance, [x, y, z], \"picked\" or \"centre\"".to_string());
+                        return Err("`look.dof.focus` must be a distance, [x, y, z], \"picked\", \"selection\" or \"centre\"".to_string());
                     }
                 }
                 out.dof = Some(dof);
@@ -302,26 +348,22 @@ impl LookSpec {
             "bloom": self.look.bloom,
             "dof": self.dof.map(|d| json!({
                 "fstop": d.fstop,
-                "focus": match d.focus {
-                    FocusSpec::Centre => json!("centre"),
-                    FocusSpec::Distance(z) => json!(z),
-                    FocusSpec::Point(p) => json!(p),
-                    FocusSpec::Picked => json!("picked"),
-                },
+                "focus": d.focus.json(),
             })),
             "accumulate": self.accumulate,
         })
     }
 
     /// The look to draw a model within `model` with: the lens focused
-    /// (on the model's centre, or the last pick `picked`, as asked) for a
+    /// (on the model's centre, or on a point of `at`, the last pick or the
+    /// selection's centre, as asked; the centre without it) for a
     /// document whose length unit is `mm_per_unit` millimetres, and the
     /// frames (`default_frames` when the look does not say).
     pub fn resolved(
         &self,
         model: &Bbox3,
         mm_per_unit: f64,
-        picked: Option<[f64; 3]>,
+        at: &FocusAt,
         default_frames: u32,
     ) -> Look {
         let centre = model
@@ -338,7 +380,8 @@ impl LookSpec {
                     FocusSpec::Centre => Focus::Point(centre),
                     FocusSpec::Distance(z) => Focus::Distance(z),
                     FocusSpec::Point(p) => Focus::Point(p),
-                    FocusSpec::Picked => Focus::Point(picked.unwrap_or(centre)),
+                    FocusSpec::Picked => Focus::Point(at.picked.unwrap_or(centre)),
+                    FocusSpec::Selection => Focus::Point(at.selection.unwrap_or(centre)),
                 },
                 mm_per_unit,
             }),
@@ -469,6 +512,10 @@ mod tests {
             json!({"dof": {"focus": -1}}),
             json!({"dof": {"focus": [1, 2]}}),
             json!({"dof": {"focus": "there"}}),
+            json!({"dof": {"focus": "Selection"}}),
+            json!({"dof": {"focus": 0}}),
+            json!({"dof": {"focus": true}}),
+            json!({"dof": {"fstop": null}}),
             json!({"dof": {"lens": 50}}),
             json!({"accumulate": "many"}),
             json!({"bloom": true}),
@@ -493,7 +540,7 @@ mod tests {
             craft3d_math::Vec3::ZERO,
             craft3d_math::Vec3::new(2.0, 2.0, 2.0),
         ]);
-        let look = lens.resolved(&model, 25.4, None, 16);
+        let look = lens.resolved(&model, 25.4, &FocusAt::default(), 16);
         assert_eq!(look.accumulate, MAX_ACCUMULATE);
         let dof = look.dof.unwrap();
         assert_eq!(
@@ -501,12 +548,58 @@ mod tests {
             (4.0, Focus::Point([1.0, 2.0, 3.0]), 25.4)
         );
         let picked = LookSpec::patched(&plain, &json!({"dof": {"focus": "picked"}})).unwrap();
-        let at = |p| picked.resolved(&model, 1.0, p, 16).dof.unwrap().focus;
+        let at = |p| {
+            let at = FocusAt {
+                picked: p,
+                selection: Some([9.0; 3]),
+            };
+            picked.resolved(&model, 1.0, &at, 16).dof.unwrap().focus
+        };
         assert_eq!(at(None), Focus::Point([1.0; 3]));
         assert_eq!(at(Some([5.0, 0.0, 0.0])), Focus::Point([5.0, 0.0, 0.0]));
-        assert_eq!(picked.resolved(&model, 1.0, None, 16).accumulate, 16);
+        assert_eq!(
+            picked
+                .resolved(&model, 1.0, &FocusAt::default(), 16)
+                .accumulate,
+            16
+        );
         let flat = LookSpec::patched(&studio, &json!({"background": "plain"})).unwrap();
         assert!(flat.look.plain_background && !studio.look.plain_background);
         assert_eq!(LookSpec::patched(&plain, &flat.json()).unwrap(), flat);
+    }
+
+    #[test]
+    fn a_lens_focuses_on_the_selection_and_falls_back_to_the_centre() {
+        let plain = LookSpec::default();
+        let spec = LookSpec::patched(
+            &plain,
+            &json!({"mode": "studio", "dof": {"fstop": 1.4, "focus": "selection"}}),
+        )
+        .unwrap();
+        let dof = spec.dof.unwrap();
+        assert_eq!((dof.fstop, dof.focus), (1.4, FocusSpec::Selection));
+        assert_eq!(dof.focus.json(), json!("selection"));
+        assert_eq!(LookSpec::patched(&plain, &spec.json()).unwrap(), spec);
+        let model = Bbox3::from_points([
+            craft3d_math::Vec3::ZERO,
+            craft3d_math::Vec3::new(4.0, 2.0, 2.0),
+        ]);
+        let none = FocusAt::default();
+        let selected = FocusAt {
+            picked: Some([7.0; 3]),
+            selection: Some([3.0, 1.0, 0.5]),
+        };
+        let focus = |at: &FocusAt| spec.resolved(&model, 1.0, at, 1).dof.unwrap().focus;
+        assert_eq!(focus(&none), Focus::Point([2.0, 1.0, 1.0]));
+        assert_eq!(focus(&selected), Focus::Point([3.0, 1.0, 0.5]));
+        assert!(FocusSpec::Selection.fallback(&none).is_some());
+        assert!(FocusSpec::Selection.fallback(&selected).is_none());
+        assert!(FocusSpec::Picked.fallback(&none).is_some());
+        assert!(FocusSpec::Centre.fallback(&none).is_none());
+        // A hostile f-number is clamped, never a lens without aperture.
+        for (fstop, want) in [(0.0, 0.5), (-3.0, 0.5), (1e9, 64.0)] {
+            let lens = LookSpec::patched(&plain, &json!({"dof": {"fstop": fstop}})).unwrap();
+            assert_eq!(lens.dof.unwrap().fstop, want, "{fstop}");
+        }
     }
 }
