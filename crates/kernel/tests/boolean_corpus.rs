@@ -966,6 +966,34 @@ fn second_opinion(
 /// change that should only make the kernel faster is checked).
 static DIGEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// With `BOOLEAN_CORPUS_CASES` set, one line per result, to tell two runs
+/// apart case by case: a hash of the whole result (as the digest), a hash
+/// of its shape without where its edges run (the topology, the surfaces,
+/// the vertices and the sources), the counts of vertices, edges and faces,
+/// and the volume.
+fn per_case(id: &str, op: BooleanOp, result: &craft3d_kernel::boolean::BooleanResult) {
+    use std::hash::{Hash, Hasher};
+    let hash = |text: String| {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        text.hash(&mut hasher);
+        hasher.finish()
+    };
+    let b = &result.body;
+    let ends: Vec<_> = b.edges.iter().map(|e| (e.start, e.end)).collect();
+    let shape = hash(format!(
+        "{:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}",
+        b.vertices, ends, b.loops, b.faces, b.shells, result.faces, result.edges, result.vertices
+    ));
+    let volume = craft3d_topo::mass_properties(b).map_or(f64::NAN, |m| m.volume);
+    println!(
+        "CASE {id} {op:?} whole {:016x} shape {shape:016x} v{} e{} f{} volume {volume:.12e}",
+        hash(format!("{result:?}")),
+        b.vertices.len(),
+        b.edges.len(),
+        b.faces.len()
+    );
+}
+
 fn digest(result: &craft3d_kernel::boolean::BooleanResult) {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -1112,6 +1140,9 @@ fn run_case(case: &Value, snap: Option<&Value>, verbose: bool) -> Vec<Outcome> {
             Ok(Err(other)) => Outcome::Invalid(format!("error: {other}")),
             Ok(Ok(result)) => {
                 digest(&result);
+                if std::env::var_os("BOOLEAN_CORPUS_CASES").is_some() {
+                    per_case(case["id"].as_str().unwrap_or("?"), op, &result);
+                }
                 booleans_ms = started.elapsed().as_secs_f64() * 1e3;
                 // The cost of `topo::check`'s region rule on the result,
                 // against the whole check (docs/design/topology.md); the
