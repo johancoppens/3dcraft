@@ -583,3 +583,105 @@ fn a_die_cut_into_triangles_adds_up_to_its_area() {
         assert!(triangles(&bow).is_none(), "scale {k}");
     }
 }
+
+/// A tool's outline with arcs: the arc through three points, its top,
+/// the polygon that holds it, its mirror image and whether it is its own
+/// (sheetmetal.md › *Bend sequence* › *Arcs in the tools*).
+#[test]
+fn a_tools_arcs_are_circles_through_their_points() {
+    use craft3d_kernel::sheetmetal::sequence::{Tool, circle_through};
+    for k in SCALES {
+        // A punch with a round tip of radius 2 about the origin and
+        // straight flanks 50 high.
+        let r = 2.0 * k;
+        let punch = Tool {
+            corners: vec![[-r, 50.0 * k], [-r, 0.0], [r, 0.0], [r, 50.0 * k]],
+            through: vec![None, Some([0.0, -r]), None, None],
+        };
+        let (c, radius, ccw) = circle_through([-r, 0.0], [0.0, -r], [r, 0.0]).unwrap();
+        assert!(c[0].abs() <= 1e-15 * k && c[1].abs() <= 1e-15 * k, "{c:?}");
+        assert!((radius - r).abs() <= 1e-15 * k, "{radius}");
+        assert!(ccw);
+        // Its curves: the tip an arc about the origin, counter-clockwise
+        // from its left end to its right (as the outline runs).
+        let curves = punch.curves().unwrap();
+        assert!(matches!(
+            curves[1].curve,
+            Curve2::Arc { start, end, .. } if start == [-r, 0.0] && end == [r, 0.0]
+        ));
+        assert!(punch.symmetric(), "scale {k}");
+        assert!(punch.mirrored().symmetric());
+        // Its top is its flanks', the tip below them.
+        assert_eq!(punch.top(), 50.0 * k);
+        // The polygon holding it: the tip by its tangents' meeting
+        // points, (−r, −r) and (r, −r).
+        let held = punch.enclosing().unwrap();
+        for corner in [[-r, -r], [r, -r]] {
+            assert!(
+                held.iter().any(|p| (p[0] - corner[0]).abs() <= 1e-12 * k
+                    && (p[1] - corner[1]).abs() <= 1e-12 * k),
+                "scale {k}: {held:?}"
+            );
+        }
+        let cut = triangles(&held).unwrap();
+        let area: f64 = cut
+            .iter()
+            .map(|t| {
+                0.5 * ((t[1][0] - t[0][0]) * (t[2][1] - t[0][1])
+                    - (t[1][1] - t[0][1]) * (t[2][0] - t[0][0]))
+            })
+            .sum();
+        // The flanks' rectangle and the square under it.
+        let exact = 2.0 * r * 50.0 * k + 2.0 * r * r;
+        assert!(
+            (area - exact).abs() <= 1e-9 * exact,
+            "scale {k}: {area} against {exact}"
+        );
+
+        // A die with a shoulder bulging above its top: its top is the
+        // circle's, `c + r` over the arc.
+        let die = Tool {
+            corners: vec![
+                [-10.0 * k, -10.0 * k],
+                [10.0 * k, -10.0 * k],
+                [10.0 * k, 0.0],
+                [-10.0 * k, 0.0],
+            ],
+            through: vec![None, None, Some([0.0, 1.0 * k]), None],
+        };
+        let (c, radius, _) = circle_through([10.0 * k, 0.0], [0.0, k], [-10.0 * k, 0.0]).unwrap();
+        assert!(
+            (die.top() - (c[1] + radius)).abs() <= 1e-12 * k,
+            "scale {k}"
+        );
+        assert!((die.top() - k).abs() <= 1e-12 * k, "scale {k}");
+        // An arc that bulges into the region is held by its chord: a die
+        // with a round notch keeps its straight top.
+        let notched = Tool {
+            corners: vec![
+                [-10.0 * k, -10.0 * k],
+                [10.0 * k, -10.0 * k],
+                [10.0 * k, 0.0],
+                [-10.0 * k, 0.0],
+            ],
+            through: vec![None, None, Some([0.0, -k]), None],
+        };
+        assert_eq!(notched.enclosing().unwrap().len(), 4, "scale {k}");
+        assert_eq!(notched.top(), 0.0);
+        // An asymmetric arc: not its own mirror image; mirrored twice it
+        // is itself.
+        let leaning = Tool {
+            corners: vec![[-r, 50.0 * k], [-r, 0.0], [r, 0.0], [r, 50.0 * k]],
+            through: vec![None, Some([0.5 * r, -0.8 * r]), None, None],
+        };
+        assert!(!leaning.symmetric(), "scale {k}");
+        assert_eq!(leaning.mirrored().mirrored(), leaning);
+        // Through points in a line with the side's ends: no arc.
+        let flat = Tool {
+            corners: vec![[-r, 50.0 * k], [-r, 0.0], [r, 0.0], [r, 50.0 * k]],
+            through: vec![None, Some([0.0, 0.0]), None, None],
+        };
+        assert!(flat.curves().unwrap_err().to_string().contains("in a line"));
+        assert!(circle_through([0.0, 0.0], [k, 0.0], [2.0 * k, 0.0]).is_none());
+    }
+}

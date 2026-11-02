@@ -459,8 +459,10 @@ from the virtual sharp), `holeToBend` (the least distance from a hole to a bend'
 for a material and a thickness are yours, as expressions or a table, as above. `file.export` with
 `sheetMetal` writes the flat pattern (.dxf or .svg): the outline on the layer `outline`, the bend lines
 on `bendUp` (dashed) and `bendDown` (dash-dot). `sheetMetal.bendSequence` checks whether the part can be
-bent on a press brake with your punch and die (each a polygon in the plane square to the bend: the punch's
-tip centre and the die's top at the origin, `y` up into the punch) and finds an order of the bends: every
+bent on a press brake with your punch and die (each an outline in the plane square to the bend: the punch's
+tip centre and the die's top at the origin, `y` up into the punch; a `{"through": [x, y]}` between two
+points makes that side the arc through the point, so a punch's round tip of radius `r` is
+`[[-r, 50], [-r, 0], {"through": [0, -r]}, [r, 0], [r, 50]]`, exactly) and finds an order of the bends: every
 step is proven to keep the punch at least `clearance` from every piece of the part but the bend and its
 two flats, and the die from every piece but the bend, over the whole stroke (the sheet may rest on the
 die's top, not go into it), with the part as it lies or turned end for end (`turned` in the step, for a

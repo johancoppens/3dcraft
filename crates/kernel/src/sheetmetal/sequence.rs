@@ -803,9 +803,9 @@ pub fn piece_lowest_within(
     (!least.is_nan()).then_some(least)
 }
 
-/// The closed polygon `points` (either way round, no three points
-/// repeated) cut into triangles by clipping ears: convex pieces whose
-/// union is the polygon. `None` when it is not one simple polygon the
+/// The closed polygon `points` (either way round) cut into triangles by
+/// clipping ears: convex pieces whose union is the polygon (a corner on
+/// the straight line between its neighbours is dropped). `None` when it is not one simple polygon the
 /// clipping can cut (a polygon that crosses itself, or a degenerate one).
 pub fn triangles(points: &[[f64; 2]]) -> Option<Vec<[[f64; 2]; 3]>> {
     let n = points.len();
@@ -845,6 +845,14 @@ pub fn triangles(points: &[[f64; 2]]) -> Option<Vec<[[f64; 2]; 3]>> {
                 return None;
             };
             let (a, b, c) = (*points.get(ia)?, *points.get(ib)?, *points.get(ic)?);
+            // A point on the straight line between its neighbours bounds
+            // nothing: dropped.
+            let on = (b[0] - a[0]) * (c[0] - b[0]) + (b[1] - a[1]) * (c[1] - b[1]);
+            if cross(a, b, c) == 0.0 && on > 0.0 {
+                idx.remove(k);
+                clipped = true;
+                break;
+            }
             if !(cross(a, b, c) > 0.0) {
                 continue;
             }
@@ -879,4 +887,279 @@ pub fn triangles(points: &[[f64; 2]]) -> Option<Vec<[[f64; 2]; 3]>> {
     }
     out.push(tri);
     Some(out)
+}
+
+/// A press-brake tool's outline in the plane square to a bend: its
+/// corners in order, and per side (from corner `i` to corner `i + 1`, the
+/// last back to the first) an optional point the side passes through,
+/// which makes it the circular arc through the three points (a punch's
+/// round tip, a die's shoulder radius); a side without one is straight.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tool {
+    pub corners: Vec<[f64; 2]>,
+    pub through: Vec<Option<[f64; 2]>>,
+}
+
+/// The circle through `a`, `m` and `b`: its centre, radius, and whether
+/// `a → m → b` runs counter-clockwise about it. `None` for points in a
+/// line (within a millionth of their spread's square) or not finite.
+pub fn circle_through(a: [f64; 2], m: [f64; 2], b: [f64; 2]) -> Option<([f64; 2], f64, bool)> {
+    let (ux, uy) = (m[0] - a[0], m[1] - a[1]);
+    let (vx, vy) = (b[0] - a[0], b[1] - a[1]);
+    let cross = ux * vy - uy * vx;
+    let spread = (ux * ux + uy * uy).max(vx * vx + vy * vy);
+    if !(cross.abs() > 1e-6 * spread) {
+        return None;
+    }
+    let (uu, vv) = (ux * ux + uy * uy, vx * vx + vy * vy);
+    let cx = (vy * uu - uy * vv) / (2.0 * cross);
+    let cy = (ux * vv - vx * uu) / (2.0 * cross);
+    let centre = [a[0] + cx, a[1] + cy];
+    let radius = cx.phypot(cy);
+    (centre[0].is_finite() && centre[1].is_finite() && radius.is_finite() && radius > 0.0)
+        .then_some((centre, radius, cross > 0.0))
+}
+
+impl Tool {
+    /// A tool of straight sides only.
+    pub fn polygon(corners: Vec<[f64; 2]>) -> Tool {
+        let n = corners.len();
+        Tool {
+            corners,
+            through: vec![None; n],
+        }
+    }
+
+    /// Side `i`: its start, its end and the point it passes through.
+    fn side(&self, i: usize) -> Option<([f64; 2], [f64; 2], Option<[f64; 2]>)> {
+        let n = self.corners.len();
+        Some((
+            *self.corners.get(i)?,
+            *self.corners.get((i + 1) % n)?,
+            self.through.get(i).copied().flatten(),
+        ))
+    }
+
+    /// The outline's curves (lines and counter-clockwise arcs) for the
+    /// sketch's profile detection; an error naming the side whose three
+    /// points lie in a line.
+    pub fn curves(&self) -> Result<Vec<SketchCurve>, KernelError> {
+        if self.corners.len() < 2 || self.through.len() != self.corners.len() {
+            return Err(refuse(
+                None,
+                "a tool needs at least 2 corners and a side per corner",
+            ));
+        }
+        if self.corners.len() == 2 && self.through.iter().any(Option::is_none) {
+            return Err(refuse(
+                None,
+                "a tool of 2 corners needs both its sides to be arcs",
+            ));
+        }
+        (0..self.corners.len())
+            .map(|i| {
+                let (a, b, m) = self
+                    .side(i)
+                    .ok_or_else(|| refuse(None, "a tool's side is missing"))?;
+                let curve = match m {
+                    None => Curve2::Line { start: a, end: b },
+                    Some(m) => {
+                        let (center, _, ccw) = circle_through(a, m, b).ok_or_else(|| {
+                            refuse(
+                                None,
+                                format!(
+                                    "side {i} of the tool: the point it passes through lies in a line with its ends (or a point repeats), so it is no arc"
+                                ),
+                            )
+                        })?;
+                        if ccw {
+                            Curve2::Arc {
+                                center,
+                                start: a,
+                                end: b,
+                            }
+                        } else {
+                            Curve2::Arc {
+                                center,
+                                start: b,
+                                end: a,
+                            }
+                        }
+                    }
+                };
+                Ok(SketchCurve {
+                    id: i as u64 + 1,
+                    curve,
+                })
+            })
+            .collect()
+    }
+
+    /// The outline extruded along `frame`'s z from `from` to `to`; an
+    /// error unless it is one simple closed outline.
+    pub fn prism(
+        &self,
+        frame: &Frame,
+        from: f64,
+        to: f64,
+        tolerance: &Tolerance,
+    ) -> Result<Body, KernelError> {
+        let curves = self.curves()?;
+        let profiles = detect_profiles(&curves, tolerance)?;
+        match profiles.as_slice() {
+            [one] if one.holes.is_empty() => {}
+            _ => {
+                return Err(refuse(
+                    None,
+                    "the outline is not one simple closed outline (its sides cross, touch or repeat a point)",
+                ));
+            }
+        }
+        Ok(extrude(&profiles, frame, from, to, tolerance)?.body)
+    }
+
+    /// The tool mirrored in `x`, its corners reversed so it keeps its
+    /// sense, each arc still through its own point mirrored.
+    pub fn mirrored(&self) -> Tool {
+        let n = self.corners.len();
+        let m = |p: [f64; 2]| [-p[0], p[1]];
+        Tool {
+            corners: self.corners.iter().rev().map(|p| m(*p)).collect(),
+            through: (0..n)
+                .map(|j| {
+                    self.through
+                        .get((2 * n).saturating_sub(2 + j) % n.max(1))
+                        .copied()
+                        .flatten()
+                        .map(m)
+                })
+                .collect(),
+        }
+    }
+
+    /// Whether the tool is its own mirror image in `x`: the mirrored
+    /// outline is the same cyclic list of corners and sides (any first
+    /// corner, either sense), compared exactly (−0 equal to 0).
+    pub fn symmetric(&self) -> bool {
+        #[derive(PartialEq)]
+        enum Token {
+            Corner(u64, u64),
+            Side(Option<(u64, u64)>),
+        }
+        let key = |q: [f64; 2]| ((q[0] + 0.0).to_bits(), (q[1] + 0.0).to_bits());
+        let tokens = |t: &Tool| -> Vec<Token> {
+            (0..t.corners.len())
+                .flat_map(|i| {
+                    let (x, y) = t.corners.get(i).map_or((0, 0), |p| key(*p));
+                    [
+                        Token::Corner(x, y),
+                        Token::Side(t.through.get(i).copied().flatten().map(key)),
+                    ]
+                })
+                .collect()
+        };
+        let a = tokens(self);
+        let m = tokens(&self.mirrored());
+        let back: Vec<&Token> = m.iter().rev().collect();
+        let n = a.len();
+        if n == 0 || m.len() != n {
+            return false;
+        }
+        (0..n).any(|shift| {
+            (0..n).all(|i| a.get(i) == m.get((i + shift) % n))
+                || (0..n).all(|i| a.get(i) == back.get((i + shift) % n).copied())
+        })
+    }
+
+    /// The highest `y` of the outline: of its corners, and of each arc at
+    /// the top of its circle when it passes there.
+    pub fn top(&self) -> f64 {
+        let mut top = self
+            .corners
+            .iter()
+            .map(|p| p[1])
+            .fold(f64::NEG_INFINITY, f64::max);
+        for i in 0..self.corners.len() {
+            let Some((a, b, Some(m))) = self.side(i) else {
+                continue;
+            };
+            let Some((c, r, ccw)) = circle_through(a, m, b) else {
+                return f64::INFINITY;
+            };
+            let (from, to) = if ccw { (a, b) } else { (b, a) };
+            let angle = |p: [f64; 2]| (p[1] - c[1]).patan2(p[0] - c[0]);
+            let sweep = (angle(to) - angle(from)).rem_euclid(std::f64::consts::TAU);
+            let up = (std::f64::consts::FRAC_PI_2 - angle(from)).rem_euclid(std::f64::consts::TAU);
+            if up <= sweep {
+                top = top.max(c[1] + r);
+            }
+        }
+        top
+    }
+
+    /// A polygon that holds the region the outline bounds: a straight
+    /// side as it is, an arc that bulges out of the region by its ends and
+    /// the meeting points of its tangents over pieces of at most 90
+    /// degrees (the arc lies in those triangles), an arc that bulges into
+    /// it by its chord. `None` for an arc through points in a line.
+    pub fn enclosing(&self) -> Option<Vec<[f64; 2]>> {
+        let n = self.corners.len();
+        // The signed area: the corners' polygon and each arc's segment
+        // between its chord and itself.
+        let mut area = 0.0;
+        let mut arcs = Vec::with_capacity(n);
+        for i in 0..n {
+            let (a, b, m) = self.side(i)?;
+            area += 0.5 * (a[0] * b[1] - b[0] * a[1]);
+            let arc = match m {
+                None => None,
+                Some(m) => {
+                    let (c, r, ccw) = circle_through(a, m, b)?;
+                    let (from, to) = if ccw { (a, b) } else { (b, a) };
+                    let angle = |p: [f64; 2]| (p[1] - c[1]).patan2(p[0] - c[0]);
+                    let sweep = (angle(to) - angle(from)).rem_euclid(std::f64::consts::TAU);
+                    let segment = 0.5 * r * r * (sweep - sweep.psin());
+                    // Bulging to the right of a → b (`m` right of the
+                    // chord) adds to a counter-clockwise area.
+                    let right = (b[0] - a[0]) * (m[1] - a[1]) - (b[1] - a[1]) * (m[0] - a[0]) < 0.0;
+                    area += if right { segment } else { -segment };
+                    Some((c, r, angle(a), if ccw { sweep } else { -sweep }, right))
+                }
+            };
+            arcs.push(arc);
+        }
+        if !(area.abs() > 0.0) {
+            return None;
+        }
+        let mut out = Vec::new();
+        for i in 0..n {
+            let a = *self.corners.get(i)?;
+            out.push(a);
+            let Some(Some((c, r, start, sweep, right))) = arcs.get(i).copied() else {
+                continue;
+            };
+            // Out of the region: to the right for a counter-clockwise
+            // outline.
+            if right != (area > 0.0) {
+                continue;
+            }
+            let pieces = (sweep.abs() / std::f64::consts::FRAC_PI_2)
+                .ceil()
+                .clamp(1.0, 4.0);
+            let step = sweep / pieces;
+            let apex = r / (0.5 * step).pcos();
+            let at = |rr: f64, ang: f64| [c[0] + rr * ang.pcos(), c[1] + rr * ang.psin()];
+            // `pieces` is 1 to 4.
+            for k in 0..(pieces as usize) {
+                let s0 = start + step * k as f64;
+                if k > 0 {
+                    out.push(at(r, s0));
+                }
+                out.push(at(apex, s0 + 0.5 * step));
+            }
+        }
+        out.iter()
+            .all(|p| p[0].is_finite() && p[1].is_finite())
+            .then_some(out)
+    }
 }

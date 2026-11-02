@@ -26,9 +26,10 @@ use crate::verify::{self, Part as Measured};
 use crate::verify_cmds::{Ctx, Dim, Outcome};
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_kernel::boolean::contains_points;
+use craft3d_kernel::sheetmetal::sequence::Tool;
 use craft3d_kernel::sheetmetal::sequence::{
     PieceOf, bend_faces, bend_frame, final_worlds, from_axis, inside_piece, piece_lowest,
-    piece_lowest_within, piece_points, prism, stage_worlds, strip_slab, stroke_speed,
+    piece_lowest_within, piece_points, stage_worlds, strip_slab, stroke_speed,
 };
 use craft3d_kernel::sheetmetal::{self, cut_pieces, flange_length, flat_faces};
 use craft3d_math::Portable;
@@ -40,8 +41,8 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(crate) static SPECS: &[CommandSpec] = &[spec!(
     "sheetMetal.bendSequence",
     "Bend Sequence",
-    r#"{"feature": id or name, "punch": [[x, y], ...], "die": [[x, y], ...], "length": number or [number or null, ...] (one per flange) = the part's reach, "segmented": boolean = false, "clearance": number = the document's tolerance, "order": [flange or [flange, ...], ...] = searched, "formed": [flange, ...] = none, "maxWork": number = 20000}"#,
-    "Checks whether a sheet-metal part (feature.sheetMetal) can be bent on a press brake with the punch and die given, and finds an order of its bends (changes nothing). punch and die are closed polygons (at least 3 points, in the document's length unit) in the plane square to a bend: the punch's with the centre of its tip at the origin and its body along +y, the die's with the point under the bend on the part's outer skin at the origin and its body below (y < 0); each is extruded along the bend: one piece length long centred on the middle of the bends made in the stroke (default: long enough to cover the whole part), or, with segmented true or a list of lengths, segmented tooling set up per bend, a segment per bend centred on its middle, as long as length gives for it (one number for every bend, or a list of one per flange with null for the bend's own) or else as long as the bend; unchecked states which. Bends on one line of one flat with the same angle, direction, radius and K-factor (tabs on one edge) are made in one stroke. At every bend both stand in the bend's frame: origin on the bend's axis (the die's R + T further out), y along the bisector of the two flats towards the inside (as on a press brake where both legs rise half the angle), z along the axis. A step, a bend made with some others already made and the rest still flat, clears when the proven distance (its lower bound) between the punch and every piece of the part but that bend's own strip and its two flats, and between the die counted lowered (moved away from the punch) by clearance plus the document's tolerance and every piece but the bend's own strip, is at least clearance over the whole stroke from 0 to the bend's angle (so the sheet may rest on the die's top, but not go into it by more than the tolerance nor come nearer than clearance from any other side), with the part as it lies or turned end for end (about the tools' y, as an operator turns it: the tools mirrored in x; segments stay at their bends), unless both tools are their own mirror image (the same polygon, compared as a cyclic list of points): proven at eight stroke angles, and between two of them less how far any point of the part can move against the tools in between (half its distance from the bend's axis, the farthest at either end of the stroke, plus the bend's neutral radius, per radian), the interval halved (to 1/1024 of the stroke) until that holds, or, for a die wholly below its top (y <= 0), by the piece's lowest point staying above the die's top less the tolerance between them (its height bounded by its heights there and how fast it can bend, halved as needed: what proves a piece lifting off the die), or by the piece cut at its bend line (material past it beside the bend's ends, such as ears or a closed corner's extension, goes down into the die's opening) with each half kept apart from each triangle of the die (a die of at most 200 points) along the tools' y or a side's outward normal, bounded and halved the same way; a piece and a tool wholly inside one another count as 0. formed lists flanges made before the press brake by a tool of their own (a louvre on a punch press, a jog by an offset die, a hem closed by a flattening tool): they are made from the start, are no step of the order and are not checked themselves (said in unchecked). With order (a list of strokes, each a flange or a list of flanges on one line; every flange once) that order is checked step by step, every step, instead of a search. Otherwise the order is searched depth first over all orders of the strokes (with one-piece tools a stroke is every bend on its line, and an order given must keep them together; with segmented tooling the bends of a line are tried together and one by one), the bends whose flanges carry the fewest others first (then the shorter flange, then the lower index), every set of bends made that leads nowhere remembered. Returns feasible, given (whether the order was given), order (the strokes, first bent first: a flange by index, or a list for a stroke of several; null when none clears), steps (per stroke of the order, also those that cleared of an order given that does not: flange (its first), flanges, segments (with segmented tooling: the tools' length at each of its bends), done (the flanges made before it), least (the least distance to the punch proven at the stroke angles measured), at (the stroke angle of it, degrees), proven (the least distance to the punch proven over the whole stroke, between the angles measured too) die (least, at and proven for the lowered die) and turned (whether the part is turned end for end for it)), collisions (every step tried that did not clear, per orientation tried: flange, flanges, done, tool (punch or die), piece (the base, flange i, or the strip of flange i, bent or flat), angle (degrees), distance and lower (the distance found and what is proven below it; to the lowered die for the die), or notProven with the stroke interval no halving could prove; certain: whether this failure is certain, a tool and a piece found nearer than the clearance at a real place or wholly inside one another, where a collision only not proven clear is not; stepCertain: whether the step fails for certain, both as the part lies and turned; turned: whether this failure is the turned one), infeasibleProven (with feasible false: whether every step tried that failed failed for certain, so that no order exists with these tools, or for an order given whether a step of it fails for certain; false means no order was found but one may exist), unchecked (what is not looked at) and work (distances measured). A part with a hole across a bend is checked with each strip not yet bent as its whole slab (more material than it has, so a clearance proven is proven; a collision with such a strip, or found inside a flat by its outline, is not certain). Refused: a polygon that crosses itself, a clearance that is not more than 0, and more distances and heights measured than maxWork (default 20000, at most 10000000; give the order, or raise it). Not looked at (said in unchecked): a bend's own strip during its stroke, and its own two flats against the punch (an acute bend with a punch of a wider angle closing its flats onto it is not found).",
+    r#"{"feature": id or name, "punch": [[x, y] or {"through": [x, y]}, ...], "die": [[x, y] or {"through": [x, y]}, ...], "length": number or [number or null, ...] (one per flange) = the part's reach, "segmented": boolean = false, "clearance": number = the document's tolerance, "order": [flange or [flange, ...], ...] = searched, "formed": [flange, ...] = none, "maxWork": number = 20000}"#,
+    "Checks whether a sheet-metal part (feature.sheetMetal) can be bent on a press brake with the punch and die given, and finds an order of its bends (changes nothing). punch and die are closed outlines (at least 3 points, in the document's length unit; an object {through: [x, y]} between two points makes the side between them the arc through that point, so a punch's round tip or a die's shoulder radius is exact, not a polygon) in the plane square to a bend: the punch's with the centre of its tip at the origin and its body along +y, the die's with the point under the bend on the part's outer skin at the origin and its body below (y < 0); each is extruded along the bend: one piece length long centred on the middle of the bends made in the stroke (default: long enough to cover the whole part), or, with segmented true or a list of lengths, segmented tooling set up per bend, a segment per bend centred on its middle, as long as length gives for it (one number for every bend, or a list of one per flange with null for the bend's own) or else as long as the bend; unchecked states which. Bends on one line of one flat with the same angle, direction, radius and K-factor (tabs on one edge) are made in one stroke. At every bend both stand in the bend's frame: origin on the bend's axis (the die's R + T further out), y along the bisector of the two flats towards the inside (as on a press brake where both legs rise half the angle), z along the axis. A step, a bend made with some others already made and the rest still flat, clears when the proven distance (its lower bound) between the punch and every piece of the part but that bend's own strip and its two flats, and between the die counted lowered (moved away from the punch) by clearance plus the document's tolerance and every piece but the bend's own strip, is at least clearance over the whole stroke from 0 to the bend's angle (so the sheet may rest on the die's top, but not go into it by more than the tolerance nor come nearer than clearance from any other side), with the part as it lies or turned end for end (about the tools' y, as an operator turns it: the tools mirrored in x; segments stay at their bends), unless both tools are their own mirror image (the same outline, compared as a cyclic list of points and arcs): proven at eight stroke angles, and between two of them less how far any point of the part can move against the tools in between (half its distance from the bend's axis, the farthest at either end of the stroke, plus the bend's neutral radius, per radian), the interval halved (to 1/1024 of the stroke) until that holds, or, for a die wholly below its top (y <= 0), by the piece's lowest point staying above the die's top less the tolerance between them (its height bounded by its heights there and how fast it can bend, halved as needed: what proves a piece lifting off the die), or by the piece cut at its bend line (material past it beside the bend's ends, such as ears or a closed corner's extension, goes down into the die's opening) with each half kept apart from each triangle of the die (a die of at most 200 points) along the tools' y or a side's outward normal, bounded and halved the same way; a piece and a tool wholly inside one another count as 0. formed lists flanges made before the press brake by a tool of their own (a louvre on a punch press, a jog by an offset die, a hem closed by a flattening tool): they are made from the start, are no step of the order and are not checked themselves (said in unchecked). With order (a list of strokes, each a flange or a list of flanges on one line; every flange once) that order is checked step by step, every step, instead of a search. Otherwise the order is searched depth first over all orders of the strokes (with one-piece tools a stroke is every bend on its line, and an order given must keep them together; with segmented tooling the bends of a line are tried together and one by one), the bends whose flanges carry the fewest others first (then the shorter flange, then the lower index), every set of bends made that leads nowhere remembered. Returns feasible, given (whether the order was given), order (the strokes, first bent first: a flange by index, or a list for a stroke of several; null when none clears), steps (per stroke of the order, also those that cleared of an order given that does not: flange (its first), flanges, segments (with segmented tooling: the tools' length at each of its bends), done (the flanges made before it), least (the least distance to the punch proven at the stroke angles measured), at (the stroke angle of it, degrees), proven (the least distance to the punch proven over the whole stroke, between the angles measured too) die (least, at and proven for the lowered die) and turned (whether the part is turned end for end for it)), collisions (every step tried that did not clear, per orientation tried: flange, flanges, done, tool (punch or die), piece (the base, flange i, or the strip of flange i, bent or flat), angle (degrees), distance and lower (the distance found and what is proven below it; to the lowered die for the die), or notProven with the stroke interval no halving could prove; certain: whether this failure is certain, a tool and a piece found nearer than the clearance at a real place or wholly inside one another, where a collision only not proven clear is not; stepCertain: whether the step fails for certain, both as the part lies and turned; turned: whether this failure is the turned one), infeasibleProven (with feasible false: whether every step tried that failed failed for certain, so that no order exists with these tools, or for an order given whether a step of it fails for certain; false means no order was found but one may exist), unchecked (what is not looked at) and work (distances measured). A part with a hole across a bend is checked with each strip not yet bent as its whole slab (more material than it has, so a clearance proven is proven; a collision with such a strip, or found inside a flat by its outline, is not certain). Refused: an outline that crosses itself, an arc whose point lies in a line with its side's ends, a clearance that is not more than 0, and more distances and heights measured than maxWork (default 20000, at most 10000000; give the order, or raise it). Not looked at (said in unchecked): a bend's own strip during its stroke, and its own two flats against the punch (an acute bend with a punch of a wider angle closing its flats onto it is not found).",
     doc: true,
     names: ["feature"],
     bend_sequence
@@ -83,37 +84,74 @@ fn unchecked(segmented: bool) -> String {
 /// Most collisions listed.
 const MAX_LISTED: usize = 200;
 
-fn polygon(p: &Params, key: &str) -> Result<Vec<[f64; 2]>, CommandError> {
+fn polygon(p: &Params, key: &str) -> Result<Tool, CommandError> {
     let id = p.command();
     let Some(value) = p.get(key) else {
         return Err(p.missing(key));
     };
-    let bad = || {
-        CommandError::new(format!(
-            "{id}: `{key}` must be a list of at least 3 points [x, y] (finite numbers, at most {MAX_POINTS})"
-        ))
+    tool_of(value, key, &mut |v: &Value| {
+        v.as_f64().filter(|v| v.is_finite()).ok_or_else(String::new)
+    })
+    .map_err(|why| CommandError::new(format!("{id}: {why}")))
+}
+
+/// A tool's outline from its list: corners `[x, y]`, and between two
+/// corners (or after the last, for the side back to the first) a
+/// `{"through": [x, y]}` that makes that side the arc through the point;
+/// each coordinate read by `number` (an error string, empty for "not a
+/// number").
+fn tool_of(
+    value: &Value,
+    key: &str,
+    number: &mut dyn FnMut(&Value) -> Result<f64, String>,
+) -> Result<Tool, String> {
+    let bad = |why: &str| {
+        format!(
+            "`{key}` must be a list of at least 3 points [x, y] (finite numbers or length expressions, at most {MAX_POINTS}), a side an arc where a {{\"through\": [x, y]}} stands between its two points{why}"
+        )
     };
-    let list = value.as_array().ok_or_else(bad)?;
+    let list = value.as_array().ok_or_else(|| bad(""))?;
     if list.len() < 3 || list.len() > MAX_POINTS {
-        return Err(bad());
+        return Err(bad(""));
     }
-    list.iter()
-        .map(|q| {
-            let pair = q.as_array().filter(|a| a.len() == 2).ok_or_else(bad)?;
-            let x = pair
-                .first()
-                .and_then(Value::as_f64)
-                .filter(|v| v.is_finite());
-            let y = pair
-                .get(1)
-                .and_then(Value::as_f64)
-                .filter(|v| v.is_finite());
-            match (x, y) {
-                (Some(x), Some(y)) => Ok([x, y]),
-                _ => Err(bad()),
+    let mut pair = |q: &Value| -> Result<[f64; 2], String> {
+        let [x, y] = q.as_array().map(Vec::as_slice).ok_or_else(|| bad(""))? else {
+            return Err(bad(""));
+        };
+        let read = |v: &Value, n: &mut dyn FnMut(&Value) -> Result<f64, String>| {
+            n(v).map_err(|e| if e.is_empty() { bad("") } else { e })
+        };
+        Ok([read(x, number)?, read(y, number)?])
+    };
+    let mut corners: Vec<[f64; 2]> = Vec::new();
+    let mut through: Vec<Option<[f64; 2]>> = Vec::new();
+    for q in list {
+        match q.as_object() {
+            Some(o) => {
+                let (Some(point), 1) = (o.get("through"), o.len()) else {
+                    return Err(bad(
+                        ": an object in it is {\"through\": [x, y]} and nothing else",
+                    ));
+                };
+                match through.last_mut() {
+                    Some(slot @ None) => *slot = Some(pair(point)?),
+                    _ => {
+                        return Err(bad(
+                            ": a \"through\" follows a corner, never another \"through\" nor the list's start",
+                        ));
+                    }
+                }
             }
-        })
-        .collect()
+            None => {
+                corners.push(pair(q)?);
+                through.push(None);
+            }
+        }
+    }
+    if corners.len() < 2 || (corners.len() == 2 && through.iter().any(Option::is_none)) {
+        return Err(bad(": at least 3 corners, or 2 with both sides arcs"));
+    }
+    Ok(Tool { corners, through })
 }
 
 /// A piece of the part at a stage: what it is, the faces it is measured
@@ -334,7 +372,7 @@ const MAX_REST_DEPTH: u32 = 40;
 const DIRECTIONS: usize = 4;
 
 /// A tool's outline in the plane square to a bend.
-type Polygon = Vec<[f64; 2]>;
+type Polygon = Tool;
 
 /// A convex piece of a tool's outline, counter-clockwise.
 type Triangle = [[f64; 2]; 3];
@@ -343,19 +381,21 @@ type Triangle = [[f64; 2]; 3];
 /// cut at their bend line (the cutting is quadratic or worse in them).
 const MAX_CUT_POINTS: usize = 200;
 
-/// The die cut into triangles, `None` when it has too many points or
-/// cannot be cut.
-fn die_pieces(die: &[[f64; 2]]) -> Option<Vec<Triangle>> {
-    (die.len() <= MAX_CUT_POINTS)
-        .then(|| sheetmetal::sequence::triangles(die))
+/// The die cut into triangles (its outline held by a polygon, an arc by
+/// its tangents where it bulges out: `Tool::enclosing`), `None` when it
+/// has too many points or cannot be cut.
+fn die_pieces(die: &Tool) -> Option<Vec<Triangle>> {
+    let polygon = die.enclosing()?;
+    (polygon.len() <= MAX_CUT_POINTS)
+        .then(|| sheetmetal::sequence::triangles(&polygon))
         .flatten()
 }
 
 struct Check<'a> {
     part: &'a sheetmetal::Part,
     tol: Tolerance,
-    punch: Vec<[f64; 2]>,
-    die: Vec<[f64; 2]>,
+    punch: Tool,
+    die: Tool,
     /// The tools mirrored in `x` (`mirrored`): where they stand against
     /// the part turned end for end; `None` when both are their own
     /// mirror image (`symmetric`), so turning changes nothing.
@@ -522,7 +562,7 @@ impl Check<'_> {
             speed,
             bow,
             segments,
-            die_below: self.die.iter().all(|p| p[1] <= 0.0),
+            die_below: self.die.top() <= 0.0,
             turned: false,
         })
     }
@@ -609,7 +649,8 @@ impl Check<'_> {
                     .frame(&tool_frame)
                     .ok_or("a tool's frame is not finite")?;
                 for &(z0, z1) in &stroke.segments {
-                    let body = prism(points, &local, z0, z1, &self.tol)
+                    let body = points
+                        .prism(&local, z0, z1, &self.tol)
                         .map_err(|e| format!("the {name}: {e}"))?;
                     bodies.push((carrier, body, local, 0.5 * (z0 + z1)));
                 }
@@ -642,6 +683,7 @@ impl Check<'_> {
                     // inside the tool, or a point of the tool (its
                     // middle section) inside the piece.
                     let tool_point = points
+                        .corners
                         .first()
                         .map(|q| local.point(q[0], q[1], *zmid))
                         .ok_or("a tool has no points")?;
@@ -1543,8 +1585,8 @@ enum Length {
 
 /// The tools and bounds a check is made with.
 struct Tools {
-    punch: Vec<[f64; 2]>,
-    die: Vec<[f64; 2]>,
+    punch: Tool,
+    die: Tool,
     length: Length,
     /// Segmented tooling asked for (`None`: as `length` implies, one
     /// piece unless it lists a length per flange).
@@ -1571,32 +1613,16 @@ fn turn_or(given: Failure, turned: Result<Cleared, Failure>) -> Result<Cleared, 
     }
 }
 
-/// A tool's polygon mirrored in `x` (the part turned end for end), its
-/// points reversed so it keeps its sense of turning.
+/// A polygon mirrored in `x` (`Tool::mirrored`).
+#[cfg(test)]
 fn mirrored(points: &[[f64; 2]]) -> Vec<[f64; 2]> {
-    points.iter().rev().map(|p| [-p[0], p[1]]).collect()
+    Tool::polygon(points.to_vec()).mirrored().corners
 }
 
-/// Whether a tool's polygon is its own mirror image in `x`: the mirrored
-/// polygon is the same cyclic list of points (any first point, either
-/// sense), compared exactly (−0 equal to 0). The same SET of points is
-/// not enough: an asymmetric outline can have a symmetric set of
-/// corners. Any difference, however small, has the turned orientation
-/// checked as well.
+/// Whether a polygon is its own mirror image in `x` (`Tool::symmetric`).
+#[cfg(test)]
 fn symmetric(points: &[[f64; 2]]) -> bool {
-    let key = |q: &[f64; 2]| ((q[0] + 0.0).to_bits(), (q[1] + 0.0).to_bits());
-    let a: Vec<(u64, u64)> = points.iter().map(key).collect();
-    let m: Vec<(u64, u64)> = mirrored(points).iter().map(key).collect();
-    let back: Vec<(u64, u64)> = m.iter().rev().copied().collect();
-    let n = a.len();
-    if n == 0 || m.len() != n {
-        return false;
-    }
-    (0..n).any(|shift| {
-        [&m, &back]
-            .iter()
-            .any(|c| (0..n).all(|i| a.get(i) == c.get((i + shift) % n)))
-    })
+    Tool::polygon(points.to_vec()).symmetric()
 }
 
 /// The order given, checked against the part: each stroke's flanges on
@@ -1724,20 +1750,22 @@ fn prove(
     // The tools must be simple outlines: checked once here, so a bad one
     // is an error before any search.
     let unit = craft3d_math::Frame::WORLD;
-    for (name, points) in [("punch", &tools.punch), ("die", &tools.die)] {
-        // As tall as the polygon is wide, so the check holds at any scale.
-        let size = points
+    for (name, tool) in [("punch", &tools.punch), ("die", &tools.die)] {
+        // As tall as the outline is wide, so the check holds at any scale.
+        let size = tool
+            .corners
             .iter()
+            .chain(tool.through.iter().flatten())
             .flat_map(|p| p.iter())
             .fold(0.0_f64, |m, v| m.max(v.abs()))
             .max(tol.linear * 1e3);
-        prism(points, &unit, 0.0, size, &tol)
+        tool.prism(&unit, 0.0, size, &tol)
             .map_err(|e| Stopped::Error(format!("`{name}`: {e}")))?;
     }
     let slabs = slabs_of(part, &tol).map_err(Stopped::Error)?;
     let pieces = pieces_of(part, &slabs, &tol).map_err(Stopped::Error)?;
-    let turned_tools = (!(symmetric(&tools.punch) && symmetric(&tools.die)))
-        .then(|| (mirrored(&tools.punch), mirrored(&tools.die)));
+    let turned_tools = (!(tools.punch.symmetric() && tools.die.symmetric()))
+        .then(|| (tools.punch.mirrored(), tools.die.mirrored()));
     let segments = match &tooling {
         Tooling::Whole(_) => None,
         Tooling::Segmented(lengths) => Some(
@@ -2124,29 +2152,12 @@ pub(crate) const EXPRS: [&str; 4] = ["punch", "die", "length", "clearance"];
 /// A tool's polygon for the measure: points `[x, y]`, each coordinate a
 /// number in the document's unit or a length expression (of the
 /// variables, a table's row, the outputs).
-fn tool_points(ctx: &Ctx<'_>, p: &Map<String, Value>, key: &str) -> Result<Vec<[f64; 2]>, String> {
-    let bad = || {
-        format!(
-            "`{key}` must be a list of at least 3 points [x, y] (numbers or length expressions, at most {MAX_POINTS})"
-        )
-    };
-    let list = p
+fn tool_points(ctx: &Ctx<'_>, p: &Map<String, Value>, key: &str) -> Result<Tool, String> {
+    let value = p
         .get(key)
         .filter(|v| !v.is_null())
-        .ok_or_else(|| format!("`{key}` is required: a polygon [[x, y], ...]"))?
-        .as_array()
-        .ok_or_else(bad)?;
-    if list.len() < 3 || list.len() > MAX_POINTS {
-        return Err(bad());
-    }
-    list.iter()
-        .map(|q| {
-            let [x, y] = q.as_array().map(Vec::as_slice).ok_or_else(bad)? else {
-                return Err(bad());
-            };
-            Ok([ctx.quantity(x, key, 1)?, ctx.quantity(y, key, 1)?])
-        })
-        .collect()
+        .ok_or_else(|| format!("`{key}` is required: a polygon [[x, y], ...]"))?;
+    tool_of(value, key, &mut |v: &Value| ctx.quantity(v, key, 1))
 }
 
 /// An optional length more than 0, a number or an expression.
@@ -2391,8 +2402,8 @@ mod tests {
             let check = Check {
                 part,
                 tol,
-                punch: vec![[-k, 0.0], [k, 0.0], [k, 100.0 * k], [-k, 100.0 * k]],
-                die: vec![[-k, -k], [k, -k], [k, 0.0], [-k, 0.0]],
+                punch: Tool::polygon(vec![[-k, 0.0], [k, 0.0], [k, 100.0 * k], [-k, 100.0 * k]]),
+                die: Tool::polygon(vec![[-k, -k], [k, -k], [k, 0.0], [-k, 0.0]]),
                 turned_tools: None,
                 die_pieces: [None, None],
                 tooling: Tooling::Whole(None),
@@ -2516,8 +2527,8 @@ mod tests {
         let mut check = Check {
             part,
             tol,
-            punch: vec![[-k, 0.0], [k, 0.0], [k, 100.0 * k], [-k, 100.0 * k]],
-            die: vec![[-k, -k], [k, -k], [k, 0.0], [-k, 0.0]],
+            punch: Tool::polygon(vec![[-k, 0.0], [k, 0.0], [k, 100.0 * k], [-k, 100.0 * k]]),
+            die: Tool::polygon(vec![[-k, -k], [k, -k], [k, 0.0], [-k, 0.0]]),
             turned_tools: None,
             die_pieces: [None, None],
             tooling: Tooling::Whole(None),
