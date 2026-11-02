@@ -155,13 +155,21 @@ fn now_ms() -> u64 {
     }
 }
 
-/// Commands that only read: not worth an entry.
-const NOT_LOGGED: [&str; 5] = [
+/// Commands that only list what is there: not worth an entry, and the
+/// window itself runs some of them after every request (`param.list` for
+/// its Parameters tab), which are no agent's doing. Checks an agent runs
+/// (`document.check`, `assert.check`) are logged.
+const NOT_LOGGED: [&str; 10] = [
     "agent.log",
     "document.inspect",
     "select.get",
     "file.list",
     "session.report",
+    "param.list",
+    "assert.list",
+    "variable.list",
+    "set.list",
+    "recovery.list",
 ];
 
 /// The active document's id and its features as they are.
@@ -401,6 +409,10 @@ mod tests {
             3,
             "agent.log is not logged"
         );
+        // Listings (the window runs param.list after each request) are
+        // not an agent's doing.
+        session.execute("param.list", &json!({})).unwrap();
+        assert_eq!(session.agent_log_json(10)["total"], 3);
         // The person again: not logged.
         session.set_actor(None);
         session

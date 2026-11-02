@@ -391,11 +391,18 @@ impl Desk {
             && let Some(picker) = &mut self.agents_picker
             && !picker.busy()
         {
-            let _ = picker.ask_folder(agents.folder());
+            if let Err(e) = picker.ask_folder(agents.folder()) {
+                agents.note_error(format!("The folder picker could not be shown: {e}"));
+            }
         }
         if let Some(choice) = self.agents_picker.as_mut().and_then(Picker::poll) {
-            if let Ok(files::Choice::Folder(folder)) = choice {
-                let _ = agents.choose_folder(&folder);
+            match choice {
+                // A folder that cannot be used says why itself.
+                Ok(files::Choice::Folder(folder)) => {
+                    let _ = agents.choose_folder(&folder);
+                }
+                Ok(_) => {}
+                Err(e) => agents.note_error(format!("The folder picker failed: {e}")),
             }
             changed = true;
         }

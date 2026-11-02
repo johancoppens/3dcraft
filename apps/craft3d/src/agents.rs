@@ -154,6 +154,9 @@ pub struct Agents {
     protected: Protected,
 }
 
+/// Most questions waiting for the person at once.
+pub const MAX_PROMPTS: usize = 32;
+
 /// A question waiting for the person.
 #[derive(Clone, Debug)]
 pub struct Pending {
@@ -258,7 +261,7 @@ impl Agents {
             let (Some(key), Some(cwd)) = (client.key, client.cwd) else {
                 continue;
             };
-            if self.asked.contains(&key) {
+            if self.asked.contains(&key) || self.prompts.len() >= MAX_PROMPTS {
                 continue;
             }
             self.asked.insert(key);
@@ -302,6 +305,13 @@ impl Agents {
     pub fn screen(&mut self, origin: &Origin, wanted: &[Wanted]) -> Result<Option<u64>, String> {
         if !self.asks() {
             return Ok(None);
+        }
+        // Bounded: a flood of requests is refused, not queued for the
+        // person.
+        if self.prompts.len() >= MAX_PROMPTS {
+            return Err(format!(
+                "{MAX_PROMPTS} requests already wait for the person to answer in the 3DCraft window; wait for those first"
+            ));
         }
         for want in wanted {
             let resolved = if want.write {
@@ -735,6 +745,12 @@ impl Agents {
     /// The token file in use, while listening.
     pub fn token_file(&self) -> Option<&Path> {
         self.token_file.as_deref().filter(|_| self.server.is_some())
+    }
+
+    /// Something went wrong around the switch that the person should see
+    /// (the folder picker could not be shown).
+    pub fn note_error(&mut self, error: String) {
+        self.error = Some(error);
     }
 
     /// The folder Change… starts in.
@@ -1667,7 +1683,10 @@ mod tests {
             .unwrap();
         let log = &got["agentLog"];
         assert_eq!(log["entries"][0]["client"], "Claude Code", "{log}");
-        assert_eq!(log["entries"][0]["intent"], "a peg to locate the lid");
+        assert_eq!(
+            log["entries"][0]["intent"], "a peg to locate the lid",
+            "{log}"
+        );
         assert_eq!(log["entries"][0]["created"], json!(["F2"]));
         assert_eq!(log["entries"][1]["command"], "file.save");
         assert_eq!(log["features"][0]["madeBy"], "Claude Code");
@@ -1994,6 +2013,44 @@ mod tests {
         assert!(tried);
         assert_eq!(reply["result"]["isError"], true, "{reply}");
         assert!(!target.exists());
+        let _ = std::fs::remove_dir_all(&state);
+    }
+
+    /// The questions waiting for the person are bounded: one more request
+    /// is refused at once, with what to do.
+    #[test]
+    fn a_flood_of_requests_is_refused_not_queued() {
+        let state = workdir("consent-flood");
+        let outside = state.join("elsewhere");
+        std::fs::create_dir_all(&outside).unwrap();
+        let mut config = config(&state.join("craft"));
+        config.work_folder = Some(state.join("chosen"));
+        let (mut agents, _pump) = agents(config);
+        agents.allow(true);
+        let origin = Origin {
+            key: "k".to_string(),
+            name: "Claude Code".to_string(),
+            cwd: None,
+        };
+        let want = |n: usize| Wanted {
+            command: "file.export".to_string(),
+            path: outside
+                .join(format!("{n}.stl"))
+                .to_str()
+                .unwrap()
+                .to_string(),
+            write: true,
+            folder: false,
+        };
+        for n in 0..MAX_PROMPTS {
+            assert!(
+                matches!(agents.screen(&origin, &[want(n)]), Ok(Some(_))),
+                "{n}"
+            );
+        }
+        let error = agents.screen(&origin, &[want(99)]).unwrap_err();
+        assert!(error.contains("wait for the person"), "{error}");
+        assert_eq!(agents.status().prompts.len(), MAX_PROMPTS);
         let _ = std::fs::remove_dir_all(&state);
     }
 }
