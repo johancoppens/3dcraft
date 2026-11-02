@@ -24,6 +24,7 @@ use craft3d_render::{Highlight, Section};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+mod bake_hint;
 mod calm;
 mod controls;
 mod dialogs;
@@ -453,6 +454,10 @@ struct FrameKey {
     /// The studio look's environment is prepared (always true for the
     /// plain look): the frame drawn plain while it was not is redrawn.
     look_ready: bool,
+    /// Drawn lighter while a motion plays ([`Shell::playing_light`]): the
+    /// picture of a moment drawn so is drawn again at the full quality
+    /// once it stops.
+    light: bool,
     tokens: Tokens,
 }
 
@@ -619,6 +624,10 @@ pub struct Shell {
     /// frame-exact recording, it shows the exact moment of a motion at
     /// full quality ([`Self::exact_pictures`]).
     pub(crate) capturing: bool,
+    /// The window is being recorded (`ui.record`, in real time or frame
+    /// by frame): a playing motion is then drawn at the full quality, not
+    /// lighter ([`Self::playing_light`]).
+    recording: bool,
     pub tokens: Tokens,
     pub last_command: Option<CommandReport>,
     /// The work indicator and the texts of the status bar, held so they
@@ -1054,7 +1063,14 @@ impl Shell {
         }
         let spec = self.state.look.spec().ok()?;
         let env = spec.prepared_if_ready()?;
-        Some(self.studio_of(&spec, env, frames))
+        let mut studio = self.studio_of(&spec, env, frames);
+        // While a motion plays the window draws lighter; still pictures,
+        // captures and recordings never come through here lightened
+        // ([`Self::playing_light`]).
+        if self.playing_light() {
+            studio.look = player::light_look(studio.look);
+        }
+        Some(studio)
     }
 
     /// The studio look of `spec` lit by `env`, for the shown scene: the
@@ -1154,6 +1170,7 @@ impl Shell {
             state: UiState::default(),
             frame_exact: false,
             capturing: false,
+            recording: false,
             tokens: Tokens::default(),
             last_command: None,
             calm: Calm::default(),
@@ -1411,6 +1428,33 @@ impl Shell {
     /// `capturing` is true ([`Self::exact_pictures`]).
     pub fn set_capturing(&mut self, capturing: bool) {
         self.capturing = capturing;
+    }
+
+    /// The window is recorded (`ui.record`, in real time or frame by
+    /// frame) while `recording` is true: a playing motion is drawn at the
+    /// full quality then ([`Self::playing_light`]).
+    pub fn set_recording(&mut self, recording: bool) {
+        self.recording = recording;
+    }
+
+    /// Whether the window is recorded ([`Self::set_recording`]).
+    pub fn recording(&self) -> bool {
+        self.recording
+    }
+
+    /// True while the viewport draws lighter because a motion plays
+    /// (`timeline.playQuality` auto): the studio look without its
+    /// accumulated frames and its depth of field
+    /// (`player::light_look`). Never for what is recorded
+    /// or captured (a picture of the window, `ui.record` in real time or
+    /// frame by frame): those are drawn at the full quality, as a motion
+    /// that stands still is (docs/design/motion.md › *The player*).
+    pub fn playing_light(&self) -> bool {
+        self.state.timeline.playing
+            && self.state.timeline.play_quality == crate::state::PlayQuality::Auto
+            && self.playing_motion()
+            && !self.exact_pictures()
+            && !self.recording
     }
 
     /// True while what the viewport draws is recorded or captured (a
@@ -3867,6 +3911,7 @@ impl Shell {
             look: self.state.look.clone(),
             analysis: self.analysis_serial,
             look_ready: self.look_ready(),
+            light: self.playing_light(),
             tokens,
         };
         // The environment is being prepared on a thread, which cannot

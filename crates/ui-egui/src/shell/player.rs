@@ -43,10 +43,6 @@ pub(crate) const ORBIT_DEGREES_PER_SECOND: f64 = 12.0;
 /// The frames a second the orbit asks for.
 const ORBIT_FPS: f64 = 30.0;
 
-/// The frames a motion is baked at in the background when it builds as it
-/// plays: 30 a second over the [`MOTION_SECONDS`] of a play at speed 1.
-const PLAY_FRAMES: u64 = 120;
-
 /// A turn per frame above this many degrees is drawn as a moving camera
 /// (coarser, `MOVING_DIVISOR`); a slower orbit is drawn sharp.
 const ORBIT_MOVING_DEGREES: f64 = 1.0;
@@ -89,9 +85,24 @@ pub(crate) struct Player {
     /// rounded to the frames of a bake ([`rounded_to_frames`]), so a play
     /// at frame rate goes on at its speed whatever the rounding.
     clock: Option<f64>,
-    /// A bake in the background was asked for the motion shown (once per
-    /// play of a document state).
-    asked_bake: bool,
+    /// The bake hint: what the moments cost, the bake it asked for, the
+    /// documents it was dismissed for (`bake_hint.rs`). Kept when playing
+    /// stops: the hint stays while the motion is paused.
+    pub(crate) hint: super::bake_hint::BakeHint,
+}
+
+/// The studio look drawn while a motion plays (`timeline.playQuality`
+/// auto, [`Shell::playing_light`]): one frame instead of the frames a
+/// still picture accumulates, and no depth of field, whose blur needs
+/// them. Everything else stays as asked, so the picture keeps its light,
+/// its shadows and its reflections while it moves; once the motion stops,
+/// the full look is drawn again and settles.
+pub(crate) fn light_look(look: craft3d_render::studio::Look) -> craft3d_render::studio::Look {
+    craft3d_render::studio::Look {
+        accumulate: 1,
+        dof: None,
+        ..look
+    }
 }
 
 /// `t` rounded to the nearest frame `k / frames` of a bake: a baked
@@ -170,7 +181,7 @@ impl Player {
         self.moved = None;
         self.backwards = false;
         self.clock = None;
-        self.asked_bake = false;
+        self.hint.not_weighed();
     }
 
     /// No scrub waits to be run and the view's scene is built: the step
@@ -372,30 +383,30 @@ impl Shell {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(1.0 / ORBIT_FPS));
             return;
         }
+        // The moment asked for is shown: what it cost is weighed for the
+        // bake hint (`bake_hint.rs`), unless the window is recorded or
+        // captured, whose clock is not the wall's. A moment built as it
+        // plays (shown provisionally while its configurations are built)
+        // is not baked by itself: the hint offers it.
+        if self.exact_pictures() || self.recording() {
+            self.player.hint.not_weighed();
+        } else {
+            let provisional = self
+                .timeline
+                .motion
+                .as_ref()
+                .is_some_and(|m| !m.exact || !m.stale.is_empty());
+            self.player.hint.shown(now, provisional);
+        }
         let Some(shown) = self.timeline.motion_t() else {
             self.player.moved = Some(now);
             self.player.clock = Some(0.0);
             self.go_to_t(0.0);
+            self.player.hint.asked(now);
             ctx.request_repaint();
             return;
         };
         let frames = self.timeline.motion.as_ref().and_then(|m| m.baked);
-        // A motion whose moments are built as it plays (a configuration
-        // per moment) is baked in the background, once, for the next pass.
-        if !self.player.asked_bake
-            && frames.is_none()
-            && self
-                .timeline
-                .motion
-                .as_ref()
-                .is_some_and(|m| !m.exact || !m.stale.is_empty() || m.building > 0)
-        {
-            self.player.asked_bake = true;
-            self.timeline.queue(
-                "motion.bake",
-                json!({"frames": PLAY_FRAMES, "background": true}),
-            );
-        }
         // The clock goes on from where it was, unless something else moved
         // the moment shown (the slider, an agent).
         let t = match self.player.clock {
@@ -419,6 +430,7 @@ impl Shell {
                 let asked = rounded_to_frames(next, frames);
                 if asked != shown {
                     self.go_to_t(asked);
+                    self.player.hint.asked(now);
                 }
                 ctx.request_repaint_after(std::time::Duration::from_secs_f64(1.0 / ORBIT_FPS));
             }
@@ -518,6 +530,8 @@ impl Shell {
             tokens.attention
         };
         ui.label(egui::RichText::new(text).color(color(ink)));
+        // This motion is heavy — bake first? (`bake_hint.rs`)
+        self.bake_hint_ui(ui);
     }
 
     /// After a sync with the session: an edit of the document stops
@@ -527,6 +541,8 @@ impl Shell {
         let revision = session.document_revision();
         if self.player.revision.is_some_and(|seen| seen != revision) {
             self.stop_playing();
+            // An edit lets go of the bake, and the motion is another.
+            self.player.hint.forget();
         }
         self.player.revision = Some(revision);
         if !self.timeline.scrub_waiting() {
@@ -539,12 +555,17 @@ impl Shell {
     pub(crate) fn player_switched(&mut self) {
         self.stop_playing();
         self.player.revision = None;
+        self.player.hint.forget();
     }
 
     /// One frame of the player: the next step when it is time, the orbit,
     /// and the frame to come.
     pub(crate) fn advance_player(&mut self, ctx: &egui::Context) {
         let now = ctx.input(|i| i.time);
+        // The bake the hint asked for: its next piece, its progress.
+        if self.follow_bake() {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(1.0 / ORBIT_FPS));
+        }
         let play = self.state.timeline;
         let tick = if self.playing_motion() && play.playing {
             self.advance_motion(ctx, now);

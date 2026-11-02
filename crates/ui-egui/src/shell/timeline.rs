@@ -78,6 +78,12 @@ impl Timeline {
             .unwrap_or(self.steps)
     }
 
+    /// The commands waiting, in order: for tests.
+    #[cfg(test)]
+    pub(crate) fn pending_ids(&self) -> Vec<&'static str> {
+        self.pending.iter().map(|(id, _)| *id).collect()
+    }
+
     /// Whether a scrub waits to be run.
     pub(super) fn scrub_waiting(&self) -> bool {
         self.pending.iter().any(|(id, _)| *id == "view.scrub")
@@ -376,6 +382,9 @@ impl Shell {
             }),
             "traces": self.timeline.traces.len(),
             "caption": self.player_caption(),
+            "playQuality": self.state.timeline.play_quality,
+            "playingLight": self.playing_light(),
+            "heavy": self.heavy_json(),
         })
     }
 
@@ -408,7 +417,16 @@ impl Shell {
         }
         let pending = std::mem::take(&mut self.timeline.pending);
         for (id, params) in &pending {
-            match session.execute(id, params) {
+            let answer = session.execute(id, params);
+            // The bake hint follows the bake it asked for by its answers
+            // (`bake_hint.rs`): only the hint queues `motion.bake`.
+            if *id == "motion.bake" {
+                self.player
+                    .hint
+                    .answers
+                    .push(answer.clone().map_err(|e| e.message().to_string()));
+            }
+            match answer {
                 Ok(_) => self.timeline.problem = None,
                 Err(e) => {
                     self.timeline.problem = Some(e.message().to_string());
