@@ -453,6 +453,16 @@ enum Form {
     },
 }
 
+/// Which borders of a spline's range a start is stepped off
+/// (`SurfaceBound::off_singular`): none (singular points only), any, or
+/// only those the surface closes across (seams).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Borders {
+    No,
+    Any,
+    Seams,
+}
+
 /// A surface made ready for proofs about curves near it.
 pub struct SurfaceBound<'a> {
     surface: &'a Surface,
@@ -971,13 +981,13 @@ impl<'a> SurfaceBound<'a> {
     }
 
     /// Whether `(u, v)` lies on a border of a spline's parameter range
-    /// (within a billionth of its width) across which the surface closes
-    /// on itself (its two borders in that direction meet at this point):
-    /// a seam, where the same point has two names. A border the surface
-    /// does not close across (the side of a ruled surface, which an edge
-    /// may run along) is no seam (2026-11-01: an edge along it was taken
-    /// for one and its start never settled; ABC models).
-    fn on_border(&self, (u, v): (f64, f64)) -> bool {
+    /// (within a billionth of its width); with `seams_only`, only on one
+    /// across which the surface closes on itself (its two borders in that
+    /// direction meet at this point): a seam, where the same point has two
+    /// names. A border the surface does not close across (the side of a
+    /// ruled surface, which an edge may run along) is no seam (2026-11-01:
+    /// an edge along it never settled off a border; ABC models).
+    fn on_border(&self, (u, v): (f64, f64), seams_only: bool) -> bool {
         let Form::Patches { us, vs, .. } = &self.form else {
             return false;
         };
@@ -989,7 +999,7 @@ impl<'a> SurfaceBound<'a> {
             let width = (hi - lo).abs();
             (x - lo).abs() <= 1e-9 * width || (x - hi).abs() <= 1e-9 * width
         };
-        let meet = |a: Vec3, b: Vec3| a.distance(b) <= 1e-9 * (1.0 + a.length());
+        let meet = |a: Vec3, b: Vec3| !seams_only || a.distance(b) <= 1e-9 * (1.0 + a.length());
         let across_u = ends(us).is_some_and(|e| {
             near(u, e) && meet(self.surface.eval(e.0, v), self.surface.eval(e.1, v))
         });
@@ -1033,9 +1043,16 @@ impl<'a> SurfaceBound<'a> {
         curve: &CurveBound<'_>,
         (lo, hi): (f64, f64),
         start: (f64, f64),
-        borders: bool,
+        borders: Borders,
     ) -> (f64, f64) {
-        let settled = |f: (f64, f64)| !self.singular(f) && !(borders && self.on_border(f));
+        let settled = |f: (f64, f64)| {
+            !self.singular(f)
+                && match borders {
+                    Borders::No => true,
+                    Borders::Any => !self.on_border(f, false),
+                    Borders::Seams => !self.on_border(f, true),
+                }
+        };
         if settled(start) {
             return start;
         }
@@ -1253,7 +1270,7 @@ impl<'a> SurfaceBound<'a> {
         // between (a foot found from far away may be another one: on a
         // torus, the inside of the tube).
         let mut feet = Vec::with_capacity(points.len());
-        let mut hint = self.off_singular(curve, range, start, false);
+        let mut hint = self.off_singular(curve, range, start, Borders::No);
         let mut last = lo;
         for t in &points {
             for k in 1..FOLLOW {
@@ -1338,16 +1355,27 @@ pub fn curve_on_surface(
         at: 0.5 * (range.0 + range.1),
     };
     let bound = SurfaceBound::new(surface).ok_or(middle)?;
-    let start = match start {
-        Some(start) => start,
+    let prove = |start| bound.curve_within(curve, range, start, breaks, within.target, within.most);
+    match start {
+        Some(start) => prove(start),
         // A projection alone may name either end of a closed spline's
-        // range at its seam: the one the curve goes on from.
+        // range at its seam: the one the curve goes on from. A start on
+        // any border is stepped off first (as before 2026-11-01); should
+        // that not prove it, a start stepped off only a border the
+        // surface closes across (an edge along the side of a ruled ring,
+        // whose every point is on a border, never settles off one).
         None => {
             let projected = surface.project(curve.eval(range.0)).map_err(|_| middle)?;
-            bound.off_singular(curve, range, projected, true)
+            let any = bound.off_singular(curve, range, projected, Borders::Any);
+            match prove(any) {
+                Ok(proven) => Ok(proven),
+                Err(not) => {
+                    let seams = bound.off_singular(curve, range, projected, Borders::Seams);
+                    if seams == any { Err(not) } else { prove(seams) }
+                }
+            }
         }
-    };
-    bound.curve_within(curve, range, start, breaks, within.target, within.most)
+    }
 }
 
 /// How two curves lie, as far as [`curves_apart`] could tell.
@@ -2289,7 +2317,7 @@ mod tests {
                 let range = (0.0, 95.7);
                 // The start's foot named by the far end of the seam, as a
                 // projection may name it.
-                let start = sb.off_singular(&cb, range, (u, 96.0), true);
+                let start = sb.off_singular(&cb, range, (u, 96.0), Borders::Seams);
                 assert!(start.1 < 1.0, "{u} at {k}: {start:?}");
                 let proven = sb.curve_within(&cb, range, start, &[], 1e-6 * k, 1 << 14);
                 assert!(

@@ -712,6 +712,25 @@ pub fn check_capped(body: &Body, tol: &Tolerance, cap: f64) -> Vec<Defect> {
                     })
                     .fold(0.0, f64::max);
                 let within = body.edge_tolerance_at(*edge, tol.linear);
+                // The surface's projection searches a grid of fixed size
+                // and on a spline of many spans may land in another dip
+                // of the distance: where it says off, the feet found by
+                // the surface's spans too (`crate::nearest_foot`;
+                // 2026-11-01, ABC models on rational rings of 96 spans).
+                let worst = if worst > within {
+                    (0..=4)
+                        .map(|k| {
+                            let p = e.curve.eval(t0 + (t1 - t0) * f64::from(k) / 4.0);
+                            crate::nearest_foot(&face.surface, p)
+                                .map(|(u, v)| face.surface.eval(u, v).distance(p))
+                                .filter(|d| d.is_finite())
+                                .unwrap_or(f64::INFINITY)
+                        })
+                        .fold(0.0, f64::max)
+                        .min(worst)
+                } else {
+                    worst
+                };
                 if worst > within {
                     defects.push(Defect::EdgeOffSurface {
                         face: id,
@@ -837,19 +856,31 @@ fn proven_on(
     within: f64,
 ) -> Result<(), f64> {
     use craft3d_geom::certify::{CurveBound, Within, curve_on_surface};
-    curve_on_surface(
-        &CurveBound::new(curve),
-        range,
-        surface,
-        None,
-        &[],
-        Within {
-            target: within,
-            most: crate::PROOF_PIECES,
+    let bounded = CurveBound::new(curve);
+    let prove = |start| {
+        curve_on_surface(
+            &bounded,
+            range,
+            surface,
+            start,
+            &[],
+            Within {
+                target: within,
+                most: crate::PROOF_PIECES,
+            },
+        )
+    };
+    match prove(None) {
+        Ok(_) => Ok(()),
+        // From the start's foot found by the surface's spans, where the
+        // projection may have landed in another dip (`crate::nearest_foot`).
+        Err(not) => match crate::nearest_foot(surface, curve.eval(range.0)) {
+            Some(start) if surface.project(curve.eval(range.0)).ok() != Some(start) => {
+                prove(Some(start)).map(|_| ()).map_err(|n| n.at)
+            }
+            _ => Err(not.at),
         },
-    )
-    .map(|_| ())
-    .map_err(|not| not.at)
+    }
 }
 
 /// What is wrong with the table of tolerances itself: entities that do not
