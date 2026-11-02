@@ -2633,6 +2633,16 @@ impl Shell {
             RecoveryAction::DiscardAll => ("recovery.discard", serde_json::json!({ "all": true })),
         };
         self.discard_armed = None;
+        // Not while an edit made where the bodies are waits: said, so the
+        // person clicks again once it is done.
+        if session.edits_waiting() {
+            self.last_command = Some(CommandReport {
+                label: command.to_string(),
+                ok: false,
+                text: "an edit is still being made; try again once it is done".to_string(),
+            });
+            return;
+        }
         let outcome = session.execute(command, &params);
         let (ok, text) = match &outcome {
             Ok(result) => (true, crate::answer::summary(command, result)),

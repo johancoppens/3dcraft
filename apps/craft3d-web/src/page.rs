@@ -1078,7 +1078,13 @@ impl eframe::App for Page {
                 ctx.request_repaint();
             });
         }
-        let arrived: Vec<Arrived> = self.inbox.borrow_mut().drain(..).collect();
+        // A file opened or dropped while an edit made in the worker waits
+        // for its answer waits too (the frame of that answer takes it).
+        let arrived: Vec<Arrived> = if self.host.session.edits_waiting() {
+            Vec::new()
+        } else {
+            self.inbox.borrow_mut().drain(..).collect()
+        };
         for file in arrived {
             match file.bytes {
                 Ok(bytes) => {
@@ -1225,6 +1231,10 @@ impl eframe::App for Page {
             self.pick(pick);
         }
         self.deliver(outcome.downloads);
+        // An edit made in the worker that takes a while: what it is, and
+        // Cancel.
+        let cancelled = self.host.waiting_ui(ui.ctx());
+        self.deliver(cancelled.downloads);
         if let Some(file) = self.host.companion_ui(ui.ctx()) {
             self.save_companion(file);
         }

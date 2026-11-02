@@ -510,3 +510,66 @@ fn an_edit_that_needs_the_bodies_is_made_in_the_worker_and_undone_here() {
     page.settle();
     assert_eq!(page.host.session.work_here(), work);
 }
+
+/// An export answered after the document was edited (a slider, an eye):
+/// its file is still written, the export of the state it was asked on.
+#[test]
+fn an_export_survives_an_edit_before_its_answer() {
+    let bytes = model();
+    let want = wanted(
+        &mut in_process(&bytes),
+        &ExportWhat::Model,
+        ExportFormat::Step,
+    );
+    let mut page = opened(&bytes, false);
+    assert_eq!(
+        page.host.file_action(FileAction::Export),
+        Outcome::default()
+    );
+    page.settle();
+    page.host.shell.set_export_what(ExportWhat::Model).unwrap();
+    page.host
+        .shell
+        .set_export_format(ExportFormat::Step)
+        .unwrap();
+    page.host.shell.answer_export(true);
+    let request = page.host.shell.take_export_answer().unwrap();
+    assert_eq!(page.host.export_request(request), Outcome::default());
+    // An edit before the worker answers.
+    page.host
+        .session
+        .execute(
+            "feature.block",
+            &json!({"size": [1, 1, 1], "position": [0, 0, 50]}),
+        )
+        .unwrap();
+    let got = page.settle();
+    assert_eq!(files(&got.downloads), files(&want));
+    assert!(page.host.shell.error_dialog().is_none());
+}
+
+/// An edit made in the worker that the person cancels: not made, no
+/// error dialog, and what waited behind it (an undo) runs.
+#[test]
+fn an_edit_cancelled_is_not_made() {
+    let bytes = model();
+    let mut page = opened(&bytes, false);
+    let before = page.host.session.document_bytes();
+    let add = json!({"name": "plate", "measure": "volume", "of": "Plate", "eq": "8000 * (1 mm)^3", "tol": "1e-6 * (1 mm)^3"});
+    let now = page
+        .host
+        .session
+        .execute_deferrable("assert.add", &add)
+        .unwrap();
+    assert_eq!(now["deferred"], true);
+    page.host.cancel_edits();
+    assert!(!page.host.session.edits_waiting());
+    page.settle();
+    assert_eq!(page.host.session.document_bytes(), before);
+    assert!(page.host.shell.error_dialog().is_none());
+    let report = page.host.shell.last_command.clone().unwrap();
+    assert!(
+        !report.ok && report.text == crate::host::CANCELLED,
+        "{report:?}"
+    );
+}

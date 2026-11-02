@@ -148,6 +148,10 @@ impl<T: Transport> Scenes<T> {
                 }
                 Reply::Command { token, answer } => {
                     self.answered_once = true;
+                    // It answers: the next answer is waited for from now.
+                    if self.commands_since.is_some() {
+                        self.commands_since = Some(now);
+                    }
                     done.commands
                         .extend(session.command_answered(token, answer));
                 }

@@ -347,6 +347,12 @@ pub struct WebHost {
     /// (`crate::jobs::EXPORT_CHOICES`): the job's number and the document
     /// it is for; the dialog opens with its answer.
     export_choices: Option<(u64, Option<u64>)>,
+    /// The Parameters form's command, made where the bodies are: the form
+    /// is told its result when the answer comes.
+    form_job: Option<u64>,
+    /// Since when (egui's clock, s) an edit made where the bodies are
+    /// waits ([`WebHost::waiting_ui`]).
+    edit_since: Option<f64>,
     /// The long work is done a piece per frame ([`WebHost::prepare`]), as
     /// the page does: its one thread draws between the pieces.
     stepwise: bool,
@@ -383,6 +389,13 @@ pub struct WebHost {
 /// shown again (an undo).
 pub const WEB_SCENE_BUDGET: usize = 256 << 20;
 
+/// How long an edit made where the bodies are waits before the page says
+/// so with Cancel, in seconds (the work indicator's own wait).
+const EDIT_NOTE_AFTER: f64 = 0.35;
+
+/// What an edit the person cancelled while it was made says.
+pub const CANCELLED: &str = "cancelled: the edit was not made";
+
 impl WebHost {
     /// A host whose session keeps its files in memory, around `shell`,
     /// within the page's memory budgets ([`WEB_SCENE_BUDGET`]; the bodies
@@ -400,6 +413,8 @@ impl WebHost {
             pending_export: None,
             deferred_exports: Vec::new(),
             export_choices: None,
+            form_job: None,
+            edit_since: None,
             stepwise: false,
             about: None,
             fetching: None,
@@ -894,6 +909,16 @@ impl WebHost {
         // document the edit leaves, in the order asked (as the desktop's
         // engine thread runs one task after the other).
         if self.session.edits_waiting() {
+            // Open and Import only ask for a file, which the browser lets
+            // the page do only in the frame of the click: asked now, the
+            // file taken once the edit is done (`page.rs`). The rest waits.
+            match self.shell.take_file_action() {
+                Some(action @ (FileAction::Open | FileAction::Import)) => {
+                    return self.file_action(action);
+                }
+                Some(action) => self.shell.request_file_action(action),
+                None => {}
+            }
             return outcome;
         }
         if let Some(action) = self.shell.take_file_action() {
@@ -948,10 +973,63 @@ impl WebHost {
         if let Some(asked) = self.shell.take_command() {
             self.about = Some((asked.command.to_string(), None));
             let done = self.run(asked.command, &asked.params);
+            // Made where the bodies are: the form is told the real result
+            // when its answer comes ([`Self::answered`]).
+            if let Ok(result) = &done
+                && let Some(token) = deferred(result)
+            {
+                self.form_job = Some(token);
+                return outcome;
+            }
             self.shell.command_done(done.clone());
             self.finish(asked.command, &done);
         }
         outcome
+    }
+
+    /// While an edit made where the bodies are has waited a moment: a
+    /// small window that says what it is, with Cancel (the edit is then
+    /// not made, and a late answer is dropped). What Cancel leaves for
+    /// the page.
+    pub fn waiting_ui(&mut self, ctx: &egui::Context) -> Outcome {
+        let now = ctx.input(|i| i.time);
+        let Some(command) = self.session.edit_waiting().map(str::to_string) else {
+            self.edit_since = None;
+            return Outcome::default();
+        };
+        let since = *self.edit_since.get_or_insert(now);
+        if now - since < EDIT_NOTE_AFTER {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            return Outcome::default();
+        }
+        let label = Session::command(&command).map_or(command.as_str(), |spec| spec.label);
+        let mut cancel = false;
+        egui::Window::new("Working")
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -48.0))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(format!("Working on {label}…"));
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if cancel {
+            return self.cancel_edits();
+        }
+        Outcome::default()
+    }
+
+    /// Cancels every edit that waits for the worker's answer: not made,
+    /// said so, and what was kept waiting behind it runs.
+    pub fn cancel_edits(&mut self) -> Outcome {
+        self.edit_since = None;
+        let answered = self.session.edits_failed(CANCELLED);
+        self.answered(answered)
     }
 
     /// Does what the File menu asked for, as far as that goes without the
@@ -1398,6 +1476,20 @@ impl WebHost {
                 .or_else(|| answer.params.get("name"))
                 .and_then(Value::as_str);
             files.sort_by_key(|file| Some(file.name.as_str()) != asked);
+            let form = self.form_job == Some(answer.token);
+            if form {
+                self.form_job = None;
+                self.shell.command_done(answer.result.clone());
+            }
+            // Cancelled by the person: said, no error dialog.
+            if matches!(&answer.result, Err(why) if why.ends_with(CANCELLED)) {
+                self.note(&answer.command, false, CANCELLED.to_string());
+                continue;
+            }
+            if form {
+                self.finish(&answer.command, &answer.result);
+                continue;
+            }
             let Some((_, request)) = export else {
                 if answer.edited {
                     // An edit made where the bodies are, now applied

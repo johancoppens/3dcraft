@@ -170,7 +170,6 @@ pub(crate) fn edit_merging<T>(
         return Err(crate::jig_cmds::in_use_refusal(command));
     }
     let cache = &mut open.cache;
-    let revision = open.history.revision();
     let outcome = open
         .history
         .apply_merging(label, key, merge, |doc| {
@@ -220,16 +219,17 @@ pub(crate) fn edit_merging<T>(
         .map_err(doc_error(command))?;
     // Made for another session (`run_on_state`): the step, for it to
     // make the same.
-    if open.history.revision() != revision {
-        let after = std::sync::Arc::clone(open.history.current());
-        if let Some(log) = &mut session.edit_log {
-            log.push(crate::commands_elsewhere::EditStep {
-                label: label.to_string(),
-                key: key.map(str::to_string),
-                merge,
-                after,
-            });
-        }
+    // An edit that changed nothing is logged too: under a key it still
+    // starts a new run (`History::apply_merging`), which the other session
+    // must start as well.
+    let after = std::sync::Arc::clone(open.history.current());
+    if let Some(log) = &mut session.edit_log {
+        log.push(crate::commands_elsewhere::EditStep {
+            label: label.to_string(),
+            key: key.map(str::to_string),
+            merge,
+            after,
+        });
     }
     Ok(outcome)
 }

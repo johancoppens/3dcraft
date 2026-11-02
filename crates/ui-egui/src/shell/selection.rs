@@ -313,6 +313,11 @@ impl Shell {
 
     /// Runs the requests the mouse made. True when there were any.
     pub(crate) fn apply_selection_requests(&mut self, session: &mut Session) -> bool {
+        // An edit made where the bodies are waits for its answer: a click
+        // waits too, and selects in the document the edit leaves.
+        if session.edits_waiting() {
+            return false;
+        }
         let pending = std::mem::take(&mut self.select.pending);
         for params in &pending {
             // A click: handed to where the bodies are when they are not

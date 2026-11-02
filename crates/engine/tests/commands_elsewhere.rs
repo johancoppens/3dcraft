@@ -609,3 +609,34 @@ fn a_click_after_a_refused_one_and_an_undo_does_not_follow_it() {
         .collect();
     assert_eq!(names, ["Ball"]);
 }
+
+/// Two `param.set` with `merge: true` (a slider dragged), each made where
+/// the bodies are (`wait: true` reads them): one undo step, as on the
+/// desktop; one undo goes back to before the first.
+#[test]
+fn a_slider_run_made_elsewhere_folds_into_one_step() {
+    let mut page = page(1.0);
+    let mut desktop = desktop(1.0);
+    let before = page.document_bytes();
+    let desktop_before = desktop.document_bytes();
+    for w in ["43 mm", "44 mm"] {
+        let params = json!({"values": {"w": w}, "merge": true, "wait": true});
+        let want = desktop
+            .execute("param.set", &params)
+            .map_err(|e| e.message().to_string());
+        let (got, handed) = on_page(&mut page, "param.set", &params);
+        assert!(handed, "{w}");
+        assert_eq!(got.is_ok(), want.is_ok(), "{w}: {got:?}");
+        assert!(page.document_bytes() == desktop.document_bytes(), "{w}");
+        assert_eq!(undo_label(&page), undo_label(&desktop), "{w}");
+        settle(&mut page);
+    }
+    // One undo goes back past the whole run (on both, also past the
+    // build's own last `param.set` of the same key, which the run joined).
+    desktop.execute("edit.undo", &json!({})).unwrap();
+    page.execute("edit.undo", &json!({})).unwrap();
+    assert!(page.document_bytes() == desktop.document_bytes());
+    assert!(desktop.document_bytes() != desktop_before);
+    assert!(page.document_bytes() != before);
+    assert_eq!(undo_label(&page), undo_label(&desktop));
+}

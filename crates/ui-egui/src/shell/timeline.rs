@@ -400,6 +400,12 @@ impl Shell {
     /// anything. The scene of a new step is built by whoever builds the
     /// window's scenes (the engine thread in the desktop app), not here.
     pub(crate) fn apply_timeline_requests(&mut self, session: &mut Session) -> bool {
+        // An edit made where the bodies are waits for its answer (the
+        // page's worker): what the timeline and the eyes ask for waits
+        // too, and runs on the document it leaves.
+        if session.edits_waiting() {
+            return false;
+        }
         let pending = std::mem::take(&mut self.timeline.pending);
         for (id, params) in &pending {
             match session.execute(id, params) {
@@ -597,6 +603,101 @@ mod tests {
         };
         let mut output = ctx.run_ui(input, |ui| shell.ui(ui, session));
         output.textures_delta.clear();
+    }
+
+    /// While an edit made where the bodies are waits for its answer (the
+    /// page's worker), an eye clicked and a click that selects wait too:
+    /// neither runs on the state before the edit (which would have the
+    /// edit's answer refused), both run on the state it leaves, in order.
+    #[test]
+    fn the_eye_and_a_click_wait_for_an_edit_made_elsewhere() {
+        use craft3d_engine::{run_command, scene_begin, scene_next};
+        let mut session = Session::new(Workspace::memory());
+        session.set_stepwise(true);
+        session.set_checks_elsewhere(true);
+        session.set_regen_elsewhere(true);
+        session.set_commands_elsewhere(true);
+        for (id, params) in [
+            ("file.new", json!({"units": "mm"})),
+            (
+                "feature.block",
+                json!({"size": [10, 10, 10], "name": "Box"}),
+            ),
+            (
+                "feature.sphere",
+                json!({"radius": 3, "position": [30, 0, 0], "name": "Ball"}),
+            ),
+        ] {
+            session.execute(id, &params).unwrap();
+        }
+        let settle = |session: &mut Session| {
+            let quality = craft3d_engine::SceneQuality::display();
+            while let Some(token) = session.scene_job(quality) {
+                let request = session.scene_request(token).unwrap();
+                scene_begin(&request.document, &request.work);
+                while let Some(part) = scene_next() {
+                    session.scene_answered(token, Ok(&part));
+                }
+                session.scene_done(token);
+            }
+            for token in session.command_jobs() {
+                let request = session.command_request(token).unwrap();
+                let answer = run_command(&request.document, &request.work);
+                session.command_answered(token, Ok(answer));
+            }
+        };
+        // A state the page has not regenerated (a slider moved).
+        for (id, params) in [
+            ("variable.set", json!({"name": "k", "expr": "1"})),
+            (
+                "variable.publish",
+                json!({"name": "k", "min": "0", "max": "2"}),
+            ),
+        ] {
+            session.execute(id, &params).unwrap();
+        }
+        settle(&mut session);
+        session
+            .execute("param.set", &json!({"values": {"k": "2"}}))
+            .unwrap();
+        settle(&mut session);
+        assert!(!session.regenerated_here());
+        let add = json!({"name": "box", "measure": "volume", "of": "Box", "eq": "1000 * (1 mm)^3", "tol": "1e-6 * (1 mm)^3"});
+        let now = session.execute_deferrable("assert.add", &add).unwrap();
+        assert_eq!(now["deferred"], true, "{now}");
+        assert!(session.edits_waiting());
+        let mut shell = Shell::new();
+        shell.toggle_visible("F2".to_string(), false);
+        shell.queue_select(json!({"names": ["Box"]}));
+        let revision = session.document_revision();
+        assert!(!shell.apply_timeline_requests(&mut session));
+        assert!(!shell.apply_selection_requests(&mut session));
+        assert_eq!(session.document_revision(), revision);
+        // The edit's answer: applied; then the eye and the click run.
+        settle(&mut session);
+        assert!(!session.edits_waiting());
+        assert_eq!(
+            session.document_status().unwrap().undo.as_deref(),
+            Some("Add assertion box")
+        );
+        let edited = session.document_revision();
+        assert_ne!(edited, revision);
+        assert!(shell.apply_timeline_requests(&mut session));
+        // The eye's edit came after the assertion's, on top of it.
+        assert_ne!(session.document_revision(), edited);
+        assert_ne!(
+            session.document_status().unwrap().undo.as_deref(),
+            Some("Add assertion box")
+        );
+        assert!(shell.apply_selection_requests(&mut session));
+        settle(&mut session);
+        let names: Vec<String> = session
+            .selection()
+            .items
+            .iter()
+            .map(|i| i.name.clone())
+            .collect();
+        assert_eq!(names, ["Box"]);
     }
 
     #[test]

@@ -723,9 +723,13 @@ pub fn run_on_state(
                 .is_none_or(|open| open.history.revision() != revision);
         let after = session.documents.first().map(|o| o.selection.to_wire());
         let selection = (after != before).then_some(after).flatten();
-        // The edit as the steps it made: only when they are the whole of
-        // it (the one document, its last step the state it is in now).
-        let whole = edited
+        // The edit as the steps it made (also those that changed nothing:
+        // under a key they start a run): only when they are the whole of
+        // it (the one document, its last step the state it is in now), at
+        // most as many as a history keeps, and each state crossing the
+        // file as it is (the host would otherwise take another one).
+        let whole = !steps.is_empty()
+            && steps.len() <= craft3d_ops::DEFAULT_LIMIT
             && session.documents.len() == 1
             && steps.last().is_some_and(|step| {
                 session
@@ -736,9 +740,12 @@ pub fn run_on_state(
         let mut documents = Vec::new();
         if whole {
             for step in &steps {
-                match craft3d_format::to_bytes(&step.after) {
-                    Ok(bytes) => documents.push(bytes),
-                    Err(_) => {
+                let crossed = craft3d_format::to_bytes(&step.after).ok().filter(|bytes| {
+                    craft3d_format::from_bytes(bytes).is_ok_and(|back| back == *step.after)
+                });
+                match crossed {
+                    Some(bytes) => documents.push(bytes),
+                    None => {
                         documents.clear();
                         break;
                     }

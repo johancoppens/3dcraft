@@ -152,6 +152,9 @@ pub(crate) struct Commands {
 /// runs here.
 const MAX_JOBS: usize = 64;
 
+/// Longest undo label or run key an edit's answer may carry, in bytes.
+const MAX_LABEL: usize = 4096;
+
 /// What came of trying a command without the bodies.
 pub(crate) enum Trial {
     /// It needed none: its result stands.
@@ -342,6 +345,33 @@ impl Session {
         Some(token)
     }
 
+    /// The command of the first edit handed over that waits for its
+    /// answer, for a host to say what it waits for.
+    pub fn edit_waiting(&self) -> Option<&str> {
+        self.commands
+            .jobs
+            .iter()
+            .find(|job| job.kind == JobKind::Edit)
+            .map(|job| job.command.as_str())
+    }
+
+    /// Every edit that waits, answered with `why` (the person cancelled
+    /// it): nothing of it is made, and a late answer is dropped. The
+    /// reads and exports waiting go on.
+    pub fn edits_failed(&mut self, why: &str) -> Vec<Answered> {
+        let tokens: Vec<u64> = self
+            .commands
+            .jobs
+            .iter()
+            .filter(|job| job.kind == JobKind::Edit)
+            .map(|job| job.token)
+            .collect();
+        tokens
+            .into_iter()
+            .filter_map(|token| self.command_answered(token, Err(why.to_string())))
+            .collect()
+    }
+
     /// True while an edit handed over waits for its answer: a host keeps
     /// the commands asked for after it until it is applied, so that they
     /// run on the document it leaves, in the order they were asked for.
@@ -482,6 +512,32 @@ impl Session {
         let reply: Value = serde_json::from_str(&answer.answer).map_err(|e| {
             format!("{id}: internal error (a bug in 3DCraft, please report it): its answer cannot be read: {e}")
         })?;
+        // An export (the host's own job, or `file.export`) is a function
+        // of the state it was asked on alone: its files are taken while
+        // its document is open, whatever was done to it since (a slider
+        // moved, an eye clicked), and nothing else of it is.
+        if job.kind == JobKind::Host || id == "file.export" {
+            if !self.documents.iter().any(|open| open.id == job.doc_id) {
+                return Err(format!(
+                    "{id}: the document was closed before its answer came, so nothing was written"
+                ));
+            }
+            if reply.get("edited") == Some(&Value::Bool(true)) {
+                return Err(format!(
+                    "{id}: internal error (a bug in 3DCraft, please report it): it changed the document beside the page"
+                ));
+            }
+            if let Some(error) = reply.get("error") {
+                return Err(error.as_str().unwrap_or("failed").to_string());
+            }
+            let mut files = Vec::new();
+            for (name, bytes) in answer.files {
+                self.put_file(&name, bytes)
+                    .map_err(|e| format!("{id}: {}", e.message()))?;
+                files.push(name);
+            }
+            return Ok((reply.get("ok").cloned().unwrap_or(Value::Null), files));
+        }
         let Some(at) = self.documents.iter().position(|open| {
             open.id == job.doc_id && Arc::ptr_eq(open.history.current(), &job.doc)
         }) else {
@@ -489,12 +545,22 @@ impl Session {
                 "{id}: the document changed before its answer came, so nothing of it was taken; run it again"
             ));
         };
-        if reply.get("edited") == Some(&Value::Bool(true)) {
-            if job.kind == JobKind::Edit
-                && let Some(applied) = self.apply_edit(at, &job.doc, &reply, answer.documents)
-            {
-                return applied.map(|value| (value, Vec::new()));
+        // An edit's steps (also those that changed nothing: a new run of
+        // a key), applied here; an edit takes no files.
+        if job.kind == JobKind::Edit && reply.get("steps").is_some() {
+            let edited = reply.get("edited") == Some(&Value::Bool(true));
+            match self.apply_edit(at, job, &reply, answer.documents) {
+                Some(applied) => return applied.map(|value| (value, Vec::new())),
+                None if !edited => {
+                    return match reply.get("error") {
+                        Some(error) => Err(error.as_str().unwrap_or("failed").to_string()),
+                        None => Ok((reply.get("ok").cloned().unwrap_or(Value::Null), Vec::new())),
+                    };
+                }
+                None => {}
             }
+        }
+        if reply.get("edited") == Some(&Value::Bool(true)) {
             // It changes the document and its edit cannot be taken from
             // there: run here, as it always was.
             if at != self.active {
@@ -524,6 +590,9 @@ impl Session {
             return Err(error.as_str().unwrap_or("failed").to_string());
         }
         let mut files = Vec::new();
+        if job.kind == JobKind::Edit {
+            return Ok((reply.get("ok").cloned().unwrap_or(Value::Null), files));
+        }
         for (name, bytes) in answer.files {
             self.put_file(&name, bytes)
                 .map_err(|e| format!("{id}: {}", e.message()))?;
@@ -545,12 +614,16 @@ impl Session {
     fn apply_edit(
         &mut self,
         at: usize,
-        doc: &Arc<Document>,
+        job: &CommandJob,
         reply: &Value,
         documents: Vec<Vec<u8>>,
     ) -> Option<Result<Value, String>> {
+        let doc = &job.doc;
         let steps = reply.get("steps")?.as_array()?;
-        if steps.is_empty() || steps.len() != documents.len() {
+        if steps.is_empty()
+            || steps.len() > craft3d_ops::DEFAULT_LIMIT
+            || steps.len() != documents.len()
+        {
             return None;
         }
         // The other side made the edit on the state read from its file:
@@ -564,27 +637,29 @@ impl Session {
         }
         let mut made = Vec::with_capacity(steps.len());
         for (step, bytes) in steps.iter().zip(&documents) {
-            let label = step.get("label")?.as_str()?.to_string();
-            let key = step.get("key").and_then(Value::as_str).map(str::to_string);
+            let label = step.get("label")?.as_str()?;
+            let key = step.get("key").and_then(Value::as_str);
+            if label.len() > MAX_LABEL || key.is_some_and(|key| key.len() > MAX_LABEL) {
+                return None;
+            }
+            let (label, key) = (label.to_string(), key.map(str::to_string));
             let merge = step.get("merge").and_then(Value::as_bool).unwrap_or(false);
             let after = craft3d_format::from_bytes(bytes).ok()?;
             made.push((label, key, merge, after));
         }
         let open = self.documents.get_mut(at)?;
         for (label, key, merge, after) in made {
-            let applied = open
+            let Ok(()) = open
                 .history
                 .apply_merging(&label, key.as_deref(), merge, |current| {
                     *current = after;
-                    Ok::<(), ()>(())
+                    Ok::<(), std::convert::Infallible>(())
                 });
-            if applied.is_err() {
-                return None;
-            }
         }
         // What it left selected, checked against this state once it is
-        // regenerated here.
-        if let Some(wire) = reply.get("selection").filter(|s| !s.is_null())
+        // regenerated here; not over a selection made here since.
+        if open.selection.serial() == job.serial
+            && let Some(wire) = reply.get("selection").filter(|s| !s.is_null())
             && let Some(selection) = Selection::from_wire(wire, None)
         {
             open.selection = selection;
