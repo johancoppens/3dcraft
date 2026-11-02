@@ -1,19 +1,19 @@
 # ABC scorecard: chunk 0000
 
-Made by `cargo xtask abc` in Heavy run 41402275303 on the Strix; the same chunk at the commit this branch starts from (main 91e156d5 with the same report), Heavy run 41397009712: 7699 imported, 36 invalid (the first scorecard, at 9aca23b396 before spindle tori were read, Heavy run 41347412557: 7574 and 34). Model ids are the ABC dataset's (`<id>/<n>`: the model's file `<id>_<hash>_step_<n>`); the models themselves are never committed (their licence: [testing.md](testing.md) › *Real-world models*). A timeout is a model that gave no verdict in time: slow or hanging, not yet told apart. Why an edge is refused (the distances at samples, what the prover reaches): [design/step-import.md](design/step-import.md) › *Edges the ABC corpus refused*.
+Made by `cargo xtask abc` in Heavy run 41467905116 on the Strix; the same chunk at the commit this branch starts from (main 91e156d5 with the same report), Heavy run 41397009712: 7699 imported, 36 invalid (the first scorecard, at 9aca23b396 before spindle tori were read, Heavy run 41347412557: 7574 and 34). Model ids are the ABC dataset's (`<id>/<n>`: the model's file `<id>_<hash>_step_<n>`); the models themselves are never committed (their licence: [testing.md](testing.md) › *Real-world models*). A timeout is a model that gave no verdict in time: slow or hanging, not yet told apart. Why an edge is refused (the distances at samples, what the prover reaches): [design/step-import.md](design/step-import.md) › *Edges the ABC corpus refused*.
 
-Commit 186bde4601, 2026-11-02 08:51; 10000 of the chunk's 10000 STEP files run, 6 at once, 60 s and 3G per model (docs/testing.md › Real-world models).
+Commit aaffc9d91a9, 2026-11-02 17:27; 10000 of the chunk's 10000 STEP files run, 6 at once, 60 s and 3G per model (docs/testing.md › Real-world models).
 
 ## Stage 1: import, check, mesh, measure
 
 | Verdict | Models | % |
 |---|---:|---:|
 | invalid | 39 | 0.4 |
-| ok | 8007 | 80.1 |
+| ok | 8006 | 80.1 |
 | refused | 1947 | 19.5 |
-| timeout | 7 | 0.1 |
+| timeout | 8 | 0.1 |
 
-Read as valid solids (ready for stage 2): 7979.
+Read as valid solids (ready for stage 2): 7978.
 
 | Where | Models |
 |---|---:|
@@ -60,6 +60,7 @@ Read as valid solids (ready for stage 2): 7979.
 
 | Model | Verdict | Detail |
 |---|---|---|
+| 00000644 | timeout | no verdict within 60 s |
 | 00001054 | timeout | no verdict within 60 s |
 | 00001760 | timeout | no verdict within 60 s |
 | 00002501/3 | timeout | no verdict within 60 s |
@@ -73,31 +74,31 @@ Read as valid solids (ready for stage 2): 7979.
 | Verdict | Models | % |
 |---|---:|---:|
 | invalid | 4 | 0.1 |
-| ok | 7788 | 97.6 |
-| refused | 180 | 2.3 |
-| timeout | 7 | 0.1 |
+| ok | 7793 | 97.7 |
+| refused | 175 | 2.2 |
+| timeout | 6 | 0.1 |
 
 | Tool | Verdict | Models |
 |---|---|---:|
 | corner | invalid | 3 |
-| corner | ok | 7916 |
-| corner | refused | 53 |
+| corner | ok | 7917 |
+| corner | refused | 52 |
 | drill | invalid | 2 |
-| drill | ok | 7883 |
-| drill | refused | 87 |
+| drill | ok | 7885 |
+| drill | refused | 85 |
 | slab | invalid | 2 |
-| slab | ok | 7845 |
-| slab | refused | 125 |
+| slab | ok | 7848 |
+| slab | refused | 122 |
 
 ### Top boolean refusals
 
 | Reason | Models | Examples |
 |---|---:|---|
 | slab union: boolean does not support this: a freeform face that closes on itself and into | 25 | 00000324/19, 00000380/1, 00000722 |
-| slab union: boolean does not support this: two curves leave a point in the same direction | 23 | 00000032/12, 00000761/8, 00001143 |
+| slab union: boolean does not support this: two curves leave a point in the same direction | 22 | 00000032/12, 00000761/8, 00001143 |
 | drill union: boolean does not support this: two curves leave a point in the same direction | 20 | 00000078/19, 00001467/51, 00003450/1 |
 | drill union: boolean does not support this: a freeform face that closes on itself and into | 17 | 00000407/4, 00001144, 00002192/1 |
-| drill union: boolean does not support this: two points closer together than the tolerance can tell | 13 | 00000245, 00000857, 00001482/66 |
+| drill union: boolean does not support this: two points closer together than the tolerance can tell | 11 | 00000245, 00000857, 00001482/66 |
 | drill union: the result would have zero thickness at : two of its parts touch there | 9 | 00001356, 00002306/6, 00002364/7 |
 | slab union: boolean produced an invalid body: edge # is #.#e# away from the surface of | 6 | 00000530/2, 00003174, 00003938 |
 | corner union: boolean does not support this: a freeform face that closes on itself and into | 5 | 00000826/2, 00005401/5, 00007946 |
@@ -110,9 +111,9 @@ Read as valid solids (ready for stage 2): 7979.
 | slab union: boolean does not support this: an intersection curve could not be fitted within the | 3 | 00009287/5, 00009288/6, 00009780/5 |
 | slab union: boolean does not support this: imprint lost: a curve in which two faces cross | 3 | 00002928, 00004655/6, 00005460/14 |
 | corner union: boolean does not support this: two curves leave a point in the same direction | 2 | 00006696, 00009956/91 |
-| corner union: boolean does not support this: two points closer together than the tolerance can tell | 2 | 00007724, 00008805/1 |
+| drill union: boolean does not support this: a curve that is partly on and partly off | 2 | 00000033/13, 00008919/1 |
 | drill union: boolean does not support this: a piece of a face too thin to find | 2 | 00004207, 00007346/1 |
-| drill union: boolean does not support this: two faces that go through each other by between | 2 | 00001444/28, 00008642 |
+| slab union: boolean does not support this: a point too close to a face boundary to | 2 | 00003321/9, 00007608/6 |
 
 ### Wrong booleans (identity or check)
 
@@ -125,11 +126,10 @@ Read as valid solids (ready for stage 2): 7979.
 
 | Model | Verdict | Detail |
 |---|---|---|
-| 00000644 | timeout | no verdict within 180 s |
-| 00001678/5 | timeout | no verdict within 180 s |
 | 00003163/2 | timeout | no verdict within 180 s |
 | 00003662/1 | timeout | no verdict within 180 s |
 | 00003663/2 | timeout | no verdict within 180 s |
+| 00003890/3 | timeout | no verdict within 180 s |
 | 00004112 | timeout | no verdict within 180 s |
 | 00004795/41 | timeout | no verdict within 180 s |
 
