@@ -357,6 +357,14 @@ fn an_edit_that_needs_the_bodies_is_made_where_they_are() {
         let cube = 512.0 * s * s * s;
         // `None`: either way (whether its trial needs the bodies).
         for (id, params, handed) in [
+            // Needs no bodies: done here at once (first: once the document
+            // has a measured variable or a failing feature, adding one
+            // reads the bodies).
+            (
+                "feature.block",
+                json!({"size": [1, 1, 1], "name": "C"}),
+                Some(false),
+            ),
             (
                 "variable.measure",
                 json!({"of": "B", "name": "VB", "measure": "volume"}),
@@ -366,13 +374,6 @@ fn an_edit_that_needs_the_bodies_is_made_where_they_are() {
                 "assert.add",
                 json!({"name": "cube", "measure": "volume", "of": "B", "eq": format!("{cube} * (1 mm)^3"), "tol": format!("{} * (1 mm)^3", cube * 1e-6)}),
                 Some(true),
-            ),
-            // Needs no bodies: done here at once (before a feature fails,
-            // which an edit's result then reports from a regeneration).
-            (
-                "feature.block",
-                json!({"size": [1, 1, 1], "name": "C"}),
-                Some(false),
             ),
             // A datum plane on a face, which says where it lies.
             (
