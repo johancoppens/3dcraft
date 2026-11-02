@@ -305,7 +305,7 @@ fn ui_get_reports_the_state_the_scene_and_the_tree() {
     );
     assert!(features[2]["error"].as_str().unwrap().contains("nope"));
     // The camera followed the model: it looks at the middle of its box.
-    assert_eq!(got["state"]["camera"]["target"], json!([30.0, 20.0, 19.0]));
+    assert_middle(&got["state"]["camera"]["target"]);
     assert_eq!(got["state"]["camera"]["autoFit"], true);
 
     let error = refused(&mut shell, &mut session, "ui.get", json!({"verbose": true}));
@@ -336,7 +336,7 @@ fn ui_set_changes_the_state_or_nothing() {
     assert_eq!(set["state"]["selectedFeature"], "F2");
     assert_eq!(set["state"], serde_json::to_value(&shell.state).unwrap());
     // Turning the camera keeps it on the model.
-    assert_eq!(set["state"]["camera"]["target"], json!([30.0, 20.0, 19.0]));
+    assert_middle(&set["state"]["camera"]["target"]);
 
     // A selection that names no feature does not stick.
     let set = call(
@@ -402,7 +402,7 @@ fn ui_fit_frames_the_model_and_refuses_when_there_is_none() {
     );
     assert!(!shell.state.camera.auto_fit);
     let fitted = call(&mut shell, &mut session, "ui.fit", json!({"view": "front"}));
-    assert_eq!(fitted["camera"]["target"], json!([30.0, 20.0, 19.0]));
+    assert_middle(&fitted["camera"]["target"]);
     assert_eq!(fitted["camera"]["yaw"], -90.0);
     assert_eq!(fitted["camera"]["pitch"], 0.0);
     assert_eq!(fitted["camera"]["autoFit"], true);
@@ -424,7 +424,7 @@ fn ui_fit_frames_the_model_and_refuses_when_there_is_none() {
         json!({"feature": "Post", "height": "92 mm"}),
     );
     let got = call(&mut shell, &mut session, "ui.get", json!({}));
-    assert_eq!(got["state"]["camera"]["target"], json!([30.0, 20.0, 50.0]));
+    assert_near(&got["state"]["camera"]["target"], [30.0, 20.0, 50.0]);
 
     let before = shell.state.clone();
     for bad in [
@@ -873,5 +873,24 @@ fn evidence_of_the_demo_part() {
             .filter(|p| **p == axis)
             .count();
         assert!(count > 3, "axis colour {axis:?}: {count} pixels");
+    }
+}
+
+/// The camera looks at the middle of the model, framed on the bodies'
+/// B-rep box (`Scene::frame_box`, 2026-11-02; before, the meshes' box),
+/// whose bounds carry the box's own rounding: to a billionth of the model.
+fn assert_middle(target: &Value) {
+    assert_near(target, [30.0, 20.0, 19.0]);
+}
+
+/// [`assert_middle`] of a model whose middle is `want`.
+fn assert_near(target: &Value, want: [f64; 3]) {
+    let got: Vec<f64> = target
+        .as_array()
+        .map(|a| a.iter().filter_map(Value::as_f64).collect())
+        .unwrap_or_default();
+    assert_eq!(got.len(), 3, "{target}");
+    for (got, want) in got.iter().zip(want) {
+        assert!((got - want).abs() <= 1e-9 * 100.0, "camera target {target}");
     }
 }

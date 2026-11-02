@@ -322,7 +322,7 @@ pub fn received_kind(name: &str) -> Option<Received> {
 /// A dialog's answer kept while an edit made where the bodies are waits.
 #[derive(Clone, Debug)]
 enum HeldAnswer {
-    Export(ExportRequest),
+    Export(Box<ExportRequest>),
     Name(NameDialog),
 }
 
@@ -937,7 +937,7 @@ impl WebHost {
         }
         // A dialog answered while the edit waited: done now, after it.
         match self.held_answer.take() {
-            Some(HeldAnswer::Export(request)) => return self.export_request(request),
+            Some(HeldAnswer::Export(request)) => return self.export_request(*request),
             Some(HeldAnswer::Name(dialog)) => return self.answer(dialog, true),
             None => {}
         }
@@ -1611,7 +1611,7 @@ impl WebHost {
             // An edit waits: the export is of the document it leaves, as
             // on the desktop, and is made once it is there.
             if self.session.edits_waiting() {
-                self.held_answer = Some(HeldAnswer::Export(request));
+                self.held_answer = Some(HeldAnswer::Export(Box::new(request)));
                 return Outcome::default();
             }
             return self.export_request(request);
