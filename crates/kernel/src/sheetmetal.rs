@@ -2491,6 +2491,10 @@ fn close_corners(
     // end (the corner at its edge's start or end).
     let mut at_start: BTreeMap<usize, (Vec3, Vec3)> = BTreeMap::new();
     let mut at_end: BTreeMap<usize, (Vec3, Vec3)> = BTreeMap::new();
+    // Per flange end at a mitre: the halving plane before its shift by
+    // half the gap (a point of it and its normal), what decides whether
+    // the bend's root may reach past its end plane (`trim::untrimmed_cut`).
+    let mut halving: BTreeMap<(usize, usize), (Vec3, Vec3)> = BTreeMap::new();
     for c in corners {
         let [fa, fb] = c.bends;
         let g = c.closing.gap;
@@ -2543,6 +2547,9 @@ fn close_corners(
                             ));
                         }
                         let toward = |side: f64| q + n * (0.5 * g * side.signum());
+                        // Flange fa's end is at the corner, fb's start.
+                        halving.insert((fa, 1), (q, n));
+                        halving.insert((fb, 0), (q, n));
                         [(fa, (toward(sa), n)), (fb, (toward(sb), n))]
                     }
                     _ => {
@@ -2734,9 +2741,23 @@ fn close_corners(
                 })?;
                 r.near_point = trim::far_point(b, &t);
                 r.trim = Some(t);
-            } else if let Some((skin, phi, depth)) =
-                trim::untrimmed_cut(x, b, &parent_tf, which, plane, tolerance)?
-            {
+            } else if let Some((skin, phi, depth)) = {
+                // The root's own cut is allowed only at a mitre whose
+                // halving plane passes through the corner's point on both
+                // skins (a symmetric mitre): then a cut no deeper than the
+                // root's keeps the bend on its side of that plane, which
+                // the other wall's material does not cross. Anywhere else
+                // nothing proves the other bend leaves room (review of
+                // cc7b9228): every cut counts.
+                let corner = if which == 0 { b.start } else { b.end };
+                let root_allowed = halving.get(&(x, which)).is_some_and(|&(q, n)| {
+                    [0.0, thickness].iter().all(|&z| {
+                        let p = parent_tf.point(Vec3::new(corner[0], corner[1], z));
+                        n.dot(p - q).abs() <= tolerance.linear
+                    })
+                });
+                trim::untrimmed_cut(x, b, &parent_tf, which, plane, root_allowed, tolerance)?
+            } {
                 return Err(refuse(
                     Some(x),
                     format!(

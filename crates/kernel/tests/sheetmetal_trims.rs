@@ -518,3 +518,45 @@ fn trims_refused_by_reason() {
         assert!(why.contains("not supported"), "{why}");
     }
 }
+
+/// A mitre of walls unlike each other (inner radius 1 on one, 3 on the
+/// other, both square to the base) at a corner without a relief: the
+/// halving plane does not pass through the corner's point, so one bend's
+/// root reaches past its end plane by more than half the gap and nothing
+/// proves the other bend leaves room: refused with the reason (review of
+/// cc7b9228: it was let through, its root's cut taken as the corner's
+/// own). With a relief the bends end short of the corner and the part is
+/// built, a valid solid.
+#[test]
+fn a_mitre_of_unlike_walls_without_a_relief_is_refused() {
+    for k in SCALES {
+        let tol = tolerance(k);
+        let (t, l) = (1.0 * k, 10.0 * k);
+        let base = polygon(&[[0.0, 0.0], [60.0, 0.0], [60.0, 40.0], [0.0, 40.0]], k);
+        let mut sp = spec(
+            base,
+            t,
+            vec![
+                flange(1, l, FRAC_PI_2, 1.0 * k, 0.4),
+                flange(2, l, FRAC_PI_2, 3.0 * k, 0.4),
+            ],
+            Closing {
+                kind: CornerKind::Miter,
+                gap: 0.3 * k,
+                over: None,
+            },
+        );
+        let (f, why) = refused(&sp, &tol);
+        assert!(f.is_some(), "scale {k}: {why}");
+        assert!(
+            why.contains("not supported") && why.contains("relief"),
+            "scale {k}: {why}"
+        );
+        sp.relief = Some(craft3d_kernel::sheetmetal::Relief {
+            kind: craft3d_kernel::sheetmetal::ReliefKind::Rect,
+            size: 5.0 * k,
+        });
+        let part = build(&sp, &tol).unwrap_or_else(|e| panic!("scale {k}: {e}"));
+        assert!(check(&part.solid.body, &tol).is_empty(), "scale {k}");
+    }
+}

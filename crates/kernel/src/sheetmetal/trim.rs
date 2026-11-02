@@ -308,11 +308,16 @@ pub fn trim(
 /// stationary angle `φ* = atan2(b, c) + kπ`, in closed form. At the
 /// parent's tangent line (`φ = 0`) the bend's end is the corner's own:
 /// two bends that reach a corner meet there at its point, as at an open
-/// corner, whatever the plane (a mitre's plane, shifted by half the gap,
-/// passes beside that point; the pattern check holds the pieces apart
-/// there). So a cut counts where it goes deeper than at the root, by more
-/// than the tolerance, or is positive at all: `cut(φ) > max(cut(0), 0) +
-/// tol` for some `φ` in `(0, θ]`. `None` when neither skin is cut so;
+/// corner, and when `root_allowed` (the caller's: a mitre whose halving
+/// plane passes through the corner's point on both skins, within the
+/// tolerance) the root's cut is the half gap the plane is shifted by, so a
+/// cut no deeper than it keeps the bend on its own side of the halving
+/// plane, which the other wall does not cross: a cut counts where it goes
+/// deeper than at the root by more than the tolerance, `cut(φ) >
+/// max(cut(0), 0) + tol` for some `φ` in `(0, θ]`. Otherwise (overlap,
+/// butt, a mitre of walls unlike each other, whose halving plane misses
+/// the corner's point) nothing proves the other bend leaves room, and
+/// every cut counts: `cut(φ) > tol` on `[0, θ]`. `None` when neither skin is cut so;
 /// else the skin, the angle and the depth. A plane that cuts the top skin
 /// only (a bend down whose outside is cut), or the middle of either skin
 /// while its ends stay clear, makes no trim this method builds (module
@@ -324,6 +329,7 @@ pub fn untrimmed_cut(
     parent: &Transform,
     end: usize,
     plane: (Vec3, Vec3),
+    root_allowed: bool,
     tolerance: &Tolerance,
 ) -> Result<Option<(&'static str, f64, f64)>, KernelError> {
     let theta = bend.theta();
@@ -339,8 +345,16 @@ pub fn untrimmed_cut(
             sign * (a + b * s + c * co - u_end)
         };
         let star = b.patan2(c);
-        let floor = cut(0.0).max(0.0) + tolerance.linear;
-        let mut angles = vec![theta];
+        let floor = if root_allowed {
+            cut(0.0).max(0.0) + tolerance.linear
+        } else {
+            tolerance.linear
+        };
+        let mut angles = if root_allowed {
+            vec![theta]
+        } else {
+            vec![0.0, theta]
+        };
         for k in -2..=2 {
             let phi = star + f64::from(k) * std::f64::consts::PI;
             if phi > 0.0 && phi < theta {
@@ -490,7 +504,7 @@ mod tests {
                 )
             };
             let id = Transform::IDENTITY;
-            let (skin, phi, depth) = untrimmed_cut(0, &bend, &id, 1, plane(0.5), &tol)
+            let (skin, phi, depth) = untrimmed_cut(0, &bend, &id, 1, plane(0.5), true, &tol)
                 .unwrap()
                 .expect("the middle of the bend is cut");
             assert_eq!(skin, "bottom");
@@ -506,7 +520,7 @@ mod tests {
             // Neither end of the bend is cut: trim() makes no trim here.
             assert_eq!(trim(0, &bend, &id, 1, plane(0.5), &tol).unwrap(), None);
             assert_eq!(
-                untrimmed_cut(0, &bend, &id, 1, plane(0.0), &tol).unwrap(),
+                untrimmed_cut(0, &bend, &id, 1, plane(0.0), true, &tol).unwrap(),
                 None
             );
         }
