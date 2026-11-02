@@ -3358,6 +3358,7 @@ mod tests {
             work: 0,
             clearance: 0.1,
             segments: None,
+            hoods: 0,
         }
     }
 
