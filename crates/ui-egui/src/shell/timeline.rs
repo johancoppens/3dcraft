@@ -452,7 +452,7 @@ impl Shell {
                 egui::Label::new(
                     egui::RichText::new(problem)
                         .color(color(tokens.failed))
-                        .small(),
+                        .size(tokens.secondary_font),
                 )
                 .wrap(),
             );

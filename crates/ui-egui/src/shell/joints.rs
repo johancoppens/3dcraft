@@ -382,7 +382,7 @@ impl Shell {
                         "Joints driven by a formula (of t) follow the timeline; the player plays them.",
                     )
                     .color(dim)
-                    .small(),
+                    .size(tokens.secondary_font),
                 )
                 .wrap(),
             );

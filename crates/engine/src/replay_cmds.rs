@@ -647,6 +647,15 @@ mod native {
                     said.insert("accumulate".into(), look.accumulate.into());
                 }
                 map.insert("look".into(), said);
+                // A replay has no selection and no click per frame: a
+                // lens on either focuses on the model's centre, and says so.
+                if let Some(why) = self
+                    .look
+                    .dof
+                    .and_then(|d| d.focus.fallback(&crate::look::FocusAt::default()))
+                {
+                    map.insert("lens".into(), json!({ "fallback": why }));
+                }
             }
             result
         }

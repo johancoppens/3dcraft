@@ -313,6 +313,15 @@ fn other_usage_errors_exit_with_2() {
             vec!["render", &part, "--out", "x.png", "--out", "y.png"],
             "`--out` was given twice",
         ),
+        // No window: nothing selected or clicked to focus on.
+        (
+            vec!["render", &part, "--out", "x.png", "--focus", "selection"],
+            "--focus selection: render has no window",
+        ),
+        (
+            vec!["render", &part, "--out", "x.png", "--focus", "picked"],
+            "--focus picked: render has no window",
+        ),
         (vec!["convert", &part], "IN OUT"),
         // How a drawing of the model as seen looks at it: only for such
         // a drawing.
@@ -496,6 +505,17 @@ fn run_builds_a_part_that_info_render_and_convert_read() {
     assert_eq!(&png[12..16], b"IHDR");
     assert_eq!(u32::from_be_bytes(png[16..20].try_into().unwrap()), 320);
     assert_eq!(u32::from_be_bytes(png[20..24].try_into().unwrap()), 240);
+    // A lens on the model's centre, given by name.
+    let lens_shot = path(&dir, "lens.png");
+    let ran = cli(&[
+        "render", &part, "--out", &lens_shot, "--size", "96x72", "--fstop", "4", "--focus",
+        "centre",
+    ])
+    .ok();
+    let drawn = &ran.json_lines()[0];
+    assert_eq!(drawn["look"]["dof"]["focus"], "centre", "{drawn}");
+    assert_eq!(drawn["lens"]["fallback"], Value::Null, "{drawn}");
+    assert!(std::fs::read(&lens_shot).is_ok());
     // The default size.
     let default_shot = path(&dir, "default.png");
     cli(&["render", &part, "--out", &default_shot]).ok();

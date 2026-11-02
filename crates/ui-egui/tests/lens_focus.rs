@@ -308,15 +308,21 @@ fn bad_lens_values_are_refused_or_clamped_and_the_state_round_trips() {
         json!({"look": {"dof": {"focus": [1, 2, "x"]}}}),
         json!({"look": {"dof": {"fstop": "wide"}}}),
         json!({"look": {"dof": {"fstop": null}}}),
+        json!({"look": {"dof": {"fstop": 0}}}),
+        json!({"look": {"dof": {"fstop": -1}}}),
         json!({"look": {"dof": {"aperture": 2}}}),
         json!({"look": {"dof": 3}}),
     ] {
         let error = refused(&mut shell, &mut session, bad.clone());
         assert!(error.contains("dof"), "{bad}: {error}");
+        if bad["look"]["dof"]["fstop"].is_number() {
+            assert!(error.contains("positive f-number"), "{bad}: {error}");
+        }
         assert_eq!(shell.state.look, before, "{bad}: a refusal changes nothing");
     }
-    // An f-number out of range is clamped to the lens's 0.5 to 64.
-    for (fstop, want) in [(0.0, 0.5), (-1.0, 0.5), (1e12, 64.0)] {
+    // A positive f-number out of range is clamped to the lens's 0.5 to
+    // 64 (one that is not positive was refused above).
+    for (fstop, want) in [(1e-6, 0.5), (0.2, 0.5), (1e12, 64.0)] {
         call(
             &mut shell,
             &mut session,
@@ -347,4 +353,106 @@ fn bad_lens_values_are_refused_or_clamped_and_the_state_round_trips() {
         assert_eq!(back, state, "{text}");
         assert_eq!(back.checked().unwrap(), state, "{text}");
     }
+}
+
+/// The focus on the selection never goes stale: it follows an edit that
+/// moves the selected body, comes back with undo, and falls back (saying
+/// why) when the body is hidden or deleted.
+#[test]
+fn the_focus_on_the_selection_follows_edits_and_falls_back() {
+    let (mut session, mut shell, ctx) = two_cubes();
+    select(&mut session, "Near");
+    frame(&ctx, &mut shell, &mut session);
+    at(&lens(&mut shell, &mut session), [45.0, -20.0, 0.0], 105.0);
+    // Moved 20 towards the eye: its centre is at x 65, 85 ahead.
+    run(
+        &mut session,
+        "feature.edit",
+        json!({"feature": "Near", "position": [60, -25, -5]}),
+    );
+    frame(&ctx, &mut shell, &mut session);
+    at(&lens(&mut shell, &mut session), [65.0, -20.0, 0.0], 85.0);
+    run(&mut session, "edit.undo", json!({}));
+    frame(&ctx, &mut shell, &mut session);
+    at(&lens(&mut shell, &mut session), [45.0, -20.0, 0.0], 105.0);
+    // Hidden: still selected, not shown.
+    run(
+        &mut session,
+        "feature.visible",
+        json!({"feature": "Near", "visible": false}),
+    );
+    frame(&ctx, &mut shell, &mut session);
+    let got = lens(&mut shell, &mut session);
+    assert!(
+        got["fallback"].as_str().unwrap().contains("not shown"),
+        "{got}"
+    );
+    run(&mut session, "edit.undo", json!({}));
+    frame(&ctx, &mut shell, &mut session);
+    at(&lens(&mut shell, &mut session), [45.0, -20.0, 0.0], 105.0);
+    // Deleted: what was selected is gone. Only Far is left, so the
+    // model's centre is its centre.
+    run(&mut session, "feature.delete", json!({"feature": "Near"}));
+    frame(&ctx, &mut shell, &mut session);
+    let got = lens(&mut shell, &mut session);
+    at(&got, [-55.0, 20.0, 0.0], 205.0);
+    assert!(got["fallback"].as_str().unwrap().contains("gone"), "{got}");
+}
+
+/// An orthographic view has no lens: `ui.get` says so, and so does the
+/// popover's note.
+#[test]
+fn an_orthographic_view_says_the_lens_blurs_nothing() {
+    let (mut session, mut shell, ctx) = two_cubes();
+    assert_eq!(lens(&mut shell, &mut session)["noBlur"], Value::Null);
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"camera": {"projection": "orthographic"}}),
+    );
+    frame(&ctx, &mut shell, &mut session);
+    let got = lens(&mut shell, &mut session);
+    assert!(
+        got["noBlur"].as_str().unwrap().contains("orthographic"),
+        "{got}"
+    );
+    // A focus behind the eye blurs nothing either.
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"camera": {"projection": "perspective"},
+               "look": {"dof": {"focus": [400.0, 0.0, 0.0]}}}),
+    );
+    frame(&ctx, &mut shell, &mut session);
+    let got = lens(&mut shell, &mut session);
+    assert!(got["noBlur"].as_str().unwrap().contains("behind"), "{got}");
+}
+
+/// While the lens is on the selected faces keep their own colour (the
+/// part in focus shows its sharpness; the outline says what is
+/// selected), and without a lens they are lit in the selection's colour.
+#[test]
+fn the_selection_is_not_tinted_under_the_lens() {
+    let (mut session, mut shell, ctx) = two_cubes();
+    select(&mut session, "Near");
+    frame(&ctx, &mut shell, &mut session);
+    let scene = shell.shown_scene_arc();
+    assert!(shell.lens_on());
+    assert_eq!(
+        shell.face_highlight(scene.as_deref()),
+        craft3d_render::Highlight::NONE
+    );
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"look": {"dof": null}}),
+    );
+    assert!(!shell.lens_on());
+    assert_ne!(
+        shell.face_highlight(scene.as_deref()),
+        craft3d_render::Highlight::NONE
+    );
 }

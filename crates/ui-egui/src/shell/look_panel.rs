@@ -50,8 +50,9 @@ const DISTANCE_RANGE: [f64; 2] = [0.05, 4.0];
 /// `background.<v>`, `tonemap.<v>` and `focus.<v>` ([`FOCUSES`]) for the
 /// choices, `rotation`, `exposure`, `groundReflection`, `bloom`, `fstop`
 /// and `focusDistance` for the sliders (their track only), `ground`,
-/// `shadows`, `ao`, `reflections` and `lens` for the toggles, and `panel`
-/// for the whole panel.
+/// `shadows`, `ao`, `reflections` and `lens` for the toggles, `lensNote`
+/// for the lens's note (where it focuses instead, or why it blurs
+/// nothing), and `panel` for the whole panel.
 pub type LookHits = Vec<(String, Rect)>;
 
 /// What the lens rows need to know besides the look: where the lens
@@ -62,6 +63,10 @@ struct LensContext {
     /// The focus distance along the view now, if there is a lens.
     distance: Option<f64>,
     camera_distance: f64,
+    /// Why the lens blurs nothing ([`craft3d_engine::look::no_blur`]).
+    no_blur: Option<&'static str>,
+    /// An orthographic view: there is no lens to set.
+    orthographic: bool,
 }
 
 impl Shell {
@@ -83,10 +88,14 @@ impl Shell {
         let tokens = self.tokens;
         let before = self.state.look.clone();
         let mut hits = LookHits::new();
+        let now = self.lens_focus();
         let lens = LensContext {
             at: self.focus_at(),
-            distance: self.lens_focus().and_then(|focus| focus.distance),
+            distance: now.as_ref().and_then(|focus| focus.distance),
             camera_distance: self.state.camera.distance,
+            no_blur: now.as_ref().and_then(|focus| focus.no_blur),
+            orthographic: self.state.camera.projection
+                == crate::state::ProjectionKind::Orthographic,
         };
         let panel = self.popover(ui, "studio-options", place, chip, |shell, ui| {
             look_options(ui, &mut shell.state.look, &tokens, &lens, &mut hits);
@@ -101,7 +110,8 @@ impl Shell {
     /// Where the studio look's lens focuses as the viewport draws it now
     /// (`ui.get`'s `lens`), or `None` without a lens.
     pub fn lens_focus(&self) -> Option<LensFocus> {
-        if !self.state.look.is_studio() {
+        // An analysis is drawn in the plain look, without a lens.
+        if !self.state.look.is_studio() || self.state.analysis.is_on() {
             return None;
         }
         let spec = self.state.look.spec().ok()?;
@@ -126,6 +136,7 @@ impl Shell {
             point,
             distance,
             fallback: asked.fallback(&at),
+            no_blur: craft3d_engine::look::no_blur(&dof, &camera),
         })
     }
 
@@ -178,6 +189,9 @@ pub struct LensFocus {
     /// Why it focuses on the model's centre rather than where it was
     /// asked to ([`craft3d_engine::look::FocusSpec::fallback`]).
     pub fallback: Option<&'static str>,
+    /// Why it blurs nothing: an orthographic view, a focus behind the
+    /// camera ([`craft3d_engine::look::no_blur`]).
+    pub no_blur: Option<&'static str>,
 }
 
 impl LensFocus {
@@ -188,6 +202,7 @@ impl LensFocus {
             "point": self.point,
             "distance": self.distance,
             "fallback": self.fallback,
+            "noBlur": self.no_blur,
         })
     }
 }
@@ -214,6 +229,7 @@ pub fn nearest_stop(fstop: f64) -> usize {
 }
 
 /// The lens's rows: switched on and off, its f-number, where it focuses.
+/// Its notes are the secondary text of the plates ([`Tokens::plate_secondary`]).
 fn lens_rows(
     ui: &mut egui::Ui,
     look: &mut LookState,
@@ -222,7 +238,6 @@ fn lens_rows(
     hits: &mut LookHits,
 ) {
     use craft3d_engine::look::{FocusSpec, LookSpec};
-    let dim = crate::theme::color(tokens.text_dim);
     // The lens as the engine reads it: a value it refuses is shown as
     // the default and replaced only once a control is moved.
     let dof = look.dof.as_ref().and_then(|value| {
@@ -240,11 +255,13 @@ fn lens_rows(
         look.dof = on.then(|| serde_json::json!({ "fstop": FSTOP, "focus": "selection" }));
         return;
     }
+    // An orthographic view has no lens: nothing to set.
+    let settable = on && !lens.orthographic;
     let mut fstop = dof.map_or(FSTOP, |d| d.fstop);
     let mut focus = dof.map_or(FocusSpec::Centre, |d| d.focus);
     let mut changed = false;
     ui.label("Aperture");
-    ui.add_enabled_ui(on, |ui| {
+    ui.add_enabled_ui(settable, |ui| {
         ui.horizontal(|ui| {
             let mut stop = nearest_stop(fstop) as f64;
             let last = (FSTOPS.len() - 1) as f64;
@@ -265,18 +282,12 @@ fn lens_rows(
                 changed = true;
             }
             ui.label(fstop_text(fstop));
+            ui.label(tokens.plate_secondary(APERTURE_HINT));
         });
     });
     ui.end_row();
-    ui.label("");
-    ui.label(
-        egui::RichText::new("smaller f-number: more blur")
-            .small()
-            .color(dim),
-    );
-    ui.end_row();
     ui.label("Focus");
-    ui.add_enabled_ui(on, |ui| {
+    ui.add_enabled_ui(settable, |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = tokens.nav_spacing;
             for (name, shown) in FOCUSES {
@@ -316,7 +327,7 @@ fn lens_rows(
     ui.end_row();
     if let FocusSpec::Distance(mut d) = focus {
         ui.label("");
-        ui.add_enabled_ui(on, |ui| {
+        ui.add_enabled_ui(settable, |ui| {
             ui.horizontal(|ui| {
                 let scale = lens.camera_distance.max(f64::MIN_POSITIVE);
                 let range = scale * DISTANCE_RANGE[0]..=scale * DISTANCE_RANGE[1];
@@ -336,24 +347,36 @@ fn lens_rows(
         });
         ui.end_row();
     }
-    let note = match focus {
-        FocusSpec::Point(p) => Some(format!(
-            "on the point [{}, {}, {}]",
-            significant(p[0]),
-            significant(p[1]),
-            significant(p[2])
-        )),
-        _ => focus.fallback(&lens.at).map(str::to_string),
+    // What the lens does instead of what it was asked: no blur at all
+    // first, then where it focuses instead.
+    let note = if !on {
+        None
+    } else if let Some(why) = lens.no_blur {
+        Some(why.to_string())
+    } else {
+        match focus {
+            FocusSpec::Point(p) => Some(format!(
+                "on the point [{}, {}, {}]",
+                significant(p[0]),
+                significant(p[1]),
+                significant(p[2])
+            )),
+            _ => focus.fallback(&lens.at).map(str::to_string),
+        }
     };
     if let Some(note) = note {
         ui.label("");
-        ui.add(egui::Label::new(egui::RichText::new(note).small().color(dim)).wrap());
+        let response = ui.add(egui::Label::new(tokens.plate_secondary(note)).wrap());
+        hits.push(("lensNote".to_string(), response.rect));
         ui.end_row();
     }
     if changed {
         look.dof = Some(serde_json::json!({ "fstop": fstop, "focus": focus.json() }));
     }
 }
+
+/// What the aperture's value says after it: which way blurs more.
+pub const APERTURE_HINT: &str = "smaller = more blur";
 
 /// A number to four significant digits, as the panel writes lengths.
 fn significant(x: f64) -> String {

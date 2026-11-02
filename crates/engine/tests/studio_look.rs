@@ -221,3 +221,88 @@ fn too_many_frames_are_refused() {
     assert!(e.to_string().contains("accumulate fewer frames"), "{e}");
     assert!(started.elapsed().as_secs() < 60, "refused before drawing");
 }
+
+/// `view.render`'s lens on the selection: it focuses on the centre of the
+/// session's selection and says so under `lens`; with the selection
+/// cleared it focuses on the model's centre and says why; an orthographic
+/// view says it blurs nothing.
+#[test]
+fn view_render_focuses_the_lens_on_the_selection() {
+    let mut s = common::session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Near", "size": [10, 10, 10], "position": [40, -25, -5]}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Far", "size": [10, 10, 10], "position": [-60, 15, -5]}),
+    );
+    let look = json!({"mode": "studio", "dof": {"fstop": 4, "focus": "selection"}});
+    let render = |s: &mut craft3d_engine::Session, extra: Value| {
+        let mut params = json!({"width": 96, "height": 72, "look": look});
+        if let (Some(map), Value::Object(more)) = (params.as_object_mut(), extra) {
+            map.extend(more);
+        }
+        run(s, "view.render", params)
+    };
+    run(
+        &mut s,
+        "select.set",
+        json!({"items": [{"kind": "body", "feature": "Near"}]}),
+    );
+    let picture = render(&mut s, json!({}));
+    assert_eq!(
+        picture["lens"]["focus"],
+        json!([45.0, -20.0, 0.0]),
+        "{}",
+        picture["lens"]
+    );
+    assert_eq!(picture["lens"]["fallback"], Value::Null);
+    assert_eq!(picture["lens"]["noBlur"], Value::Null);
+    run(
+        &mut s,
+        "select.set",
+        json!({"items": [{"kind": "body", "feature": "Far"}]}),
+    );
+    let far = render(&mut s, json!({}));
+    assert_eq!(far["lens"]["focus"], json!([-55.0, 20.0, 0.0]));
+    assert_ne!(far["base64"], picture["base64"], "the focus moved");
+    run(&mut s, "select.set", json!({"mode": "clear"}));
+    let cleared = render(&mut s, json!({}));
+    // The model's box is x -60..50, y -25..25, z -5..5.
+    assert_eq!(cleared["lens"]["focus"], json!([-5.0, 0.0, 0.0]));
+    let why = cleared["lens"]["fallback"].as_str().unwrap();
+    assert!(why.contains("nothing selected"), "{why}");
+    // A selection that is not shown is told apart from none.
+    run(
+        &mut s,
+        "select.set",
+        json!({"items": [{"kind": "body", "feature": "Near"}]}),
+    );
+    run(
+        &mut s,
+        "feature.visible",
+        json!({"feature": "Near", "visible": false}),
+    );
+    let hidden = render(&mut s, json!({}));
+    let why = hidden["lens"]["fallback"].as_str().unwrap();
+    assert!(why.contains("not shown"), "{why}");
+    run(
+        &mut s,
+        "feature.visible",
+        json!({"feature": "Near", "visible": true}),
+    );
+    let ortho = render(&mut s, json!({"projection": "orthographic"}));
+    let why = ortho["lens"]["noBlur"].as_str().unwrap();
+    assert!(why.contains("orthographic"), "{why}");
+    // An f-number that is not positive is refused.
+    let error = common::refused(
+        &mut s,
+        "view.render",
+        json!({"look": {"dof": {"fstop": 0}}}),
+    );
+    assert!(error.contains("positive f-number"), "{error}");
+}

@@ -1062,12 +1062,24 @@ impl Shell {
         }
     }
 
+    /// Whether the viewport draws the studio look with a lens: the studio
+    /// look, a lens, no analysis (drawn in the plain look) and a
+    /// perspective view (an orthographic one has no lens).
+    pub fn lens_on(&self) -> bool {
+        self.state.look.is_studio()
+            && self.state.look.dof.is_some()
+            && !self.state.analysis.is_on()
+            && self.state.camera.projection == crate::state::ProjectionKind::Perspective
+    }
+
     /// The points the lens may focus on: the last click and the centre
     /// of the selection ([`craft3d_engine::look::FocusAt`]).
     pub fn focus_at(&self) -> craft3d_engine::look::FocusAt {
         craft3d_engine::look::FocusAt {
             picked: self.state.picked.as_ref().and_then(|p| p.point),
             selection: self.select.focus,
+            selected: !self.select.view.items.is_empty() || !self.select.view.hidden.is_empty(),
+            gone: !self.select.view.dropped.is_empty(),
         }
     }
 
@@ -1584,8 +1596,18 @@ impl Shell {
 
     /// The faces the viewport shows highlighted, as the renderers take
     /// them.
+    ///
+    /// While the studio look's lens is on the selected faces keep their
+    /// own colour, so the part in focus shows its sharpness (the
+    /// selection is then said by its outline alone, drawn over the
+    /// picture); the entry of the "select other" list under the pointer
+    /// and the face `ui.highlight` points at are still lit.
     pub fn face_highlight(&self, scene: Option<&Scene>) -> Highlight {
-        let mut ids: Vec<u32> = self.selection_faces().collect();
+        let mut ids: Vec<u32> = if self.lens_on() {
+            self.select.hover.into_iter().collect()
+        } else {
+            self.selection_faces().collect()
+        };
         if let (Some(face), Some(scene)) = (&self.state.highlight, scene)
             && let Ok(found) = scene.faces_named(face.feature.as_deref(), &face.face)
         {
@@ -3287,7 +3309,8 @@ impl Shell {
                                         if let Some(when) = &row.when {
                                             ui.colored_label(
                                                 dim,
-                                                egui::RichText::new("when").small(),
+                                                egui::RichText::new("when")
+                                                    .size(tokens.secondary_font),
                                             )
                                             .on_hover_text(format!("Built when {when} is not 0"));
                                         }
@@ -3317,7 +3340,7 @@ impl Shell {
                                         egui::Label::new(
                                             egui::RichText::new(error)
                                                 .color(color(tokens.failed))
-                                                .small(),
+                                                .size(tokens.secondary_font),
                                         )
                                         .wrap(),
                                     );
@@ -3367,7 +3390,7 @@ impl Shell {
                                         egui::Label::new(
                                             egui::RichText::new(&row.message)
                                                 .color(color(tint))
-                                                .small(),
+                                                .size(tokens.secondary_font),
                                         )
                                         .wrap(),
                                     );
@@ -4478,7 +4501,10 @@ fn mates_ui(ui: &mut egui::Ui, tokens: &Tokens, outline: &craft3d_engine::Assemb
     ui.label(egui::RichText::new("Mates").strong());
     ui.separator();
     if outline.mates.is_empty() {
-        ui.colored_label(dim, egui::RichText::new("No mates yet.").small());
+        ui.colored_label(
+            dim,
+            egui::RichText::new("No mates yet.").size(tokens.secondary_font),
+        );
     }
     for mate in &outline.mates {
         let (state, tint) = match mate.status {
@@ -4513,7 +4539,12 @@ fn mates_ui(ui: &mut egui::Ui, tokens: &Tokens, outline: &craft3d_engine::Assemb
         if let Some(error) = &mate.error {
             ui.indent(("craft3d-mate-error", &mate.name), |ui| {
                 ui.add(
-                    egui::Label::new(egui::RichText::new(error).color(color(tint)).small()).wrap(),
+                    egui::Label::new(
+                        egui::RichText::new(error)
+                            .color(color(tint))
+                            .size(tokens.secondary_font),
+                    )
+                    .wrap(),
                 );
             });
         }
@@ -4524,7 +4555,7 @@ fn mates_ui(ui: &mut egui::Ui, tokens: &Tokens, outline: &craft3d_engine::Assemb
                 egui::Label::new(
                     egui::RichText::new(format!("Not solved: {why}"))
                         .color(color(tokens.failed))
-                        .small(),
+                        .size(tokens.secondary_font),
                 )
                 .wrap(),
             );
@@ -4550,7 +4581,7 @@ fn assertions_heading(ui: &mut egui::Ui, tokens: &Tokens, empty: bool) {
             egui::Label::new(
                 egui::RichText::new(NO_ASSERTIONS_HINT)
                     .color(color(tokens.text_dim))
-                    .small(),
+                    .size(tokens.secondary_font),
             )
             .wrap(),
         );

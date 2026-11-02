@@ -39,7 +39,7 @@ pub const DEFAULT_FSTOP: f64 = 2.8;
 pub const VIEWPORT_ACCUMULATE: u32 = 16;
 
 /// The params text of a look, for the commands' documentation.
-pub const LOOK_PARAMS: &str = r#"{"mode": "plain|studio" = "studio", "environment": "studio|outdoor|workshop" = "studio", "exposure": stops from -10 to 10 = 0, "rotation": degrees = 0, "ground": boolean = true, "ao": boolean = true, "shadows": boolean = true, "tonemap": "agx|aces|linear" = "agx", "light": [azimuth, elevation] in degrees = the environment's brightest direction, "background": "environment|plain" = "environment", "reflections": boolean = true, "contactShadows": boolean = true, "specularShadow": boolean = true, "groundReflection": 0 to 1 = 0, "bloom": 0 to 1 = 0.04, "dof": {"fstop": number = 2.8, "focus": distance | [x, y, z] | "picked" (the window's last click) | "selection" (the centre of the box of what is selected; the model's centre when nothing is) | "centre" = "centre"} | null = null, "accumulate": frames from 1 to 256 = 1 (the window and view.replay: 16)}"#;
+pub const LOOK_PARAMS: &str = r#"{"mode": "plain|studio" = "studio", "environment": "studio|outdoor|workshop" = "studio", "exposure": stops from -10 to 10 = 0, "rotation": degrees = 0, "ground": boolean = true, "ao": boolean = true, "shadows": boolean = true, "tonemap": "agx|aces|linear" = "agx", "light": [azimuth, elevation] in degrees = the environment's brightest direction, "background": "environment|plain" = "environment", "reflections": boolean = true, "contactShadows": boolean = true, "specularShadow": boolean = true, "groundReflection": 0 to 1 = 0, "bloom": 0 to 1 = 0.04, "dof": {"fstop": positive f-number, clamped to 0.5 to 64 = 2.8, "focus": distance | [x, y, z] | "picked" (the window's last click) | "selection" (the centre of the box of what is selected; the model's centre when nothing is) | "centre" = "centre"} | null = null, "accumulate": frames from 1 to 256 = 1 (the window and view.replay: 16)}"#;
 
 /// A look: plain (the default) or studio with its options.
 #[derive(Clone, Debug, PartialEq)]
@@ -94,16 +94,21 @@ impl FocusSpec {
 
     /// Why the lens focuses on the model's centre instead of where this
     /// says, given the points it may focus on: no click yet for
-    /// `picked`, nothing (shown) selected for `selection`; `None` when it
-    /// focuses where it says.
+    /// `picked`; for `selection` nothing selected, a selection none of
+    /// which is shown (hidden, or its feature suppressed), or what was
+    /// selected gone; `None` when it focuses where it says.
     pub fn fallback(self, at: &FocusAt) -> Option<&'static str> {
         match self {
             FocusSpec::Picked if at.picked.is_none() => {
                 Some("no point clicked yet: focused on the model's centre")
             }
-            FocusSpec::Selection if at.selection.is_none() => {
-                Some("nothing selected: focused on the model's centre")
-            }
+            FocusSpec::Selection if at.selection.is_none() => Some(if at.selected {
+                "the selection is not shown: focused on the model's centre"
+            } else if at.gone {
+                "what was selected is gone: focused on the model's centre"
+            } else {
+                "nothing selected: focused on the model's centre"
+            }),
             _ => None,
         }
     }
@@ -117,6 +122,30 @@ impl FocusSpec {
 pub struct FocusAt {
     pub picked: Option<[f64; 3]>,
     pub selection: Option<[f64; 3]>,
+    /// Something is selected, shown or not (`selection` is `None` when
+    /// none of it is shown).
+    pub selected: bool,
+    /// Something selected was dropped because it no longer exists.
+    pub gone: bool,
+}
+
+/// Why a lens blurs nothing in a picture seen with `camera`, or `None`
+/// when it does: an orthographic view has no lens, and a focus behind
+/// the eye none either ([`Dof::focus_distance`]).
+pub fn no_blur(dof: &Dof, camera: &craft3d_render::Camera) -> Option<&'static str> {
+    let Ok(axes) = camera.axes() else {
+        return Some("no camera to focus with");
+    };
+    if !matches!(
+        axes.projection,
+        craft3d_render::Projection::Perspective { .. }
+    ) {
+        return Some("orthographic view: no lens, nothing blurred");
+    }
+    if dof.focus_distance(axes.eye, axes.forward).is_none() {
+        return Some("the focus is behind the camera: nothing blurred");
+    }
+    None
 }
 
 impl Default for LookSpec {
@@ -283,8 +312,8 @@ impl LookSpec {
                 if let Some(f) = lens.get("fstop") {
                     let f = f
                         .as_f64()
-                        .filter(|f| f.is_finite())
-                        .ok_or("`look.dof.fstop` must be a finite number")?;
+                        .filter(|f| f.is_finite() && *f > 0.0)
+                        .ok_or("`look.dof.fstop` must be a positive f-number")?;
                     dof.fstop = f.clamp(0.5, 64.0);
                 }
                 match lens.get("focus") {
@@ -552,6 +581,7 @@ mod tests {
             let at = FocusAt {
                 picked: p,
                 selection: Some([9.0; 3]),
+                ..FocusAt::default()
             };
             picked.resolved(&model, 1.0, &at, 16).dof.unwrap().focus
         };
@@ -588,18 +618,68 @@ mod tests {
         let selected = FocusAt {
             picked: Some([7.0; 3]),
             selection: Some([3.0, 1.0, 0.5]),
+            selected: true,
+            gone: false,
         };
         let focus = |at: &FocusAt| spec.resolved(&model, 1.0, at, 1).dof.unwrap().focus;
         assert_eq!(focus(&none), Focus::Point([2.0, 1.0, 1.0]));
         assert_eq!(focus(&selected), Focus::Point([3.0, 1.0, 0.5]));
-        assert!(FocusSpec::Selection.fallback(&none).is_some());
+        let says = |at: &FocusAt| FocusSpec::Selection.fallback(at).unwrap();
+        assert!(says(&none).starts_with("nothing selected"));
+        let hidden = FocusAt {
+            selected: true,
+            ..none
+        };
+        assert!(says(&hidden).contains("not shown"), "{}", says(&hidden));
+        let gone = FocusAt { gone: true, ..none };
+        assert!(says(&gone).contains("gone"), "{}", says(&gone));
         assert!(FocusSpec::Selection.fallback(&selected).is_none());
         assert!(FocusSpec::Picked.fallback(&none).is_some());
         assert!(FocusSpec::Centre.fallback(&none).is_none());
-        // A hostile f-number is clamped, never a lens without aperture.
-        for (fstop, want) in [(0.0, 0.5), (-3.0, 0.5), (1e9, 64.0)] {
+        // An f-number that is not positive is refused; a positive one is
+        // clamped to the lens's range, never a lens without aperture.
+        for bad in [0.0, -3.0, -1e-300] {
+            let error = LookSpec::patched(&plain, &json!({"dof": {"fstop": bad}})).unwrap_err();
+            assert!(error.contains("positive f-number"), "{bad}: {error}");
+        }
+        for (fstop, want) in [(1e-9, 0.5), (0.3, 0.5), (1e9, 64.0)] {
             let lens = LookSpec::patched(&plain, &json!({"dof": {"fstop": fstop}})).unwrap();
             assert_eq!(lens.dof.unwrap().fstop, want, "{fstop}");
         }
+    }
+
+    #[test]
+    fn a_lens_says_when_it_blurs_nothing() {
+        use craft3d_math::Vec3;
+        use craft3d_render::{Camera, Projection};
+        let dof = |focus| Dof {
+            fstop: 2.8,
+            focus,
+            mm_per_unit: 1.0,
+        };
+        let camera = |projection| Camera {
+            eye: Vec3::new(10.0, 0.0, 0.0),
+            target: Vec3::ZERO,
+            up: Vec3::new(0.0, 0.0, 1.0),
+            projection,
+        };
+        let persp = camera(Projection::Perspective { fov_y_deg: 30.0 });
+        let ortho = camera(Projection::Orthographic { half_height: 5.0 });
+        assert_eq!(no_blur(&dof(Focus::Point([0.0; 3])), &persp), None);
+        assert!(
+            no_blur(&dof(Focus::Point([0.0; 3])), &ortho)
+                .unwrap()
+                .contains("orthographic")
+        );
+        assert!(
+            no_blur(&dof(Focus::Point([20.0, 0.0, 0.0])), &persp)
+                .unwrap()
+                .contains("behind")
+        );
+        let flat = Camera {
+            target: Vec3::new(10.0, 0.0, 0.0),
+            ..persp
+        };
+        assert!(no_blur(&dof(Focus::Distance(5.0)), &flat).is_some());
     }
 }

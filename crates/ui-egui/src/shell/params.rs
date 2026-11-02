@@ -1577,7 +1577,7 @@ impl Shell {
                                 format!("by {}", footer.join(" · "))
                             };
                             ui.add(
-                                egui::Label::new(egui::RichText::new(text).small().color(dim))
+                                egui::Label::new(egui::RichText::new(text).size(tokens.secondary_font).color(dim))
                                     .wrap(),
                             );
                         }
@@ -1606,7 +1606,7 @@ impl Shell {
         ui.add(
             egui::Label::new(
                 egui::RichText::new(&trouble.message)
-                    .small()
+                    .size(tokens.secondary_font)
                     .color(color(tokens.failed)),
             )
             .wrap(),
@@ -1748,7 +1748,12 @@ impl Shell {
                 }
             });
             let small = |text: &str, tint| {
-                egui::Label::new(egui::RichText::new(text).small().color(color(tint))).wrap()
+                egui::Label::new(
+                    egui::RichText::new(text)
+                        .size(tokens.secondary_font)
+                        .color(color(tint)),
+                )
+                .wrap()
             };
             if let Some(error) = &p.error {
                 ui.add(small(error, tokens.failed));

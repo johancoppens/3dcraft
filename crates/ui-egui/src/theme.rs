@@ -145,6 +145,14 @@ pub struct Tokens {
     /// player's step caption under it, in points.
     pub notice_font: f32,
     pub caption_font: f32,
+    /// Size of secondary text, in points: hints, notes, a feature's or an
+    /// assertion's message, what a panel says while it is empty. One
+    /// size for the whole interface, as large as the body text, and told
+    /// apart by its colour (`text_dim` on a panel, `plate_text_dim` on a
+    /// plate, `chrome_text_dim` on a bar, each kept at 4.5:1 by
+    /// [`Tokens::text_pairs`]): egui's `TextStyle::Small` is set to it, so
+    /// `.small()` is this size too ([`Tokens::apply`]).
+    pub secondary_font: f32,
     /// Width of sketch lines, in points.
     pub sketch_width: f32,
     pub construction_width: f32,
@@ -548,6 +556,7 @@ impl Tokens {
             notice_radius: 6,
             notice_font: 17.0,
             caption_font: 15.0,
+            secondary_font: 12.5,
             sketch_width: 1.75,
             construction_width: 1.0,
             axis_width: 1.25,
@@ -714,7 +723,37 @@ impl Tokens {
         } else {
             egui::Theme::Light
         });
-        ctx.all_styles_mut(move |style| style.visuals = visuals.clone());
+        let small = egui::FontId::proportional(self.secondary_font);
+        ctx.all_styles_mut(move |style| {
+            style.visuals = visuals.clone();
+            style
+                .text_styles
+                .insert(egui::TextStyle::Small, small.clone());
+        });
+    }
+
+    /// Secondary text on a panel: a hint, a note, a message under a row
+    /// ([`Tokens::secondary_font`] in `text_dim`).
+    pub fn secondary(&self, text: impl Into<String>) -> egui::RichText {
+        egui::RichText::new(text)
+            .size(self.secondary_font)
+            .color(color(self.text_dim))
+    }
+
+    /// Secondary text on a plate over the viewport (a popover):
+    /// [`Tokens::secondary_font`] in `plate_text_dim`.
+    pub fn plate_secondary(&self, text: impl Into<String>) -> egui::RichText {
+        egui::RichText::new(text)
+            .size(self.secondary_font)
+            .color(color(self.plate_text_dim))
+    }
+
+    /// Secondary text in another colour (an error's red, an assertion's
+    /// state) at the secondary size.
+    pub fn secondary_in(&self, text: impl Into<String>, ink: Rgb) -> egui::RichText {
+        egui::RichText::new(text)
+            .size(self.secondary_font)
+            .color(color(ink))
     }
 
     /// The visuals of the panels: egui's light or dark ones, whichever the
@@ -1063,6 +1102,23 @@ mod tests {
             }
         }
         assert!(low.is_empty(), "{low:?}");
+    }
+
+    /// Secondary text is one legible size, as large as the body text, and
+    /// egui's small text style is that size once the tokens are applied.
+    #[test]
+    fn secondary_text_is_one_legible_size() {
+        let tokens = Tokens::default();
+        let ctx = egui::Context::default();
+        tokens.apply(&ctx);
+        let style = ctx.style_of(ctx.theme());
+        let body = style.text_styles[&egui::TextStyle::Body].size;
+        let small = style.text_styles[&egui::TextStyle::Small].size;
+        assert_eq!(small, tokens.secondary_font);
+        assert!(tokens.secondary_font >= body, "{small} < {body}");
+        for tokens in [Tokens::default(), Tokens::default().touch()] {
+            assert!(tokens.secondary_font >= 12.0);
+        }
     }
 
     /// An edge contrasts with its own body by the stated ratio or more,
