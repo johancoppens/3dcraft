@@ -425,7 +425,7 @@ fn planar_image(surface: &Surface, outward: bool, p: P2, q: P2) -> P2 {
             let (Some(&from), Some(&step)) = (p.get(k), d.get(k)) else {
                 continue;
             };
-            if step == 0.0 || !step.is_finite() {
+            if step == 0.0 || !step.is_finite() || !from.is_finite() {
                 continue;
             }
             let (lo, hi) = (from.min(from + step), from.max(from + step));
@@ -445,7 +445,7 @@ fn planar_image(surface: &Surface, outward: bool, p: P2, q: P2) -> P2 {
     let (mut end, mut theta) = ([0.0, 0.0], 0.0_f64);
     for w in cuts.windows(2) {
         let [a, b] = w else { continue };
-        if !(b > a) {
+        if b <= a {
             continue;
         }
         let (piece, turn) = planar_image_piece(surface, outward, at(*a), at(*b));

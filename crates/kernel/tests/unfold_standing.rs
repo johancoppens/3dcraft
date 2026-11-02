@@ -71,7 +71,11 @@ fn lower(u: f64) -> (f64, f64) {
     let spans = knots.len() - 1;
     for s in (0..spans).rev() {
         let (lo, hi) = (knots[s], knots[s + 1]);
-        let a = if (spans - 1 - s) % 2 == 0 { 1.0 } else { 3.0 };
+        let a = if (spans - 1 - s).is_multiple_of(2) {
+            1.0
+        } else {
+            3.0
+        };
         let to = u.max(lo);
         let h = to - hi;
         q += dq * h + 0.5 * a * h * h;
@@ -145,15 +149,14 @@ fn closed_upper_length(k: f64) -> f64 {
 /// The Bernstein coefficients, at degree 4, of the product of a scalar
 /// and a point quadratic given by theirs at degree 2.
 fn product(q: [f64; 3], p: [Vec3; 3]) -> [Vec3; 5] {
-    let binomial = [[1.0, 0.0, 0.0], [1.0, 2.0, 1.0]];
-    let c2 = binomial[1];
+    let c2 = [1.0, 2.0, 1.0];
     let c4 = [1.0, 4.0, 6.0, 4.0, 1.0];
     let mut out = [Vec3::ZERO; 5];
     for (m, slot) in out.iter_mut().enumerate() {
         for i in 0..3 {
             if m >= i && m - i < 3 {
                 let j = m - i;
-                *slot = *slot + p[j] * (c2[i] * c2[j] / c4[m] * q[i]);
+                *slot += p[j] * (c2[i] * c2[j] / c4[m] * q[i]);
             }
         }
     }
