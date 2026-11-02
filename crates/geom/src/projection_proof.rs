@@ -644,8 +644,12 @@ fn enclose(
 /// a part whose coefficients are all at most zero is left, a part whose
 /// largest coefficient is within a thousandth of its largest end value
 /// (a value of `g`) is taken at that coefficient, others are halved to a
-/// depth of 48 and at most 64 parts alive; the hull of what is left then
-/// bounds the rest. Widened by the rounding of the splits.
+/// depth of 48 and at most [`MAX_RISE_PARTS`] parts taken in all; the
+/// hull of what is still pending then bounds the rest. Widened by the
+/// rounding of the splits.
+/// Most parts [`rise`] takes before it bounds the rest by their hull.
+const MAX_RISE_PARTS: usize = 4096;
+
 fn rise(g: &[f64]) -> f64 {
     let scale = max_abs(g);
     if !scale.is_finite() {
@@ -657,7 +661,17 @@ fn rise(g: &[f64]) -> f64 {
     }
     let mut best = 0.0_f64;
     let mut live: Vec<(Vec<f64>, u32)> = vec![(g.to_vec(), 0)];
+    let mut taken = 0usize;
     while let Some((c, depth)) = live.pop() {
+        taken += 1;
+        if taken > MAX_RISE_PARTS {
+            // Past the allowance, the hull of what is still pending (with
+            // this part) bounds the rest.
+            for (rest, _) in live.iter().chain(std::iter::once(&(c, depth))) {
+                best = best.max(rest.iter().copied().fold(f64::NEG_INFINITY, f64::max));
+            }
+            break;
+        }
         let top = c.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         if top <= best {
             continue;
@@ -668,7 +682,7 @@ fn rise(g: &[f64]) -> f64 {
             .unwrap_or(0.0)
             .max(c.last().copied().unwrap_or(0.0));
         best = best.max(ends);
-        if top - ends <= 1e-3 * top.abs() || depth >= 48 || live.len() >= 64 {
+        if top - ends <= 1e-3 * top.abs() || depth >= 48 {
             best = best.max(top);
             continue;
         }
@@ -1128,7 +1142,16 @@ struct AtBox {
     a_u: f64,
     a_v: f64,
     om_lo: f64,
+    /// Rational-form joins (C1 by construction, C0 by their knots) the
+    /// box crosses, for closest points.
+    joins: usize,
 }
+
+/// How far, in units of `ε` of `|B|`, the first derivatives of a rational
+/// form may differ across a join (the control points from `pcos`/`psin`,
+/// within an ulp or two, through the frame's products and sums, and the
+/// derivative's difference and scale): generously 64.
+const JOIN_OFF: f64 = 64.0;
 
 /// Why a box gave no answer.
 enum Fail {
@@ -1178,12 +1201,20 @@ fn at_box(
     // first derivatives.
     let (p0, q0) = nets.degrees;
     let need = if rows.is_some() || smooth_lines { 0 } else { 1 };
+    // Knot lines taken as C1 by construction (a rational form's joins)
+    // whose knots say only C0: their stored control points, from the
+    // portable sine and cosine, are symmetric only to a few ε, so the
+    // condition may jump there by that much (counted in `prove_span`).
+    let mut joins = 0usize;
     for (k, m, p, along_u) in lines_inside(&nets.x.ku, &nets.mult_u, bx[0], bx[1])
         .map(|(k, m)| (k, m, p0, true))
         .chain(lines_inside(&nets.x.kv, &nets.mult_v, bx[2], bx[3]).map(|(k, m)| (k, m, q0, false)))
     {
         let continuity = p as i64 - m as i64;
         let required = if smooth_lines && m <= p { 0 } else { need };
+        if smooth_lines && rows.is_none() && continuity == 0 {
+            joins += 1;
+        }
         if continuity < required {
             return Err(Fail::Refuse(format!(
                 "the curve's projection crosses the knot line {} = {k} of the face, where it is only C{} ({}): not proven there{}",
@@ -1267,6 +1298,7 @@ fn at_box(
         a_u: v_norm(a_u),
         a_v: v_norm(a_v),
         om_lo: om.lo,
+        joins,
     })
 }
 
@@ -1351,6 +1383,12 @@ fn prove_span(nets: &Nets, span: &Span, rows: Option<[Vec3; 2]>, smooth_lines: b
                 let ysum = yr[0].abs() + yr[1].abs();
                 *e += ysum * off * at.a;
                 *wd += ysum * off * (at.a_u + at.a_v);
+            }
+            // A join of a rational form: `F = A·B` may jump by
+            // `|A| JOIN_OFF ε |B|` per line crossed.
+            if at.joins > 0 {
+                let jump = at.joins as f64 * JOIN_OFF * EPS * at.a;
+                *e += 2.0 * (yr[0].abs() * jump * at.bu + yr[1].abs() * jump * at.bv);
             }
         }
         let rho_k = [
