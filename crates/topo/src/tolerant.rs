@@ -347,24 +347,25 @@ pub fn measure_curve(
                         pieces = p.pieces;
                     }
                 }
-                return Ok(tighten(
-                    bound,
-                    pieces,
-                    sampled,
-                    tolerance.linear,
-                    |t, most| {
-                        curve_on_surface(
-                            &bounded,
-                            range,
-                            surface,
-                            start,
-                            &[],
-                            Within { target: t, most },
-                        )
-                        .ok()
-                        .map(|p| (p.bound.max(sampled), p.pieces))
-                    },
-                ));
+                // The gap seen along the whole edge, densely: the floor a
+                // tighter proof aims at (five places may see much less).
+                let seen = if bound > tolerance.linear {
+                    sampled.max(dense_gap(curve, range, surface, start))
+                } else {
+                    sampled
+                };
+                return Ok(tighten(bound, pieces, seen, tolerance.linear, |t, most| {
+                    curve_on_surface(
+                        &bounded,
+                        range,
+                        surface,
+                        start,
+                        &[],
+                        Within { target: t, most },
+                    )
+                    .ok()
+                    .map(|p| (p.bound.max(sampled), p.pieces))
+                }));
             }
             Err(not) => stopped = not.at,
         }
@@ -384,7 +385,9 @@ const TIGHTEN: usize = 8;
 /// (review of 2026-11-02: an ABC model's tolerance rose and tripped the
 /// boolean's tolerance rule). Where the samples lie within the document's
 /// tolerance (a tenth above them included), a proof at that tolerance
-/// first, which records nothing when it holds; then up to [`TIGHTEN`]
+/// first, which records nothing when it holds; then one at a fiftieth
+/// above the gap seen (`sampled`: [`dense_gap`] in [`measure_curve`]),
+/// with every piece; then up to [`TIGHTEN`]
 /// proofs at targets halfway (geometrically) between the bound and a
 /// hundredth above the sampled gap, each allowed four times the pieces of
 /// the last that held (a proof that stopped early needs more to go
@@ -409,6 +412,11 @@ fn tighten(
         return b.min(bound);
     }
     let mut floor = (1.01 * sampled).max(linear);
+    // Straight at the gap seen, with every piece: where the samples see
+    // the gap (they are dense), this is the bound wanted at once.
+    if let Some((b, _)) = prove((1.02 * floor).max(linear), PROOF_PIECES) {
+        return b.min(bound);
+    }
     let mut attempts = 0;
     while attempts < TIGHTEN && !bound.is_nan() && bound > 1.01 * floor {
         let target = (floor * bound).sqrt().max(floor);
@@ -434,6 +442,47 @@ fn tighten(
         floor = target;
     }
     bound
+}
+
+/// Places along a curve where [`dense_gap`] measures it.
+const DENSE: u32 = 64;
+
+/// How far `curve` over `range` lies off `surface` at [`DENSE`] + 1
+/// places, each foot walked from the one before (from `start`, else the
+/// surface's projection of the first place) and the nearer of that and
+/// the projection at every eighth: the gap a proof must hold as far as
+/// samples see it (a foot not quite the nearest only makes it larger),
+/// where the five places of the first proof may see much less (review of
+/// 2026-11-02: a recorded tolerance 1.33 times the gap an ABC model's
+/// edge has).
+fn dense_gap(
+    curve: &Curve3,
+    range: (f64, f64),
+    surface: &Surface,
+    start: Option<(f64, f64)>,
+) -> f64 {
+    let (t0, t1) = range;
+    let mut last = start;
+    let mut worst = 0.0_f64;
+    for k in 0..=DENSE {
+        let p = curve.eval(t0 + (t1 - t0) * f64::from(k) / f64::from(DENSE));
+        let walked = last.and_then(|l| surface.project_from(p, l).ok());
+        let own = (k % 8 == 0 || walked.is_none())
+            .then(|| surface.project(p).ok())
+            .flatten();
+        let mut best: Option<(f64, (f64, f64))> = None;
+        for at in [walked, own].into_iter().flatten() {
+            let d = surface.eval(at.0, at.1).distance(p);
+            if d.is_finite() && best.is_none_or(|(b, _)| d < b) {
+                best = Some((d, at));
+            }
+        }
+        if let Some((d, at)) = best {
+            worst = worst.max(d);
+            last = Some(at);
+        }
+    }
+    worst
 }
 
 /// Places per quarter of a curve where its feet on a surface are walked
