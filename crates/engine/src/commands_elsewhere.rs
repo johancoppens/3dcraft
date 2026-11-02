@@ -356,8 +356,9 @@ impl Session {
     }
 
     /// Every edit that waits, answered with `why` (the person cancelled
-    /// it): nothing of it is made, and a late answer is dropped. The
-    /// reads and exports waiting go on.
+    /// it): nothing of it is made, a late answer is dropped, and nothing
+    /// is kept for the bug report (no command failed). The reads and
+    /// exports waiting go on.
     pub fn edits_failed(&mut self, why: &str) -> Vec<Answered> {
         let tokens: Vec<u64> = self
             .commands
@@ -368,8 +369,17 @@ impl Session {
             .collect();
         tokens
             .into_iter()
-            .filter_map(|token| self.command_answered(token, Err(why.to_string())))
+            .filter_map(|token| self.answered_recording(token, Err(why.to_string()), false))
             .collect()
+    }
+
+    /// True when an edit that waits was posted to the other side: it may
+    /// be what that side works on now (a cancel then ends it there).
+    pub fn edit_posted(&self) -> bool {
+        self.commands
+            .jobs
+            .iter()
+            .any(|job| job.kind == JobKind::Edit && job.posted)
     }
 
     /// True while an edit handed over waits for its answer: a host keeps
@@ -461,6 +471,17 @@ impl Session {
         token: u64,
         answer: Result<CommandAnswer, String>,
     ) -> Option<Answered> {
+        self.answered_recording(token, answer, true)
+    }
+
+    /// [`Session::command_answered`]; a failure is kept for the bug
+    /// report only when `record` (a cancel by the person is none).
+    fn answered_recording(
+        &mut self,
+        token: u64,
+        answer: Result<CommandAnswer, String>,
+        record: bool,
+    ) -> Option<Answered> {
         let at = self.commands.jobs.iter().position(|j| j.token == token)?;
         let job = self.commands.jobs.remove(at);
         let revision = self
@@ -469,7 +490,9 @@ impl Session {
             .find(|open| open.id == job.doc_id)
             .map(|open| open.history.revision());
         let result = self.take_answer(&job, answer);
-        if let Err(why) = &result {
+        if let Err(why) = &result
+            && record
+        {
             self.record_failure(&job.command, &job.params, why);
         }
         let edited = self

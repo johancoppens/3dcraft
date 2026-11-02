@@ -6,7 +6,10 @@
 //! export tests saw a drawing of `view: "current"` change with what the
 //! page did before it: that was the window's camera (`Shell::sync` gives
 //! it to the session, and it follows the model once the scene is there),
-//! not the drawing; a named view gave the same bytes in every case.
+//! not the drawing; a named view gave the same bytes in every case. The
+//! view seen with a given window camera is held here too; that the
+//! window's camera does not move between the quick first picture and the
+//! display scene is `crates/ui-egui/tests/frame_box.rs`.
 
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -42,6 +45,10 @@ fn model(s: f64) -> Session {
             json!({"body": "Plate", "color": "#2060c0"}),
         ),
         (
+            "body.material",
+            json!({"body": "Plate", "name": "Steel", "density": "7.85 g/cm3"}),
+        ),
+        (
             "set.define",
             json!({"name": "Tops", "kind": "face", "where": {"normal": {"along": "z"}, "in": "Plate"}}),
         ),
@@ -58,6 +65,27 @@ fn model(s: f64) -> Session {
     let mut opened = Session::new(Workspace::memory());
     opened.open_bytes("model.3dcraft", &bytes).unwrap();
     opened
+}
+
+/// The window's camera, at scale `s`: what `view: "current"` draws.
+fn camera(s: f64) -> craft3d_render::Camera {
+    craft3d_render::Camera {
+        eye: craft3d_math::Vec3::new(140.0 * s, -160.0 * s, 90.0 * s),
+        target: craft3d_math::Vec3::new(40.0 * s, 10.0 * s, 5.0 * s),
+        up: craft3d_math::Vec3::new(0.0, 0.0, 1.0),
+        projection: craft3d_render::Projection::Orthographic {
+            half_height: 90.0 * s,
+        },
+    }
+}
+
+/// Lets go of what the kernel and the tessellator keep for the whole
+/// process (projections, intersections, meshes), so that a reference
+/// drawing is made from nothing, as in a process of its own.
+fn forget_the_process() {
+    craft3d_geom::forget_projections();
+    craft3d_geom::intersect::forget_kept();
+    craft3d_tess::forget_kept_meshes();
 }
 
 fn drawing(session: &mut Session, name: &str, extra: &Value) -> Vec<u8> {
@@ -99,13 +127,7 @@ fn before(session: &mut Session, what: &str) {
             session.execute("document.measure", &json!({})).unwrap();
         }
         "inertia" => {
-            session
-                .execute(
-                    "body.material",
-                    &json!({"body": "Plate", "material": "steel"}),
-                )
-                .ok();
-            session.execute("document.inspect", &json!({})).ok();
+            session.execute("document.inspect", &json!({})).unwrap();
         }
         "step exported" => {
             session
@@ -151,8 +173,12 @@ fn the_drawing_of_the_model_is_the_same_whatever_came_before() {
             for extra in [
                 json!({"projection": "orthographic", "hidden": "omit"}),
                 json!({"projection": "orthographic", "hidden": "omit", "tolerance": 0.01 * s}),
+                json!({"view": "current", "projection": "orthographic", "hidden": "dashed"}),
+                json!({"view": "current", "projection": "perspective", "hidden": "omit"}),
             ] {
+                forget_the_process();
                 let mut fresh = model(s);
+                fresh.set_window_camera(Some(camera(s)));
                 let want = drawing(&mut fresh, &name, &extra);
                 for what in [
                     "step exported",
@@ -166,6 +192,7 @@ fn the_drawing_of_the_model_is_the_same_whatever_came_before() {
                     "inertia",
                 ] {
                     let mut session = model(s);
+                    session.set_window_camera(Some(camera(s)));
                     before(&mut session, what);
                     let got = drawing(&mut session, &name, &extra);
                     assert!(

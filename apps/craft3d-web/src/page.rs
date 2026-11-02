@@ -1235,6 +1235,13 @@ impl eframe::App for Page {
         // Cancel.
         let cancelled = self.host.waiting_ui(ui.ctx());
         self.deliver(cancelled.downloads);
+        if self.host.take_worker_restart()
+            && let Some(scenes) = &mut self.scenes
+        {
+            let answered = scenes.restart(&mut self.host.session);
+            let outcome = self.host.answered(answered);
+            self.deliver(outcome.downloads);
+        }
         if let Some(file) = self.host.companion_ui(ui.ctx()) {
             self.save_companion(file);
         }

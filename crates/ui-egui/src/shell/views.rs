@@ -65,7 +65,7 @@ impl Shell {
             if turn.to.auto_fit
                 && let Some(scene) = &self.shown_scene
             {
-                self.framed = scene.bbox;
+                self.framed = scene.frame_box();
             }
         }
         if let Some(before) = self.viewing.filter(|id| open.contains(id)) {

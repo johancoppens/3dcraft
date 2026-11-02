@@ -126,7 +126,11 @@ impl Page {
         let done = self
             .scenes
             .frame_at(&mut self.host.session, quality, replies, self.clock);
-        let answered = self.host.answered(done.commands);
+        let mut commands = done.commands;
+        if self.host.take_worker_restart() {
+            commands.extend(self.scenes.restart(&mut self.host.session));
+        }
+        let answered = self.host.answered(commands);
         outcome.downloads.extend(answered.downloads);
         outcome.pick = outcome.pick.or(answered.pick);
         self.host.prepare(|| true);
@@ -570,4 +574,77 @@ fn an_edit_cancelled_is_not_made() {
         !report.ok && report.text == crate::host::CANCELLED,
         "{report:?}"
     );
+}
+
+/// An edit the worker hangs on, cancelled: the worker is ended, the
+/// document stays as it was, and the next job goes to a new worker.
+#[test]
+fn a_cancelled_edit_ends_a_worker_that_hangs_on_it() {
+    let bytes = model();
+    let mut page = opened(&bytes, false);
+    let before = page.host.session.document_bytes();
+    let add = json!({"name": "plate", "measure": "volume", "of": "Plate", "eq": "8000 * (1 mm)^3", "tol": "1e-6 * (1 mm)^3"});
+    *page.worker.hangs.borrow_mut() = true;
+    page.host
+        .session
+        .execute_deferrable("assert.add", &add)
+        .unwrap();
+    page.frame();
+    assert!(page.host.session.edit_posted());
+    let stops = *page.worker.stops.borrow();
+    page.host.cancel_edits();
+    page.frame();
+    assert_eq!(*page.worker.stops.borrow(), stops + 1);
+    assert!(!page.host.session.edits_waiting());
+    assert_eq!(page.host.session.document_bytes(), before);
+    // Nothing went to the bug report: no command failed.
+    assert!(page.host.session.last_failure().is_none());
+    // A new worker takes the next job.
+    *page.worker.hangs.borrow_mut() = false;
+    let got = page.export(&ExportWhat::Model, ExportFormat::Step);
+    assert_eq!(got.downloads.len(), 1);
+}
+
+/// The export dialog answered while an edit waits: made after the edit,
+/// of the document it leaves.
+#[test]
+fn an_export_answered_during_an_edit_follows_it() {
+    let bytes = model();
+    let mut page = opened(&bytes, false);
+    assert_eq!(
+        page.host.file_action(FileAction::Export),
+        Outcome::default()
+    );
+    page.settle();
+    page.host.shell.set_export_what(ExportWhat::Model).unwrap();
+    page.host
+        .shell
+        .set_export_format(ExportFormat::Stl)
+        .unwrap();
+    let add = json!({"name": "plate", "measure": "volume", "of": "Plate", "eq": "8000 * (1 mm)^3", "tol": "1e-6 * (1 mm)^3"});
+    page.host
+        .session
+        .execute_deferrable("assert.add", &add)
+        .unwrap();
+    assert!(page.host.session.edits_waiting());
+    page.host.shell.answer_export(true);
+    let ctx = egui::Context::default();
+    let mut held = Outcome::default();
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+        held = page.host.dialog_ui(ui.ctx());
+    });
+    output.textures_delta.clear();
+    assert_eq!(held, Outcome::default(), "kept while the edit waits");
+    let revision = page.host.session.document_revision();
+    let got = page.settle();
+    assert_ne!(
+        page.host.session.document_revision(),
+        revision,
+        "the edit came first"
+    );
+    assert_eq!(got.downloads.len(), 1);
+    let mut want = in_process(&bytes);
+    want.session.execute("assert.add", &add).unwrap();
+    let want = wanted(&mut want, &ExportWhat::Model, ExportFormat::Stl);
+    assert_eq!(files(&got.downloads), files(&want));
 }

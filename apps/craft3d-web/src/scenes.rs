@@ -81,6 +81,11 @@ pub struct Scenes<T: Transport> {
     commands_since: Option<f64>,
 }
 
+/// What a command waiting for the worker says when the worker was ended
+/// because an edit was cancelled.
+pub const RESTARTED: &str =
+    "the worker beside the page was ended when an edit was cancelled; run it again";
+
 /// What a command run where the bodies are says when the worker took
 /// longer than [`DEADLINE_MS`] over it.
 pub const COMMAND_TOO_LONG: &str =
@@ -280,6 +285,17 @@ impl<T: Transport> Scenes<T> {
             }
         }
         done
+    }
+
+    /// Ends the worker (an edit the person cancelled is the one it works
+    /// on, and it may never answer): what was posted to it is answered
+    /// with errors that say so, and the next job starts a new worker (the
+    /// scene it was building is posted again to that one).
+    pub fn restart(&mut self, session: &mut Session) -> Vec<Answered> {
+        self.transport.stop();
+        self.busy = None;
+        self.commands_since = None;
+        session.commands_failed(RESTARTED)
     }
 
     fn go_home(&mut self, session: &mut Session, why: &str, done: &mut Frame) {

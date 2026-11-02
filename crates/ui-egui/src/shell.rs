@@ -2021,6 +2021,9 @@ impl Shell {
         self.sync_timeline(session);
         self.sync_player(session);
         let scene = self.sync_scene(session);
+        // Again once the camera followed the model to this scene: the view
+        // seen is the one this frame shows, not the last frame's.
+        session.set_window_camera(Some(self.state.camera.to_render()));
         self.sync_analysis(session, scene.as_ref());
         self.mark_scrubbed_rows();
         self.mark_zoomable(scene.as_deref());
@@ -2279,10 +2282,13 @@ impl Shell {
                 .collect();
         }
         self.sync_joint_handles(session, &scene);
-        if self.state.camera.auto_fit && scene.bbox != self.framed {
-            self.framed = scene.bbox;
+        // Framed on a box that does not depend on how finely the scene
+        // was sampled: the quick first picture turning into the display
+        // scene moves no camera.
+        if self.state.camera.auto_fit && scene.frame_box() != self.framed {
+            self.framed = scene.frame_box();
             let aspect = self.aspect();
-            self.state.camera.fit(&scene.bbox, aspect);
+            self.state.camera.fit(&self.framed, aspect);
         }
         Some(scene)
     }
@@ -2293,13 +2299,14 @@ impl Shell {
         let Some(scene) = self.sync(session) else {
             return false;
         };
-        if scene.bbox.is_empty() {
+        let frame = scene.frame_box();
+        if frame.is_empty() {
             return false;
         }
         let aspect = self.aspect();
-        self.state.camera.fit(&scene.bbox, aspect);
+        self.state.camera.fit(&frame, aspect);
         self.state.camera.auto_fit = true;
-        self.framed = scene.bbox;
+        self.framed = frame;
         true
     }
 
@@ -3756,9 +3763,9 @@ impl Shell {
             if self.state.camera.auto_fit
                 && let Some(scene) = scene
             {
-                self.framed = scene.bbox;
+                self.framed = scene.frame_box();
                 let aspect = self.aspect();
-                self.state.camera.fit(&scene.bbox, aspect);
+                self.state.camera.fit(&self.framed, aspect);
             }
         }
 
@@ -4072,7 +4079,7 @@ impl Shell {
         if camera == turn.to {
             self.turn = None;
             if let Some(scene) = scene.filter(|_| turn.to.auto_fit) {
-                self.framed = scene.bbox;
+                self.framed = scene.frame_box();
             }
             return false;
         }
@@ -4097,12 +4104,12 @@ impl Shell {
 
     fn fit_to(&mut self, scene: Option<&Scene>) {
         if let Some(scene) = scene
-            && !scene.bbox.is_empty()
+            && !scene.frame_box().is_empty()
         {
             let aspect = self.aspect();
-            self.state.camera.fit(&scene.bbox, aspect);
+            self.framed = scene.frame_box();
+            self.state.camera.fit(&self.framed, aspect);
             self.state.camera.auto_fit = true;
-            self.framed = scene.bbox;
         }
     }
 

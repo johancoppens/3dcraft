@@ -533,6 +533,32 @@ pub struct Scene {
 }
 
 impl Scene {
+    /// The box a window frames the model on: the bodies' box from their
+    /// B-rep ([`Scene::bodies_box`]) with the sketches' points and the
+    /// ends of their curves, none of which depends on how finely the scene
+    /// was sampled, so the quick first picture and the display scene of
+    /// one state are framed alike (a camera that follows the model does
+    /// not move when the one turns into the other, and a drawing of the
+    /// view seen is the same whichever was there). Without bodies, the
+    /// box around the sketches as drawn.
+    pub fn frame_box(&self) -> Bbox3 {
+        if self.bodies_box.is_empty() {
+            return self.bbox;
+        }
+        let mut frame = self.bodies_box;
+        for sketch in &self.sketches {
+            for point in sketch
+                .polylines
+                .iter()
+                .flat_map(|p| p.points.first().into_iter().chain(p.points.last()))
+                .chain(&sketch.points)
+            {
+                frame.add(*point);
+            }
+        }
+        frame
+    }
+
     /// How the bodies were sampled: the chordal tolerance and the angle
     /// criterion. Two scenes of one revision with the same sampling have
     /// the same meshes; a viewer that keeps what it uploaded keys it by

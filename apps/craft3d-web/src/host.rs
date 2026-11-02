@@ -319,6 +319,13 @@ pub fn received_kind(name: &str) -> Option<Received> {
     }
 }
 
+/// A dialog's answer kept while an edit made where the bodies are waits.
+#[derive(Clone, Debug)]
+enum HeldAnswer {
+    Export(ExportRequest),
+    Name(NameDialog),
+}
+
 pub struct WebHost {
     pub session: Session,
     pub shell: Shell,
@@ -353,6 +360,11 @@ pub struct WebHost {
     /// Since when (egui's clock, s) an edit made where the bodies are
     /// waits ([`WebHost::waiting_ui`]).
     edit_since: Option<f64>,
+    /// An edit the worker had was cancelled: the page ends the worker.
+    worker_restart: bool,
+    /// A dialog over the page answered while an edit waits: done once it
+    /// is applied, in the order asked ([`WebHost::pump`]).
+    held_answer: Option<HeldAnswer>,
     /// The long work is done a piece per frame ([`WebHost::prepare`]), as
     /// the page does: its one thread draws between the pieces.
     stepwise: bool,
@@ -415,6 +427,8 @@ impl WebHost {
             export_choices: None,
             form_job: None,
             edit_since: None,
+            worker_restart: false,
+            held_answer: None,
             stepwise: false,
             about: None,
             fetching: None,
@@ -921,6 +935,12 @@ impl WebHost {
             }
             return outcome;
         }
+        // A dialog answered while the edit waited: done now, after it.
+        match self.held_answer.take() {
+            Some(HeldAnswer::Export(request)) => return self.export_request(request),
+            Some(HeldAnswer::Name(dialog)) => return self.answer(dialog, true),
+            None => {}
+        }
         if let Some(action) = self.shell.take_file_action() {
             outcome = self.file_action(action);
         }
@@ -1028,8 +1048,17 @@ impl WebHost {
     /// said so, and what was kept waiting behind it runs.
     pub fn cancel_edits(&mut self) -> Outcome {
         self.edit_since = None;
+        // The worker may be working on it, or hang on it: it is ended,
+        // and the next job starts a new one ([`Self::take_worker_restart`]).
+        self.worker_restart |= self.session.edit_posted();
         let answered = self.session.edits_failed(CANCELLED);
         self.answered(answered)
+    }
+
+    /// True once after an edit the worker had was cancelled: the page
+    /// ends that worker (`crate::scenes::Scenes::restart`).
+    pub fn take_worker_restart(&mut self) -> bool {
+        std::mem::take(&mut self.worker_restart)
     }
 
     /// Does what the File menu asked for, as far as that goes without the
@@ -1579,6 +1608,12 @@ impl WebHost {
     /// browser shows its save dialog.
     pub fn dialog_ui(&mut self, ctx: &egui::Context) -> Outcome {
         if let Some(request) = self.shell.take_export_answer() {
+            // An edit waits: the export is of the document it leaves, as
+            // on the desktop, and is made once it is there.
+            if self.session.edits_waiting() {
+                self.held_answer = Some(HeldAnswer::Export(request));
+                return Outcome::default();
+            }
             return self.export_request(request);
         }
         let Some(mut dialog) = self.dialog.take() else {
@@ -1619,6 +1654,10 @@ impl WebHost {
                 }
             });
         match answer {
+            Some(true) if self.session.edits_waiting() => {
+                self.held_answer = Some(HeldAnswer::Name(dialog));
+                Outcome::default()
+            }
             Some(confirmed) => self.answer(dialog, confirmed),
             None => {
                 self.dialog = Some(dialog);
