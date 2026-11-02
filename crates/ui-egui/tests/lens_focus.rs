@@ -214,18 +214,14 @@ fn base64_decode(text: &str) -> Vec<u8> {
     out
 }
 
-/// The edge energy of the left and the right half of a picture: the sum
-/// of the squared differences between neighbouring pixels. Blur spreads
-/// a step over many pixels, which lowers it.
-fn energy((w, h, gray): &(usize, usize, Vec<u8>)) -> [f64; 2] {
-    let mut halves = [0.0; 2];
-    for y in 0..h - 1 {
-        for x in 0..w - 1 {
-            let p = f64::from(gray[y * w + x]);
-            let dx = f64::from(gray[y * w + x + 1]) - p;
-            let dy = f64::from(gray[(y + 1) * w + x]) - p;
-            halves[usize::from(x >= w / 2)] += dx * dx + dy * dy;
-        }
+/// How far a picture is from the sharp one, in its left and its right
+/// half: the sum of the differences of the grey levels. Blur moves the
+/// light of a part's outline into its surroundings.
+fn off_sharp(picture: &(usize, usize, Vec<u8>), sharp: &(usize, usize, Vec<u8>)) -> [u64; 2] {
+    let (w, _, gray) = picture;
+    let mut halves = [0; 2];
+    for (k, (a, b)) in gray.iter().zip(&sharp.2).enumerate() {
+        halves[usize::from(k % w >= w / 2)] += u64::from(a.abs_diff(*b));
     }
     halves
 }
@@ -233,33 +229,45 @@ fn energy((w, h, gray): &(usize, usize, Vec<u8>)) -> [f64; 2] {
 #[test]
 fn the_part_in_focus_is_sharp_and_the_other_blurred() {
     let (mut session, mut shell, _ctx) = two_cubes();
+    // Sixteen frames, so the lens's disc is filled and the picture is
+    // not grainy (`look.accumulate`).
     let mut shot = |shell: &mut Shell, dof: Value| {
-        call(shell, &mut session, "ui.set", json!({"look": {"dof": dof}}));
-        let picture = screenshot(shell, &mut session);
-        (energy(&picture), picture)
+        call(
+            shell,
+            &mut session,
+            "ui.set",
+            json!({"look": {"dof": dof, "accumulate": 16}}),
+        );
+        screenshot(shell, &mut session)
     };
     // Nothing selected, so no outline is drawn over the picture: the
-    // lens focused on each cube's centre in turn.
-    let (on_near, _) = shot(
-        &mut shell,
-        json!({"fstop": 1.4, "focus": [45.0, -20.0, 0.0]}),
+    // lens focused on each cube's centre in turn, at f/4 (at f/1.4 the
+    // near cube's front, 5 nearer than its centre, is out of focus too).
+    let sharp = shot(&mut shell, Value::Null);
+    let on_near = off_sharp(
+        &shot(&mut shell, json!({"fstop": 4, "focus": [45.0, -20.0, 0.0]})),
+        &sharp,
     );
-    let (on_far, _) = shot(
-        &mut shell,
-        json!({"fstop": 1.4, "focus": [-55.0, 20.0, 0.0]}),
+    let on_far = off_sharp(
+        &shot(&mut shell, json!({"fstop": 4, "focus": [-55.0, 20.0, 0.0]})),
+        &sharp,
     );
-    // Near is on the left, Far on the right: each half is sharper when
-    // its cube is in focus.
-    assert!(on_near[0] > 1.5 * on_far[0], "{on_near:?} {on_far:?}");
-    assert!(on_far[1] > 1.5 * on_near[1], "{on_near:?} {on_far:?}");
-    // Stopped down to f/22 the far cube, out of focus, is sharper than
-    // at f/1.4.
-    let (stopped, _) = shot(
-        &mut shell,
-        json!({"fstop": 22, "focus": [45.0, -20.0, 0.0]}),
+    eprintln!("off the sharp picture, focused near {on_near:?}, far {on_far:?}");
+    // Near is on the left, Far on the right: each half is close to the
+    // sharp picture when its cube is in focus, far from it when not.
+    assert!(4 * on_near[0] < on_far[0], "{on_near:?} {on_far:?}");
+    assert!(4 * on_far[1] < on_near[1], "{on_near:?} {on_far:?}");
+    // Stopped down to f/22 the far cube, out of focus, is much nearer
+    // the sharp picture than at f/4.
+    let stopped = off_sharp(
+        &shot(
+            &mut shell,
+            json!({"fstop": 22, "focus": [45.0, -20.0, 0.0]}),
+        ),
+        &sharp,
     );
-    assert!(stopped[1] > 1.5 * on_near[1], "{stopped:?} {on_near:?}");
-    eprintln!("near {on_near:?} far {on_far:?} f/22 {stopped:?}");
+    eprintln!("f/22: {stopped:?}");
+    assert!(2 * stopped[1] < on_near[1], "{stopped:?} {on_near:?}");
 }
 
 /// The lens on the selection draws the very picture of the lens on the
