@@ -803,13 +803,94 @@ pub fn piece_lowest_within(
     (!least.is_nan()).then_some(least)
 }
 
+/// Whether the closed polygon `points` is simple: no two of its sides
+/// meet but neighbours at their shared corner. Exact up to rounding, which
+/// is taken against it: an orientation within `1e-12` of the squared size
+/// of the two sides counts as touching, so a polygon that crosses or
+/// touches itself, or nearly does, is never taken as simple (a tool's
+/// enclosing polygon whose arc's tangent apex crosses another side: review
+/// of 4116ed3e, where the ear clipping could then cut the wrong region).
+/// Quadratic in the corners (at most [`MAX_SIMPLE_POINTS`]; more is not
+/// simple).
+pub fn simple(points: &[[f64; 2]]) -> bool {
+    let n = points.len();
+    if !(3..=MAX_SIMPLE_POINTS).contains(&n) {
+        return false;
+    }
+    let side = |i: usize| -> Option<([f64; 2], [f64; 2])> {
+        Some((*points.get(i)?, *points.get((i + 1) % n)?))
+    };
+    let orient = |o: [f64; 2], a: [f64; 2], b: [f64; 2], size: f64| -> i8 {
+        let c = (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+        if !c.is_finite() || c.abs() <= 1e-12 * size {
+            0
+        } else if c > 0.0 {
+            1
+        } else {
+            -1
+        }
+    };
+    let len2 = |a: [f64; 2], b: [f64; 2]| {
+        let (x, y) = (b[0] - a[0], b[1] - a[1]);
+        x * x + y * y
+    };
+    for i in 0..n {
+        let Some((a, b)) = side(i) else { return false };
+        if !(len2(a, b) > 0.0) {
+            return false;
+        }
+        for j in (i + 1)..n {
+            // Neighbours share a corner: only a fold back onto the side
+            // (the far corner on it) makes them meet elsewhere.
+            let Some((c, d)) = side(j) else { return false };
+            let size = len2(a, b).max(len2(c, d));
+            if j == i + 1 || (i == 0 && j == n - 1) {
+                let (shared, other_far, own_far) = if j == i + 1 { (b, d, a) } else { (a, c, b) };
+                if orient(shared, own_far, other_far, size) == 0 {
+                    // In line: they overlap when the far corner lies back
+                    // along the side.
+                    let back = (own_far[0] - shared[0]) * (other_far[0] - shared[0])
+                        + (own_far[1] - shared[1]) * (other_far[1] - shared[1]);
+                    if back > 0.0 {
+                        return false;
+                    }
+                }
+                continue;
+            }
+            let (o1, o2) = (orient(a, b, c, size), orient(a, b, d, size));
+            let (o3, o4) = (orient(c, d, a, size), orient(c, d, b, size));
+            // Apart only when one side lies strictly to one side of the
+            // other's line.
+            let mut apart = (o1 == o2 && o1 != 0) || (o3 == o4 && o3 != 0);
+            if !apart && o1 == 0 && o2 == 0 {
+                // In one line: apart when their spans along it are, by
+                // more than the rounding taken against them.
+                let dir = [b[0] - a[0], b[1] - a[1]];
+                let at = |p: [f64; 2]| (p[0] - a[0]) * dir[0] + (p[1] - a[1]) * dir[1];
+                let (lo, hi) = (0.0, at(b));
+                let (c0, c1) = (at(c).min(at(d)), at(c).max(at(d)));
+                let slack = 1e-12 * size;
+                apart = c1 < lo - slack || c0 > hi + slack;
+            }
+            if !apart {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// The most corners [`simple`] looks at.
+pub const MAX_SIMPLE_POINTS: usize = 4096;
+
 /// The closed polygon `points` (either way round) cut into triangles by
 /// clipping ears: convex pieces whose union is the polygon (a corner on
-/// the straight line between its neighbours is dropped). `None` when it is not one simple polygon the
-/// clipping can cut (a polygon that crosses itself, or a degenerate one).
+/// the straight line between its neighbours is dropped). `None` when it
+/// is not one simple polygon ([`simple`], checked first) or the clipping
+/// cannot cut it (a degenerate one).
 pub fn triangles(points: &[[f64; 2]]) -> Option<Vec<[[f64; 2]; 3]>> {
     let n = points.len();
-    if n < 3 {
+    if n < 3 || !simple(points) {
         return None;
     }
     let area: f64 = (0..n)

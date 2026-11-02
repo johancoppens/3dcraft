@@ -27,7 +27,7 @@
 
 use craft3d_kernel::profile::{Curve2, Profile, SketchCurve, detect_profiles};
 use craft3d_kernel::sheetmetal::sequence::{
-    PieceOf, final_worlds, piece_lowest, piece_lowest_within, piece_points, triangles,
+    PieceOf, final_worlds, piece_lowest, piece_lowest_within, piece_points, simple, triangles,
 };
 use craft3d_kernel::sheetmetal::{
     Closing, Direction, FlangeSpec, LengthFrom, On, Part, Spec, build,
@@ -581,6 +581,29 @@ fn a_die_cut_into_triangles_adds_up_to_its_area() {
         // A bow tie crosses itself: no area to cut, refused.
         let bow = [[0.0, 0.0], [k, k], [k, 0.0], [0.0, k]];
         assert!(triangles(&bow).is_none(), "scale {k}");
+        // A polygon whose third side dips across its first (as a round
+        // shoulder's tangent apex can cross a V's flank) has an area and
+        // ears to clip, but is no region: refused, never cut (review of
+        // 4116ed3e).
+        let crossed: Vec<[f64; 2]> = [
+            [0.0, 0.0],
+            [10.0, 0.0],
+            [10.0, 10.0],
+            [6.0, -1.0],
+            [0.0, 10.0],
+        ]
+        .iter()
+        .map(|p| [p[0] * k, p[1] * k])
+        .collect();
+        assert!(!simple(&crossed), "scale {k}");
+        assert!(triangles(&crossed).is_none(), "scale {k}");
+        // Touching itself at a corner is not simple either; the V die is.
+        let touching: Vec<[f64; 2]> = [[0.0, 0.0], [10.0, 0.0], [5.0, 0.0], [5.0, 5.0]]
+            .iter()
+            .map(|p| [p[0] * k, p[1] * k])
+            .collect();
+        assert!(!simple(&touching), "scale {k}");
+        assert!(simple(&v_die), "scale {k}");
     }
 }
 
