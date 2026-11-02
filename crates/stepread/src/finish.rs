@@ -337,6 +337,70 @@ fn worst_gap(defects: &[Defect]) -> Option<(f64, &Defect)> {
     worst
 }
 
+/// The refusal of a body whose reading spent its work
+/// (`crate::IMPORT_WORK`), naming the stage and where it was; `None`
+/// while there is work left.
+fn over_budget(name: &str, stage: &str, at: Option<String>) -> Option<ImportError> {
+    craft3d_geom::allowance::exhausted().then(|| {
+        ImportError(format!(
+            "`{name}`: reading the body took more work than an import may (`stepread::IMPORT_WORK`) while {stage}{}; the body is refused",
+            at.map_or_else(String::new, |a| format!(" (at {a})"))
+        ))
+    })
+}
+
+/// An edge whose tolerance is at least this share of the body's largest
+/// is measured again near its gap ([`tighten_loosest`]).
+const NEAR_LARGEST: f64 = 0.5;
+
+/// The edges whose tolerance sets or comes near the body's largest (at
+/// least [`NEAR_LARGEST`] of it), which the kernel then works at, measured
+/// again near their gap (`topo::tighten_edge`), loosest first, until the
+/// next is below that share of the largest left; the rest keep the bound
+/// of the first proof (the developer, 2026-11-02: tighten where it
+/// matters, at the cost of the import's time elsewhere). Edges sewing
+/// gave a tolerance (`sewn`) are left. The vertices at an edge tightened
+/// lose what it raised them to; they are measured after. The report's
+/// count and largest follow.
+fn tighten_loosest(
+    body: &mut craft3d_topo::Body,
+    sewn: &std::collections::BTreeSet<EdgeId>,
+    tolerance: &craft3d_math::Tolerance,
+    cap: f64,
+    report: &mut Report,
+) {
+    let mut loose: Vec<(EdgeId, f64)> = body
+        .tolerances
+        .edges()
+        .filter(|(e, _)| !sewn.contains(e))
+        .collect();
+    loose.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    let mut largest_done = 0.0_f64;
+    for &(edge, had) in &loose {
+        // The largest there will be: what was tightened, this one as it
+        // is, and the edges sewing gave.
+        let left = sewn
+            .iter()
+            .filter_map(|e| body.edge_tolerance(*e))
+            .fold(largest_done.max(had), f64::max);
+        if had < NEAR_LARGEST * left {
+            break;
+        }
+        let ends = body.edge(edge).map(|e| [e.start, e.end]);
+        let now = craft3d_topo::tighten_edge(body, edge, tolerance, cap).unwrap_or(Some(had));
+        largest_done = largest_done.max(now.unwrap_or(0.0));
+        if now.is_none_or(|t| t < had) {
+            for v in ends.into_iter().flatten() {
+                body.clear_vertex_tolerance(v);
+            }
+        }
+        if now.is_none() {
+            report.loose_edges = report.loose_edges.saturating_sub(1);
+        }
+    }
+    report.largest_tolerance = body.tolerances.edges().map(|(_, t)| t).fold(0.0, f64::max);
+}
+
 /// Finishes a body read from a file: `name` names it in messages,
 /// `merge` is the distance within which the file's edges are one (its
 /// uncertainty, within the tolerance and the cap).
@@ -387,7 +451,9 @@ pub(crate) fn finish_described(
         report: &mut *report,
     };
     finisher.sew_edges();
-    finisher.sew_loose(&name, &options.tolerance, cap)?;
+    if let Err(e) = finisher.sew_loose(&name, &options.tolerance, cap) {
+        return Err(over_budget(&name, "sewing its faces", None).unwrap_or(e));
+    }
     // A solid's outside encloses a positive volume and a cavity a
     // negative one; a shell the other way round is turned over (a cavity
     // the file gives as a plain closed shell).
@@ -410,9 +476,25 @@ pub(crate) fn finish_described(
     // proof within the cap is found, the body is refused naming the
     // entity. Geometry is never moved.
     let step_id = |ids: &[u64], k: u32| ids.get(k as usize).copied().unwrap_or(0);
-    for k in 0..finisher.body.edges.len() {
+    // Edges sewing gave a tolerance (it holds the edge it dropped too):
+    // never measured tighter on their own curve alone.
+    let sewn: std::collections::BTreeSet<EdgeId> =
+        finisher.body.tolerances.edges().map(|(e, _)| e).collect();
+    let count = finisher.body.edges.len();
+    for k in 0..count {
         let edge = EdgeId(u32::try_from(k).unwrap_or(u32::MAX));
-        match craft3d_topo::record_edge(&mut finisher.body, edge, &options.tolerance, cap) {
+        let recorded = craft3d_topo::record_edge(&mut finisher.body, edge, &options.tolerance, cap);
+        if let Some(e) = over_budget(
+            &name,
+            "proving its edges on their faces",
+            Some(format!(
+                "edge #{}, {k} of {count} edges proven",
+                step_id(&finisher.edge_ids, edge.0)
+            )),
+        ) {
+            return Err(e);
+        }
+        match recorded {
             Ok(Some(t)) => {
                 finisher.report.loose_edges += 1;
                 finisher.report.largest_tolerance = finisher.report.largest_tolerance.max(t);
@@ -456,6 +538,16 @@ pub(crate) fn finish_described(
                 ));
             }
         }
+    }
+    tighten_loosest(
+        &mut finisher.body,
+        &sewn,
+        &options.tolerance,
+        cap,
+        finisher.report,
+    );
+    if let Some(e) = over_budget(&name, "measuring its loosest edges again", None) {
+        return Err(e);
     }
     // Every vertex, with one pass over the edges.
     let every: Vec<VertexId> = (0..finisher.body.vertices.len())

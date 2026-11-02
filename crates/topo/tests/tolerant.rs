@@ -336,7 +336,8 @@ fn a_gap_within_the_cap_is_measured_within_it() {
         for share in [0.01, 0.3, 0.6, 0.8, 0.95, 1.2] {
             let gap = share * cap;
             let circle = Curve3::Circle(Circle::new(frame, radius + gap).unwrap());
-            let measured = craft3d_topo::measure_curve(&circle, (0.3, 2.9), &cylinder, &t, cap);
+            let measured =
+                craft3d_topo::measure_curve_tight(&circle, (0.3, 2.9), &cylinder, &t, cap);
             match measured {
                 Ok(d) => {
                     assert!(
@@ -506,7 +507,21 @@ fn a_gap_is_recorded_near_its_size() {
             let gap = (0..=6000)
                 .map(|k| curve.eval(6.0 * f64::from(k) / 6000.0).z.abs())
                 .fold(0.0, f64::max);
-            let d = craft3d_topo::measure_curve(&curve, (0.0, 6.0), &plane, &t, cap).unwrap();
+            // The cheap measure makes nothing loose that is not; the
+            // tight one, for the edges that matter, records near the gap.
+            let cheap = craft3d_topo::measure_curve(&curve, (0.0, 6.0), &plane, &t, cap).unwrap();
+            assert!(
+                cheap >= gap * (1.0 - 1e-9),
+                "{scale} {share}: {cheap:e} below {gap:e}"
+            );
+            if gap * 1.1 <= t.linear {
+                assert!(
+                    cheap <= t.linear,
+                    "{scale} {share}: {cheap:e} above {:e}",
+                    t.linear
+                );
+            }
+            let d = craft3d_topo::measure_curve_tight(&curve, (0.0, 6.0), &plane, &t, cap).unwrap();
             assert!(
                 d >= gap * (1.0 - 1e-9),
                 "{scale} {share}: {d:e} below {gap:e}"

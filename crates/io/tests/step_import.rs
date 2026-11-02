@@ -765,6 +765,13 @@ fn an_edge_off_its_face_within_the_cap_reads_within_the_cap() {
             assert_eq!(sheet.report.loose_edges, 1, "{:?}", sheet.report);
             let t = sheet.report.largest_tolerance;
             assert!(t >= share * cap && t <= cap, "{per} {share}: {t:e}");
+            // The body's loosest edge is measured near its gap
+            // (`stepread::finish::tighten_loosest`): recorded within an
+            // eighth (the margin) and a quarter of it.
+            assert!(
+                t <= (share * cap * 1.25 * craft3d_topo::RECORD_MARGIN).min(cap),
+                "{per} {share}: {t:e}"
+            );
             let defects = craft3d_topo::check_capped(&sheet.body, &options.tolerance, cap);
             assert!(defects.is_empty(), "{per} {share}: {defects:?}");
         }
@@ -2030,4 +2037,38 @@ fn a_side_against_two_faces_split_across_it_reads_as_one_body() {
         );
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// Reading a body is bounded work: past the bound it is refused naming
+/// the stage and the edge where the work ran out, the same on every run
+/// (counted, not clocked); within the bound it reads (2026-11-02: ABC
+/// models of tens of thousands of edges took minutes).
+#[test]
+fn reading_past_the_work_bound_is_refused_naming_where() {
+    let options = Options {
+        metres_per_unit: 1e-3,
+        tolerance: tolerance(1.0),
+        loosest: 1e-3,
+    };
+    let parsed = parse(wavy_sheet(1e-4).as_bytes()).unwrap();
+    let read = parsed.build_within(0, &options, craft3d_stepread::IMPORT_WORK);
+    assert!(read.is_ok(), "{:?}", read.err());
+    for work in [1, 50] {
+        let error = parsed
+            .build_within(0, &options, work)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("more work than an import may"),
+            "{work}: {error}"
+        );
+        assert!(error.contains("while proving its edges"), "{work}: {error}");
+        assert!(error.contains("edge #"), "{work}: {error}");
+        // The same refusal again.
+        let again = parsed
+            .build_within(0, &options, work)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, again);
+    }
 }

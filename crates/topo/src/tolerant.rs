@@ -302,17 +302,80 @@ pub fn measure_edge(
     Ok(worst)
 }
 
+/// The edge's tolerance measured again with [`measure_curve_tight`] and
+/// recorded when that is tighter than what it has (its own tolerance
+/// cleared when the gap lies within the document's; its vertices are left
+/// to be measured after). The tolerance it has afterwards, `None` for
+/// the document's.
+pub fn tighten_edge(
+    body: &mut Body,
+    edge: EdgeId,
+    tolerance: &Tolerance,
+    cap: f64,
+) -> Result<Option<f64>, ToleranceError> {
+    let e = body.edge(edge).ok_or(ToleranceError::NoEdge { edge })?;
+    let had = body.edge_tolerance(edge);
+    let mut worst: f64 = 0.0;
+    for face in faces_of(body, edge) {
+        let bound = measure_curve_tight(&e.curve, e.range, &face.surface, tolerance, cap)
+            .map_err(|at| ToleranceError::EdgeNotMeasured { edge, at, cap })?;
+        worst = worst.max(bound);
+    }
+    if worst <= tolerance.linear {
+        body.clear_edge_tolerance(edge);
+        return Ok(None);
+    }
+    let tighter = (worst * RECORD_MARGIN).min(cap).max(tolerance.linear);
+    match had {
+        Some(h) if h <= tighter => Ok(Some(h)),
+        _ => {
+            body.clear_edge_tolerance(edge);
+            body.set_edge_tolerance(edge, tighter)?;
+            Ok(Some(tighter))
+        }
+    }
+}
+
 /// How far `curve` over `range` is from `surface`, proven over the whole
 /// range: the least bound proven, in steps of two from twice the farthest
 /// of five places along it (at least the document's tolerance), up to
 /// `cap`; `Err` with the parameter where the last proof stopped when none
-/// within the cap is found.
+/// within the cap is found. A bound just above the document's tolerance
+/// for a gap the samples see within it is proven at that tolerance once
+/// more, so no entity is made loose that is not. The bound may lie
+/// anywhere up to the proof's target; [`measure_curve_tight`] brings it
+/// near the gap, at a cost, for the entities whose tolerance matters.
 pub fn measure_curve(
     curve: &Curve3,
     range: (f64, f64),
     surface: &Surface,
     tolerance: &Tolerance,
     cap: f64,
+) -> Result<f64, f64> {
+    measure_curve_with(curve, range, surface, tolerance, cap, false)
+}
+
+/// [`measure_curve`], the bound brought near the gap ([`tighten`]): for
+/// the edges that set or come near a body's largest tolerance, which the
+/// kernel then works at (review of 2026-11-02; the developer: tighten
+/// where it matters, the rest the cheap way).
+pub fn measure_curve_tight(
+    curve: &Curve3,
+    range: (f64, f64),
+    surface: &Surface,
+    tolerance: &Tolerance,
+    cap: f64,
+) -> Result<f64, f64> {
+    measure_curve_with(curve, range, surface, tolerance, cap, true)
+}
+
+fn measure_curve_with(
+    curve: &Curve3,
+    range: (f64, f64),
+    surface: &Surface,
+    tolerance: &Tolerance,
+    cap: f64,
+    tight: bool,
 ) -> Result<f64, f64> {
     let bounded = CurveBound::new(curve);
     let (sampled, start) = walk(curve, range, surface, cap);
@@ -347,14 +410,7 @@ pub fn measure_curve(
                         pieces = p.pieces;
                     }
                 }
-                // The gap seen along the whole edge, densely: the floor a
-                // tighter proof aims at (five places may see much less).
-                let seen = if bound > tolerance.linear {
-                    sampled.max(dense_gap(curve, range, surface, start))
-                } else {
-                    sampled
-                };
-                return Ok(tighten(bound, pieces, seen, tolerance.linear, |t, most| {
+                let prove = |t: f64, most: usize| {
                     curve_on_surface(
                         &bounded,
                         range,
@@ -365,7 +421,25 @@ pub fn measure_curve(
                     )
                     .ok()
                     .map(|p| (p.bound.max(sampled), p.pieces))
-                }));
+                };
+                if !tight {
+                    // No entity made loose that is not.
+                    if bound > tolerance.linear
+                        && 1.1 * sampled <= tolerance.linear
+                        && let Some((b, _)) = prove(tolerance.linear, PROOF_PIECES)
+                    {
+                        return Ok(b.min(bound));
+                    }
+                    return Ok(bound);
+                }
+                // The gap seen along the whole edge, densely: the floor a
+                // tighter proof aims at (five places may see much less).
+                let seen = if bound > tolerance.linear {
+                    sampled.max(dense_gap(curve, range, surface, start))
+                } else {
+                    sampled
+                };
+                return Ok(tighten(bound, pieces, seen, tolerance.linear, prove));
             }
             Err(not) => stopped = not.at,
         }

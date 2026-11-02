@@ -351,6 +351,13 @@ impl Imported {
     }
 }
 
+/// The work one placed solid or sheet may take to read
+/// (`craft3d_geom::allowance` units: about one per freeform evaluation,
+/// one to three million a second): past it the body is refused, naming
+/// the stage and the entity where the work ran out (2026-11-02: ABC
+/// models of tens of thousands of edges took minutes to prove).
+pub const IMPORT_WORK: u64 = 40_000_000;
+
 /// A parsed file with its items found.
 #[derive(Debug)]
 pub struct Parsed {
@@ -603,6 +610,16 @@ impl Parsed {
     /// Placed item `index` (of [`Parsed::placed`]) as a body in the
     /// caller's units, where its assembly places it.
     pub fn build(&self, index: usize, options: &Options) -> Result<Imported, ImportError> {
+        self.build_within(index, options, IMPORT_WORK)
+    }
+
+    /// [`Parsed::build`] with `work` in place of [`IMPORT_WORK`].
+    pub fn build_within(
+        &self,
+        index: usize,
+        options: &Options,
+        work: u64,
+    ) -> Result<Imported, ImportError> {
         let placed = self.placed.get(index).ok_or_else(|| {
             ImportError(format!(
                 "the file has {} placed solids and sheets; there is no number {index}",
@@ -654,7 +671,12 @@ impl Parsed {
             ..Report::default()
         };
         let reader = geometry::Reader::new(self, scale, units.radians_per_angle);
-        let mut read = topology::build(&reader, item, options, &mut report)?;
+        // Bounded work (`craft3d_geom::allowance`, counted, so the same
+        // file gives the same answer on every machine): a body whose
+        // proofs would take minutes is refused naming where the work went.
+        let mut read = craft3d_geom::allowance::within(work, || {
+            topology::build(&reader, item, options, &mut report)
+        })?;
         read.color = style::color_of(self, item.id, &read.face_ids);
         if !placed.steps.is_empty() {
             let transform = self.placement_transform(placed, options)?;

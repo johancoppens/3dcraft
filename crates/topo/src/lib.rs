@@ -51,8 +51,8 @@ pub use sew_split::{MAX_STATION_LOOKS, MAX_STATIONS};
 pub use shells::{Taken, boundary_loops, face_groups, shell_alone, shell_genera, shells_alone};
 pub use tolerant::{
     DEFAULT_LOOSEST, PROOF_PIECES, RECORD_MARGIN, ToleranceError, Tolerances, default_loosest,
-    measure_curve, measure_edge, measure_vertex, nearest_foot, record_edge, record_vertex,
-    record_vertices,
+    measure_curve, measure_curve_tight, measure_edge, measure_vertex, nearest_foot, record_edge,
+    record_vertex, record_vertices, tighten_edge,
 };
 pub use touch::{Touch, TouchError, TouchScope, Touched, touches};
 pub use transform::{Offsets, TransformError, merge};

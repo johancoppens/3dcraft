@@ -1324,6 +1324,12 @@ impl<'a> SurfaceBound<'a> {
         };
         while let Some((a, b, fa, fb)) = stack.pop() {
             let middle = 0.5 * (a + b);
+            // Under a bound on the work (`crate::allowance`) that is
+            // spent, no more pieces: not proven (an import refuses then,
+            // naming the work).
+            if crate::allowance::exhausted() {
+                return Err(NotProven { at: middle });
+            }
             match self.piece_bound(curve, a, b, fa, fb) {
                 Some(bound) if bound <= target => {
                     proven.bound = proven.bound.max(bound);
