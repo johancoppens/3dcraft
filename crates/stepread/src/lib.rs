@@ -240,6 +240,52 @@ pub struct Loosest {
     /// largest tolerance of an edge that ends at it.
     pub ends: f64,
     pub edge: f64,
+    /// For a vertex: the loosest edge that ends at it (its file id) and
+    /// how far that edge lies off its faces at 1025 places.
+    pub edge_step: u64,
+    pub edge_gap: f64,
+}
+
+/// How far `edge` lies off the surfaces of its faces at 1025 places, each
+/// foot the nearer of the projection and the foot walked from the place
+/// before: for reports.
+fn sampled_gap(body: &craft3d_topo::Body, edge: craft3d_topo::EdgeId) -> f64 {
+    let Some(e) = body.edge(edge) else {
+        return f64::NAN;
+    };
+    let mut worst = 0.0_f64;
+    for face in &body.faces {
+        let uses = face.loops.iter().any(|l| {
+            body.loop_(*l)
+                .is_some_and(|l| l.coedges.iter().any(|c| c.edge == edge))
+        });
+        if !uses {
+            continue;
+        }
+        let mut last: Option<(f64, f64)> = None;
+        for k in 0..=1024 {
+            let t = e.range.0 + (e.range.1 - e.range.0) * f64::from(k) / 1024.0;
+            let p = e.curve.eval(t);
+            let mut best: Option<(f64, (f64, f64))> = None;
+            for at in [
+                last.and_then(|l| face.surface.project_from(p, l).ok()),
+                face.surface.project(p).ok(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                let d = face.surface.eval(at.0, at.1).distance(p);
+                if d.is_finite() && best.is_none_or(|(b, _)| d < b) {
+                    best = Some((d, at));
+                }
+            }
+            if let Some((d, at)) = best {
+                worst = worst.max(d);
+                last = Some(at);
+            }
+        }
+    }
+    worst
 }
 
 impl Imported {
@@ -257,6 +303,8 @@ impl Imported {
                     from_edge: false,
                     ends: 0.0,
                     edge: t,
+                    edge_step: id(&self.edge_ids, e.0),
+                    edge_gap: sampled_gap(&self.body, e),
                 });
             }
         }
@@ -270,6 +318,7 @@ impl Imported {
                 });
                 let point = self.body.vertex(v).map(|x| x.point);
                 let (mut ends, mut edge) = (0.0_f64, 0.0_f64);
+                let mut loosest_edge: Option<craft3d_topo::EdgeId> = None;
                 for (k, e) in self.body.edges.iter().enumerate() {
                     for (end, at) in [(e.start, e.range.0), (e.end, e.range.1)] {
                         if end == v
@@ -279,7 +328,10 @@ impl Imported {
                             let own = u32::try_from(k)
                                 .ok()
                                 .and_then(|k| self.body.edge_tolerance(craft3d_topo::EdgeId(k)));
-                            edge = edge.max(own.unwrap_or(0.0));
+                            if own.unwrap_or(0.0) > edge {
+                                edge = own.unwrap_or(0.0);
+                                loosest_edge = u32::try_from(k).ok().map(craft3d_topo::EdgeId);
+                            }
                         }
                     }
                 }
@@ -290,6 +342,8 @@ impl Imported {
                     from_edge,
                     ends,
                     edge,
+                    edge_step: loosest_edge.map_or(0, |e| id(&self.edge_ids, e.0)),
+                    edge_gap: loosest_edge.map_or(f64::NAN, |e| sampled_gap(&self.body, e)),
                 });
             }
         }

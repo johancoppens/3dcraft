@@ -139,6 +139,8 @@ pub(crate) fn import_bytes(
                 "fromEdge": l.from_edge,
                 "ends": l.ends,
                 "edge": l.edge,
+                "edgeStep": format!("#{}", l.edge_step),
+                "edgeGap": l.edge_gap,
             })),
         }));
     }
