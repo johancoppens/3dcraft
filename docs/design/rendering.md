@@ -566,6 +566,55 @@ soft one); the layout tests with the *Edges* chip. With it the 1280 × 800 windo
 narrow for the three toggles' names with the section open: those three show their icons (their names as
 tooltips) before any other chip loses its name.
 
+### The lens's controls and a focus on the selection (2026-11-02)
+
+The developer could not set the depth of field: the studio popover had only a *Depth of field* toggle,
+which switched on `{"fstop": 2.8}` with the default focus, the model's centre; the f-number and the
+focus were reachable through `ui.set` alone. Now the popover's lens rows are (`shell/look_panel.rs`,
+`lens_rows`): *Lens* (on and off; on is `{fstop: 2.8, focus: "selection"}`), *Aperture*, a slider over
+the full stops f/1.4 to f/22 (`FSTOPS`: each stop halves the light, so equal steps on the slider are
+equal steps of the f-number's logarithm; a value set by `ui.set` between stops is shown as it is and
+kept until the slider moves), with "smaller f-number: more blur" under it, and *Focus*: *Selection*,
+*Click* (`picked`), *Centre*, *Distance* (a logarithmic slider from 0.05 to 4 times the camera's
+distance to its target; choosing it starts at the distance the lens focuses at now, so the picture
+does not jump). A point set by `ui.set` is named under the choice; a fallback is said there too.
+
+*Focus on the selection* (`FocusSpec::Selection`, `look.dof.focus` `"selection"`) focuses on the plane
+square to the view through the centre of the box of what the selection shows,
+`Scene::items_focus`: the box `F` frames (`items_box`: a body's mesh, a feature's faces, a face's
+triangles, an edge's polyline, a vertex's point). The box's centre rather than the mean of the mesh's
+points, which leans towards where the mesh is fine, and rather than the visible surface point under
+the view, which moves as the camera turns and would make the accumulated still restart on every orbit:
+a lens focuses on a plane, so only the depth matters, and a part's middle keeps most of it sharp. The
+window works it out when the selection or the scene changes (`Selecting::focus`, beside the drawn
+selection), not per frame. Nothing shown selected: the model's centre, and `FocusSpec::fallback` says
+why ("nothing selected", "no point clicked yet"), which the popover shows and `ui.get` gives under
+`lens` (`{focus, point, distance, fallback}`, `Shell::lens_focus`). The focus points are passed to
+`LookSpec::resolved` as `FocusAt {picked, selection}` (it took `picked` alone). `view.render` focuses
+`selection` on the session's selection (`select.get`) and reports the same `lens`; `view.replay` has
+none per frame (the centre); `craft3d-cli render` has no selection or click, so its `--focus` takes a
+distance, `X,Y,Z` or `centre` and refuses `selection` and `picked` with that reason.
+
+The selection resolves to a point, so the renderers see a `Focus::Point` as before: the CPU and GPU
+lens and their parity (`gpu/tests/polish.rs`) are unchanged.
+
+*Tests.* `crates/ui-egui/tests/lens_focus.rs`: two cubes 105 and 205 ahead of the eye: the focus point
+and distance for nothing selected (the model's centre, 155, with the fallback), each body, the feature
+from the list, a face (its centre, 100), cleared, to 10⁻⁹; the CPU picture (16 frames, f/4) against
+the sharp one, half by half: the half of the cube in focus is more than 4 times nearer the sharp
+picture than with the other in focus, and f/22 more than twice nearer than f/4; the picture focused on
+the selection is the picture focused on its centre given as a point, byte for byte; bad values refused
+with nothing changed (an unknown focus word, a capitalised one, 0, a negative distance, two
+coordinates, a string f-number, null) or clamped (f/0 and below to 0.5, above 64 to 64); the state
+round trips through serde with every kind of focus. `look_panel.rs`: the slider's ends are f/1.4 and
+f/22 and its middle f/5.6, each focus choice, the distance slider appearing and moving the focus
+further. `engine` `look.rs`: parsing and the fallback.
+
+*Found on the way.* A `ui.screenshot {window: true}` taken right after the studio look is first switched
+on in a process, before its environment is prepared (on a thread, `prepared_if_ready`), shows the
+plain look: the settling waits for the viewport's sharp picture and its averaging, not for the look.
+A second picture a moment later is right. Owed: wait for `look_ready` in `settled_frame`.
+
 ### Layer 3: materials (2026-10-30)
 
 Layer 3 of `plan/rendering.md`: the layers of a material beyond its colour, metallic and roughness,
