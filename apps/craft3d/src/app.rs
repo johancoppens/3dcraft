@@ -2673,10 +2673,24 @@ mod tests {
             "mate.add",
             json!({"kind": "fixed", "a": "world/z", "b": "Belt/End1", "name": "Hold", "flip": true}),
         );
+        // The background builder gets no thread (every thread of the
+        // pool held): only the exact path can make the moment exact.
+        let frozen = ready.then(|| {
+            let mut held = Vec::new();
+            let mut have = 0;
+            while have < craft3d_math::pool::SHARED_THREADS {
+                let lease = craft3d_math::pool::lease(craft3d_math::pool::SHARED_THREADS);
+                have += lease.threads();
+                held.push(lease);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            held
+        });
         let shapes = if ready { "ready" } else { "exact" };
         run("view.motion", json!({"t": 0.5, "shapes": shapes}));
         session.set_motion_live(true);
-        if ready && craft3d_math::available_threads() >= 2 {
+        let background = ready && craft3d_math::available_threads() >= 2;
+        if background {
             assert!(!session.motion().unwrap().exact, "provisional on screen");
         }
         let (requests, incoming) = mpsc::channel();
@@ -2700,6 +2714,10 @@ mod tests {
             panic!("no reply to {what}");
         };
         desk.offscreen_pass(&ctx, 0.0, Vec::new(), false).unwrap();
+        if background {
+            // Still provisional on screen as the recording starts.
+            assert!(!desk.host.session.motion().unwrap().exact);
+        }
         let start = r#"{"id":1,"method":"ui.record","params":{"path":"frames","step":true}}"#;
         assert_eq!(
             serve(&mut desk, "start", &ask(&requests, start))["ok"],
@@ -2709,8 +2727,14 @@ mod tests {
         let advance = r#"{"id":2,"method":"ui.advance","params":{"frames":1}}"#;
         let reply = serve(&mut desk, "advance", &ask(&requests, advance));
         assert_eq!(reply["result"]["frames"], 1, "{reply}");
-        // The moment shown while recording is the exact one.
-        assert!(desk.host.session.motion().unwrap().exact);
+        // The moment shown while recording is the exact one, and not
+        // because the builder delivered it: it is still waiting for a
+        // thread.
+        let shown = desk.host.session.motion().unwrap();
+        assert!(shown.exact);
+        if background {
+            assert!(shown.building > 0, "the builder built nothing");
+        }
         let stop = r#"{"id":3,"method":"ui.record","params":{"stop":true}}"#;
         assert_eq!(serve(&mut desk, "stop", &ask(&requests, stop))["ok"], true);
         let mut frames: Vec<_> = std::fs::read_dir(dir.join("frames"))
@@ -2718,6 +2742,7 @@ mod tests {
             .map(|e| e.unwrap().path())
             .collect();
         frames.sort();
+        drop(frozen);
         std::fs::read(frames.first().unwrap()).unwrap()
     }
 

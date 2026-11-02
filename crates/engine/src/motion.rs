@@ -777,7 +777,8 @@ impl Sweep {
         let mut asm = sweep.asm.clone();
         asm.deferred.clear();
         let path = sweep.path.clone();
-        builder.queue_grid(Box::new(move |let_go: &dyn Fn() -> bool| {
+        builder.queue_grid(Box::new(move |let_go: crate::motion_build::Cancel| {
+            asm.cancel = Some(std::sync::Arc::clone(&let_go));
             let before = asm.config_keys();
             let mut out = Vec::new();
             let mut from = from;
@@ -858,31 +859,33 @@ impl Sweep {
             let mut asm = sweep.asm.clone();
             asm.deferred.clear();
             let path = sweep.path.clone();
-            let queued = builder.queue_frames(Box::new(move |let_go: &dyn Fn() -> bool| {
-                let before = asm.config_keys();
-                let mut seen = Vec::new();
-                let mut failed = false;
-                // A frame at a time, so that a run let go of stops at the
-                // next frame (the configurations are the same built
-                // together or one frame after the other).
-                for &t in &ts {
-                    if let_go() {
-                        break;
+            let queued =
+                builder.queue_frames(Box::new(move |let_go: crate::motion_build::Cancel| {
+                    asm.cancel = Some(std::sync::Arc::clone(&let_go));
+                    let before = asm.config_keys();
+                    let mut seen = Vec::new();
+                    let mut failed = false;
+                    // A frame at a time, so that a run let go of stops at the
+                    // next frame (the configurations are the same built
+                    // together or one frame after the other).
+                    for &t in &ts {
+                        if let_go() {
+                            break;
+                        }
+                        let Ok(doc) = at_t(&reference, t) else {
+                            failed = true;
+                            continue;
+                        };
+                        seen.push((t, asm.instance_keys(&doc, path.as_deref())));
+                        asm.prebuild(std::slice::from_ref(&doc), path.as_deref(), usize::MAX);
                     }
-                    let Ok(doc) = at_t(&reference, t) else {
-                        failed = true;
-                        continue;
-                    };
-                    seen.push((t, asm.instance_keys(&doc, path.as_deref())));
-                    asm.prebuild(std::slice::from_ref(&doc), path.as_deref(), usize::MAX);
-                }
-                crate::motion_build::Worked {
-                    steps: Vec::new(),
-                    built: asm.configs_since(&before),
-                    seen,
-                    failed,
-                }
-            }));
+                    crate::motion_build::Worked {
+                        steps: Vec::new(),
+                        built: asm.configs_since(&before),
+                        seen,
+                        failed,
+                    }
+                }));
             if !queued {
                 return Ok(());
             }
@@ -2873,6 +2876,45 @@ fn motion_check(session: &mut Session, params: &Value) -> Run {
 mod tests {
     use super::*;
     use craft3d_math::Portable;
+
+    /// The configurations a provisional placement leaves to the builder
+    /// are set for that placement only: an error out of it (here the
+    /// document has no timeline) leaves none set, as a panic does, so no
+    /// grid point is solved later with them skipped.
+    #[test]
+    fn deferred_configurations_are_let_go_of_after_an_error_or_a_panic() {
+        let doc = Document::default();
+        let mut sweep = Sweep::new(&doc, RegenCache::default());
+        sweep.assembly = Some(AsmSweep {
+            path: None,
+            asm: AsmState::default(),
+            grid: BTreeMap::new(),
+            solves: BTreeMap::new(),
+            bake_ts: BTreeSet::new(),
+            seen: BTreeMap::new(),
+            grid_stopped: false,
+            frame_keys: BTreeSet::new(),
+            grid_target: None,
+            bake_queue: std::collections::VecDeque::new(),
+            last_carried: None,
+        });
+        let deferred = |sweep: &Sweep| sweep.assembly.as_ref().map(|a| a.asm.deferred.len());
+        let keys: BTreeSet<String> = ["a|1", "b|2"].iter().map(|k| k.to_string()).collect();
+        let mut builder = crate::motion_build::Builder::default();
+        let mut seen_inside = None;
+        let out = sweep.with_deferred(keys.clone(), |sweep| {
+            seen_inside = deferred(sweep);
+            sweep.placed_ready_deferred(0.5, 64, 0, &doc, &mut builder)
+        });
+        assert!(out.is_err());
+        assert_eq!(seen_inside, Some(2), "set while it works");
+        assert_eq!(deferred(&sweep), Some(0));
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            sweep.with_deferred(keys, |_| -> Result<(), String> { panic!("inside") })
+        }));
+        assert!(panicked.is_err());
+        assert_eq!(deferred(&sweep), Some(0));
+    }
 
     /// Every pair of three bodies in one place collides, however few
     /// answers are kept between states: an answer kept or not is asked

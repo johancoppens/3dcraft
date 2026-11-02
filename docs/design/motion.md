@@ -305,8 +305,11 @@ solved, and the solve reads the instance's geometry). What keeps that affordable
   an operation whose next tree would take the process over it waits until another lets go, unless every other
   operation holding trees waits too; background threads (the builder, the assertions measured behind a command,
   `pool::mark_background`, and the helpers they lease, `Lease::helper_starts`) wait already at half of it. Each
-  operation holds at most `HELD_BYTES` (2 GiB), so the process stays below 6 GiB of trees plus the shelf (768
-  MiB); waiting changes when an operation runs, never its answer, and a pattern's side by side unions run as
+  operation holds at most `HELD_BYTES` (2 GiB), so the trees counted stay below about 6 GiB plus the shelf (768
+  MiB). That is an estimate, not a hard ceiling: a tree is counted once it is built (each waiting operation holds
+  one more, at most about 22 MB), the memos trees grow later are not counted, a tree asked for outside a boolean
+  counts only on the shelf, and the workers' cache budget is estimated from the configuration's bodies. Waiting
+  changes when an operation runs, never its answer, and a pattern's side by side unions run as
   before (a count of operations at once, tried first, held them to three). The builder's own memory: at most
   `MAX_QUEUED` (256) configurations queued, each with a copy of its source document and of its source's
   regeneration cache (bodies shared); per worker the regeneration caches of at most 4 sources and 384 MiB

@@ -1906,12 +1906,21 @@ pub(super) const TOO_MUCH_HELD: Reason = "the freeform faces it meets need more 
 /// already at half of it, so it leaves the rest to the work someone waits
 /// for. So the side by side booleans of a pattern's unions, an
 /// interference or an assertion sweep run as before (their trees are far
-/// below it), and the process stays below `HELD_TOGETHER + HELD_BYTES`
-/// plus the shelf ([`SHELF_BYTES`]): an operation never waits when every
-/// other operation holding trees waits too (it is the one that goes on),
-/// so they cannot deadlock (no freeform operation waits for another
-/// thread), and the one that goes on adds at most its own [`HELD_BYTES`]
-/// beyond it. Before 2026-11-02 the budget was per thread only (a
+/// below it). An operation never waits when every other operation
+/// holding trees waits too (the first in line goes on), so they cannot
+/// deadlock (no freeform operation waits for another thread), and the one
+/// that goes on adds at most its own [`HELD_BYTES`] beyond it.
+///
+/// **What this bounds, honestly.** It is an estimate of memory, not a
+/// hard ceiling. A tree is counted by [`PatchTree::base_bytes`] once it is
+/// built or found (a tree's size is known only when it is built), so each
+/// waiting operation holds one tree not counted yet (at most about 22 MB,
+/// [`MAX_LEAVES`]); what a tree remembers later (its memos) is not
+/// counted; and a tree asked for outside any operation (an outline made
+/// outside a boolean) counts nowhere but on the shelf. So the trees of
+/// the process stay below about `HELD_TOGETHER + HELD_BYTES` plus the
+/// shelf ([`SHELF_BYTES`]) plus one tree per waiting operation plus what
+/// the trees remember: about 6.75 GiB natively for the counted part. Before 2026-11-02 the budget was per thread only (a
 /// motion's builder threads, the window's thread and the unions' helpers
 /// could each hold 2 GiB); a count of operations at once, tried first,
 /// throttled the foreground's side by side booleans (both found by
@@ -1922,22 +1931,65 @@ pub const HELD_TOGETHER: usize = 4 << 30;
 pub const HELD_TOGETHER: usize = 512 << 20;
 
 /// The trees held by every operation, how many operations hold some, and
-/// how many of those wait.
+/// the operations waiting, in the order they came, foreground and
+/// background apart (by ticket).
 struct Together {
     bytes: usize,
     holders: usize,
-    waiting: usize,
+    next_ticket: u64,
+    foreground: std::collections::VecDeque<u64>,
+    background: std::collections::VecDeque<u64>,
 }
 
 static TOGETHER: Mutex<Together> = Mutex::new(Together {
     bytes: 0,
     holders: 0,
-    waiting: 0,
+    next_ticket: 0,
+    foreground: std::collections::VecDeque::new(),
+    background: std::collections::VecDeque::new(),
 });
 static FREED: std::sync::Condvar = std::sync::Condvar::new();
 
 fn together() -> std::sync::MutexGuard<'static, Together> {
     TOGETHER.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Whether an operation may add `size` bytes now: its turn, and room or
+/// nobody else going on. Its turn: the first foreground operation waiting
+/// (or none waiting when it comes); a background operation only when no
+/// foreground one waits, and then the first background one. So nobody
+/// that comes later passes one that waits (a woken waiter that has not
+/// locked again yet is still in line: the review of 2026-11-02 found
+/// three motion workers passing a foreground operation in turn), and the
+/// background never passes the foreground. Nobody else going on: every
+/// other operation holding trees waits too; only the one whose turn it
+/// is goes on then, so they cannot deadlock.
+fn may_add(t: &Together, size: usize, ticket: Option<u64>, background: bool) -> bool {
+    let line = if background {
+        &t.background
+    } else {
+        &t.foreground
+    };
+    let my_turn = (!background || t.foreground.is_empty())
+        && match ticket {
+            None => line.is_empty(),
+            Some(ticket) => line.front() == Some(&ticket),
+        };
+    if !my_turn {
+        return false;
+    }
+    let limit = if background {
+        HELD_TOGETHER / 2
+    } else {
+        HELD_TOGETHER
+    };
+    let waiting = t.foreground.len().saturating_add(t.background.len());
+    // Others holding trees that go on: holders not in a line, but this one.
+    let others_going = t
+        .holders
+        .saturating_sub(waiting)
+        .saturating_sub(usize::from(ticket.is_none()));
+    t.bytes.saturating_add(size) <= limit || others_going == 0
 }
 
 /// One operation's share of [`HELD_TOGETHER`], given back when dropped.
@@ -1952,23 +2004,30 @@ impl Share {
         Share { bytes: 0 }
     }
 
-    /// Counts `size` more bytes, waiting while they would take the
-    /// process over its limit and another operation goes on.
+    /// Counts `size` more bytes, waiting its turn while they would take
+    /// the process over its limit and another operation goes on
+    /// ([`may_add`]).
     fn add(&mut self, size: usize) {
-        let limit = if craft3d_math::pool::background() {
-            HELD_TOGETHER / 2
-        } else {
-            HELD_TOGETHER
-        };
+        let background = craft3d_math::pool::background();
         let mut t = together();
-        loop {
-            let others_going = t.holders.saturating_sub(t.waiting).saturating_sub(1);
-            if t.bytes.saturating_add(size) <= limit || others_going == 0 {
-                break;
+        if !may_add(&t, size, None, background) {
+            let ticket = t.next_ticket;
+            t.next_ticket = t.next_ticket.wrapping_add(1);
+            if background {
+                t.background.push_back(ticket);
+            } else {
+                t.foreground.push_back(ticket);
             }
-            t.waiting = t.waiting.saturating_add(1);
-            t = FREED.wait(t).unwrap_or_else(PoisonError::into_inner);
-            t.waiting = t.waiting.saturating_sub(1);
+            while !may_add(&t, size, Some(ticket), background) {
+                t = FREED.wait(t).unwrap_or_else(PoisonError::into_inner);
+            }
+            if background {
+                t.background.pop_front();
+            } else {
+                t.foreground.pop_front();
+            }
+            // The next in line may go now.
+            FREED.notify_all();
         }
         t.bytes = t.bytes.saturating_add(size);
         self.bytes = self.bytes.saturating_add(size);
@@ -3532,6 +3591,93 @@ mod tests {
     use super::*;
     use craft3d_geom::BezierPatch;
     use craft3d_math::Frame;
+
+    /// Nobody passes an operation that waits, and the background never
+    /// passes the foreground: a background operation that comes while a
+    /// woken foreground one has not locked again yet waits (before
+    /// 2026-11-02 it went on, seeing "every other holder waits", and three
+    /// motion workers passed the foreground in turn).
+    #[test]
+    fn a_waiting_foreground_operation_is_not_passed() {
+        let full = Together {
+            bytes: HELD_TOGETHER,
+            holders: 2,
+            next_ticket: 1,
+            foreground: std::collections::VecDeque::from([0]),
+            background: std::collections::VecDeque::new(),
+        };
+        // The background operation that comes: not its turn.
+        assert!(!may_add(&full, 1, None, true));
+        // Nor that of a foreground one that comes after.
+        assert!(!may_add(&full, 1, None, false));
+        // So the background one gets in line behind it, and the waiting
+        // one goes on: nobody else goes on.
+        let lined = Together {
+            next_ticket: 2,
+            background: std::collections::VecDeque::from([1]),
+            ..full
+        };
+        assert!(may_add(&lined, 1, Some(0), false));
+        assert!(!may_add(&lined, 1, Some(1), true));
+        // With room, the foreground comes first still.
+        let room = Together { bytes: 0, ..lined };
+        assert!(!may_add(&room, 1, Some(1), true));
+        assert!(!may_add(&room, 1, None, true));
+        assert!(may_add(&room, 1, Some(0), false));
+    }
+
+    /// A foreground operation that needs most of the room gets it while
+    /// background operations come and go without a pause.
+    #[test]
+    fn background_churn_does_not_starve_the_foreground() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::{Duration, Instant};
+        let stop = AtomicBool::new(false);
+        let waited = std::thread::scope(|scope| {
+            for n in 0..3u64 {
+                let stop = &stop;
+                scope.spawn(move || {
+                    craft3d_math::pool::work_alone();
+                    let mut k = 0u64;
+                    while !stop.load(Ordering::SeqCst) {
+                        let id = u64::MAX - 1000 - n * 1_000_000 - k;
+                        let _ = holding(|| {
+                            held_within_budget(Some((id, HELD_TOGETHER / 2))).unwrap();
+                            std::thread::sleep(Duration::from_millis(2));
+                            Ok(())
+                        });
+                        k += 1;
+                    }
+                });
+            }
+            // The churn stops whatever happens here (else the scope waits
+            // for ever).
+            struct Stop<'a>(&'a AtomicBool);
+            impl Drop for Stop<'_> {
+                fn drop(&mut self) {
+                    self.0.store(true, Ordering::SeqCst);
+                }
+            }
+            let _stop = Stop(&stop);
+            std::thread::sleep(Duration::from_millis(50));
+            let start = Instant::now();
+            // Room for nothing else: it waits until no background
+            // operation holds trees (a budget of its own for the test).
+            let ran = holding_within(usize::MAX, || {
+                held_within_budget(Some((u64::MAX - 999, HELD_TOGETHER - 1))).map_err(|_| {
+                    crate::KernelError::Unsupported {
+                        operation: super::super::OPERATION,
+                        reason: TOO_MUCH_HELD,
+                        faces: Vec::new(),
+                    }
+                })
+            });
+            let waited = start.elapsed();
+            assert!(ran.is_ok());
+            waited
+        });
+        assert!(waited < Duration::from_secs(2), "waited {waited:?}");
+    }
 
     /// The trees of the whole process's freeform operations stay within
     /// [`HELD_TOGETHER`] (half of it for background threads): an

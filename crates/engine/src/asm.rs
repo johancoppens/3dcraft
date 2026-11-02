@@ -103,6 +103,12 @@ pub(crate) struct AsmState {
     /// placement neither works them out nor builds them; one made at
     /// once ([`Self::place_ready`]) shows another of the instance's.
     pub deferred: BTreeSet<String>,
+    /// Asked between the features of each part it builds, on a copy of a
+    /// motion's state in the builder (`motion_build.rs`): true when the
+    /// run was let go of, and then the build stops there and its
+    /// configuration is not kept (`craft3d_regen::progress::with_stop`).
+    /// `None` everywhere else.
+    pub cancel: Option<crate::motion_build::Cancel>,
     /// The folder the sources of an assembly without a file were read
     /// from (`Session::read_sources`: the current folder with access to
     /// every file, the read root's top otherwise): its sources are
@@ -1016,6 +1022,7 @@ fn build(state: &mut AsmState, chain: &mut Vec<String>, jobs: Vec<Job>) {
         .partition(|job| job.doc.as_ref().is_ok_and(Document::is_assembly));
     let indices: Vec<usize> = (0..parts.len()).collect();
     let caches = &state.regen_caches;
+    let cancel = state.cancel.clone();
     let built = crate::interference_cmds::in_order(&indices, |i| {
         let job = parts.get(i)?;
         Some(match &job.doc {
@@ -1026,11 +1033,32 @@ fn build(state: &mut AsmState, chain: &mut Vec<String>, jobs: Vec<Job>) {
                     .and_then(|source| caches.get(source))
                     .cloned()
                     .unwrap_or_default();
-                let mut regen = craft3d_regen::regenerate_cached_needing(
-                    doc,
-                    &mut cache,
-                    craft3d_regen::Need::All,
-                );
+                let mut regen = match &cancel {
+                    None => craft3d_regen::regenerate_cached_needing(
+                        doc,
+                        &mut cache,
+                        craft3d_regen::Need::All,
+                    ),
+                    Some(cancel) => {
+                        let cancel = std::sync::Arc::clone(cancel);
+                        let (regen, stopped) = craft3d_regen::progress::with_stop(
+                            move || cancel(),
+                            || {
+                                craft3d_regen::regenerate_cached_needing(
+                                    doc,
+                                    &mut cache,
+                                    craft3d_regen::Need::All,
+                                )
+                            },
+                        );
+                        if stopped {
+                            // Cut short: neither the configuration nor its
+                            // cache is kept.
+                            return Some(None);
+                        }
+                        regen
+                    }
+                };
                 if job.slim {
                     regen = slimmed(regen);
                 }
@@ -1038,17 +1066,21 @@ fn build(state: &mut AsmState, chain: &mut Vec<String>, jobs: Vec<Job>) {
                     doc: Arc::new(doc.clone()),
                     regen: Arc::new(regen),
                 }));
-                (built, job.source.is_some().then_some(cache))
+                Some((built, job.source.is_some().then_some(cache)))
             }
-            Err(why) => (Err(why.clone()), None),
+            Err(why) => Some((Err(why.clone()), None)),
         })
     });
     for (job, result) in parts.iter().zip(built) {
         if job.doc.is_ok() {
             state.builds = state.builds.saturating_add(1);
         }
-        let (result, cache) =
-            result.unwrap_or_else(|| (Err("its regeneration stopped".to_string()), None));
+        let (result, cache) = match result {
+            Some(Some(done)) => done,
+            // Let go of part way (`AsmState::cancel`): not kept.
+            Some(None) => continue,
+            None => (Err("its regeneration stopped".to_string()), None),
+        };
         // The cache of the last configuration built of each source, in the
         // order of the jobs (which cache is kept changes only the time).
         if let (Some(source), Some(cache)) = (&job.source, cache) {

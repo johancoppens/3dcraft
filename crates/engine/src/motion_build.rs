@@ -81,7 +81,12 @@ pub(crate) struct Worked {
 /// (`Sweep::queue_baked`). It is given a test of whether it was let go
 /// of (a new sweep, the builder dropped), which it asks between its grid
 /// points and frames, and then hands in what it has.
-pub(crate) type GridJob = Box<dyn FnOnce(&dyn Fn() -> bool) -> Worked + Send>;
+pub(crate) type GridJob = Box<dyn FnOnce(Cancel) -> Worked + Send>;
+
+/// Whether a run was let go of (a new epoch, the builder dropped): asked
+/// between its grid points and frames, and between the features of each
+/// configuration it builds (`AsmState::cancel`).
+pub(crate) type Cancel = Arc<dyn Fn() -> bool + Send + Sync>;
 
 /// What a worker is given.
 enum Job {
@@ -642,16 +647,16 @@ mod native {
             if epoch != cached_for {
                 continue;
             }
-            let let_go = {
+            let let_go: super::Cancel = {
                 let shared = Arc::clone(&shared);
-                move || {
+                Arc::new(move || {
                     shared.stop.load(Ordering::Acquire)
                         || shared.epoch.load(Ordering::Acquire) != epoch
-                }
+                })
             };
             let before = caches.len();
             let done = match job {
-                Job::Part(job) => match build(*job, &mut caches, let_go) {
+                Job::Part(job) => match build(*job, &mut caches, move || let_go()) {
                     Some(done) => Done::Part(done),
                     // Cut short: let go of, as its epoch is.
                     None => {
@@ -660,7 +665,7 @@ mod native {
                     }
                 },
                 Job::Grid(job, grid) => Done::Grid(
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&let_go)))
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(let_go)))
                         .unwrap_or_else(|_| super::Worked {
                             failed: true,
                             ..super::Worked::default()
@@ -772,17 +777,15 @@ mod tests {
         let mut builder = Builder::default();
         let points = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&points);
-        assert!(
-            builder.queue_grid(Box::new(move |let_go: &dyn Fn() -> bool| {
-                let mut steps = 0;
-                while !let_go() && steps < 10_000 {
-                    counted.fetch_add(1, Ordering::SeqCst);
-                    std::thread::sleep(Duration::from_millis(1));
-                    steps += 1;
-                }
-                Worked::default()
-            }))
-        );
+        assert!(builder.queue_grid(Box::new(move |let_go: Cancel| {
+            let mut steps = 0;
+            while !let_go() && steps < 10_000 {
+                counted.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(1));
+                steps += 1;
+            }
+            Worked::default()
+        })));
         let deadline = Instant::now() + Duration::from_secs(60);
         while points.load(Ordering::SeqCst) == 0 {
             assert!(Instant::now() < deadline, "the run never started");

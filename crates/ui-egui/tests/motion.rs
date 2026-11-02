@@ -315,6 +315,25 @@ fn without_a_timeline_the_motion_is_not_offered() {
     assert_eq!(got["timeline"]["t"], Value::Null);
 }
 
+/// Every thread of the process's pool, held until dropped: a motion's
+/// background builder builds nothing meanwhile.
+fn freeze_pool() -> Vec<craft3d_math::pool::Lease> {
+    let mut held = Vec::new();
+    let mut have = 0;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while have < craft3d_math::pool::SHARED_THREADS {
+        let lease = craft3d_math::pool::lease(craft3d_math::pool::SHARED_THREADS);
+        have += lease.threads();
+        held.push(lease);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the pool never came back"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    held
+}
+
 /// A bar part with a published length (`bar.3dcraft`), and an assembly of
 /// a crank turned by `360 deg * t` and a bar whose length follows `t`: a
 /// configuration of its own at every moment, built in the background
@@ -391,6 +410,9 @@ fn stretching(name: &str) -> Session {
 /// asked for the moment exactly.
 #[test]
 fn pictures_and_recorded_frames_of_a_provisional_moment_are_the_exact_one() {
+    // The background builder gets no thread: every moment asked for at
+    // once stays provisional until something makes it exact.
+    let _frozen = freeze_pool();
     let mut window = Window {
         ctx: egui::Context::default(),
         time: 0.0,
@@ -414,14 +436,29 @@ fn pictures_and_recorded_frames_of_a_provisional_moment_are_the_exact_one() {
     }
     assert_eq!(screenshot(&mut shell, &mut s, "motion-ready"), wanted);
 
-    // ui.pick, ui.fit and ui.highlight see the exact moment too.
-    let pick = json!({"x": 400, "y": 300});
+    // ui.pick, ui.fit and ui.highlight see the exact moment too: a pixel
+    // proven to hit the Belt at the exact moment picks the same there
+    // while the viewport shows the moment provisionally.
+    let pick = (0..760)
+        .step_by(20)
+        .flat_map(|y| (0..1100).step_by(20).map(move |x| json!({"x": x, "y": y})))
+        .find(|at| {
+            call(&mut exact_shell, &mut exact, "ui.pick", at.clone())
+                .to_string()
+                .contains("Belt")
+        })
+        .expect("a pixel on the Belt");
     let wanted_pick = call(&mut exact_shell, &mut exact, "ui.pick", pick.clone());
+    let provisional = |s: &mut Session| {
+        if craft3d_math::available_threads() >= 2 {
+            assert!(!s.motion().unwrap().exact, "provisional before the call");
+        }
+    };
     let mut p = stretching("picked");
     let mut shell = Shell::new();
     window.frame(&mut shell, &mut p, 0.0);
     run(&mut p, "view.motion", json!({"t": 0.5, "shapes": "ready"}));
-    window.frame(&mut shell, &mut p, 0.0);
+    provisional(&mut p);
     let got_pick = call(&mut shell, &mut p, "ui.pick", pick);
     assert!(p.motion().unwrap().exact, "ui.pick made the moment exact");
     assert_eq!(got_pick, wanted_pick);
@@ -433,7 +470,7 @@ fn pictures_and_recorded_frames_of_a_provisional_moment_are_the_exact_one() {
         let mut shell = Shell::new();
         window.frame(&mut shell, &mut h, 0.0);
         run(&mut h, "view.motion", json!({"t": 0.5, "shapes": "ready"}));
-        window.frame(&mut shell, &mut h, 0.0);
+        provisional(&mut h);
         // Whether the face is there or not, the scene it is looked up
         // in is the exact moment's.
         let _ = shell.handle_method(&mut h, method, Some(&params));
