@@ -145,59 +145,48 @@ watching**.
 
 ### Bridged to the window (recommended)
 
-The window listens for the agent on a port on your own computer, protected by a secret token in a file.
+1. **Allow AI agents.** On the start screen (start 3DCraft, or close every tab), under **Connect an
+   AI agent**, turn on **Allow AI agents**. The same switch is in the **Help** menu, so you can turn it
+   on or off with a document open. 3DCraft remembers your choice for the next start.
+2. **Add 3DCraft to your AI tool, once.** With the switch on, the block shows what to copy:
+   - for **Claude Code**, click **Copy command** and paste the line into a terminal:
 
-1. **Start the window so that it listens.** Open the start screen (close every tab, or start 3DCraft
-   without a file) and look at **Connect an AI agent**: it shows the two command lines for your
-   computer. The first starts the window:
+     ```sh
+     claude mcp add 3dcraft -- /full/path/to/craft3d-cli mcp --bridge
+     ```
 
-   ```sh
-   /opt/3dcraft/bin/craft3d --control 7878 --control-token-file /home/me/.config/craft3d-control.token \
-       --automation-read-root /home/me/Documents/3DCraft --automation-write-root /home/me/Documents/3DCraft
-   ```
+   - for **Claude Desktop** and other tools configured with JSON, click **Copy MCP configuration** and
+     paste it into the tool's configuration (Claude Desktop calls it `claude_desktop_config.json`):
 
-   It names the program by its full path (on Linux with the AppImage, the AppImage itself). The token
-   file, and the folder `3DCraft` in your Documents, are made the first time. The read and write roots
-   are the folder the agent may read and write files in (see below).
-2. **Give your AI tool the server.** On the start screen of the window you just started, click **Copy
-   configuration** and paste it into your MCP client's configuration (its file and where it lives depend
-   on the client; Claude Desktop calls it `claude_desktop_config.json`). It looks like this, with full
-   paths:
-
-   ```text
-   {
-     "mcpServers": {
-       "craft3d": {
-         "command": "/full/path/to/craft3d-cli",
-         "args": ["mcp", "--bridge", "7878", "--control-token-file",
-                  "/home/me/.config/craft3d-control.token"]
+     ```text
+     {
+       "mcpServers": {
+         "3dcraft": {
+           "command": "/full/path/to/craft3d-cli",
+           "args": ["mcp", "--bridge"]
+         }
        }
      }
-   }
-   ```
+     ```
 
-   For **Claude Code**, click **Copy for Claude Code** instead and paste the line into a terminal:
+   The path is filled in for your computer (on Linux with the AppImage, the AppImage itself, followed
+   by `cli`). Nothing secret is in it: there is no password to copy or keep.
+3. **Ask the agent something** ([chapter 3](03-agent.md)): "Make a 40 × 20 × 10 mm block in 3DCraft".
+   The block appears in the window. While an agent is connected, the status bar at the bottom says so;
+   click it to see which agents, to **Disconnect all**, or to turn agents off.
 
-   ```sh
-   claude mcp add craft3d -- /full/path/to/craft3d-cli mcp \
-       --bridge 7878 --control-token-file /home/me/.config/craft3d-control.token
-   ```
+> **Which files can the agent touch?** Only the folder `3DCraft` in your Documents (made the first time),
+> which the start screen names: `file.open`, `file.save`, `file.export`, `file.import` and `view.render`
+> refuse any other path. Everything you open or save yourself from the File menu stays yours to choose.
 
-3. **Ask the agent something** ([chapter 3](03-agent.md)): "Make a 40 × 20 × 10 mm block in 3DCraft". The block appears
-   in the window.
+If no window allows agents, the agent's requests get an answer that says to turn on **Allow AI agents**,
+and it can carry on as soon as you do. With several 3DCraft windows open, the agent works in the one you
+used last (click into it before you ask).
 
-The window must have been started from a terminal with these options (step 1); a window started from the
-menu does not listen. `craft3d` lives next to `craft3d-cli`: on macOS
-`/Applications/3DCraft.app/Contents/MacOS/craft3d`, on Windows `craft3d.exe`, and the AppImage without
-`cli` is the window.
-
-> **Which files can the agent touch?** Only files beneath the read and write roots given to the window
-> (`file.open`, `file.save`, `file.export`, `file.import` and `view.render` refuse any other path). Give the
-> agent a working folder of its own. Without a root, the agent can read or write no file at all, but it
-> can still model and you can save from the File menu.
-
-If the window is not running, the bridged server answers every request with an error that says how to
-start it, and keeps serving: start the window and ask again.
+**Why a switch, and is it safe?** With the switch off, 3DCraft does not listen at all. With it on, it
+listens only to programs on your own computer, and only to those that know a secret token which 3DCraft
+keeps in a file that only you can read; your AI tool's `craft3d-cli` reads it there by itself. A web page
+open in your browser cannot drive 3DCraft: it cannot read that file, and 3DCraft ignores web requests.
 
 ### Headless (no window)
 

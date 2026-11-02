@@ -6,7 +6,8 @@
 //! the first free one after it, behind the control token in the state
 //! folder's `control.token` (made on first use, mode 0600); it writes a
 //! discovery entry there with its port, so `craft3d-cli mcp --bridge`
-//! finds it with nothing on its command line; and, when the command line
+//! finds it with nothing on its command line (a window given a token file
+//! of its own writes none: it is reached with that file); and, when the command line
 //! gave no automation roots, agents get the person's `Documents/3DCraft`
 //! to read and write files in. Off, the listener is gone, every
 //! connection closed, the entry removed and the roots taken back. The
@@ -201,7 +202,10 @@ impl Agents {
             });
             self.granted = Some(folder);
         }
-        if let Some(folder) = self.config.state_dir.clone() {
+        // Found by the bridge only with the state folder's own token: a
+        // window given a token file of its own (a script's, a test's) is
+        // reached with that file and its port.
+        if let Some(folder) = self.discoverable() {
             // Windows that crashed or were killed leave entries behind.
             let _ = discovery::live_entries(&folder, Some(self.config.pid));
             if let Err(e) = discovery::write_entry(&folder, &self.entry(port, token_file)) {
@@ -211,6 +215,14 @@ impl Agents {
             }
         }
         Ok(())
+    }
+
+    /// The state folder, when this window writes a discovery entry there.
+    fn discoverable(&self) -> Option<PathBuf> {
+        self.config
+            .state_dir
+            .clone()
+            .filter(|_| self.config.token_file.is_none())
     }
 
     fn entry(&self, port: u16, token_file: PathBuf) -> WindowEntry {
@@ -229,8 +241,8 @@ impl Agents {
         if self.server.take().is_none() {
             return;
         }
-        if let Some(folder) = &self.config.state_dir {
-            discovery::remove_entry(folder, self.config.pid);
+        if let Some(folder) = self.discoverable() {
+            discovery::remove_entry(&folder, self.config.pid);
         }
         if self.granted.take().is_some() {
             self.workspace = Some(Workspace::none());
@@ -249,13 +261,11 @@ impl Agents {
     /// last.
     pub fn focused(&mut self) {
         self.focused_at = discovery::now_ms();
-        if let (Some(server), Some(folder), Some(token_file)) = (
-            &self.server,
-            &self.config.state_dir,
-            self.token_file.clone(),
-        ) {
+        if let (Some(server), Some(folder), Some(token_file)) =
+            (&self.server, self.discoverable(), self.token_file.clone())
+        {
             let entry = self.entry(server.address().port(), token_file);
-            let _ = discovery::write_entry(folder, &entry);
+            let _ = discovery::write_entry(&folder, &entry);
         }
     }
 
@@ -507,6 +517,14 @@ mod tests {
         // Dropped with the window: the entry goes with it.
         drop(agents);
         assert!(discovery::read_entries(&state).is_empty());
+        // A token file of its own (a script's window): no entry.
+        let mut own = config(&state);
+        own.token_file = Some(state.join("own.token"));
+        let (mut agents, _pump) = super::tests::agents(own);
+        agents.allow(true);
+        assert!(agents.address().is_some());
+        assert!(discovery::read_entries(&state).is_empty());
+        assert!(state.join("own.token").is_file());
         let _ = std::fs::remove_dir_all(&state);
     }
 
