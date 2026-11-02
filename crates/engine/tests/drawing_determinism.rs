@@ -8,7 +8,7 @@
 //! it to the session, and it follows the model once the scene is there),
 //! not the drawing; a named view gave the same bytes in every case.
 
-#![allow(clippy::unwrap_used, clippy::panic)]
+#![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use craft3d_engine::{SceneQuality, Session, Workspace};
 use serde_json::{Value, json};
