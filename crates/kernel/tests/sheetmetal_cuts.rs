@@ -637,3 +637,106 @@ fn a_slot_across_two_bends_one_down() {
         }
     }
 }
+
+/// A tab on a hole's edge with a slot across its bend (refused until
+/// 2026-11-02: the bend's tangent line on the parent is a hole's, which
+/// the cells did not trace). A plate 60 × 40 with a window 20 × 20 (its
+/// bottom edge curve 5, from (20, 10) to (40, 10)), a tab 16 wide bent
+/// down from that edge 8 long, and a slot 4 wide from y = 7 across both of
+/// the tab's tangent lines to y = 13: the volume loses the slot's area on
+/// the flats times `T` and on the strip times `T (R + T/2) / (R + K T)`,
+/// the flat area its whole area; fold then unfold; one sheet; the names of
+/// the tab's tangent lines' pieces are the split's.
+#[test]
+fn a_slot_across_the_bend_of_a_tab_on_a_holes_edge() {
+    for k in SCALES {
+        for kf in [0.33, 0.5] {
+            let tol = tolerance(k);
+            let (t, r, l) = (k, k, 8.0 * k);
+            let curves: Vec<SketchCurve> = [
+                [[0.0, 0.0], [60.0, 0.0]],
+                [[60.0, 0.0], [60.0, 40.0]],
+                [[60.0, 40.0], [0.0, 40.0]],
+                [[0.0, 40.0], [0.0, 0.0]],
+                [[20.0, 10.0], [40.0, 10.0]],
+                [[40.0, 10.0], [40.0, 30.0]],
+                [[40.0, 30.0], [20.0, 30.0]],
+                [[20.0, 30.0], [20.0, 10.0]],
+            ]
+            .iter()
+            .enumerate()
+            .map(|(i, [a, b])| line(i as u64 + 1, [a[0] * k, a[1] * k], [b[0] * k, b[1] * k]))
+            .collect();
+            let base = detect_profiles(&curves, &tol).unwrap().remove(0);
+            assert_eq!(base.holes.len(), 1);
+            let tab = FlangeSpec {
+                on: On::Base(5),
+                length: l,
+                angle: FRAC_PI_2,
+                direction: Direction::Down,
+                radius: r,
+                k: kf,
+                from: LengthFrom::Tangent,
+                inset: [2.0 * k, 2.0 * k],
+                outline: None,
+            };
+            let slot = polygon(&[[28.0, 7.0], [32.0, 7.0], [32.0, 13.0], [28.0, 13.0]], k);
+            let spec = |cutouts: Vec<Cutout>| Spec {
+                base: base.clone(),
+                plane: Frame::WORLD,
+                thickness: t,
+                flanges: vec![tab.clone()],
+                relief: None,
+                bend_relief: None,
+                corner: Closing::OPEN,
+                corners: Vec::new(),
+                cutouts,
+                jogs: Vec::new(),
+                ids: Vec::new(),
+            };
+            let plain = build(&spec(Vec::new()), &tol).unwrap();
+            let part = build(&spec(vec![slot]), &tol).unwrap();
+            healthy(&part, &tol);
+            round_trip(&part, &tol);
+            one_sheet(&part, &tol);
+            assert_eq!(part.cuts.len(), 1);
+            let ba = FRAC_PI_2 * (r + kf * t);
+            assert!(ba < 3.0 * k);
+            // On the flats: 3 in the base, 3 − BA in the tab; on the strip BA.
+            let on_flats = 4.0 * k * (3.0 * k + 3.0 * k - ba);
+            let on_strip = 4.0 * k * ba;
+            let taken = on_flats * t + on_strip * t * (r + 0.5 * t) / (r + kf * t);
+            let want = volume(&plain) - taken;
+            near(volume(&part), want, 1e-7 * want, "volume");
+            let area = flat_area(&plain) - 24.0 * k * k;
+            near(flat_area(&part), area, 1e-9 * area, "flat area");
+            // The pieces of the base's tangent line (the hole's edge) are
+            // named as split tangent lines are, [9, 7, 0, 0, piece], counted
+            // along it with the piece inside the slot (1) dropped.
+            let names: Vec<Vec<u64>> = part
+                .edge_keys
+                .iter()
+                .map(|key| craft3d_kernel::sheetmetal::edge_numbers(&part, *key).unwrap())
+                .collect();
+            for piece in [0, 2] {
+                assert!(
+                    names.contains(&vec![9, 7, 0, 0, piece]),
+                    "no piece {piece} of the hole's tangent line among {names:?}"
+                );
+            }
+            // Every name the plain part has but the whole tangent lines is
+            // kept.
+            let before: Vec<Vec<u64>> = plain
+                .edge_keys
+                .iter()
+                .map(|key| craft3d_kernel::sheetmetal::edge_numbers(&plain, *key).unwrap())
+                .collect();
+            for name in before {
+                if name.first() == Some(&7) {
+                    continue;
+                }
+                assert!(names.contains(&name), "{name:?} lost");
+            }
+        }
+    }
+}

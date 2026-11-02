@@ -480,6 +480,15 @@ pub enum EdgeKey {
     /// (1) of bend `bend`, trimmed by a closed corner (the rest of that
     /// end is still its arc).
     Trim { bend: usize, end: usize },
+    /// Piece `piece` of segment `seg` of hole `hole` of flat `flat`: the
+    /// tangent line of a flange on the hole's edge that a hole across its
+    /// bend crosses.
+    SplitHole {
+        flat: usize,
+        hole: usize,
+        seg: usize,
+        piece: usize,
+    },
     /// Piece `piece` of segment `seg` of cut `cut` (a hole across a bend).
     Cut {
         cut: usize,
@@ -3795,6 +3804,19 @@ pub fn edge_numbers(part: &Part, key: EdgeKey) -> Option<Vec<u64>> {
         EdgeKey::Split { flat, seg, piece } => {
             let mut out = vec![9];
             out.extend(outline(flat, seg)?);
+            out.push(piece as u64);
+            Some(out)
+        }
+        EdgeKey::SplitHole {
+            flat,
+            hole,
+            seg,
+            piece,
+        } => {
+            // Named as a split tangent line of the outer loop is: by what
+            // the whole segment is (the bend's tangent line) and the piece.
+            let mut out = vec![9];
+            out.extend(edge_numbers(part, EdgeKey::Hole { flat, hole, seg })?);
             out.push(piece as u64);
             Some(out)
         }
