@@ -192,6 +192,17 @@ impl ModelRun {
             .filter_map(|r| r.get("looseEdges").and_then(Value::as_u64))
             .sum();
         self.set("largestTolerance", largest);
+        // Which entity is the loosest, of the solid that has it.
+        if let Some(l) = reports
+            .iter()
+            .filter_map(|r| r.get("loosest").filter(|l| !l.is_null()))
+            .max_by(|a, b| {
+                let t = |x: &Value| x.get("tolerance").and_then(Value::as_f64).unwrap_or(0.0);
+                t(a).total_cmp(&t(b))
+            })
+        {
+            self.set("loosest", l.clone());
+        }
         self.set("looseEdges", loose);
         // A feature the import added that failed when regenerated.
         if let Some(failed) = imported

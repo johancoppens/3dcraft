@@ -225,6 +225,55 @@ pub struct Imported {
     pub vertex_ids: Vec<u64>,
 }
 
+/// The entity of an imported body with the largest tolerance of its own,
+/// for reports: `"edge"` or `"vertex"`, the file's instance id, the
+/// tolerance, and for a vertex whether an edge that ends at it is as
+/// loose (its tolerance raised to the edge's) rather than measured from
+/// its edges' ends.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Loosest {
+    pub kind: &'static str,
+    pub step: u64,
+    pub tolerance: f64,
+    pub from_edge: bool,
+}
+
+impl Imported {
+    /// The entity with the largest tolerance of its own (an edge before a
+    /// vertex as loose), `None` for an exact body.
+    pub fn loosest(&self) -> Option<Loosest> {
+        let id = |ids: &[u64], k: u32| ids.get(k as usize).copied().unwrap_or(0);
+        let mut best: Option<Loosest> = None;
+        for (e, t) in self.body.tolerances.edges() {
+            if best.as_ref().is_none_or(|b| t > b.tolerance) {
+                best = Some(Loosest {
+                    kind: "edge",
+                    step: id(&self.edge_ids, e.0),
+                    tolerance: t,
+                    from_edge: false,
+                });
+            }
+        }
+        for (v, t) in self.body.tolerances.vertices() {
+            if best.as_ref().is_none_or(|b| t > b.tolerance) {
+                let from_edge = self.body.edges.iter().enumerate().any(|(k, e)| {
+                    (e.start == v || e.end == v)
+                        && u32::try_from(k).is_ok_and(|k| {
+                            self.body.edge_tolerance(craft3d_topo::EdgeId(k)) == Some(t)
+                        })
+                });
+                best = Some(Loosest {
+                    kind: "vertex",
+                    step: id(&self.vertex_ids, v.0),
+                    tolerance: t,
+                    from_edge,
+                });
+            }
+        }
+        best
+    }
+}
+
 /// A parsed file with its items found.
 #[derive(Debug)]
 pub struct Parsed {

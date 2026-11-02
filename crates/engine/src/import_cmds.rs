@@ -132,6 +132,12 @@ pub(crate) fn import_bytes(
             "looseVertices": r.loose_vertices,
             "unprovenEdges": r.unproven_edges,
             "largestTolerance": r.largest_tolerance,
+            "loosest": read.loosest().map(|l| json!({
+                "kind": l.kind,
+                "step": format!("#{}", l.step),
+                "tolerance": l.tolerance,
+                "fromEdge": l.from_edge,
+            })),
         }));
     }
     add_features(
