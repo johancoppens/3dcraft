@@ -203,9 +203,11 @@ so the settle starts on the first frame after a pause (`crates/ui-egui/tests/pla
 playing moment is one frame, a frame-exact recorded one is pixel for pixel the paused full picture).
 
 **The bake hint** (`shell/bake_hint.rs`, 2026-11-02). The player weighs what each moment costs while it plays:
-the time from the frame that asked for it (and ran its `view.motion`) to the frame that shows it, in egui's input
-time (the browser has it; nothing is weighed while the window is captured or recorded, whose clock is not the
-wall's), capped at 2 s. Over the last 15 moments (judged from 8) a motion is heavy when the median is 100 ms or
+the time the `view.motion` the playing player asked for took in the window's thread (`apply_timeline_requests`,
+on `std`'s clock natively and `web_time`'s in the browser), not the frame around it: a heavy picture is not a
+heavy moment and a bake would not help it (review of 2026-11-02, S1; the scene of the moment is not counted).
+Nothing is weighed while the window is captured or recorded, for a moment asked for by the slider or an agent, or
+across a pause, and a moment over 2 s (a machine that stood still) is left out. Over the last 15 moments (judged from 8) a motion is heavy when the median is 100 ms or
 more, and light again only when it is under 70 ms, so costs that wander around the threshold do not make it
 flicker. A heavy motion that is not baked (`baked` with nothing `building`) and whose hint was not dismissed for
 the document (by its id, for the session) shows *This motion is heavy — bake first?* under the caption
@@ -217,8 +219,11 @@ limit: 1}`: an assembly on the desktop hands it to the builder, and the progress
 `MotionView::work_left` against the most seen, never going back (`building` counted in steps of about equal
 work: a run of the grid as its grid points left, a run of a bake's frames as its 8 frames; zero exactly when
 `building` is; with `building` alone the router's bar stood at 99 % for the last 20 s); a part, or the browser, bakes in the window's thread a piece per
-frame, the next piece asked for while the last answered `done: false`, the bar following `remaining`. When it is
-done the hint goes. An edit or another document forgets what was weighed and the bake (the engine lets go of it
+frame, the next piece asked for while the last answered `done: false`, the bar following `remaining`. While a bake
+runs the window reads the motion's state every frame, also paused on an exact moment (whose poll says nothing
+changed), so the bar goes on to the end. When it is done the hint goes. A bake that did not finish (three pieces
+without progress, an error, another tab) leaves the document marked as not baked although its `baked` says
+frames, so it is offered, or baked by itself, again. An edit or another document forgets what was weighed and the bake (the engine lets go of it
 too); the dismissal stays. `ui.get` › `timeline.heavy` gives the same to agents.
 
 ### Assemblies (phase 2)

@@ -12,17 +12,24 @@
 //! baked by itself, once, as the player did before the hint, with the
 //! same progress bar.
 //!
-//! The clock is egui's input time (the browser has it too): a moment's
-//! cost is the time from the frame that asked for it (and ran its
-//! `view.motion`) to the frame that shows it, the whole frame the window
-//! spent on it (the solve, the scene, the drawing). Nothing is measured
-//! while the window is recorded or captured, whose clock is not the
-//! wall's.
+//! A moment's cost is the time its `view.motion` took in the window's
+//! thread (the solve and the placement, or a part's regeneration), on
+//! a clock the browser has too (`web_time`'s there), not the frame around it:
+//! a heavy picture is not a heavy moment, and baking would not help it
+//! (the lighter drawing while it plays does). Nothing is weighed while the
+//! window is recorded or captured, or for a moment asked for by the slider
+//! or an agent rather than the playing player.
 
 use super::Shell;
 use crate::kit::{Kit, controls::Button, status::BannerKind};
 use serde_json::{Value, json};
 use std::collections::{BTreeSet, VecDeque};
+// The browser has no clock in `std` (`std::time::Instant::now` panics
+// there): `web_time`'s, the page's.
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 
 /// The moments weighed: the median over the last so many.
 pub(crate) const HEAVY_MOMENTS: usize = 15;
@@ -43,9 +50,9 @@ pub(crate) const HEAVY_OFF_MS: f64 = 70.0;
 /// heavy is baked by itself.
 const PROVISIONAL_BAKE: f64 = 0.5;
 
-/// A moment that took longer than this, in milliseconds, is counted as
-/// this: a window that was not drawn for a while (hidden, behind a
-/// dialog) says nothing more about the motion.
+/// A moment that took longer than this, in milliseconds, is not weighed:
+/// a machine that stood still for a while (suspended, swapping) says
+/// nothing about the motion.
 const COST_CAP_MS: f64 = 2000.0;
 
 /// The frames the player bakes at: 30 a second over a play at speed 1
@@ -71,10 +78,10 @@ impl Heavy {
     /// Weighs a moment that cost `ms` milliseconds, shown provisionally
     /// or not. A cost that is not a number is not weighed.
     pub(crate) fn note(&mut self, ms: f64, provisional: bool) {
-        if !ms.is_finite() || ms < 0.0 {
+        if !ms.is_finite() || !(0.0..=COST_CAP_MS).contains(&ms) {
             return;
         }
-        self.moments.push_back((ms.min(COST_CAP_MS), provisional));
+        self.moments.push_back((ms, provisional));
         while self.moments.len() > HEAVY_MOMENTS {
             self.moments.pop_front();
         }
@@ -163,6 +170,8 @@ pub(crate) struct Baking {
     /// Started by itself (a light motion shown provisionally), not by the
     /// Bake button.
     auto: bool,
+    /// Stopped by a stall before the bake was done ([`STALLED_PIECES`]).
+    cut_short: bool,
 }
 
 impl Baking {
@@ -205,8 +214,10 @@ impl Baking {
             self.see(left);
             let more = answer.get("done").and_then(Value::as_bool) == Some(false);
             if more && self.stalled >= STALLED_PIECES {
-                // Nothing moves: what was made stays, and the hint ends.
+                // Nothing moves: what was made stays, and the hint ends;
+                // the motion is not baked (offered again).
                 self.left = 0;
+                self.cut_short = true;
                 return false;
             }
             more
@@ -251,13 +262,23 @@ pub(crate) enum Hint {
 pub(crate) struct BakeHint {
     /// What the recent moments cost.
     pub(crate) heavy: Heavy,
-    /// The input time of the frame that asked for the moment not yet
-    /// shown: its cost is weighed when it is.
-    asked_at: Option<f64>,
+    /// The player asked for a moment that is not shown yet: its cost is
+    /// weighed when it is.
+    asked: bool,
+    /// What the `view.motion` of the moment asked for took, in
+    /// milliseconds, once it ran.
+    made: Option<f64>,
+    /// The clock moments are timed by ([`MomentClock`]).
+    pub(crate) clock: MomentClock,
     /// The bake asked for from the hint, while it runs.
     pub(crate) baking: Option<Baking>,
     /// The documents (by id) whose hint was dismissed in this session.
     dismissed: BTreeSet<u64>,
+    /// The documents (by id) whose bake from the hint started and did not
+    /// finish (cut short by a stall, an error or another tab): their
+    /// motion's `baked` says frames although not all are made, so it is
+    /// offered (or baked by itself) again.
+    partial: BTreeSet<u64>,
     /// The motion was baked by itself once (a light one shown
     /// provisionally): not again until an edit or another document.
     auto_baked: bool,
@@ -274,29 +295,81 @@ impl BakeHint {
     /// a bake); what was dismissed stays.
     pub(crate) fn forget(&mut self) {
         self.heavy.reset();
-        self.asked_at = None;
+        self.not_weighed();
         self.baking = None;
         self.answers.clear();
         self.auto_baked = false;
     }
 
-    /// A moment was asked for in the frame at input time `now`.
-    pub(crate) fn asked(&mut self, now: f64) {
-        self.asked_at = Some(now);
+    /// The playing player asked for a moment: its `view.motion` is timed.
+    pub(crate) fn asked(&mut self) {
+        self.asked = true;
+        self.made = None;
     }
 
-    /// The moment asked for is shown in the frame at input time `now`,
-    /// provisionally or not: its cost is weighed.
-    pub(crate) fn shown(&mut self, now: f64, provisional: bool) {
-        if let Some(at) = self.asked_at.take() {
-            self.heavy.note((now - at) * 1000.0, provisional);
+    /// Whether the `view.motion` about to run is the playing player's,
+    /// to be timed.
+    pub(crate) fn timing(&self) -> bool {
+        self.asked && self.made.is_none()
+    }
+
+    /// The `view.motion` of the moment asked for ran in `ms` milliseconds.
+    pub(crate) fn made(&mut self, ms: f64) {
+        if self.asked {
+            self.made = Some(ms);
+        }
+    }
+
+    /// The moment asked for is shown, provisionally or not: its cost is
+    /// weighed (once its `view.motion` ran).
+    pub(crate) fn shown(&mut self, provisional: bool) {
+        if let (true, Some(ms)) = (self.asked, self.made) {
+            self.heavy.note(ms, provisional);
+            self.not_weighed();
         }
     }
 
     /// Stops weighing the moment asked for (playing stopped, the window
     /// is recorded): its time says nothing of its cost.
     pub(crate) fn not_weighed(&mut self) {
-        self.asked_at = None;
+        self.asked = false;
+        self.made = None;
+    }
+}
+
+/// The clock a moment's `view.motion` is timed by, in milliseconds:
+/// `web_time`'s (the browser has it), or one a test sets
+/// ([`Shell::set_moment_clock`]).
+#[derive(Clone, Default)]
+pub(crate) struct MomentClock(Option<std::sync::Arc<dyn Fn() -> f64 + Send + Sync>>);
+
+impl std::fmt::Debug for MomentClock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "MomentClock(set)"
+        } else {
+            "MomentClock"
+        })
+    }
+}
+
+impl MomentClock {
+    /// Runs `work` and says how long it took, in milliseconds.
+    pub(crate) fn time<R>(&self, work: impl FnOnce() -> R) -> (R, f64) {
+        match &self.0 {
+            Some(clock) => {
+                let start = clock();
+                let out = work();
+                (out, clock() - start)
+            }
+            None => {
+                // native clock: `Instant` is std's only off the browser
+                // (the `use` above).
+                let start = Instant::now();
+                let out = work();
+                (out, start.elapsed().as_secs_f64() * 1000.0)
+            }
+        }
     }
 }
 
@@ -325,10 +398,25 @@ impl Shell {
     /// Whether the motion shown is baked: a bake's frames, and nothing
     /// left for the builder.
     fn motion_baked(&self) -> bool {
-        self.timeline
-            .motion
-            .as_ref()
-            .is_some_and(|m| m.baked.is_some() && m.building == 0)
+        let partial = self
+            .viewing()
+            .is_some_and(|id| self.player.hint.partial.contains(&id));
+        !partial
+            && self
+                .timeline
+                .motion
+                .as_ref()
+                .is_some_and(|m| m.baked.is_some() && m.building == 0)
+    }
+
+    /// Times moments by `clock` (milliseconds) instead of the wall's, or
+    /// by the wall's again with `None`: for tests, which make a moment as
+    /// slow or as quick as they need.
+    pub fn set_moment_clock(
+        &mut self,
+        clock: Option<std::sync::Arc<dyn Fn() -> f64 + Send + Sync>>,
+    ) {
+        self.player.hint.clock = MomentClock(clock);
     }
 
     /// While it plays: a motion that is not heavy but shown provisionally
@@ -363,6 +451,10 @@ impl Shell {
             asked: true,
             ..Baking::default()
         });
+        // Not baked until it is done: cut short, it is offered again.
+        if let Some(id) = self.viewing() {
+            self.player.hint.partial.insert(id);
+        }
         self.queue_bake_piece();
     }
 
@@ -411,8 +503,12 @@ impl Shell {
             return true;
         }
         if baking.done() {
+            let finished = !baking.cut_short;
             self.player.hint.baking = None;
             self.player.hint.heavy.reset();
+            if finished && let Some(id) = self.viewing() {
+                self.player.hint.partial.remove(&id);
+            }
             return false;
         }
         true
@@ -420,6 +516,8 @@ impl Shell {
 
     /// The hint under the motion's caption: the offer with its buttons,
     /// or the bake's progress.
+    // Review of 2026-11-02, N4: the hint's place and look are restyled with
+    // the player in the UI overhaul's phase 2b; kept small until then.
     pub(crate) fn bake_hint_ui(&mut self, ui: &mut egui::Ui) {
         let kit = Kit::panel(&self.tokens);
         match self.bake_hint() {
@@ -514,17 +612,36 @@ mod tests {
     use serde_json::json;
 
     /// A crank whose block goes round a circle, played in a shell whose
-    /// frames are `dt` seconds of egui's clock apart: the clock the hint
-    /// weighs moments by, injected.
+    /// frames are `dt` seconds of egui's clock apart, and whose moments
+    /// take `dt` too on the clock the hint times them by (injected:
+    /// [`crate::Shell::set_moment_clock`]), unless it is the wall's.
     struct Played {
         shell: crate::Shell,
         session: craft3d_engine::Session,
         ctx: egui::Context,
         time: f64,
+        /// What the injected clock moves by each time it is read, in ms.
+        step: std::sync::Arc<std::sync::Mutex<f64>>,
     }
 
     impl Played {
         fn new() -> Self {
+            let mut played = Self::wall();
+            let step = std::sync::Arc::clone(&played.step);
+            let now = std::sync::Mutex::new(0.0_f64);
+            played
+                .shell
+                .set_moment_clock(Some(std::sync::Arc::new(move || {
+                    let step = *step.lock().unwrap();
+                    let mut at = now.lock().unwrap();
+                    *at += step;
+                    *at
+                })));
+            played
+        }
+
+        /// Moments timed by the wall's clock.
+        fn wall() -> Self {
             let mut session = craft3d_engine::Session::new(craft3d_engine::Workspace::none());
             for (id, params) in [
                 ("file.new", json!({})),
@@ -542,6 +659,7 @@ mod tests {
                 session,
                 ctx: egui::Context::default(),
                 time: 0.0,
+                step: std::sync::Arc::new(std::sync::Mutex::new(0.0)),
             };
             played.frame(0.0);
             played.shell.state.timeline = Playback {
@@ -559,6 +677,7 @@ mod tests {
 
         fn frame_with(&mut self, dt: f64, events: Vec<egui::Event>) {
             self.time += dt;
+            *self.step.lock().unwrap() = dt * 1000.0;
             let input = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -710,6 +829,68 @@ mod tests {
         p.shell.state.timeline.motion = true;
         p.frames(30, 0.15);
         assert_eq!(p.shell.bake_hint(), Hint::Offer);
+    }
+
+    #[test]
+    fn slow_frames_of_quick_moments_are_not_heavy() {
+        // Frames 150 ms apart (a heavy picture), the moments timed by the
+        // wall's clock: the crank's view.motion takes far less.
+        let mut p = Played::wall();
+        p.frames(30, 0.15);
+        let heavy = p.heavy();
+        assert!(heavy["moments"].as_u64().unwrap() >= 8, "{heavy}");
+        assert!(heavy["msPerMoment"].as_f64().unwrap() < 100.0, "{heavy}");
+        assert_eq!(heavy["suggestBake"], false, "{heavy}");
+        assert_eq!(p.shell.bake_hint(), Hint::None);
+    }
+
+    #[test]
+    fn a_bake_cut_short_by_another_tab_is_offered_again() {
+        let mut p = Played::new();
+        p.frames(30, 0.15);
+        assert_eq!(p.shell.bake_hint(), Hint::Offer);
+        p.shell.bake_from_hint();
+        p.frames(5, 0.03);
+        assert!(matches!(p.shell.bake_hint(), Hint::Baking(_)));
+        // Some frames are made: the motion says it was baked.
+        assert_eq!(p.session.motion().unwrap().baked, Some(BAKE_FRAMES));
+        // Another tab, and back: the bake is let go of unfinished.
+        p.session.execute("file.new", &json!({})).unwrap();
+        p.frame(0.03);
+        p.session
+            .execute("file.activate", &json!({"document": 0}))
+            .unwrap();
+        p.frame(0.03);
+        p.shell.state.timeline.playing = true;
+        p.shell.state.timeline.motion = true;
+        p.frames(30, 0.15);
+        assert_eq!(p.shell.bake_hint(), Hint::Offer, "{}", p.heavy());
+    }
+
+    #[test]
+    fn a_pause_drops_the_moment_asked_for() {
+        let mut p = Played::new();
+        p.frames(3, 0.03);
+        p.shell.state.timeline.playing = false;
+        p.frames(3, 0.5);
+        p.shell.state.timeline.playing = true;
+        p.frames(2, 0.03);
+        // No moment weighed at the paused frames' 500 ms.
+        let heavy = p.heavy();
+        assert!(
+            p.shell
+                .player
+                .hint
+                .heavy
+                .moments
+                .iter()
+                .all(|(ms, _)| *ms < 100.0),
+            "{heavy}"
+        );
+        // A cost beyond the cap is not weighed at all.
+        let mut h = Heavy::default();
+        h.note(super::COST_CAP_MS + 1.0, false);
+        assert!(h.moments.is_empty());
     }
 
     fn weighed(costs: &[f64]) -> Heavy {

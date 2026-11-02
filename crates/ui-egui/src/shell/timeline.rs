@@ -78,6 +78,11 @@ impl Timeline {
             .unwrap_or(self.steps)
     }
 
+    /// Drops the commands `id` waiting to be run.
+    pub(super) fn drop_pending(&mut self, id: &str) {
+        self.pending.retain(|(queued, _)| *queued != id);
+    }
+
     /// Whether a scrub waits to be run.
     pub(super) fn scrub_waiting(&self) -> bool {
         self.pending.iter().any(|(id, _)| *id == "view.scrub")
@@ -411,7 +416,24 @@ impl Shell {
         }
         let pending = std::mem::take(&mut self.timeline.pending);
         for (id, params) in &pending {
-            let answer = session.execute(id, params);
+            // The playing player's moment is timed for the bake hint: its
+            // `view.motion` alone, not the frame around it
+            // (`bake_hint.rs`).
+            let timed =
+                *id == "view.motion" && self.state.timeline.playing && self.player.hint.timing();
+            let (answer, ms) = if timed {
+                let clock = self.player.hint.clock.clone();
+                clock.time(|| session.execute(id, params))
+            } else {
+                (session.execute(id, params), 0.0)
+            };
+            if timed {
+                if answer.is_ok() {
+                    self.player.hint.made(ms);
+                } else {
+                    self.player.hint.not_weighed();
+                }
+            }
             // The bake hint follows the bake it asked for by its answers
             // (`bake_hint.rs`): only the hint queues `motion.bake`.
             if *id == "motion.bake" {
@@ -439,7 +461,11 @@ impl Shell {
         let polled = pending.is_empty()
             && (self.timeline.motion.is_some() || self.timeline.tracing)
             && session.poll_motion();
-        if !pending.is_empty() || polled {
+        // A bake the hint follows reads what the builder has left every
+        // frame, also while paused on an exact moment, whose poll says
+        // nothing changed.
+        let following = self.player.hint.baking.is_some();
+        if !pending.is_empty() || polled || following {
             self.sync_timeline(session);
         }
         !pending.is_empty() || polled

@@ -406,14 +406,14 @@ impl Shell {
                 .motion
                 .as_ref()
                 .is_some_and(|m| !m.exact || !m.stale.is_empty());
-            self.player.hint.shown(now, provisional);
+            self.player.hint.shown(provisional);
             self.auto_bake();
         }
         let Some(shown) = self.timeline.motion_t() else {
             self.player.moved = Some(now);
             self.player.clock = Some(0.0);
             self.go_to_t(0.0);
-            self.player.hint.asked(now);
+            self.ask_weighed();
             ctx.request_repaint();
             return;
         };
@@ -441,11 +441,22 @@ impl Shell {
                 let asked = rounded_to_frames(next, frames);
                 if asked != shown {
                     self.go_to_t(asked);
-                    self.player.hint.asked(now);
+                    self.ask_weighed();
                 }
                 ctx.request_repaint_after(std::time::Duration::from_secs_f64(1.0 / ORBIT_FPS));
             }
             MotionStep::Stop => self.stop_playing(),
+        }
+    }
+
+    /// The playing player asked for a moment: its `view.motion` is timed
+    /// for the bake hint, unless the window is recorded or captured (its
+    /// moments are made exactly, not as the play makes them).
+    fn ask_weighed(&mut self) {
+        if self.exact_pictures() || self.recording() {
+            self.player.hint.not_weighed();
+        } else {
+            self.player.hint.asked();
         }
     }
 
@@ -554,6 +565,7 @@ impl Shell {
             self.stop_playing();
             // An edit lets go of the bake, and the motion is another.
             self.player.hint.forget();
+            self.timeline.drop_pending("motion.bake");
         }
         self.player.revision = Some(revision);
         if !self.timeline.scrub_waiting() {
