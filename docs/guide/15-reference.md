@@ -8,7 +8,7 @@ The full description of any command, with every value it takes and what it refus
 
 ## Commands
 
-3DCraft 0.1.0 has 169 commands. A command's id is its family and its name: `feature.fillet`.
+3DCraft 0.1.0 has 170 commands. A command's id is its family and its name: `feature.fillet`.
 
 ### Documents and files
 
@@ -102,6 +102,7 @@ The full description of any command, with every value it takes and what it refus
 | `assert.add`, `assert.edit`, `assert.delete`, `assert.list` | Checks kept in the document; their measures include the floating equilibrium (`floatingGM`, `floatingTrim`, …) and the press-brake check (`bendable`) ([chapter 10](10-measure.md#assertions)) |
 | `variable.measure`, `variable.output`, `output.list` | Outputs: read-only variables computed after regeneration from measures and formulas, for assertions ([chapter 10](10-measure.md#outputs-measures-in-formulas)) |
 | `select.get`, `select.set`, `select.query` | The selection, and finding things by description ([chapter 11](11-selection.md)) |
+| `agent.log` | What agents did to the document, newest first, with the intent they gave, and which agent made each feature |
 | `set.define`, `set.edit`, `set.remove`, `set.list` | Named sets |
 | `view.render`, `view.pick` | A picture, and what is at a point of it |
 | `view.scrub`, `view.replay` | The model at a step of its history; a video of how it was built |

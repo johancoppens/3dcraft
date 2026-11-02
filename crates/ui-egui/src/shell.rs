@@ -24,6 +24,7 @@ use craft3d_render::{Highlight, Section};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+pub mod agents;
 mod bake_hint;
 mod calm;
 mod controls;
@@ -41,6 +42,7 @@ mod popover;
 pub mod recent;
 mod report;
 mod selection;
+pub mod sidepanel;
 pub mod start;
 mod tabs;
 mod timeline;
@@ -626,6 +628,9 @@ fn epoch_now() -> Option<u64> {
 
 pub struct Shell {
     pub state: UiState,
+    /// The side panel's memory: what it read, what it asked for, what is
+    /// being typed (`shell/sidepanel`).
+    side: sidepanel::SideMemory,
     /// A frame-exact recording keeps the clock (`record.rs`): nothing
     /// measured on the wall clock is drawn (a picture's milliseconds in
     /// the status bar), so the same requests give the same window.
@@ -887,6 +892,8 @@ pub struct Shell {
     /// The Parameters tab: its list, the field being changed, the commit
     /// waiting for the host (`shell/params.rs`).
     params: params::ParamForm,
+    /// Whether AI agents may drive the window (`shell/agents.rs`).
+    agents: agents::AgentsMemory,
     /// The Help menu, the recent files and the start screen.
     help: help::HelpMemory,
     recent: recent::RecentMemory,
@@ -1197,6 +1204,7 @@ impl Shell {
     pub fn with_renderer(choice: RendererChoice) -> Self {
         Self {
             state: UiState::default(),
+            side: sidepanel::SideMemory::default(),
             frame_exact: false,
             capturing: false,
             recording: false,
@@ -1313,6 +1321,7 @@ impl Shell {
             dialogs: dialogs::Dialogs::default(),
             tree_view: None,
             params: params::ParamForm::default(),
+            agents: agents::AgentsMemory::default(),
             help: help::HelpMemory::default(),
             recent: recent::RecentMemory::default(),
             start: start::StartMemory::default(),
@@ -2188,6 +2197,7 @@ impl Shell {
         self.mark_zoomable(scene.as_deref());
         self.assertion_rows = session.assertion_states();
         self.sync_params(session, scene.as_ref());
+        self.sync_side(session, scene.as_deref());
         self.sync_tabs(session);
         self.note_recent(session);
         self.shown_status = session.document_status();
@@ -2660,6 +2670,21 @@ impl Shell {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(33));
         }
+        // What the side panel asked for: edits, each one undo step.
+        if let Some(session) = session.as_deref_mut()
+            && self.apply_side_requests(session)
+        {
+            self.sync(session);
+            ui.ctx().request_repaint();
+        }
+        // A tab chosen since the last sync that shows what was not read.
+        if let Some(session) = session.as_deref_mut()
+            && self.side_stale()
+        {
+            let scene = self.shown_scene.clone();
+            self.sync_side(session, scene.as_deref());
+            ui.ctx().request_repaint();
+        }
         // What the mouse selected, now that the session is here.
         if let Some(session) = session
             && self.apply_selection_requests(session)
@@ -3106,7 +3131,12 @@ impl Shell {
                 }
             })
             .collect();
-        let available = ui.available_width();
+        // The agents pill at the far left, always (`shell/agents.rs`): its
+        // room, at most two fifths of the bar, is kept out of what the
+        // items get.
+        let pill_most = (ui.available_width() * 0.4).max(80.0);
+        let pill_width = self.agents_pill_width(ui, pill_most);
+        let available = (ui.available_width() - pill_width - tokens.status_gap).max(0.0);
         // "Copy details" after the answer of a command that failed
         // (`shell/report.rs`): its room is kept out of what the items get.
         let copy = self
@@ -3134,6 +3164,8 @@ impl Shell {
         let mut copy_rect = None;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
+            self.agents_pill(ui, pill_most);
+            ui.add_space(tokens.status_gap);
             let mut used = 0.0;
             let mut first = true;
             let mut copy_button = |ui: &mut egui::Ui, used: &mut f32| {

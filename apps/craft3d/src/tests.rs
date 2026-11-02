@@ -364,6 +364,164 @@ fn nothing_is_dispatched_before_auth_succeeds() {
     assert!(!host.shell.quit_requested());
 }
 
+/// A web page in a browser can post to the port (a "simple" request needs
+/// no preflight). Its first line is the HTTP request line, and the
+/// connection is closed on it, unanswered: the body, here the right token
+/// and a command, is never read, even when it is in the same packet.
+#[test]
+fn an_http_request_is_closed_before_its_body_is_read() {
+    let rig = Rig::start(Workspace::none());
+    let auth = json!({"id": 1, "method": "auth", "params": {"token": TOKEN}}).to_string();
+    let command = json!({"id": 2, "method": "engine.execute",
+        "params": {"command": "file.new"}})
+    .to_string();
+    let body = format!("{auth}\n{command}\n");
+    for head in [
+        "POST / HTTP/1.1",
+        "GET /?x HTTP/1.1",
+        "post /mcp HTTP/1.0",
+        "OPTIONS * HTTP/1.1",
+        "PUT /x HTTP/1.1",
+    ] {
+        let request = format!(
+            "{head}\r\nHost: 127.0.0.1\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut client = rig.connect();
+        client.send(request.as_bytes());
+        assert_eq!(client.read(), None, "{head}: closed without a reply");
+    }
+    // The body alone, first, is a client like any other: the token works.
+    let mut client = rig.connect();
+    client.send(body.as_bytes());
+    assert_eq!(client.read().unwrap()["ok"], true);
+    assert_eq!(client.read().unwrap()["ok"], true);
+    // Of the HTTP requests nothing reached the session.
+    assert_eq!(rig.dispatched.load(Ordering::SeqCst), 1);
+    let host = rig.finish();
+    assert!(
+        host.session.has_document(),
+        "only the plain client's file.new ran"
+    );
+}
+
+/// The challenge (2026-11-02): the window proves it holds the token, the
+/// client proves it too, and the token never crosses the socket.
+#[test]
+fn the_window_and_the_client_prove_the_token_to_each_other() {
+    use craft3d_automation::proof;
+    let rig = Rig::start(Workspace::none());
+    let ours = "1".repeat(64);
+    let mut client = rig.connect();
+    let answer = client.ok("challenge", json!({"nonce": ours}));
+    let theirs = answer["nonce"].as_str().unwrap().to_string();
+    assert!(proof::is_nonce(&theirs));
+    let (port, pid) = (rig.address.port(), std::process::id());
+    assert_eq!(answer["pid"], pid);
+    assert_eq!(
+        answer["proof"],
+        proof::proof(TOKEN, proof::WINDOW, port, pid, &ours, &theirs),
+        "the window's proof, for its own port and process"
+    );
+    let reply = client.call(
+        "auth",
+        json!({"proof": proof::proof(TOKEN, proof::CLIENT, port, pid, &theirs, &ours), "client": "test"}),
+    );
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(client.ok("ui.get", json!({}))["document"], Value::Null);
+    // A wrong proof, a proof without a challenge, a bad nonce, two
+    // challenges: refused and closed, nothing dispatched.
+    let before = rig.dispatched.load(Ordering::SeqCst);
+    let mut wrong = rig.connect();
+    let answer = wrong.ok("challenge", json!({"nonce": ours}));
+    let theirs = answer["nonce"].as_str().unwrap().to_string();
+    let reply = wrong.call(
+        "auth",
+        json!({"proof": proof::proof(&"0".repeat(64), proof::CLIENT, port, pid, &theirs, &ours)}),
+    );
+    assert_eq!(reply["ok"], false);
+    assert_eq!(wrong.read(), None);
+    let mut early = rig.connect();
+    let reply = early.call("auth", json!({"proof": "00".repeat(32)}));
+    assert!(
+        reply["error"].as_str().unwrap().contains("challenge first"),
+        "{reply}"
+    );
+    let mut bad = rig.connect();
+    assert_eq!(bad.call("challenge", json!({"nonce": "12"}))["ok"], false);
+    assert_eq!(bad.read(), None);
+    let mut twice = rig.connect();
+    twice.ok("challenge", json!({"nonce": ours}));
+    assert_eq!(twice.call("challenge", json!({"nonce": ours}))["ok"], false);
+    assert_eq!(rig.dispatched.load(Ordering::SeqCst), before);
+}
+
+/// A program on another port that relays the bridge's challenge to the
+/// real window (re-review, 2026-11-02): the window's proof is for its own
+/// port, so the bridge, which checks it with the port it connected to,
+/// sends nothing further.
+#[test]
+fn a_relayed_proof_does_not_pass() {
+    use craft3d_automation::bridge::{self, BridgeConfig};
+    let rig = Rig::start(Workspace::none());
+    let window = rig.address;
+    let relay = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let relay_address = relay.local_addr().unwrap();
+    // The relay copies every byte both ways, and keeps what it saw.
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let for_relay = Arc::clone(&seen);
+    std::thread::spawn(move || {
+        let Ok((client, _)) = relay.accept() else {
+            return;
+        };
+        let Ok(server) = TcpStream::connect(window) else {
+            return;
+        };
+        let (mut client_in, mut server_out) =
+            (client.try_clone().unwrap(), server.try_clone().unwrap());
+        let copy_up = std::thread::spawn(move || {
+            let mut buffer = [0_u8; 4096];
+            while let Ok(n) = std::io::Read::read(&mut client_in, &mut buffer) {
+                if n == 0 {
+                    break;
+                }
+                for_relay.lock().unwrap().extend_from_slice(&buffer[..n]);
+                if server_out.write_all(&buffer[..n]).is_err() {
+                    break;
+                }
+            }
+            let _ = server_out.shutdown(std::net::Shutdown::Both);
+        });
+        let (mut server_in, mut client_out) = (server, client);
+        let mut buffer = [0_u8; 4096];
+        while let Ok(n) = std::io::Read::read(&mut server_in, &mut buffer) {
+            if n == 0 || client_out.write_all(&buffer[..n]).is_err() {
+                break;
+            }
+        }
+        let _ = client_out.shutdown(std::net::Shutdown::Both);
+        let _ = copy_up.join();
+    });
+    let message = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
+    let mut output = Vec::new();
+    bridge::serve(
+        &BridgeConfig::new(relay_address, TOKEN.to_string()),
+        format!("{message}\n").as_bytes(),
+        &mut output,
+    )
+    .unwrap();
+    let reply: Value = serde_json::from_slice(&output).unwrap();
+    let error = reply["error"]["message"].as_str().unwrap();
+    assert!(error.contains("nothing was sent"), "{error}");
+    let seen = String::from_utf8(seen.lock().unwrap().clone()).unwrap();
+    assert!(
+        !seen.contains("\"auth\""),
+        "no auth went through the relay: {seen}"
+    );
+    assert!(!seen.contains(TOKEN));
+    assert_eq!(rig.dispatched.load(Ordering::SeqCst), 0);
+}
+
 #[test]
 fn a_script_builds_a_part_and_measures_the_closed_form_volume() {
     let rig = Rig::start(Workspace::none());
@@ -431,6 +589,7 @@ fn a_script_builds_a_part_and_measures_the_closed_form_volume() {
             "batch",
             "methods",
             "auth",
+            "bye",
             "mcp.message",
             "ui.get",
             "ui.set",
@@ -971,6 +1130,7 @@ fn the_window_pumps_the_same_channel_between_frames() {
             .send(Request {
                 line: line.to_string(),
                 reply,
+                origin: None,
             })
             .unwrap();
         replies.push(answer);
@@ -992,6 +1152,7 @@ fn the_window_pumps_the_same_channel_between_frames() {
         .send(Request {
             line: r#"{"id": 3, "method": "ui.get"}"#.to_string(),
             reply,
+            origin: None,
         })
         .unwrap();
     assert_eq!(host.pump(&incoming), 1);
@@ -1003,6 +1164,7 @@ fn the_window_pumps_the_same_channel_between_frames() {
             .send(Request {
                 line: r#"{"id": 4, "method": "methods"}"#.to_string(),
                 reply,
+                origin: None,
             })
             .unwrap();
     }
@@ -1136,8 +1298,9 @@ fn a_file_named_by_a_relative_path_is_saved_back_to_itself() {
 fn the_control_option_starts_a_listener_with_a_fresh_token_file() {
     let dir = workdir("option");
     let wake: Wake = Arc::new(|| {});
-    let (server, _incoming) = app::control(&Options::default(), Arc::clone(&wake)).unwrap();
-    assert!(server.is_none(), "no --control, no listener");
+    let none = |_: &str| None;
+    let (agents, _incoming) = app::control(&Options::default(), Arc::clone(&wake), &none).unwrap();
+    assert!(agents.address().is_none(), "no --control, no listener");
 
     let token_file = dir.join("control.token");
     let options = Options {
@@ -1145,12 +1308,12 @@ fn the_control_option_starts_a_listener_with_a_fresh_token_file() {
         token_file: Some(token_file.clone()),
         ..Options::default()
     };
-    let (server, incoming) = app::control(&options, Arc::clone(&wake)).unwrap();
-    let server = server.unwrap();
+    let (agents, incoming) = app::control(&options, Arc::clone(&wake), &none).unwrap();
+    let address = agents.address().unwrap();
     let token = std::fs::read_to_string(&token_file).unwrap();
     assert_eq!(token.trim().len(), 64);
     // A client that read the file gets in; the request reaches the channel.
-    let mut client = Client::connect(server.address());
+    let mut client = Client::connect(address);
     let reply = client.call("auth", json!({"token": token.trim()}));
     assert_eq!(reply["ok"], true, "{reply}");
     client.send(b"{\"id\": 5, \"method\": \"ui.get\"}\n");
@@ -1164,15 +1327,17 @@ fn the_control_option_starts_a_listener_with_a_fresh_token_file() {
 
     // The port is taken now: starting a second app on it is an error.
     let second = Options {
-        control: Some(server.address().port()),
+        control: Some(address.port()),
         token_file: Some(token_file.clone()),
         ..Options::default()
     };
-    let error = app::control(&second, Arc::clone(&wake)).err().unwrap();
+    let error = app::control(&second, Arc::clone(&wake), &none)
+        .err()
+        .unwrap();
     assert!(error.contains("cannot listen"), "{error}");
     // A token file that holds something else stops the start.
     std::fs::write(&token_file, "not a token").unwrap();
-    let error = app::control(&options, wake).err().unwrap();
+    let error = app::control(&options, wake, &none).err().unwrap();
     assert!(error.contains("does not hold a control token"), "{error}");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1496,7 +1661,12 @@ fn the_bridge_tells_the_agent_when_the_window_cannot_be_used() {
     assert_eq!(replies.len(), 1);
     assert_eq!(replies[0]["id"], "a");
     let message = replies[0]["error"]["message"].as_str().unwrap();
-    assert!(message.contains("refused the control token"), "{message}");
+    // Since 2026-11-02 the window proves it holds the token first: with
+    // another token its proof does not match, and nothing is sent.
+    assert!(
+        message.contains("holds this token") && message.contains("nothing was sent"),
+        "{message}"
+    );
     // Nothing reached the session's thread.
     assert_eq!(rig.dispatched.load(Ordering::SeqCst), 0);
 

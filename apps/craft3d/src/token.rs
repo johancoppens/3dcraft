@@ -20,15 +20,10 @@ pub fn generate() -> Result<String, String> {
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-fn create(path: &Path, token: &str) -> std::io::Result<()> {
-    // The folder it goes in, made when it is missing: a configuration
-    // folder (`%APPDATA%\3DCraft`, `~/.config`) that nothing made yet.
-    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent)?;
-    }
+/// Writes `token` to a new file at `path`, mode 0600 on Unix, never
+/// through a link someone put there.
+fn write_new(path: &Path, token: &str) -> std::io::Result<()> {
     let mut options = std::fs::OpenOptions::new();
-    // Never over an existing file, and never through a link someone put
-    // there in the meantime.
     options.write(true).create_new(true);
     #[cfg(unix)]
     {
@@ -41,6 +36,39 @@ fn create(path: &Path, token: &str) -> std::io::Result<()> {
     file.sync_all()
 }
 
+/// Counts the temporary files this process made.
+static TEMPORARIES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Creates the token file whole: written to a temporary file of this
+/// process's own beside it, then linked in under its name, which fails
+/// when a file (or a link) is there already. So another process never
+/// reads half a token, and two windows starting at once never write over
+/// each other's: the second one reads the first one's. Where the file
+/// system has no hard links, the file is written in place.
+fn create(path: &Path, token: &str) -> std::io::Result<()> {
+    // The folder it goes in, made when it is missing: a state or
+    // configuration folder that nothing made yet.
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+    }
+    let count = TEMPORARIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut temporary = path.as_os_str().to_owned();
+    temporary.push(format!(".{}-{count}.tmp", std::process::id()));
+    let temporary = std::path::PathBuf::from(temporary);
+    if write_new(&temporary, token).is_err() {
+        let _ = std::fs::remove_file(&temporary);
+        return write_new(path, token);
+    }
+    let linked = std::fs::hard_link(&temporary, path);
+    let _ = std::fs::remove_file(&temporary);
+    match linked {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => Err(e),
+        // No hard links here (some network or FAT file systems).
+        Err(_) => write_new(path, token),
+    }
+}
+
 /// Reads the token from `path`, or creates the file with a fresh token when
 /// it does not exist (mode 0600 on Unix), and the folders it goes in. A file that holds anything but a
 /// token is an error and is left as it is.
@@ -50,6 +78,7 @@ pub fn load_or_create(path: &Path) -> Result<String, String> {
         Ok(text) => {
             let token = text.trim();
             if is_token(token) {
+                craft3d_automation::discovery::check_private(path)?;
                 Ok(token.to_ascii_lowercase())
             } else {
                 Err(format!(
@@ -59,11 +88,39 @@ pub fn load_or_create(path: &Path) -> Result<String, String> {
         }
         Err(e) if e.kind() == ErrorKind::NotFound => {
             let token = generate()?;
-            create(path, &token)
-                .map_err(|e| format!("cannot create the control token file `{shown}`: {e}"))?;
-            Ok(token)
+            match create(path, &token) {
+                Ok(()) => Ok(token),
+                // Another window made it in the meantime: its token is
+                // the one.
+                Err(e) if e.kind() == ErrorKind::AlreadyExists && !is_link(path) => {
+                    load_existing(path)
+                }
+                Err(e) => Err(format!(
+                    "cannot create the control token file `{shown}`: {e}"
+                )),
+            }
         }
         Err(e) => Err(format!("cannot read the control token file `{shown}`: {e}")),
+    }
+}
+
+fn is_link(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
+}
+
+/// Reads a token file that exists.
+fn load_existing(path: &Path) -> Result<String, String> {
+    let shown = path.display();
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read the control token file `{shown}`: {e}"))?;
+    let token = text.trim();
+    if is_token(token) {
+        craft3d_automation::discovery::check_private(path)?;
+        Ok(token.to_ascii_lowercase())
+    } else {
+        Err(format!(
+            "`{shown}` does not hold a control token ({TOKEN_CHARS} hexadecimal characters); delete it to have a new one made"
+        ))
     }
 }
 
@@ -131,6 +188,14 @@ mod tests {
         let path = dir.join("t");
         let token = "0123456789ABCDEF".repeat(4);
         std::fs::write(&path, format!("  {token}\r\n")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // Readable by others: refused (2026-11-02), until made private.
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(load_or_create(&path).unwrap_err().contains("other users"));
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
         assert_eq!(load_or_create(&path).unwrap(), token.to_ascii_lowercase());
         let _ = std::fs::remove_dir_all(&dir);
     }

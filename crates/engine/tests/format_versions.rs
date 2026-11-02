@@ -81,6 +81,18 @@ fn differences(version: u32, inspect: &Value, want: &Value) -> Vec<String> {
         ));
     }
     for (feature, wanted) in features.iter().zip(wanted) {
+        // Who made and changed it (format 63): pinned where the fixture
+        // says, and never made up where it does not.
+        for key in ["madeBy", "lastChangedBy"] {
+            if feature.get(key) != wanted.get(key) {
+                found.push(format!(
+                    "{tag} {}: {key} {:?} (was {:?})",
+                    wanted["id"],
+                    feature.get(key),
+                    wanted.get(key)
+                ));
+            }
+        }
         for key in ["id", "name", "status", "dof"] {
             if wanted.get(key).is_some() && feature[key] != wanted[key] {
                 found.push(format!(

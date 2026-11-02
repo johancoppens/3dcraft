@@ -210,6 +210,23 @@ impl History {
         changed
     }
 
+    /// Changes the current document in place, as no undo step and no
+    /// revision of its own: for what does not change what the document
+    /// makes, such as which agent made a feature (a document compares
+    /// equal before and after). The last undo step, when it ends in the
+    /// current document, ends in the changed one, so redo brings it back.
+    pub fn annotate(&mut self, f: impl FnOnce(&mut Document)) {
+        let mut next = (*self.current).clone();
+        f(&mut next);
+        let next = Arc::new(next);
+        if let Some(last) = self.undo.last_mut()
+            && Arc::ptr_eq(&last.after, &self.current)
+        {
+            last.after = Arc::clone(&next);
+        }
+        self.current = next;
+    }
+
     /// Labels of the steps that can be undone, oldest first.
     pub fn undo_labels(&self) -> impl Iterator<Item = &str> {
         self.undo.iter().map(|s| s.label.as_str())
@@ -232,6 +249,47 @@ mod tests {
 
     fn set(h: &mut History, name: &str, expr: &str) -> Result<(), DocError> {
         h.apply(&format!("Set {name}"), |doc| doc.set_variable(name, expr))
+    }
+
+    /// A note written in place (who made a feature) is no step and no
+    /// revision; redo brings it back with the step it belongs to.
+    #[test]
+    fn an_annotation_is_no_step_and_rides_with_its_step() {
+        let mut h = history();
+        h.apply("Block", |doc| {
+            doc.add_feature(
+                Some("B"),
+                craft3d_doc::FeatureKind::Block(craft3d_doc::Block {
+                    position: Default::default(),
+                    size: [
+                        craft3d_doc::Expr::new("1 mm"),
+                        craft3d_doc::Expr::new("1 mm"),
+                        craft3d_doc::Expr::new("1 mm"),
+                    ],
+                    orientation: Default::default(),
+                }),
+            )
+        })
+        .unwrap();
+        let revision = h.revision();
+        h.annotate(|doc| {
+            if let Some(feature) = doc.features.first_mut() {
+                feature.made_by = Some("Claude Code".to_string());
+            }
+        });
+        assert_eq!(h.revision(), revision, "no revision of its own");
+        assert_eq!(h.undo_labels().count(), 1, "no step of its own");
+        assert_eq!(
+            h.current().features[0].made_by.as_deref(),
+            Some("Claude Code")
+        );
+        h.undo();
+        assert!(h.current().features.is_empty());
+        h.redo();
+        assert_eq!(
+            h.current().features[0].made_by.as_deref(),
+            Some("Claude Code")
+        );
     }
 
     #[test]

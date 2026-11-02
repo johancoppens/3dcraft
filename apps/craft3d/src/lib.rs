@@ -8,6 +8,8 @@
 //!
 //! - [`args`]: the command line and its environment variables.
 //! - [`token`]: the control token and its file.
+//! - [`agents`]: the switch Allow AI agents: the listener turned on and
+//!   off while the window runs, the discovery entry, the remembered choice.
 //! - [`control`]: the TCP listener; authentication, limits, one thread per
 //!   connection, nothing dispatched on them.
 //! - [`host`]: the session and the shell, and answering a request line on
@@ -27,8 +29,10 @@
 //! Everything but [`app::run`] works without a window, which is how the
 //! tests drive the control channel.
 
+pub mod agents;
 pub mod app;
 pub mod args;
+pub mod consent;
 pub mod control;
 pub mod files;
 pub mod host;

@@ -3547,6 +3547,16 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
         {
             map.insert("hidden".into(), true.into());
         }
+        // Which AI agent made it and changed it last: said only when one
+        // did (since format 63).
+        if let Some(map) = entry.as_object_mut() {
+            if let Some(agent) = &feature.made_by {
+                map.insert("madeBy".into(), agent.clone().into());
+            }
+            if let Some(agent) = &feature.last_changed_by {
+                map.insert("lastChangedBy".into(), agent.clone().into());
+            }
+        }
         // Failed because something it is made from failed: the feature at
         // the start of that chain, the one to fix.
         if let (Some(map), Some(root)) = (

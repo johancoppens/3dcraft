@@ -101,6 +101,8 @@ const FROZEN: &[(u32, usize, u64)] = &[
     (61, 11079, 0x56dd_6431_5f65_3682),
     // A network quintic across (acrossDegree 5).
     (62, 13537, 0x7926_09b8_a310_cc27),
+    // Who made and changed a feature (madeBy, lastChangedBy).
+    (63, 1933, 0xda6d_3be2_d46b_5d4a),
 ];
 
 fn dir() -> PathBuf {

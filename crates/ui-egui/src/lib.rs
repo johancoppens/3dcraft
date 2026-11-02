@@ -65,7 +65,8 @@ pub use shell::{
     autosave_text, doc_tabs, fit_status, moving_size, run_edit, window_title,
 };
 pub use state::{
-    CameraState, Closing, DocTab, Panels, ParametersView, PlayQuality, Playback, ProjectionKind,
-    Show, TabView, UiState, Work,
+    AgentClient, AgentPrompt, AgentRoot, AgentsStatus, CameraState, Closing, DocTab, Panels,
+    ParametersView, PlayQuality, Playback, ProjectionKind, PromptAnswer, Show, SidePanelView,
+    SideTab, TabView, UiState, Work,
 };
 pub use theme::Tokens;

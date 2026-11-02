@@ -102,42 +102,77 @@ The **Help** menu:
   links to the guide and the source, and the renderer in use. **Copy system info** copies those lines
   for a bug report.
 
-## The feature list
+## The side panel
 
-The left panel shows the history of the design, one row per step: the name, the kind of feature and its
-state. Drag its right edge to make it wider or narrower; it keeps that width whatever it shows, and a name too long for it ends in "…", the whole name on
-hover. Each row has a mark:
+The left panel has tabs, chosen by the kind of document: a part has **Features**, **Variables** and
+**Bodies**; an assembly has **Assembly** (its instances and mates) and **Variables**; a document with public
+parameters (a Jig) has **Parameters** first. When the tabs do not fit, the rest are behind **⋯**. Drag the
+panel's right edge to make it wider or narrower; it keeps that width whatever it shows.
 
-| Mark | Means |
-|---|---|
-| ✔ | Built |
-| ⚠ | Failed: the reason is under it; *caused by …* when it failed because a feature it is made from failed (click that one) |
-| ⏸ | Suppressed: switched off by hand |
-| ○ | After the rollback marker: not built for now |
+### Features
 
-A feature switched off by a condition (*inactive*, [chapter 8](08-formulas.md#switching-parts-on-and-off))
-is greyed, with a *when* mark; its condition shows when you hold the pointer over it.
+One row per step of the history: an icon for its kind (sketches in indigo, datums in petrol, as in the
+view), its name, and its key value at the right, such as *Extrude 8 mm*, *R18 × 60 mm* (a cylinder),
+*3 × 22 mm* (a pattern) or *− Bore* (a subtraction and its tool).
 
-- **Click a row** to select the feature: the faces it made light up in the view (a fillet's round, not the
-  whole part). A pattern or a mirror lights the copies it made.
-- **The eye** at the end of a row hides that feature's body, sketch or datum in the view; click it again
-  to show it. The model itself does not change: the hidden part is still built, measured and exported.
-- **Double-click a row**, or click the **⌖** that shows on the row under the pointer, to **fly to** the
-  feature: the camera turns to the view that shows it best, with some of its body around it. A feature
-  that failed, is suppressed or shows nothing has no ⌖. A double click on a hidden feature shows it
-  again and flies to it.
-- When you click something in the view, the list scrolls to the feature that made it.
+- **A sketch sits under the feature made from it**, folded: click **›** to open it. **Datums that follow
+  one another** fold into one *Datums* row in their place. The order shown is always the history's.
+- **The filter** at the top keeps the rows whose name, kind or value holds what you type.
+- **The line under the filter** says how it went: *23 rebuilt · 7 checks pass*, *1 failed · 3 not rebuilt*,
+  or *Rolled back to Bored · 10 of 25*. The dot carries a tick or a cross, so it does not rest on colour.
+- **Hold the pointer on a row**: what it uses (↑) and what uses it (↓) get an indigo tint, and a strip at
+  the foot of the list names them and counts the later features that depend on it through them. Its value
+  turns into a field: **click the value of the selected row to edit it** in place (Enter sets it, as one step to undo; Escape
+  leaves it). Its grip (⠿) and its eye show too.
+- **The eye** hides that feature's body, sketch or datum in the view; it stays on a hidden row, struck
+  through. The model itself does not change.
+- **Click a row** to select the feature; **double-click** it, or click the **⌖** on the row under the pointer,
+  to **fly to** it.
+- **A feature that fails** is a red row with its reason and two buttons: **Show where** flies to what it is
+  made from, **Edit** opens its value. The features made from it are dimmed: they are not rebuilt (the
+  regeneration skips what is made from a failed feature); the ones that do not depend on it are built as
+  usual.
+- **The gold roll-back bar** sits after the last step built. Drag its grip to roll back to another step: the
+  steps after it are dimmed and the view shows the model there.
+- **Drag a row by its grip** to move it in the history (`feature.move`). A place before what it is made from,
+  or after what is made from it, is refused before you drop it: the indigo line does not show there.
+- **Right-click a row** for its menu: *Edit…*, *Rename*, *Show dependencies* (the hover's marks stay until
+  Escape), *Roll back to here*, *Suppress*, *Hide*, *Copy id* (for a message to an agent) and
+  *Delete*. Each is a command, so an agent can do the same and every one can be undone.
 
-Under the features are the **assertions**, failed ones in red with their message. While there are none, a
-short hint says how to add one.
+**Checks** sit under the list: *Checks 7 · all pass*, then each check measured against its limit, such as
+*7 mm ≥ 5 mm*. A failing check is red, with its reason under it, and the line at the top says *1 of 7 checks
+fails*. Click a check to fly to what it measures. They fold to their heading while something is selected
+(or when the panel is short), to make room.
 
-**A Jig** has two tabs here: **Parameters** (its form) and **Features** (this list, to look at).
+**What is selected** shows at the foot: a face's surface (plane, cylinder R …, cone, sphere, torus, spline),
+its area and its normal or axis; an edge's curve, length, the two faces it lies between and the angle there;
+a body's volume, mass, area and box. *Made by* links to the feature that made it, *Name* is its persistent
+name (what an agent uses). **Measure** measures a face's wall thickness, or the distance between the first two
+things selected; **Copy name** copies the name.
+
+### Variables
+
+The document's variables as a table: name, value or formula, result. Variables are grouped by the group a
+public parameter was given, or by a prefix two of them share (*base_t*, *base_r* under *Base*). A formula is
+written in indigo on a line of its own, its result at the right. **Click a value or a formula to edit it**:
+Enter sets it, as one step to undo; one that does not work out says why under it. **Add variable** opens a new one to fill in;
+Enter makes it. The document's units and tolerance fold away at the foot.
+
+### Bodies
+
+One row per body the design ends with: its colour, its name, its mass (or its volume without a material) and
+its eye. Click a body for its card: **Material** (choose a preset: it sets the density and the look), density,
+colour, volume, mass, area, box, faces and edges, and whether it is a valid closed solid. The totals are at the
+foot. The bodies that booleans used up are folded under *Tool bodies*; open it to see them and where they went.
+
+**A Jig** opens on **Parameters** (its form); its other tabs are there to look at.
 
 ## The history player
 
 ![The history player](images/player.png)
 
-At the foot of the feature list is the **timeline**: drag it to see the design as it was after any step
+At the foot of the side panel is the **timeline**: drag it to see the design as it was after any step
 of its history. Features after that step are greyed, and the step is named at the top of the view, such as
 `Step 3/6  Join`. Looking back never changes the document.
 

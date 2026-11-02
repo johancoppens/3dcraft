@@ -2,8 +2,9 @@
 //! the control channel's requests answered on the UI thread whenever that
 //! loop is woken for them, whether or not a frame is drawn.
 
+use crate::agents::{Agents, AgentsConfig};
 use crate::args::Options;
-use crate::control::{ControlConfig, ControlServer, Wake};
+use crate::control::Wake;
 use crate::files::{self, Choice, Picker, SystemDialogs};
 use crate::host::{Host, Request, Route, answer_on_engine, report, route};
 use crate::recording::{
@@ -12,7 +13,6 @@ use crate::recording::{
 };
 use crate::refine::{Poll, Refiner};
 use crate::tabs;
-use crate::token;
 use crate::worker::{Finished, Outcome, Run, Task, Worker};
 use craft3d_automation::rpc;
 use craft3d_engine::{Access, RecoveryOptions, Session, Workspace};
@@ -158,22 +158,18 @@ pub fn recovery(options: &Options, wake: Wake) -> Result<Option<RecoveryOptions>
     Ok(Some(recovery))
 }
 
-/// The control listener the options ask for, if any, with the channel its
-/// requests arrive on.
+/// The switch for AI agents the options ask for, listening from the start
+/// when `--control` asks for it or the person left it on, with the channel
+/// its requests arrive on. `env` names the person's folders.
 pub fn control(
     options: &Options,
     wake: Wake,
-) -> Result<(Option<ControlServer>, Receiver<Request>), String> {
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<(Agents, Receiver<Request>), String> {
     let (requests, incoming) = mpsc::channel();
-    let Some(port) = options.control else {
-        return Ok((None, incoming));
-    };
-    let Some(token_file) = &options.token_file else {
-        return Err("`--control` needs `--control-token-file FILE`".to_string());
-    };
-    let token = token::load_or_create(token_file)?;
-    let server = ControlServer::start(ControlConfig::new(port, token), requests, wake)?;
-    Ok((Some(server), incoming))
+    let mut agents = Agents::new(AgentsConfig::from_options(options, env), requests, wake);
+    agents.start()?;
+    Ok((agents, incoming))
 }
 
 /// What the window works on, and what reaches it from outside a frame:
@@ -226,6 +222,15 @@ pub struct Desk {
     /// The window's frames painted offscreen: recordings, and pictures of
     /// a window that is not on screen (`recording.rs`).
     rec: Rec,
+    /// The switch Allow AI agents and the listener behind it (`agents.rs`);
+    /// `None` for a desk without one (tests).
+    agents: Option<Agents>,
+    /// The folder picker of the agents' Change….
+    agents_picker: Option<Picker>,
+    /// Requests that wait for the person's answer to a prompt, by its id
+    /// (`consent.rs`), and those whose answer came, until they run.
+    held: Vec<(u64, Request)>,
+    released: Vec<Request>,
 }
 
 /// A request for a picture of the window: it is answered once egui hands
@@ -319,6 +324,208 @@ impl Desk {
             wake: None,
             deadlines: None,
             rec: Rec::default(),
+            agents: None,
+            agents_picker: None,
+            held: Vec::new(),
+            released: Vec::new(),
+        }
+    }
+
+    /// Lets the switch Allow AI agents work, with `agents` behind it.
+    #[must_use]
+    pub fn with_agents(mut self, agents: Agents) -> Self {
+        self.agents = Some(agents);
+        self
+    }
+
+    /// The folder picker Change… opens.
+    #[must_use]
+    pub fn with_agents_picker(mut self, picker: Picker) -> Self {
+        self.agents_picker = Some(picker);
+        self
+    }
+
+    /// The switch and its listener, to change.
+    pub fn agents_mut(&mut self) -> Option<&mut Agents> {
+        self.agents.as_mut()
+    }
+
+    /// The switch and its listener.
+    pub fn agents(&self) -> Option<&Agents> {
+        self.agents.as_ref()
+    }
+
+    /// The window got the focus (the bridge prefers the window focused
+    /// last).
+    pub fn agents_focused(&mut self) {
+        if let Some(agents) = &mut self.agents {
+            agents.focused();
+        }
+    }
+
+    /// Does what the switch asked for, gives the session the roots it
+    /// changed once the session is on this thread, and tells the shell
+    /// how things stand. True when something changed.
+    fn pump_agents(&mut self) -> bool {
+        let Some(agents) = &mut self.agents else {
+            return false;
+        };
+        let mut changed = false;
+        if let Some(on) = self.host.shell.take_agents_switch() {
+            agents.allow(on);
+            changed = true;
+        }
+        if self.host.shell.take_agents_disconnect() {
+            agents.disconnect_all();
+            changed = true;
+        }
+        if let Some(on) = self.host.shell.take_agents_document_folder() {
+            agents.set_document_folder(on);
+            changed = true;
+        }
+        if self.host.shell.take_agents_folder()
+            && let Some(picker) = &mut self.agents_picker
+            && !picker.busy()
+            && let Err(e) = picker.ask_folder(agents.folder())
+        {
+            agents.note_error(format!("The folder picker could not be shown: {e}"));
+        }
+        if let Some(choice) = self.agents_picker.as_mut().and_then(Picker::poll) {
+            match choice {
+                // A folder that cannot be used says why itself.
+                Ok(files::Choice::Folder(folder)) => {
+                    let _ = agents.choose_folder(&folder);
+                }
+                Ok(_) => {}
+                Err(e) => agents.note_error(format!("The folder picker failed: {e}")),
+            }
+            changed = true;
+        }
+        if self.waiting.is_none() {
+            // The open document's folder follows the active tab: only for a
+            // document the person opened or saved and made active
+            // themselves, never one an agent opened, saved elsewhere or
+            // activated, nor a recovered one.
+            let path = self
+                .host
+                .session
+                .person_document_file()
+                .map(std::path::PathBuf::from);
+            agents.set_document(path.as_deref());
+        }
+        if let Some(folder) = self.host.shell.take_agents_revoke() {
+            agents.revoke(std::path::Path::new(&folder));
+            changed = true;
+        }
+        agents.ask_about_clients();
+        // The person's click on a prompt; and prompts nobody answered.
+        if let Some((id, answer)) = self.host.shell.take_agent_prompt_answer() {
+            let verdict = agents.answer(id, answer);
+            changed = true;
+            if let Some(index) = self.held.iter().position(|(held, _)| *held == id) {
+                let (_, request) = self.held.remove(index);
+                match verdict {
+                    Some(crate::agents::Verdict::Run) => self.released.push(request),
+                    Some(crate::agents::Verdict::Once { file, write }) => {
+                        let mut request = request;
+                        if let Some(origin) = &mut request.origin {
+                            origin.grant = Some((file, write));
+                        }
+                        self.released.push(request);
+                    }
+                    Some(crate::agents::Verdict::Refuse(why)) => {
+                        let _ = request
+                            .reply
+                            .send(Some(crate::consent::refusal(&request.line, &why)));
+                    }
+                    None => self.released.push(request),
+                }
+            }
+        }
+        self.expire_prompts(Instant::now());
+        let Some(agents) = &mut self.agents else {
+            return changed;
+        };
+        if self.waiting.is_none()
+            && let Some(workspace) = agents.take_workspace()
+        {
+            self.host.session.set_workspace(workspace);
+            changed = true;
+        }
+        // Released requests go first, in the order they came, once the
+        // session has the roots their answer gave.
+        if !self.released.is_empty() && self.waiting.is_none() {
+            for request in std::mem::take(&mut self.released).into_iter().rev() {
+                // Asked again: a batch may name another path outside.
+                if let Some(request) = self.screen(request) {
+                    self.queue.push_front(request);
+                }
+            }
+            changed = true;
+        }
+        let Some(agents) = &mut self.agents else {
+            return changed;
+        };
+        if self.host.shell.set_agents_status(agents.status()) {
+            changed = true;
+        }
+        changed
+    }
+
+    /// Refuses the requests whose prompt nobody answered by `now`.
+    pub fn expire_prompts(&mut self, now: Instant) {
+        let Some(agents) = &mut self.agents else {
+            return;
+        };
+        for (id, why) in agents.expire(now) {
+            if let Some(index) = self.held.iter().position(|(held, _)| *held == id) {
+                let (_, request) = self.held.remove(index);
+                let _ = request
+                    .reply
+                    .send(Some(crate::consent::refusal(&request.line, &why)));
+            }
+        }
+    }
+
+    /// A request as it comes in: on its way (`Some`), or held for the
+    /// person's answer, or refused at once, when it names a path outside
+    /// every root (`consent.rs`).
+    fn screen(&mut self, request: Request) -> Option<Request> {
+        let (Some(origin), Some(agents)) = (&request.origin, &mut self.agents) else {
+            return Some(request);
+        };
+        // The file allowed once for this request is asked about no more.
+        let granted = origin.grant.as_ref().map(|(file, _)| file.clone());
+        let wanted: Vec<crate::consent::Wanted> = crate::consent::wanted(&request.line)
+            .into_iter()
+            .filter(|want| granted.as_deref() != Some(std::path::Path::new(&want.path)))
+            .collect();
+        if wanted.is_empty() {
+            return Some(request);
+        }
+        match agents.screen(origin, &wanted) {
+            Ok(None) => Some(request),
+            Ok(Some(id)) => {
+                // Woken when it times out, frame or no frame.
+                if let Some(wake) = self.wake.clone() {
+                    let _ = std::thread::Builder::new()
+                        .name("craft3d-prompt-deadline".to_string())
+                        .spawn(move || {
+                            std::thread::sleep(
+                                crate::consent::PROMPT_WAIT + Duration::from_millis(50),
+                            );
+                            wake();
+                        });
+                }
+                self.held.push((id, request));
+                None
+            }
+            Err(why) => {
+                let _ = request
+                    .reply
+                    .send(Some(crate::consent::refusal(&request.line, &why)));
+                None
+            }
         }
     }
 
@@ -402,10 +609,13 @@ impl Desk {
     /// Needs no frame and no window.
     pub fn turn(&mut self) -> Turn {
         self.sync_exact_pictures();
+        let agents = self.pump_agents();
         if self.worker.is_none() {
-            let mut answered = self.settle_capture();
+            let mut answered = self.settle_capture() || agents;
             while let Ok(request) = self.requests.try_recv() {
-                self.queue.push_back(request);
+                if let Some(request) = self.screen(request) {
+                    self.queue.push_back(request);
+                }
             }
             let mut served = 0;
             while served < MAX_PER_TURN {
@@ -433,7 +643,7 @@ impl Desk {
                 quit: self.host.shell.quit_requested(),
             };
         }
-        let mut changed = self.collect();
+        let mut changed = self.collect() || agents;
         if self.settle_capture() {
             changed = true;
         }
@@ -519,12 +729,22 @@ impl Desk {
                         let label = request_label(&request.line);
                         let subject = request_subject(&request.line);
                         let line = request.line.clone();
+                        let actor = request.origin.as_ref().map(|origin| origin.name.clone());
+                        let grant = request.origin.as_ref().and_then(|o| o.grant.clone());
                         self.start_about(
                             Waiting::Request(request),
                             label,
                             subject,
                             Box::new(move |session| {
-                                Outcome::Reply(answer_on_engine(session, &line))
+                                // An agent's commands go into the agent log;
+                                // a file allowed once is this request's alone.
+                                // Both are put back also when it unwinds.
+                                let grant =
+                                    grant.as_ref().map(|(file, write)| (file.as_path(), *write));
+                                let reply = session.acting(actor.as_deref(), grant, |session| {
+                                    answer_on_engine(session, &line)
+                                });
+                                Outcome::Reply(reply)
                             }),
                         );
                     }
@@ -559,9 +779,12 @@ impl Desk {
             any = true;
             if self.away() && route(&request.line) == Route::Anytime {
                 self.show_work();
+                let viewer = request.origin.as_ref().map(|o| o.name.clone());
+                self.host.shell.set_agents_viewer(viewer.as_deref());
                 let reply = self.answer_away(&request.line);
+                self.host.shell.set_agents_viewer(None);
                 let _ = request.reply.send(reply);
-            } else {
+            } else if let Some(request) = self.screen(request) {
                 self.queue.push_back(request);
             }
         }
@@ -578,7 +801,10 @@ impl Desk {
         let queued = std::mem::take(&mut self.queue);
         for request in queued {
             if route(&request.line) == Route::Anytime {
+                let viewer = request.origin.as_ref().map(|o| o.name.clone());
+                self.host.shell.set_agents_viewer(viewer.as_deref());
                 let reply = self.answer_away(&request.line);
+                self.host.shell.set_agents_viewer(None);
                 let _ = request.reply.send(reply);
             } else {
                 self.queue.push_back(request);
@@ -1912,8 +2138,8 @@ struct Viewer {
     mirror: Option<egui::TextureHandle>,
     /// The title the window has now.
     title: String,
-    /// Kept so the listener lives as long as the window.
-    _server: Option<ControlServer>,
+    /// Whether the window had the focus in the last frame.
+    focused: bool,
 }
 
 impl eframe::App for Viewer {
@@ -1929,6 +2155,11 @@ impl eframe::App for Viewer {
             // Show what changed, and look for more.
             ctx.request_repaint();
         }
+        let focused = ctx.input(|i| i.focused);
+        if focused && !self.focused {
+            desk.agents_focused();
+        }
+        self.focused = focused;
         // The window's close button (or the window manager): the window
         // stays and asks first when a document has unsaved changes.
         if ctx.input(|i| i.viewport().close_requested()) && !desk.window_close() {
@@ -2135,13 +2366,14 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
                 .map_or(0, |ctx| ctx.cumulative_pass_nr_for(egui::ViewportId::ROOT))
         },
     );
-    // The listener starts before the window, so a port that is taken is an
-    // error on the command line, not a window without a control channel.
-    let (server, requests) = control(options, Arc::clone(&wake))?;
-    if let (Some(server), Some(token_file)) = (&server, &options.token_file) {
+    let env = |name: &str| std::env::var(name).ok();
+    // The listener `--control` asks for starts before the window, so a port
+    // that is taken is an error on the command line, not a window without
+    // a control channel.
+    let (agents, requests) = control(options, Arc::clone(&wake), &env)?;
+    if let (Some(address), Some(token_file)) = (agents.address(), agents.token_file()) {
         announce(&format!(
-            "control channel on {} (token in {})",
-            server.address(),
+            "control channel on {address} (token in {})",
             token_file.display()
         ));
     }
@@ -2169,16 +2401,15 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
         .map(crate::places::read_recent)
         .unwrap_or_default();
     host.recent_baseline = recent.clone();
-    let env = |name: &str| std::env::var(name).ok();
     let data_folder = crate::places::data_folder(options, &env);
-    let agent = crate::places::agent_setup(
-        server.as_ref().map(|server| server.address().port()),
-        options.token_file.as_deref(),
-        &env,
-    );
+    let agent = crate::places::agent_setup(&env);
     let title = window_title(host.session.document_status().as_ref());
     let picker = Picker::new(Arc::new(SystemDialogs), Arc::clone(&wake));
-    let mut desk = Desk::new(host, requests, picker).with_engine_thread(Arc::clone(&wake));
+    let agents_picker = Picker::new(Arc::new(SystemDialogs), Arc::clone(&wake));
+    let mut desk = Desk::new(host, requests, picker)
+        .with_engine_thread(Arc::clone(&wake))
+        .with_agents(agents)
+        .with_agents_picker(agents_picker);
     if let Some([w, h]) = options.window_size {
         desk.set_window_points([w as f32, h as f32]);
     }
@@ -2218,7 +2449,7 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
                 mirror: None,
                 desk: for_viewer,
                 title,
-                _server: server,
+                focused: false,
             };
             // Requests that arrived before the window existed are waiting
             // in the channel; they are answered from here on.
@@ -3712,7 +3943,13 @@ mod tests {
     fn ask(requests: &mpsc::Sender<Request>, line: &str) -> Receiver<Option<String>> {
         let (reply, answer) = mpsc::channel();
         let line = line.to_string();
-        requests.send(Request { line, reply }).unwrap();
+        requests
+            .send(Request {
+                line,
+                reply,
+                origin: None,
+            })
+            .unwrap();
         answer
     }
 

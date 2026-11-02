@@ -17,6 +17,9 @@ use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 pub struct Request {
     pub line: String,
     pub reply: Sender<Option<String>>,
+    /// Who sent it, when it came over the control channel from a client
+    /// that authenticated (`consent.rs`); `None` for the window's own.
+    pub origin: Option<crate::consent::Origin>,
 }
 
 /// Longest result or error shown in the status bar, in characters.
@@ -55,9 +58,14 @@ fn methods() -> &'static [Method] {
     ALL.get_or_init(|| {
         let mut all = vec![Method {
             name: "auth",
-            params: r#"{"token": string}"#,
-            summary: "Authenticates the connection; must be its first request.",
+            params: r#"{"token": string, "client"?: string}"#,
+            summary: "Authenticates the connection; must be its first request. An optional `client` (a name of up to 80 characters) counts the client as a connected agent until it says `bye` or has been quiet for five minutes.",
         }];
+        all.push(Method {
+            name: "bye",
+            params: "{}",
+            summary: "Says this client is done: the window stops counting it as a connected agent (what `craft3d-cli mcp --bridge` sends when its input ends).",
+        });
         all.push(Method {
             name: "mcp.message",
             params: r#"{"line": string}"#,
@@ -476,7 +484,28 @@ impl Host {
     /// Answers a request and sends the reply back. A requester that has
     /// gone away is not an error.
     pub fn answer(&mut self, request: Request) {
+        // An agent's commands go into the document's agent log, under the
+        // name its MCP client gave (`craft3d_engine::agent_log`).
+        let actor = request.origin.as_ref().map(|origin| origin.name.clone());
+        // A file the person allowed once: for this request alone.
+        let grant = request.origin.as_ref().and_then(|o| o.grant.clone());
+        self.shell.set_agents_viewer(actor.as_deref());
+        // Put back below in every case: `handle_line` catches whatever
+        // unwinds in it (the last-resort guard), so nothing skips the
+        // restore here. (The engine thread's closure, which has no such
+        // guard around it, uses `Session::acting`.)
+        let saved = grant.as_ref().map(|(file, write)| {
+            let saved = self.session.workspace().clone();
+            self.session.set_workspace(saved.with_file(file, *write));
+            saved
+        });
+        self.session.set_actor(actor.as_deref());
         let reply = self.handle_line(&request.line);
+        self.session.set_actor(None);
+        if let Some(saved) = saved {
+            self.session.set_workspace(saved);
+        }
+        self.shell.set_agents_viewer(None);
         let _ = request.reply.send(reply);
     }
 

@@ -12,6 +12,7 @@
 //! autosave thread of a session that was given a recovery directory
 //! (`recovery.rs`).
 
+pub mod agent_log;
 pub mod analysis;
 mod analysis_cmds;
 mod angle_warnings;
@@ -45,6 +46,7 @@ mod file_cmds;
 mod fold_cmds;
 pub mod fonts;
 mod helix_cmds;
+pub mod history_view;
 mod import_cmds;
 mod interference_cmds;
 mod jig_cmds;
@@ -122,6 +124,7 @@ pub use checks_elsewhere::{CheckRequest, measure_checks};
 pub use commands::{DARK_BACKGROUND, EXPORT_QUALITIES, VIEWPORT_BACKGROUND};
 pub use commands_elsewhere::{Answered, CommandAnswer, CommandRequest};
 pub use craft3d_regen::progress::Progress;
+pub use history_view::{HistoryEntry, HistoryView, KeyEdit, VariableEntry};
 pub use memory_files::{MAX_MEMORY_BYTES, MAX_MEMORY_FILE_BYTES, MAX_MEMORY_FILES};
 pub use meshes::{BodyFacts, EdgePolylines};
 pub use motion::{COLLISION_COLOR, MotionView, TIMELINE, TraceState, TraceView};
@@ -271,6 +274,13 @@ pub(crate) struct OpenDocument {
     pub(crate) motion: motion::Motion,
     /// For an assembly: what was read and derived for it (`asm.rs`).
     pub(crate) asm: asm::AsmState,
+    /// What agents did to it (`agent_log.rs`): session state, not saved
+    /// and not undone.
+    pub(crate) agent_log: agent_log::AgentLog,
+    /// Its file, when the person opened or saved it there themselves (no
+    /// agent acting): the folder a host may give agents as "the open
+    /// document's folder". An agent's open or save as clears it.
+    pub(crate) person_file: Option<String>,
     /// While a command is tried without the bodies
     /// (`commands_elsewhere.rs`): `Some`, and true once it asked for a
     /// regeneration that is not there (it was handed an empty one).
@@ -354,6 +364,8 @@ impl OpenDocument {
             state_checks: regen_elsewhere::StateChecks::default(),
             motion: motion::Motion::default(),
             asm: asm::AsmState::default(),
+            agent_log: agent_log::AgentLog::default(),
+            person_file: None,
             forbid_regen: None,
             work: Arc::default(),
         }
@@ -500,6 +512,12 @@ pub struct Session {
     /// While a command that adds features runs with `when`: the condition
     /// every feature it adds gets, in the same edit (`when_cmds`).
     pub(crate) new_when: Option<craft3d_doc::Expr>,
+    /// The agent the commands run for, and its intent; `None` for the
+    /// person (`agent_log.rs`).
+    pub(crate) actor: Option<agent_log::Actor>,
+    /// The active document was made active by an agent (`file.activate`,
+    /// `file.open`, `recovery.open`, …), not by the person.
+    pub(crate) agent_activated: bool,
     /// The host does the long work a piece at a time between its frames
     /// ([`Session::prepare_some`], `stepwise.rs`): assertions are not
     /// measured on a thread of their own nor all at once when asked.
@@ -560,6 +578,8 @@ impl Session {
             host_details: Vec::new(),
             window_camera: None,
             new_when: None,
+            actor: None,
+            agent_activated: false,
             stepwise: false,
             reached: None,
             prepare_broken: None,
@@ -661,13 +681,17 @@ impl Session {
         craft3d_format::to_bytes(open.history.current()).ok()
     }
 
-    /// The command registry, in a fixed order.
+    /// The command registry, in a fixed order. A new command that puts
+    /// back features without anyone making them (a revert, a "back to the
+    /// last good state", a reopening) must also be listed in
+    /// `agent_log::NO_PROVENANCE`, or who made those features is rewritten.
     pub fn commands() -> &'static [CommandSpec] {
         static ALL: std::sync::OnceLock<Vec<CommandSpec>> = std::sync::OnceLock::new();
         ALL.get_or_init(|| {
             [
                 commands::SPECS,
                 file_cmds::SPECS,
+                agent_log::SPECS,
                 asm_cmds::SPECS,
                 asm_measure::SPECS,
                 import_cmds::SPECS,
@@ -865,7 +889,15 @@ impl Session {
     /// document that was just saved or closed. After a caught panic the
     /// last good state of every document is autosaved at once.
     pub fn execute(&mut self, id: &str, params: &Value) -> Result<Value, CommandError> {
-        let outcome = self.execute_unrecorded(id, params);
+        let before = (
+            self.documents
+                .iter()
+                .map(|open| (open.id, open.file.clone()))
+                .collect::<Vec<_>>(),
+            self.document().ok().map(|open| open.id),
+        );
+        let outcome = self.logged(id, |session| session.execute_unrecorded(id, params));
+        self.track_who_opened(id, before);
         // The report itself is not what a report is about.
         if let Err(error) = &outcome
             && id != "session.report"
@@ -980,6 +1012,54 @@ impl Session {
         };
         let resolved = name_refs::resolve(open.history.current(), keys, params)?;
         Ok(resolved.params.unwrap_or_else(|| params.clone()))
+    }
+
+    /// Notes, after a command, who made the active document active and who
+    /// gave it its file: the person (no actor) or an agent. `before` is
+    /// every open document's id and file, and the active one's id.
+    fn track_who_opened(&mut self, id: &str, before: (Vec<(u64, Option<String>)>, Option<u64>)) {
+        let by_agent = self.actor.is_some();
+        let (documents, active_before) = before;
+        let Some(open) = self.documents.get_mut(self.active) else {
+            return;
+        };
+        // A change of the active document is whoever made it; the person
+        // activating the document already active (a click on its tab)
+        // makes it theirs again.
+        if active_before != Some(open.id) || (!by_agent && id == "file.activate") {
+            self.agent_activated = by_agent;
+        }
+        let file_before = documents
+            .iter()
+            .find(|(id, _)| *id == open.id)
+            .map(|(_, file)| file);
+        let gave_file = match file_before {
+            // Opened (or made) by this command.
+            None => true,
+            Some(file) => *file != open.file,
+        };
+        if gave_file {
+            open.person_file = if by_agent { None } else { open.file.clone() };
+        }
+    }
+
+    /// The file of the active document when the person opened or saved it
+    /// themselves and made it active themselves; `None` otherwise (a new or
+    /// recovered document, one an agent opened, saved elsewhere or made
+    /// active). What a host may give agents as "the open document's
+    /// folder".
+    pub fn person_document_file(&self) -> Option<String> {
+        if self.agent_activated {
+            return None;
+        }
+        self.document().ok()?.person_file.clone()
+    }
+
+    /// The file of open document `index` when the person opened or saved
+    /// it there themselves (an agent's file is `None`): what a host may
+    /// list among the person's recent files.
+    pub fn person_file_of(&self, index: usize) -> Option<String> {
+        self.documents.get(index)?.person_file.clone()
     }
 
     pub(crate) fn document(&self) -> Result<&OpenDocument, CommandError> {

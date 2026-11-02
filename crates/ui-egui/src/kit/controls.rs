@@ -812,7 +812,15 @@ impl Kit {
                 StrokeKind::Inside,
             ));
             let text = options.get(*chosen).copied().unwrap_or("");
-            let galley = self.galley(ui, text, self.font(), s.text);
+            // Cut before the chevron.
+            let room = (rect.width() - 2.0 * t.field_text_pad - t.nav_icon_size).max(0.0);
+            let mut job = egui::text::LayoutJob::simple_singleline(
+                text.to_string(),
+                self.font(),
+                color(s.text),
+            );
+            job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+            let galley = painter.layout_job(job);
             painter.galley(
                 pos2(
                     rect.left() + t.field_text_pad,
