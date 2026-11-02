@@ -145,9 +145,10 @@ watching**.
 
 ### Bridged to the window (recommended)
 
-1. **Allow AI agents.** On the start screen (start 3DCraft, or close every tab), under **Connect an
-   AI agent**, turn on **Allow AI agents**. The same switch is in the **Help** menu, so you can turn it
-   on or off with a document open. 3DCraft remembers your choice for the next start.
+1. **Allow AI agents.** Click **Connect AI agent** at the bottom left of the window (the indigo pill
+   in the status bar; on the start screen the same panel is under **Connect an AI agent**) and turn on
+   **Allow AI agents**. 3DCraft remembers your choice for the next start. The pill then says
+   **Agents on — waiting**.
 2. **Add 3DCraft to your AI tool, once.** With the switch on, the block shows what to copy:
    - for **Claude Code**, click **Copy command** and paste the line into a terminal:
 
@@ -172,12 +173,18 @@ watching**.
    The path is filled in for your computer (on Linux with the AppImage, the AppImage itself, followed
    by `cli`). Nothing secret is in it: there is no password to copy or keep.
 3. **Ask the agent something** ([chapter 3](03-agent.md)): "Make a 40 × 20 × 10 mm block in 3DCraft".
-   The block appears in the window. While an agent is connected, the status bar at the bottom says so;
-   click it to see which agents, to **Disconnect all**, or to turn agents off.
+   The block appears in the window. The pill turns into **Claude Code connected** with a green dot,
+   and while the agent works it names each command it runs (**Claude Code · feature.block**), so you
+   always see when it acts. Click the pill to see who is connected and since when, to **Disconnect
+   all**, or to turn agents off.
 
-> **Which files can the agent touch?** Only the folder `3DCraft` in your Documents (made the first time),
-> which the start screen names: `file.open`, `file.save`, `file.export`, `file.import` and `view.render`
-> refuse any other path. Everything you open or save yourself from the File menu stays yours to choose.
+> **Which files can the agent touch?** Only the folders the panel names: **Agents can read and write
+> files in:** `~/Documents/3DCraft` (made the first time; **Change…** picks another folder, which
+> 3DCraft remembers, **Open folder** shows it), and, while **Also the open document's folder** is on,
+> the folder of the document you have open, so the agent can export next to it. `file.open`,
+> `file.save`, `file.export`, `file.import` and `view.render` refuse any other path, also through a
+> shortcut (a symbolic link) that leads out of those folders. Everything you open or save yourself from
+> the File menu stays yours to choose.
 
 If no window allows agents, the agent's requests get an answer that says to turn on **Allow AI agents**,
 and it can carry on as soon as you do. With several 3DCraft windows open, the agent works in the one you

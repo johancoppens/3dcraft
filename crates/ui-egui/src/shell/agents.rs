@@ -351,8 +351,8 @@ impl Shell {
         };
         #[cfg(target_arch = "wasm32")]
         let _ = folder;
+        ui.colored_label(dim, text);
         ui.horizontal_wrapped(|ui| {
-            ui.colored_label(dim, text);
             let change = ui
                 .add_enabled(!status.command_line, egui::Button::new("Change…").small())
                 .on_hover_text("Choose the folder agents may read and write files in")
@@ -494,7 +494,12 @@ impl Shell {
                     None => String::new(),
                 };
                 ui.horizontal_wrapped(|ui| {
-                    ui.colored_label(color(tokens.ok), "●");
+                    // A green dot, painted (the font has no "●").
+                    let side = ui.text_style_height(&egui::TextStyle::Body);
+                    let (dot, _) =
+                        ui.allocate_exact_size(egui::vec2(side * 0.6, side), egui::Sense::hover());
+                    ui.painter()
+                        .circle_filled(dot.center(), side * 0.22, color(tokens.ok));
                     ui.label(egui::RichText::new(&client.name).strong());
                     ui.colored_label(
                         dim,
