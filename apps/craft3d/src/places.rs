@@ -117,95 +117,43 @@ pub fn data_folder(options: &Options, env: &dyn Fn(&str) -> Option<String>) -> O
     used.then_some(own)
 }
 
-/// Where a token file would go when the window does not listen yet, for
-/// the start screen's configuration: absolute, in the user's
-/// configuration folder (`$XDG_CONFIG_HOME` or `~/.config` spelled out,
-/// `%APPDATA%\3DCraft`, `~/Library/Application Support/3DCraft`).
-pub fn suggested_token_file(env: &dyn Fn(&str) -> Option<String>) -> Option<String> {
-    let var = |name: &str| {
-        env(name)
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute())
-    };
-    let file = if cfg!(windows) {
-        var("APPDATA")?.join("3DCraft").join("control.token")
-    } else if cfg!(target_os = "macos") {
-        var("HOME")?
-            .join("Library")
-            .join("Application Support")
-            .join("3DCraft")
-            .join("control.token")
-    } else {
-        var("XDG_CONFIG_HOME")
-            .or_else(|| var("HOME").map(|home| home.join(".config")))?
-            .join("craft3d-control.token")
-    };
-    file.to_str().map(str::to_string)
-}
-
-/// How an agent reaches this window: `craft3d-cli` beside this program
-/// when it is there (as the installers put it), else by its name on the
-/// `PATH`; this program itself for the window line; the port the window
-/// listens on and its token file, absolute; and the folder the agent may
-/// work in ([`suggested_work_folder`]). Started from an AppImage
-/// (`$APPIMAGE`), both programs are the AppImage itself, the command line
-/// as `<AppImage> cli`: the running program's own path is the AppImage's
-/// temporary mount, gone when it stops.
-pub fn agent_setup(
-    port: Option<u16>,
-    token_file: Option<&Path>,
-    env: &dyn Fn(&str) -> Option<String>,
-) -> AgentSetup {
+/// How an MCP client starts the bridge to this window: `craft3d-cli`
+/// beside this program when it is there (as the installers put it), else
+/// by its name on the `PATH`. Started from an AppImage (`$APPIMAGE`), it is
+/// the AppImage itself, run as `<AppImage> cli`: the running program's own
+/// path is the AppImage's temporary mount, gone when it stops.
+pub fn agent_setup(env: &dyn Fn(&str) -> Option<String>) -> AgentSetup {
     let exe = std::env::current_exe()
         .ok()
         .and_then(|exe| std::path::absolute(exe).ok());
-    setup_for(port, token_file, env, exe.as_deref())
+    setup_for(env, exe.as_deref())
 }
 
 /// [`agent_setup`] for the program at `exe`.
-fn setup_for(
-    port: Option<u16>,
-    token_file: Option<&Path>,
-    env: &dyn Fn(&str) -> Option<String>,
-    exe: Option<&Path>,
-) -> AgentSetup {
+fn setup_for(env: &dyn Fn(&str) -> Option<String>, exe: Option<&Path>) -> AgentSetup {
     let name = if cfg!(windows) {
         "craft3d-cli.exe"
     } else {
         "craft3d-cli"
     };
-    let token_file = token_file
-        .and_then(|file| std::path::absolute(file).ok())
-        .and_then(|file| file.to_str().map(str::to_string));
     let appimage =
         env("APPIMAGE").filter(|path| Path::new(path).is_absolute() && Path::new(path).is_file());
-    let (cli, cli_prefix, window) = match appimage {
-        Some(appimage) => (appimage.clone(), vec!["cli".to_string()], appimage),
+    let (cli, cli_prefix) = match appimage {
+        Some(appimage) => (appimage, vec!["cli".to_string()]),
         None => {
             let beside = exe
                 .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
                 .filter(|cli| cli.is_file())
                 .and_then(|cli| cli.to_str().map(str::to_string));
-            let window = exe
-                .and_then(Path::to_str)
-                .map(str::to_string)
-                .unwrap_or_else(|| "craft3d".to_string());
             (
                 beside.unwrap_or_else(|| "craft3d-cli".to_string()),
                 Vec::new(),
-                window,
             )
         }
     };
     AgentSetup {
         cli,
         cli_prefix,
-        window,
-        work_folder: suggested_work_folder(env),
-        port,
-        token_file,
-        suggested_token: suggested_token_file(env),
         windows: cfg!(windows),
     }
 }
@@ -478,33 +426,20 @@ mod tests {
     }
 
     #[test]
-    fn the_agent_setup_names_this_windows_port_and_an_absolute_token_file() {
+    fn the_agent_setup_names_the_cli_and_the_work_folder_absolute() {
         let env = |name: &str| match name {
             "HOME" => Some("/home/me".to_string()),
-            "APPDATA" => Some(r"C:\Users\me\AppData\Roaming".to_string()),
+            "USERPROFILE" => Some(r"C:\Users\me".to_string()),
             _ => None,
         };
-        let setup = agent_setup(Some(7901), Some(Path::new("tok/control.token")), &env);
-        assert!(setup.listening());
-        assert!(Path::new(setup.token_file.as_deref().unwrap()).is_absolute());
+        let setup = agent_setup(&env);
         assert!(setup.cli.contains("craft3d-cli"));
-        let idle = agent_setup(None, None, &env);
-        assert!(!idle.listening());
-        // A token file to suggest, spelled out: never `~`.
-        let suggested = idle.suggested_token.clone().unwrap();
-        assert!(!suggested.contains('~'), "{suggested}");
-        assert!(!idle.mcp_config().contains('~'));
-        assert_eq!(suggested_token_file(&|_| None), None);
+        assert!(!setup.mcp_config().contains('~'));
         // The agent's folder, absolute, in the documents.
-        let work = idle.work_folder.clone().unwrap();
+        let work = suggested_work_folder(&env).unwrap();
         assert!(Path::new(&work).is_absolute(), "{work}");
         assert!(work.ends_with("3DCraft"), "{work}");
-        assert!(idle.window_command().contains("--automation-write-root"));
         assert_eq!(suggested_work_folder(&|_| None), None);
-        assert_eq!(
-            suggested_token_file(&|n| (n == "HOME").then(|| "relative".to_string())),
-            None
-        );
     }
 
     #[test]
@@ -521,29 +456,27 @@ mod tests {
             _ => None,
         };
         let mount = Path::new("/tmp/.mount_3DCraftAbc/usr/bin/craft3d");
-        let setup = setup_for(None, None, &env, Some(mount));
+        let setup = setup_for(&env, Some(mount));
         assert_eq!(setup.cli, path);
-        assert_eq!(setup.window, path);
         assert_eq!(setup.cli_prefix, ["cli"]);
-        assert!(!setup.window_command().contains(".mount_"));
-        // Not an AppImage: this program's own absolute path.
+        assert!(!setup.claude_command().contains(".mount_"));
+        // Not an AppImage, and no craft3d-cli beside it: by name.
         let plain = |name: &str| (name == "HOME").then(|| "/home/me".to_string());
-        let setup = setup_for(
-            None,
-            None,
-            &plain,
-            Some(Path::new("/opt/3dcraft/bin/craft3d")),
-        );
-        assert_eq!(setup.window, "/opt/3dcraft/bin/craft3d");
+        let setup = setup_for(&plain, Some(Path::new("/opt/3dcraft/bin/craft3d")));
+        assert_eq!(setup.cli, "craft3d-cli");
         assert!(setup.cli_prefix.is_empty());
+        // craft3d-cli beside the program: by its absolute path.
+        let cli = dir.join(if cfg!(windows) {
+            "craft3d-cli.exe"
+        } else {
+            "craft3d-cli"
+        });
+        std::fs::write(&cli, b"").unwrap();
+        let setup = setup_for(&plain, Some(&dir.join("craft3d")));
+        assert_eq!(setup.cli, cli.to_str().unwrap());
         // An APPIMAGE that is no file is not believed.
         let bogus = |name: &str| (name == "APPIMAGE").then(|| "/no/such.AppImage".to_string());
-        let setup = setup_for(
-            None,
-            None,
-            &bogus,
-            Some(Path::new("/opt/3dcraft/bin/craft3d")),
-        );
+        let setup = setup_for(&bogus, Some(Path::new("/opt/3dcraft/bin/craft3d")));
         assert!(setup.cli_prefix.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }

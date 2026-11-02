@@ -311,6 +311,36 @@ pub struct Closing {
     pub jig: bool,
 }
 
+/// Whether AI agents may drive this window, and who does: what the start
+/// screen's "Connect an AI agent" block, the Help menu's switch and the
+/// status bar show, and `ui.get` reports under `agents`. The host fills it
+/// in; it is read-only over the control channel: a request cannot turn the
+/// channel it came over off (that is the person's switch), and nothing can
+/// turn it on over a channel that is off. In the browser `available` is
+/// false.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AgentsStatus {
+    /// The host can let agents in (the desktop app).
+    pub available: bool,
+    /// The switch: agents are allowed, and the window listens.
+    pub allowed: bool,
+    /// Turned on by `--control PORT` on the command line.
+    pub forced: bool,
+    /// The port it listens on, while it does.
+    pub port: Option<u16>,
+    /// The clients connected now (an MCP bridge counts while it is heard
+    /// from, or until it says goodbye).
+    pub connected: usize,
+    /// Their names, as they gave them (`MCP bridge (process 4242)`).
+    pub clients: Vec<String>,
+    /// The folder agents may read and write files in, when the window
+    /// gave them one.
+    pub work_folder: Option<String>,
+    /// Why the switch could not be turned on, or what went wrong around it.
+    pub error: Option<String>,
+}
+
 /// What the viewport draws besides the bodies' faces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]

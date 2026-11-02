@@ -626,7 +626,7 @@ fn call_tool(
             Some(extension) => tool_control_call(session, arguments, extension),
             None => {
                 return Err(RpcError::invalid_params(
-                    "the tool `control_call` reaches a 3DCraft window, and this server has none: start the window with `craft3d --control PORT --control-token-file FILE` and this server with `craft3d-cli mcp --bridge PORT --control-token-file FILE`",
+                    "the tool `control_call` reaches a 3DCraft window, and this server has none: switch on Allow AI agents in 3DCraft (on the start screen or in the Help menu) and start this server as `craft3d-cli mcp --bridge`",
                 ));
             }
         },

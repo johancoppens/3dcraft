@@ -11,8 +11,9 @@ use std::time::Duration;
 pub const HELP: &str = "\
 craft3d: the 3DCraft desktop viewer
 
-Usage: craft3d [FILE] [--control PORT --control-token-file FILE]
+Usage: craft3d [FILE] [--control PORT] [--control-token-file FILE]
                [--automation-read-root DIR] [--automation-write-root DIR]
+               [--state-dir DIR]
                [--renderer auto|cpu]
                [--recovery-dir DIR|none] [--autosave-interval SECONDS]
                [--recent-file FILE|none] [--window-size WIDTHxHEIGHT]
@@ -25,16 +26,30 @@ does not model; the document changes through commands, sent over the
 control channel. It does open and save files: the File menu, with the
 system's file dialog, wherever you may read and write.
 
+AI agents: the switch Allow AI agents (on the start screen, in the Help
+menu) lets agents drive the window over MCP with `craft3d-cli mcp
+--bridge`, which finds the window by itself. Off by default; the choice is
+remembered. The window then listens on 127.0.0.1, port 7878 or the next
+free one, behind the control token in control.token in the state folder.
+
 Options:
   --control PORT              Listen on 127.0.0.1:PORT for JSON-lines requests
-                              (docs/control-protocol.md). 0 picks a free port;
-                              the address is printed on standard error.
+                              (docs/control-protocol.md) from the start, as
+                              if Allow AI agents were on. 0 picks a free
+                              port; the address is printed on standard error.
   --control-token-file FILE   The file with the control token. Created with a
                               fresh token (mode 0600) when it does not exist.
-                              Required with --control.
+                              Default: control.token in the state folder.
   --automation-read-root DIR  Requests may read files beneath DIR only
   --automation-write-root DIR Requests may write files beneath DIR only
-                              Without a root, that direction is denied.
+                              Without a root, that direction is denied; with
+                              neither, an agent the switch let in gets
+                              Documents/3DCraft for both.
+  --state-dir DIR             3DCraft's own folder: the control token, the
+                              entries the bridge finds windows by, the
+                              remembered switch, and the default recovery
+                              directory and recent files. Default: 3dcraft
+                              in your state directory (see --recovery-dir).
   --renderer auto|cpu         What shades the model in the viewport: auto
                               (the GPU when there is one, else the CPU; the
                               default) or cpu (the reference renderer, to
@@ -58,7 +73,7 @@ Options:
                               (e.g. 1920x1080; at least 480x320).
                               Default: 1280x800
 
-Environment: CRAFT3D_CONTROL_PORT, CRAFT3D_CONTROL_TOKEN_FILE,
+Environment: CRAFT3D_CONTROL_PORT, CRAFT3D_CONTROL_TOKEN_FILE, CRAFT3D_STATE_DIR,
 CRAFT3D_AUTOMATION_READ_ROOT, CRAFT3D_AUTOMATION_WRITE_ROOT,
 CRAFT3D_RENDERER, CRAFT3D_RECOVERY_DIR, CRAFT3D_AUTOSAVE_INTERVAL,
 CRAFT3D_RECENT_FILE and CRAFT3D_WINDOW_SIZE stand in for the flags of the
@@ -94,6 +109,10 @@ pub struct Options {
     pub recent_file: Option<PathBuf>,
     /// The window's size when it opens, in points; `None` for the default.
     pub window_size: Option<[u32; 2]>,
+    /// 3DCraft's own folder in the state directory: the default token
+    /// file, the discovery entries and the remembered switch for agents.
+    /// Parsing fills in the platform's default, as for `recovery_dir`.
+    pub state_dir: Option<PathBuf>,
 }
 
 /// What the command line asked for.
@@ -147,6 +166,7 @@ pub fn parse(
     let mut seen: Vec<String> = Vec::new();
     let mut recovery_dir: Option<String> = None;
     let mut recent_file: Option<String> = None;
+    let mut state_dir: Option<String> = None;
     while let Some(arg) = args.next() {
         if flags_ended || !arg.starts_with('-') || arg == "-" {
             if options.file.is_some() {
@@ -184,6 +204,7 @@ pub fn parse(
             | "--recovery-dir"
             | "--autosave-interval"
             | "--recent-file"
+            | "--state-dir"
             | "--window-size" => {
                 if seen.contains(&name) {
                     return Err(format!("`{name}` was given twice"));
@@ -197,6 +218,12 @@ pub fn parse(
                     "--automation-read-root" => options.read_root = Some(value),
                     "--recovery-dir" => recovery_dir = Some(value),
                     "--recent-file" => recent_file = Some(value),
+                    "--state-dir" => {
+                        if value.is_empty() {
+                            return Err("`--state-dir` needs a directory".to_string());
+                        }
+                        state_dir = Some(value);
+                    }
                     "--window-size" => {
                         options.window_size = Some(window_size(&value, "--window-size")?);
                     }
@@ -251,14 +278,27 @@ pub fn parse(
     {
         options.window_size = Some(window_size(&value, "CRAFT3D_WINDOW_SIZE")?);
     }
-    // The flag, else the variable, else the platform's place; `none`
-    // turns autosave off, and so does a platform that names no place.
+    // The state folder: the flag, else the variable, else the platform's
+    // place (the folder of the default recovery directory).
+    let state_given = state_dir
+        .or_else(|| from_env("CRAFT3D_STATE_DIR"))
+        .map(PathBuf::from);
+    options.state_dir = state_given.clone().or_else(|| {
+        craft3d_engine::default_recovery_directory(env)
+            .and_then(|recovery| recovery.parent().map(std::path::Path::to_path_buf))
+    });
+    // The flag, else the variable, else the platform's place (in a state
+    // folder given, there); `none` turns autosave off, and so does a
+    // platform that names no place.
     let recovery_given = recovery_dir.or_else(|| from_env("CRAFT3D_RECOVERY_DIR"));
     let own_recovery = recovery_given.is_none();
     options.recovery_dir = match recovery_given {
         Some(none) if none == "none" => None,
         Some(dir) => Some(PathBuf::from(dir)),
-        None => craft3d_engine::default_recovery_directory(env),
+        None => match &state_given {
+            Some(state) => Some(state.join("recovery")),
+            None => craft3d_engine::default_recovery_directory(env),
+        },
     };
     // Beside the default recovery directory only: a window given a
     // recovery directory of its own (a test's, an agent's, or none) keeps
@@ -273,9 +313,9 @@ pub fn parse(
             .and_then(crate::places::recent_file_beside),
         None => None,
     };
-    if options.control.is_some() && options.token_file.is_none() {
+    if options.control.is_some() && options.token_file.is_none() && options.state_dir.is_none() {
         return Err(
-            "`--control` needs `--control-token-file FILE`: the token is never given on the command line"
+            "`--control` needs `--control-token-file FILE` here: there is no state folder for the default one (give `--state-dir DIR`), and the token is never given on the command line"
                 .to_string(),
         );
     }
@@ -358,6 +398,7 @@ mod tests {
                 autosave_interval: None,
                 recent_file: None,
                 window_size: None,
+                state_dir: None,
             }
         );
         // Port 0 asks for a free one.
@@ -545,6 +586,53 @@ mod tests {
         assert_eq!(run(&["--version"]), Ok(Parsed::Version));
         assert_eq!(run(&["-V"]), Ok(Parsed::Version));
         assert!(HELP.contains("--control-token-file") && HELP.contains("3DCraft"));
+    }
+
+    #[test]
+    fn the_state_folder_holds_the_defaults_and_control_needs_no_token_file_then() {
+        let home = |name: &str| match name {
+            "HOME" => Some("/home/ann".to_string()),
+            "LOCALAPPDATA" => Some("C:\\Users\\ann\\AppData\\Local".to_string()),
+            _ => None,
+        };
+        let with = |env: &dyn Fn(&str) -> Option<String>, list: &[&str]| match parse(
+            list.iter().map(|s| (*s).to_string()),
+            env,
+        ) {
+            Ok(Parsed::Run(options)) => options,
+            other => panic!("{other:?}"),
+        };
+        // The platform's: the folder of the default recovery directory.
+        let default = with(&home, &[]);
+        let state = default.state_dir.clone().unwrap();
+        assert_eq!(
+            Some(state.as_path()),
+            default.recovery_dir.as_ref().unwrap().parent()
+        );
+        // `--control` alone: the default token file in that folder.
+        let control = with(&home, &["--control", "0"]);
+        assert_eq!(control.control, Some(0));
+        assert_eq!(control.token_file, None, "resolved when the window listens");
+        // A state folder given: the recovery directory and the recent
+        // files go there too, unless given.
+        let given = with(&home, &["--state-dir", "/t/state"]);
+        assert_eq!(given.state_dir, Some(PathBuf::from("/t/state")));
+        let at = PathBuf::from("/t/state");
+        assert_eq!(given.recovery_dir, Some(at.join("recovery")));
+        assert_eq!(given.recent_file, Some(at.join("recent-files.json")));
+        let none = with(
+            &home,
+            &["--state-dir", "/t/state", "--recovery-dir", "none"],
+        );
+        assert_eq!((none.recovery_dir, none.recent_file), (None, None));
+        let env = |name: &str| (name == "CRAFT3D_STATE_DIR").then(|| "/v/state".to_string());
+        assert_eq!(with(&env, &[]).state_dir, Some(PathBuf::from("/v/state")));
+        assert!(
+            run(&["--state-dir="])
+                .unwrap_err()
+                .contains("needs a directory")
+        );
+        assert!(HELP.contains("--state-dir") && HELP.contains("CRAFT3D_STATE_DIR"));
     }
 
     #[test]

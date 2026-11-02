@@ -364,6 +364,47 @@ fn nothing_is_dispatched_before_auth_succeeds() {
     assert!(!host.shell.quit_requested());
 }
 
+/// A web page in a browser can post to the port (a "simple" request needs
+/// no preflight). Its first line is the HTTP request line, and the
+/// connection is closed on it, unanswered: the body, here the right token
+/// and a command, is never read, even when it is in the same packet.
+#[test]
+fn an_http_request_is_closed_before_its_body_is_read() {
+    let rig = Rig::start(Workspace::none());
+    let auth = json!({"id": 1, "method": "auth", "params": {"token": TOKEN}}).to_string();
+    let command = json!({"id": 2, "method": "engine.execute",
+        "params": {"command": "file.new"}})
+    .to_string();
+    let body = format!("{auth}\n{command}\n");
+    for head in [
+        "POST / HTTP/1.1",
+        "GET /?x HTTP/1.1",
+        "post /mcp HTTP/1.0",
+        "OPTIONS * HTTP/1.1",
+        "PUT /x HTTP/1.1",
+    ] {
+        let request = format!(
+            "{head}\r\nHost: 127.0.0.1\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut client = rig.connect();
+        client.send(request.as_bytes());
+        assert_eq!(client.read(), None, "{head}: closed without a reply");
+    }
+    // The body alone, first, is a client like any other: the token works.
+    let mut client = rig.connect();
+    client.send(body.as_bytes());
+    assert_eq!(client.read().unwrap()["ok"], true);
+    assert_eq!(client.read().unwrap()["ok"], true);
+    // Of the HTTP requests nothing reached the session.
+    assert_eq!(rig.dispatched.load(Ordering::SeqCst), 1);
+    let host = rig.finish();
+    assert!(
+        host.session.has_document(),
+        "only the plain client's file.new ran"
+    );
+}
+
 #[test]
 fn a_script_builds_a_part_and_measures_the_closed_form_volume() {
     let rig = Rig::start(Workspace::none());
@@ -431,6 +472,7 @@ fn a_script_builds_a_part_and_measures_the_closed_form_volume() {
             "batch",
             "methods",
             "auth",
+            "bye",
             "mcp.message",
             "ui.get",
             "ui.set",
@@ -1136,8 +1178,9 @@ fn a_file_named_by_a_relative_path_is_saved_back_to_itself() {
 fn the_control_option_starts_a_listener_with_a_fresh_token_file() {
     let dir = workdir("option");
     let wake: Wake = Arc::new(|| {});
-    let (server, _incoming) = app::control(&Options::default(), Arc::clone(&wake)).unwrap();
-    assert!(server.is_none(), "no --control, no listener");
+    let none = |_: &str| None;
+    let (agents, _incoming) = app::control(&Options::default(), Arc::clone(&wake), &none).unwrap();
+    assert!(agents.address().is_none(), "no --control, no listener");
 
     let token_file = dir.join("control.token");
     let options = Options {
@@ -1145,12 +1188,12 @@ fn the_control_option_starts_a_listener_with_a_fresh_token_file() {
         token_file: Some(token_file.clone()),
         ..Options::default()
     };
-    let (server, incoming) = app::control(&options, Arc::clone(&wake)).unwrap();
-    let server = server.unwrap();
+    let (agents, incoming) = app::control(&options, Arc::clone(&wake), &none).unwrap();
+    let address = agents.address().unwrap();
     let token = std::fs::read_to_string(&token_file).unwrap();
     assert_eq!(token.trim().len(), 64);
     // A client that read the file gets in; the request reaches the channel.
-    let mut client = Client::connect(server.address());
+    let mut client = Client::connect(address);
     let reply = client.call("auth", json!({"token": token.trim()}));
     assert_eq!(reply["ok"], true, "{reply}");
     client.send(b"{\"id\": 5, \"method\": \"ui.get\"}\n");
@@ -1164,15 +1207,17 @@ fn the_control_option_starts_a_listener_with_a_fresh_token_file() {
 
     // The port is taken now: starting a second app on it is an error.
     let second = Options {
-        control: Some(server.address().port()),
+        control: Some(address.port()),
         token_file: Some(token_file.clone()),
         ..Options::default()
     };
-    let error = app::control(&second, Arc::clone(&wake)).err().unwrap();
+    let error = app::control(&second, Arc::clone(&wake), &none)
+        .err()
+        .unwrap();
     assert!(error.contains("cannot listen"), "{error}");
     // A token file that holds something else stops the start.
     std::fs::write(&token_file, "not a token").unwrap();
-    let error = app::control(&options, wake).err().unwrap();
+    let error = app::control(&options, wake, &none).err().unwrap();
     assert!(error.contains("does not hold a control token"), "{error}");
     let _ = std::fs::remove_dir_all(&dir);
 }

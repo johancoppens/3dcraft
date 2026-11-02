@@ -275,6 +275,8 @@ impl Shell {
                 ui.close();
             }
             #[cfg(not(target_arch = "wasm32"))]
+            self.agents_menu_item(ui);
+            #[cfg(not(target_arch = "wasm32"))]
             if let Some(folder) = self.help.data_folder.clone() {
                 let item = ui.button("Open data folder").on_hover_text(format!(
                     "Autosaves, crash recovery and the recent files: {}",
@@ -297,6 +299,7 @@ impl Shell {
     /// for the host to take what the menus or the start screen asked for.
     pub(super) fn help_windows(&mut self, ui: &egui::Ui) {
         if self.help.external.is_some()
+            || self.agents_pending()
             || self.recent.chosen.is_some()
             || self.start.chosen.is_some()
             || self.file_action.is_some()

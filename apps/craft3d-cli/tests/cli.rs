@@ -1390,12 +1390,58 @@ fn mcp_bridge_checks_its_flags_and_reports_a_window_that_is_not_there() {
 
     let wrong = path(&dir, "wrong.token");
     std::fs::write(&wrong, "not a token").unwrap();
+    let dir_text = dir.to_str().unwrap().to_string();
+    // Without a token file the window is found through the discovery
+    // entries of the state folder (2026-11-02): with none there, and no
+    // default token file, each request is told what to do.
+    let state = dir.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let state_text = state.to_str().unwrap().to_string();
+    let found = cli_in(
+        &dir,
+        &["mcp", "--bridge", "--state-dir", &state_text],
+        Some(&input),
+    )
+    .ok();
+    let replies = found.json_lines();
+    assert_eq!(replies.len(), 2, "{}", found.stdout);
+    for reply in &replies {
+        let message = reply["error"]["message"].as_str().unwrap();
+        assert!(message.contains("Allow AI agents"), "{message}");
+    }
+    let on_port = cli_in(
+        &dir,
+        &["mcp", "--bridge", &port, "--state-dir", &state_text],
+        Some(&input),
+    )
+    .ok();
+    for reply in &on_port.json_lines() {
+        let message = reply["error"]["message"].as_str().unwrap();
+        assert!(message.contains("control token file"), "{message}");
+    }
     for (args, code, word) in [
-        (vec!["mcp", "--bridge", &port], 2, "go together"),
         (
             vec!["mcp", "--control-token-file", &token],
             2,
-            "go together",
+            "go with `--bridge`",
+        ),
+        (
+            vec!["mcp", "--state-dir", &dir_text],
+            2,
+            "go with `--bridge`",
+        ),
+        (
+            vec![
+                "mcp",
+                "--bridge",
+                &port,
+                "--control-token-file",
+                &token,
+                "--state-dir",
+                &dir_text,
+            ],
+            2,
+            "one or the other",
         ),
         (
             vec![

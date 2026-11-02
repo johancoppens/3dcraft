@@ -2,8 +2,9 @@
 //! the control channel's requests answered on the UI thread whenever that
 //! loop is woken for them, whether or not a frame is drawn.
 
+use crate::agents::{Agents, AgentsConfig};
 use crate::args::Options;
-use crate::control::{ControlConfig, ControlServer, Wake};
+use crate::control::Wake;
 use crate::files::{self, Choice, Picker, SystemDialogs};
 use crate::host::{Host, Request, Route, answer_on_engine, report, route};
 use crate::recording::{
@@ -12,7 +13,6 @@ use crate::recording::{
 };
 use crate::refine::{Poll, Refiner};
 use crate::tabs;
-use crate::token;
 use crate::worker::{Finished, Outcome, Run, Task, Worker};
 use craft3d_automation::rpc;
 use craft3d_engine::{Access, RecoveryOptions, Session, Workspace};
@@ -158,22 +158,18 @@ pub fn recovery(options: &Options, wake: Wake) -> Result<Option<RecoveryOptions>
     Ok(Some(recovery))
 }
 
-/// The control listener the options ask for, if any, with the channel its
-/// requests arrive on.
+/// The switch for AI agents the options ask for, listening from the start
+/// when `--control` asks for it or the person left it on, with the channel
+/// its requests arrive on. `env` names the person's folders.
 pub fn control(
     options: &Options,
     wake: Wake,
-) -> Result<(Option<ControlServer>, Receiver<Request>), String> {
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<(Agents, Receiver<Request>), String> {
     let (requests, incoming) = mpsc::channel();
-    let Some(port) = options.control else {
-        return Ok((None, incoming));
-    };
-    let Some(token_file) = &options.token_file else {
-        return Err("`--control` needs `--control-token-file FILE`".to_string());
-    };
-    let token = token::load_or_create(token_file)?;
-    let server = ControlServer::start(ControlConfig::new(port, token), requests, wake)?;
-    Ok((Some(server), incoming))
+    let mut agents = Agents::new(AgentsConfig::from_options(options, env), requests, wake);
+    agents.start()?;
+    Ok((agents, incoming))
 }
 
 /// What the window works on, and what reaches it from outside a frame:
@@ -226,6 +222,9 @@ pub struct Desk {
     /// The window's frames painted offscreen: recordings, and pictures of
     /// a window that is not on screen (`recording.rs`).
     rec: Rec,
+    /// The switch Allow AI agents and the listener behind it (`agents.rs`);
+    /// `None` for a desk without one (tests).
+    agents: Option<Agents>,
 }
 
 /// A request for a picture of the window: it is answered once egui hands
@@ -319,7 +318,56 @@ impl Desk {
             wake: None,
             deadlines: None,
             rec: Rec::default(),
+            agents: None,
         }
+    }
+
+    /// Lets the switch Allow AI agents work, with `agents` behind it.
+    #[must_use]
+    pub fn with_agents(mut self, agents: Agents) -> Self {
+        self.agents = Some(agents);
+        self
+    }
+
+    /// The switch and its listener.
+    pub fn agents(&self) -> Option<&Agents> {
+        self.agents.as_ref()
+    }
+
+    /// The window got the focus (the bridge prefers the window focused
+    /// last).
+    pub fn agents_focused(&mut self) {
+        if let Some(agents) = &mut self.agents {
+            agents.focused();
+        }
+    }
+
+    /// Does what the switch asked for, gives the session the roots it
+    /// changed once the session is on this thread, and tells the shell
+    /// how things stand. True when something changed.
+    fn pump_agents(&mut self) -> bool {
+        let Some(agents) = &mut self.agents else {
+            return false;
+        };
+        let mut changed = false;
+        if let Some(on) = self.host.shell.take_agents_switch() {
+            agents.allow(on);
+            changed = true;
+        }
+        if self.host.shell.take_agents_disconnect() {
+            agents.disconnect_all();
+            changed = true;
+        }
+        if self.waiting.is_none()
+            && let Some(workspace) = agents.take_workspace()
+        {
+            self.host.session.set_workspace(workspace);
+            changed = true;
+        }
+        if self.host.shell.set_agents_status(agents.status()) {
+            changed = true;
+        }
+        changed
     }
 
     /// Paints the window's frames offscreen from now on, on the device and
@@ -402,8 +450,9 @@ impl Desk {
     /// Needs no frame and no window.
     pub fn turn(&mut self) -> Turn {
         self.sync_exact_pictures();
+        let agents = self.pump_agents();
         if self.worker.is_none() {
-            let mut answered = self.settle_capture();
+            let mut answered = self.settle_capture() || agents;
             while let Ok(request) = self.requests.try_recv() {
                 self.queue.push_back(request);
             }
@@ -433,7 +482,7 @@ impl Desk {
                 quit: self.host.shell.quit_requested(),
             };
         }
-        let mut changed = self.collect();
+        let mut changed = self.collect() || agents;
         if self.settle_capture() {
             changed = true;
         }
@@ -1904,8 +1953,8 @@ struct Viewer {
     mirror: Option<egui::TextureHandle>,
     /// The title the window has now.
     title: String,
-    /// Kept so the listener lives as long as the window.
-    _server: Option<ControlServer>,
+    /// Whether the window had the focus in the last frame.
+    focused: bool,
 }
 
 impl eframe::App for Viewer {
@@ -1921,6 +1970,11 @@ impl eframe::App for Viewer {
             // Show what changed, and look for more.
             ctx.request_repaint();
         }
+        let focused = ctx.input(|i| i.focused);
+        if focused && !self.focused {
+            desk.agents_focused();
+        }
+        self.focused = focused;
         // The window's close button (or the window manager): the window
         // stays and asks first when a document has unsaved changes.
         if ctx.input(|i| i.viewport().close_requested()) && !desk.window_close() {
@@ -2127,13 +2181,14 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
                 .map_or(0, |ctx| ctx.cumulative_pass_nr_for(egui::ViewportId::ROOT))
         },
     );
-    // The listener starts before the window, so a port that is taken is an
-    // error on the command line, not a window without a control channel.
-    let (server, requests) = control(options, Arc::clone(&wake))?;
-    if let (Some(server), Some(token_file)) = (&server, &options.token_file) {
+    let env = |name: &str| std::env::var(name).ok();
+    // The listener `--control` asks for starts before the window, so a port
+    // that is taken is an error on the command line, not a window without
+    // a control channel.
+    let (agents, requests) = control(options, Arc::clone(&wake), &env)?;
+    if let (Some(address), Some(token_file)) = (agents.address(), agents.token_file()) {
         announce(&format!(
-            "control channel on {} (token in {})",
-            server.address(),
+            "control channel on {address} (token in {})",
             token_file.display()
         ));
     }
@@ -2161,16 +2216,13 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
         .map(crate::places::read_recent)
         .unwrap_or_default();
     host.recent_baseline = recent.clone();
-    let env = |name: &str| std::env::var(name).ok();
     let data_folder = crate::places::data_folder(options, &env);
-    let agent = crate::places::agent_setup(
-        server.as_ref().map(|server| server.address().port()),
-        options.token_file.as_deref(),
-        &env,
-    );
+    let agent = crate::places::agent_setup(&env);
     let title = window_title(host.session.document_status().as_ref());
     let picker = Picker::new(Arc::new(SystemDialogs), Arc::clone(&wake));
-    let mut desk = Desk::new(host, requests, picker).with_engine_thread(Arc::clone(&wake));
+    let mut desk = Desk::new(host, requests, picker)
+        .with_engine_thread(Arc::clone(&wake))
+        .with_agents(agents);
     if let Some([w, h]) = options.window_size {
         desk.set_window_points([w as f32, h as f32]);
     }
@@ -2210,7 +2262,7 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
                 mirror: None,
                 desk: for_viewer,
                 title,
-                _server: server,
+                focused: false,
             };
             // Requests that arrived before the window existed are waiting
             // in the channel; they are answered from here on.

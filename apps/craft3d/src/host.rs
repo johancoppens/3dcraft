@@ -55,9 +55,14 @@ fn methods() -> &'static [Method] {
     ALL.get_or_init(|| {
         let mut all = vec![Method {
             name: "auth",
-            params: r#"{"token": string}"#,
-            summary: "Authenticates the connection; must be its first request.",
+            params: r#"{"token": string, "client"?: string}"#,
+            summary: "Authenticates the connection; must be its first request. An optional `client` (a name of up to 80 characters) counts the client as a connected agent until it says `bye` or has been quiet for five minutes.",
         }];
+        all.push(Method {
+            name: "bye",
+            params: "{}",
+            summary: "Says this client is done: the window stops counting it as a connected agent (what `craft3d-cli mcp --bridge` sends when its input ends).",
+        });
         all.push(Method {
             name: "mcp.message",
             params: r#"{"line": string}"#,

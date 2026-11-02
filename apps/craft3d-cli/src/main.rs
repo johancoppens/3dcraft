@@ -393,6 +393,7 @@ const HELP_MCP: &str = "\
 Usage: craft3d-cli mcp [--automation-read-root DIR]
                        [--automation-write-root DIR]
                        [--recovery-dir DIR|none] [--autosave-interval SECONDS]
+       craft3d-cli mcp --bridge [PORT] [--state-dir DIR]
        craft3d-cli mcp --bridge PORT --control-token-file FILE
 
 Serves the Model Context Protocol on stdin and stdout (JSON-RPC 2.0, one
@@ -404,10 +405,17 @@ the write root. Each is optional and independent: without one, that
 direction is denied.
 
 With --bridge there is no session here: every message is passed to a
-running 3DCraft window (started with `craft3d --control PORT
---control-token-file FILE`) and answered on the document that window shows,
-so an agent models where you can watch. The files a command may touch are
+running 3DCraft window and answered on the document that window shows, so
+an agent models where you can watch. The files a command may touch are
 then the ones that window was given.
+
+`--bridge` alone finds the window: one that allows AI agents (the switch
+on its start screen or in its Help menu) has an entry in 3DCraft's state
+folder, with its port and token file. With one such window it is that one;
+with several, the one focused last (an error names them when that does
+not decide). The window is chosen at the first message and kept while it
+answers. A port narrows the choice to the window on it. `--control-token-file`
+skips discovery: the window at that port with that token.
 
 Options:
   --automation-read-root DIR    An existing directory commands may read from
@@ -418,8 +426,11 @@ Options:
                                 recovery.discard). Default: none
   --autosave-interval SECONDS   How long after a change a document is
                                 autosaved. Default: 30
-  --bridge PORT                 Port (or 127.0.0.1:PORT) of a running window
-  --control-token-file FILE     The token file that window was started with";
+  --bridge [PORT]               Pass every message to a running window: the
+                                one found, or the one on PORT (127.0.0.1:PORT)
+  --control-token-file FILE     The token file that window was started with
+  --state-dir DIR               Where to look for windows. Default: 3dcraft/
+                                in your state directory (CRAFT3D_STATE_DIR)";
 
 const SUBCOMMANDS: &[(&str, &str)] = &[
     ("commands", HELP_COMMANDS),
