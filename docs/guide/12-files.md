@@ -143,6 +143,59 @@ The same as commands:
 a sketch by half the laser's kerf before you export it. DXF files are AutoCAD 2000 ASCII with their unit;
 SVG files give their size in mm, cm or in, so they print and import at true size.
 
+## Cut lists: the plates of a design
+
+A design built from panels (a shelf, a box, a cabinet) is cut from sheets. `cut.list` finds every body that
+is a **plate**, a flat part of one thickness whose sides are square to its faces (holes straight through
+are fine), and every **sheet-metal part**, by its flat pattern. It groups them by thickness and material
+(`body.material`), gives each part its length × width (the smallest rectangle around it), its area and the
+length of its cut, and counts the parts that are the same: the same outline and holes, however the body
+lies in the model, also turned over. A body that is not a plate is listed under `notPlates` with the reason
+and the face: a pocket's floor, a chamfer, a round on an edge.
+
+`cut.export` writes the outlines to DXF or SVG at true size, each part in its own frame on a layer named
+after it: side by side on one sheet (`width` and `gap` as for a sheet of faces; it lays out in rows, it does
+not nest), or one file per part (`"layout": "each"`). One of each part is drawn and the result says how many
+to cut; `"copies": true` draws every body. `kerf` moves the cut off the part by that distance (half the width
+the beam cuts away): the outline out, the holes in, the outside corners rounded as a round beam goes round
+them. A kerf the beam cannot follow (a slot narrower than the beam) is refused with the largest that fits.
+
+### A cut list: a small shelf
+
+Two sides, a top and a bottom of 18 mm birch plywood, and a 6 mm hardboard back with a cable hole:
+
+```json
+[
+ ["feature.block", {"name": "Left side", "size": [18, 200, 300]}],
+ ["feature.block", {"name": "Right side", "size": [18, 200, 300], "position": [582, 0, 0]}],
+ ["feature.block", {"name": "Bottom", "size": [564, 200, 18], "position": [18, 0, 0]}],
+ ["feature.block", {"name": "Top", "size": [564, 200, 18], "position": [18, 0, 282]}],
+ ["feature.block", {"name": "Back", "size": [600, 6, 300], "position": [0, 200, 0]}],
+ ["sketch.create", {"plane": "zx", "offset": 200, "name": "Cable hole"}],
+ ["sketch.circle", {"sketch": "Cable hole", "center": [150, 150], "radius": 20}],
+ ["feature.extrude", {"sketch": "Cable hole", "distance": 20, "symmetric": true, "cut": "Back", "name": "Back with hole"}],
+ ["body.material", {"body": "Left side", "name": "birch plywood", "density": 680}],
+ ["body.material", {"body": "Right side", "name": "birch plywood", "density": 680}],
+ ["body.material", {"body": "Bottom", "name": "birch plywood", "density": 680}],
+ ["body.material", {"body": "Top", "name": "birch plywood", "density": 680}],
+ ["body.material", {"body": "Back", "name": "hardboard", "density": 900}],
+ ["cut.list", {"format": "csv"}],
+ ["cut.export", {"path": "shelf.svg", "copies": true, "width": "1250 mm", "gap": "10 mm"}]
+]
+```
+
+The cut list (`csv`, ready for a spreadsheet; without `format` the same as JSON, with each part's frame in
+the model):
+
+```text
+material,thickness (mm),name,count,length (mm),width (mm),area (mm^2),cut length (mm),holes,kind,bodies,reason
+hardboard,6,Back with hole,1,600,300,178743.3629385641,1925.6637061435918,1,plate,Back with hole,
+birch plywood,18,Left side,2,300,200,60000,1000,0,plate,Left side; Right side,
+birch plywood,18,Bottom,2,564,200,112800,1528,0,plate,Bottom; Top,
+```
+
+![The shelf's five parts on one sheet, ready to cut](images/cut-shelf.png)
+
 ## Drawings of the model as seen
 
 **The model** exported as `.dxf` or `.svg` is a **drawing of the whole model** from a view: the

@@ -843,3 +843,40 @@ fn bad_parameters_and_impossible_kerfs_are_refused() {
         assert!(e.contains(words), "{id} {params}: `{e}` lacks `{words}`");
     }
 }
+
+/// The shelf of the guide (docs/guide/12-files.md › *A cut list: a small
+/// shelf*): its steps run as written, and its cut list is the one the
+/// guide prints. The laid-out sheet is left in `target/evidence/cut/`.
+#[test]
+fn the_shelf_of_the_guide_gives_the_cut_list_it_prints() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let guide = std::fs::read_to_string(root.join("docs/guide/12-files.md")).unwrap();
+    let at = guide.find("### A cut list: a small shelf").unwrap();
+    let rest = &guide[at..];
+    let script = &rest[rest.find("```json\n").unwrap() + 8..];
+    let script = &script[..script.find("```").unwrap()];
+    let printed = &rest[rest.find("```text\n").unwrap() + 8..];
+    let printed = &printed[..printed.find("```").unwrap()];
+    let dir = workdir("cut", "shelf");
+    let mut s = session_in(&dir);
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    let steps: Value = serde_json::from_str(script).unwrap();
+    let mut last = Value::Null;
+    for step in steps.as_array().unwrap() {
+        let id = step[0].as_str().unwrap();
+        last = run(&mut s, id, step[1].clone());
+        if id == "cut.list" {
+            assert_eq!(last["csv"].as_str().unwrap(), printed, "{last}");
+        }
+    }
+    assert_eq!(last["parts"].as_array().unwrap().len(), 5, "{last}");
+    assert_eq!(last["rows"], 2, "{last}");
+    let list = run(&mut s, "cut.list", json!({}));
+    let (_, back) = part(&list, "Back with hole");
+    assert_eq!(back["material"], "hardboard");
+    close(&back["area"], 180_000.0 - 400.0 * PI, 1.0, "back area");
+    let svg = std::fs::read_to_string(dir.join("shelf.svg")).unwrap();
+    let evidence = root.join("target/evidence/cut");
+    std::fs::create_dir_all(&evidence).unwrap();
+    std::fs::write(evidence.join("shelf.svg"), &svg).unwrap();
+}
