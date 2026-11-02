@@ -1,14 +1,16 @@
 //! The player's bake hint (docs/design/motion.md › *The player*): while a
 //! motion plays, the window weighs what its moments cost, and when they
 //! are heavy (the median over the recent ones at or above
-//! [`HEAVY_ON_MS`], or most of them shown provisionally while their
-//! configurations are built in the background) the player offers "This
-//! motion is heavy — bake first?" with a button that runs `motion.bake`
-//! and a progress bar while it bakes. Hysteresis keeps the hint from
-//! flickering: once heavy, a motion is light again only when the median
-//! has fallen below [`HEAVY_OFF_MS`] and few moments are provisional. The
-//! hint goes away when the motion is baked or dismissed (remembered per
-//! document for the session).
+//! [`HEAVY_ON_MS`]) the player offers "This motion is heavy — bake
+//! first?" with a button that runs `motion.bake` and a progress bar while
+//! it bakes. Hysteresis keeps the hint from flickering: once heavy, a
+//! motion is light again only when the median has fallen below
+//! [`HEAVY_OFF_MS`]. The hint goes away when the motion is baked or
+//! dismissed (remembered per document for the session). A motion that is
+//! not heavy but whose moments are shown provisionally (an assembly whose
+//! configurations follow `t`, built in the background as it plays) is
+//! baked by itself, once, as the player did before the hint, with the
+//! same progress bar.
 //!
 //! The clock is egui's input time (the browser has it too): a moment's
 //! cost is the time from the frame that asked for it (and ran its
@@ -37,11 +39,9 @@ pub(crate) const HEAVY_ON_MS: f64 = 100.0;
 pub(crate) const HEAVY_OFF_MS: f64 = 70.0;
 
 /// The share of the moments weighed shown provisionally (configurations
-/// still built in the background) at or above which a motion is heavy.
-const PROVISIONAL_ON: f64 = 0.5;
-
-/// ... and below which a heavy one may be light again.
-const PROVISIONAL_OFF: f64 = 0.25;
+/// still built in the background) at or above which a motion that is not
+/// heavy is baked by itself.
+const PROVISIONAL_BAKE: f64 = 0.5;
 
 /// A moment that took longer than this, in milliseconds, is counted as
 /// this: a window that was not drawn for a while (hidden, behind a
@@ -112,14 +112,19 @@ impl Heavy {
         let Some(median) = self.median() else {
             return;
         };
-        let provisional = self.provisional();
         if self.heavy {
-            if median < HEAVY_OFF_MS && provisional < PROVISIONAL_OFF {
+            if median < HEAVY_OFF_MS {
                 self.heavy = false;
             }
-        } else if median >= HEAVY_ON_MS || provisional >= PROVISIONAL_ON {
+        } else if median >= HEAVY_ON_MS {
             self.heavy = true;
         }
+    }
+
+    /// Whether a motion that is not heavy is to be baked by itself: enough
+    /// moments weighed, and at least half of them shown provisionally.
+    pub(crate) fn wants_bake(&self) -> bool {
+        self.median().is_some() && !self.heavy && self.provisional() >= PROVISIONAL_BAKE
     }
 
     /// Whether the motion is heavy, as last judged.
@@ -149,6 +154,11 @@ pub(crate) struct Baking {
     left: usize,
     /// The most left seen since it started: the progress bar's whole.
     whole: usize,
+    /// Pieces in a row that left as much as before ([`STALLED_PIECES`]).
+    stalled: u32,
+    /// Started by itself (a light motion shown provisionally), not by the
+    /// Bake button.
+    auto: bool,
 }
 
 impl Baking {
@@ -177,9 +187,29 @@ impl Baking {
             self.see(count("building"));
             false
         } else {
+            let before = self.pieces.then_some(self.left);
             self.pieces = true;
-            self.see(count("remaining"));
-            answer.get("done").and_then(Value::as_bool) == Some(false)
+            let left = count("remaining");
+            // A piece that built a configuration (an assembly) or a
+            // moment (a part) made progress even when the steps left did
+            // not go down (a step of `t` may need several).
+            let built = answer
+                .pointer("/configurations/built")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+                .saturating_add(answer.get("moments").and_then(Value::as_u64).unwrap_or(0));
+            self.stalled = match before {
+                Some(before) if left >= before && built == 0 => self.stalled.saturating_add(1),
+                _ => 0,
+            };
+            self.see(left);
+            let more = answer.get("done").and_then(Value::as_bool) == Some(false);
+            if more && self.stalled >= STALLED_PIECES {
+                // Nothing moves: what was made stays, and the hint ends.
+                self.left = 0;
+                return false;
+            }
+            more
         }
     }
 
@@ -196,6 +226,10 @@ impl Baking {
         self.started && !self.asked && self.left == 0
     }
 }
+
+/// Pieces in a row that leave as much to do as before, after which the
+/// hint stops asking for more (the bake cannot go on: its budget is full).
+const STALLED_PIECES: u32 = 3;
 
 /// What the player's hint shows.
 #[derive(Clone, Debug, PartialEq)]
@@ -220,9 +254,14 @@ pub(crate) struct BakeHint {
     pub(crate) baking: Option<Baking>,
     /// The documents (by id) whose hint was dismissed in this session.
     dismissed: BTreeSet<u64>,
+    /// The motion was baked by itself once (a light one shown
+    /// provisionally): not again until an edit or another document.
+    auto_baked: bool,
     /// The answers of `motion.bake` asked for by the hint, not taken in
     /// yet: `Err` with why it failed.
     pub(crate) answers: Vec<Result<Value, String>>,
+    /// Where the Bake button was drawn in this frame, in points.
+    bake_hit: Option<egui::Rect>,
 }
 
 impl BakeHint {
@@ -234,6 +273,7 @@ impl BakeHint {
         self.asked_at = None;
         self.baking = None;
         self.answers.clear();
+        self.auto_baked = false;
     }
 
     /// A moment was asked for in the frame at input time `now`.
@@ -266,18 +306,46 @@ impl Shell {
         if let Some(baking) = &hint.baking {
             return Hint::Baking(baking.progress());
         }
-        let dismissed = self
-            .viewing()
-            .is_some_and(|id| hint.dismissed.contains(&id));
-        let baked = self
-            .timeline
-            .motion
-            .as_ref()
-            .is_some_and(|m| m.baked.is_some() && m.building == 0);
-        if dismissed || baked || !hint.heavy.heavy() {
+        if self.bake_dismissed() || self.motion_baked() || !hint.heavy.heavy() {
             return Hint::None;
         }
         Hint::Offer
+    }
+
+    /// Whether the hint was dismissed for the active document.
+    fn bake_dismissed(&self) -> bool {
+        self.viewing()
+            .is_some_and(|id| self.player.hint.dismissed.contains(&id))
+    }
+
+    /// Whether the motion shown is baked: a bake's frames, and nothing
+    /// left for the builder.
+    fn motion_baked(&self) -> bool {
+        self.timeline
+            .motion
+            .as_ref()
+            .is_some_and(|m| m.baked.is_some() && m.building == 0)
+    }
+
+    /// While it plays: a motion that is not heavy but shown provisionally
+    /// (configurations built in the background as it plays) is baked by
+    /// itself, once, as the player did before the hint (2026-11-01); a
+    /// heavy one is offered instead, and a dismissed one is left alone.
+    pub(crate) fn auto_bake(&mut self) {
+        let hint = &self.player.hint;
+        if hint.auto_baked
+            || hint.baking.is_some()
+            || !hint.heavy.wants_bake()
+            || self.bake_dismissed()
+            || self.motion_baked()
+        {
+            return;
+        }
+        self.player.hint.auto_baked = true;
+        self.bake_from_hint();
+        if let Some(baking) = self.player.hint.baking.as_mut() {
+            baking.auto = true;
+        }
     }
 
     /// Bakes the motion of the active document, as the hint's button does:
@@ -313,6 +381,7 @@ impl Shell {
     /// its next piece, follows the builder, and ends it when done. True
     /// while it runs, so the window comes back for it.
     pub(crate) fn follow_bake(&mut self) -> bool {
+        self.player.hint.bake_hit = None;
         let answers = std::mem::take(&mut self.player.hint.answers);
         let mut next_piece = false;
         for answer in answers {
@@ -352,38 +421,33 @@ impl Shell {
             Hint::None => {}
             Hint::Offer => {
                 let ms = self.player.hint.heavy.median().unwrap_or(0.0);
-                let body = if self.player.hint.heavy.provisional() >= PROVISIONAL_ON {
-                    "Its parts are still being built while it plays, so it shows them late. \
-                     Baking makes the moments of a play ahead; then it plays smoothly."
-                        .to_string()
-                } else {
-                    format!(
-                        "Each moment takes about {:.0} ms to make. Baking makes the moments \
-                         of a play ahead; then it plays smoothly.",
-                        ms.round()
-                    )
-                };
+                let body = format!(
+                    "Each moment takes about {:.0} ms to make. Baking makes the moments \
+                     of a play ahead; then it plays smoothly.",
+                    ms.round()
+                );
                 let mut bake = false;
                 let mut dismiss = false;
+                let mut hit = None;
                 kit.banner(
                     ui,
                     BannerKind::Attention,
                     Some("This motion is heavy — bake first?"),
                     &body,
                     |kit, ui| {
-                        bake = kit
-                            .button(ui, Button::primary("Bake"))
-                            .on_hover_text(
-                                "Make the moments of a play ahead (motion.bake), in the \
-                                 background: it goes on playing meanwhile",
-                            )
-                            .clicked();
+                        let button = kit.button(ui, Button::primary("Bake")).on_hover_text(
+                            "Make the moments of a play ahead (motion.bake), in the \
+                             background: it goes on playing meanwhile",
+                        );
+                        hit = Some(button.rect);
+                        bake = button.clicked();
                         dismiss = kit
                             .button(ui, Button::quiet("Not now"))
                             .on_hover_text("Do not offer it again for this document")
                             .clicked();
                     },
                 );
+                self.player.hint.bake_hit = hit;
                 if bake {
                     self.bake_from_hint();
                     ui.ctx().request_repaint();
@@ -400,6 +464,12 @@ impl Shell {
         }
     }
 
+    /// Where the hint's Bake button was drawn in the last frame, in
+    /// points: for a host or a test that presses it.
+    pub fn bake_hint_button(&self) -> Option<egui::Rect> {
+        self.player.hint.bake_hit
+    }
+
     /// The hint as `ui.get` gives it under `timeline.heavy`.
     pub(crate) fn heavy_json(&self) -> Value {
         let hint = &self.player.hint;
@@ -410,8 +480,11 @@ impl Shell {
             "provisional": (hint.heavy.provisional() * 100.0).round() / 100.0,
             "heavy": hint.heavy.heavy(),
             "suggestBake": shown == Hint::Offer,
-            "baking": match shown {
-                Hint::Baking(progress) => json!({"progress": (progress * 1000.0).round() / 1000.0}),
+            "baking": match (shown, &hint.baking) {
+                (Hint::Baking(progress), Some(baking)) => json!({
+                    "progress": (progress * 1000.0).round() / 1000.0,
+                    "auto": baking.auto,
+                }),
                 _ => Value::Null,
             },
             "dismissed": self.viewing().is_some_and(|id| hint.dismissed.contains(&id)),
@@ -467,6 +540,10 @@ mod tests {
         }
 
         fn frame(&mut self, dt: f64) {
+            self.frame_with(dt, Vec::new());
+        }
+
+        fn frame_with(&mut self, dt: f64, events: Vec<egui::Event>) {
             self.time += dt;
             let input = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -474,6 +551,7 @@ mod tests {
                     egui::vec2(1000.0, 700.0),
                 )),
                 time: Some(self.time),
+                events,
                 ..Default::default()
             };
             let Self { shell, session, .. } = self;
@@ -537,12 +615,26 @@ mod tests {
         p.frames(30, 0.15);
         assert_eq!(p.shell.bake_hint(), Hint::Offer);
         assert!(p.session.motion().unwrap().baked.is_none());
-        // What the Bake button does.
-        p.shell.bake_from_hint();
+        // A click on the Bake button the hint shows.
+        let at = p
+            .shell
+            .bake_hint_button()
+            .expect("the Bake button drawn")
+            .center();
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        p.frame_with(0.03, vec![egui::Event::PointerMoved(at), button(true)]);
+        p.frame_with(0.03, vec![button(false)]);
+        // It runs motion.bake: the hint follows the bake it asked for.
         assert!(
-            p.shell.timeline.pending_ids().contains(&"motion.bake"),
-            "the button queued motion.bake"
+            p.shell.player.hint.baking.is_some(),
+            "the click ran no bake"
         );
+        assert_eq!(p.session.motion().unwrap().baked, Some(BAKE_FRAMES));
         p.frame(0.03);
         // A part bakes in pieces between frames: the progress grows.
         let first = match p.shell.bake_hint() {
@@ -673,18 +765,27 @@ mod tests {
     }
 
     #[test]
-    fn moments_shown_provisionally_are_heavy() {
+    fn quick_moments_shown_provisionally_are_baked_by_themselves_not_offered() {
         let mut h = Heavy::default();
-        for _ in 0..HEAVY_MOMENTS {
+        for _ in 0..HEAVY_MIN_MOMENTS - 1 {
             h.note(40.0, true);
         }
-        assert!(h.heavy());
+        assert!(!h.wants_bake(), "too few weighed yet");
+        h.note(40.0, true);
+        assert!(!h.heavy());
+        assert!(h.wants_bake());
         assert_eq!(h.provisional(), 1.0);
-        // Exact again and cheap: light.
+        // Exact again: nothing to bake.
         for _ in 0..HEAVY_MOMENTS {
             h.note(40.0, false);
         }
-        assert!(!h.heavy());
+        assert!(!h.wants_bake());
+        // Heavy and provisional: offered, not baked by itself.
+        for _ in 0..HEAVY_MOMENTS {
+            h.note(150.0, true);
+        }
+        assert!(h.heavy());
+        assert!(!h.wants_bake());
     }
 
     #[test]
@@ -719,5 +820,17 @@ mod tests {
         assert_eq!(p.progress(), 0.5);
         assert!(!p.answered(&json!({"frames": 120, "done": true, "remaining": 0})));
         assert!(p.done());
+        // A piece that built something made progress, though the steps
+        // left stayed.
+        let mut slow = Baking::default();
+        let building = json!({"frames": 120, "done": false, "remaining": 50,
+                              "configurations": {"built": 1}});
+        assert!((0..10).all(|_| slow.answered(&building)));
+        // Pieces that build nothing and leave as much: it stops asking.
+        let mut stuck = Baking::default();
+        let answer = json!({"frames": 120, "done": false, "remaining": 50});
+        let asked: Vec<bool> = (0..10).map(|_| stuck.answered(&answer)).collect();
+        assert_eq!(asked.iter().filter(|more| **more).count(), 3, "{asked:?}");
+        assert!(stuck.done());
     }
 }

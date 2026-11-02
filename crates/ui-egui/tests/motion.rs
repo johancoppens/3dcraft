@@ -503,3 +503,56 @@ fn pictures_and_recorded_frames_of_a_provisional_moment_are_the_exact_one() {
         assert!(r.motion().is_none_or(|m| m.exact));
     }
 }
+
+/// A motion whose moments are shown provisionally (a configuration of its
+/// own at every moment, built in the background as it plays) and quick to
+/// show is baked by itself once the player has weighed enough of them, with
+/// the hint's progress; a heavy one is offered instead
+/// (docs/design/motion.md › *The bake hint*). The clock is the window's:
+/// frames 30 ms apart, then 150 ms apart.
+#[test]
+fn a_quick_provisional_motion_bakes_itself_and_a_heavy_one_is_offered() {
+    // The background builder gets no thread: the moments stay provisional.
+    let frozen = freeze_pool();
+    for (dt, name) in [(0.03, "quick"), (0.15, "heavy")] {
+        let mut s = stretching(&format!("hint-{name}"));
+        let mut shell = Shell::new();
+        let mut window = Window {
+            ctx: egui::Context::default(),
+            time: 0.0,
+        };
+        window.frame(&mut shell, &mut s, 0.0);
+        call(
+            &mut shell,
+            &mut s,
+            "ui.set",
+            json!({"timeline": {"motion": true, "playing": true, "loop": true}}),
+        );
+        for _ in 0..30 {
+            window.frame(&mut shell, &mut s, dt);
+        }
+        let heavy = call(&mut shell, &mut s, "ui.get", json!({}))["timeline"]["heavy"].clone();
+        let ms = heavy["msPerMoment"].as_f64().unwrap();
+        assert!((ms - dt * 1000.0).abs() < 1.0, "{name}: {heavy}");
+        if craft3d_math::available_threads() < 2 {
+            // Without a background, every moment is exact: nothing to say.
+            continue;
+        }
+        assert!(
+            heavy["provisional"].as_f64().unwrap() >= 0.5,
+            "{name}: {heavy}"
+        );
+        if name == "quick" {
+            assert_eq!(heavy["heavy"], false, "{heavy}");
+            assert_eq!(heavy["suggestBake"], false, "{heavy}");
+            assert_eq!(heavy["baking"]["auto"], true, "baked by itself: {heavy}");
+            assert_eq!(s.motion().unwrap().baked, Some(120));
+        } else {
+            assert_eq!(heavy["heavy"], true, "{heavy}");
+            assert_eq!(heavy["suggestBake"], true, "{heavy}");
+            assert_eq!(heavy["baking"], Value::Null, "not baked by itself: {heavy}");
+            assert_eq!(s.motion().unwrap().baked, None);
+        }
+    }
+    drop(frozen);
+}

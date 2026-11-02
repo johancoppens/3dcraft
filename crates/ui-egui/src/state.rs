@@ -377,8 +377,9 @@ pub struct Playback {
     /// With `motion`: the bodies that overlap at the `t` shown are drawn
     /// red (`view.motion {collisions}`).
     pub collisions: bool,
-    /// How the viewport draws while the motion plays: `auto` lighter (no
-    /// frame accumulation, no depth of field), `full` as when it stands
+    /// How the viewport draws while the motion plays: `auto` lighter (one
+    /// frame, no depth of field, no ambient occlusion or screen-space
+    /// reflections), `full` as when it stands
     /// still. Pictures and recordings are full either way
     /// (docs/design/motion.md › *The player*).
     pub play_quality: PlayQuality,
@@ -388,8 +389,9 @@ pub struct Playback {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PlayQuality {
-    /// Lighter while it plays (the studio look without its accumulated
-    /// frames and its depth of field); full again once it stops.
+    /// Lighter while it plays (the studio look in one frame, without its
+    /// depth of field, ambient occlusion and screen-space reflections);
+    /// full again once it stops.
     #[default]
     Auto,
     /// The full quality while it plays too.

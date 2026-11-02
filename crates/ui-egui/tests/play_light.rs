@@ -90,7 +90,11 @@ fn timeline(shell: &mut Shell, s: &mut Session) -> Value {
 /// no lens.
 fn draws_light(shell: &Shell) -> bool {
     let studio = shell.studio().expect("the studio look, prepared");
-    studio.look.accumulate == 1 && studio.look.dof.is_none()
+    let look = studio.look;
+    let light = look.accumulate == 1 && look.dof.is_none() && !look.ao && !look.ssr;
+    // The key's shadows and the ground stay.
+    assert!(look.shadows && look.ground, "{look:?}");
+    light
 }
 
 #[test]

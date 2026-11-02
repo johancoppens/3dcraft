@@ -1443,8 +1443,8 @@ impl Shell {
     }
 
     /// True while the viewport draws lighter because a motion plays
-    /// (`timeline.playQuality` auto): the studio look without its
-    /// accumulated frames and its depth of field
+    /// (`timeline.playQuality` auto): the studio look in one frame,
+    /// without its depth of field and its most costly screen-space passes
     /// (`player::light_look`). Never for what is recorded
     /// or captured (a picture of the window, `ui.record` in real time or
     /// frame by frame): those are drawn at the full quality, as a motion

@@ -93,14 +93,23 @@ pub(crate) struct Player {
 
 /// The studio look drawn while a motion plays (`timeline.playQuality`
 /// auto, [`Shell::playing_light`]): one frame instead of the frames a
-/// still picture accumulates, and no depth of field, whose blur needs
-/// them. Everything else stays as asked, so the picture keeps its light,
-/// its shadows and its reflections while it moves; once the motion stops,
-/// the full look is drawn again and settles.
+/// still picture accumulates, no depth of field (whose blur needs them),
+/// and none of the screen-space passes that cost the most per frame on a
+/// laptop's GPU (ambient occlusion, the reflections in glossy faces, the
+/// contact shadows and the key's shadow on the reflections: together about
+/// two thirds of a light frame of the router; docs/design/motion.md ›
+/// *Findings*, 2026-11-02). The light, the key's shadows, the ground and
+/// its reflection, bloom and the tone mapping stay, so a moving part keeps
+/// its shading and the shadow that grounds it; once the motion stops the
+/// full look is drawn again and settles.
 pub(crate) fn light_look(look: craft3d_render::studio::Look) -> craft3d_render::studio::Look {
     craft3d_render::studio::Look {
         accumulate: 1,
         dof: None,
+        ao: false,
+        ssr: false,
+        contact_shadows: false,
+        specular_shadow: false,
         ..look
     }
 }
@@ -387,7 +396,8 @@ impl Shell {
         // bake hint (`bake_hint.rs`), unless the window is recorded or
         // captured, whose clock is not the wall's. A moment built as it
         // plays (shown provisionally while its configurations are built)
-        // is not baked by itself: the hint offers it.
+        // is baked by itself once it is known not to be heavy; a heavy
+        // one the hint offers.
         if self.exact_pictures() || self.recording() {
             self.player.hint.not_weighed();
         } else {
@@ -397,6 +407,7 @@ impl Shell {
                 .as_ref()
                 .is_some_and(|m| !m.exact || !m.stale.is_empty());
             self.player.hint.shown(now, provisional);
+            self.auto_bake();
         }
         let Some(shown) = self.timeline.motion_t() else {
             self.player.moved = Some(now);

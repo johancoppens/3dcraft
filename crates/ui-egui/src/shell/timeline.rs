@@ -78,12 +78,6 @@ impl Timeline {
             .unwrap_or(self.steps)
     }
 
-    /// The commands waiting, in order: for tests.
-    #[cfg(test)]
-    pub(crate) fn pending_ids(&self) -> Vec<&'static str> {
-        self.pending.iter().map(|(id, _)| *id).collect()
-    }
-
     /// Whether a scrub waits to be run.
     pub(super) fn scrub_waiting(&self) -> bool {
         self.pending.iter().any(|(id, _)| *id == "view.scrub")
