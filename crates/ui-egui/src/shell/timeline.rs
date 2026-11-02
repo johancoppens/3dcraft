@@ -57,6 +57,9 @@ pub(crate) struct Timeline {
     /// Counts the changes of `traces`: the picture's key holds this, not
     /// the points.
     pub(super) traces_serial: u64,
+    /// A trace is worked out in the background (`view.trace` in a
+    /// window): the window comes back now and then to draw it when done.
+    pub(super) tracing: bool,
 }
 
 impl Timeline {
@@ -373,7 +376,10 @@ impl Shell {
         // comes (docs/design/motion.md › *Shapes in the background*).
         // Not in a pass that showed a moment just now: that one took in
         // what was there.
-        let polled = pending.is_empty() && self.timeline.motion.is_some() && session.poll_motion();
+        self.timeline.tracing = session.traces_pending();
+        let polled = pending.is_empty()
+            && (self.timeline.motion.is_some() || self.timeline.tracing)
+            && session.poll_motion();
         if !pending.is_empty() || polled {
             self.sync_timeline(session);
         }
@@ -388,6 +394,7 @@ impl Shell {
             .motion
             .as_ref()
             .is_some_and(|m| !m.exact || m.building > 0)
+            || self.timeline.tracing
     }
 
     /// The timeline at the foot of the feature panel: a slider over the

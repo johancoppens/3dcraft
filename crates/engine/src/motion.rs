@@ -59,8 +59,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!(
         "view.trace",
         "Trace Point",
-        r#"{"point": vertex name or {sketch, entity}, "feature": id or name = the body that has the vertex, "t": [number, number] = [0, 1], "samples": integer = 65, "name": string = "Trace <n>", "grow": boolean = false, "clear": boolean or trace name}"#,
-        "Traces the path of a point over the motion: the point is a vertex by its persistent name (document.edges lists them; feature says which body when several have it) or a point of a sketch ({sketch, entity}); its place is taken at samples values of t evenly from t[0] to t[1] (both included), each state made as view.motion makes it. The trace is view state of the document (not saved, not undone, let go of at the next edit): the viewport draws it as a line, and file.export {path: *.svg or *.dxf, trace: name} writes it in its plane. With grow: true the viewport draws the trace only up to the t it shows while it shows a moment of the motion (the player draws it as it goes), whole otherwise. A trace with the name of one kept replaces it; at most 32 are kept. clear: true removes every trace, clear: name one of them (nothing is traced then). The document needs a timeline (view.motion). A point that is gone at some t fails the trace, naming that t. Returns name, point, t, samples, grow, points ([x, y, z] in the document's unit), length (along the polyline), closed (more than 2 points and it ends where it began, within the tolerance), box and plane ({point, normal} when the path lies in one plane within the tolerance and within a millionth of its size, else null). In an assembly the point is named through an instance as a mate names it (Coupler/End2, Foot/F1:vertex(2)), without feature.",
+        r#"{"point": vertex name or {sketch, entity}, "feature": id or name = the body that has the vertex, "t": [number, number] = [0, 1], "samples": integer = 65, "name": string = "Trace <n>", "grow": boolean = false, "clear": boolean or trace name, "background": boolean = true in a window, else false}"#,
+        "Traces the path of a point over the motion: the point is a vertex by its persistent name (document.edges lists them; feature says which body when several have it) or a point of a sketch ({sketch, entity}); its place is taken at samples values of t evenly from t[0] to t[1] (both included), each state made as view.motion makes it. The trace is view state of the document (not saved, not undone, let go of at the next edit): the viewport draws it as a line, and file.export {path: *.svg or *.dxf, trace: name} writes it in its plane. With grow: true the viewport draws the trace only up to the t it shows while it shows a moment of the motion (the player draws it as it goes), whole otherwise. A trace with the name of one kept replaces it; at most 32 are kept. clear: true removes every trace, clear: name one of them (nothing is traced then). The document needs a timeline (view.motion). A point that is gone at some t fails the trace, naming that t. Returns name, point, t, samples, grow, points ([x, y, z] in the document's unit), length (along the polyline), closed (more than 2 points and it ends where it began, within the tolerance), box and plane ({point, normal} when the path lies in one plane within the tolerance and within a millionth of its size, else null). In an assembly the point is named through an instance as a mate names it (Coupler/End2, Foot/F1:vertex(2)), without feature. With background: true (a window's default) the points are worked out by the motion's background builder, so a window goes on playing meanwhile: the result says pending: true and leaves out the points and what is measured of them, and the trace is drawn once it is done (view.trace with background: false works it out in the command and returns them).",
         doc: true,
         names: ["point"],
         view_trace
@@ -825,6 +825,7 @@ impl Sweep {
                 steps: out,
                 built,
                 seen: Vec::new(),
+                trace: None,
             }
         }));
         Ok(())
@@ -884,6 +885,7 @@ impl Sweep {
                         built: asm.configs_since(&before),
                         seen,
                         failed,
+                        trace: None,
                     }
                 }));
             if !queued {
@@ -1682,6 +1684,8 @@ pub(crate) struct Motion {
     pub(crate) live: bool,
     /// What builds the configurations of the sweep in the background.
     builder: crate::motion_build::Builder,
+    /// Why the last trace worked out in the background could not be made.
+    trace_error: Option<String>,
 }
 
 /// The features whose bodies differ between two regenerations: what a
@@ -1759,6 +1763,7 @@ impl OpenDocument {
             .saturating_add(queued)
             .saturating_add(usize::from(self.motion.builder.grid_busy()))
             .saturating_add(self.motion.builder.frames_busy())
+            .saturating_add(self.motion.builder.traces_busy())
     }
 
     /// Drops what the background builder has queued (`motion.bake
@@ -1793,6 +1798,9 @@ impl OpenDocument {
     /// grid is solved a little at a time). A provisional moment is then
     /// made again, at once, the next time it is shown.
     pub(crate) fn poll_motion(&mut self) -> bool {
+        // Traces worked out in the background (`view.trace`): drawn once
+        // they are here, if they are of the document as it is.
+        let traced = self.take_traces();
         let Motion {
             sweep,
             builder,
@@ -1800,7 +1808,7 @@ impl OpenDocument {
             ..
         } = &mut self.motion;
         let Some((_, _, sweep)) = sweep.as_mut() else {
-            return false;
+            return traced;
         };
         let taken = sweep.take_built(builder);
         let idle = builder.pending() == 0 && !builder.grid_busy();
@@ -1810,7 +1818,7 @@ impl OpenDocument {
         if again {
             *state = None;
         }
-        again
+        again || traced
     }
 
     /// The answers about pairs of bodies kept from the last state's
@@ -1945,6 +1953,36 @@ impl OpenDocument {
 
     /// The traces of the document as it is; lets go of those of another
     /// state of it.
+    /// Takes in the traces worked out in the background; true when one
+    /// was added. One of another document state, or past the most kept,
+    /// is let go of; one that failed is noted ([`Motion::trace_error`]).
+    fn take_traces(&mut self) -> bool {
+        let done = self.motion.builder.take_traces();
+        if done.is_empty() {
+            return false;
+        }
+        let current = Arc::clone(self.history.current());
+        let generation = self.asm.generation;
+        let mut added = false;
+        for trace in done {
+            match trace {
+                Ok(trace) => {
+                    if !Arc::ptr_eq(&trace.base, &current) || trace.generation != generation {
+                        continue;
+                    }
+                    let traces = self.traces();
+                    traces.retain(|t| t.name != trace.name);
+                    if traces.len() < MAX_TRACES {
+                        traces.push(trace);
+                        added = true;
+                    }
+                }
+                Err(why) => self.motion.trace_error = Some(why),
+            }
+        }
+        added
+    }
+
     fn traces(&mut self) -> &mut Vec<Trace> {
         let current = Arc::clone(self.history.current());
         let generation = self.asm.generation;
@@ -2081,6 +2119,23 @@ impl Session {
         self.documents
             .get_mut(self.active)
             .is_some_and(OpenDocument::poll_motion)
+    }
+
+    /// True while a trace of the active document is worked out in the
+    /// background (`view.trace` in a window); a viewer polls
+    /// ([`Self::poll_motion`]) until it is drawn.
+    pub fn traces_pending(&self) -> bool {
+        self.documents
+            .get(self.active)
+            .is_some_and(|open| open.motion.builder.traces_busy() > 0)
+    }
+
+    /// Why the last trace worked out in the background could not be made,
+    /// if it could not.
+    pub fn trace_error(&self) -> Option<String> {
+        self.documents
+            .get(self.active)
+            .and_then(|open| open.motion.trace_error.clone())
     }
 
     /// The value of the timeline of the active document, or why it has
@@ -2414,13 +2469,30 @@ fn view_trace(session: &mut Session, params: &Value) -> Run {
     let p = Params::new(
         ID,
         params,
-        &["point", "feature", "t", "samples", "name", "grow", "clear"],
+        &[
+            "point",
+            "feature",
+            "t",
+            "samples",
+            "name",
+            "grow",
+            "clear",
+            "background",
+        ],
     )?;
     if let Some(clear) = p.get("clear") {
-        let others: Vec<&str> = ["point", "feature", "t", "samples", "name", "grow"]
-            .into_iter()
-            .filter(|k| p.has(k))
-            .collect();
+        let others: Vec<&str> = [
+            "point",
+            "feature",
+            "t",
+            "samples",
+            "name",
+            "grow",
+            "background",
+        ]
+        .into_iter()
+        .filter(|k| p.has(k))
+        .collect();
         if let Some(key) = others.first() {
             return fail(format!(
                 "{ID}: `clear` removes traces; it does not go with `{key}`"
@@ -2458,12 +2530,20 @@ fn view_trace(session: &mut Session, params: &Value) -> Run {
     {
         return fail(format!("{ID}: `name` must have 1 to 200 bytes"));
     }
+    let background = p.bool("background")?.unwrap_or(session.bake_in_background)
+        && crate::motion_build::Builder::available();
     let open = session.document_mut()?;
     let base = Arc::clone(open.history.current());
     timeline(&base).map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
     let point = PointRef::parse(ID, &base, &p)?;
-    let mut sweep = Sweep::of(open, &base);
-    let mut points = Vec::new();
+    let generation = open.asm.generation;
+    // The motion's own sweep: what it has built and solved (a bake's
+    // configurations) is used, and what the trace builds stays for the
+    // play. A moment is a function of `t` alone, so the points are those
+    // of a sweep of its own.
+    let sweep = open
+        .motion_sweep(&base)
+        .map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
     let in_assembly = match (&point, sweep.is_assembly()) {
         (_, false) => None,
         (
@@ -2479,24 +2559,161 @@ fn view_trace(session: &mut Session, params: &Value) -> Run {
             ));
         }
     };
+    if background {
+        // In a window: worked out on a copy of the sweep by the motion's
+        // builder, so the window goes on playing (the developer's field
+        // test of 2026-11-02 found a play stopped for as long as a trace
+        // of 641 samples built its configurations). Drawn when it is
+        // done (`Session::poll_motion`).
+        let mut copy = sweep.clone();
+        let name = trace_name(open, given_name);
+        if let Some(asm) = copy.assembly.as_mut() {
+            asm.asm.deferred.clear();
+        }
+        let described = point.describe();
+        let (job_base, job_point, job_name) = (Arc::clone(&base), point.clone(), name.clone());
+        let job_in_assembly = in_assembly.clone();
+        let job: crate::motion_build::GridJob =
+            Box::new(move |let_go: crate::motion_build::Cancel| {
+                let before = copy.assembly.as_ref().map(|a| a.asm.config_keys());
+                if let Some(asm) = copy.assembly.as_mut() {
+                    asm.asm.cancel = Some(Arc::clone(&let_go));
+                }
+                let points = trace_points(
+                    &mut copy,
+                    &job_point,
+                    job_in_assembly.as_deref(),
+                    range,
+                    samples,
+                    &|| let_go(),
+                );
+                let built = match (copy.assembly.as_ref(), before) {
+                    (Some(asm), Some(before)) => asm.asm.configs_since(&before),
+                    _ => Vec::new(),
+                };
+                crate::motion_build::Worked {
+                    built,
+                    trace: Some(points.map(|points| Trace {
+                        base: job_base,
+                        generation,
+                        name: job_name,
+                        point: job_point.describe(),
+                        points,
+                        t: range,
+                        grow,
+                    })),
+                    ..crate::motion_build::Worked::default()
+                }
+            });
+        if open.motion.builder.queue_trace(job) {
+            open.motion.trace_error = None;
+            return Ok(json!({
+                "name": name,
+                "point": described,
+                "t": [range.0, range.1],
+                "samples": samples,
+                "grow": grow,
+                "pending": true,
+                "unit": length_unit(&base),
+            }));
+        }
+        // No thread after all: worked out here.
+        let sweep = open
+            .motion_sweep(&base)
+            .map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
+        let points = trace_points(
+            sweep,
+            &point,
+            in_assembly.as_deref(),
+            range,
+            samples,
+            &|| false,
+        )
+        .map_err(CommandError::new)?;
+        return add_trace(
+            open,
+            base,
+            generation,
+            Some(name),
+            point,
+            points,
+            range,
+            samples,
+            grow,
+        );
+    }
+    let points = trace_points(
+        sweep,
+        &point,
+        in_assembly.as_deref(),
+        range,
+        samples,
+        &|| false,
+    )
+    .map_err(CommandError::new)?;
+    add_trace(
+        open, base, generation, given_name, point, points, range, samples, grow,
+    )
+}
+
+/// The name a new trace gets: the one given, else `Trace <n>` free.
+fn trace_name(open: &mut OpenDocument, given: Option<String>) -> String {
+    let traces = open.traces();
+    given.unwrap_or_else(|| {
+        (1..)
+            .map(|n| format!("Trace {n}"))
+            .find(|n| traces.iter().all(|t| &t.name != n))
+            .unwrap_or_else(|| "Trace".to_string())
+    })
+}
+
+/// The place of `point` at `samples` values of `t` over `range`, each
+/// moment made as `view.motion` makes it, in `sweep`; stops (an error)
+/// when `let_go` says so.
+fn trace_points(
+    sweep: &mut Sweep,
+    point: &PointRef,
+    in_assembly: Option<&str>,
+    range: (f64, f64),
+    samples: u64,
+    let_go: &dyn Fn() -> bool,
+) -> Result<Vec<Vec3>, String> {
+    const ID: &str = "view.trace";
+    let mut points = Vec::new();
     for t in samples_of(range, samples) {
-        let err =
-            |e: String| CommandError::new(format!("{ID}: `{}` at t = {t}: {e}", point.describe()));
-        let at = if let Some(name) = &in_assembly {
+        if let_go() {
+            return Err(format!("{ID}: let go of (the motion changed)"));
+        }
+        let err = |e: String| format!("{ID}: `{}` at t = {t}: {e}", point.describe());
+        let at = if let Some(name) = in_assembly {
             let (placed, _) = sweep
                 .placed_at(t)
-                .map_err(|e| CommandError::new(format!("{ID}: at t = {t}: {e}")))?;
+                .map_err(|e| format!("{ID}: at t = {t}: {e}"))?;
             crate::asm::point_in(&placed, name).map_err(err)?
         } else {
-            let (doc, regen) = sweep
-                .at(t)
-                .map_err(|e| CommandError::new(format!("{ID}: at t = {t}: {e}")))?;
+            let (doc, regen) = sweep.at(t).map_err(|e| format!("{ID}: at t = {t}: {e}"))?;
             point.at(&doc, &regen).map_err(err)?
         };
         points.push(at);
     }
+    Ok(points)
+}
+
+/// Keeps a trace worked out here and answers `view.trace` with it.
+#[allow(clippy::too_many_arguments)]
+fn add_trace(
+    open: &mut OpenDocument,
+    base: Arc<Document>,
+    generation: u64,
+    given_name: Option<String>,
+    point: PointRef,
+    points: Vec<Vec3>,
+    range: (f64, f64),
+    samples: u64,
+    grow: bool,
+) -> Run {
+    const ID: &str = "view.trace";
     let tolerance = base.tolerance.linear;
-    let generation = open.asm.generation;
     let traces = open.traces();
     let name = given_name.unwrap_or_else(|| {
         (1..)

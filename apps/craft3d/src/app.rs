@@ -2763,6 +2763,211 @@ mod tests {
         );
     }
 
+    /// Plays the assembly at `CRAFT3D_PLAY_ASM` in a desk as the window
+    /// does (engine thread, refiner, GPU viewport, a pass every 1/60 s),
+    /// without a window: `motion.bake {frames: 120}` (in the background),
+    /// a trace of `CRAFT3D_PLAY_TRACE` (a vertex name, 641 samples, grown)
+    /// and the player looping at speed 1, as the developer's field test of
+    /// 2026-11-02. Prints, every 30 s of `CRAFT3D_PLAY_SECONDS` (300), the
+    /// CPU used, the resident memory, the longest time `t` stood still
+    /// (polled through `ui.get` every 100 ms, as the developer did) and
+    /// the work the window said it did. Timings only.
+    #[test]
+    #[ignore = "prints timings only"]
+    fn play_an_assembly_headless() {
+        let Some(path) = std::env::var_os("CRAFT3D_PLAY_ASM").map(std::path::PathBuf::from) else {
+            println!("no assembly (CRAFT3D_PLAY_ASM)");
+            return;
+        };
+        let seconds: f64 = std::env::var("CRAFT3D_PLAY_SECONDS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(300.0);
+        let state = match craft3d_ui_egui::direct::headless_render_state() {
+            Ok(state) => state,
+            Err(e) => {
+                println!("SKIPPED: no graphics adapter: {e}");
+                return;
+            }
+        };
+        let dir = path.parent().unwrap().to_path_buf();
+        let (requests, incoming) = mpsc::channel();
+        let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
+        let host = Host::new(Session::new(Workspace {
+            read: Access::Root(dir.clone()),
+            write: Access::None,
+        }));
+        let mut desk = Desk::new(host, incoming, picker).with_engine_thread(Arc::new(|| {}));
+        desk.host.shell =
+            Shell::threaded_with_gpu(craft3d_ui_egui::RendererChoice::Auto, Some(&state));
+        desk.set_window_points([1280.0, 720.0]);
+        desk.attach_recorder(Some(&state));
+        let ctx = egui::Context::default();
+        let began = Instant::now();
+        let mut pass = |desk: &mut Desk| {
+            desk.turn();
+            let time = began.elapsed().as_secs_f64();
+            let _ = desk.offscreen_pass(&ctx, time, Vec::new(), false);
+        };
+        let serve = |desk: &mut Desk, pass: &mut dyn FnMut(&mut Desk), line: String| -> Value {
+            let answer = ask(&requests, &line);
+            for _ in 0..600_000 {
+                pass(desk);
+                if let Ok(reply) = answer.try_recv() {
+                    return serde_json::from_str(&reply.unwrap()).unwrap();
+                }
+                std::thread::sleep(Duration::from_millis(16));
+            }
+            panic!("no reply to {line}");
+        };
+        let execute = |id: u64, command: &str, params: Value| {
+            json!({"id": id, "method": "engine.execute",
+                   "params": {"command": command, "params": params}})
+            .to_string()
+        };
+        let opened = serve(
+            &mut desk,
+            &mut pass,
+            execute(1, "file.open", json!({"path": path.to_string_lossy()})),
+        );
+        assert_eq!(opened["ok"], true, "{opened}");
+        let baked = serve(
+            &mut desk,
+            &mut pass,
+            execute(2, "motion.bake", json!({"frames": 120})),
+        );
+        println!("motion.bake: {baked}");
+        let set = json!({"id": 4, "method": "ui.set", "params": {"timeline":
+            {"playing": true, "loop": true, "motion": true, "speed": 1}}});
+        let played = serve(&mut desk, &mut pass, set.to_string());
+        assert_eq!(played["ok"], true, "{played}");
+        let cpu = || -> f64 {
+            let stat = std::fs::read_to_string("/proc/self/stat").unwrap_or_default();
+            let fields: Vec<&str> = stat
+                .rsplit(')')
+                .next()
+                .unwrap_or_default()
+                .split_whitespace()
+                .collect();
+            let ticks = |i: usize| {
+                fields
+                    .get(i)
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(0.0)
+            };
+            (ticks(11) + ticks(12)) / 100.0
+        };
+        let rss = || -> f64 {
+            std::fs::read_to_string("/proc/self/status")
+                .ok()
+                .and_then(|s| {
+                    s.lines()
+                        .find(|l| l.starts_with("VmRSS:"))
+                        .and_then(|l| l.split_whitespace().nth(1))
+                        .and_then(|kb| kb.parse::<f64>().ok())
+                })
+                .unwrap_or(0.0)
+                / 1024.0
+        };
+        // The trace asked for while the motion plays, as in the field test.
+        let mut trace = std::env::var("CRAFT3D_PLAY_TRACE").ok().map(|point| {
+            let asked = Instant::now();
+            let answer = ask(
+                &requests,
+                &execute(
+                    3,
+                    "view.trace",
+                    json!({"point": point, "samples": 641, "name": "Tool", "grow": true,
+                           // As before 2026-11-02, worked out in the command.
+                           "background": std::env::var_os("CRAFT3D_PLAY_TRACE_HERE").is_none()}),
+                ),
+            );
+            (asked, answer)
+        });
+        let start = Instant::now();
+        let mut window = (Instant::now(), cpu());
+        let mut last_t: Option<f64> = None;
+        let mut still_since = Instant::now();
+        let mut longest = 0.0f64;
+        let mut stalls = 0usize;
+        let mut moments = 0usize;
+        let mut works: std::collections::BTreeMap<String, usize> = Default::default();
+        let mut next_poll = Instant::now();
+        let mut id = 100u64;
+        let mut pending: Option<Receiver<Option<String>>> = None;
+        while start.elapsed().as_secs_f64() < seconds {
+            pass(&mut desk);
+            if let Some((asked, answer)) = &trace
+                && let Ok(reply) = answer.try_recv()
+            {
+                let got: Value =
+                    serde_json::from_str(&reply.unwrap_or_default()).unwrap_or(Value::Null);
+                println!(
+                    "view.trace answered in {:.2} s: ok {}, pending {}",
+                    asked.elapsed().as_secs_f64(),
+                    got["ok"],
+                    got["result"]["pending"]
+                );
+                trace = None;
+            }
+            if pending.is_none() && Instant::now() >= next_poll {
+                id += 1;
+                pending = Some(ask(
+                    &requests,
+                    &json!({"id": id, "method": "ui.get", "params": {}}).to_string(),
+                ));
+                next_poll = Instant::now() + Duration::from_millis(100);
+            }
+            if let Some(reply) = pending.as_ref().and_then(|r| r.try_recv().ok()) {
+                pending = None;
+                let got: Value =
+                    serde_json::from_str(&reply.unwrap_or_default()).unwrap_or(Value::Null);
+                let t = got["result"]["timeline"]["t"].as_f64();
+                if let Some(work) = got["result"]["work"].as_object() {
+                    let key = format!(
+                        "{}",
+                        work.get("label")
+                            .or(work.get("phase"))
+                            .unwrap_or(&Value::Null)
+                    );
+                    *works.entry(key).or_default() += 1;
+                } else if !got["result"]["work"].is_null() {
+                    *works
+                        .entry(got["result"]["work"].to_string().chars().take(80).collect())
+                        .or_default() += 1;
+                }
+                if t != last_t {
+                    moments += 1;
+                    let still = still_since.elapsed().as_secs_f64();
+                    if still > 0.2 {
+                        stalls += 1;
+                    }
+                    longest = longest.max(still);
+                    still_since = Instant::now();
+                    last_t = t;
+                }
+            }
+            if window.0.elapsed() >= Duration::from_secs(30) {
+                let used = cpu() - window.1;
+                // A still that goes on counts as far as it went.
+                let shown_longest = longest.max(still_since.elapsed().as_secs_f64());
+                println!(
+                    "PLAY {:.0} s: CPU {:.0} %, RSS {:.0} MB, t seen to change {moments} times, longest still {:.2} s, stills > 0.2 s {stalls}, work {works:?}",
+                    start.elapsed().as_secs_f64(),
+                    100.0 * used / window.0.elapsed().as_secs_f64(),
+                    rss(),
+                    shown_longest,
+                );
+                moments = 0;
+                window = (Instant::now(), cpu());
+                longest = 0.0;
+                stalls = 0;
+                works.clear();
+            }
+            std::thread::sleep(Duration::from_millis(16));
+        }
+    }
+
     fn ask(requests: &mpsc::Sender<Request>, line: &str) -> Receiver<Option<String>> {
         let (reply, answer) = mpsc::channel();
         let line = line.to_string();

@@ -69,6 +69,9 @@ pub(crate) struct Worked {
     pub steps: Vec<GridStep>,
     pub built: Vec<PartDone>,
     pub seen: Vec<(f64, Vec<(String, String)>)>,
+    /// A trace's points worked out (`view.trace` in the background): the
+    /// trace, or why it could not be made.
+    pub trace: Option<Result<crate::motion::Trace, String>>,
     /// The run stopped short: it panicked, or a moment of it could not be
     /// made. A grid run that failed is not started again for this sweep
     /// (it would fail again, and the session would ask for it every
@@ -88,17 +91,27 @@ pub(crate) type GridJob = Box<dyn FnOnce(Cancel) -> Worked + Send>;
 /// configuration it builds (`AsmState::cancel`).
 pub(crate) type Cancel = Arc<dyn Fn() -> bool + Send + Sync>;
 
+/// Which run a run is.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Run {
+    /// Grid points solved (`Sweep::queue_grid`).
+    Grid,
+    /// Frames of a bake (`Sweep::queue_baked`).
+    Frames,
+    /// A trace's points (`view.trace` in the background).
+    Trace,
+}
+
 /// What a worker is given.
 enum Job {
     Part(Box<PartJob>),
-    /// A run, and whether it is the grid's.
-    Grid(GridJob, bool),
+    Grid(GridJob, Run),
 }
 
 /// What a worker gives back.
 enum Done {
     Part(PartDone),
-    Grid(Worked, bool),
+    Grid(Worked, Run),
 }
 
 /// Most configurations queued or being built at once. Each job holds a
@@ -127,6 +140,9 @@ pub(crate) struct Builder {
     seen_done: Vec<(f64, Vec<(String, String)>)>,
     /// A grid run of this epoch failed ([`Worked::failed`]), not taken yet.
     grid_failed: bool,
+    /// Traces being worked out, and those done and not taken yet.
+    traces_busy: usize,
+    traces_done: Vec<Result<crate::motion::Trace, String>>,
     /// Configurations built and not taken yet: whatever call collects
     /// them keeps them here until [`Self::take`].
     parts_done: Vec<PartDone>,
@@ -165,6 +181,8 @@ impl Builder {
         self.seen_done.clear();
         self.grid_failed = false;
         self.parts_done.clear();
+        self.traces_busy = 0;
+        self.traces_done.clear();
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(running) = &self.running {
             running.reset(self.epoch);
@@ -209,7 +227,7 @@ impl Builder {
         if !Self::available() || self.grid_busy {
             return false;
         }
-        self.grid_busy = self.push(vec![Job::Grid(job, true)], true);
+        self.grid_busy = self.push(vec![Job::Grid(job, Run::Grid)], true);
         self.grid_busy
     }
 
@@ -219,11 +237,35 @@ impl Builder {
         if !Self::available() {
             return false;
         }
-        let queued = self.push(vec![Job::Grid(job, false)], false);
+        let queued = self.push(vec![Job::Grid(job, Run::Frames)], false);
         if queued {
             self.frames_busy = self.frames_busy.saturating_add(1);
         }
         queued
+    }
+
+    /// Works out a trace's points in the background (`view.trace` in a
+    /// window): false without a thread.
+    pub(crate) fn queue_trace(&mut self, job: GridJob) -> bool {
+        if !Self::available() {
+            return false;
+        }
+        let queued = self.push(vec![Job::Grid(job, Run::Trace)], false);
+        if queued {
+            self.traces_busy = self.traces_busy.saturating_add(1);
+        }
+        queued
+    }
+
+    /// Traces being worked out.
+    pub(crate) fn traces_busy(&self) -> usize {
+        self.traces_busy
+    }
+
+    /// The traces worked out since the last call.
+    pub(crate) fn take_traces(&mut self) -> Vec<Result<crate::motion::Trace, String>> {
+        self.collect();
+        std::mem::take(&mut self.traces_done)
     }
 
     /// Runs of frames being built.
@@ -293,12 +335,21 @@ impl Builder {
                             parts.push(d);
                         }
                     }
-                    Done::Grid(worked, grid) => {
-                        if grid {
-                            self.grid_busy = false;
-                            self.grid_failed |= worked.failed;
-                        } else {
-                            self.frames_busy = self.frames_busy.saturating_sub(1);
+                    Done::Grid(worked, run) => {
+                        match run {
+                            Run::Grid => {
+                                self.grid_busy = false;
+                                self.grid_failed |= worked.failed;
+                            }
+                            Run::Frames => {
+                                self.frames_busy = self.frames_busy.saturating_sub(1);
+                            }
+                            Run::Trace => {
+                                self.traces_busy = self.traces_busy.saturating_sub(1);
+                                self.traces_done.push(worked.trace.unwrap_or_else(|| {
+                                    Err("the trace could not be worked out".to_string())
+                                }));
+                            }
                         }
                         self.grid_done.extend(worked.steps);
                         self.seen_done.extend(worked.seen);
@@ -664,13 +715,13 @@ mod native {
                         continue;
                     }
                 },
-                Job::Grid(job, grid) => Done::Grid(
+                Job::Grid(job, run) => Done::Grid(
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(let_go)))
                         .unwrap_or_else(|_| super::Worked {
                             failed: true,
                             ..super::Worked::default()
                         }),
-                    grid,
+                    run,
                 ),
             };
             held_change(&shared, before, caches.len());

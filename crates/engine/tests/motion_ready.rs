@@ -17,7 +17,7 @@ mod common;
 use common::plain::run;
 use common::{error, session_in, workdir};
 use craft3d_engine::Session;
-use serde_json::json;
+use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
 /// A bar part with a published length, its body `Bar` 4 wide and 2
@@ -392,4 +392,49 @@ fn bad_shapes_and_background_are_refused() {
     assert!(why.contains("shapes"), "{why}");
     let why = error(&mut s, "motion.bake", json!({ "background": "yes" }));
     assert!(why.contains("background"), "{why}");
+}
+
+/// In a window (`Session::set_bake_in_background`) a trace is worked out
+/// by the motion's builder: the command answers at once (pending, the
+/// trace not drawn yet), so the window goes on playing (the developer's
+/// field test of 2026-11-02: a play stood still while a trace of 641
+/// samples built its configurations on the engine thread); once polled in,
+/// its points are those the command works out itself.
+#[test]
+fn a_trace_in_a_window_is_worked_out_in_the_background() {
+    let trace = json!({ "point": "Crank/F1:vertex(6)", "samples": 33, "name": "End" });
+    let mut here = assembly_session("trace-here");
+    let made = run(&mut here, "view.trace", trace.clone());
+    let wanted = made["points"].clone();
+    assert_eq!(wanted.as_array().unwrap().len(), 33, "{made}");
+
+    let mut s = assembly_session("trace-behind");
+    s.set_bake_in_background(true);
+    let answer = run(&mut s, "view.trace", trace);
+    if craft3d_math::available_threads() < 2 {
+        assert_eq!(answer["points"], wanted);
+        return;
+    }
+    assert_eq!(answer["pending"], true, "{answer}");
+    assert!(answer["points"].is_null(), "{answer}");
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while s.traces().is_empty() {
+        assert!(
+            s.traces_pending() || s.trace_error().is_none(),
+            "{:?}",
+            s.trace_error()
+        );
+        s.poll_motion();
+        assert!(Instant::now() < deadline, "the trace never came");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(!s.traces_pending());
+    let traces = s.traces();
+    let got: Vec<Value> = traces[0]
+        .points
+        .iter()
+        .map(|p| json!([p.x, p.y, p.z]))
+        .collect();
+    assert_eq!(traces[0].name, "End");
+    assert_eq!(Value::Array(got), wanted);
 }
