@@ -497,6 +497,25 @@ pub struct Playback {
     /// With `motion`: the bodies that overlap at the `t` shown are drawn
     /// red (`view.motion {collisions}`).
     pub collisions: bool,
+    /// How the viewport draws while the motion plays: `auto` lighter (one
+    /// frame, no depth of field, no ambient occlusion or screen-space
+    /// reflections), `full` as when it stands
+    /// still. Pictures and recordings are full either way
+    /// (docs/design/motion.md › *The player*).
+    pub play_quality: PlayQuality,
+}
+
+/// How the viewport draws while a motion plays ([`Playback::play_quality`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PlayQuality {
+    /// Lighter while it plays (the studio look in one frame, without its
+    /// depth of field, ambient occlusion and screen-space reflections);
+    /// full again once it stops.
+    #[default]
+    Auto,
+    /// The full quality while it plays too.
+    Full,
 }
 
 /// How long the motion takes from `t` = 0 to 1 at speed 1, in seconds.
@@ -518,6 +537,7 @@ impl Default for Playback {
             motion: false,
             bounce: false,
             collisions: false,
+            play_quality: PlayQuality::Auto,
         }
     }
 }
@@ -1573,6 +1593,8 @@ mod tests {
                 motion: true,
                 bounce: true,
                 collisions: true,
+                // Added with the light drawing while playing (2026-11-02).
+                play_quality: PlayQuality::Full,
             },
             // Added with the Jigs' parameter form (2026-10-23).
             parameters: ParametersView {
@@ -1667,7 +1689,7 @@ mod tests {
                            "drawing": {"view": "top", "perspective": false, "dashed": true},
                            "width": "600 mm", "gap": "", "name": "box.dxf"},
                 "dialogs": {"about": true, "shortcuts": false, "agents": true},
-                "timeline": {"playing": true, "speed": 2.0, "loop": true, "orbit": false, "motion": true, "bounce": true, "collisions": true},
+                "timeline": {"playing": true, "speed": 2.0, "loop": true, "orbit": false, "motion": true, "bounce": true, "collisions": true, "playQuality": "full"},
                 "look": {"mode": "studio", "environment": "workshop", "exposure": -0.5,
                          "rotation": 90.0, "ground": false, "ao": true, "shadows": false,
                          "tonemap": "aces", "light": [30.0, 45.0], "background": "plain",

@@ -66,6 +66,7 @@ pub use shell::{
 };
 pub use state::{
     AgentClient, AgentPrompt, AgentRoot, AgentsStatus, CameraState, Closing, DocTab, Panels,
-    ParametersView, Playback, ProjectionKind, PromptAnswer, Show, TabView, UiState, Work,
+    ParametersView, PlayQuality, Playback, ProjectionKind, PromptAnswer, Show, TabView, UiState,
+    Work,
 };
 pub use theme::Tokens;

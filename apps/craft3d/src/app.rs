@@ -1720,6 +1720,14 @@ impl Desk {
     /// depends on how far the motion's background builder got.
     fn sync_exact_pictures(&mut self) {
         self.host.shell.set_capturing(self.capture.is_some());
+        // A recording (in real time too) draws a playing motion at the
+        // full quality, never lighter (`Shell::playing_light`).
+        let recording = self
+            .rec
+            .recorder
+            .as_ref()
+            .is_some_and(|r| r.recording.is_some());
+        self.host.shell.set_recording(recording);
         if !self.away() {
             let live = !self.host.shell.exact_pictures();
             self.host.session.set_motion_live(live);
@@ -3510,6 +3518,426 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(16));
         }
+    }
+
+    /// The GPU time this process used so far, in nanoseconds, as the
+    /// kernel's DRM driver counts it per client (`/proc/self/fdinfo`,
+    /// `drm-engine-*`, each client once): Linux only, 0 elsewhere.
+    fn gpu_ns() -> u128 {
+        let mut seen = std::collections::BTreeMap::<String, u128>::new();
+        let Ok(dir) = std::fs::read_dir("/proc/self/fdinfo") else {
+            return 0;
+        };
+        for entry in dir.flatten() {
+            let Ok(text) = std::fs::read_to_string(entry.path()) else {
+                continue;
+            };
+            let Some(client) = text
+                .lines()
+                .find_map(|l| l.strip_prefix("drm-client-id:"))
+                .map(|c| c.trim().to_string())
+            else {
+                continue;
+            };
+            let ns: u128 = text
+                .lines()
+                .filter(|l| l.starts_with("drm-engine-") && !l.starts_with("drm-engine-capacity"))
+                .filter_map(|l| l.split_whitespace().nth(1)?.parse::<u128>().ok())
+                .sum();
+            seen.insert(client, ns);
+        }
+        seen.values().sum()
+    }
+
+    /// Plays the documents at `CRAFT3D_PLAY_LIGHT` (paths separated by
+    /// `:`) in a desk as the window does (engine thread, GPU viewport, a
+    /// pass every 1/60 s), in the studio look with a lens and 16 frames
+    /// averaged, and prints for each phase of `CRAFT3D_PLAY_LIGHT_SECONDS`
+    /// (15) what a frame of the window cost: unbaked with the light
+    /// drawing (and what the bake hint weighed), then baked with
+    /// `timeline.playQuality` full, auto, and auto with shadows, ambient
+    /// occlusion or the reflections off besides. CPU from
+    /// `/proc/self/stat`, GPU from the DRM driver's counters, the passes'
+    /// wall time, frames drawn by the viewport and moments shown. Timings
+    /// only (docs/design/motion.md › *Findings*, 2026-11-02).
+    #[test]
+    #[ignore = "prints timings only"]
+    fn play_light_against_full_headless() {
+        let Some(paths) = std::env::var_os("CRAFT3D_PLAY_LIGHT") else {
+            println!("no documents (CRAFT3D_PLAY_LIGHT)");
+            return;
+        };
+        let seconds: f64 = std::env::var("CRAFT3D_PLAY_LIGHT_SECONDS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(15.0);
+        let state = match craft3d_ui_egui::direct::headless_render_state() {
+            Ok(state) => state,
+            Err(e) => {
+                println!("SKIPPED: no graphics adapter: {e}");
+                return;
+            }
+        };
+        let cpu = || -> f64 {
+            let stat = std::fs::read_to_string("/proc/self/stat").unwrap_or_default();
+            let fields: Vec<&str> = stat
+                .rsplit(')')
+                .next()
+                .unwrap_or_default()
+                .split_whitespace()
+                .collect();
+            let ticks = |i: usize| {
+                fields
+                    .get(i)
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(0.0)
+            };
+            (ticks(11) + ticks(12)) / 100.0
+        };
+        for path in std::env::split_paths(&paths) {
+            let dir = path.parent().unwrap().to_path_buf();
+            let (requests, incoming) = mpsc::channel();
+            let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
+            let host = Host::new(Session::new(Workspace {
+                read: Access::Root(dir.clone()),
+                write: Access::None,
+            }));
+            let mut desk = Desk::new(host, incoming, picker).with_engine_thread(Arc::new(|| {}));
+            desk.host.shell =
+                Shell::threaded_with_gpu(craft3d_ui_egui::RendererChoice::Auto, Some(&state));
+            desk.set_window_points([1280.0, 720.0]);
+            desk.attach_recorder(Some(&state));
+            let ctx = egui::Context::default();
+            let began = Instant::now();
+            let mut pass_ms: Vec<f64> = Vec::new();
+            let pass = |desk: &mut Desk, times: &mut Vec<f64>| {
+                let at = Instant::now();
+                desk.turn();
+                let time = began.elapsed().as_secs_f64();
+                let _ = desk.offscreen_pass(&ctx, time, Vec::new(), false);
+                times.push(at.elapsed().as_secs_f64() * 1000.0);
+            };
+            let id = std::cell::Cell::new(0u64);
+            let serve = |desk: &mut Desk, times: &mut Vec<f64>, method: &str, params: Value| {
+                id.set(id.get() + 1);
+                let line = json!({"id": id.get(), "method": method, "params": params}).to_string();
+                let answer = ask(&requests, &line);
+                for _ in 0..600_000 {
+                    pass(desk, times);
+                    if let Ok(reply) = answer.try_recv() {
+                        let got: Value = serde_json::from_str(&reply.unwrap()).unwrap();
+                        return got;
+                    }
+                    std::thread::sleep(Duration::from_millis(16));
+                }
+                panic!("no reply to {line}");
+            };
+            let execute =
+                |command: &str, params: Value| json!({"command": command, "params": params});
+            let opened = serve(
+                &mut desk,
+                &mut pass_ms,
+                "engine.execute",
+                execute("file.open", json!({"path": path.to_string_lossy()})),
+            );
+            assert_eq!(opened["ok"], true, "{opened}");
+            println!("LIGHT document {}", path.display());
+            let look = json!({"mode": "studio", "accumulate": 16,
+                              "dof": {"fstop": 2.8, "focus": "centre"}});
+            let set = serve(
+                &mut desk,
+                &mut pass_ms,
+                "ui.set",
+                json!({"look": look, "camera": {"autoFit": true}}),
+            );
+            assert_eq!(set["ok"], true, "{set}");
+            let phase = |desk: &mut Desk, name: &str, timeline: Value, look: Value| {
+                let mut times = Vec::new();
+                let set = serve(
+                    desk,
+                    &mut times,
+                    "ui.set",
+                    json!({"timeline": timeline, "look": look}),
+                );
+                assert_eq!(set["ok"], true, "{set}");
+                // A second to settle into the phase.
+                let warm = Instant::now();
+                while warm.elapsed().as_secs_f64() < 1.0 {
+                    pass(desk, &mut times);
+                    std::thread::sleep(Duration::from_millis(16));
+                }
+                let drawn = |desk: &Desk| desk.host.shell.render_count();
+                times.clear();
+                let (cpu0, gpu0, drawn0) = (cpu(), gpu_ns(), drawn(desk));
+                let start = Instant::now();
+                let mut moments = 0usize;
+                let mut last_t = None;
+                while start.elapsed().as_secs_f64() < seconds {
+                    pass(desk, &mut times);
+                    if !desk.away() {
+                        let t = desk.host.session.motion().map(|m| m.t.to_bits());
+                        if t != last_t {
+                            moments += 1;
+                            last_t = t;
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(16));
+                }
+                let wall = start.elapsed().as_secs_f64();
+                let (cpu1, gpu1, drawn1) = (cpu(), gpu_ns(), drawn(desk));
+                times.sort_by(f64::total_cmp);
+                let at = |q: f64| {
+                    times
+                        .get(((times.len() as f64 - 1.0) * q).round() as usize)
+                        .copied()
+                        .unwrap_or(0.0)
+                };
+                let got = serve(desk, &mut Vec::new(), "ui.get", json!({}));
+                let heavy = got["result"]["timeline"]["heavy"].clone();
+                let light = got["result"]["timeline"]["playingLight"].clone();
+                println!(
+                    "LIGHT {name}: playingLight {light}, CPU {:.0} %, GPU {:.1} ms/s, \
+                     viewport frames drawn {:.1}/s, moments {:.1}/s, pass median {:.1} ms, \
+                     p95 {:.1} ms, max {:.1} ms; heavy {heavy}",
+                    100.0 * (cpu1 - cpu0) / wall,
+                    (gpu1.saturating_sub(gpu0)) as f64 / 1e6 / wall,
+                    (drawn1.saturating_sub(drawn0)) as f64 / wall,
+                    moments as f64 / wall,
+                    at(0.5),
+                    at(0.95),
+                    at(1.0),
+                );
+            };
+            let play = |quality: &str| json!({"motion": true, "playing": true, "loop": true, "playQuality": quality});
+            let full_look = json!({"shadows": true, "ao": true, "reflections": true,
+                                   "contactShadows": true, "specularShadow": true});
+            phase(&mut desk, "unbaked auto", play("auto"), full_look.clone());
+            let baked = serve(
+                &mut desk,
+                &mut Vec::new(),
+                "engine.execute",
+                execute("motion.bake", json!({"frames": 120, "background": false})),
+            );
+            println!("LIGHT motion.bake: {}", baked["result"]);
+            phase(&mut desk, "baked full", play("full"), full_look.clone());
+            phase(&mut desk, "baked auto", play("auto"), full_look.clone());
+            phase(
+                &mut desk,
+                "baked auto, no shadows either",
+                play("auto"),
+                json!({"shadows": false}),
+            );
+            phase(
+                &mut desk,
+                "baked auto, plain look",
+                play("auto"),
+                json!({"mode": "plain", "shadows": true}),
+            );
+            phase(
+                &mut desk,
+                "standing still, studio",
+                json!({"playing": false}),
+                json!({"mode": "studio", "reflections": true, "contactShadows": true,
+                       "specularShadow": true}),
+            );
+        }
+    }
+
+    /// Pictures of the player's bake hint on the assembly at
+    /// `CRAFT3D_PLAY_HINT_ASM`, in a desk as the window plays it (engine
+    /// thread, GPU viewport, a pass every 1/60 s), the whole window as
+    /// `ui.screenshot {window: true}` paints it: the motion playing unbaked
+    /// until the hint offers the bake, its Bake button clicked, the bake
+    /// under way, and the motion playing after it. Written to
+    /// `target/evidence/ui/bake-hint-*.png`; what `ui.get` › `timeline.heavy`
+    /// said is printed. Pictures and timings only.
+    #[test]
+    #[ignore = "pictures and timings only"]
+    fn the_bake_hint_in_pictures() {
+        let Some(path) = std::env::var_os("CRAFT3D_PLAY_HINT_ASM").map(std::path::PathBuf::from)
+        else {
+            println!("no assembly (CRAFT3D_PLAY_HINT_ASM)");
+            return;
+        };
+        let state = match craft3d_ui_egui::direct::headless_render_state() {
+            Ok(state) => state,
+            Err(e) => {
+                println!("SKIPPED: no graphics adapter: {e}");
+                return;
+            }
+        };
+        let out =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/evidence/ui");
+        std::fs::create_dir_all(&out).unwrap();
+        let dir = path.parent().unwrap().to_path_buf();
+        let (requests, incoming) = mpsc::channel();
+        let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
+        let host = Host::new(Session::new(Workspace {
+            read: Access::Root(dir.clone()),
+            write: Access::None,
+        }));
+        let mut desk = Desk::new(host, incoming, picker).with_engine_thread(Arc::new(|| {}));
+        desk.host.shell =
+            Shell::threaded_with_gpu(craft3d_ui_egui::RendererChoice::Auto, Some(&state));
+        desk.set_window_points([1440.0, 900.0]);
+        desk.attach_recorder(Some(&state));
+        let ctx = egui::Context::default();
+        let began = Instant::now();
+        let pass = |desk: &mut Desk, events: Vec<egui::Event>, read: bool| {
+            desk.turn();
+            let time = began.elapsed().as_secs_f64();
+            desk.offscreen_pass(&ctx, time, events, read).ok().flatten()
+        };
+        let save = |name: &str, frame: &craft3d_ui_egui::record::Frame| {
+            let file = out.join(format!("bake-hint-{name}.png"));
+            let mut encoder = png::Encoder::new(
+                std::io::BufWriter::new(std::fs::File::create(&file).unwrap()),
+                frame.width,
+                frame.height,
+            );
+            encoder.set_color(png::ColorType::Rgb);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&frame.rgb)
+                .unwrap();
+            println!("HINT picture {}", file.display());
+        };
+        let serve = |desk: &mut Desk, line: String| -> Value {
+            let answer = ask(&requests, &line);
+            for _ in 0..600_000 {
+                pass(desk, Vec::new(), false);
+                if let Ok(reply) = answer.try_recv() {
+                    return serde_json::from_str(&reply.unwrap()).unwrap();
+                }
+                std::thread::sleep(Duration::from_millis(16));
+            }
+            panic!("no reply to {line}");
+        };
+        let heavy = |desk: &Desk| -> Value {
+            if desk.away() {
+                return Value::Null;
+            }
+            desk.host.shell.timeline_json()["heavy"].clone()
+        };
+        let opened = serve(
+            &mut desk,
+            json!({"id": 1, "method": "engine.execute",
+                   "params": {"command": "file.open", "params": {"path": path.to_string_lossy()}}})
+            .to_string(),
+        );
+        assert_eq!(opened["ok"], true, "{opened}");
+        let played = serve(
+            &mut desk,
+            json!({"id": 2, "method": "ui.set", "params": {"timeline":
+                {"playing": true, "loop": true, "motion": true}}})
+            .to_string(),
+        );
+        assert_eq!(played["ok"], true, "{played}");
+        // Playing unbaked until the hint offers the bake.
+        let start = Instant::now();
+        let _offered = loop {
+            pass(&mut desk, Vec::new(), false);
+            if let Some(rect) = desk.host.shell.bake_hint_button() {
+                break rect;
+            }
+            assert!(
+                start.elapsed().as_secs_f64() < 120.0,
+                "no hint within 2 minutes: {}",
+                heavy(&desk)
+            );
+            std::thread::sleep(Duration::from_millis(16));
+        };
+        println!(
+            "HINT offered after {:.1} s: {}",
+            start.elapsed().as_secs_f64(),
+            heavy(&desk)
+        );
+        if let Some(frame) = pass(&mut desk, Vec::new(), true) {
+            save("offer", &frame);
+        }
+        // Its Bake button, clicked: in passes that draw the shell (not
+        // while the engine thread has the session), again until the bake
+        // runs.
+        let clicked = Instant::now();
+        loop {
+            let Some(at) = desk.host.shell.bake_hint_button().map(|r| r.center()) else {
+                pass(&mut desk, Vec::new(), false);
+                continue;
+            };
+            let click = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            while desk.away() {
+                pass(&mut desk, Vec::new(), false);
+                std::thread::sleep(Duration::from_millis(4));
+            }
+            pass(
+                &mut desk,
+                vec![egui::Event::PointerMoved(at), click(true)],
+                false,
+            );
+            while desk.away() {
+                pass(&mut desk, Vec::new(), false);
+                std::thread::sleep(Duration::from_millis(4));
+            }
+            pass(&mut desk, vec![click(false)], false);
+            pass(&mut desk, Vec::new(), false);
+            if !heavy(&desk)["baking"].is_null() || desk.host.shell.bake_hint_button().is_none() {
+                break;
+            }
+            assert!(
+                clicked.elapsed().as_secs_f64() < 30.0,
+                "the click never landed: {}",
+                heavy(&desk)
+            );
+        }
+        println!("HINT clicked: {}", heavy(&desk));
+        let baking = Instant::now();
+        let mut saved = false;
+        let mut last = Instant::now();
+        loop {
+            pass(&mut desk, Vec::new(), false);
+            let now = heavy(&desk);
+            if !saved && baking.elapsed().as_secs_f64() > 4.0 {
+                if let Some(frame) = pass(&mut desk, Vec::new(), true) {
+                    save("baking", &frame);
+                }
+                println!("HINT baking: {now}");
+                saved = true;
+            }
+            if last.elapsed().as_secs_f64() > 5.0 {
+                println!("HINT {:.0} s: {now}", baking.elapsed().as_secs_f64());
+                last = Instant::now();
+            }
+            if saved && now["baking"].is_null() && !now.is_null() {
+                break;
+            }
+            assert!(
+                baking.elapsed().as_secs_f64() < 600.0,
+                "the bake did not end: {now}"
+            );
+            std::thread::sleep(Duration::from_millis(16));
+        }
+        println!(
+            "HINT baked in {:.1} s: {}",
+            baking.elapsed().as_secs_f64(),
+            heavy(&desk)
+        );
+        // Playing baked for a while.
+        let after = Instant::now();
+        while after.elapsed().as_secs_f64() < 6.0 {
+            pass(&mut desk, Vec::new(), false);
+            std::thread::sleep(Duration::from_millis(16));
+        }
+        if let Some(frame) = pass(&mut desk, Vec::new(), true) {
+            save("after", &frame);
+        }
+        println!("HINT after the bake: {}", heavy(&desk));
     }
 
     fn ask(requests: &mpsc::Sender<Request>, line: &str) -> Receiver<Option<String>> {

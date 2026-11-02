@@ -192,6 +192,30 @@ impl Window {
         let mut output = self.ctx.run_ui(input, |ui| shell.ui(ui, session));
         output.textures_delta.clear();
     }
+
+    /// A click at `at`: pressed in one frame, released in the next.
+    fn click(&mut self, shell: &mut Shell, session: &mut Session, at: Pos2) {
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        for events in [
+            vec![egui::Event::PointerMoved(at), button(true)],
+            vec![button(false)],
+        ] {
+            self.time += 0.03;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, vec2(1100.0, 760.0))),
+                time: Some(self.time),
+                events,
+                ..Default::default()
+            };
+            let mut output = self.ctx.run_ui(input, |ui| shell.ui(ui, session));
+            output.textures_delta.clear();
+        }
+    }
 }
 
 fn shown_t(shell: &mut Shell, session: &mut Session) -> Option<f64> {
@@ -502,4 +526,139 @@ fn pictures_and_recorded_frames_of_a_provisional_moment_are_the_exact_one() {
         window.frame(&mut shell, &mut r, 0.05);
         assert!(r.motion().is_none_or(|m| m.exact));
     }
+}
+
+/// A clock for the bake hint that moves `ms` milliseconds each time it is
+/// read: every moment's `view.motion` takes `ms` on it.
+fn moment_clock(shell: &mut Shell, ms: f64) {
+    let now = std::sync::Mutex::new(0.0_f64);
+    shell.set_moment_clock(Some(std::sync::Arc::new(move || {
+        let mut at = now.lock().unwrap();
+        *at += ms;
+        *at
+    })));
+}
+
+/// A motion whose moments are shown provisionally (a configuration of its
+/// own at every moment, built in the background as it plays) and quick to
+/// make is baked by itself once the player has weighed enough of them, with
+/// the hint's progress; a heavy one is offered instead
+/// (docs/design/motion.md › *The bake hint*). Its moments take 30 ms,
+/// then 150 ms, on the clock the hint times them by.
+#[test]
+fn a_quick_provisional_motion_bakes_itself_and_a_heavy_one_is_offered() {
+    // The background builder gets no thread: the moments stay provisional.
+    let frozen = freeze_pool();
+    for (cost, name) in [(30.0, "quick"), (150.0, "heavy")] {
+        let mut s = stretching(&format!("hint-{name}"));
+        let mut shell = Shell::new();
+        moment_clock(&mut shell, cost);
+        let mut window = Window {
+            ctx: egui::Context::default(),
+            time: 0.0,
+        };
+        window.frame(&mut shell, &mut s, 0.0);
+        call(
+            &mut shell,
+            &mut s,
+            "ui.set",
+            json!({"timeline": {"motion": true, "playing": true, "loop": true}}),
+        );
+        for _ in 0..30 {
+            window.frame(&mut shell, &mut s, 0.03);
+        }
+        let heavy = call(&mut shell, &mut s, "ui.get", json!({}))["timeline"]["heavy"].clone();
+        let ms = heavy["msPerMoment"].as_f64().unwrap();
+        assert!((ms - cost).abs() < 1.0, "{name}: {heavy}");
+        if craft3d_math::available_threads() < 2 {
+            // Without a background, every moment is exact: nothing to say.
+            continue;
+        }
+        assert!(
+            heavy["provisional"].as_f64().unwrap() >= 0.5,
+            "{name}: {heavy}"
+        );
+        if name == "quick" {
+            assert_eq!(heavy["heavy"], false, "{heavy}");
+            assert_eq!(heavy["suggestBake"], false, "{heavy}");
+            assert_eq!(heavy["baking"]["auto"], true, "baked by itself: {heavy}");
+            assert_eq!(s.motion().unwrap().baked, Some(120));
+        } else {
+            assert_eq!(heavy["heavy"], true, "{heavy}");
+            assert_eq!(heavy["suggestBake"], true, "{heavy}");
+            assert_eq!(heavy["baking"], Value::Null, "not baked by itself: {heavy}");
+            assert_eq!(s.motion().unwrap().baked, None);
+        }
+    }
+    drop(frozen);
+}
+
+/// A bake in the background asked for from the hint goes on to the end
+/// while the motion is paused: its bar follows what the builder has left
+/// and the hint goes once it is done (review of 2026-11-02, S2: the bar
+/// stood still while paused on an exact moment).
+#[test]
+fn a_bake_in_the_background_finishes_while_paused() {
+    if craft3d_math::available_threads() < 2 {
+        return;
+    }
+    let mut s = stretching("hint-paused");
+    // As in the window: a bake goes to the background builder.
+    s.set_bake_in_background(true);
+    let mut shell = Shell::new();
+    moment_clock(&mut shell, 150.0);
+    let mut window = Window {
+        ctx: egui::Context::default(),
+        time: 0.0,
+    };
+    window.frame(&mut shell, &mut s, 0.0);
+    call(
+        &mut shell,
+        &mut s,
+        "ui.set",
+        json!({"timeline": {"motion": true, "playing": true, "loop": true}}),
+    );
+    let heavy = |shell: &mut Shell, s: &mut Session| {
+        call(shell, s, "ui.get", json!({}))["timeline"]["heavy"].clone()
+    };
+    for _ in 0..60 {
+        window.frame(&mut shell, &mut s, 0.03);
+        if heavy(&mut shell, &mut s)["suggestBake"] == true {
+            break;
+        }
+    }
+    assert_eq!(heavy(&mut shell, &mut s)["suggestBake"], true);
+    // Bake, then pause.
+    // A frame more: the panel lays the banner out where it stays.
+    window.frame(&mut shell, &mut s, 0.03);
+    let at = shell.bake_hint_button().expect("the Bake button").center();
+    window.click(&mut shell, &mut s, at);
+    assert!(!heavy(&mut shell, &mut s)["baking"].is_null(), "baking");
+    call(
+        &mut shell,
+        &mut s,
+        "ui.set",
+        json!({"timeline": {"playing": false}}),
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    let mut progress = 0.0;
+    loop {
+        window.frame(&mut shell, &mut s, 0.03);
+        let now = heavy(&mut shell, &mut s);
+        if now["baking"].is_null() {
+            break;
+        }
+        let p = now["baking"]["progress"].as_f64().unwrap();
+        assert!(p >= progress, "the bar went back: {progress} -> {p}");
+        progress = p;
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the bake did not end while paused: {now}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let motion = s.motion().unwrap();
+    assert_eq!(motion.baked, Some(120));
+    assert_eq!(motion.building, 0);
+    assert_eq!(heavy(&mut shell, &mut s)["suggestBake"], false);
 }
