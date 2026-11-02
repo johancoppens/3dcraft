@@ -268,12 +268,12 @@ fn view_render_focuses_the_lens_on_the_selection() {
         json!({"items": [{"kind": "body", "feature": "Far"}]}),
     );
     let far = render(&mut s, json!({}));
-    assert_eq!(far["lens"]["focus"], json!([-55.0, 20.0, 0.0]));
+    at(&far["lens"]["focus"], [-55.0, 20.0, 0.0]);
     assert_ne!(far["base64"], picture["base64"], "the focus moved");
     run(&mut s, "select.set", json!({"mode": "clear"}));
     let cleared = render(&mut s, json!({}));
     // The model's box is x -60..50, y -25..25, z -5..5.
-    assert_eq!(cleared["lens"]["focus"], json!([-5.0, 0.0, 0.0]));
+    at(&cleared["lens"]["focus"], [-5.0, 0.0, 0.0]);
     let why = cleared["lens"]["fallback"].as_str().unwrap();
     assert!(why.contains("nothing selected"), "{why}");
     // A selection that is not shown is told apart from none.
