@@ -803,6 +803,66 @@
   }
  ],
  [
+  "sketch.line",
+  {
+   "sketch": "Lid outline",
+   "from": [
+    "60 mm",
+    "50 mm"
+   ],
+   "to": [
+    "120 mm",
+    "50 mm"
+   ],
+   "construction": true
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "Lid outline",
+   "from": [
+    "60 mm",
+    "72 mm"
+   ],
+   "to": [
+    "120 mm",
+    "72 mm"
+   ],
+   "construction": true
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "Lid outline",
+   "from": [
+    "60 mm",
+    "94 mm"
+   ],
+   "to": [
+    "120 mm",
+    "94 mm"
+   ],
+   "construction": true
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "Lid outline",
+   "from": [
+    "60 mm",
+    "116 mm"
+   ],
+   "to": [
+    "120 mm",
+    "116 mm"
+   ],
+   "construction": true
+  }
+ ],
+ [
   "sketch.create",
   {
    "plane": "xy",
@@ -979,6 +1039,28 @@
      "angle": "90 deg",
      "direction": "down",
      "insetEnd": "r + t"
+    }
+   ],
+   "formedLouvres": [
+    {
+     "line": "e19",
+     "width": "8 mm",
+     "height": "3 mm"
+    },
+    {
+     "line": "e22",
+     "width": "8 mm",
+     "height": "3 mm"
+    },
+    {
+     "line": "e25",
+     "width": "8 mm",
+     "height": "3 mm"
+    },
+    {
+     "line": "e28",
+     "width": "8 mm",
+     "height": "3 mm"
     }
    ]
   }
@@ -1296,6 +1378,15 @@
    "name": "Bend radius",
    "measure": "bendRadius",
    "min": "hem_r"
+  }
+ ],
+ [
+  "assert.add",
+  {
+   "name": "Lid louvres stretch at most 25 percent",
+   "measure": "louvreStretch",
+   "of": "Lid",
+   "max": "0.25"
   }
  ],
  [

@@ -447,6 +447,24 @@ its edges' names. The press-brake check takes a jog as made by an offset die (`f
 ]
 ```
 
+A **formed louvre** (`formedLouvres`) is a vent pressed by a tool: draw its lance as a construction
+line where it lies in the flat pattern and give the hood's `width` (how far back from the line it
+reaches, on the line's left), `height` (the opening's), `ends` (`closed`, rounded, the default, or
+`open`) and `direction`. The hood is not in the flat pattern, which shows the lance as a cut and where
+the tool lands on the layer `form`; the part has the hood. `louvreStretch` measures how far the tool
+stretches the sheet (the hood's length across over its width, less 1), for your material's limit.
+
+```json
+[
+ ["sketch.create", {"plane": "xy", "name": "VentBase"}],
+ ["sketch.rect", {"sketch": "VentBase", "from": [0, 0], "to": [100, 60]}],
+ ["sketch.line", {"sketch": "VentBase", "from": [30, 20], "to": [70, 20], "construction": true}],
+ ["feature.sheetMetal", {"sketch": "VentBase", "name": "Vented", "thickness": "1 mm", "radius": "1 mm",
+   "kFactor": 0.4, "formedLouvres": [{"line": "e11", "width": "8 mm", "height": "3 mm"}]}],
+ ["assert.add", {"name": "Louvre stretch", "measure": "louvreStretch", "of": "Vented", "max": "0.25"}]
+]
+```
+
 The bends are folded by the same mechanism as `feature.fold` (a joint with a radius), and the folded sheet
 is given its thickness as `feature.plate` does, so a bend's skins are the cylinders of the inner radius and
 of the inner radius plus the thickness. `sheetMetal.bends` is the **bend table**: per bend its angle and
