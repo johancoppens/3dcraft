@@ -3270,7 +3270,8 @@ fn close_corners(
             .get(x)
             .ok_or_else(|| refuse(Some(x), "a corner's flange is missing"))?;
         let clear = other_of.get(&(x, which)).is_some_and(|&o| {
-            past_the_end(flats, b, which, o, thickness).is_some_and(|m| m > tolerance.linear)
+            past_the_end(flats, bends, b, which, o, thickness, moved_any)
+                .is_some_and(|m| m > tolerance.linear)
         });
         if !clear {
             return Err(refuse(
@@ -3287,15 +3288,29 @@ fn close_corners(
     Ok(moved_any)
 }
 
-/// How far flange `other`'s flat (as folded, its outline on both skins)
-/// lies at least past bend `b`'s square end at `which` (0 its start, 1
-/// its end), along the bend's tangent line away from the bend: lines at
-/// their ends, arcs and circles also at the angle where the least lies, a
-/// spline at its control points (a lower bound). `None` when a flat is
-/// missing or a number is not finite.
-fn past_the_end(flats: &[Flat], b: &Bend, which: usize, other: usize, t: f64) -> Option<f64> {
+/// How far flange `other`'s flat and everything it carries (the flats and
+/// bends of its subtree: a return on its tip, a tab on its side, as
+/// folded) lie at least past bend `b`'s square end at `which` (0 its
+/// start, 1 its end), along the bend's tangent line away from the bend: a
+/// flat over its outline on both skins (lines at their ends, arcs and
+/// circles also at the angle where the least lies, a spline at its
+/// control points), a bend over its ring sector (its arcs at both ends,
+/// at their ends and the angle where the least lies), so a lower bound.
+/// `other`'s own bend is left out (it meets bend `b` only at the corner's
+/// point). `None` when something is missing or not finite, and when
+/// `stale` (flanges were moved to a closed corner's end in the pattern and
+/// are folded again only later) and the other flange carries any: their
+/// motions are not yet where they will be.
+fn past_the_end(
+    flats: &[Flat],
+    bends: &[Bend],
+    b: &Bend,
+    which: usize,
+    other: usize,
+    t: f64,
+    stale: bool,
+) -> Option<f64> {
     let parent = flats.get(b.parent)?;
-    let flat = flats.get(other + 1)?;
     let d = unit(sub(b.end, b.start))?;
     let (corner, sign) = if which == 0 {
         (b.start, -1.0)
@@ -3304,15 +3319,55 @@ fn past_the_end(flats: &[Flat], b: &Bend, which: usize, other: usize, t: f64) ->
     };
     let dir = parent.transform.vector(lift(d)) * sign;
     let p = parent.transform.point(lift(corner));
+    // The subtree's flats: the other flange's, then every flat a bend of
+    // the subtree turns (each bend is visited once, so at most as many
+    // rounds as bends).
+    let mut subtree: Vec<usize> = vec![other.checked_add(1)?];
+    let mut carried: Vec<usize> = Vec::new();
+    for _ in 0..=bends.len() {
+        let mut grew = false;
+        for (i, x) in bends.iter().enumerate() {
+            if subtree.contains(&x.parent) && !carried.contains(&i) {
+                carried.push(i);
+                if !subtree.contains(&x.child) {
+                    subtree.push(x.child);
+                }
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    if stale && !carried.is_empty() {
+        return None;
+    }
+    let mut least = f64::INFINITY;
+    for &f in &subtree {
+        let flat = flats.get(f)?;
+        least = least.min(flat_least(flat, |q| dir.dot(q - p), t)?);
+    }
+    for &i in &carried {
+        let x = bends.get(i)?;
+        let tr = flats.get(x.parent)?.transform;
+        least = least.min(bend_least(x, &tr, |q| dir.dot(q - p))?);
+    }
+    least.is_finite().then_some(least)
+}
+
+/// The least of the linear function `f` over a flat's material as folded:
+/// its outline on both skins (`t` the thickness), lines at their ends,
+/// arcs and circles also at the angle where the least lies, a spline at
+/// its control points (a lower bound).
+fn flat_least(flat: &Flat, f: impl Fn(Vec3) -> f64, t: f64) -> Option<f64> {
     let tr = flat.transform;
-    let f = |q: P2, z: f64| dir.dot(tr.point(Vec3::new(q[0], q[1], z)) - p);
+    let g = |q: P2, z: f64| f(tr.point(Vec3::new(q[0], q[1], z)));
     let mut least = f64::INFINITY;
     for z in [0.0, t] {
-        // The gradient of `f` in the flat's own axes.
-        let (g0, gx, gy) = (f([0.0, 0.0], z), f([1.0, 0.0], z), f([0.0, 1.0], z));
+        let (g0, gx, gy) = (g([0.0, 0.0], z), g([1.0, 0.0], z), g([0.0, 1.0], z));
         let grad = [gx - g0, gy - g0];
         for seg in &flat.outer {
-            least = least.min(f(seg.start, z)).min(f(seg.end, z));
+            least = least.min(g(seg.start, z)).min(g(seg.end, z));
             match &seg.shape {
                 Shape::Line => {}
                 &Shape::Arc { center, radius } | &Shape::Circle { center, radius } => {
@@ -3330,19 +3385,84 @@ fn past_the_end(flats: &[Flat], b: &Bend, which: usize, other: usize, t: f64) ->
                             None => true,
                         };
                         if inside {
-                            least = least.min(f(at, z));
+                            least = least.min(g(at, z));
                         }
                     }
                 }
                 Shape::Spline(sp) => {
                     for &c in &sp.control {
-                        least = least.min(f(c, z));
+                        least = least.min(g(c, z));
                     }
                 }
             }
         }
     }
     least.is_finite().then_some(least)
+}
+
+/// The least of the linear function `f` over a bend's material (its ring
+/// sector between the skins, untrimmed: a trimmed bend has less), `tr`
+/// its parent's motion: at both ends of the bend, on both skins' arcs, at
+/// the arcs' ends and at the one angle where the least lies inside.
+fn bend_least(x: &Bend, tr: &Transform, f: impl Fn(Vec3) -> f64) -> Option<f64> {
+    let d = unit(sub(x.end, x.start))?;
+    let len = distance(x.start, x.end);
+    let theta = x.theta();
+    let up = x.angle > 0.0;
+    let (zc, sigma) = if up {
+        (x.thickness + x.radius, 1.0)
+    } else {
+        (-x.radius, -1.0)
+    };
+    let point = |u: f64, r: f64, phi: f64| {
+        let (sn, cs) = phi.psin_cos();
+        tr.point(Vec3::new(
+            x.start[0] + u * d[0] + r * sn * x.across[0],
+            x.start[1] + u * d[1] + r * sn * x.across[1],
+            zc - sigma * r * cs,
+        ))
+    };
+    let mut least = f64::INFINITY;
+    for u in [0.0, len] {
+        for r in [x.radius, x.radius + x.thickness] {
+            // f along the arc is c0 + a sin φ + b cos φ: its stationary
+            // angles are atan2(a, b) + kπ.
+            let c0 = f(point(u, 0.0, 0.0));
+            let a = f(point(u, r, std::f64::consts::FRAC_PI_2)) - c0;
+            let b = f(point(u, r, 0.0)) - c0;
+            let star = a.patan2(b);
+            let mut angles = vec![0.0, theta];
+            for k in -2..=2 {
+                let phi = star + f64::from(k) * std::f64::consts::PI;
+                if phi > 0.0 && phi < theta {
+                    angles.push(phi);
+                }
+            }
+            for phi in angles {
+                least = least.min(f(point(u, r, phi)));
+            }
+        }
+    }
+    least.is_finite().then_some(least)
+}
+
+/// How far flange `other`'s flat and what it carries lie past bend
+/// `bend`'s square end at `which`, along its tangent line ([`Part`]'s
+/// flats and bends as built): the clearance a closed corner relies on
+/// where its end plane cuts a bend it does not trim
+/// (docs/design/sheetmetal.md › *Trimming a bend*). `None` when a piece
+/// is missing.
+pub fn clearance_past_end(part: &Part, bend: usize, which: usize, other: usize) -> Option<f64> {
+    let b = part.bends.get(bend)?;
+    past_the_end(
+        &part.flats,
+        &part.bends,
+        b,
+        which,
+        other,
+        part.thickness,
+        false,
+    )
 }
 
 /// The number the piece at place `seg` of flat `flat`'s outline that a

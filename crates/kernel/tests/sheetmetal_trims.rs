@@ -26,7 +26,7 @@ use craft3d_kernel::KernelError;
 use craft3d_kernel::profile::{Curve2, Profile, Shape, SketchCurve, detect_profiles};
 use craft3d_kernel::sheetmetal::{
     Closing, CornerKind, Direction, EdgeKey, FlangeSpec, LengthFrom, On, Part, SheetFace, Spec,
-    build, developed_allowance, edge_numbers, flat_area, outline,
+    build, clearance_past_end, developed_allowance, edge_numbers, flat_area, outline,
 };
 use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
@@ -555,6 +555,33 @@ fn a_mitre_of_unlike_walls_is_kept_only_where_the_other_wall_is_clear() {
         assert!(
             part.bends.iter().all(|b| b.trim == [None, None]),
             "scale {k}"
+        );
+        // Kept by the clearance, not because nothing is cut. The halving
+        // plane through the outer skins' meeting line (x = 60 + R_B + T,
+        // y = −(R_A + T)) misses the corner (60, 0) by (R_B − R_A)/√2, so
+        // the wall of radius 3 (flange 1, its start at the corner) has
+        // its root cut by (R_B − R_A) + g/√2 along its tangent line, far
+        // past the tolerance, and the other wall's flat lies past that
+        // bend's square end by its inner skin's distance from the edge,
+        // R_A, exactly (its extension runs along x at y ≤ −R_A).
+        let (ra, rb, g) = (1.0 * k, 3.0 * k, 0.3 * k);
+        let root = (rb - ra) + g / 2f64.sqrt();
+        assert!(root > 1e3 * tol.linear, "scale {k}");
+        let clear = clearance_past_end(&part, 1, 0, 0).unwrap();
+        near(clear, ra, 1e-9 * k, &format!("scale {k}: the clearance"));
+        // A return on that other wall's tip, turned in over the base, comes
+        // back past the bend's end: nothing proves it clear, refused (the
+        // clearance counts what the other flange carries).
+        let mut returned = square.clone();
+        returned.flanges.push(FlangeSpec {
+            on: On::Tip(0),
+            ..flange(1, 15.0 * k, FRAC_PI_2, 1.0 * k, 0.4)
+        });
+        let (f, why) = refused(&returned, &tol);
+        assert_eq!(f, Some(1), "scale {k}: {why}");
+        assert!(
+            why.contains("comes back over the bend's end"),
+            "scale {k}: {why}"
         );
         // The wall of radius 1 leaning in at 120 degrees, the other square
         // with radius 3: the plane cuts the square wall's bend at its root
