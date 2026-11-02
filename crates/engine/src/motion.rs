@@ -825,7 +825,7 @@ impl Sweep {
                 steps: out,
                 built,
                 seen: Vec::new(),
-                trace: None,
+                ..crate::motion_build::Worked::default()
             }
         }));
         Ok(())
@@ -885,7 +885,7 @@ impl Sweep {
                         built: asm.configs_since(&before),
                         seen,
                         failed,
-                        trace: None,
+                        ..crate::motion_build::Worked::default()
                     }
                 }));
             if !queued {
@@ -1684,8 +1684,46 @@ pub(crate) struct Motion {
     pub(crate) live: bool,
     /// What builds the configurations of the sweep in the background.
     builder: crate::motion_build::Builder,
-    /// Why the last trace worked out in the background could not be made.
-    trace_error: Option<String>,
+    /// The traces asked for in the background (`view.trace` in a
+    /// window), by name, until they are delivered: pending, or why they
+    /// could not be made.
+    trace_jobs: BTreeMap<String, TraceJob>,
+    /// Counts the traces asked for and the clears: a trace worked out in
+    /// the background is taken only when it is the one last asked for its
+    /// name (an older one finishing later, or one cleared, is let go of).
+    trace_serial: u64,
+}
+
+/// A trace asked for in the background ([`Motion::trace_jobs`]).
+#[derive(Clone)]
+pub(crate) struct TraceJob {
+    serial: u64,
+    /// The document state and files it was asked for in: an edit lets go
+    /// of it.
+    base: Arc<Document>,
+    generation: u64,
+    /// Why it could not be made; `None` while pending.
+    error: Option<String>,
+}
+
+impl TraceJob {
+    fn pending(&self) -> bool {
+        self.error.is_none()
+    }
+}
+
+/// A trace as `ui.get` and a viewer list it ([`Session::trace_states`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TraceState {
+    pub name: String,
+    /// Being worked out in the background.
+    pub pending: bool,
+    /// Why a trace asked for in the background could not be made.
+    pub error: Option<String>,
+    /// Of a trace that is there: its length, in the document's unit, and
+    /// whether it ends where it began.
+    pub length: Option<f64>,
+    pub closed: Option<bool>,
 }
 
 /// The features whose bodies differ between two regenerations: what a
@@ -1727,14 +1765,16 @@ impl OpenDocument {
                 self.motion.state = Some(state.clone());
                 Some(state)
             }
-            Err(_) => {
+            Err(why) => {
+                self.reset_builder(&format!("the motion could not be shown: {why}"));
                 self.motion = Motion {
                     traces: std::mem::take(&mut self.motion.traces),
                     builder: std::mem::take(&mut self.motion.builder),
                     live: self.motion.live,
+                    trace_jobs: std::mem::take(&mut self.motion.trace_jobs),
+                    trace_serial: self.motion.trace_serial,
                     ..Motion::default()
                 };
-                self.motion.builder.reset();
                 None
             }
         }
@@ -1746,7 +1786,36 @@ impl OpenDocument {
         self.motion.sweep = None;
         self.motion.state = None;
         self.motion.memo = PairMemo::default();
+        self.reset_builder("the motion's states were let go of");
+    }
+
+    /// Moves the builder to a new epoch ([`crate::motion_build::Builder::
+    /// reset`]): what it was doing is let go of, and a trace it was working
+    /// out fails with `why` (`view.trace {name}` says so), never silently.
+    pub(crate) fn reset_builder(&mut self, why: &str) {
         self.motion.builder.reset();
+        for job in self.motion.trace_jobs.values_mut() {
+            if job.pending() {
+                job.error = Some(format!("let go of: {why}"));
+            }
+        }
+    }
+
+    /// Lets go of the traces being worked out for another state of the
+    /// document than the one there now (an edit, a reload): they fail, and
+    /// the builder stops working on them.
+    pub(crate) fn check_trace_base(&mut self) {
+        let current = Arc::clone(self.history.current());
+        let generation = self.asm.generation;
+        let stale = self.motion.trace_jobs.values().any(|job| {
+            job.pending() && (!Arc::ptr_eq(&job.base, &current) || job.generation != generation)
+        });
+        if stale {
+            self.reset_builder("the document changed before it was done");
+        }
+        self.motion.trace_jobs.retain(|_, job| {
+            job.pending() || (Arc::ptr_eq(&job.base, &current) && job.generation == generation)
+        });
     }
 
     /// How much the background has left: configurations queued or being
@@ -1767,10 +1836,12 @@ impl OpenDocument {
     }
 
     /// Drops what the background builder has queued (`motion.bake
-    /// {cancel: true}`); returns how many configurations were waiting.
+    /// {cancel: true}`); returns how much was left
+    /// ([`Self::motion_building`]: configurations, runs, frames of a bake
+    /// and traces being worked out, which fail, `let go of`).
     pub(crate) fn motion_cancel_background(&mut self) -> usize {
         let dropped = self.motion_building();
-        self.motion.builder.reset();
+        self.reset_builder("the background work was cancelled (motion.bake {cancel: true})");
         if let Some((_, _, sweep)) = self.motion.sweep.as_mut()
             && let Some(asm) = sweep.assembly.as_mut()
         {
@@ -1843,7 +1914,7 @@ impl OpenDocument {
             // The answers were about the bodies of another base.
             self.motion.memo = PairMemo::default();
             // What was being built was for another base.
-            self.motion.builder.reset();
+            self.reset_builder("the motion was made again for another state of the document");
         }
         let (_, _, sweep) = self
             .motion
@@ -1951,38 +2022,36 @@ impl OpenDocument {
         self.scrubbed_regen()
     }
 
-    /// The traces of the document as it is; lets go of those of another
-    /// state of it.
     /// Takes in the traces worked out in the background; true when one
-    /// was added. One of another document state, or past the most kept,
-    /// is let go of; one that failed is noted ([`Motion::trace_error`]).
+    /// was added or failed. Only the one last asked for its name is taken
+    /// ([`Motion::trace_serial`]), and only for the document as it is.
     fn take_traces(&mut self) -> bool {
+        self.check_trace_base();
         let done = self.motion.builder.take_traces();
-        if done.is_empty() {
-            return false;
-        }
-        let current = Arc::clone(self.history.current());
-        let generation = self.asm.generation;
-        let mut added = false;
-        for trace in done {
-            match trace {
+        let mut changed = false;
+        for done in done {
+            let Some(job) = self.motion.trace_jobs.get_mut(&done.name) else {
+                continue;
+            };
+            if job.serial != done.serial || !job.pending() {
+                continue;
+            }
+            changed = true;
+            match done.result {
                 Ok(trace) => {
-                    if !Arc::ptr_eq(&trace.base, &current) || trace.generation != generation {
-                        continue;
-                    }
+                    self.motion.trace_jobs.remove(&done.name);
                     let traces = self.traces();
                     traces.retain(|t| t.name != trace.name);
-                    if traces.len() < MAX_TRACES {
-                        traces.push(trace);
-                        added = true;
-                    }
+                    traces.push(trace);
                 }
-                Err(why) => self.motion.trace_error = Some(why),
+                Err(why) => job.error = Some(why),
             }
         }
-        added
+        changed
     }
 
+    /// The traces of the document as it is; lets go of those of another
+    /// state of it.
     fn traces(&mut self) -> &mut Vec<Trace> {
         let current = Arc::clone(self.history.current());
         let generation = self.asm.generation;
@@ -2127,15 +2196,48 @@ impl Session {
     pub fn traces_pending(&self) -> bool {
         self.documents
             .get(self.active)
-            .is_some_and(|open| open.motion.builder.traces_busy() > 0)
+            .is_some_and(|open| open.motion.trace_jobs.values().any(TraceJob::pending))
     }
 
-    /// Why the last trace worked out in the background could not be made,
-    /// if it could not.
-    pub fn trace_error(&self) -> Option<String> {
-        self.documents
-            .get(self.active)
-            .and_then(|open| open.motion.trace_error.clone())
+    /// The traces of the active document, those kept and those asked for
+    /// in the background (pending, or why they failed), by name.
+    pub fn trace_states(&mut self) -> Vec<TraceState> {
+        let Some(open) = self.documents.get_mut(self.active) else {
+            return Vec::new();
+        };
+        open.check_trace_base();
+        let mut states: BTreeMap<String, TraceState> = open
+            .motion
+            .trace_jobs
+            .iter()
+            .map(|(name, job)| {
+                (
+                    name.clone(),
+                    TraceState {
+                        name: name.clone(),
+                        pending: job.pending(),
+                        error: job.error.clone(),
+                        length: None,
+                        closed: None,
+                    },
+                )
+            })
+            .collect();
+        for trace in open.traces().iter() {
+            states
+                .entry(trace.name.clone())
+                .or_insert_with(|| TraceState {
+                    name: trace.name.clone(),
+                    pending: false,
+                    error: None,
+                    length: Some(polyline_length(&trace.points)),
+                    closed: Some(ends_where_it_began(
+                        &trace.points,
+                        trace.base.tolerance.linear,
+                    )),
+                });
+        }
+        states.into_values().collect()
     }
 
     /// The value of the timeline of the active document, or why it has
@@ -2226,7 +2328,7 @@ fn view_motion(session: &mut Session, params: &Value) -> Run {
         if t.is_none() {
             open.motion.state = None;
             open.motion.sweep = None;
-            open.motion.builder.reset();
+            open.reset_builder("the motion was let go of (view.motion {t: null})");
             open.motion.memo = PairMemo::default();
         }
     }
@@ -2478,6 +2580,7 @@ fn view_trace(session: &mut Session, params: &Value) -> Run {
             "grow",
             "clear",
             "background",
+            "wait",
         ],
     )?;
     if let Some(clear) = p.get("clear") {
@@ -2489,6 +2592,7 @@ fn view_trace(session: &mut Session, params: &Value) -> Run {
             "name",
             "grow",
             "background",
+            "wait",
         ]
         .into_iter()
         .filter(|k| p.has(k))
@@ -2499,14 +2603,27 @@ fn view_trace(session: &mut Session, params: &Value) -> Run {
             ));
         }
         let open = session.document_mut()?;
-        let traces = open.traces();
-        let before = traces.len();
+        open.check_trace_base();
+        // Whatever is still worked out for them is let go of when it comes.
+        open.motion.trace_serial = open.motion.trace_serial.wrapping_add(1);
+        let before = open
+            .traces()
+            .len()
+            .saturating_add(open.motion.trace_jobs.len());
         match clear {
-            Value::Bool(true) => traces.clear(),
+            Value::Bool(true) => {
+                open.traces().clear();
+                open.motion.trace_jobs.clear();
+            }
             Value::Bool(false) => {}
             Value::String(name) => {
-                traces.retain(|trace| &trace.name != name);
-                if traces.len() == before {
+                open.traces().retain(|trace| &trace.name != name);
+                open.motion.trace_jobs.remove(name);
+                let after = open
+                    .traces()
+                    .len()
+                    .saturating_add(open.motion.trace_jobs.len());
+                if after == before {
                     return fail(format!("{ID}: there is no trace `{}`", short(clear)));
                 }
             }
@@ -2517,8 +2634,31 @@ fn view_trace(session: &mut Session, params: &Value) -> Run {
                 ));
             }
         }
-        let after = traces.len();
-        return Ok(json!({"removed": before.saturating_sub(after), "traces": after}));
+        let after = open
+            .traces()
+            .len()
+            .saturating_add(open.motion.trace_jobs.len());
+        return Ok(json!({"removed": before.saturating_sub(after), "traces": open.traces().len()}));
+    }
+    let wait = p.bool("wait")?.unwrap_or(false);
+    if !p.has("point") {
+        // A trace asked for before, by its name: its result once it is
+        // worked out (waiting for it with `wait`), or why it failed.
+        let others: Vec<&str> = ["feature", "t", "samples", "grow", "background"]
+            .into_iter()
+            .filter(|k| p.has(k))
+            .collect();
+        if let Some(key) = others.first() {
+            return fail(format!(
+                "{ID}: `{key}` goes with `point`; without one, view.trace {{name}} reads a trace asked for before"
+            ));
+        }
+        let Some(name) = p.str("name")?.map(str::to_string) else {
+            return fail(format!(
+                "{ID}: give `point` to trace one, or `name` to read a trace asked for before"
+            ));
+        };
+        return read_trace(session, &name, wait);
     }
     let range = t_range(ID, &p)?;
     let samples = p.integer("samples", 2, MAX_SAMPLES)?.unwrap_or(65);
@@ -2533,17 +2673,32 @@ fn view_trace(session: &mut Session, params: &Value) -> Run {
     let background = p.bool("background")?.unwrap_or(session.bake_in_background)
         && crate::motion_build::Builder::available();
     let open = session.document_mut()?;
+    open.check_trace_base();
+    // The document a trace belongs to (an edit lets go of it), and the
+    // state it is taken in: the one the view shows below the motion, as
+    // the player's.
     let base = Arc::clone(open.history.current());
-    timeline(&base).map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
+    let shown = open.scrubbed();
+    timeline(&shown).map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
     let point = PointRef::parse(ID, &base, &p)?;
     let generation = open.asm.generation;
-    // The motion's own sweep: what it has built and solved (a bake's
-    // configurations) is used, and what the trace builds stays for the
-    // play. A moment is a function of `t` alone, so the points are those
-    // of a sweep of its own.
-    let sweep = open
-        .motion_sweep(&base)
-        .map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
+    // The motion's own sweep when it runs over that state (what a bake
+    // built is used, what the trace builds stays for the play); one of
+    // its own otherwise, so the trace never replaces the motion's. A
+    // moment is a function of `t` alone: the points are the same either
+    // way.
+    let reuse = open
+        .motion
+        .sweep
+        .as_ref()
+        .is_none_or(|(of, g, _)| Arc::ptr_eq(of, &shown) && *g == generation);
+    let mut own = (!reuse).then(|| Sweep::of(open, &shown));
+    let sweep: &mut Sweep = match own.as_mut() {
+        Some(own) => own,
+        None => open
+            .motion_sweep(&shown)
+            .map_err(|e| CommandError::new(format!("{ID}: {e}")))?,
+    };
     let in_assembly = match (&point, sweep.is_assembly()) {
         (_, false) => None,
         (
@@ -2559,136 +2714,240 @@ fn view_trace(session: &mut Session, params: &Value) -> Run {
             ));
         }
     };
-    if background {
-        // In a window: worked out on a copy of the sweep by the motion's
-        // builder, so the window goes on playing (the developer's field
-        // test of 2026-11-02 found a play stopped for as long as a trace
-        // of 641 samples built its configurations). Drawn when it is
-        // done (`Session::poll_motion`).
-        let mut copy = sweep.clone();
+    if !background {
+        let ts = samples_of(range, samples);
+        let points = trace_points(sweep, &point, in_assembly.as_deref(), &ts, &|| false)
+            .map_err(CommandError::new)?;
         let name = trace_name(open, given_name);
-        if let Some(asm) = copy.assembly.as_mut() {
-            asm.asm.deferred.clear();
-            // A trace's samples are not the play's frames: the copy keeps
-            // little of what it builds, and gives none of it to the motion
-            // (taken in, hundreds of configurations pushed a bake's frames
-            // out of the budget and the play built them again: the
-            // developer's field test of 2026-11-02, headless).
-            asm.asm
-                .set_config_budget(TRACE_CONFIG_BUDGET.min(asm.asm.config_budget()));
-        }
-        let described = point.describe();
-        let (job_base, job_point, job_name) = (Arc::clone(&base), point.clone(), name.clone());
-        let job_in_assembly = in_assembly.clone();
-        let job: crate::motion_build::GridJob =
-            Box::new(move |let_go: crate::motion_build::Cancel| {
-                if let Some(asm) = copy.assembly.as_mut() {
-                    asm.asm.cancel = Some(Arc::clone(&let_go));
-                }
-                let points = trace_points(
-                    &mut copy,
-                    &job_point,
-                    job_in_assembly.as_deref(),
-                    range,
-                    samples,
-                    &|| let_go(),
-                );
-                crate::motion_build::Worked {
-                    trace: Some(points.map(|points| Trace {
-                        base: job_base,
-                        generation,
-                        name: job_name,
-                        point: job_point.describe(),
-                        points,
-                        t: range,
-                        grow,
-                    })),
-                    ..crate::motion_build::Worked::default()
-                }
-            });
-        if open.motion.builder.queue_trace(job) {
-            open.motion.trace_error = None;
-            return Ok(json!({
-                "name": name,
-                "point": described,
-                "t": [range.0, range.1],
-                "samples": samples,
-                "grow": grow,
-                "pending": true,
-                "unit": length_unit(&base),
-            }));
-        }
-        // No thread after all: worked out here.
-        let sweep = open
-            .motion_sweep(&base)
-            .map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
-        let points = trace_points(
-            sweep,
-            &point,
-            in_assembly.as_deref(),
-            range,
-            samples,
-            &|| false,
-        )
-        .map_err(CommandError::new)?;
-        return add_trace(
-            open,
-            base,
-            generation,
-            Some(name),
-            point,
-            points,
-            range,
-            samples,
-            grow,
-        );
+        return add_trace(open, base, generation, name, point, points, range, grow);
     }
-    let points = trace_points(
-        sweep,
-        &point,
-        in_assembly.as_deref(),
+    // In a window: worked out by the motion's builder on a copy of the
+    // sweep, so the window goes on playing (the developer's field test of
+    // 2026-11-02 found a play stopped for as long as a trace of 641
+    // samples built its configurations on the engine thread). What is
+    // wrong with the point is said now: it is found at the first `t`.
+    trace_points(sweep, &point, in_assembly.as_deref(), &[range.0], &|| false)
+        .map_err(CommandError::new)?;
+    let mut copy = sweep.clone();
+    if let Some(asm) = copy.assembly.as_mut() {
+        asm.asm.deferred.clear();
+        // A trace's samples are not the play's frames: the copy keeps
+        // little of what it builds, and gives none of it to the motion
+        // (taken in, hundreds of configurations pushed a bake's frames
+        // out of the budget and the play built them again).
+        asm.asm
+            .set_config_budget(TRACE_CONFIG_BUDGET.min(asm.asm.config_budget()));
+    }
+    let name = trace_name(open, given_name);
+    let others = open
+        .traces()
+        .iter()
+        .filter(|t| t.name != name)
+        .count()
+        .saturating_add(
+            open.motion
+                .trace_jobs
+                .iter()
+                .filter(|(n, job)| **n != name && job.pending())
+                .count(),
+        );
+    if others >= MAX_TRACES {
+        return fail(format!(
+            "{ID}: {MAX_TRACES} traces are kept or being worked out already; remove some with clear"
+        ));
+    }
+    open.motion.trace_serial = open.motion.trace_serial.wrapping_add(1);
+    let serial = open.motion.trace_serial;
+    let run = TraceRun {
+        copy: Box::new(copy),
+        ts: samples_of(range, samples),
+        points: Vec::new(),
+        point: point.clone(),
+        in_assembly: in_assembly.clone(),
+        name: name.clone(),
+        base: Arc::clone(&base),
+        generation,
         range,
-        samples,
-        &|| false,
-    )
-    .map_err(CommandError::new)?;
-    add_trace(
-        open, base, generation, given_name, point, points, range, samples, grow,
-    )
+        grow,
+    };
+    if !open
+        .motion
+        .builder
+        .queue_trace(trace_job(run), name.clone(), serial)
+    {
+        // No thread after all: worked out here.
+        let ts = samples_of(range, samples);
+        let sweep = match own.as_mut() {
+            Some(own) => own,
+            None => open
+                .motion_sweep(&shown)
+                .map_err(|e| CommandError::new(format!("{ID}: {e}")))?,
+        };
+        let points = trace_points(sweep, &point, in_assembly.as_deref(), &ts, &|| false)
+            .map_err(CommandError::new)?;
+        return add_trace(open, base, generation, name, point, points, range, grow);
+    }
+    open.motion.trace_jobs.insert(
+        name.clone(),
+        TraceJob {
+            serial,
+            base: Arc::clone(&base),
+            generation,
+            error: None,
+        },
+    );
+    if wait {
+        return read_trace(session, &name, true);
+    }
+    Ok(json!({
+        "name": name,
+        "point": point.describe(),
+        "t": [range.0, range.1],
+        "samples": samples,
+        "grow": grow,
+        "pending": true,
+        "unit": length_unit(&base),
+    }))
 }
+
+/// A trace worked out in the background: the copy of the sweep it works
+/// on, the `t` of its samples and the points found so far, and what it
+/// is delivered as.
+struct TraceRun {
+    copy: Box<Sweep>,
+    ts: Vec<f64>,
+    points: Vec<Vec3>,
+    point: PointRef,
+    in_assembly: Option<String>,
+    name: String,
+    base: Arc<Document>,
+    generation: u64,
+    range: (f64, f64),
+    grow: bool,
+}
+
+/// Samples a background trace works out before it lets other jobs of the
+/// builder run (it goes on behind them): with one worker (a machine of
+/// four to seven threads), a trace of 641 samples held every other
+/// background build up for minutes.
+const TRACE_CHUNK: usize = 32;
+
+/// The job that works out the next [`TRACE_CHUNK`] samples of `run`, and
+/// hands on the job for the rest, or the trace when it is done.
+fn trace_job(mut run: TraceRun) -> crate::motion_build::GridJob {
+    Box::new(move |let_go: crate::motion_build::Cancel| {
+        if let Some(asm) = run.copy.assembly.as_mut() {
+            asm.asm.cancel = Some(Arc::clone(&let_go));
+        }
+        let from = run.points.len();
+        let to = from.saturating_add(TRACE_CHUNK).min(run.ts.len());
+        let ts: Vec<f64> = run
+            .ts
+            .get(from..to)
+            .map(<[f64]>::to_vec)
+            .unwrap_or_default();
+        let found = trace_points(
+            &mut run.copy,
+            &run.point,
+            run.in_assembly.as_deref(),
+            &ts,
+            &|| let_go(),
+        );
+        let found = match found {
+            Ok(found) => found,
+            Err(why) => {
+                return crate::motion_build::Worked {
+                    trace: Some(Err(why)),
+                    ..crate::motion_build::Worked::default()
+                };
+            }
+        };
+        run.points.extend(found);
+        if run.points.len() < run.ts.len() {
+            return crate::motion_build::Worked {
+                next: Some(trace_job(run)),
+                ..crate::motion_build::Worked::default()
+            };
+        }
+        crate::motion_build::Worked {
+            trace: Some(Ok(Trace {
+                base: run.base,
+                generation: run.generation,
+                name: run.name,
+                point: run.point.describe(),
+                points: run.points,
+                t: run.range,
+                grow: run.grow,
+            })),
+            ..crate::motion_build::Worked::default()
+        }
+    })
+}
+
+/// A trace asked for before, by its name: its result once it is worked
+/// out (`wait`: waiting for it, at most [`TRACE_WAIT`]), or why it failed.
+fn read_trace(session: &mut Session, name: &str, wait: bool) -> Run {
+    const ID: &str = "view.trace";
+    let deadline = std::time::Instant::now() + TRACE_WAIT;
+    loop {
+        let open = session.document_mut()?;
+        open.poll_motion();
+        open.check_trace_base();
+        if let Some(job) = open.motion.trace_jobs.get(name) {
+            if let Some(why) = &job.error {
+                return fail(format!("{ID}: trace `{name}`: {why}"));
+            }
+            if !wait || std::time::Instant::now() >= deadline {
+                return Ok(json!({"name": name, "pending": true}));
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            continue;
+        }
+        let Some(trace) = open.traces().iter().find(|t| t.name == name).cloned() else {
+            return fail(format!("{ID}: there is no trace `{name}`"));
+        };
+        return Ok(trace_json(&trace));
+    }
+}
+
+/// How long `view.trace {wait: true}` waits for a trace worked out in the
+/// background.
+const TRACE_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// The configurations a trace worked out in the background keeps while it
 /// works (its own copy of the motion's state): each sample asks for its
 /// own, used once.
 const TRACE_CONFIG_BUDGET: usize = 256 << 20;
 
-/// The name a new trace gets: the one given, else `Trace <n>` free.
+/// The name a new trace gets: the one given, else `Trace <n>` free (of
+/// the traces kept and those being worked out).
 fn trace_name(open: &mut OpenDocument, given: Option<String>) -> String {
+    let jobs: Vec<String> = open.motion.trace_jobs.keys().cloned().collect();
     let traces = open.traces();
     given.unwrap_or_else(|| {
         (1..)
             .map(|n| format!("Trace {n}"))
-            .find(|n| traces.iter().all(|t| &t.name != n))
+            .find(|n| traces.iter().all(|t| &t.name != n) && !jobs.contains(n))
             .unwrap_or_else(|| "Trace".to_string())
     })
 }
 
-/// The place of `point` at `samples` values of `t` over `range`, each
-/// moment made as `view.motion` makes it, in `sweep`; stops (an error)
-/// when `let_go` says so.
+/// The place of `point` at each of `ts`, each moment made as
+/// `view.motion` makes it, in `sweep`; stops (an error) when `let_go`
+/// says so.
 fn trace_points(
     sweep: &mut Sweep,
     point: &PointRef,
     in_assembly: Option<&str>,
-    range: (f64, f64),
-    samples: u64,
+    ts: &[f64],
     let_go: &dyn Fn() -> bool,
 ) -> Result<Vec<Vec3>, String> {
     const ID: &str = "view.trace";
     let mut points = Vec::new();
-    for t in samples_of(range, samples) {
+    for &t in ts {
         if let_go() {
-            return Err(format!("{ID}: let go of (the motion changed)"));
+            return Err("let go of: the motion changed before it was done".to_string());
         }
         let err = |e: String| format!("{ID}: `{}` at t = {t}: {e}", point.describe());
         let at = if let Some(name) = in_assembly {
@@ -2711,56 +2970,59 @@ fn add_trace(
     open: &mut OpenDocument,
     base: Arc<Document>,
     generation: u64,
-    given_name: Option<String>,
+    name: String,
     point: PointRef,
     points: Vec<Vec3>,
     range: (f64, f64),
-    samples: u64,
     grow: bool,
 ) -> Run {
     const ID: &str = "view.trace";
-    let tolerance = base.tolerance.linear;
+    open.motion.trace_jobs.remove(&name);
     let traces = open.traces();
-    let name = given_name.unwrap_or_else(|| {
-        (1..)
-            .map(|n| format!("Trace {n}"))
-            .find(|n| traces.iter().all(|t| &t.name != n))
-            .unwrap_or_else(|| "Trace".to_string())
-    });
     traces.retain(|trace| trace.name != name);
     if traces.len() >= MAX_TRACES {
         return fail(format!(
             "{ID}: {MAX_TRACES} traces are kept already; remove some with clear"
         ));
     }
-    traces.push(Trace {
-        base: Arc::clone(&base),
+    let trace = Trace {
+        base,
         generation,
-        name: name.clone(),
+        name,
         point: point.describe(),
-        points: points.clone(),
+        points,
         t: range,
         grow,
-    });
-    let closed = ends_where_it_began(&points, tolerance);
+    };
+    let answer = trace_json(&trace);
+    traces.push(trace);
+    Ok(answer)
+}
+
+/// What `view.trace` answers about a trace: its points and what is
+/// measured of them.
+fn trace_json(trace: &Trace) -> Value {
+    let points = &trace.points;
+    let tolerance = trace.base.tolerance.linear;
+    let closed = ends_where_it_began(points, tolerance);
     let bbox = craft3d_math::Bbox3::from_points(points.iter().copied());
-    let plane = plane_of(&points, tolerance).map_or(
+    let plane = plane_of(points, tolerance).map_or(
         Value::Null,
         |(at, n)| json!({"point": vec3(at), "normal": vec3(n)}),
     );
-    Ok(json!({
-        "name": name,
-        "point": point.describe(),
-        "t": [range.0, range.1],
-        "samples": samples,
-        "grow": grow,
+    json!({
+        "name": trace.name,
+        "point": trace.point,
+        "t": [trace.t.0, trace.t.1],
+        "samples": points.len(),
+        "grow": trace.grow,
         "points": points.iter().map(|p| vec3(*p)).collect::<Vec<_>>(),
-        "length": polyline_length(&points),
+        "length": polyline_length(points),
         "closed": closed,
         "box": bbox.corners().map(|(lo, hi)| json!([vec3(lo), vec3(hi)])),
         "plane": plane,
-        "unit": length_unit(&base),
-    }))
+        "unit": length_unit(&trace.base),
+    })
 }
 
 /// The drawing of a trace for `file.export {trace}`: the polyline in its
@@ -2778,6 +3040,15 @@ pub(crate) fn trace_drawing(
         ));
     };
     let open = session.document_mut()?;
+    open.poll_motion();
+    if let Some(job) = open.motion.trace_jobs.get(name) {
+        return fail(match &job.error {
+            None => format!(
+                "{command}: the trace `{name}` is still being worked out in the background; wait for it with view.trace {{name, wait: true}}"
+            ),
+            Some(why) => format!("{command}: the trace `{name}` could not be made: {why}"),
+        });
+    }
     let tolerance = open.history.current().tolerance.linear;
     let traces = open.traces();
     let Some(trace) = traces.iter().find(|t| &t.name == name) else {

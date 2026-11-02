@@ -72,6 +72,11 @@ pub(crate) struct Worked {
     /// A trace's points worked out (`view.trace` in the background): the
     /// trace, or why it could not be made.
     pub trace: Option<Result<crate::motion::Trace, String>>,
+    /// A run that goes on: the job for the rest, queued again behind what
+    /// waits (a trace a chunk of samples at a time).
+    pub next: Option<GridJob>,
+    /// What the run's panic said, when it panicked.
+    pub panicked: Option<String>,
     /// The run stopped short: it panicked, or a moment of it could not be
     /// made. A grid run that failed is not started again for this sweep
     /// (it would fail again, and the session would ask for it every
@@ -92,14 +97,22 @@ pub(crate) type GridJob = Box<dyn FnOnce(Cancel) -> Worked + Send>;
 pub(crate) type Cancel = Arc<dyn Fn() -> bool + Send + Sync>;
 
 /// Which run a run is.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum Run {
     /// Grid points solved (`Sweep::queue_grid`).
     Grid,
     /// Frames of a bake (`Sweep::queue_baked`).
     Frames,
-    /// A trace's points (`view.trace` in the background).
-    Trace,
+    /// A trace's points (`view.trace` in the background): its name and
+    /// the serial it was asked for with.
+    Trace(String, u64),
+}
+
+/// A trace worked out in the background, as it is handed in.
+pub(crate) struct TraceDone {
+    pub name: String,
+    pub serial: u64,
+    pub result: Result<crate::motion::Trace, String>,
 }
 
 /// What a worker is given.
@@ -111,7 +124,7 @@ enum Job {
 /// What a worker gives back.
 enum Done {
     Part(PartDone),
-    Grid(Worked, Run),
+    Grid(Box<Worked>, Run),
 }
 
 /// Most configurations queued or being built at once. Each job holds a
@@ -142,7 +155,7 @@ pub(crate) struct Builder {
     grid_failed: bool,
     /// Traces being worked out, and those done and not taken yet.
     traces_busy: usize,
-    traces_done: Vec<Result<crate::motion::Trace, String>>,
+    traces_done: Vec<TraceDone>,
     /// Configurations built and not taken yet: whatever call collects
     /// them keeps them here until [`Self::take`].
     parts_done: Vec<PartDone>,
@@ -246,11 +259,11 @@ impl Builder {
 
     /// Works out a trace's points in the background (`view.trace` in a
     /// window): false without a thread.
-    pub(crate) fn queue_trace(&mut self, job: GridJob) -> bool {
+    pub(crate) fn queue_trace(&mut self, job: GridJob, name: String, serial: u64) -> bool {
         if !Self::available() {
             return false;
         }
-        let queued = self.push(vec![Job::Grid(job, Run::Trace)], false);
+        let queued = self.push(vec![Job::Grid(job, Run::Trace(name, serial))], false);
         if queued {
             self.traces_busy = self.traces_busy.saturating_add(1);
         }
@@ -263,7 +276,7 @@ impl Builder {
     }
 
     /// The traces worked out since the last call.
-    pub(crate) fn take_traces(&mut self) -> Vec<Result<crate::motion::Trace, String>> {
+    pub(crate) fn take_traces(&mut self) -> Vec<TraceDone> {
         self.collect();
         std::mem::take(&mut self.traces_done)
     }
@@ -336,6 +349,7 @@ impl Builder {
                         }
                     }
                     Done::Grid(worked, run) => {
+                        let worked = *worked;
                         match run {
                             Run::Grid => {
                                 self.grid_busy = false;
@@ -344,11 +358,30 @@ impl Builder {
                             Run::Frames => {
                                 self.frames_busy = self.frames_busy.saturating_sub(1);
                             }
-                            Run::Trace => {
+                            Run::Trace(name, serial) => {
+                                if let Some(next) = worked.next {
+                                    // The rest, behind what waits now.
+                                    running.push(
+                                        self.epoch,
+                                        vec![Job::Grid(next, Run::Trace(name, serial))],
+                                        false,
+                                    );
+                                    continue;
+                                }
                                 self.traces_busy = self.traces_busy.saturating_sub(1);
-                                self.traces_done.push(worked.trace.unwrap_or_else(|| {
-                                    Err("the trace could not be worked out".to_string())
-                                }));
+                                let result = worked.trace.unwrap_or_else(|| {
+                                    Err(match &worked.panicked {
+                                        Some(why) => {
+                                            format!("the trace could not be worked out: {why}")
+                                        }
+                                        None => "the trace could not be worked out".to_string(),
+                                    })
+                                });
+                                self.traces_done.push(TraceDone {
+                                    name,
+                                    serial,
+                                    result,
+                                });
                             }
                         }
                         self.grid_done.extend(worked.steps);
@@ -716,11 +749,20 @@ mod native {
                     }
                 },
                 Job::Grid(job, run) => Done::Grid(
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(let_go)))
-                        .unwrap_or_else(|_| super::Worked {
-                            failed: true,
-                            ..super::Worked::default()
-                        }),
+                    Box::new(
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(let_go)))
+                            .unwrap_or_else(|payload| super::Worked {
+                                failed: true,
+                                panicked: Some(
+                                    payload
+                                        .downcast_ref::<&str>()
+                                        .map(|s| (*s).to_string())
+                                        .or_else(|| payload.downcast_ref::<String>().cloned())
+                                        .unwrap_or_else(|| "it panicked".to_string()),
+                                ),
+                                ..super::Worked::default()
+                            }),
+                    ),
                     run,
                 ),
             };

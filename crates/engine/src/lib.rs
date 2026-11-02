@@ -124,7 +124,7 @@ pub use commands_elsewhere::{Answered, CommandAnswer, CommandRequest};
 pub use craft3d_regen::progress::Progress;
 pub use memory_files::{MAX_MEMORY_BYTES, MAX_MEMORY_FILE_BYTES, MAX_MEMORY_FILES};
 pub use meshes::{BodyFacts, EdgePolylines};
-pub use motion::{COLLISION_COLOR, MotionView, TIMELINE, TraceView};
+pub use motion::{COLLISION_COLOR, MotionView, TIMELINE, TraceState, TraceView};
 pub use output_cmds::{OutputState, OutputStatus};
 pub use param_cmds::step_grid;
 pub use pick_cmds::{

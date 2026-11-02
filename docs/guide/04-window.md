@@ -188,7 +188,10 @@ assembly has no history of its own, so it shows only **Motion**: its parts are m
 
 An agent does the same with `view.motion {"t": 0.5, "collisions": true}`, draws a point's path with
 `view.trace` (`"grow": true` draws it only as far as the moment shown, so it grows while the motion plays;
-exported with `file.export {"path": "path.svg", "trace": "Trace 1"}`), checks assertions over the
+exported with `file.export {"path": "path.svg", "trace": "Trace 1"}`; in the window a trace is worked out in
+the background so the motion keeps playing: the answer says `"pending": true`, `view.trace {"name": "Trace 1",
+"wait": true}` gives the points once they are there, or why they could not be made, and `ui.get` lists every trace
+under `traces` with `pending` or `error`; `"background": false` works it out in the command), checks assertions over the
 motion with `motion.check` ([Measure and check](10-measure.md#over-a-motion)), and makes a video of it with
 `view.replay {"dir": "frames", "motion": {"frames": 120}}`.
 

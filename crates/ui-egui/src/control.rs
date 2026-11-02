@@ -287,7 +287,10 @@ impl Shell {
     ) -> Result<Value, String> {
         fields("ui.get", params, &[])?;
         let (scene, status) = match session {
-            Some(session) => (self.sync(session), session.document_status()),
+            Some(session) => {
+                self.sync_trace_states(session);
+                (self.sync(session), session.document_status())
+            }
             None => (self.shown_scene_arc(), self.shown_status().cloned()),
         };
         let [width, height] = self.viewport_size();
@@ -394,6 +397,7 @@ impl Shell {
             "problem": self.problem(),
             "work": self.work(),
             "workShown": self.work_shown(),
+            "traces": self.traces_json(),
             "tabs": self.tabs(),
             "closing": self.closing(),
             "quitting": self.quitting(),

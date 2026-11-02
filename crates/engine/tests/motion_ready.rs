@@ -394,47 +394,168 @@ fn bad_shapes_and_background_are_refused() {
     assert!(why.contains("background"), "{why}");
 }
 
+/// Every thread of the process's pool, held until dropped: the motion's
+/// background builder works on nothing meanwhile.
+fn freeze_pool() -> (
+    std::sync::MutexGuard<'static, ()>,
+    Vec<craft3d_math::pool::Lease>,
+) {
+    static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let one = ONE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut held = Vec::new();
+    let mut have = 0;
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while have < craft3d_math::pool::SHARED_THREADS {
+        let lease = craft3d_math::pool::lease(craft3d_math::pool::SHARED_THREADS);
+        have += lease.threads();
+        held.push(lease);
+        assert!(Instant::now() < deadline, "the pool never came back");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    (one, held)
+}
+
+/// The trace a fresh session works out in the command: the reference.
+fn trace_here(name: &str) -> Value {
+    let mut s = assembly_session(name);
+    run(
+        &mut s,
+        "view.trace",
+        json!({ "point": "Crank/F1:vertex(6)", "samples": 33, "name": "End" }),
+    )
+}
+
 /// In a window (`Session::set_bake_in_background`) a trace is worked out
 /// by the motion's builder: the command answers at once (pending, the
 /// trace not drawn yet), so the window goes on playing (the developer's
 /// field test of 2026-11-02: a play stood still while a trace of 641
-/// samples built its configurations on the engine thread); once polled in,
-/// its points are those the command works out itself.
+/// samples built its configurations on the engine thread). Asked for
+/// after a bake and a few moments, and with a budget of configurations so
+/// small that the trace's copy lets go of them as it goes, its result is
+/// bit for bit the one a fresh session works out in the command, and
+/// `view.trace {name, wait: true}` gives all of it.
 #[test]
 fn a_trace_in_a_window_is_worked_out_in_the_background() {
-    let trace = json!({ "point": "Crank/F1:vertex(6)", "samples": 33, "name": "End" });
-    let mut here = assembly_session("trace-here");
-    let made = run(&mut here, "view.trace", trace.clone());
-    let wanted = made["points"].clone();
-    assert_eq!(wanted.as_array().unwrap().len(), 33, "{made}");
+    let wanted = trace_here("trace-here");
+    assert_eq!(wanted["points"].as_array().unwrap().len(), 33, "{wanted}");
+    for budget in [None, Some(1usize)] {
+        let mut s = assembly_session(&format!("trace-behind-{}", budget.is_some()));
+        s.set_bake_in_background(true);
+        if let Some(bytes) = budget {
+            s.set_config_budget(bytes);
+        }
+        run(&mut s, "motion.bake", json!({ "frames": 8 }));
+        for t in [0.25, 0.5, 0.125] {
+            run(&mut s, "view.motion", json!({ "t": t, "shapes": "ready" }));
+        }
+        let answer = run(
+            &mut s,
+            "view.trace",
+            json!({ "point": "Crank/F1:vertex(6)", "samples": 33, "name": "End" }),
+        );
+        if craft3d_math::available_threads() >= 2 {
+            assert_eq!(answer["pending"], true, "{answer}");
+            assert!(answer["points"].is_null(), "{answer}");
+            let states = s.trace_states();
+            assert_eq!(states.len(), 1);
+            assert!(states[0].pending || states[0].length.is_some());
+        }
+        let got = run(&mut s, "view.trace", json!({ "name": "End", "wait": true }));
+        assert_eq!(got, wanted, "budget {budget:?}");
+        assert!(!s.traces_pending());
+        let states = s.trace_states();
+        assert_eq!(states[0].length, wanted["length"].as_f64());
+        assert_eq!(states[0].error, None);
+    }
+}
 
-    let mut s = assembly_session("trace-behind");
+/// What is wrong with the point is said at once, in the window too.
+#[test]
+fn a_background_trace_of_a_wrong_point_fails_at_once() {
+    let mut s = assembly_session("trace-wrong");
     s.set_bake_in_background(true);
-    let answer = run(&mut s, "view.trace", trace);
+    let why = error(
+        &mut s,
+        "view.trace",
+        json!({ "point": "Crank/F1:vertex(999)", "samples": 33 }),
+    );
+    assert!(why.contains("vertex(999)"), "{why}");
+    let why = error(
+        &mut s,
+        "view.trace",
+        json!({ "point": "Nobody/F1:vertex(0)", "samples": 33 }),
+    );
+    assert!(why.contains("Nobody"), "{why}");
+    assert!(s.trace_states().is_empty());
+}
+
+/// A trace the builder was working out when its work was let go of
+/// (`motion.bake {cancel: true}`) fails with why, never silently; one
+/// cleared while pending never comes back; two unnamed ones get names of
+/// their own, and the last asked for a name is the one kept.
+#[test]
+fn pending_traces_are_cancelled_cleared_and_named_as_asked() {
     if craft3d_math::available_threads() < 2 {
-        assert_eq!(answer["points"], wanted);
         return;
     }
-    assert_eq!(answer["pending"], true, "{answer}");
-    assert!(answer["points"].is_null(), "{answer}");
-    let deadline = Instant::now() + Duration::from_secs(120);
-    while s.traces().is_empty() {
-        assert!(
-            s.traces_pending() || s.trace_error().is_none(),
-            "{:?}",
-            s.trace_error()
-        );
+    let mut s = assembly_session("trace-pending");
+    s.set_bake_in_background(true);
+    let point = json!({ "point": "Crank/F1:vertex(6)", "samples": 9 });
+    let frozen = freeze_pool();
+    // Cancelled while it waits for a thread.
+    run(
+        &mut s,
+        "view.trace",
+        json!({ "point": "Crank/F1:vertex(6)", "name": "Cut" }),
+    );
+    run(&mut s, "motion.bake", json!({ "cancel": true }));
+    let why = error(&mut s, "view.trace", json!({ "name": "Cut" }));
+    assert!(why.contains("let go of"), "{why}");
+    let states = s.trace_states();
+    assert!(
+        states.iter().any(|t| t.name == "Cut" && t.error.is_some()),
+        "{states:?}"
+    );
+    // Two without a name: their own names.
+    let a = run(&mut s, "view.trace", point.clone());
+    let b = run(&mut s, "view.trace", point.clone());
+    assert_ne!(a["name"], b["name"], "{a} {b}");
+    // One cleared while pending, and one asked for twice under one name.
+    run(&mut s, "view.trace", json!({ "clear": a["name"].clone() }));
+    run(
+        &mut s,
+        "view.trace",
+        json!({ "point": "Crank/F1:vertex(6)", "samples": 5, "name": "Twice" }),
+    );
+    run(
+        &mut s,
+        "view.trace",
+        json!({ "point": "Crank/F1:vertex(6)", "samples": 7, "name": "Twice" }),
+    );
+    drop(frozen);
+    let twice = run(
+        &mut s,
+        "view.trace",
+        json!({ "name": "Twice", "wait": true }),
+    );
+    assert_eq!(twice["samples"], 7, "{twice}");
+    let other = run(
+        &mut s,
+        "view.trace",
+        json!({ "name": b["name"].clone(), "wait": true }),
+    );
+    assert_eq!(other["samples"], 9, "{other}");
+    // The cleared one has not come back, nor will it.
+    let deadline = Instant::now() + Duration::from_millis(300);
+    while Instant::now() < deadline {
         s.poll_motion();
-        assert!(Instant::now() < deadline, "the trace never came");
-        std::thread::sleep(Duration::from_millis(2));
+        std::thread::sleep(Duration::from_millis(5));
     }
-    assert!(!s.traces_pending());
-    let traces = s.traces();
-    let got: Vec<Value> = traces[0]
-        .points
-        .iter()
-        .map(|p| json!([p.x, p.y, p.z]))
-        .collect();
-    assert_eq!(traces[0].name, "End");
-    assert_eq!(Value::Array(got), wanted);
+    let names: Vec<String> = s.traces().iter().map(|t| t.name.clone()).collect();
+    assert!(
+        !names.contains(&a["name"].as_str().unwrap().to_string()),
+        "{names:?}"
+    );
 }

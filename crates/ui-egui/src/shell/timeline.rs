@@ -60,6 +60,11 @@ pub(crate) struct Timeline {
     /// A trace is worked out in the background (`view.trace` in a
     /// window): the window comes back now and then to draw it when done.
     pub(super) tracing: bool,
+    /// The traces as the session last listed them: kept, pending or
+    /// failed (`ui.get` `traces`).
+    pub(super) trace_states: Vec<craft3d_engine::TraceState>,
+    /// The failed traces already said to the person (by name and why).
+    pub(super) trace_errors_told: std::collections::BTreeSet<(String, String)>,
 }
 
 impl Timeline {
@@ -178,6 +183,7 @@ impl Shell {
         self.timeline.rollback = rollback;
         self.timeline.motion = session.motion();
         self.timeline.has_timeline = session.timeline().is_ok();
+        self.sync_trace_states(session);
         let traces = session.traces();
         if !same_traces(&traces, &self.timeline.traces) {
             self.timeline.traces = traces;
@@ -305,6 +311,41 @@ impl Shell {
                 .map_err(|e| e.message().to_string())?;
         }
         Ok(!requests.is_empty())
+    }
+
+    /// Takes in the session's traces, kept, pending or failed; a trace
+    /// worked out in the background that failed is said to the person,
+    /// once.
+    pub(crate) fn sync_trace_states(&mut self, session: &mut Session) {
+        self.timeline.trace_states = session.trace_states();
+        for state in &self.timeline.trace_states {
+            if let Some(why) = &state.error
+                && self
+                    .timeline
+                    .trace_errors_told
+                    .insert((state.name.clone(), why.clone()))
+            {
+                self.timeline.problem = Some(format!("Trace {}: {why}", state.name));
+            }
+        }
+    }
+
+    /// The traces as `ui.get` lists them: `[{name, pending, error,
+    /// length, closed}]`.
+    pub fn traces_json(&self) -> Value {
+        self.timeline
+            .trace_states
+            .iter()
+            .map(|t| {
+                json!({
+                    "name": t.name,
+                    "pending": t.pending,
+                    "error": t.error,
+                    "length": t.length,
+                    "closed": t.closed,
+                })
+            })
+            .collect()
     }
 
     /// The timeline as `ui.get` reports it: the steps, where the view is

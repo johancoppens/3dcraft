@@ -132,7 +132,9 @@ a joint by a formula of it.
 Each moment is solved from the one before it, so the linkage stays the way it was assembled (elbow up stays up),
 and the same `t` always shows the same state. Where the mechanism cannot go further (a dead point), `view.motion`
 says so with the `t` it stopped at, and `motion.check` lists every dead point it meets. A trace names its point
-through an instance, as a mate does: `view.trace {"point": "Coupler/End2"}`.
+through an instance, as a mate does: `view.trace {"point": "Coupler/End2"}`. In the window the trace of an
+assembly is worked out in the background, as a bake is, so a play does not stop for it; read it with
+`view.trace {"name": …, "wait": true}` ([The window](04-window.md#playing-a-motion)).
 
 An instance whose parameters are formulas of `t` (a belt whose loop follows the carriage) is a new configuration at
 every moment, built when the moment is first shown. `motion.bake` builds them all ahead, side by side, so the motion

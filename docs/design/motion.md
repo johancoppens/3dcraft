@@ -84,6 +84,24 @@ It is sampled at evenly spaced `t` over a range, by one `Sweep` in order, and fa
 it is gone, naming that `t` (rule 4: a name that is gone is never retargeted). A trace is view state of one document
 state, at most 32 per document, let go of at the next edit.
 
+**In the background** (2026-11-02, after the developer's field test: a trace of 641 samples asked for while the
+router played stopped the play for as long as the command built its configurations). In the window
+(`Session::set_bake_in_background`) `view.trace` defaults to `background: true`: the point is first found at
+`t[0]` in the command (a wrong name fails at once), then the samples are worked out by the motion's builder on a
+copy of the motion's sweep (`TraceRun`, 32 samples a job, each job queued again behind what waits, so a machine
+with one background worker still builds a play's configurations in between), with a configuration budget of its
+own (256 MiB) and nothing handed back to the motion (taken in, the trace's configurations pushed a bake's frames
+out of the budget). The command answers `pending: true`; `Motion::trace_jobs` keeps each pending or failed trace by
+name with a serial, so only the last asked for a name is taken, a cleared one is never taken, names are reserved
+when asked, and the 32-trace limit counts pending ones. A reset of the builder (`motion.bake {cancel}`,
+`view.motion {t: null}`, a new sweep, a motion that cannot be shown, an edit: `check_trace_base`) fails the pending
+traces with `let go of: …`. `view.trace {name, wait?}` reads one (its full answer, the error, or pending; `wait`
+waits up to 600 s), `ui.get` lists them (`traces: [{name, pending, error, length, closed}]`), and the window says a
+failed one in the timeline's problem line. Worked out in the command, a trace uses the motion's own sweep when it
+runs over the state the view shows below the motion (the scrubbed one), else a sweep of its own, never replacing the
+motion's. A trace's points are the same bit for bit whichever way it was worked out
+(`crates/engine/tests/motion_ready.rs`, also after a bake and with a budget of one byte).
+
 The window draws a trace as a polyline over the picture, tested against the depth buffer like a sketch (dimmed
 behind a body), in the theme's `trace` colour, in both overlay paths (`viewport.rs` for the CPU raster and the
 screenshot, `direct.rs` for the GPU drawing on the window's device). Every path that draws the window's picture
