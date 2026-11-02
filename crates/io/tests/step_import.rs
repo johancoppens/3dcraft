@@ -702,6 +702,13 @@ fn an_edge_off_its_face_between_the_samples_is_refused() {
     let error = zig.build(0, &options).unwrap_err().to_string();
     assert!(error.contains("edge #17"), "{error}");
     assert!(error.contains("refused rather than moved"), "{error}");
+    // Why, in the message: the file's curve and surface, how far the
+    // edge lies off at samples (1 mm, at an odd point).
+    assert!(error.contains("a POLYLINE"), "{error}");
+    assert!(
+        error.contains("face #12 (PLANE): sampled up to 1.00e0 off"),
+        "{error}"
+    );
     // Within the cap (2e-4 mm): read, the edge given its proven gap.
     let small = parse(zigzag_sheet(2e-4).as_bytes()).unwrap();
     let sheet = small.build(0, &options).unwrap();
