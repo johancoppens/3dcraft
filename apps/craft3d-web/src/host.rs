@@ -343,6 +343,10 @@ pub struct WebHost {
     /// number of their command, with what the export dialog asked when
     /// it asked: their files come with the answer ([`WebHost::answered`]).
     deferred_exports: Vec<(u64, Option<ExportRequest>)>,
+    /// What the export dialog offers, being read where the bodies are
+    /// (`crate::jobs::EXPORT_CHOICES`): the job's number and the document
+    /// it is for; the dialog opens with its answer.
+    export_choices: Option<(u64, Option<u64>)>,
     /// The long work is done a piece per frame ([`WebHost::prepare`]), as
     /// the page does: its one thread draws between the pieces.
     stepwise: bool,
@@ -395,6 +399,7 @@ impl WebHost {
             companion: None,
             pending_export: None,
             deferred_exports: Vec::new(),
+            export_choices: None,
             stepwise: false,
             about: None,
             fetching: None,
@@ -884,6 +889,13 @@ impl WebHost {
     /// the last frame.
     pub fn pump(&mut self) -> Outcome {
         let mut outcome = Outcome::default();
+        // An edit made where the bodies are waits for its answer: what was
+        // asked for after it waits too, in its queue, and runs on the
+        // document the edit leaves, in the order asked (as the desktop's
+        // engine thread runs one task after the other).
+        if self.session.edits_waiting() {
+            return outcome;
+        }
         if let Some(action) = self.shell.take_file_action() {
             outcome = self.file_action(action);
         }
@@ -997,6 +1009,22 @@ impl WebHost {
             // Without them the dialog asks the name itself.
             FileAction::Export => {
                 self.shell.set_export_names_file(!self.pickers);
+                if self.shell.export_dialog_open() || self.export_choices.is_some() {
+                    return outcome;
+                }
+                // What the dialog offers needs the bodies (what is
+                // selected, the patterns): read where they are when the
+                // page does not have them, and the dialog opens with the
+                // answer ([`Self::answered`]).
+                let document = self.session.document_status().map(|s| s.id);
+                if document.is_some()
+                    && let Some(token) = self
+                        .session
+                        .hand_over(crate::jobs::EXPORT_CHOICES, &json!({}))
+                {
+                    self.export_choices = Some((token, document));
+                    return outcome;
+                }
                 if let Err(e) = self.shell.open_export(&mut self.session) {
                     self.report("file.export", &Err(e));
                 }
@@ -1141,9 +1169,8 @@ impl WebHost {
     /// `file.export` can take them. The file (and an OBJ's material
     /// library) are the downloads.
     pub fn export_as(&mut self, name: &str) -> Vec<Download> {
-        let mut plan = self.shell.state.export.plan();
-        plan.what = craft3d_ui_egui::files::following_selection(&mut self.session);
-        let files = self.export_with(name, plan);
+        let plan = self.shell.state.export.plan();
+        let files = self.export_plan(name, plan, true);
         // Exported: the format the next export dialog chooses first.
         if !files.is_empty()
             && let Some(format) = craft3d_ui_egui::files::ExportFormat::of_name(name)
@@ -1156,10 +1183,34 @@ impl WebHost {
     /// [`Self::export_as`] as the export dialog was answered: what goes
     /// in and the options ([`craft3d_ui_egui::files::export_params`]).
     pub fn export_with(&mut self, name: &str, plan: ExportPlan) -> Vec<Download> {
+        self.export_plan(name, plan, false)
+    }
+
+    /// [`Self::export_with`], or the plan with what is selected now when
+    /// `following` ([`Self::export_as`]). Where the page does not have
+    /// the bodies, the whole export is a job of the worker that has them
+    /// (`crate::jobs::EXPORT`: its choices resolved there, the file
+    /// written there), whose files come with the answer: the page never
+    /// regenerates or meshes for it.
+    fn export_plan(&mut self, name: &str, mut plan: ExportPlan, following: bool) -> Vec<Download> {
         let Some(name) = memory_name(name) else {
             self.finish("file.export", &Err(format!("`{name}` is not a file name")));
             return Vec::new();
         };
+        if self.session.document_status().is_some()
+            && let Some(token) = self.session.hand_over(
+                crate::jobs::EXPORT,
+                &crate::jobs::export_params(&name, &plan, following),
+            )
+        {
+            self.deferred_exports.push((token, None));
+            self.note("file.export", true, format!("Exporting `{name}`…"));
+            self.forget_files();
+            return Vec::new();
+        }
+        if following {
+            plan.what = craft3d_ui_egui::files::following_selection(&mut self.session);
+        }
         let exported = export_params(&mut self.session, &name, &plan).and_then(|extra| {
             let mut params = json!({ "path": name });
             if let Some(map) = params.as_object_mut() {
@@ -1319,6 +1370,13 @@ impl WebHost {
     pub fn answered(&mut self, answered: Vec<craft3d_engine::Answered>) -> Outcome {
         let mut outcome = Outcome::default();
         for answer in answered {
+            if let Some((token, document)) = self.export_choices
+                && token == answer.token
+            {
+                self.export_choices = None;
+                self.choices_answered(document, answer.result);
+                continue;
+            }
             let export = self
                 .deferred_exports
                 .iter()
@@ -1334,10 +1392,19 @@ impl WebHost {
                 .collect();
             // The file asked for first, then what goes with it (an OBJ's
             // library), as an export on the page hands them on.
-            let asked = answer.params.get("path").and_then(Value::as_str);
+            let asked = answer
+                .params
+                .get("path")
+                .or_else(|| answer.params.get("name"))
+                .and_then(Value::as_str);
             files.sort_by_key(|file| Some(file.name.as_str()) != asked);
             let Some((_, request)) = export else {
-                if answer.command == "select.set" {
+                if answer.edited {
+                    // An edit made where the bodies are, now applied
+                    // here: reported, and the window shows the new state
+                    // as after any edit.
+                    self.finish(&answer.command, &answer.result);
+                } else if answer.command == "select.set" {
                     if let Err(why) = &answer.result {
                         self.note("select.set", false, why.clone());
                     }
@@ -1374,6 +1441,35 @@ impl WebHost {
             }
         }
         outcome
+    }
+
+    /// What the export dialog offers, read where the bodies are for the
+    /// document `document`: the dialog opens with it while that document
+    /// is still the one shown; an error says why it cannot.
+    fn choices_answered(&mut self, document: Option<u64>, result: Result<Value, String>) {
+        let shown = self.session.document_status().map(|s| s.id);
+        if shown != document {
+            self.note_error(
+                "file.export",
+                "another document is shown now than the one Export was asked for; export again"
+                    .to_string(),
+            );
+            return;
+        }
+        let opened = result.and_then(|value| {
+            let choices: craft3d_ui_egui::files::ExportChoices = serde_json::from_value(value)
+                .map_err(|e| format!("file.export: what to export cannot be read: {e}"))?;
+            self.shell.open_export_with(&mut self.session, choices)
+        });
+        if let Err(e) = opened {
+            self.report("file.export", &Err(e));
+        }
+    }
+
+    /// True while the export dialog's choices are being read where the
+    /// bodies are (it opens with the answer).
+    pub fn export_choices_waiting(&self) -> bool {
+        self.export_choices.is_some()
     }
 
     /// The system's save dialog named the file of the export made last
@@ -1646,13 +1742,15 @@ mod tests {
             host.session.scene_done(token);
         }
         assert!(!host.session.regenerated_here());
-        // Written now (the export dialog's own reads, which answer at
-        // once, needed the bodies on the page) or by the worker.
+        let work = host.session.work_here();
+        // Written by the worker, its choices resolved there (2026-11-02):
+        // nothing now.
         let now = host.export_as("plate.obj");
+        assert!(now.is_empty());
         let mut answered = Vec::new();
         for token in host.session.command_jobs() {
             let request = host.session.command_request(token).unwrap();
-            let answer = craft3d_engine::run_command(&request.document, &request.work);
+            let answer = crate::jobs::run(&request.document, &request.work);
             answered.extend(host.session.command_answered(token, Ok(answer)));
         }
         let mut outcome = host.answered(answered);
@@ -1664,12 +1762,13 @@ mod tests {
         };
         assert_eq!(files(&outcome.downloads), files(&want));
         assert!(host.shell.last_command.as_ref().is_some_and(|r| r.ok));
+        assert_eq!(host.session.work_here(), work);
     }
 
     /// Bodies selected, a slider moved, then Export: only the selected
     /// bodies are written, as on a page that regenerates itself. The
-    /// export's own reads (what is selected) answer at once on the page;
-    /// only the export goes to the worker.
+    /// export's own reads (what is selected) are made in the worker with
+    /// the export (2026-11-02; before, on the page).
     #[test]
     fn a_selection_then_a_slider_then_export_writes_only_the_selection() {
         let steps = [
@@ -1720,7 +1819,7 @@ mod tests {
             let mut answered = Vec::new();
             for token in host.session.command_jobs() {
                 let request = host.session.command_request(token).unwrap();
-                let answer = craft3d_engine::run_command(&request.document, &request.work);
+                let answer = crate::jobs::run(&request.document, &request.work);
                 answered.extend(host.session.command_answered(token, Ok(answer)));
             }
             answered
@@ -1743,14 +1842,17 @@ mod tests {
             .unwrap();
         settle(&mut host);
         assert!(!host.session.regenerated_here());
-        // Written now (the dialog's own reads needed the bodies here) or
-        // by the worker: either way only the selection.
+        // Written by the worker: only the selection, the page never
+        // regenerating for it.
+        let work = host.session.work_here();
         let mut written = host.export_as("part.stl");
+        assert!(written.is_empty());
         let answered = settle(&mut host);
         written.extend(host.answered(answered).downloads);
         assert_eq!(written.len(), 1);
         assert_eq!(written[0].bytes, want[0].bytes);
         assert_eq!(host.shell.state.export.format.extension(), "stl");
+        assert_eq!(host.session.work_here(), work);
     }
 
     fn modelled() -> WebHost {

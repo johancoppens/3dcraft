@@ -25,8 +25,10 @@
 //! - `pickers` (wasm32 only): the system's file dialogs and writing to
 //!   the file one chose.
 //! - [`checks`]: the assertions and outputs measured in a Web Worker;
-//!   [`scenes`]: the document regenerated and meshed in another; `worker`
-//!   (wasm32 only) is such a worker and its messages.
+//!   [`scenes`]: the document regenerated and meshed in another, which
+//!   also runs what needs its bodies ([`jobs`]: a command, an edit, an
+//!   export from the menu); `worker` (wasm32 only) is such a worker and
+//!   its messages.
 //!
 //! The page runs on its own thread plus two Web Workers, one for the
 //! checks and one for the regeneration and meshing, which share no memory
@@ -39,10 +41,13 @@
 //! changes is closed. Building the site: `cargo xtask package --formats
 //! web` (docs/development.md, Web build).
 
+#[cfg(test)]
+mod beside_tests;
 pub mod checks;
 pub mod flags;
 pub mod fonts;
 pub mod host;
+pub mod jobs;
 #[cfg(target_arch = "wasm32")]
 mod page;
 #[cfg(target_arch = "wasm32")]

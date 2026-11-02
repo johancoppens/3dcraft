@@ -17,7 +17,8 @@
 //! `WebAssembly.Module`, so the worker compiles nothing); the worker
 //! answers a check with `{token, reply}`, a scene with a `{token, part}`
 //! per part (a `Uint8Array`, its buffer handed over, not copied) and
-//! `{token, done}`; `{token, fatal}` when the work threw (a panic aborts
+//! `{token, done}`, a command (`kind: "command"`) with `{token, command,
+//! files, documents}`; `{token, fatal}` when the work threw (a panic aborts
 //! the module: a bug), or `{token, unavailable}` when the module could
 //! not be started there. An error that escapes the worker (it could not
 //! be loaded) arrives as its `error` event. Every reply is put in its
@@ -61,11 +62,17 @@ pub fn craft3d_scene_step(budget_ms: f64) -> Option<Vec<u8>> {
 }
 
 /// What the regenerating worker answers a command with, run where the
-/// bodies are (`craft3d_engine::run_command`): `{answer, files}`, the
-/// files as `[name, Uint8Array]` pairs.
+/// bodies are (`crate::jobs::run`: a command, or the page's own job such
+/// as an export): `{answer, files, documents}`, the files as `[name,
+/// Uint8Array]` pairs, the documents an edit left (one per undo step) as
+/// `Uint8Array`s.
 #[wasm_bindgen]
 pub fn craft3d_command(document: &[u8], work: &str) -> JsValue {
-    let answered = craft3d_engine::run_command(document, work);
+    let answered = crate::jobs::run(document, work);
+    let documents = js_sys::Array::new();
+    for bytes in &answered.documents {
+        documents.push(&js_sys::Uint8Array::from(&bytes[..]));
+    }
     let files = js_sys::Array::new();
     for (name, bytes) in &answered.files {
         let pair = js_sys::Array::new();
@@ -80,6 +87,7 @@ pub fn craft3d_command(document: &[u8], work: &str) -> JsValue {
         &JsValue::from_str(&answered.answer),
     );
     let _ = js_sys::Reflect::set(&reply, &JsValue::from_str("files"), &files);
+    let _ = js_sys::Reflect::set(&reply, &JsValue::from_str("documents"), &documents);
     reply.into()
 }
 
@@ -269,9 +277,22 @@ fn reply_of(data: &JsValue, name: &str) -> Reply {
                 }
             }
         }
+        let documents = get("documents")
+            .and_then(|v| v.dyn_into::<js_sys::Array>().ok())
+            .map(|list| {
+                list.iter()
+                    .filter_map(|bytes| bytes.dyn_into::<js_sys::Uint8Array>().ok())
+                    .map(|bytes| bytes.to_vec())
+                    .collect()
+            })
+            .unwrap_or_default();
         return Reply::Command {
             token,
-            answer: Ok(craft3d_engine::CommandAnswer { answer, files }),
+            answer: Ok(craft3d_engine::CommandAnswer {
+                answer,
+                files,
+                documents,
+            }),
         };
     }
     if let Some(why) = field("unavailable") {

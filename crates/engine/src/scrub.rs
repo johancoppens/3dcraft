@@ -326,6 +326,7 @@ impl OpenDocument {
         {
             cache.take_bodies_from(last);
         }
+        self.work.regenerated();
         let regen = Arc::new(craft3d_regen::regenerate_cached(&doc, &mut cache));
         let (rebuilt, reused) = cache.last_run();
         self.scrub.last = ScrubRegeneration {

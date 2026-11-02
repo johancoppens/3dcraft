@@ -887,7 +887,9 @@ fn checked_alone(
     doc: Document,
 ) -> Result<(Vec<Checked>, std::sync::Arc<Resolved>), CommandError> {
     let active = session.active;
-    session.documents.push(OpenDocument::new(doc, None));
+    let mut alone = OpenDocument::new(doc, None);
+    alone.work = std::sync::Arc::clone(&session.work);
+    session.documents.push(alone);
     session.active = session.documents.len().saturating_sub(1);
     let checked = session.checks_and_outputs(Wait::All);
     session.documents.pop();

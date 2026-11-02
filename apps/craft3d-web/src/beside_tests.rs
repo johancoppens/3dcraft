@@ -1,0 +1,505 @@
+//! The page with its regenerating worker, natively: the page's own
+//! [`WebHost`] and [`Scenes`] over a [`Transport`] whose worker answers
+//! with what `worker.js` runs (`scene_begin`/`scene_next` for scenes,
+//! [`crate::jobs::run`] for commands and the page's own jobs), a frame at
+//! a time as `page.rs` drives them. What it checks: every export from the
+//! menu, the dialog's choices included, and every edit that needs the
+//! bodies are made in the worker, with the bytes and the document a page
+//! that regenerates itself makes, while the page's session regenerates
+//! and meshes nothing (`Session::work_here`); a worker that dies or hangs
+//! mid-job is reported and replaced, never waited for.
+
+#![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
+
+use crate::checks::{Reply, Transport};
+use crate::host::{Download, Outcome, Pick, WebHost};
+use crate::scenes::{COMMAND_TOO_LONG, DEADLINE_MS, Scenes};
+use craft3d_engine::{Session, Workspace, measure_checks, scene_begin, scene_next};
+use craft3d_ui_egui::FileAction;
+use craft3d_ui_egui::files::{ExportFormat, ExportWhat};
+use craft3d_ui_egui::shell::Shell;
+use serde_json::json;
+use std::cell::RefCell;
+use std::rc::Rc;
+
+enum Job {
+    Scene(u64, Vec<u8>, String),
+    Command(u64, Vec<u8>, String),
+}
+
+/// The worker: keeps what it is posted and answers it when the frame
+/// asks, or dies (`Reply::Failed`), or never answers.
+#[derive(Clone, Default)]
+struct Beside {
+    jobs: Rc<RefCell<Vec<Job>>>,
+    stops: Rc<RefCell<usize>>,
+    /// The next answer is its death.
+    dies: Rc<RefCell<bool>>,
+    /// It answers nothing (it hangs).
+    hangs: Rc<RefCell<bool>>,
+}
+
+impl Transport for Beside {
+    fn post(&mut self, token: u64, document: &[u8], work: &str) -> Result<(), String> {
+        self.jobs
+            .borrow_mut()
+            .push(Job::Scene(token, document.to_vec(), work.into()));
+        Ok(())
+    }
+    fn post_command(&mut self, token: u64, document: &[u8], work: &str) -> Result<(), String> {
+        self.jobs
+            .borrow_mut()
+            .push(Job::Command(token, document.to_vec(), work.into()));
+        Ok(())
+    }
+    fn stop(&mut self) {
+        *self.stops.borrow_mut() += 1;
+        self.jobs.borrow_mut().clear();
+    }
+    fn cancel(&mut self) {}
+}
+
+impl Beside {
+    fn answers(&self) -> Vec<Reply> {
+        if *self.hangs.borrow() {
+            return Vec::new();
+        }
+        if *self.dies.borrow() && !self.jobs.borrow().is_empty() {
+            *self.dies.borrow_mut() = false;
+            self.jobs.borrow_mut().clear();
+            return vec![Reply::Failed("the worker stopped (out of memory)".into())];
+        }
+        let mut replies = Vec::new();
+        for job in self.jobs.borrow_mut().drain(..) {
+            match job {
+                Job::Scene(token, document, work) => {
+                    scene_begin(&document, &work);
+                    while let Some(bytes) = scene_next() {
+                        replies.push(Reply::Part { token, bytes });
+                    }
+                    replies.push(Reply::Done { token });
+                }
+                Job::Command(token, document, work) => {
+                    replies.push(Reply::Command {
+                        token,
+                        answer: Ok(crate::jobs::run(&document, &work)),
+                    });
+                }
+            }
+        }
+        replies
+    }
+}
+
+/// The page: its host, and its regenerating worker; the checks measured
+/// by their own worker's code, answered in the same frame.
+struct Page {
+    host: WebHost,
+    scenes: Scenes<Beside>,
+    worker: Beside,
+    clock: f64,
+}
+
+impl Page {
+    fn new(pickers: bool) -> Self {
+        let mut host = WebHost::new(Shell::new());
+        host.pickers = pickers;
+        host.set_stepwise(true);
+        host.session.set_checks_elsewhere(true);
+        let worker = Beside::default();
+        let scenes = Scenes::new(worker.clone(), &mut host.session);
+        Self {
+            host,
+            scenes,
+            worker,
+            clock: 0.0,
+        }
+    }
+
+    /// One frame, as `page.rs` runs it: the File menu's work, then what
+    /// the worker answered, then the checks.
+    fn frame(&mut self) -> Outcome {
+        let mut outcome = self.host.pump();
+        self.clock += 16.0;
+        let quality = self.host.shell.scene_quality();
+        let replies = self.worker.answers();
+        let done = self
+            .scenes
+            .frame_at(&mut self.host.session, quality, replies, self.clock);
+        let answered = self.host.answered(done.commands);
+        outcome.downloads.extend(answered.downloads);
+        outcome.pick = outcome.pick.or(answered.pick);
+        self.host.prepare(|| true);
+        while let Some(token) = self.host.session.checks_job() {
+            let request = self.host.session.checks_request(token).unwrap();
+            let answer = measure_checks(&request.document, &request.work);
+            self.host.session.checks_answered(token, Ok(&answer));
+        }
+        outcome
+    }
+
+    /// Frames until nothing waits for the worker.
+    fn settle(&mut self) -> Outcome {
+        let mut outcome = Outcome::default();
+        for _ in 0..50 {
+            let more = self.frame();
+            outcome.downloads.extend(more.downloads);
+            outcome.pick = outcome.pick.or(more.pick);
+            let quality = self.host.shell.scene_quality();
+            if self.scenes.busy().is_none()
+                && !self.host.session.commands_waiting()
+                && self.host.session.scene_job(quality).is_none()
+                && !self.host.export_choices_waiting()
+            {
+                return outcome;
+            }
+        }
+        panic!("the page never settled");
+    }
+
+    /// File › Export answered as `what` in `format`: what the page is
+    /// left to offer once the worker answered.
+    fn export(&mut self, what: &ExportWhat, format: ExportFormat) -> Outcome {
+        assert_eq!(
+            self.host.file_action(FileAction::Export),
+            Outcome::default()
+        );
+        // What the dialog offers is read in the worker: open once it
+        // answered.
+        assert!(!self.host.shell.export_dialog_open());
+        self.settle();
+        assert!(self.host.shell.export_dialog_open());
+        self.host.shell.set_export_what(what.clone()).unwrap();
+        self.host.shell.set_export_format(format).unwrap();
+        self.host.shell.answer_export(true);
+        let request = self.host.shell.take_export_answer().unwrap();
+        let now = self.host.export_request(request);
+        assert_eq!(now, Outcome::default(), "made in the worker, not now");
+        self.settle()
+    }
+}
+
+/// A plate with a colour, a sheet-metal part and a named set of flat
+/// faces: every kind of export has something to write.
+fn model() -> Vec<u8> {
+    let mut s = Session::new(Workspace::memory());
+    for (id, params) in [
+        ("file.new", json!({"units": "mm"})),
+        (
+            "feature.block",
+            json!({"size": [40, 20, 10], "name": "Plate"}),
+        ),
+        (
+            "body.appearance",
+            json!({"body": "Plate", "color": "#2060c0"}),
+        ),
+        ("sketch.create", json!({"plane": "xy", "name": "S"})),
+        (
+            "sketch.rect",
+            json!({"sketch": "S", "from": [60, 0], "to": [110, 40]}),
+        ),
+        (
+            "feature.sheetMetal",
+            json!({"sketch": "S", "name": "Part", "thickness": "1 mm", "radius": "1 mm",
+                "kFactor": 0.4, "flanges": [{"edge": "e6", "length": "15 mm", "angle": "90 deg"}]}),
+        ),
+        (
+            "set.define",
+            json!({"name": "Tops", "kind": "face", "where": {"normal": {"along": "z"}, "in": "Plate"}}),
+        ),
+    ] {
+        s.execute(id, &params)
+            .unwrap_or_else(|e| panic!("{id}: {}", e.message()));
+    }
+    s.execute("file.save", &json!({"path": "model.3dcraft"}))
+        .unwrap();
+    s.take_file("model.3dcraft").unwrap()
+}
+
+/// A host that regenerates itself (no worker): the bytes to compare.
+fn in_process(bytes: &[u8]) -> WebHost {
+    let mut host = WebHost::new(Shell::new());
+    host.receive("model.3dcraft", bytes.to_vec(), None).unwrap();
+    host
+}
+
+fn opened(bytes: &[u8], pickers: bool) -> Page {
+    let mut page = Page::new(pickers);
+    page.host
+        .receive("model.3dcraft", bytes.to_vec(), None)
+        .unwrap();
+    page.settle();
+    page
+}
+
+fn files(downloads: &[Download]) -> Vec<(String, Vec<u8>)> {
+    downloads
+        .iter()
+        .map(|d| (d.name.clone(), d.bytes.clone()))
+        .collect()
+}
+
+/// The same export on a page that regenerates itself, through the same
+/// dialog.
+fn wanted(host: &mut WebHost, what: &ExportWhat, format: ExportFormat) -> Vec<Download> {
+    assert_eq!(host.file_action(FileAction::Export), Outcome::default());
+    host.shell.set_export_what(what.clone()).unwrap();
+    host.shell.set_export_format(format).unwrap();
+    host.shell.answer_export(true);
+    let request = host.shell.take_export_answer().unwrap();
+    host.export_request(request).downloads
+}
+
+/// Every export from the menu, in every format and of every kind of
+/// *What* (the model, the selection, a set's sheet, a flat pattern), is
+/// made in the worker: the dialog's choices read there, the file written
+/// there, the same bytes as a page that regenerates itself, the OBJ with
+/// its library; and the page's session never regenerates or meshes.
+#[test]
+fn every_export_from_the_menu_is_made_where_the_bodies_are() {
+    let bytes = model();
+    let mut want = in_process(&bytes);
+    let mut page = opened(&bytes, false);
+    let work = page.host.session.work_here();
+    let cases = [
+        (ExportWhat::Model, ExportFormat::Step),
+        (ExportWhat::Model, ExportFormat::Stl),
+        (ExportWhat::Model, ExportFormat::ThreeMf),
+        (ExportWhat::Model, ExportFormat::Obj),
+        (ExportWhat::Model, ExportFormat::Dxf),
+        (ExportWhat::Model, ExportFormat::Svg),
+        (ExportWhat::Set("Tops".into()), ExportFormat::Svg),
+        (ExportWhat::SheetMetal("Part".into()), ExportFormat::Dxf),
+    ];
+    for (what, format) in &cases {
+        let want = wanted(&mut want, what, *format);
+        assert!(!want.is_empty(), "{what:?} {format:?}");
+        let got = page.export(what, *format);
+        assert_eq!(files(&got.downloads), files(&want), "{what:?} {format:?}");
+        assert!(page.host.shell.error_dialog().is_none(), "{what:?}");
+        assert!(page.host.session.file_names().is_empty());
+        assert_eq!(page.host.session.work_here(), work, "{what:?} {format:?}");
+    }
+    // A face selected (a click, answered by the worker): the dialog
+    // offers the selection, and its outline is the selection's; one body
+    // selected, its mesh only.
+    for (name, format) in [("Plate", ExportFormat::Stl)] {
+        let click = json!({"names": [name]});
+        want.session.execute("select.set", &click).unwrap();
+        page.host
+            .session
+            .execute_deferrable("select.set", &click)
+            .unwrap();
+        page.settle();
+        let want = wanted(&mut want, &ExportWhat::Selection, format);
+        let got = page.export(&ExportWhat::Selection, format);
+        assert_eq!(files(&got.downloads), files(&want), "{name}");
+        assert_eq!(page.host.session.work_here(), work, "{name}");
+    }
+    let top = want
+        .session
+        .execute(
+            "select.query",
+            &json!({"kind": "face", "where": {"in": "Plate", "normal": {"along": "z"}}, "then": "replace"}),
+        )
+        .unwrap();
+    let face = top["items"][0]["name"].as_str().unwrap().to_string();
+    page.host
+        .session
+        .execute_deferrable(
+            "select.set",
+            &json!({"items": [{"kind": "face", "name": face, "feature": "F1"}]}),
+        )
+        .unwrap();
+    page.settle();
+    let want = wanted(&mut want, &ExportWhat::Selection, ExportFormat::Dxf);
+    let got = page.export(&ExportWhat::Selection, ExportFormat::Dxf);
+    assert_eq!(files(&got.downloads), files(&want));
+    assert_eq!(page.host.session.work_here(), work);
+}
+
+/// With the system's file dialogs: the export is made in the worker
+/// before its dialog, and the dialog is asked for with the file made
+/// (an OBJ's library waits for its own click); a failing export shows
+/// the error as on the desktop and no dialog at all.
+#[test]
+fn with_file_dialogs_the_file_is_made_in_the_worker_before_the_dialog() {
+    let bytes = model();
+    let mut page = opened(&bytes, true);
+    let mut want = in_process(&bytes);
+    want.pickers = true;
+    let got = page.export(&ExportWhat::Model, ExportFormat::Obj);
+    assert!(got.downloads.is_empty());
+    let Some(Pick::Export { file }) = got.pick else {
+        panic!("{:?}", got.pick)
+    };
+    let wanted = {
+        assert_eq!(want.file_action(FileAction::Export), Outcome::default());
+        want.shell.set_export_what(ExportWhat::Model).unwrap();
+        want.shell.set_export_format(ExportFormat::Obj).unwrap();
+        want.shell.answer_export(true);
+        let request = want.shell.take_export_answer().unwrap();
+        want.export_request(request)
+    };
+    let Some(Pick::Export { file: want_file }) = wanted.pick else {
+        panic!()
+    };
+    assert_eq!(
+        (&file.name, &file.bytes),
+        (&want_file.name, &want_file.bytes)
+    );
+    let library = page.host.companion.clone().unwrap();
+    assert_eq!(library.bytes, want.companion.clone().unwrap().bytes);
+    // A selection a mesh cannot hold (an edge): the dialog does not offer
+    // it any more, so the edge is selected after the dialog was answered
+    // as the selection; the worker refuses it as the page would.
+    let work = page.host.session.work_here();
+    page.host.companion = None;
+    page.host
+        .session
+        .execute_deferrable(
+            "select.query",
+            &json!({"kind": "face", "limit": 1, "then": "replace"}),
+        )
+        .unwrap();
+    page.settle();
+    assert_eq!(
+        page.host.file_action(FileAction::Export),
+        Outcome::default()
+    );
+    page.settle();
+    page.host
+        .shell
+        .set_export_what(ExportWhat::Selection)
+        .unwrap();
+    page.host
+        .shell
+        .set_export_format(ExportFormat::Dxf)
+        .unwrap();
+    page.host.shell.answer_export(true);
+    let request = page.host.shell.take_export_answer().unwrap();
+    page.host
+        .session
+        .execute_deferrable(
+            "select.query",
+            &json!({"kind": "edge", "limit": 1, "then": "replace"}),
+        )
+        .unwrap();
+    page.settle();
+    page.host.export_request(request);
+    let failed = page.settle();
+    assert!(failed.pick.is_none() && failed.downloads.is_empty());
+    assert_eq!(
+        page.host.shell.error_dialog().map(|e| e.title.as_str()),
+        Some("Could not export")
+    );
+    assert_eq!(page.host.session.work_here(), work);
+}
+
+/// A worker that dies while it makes an export: the export is an error
+/// the person sees (never waited for), the worker is replaced, and the
+/// next export is made by the new one. One that hangs is given up at the
+/// deadline the same way.
+#[test]
+fn a_worker_that_dies_or_hangs_mid_export_is_reported_and_replaced() {
+    let bytes = model();
+    let mut page = opened(&bytes, false);
+    let work = page.host.session.work_here();
+    assert_eq!(
+        page.host.file_action(FileAction::Export),
+        Outcome::default()
+    );
+    page.settle();
+    page.host.shell.set_export_what(ExportWhat::Model).unwrap();
+    page.host
+        .shell
+        .set_export_format(ExportFormat::Step)
+        .unwrap();
+    page.host.shell.answer_export(true);
+    let request = page.host.shell.take_export_answer().unwrap();
+    page.host.export_request(request);
+    *page.worker.dies.borrow_mut() = true;
+    let died = page.settle();
+    assert!(died.downloads.is_empty());
+    let error = page.host.shell.error_dialog().unwrap();
+    assert!(error.message.contains("stopped"), "{error:?}");
+    assert_eq!(*page.worker.stops.borrow(), 1);
+    page.host.shell.close_error_dialog();
+    let again = page.export(&ExportWhat::Model, ExportFormat::Step);
+    assert_eq!(again.downloads.len(), 1);
+    // Hangs: nothing comes; at the deadline it is given up.
+    assert_eq!(
+        page.host.file_action(FileAction::Export),
+        Outcome::default()
+    );
+    page.settle();
+    page.host.shell.answer_export(true);
+    let request = page.host.shell.take_export_answer().unwrap();
+    page.host.export_request(request);
+    *page.worker.hangs.borrow_mut() = true;
+    page.frame();
+    assert!(page.host.session.commands_waiting());
+    page.clock += DEADLINE_MS + 1.0;
+    page.frame();
+    assert!(!page.host.session.commands_waiting());
+    let error = page.host.shell.error_dialog().unwrap();
+    assert!(
+        error.message.contains(&COMMAND_TOO_LONG[1..40]),
+        "{error:?}"
+    );
+    assert_eq!(*page.worker.stops.borrow(), 2);
+    assert_eq!(page.host.session.work_here(), work);
+}
+
+/// An edit that needs the bodies, asked for on the page, is made in the
+/// worker and applied to the page's history: the same document as a page
+/// that regenerates itself, undone as any edit. What was asked for after
+/// it (an undo) waits for it and runs on the document it leaves.
+#[test]
+fn an_edit_that_needs_the_bodies_is_made_in_the_worker_and_undone_here() {
+    let bytes = model();
+    let mut want = in_process(&bytes);
+    let mut page = opened(&bytes, false);
+    let work = page.host.session.work_here();
+    let add = json!({"name": "plate", "measure": "volume", "of": "Plate", "eq": "8000 * (1 mm)^3", "tol": "1e-6 * (1 mm)^3"});
+    let wanted = want.session.execute("assert.add", &add).unwrap();
+    let now = page
+        .host
+        .session
+        .execute_deferrable("assert.add", &add)
+        .unwrap();
+    assert_eq!(now["deferred"], true);
+    let before = page.host.session.document_bytes();
+    // An undo asked for meanwhile waits for the edit.
+    let id = page.host.session.document_status().unwrap().id;
+    page.host
+        .shell
+        .request_edit_action(craft3d_ui_egui::shell::EditAction::Undo, id);
+    assert!(page.host.session.edits_waiting());
+    let report_before = page.host.shell.last_command.clone();
+    page.host.pump();
+    assert_eq!(page.host.session.document_bytes(), before, "held back");
+    assert_eq!(page.host.shell.last_command, report_before);
+    // The worker answers: the edit is applied, then the undo runs.
+    for _ in 0..10 {
+        if !page.host.session.edits_waiting() {
+            break;
+        }
+        page.frame();
+    }
+    assert!(!page.host.session.edits_waiting());
+    assert_eq!(
+        page.host.session.document_bytes(),
+        want.session.document_bytes()
+    );
+    let report = page.host.shell.last_command.clone().unwrap();
+    assert!(report.ok, "{report:?} {wanted}");
+    page.frame();
+    assert_eq!(
+        page.host.session.document_bytes(),
+        before,
+        "undone after it"
+    );
+    page.settle();
+    assert_eq!(page.host.session.work_here(), work);
+}

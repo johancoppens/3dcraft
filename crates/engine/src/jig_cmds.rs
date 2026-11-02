@@ -120,6 +120,7 @@ fn thumbnail_of(
     let active = session.active;
     let mut copy = OpenDocument::new((**document).clone(), None);
     copy.cache = session.document()?.cache.clone();
+    copy.work = std::sync::Arc::clone(&session.work);
     session.documents.push(copy);
     session.active = session.documents.len().saturating_sub(1);
     let drawn = thumbnail_png(session);

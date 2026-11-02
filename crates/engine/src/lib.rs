@@ -139,8 +139,8 @@ pub use recovery::{
     parse_autosave_interval,
 };
 pub use regen_elsewhere::{
-    SceneRequest, SceneStep, run_command, scene_begin, scene_bytes, scene_forget, scene_next,
-    scene_step,
+    SceneRequest, SceneStep, run_command, run_on_state, scene_begin, scene_bytes, scene_forget,
+    scene_next, scene_step,
 };
 pub use report::{
     FailedCommand, MAX_REPORT_FIELD_CHARS, VERSION, bug_report, build_commit, platform,
@@ -275,6 +275,37 @@ pub(crate) struct OpenDocument {
     /// (`commands_elsewhere.rs`): `Some`, and true once it asked for a
     /// regeneration that is not there (it was handed an empty one).
     pub(crate) forbid_regen: Option<bool>,
+    /// What regenerating it cost this session: shared with the session
+    /// that holds it ([`Session::work_here`]).
+    pub(crate) work: Arc<WorkHere>,
+}
+
+/// How often a session regenerated a document and meshed a body itself,
+/// on its own thread: shared by the session, its documents and its
+/// clones (a command tried without the bodies is tried on one), so a
+/// host that has that work done elsewhere (the page's Web Worker,
+/// `regen_elsewhere.rs`) can check that it never does it
+/// ([`Session::work_here`]).
+#[derive(Debug, Default)]
+pub(crate) struct WorkHere {
+    regenerations: std::sync::atomic::AtomicU64,
+}
+
+impl WorkHere {
+    pub(crate) fn regenerated(&self) {
+        self.regenerations
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// [`Session::work_here`]: the regenerations of a document (whole or
+/// a piece of one, a scrubbed state's too) and the bodies meshed for its
+/// scenes, since the session was made. A body is meshed for an export or
+/// a measure only once a regeneration made it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WorkCount {
+    pub regenerations: u64,
+    pub meshes: u64,
 }
 
 /// A regeneration cache with the budget of bodies the environment asks
@@ -324,6 +355,7 @@ impl OpenDocument {
             motion: motion::Motion::default(),
             asm: asm::AsmState::default(),
             forbid_regen: None,
+            work: Arc::default(),
         }
     }
 
@@ -417,6 +449,7 @@ impl OpenDocument {
                 Arc::new(Regen::default())
             }
             _ => {
+                self.work.regenerated();
                 let regen = Arc::new(craft3d_regen::regenerate_cached_needing(
                     self.history.current(),
                     &mut self.cache,
@@ -498,6 +531,12 @@ pub struct Session {
     /// host's worker, while the document is not regenerated here
     /// (`commands_elsewhere.rs`): the jobs handed out and waiting.
     pub(crate) commands: commands_elsewhere::Commands,
+    /// What this session regenerated and meshed itself
+    /// ([`Session::work_here`]).
+    pub(crate) work: Arc<WorkHere>,
+    /// While a command runs for another session (`run_on_state`): the
+    /// undo steps its edits made, for that session to make the same.
+    pub(crate) edit_log: Option<Vec<commands_elsewhere::EditStep>>,
 }
 
 /// Most documents open at once.
@@ -532,6 +571,20 @@ impl Session {
             pictures: pictures::Hosted::default(),
             video: pictures::Hosted::default(),
             commands: commands_elsewhere::Commands::default(),
+            work: Arc::default(),
+            edit_log: None,
+        }
+    }
+
+    /// How often this session regenerated a document and meshed a body
+    /// itself since it was made (what it was answered from elsewhere does
+    /// not count): a host that has the long work done by its worker
+    /// checks with it that its own thread never does it.
+    pub fn work_here(&self) -> WorkCount {
+        use std::sync::atomic::Ordering::Relaxed;
+        WorkCount {
+            regenerations: self.work.regenerations.load(Relaxed),
+            meshes: self.scene.meshes.made(),
         }
     }
 
@@ -597,6 +650,15 @@ impl Session {
         self.documents
             .get(self.active)
             .map(|d| d.history.revision())
+    }
+
+    /// The active document as it is now, as the bytes of its `.3dcraft`
+    /// file (without a thumbnail): two sessions whose documents give the
+    /// same bytes hold the same design. `None` without a document or when
+    /// it cannot be written.
+    pub fn document_bytes(&self) -> Option<Vec<u8>> {
+        let open = self.documents.get(self.active)?;
+        craft3d_format::to_bytes(open.history.current()).ok()
     }
 
     /// The command registry, in a fixed order.
@@ -827,6 +889,7 @@ impl Session {
     }
 
     fn execute_exact(&mut self, id: &str, params: &Value) -> Result<Value, CommandError> {
+        let asked = params;
         let Some(spec) = Self::command(id) else {
             let hint = commands::closest(id)
                 .map(|c| format!("; did you mean `{c}`?"))
@@ -860,7 +923,7 @@ impl Session {
         let mut outcome =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(self, &params)));
         if let Some(snapshot) = trial {
-            match self.after_trial(snapshot, id, &params) {
+            match self.after_trial(snapshot, id, &params, asked) {
                 commands_elsewhere::Trial::Kept => {}
                 commands_elsewhere::Trial::Deferred(result) => {
                     self.new_when = None;
@@ -938,6 +1001,7 @@ impl Session {
             )));
         }
         let mut document = document;
+        document.work = Arc::clone(&self.work);
         if let Some(budget) = self.body_budget {
             document.cache.set_body_budget(budget);
         }

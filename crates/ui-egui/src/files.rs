@@ -531,7 +531,7 @@ impl ExportWhat {
 }
 
 /// What a pattern of a DXF or SVG export is drawn from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PatternKind {
     /// A sheet-metal part: its flat pattern, with its bend lines.
     SheetMetal,
@@ -567,7 +567,7 @@ impl PatternKind {
 
 /// The flat pattern of one sheet-metal part, or the crease pattern of one
 /// fold, as the export dialog offers it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FlatPattern {
     pub kind: PatternKind,
     /// The feature's name, as `file.export` is given it ("every part"
@@ -647,7 +647,7 @@ pub const MAX_EXPORT_TEXT: usize = 200;
 
 /// How the person chose to export, in the export dialog: what goes into
 /// the file and how (the format is the file's name's).
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ExportPlan {
     pub what: ExportWhat,
     /// How finely a mesh follows the model (STL, 3MF, OBJ).
@@ -668,7 +668,7 @@ pub fn is_mesh(name: &str) -> bool {
 
 /// What is selected, as the export dialog offers it: in which formats it
 /// can be exported, and why in none when it cannot.
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct SelectionChoice {
     /// `select.get`'s summary: "1 body, 2 faces".
     pub summary: String,
@@ -681,7 +681,7 @@ pub struct SelectionChoice {
 /// What the export dialog offers for the active document, read when it
 /// opens: the selection, the named sets that may hold faces, and the
 /// sheet-metal parts' and folds' patterns.
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ExportChoices {
     /// `None` when nothing is selected.
     pub selection: Option<SelectionChoice>,
@@ -981,6 +981,32 @@ pub fn export_params(
         params.push(("quality", Value::String(plan.quality.name().to_string())));
     }
     Ok(params)
+}
+
+/// The whole of an export to `name` as `plan` says (what is selected
+/// now when `following`: [`following_selection`]): its parameters
+/// ([`export_params`]), then `file.export`. What a host runs where the
+/// bodies are (the page's worker), on the state and selection the export
+/// was asked for, so that the reads it needs (what is selected, the
+/// patterns) never regenerate on the host's own thread.
+pub fn export_where_bodies_are(
+    session: &mut Session,
+    name: &str,
+    plan: &ExportPlan,
+    following: bool,
+) -> Result<Value, String> {
+    let mut plan = plan.clone();
+    if following {
+        plan.what = following_selection(session);
+    }
+    let extra = export_params(session, name, &plan)?;
+    let mut params = json!({ "path": name });
+    if let Some(map) = params.as_object_mut() {
+        for (key, value) in extra {
+            map.insert(key.to_string(), value);
+        }
+    }
+    guarded(session, "file.export", &params)
 }
 
 #[cfg(test)]

@@ -56,6 +56,10 @@ pub struct CommandAnswer {
     pub answer: String,
     /// The files the command wrote, by name.
     pub files: Vec<(String, Vec<u8>)>,
+    /// The document after each undo step an edit made, as the bytes of
+    /// its `.3dcraft` file, in order (the answer's `steps` say how each
+    /// was made): what the host applies to its own history.
+    pub documents: Vec<Vec<u8>>,
 }
 
 /// A command run elsewhere and answered, for the host to report.
@@ -69,6 +73,32 @@ pub struct Answered {
     /// The files it wrote, now in this session's memory
     /// ([`Session::take_file`]).
     pub files: Vec<String>,
+    /// It edited the document: its edit is applied here now, as one undo
+    /// step (or as the steps it made), as if it had run here.
+    pub edited: bool,
+}
+
+/// What a job handed over may do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum JobKind {
+    /// A command that only reads: its result, the selection, the files.
+    Read,
+    /// A command that may edit the document: the edit is made there,
+    /// where the bodies are, and applied here from its answer.
+    Edit,
+    /// A host's own job ([`Session::hand_over`]): the host's code runs
+    /// there on the state (an export with its choices resolved).
+    Host,
+}
+
+/// An undo step an edit made, as `edit_merging` made it: what the host
+/// needs to make the same step in its own history.
+#[derive(Clone, Debug)]
+pub(crate) struct EditStep {
+    pub label: String,
+    pub key: Option<String>,
+    pub merge: bool,
+    pub after: Arc<Document>,
 }
 
 #[derive(Clone, Debug)]
@@ -91,6 +121,9 @@ pub(crate) struct CommandJob {
     /// The window's camera, when it was given for this document (an
     /// export `view: "current"` draws what the window shows).
     camera: Option<Value>,
+    kind: JobKind,
+    /// The document is a Jig in use (only its parameters change).
+    jig_in_use: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -158,8 +191,17 @@ impl Session {
         Some(snapshot)
     }
 
-    /// After a command tried without the bodies.
-    pub(crate) fn after_trial(&mut self, snapshot: Session, id: &str, params: &Value) -> Trial {
+    /// After a command tried without the bodies. `params` as the command
+    /// read them, `asked` as they were given (an edit runs there from
+    /// these: its `when` and the feature names in its face names are
+    /// taken there again, from the same state).
+    pub(crate) fn after_trial(
+        &mut self,
+        snapshot: Session,
+        id: &str,
+        params: &Value,
+        asked: &Value,
+    ) -> Trial {
         self.commands.busy = false;
         let tried = snapshot.documents.get(snapshot.active).map(|open| open.id);
         let mut wanted = false;
@@ -180,11 +222,28 @@ impl Session {
                 .any(|(now, was)| {
                     now.id != was.id || now.history.revision() != was.history.revision()
                 });
+        // Another document than the active one, or another active one:
+        // not an edit of the one document a job carries.
+        let elsewhere_too = self.documents.len() != snapshot.documents.len()
+            || self.active != snapshot.active
+            || self
+                .documents
+                .iter()
+                .zip(&snapshot.documents)
+                .enumerate()
+                .any(|(at, (now, was))| {
+                    now.id != was.id
+                        || (at != self.active && now.history.revision() != was.history.revision())
+                });
         self.restore(snapshot);
-        if edited || !answered_elsewhere(id) {
+        let kind = if answered_elsewhere(id) && !edited {
+            JobKind::Read
+        } else if edits_elsewhere(id) && !elsewhere_too && self.edits_can_cross() {
+            JobKind::Edit
+        } else {
             self.commands.busy = true;
             return Trial::RunHere;
-        }
+        };
         let Some(open) = self.documents.get(self.active) else {
             return Trial::RunHere;
         };
@@ -192,11 +251,75 @@ impl Session {
         let token = self.commands.token;
         let current = open.history.current();
         let serial = open.selection.serial();
-        let follows = self
-            .commands
-            .jobs
-            .iter()
-            .any(|j| j.doc_id == open.id && j.serial == serial && Arc::ptr_eq(&j.doc, current));
+        // Selections chain only from reads (two clicks that add); an
+        // edit is run on the selection it read.
+        let follows = kind == JobKind::Read
+            && self.commands.jobs.iter().any(|j| {
+                j.kind == JobKind::Read
+                    && j.doc_id == open.id
+                    && j.serial == serial
+                    && Arc::ptr_eq(&j.doc, current)
+            });
+        let camera = self
+            .window_camera
+            .as_ref()
+            .filter(|(id, _)| *id == open.id)
+            .map(|(_, camera)| camera_wire(camera));
+        let params = match kind {
+            JobKind::Edit => asked.clone(),
+            _ => params.clone(),
+        };
+        self.commands.jobs.push(CommandJob {
+            token,
+            doc_id: open.id,
+            doc: Arc::clone(open.history.current()),
+            command: id.to_string(),
+            params,
+            selection: open.selection.to_wire(),
+            serial,
+            posted: false,
+            follows,
+            camera,
+            kind,
+            jig_in_use: open.jig_in_use,
+        });
+        Trial::Deferred(json!({
+            "deferred": true,
+            "job": token,
+            "summary": format!("{id} runs where the bodies are; its answer follows"),
+        }))
+    }
+
+    /// An edit of the active document can be made where the bodies are
+    /// and applied here: its view is not scrubbed to an earlier state
+    /// (view state the other side does not have). A motion's moment is
+    /// view state too; a motion shown on the page is regenerated there
+    /// (`view.motion`), until its playback gets a worker of its own.
+    fn edits_can_cross(&mut self) -> bool {
+        self.documents
+            .get_mut(self.active)
+            .is_some_and(|open| open.scrubbed_to().is_none())
+    }
+
+    /// Hands the host's own job over to be run where the bodies are, on
+    /// the active document as it is now with its selection (and the
+    /// window's camera): `command` names it for the other side's host
+    /// code (`craft3d-web`'s `jobs.rs`), which runs it with
+    /// [`crate::run_on_state`]; its answer comes back as a command's
+    /// does ([`Session::command_answered`]). `None` when the active
+    /// document is regenerated here (or not elsewhere at all): the host
+    /// does the job itself.
+    pub fn hand_over(&mut self, command: &str, params: &Value) -> Option<u64> {
+        if !self.commands.enabled
+            || self.commands.jobs.len() >= MAX_JOBS
+            || !self.regen_elsewhere()
+            || self.regenerated_here()
+        {
+            return None;
+        }
+        let open = self.documents.get(self.active)?;
+        self.commands.token = self.commands.token.wrapping_add(1).max(1);
+        let token = self.commands.token;
         let camera = self
             .window_camera
             .as_ref()
@@ -206,19 +329,27 @@ impl Session {
             token,
             doc_id: open.id,
             doc: Arc::clone(open.history.current()),
-            command: id.to_string(),
+            command: command.to_string(),
             params: params.clone(),
             selection: open.selection.to_wire(),
-            serial,
+            serial: open.selection.serial(),
             posted: false,
-            follows,
+            follows: false,
             camera,
+            kind: JobKind::Host,
+            jig_in_use: open.jig_in_use,
         });
-        Trial::Deferred(json!({
-            "deferred": true,
-            "job": token,
-            "summary": format!("{id} runs where the bodies are; its answer follows"),
-        }))
+        Some(token)
+    }
+
+    /// True while an edit handed over waits for its answer: a host keeps
+    /// the commands asked for after it until it is applied, so that they
+    /// run on the document it leaves, in the order they were asked for.
+    pub fn edits_waiting(&self) -> bool {
+        self.commands
+            .jobs
+            .iter()
+            .any(|job| job.kind == JobKind::Edit)
     }
 
     /// [`Session::execute`] for a command a person or an agent asked for:
@@ -281,6 +412,7 @@ impl Session {
             "selection": job.selection,
             "follows": job.follows,
             "camera": job.camera,
+            "jigInUse": job.jig_in_use,
         });
         Ok(CommandRequest {
             token,
@@ -301,10 +433,21 @@ impl Session {
     ) -> Option<Answered> {
         let at = self.commands.jobs.iter().position(|j| j.token == token)?;
         let job = self.commands.jobs.remove(at);
+        let revision = self
+            .documents
+            .iter()
+            .find(|open| open.id == job.doc_id)
+            .map(|open| open.history.revision());
         let result = self.take_answer(&job, answer);
         if let Err(why) = &result {
             self.record_failure(&job.command, &job.params, why);
         }
+        let edited = self
+            .documents
+            .iter()
+            .find(|open| open.id == job.doc_id)
+            .map(|open| open.history.revision())
+            != revision;
         let (result, files) = match result {
             Ok((value, files)) => (Ok(value), files),
             Err(why) => (Err(why), Vec::new()),
@@ -315,6 +458,7 @@ impl Session {
             params: job.params,
             result,
             files,
+            edited,
         })
     }
 
@@ -346,7 +490,13 @@ impl Session {
             ));
         };
         if reply.get("edited") == Some(&Value::Bool(true)) {
-            // It changes the document: run here, as it always was.
+            if job.kind == JobKind::Edit
+                && let Some(applied) = self.apply_edit(at, &job.doc, &reply, answer.documents)
+            {
+                return applied.map(|value| (value, Vec::new()));
+            }
+            // It changes the document and its edit cannot be taken from
+            // there: run here, as it always was.
             if at != self.active {
                 return Err(format!("{id}: another document is shown now; run it again"));
             }
@@ -383,6 +533,100 @@ impl Session {
     }
 }
 
+impl Session {
+    /// Applies the edit an answer brings to the document at `at`, still
+    /// in the state `doc` the edit was made on: each undo step it made,
+    /// as `edit_merging` would have made it here (its label, and folded
+    /// into the last step as a run of the same key is), so undo and redo
+    /// see one step as after any edit. `None` when the answer's steps
+    /// cannot be taken (none, or a document that does not read, or a
+    /// state that does not cross the file as it is here): the caller
+    /// runs the command here instead.
+    fn apply_edit(
+        &mut self,
+        at: usize,
+        doc: &Arc<Document>,
+        reply: &Value,
+        documents: Vec<Vec<u8>>,
+    ) -> Option<Result<Value, String>> {
+        let steps = reply.get("steps")?.as_array()?;
+        if steps.is_empty() || steps.len() != documents.len() {
+            return None;
+        }
+        // The other side made the edit on the state read from its file:
+        // taken only when that is this state, field for field (a format
+        // that left something out would otherwise lose it here).
+        let crossed = craft3d_format::to_bytes(doc)
+            .ok()
+            .and_then(|bytes| craft3d_format::from_bytes(&bytes).ok())?;
+        if crossed != **doc {
+            return None;
+        }
+        let mut made = Vec::with_capacity(steps.len());
+        for (step, bytes) in steps.iter().zip(&documents) {
+            let label = step.get("label")?.as_str()?.to_string();
+            let key = step.get("key").and_then(Value::as_str).map(str::to_string);
+            let merge = step.get("merge").and_then(Value::as_bool).unwrap_or(false);
+            let after = craft3d_format::from_bytes(bytes).ok()?;
+            made.push((label, key, merge, after));
+        }
+        let open = self.documents.get_mut(at)?;
+        for (label, key, merge, after) in made {
+            let applied = open
+                .history
+                .apply_merging(&label, key.as_deref(), merge, |current| {
+                    *current = after;
+                    Ok::<(), ()>(())
+                });
+            if applied.is_err() {
+                return None;
+            }
+        }
+        // What it left selected, checked against this state once it is
+        // regenerated here.
+        if let Some(wire) = reply.get("selection").filter(|s| !s.is_null())
+            && let Some(selection) = Selection::from_wire(wire, None)
+        {
+            open.selection = selection;
+        }
+        self.recovery_sync(false);
+        Some(match reply.get("error") {
+            Some(error) => Err(error.as_str().unwrap_or("failed").to_string()),
+            None => Ok(reply.get("ok").cloned().unwrap_or(Value::Null)),
+        })
+    }
+}
+
+/// The commands that may edit the document and are handed over when
+/// they need the bodies (`assert.add`, a feature that follows a face or
+/// an edge): their edit is made there and applied here from the answer
+/// (`apply_edit`), in the order asked (a host keeps later commands while
+/// one waits: [`Session::edits_waiting`]). The families whose commands
+/// change the document and nothing else; not the texts, whose fonts are
+/// files of this session the other side does not have, and not
+/// `view.motion`, whose moments are regenerated where the motion is
+/// played (the hook for that: a motion's states handed over as a job of
+/// their own, the motion's view state kept here).
+fn edits_elsewhere(id: &str) -> bool {
+    const FAMILIES: [&str; 13] = [
+        "feature.",
+        "sketch.",
+        "datum.",
+        "assert.",
+        "variable.",
+        "param.",
+        "body.",
+        "face.",
+        "set.",
+        "table.",
+        "output.",
+        "fold.",
+        "unfold.",
+    ];
+    FAMILIES.iter().any(|family| id.starts_with(family))
+        && !matches!(id, "sketch.text" | "sketch.textEdit" | "sketch.textOnCurve")
+}
+
 /// The commands that are handed over when they need the bodies: those
 /// that only read the document, whose effects are a result, the
 /// selection and files written, which is all an answer carries. A
@@ -397,6 +641,8 @@ fn answered_elsewhere(id: &str) -> bool {
         || matches!(
             id,
             "file.export"
+                | "assert.list"
+                | "document.check"
                 | "document.inspect"
                 | "document.edges"
                 | "document.measure"
@@ -410,6 +656,7 @@ pub(crate) fn answer_json(
     result: Result<Value, CommandError>,
     edited: bool,
     selection: Option<Value>,
+    steps: &[EditStep],
 ) -> String {
     let mut answer = match result {
         Ok(value) => json!({ "ok": value }),
@@ -418,6 +665,13 @@ pub(crate) fn answer_json(
     if let Some(map) = answer.as_object_mut() {
         map.insert("edited".into(), Value::Bool(edited));
         map.insert("selection".into(), selection.unwrap_or(Value::Null));
+        if !steps.is_empty() {
+            let steps: Vec<Value> = steps
+                .iter()
+                .map(|step| json!({"label": step.label, "key": step.key, "merge": step.merge}))
+                .collect();
+            map.insert("steps".into(), Value::Array(steps));
+        }
     }
     answer.to_string()
 }

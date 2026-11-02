@@ -642,6 +642,24 @@ pub fn scene_forget() {
 /// selection it left when that changed, and the files it wrote. A job of
 /// scenes in hand goes on afterwards. Never panics on any input.
 pub fn run_command(document: &[u8], work: &str) -> crate::CommandAnswer {
+    run_on_state(document, work, |session, command, params| {
+        session.execute(command, params)
+    })
+}
+
+/// [`run_command`] with the running given: `run` gets this side's session
+/// with the document state and the selection the request was written
+/// with, and the command's name and parameters from it, and does what a
+/// host's own job there does (`craft3d-web`'s export, its choices
+/// resolved where the bodies are, [`Session::hand_over`]). An edit it
+/// makes comes back as the undo steps it made, each with the document
+/// after it, for the host to make the same ([`Session::command_answered`]).
+/// Never panics on any input; a panic inside `run` is caught.
+pub fn run_on_state(
+    document: &[u8],
+    work: &str,
+    run: impl FnOnce(&mut Session, &str, &Value) -> Result<Value, CommandError>,
+) -> crate::CommandAnswer {
     let answered = BUILDER.with(|builder| {
         let mut builder = builder
             .try_borrow_mut()
@@ -676,6 +694,7 @@ pub fn run_command(document: &[u8], work: &str) -> crate::CommandAnswer {
         }
         let open = session.documents.get_mut(0).ok_or("no document")?;
         open.selection = selection;
+        open.jig_in_use = work.get("jigInUse") == Some(&Value::Bool(true));
         let id = open.id;
         session.window_camera = work
             .get("camera")
@@ -687,14 +706,49 @@ pub fn run_command(document: &[u8], work: &str) -> crate::CommandAnswer {
         }
         session.check_selection();
         let before = session.documents.first().map(|o| o.selection.to_wire());
-        let result = session.execute(&command, &params);
+        session.edit_log = Some(Vec::new());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run(session, &command, &params)
+        }))
+        .unwrap_or_else(|_| {
+            Err(CommandError::new(format!(
+                "{command}: internal error (a bug in 3DCraft, please report it)"
+            )))
+        });
+        let mut steps = session.edit_log.take().unwrap_or_default();
         let edited = session.documents.len() != 1
             || session
                 .documents
                 .first()
                 .is_none_or(|open| open.history.revision() != revision);
         let after = session.documents.first().map(|o| o.selection.to_wire());
-        let selection = (!edited && after != before).then_some(after).flatten();
+        let selection = (after != before).then_some(after).flatten();
+        // The edit as the steps it made: only when they are the whole of
+        // it (the one document, its last step the state it is in now).
+        let whole = edited
+            && session.documents.len() == 1
+            && steps.last().is_some_and(|step| {
+                session
+                    .documents
+                    .first()
+                    .is_some_and(|open| Arc::ptr_eq(&step.after, open.history.current()))
+            });
+        let mut documents = Vec::new();
+        if whole {
+            for step in &steps {
+                match craft3d_format::to_bytes(&step.after) {
+                    Ok(bytes) => documents.push(bytes),
+                    Err(_) => {
+                        documents.clear();
+                        break;
+                    }
+                }
+            }
+        }
+        if documents.len() != steps.len() {
+            steps.clear();
+            documents.clear();
+        }
         builder.selected = match &selection {
             Some(left) => Some((state, read, left.clone())),
             None if !edited && wire != read => builder.selected.clone(),
@@ -720,8 +774,9 @@ pub fn run_command(document: &[u8], work: &str) -> crate::CommandAnswer {
             builder.loaded = Some(scenes_of);
         }
         Ok::<_, String>(crate::CommandAnswer {
-            answer: crate::commands_elsewhere::answer_json(result, edited, selection),
+            answer: crate::commands_elsewhere::answer_json(result, edited, selection, &steps),
             files,
+            documents,
         })
     });
     answered.unwrap_or_else(|why: String| crate::CommandAnswer {
@@ -731,8 +786,10 @@ pub fn run_command(document: &[u8], work: &str) -> crate::CommandAnswer {
             ))),
             false,
             None,
+            &[],
         ),
         files: Vec::new(),
+        documents: Vec::new(),
     })
 }
 

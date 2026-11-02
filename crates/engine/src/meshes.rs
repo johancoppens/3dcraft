@@ -355,6 +355,9 @@ struct Inner {
     tick: u64,
     bytes: usize,
     budget: usize,
+    /// How many meshes were made (not found kept), for
+    /// `Session::work_here`.
+    made: u64,
 }
 
 /// The meshes a session keeps, shared by every scene it builds.
@@ -369,6 +372,7 @@ impl MeshStore {
             tick: 0,
             bytes: 0,
             budget,
+            made: 0,
         })))
     }
 
@@ -394,6 +398,11 @@ impl MeshStore {
     /// document's meshes do not wait for the next scene to be built.
     pub(crate) fn forget_gone(&self) {
         self.lock().evict();
+    }
+
+    /// How many meshes were made since the store was.
+    pub(crate) fn made(&self) -> u64 {
+        self.lock().made
     }
 
     /// How many meshes are kept.
@@ -472,6 +481,10 @@ impl MeshStore {
             }
         }
         // Outside the lock: the work the store saves.
+        {
+            let mut inner = self.lock();
+            inner.made = inner.made.saturating_add(1);
+        }
         let made = match limit {
             Limit::None | Limit::Own(_) => {
                 let cap = match limit {

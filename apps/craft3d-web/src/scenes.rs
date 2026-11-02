@@ -75,7 +75,16 @@ pub struct Scenes<T: Transport> {
     answered_once: bool,
     /// Regenerated on the page again (the worker could not be had).
     home: bool,
+    /// Since when ([`Scenes::frame_at`]'s clock, ms) commands posted to
+    /// the worker wait for their answers: one that hangs is given up at
+    /// [`DEADLINE_MS`], as a scene is.
+    commands_since: Option<f64>,
 }
+
+/// What a command run where the bodies are says when the worker took
+/// longer than [`DEADLINE_MS`] over it.
+pub const COMMAND_TOO_LONG: &str =
+    "running it beside the page took longer than 30 minutes and was stopped; run it again";
 
 impl<T: Transport> Scenes<T> {
     /// Has `session` regenerate its documents elsewhere, through
@@ -92,6 +101,7 @@ impl<T: Transport> Scenes<T> {
             posted_at: 0.0,
             answered_once: false,
             home: false,
+            commands_since: None,
         }
     }
 
@@ -186,6 +196,23 @@ impl<T: Transport> Scenes<T> {
             session.scene_failed(busy, TOO_LONG);
             done.commands.extend(session.commands_failed(TOO_LONG));
         }
+        // A command the worker never answers (it hangs): given up, its
+        // job and every other waiting one errors that say so, and the
+        // worker ended (the next job starts a new one).
+        if !session.commands_waiting() {
+            self.commands_since = None;
+        } else if let Some(since) = self.commands_since
+            && now - since > DEADLINE_MS
+        {
+            self.transport.stop();
+            self.commands_since = None;
+            if let Some(busy) = self.busy.take() {
+                done.timed_out = Some(busy);
+                session.scene_failed(busy, TOO_LONG);
+            }
+            done.commands
+                .extend(session.commands_failed(COMMAND_TOO_LONG));
+        }
         let wanted = session.scene_job(quality);
         if let Some(busy) = self.busy
             && wanted != Some(busy)
@@ -238,9 +265,14 @@ impl<T: Transport> Scenes<T> {
                 self.transport
                     .post_command(token, &request.document, &request.work)
             });
-            if let Err(why) = posted {
-                done.commands
-                    .extend(session.command_answered(token, Err(why)));
+            match posted {
+                Ok(()) => {
+                    self.commands_since.get_or_insert(now);
+                }
+                Err(why) => {
+                    done.commands
+                        .extend(session.command_answered(token, Err(why)));
+                }
             }
         }
         done

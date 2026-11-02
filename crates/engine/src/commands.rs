@@ -170,7 +170,9 @@ pub(crate) fn edit_merging<T>(
         return Err(crate::jig_cmds::in_use_refusal(command));
     }
     let cache = &mut open.cache;
-    open.history
+    let revision = open.history.revision();
+    let outcome = open
+        .history
         .apply_merging(label, key, merge, |doc| {
             // A file from before image places were stored: where the
             // images are now, taken before the change, so the solve after
@@ -215,7 +217,21 @@ pub(crate) fn edit_merging<T>(
             craft3d_regen::settle_sketches_cached(doc, cache);
             Ok(out)
         })
-        .map_err(doc_error(command))
+        .map_err(doc_error(command))?;
+    // Made for another session (`run_on_state`): the step, for it to
+    // make the same.
+    if open.history.revision() != revision {
+        let after = std::sync::Arc::clone(open.history.current());
+        if let Some(log) = &mut session.edit_log {
+            log.push(crate::commands_elsewhere::EditStep {
+                label: label.to_string(),
+                key: key.map(str::to_string),
+                merge,
+                after,
+            });
+        }
+    }
+    Ok(outcome)
 }
 
 /// Finds a feature by id (`3` or `"F3"`) or by name.
@@ -388,6 +404,12 @@ pub(crate) fn regen_before(
     };
     let mut rolled = (**doc).clone();
     rolled.rollback = Some(previous.id);
+    // Tried without the bodies (`commands_elsewhere.rs`): not built.
+    if open.forbid_regen.is_some() {
+        open.forbid_regen = Some(true);
+        return Ok(std::sync::Arc::new(craft3d_regen::Regen::default()));
+    }
+    open.work.regenerated();
     Ok(std::sync::Arc::new(craft3d_regen::regenerate_cached(
         &rolled,
         &mut open.cache,

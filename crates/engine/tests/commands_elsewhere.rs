@@ -305,33 +305,190 @@ fn a_late_answer_is_not_taken_and_a_stopped_worker_leaves_errors() {
     let garbled = craft3d_engine::CommandAnswer {
         answer: "not json".into(),
         files: Vec::new(),
+        documents: Vec::new(),
     };
     let answered = page.command_answered(token, Ok(garbled)).unwrap();
     assert!(answered.result.is_err());
 }
 
-/// An edit is never handed over: it is the document's, and runs here
-/// (one that needs the bodies has its trial undone whole first).
+/// A page that regenerates itself, a piece at a time (no worker): what
+/// an edit's result is compared with (its summary says `deferred` where
+/// the desktop's says `failed`).
+fn alone(s: f64) -> Session {
+    let mut session = Session::new(Workspace::memory());
+    session.set_stepwise(true);
+    build(&mut session, s);
+    session
+}
+
+/// The name of the face of `body` whose outward normal points along
+/// `axis`, as the desktop names it.
+fn face(desktop: &mut Session, body: &str, axis: &str) -> String {
+    let found = desktop
+        .execute(
+            "select.query",
+            &json!({"kind": "face", "where": {"in": body, "normal": {"along": axis}}}),
+        )
+        .unwrap();
+    found["items"][0]["name"].as_str().unwrap().to_string()
+}
+
+/// The undo label of the active document.
+fn undo_label(session: &Session) -> Option<String> {
+    session.document_status().and_then(|status| status.undo)
+}
+
+/// An edit that needs the bodies (a measured variable, an assertion, a
+/// fillet on edges named by their faces) is made where they are and
+/// applied here from its answer: the same document as the desktop's, one
+/// undo step with the desktop's label (undone and redone as any), the
+/// result a page that regenerates itself gives, and the page never
+/// regenerating. One that needs none runs here at once; one that fails
+/// there fails here with the same error and changes nothing.
 #[test]
-fn an_edit_is_never_handed_over() {
-    let mut page = page(1.0);
-    for (id, params) in [
-        (
-            "variable.measure",
-            json!({"of": "B", "name": "VB", "measure": "volume"}),
-        ),
-        (
-            "assert.add",
-            json!({"name": "cube", "measure": "volume", "of": "B", "eq": "512 * (1 mm)^3", "tol": "1e-6 * (1 mm)^3"}),
-        ),
-        ("feature.block", json!({"size": [1, 1, 1], "name": "C"})),
-    ] {
-        let revision = page.document_revision();
-        let got = page.execute_deferrable(id, &params).unwrap();
-        assert!(got.get("job").is_none(), "{id}: {got}");
-        assert_ne!(page.document_revision(), revision, "{id}");
-        assert!(!page.commands_waiting());
+fn an_edit_that_needs_the_bodies_is_made_where_they_are() {
+    for s in [1e-2, 1.0, 1e3] {
+        let mut page = page(s);
+        let mut desktop = desktop(s);
+        let mut alone = alone(s);
+        let work = page.work_here();
+        let top = face(&mut desktop, "B", "z");
+        let side = face(&mut desktop, "B", "x");
+        let cube = 512.0 * s * s * s;
+        for (id, params, handed) in [
+            (
+                "variable.measure",
+                json!({"of": "B", "name": "VB", "measure": "volume"}),
+                true,
+            ),
+            (
+                "assert.add",
+                json!({"name": "cube", "measure": "volume", "of": "B", "eq": format!("{cube} * (1 mm)^3"), "tol": format!("{} * (1 mm)^3", cube * 1e-6)}),
+                true,
+            ),
+            (
+                "feature.fillet",
+                json!({"edges": [[top, side]], "radius": format!("{} mm", s), "name": "Round"}),
+                true,
+            ),
+            // A wrong one: the same error, nothing changed.
+            (
+                "feature.fillet",
+                json!({"edges": [["B:nowhere", side]], "radius": format!("{} mm", s)}),
+                true,
+            ),
+            (
+                "feature.block",
+                json!({"size": [1, 1, 1], "name": "C"}),
+                false,
+            ),
+        ] {
+            let want = alone
+                .execute(id, &params)
+                .map_err(|e| e.message().to_string());
+            let _ = desktop.execute(id, &params);
+            let (got, deferred) = on_page(&mut page, id, &params);
+            assert_eq!(deferred, handed, "{id} handed over at {s}");
+            assert_eq!(got, want, "{id} {params} at {s}");
+            assert_eq!(
+                page.document_bytes(),
+                desktop.document_bytes(),
+                "{id} at {s}"
+            );
+            assert_eq!(undo_label(&page), undo_label(&desktop), "{id} at {s}");
+            assert_eq!(
+                page.work_here(),
+                work,
+                "{id} regenerated on the page at {s}"
+            );
+            settle(&mut page);
+            assert_eq!(page.work_here(), work, "{id} at {s}");
+        }
+        // The edits are steps of the page's own history.
+        for undo in ["edit.undo", "edit.undo", "edit.redo"] {
+            page.execute(undo, &json!({})).unwrap();
+            desktop.execute(undo, &json!({})).unwrap();
+            assert_eq!(
+                page.document_bytes(),
+                desktop.document_bytes(),
+                "{undo} at {s}"
+            );
+            settle(&mut page);
+        }
+        assert_eq!(page.work_here(), work, "at {s}");
     }
+}
+
+/// `assert.list` waits for every check: answered on the page from the
+/// worker's measures of the state once they are there, handed to the
+/// worker that has the bodies before; the same list either way.
+#[test]
+fn the_assertion_list_never_regenerates_on_the_page() {
+    let mut page = page(1.0);
+    let mut desktop = desktop(1.0);
+    let add = json!({"name": "cube", "measure": "volume", "of": "B", "eq": "512 * (1 mm)^3", "tol": "1e-6 * (1 mm)^3"});
+    desktop.execute("assert.add", &add).unwrap();
+    on_page(&mut page, "assert.add", &add).0.unwrap();
+    let work = page.work_here();
+    let list = json!({"details": true});
+    let want = desktop
+        .execute("assert.list", &list)
+        .map_err(|e| e.message().to_string());
+    // Before the checks are measured: run where the bodies are.
+    let (got, handed) = on_page(&mut page, "assert.list", &list);
+    assert!(handed);
+    assert_eq!(got, want);
+    // After: answered here, at once.
+    settle(&mut page);
+    let (got, handed) = on_page(&mut page, "assert.list", &list);
+    assert!(!handed);
+    assert_eq!(got, want);
+    assert_eq!(page.work_here(), work);
+}
+
+/// An edit whose answer finds the document changed since (an undo came
+/// between) is not applied and says so; a worker that stops leaves it an
+/// error, and the document as it was.
+#[test]
+fn an_edit_answered_late_or_never_changes_nothing() {
+    let mut page = page(1.0);
+    let add = json!({"name": "cube", "measure": "volume", "of": "B", "eq": "512 * (1 mm)^3", "tol": "1e-6 * (1 mm)^3"});
+    let before = page.document_bytes();
+    let done = page.execute_deferrable("assert.add", &add).unwrap();
+    assert_eq!(done["deferred"], true);
+    assert!(page.edits_waiting());
+    page.execute("param.set", &json!({"values": {"w": "42 mm"}}))
+        .unwrap();
+    let changed = page.document_bytes();
+    let answered = answer_commands(&mut page);
+    let error = answered[0].result.clone().unwrap_err();
+    assert!(error.contains("the document changed"), "{error}");
+    assert!(!answered[0].edited);
+    assert_eq!(page.document_bytes(), changed);
+    assert!(!page.edits_waiting());
+    page.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(page.document_bytes(), before);
+    settle(&mut page);
+    page.execute_deferrable("assert.add", &add).unwrap();
+    let failed = page.commands_failed("the worker stopped");
+    assert_eq!(failed.len(), 1);
+    assert!(failed[0].result.is_err());
+    assert_eq!(page.document_bytes(), before);
+    // An answer that claims an edit without its steps, or with steps
+    // whose documents do not read: run here instead, never a panic.
+    let token = page.execute_deferrable("assert.add", &add).unwrap()["job"]
+        .as_u64()
+        .unwrap();
+    let forged = craft3d_engine::CommandAnswer {
+        answer: json!({"ok": null, "edited": true, "selection": null, "steps": [{"label": "x", "key": null, "merge": false}]}).to_string(),
+        files: Vec::new(),
+        documents: vec![b"not a document".to_vec()],
+    };
+    let answered = page.command_answered(token, Ok(forged)).unwrap();
+    assert!(answered.result.is_ok(), "{:?}", answered.result);
+    let mut desktop = desktop(1.0);
+    desktop.execute("assert.add", &add).unwrap();
+    assert_eq!(page.document_bytes(), desktop.document_bytes());
 }
 
 /// What the host asks for itself (the export dialog's choices, the count

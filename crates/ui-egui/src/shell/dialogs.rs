@@ -199,11 +199,30 @@ impl Shell {
         if self.dialogs.export.is_some() {
             return Ok(());
         }
+        if session.document_status().is_none() {
+            return Err("there is no document to export".to_string());
+        }
+        self.follow_active_tab(session);
+        let choices = export_choices(session);
+        self.open_export_with(session, choices)
+    }
+
+    /// [`Self::open_export`] with what it offers read already
+    /// ([`export_choices`] on the active document as it is): by a host
+    /// that reads them where the bodies are (the page's worker), so that
+    /// opening the dialog never regenerates on its own thread.
+    pub fn open_export_with(
+        &mut self,
+        session: &mut Session,
+        choices: ExportChoices,
+    ) -> Result<(), String> {
+        if self.dialogs.export.is_some() {
+            return Ok(());
+        }
         let Some(status) = session.document_status() else {
             return Err("there is no document to export".to_string());
         };
         self.follow_active_tab(session);
-        let choices = export_choices(session);
         let document = self.viewing();
         let preset = std::mem::take(&mut self.dialogs.preset);
         let mut committed = self.state.export.clone();
@@ -388,6 +407,11 @@ impl Shell {
             document: ask.document,
             chosen: state,
         });
+    }
+
+    /// The export dialog is open.
+    pub fn export_dialog_open(&self) -> bool {
+        self.dialogs.export.is_some()
     }
 
     /// What the export dialog was answered with, once.

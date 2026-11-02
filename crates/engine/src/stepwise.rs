@@ -160,6 +160,7 @@ impl Session {
             return None;
         }
         let doc = Arc::clone(open.history.current());
+        open.work.regenerated();
         let cache = &mut open.cache;
         let (regen, stopped) = craft3d_regen::progress::with_stop(stop, || {
             craft3d_regen::regenerate_cached_needing(&doc, cache, Need::Bodies)

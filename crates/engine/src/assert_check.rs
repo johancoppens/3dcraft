@@ -484,7 +484,8 @@ impl Session {
         wait: Wait,
     ) -> Result<(Vec<Checked>, Arc<Resolved>), CommandError> {
         let stepwise = self.stepwise;
-        let elsewhere = self.regen_elsewhere() && !matches!(wait, Wait::All);
+        let regen_elsewhere = self.regen_elsewhere();
+        let elsewhere = regen_elsewhere && !matches!(wait, Wait::All);
         let open = self.document_mut()?;
         // An assembly is measured on its placed bodies, named after their
         // instances (`asm.rs`).
@@ -497,14 +498,18 @@ impl Session {
             return Ok((Vec::new(), Arc::new(Resolved::default())));
         }
         // Regenerated and measured elsewhere, a state at a time
-        // (`regen_elsewhere.rs`): its answer once it is there, pending
-        // until then. Only what waits for every answer regenerates here.
+        // (`regen_elsewhere.rs`): its answer once it is there (every
+        // check measured: what waits for all of them takes it too),
+        // pending until then. Only what waits for every answer before it
+        // is there regenerates (on the page: is handed to the worker that
+        // has the bodies, `commands_elsewhere.rs`).
+        if regen_elsewhere
+            && let Some((of, checked, outputs)) = &open.state_checks.answer
+            && Arc::ptr_eq(of, &doc)
+        {
+            return Ok((checked.clone(), Arc::clone(outputs)));
+        }
         if elsewhere {
-            if let Some((of, checked, outputs)) = &open.state_checks.answer
-                && Arc::ptr_eq(of, &doc)
-            {
-                return Ok((checked.clone(), Arc::clone(outputs)));
-            }
             let outputs = doc
                 .outputs
                 .iter()
