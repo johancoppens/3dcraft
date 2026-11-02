@@ -98,6 +98,7 @@ fn a_side_held_in_curvature_is_sewn_to_its_crown_where_a_union_refuses() {
     assert_eq!(seams.len(), 2, "{edges}");
     for seam in &seams {
         let c = run(&mut s, "measure.continuity", json!({"edge": seam}));
+        eprintln!("{seam}: {c}");
         assert_eq!(c["order"], "G2", "{seam}: {c}");
     }
     // The sewing is saved as such and reopens to the same sheet.
@@ -169,9 +170,11 @@ fn sewing_what_is_not_two_sheets_sharing_an_edge_fails_with_the_reason() {
 /// `acrossDegree` 5, 2026-11-01) the bound across was 1.36e-12,
 /// undecided, until the expansion along `b` went on through every break
 /// where `b`'s rows are C¹ instead of counting the shift once on each side
-/// of it (`continuity.rs` › `Between`): now 1.046e-12 on the left seam and
-/// 1.181e-12 on the right (`docs/design/surfacing.md`, the tank's finding
-/// 1). The
+/// of it (`continuity.rs` › `Between`), and since 2026-11-02 halves are
+/// cut from the piece they came from and roundings count `u = 2⁻⁵³`: the
+/// same seams, sewn and uncut, are bounded at 1.025e-12 and 1.034e-12
+/// against 1.127e-12 (the sewn test above; `docs/design/surfacing.md`,
+/// the tank's finding 1 and *The sewn sheet's long seams*). The
 /// expectation is pinned apart from this test by the closed-form long
 /// seam of `geom/tests/network_g2.rs` (G2 proven at half a threshold, G1
 /// at 1.5), at three scales.
@@ -220,6 +223,7 @@ fn the_finished_tank_measures_g2_along_both_seams() {
             "measure.continuity",
             json!({"edge": assertion["edge"]}),
         );
+        eprintln!("{}: {out}", assertion["edge"]);
         assert_eq!(out["order"], "G2", "{out}");
     }
     let doc = inspect(&mut s);

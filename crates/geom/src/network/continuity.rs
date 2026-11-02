@@ -118,7 +118,11 @@ const EPS: f64 = f64::EPSILON;
 /// nearest (IEEE 754 binary64, as Rust's `f64` operations are, none fused
 /// or contracted) is within `u` of the exact result relative to it
 /// (Higham §2.2), half the spacing `ε` of the numbers at 1. Every count
-/// of roundings below is in this `u`.
+/// of roundings below is in this `u`. The model leaves out underflow (a
+/// result among the subnormals is off by up to `2⁻¹⁰⁷⁴` absolutely, not
+/// relatively): the measure works on coordinates about the edge between
+/// 1e-3 and 1e6 units and on bounds far above `1e-300`, where nothing
+/// comes near it.
 const UNIT: f64 = EPS / 2.0;
 
 /// The order of continuity proven along an edge.
@@ -202,6 +206,12 @@ pub struct Continuity {
     /// The work allowed ([`MAX_SEAM_WORK`], [`MAX_SEAM_PIECES`]) was
     /// spent before every gap was decided.
     pub exhausted: bool,
+    /// Against a spline face, the breaks between pieces whose
+    /// neighbouring terms were formed: those where `b`'s rows are C¹ and
+    /// the expansion along `b` goes on into the neighbour, and those where
+    /// they are not and the break's cross terms are counted (`Between`).
+    pub smooth_breaks: usize,
+    pub rough_breaks: usize,
 }
 
 impl Continuity {
@@ -751,6 +761,12 @@ fn down(x: f64, k: usize) -> f64 {
     x * (1.0 - gamma(k + 2))
 }
 
+/// A lower bound on the exact difference that `x` is, rounded once (of
+/// either sign; its rounding is of its own size): `x − γ₂ |x|`.
+fn low(x: f64) -> f64 {
+    x - x.abs() * gamma(2)
+}
+
 /// A homogeneous coefficient (`x w`, `y w`, `z w`, `w`) with a bound on
 /// each coordinate's rounding: the exact value is within `e[c]` of `v[c]`.
 #[derive(Clone, Copy, Debug)]
@@ -1221,6 +1237,12 @@ struct Piece {
     /// the exact `[t0, t1]`.
     root_a: f64,
     root_b: f64,
+    /// How far, relatively, the first piece's rows may run faster or
+    /// slower along the edge than its length says: their ends were put on
+    /// a knot within `2 SAME_KNOT` of each face's range and found from the
+    /// edge's parameter with a few roundings (`row_pieces`), so a face's
+    /// interval differs from the edge's by that much at each end.
+    skew: f64,
     depth: usize,
     /// Distinct among the pieces of one measure (the breaks' [`Cross`]
     /// are kept by the pair).
@@ -1229,7 +1251,7 @@ struct Piece {
 
 impl Piece {
     /// A piece of the edge from `a` to `b` with its rows as cut.
-    fn new(a: f64, b: f64, rows: Vec<P4>, id: u64) -> Piece {
+    fn new(a: f64, b: f64, rows: Vec<P4>, id: u64, skew: f64) -> Piece {
         Piece {
             a,
             b,
@@ -1239,6 +1261,7 @@ impl Piece {
             t1: 1.0,
             root_a: a,
             root_b: b,
+            skew,
             depth: 0,
             id,
         }
@@ -1264,6 +1287,7 @@ impl Piece {
                 t1: tm,
                 root_a: self.root_a,
                 root_b: self.root_b,
+                skew: self.skew,
                 depth: self.depth + 1,
                 id: ids.0,
             },
@@ -1276,19 +1300,26 @@ impl Piece {
                 t1,
                 root_a: self.root_a,
                 root_b: self.root_b,
+                skew: self.skew,
                 depth: self.depth + 1,
                 id: ids.1,
             },
         )
     }
 
-    /// Lower and upper bounds on the piece's length along the edge:
-    /// `t1 − t0` is a power of two exactly (halvings of `[0, 1]`), so the
-    /// product with the first piece's length is exact and that length's
-    /// difference is the one rounding.
+    /// Lower and upper bounds on the length along the edge that the
+    /// piece's rows run over, consistent with its neighbours': `t1 − t0`
+    /// is a power of two exactly (halvings of `[0, 1]`), so the product
+    /// with the first piece's length is exact but for that length's own
+    /// difference, and the rows' ends may lie off the edge's by the skew
+    /// ([`Piece::skew`]): every derivative along divided by these is a
+    /// bound on the derivative along the edge, on either side of a break.
     fn len(&self) -> (f64, f64) {
         let h = (self.t1 - self.t0) * (self.root_b - self.root_a);
-        (down(h, 1), up(h, 1))
+        (
+            down(h * (1.0 - self.skew), 2).max(0.0),
+            up(h * (1.0 + self.skew), 2),
+        )
     }
 
     /// The rows at a local parameter, as constants.
@@ -1397,7 +1428,13 @@ fn derivative_poly(p: &Poly) -> Poly {
 /// sizes it takes ([`Sizes::k`]); the result times `1 + γ_{k+32}` then
 /// bounds the exact value, the two more covering the margin's own
 /// multiplication ([`up`]). Every use below is such a formula: a few
-/// products and quotients of bounds, each at most a dozen deep.
+/// products and quotients of bounds, each at most a dozen deep. A
+/// difference of two rigorous bounds taken the right way round (in
+/// `implicit_terms`, `G − H B` with `G` a lower bound and `H B` an upper
+/// one: a lower bound on the exact difference) is such an operation too:
+/// what makes a difference dangerous is the error its operands carry,
+/// which cancels nothing here, and its own rounding is relative to its
+/// result like any other.
 fn room(k: usize) -> f64 {
     1.0 + gamma(k + 32)
 }
@@ -1467,7 +1504,6 @@ fn shift_window(position: f64, speed: f64, accel: f64, reach: f64) -> f64 {
     // Every product and quotient taken the way that keeps the conclusion
     // ([`up`], [`down`]); a difference is one more rounding of its own
     // size, taken off its lower bound.
-    let low = |x: f64| x - x.abs() * gamma(2);
     if !(b.is_finite() && m.is_finite() && m2.is_finite() && m > 0.0 && b >= 0.0) {
         return l;
     }
@@ -1894,7 +1930,7 @@ fn combine(
             }
             Other::Round { .. } | Other::Cone { .. } => {
                 for (h, a) in hi.iter_mut().zip(info.implicit) {
-                    *h += a;
+                    *h = up(*h + a, 1);
                 }
                 out.push((unknown_infinite(hi), 0.0));
                 continue;
@@ -1918,9 +1954,10 @@ fn combine(
             else {
                 return Err(internal());
             };
-            *slot = p + r * (d * s1 + 0.5 * d * d * s2);
+            // `r` covers the term's own products; the sum is one more.
+            *slot = up(p + r * (d * s1 + 0.5 * d * d * s2), 1);
         }
-        let mut angle = hi[1] + r * d * info.nb;
+        let mut angle = up(hi[1] + r * d * info.nb, 1);
         // The breaks with the neighbours: `s` in this piece, `s*` across.
         for (n, ninfo, here_first) in [
             left.map(|(p, x)| (p, x, false)),
@@ -1968,10 +2005,10 @@ fn combine(
                         else {
                             return Err(internal());
                         };
-                        let bound = p + r * (d * s1 + 0.5 * d * d * upper(*s2, *s2n));
+                        let bound = up(p + r * (d * s1 + 0.5 * d * d * upper(*s2, *s2n)), 1);
                         *slot = upper(*slot, bound);
                     }
-                    angle = upper(angle, hi[1] + r * d * upper(info.nb, ninfo.nb));
+                    angle = upper(angle, up(hi[1] + r * d * upper(info.nb, ninfo.nb), 1));
                     continue;
                 }
             };
@@ -1984,7 +2021,10 @@ fn combine(
                 let bound = r * (c0 + d * (dt + ds + d * mx));
                 *slot = upper(*slot, bound);
             }
-            angle = upper(angle, hi[1] + r * (d * (info.nb + ninfo.nb) + c.jump));
+            angle = upper(
+                angle,
+                up(hi[1] + r * (d * (info.nb + ninfo.nb) + c.jump), 1),
+            );
         }
         hi[1] = angle;
         for (k, v) in second.iter().enumerate() {
@@ -2409,8 +2449,19 @@ fn gaps(rows: &[P4], other: &Other) -> Result<Gaps, NetworkError> {
     // A lower bound on a weight is of no use below zero.
     let (w0_lo, w0_hi) = (w0.lo().max(0.0), w0.hi());
     // `|X| |Y|` over `w⁴` for the pairs (v, v), (u, v), (u, u).
-    let den_lo = [nv_lo * nv_lo, nu_lo * nv_lo, nu_lo * nu_lo];
-    let den_hi = [nv_hi * nv_hi, nu_hi * nv_hi, nu_hi * nu_hi];
+    // Each product one rounding, taken the way that keeps the bound; so
+    // every denominator below ([`down`]) and every value found ([`up`] of
+    // its denominator, the quotient taken down).
+    let den_lo = [
+        down(nv_lo * nv_lo, 1),
+        down(nu_lo * nv_lo, 1),
+        down(nu_lo * nu_lo, 1),
+    ];
+    let den_hi = [
+        up(nv_hi * nv_hi, 1),
+        up(nu_hi * nv_hi, 1),
+        up(nu_hi * nu_hi, 1),
+    ];
     let mut hi = [0.0; GAPS];
     let mut lo = [0.0; GAPS];
     // The second-order numerators and the factor of their denominators
@@ -2426,11 +2477,11 @@ fn gaps(rows: &[P4], other: &Other) -> Result<Gaps, NetworkError> {
             let (g0, g0d, g0dd) = (lx(&x0), lx(&x0d), lx(&x0dd));
             let (g1, g1d, g2) = (lx(&x1), lx(&x1d), lx(&x2));
             hi[0] = ratio(abs_hi(&g0), w0_lo);
-            lo[0] = abs_value_lo(&g0) / w0_hi;
+            lo[0] = ratio_lo(abs_value_lo(&g0), w0_hi);
             let n = konst3(Vec3::new(l[0], l[1], l[2]));
             let z = cross(&w, &n);
             hi[1] = ratio(norm_hi(&z), w_lo);
-            lo[1] = norm_value_lo(&z) / w_hi;
+            lo[1] = ratio_lo(norm_value_lo(&z), w_hi);
             let vv = plane_second(&g2, &g1, &g1, &g0, w0, w1, w1, w2);
             let uv = plane_second(&g1d, &g0d, &g1, &g0, w0, w0d, w1, w1d);
             let uu = plane_second(&g0dd, &g0d, &g0d, &g0, w0, w0d, w0d, w0dd);
@@ -2464,9 +2515,10 @@ fn gaps(rows: &[P4], other: &Other) -> Result<Gaps, NetworkError> {
                         }
                         None => y,
                     };
+                    // Three roundings: `R w`, the sum, the product.
                     (
-                        w0_lo * (norm_lo(&py) + radius * w0_lo),
-                        w0_hi * (norm_value_hi(&py) + radius * w0_hi),
+                        down(w0_lo * (norm_lo(&py) + radius * w0_lo), 3),
+                        up(w0_hi * (norm_value_hi(&py) + radius * w0_hi), 3),
                     )
                 }
                 Other::Cone {
@@ -2480,21 +2532,22 @@ fn gaps(rows: &[P4], other: &Other) -> Result<Gaps, NetworkError> {
                     let h = dot(&y, &konst3(*axis));
                     let py = minus(&y, &times(&konst3(*axis), &h));
                     let cos = cos.max(f64::MIN_POSITIVE);
+                    // Four: `tan |h|`, the sum, the product, the quotient.
                     (
-                        w0_lo * (norm_lo(&py) + tan * abs_lo(&h)) / cos,
-                        w0_hi * (norm_value_hi(&py) + tan * abs_hi(&h)) / cos,
+                        down(w0_lo * (norm_lo(&py) + tan * abs_lo(&h)) / cos, 4),
+                        up(w0_hi * (norm_value_hi(&py) + tan * abs_hi(&h)) / cos, 4),
                     )
                 }
                 _ => return Err(internal()),
             };
             hi[0] = ratio(abs_hi(&hh), den_lo);
-            lo[0] = abs_value_lo(&hh) / den_hi;
+            lo[0] = ratio_lo(abs_value_lo(&hh), den_hi);
             // Angle.
             let g = xyz4(&qx0);
             let z = cross(&w, &g);
             let (g_lo, g_hi) = (norm_lo(&g), norm_value_hi(&g));
-            hi[1] = ratio(norm_hi(&z), w_lo * g_lo);
-            lo[1] = norm_value_lo(&z) / (w_hi * g_hi);
+            hi[1] = ratio(norm_hi(&z), down(w_lo * g_lo, 1));
+            lo[1] = ratio_lo(norm_value_lo(&z), up(w_hi * g_hi, 1));
             let vv = quadric_second(&h_vv, &h_v, &h_v, &hh, w0, w1, w1, w2);
             let uv = quadric_second(&h_uv, &h_u, &h_v, &hh, w0, w0d, w1, w1d);
             let uu = quadric_second(&h_uu, &h_u, &h_u, &hh, w0, w0d, w0d, w0dd);
@@ -2508,8 +2561,8 @@ fn gaps(rows: &[P4], other: &Other) -> Result<Gaps, NetworkError> {
             // Position.
             let e0 = minus(&times(&p0, om), &times(&q0, w0));
             let (om_lo, om_hi) = (om.lo().max(0.0), om.hi());
-            hi[0] = ratio(norm_hi(&e0), w0_lo * om_lo);
-            lo[0] = norm_value_lo(&e0) / (w0_hi * om_hi);
+            hi[0] = ratio(norm_hi(&e0), down(w0_lo * om_lo, 1));
+            lo[0] = ratio_lo(norm_value_lo(&e0), up(w0_hi * om_hi, 1));
             // Angle, and the second order: `n_b·S_xy − II_b(X, Y)`, `X`, `Y`
             // put into b's tangent plane by Cramer's rule in `(U_b, V_b)`
             // ([`spline_parts`]).
@@ -2525,10 +2578,14 @@ fn gaps(rows: &[P4], other: &Other) -> Result<Gaps, NetworkError> {
             let SplineParts { nums, m, wb } = spline_parts(&xs, &ys);
             let z = cross(&w, &wb);
             let (wb_lo, wb_hi) = (norm_lo(&wb), norm_value_hi(&wb));
-            hi[1] = ratio(norm_hi(&z), w_lo * wb_lo);
-            lo[1] = norm_value_lo(&z) / (w_hi * wb_hi);
+            hi[1] = ratio(norm_hi(&z), down(w_lo * wb_lo, 1));
+            lo[1] = ratio_lo(norm_value_lo(&z), up(w_hi * wb_hi, 1));
             let (m_lo, m_hi) = (m.lo().max(0.0), m.hi());
-            (nums, m_lo * m_lo * wb_lo, m_hi * m_hi * wb_hi)
+            (
+                nums,
+                down(m_lo * m_lo * wb_lo, 2),
+                up(m_hi * m_hi * wb_hi, 2),
+            )
         }
     };
     for (k, num) in nums.iter().enumerate() {
@@ -2537,8 +2594,8 @@ fn gaps(rows: &[P4], other: &Other) -> Result<Gaps, NetworkError> {
             den_hi.get(k).copied().unwrap_or(f64::INFINITY),
         );
         if let (Some(h), Some(l)) = (hi.get_mut(2 + k), lo.get_mut(2 + k)) {
-            *h = ratio(abs_hi(num), extra_lo * geo_lo);
-            *l = abs_value_lo(num) / (extra_hi * geo_hi);
+            *h = ratio(abs_hi(num), down(extra_lo * geo_lo, 1));
+            *l = ratio_lo(abs_value_lo(num), up(extra_hi * geo_hi, 1));
         }
     }
     for x in &mut lo {
@@ -2875,7 +2932,12 @@ fn measure(
     let thr = thresholds(tolerance, angular, length);
     let limit = [
         thr[0],
-        angular.min(std::f64::consts::FRAC_PI_2).psin(),
+        // The verdict takes the bound's arcsine up by eight roundings
+        // (`conv` below): refining stops at a sine whose angle so taken is
+        // within the angular tolerance too, the sine and arcsine each
+        // within an ulp of exact (msun's documented accuracy, which the
+        // portable functions follow): 24 roundings of room.
+        down(angular.min(std::f64::consts::FRAC_PI_2), 24).psin(),
         thr[2],
         thr[2],
         thr[2],
@@ -2961,7 +3023,26 @@ fn measure(
             .iter()
             .map(|r| r.get(k).cloned().ok_or_else(internal))
             .collect::<Result<_, _>>()?;
-        let piece = Piece::new(*a, *b, rows, id());
+        // The skew of the rows' ends: each end within `2 SAME_KNOT` of a
+        // row's range of a knot, and `of_edge` three roundings of the
+        // line's parameters, against the piece's span on the line.
+        let mut skew = 0.0_f64;
+        for line in &lines {
+            let mut slack = 0.0_f64;
+            let mut size = line.from.abs().max(line.to.abs());
+            for (raw, _) in &line.rows {
+                let (lo, hi) = raw.domain()?;
+                slack = slack.max(2.0 * SAME_KNOT * (hi - lo));
+                size = size.max(lo.abs()).max(hi.abs());
+            }
+            let end = up(slack + gamma(3) * 3.0 * size, 3);
+            let span = down((b - a) * (line.to - line.from).abs(), 2);
+            skew = skew.max(up(2.0 * end / span, 2));
+        }
+        if !skew.is_finite() {
+            skew = f64::INFINITY;
+        }
+        let piece = Piece::new(*a, *b, rows, id(), skew);
         let info = piece_info(&piece, &other, f64::INFINITY)?;
         work.push((piece, info));
     }
@@ -2996,11 +3077,11 @@ fn measure(
                         );
                         r * (window * s1 + 0.5 * window * window * s2)
                     };
-                    *l = if inside { (*l - less).max(0.0) } else { 0.0 };
+                    *l = if inside { low(*l - less).max(0.0) } else { 0.0 };
                 }
             } else {
                 for (l, x) in lo.iter_mut().zip(info.implicit) {
-                    *l = (*l - x).max(0.0);
+                    *l = low(*l - x).max(0.0);
                 }
             }
             let place = at
@@ -3101,10 +3182,10 @@ fn measure(
     let gap = |q: usize, as_angle: bool| {
         let (f, param, at) = found.get(q).copied().unwrap_or((0.0, 0.0, origin));
         let b = bound(q);
-        // The sine's bound and lower bound as angles: `pasin` agrees with
-        // the platform's `asin` within two ulps (`craft3d_math::portable`)
-        // and that is within an ulp or two of the exact value, so the
-        // angle is taken up or down by eight roundings of `u`.
+        // The sine's bound and lower bound as angles: `pasin` is msun's
+        // `asin` (libm), documented within one ulp of the exact value
+        // (`2u` relative), so the angle is taken up or down by eight
+        // roundings of `u`, the margin's own included.
         let conv = |x: f64, rise: bool| {
             if as_angle {
                 let a = x.clamp(0.0, 1.0).pasin();
@@ -3123,6 +3204,11 @@ fn measure(
     };
     let (position, angle) = (gap(0, false), gap(1, true));
     let (curvature, twist, along) = (gap(2, false), gap(3, false), gap(4, false));
+    let smooth_breaks = crosses
+        .values()
+        .filter(|b| matches!(b, Between::Smooth(..)))
+        .count();
+    let rough_breaks = crosses.len() - smooth_breaks;
     let order = if !position.within() {
         Order::None
     } else if !angle.within() {
@@ -3142,6 +3228,8 @@ fn measure(
         length,
         pieces: work.len(),
         exhausted,
+        smooth_breaks,
+        rough_breaks,
     })
 }
 
@@ -3707,7 +3795,7 @@ mod tests {
                 rows.push(row_pieces(row, line, &[]).unwrap().remove(0));
             }
         }
-        let piece = Piece::new(0.0, 1.0, rows.clone(), 1);
+        let piece = Piece::new(0.0, 1.0, rows.clone(), 1, 0.0);
         // One piece, the whole edge: the window reaches no neighbour.
         let info = piece_info(&piece, &Other::Spline, f64::INFINITY).unwrap();
         let plain = info.plain;
@@ -3816,7 +3904,7 @@ mod tests {
             }
         }
         let piece = |k: usize, a: f64, b: f64, id: u64| {
-            Piece::new(a, b, per.iter().map(|r| r[k].clone()).collect(), id)
+            Piece::new(a, b, per.iter().map(|r| r[k].clone()).collect(), id, 0.0)
         };
         let (p, n) = (piece(0, 0.0, 0.5, 1), piece(1, 0.5, 1.0, 2));
         let work = vec![
@@ -3887,7 +3975,7 @@ mod tests {
             }
         }
         let piece = |k: usize, a: f64, b: f64, id: u64| {
-            Piece::new(a, b, per.iter().map(|r| r[k].clone()).collect(), id)
+            Piece::new(a, b, per.iter().map(|r| r[k].clone()).collect(), id, 0.0)
         };
         let (p, n) = (piece(0, 0.0, 0.5, 1), piece(1, 0.5, 1.0, 2));
         let clean = vec![
@@ -3962,7 +4050,7 @@ mod tests {
         };
         let mag = root.mag();
         let zero = || Poly::konst(0.0);
-        let mut piece = Piece::new(0.0, 1.0, vec![[root, zero(), zero(), zero()]], 1);
+        let mut piece = Piece::new(0.0, 1.0, vec![[root, zero(), zero(), zero()]], 1, 0.0);
         for level in 0..40u64 {
             let (l, r) = piece.halves((2 * level + 2, 2 * level + 3));
             piece = if level % 3 == 1 { l } else { r };

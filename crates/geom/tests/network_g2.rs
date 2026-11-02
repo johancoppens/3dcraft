@@ -1042,11 +1042,21 @@ fn two_curvature_edges_whose_lines_are_crossed_at_different_parameters_are_refus
 /// `b` of a knotted seam: degree `p` along the edge (the x axis, `l`
 /// long) with the single knots `inner`, the profile `z = c N_j(u)` (the
 /// basis function nearest the middle, scaled so that its largest
-/// curvature along the edge is `peak`), swept along +y; and `a` the flat
-/// sheet on the −y side, of the same degree and knots. The seam is G1
-/// (the profile's slope stays far within the angular tolerance) and its
-/// curvature along is `b`'s profile's: the gap along is `κ(u)` itself.
-fn knotted(l: f64, p: usize, inner: &[f64], peak: f64) -> (NurbsSurface, NurbsSurface, f64) {
+/// curvature along the edge is `peak`), swept along +y; its control points
+/// along moved off the Greville abscissae by `±shift` in turn, so that it
+/// runs along the seam at another pace than `a` and the points compared
+/// lie up to about `shift` apart along it, across the breaks too. `a` is
+/// the flat sheet on the −y side, of the same degree and knots, on the
+/// Greville abscissae. The seam is G1 (the profile's slope stays far
+/// within the angular tolerance) and its gap along is `b`'s curvature
+/// along: returned is its largest value, measured on `b` itself.
+fn knotted(
+    l: f64,
+    p: usize,
+    inner: &[f64],
+    peak: f64,
+    shift: f64,
+) -> (NurbsSurface, NurbsSurface, f64) {
     let mut knots = vec![0.0; p + 1];
     knots.extend_from_slice(inner);
     knots.extend(vec![1.0; p + 1]);
@@ -1061,11 +1071,19 @@ fn knotted(l: f64, p: usize, inner: &[f64], peak: f64) -> (NurbsSurface, NurbsSu
             centre(x).abs().total_cmp(&centre(y).abs())
         })
         .unwrap();
-    let sheet = |side: f64, z: &dyn Fn(usize) -> f64| {
+    let sheet = |side: f64, moved: f64, z: &dyn Fn(usize) -> f64| {
         let mut points = Vec::new();
         for (i, g) in greville.iter().enumerate() {
+            // The ends stay: the two edges' ends meet.
+            let off = if i == 0 || i + 1 == nu {
+                0.0
+            } else if i % 2 == 0 {
+                moved
+            } else {
+                -moved
+            };
             for k in 0..3 {
-                points.push(v(g * l, side * 0.05 * l * f64::from(k), z(i)));
+                points.push(v(g * l + off, side * 0.05 * l * f64::from(k), z(i)));
             }
         }
         NurbsSurface::new(
@@ -1080,33 +1098,43 @@ fn knotted(l: f64, p: usize, inner: &[f64], peak: f64) -> (NurbsSurface, NurbsSu
         )
         .unwrap()
     };
-    // The largest curvature along of the unit profile, sampled finely
-    // and at the knots from both sides.
-    let unit = Surface::Nurbs(sheet(1.0, &|i| if i == j { l } else { 0.0 }));
-    let mut most = 0.0_f64;
-    let mut at: Vec<f64> = (0..=4000).map(|k| f64::from(k) / 4000.0).collect();
-    for k in inner {
-        at.extend([k - 1e-12, *k + 1e-12]);
-    }
-    for u in at {
-        let (suu, _, _) = second_derivatives(&unit, u, 0.0);
-        let x = l; // the speed along: linear in u (Greville abscissae)
-        most = most.max(suu.z.abs() / (x * x));
-    }
-    let c = peak / most;
-    let b = sheet(1.0, &|i| if i == j { c * l } else { 0.0 });
-    let a = sheet(-1.0, &|_| 0.0);
-    (a, b, most * c)
+    // The largest normal curvature along the edge, `n·S_uu / |S_u|²`,
+    // sampled finely and at the knots from both sides.
+    let most = |s: &NurbsSurface| {
+        let surface = Surface::Nurbs(s.clone());
+        let mut at: Vec<f64> = (0..=4000).map(|k| f64::from(k) / 4000.0).collect();
+        for k in inner {
+            at.extend([k - 1e-12, *k + 1e-12]);
+        }
+        let mut most = 0.0_f64;
+        for u in at {
+            let (_, su, sv) = s.derivatives(u, 0.0);
+            let n = su.cross(sv).normalized().unwrap();
+            let (suu, _, _) = second_derivatives(&surface, u, 0.0);
+            most = most.max(n.dot(suu).abs() / su.dot(su));
+        }
+        most
+    };
+    let unit = most(&sheet(1.0, shift, &|i| if i == j { l } else { 0.0 }));
+    let c = peak / unit;
+    let b = sheet(1.0, shift, &|i| if i == j { c * l } else { 0.0 });
+    let a = sheet(-1.0, 0.0, &|_| 0.0);
+    let measured = most(&b);
+    (a, b, measured)
 }
 
 /// The breaks of a knotted `b` (`Between`): a seam whose curvature along
-/// peaks just above the threshold among `b`'s single knots is not proven G2,
-/// whether `b`'s rows are C¹ through them (degree 4: the expansion along
-/// `b` goes on into the neighbour, `Between::Smooth`) or not (degree 3:
-/// its second derivatives jump there, `Between::Rough`); at half the
-/// threshold it is proven G2. Three scales.
+/// peaks just past the threshold among `b`'s single knots (at a knot for
+/// degree 3, between them for degree 4), with `b` run along the seam at
+/// another pace than `a` (the points compared up to a third of the
+/// tolerance apart, so the shift reaches across the breaks), is not
+/// proven G2 but found beyond it, whether `b`'s rows are C¹ through its
+/// knots (degree 4: the expansion along `b` goes on into the neighbour,
+/// `Between::Smooth`, and no break is rough) or not (degree 3: its second
+/// derivatives jump there, `Between::Rough`); at half the threshold it is
+/// proven G2. Three scales.
 #[test]
-fn a_curvature_peak_at_a_knot_of_b_just_past_the_threshold_is_not_g2() {
+fn a_curvature_peak_among_the_knots_of_b_just_past_the_threshold_is_not_g2() {
     let inner = [0.2, 0.4, 0.45, 0.5, 0.55, 0.6, 0.8];
     for scale in SCALES {
         let (tol, ang) = (1e-6 * scale, 1e-9);
@@ -1114,20 +1142,23 @@ fn a_curvature_peak_at_a_knot_of_b_just_past_the_threshold_is_not_g2() {
         let edge = line(v(0.0, 0.0, 0.0), v(scale, 0.0, 0.0));
         for p in [3, 4] {
             for (times, order) in [(1.2, Order::G1), (0.5, Order::G2)] {
-                let (a, b, peak) = knotted(scale, p, &inner, times * threshold);
+                let (a, b, peak) = knotted(scale, p, &inner, times * threshold, tol / 3.0);
                 let c =
                     continuity(&Surface::Nurbs(a), &Surface::Nurbs(b), &edge, tol, ang).unwrap();
-                assert_eq!(
-                    c.order, order,
-                    "scale {scale}, degree {p}, {times} thresholds: {c:?}"
-                );
+                let what = format!("scale {scale}, degree {p}, {times} thresholds: {c:?}");
+                assert_eq!(c.order, order, "{what}");
+                assert!(!c.exhausted, "{what}");
                 assert!(
-                    c.along.bound >= peak * (1.0 - 1e-6),
-                    "scale {scale}, degree {p}: bound {:e} below the peak {peak:e}",
-                    c.along.bound
+                    c.along.bound >= peak * (1.0 - 1e-9),
+                    "{what}: peak {peak:e}"
                 );
+                if p == 4 {
+                    assert!(c.rough_breaks == 0 && c.smooth_breaks > 0, "{what}");
+                } else {
+                    assert!(c.rough_breaks > 0, "{what}");
+                }
                 if order == Order::G1 {
-                    assert!(c.angle.within(), "{c:?}");
+                    assert!(c.along.beyond() && c.angle.within(), "{what}");
                 }
             }
         }
