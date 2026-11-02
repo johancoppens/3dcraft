@@ -385,11 +385,11 @@ const TIGHTEN: usize = 8;
 /// (review of 2026-11-02: an ABC model's tolerance rose and tripped the
 /// boolean's tolerance rule). Where the samples lie within the document's
 /// tolerance (a tenth above them included), a proof at that tolerance
-/// first, which records nothing when it holds; then one at a fiftieth
+/// first, which records nothing when it holds; then one at a two-hundredth
 /// above the gap seen (`sampled`: [`dense_gap`] in [`measure_curve`]),
 /// with every piece; then up to [`TIGHTEN`]
 /// proofs at targets halfway (geometrically) between the bound and a
-/// hundredth above the sampled gap, each allowed four times the pieces of
+/// thousandth above the gap seen, each allowed four times the pieces of
 /// the last that held (a proof that stopped early needs more to go
 /// nearer); one that fails so is tried again with all of
 /// [`PROOF_PIECES`], and only one that fails with them all raises the
@@ -411,14 +411,14 @@ fn tighten(
     {
         return b.min(bound);
     }
-    let mut floor = (1.01 * sampled).max(linear);
+    let mut floor = (1.001 * sampled).max(linear);
     // Straight at the gap seen, with every piece: where the samples see
     // the gap (they are dense), this is the bound wanted at once.
-    if let Some((b, _)) = prove((1.02 * floor).max(linear), PROOF_PIECES) {
+    if let Some((b, _)) = prove((1.005 * sampled).max(linear), PROOF_PIECES) {
         return b.min(bound);
     }
     let mut attempts = 0;
-    while attempts < TIGHTEN && !bound.is_nan() && bound > 1.01 * floor {
+    while attempts < TIGHTEN && !bound.is_nan() && bound > 1.005 * floor {
         let target = (floor * bound).sqrt().max(floor);
         let most = pieces.saturating_mul(4).clamp(256, PROOF_PIECES);
         attempts += 1;
@@ -449,8 +449,8 @@ const DENSE: u32 = 64;
 
 /// How far `curve` over `range` lies off `surface` at [`DENSE`] + 1
 /// places, each foot walked from the one before (from `start`, else the
-/// surface's projection of the first place) and the nearer of that and
-/// the projection at every eighth: the gap a proof must hold as far as
+/// surface's projection of the first place; the projection again where a
+/// walk fails): the gap a proof must hold as far as
 /// samples see it (a foot not quite the nearest only makes it larger),
 /// where the five places of the first proof may see much less (review of
 /// 2026-11-02: a recorded tolerance 1.33 times the gap an ABC model's
@@ -467,7 +467,7 @@ fn dense_gap(
     for k in 0..=DENSE {
         let p = curve.eval(t0 + (t1 - t0) * f64::from(k) / f64::from(DENSE));
         let walked = last.and_then(|l| surface.project_from(p, l).ok());
-        let own = (k % 8 == 0 || walked.is_none())
+        let own = (k == 0 || walked.is_none())
             .then(|| surface.project(p).ok())
             .flatten();
         let mut best: Option<(f64, (f64, f64))> = None;
