@@ -1802,7 +1802,7 @@ fn pattern_sheet(
 }
 
 /// The flat pattern of part `id` (see [`flat_pattern`]).
-fn one_pattern(
+pub(crate) fn one_pattern(
     session: &mut Session,
     id: FeatureId,
     command: &str,

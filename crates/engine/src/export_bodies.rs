@@ -25,29 +25,39 @@ pub(crate) fn chosen(
     doc: &Document,
     regen: &Regen,
 ) -> Result<Option<Vec<FeatureId>>, CommandError> {
+    chosen_for(ID, p, doc, regen)
+}
+
+/// [`chosen`] for the command `command`, which its errors name.
+pub(crate) fn chosen_for(
+    command: &str,
+    p: &Params,
+    doc: &Document,
+    regen: &Regen,
+) -> Result<Option<Vec<FeatureId>>, CommandError> {
     let Some(value) = p.get("bodies") else {
         return Ok(None);
     };
     let Value::Array(items) = value else {
         return fail(format!(
-            "{ID}: `bodies` must be a list of bodies, each the id (\"F3\") or name of the feature that made it"
+            "{command}: `bodies` must be a list of bodies, each the id (\"F3\") or name of the feature that made it"
         ));
     };
     if items.is_empty() {
         return fail(format!(
-            "{ID}: `bodies` is empty; name the bodies to export ({}), or leave it out to export every body",
+            "{command}: `bodies` is empty; name the bodies to export ({}), or leave it out to export every body",
             existing(doc, regen)
         ));
     }
     if items.len() > MAX_BODIES {
         return fail(format!(
-            "{ID}: `bodies` names {} bodies; at most {MAX_BODIES} at a time",
+            "{command}: `bodies` names {} bodies; at most {MAX_BODIES} at a time",
             items.len()
         ));
     }
     let mut out: Vec<FeatureId> = Vec::with_capacity(items.len());
     for (index, item) in items.iter().enumerate() {
-        let id = feature(doc, regen, index, item)?;
+        let id = feature(command, doc, regen, index, item)?;
         if !out.contains(&id) {
             out.push(id);
         }
@@ -57,6 +67,7 @@ pub(crate) fn chosen(
 
 /// The feature `item` names, which must have a body of its own now.
 fn feature(
+    command: &str,
     doc: &Document,
     regen: &Regen,
     index: usize,
@@ -73,7 +84,7 @@ fn feature(
             .and_then(|n| doc.feature(FeatureId(n)).map(|f| f.id)),
         _ => {
             return fail(format!(
-                "{ID}: `bodies.{index}` must be the id (\"F3\") or name of the feature that made the body"
+                "{command}: `bodies.{index}` must be the id (\"F3\") or name of the feature that made the body"
             ));
         }
     };
@@ -85,7 +96,7 @@ fn feature(
         .collect();
     let Some(id) = found else {
         return fail(format!(
-            "{ID}: `bodies.{index}`: there is no feature `{shown}`; the bodies are {}",
+            "{command}: `bodies.{index}`: there is no feature `{shown}`; the bodies are {}",
             existing(doc, regen)
         ));
     };
@@ -128,7 +139,7 @@ fn feature(
         _ => "it makes no body".to_string(),
     };
     fail(format!(
-        "{ID}: `bodies.{index}`: {id} ({name}) has no body now: {why}; the bodies are {}",
+        "{command}: `bodies.{index}`: {id} ({name}) has no body now: {why}; the bodies are {}",
         existing(doc, regen)
     ))
 }

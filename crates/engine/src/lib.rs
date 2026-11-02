@@ -37,6 +37,7 @@ mod checks_elsewhere;
 mod commands;
 mod commands_elsewhere;
 mod continuity_cmds;
+mod cut_cmds;
 mod datum_cmds;
 mod develop_cmds;
 mod drawing_cmds;
@@ -722,6 +723,7 @@ impl Session {
                 fold_cmds::SPECS,
                 sheetmetal_cmds::SPECS,
                 bendseq_cmds::SPECS,
+                cut_cmds::SPECS,
                 split_cmds::SPECS,
                 query_cmds::SPECS,
                 interference_cmds::SPECS,
