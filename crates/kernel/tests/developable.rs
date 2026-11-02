@@ -1343,8 +1343,8 @@ fn end_rounding_estimate(made: &Connected) -> f64 {
 /// the unfold's estimate, the fit within half the tolerance, and the faces
 /// tangent across every edge they share; at three scales (the curves
 /// scaled about the origin, at 1 the kayak's own). Laid flat as one piece
-/// it is refused at the strip beside the bow's fan (the owed layout of a
-/// face whose parametrisation stands still at a corner). The same panel between
+/// keeping its area, its edges' lengths and its map (refused until
+/// 2026-11-02 at the strip beside the bow's fan). The same panel between
 /// the rails cut short of both folds (3 % to 97 % of each) is one face,
 /// laid flat keeping every edge's length (it was the oracle against which
 /// the stepped stretches of develop-r1 failed; review of 2026-10-28).
@@ -1505,31 +1505,12 @@ fn rails_whose_condition_has_branches_that_pass_each_other_are_closed_by_fans() 
             ],
             "{k}"
         );
-        // Laid flat as one piece it is refused, at the strip beside the
-        // bow's fan (face 2): the strip starts on the ruling where the
-        // walk's branch turned, where one of its rows stands still, and the
-        // layout of a face whose parametrisation stands still at a corner
-        // is the owed one (docs/design/developable.md, Open; the same
-        // refusal as for the strip of
-        // `branches_that_pass_each_other_at_an_inflection_are_bridged_by_a_fan`).
-        // A regression test of the refusal; what pins the panel is the
-        // geometry above and the same panel short of the folds, laid flat
-        // below.
+        // Laid flat as one piece (refused until 2026-11-02 at the strip
+        // beside the bow's fan, face 2, which starts on the ruling where
+        // the walk's branch turned; flipped as this pin asked): area,
+        // lengths and map kept.
         assert_eq!(made.faces[2], Piece::After(Mark::FoldFromStart(0)), "{k}");
-        let faces: Vec<FaceId> = (0..made.body.faces.len() as u32).map(FaceId).collect();
-        match develop(&made.body, &faces, &tol(k)) {
-            Ok(dev) => panic!(
-                "{k}: the sheer panel laid flat, {:?}: update this test",
-                dev.error()
-            ),
-            Err(e) => {
-                let e = e.to_string();
-                assert!(
-                    e.contains("face 2 ") && e.contains("stands still"),
-                    "{k}: {e}"
-                );
-            }
-        }
+        assert_unfolds_keeping_area_lengths_and_map(&made, k);
         // Cut short of the folds: one face, laid flat, every edge keeps
         // its length.
         let part = (0.03, 0.97);

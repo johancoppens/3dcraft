@@ -1407,7 +1407,7 @@ fn lay_face(
                 face.0,
                 if at_nodes <= 0.25 * error {
                     format!(
-                        "; the grids' nodes agree to {at_nodes:e} and the map between them does not, as where the face's parametrisation stands still at a corner (the strip beside a fan at a fold): unfolding such a face is not supported yet"
+                        "; the grids' nodes agree to {at_nodes:e} and the map between them does not (where the face's parametrisation stands still or its knots crowd)"
                     )
                 } else {
                     String::new()
