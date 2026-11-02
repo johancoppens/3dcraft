@@ -2018,6 +2018,10 @@ impl Share {
             } else {
                 t.foreground.push_back(ticket);
             }
+            // One more waits: the first in line may go on now that nobody
+            // else does (a holder that gets in line behind a waiter wakes
+            // it; before the review of 2026-11-02 both slept for ever).
+            FREED.notify_all();
             while !may_add(&t, size, Some(ticket), background) {
                 t = FREED.wait(t).unwrap_or_else(PoisonError::into_inner);
             }
@@ -3626,9 +3630,66 @@ mod tests {
         assert!(may_add(&room, 1, Some(0), false));
     }
 
-    /// A foreground operation that needs most of the room gets it while
-    /// background operations come and go without a pause.
+    /// A holder that asks for another tree while an operation waits for
+    /// room behind it gets in line and wakes the waiter, which may go on
+    /// now that nobody else does: A waits for room behind B, then B asks
+    /// for a second tree. Before 2026-11-02 nobody woke A and both slept
+    /// for ever (a review); a hang fails the test after a minute.
     #[test]
+    fn a_holder_that_gets_in_line_wakes_the_waiter_before_it() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+        let (done, finished) = mpsc::channel();
+        std::thread::spawn(move || {
+            let (b_holds, a_may_start) = mpsc::channel();
+            let a = std::thread::spawn(move || {
+                let _ = a_may_start.recv();
+                // More than is left while B holds half: it waits.
+                holding_within(usize::MAX, || {
+                    held_within_budget(Some((u64::MAX - 2_000_001, HELD_TOGETHER))).map_err(|_| {
+                        crate::KernelError::Unsupported {
+                            operation: super::super::OPERATION,
+                            reason: TOO_MUCH_HELD,
+                            faces: Vec::new(),
+                        }
+                    })
+                })
+                .is_ok()
+            });
+            let b = holding_within(usize::MAX, || {
+                let _ = held_within_budget(Some((u64::MAX - 2_000_002, HELD_TOGETHER / 2)));
+                let _ = b_holds.send(());
+                // A is in the foreground line before B asks again.
+                let deadline = Instant::now() + Duration::from_secs(30);
+                while together().foreground.is_empty() && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                std::thread::sleep(Duration::from_millis(20));
+                // A tree that fits: B gets in line behind A all the same.
+                held_within_budget(Some((u64::MAX - 2_000_003, 1))).map_err(|_| {
+                    crate::KernelError::Unsupported {
+                        operation: super::super::OPERATION,
+                        reason: TOO_MUCH_HELD,
+                        faces: Vec::new(),
+                    }
+                })
+            })
+            .is_ok();
+            let a = a.join().unwrap_or(false);
+            let _ = done.send(a && b);
+        });
+        match finished.recv_timeout(Duration::from_secs(60)) {
+            Ok(both) => assert!(both, "both operations went on"),
+            Err(_) => panic!("A and B wait for each other for ever"),
+        }
+    }
+
+    /// A foreground operation that needs most of the room gets it while
+    /// background operations come and go without a pause. A stress test
+    /// to run by hand: the gate is the process's, and the other tests of
+    /// this binary run real freeform booleans through it meanwhile.
+    #[test]
+    #[ignore = "stress test, timing-dependent: run by hand"]
     fn background_churn_does_not_starve_the_foreground() {
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::time::{Duration, Instant};
