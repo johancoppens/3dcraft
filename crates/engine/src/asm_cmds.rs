@@ -633,10 +633,7 @@ fn source_relative(
             }
         } else {
             // A relative path is beneath the first root.
-            match read.roots().first() {
-                Some(root) => crate::workspace::spelled_root(root).join(p),
-                None => return None,
-            }
+            crate::workspace::spelled_root(read.roots().first()?).join(p)
         };
         path.to_str().map(str::to_string)
     };

@@ -1517,7 +1517,11 @@ mod tests {
     fn bridge_in(state: &Path, cwd: &Path) -> Bridge {
         let mut config = BridgeConfig::discover(state.join("craft"), None);
         config.cwd = Some(craft3d_engine::canonical(cwd).unwrap());
-        config.client = Some(format!("MCP bridge (test {})", cwd.display()));
+        // A name of its own per bridge, short enough to be one (80
+        // characters at most).
+        static BRIDGES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = BRIDGES.fetch_add(1, Ordering::Relaxed);
+        config.client = Some(format!("MCP bridge (test {n})"));
         Bridge::new(config)
     }
 
@@ -1741,15 +1745,24 @@ mod tests {
         assert!(prompts(&desk).is_empty());
         let (back, _) = relay_turning(&mut desk, bridge, run(2, "file.new", json!({})), |_| true);
         bridge = back;
+        let (back, _) = relay_turning(
+            &mut desk,
+            bridge,
+            run(20, "feature.block", json!({"size": [10, 10, 10]})),
+            |_| true,
+        );
+        bridge = back;
+        // Exports: a save would make `elsewhere` the open document's
+        // folder, a root of its own.
         let save = |id: u64, name: &str| {
             run(
                 id,
-                "file.save",
+                "file.export",
                 json!({"path": outside.join(name).to_str().unwrap()}),
             )
         };
         // Allow once: this save only. Meanwhile the window answers.
-        let (back, reply) = relay_turning(&mut desk, bridge, save(3, "once.3dcraft"), |desk| {
+        let (back, reply) = relay_turning(&mut desk, bridge, save(3, "once.stl"), |desk| {
             let asked = prompts(desk);
             if asked.is_empty() {
                 return false;
@@ -1757,15 +1770,15 @@ mod tests {
             assert_eq!(asked[0].kind, "write");
             assert_eq!(
                 asked[0].path,
-                outside.join("once.3dcraft").to_str().unwrap(),
+                outside.join("once.stl").to_str().unwrap(),
                 "the full path"
             );
-            assert_eq!(asked[0].command.as_deref(), Some("file.save"));
+            assert_eq!(asked[0].command.as_deref(), Some("file.export"));
             click(desk, "write", PromptAnswer::Once)
         });
         bridge = back;
         assert_eq!(reply["result"]["isError"], false, "{reply}");
-        assert!(outside.join("once.3dcraft").is_file());
+        assert!(outside.join("once.stl").is_file());
         desk.turn();
         assert!(
             !desk
@@ -1778,7 +1791,7 @@ mod tests {
             "taken back"
         );
         // Deny: a tool error that says what to do.
-        let (back, reply) = relay_turning(&mut desk, bridge, save(4, "denied.3dcraft"), |desk| {
+        let (back, reply) = relay_turning(&mut desk, bridge, save(4, "denied.stl"), |desk| {
             click(desk, "write", PromptAnswer::Deny)
         });
         bridge = back;
@@ -1788,9 +1801,9 @@ mod tests {
             text.contains("has not given access") && text.contains("3DCraft window"),
             "{text}"
         );
-        assert!(!outside.join("denied.3dcraft").exists());
+        assert!(!outside.join("denied.stl").exists());
         // Nobody answers: refused after the wait (an injected clock).
-        let (back, reply) = relay_turning(&mut desk, bridge, save(5, "late.3dcraft"), |desk| {
+        let (back, reply) = relay_turning(&mut desk, bridge, save(5, "late.stl"), |desk| {
             if prompts(desk).is_empty() {
                 return false;
             }
@@ -1805,17 +1818,17 @@ mod tests {
             "{reply}"
         );
         // Allow this folder: from then on without asking.
-        let (back, reply) = relay_turning(&mut desk, bridge, save(6, "folder.3dcraft"), |desk| {
+        let (back, reply) = relay_turning(&mut desk, bridge, save(6, "folder.stl"), |desk| {
             click(desk, "write", PromptAnswer::Folder)
         });
         bridge = back;
         assert_eq!(reply["result"]["isError"], false, "{reply}");
-        let (_, reply) = relay_turning(&mut desk, bridge, save(7, "again.3dcraft"), |desk| {
+        let (_, reply) = relay_turning(&mut desk, bridge, save(7, "again.stl"), |desk| {
             assert!(prompts(desk).is_empty(), "asked again");
             false
         });
         assert_eq!(reply["result"]["isError"], false, "{reply}");
-        assert!(outside.join("again.3dcraft").is_file());
+        assert!(outside.join("again.stl").is_file());
         let _ = std::fs::remove_dir_all(&state);
     }
 

@@ -133,11 +133,6 @@ impl Protected {
                 None
             }
         };
-        if let Some(state) = &self.state
-            && let Some(why) = clash(state, "3DCraft's own folder, where its control token is")
-        {
-            return Some(why);
-        }
         let mut sensitive: Vec<(PathBuf, &str)> = Vec::new();
         if let Some(home) = &self.home {
             if folder == home {
@@ -146,9 +141,21 @@ impl Protected {
             if home.starts_with(folder) {
                 return Some(format!("`{shown}` holds your home folder"));
             }
+            // (After the home folder itself: the state folder is in it.)
+            if let Some(state) = &self.state
+                && let Some(why) = clash(state, "3DCraft's own folder, where its control token is")
+            {
+                return Some(why);
+            }
             for secret in HOME_SECRETS {
                 sensitive.push((real(&home.join(secret)), "a folder of keys and settings"));
             }
+        }
+        if self.home.is_none()
+            && let Some(state) = &self.state
+            && let Some(why) = clash(state, "3DCraft's own folder, where its control token is")
+        {
+            return Some(why);
         }
         for place in &self.places {
             sensitive.push((real(place), "a folder of the system or of your settings"));
