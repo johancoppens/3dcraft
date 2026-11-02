@@ -1,0 +1,11 @@
+[
+ ["variable.set", {"name": "t", "expr": "1 mm"}],
+ ["variable.set", {"name": "h", "expr": "8 mm"}],
+ ["sketch.create", {"plane": "xy", "name": "Base"}],
+ ["sketch.rect", {"sketch": "Base", "from": ["0 mm", "0 mm"], "to": ["80 mm", "40 mm"]}],
+ ["sketch.line", {"sketch": "Base", "from": ["35 mm", "-5 mm"], "to": ["35 mm", "45 mm"], "construction": true}],
+ ["sketch.circle", {"sketch": "Base", "center": ["60 mm", "20 mm"], "radius": "4 mm"}],
+ ["feature.sheetMetal", {"sketch": "Base", "name": "Plate", "thickness": "t", "radius": "1.5 mm", "kFactor": 0.4,
+   "flanges": [{"edge": "e6", "length": "12 mm", "angle": "90 deg"}],
+   "jogs": [{"line": "e11", "offset": "h", "angle": "60 deg", "radius": "2 mm"}]}]
+]

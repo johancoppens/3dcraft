@@ -1246,7 +1246,60 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 corners,
                 next_flange_id,
                 bend_relief,
+                jogs,
+                formed_louvres,
             }) => manifest::FeatureKind::SheetMetal {
+                formed_louvres: formed_louvres
+                    .iter()
+                    .map(
+                        |doc::FormedLouvre {
+                             line,
+                             width,
+                             height,
+                             ends,
+                             direction,
+                             id,
+                         }| manifest::SheetFormedLouvre {
+                            line: line.0,
+                            width: expr_to_manifest(width),
+                            height: expr_to_manifest(height),
+                            ends: match ends {
+                                doc::HoodEnds::Closed => manifest::HoodEnds::Closed,
+                                doc::HoodEnds::Open => manifest::HoodEnds::Open,
+                            },
+                            direction: match direction {
+                                doc::BendDirection::Up => manifest::BendDirection::Up,
+                                doc::BendDirection::Down => manifest::BendDirection::Down,
+                            },
+                            id: *id,
+                        },
+                    )
+                    .collect(),
+                jogs: jogs
+                    .iter()
+                    .map(
+                        |doc::Jog {
+                             line,
+                             offset,
+                             angle,
+                             direction,
+                             radius,
+                             k_factor,
+                             id,
+                         }| manifest::SheetJog {
+                            line: line.0,
+                            offset: expr_to_manifest(offset),
+                            angle: expr_to_manifest(angle),
+                            direction: match direction {
+                                doc::BendDirection::Up => manifest::BendDirection::Up,
+                                doc::BendDirection::Down => manifest::BendDirection::Down,
+                            },
+                            radius: radius.as_ref().map(expr_to_manifest),
+                            k_factor: k_factor.as_ref().map(expr_to_manifest),
+                            id: *id,
+                        },
+                    )
+                    .collect(),
                 bend_relief: bend_relief
                     .as_ref()
                     .map(|doc::CornerRelief { shape, size }| manifest::SheetRelief {
@@ -3210,9 +3263,62 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
                 corners,
                 next_flange_id,
                 bend_relief,
+                jogs,
+                formed_louvres,
             } => doc::FeatureKind::SheetMetal({
                 let mut part = doc::SheetMetal {
                     next_flange_id: 0,
+                    formed_louvres: formed_louvres
+                        .into_iter()
+                        .map(
+                            |manifest::SheetFormedLouvre {
+                                 line,
+                                 width,
+                                 height,
+                                 ends,
+                                 direction,
+                                 id,
+                             }| doc::FormedLouvre {
+                                line: doc::EntityId(line),
+                                width: doc::Expr(width),
+                                height: doc::Expr(height),
+                                ends: match ends {
+                                    manifest::HoodEnds::Closed => doc::HoodEnds::Closed,
+                                    manifest::HoodEnds::Open => doc::HoodEnds::Open,
+                                },
+                                direction: match direction {
+                                    manifest::BendDirection::Up => doc::BendDirection::Up,
+                                    manifest::BendDirection::Down => doc::BendDirection::Down,
+                                },
+                                id,
+                            },
+                        )
+                        .collect(),
+                    jogs: jogs
+                        .into_iter()
+                        .map(
+                            |manifest::SheetJog {
+                                 line,
+                                 offset,
+                                 angle,
+                                 direction,
+                                 radius,
+                                 k_factor,
+                                 id,
+                             }| doc::Jog {
+                                line: doc::EntityId(line),
+                                offset: doc::Expr(offset),
+                                angle: doc::Expr(angle),
+                                direction: match direction {
+                                    manifest::BendDirection::Up => doc::BendDirection::Up,
+                                    manifest::BendDirection::Down => doc::BendDirection::Down,
+                                },
+                                radius: radius.map(doc::Expr),
+                                k_factor: k_factor.map(doc::Expr),
+                                id,
+                            },
+                        )
+                        .collect(),
                     bend_relief: bend_relief.map(|manifest::SheetRelief { shape, size }| {
                         doc::CornerRelief {
                             shape: pick_to_doc(shape, relief_shape_to_doc),

@@ -1,0 +1,12 @@
+[
+ ["variable.set", {"name": "t", "expr": "1 mm"}],
+ ["variable.set", {"name": "w", "expr": "6 mm"}],
+ ["sketch.create", {"plane": "xy", "name": "Base"}],
+ ["sketch.rect", {"sketch": "Base", "from": ["0 mm", "0 mm"], "to": ["80 mm", "40 mm"]}],
+ ["sketch.line", {"sketch": "Base", "from": ["15 mm", "12 mm"], "to": ["45 mm", "12 mm"], "construction": true}],
+ ["sketch.line", {"sketch": "Base", "from": ["60 mm", "32 mm"], "to": ["20 mm", "32 mm"], "construction": true}],
+ ["feature.sheetMetal", {"sketch": "Base", "name": "Panel", "thickness": "t", "radius": "1.5 mm", "kFactor": 0.4,
+   "flanges": [{"edge": "e6", "length": "12 mm", "angle": "90 deg"}],
+   "formedLouvres": [{"line": "e11", "width": "w", "height": "2 mm"},
+                     {"line": "e14", "width": "w", "height": "2.5 mm", "ends": "open", "direction": "down"}]}]
+]
