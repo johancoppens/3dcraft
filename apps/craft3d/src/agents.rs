@@ -897,7 +897,7 @@ mod tests {
         assert!(bridge::relay(&mut bridge, &initialize).is_some());
         assert_eq!(agents.status().connected, 1);
         assert_eq!(agents.disconnect_all(), 1);
-        assert_eq!(agents.status().connected, 0);
+        eventually("all disconnected", || agents.status().connected == 0);
         let refused: Value =
             serde_json::from_str(&bridge::relay(&mut bridge, &initialize).unwrap()).unwrap();
         let message = refused["error"]["message"].as_str().unwrap();

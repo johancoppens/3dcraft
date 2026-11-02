@@ -416,7 +416,7 @@ mod tests {
         let folder = dir("entries");
         let ours = entry(std::process::id(), 7901, 5);
         write_entry(&folder, &ours).unwrap();
-        assert_eq!(read_entries(&folder), [ours.clone()]);
+        assert_eq!(read_entries(&folder), std::slice::from_ref(&ours));
         let text = std::fs::read_to_string(entry_path(&folder, ours.pid)).unwrap();
         assert!(!text.contains("token\":\""), "no token in an entry: {text}");
         #[cfg(unix)]
@@ -442,7 +442,7 @@ mod tests {
             std::fs::write(windows.join(name), content).unwrap();
         }
         std::fs::write(windows.join("7.json"), "x".repeat(10_000)).unwrap();
-        assert_eq!(read_entries(&folder), [ours.clone()]);
+        assert_eq!(read_entries(&folder), std::slice::from_ref(&ours));
         remove_entry(&folder, ours.pid);
         remove_entry(&folder, ours.pid);
         assert!(read_entries(&folder).is_empty());
@@ -467,11 +467,14 @@ mod tests {
         dead.pid = u32::MAX - 1;
         write_entry(&folder, &dead).unwrap();
         assert_eq!(read_entries(&folder).len(), 2);
-        assert_eq!(live_entries(&folder, None), [live.clone()]);
+        assert_eq!(live_entries(&folder, None), std::slice::from_ref(&live));
         assert!(!entry_path(&folder, dead.pid).exists(), "cleaned up");
         // A caller's own entry is never removed, live or not.
         drop(listener);
-        assert_eq!(live_entries(&folder, Some(live.pid)), [live.clone()]);
+        assert_eq!(
+            live_entries(&folder, Some(live.pid)),
+            std::slice::from_ref(&live)
+        );
         assert!(live_entries(&folder, None).is_empty());
         let _ = std::fs::remove_dir_all(&folder);
     }
@@ -494,7 +497,8 @@ mod tests {
         let error = choose(&[a, b, c], None).unwrap_err();
         assert!(error.contains("several"), "{error}");
         assert!(
-            error.contains("process 11 on port 7879") && error.contains("process 12 on port 7880"),
+            error.contains("(process 11) on port 7879")
+                && error.contains("(process 12) on port 7880"),
             "{error}"
         );
     }
