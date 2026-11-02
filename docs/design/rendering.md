@@ -1491,3 +1491,36 @@ developer's decisions of 2026-11-02), on the kit:
   question before closing at 1024 and 390; the tabs' icons and `ui.get` › `tabs[].assembly`),
   `tests/agents_pill.rs` (the pill at the right, the popover's controls, the two questions' buttons in order and
   what each answers, Remember for this folder), the unit tests of `agents.rs` and `start.rs`.
+
+Part B, as far as it went on 2026-11-02:
+
+- **The player** (`shell/player.rs`, board s8, decisions 4 and 5): one timeline and one row. History or Motion
+  is a kit segmented control (a document with both); the slider is the one of the mode chosen; the row is step
+  back, the round amber play button (`control_height` across, the knob's ink; `kit.hit` with touch sizes),
+  step forward, where it is (`3 / 10`, `t 0.35`), then at the right the speed chip, Loop and Orbit (kit icon
+  buttons, amber while on). No ⏮/⏭: Home and End and the timeline's ends do that (*To end*, which also took
+  the rollback marker away, is gone with it; the roll-back bar's drag to the end does that). `player_parts`:
+  orbit goes under `PLAYER_FULL_WIDTH` (220), and with touch sizes under `PLAYER_TOUCH_FULL_WIDTH` (380) only
+  the three buttons and the position stay. In Motion the step buttons move `t` by 0.05; Back and forth and
+  Collisions are chips under the row, with the bake hint, which asks the kit whether its title fits
+  (`Kit::banner_title_fits`, review N4). The phone's strip over the viewport keeps a motion's play, slider and
+  `t`, a history's three buttons and step. `Shell::player_hits` says where the parts are;
+  `tests/window_overhaul.rs` › `the_player_fits_at_every_size` plays a history and the planetary gearbox at
+  1400, 1024, 480 and 390 points, in the panel, the drawer and the strip: every part inside the window and the
+  panel, none over another.
+- **The Agent tab** (`shell/sidepanel/agent.rs`, board 06 of the side panel): offered on the desktop while
+  agents are allowed or the document has a log; the connection card, then `Session::agent_log_json(100)`
+  newest first (when and who, the label, what it made by name, a failure's reason in red, the intent in
+  italics), on a rail of indigo dots (red for a failure). Read again when the document, its revision or the
+  latest agent command's time changes. *Undo to here* is not built: the log does not say which undo step an
+  entry made (owed to an engine command). The Features tab's ✦ (`agent_mark`) is the document's provenance:
+  `TreeRow::made_by` from `madeBy` (else `lastChangedBy`), cached per document and revision.
+- **System on GNOME** (`apps/craft3d/src/desktop_theme.rs`): winit reports no theme on Linux, so the desktop app
+  reads `org.gnome.desktop.interface color-scheme` (what the XDG portal's `org.freedesktop.appearance
+  color-scheme` is made from) with `gsettings get`, then follows `gsettings monitor` on a thread of its own and
+  asks for a frame when it changes; no crate is added. `Shell::set_desktop_theme` is the fallback under
+  egui's `system_theme()`. Without `gsettings` (or `'default'`) System stays light. The monitor is killed when
+  the window goes.
+- **Not built in part B** (open): the Studio and Analysis popovers' restyle (s1) and the view and display bars
+  with their compact form (s2, s2b) are as phase 1 left them; on the phone the Studio and Analysis bottom
+  sheets, the agent sheet, the consent sheet and the Jig parameters as a half sheet (m4–m8, t1–t2).

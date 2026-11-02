@@ -1482,11 +1482,10 @@ impl Shell {
     }
 }
 
-/// The agent's mark on a row of a feature an agent made. The document
-/// does not keep who made a feature yet (r1-mcp-connect adds it): the
-/// hook is here, no row is marked.
-fn agent_mark(_row: Option<&TreeRow>) -> Option<RowMark> {
-    None
+/// The agent's mark (✦) on a row of a feature an agent made or last
+/// changed: the document's provenance (`madeBy`, `lastChangedBy`).
+fn agent_mark(row: Option<&TreeRow>) -> Option<RowMark> {
+    row.and_then(|r| r.made_by.as_ref()).map(|_| RowMark::Agent)
 }
 
 /// A sketch's key value: its curves and its degrees of freedom.
@@ -1830,6 +1829,7 @@ mod tests {
             passes: None,
             instance: None,
             depth: 0,
+            made_by: None,
         }
     }
 

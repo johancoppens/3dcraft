@@ -498,3 +498,74 @@ fn the_player_fits_at_every_size() {
         }
     }
 }
+
+/// The Agent tab reads the document's log (what an agent did, newest
+/// first, with its intent) and the feature list marks what an agent made
+/// with ✦ (the document's provenance, `madeBy`); the person's own
+/// features carry no mark.
+#[test]
+fn the_agent_tab_and_the_agents_mark() {
+    let mut session = Session::new(Workspace::none());
+    session.execute("file.new", &json!({})).unwrap();
+    session
+        .execute(
+            "feature.block",
+            &json!({"size": [10, 10, 10], "name": "Mine"}),
+        )
+        .unwrap();
+    session.set_actor(Some("Claude Code"));
+    session.set_intent(Some("Round the base for handling"));
+    session
+        .execute("feature.sphere", &json!({"radius": 3, "name": "Theirs"}))
+        .unwrap();
+    session.set_intent(None);
+    session.set_actor(None);
+    let mut shell = Shell::new();
+    shell.set_agents_status(connected());
+    let mut window = Window::sized(1400.0, 900.0);
+    window.frames(&mut shell, &mut session, 3);
+    let made: Vec<(String, Option<String>)> = shell
+        .tree_rows()
+        .iter()
+        .map(|r| (r.name.clone(), r.made_by.clone()))
+        .collect();
+    assert_eq!(
+        made,
+        [
+            ("Mine".to_string(), None),
+            ("Theirs".to_string(), Some("Claude Code".to_string()))
+        ]
+    );
+    // The tab is offered (in the bar or behind ⋯), and shows the entry.
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"panels": {"sideTab": "agent"}}),
+    );
+    window.frames(&mut shell, &mut session, 3);
+    let rows = shell.side_hits().agent_rows.clone();
+    assert_eq!(rows.len(), 1, "one command by the agent");
+    let panel = shell.side_hits().panel.unwrap();
+    for row in &rows {
+        assert!(
+            panel.expand(0.5).contains_rect(*row),
+            "{row:?} in {panel:?}"
+        );
+    }
+    // Agents off and no log: no tab.
+    let mut plain = Session::new(Workspace::none());
+    plain.execute("file.new", &json!({})).unwrap();
+    let mut shell = Shell::new();
+    let mut window = Window::sized(1400.0, 900.0);
+    window.frames(&mut shell, &mut plain, 3);
+    call(
+        &mut shell,
+        &mut plain,
+        "ui.set",
+        json!({"panels": {"sideTab": "agent"}}),
+    );
+    window.frames(&mut shell, &mut plain, 3);
+    assert!(shell.side_hits().agent_rows.is_empty());
+    assert_ne!(shell.state.panels.side_tab, craft3d_ui_egui::SideTab::Agent);
+}

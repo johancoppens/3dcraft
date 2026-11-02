@@ -132,7 +132,7 @@ The **Help** menu:
 ## The side panel
 
 The left panel has tabs, chosen by the kind of document: a part has **Features**, **Variables** and
-**Bodies**; an assembly has **Assembly** (its instances and mates) and **Variables**; a document with public
+**Bodies** (and **Agent**, below); an assembly has **Assembly** (its instances and mates) and **Variables**; a document with public
 parameters (a Jig) has **Parameters** first. When the tabs do not fit, the rest are behind **⋯**. Drag the
 panel's right edge to make it wider or narrower; it keeps that width whatever it shows.
 
@@ -195,6 +195,15 @@ foot. The bodies that booleans used up are folded under *Tool bodies*; open it t
 
 **A Jig** opens on **Parameters** (its form); its other tabs are there to look at.
 
+
+### The Agent tab
+
+While agents are allowed, or once an agent has worked on the document, the side panel has an **Agent** tab:
+who is connected, then what agents did to this document, newest first: when and which agent, the command in
+words, the features it made, why a command failed, and in italics what the agent said it meant to do. A
+feature an agent made (or last changed) carries a small indigo ✦ after its name in the Features tab. The
+desktop app only: in the browser agents cannot connect.
+
 ## The history player
 
 ![The history player](images/player.png)
@@ -203,20 +212,22 @@ At the foot of the side panel is the **timeline**: drag it to see the design as 
 of its history. Features after that step are greyed, and the step is named at the top of the view, such as
 `Step 3/6  Join`. Looking back never changes the document.
 
-Under the timeline is a **player**, like a video player's:
+Under the timeline is the **player**, one row like a video player's: the round amber button plays and
+pauses, and where you are is beside it (`3 / 6`).
 
 | Button | Key | Does |
 |---|---|---|
-| ⏮ First step | Home | Shows the first step |
-| ⏴ Step back | ← | One step back |
+| Step back | ← | One step back |
 | ▶ Play / ⏸ Pause | Space | Plays the history step by step, or pauses |
-| ⏵ Step forward | → | One step forward |
-| ⏭ To end | End | Back to the whole design |
+| Step forward | → | One step forward |
+| | Home | Shows the first step (the timeline's start) |
+| | End | Back to the whole design (the timeline's end) |
 | **1×** | | The speed: 0.5×, 1× or 2× (click to change) |
 | Loop | | Starts again at the first step after the last |
 | Orbit | | Turns the camera slowly while it plays |
 
-In a narrow feature panel the speed, Loop and Orbit move to a second row, under the other five.
+In a narrow feature panel Orbit is left out, and on a phone or a tablet only the three buttons and where
+you are stay; the timeline's ends and Home and End take you to the first step and the last.
 
 The keys work while the pointer is over the view or the feature list and you are not typing in a field.
 Each step is shown once its model is built, and for at least 0.8 s at 1×, so a heavy model never skips a
@@ -231,8 +242,9 @@ gives a video in which every step is complete ([*A video of the window*](../deve
 in the developer guide).
 
 **Roll back here** puts the *rollback marker* on the step shown: the design is then built only up to that
-step, and new features go in right after it, a way to insert something early in the history. **To end**
-takes the marker away again. While you look back, clicks in the view do not select; go **To end** first.
+step, and new features go in right after it, a way to insert something early in the history. Dragging the
+amber roll-back bar of the feature list to its end takes the marker away again. While you look back, clicks in
+the view do not select; press **End** first.
 
 ### Playing a motion
 
@@ -241,8 +253,8 @@ from 0 to 1 (`variable.set {"name": "t", "expr": "0"}`); formulas of `t` move th
 `360 deg * t`. A `t` with a unit (a thickness called `t`) is not a timeline: rename it first.
 
 With a timeline, **History** and **Motion** appear above the player. In Motion the slider runs over `t`, and the
-player plays it: from 0 to 1 in 4 s at 1×, **Loop** starts again at 0, **Back and forth** turns round at the
-end, and **Collisions** draws the parts that overlap in red. The view names the moment, such as
+player plays it: from 0 to 1 in 4 s at 1×, the step buttons move `t` by 0.05, **Loop** starts again at 0, and
+under the row **Back and forth** turns round at the end and **Collisions** draws the parts that overlap in red. The view names the moment, such as
 `t = 0.500 · collision: Wall and Crank`. As with the history, nothing in the document changes; only the
 features that use `t` are rebuilt for each moment, so a heavy model plays slower rather than skipping. An
 assembly has no history of its own, so it shows only **Motion**: its parts are moved, not rebuilt

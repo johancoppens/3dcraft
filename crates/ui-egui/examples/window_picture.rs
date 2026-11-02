@@ -35,7 +35,8 @@
 //! `--run FILE` runs the commands of FILE (a JSON array of `[id,
 //! {params}]` or `{"command": id, "params": {...}}`) after the documents
 //! are opened, as an agent would (a variable, a failing edit, a
-//! selection). `--agents FILE` sets how agents stand from FILE (an
+//! selection); with `--actor NAME` they run as that agent's, each with the
+//! `intent` its step gives, so the Agent tab and the ✦ show. `--agents FILE` sets how agents stand from FILE (an
 //! `AgentsStatus` as `ui.get` gives it under `agents`, with `home` for
 //! the `~`), so the pill, its popover and the questions show; the
 //! agents' clock is then the clients' latest command plus half a second.
@@ -55,7 +56,7 @@ use serde_json::json;
 
 const DEFAULT_SIZE: [u32; 2] = [1280, 800];
 
-const USAGE: &str = "usage: window_picture [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] [--point NAME] [--type NAME=TEXT] [--click X,Y] [--dialog export:NAME|error:TEXT] [--recent FILE] [--subject NAME] [--run FILE] [--agents FILE] FILE.3dcraft [FILE.3dcraft | untitled | none ...] OUT.png";
+const USAGE: &str = "usage: window_picture [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] [--point NAME] [--type NAME=TEXT] [--click X,Y] [--dialog export:NAME|error:TEXT] [--recent FILE] [--subject NAME] [--run FILE] [--actor NAME] [--agents FILE] FILE.3dcraft [FILE.3dcraft | untitled | none ...] OUT.png";
 
 fn main() -> Result<(), String> {
     let mut idle = false;
@@ -75,6 +76,7 @@ fn main() -> Result<(), String> {
     let mut subject: Option<String> = None;
     let mut run: Option<String> = None;
     let mut agents: Option<craft3d_ui_egui::AgentsStatus> = None;
+    let mut actor: Option<String> = None;
     let mut paths = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -147,6 +149,12 @@ fn main() -> Result<(), String> {
             }
             "--run" => {
                 run = Some(args.next().ok_or(format!("--run takes a file; {USAGE}"))?);
+            }
+            "--actor" => {
+                actor = Some(
+                    args.next()
+                        .ok_or(format!("--actor takes a name; {USAGE}"))?,
+                );
             }
             "--agents" => {
                 let file = args
@@ -239,6 +247,9 @@ fn main() -> Result<(), String> {
                 .and_then(serde_json::Value::as_str)
                 .ok_or(format!("--run {file}: a step without a command"))?;
             let params = params.cloned().unwrap_or(json!({}));
+            // As an agent, with the intent a step gives (`--actor`).
+            session.set_actor(actor.as_deref());
+            session.set_intent(step.get("intent").and_then(serde_json::Value::as_str));
             // A step may fail on purpose (an edit that breaks a feature):
             // said, and the run goes on.
             if let Err(e) = execute(&mut session, command, params) {
@@ -246,6 +257,7 @@ fn main() -> Result<(), String> {
             }
         }
     }
+    session.set_actor(None);
     session.set_refine_elsewhere(first);
     let mut shell = Shell::new();
     shell.attach_gpu(&state)?;

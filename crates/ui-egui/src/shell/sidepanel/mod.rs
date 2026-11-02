@@ -24,6 +24,7 @@
 //! selected (`select.get`, `measure.continuity`, `document.measure`)
 //! only while something is.
 
+pub mod agent;
 pub mod bodies;
 pub mod checks;
 pub mod features;
@@ -106,6 +107,8 @@ pub struct SideHits {
     pub targets: Vec<(String, egui::Rect)>,
     /// The checks' rows, by name.
     pub checks: Vec<(String, egui::Rect)>,
+    /// The Agent tab's entries, newest first.
+    pub agent_rows: Vec<egui::Rect>,
     /// Everything drawn that must lie inside the panel: the rows' texts'
     /// places included.
     pub drawn: Vec<egui::Rect>,
@@ -125,6 +128,10 @@ pub(crate) struct SideMemory {
     pub(crate) deps_cache: Option<(ViewKey, String, Dependencies)>,
     /// The lines of the Features tab, and what they were made from.
     pub(crate) outline_cache: Option<(features::OutlineKey, Arc<Vec<SideLine>>)>,
+    /// `agent.log` of the active document (`Session::agent_log_json`),
+    /// and for which document, revision and latest agent command.
+    pub(crate) agent_log: Option<Arc<Value>>,
+    agent_log_for: Option<(u64, u64, u64)>,
     /// `document.inspect` with measures, for the Bodies tab.
     pub(crate) bodies: Option<Arc<Value>>,
     bodies_for: Option<(u64, u64)>,
@@ -168,7 +175,7 @@ pub(crate) struct SideMemory {
 /// The tabs a document offers, in order: Parameters first for a Jig (or
 /// an assembly whose joints can be set), then the history (Features, or
 /// Assembly for an assembly), Variables, and Bodies for a part.
-pub fn tabs_for(assembly: bool, parameters: bool) -> Vec<SideTab> {
+pub fn tabs_for(assembly: bool, parameters: bool, agent: bool) -> Vec<SideTab> {
     let mut tabs = Vec::new();
     if parameters {
         tabs.push(SideTab::Parameters);
@@ -179,7 +186,11 @@ pub fn tabs_for(assembly: bool, parameters: bool) -> Vec<SideTab> {
     } else {
         tabs.extend([SideTab::Features, SideTab::Variables, SideTab::Bodies]);
     }
-    // The Agent tab goes here, once the agent's log is (r1-mcp-connect).
+    // What agents did, while agents are allowed or the document has a
+    // log (`sidepanel/agent.rs`; not in the browser).
+    if agent {
+        tabs.push(SideTab::Agent);
+    }
     tabs
 }
 
@@ -290,6 +301,8 @@ impl Shell {
             self.side.bodies = None;
             self.side.props = None;
             self.side.checks_list = None;
+            self.side.agent_log = None;
+            self.side.agent_log_for = None;
             return;
         };
         let revision = session.document_revision().unwrap_or(0);
@@ -355,6 +368,22 @@ impl Shell {
                     .unwrap_or_default();
             }
         }
+        // What agents did: read again when the document changes or an
+        // agent ran a command (its client's last time moves).
+        if !cfg!(target_arch = "wasm32") {
+            let latest = self
+                .agents_status()
+                .clients
+                .iter()
+                .map(|c| c.last_ms)
+                .max()
+                .unwrap_or(0);
+            let agent_key = (doc, revision, latest);
+            if self.side.agent_log_for != Some(agent_key) {
+                self.side.agent_log = Some(Arc::new(session.agent_log_json(agent::LOG_ROWS)));
+                self.side.agent_log_for = Some(agent_key);
+            }
+        }
         if !self.assertion_rows.is_empty() && self.side.checks_for != Some(key) {
             self.side.checks_list = session
                 .execute("assert.list", &json!({"wait": false}))
@@ -398,7 +427,7 @@ impl Shell {
             return;
         }
         let assembly = self.is_assembly_shown();
-        let offered = tabs_for(assembly, jig || joints);
+        let offered = tabs_for(assembly, jig || joints, self.agent_tab_offered());
         let tab = self.reconcile_tab(&offered, jig || joints);
         let chosen = self.tab_bar(ui, &offered, tab);
         if chosen != tab {
@@ -422,6 +451,7 @@ impl Shell {
             SideTab::Features => self.features_tab(ui),
             SideTab::Variables => self.variables_tab(ui),
             SideTab::Bodies => self.bodies_tab(ui),
+            SideTab::Agent => self.agent_tab(ui),
         }
     }
 
@@ -665,14 +695,27 @@ mod tests {
     #[test]
     fn tabs_follow_the_document() {
         use SideTab::*;
-        assert_eq!(tabs_for(false, false), vec![Features, Variables, Bodies]);
         assert_eq!(
-            tabs_for(false, true),
+            tabs_for(false, false, false),
+            vec![Features, Variables, Bodies]
+        );
+        assert_eq!(
+            tabs_for(false, false, true),
+            vec![Features, Variables, Bodies, SideTab::Agent]
+        );
+        assert_eq!(
+            tabs_for(false, true, false),
             vec![Parameters, Features, Variables, Bodies]
         );
-        assert_eq!(tabs_for(true, false), vec![Assembly, Variables]);
-        assert_eq!(tab_shown(Assembly, &tabs_for(false, false)), Features);
-        assert_eq!(tab_shown(Bodies, &tabs_for(true, false)), Assembly);
-        assert_eq!(tab_shown(Parameters, &tabs_for(false, false)), Features);
+        assert_eq!(tabs_for(true, false, false), vec![Assembly, Variables]);
+        assert_eq!(
+            tab_shown(Assembly, &tabs_for(false, false, false)),
+            Features
+        );
+        assert_eq!(tab_shown(Bodies, &tabs_for(true, false, false)), Assembly);
+        assert_eq!(
+            tab_shown(Parameters, &tabs_for(false, false, false)),
+            Features
+        );
     }
 }

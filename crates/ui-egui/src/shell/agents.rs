@@ -447,7 +447,7 @@ impl Shell {
         self.agents.clock = now_ms;
     }
 
-    fn agents_now(&self) -> u64 {
+    pub(crate) fn agents_now(&self) -> u64 {
         self.agents.clock.unwrap_or_else(system_ms)
     }
 

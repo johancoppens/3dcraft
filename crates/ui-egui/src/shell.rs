@@ -317,6 +317,9 @@ pub struct TreeRow {
     /// In an assembly's tree: the instance the row is, when it is the
     /// assembly's own (its eye and its Open act on it).
     pub instance: Option<String>,
+    /// The agent that made it (the document's provenance, `madeBy`), or
+    /// last changed it; `None` for the person's: its row carries the ✦.
+    pub made_by: Option<String>,
     /// In an assembly's tree: how deep in subassemblies the row is.
     pub depth: usize,
 }
@@ -803,6 +806,12 @@ pub struct Shell {
     player_shown: bool,
     /// Where the player's row drew its parts (`player.rs`).
     player_hits: Vec<(&'static str, egui::Rect)>,
+    /// Who made each feature (an agent's name), for the document and
+    /// revision it was read for: the ✦ of the feature list.
+    provenance: (
+        Option<(Option<u64>, u64)>,
+        std::collections::BTreeMap<String, String>,
+    ),
     player_shown_last: bool,
     /// The point a zoom at the pointer keeps in place, while the pointer
     /// and the camera stay as that zoom left them: one look at the model
@@ -1088,6 +1097,30 @@ fn status_text(state: FeatureState, is_sketch: bool, dof: Option<usize>) -> Stri
 
 /// A clock for timing a render (in the browser the page's own, since
 /// `std::time::Instant` has none there).
+/// Who made each feature of the active document, by its id: the agent
+/// that made it, or else the one that last changed it (the document's
+/// provenance, as `agent.log` gives it).
+fn provenance(session: &Session) -> std::collections::BTreeMap<String, String> {
+    session
+        .agent_log_json(0)
+        .get("features")
+        .and_then(serde_json::Value::as_array)
+        .map(|features| {
+            features
+                .iter()
+                .filter_map(|f| {
+                    let id = f.get("id")?.as_str()?.to_string();
+                    let by = f
+                        .get("madeBy")
+                        .and_then(serde_json::Value::as_str)
+                        .or_else(|| f.get("changedBy").and_then(serde_json::Value::as_str))?;
+                    Some((id, by.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn stopwatch() -> impl FnOnce() -> Option<f64> {
     #[cfg(not(target_arch = "wasm32"))]
     // native clock: the line above is cfg(not(target_arch = "wasm32")).
@@ -1303,6 +1336,7 @@ impl Shell {
             touch_gesture: false,
             player_shown: false,
             player_hits: Vec::new(),
+            provenance: (None, std::collections::BTreeMap::new()),
             player_shown_last: false,
             cause_hits: Vec::new(),
             section_cache: None,
@@ -2426,10 +2460,19 @@ impl Shell {
                 .find(|f| f.id == id)
                 .map_or_else(|| id.to_string(), |f| f.name.clone())
         };
+        // Who made each feature, from the document's provenance (an agent's
+        // name; none for the person's own): read again when the document
+        // or its revision changes, not every frame.
+        let key = (session.document_status().map(|s| s.id), scene.revision);
+        if self.provenance.0 != Some(key) {
+            self.provenance = (Some(key), provenance(session));
+        }
+        let made = &self.provenance.1;
         self.rows = scene
             .features
             .iter()
             .map(|f| TreeRow {
+                made_by: made.get(&f.id).cloned(),
                 id: f.id.clone(),
                 name: f.name.clone(),
                 kind: f.kind,
@@ -2490,6 +2533,7 @@ impl Shell {
                         passes: None,
                         instance: i.own.then(|| i.name.clone()),
                         depth: i.depth,
+                        made_by: None,
                     }
                 })
                 .collect();

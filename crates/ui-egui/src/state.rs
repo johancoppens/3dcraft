@@ -204,6 +204,8 @@ pub enum SideTab {
     Bodies,
     Parameters,
     Assembly,
+    /// What agents did to the document, newest first (the desktop app).
+    Agent,
 }
 
 impl SideTab {
@@ -215,6 +217,7 @@ impl SideTab {
             SideTab::Bodies => "Bodies",
             SideTab::Parameters => "Parameters",
             SideTab::Assembly => "Assembly",
+            SideTab::Agent => "Agent",
         }
     }
 }
