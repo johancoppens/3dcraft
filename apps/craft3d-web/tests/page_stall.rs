@@ -285,6 +285,13 @@ fn a_body(bytes: &[u8]) -> String {
     found["items"][0]["name"].as_str().unwrap().to_string()
 }
 
+/// A new state, shown (built by the worker) and not regenerated on the
+/// page: what each action starts from.
+fn fresh(page: &mut Page, value: &str) {
+    page.run("variable.set", &json!({"name": "filletM", "expr": value}));
+    page.take_frames();
+}
+
 fn report(what: &str, worker: bool, page: &mut Page, wall: Duration) {
     let (longest, total, frames) = page.take_frames();
     println!(
@@ -318,7 +325,11 @@ fn the_page_stalls_on_the_turbofan() {
         page.take_frames();
         let work = page.host.session.work_here();
         let mut files = Vec::new();
-        for format in [ExportFormat::Step, ExportFormat::Stl] {
+        for (format, value) in [
+            (ExportFormat::Step, "1.6 mm"),
+            (ExportFormat::Stl, "1.7 mm"),
+        ] {
+            fresh(&mut page, value);
             let started = Instant::now();
             let outcome = page.export(&ExportWhat::Model, format);
             report(
@@ -330,6 +341,7 @@ fn the_page_stalls_on_the_turbofan() {
             assert_eq!(outcome.downloads.len(), 1, "{format:?}");
             files.push(outcome.downloads[0].bytes.clone());
         }
+        fresh(&mut page, "1.55 mm");
         let started = Instant::now();
         page.run(
             "variable.measure",
@@ -341,6 +353,7 @@ fn the_page_stalls_on_the_turbofan() {
             &mut page,
             started.elapsed(),
         );
+        fresh(&mut page, "1.65 mm");
         let started = Instant::now();
         page.run(
             "assert.add",
