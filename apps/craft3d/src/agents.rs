@@ -1650,6 +1650,28 @@ mod tests {
             assert_eq!(reply["result"]["isError"], false, "{command}: {reply}");
         }
         assert!(cube.is_file(), "saved in the client's folder");
+        // The window's agent log has it, under the client's own name, with
+        // the intent the agent gave.
+        let intent = json!({"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {
+            "name": "command_run", "arguments": {"id": "feature.cylinder",
+                "params": {"name": "Peg", "position": [5, 5, 10], "radius": 1, "height": 4},
+                "intent": "a peg to locate the lid"}}});
+        let (back, reply) = relay_turning(&mut desk, bridge, intent, |_| true);
+        bridge = back;
+        assert_eq!(reply["result"]["isError"], false, "{reply}");
+        let got = desk
+            .host
+            .shell
+            .handle_method(&mut desk.host.session, "ui.get", None)
+            .unwrap()
+            .unwrap();
+        let log = &got["agentLog"];
+        assert_eq!(log["entries"][0]["client"], "Claude Code", "{log}");
+        assert_eq!(log["entries"][0]["intent"], "a peg to locate the lid");
+        assert_eq!(log["entries"][0]["created"], json!(["F2"]));
+        assert_eq!(log["entries"][1]["command"], "file.save");
+        assert_eq!(log["features"][0]["madeBy"], "Claude Code");
+        let _ = bridge;
         let mut check = Session::new(Workspace::unrestricted());
         check
             .execute("file.open", &json!({"path": cube.to_str().unwrap()}))

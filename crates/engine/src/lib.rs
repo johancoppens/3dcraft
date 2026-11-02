@@ -12,6 +12,7 @@
 //! autosave thread of a session that was given a recovery directory
 //! (`recovery.rs`).
 
+pub mod agent_log;
 pub mod analysis;
 mod analysis_cmds;
 mod angle_warnings;
@@ -271,6 +272,9 @@ pub(crate) struct OpenDocument {
     pub(crate) motion: motion::Motion,
     /// For an assembly: what was read and derived for it (`asm.rs`).
     pub(crate) asm: asm::AsmState,
+    /// What agents did to it (`agent_log.rs`): session state, not saved
+    /// and not undone.
+    pub(crate) agent_log: agent_log::AgentLog,
     /// While a command is tried without the bodies
     /// (`commands_elsewhere.rs`): `Some`, and true once it asked for a
     /// regeneration that is not there (it was handed an empty one).
@@ -354,6 +358,7 @@ impl OpenDocument {
             state_checks: regen_elsewhere::StateChecks::default(),
             motion: motion::Motion::default(),
             asm: asm::AsmState::default(),
+            agent_log: agent_log::AgentLog::default(),
             forbid_regen: None,
             work: Arc::default(),
         }
@@ -500,6 +505,9 @@ pub struct Session {
     /// While a command that adds features runs with `when`: the condition
     /// every feature it adds gets, in the same edit (`when_cmds`).
     pub(crate) new_when: Option<craft3d_doc::Expr>,
+    /// The agent the commands run for, and its intent; `None` for the
+    /// person (`agent_log.rs`).
+    pub(crate) actor: Option<agent_log::Actor>,
     /// The host does the long work a piece at a time between its frames
     /// ([`Session::prepare_some`], `stepwise.rs`): assertions are not
     /// measured on a thread of their own nor all at once when asked.
@@ -560,6 +568,7 @@ impl Session {
             host_details: Vec::new(),
             window_camera: None,
             new_when: None,
+            actor: None,
             stepwise: false,
             reached: None,
             prepare_broken: None,
@@ -668,6 +677,7 @@ impl Session {
             [
                 commands::SPECS,
                 file_cmds::SPECS,
+                agent_log::SPECS,
                 asm_cmds::SPECS,
                 asm_measure::SPECS,
                 import_cmds::SPECS,
@@ -865,7 +875,7 @@ impl Session {
     /// document that was just saved or closed. After a caught panic the
     /// last good state of every document is autosaved at once.
     pub fn execute(&mut self, id: &str, params: &Value) -> Result<Value, CommandError> {
-        let outcome = self.execute_unrecorded(id, params);
+        let outcome = self.logged(id, |session| session.execute_unrecorded(id, params));
         // The report itself is not what a report is about.
         if let Err(error) = &outcome
             && id != "session.report"

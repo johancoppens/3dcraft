@@ -727,12 +727,17 @@ impl Desk {
                         let label = request_label(&request.line);
                         let subject = request_subject(&request.line);
                         let line = request.line.clone();
+                        let actor = request.origin.as_ref().map(|origin| origin.name.clone());
                         self.start_about(
                             Waiting::Request(request),
                             label,
                             subject,
                             Box::new(move |session| {
-                                Outcome::Reply(answer_on_engine(session, &line))
+                                // An agent's commands go into the agent log.
+                                session.set_actor(actor.as_deref());
+                                let reply = answer_on_engine(session, &line);
+                                session.set_actor(None);
+                                Outcome::Reply(reply)
                             }),
                         );
                     }

@@ -44,6 +44,8 @@ pub(crate) fn command_list(session: &Session, filter: Option<&str>, enabled_only
 pub(crate) struct Step<'a> {
     pub command: &'a str,
     pub params: &'a Value,
+    /// Why the agent runs it, in its own words (the window's agent log).
+    pub intent: Option<&'a str>,
 }
 
 /// Reads the `steps` of a batch. `owner` and `noun` are for messages;
@@ -75,10 +77,11 @@ pub(crate) fn parse_steps<'a>(
                 crate::fields::describe(item)
             ));
         }
-        let step = Fields::new(&step_owner, noun, Some(item), &[id_key, "params"])?;
+        let step = Fields::new(&step_owner, noun, Some(item), &[id_key, "params", "intent"])?;
         steps.push(Step {
             command: step.required_str(id_key)?,
             params: step.object("params")?,
+            intent: step.str("intent")?,
         });
     }
     Ok(steps)
@@ -112,6 +115,7 @@ pub(crate) fn run_batch(
     steps: &[Step],
     stop_on_error: bool,
     terse: bool,
+    intent: Option<&str>,
 ) -> BatchOutcome {
     let mut results = Vec::with_capacity(if terse { 0 } else { steps.len() });
     let mut errors = Vec::new();
@@ -120,7 +124,11 @@ pub(crate) fn run_batch(
     let mut last = Value::Null;
     let (mut completed, mut failed) = (0_usize, 0_usize);
     for (index, step) in steps.iter().enumerate() {
-        match session.execute(step.command, step.params) {
+        // A step's own intent, else the batch's.
+        session.set_intent(step.intent.or(intent));
+        let outcome = session.execute(step.command, step.params);
+        session.set_intent(None);
+        match outcome {
             Ok(result) => {
                 completed = completed.saturating_add(1);
                 if terse {

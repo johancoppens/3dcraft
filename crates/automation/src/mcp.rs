@@ -427,6 +427,11 @@ fn tools() -> Value {
                     "params": {
                         "type": "object",
                         "description": "The command's parameters, as its params notation in command_list describes. Omit for none."
+                    },
+                    "intent": {
+                        "type": "string",
+                        "maxLength": 300,
+                        "description": "Why you run it, in a short sentence of your own (\"round the base edges for handling\"). Optional but asked for: the person watching sees it beside the command in the window's agent log."
                     }
                 },
                 "required": ["id"],
@@ -446,7 +451,8 @@ fn tools() -> Value {
                             "type": "object",
                             "properties": {
                                 "id": { "type": "string", "description": "A command id." },
-                                "params": { "type": "object", "description": "The command's parameters." }
+                                "params": { "type": "object", "description": "The command's parameters." },
+                                "intent": { "type": "string", "maxLength": 300, "description": "Why this step, if it differs from the batch's intent." }
                             },
                             "required": ["id"],
                             "additionalProperties": false
@@ -459,6 +465,11 @@ fn tools() -> Value {
                     "terse": {
                         "type": "boolean",
                         "description": "Report only the failures and the last result. Default false."
+                    },
+                    "intent": {
+                        "type": "string",
+                        "maxLength": 300,
+                        "description": "Why you run these steps, in a short sentence of your own. Optional but asked for: the person watching sees it in the window's agent log."
                     }
                 },
                 "required": ["steps"],
@@ -675,10 +686,18 @@ fn tool_command_run(
     session: &mut Session,
     arguments: Option<&Value>,
 ) -> Result<ToolOutput, ToolFailure> {
-    let a = Fields::new("command_run", "argument", arguments, &["id", "params"])?;
+    let a = Fields::new(
+        "command_run",
+        "argument",
+        arguments,
+        &["id", "params", "intent"],
+    )?;
     let id = a.required_str("id")?;
     let params = a.object("params")?;
-    match session.execute(id, params) {
+    session.set_intent(a.str("intent")?);
+    let outcome = session.execute(id, params);
+    session.set_intent(None);
+    match outcome {
         Ok(result) => Ok(ToolOutput::json(&result)),
         Err(error) => Err(ToolFailure::Failed(error.message().to_string())),
     }
@@ -692,12 +711,13 @@ fn tool_command_batch(
         "command_batch",
         "argument",
         arguments,
-        &["steps", "stop_on_error", "terse"],
+        &["steps", "stop_on_error", "terse", "intent"],
     )?;
     let stop_on_error = a.bool("stop_on_error")?.unwrap_or(true);
     let terse = a.bool("terse")?.unwrap_or(false);
+    let intent = a.str("intent")?;
     let steps = registry::parse_steps("command_batch", "argument", &a, "id")?;
-    let outcome = registry::run_batch(session, &steps, stop_on_error, terse);
+    let outcome = registry::run_batch(session, &steps, stop_on_error, terse, intent);
     // The report is the content either way: it says which steps ran. The
     // flag makes sure a model does not read a failed batch as done.
     Ok(ToolOutput {

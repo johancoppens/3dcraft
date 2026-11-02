@@ -484,7 +484,12 @@ impl Host {
     /// Answers a request and sends the reply back. A requester that has
     /// gone away is not an error.
     pub fn answer(&mut self, request: Request) {
+        // An agent's commands go into the document's agent log, under the
+        // name its MCP client gave (`craft3d_engine::agent_log`).
+        let actor = request.origin.as_ref().map(|origin| origin.name.clone());
+        self.session.set_actor(actor.as_deref());
         let reply = self.handle_line(&request.line);
+        self.session.set_actor(None);
         let _ = request.reply.send(reply);
     }
 

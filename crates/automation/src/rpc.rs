@@ -33,8 +33,8 @@ pub struct Method {
 pub const METHODS: &[Method] = &[
     Method {
         name: "engine.execute",
-        params: r#"{"command": string, "params": object = {}}"#,
-        summary: "Runs a command by id and returns its result.",
+        params: r#"{"command": string, "params": object = {}, "intent": string}"#,
+        summary: "Runs a command by id and returns its result. intent (optional, at most 300 characters, one line): why, in the agent's own words (\"round the base edges for handling\"); the window shows it in its agent log.",
     },
     Method {
         name: "engine.commands",
@@ -222,12 +222,20 @@ fn dispatch(
     let extra: &[Method] = extension.as_ref().map_or(&[], |e| e.methods);
     match method {
         "engine.execute" => {
-            let p = Fields::new(method, "parameter", params, &["command", "params"])?;
+            let p = Fields::new(
+                method,
+                "parameter",
+                params,
+                &["command", "params", "intent"],
+            )?;
             let command = p.required_str("command")?;
             let command_params = p.object("params")?;
-            session
+            session.set_intent(p.str("intent")?);
+            let outcome = session
                 .execute(command, command_params)
-                .map_err(|e| e.message().to_string())
+                .map_err(|e| e.message().to_string());
+            session.set_intent(None);
+            outcome
         }
         "engine.commands" => {
             let p = Fields::new(method, "parameter", params, &["filter"])?;
@@ -238,12 +246,13 @@ fn dispatch(
                 method,
                 "parameter",
                 params,
-                &["steps", "stopOnError", "terse"],
+                &["steps", "stopOnError", "terse", "intent"],
             )?;
             let stop_on_error = p.bool("stopOnError")?.unwrap_or(true);
             let terse = p.bool("terse")?.unwrap_or(false);
+            let intent = p.str("intent")?;
             let steps = registry::parse_steps(method, "parameter", &p, "command")?;
-            Ok(registry::run_batch(session, &steps, stop_on_error, terse).report)
+            Ok(registry::run_batch(session, &steps, stop_on_error, terse, intent).report)
         }
         "methods" => {
             Fields::new(method, "parameter", params, &[])?;
