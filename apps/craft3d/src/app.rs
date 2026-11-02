@@ -2706,8 +2706,10 @@ mod tests {
     /// (`Desk::sync_exact_pictures`), so the frame is the one a desk that
     /// showed the exact moment records (the review of 2026-11-02).
     fn recorded_moment(state: &eframe::egui_wgpu::RenderState, name: &str, ready: bool) -> Vec<u8> {
-        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join(format!("../../target/tmp/craft3d-desk-moment-{name}"));
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
+            "../../target/tmp/craft3d-desk-moment-{name}-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let dir = craft3d_engine::canonical(&dir).unwrap();
@@ -2898,6 +2900,24 @@ mod tests {
                     }
                 });
             }
+            // Other windows recording at the same time, on devices of
+            // their own (other test binaries beside this one).
+            for k in 0..2 {
+                scope.spawn(move || {
+                    let Ok(state) = craft3d_ui_egui::direct::headless_render_state() else {
+                        return;
+                    };
+                    let mut round = 0usize;
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        let _ = recorded_moment(
+                            &state,
+                            &format!("stress-other-{k}-{}", round % 2),
+                            false,
+                        );
+                        round += 1;
+                    }
+                });
+            }
             let mut failed = None;
             for round in 0..rounds {
                 let exact = recorded_moment(&state, &format!("stress-exact-{}", round % 2), false);
@@ -2917,6 +2937,60 @@ mod tests {
                 panic!("the recorded frame shows the provisional moment: {why}");
             }
         });
+    }
+
+    /// The step-recording test of a provisional moment in many processes
+    /// side by side, each over and over, as the Gate runs test binaries
+    /// beside each other (devices, threads and the disk shared).
+    /// `CRAFT3D_STRESS_PROCESSES` (8) processes of `CRAFT3D_STRESS_ROUNDS`
+    /// (10) runs each.
+    #[test]
+    #[ignore = "stress test: run by hand or on the Strix"]
+    fn step_recordings_of_provisional_moments_side_by_side() {
+        let number = |name: &str, default: usize| {
+            std::env::var(name)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(default)
+        };
+        let (processes, rounds) = (
+            number("CRAFT3D_STRESS_PROCESSES", 8),
+            number("CRAFT3D_STRESS_ROUNDS", 10),
+        );
+        let exe = std::env::current_exe().unwrap();
+        let children: Vec<_> = (0..processes)
+            .map(|_| {
+                let exe = exe.clone();
+                std::thread::spawn(move || {
+                    for round in 0..rounds {
+                        let out = std::process::Command::new(&exe)
+                            .args([
+                                "--exact",
+                                "app::tests::a_step_recording_of_a_provisional_moment_records_the_exact_one",
+                                "--nocapture",
+                            ])
+                            .output()
+                            .unwrap();
+                        if !out.status.success() {
+                            return Some(format!(
+                                "round {round}:\n{}\n{}",
+                                String::from_utf8_lossy(&out.stdout),
+                                String::from_utf8_lossy(&out.stderr)
+                            ));
+                        }
+                    }
+                    None
+                })
+            })
+            .collect();
+        let failures: Vec<String> = children
+            .into_iter()
+            .filter_map(|c| c.join().unwrap())
+            .collect();
+        for failure in &failures {
+            println!("FAILURE {failure}");
+        }
+        assert!(failures.is_empty(), "{} processes failed", failures.len());
     }
 
     #[test]
