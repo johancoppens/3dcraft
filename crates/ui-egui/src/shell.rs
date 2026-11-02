@@ -75,6 +75,10 @@ pub const DEFAULT_VIEWPORT: [u32; 2] = [960, 640];
 /// [`crate::direct`]: there every frame is the viewport's full size, with
 /// multisampling, and nothing is read back.)
 pub const MOVING_DIVISOR: u32 = 2;
+/// What the status bar says when the viewport leaves the window's graphics
+/// device after an error the device reported ([`Shell::leave_gpu`]).
+pub const LEFT_GPU_NOTICE: &str = "The graphics card reported an error; the viewport now draws without it (slower). Reload the page to try again.";
+
 /// How long after the camera last moved the studio look stays light where
 /// the host asked for that ([`Shell::interacting_light`], the browser), in
 /// seconds of input time: long enough to bridge the gaps between the
@@ -699,6 +703,8 @@ pub struct Shell {
     direct: Option<Direct>,
     /// Why the direct path is not used although the GPU was wanted.
     direct_fallback: Option<String>,
+    /// Why the viewport left the window's device ([`Shell::leave_gpu`]).
+    left_gpu: Option<String>,
     /// True when the picture on screen is the direct path's texture.
     direct_shown: bool,
     stats: Option<RenderStats>,
@@ -1222,6 +1228,7 @@ impl Shell {
             shown_report: None,
             direct: None,
             direct_fallback: None,
+            left_gpu: None,
             direct_shown: false,
             stats: None,
             renders: 0,
@@ -1490,8 +1497,6 @@ impl Shell {
         self.light_while_moving = light;
         if !light {
             self.moving_divisor = 1;
-        }
-        if !light {
             self.interacting = false;
         }
     }
@@ -1598,12 +1603,31 @@ impl Shell {
     /// host that learns of a failure of the device the shell cannot see
     /// itself (the browser reports errors of WebGPU later, to a handler
     /// of the page's).
+    ///
+    /// When the viewport was drawn on that device, the status bar says so
+    /// once (the error's first line with it), and `ui.get`'s
+    /// `renderer.leftGpu` keeps why: a silent, slower fallback hid a
+    /// shader the browser refused (docs/design/rendering.md › *The
+    /// browser*, 2026-11-02).
     pub fn leave_gpu(&mut self, why: String) {
         if self.direct.take().is_some() {
+            let first = why.lines().next().unwrap_or_default();
+            self.last_command = Some(CommandReport {
+                label: "graphics".to_string(),
+                ok: false,
+                text: format!("{LEFT_GPU_NOTICE} ({first})"),
+            });
+            self.left_gpu = Some(why.clone());
             self.direct_fallback = Some(why);
             self.direct_shown = false;
             self.shown_report = None;
         }
+    }
+
+    /// Why the viewport left the window's graphics device
+    /// ([`Self::leave_gpu`]), when it did.
+    pub fn left_gpu(&self) -> Option<&str> {
+        self.left_gpu.as_deref()
     }
 
     /// The quality the viewport asks the engine for: the display rule
@@ -2460,6 +2484,9 @@ impl Shell {
     }
 
     fn ui_with(&mut self, ui: &mut egui::Ui, mut session: Option<&mut Session>) {
+        // Worked out again where the viewport is drawn this frame; a frame
+        // without it (the start screen) leaves no stale light look.
+        self.interacting = false;
         // Set again where the drawer is drawn.
         self.drawer_sliding = false;
         // The viewport may show a provisional moment of a playing motion,
@@ -3890,7 +3917,9 @@ impl Shell {
         let size = [side(rect.width()), side(rect.height())];
         // A window being resized changes size every frame: those frames are
         // drawn like a moving camera, and the sharp image follows.
-        let resized = size != self.size && self.texture.is_some();
+        // (On the direct path there is no texture of the CPU's; a picture
+        // it showed counts the same.)
+        let resized = size != self.size && (self.texture.is_some() || self.direct_shown);
         if size != self.size {
             self.size = size;
             // The model was framed for another shape of viewport.
@@ -3910,8 +3939,9 @@ impl Shell {
             self.pointer(ui, &response, rect, scene) || resized || turning || self.orbiting;
         if let Some(left) = self.note_interaction(moving, ui.input(|i| i.time)) {
             // Back to the full look once the camera has rested.
-            ui.ctx()
-                .request_repaint_after(std::time::Duration::from_secs_f64(left.max(0.0)));
+            ui.ctx().request_repaint_after(
+                std::time::Duration::try_from_secs_f64(left).unwrap_or_default(),
+            );
         }
         let [width, height] = self.size;
         let pixel = |at: egui::Pos2| {
@@ -4458,7 +4488,7 @@ impl Shell {
         } else {
             1
         };
-        let (size, scale) = moving_size(key.size, self.pixels_per_point, divisor);
+        let (size, _) = moving_size(key.size, self.pixels_per_point, divisor);
         let Some(direct) = &mut self.direct else {
             return false;
         };
@@ -4467,13 +4497,16 @@ impl Shell {
         direct.set_studio(studio);
         direct.set_analysis(self.analysis_view.clone());
         direct.set_marks(marks);
+        // The lines stay uploaded at the viewport's pixels per point and
+        // are drawn thinner in the smaller picture.
+        direct.set_ink(1.0 / divisor as f32);
         let outcome = direct.frame(
             scene,
             &key.camera,
             size,
             key.selected.as_deref(),
             &key.tokens,
-            scale,
+            self.pixels_per_point,
         );
         match outcome {
             Ok(None) => true,
@@ -4647,10 +4680,12 @@ impl Shell {
     }
 }
 
-/// The size and pixels per point the direct path draws a viewport of
-/// `size` at, `divisor` times smaller per side (at least one pixel), and
-/// its lines as much thinner, so that stretched over the viewport they
-/// look as wide as at its full size.
+/// The size the direct path draws a viewport of `size` at, `divisor`
+/// times smaller per side (at least one pixel), and the pixels per point
+/// of that smaller picture. The lines stay uploaded at the viewport's
+/// pixels per point and are drawn `1 / divisor` as wide
+/// (`Direct::set_ink`), so stretched over the viewport they look as wide
+/// as at its full size.
 pub fn moving_size(size: [u32; 2], pixels_per_point: f32, divisor: u32) -> ([u32; 2], f32) {
     if divisor <= 1 {
         return (size, pixels_per_point);

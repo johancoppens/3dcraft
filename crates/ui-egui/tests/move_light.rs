@@ -60,6 +60,7 @@ fn part() -> Session {
 struct Window {
     ctx: egui::Context,
     time: f64,
+    size: egui::Vec2,
 }
 
 impl Window {
@@ -67,13 +68,14 @@ impl Window {
         Self {
             ctx: egui::Context::default(),
             time: 0.0,
+            size: vec2(800.0, 560.0),
         }
     }
 
     fn frame(&mut self, shell: &mut Shell, s: &mut Session, dt: f64, events: Vec<Event>) {
         self.time += dt;
         let input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, vec2(800.0, 560.0))),
+            screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, self.size)),
             time: Some(self.time),
             events,
             ..Default::default()
@@ -373,4 +375,85 @@ fn on_the_direct_path_a_moving_camera_is_one_smaller_frame_and_a_resting_one_ful
         "the recorded picture is not the full one"
     );
     shell.set_frame_exact(false);
+}
+
+/// Resizing the window is a moving camera on the direct path too (there is
+/// no CPU texture there to tell a resize by).
+#[test]
+fn on_the_direct_path_a_resize_draws_light_until_it_rests() {
+    let state = headless_render_state()
+        .unwrap_or_else(|e| panic!("the direct path cannot be tested: {e}; {ADAPTER_HINT}"));
+    let mut s = part();
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    shell.attach_gpu(&state).unwrap();
+    shell.set_light_while_moving(true);
+    let mut window = Window::new();
+    window.frame(&mut shell, &mut s, 0.0, Vec::new());
+    studio(&mut shell, &mut s);
+    window.frame(&mut shell, &mut s, 0.1, Vec::new());
+    window.frame(&mut shell, &mut s, 1.0, Vec::new());
+    assert!(!shell.interacting_light());
+    window.size = vec2(760.0, 540.0);
+    window.frame(&mut shell, &mut s, 1.0 / 60.0, Vec::new());
+    assert!(shell.interacting_light(), "a resize draws light");
+    assert!(interacting(&mut shell, &mut s));
+    window.frame(&mut shell, &mut s, STILL_DELAY * 2.0, Vec::new());
+    assert!(!shell.interacting_light(), "full once it rests");
+}
+
+/// When the page leaves the window's graphics device after an error the
+/// device reported, the status bar says so once, with the error's first
+/// line, and `ui.get` keeps why under `renderer.leftGpu`.
+#[test]
+fn leaving_the_gpu_is_told_once() {
+    let state = headless_render_state()
+        .unwrap_or_else(|e| panic!("the direct path cannot be tested: {e}; {ADAPTER_HINT}"));
+    let mut s = part();
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    // Without the device there is nothing to leave: nothing is said.
+    shell.leave_gpu("never drawn there".to_string());
+    assert!(shell.last_command.is_none());
+    assert!(shell.left_gpu().is_none());
+    shell.attach_gpu(&state).unwrap();
+    let mut window = Window::new();
+    window.frame(&mut shell, &mut s, 0.0, Vec::new());
+    let got = call(&mut shell, &mut s, "ui.get", json!({}));
+    assert_eq!(got["renderer"]["leftGpu"], Value::Null);
+
+    shell.leave_gpu(
+        "the graphics device reported an error: Error while parsing WGSL: value inf\n - While calling CreateShaderModule"
+            .to_string(),
+    );
+    assert!(!shell.draws_directly());
+    let said = shell.last_command.clone().expect("the status bar says so");
+    assert!(!said.ok);
+    assert!(
+        said.text.starts_with(craft3d_ui_egui::LEFT_GPU_NOTICE),
+        "{}",
+        said.text
+    );
+    assert!(
+        said.text.contains("Error while parsing WGSL: value inf"),
+        "{}",
+        said.text
+    );
+    assert!(
+        !said.text.contains("CreateShaderModule"),
+        "only the first line: {}",
+        said.text
+    );
+    window.frame(&mut shell, &mut s, 0.1, Vec::new());
+    let got = call(&mut shell, &mut s, "ui.get", json!({}));
+    assert!(
+        got["renderer"]["leftGpu"]["why"]
+            .as_str()
+            .is_some_and(|why| why.contains("value inf")),
+        "{}",
+        got["renderer"]
+    );
+
+    // Once: a second error later says nothing new.
+    shell.last_command = None;
+    shell.leave_gpu("another".to_string());
+    assert!(shell.last_command.is_none());
 }

@@ -331,7 +331,7 @@ fn split_sum(nv: f32, r: f32) -> vec2<f32> {
 // constant, and with it the whole studio shader, so the browser's viewport
 // fell back to the CPU renderer; naga takes it), and WGSL lets a compiler
 // assume no infinities in arithmetic.
-const NO_BLOCKER: f32 = 3.40282346638528859812e38;
+const NO_BLOCKER: f32 = 3.4028234663852886e38;
 
 // ShadowMap::at.
 fn shadow_at(x: f32, y: f32) -> f32 {

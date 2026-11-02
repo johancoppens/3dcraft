@@ -103,6 +103,8 @@ struct Shown {
     highlight: Highlight,
     marks: Marks,
     opacity: f64,
+    /// The lines' widths scaled by this ([`Direct::set_ink`]).
+    ink: f32,
     /// The studio look: its environment (by address) and options.
     look: Option<(usize, craft3d_render::studio::Look)>,
     /// The surface analysis and its values (by address).
@@ -134,6 +136,8 @@ pub struct Direct {
     /// cannot draw see-through bodies refuses a frame below 1
     /// (`GpuError::SeeThrough`), which is then drawn another way.
     opacity: f64,
+    /// The pixels of the picture per pixel of the viewport ([`Self::set_ink`]).
+    ink: f32,
     /// The studio look, or `None` for the plain one.
     studio: Option<craft3d_gpu::Studio>,
     /// The surface analysis of the frames, or `None`.
@@ -371,6 +375,7 @@ pub fn edge_look(tokens: &Tokens, scale: f32) -> EdgeLook {
         fade_floor: f64::from(tokens.edge_fade_floor),
         tile: viewport::tile_pixels(tokens, scale),
         soft: false,
+        ink: 1.0,
     }
 }
 
@@ -484,6 +489,7 @@ impl Direct {
             highlight: Highlight::NONE,
             marks: Marks::default(),
             opacity: 1.0,
+            ink: 1.0,
             studio: None,
             analysis: None,
         })
@@ -519,6 +525,16 @@ impl Direct {
     /// [`crate::backend::BodyRenderer::set_opacity`].
     pub fn set_opacity(&mut self, opacity: f64) {
         self.opacity = opacity;
+    }
+
+    /// The frames drawn from now on are `ink` (0 < ink <= 1) times the
+    /// viewport's size per side ([`crate::moving_size`]: the size
+    /// passed to [`Self::frame`] is already the smaller one): their lines
+    /// are drawn as much thinner, so that stretched over the viewport they
+    /// look as wide as at the full size, with the lines uploaded at the
+    /// viewport's own pixels per point (not uploaded again for it).
+    pub fn set_ink(&mut self, ink: f32) {
+        self.ink = if ink > 0.0 && ink <= 1.0 { ink } else { 1.0 };
     }
 
     /// The look of the frames drawn from now on, as
@@ -583,6 +599,7 @@ impl Direct {
             highlight: self.highlight,
             marks: self.marks.clone(),
             opacity: self.opacity,
+            ink: self.ink,
             look: self
                 .studio
                 .as_ref()
@@ -836,9 +853,12 @@ impl Direct {
             slack: depth_slack(Backend::Gpu, scene, &wanted.camera),
             hidden_opacity: wanted.tokens.hidden_opacity,
             axis_length: wanted.camera.distance * AXIS_LENGTH,
+            // The fades and the tiles in the picture's own pixels; the
+            // lines' widths scaled to them (`EdgeLook::ink`).
             edges: EdgeLook {
                 soft: wanted.marks.soft_edges,
-                ..edge_look(&wanted.tokens, wanted.scale)
+                ink: f64::from(wanted.ink),
+                ..edge_look(&wanted.tokens, wanted.scale * wanted.ink)
             },
         };
         // An analysis is drawn in the plain look.
