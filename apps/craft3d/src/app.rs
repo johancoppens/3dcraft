@@ -225,6 +225,8 @@ pub struct Desk {
     /// The switch Allow AI agents and the listener behind it (`agents.rs`);
     /// `None` for a desk without one (tests).
     agents: Option<Agents>,
+    /// The folder picker of the agents' Change….
+    agents_picker: Option<Picker>,
 }
 
 /// A request for a picture of the window: it is answered once egui hands
@@ -319,6 +321,7 @@ impl Desk {
             deadlines: None,
             rec: Rec::default(),
             agents: None,
+            agents_picker: None,
         }
     }
 
@@ -327,6 +330,18 @@ impl Desk {
     pub fn with_agents(mut self, agents: Agents) -> Self {
         self.agents = Some(agents);
         self
+    }
+
+    /// The folder picker Change… opens.
+    #[must_use]
+    pub fn with_agents_picker(mut self, picker: Picker) -> Self {
+        self.agents_picker = Some(picker);
+        self
+    }
+
+    /// The switch and its listener, to change.
+    pub fn agents_mut(&mut self) -> Option<&mut Agents> {
+        self.agents.as_mut()
     }
 
     /// The switch and its listener.
@@ -357,6 +372,32 @@ impl Desk {
         if self.host.shell.take_agents_disconnect() {
             agents.disconnect_all();
             changed = true;
+        }
+        if let Some(on) = self.host.shell.take_agents_document_folder() {
+            agents.set_document_folder(on);
+            changed = true;
+        }
+        if self.host.shell.take_agents_folder()
+            && let Some(picker) = &mut self.agents_picker
+            && !picker.busy()
+        {
+            let _ = picker.ask_folder(agents.folder());
+        }
+        if let Some(choice) = self.agents_picker.as_mut().and_then(Picker::poll) {
+            if let Ok(files::Choice::Folder(folder)) = choice {
+                let _ = agents.choose_folder(&folder);
+            }
+            changed = true;
+        }
+        if self.waiting.is_none() {
+            // The open document's folder follows the active tab.
+            let path = self
+                .host
+                .session
+                .document_status()
+                .and_then(|status| status.path)
+                .map(std::path::PathBuf::from);
+            agents.set_document(path.as_deref());
         }
         if self.waiting.is_none()
             && let Some(workspace) = agents.take_workspace()
@@ -2220,9 +2261,11 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
     let agent = crate::places::agent_setup(&env);
     let title = window_title(host.session.document_status().as_ref());
     let picker = Picker::new(Arc::new(SystemDialogs), Arc::clone(&wake));
+    let agents_picker = Picker::new(Arc::new(SystemDialogs), Arc::clone(&wake));
     let mut desk = Desk::new(host, requests, picker)
         .with_engine_thread(Arc::clone(&wake))
-        .with_agents(agents);
+        .with_agents(agents)
+        .with_agents_picker(agents_picker);
     if let Some([w, h]) = options.window_size {
         desk.set_window_points([w as f32, h as f32]);
     }

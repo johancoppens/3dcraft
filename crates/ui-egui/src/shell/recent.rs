@@ -141,9 +141,11 @@ fn roots_of(session: &Session) -> Option<Vec<PathBuf>> {
     for access in [&workspace.read, &workspace.write] {
         match access {
             Access::Unrestricted => return None,
-            Access::Root(root) => {
-                if let Ok(root) = std::path::absolute(root) {
-                    roots.push(root);
+            Access::Root(_) | Access::Roots(_) => {
+                for root in access.roots() {
+                    if let Ok(root) = std::path::absolute(root) {
+                        roots.push(root);
+                    }
                 }
             }
             Access::None | Access::Memory => {}

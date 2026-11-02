@@ -312,6 +312,7 @@ impl Shell {
         if self.state.dialogs.shortcuts {
             self.shortcuts_window(ui.ctx());
         }
+        self.agents_popover(ui.ctx());
     }
 
     fn about_window(&mut self, ctx: &egui::Context) {

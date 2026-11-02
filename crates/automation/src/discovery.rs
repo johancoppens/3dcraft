@@ -272,21 +272,83 @@ pub fn choose(live: &[WindowEntry], port: Option<u16>) -> Result<WindowEntry, St
     }
 }
 
+/// What the person chose for agents, remembered in `agents.json`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Preferences {
+    /// The switch Allow AI agents.
+    pub allow_agents: bool,
+    /// The folder agents may read and write files in, chosen with
+    /// Change…; `None` for the default (`Documents/3DCraft`).
+    pub folder: Option<PathBuf>,
+    /// Also the open document's folder (on unless turned off).
+    pub document_folder: bool,
+}
+
+impl Default for Preferences {
+    fn default() -> Self {
+        Self {
+            allow_agents: false,
+            folder: None,
+            document_folder: true,
+        }
+    }
+}
+
+/// What is remembered in `folder`; the defaults for what is not (or not
+/// readably): the switch off, the default folder, the document's folder on.
+pub fn read_preferences(folder: &Path) -> Preferences {
+    let Some(value) = read_capped(&folder.join(PREFERENCE_FILE))
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+    else {
+        return Preferences::default();
+    };
+    let defaults = Preferences::default();
+    Preferences {
+        allow_agents: value
+            .get("allowAgents")
+            .and_then(Value::as_bool)
+            .unwrap_or(defaults.allow_agents),
+        folder: value
+            .get("folder")
+            .and_then(Value::as_str)
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute()),
+        document_folder: value
+            .get("documentFolder")
+            .and_then(Value::as_bool)
+            .unwrap_or(defaults.document_folder),
+    }
+}
+
+/// Remembers what the person chose.
+pub fn write_preferences(folder: &Path, preferences: &Preferences) -> Result<(), String> {
+    let chosen = preferences
+        .folder
+        .as_ref()
+        .map(|path| Value::String(path.to_string_lossy().into_owned()))
+        .unwrap_or(Value::Null);
+    write_atomically(
+        &folder.join(PREFERENCE_FILE),
+        &json!({
+            "allowAgents": preferences.allow_agents,
+            "folder": chosen,
+            "documentFolder": preferences.document_folder,
+        })
+        .to_string(),
+    )
+}
+
 /// Whether the person allows AI agents, as remembered in `folder`; off
 /// when nothing (or nothing readable) is remembered.
 pub fn read_preference(folder: &Path) -> bool {
-    read_capped(&folder.join(PREFERENCE_FILE))
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-        .and_then(|value| value.get("allowAgents").and_then(Value::as_bool))
-        .unwrap_or(false)
+    read_preferences(folder).allow_agents
 }
 
-/// Remembers whether the person allows AI agents.
+/// Remembers whether the person allows AI agents, keeping the rest.
 pub fn write_preference(folder: &Path, allowed: bool) -> Result<(), String> {
-    write_atomically(
-        &folder.join(PREFERENCE_FILE),
-        &json!({ "allowAgents": allowed }).to_string(),
-    )
+    let mut preferences = read_preferences(folder);
+    preferences.allow_agents = allowed;
+    write_preferences(folder, &preferences)
 }
 
 /// Reads a control token from `path`: 64 hexadecimal characters, lower
@@ -449,6 +511,32 @@ mod tests {
             std::fs::write(folder.join(PREFERENCE_FILE), bad).unwrap();
             assert!(!read_preference(&folder), "{bad:?}");
         }
+        // The folder and the document's folder are kept beside it.
+        let chosen = std::path::absolute("chosen").unwrap();
+        write_preferences(
+            &folder,
+            &Preferences {
+                allow_agents: false,
+                folder: Some(chosen.clone()),
+                document_folder: false,
+            },
+        )
+        .unwrap();
+        write_preference(&folder, true).unwrap();
+        let read = read_preferences(&folder);
+        assert_eq!(
+            read,
+            Preferences {
+                allow_agents: true,
+                folder: Some(chosen),
+                document_folder: false
+            }
+        );
+        // A relative folder is not believed; the document's folder is on
+        // unless said otherwise.
+        std::fs::write(folder.join(PREFERENCE_FILE), r#"{"folder": "rel"}"#).unwrap();
+        assert_eq!(read_preferences(&folder), Preferences::default());
+        assert!(Preferences::default().document_folder);
         // A folder that cannot be made: an error, not a panic.
         let file = folder.join("file");
         std::fs::write(&file, "").unwrap();

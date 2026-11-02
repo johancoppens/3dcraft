@@ -274,6 +274,12 @@ pub struct Tokens {
     pub info_accent: Rgb,
     pub info_ink: Rgb,
     pub info_code: Rgb,
+    /// The status bar's agents pill (2026-11-02): the green dot of a
+    /// connected agent (on `info_accent`), the pill's corner radius, and
+    /// the width of the agents popover above it, in points.
+    pub agent_dot: Rgb,
+    pub pill_radius: u8,
+    pub agent_popover_width: f32,
     /// Width of the info accent's bars (beside a heading, beside the
     /// agent block) and their corner radius, and the corner radius of an
     /// example's thumbnail, in points. A heading's bar is as high as the
@@ -861,6 +867,9 @@ impl Tokens {
             info_accent: [76, 90, 166],
             info_ink: [60, 72, 144],
             info_code: [169, 179, 236],
+            agent_dot: [110, 220, 140],
+            pill_radius: 10,
+            agent_popover_width: 470.0,
             info_bar_width: 3.0,
             info_bar_radius: 1,
             thumb_radius: 6,
@@ -1275,6 +1284,13 @@ impl Tokens {
                 self.status_fill,
             ),
             ("chrome_ok on status_fill", self.chrome_ok, self.status_fill),
+            // The agents pill: outlined (off) and filled (on).
+            ("info_code on status_fill", self.info_code, self.status_fill),
+            (
+                "plate_text on info_accent",
+                self.plate_text,
+                self.info_accent,
+            ),
             (
                 "chrome_failed on status_fill",
                 self.chrome_failed,

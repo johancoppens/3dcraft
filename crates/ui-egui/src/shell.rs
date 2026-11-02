@@ -24,7 +24,7 @@ use craft3d_render::{Highlight, Section};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-mod agents;
+pub mod agents;
 mod calm;
 mod controls;
 mod dialogs;
@@ -630,8 +630,6 @@ pub struct Shell {
     report: report::ReportState,
     /// Where "Copy details" was drawn in the last frame.
     copy_hit: Option<egui::Rect>,
-    /// Where the status bar's agents item was drawn in the last frame.
-    agents_hit: Option<egui::Rect>,
     /// Autosave and what can be recovered, as of the last `sync`.
     recovery: RecoveryOverview,
     /// Where the buttons of the recovery bar were drawn in the last frame.
@@ -1164,7 +1162,6 @@ impl Shell {
             calm: Calm::default(),
             report: report::ReportState::default(),
             copy_hit: None,
-            agents_hit: None,
             recovery: RecoveryOverview::default(),
             recovery_hits: Vec::new(),
             discard_armed: None,
@@ -2951,13 +2948,12 @@ impl Shell {
                 }
             })
             .collect();
-        // The agents item at the far right, while agents are allowed
-        // (`shell/agents.rs`): its room is kept out of what the items get.
-        let agents_text = self.agents_status_text();
-        let agents_width = agents_text.as_deref().map_or(0.0, |text| {
-            measure(text) + 2.0 * ui.spacing().button_padding.x + tokens.status_gap
-        });
-        let available = (ui.available_width() - agents_width).max(0.0);
+        // The agents pill at the far left, always (`shell/agents.rs`): its
+        // room, at most two fifths of the bar, is kept out of what the
+        // items get.
+        let pill_most = (ui.available_width() * 0.4).max(80.0);
+        let pill_width = self.agents_pill_width(ui, pill_most);
+        let available = (ui.available_width() - pill_width - tokens.status_gap).max(0.0);
         // "Copy details" after the answer of a command that failed
         // (`shell/report.rs`): its room is kept out of what the items get.
         let copy = self
@@ -2983,9 +2979,10 @@ impl Shell {
         let mut hits = Vec::new();
         let mut copy_clicked = false;
         let mut copy_rect = None;
-        let mut agents_rect = None;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
+            self.agents_pill(ui, pill_most);
+            ui.add_space(tokens.status_gap);
             let mut used = 0.0;
             let mut first = true;
             let mut copy_button = |ui: &mut egui::Ui, used: &mut f32| {
@@ -3074,24 +3071,13 @@ impl Shell {
             if !copy_shown {
                 copy_button(ui, &mut used);
             }
-            if let Some(text) = &agents_text {
-                ui.add_space((available - used).max(0.0) + tokens.status_gap);
-                agents_rect = Some(self.agents_status_menu(ui, text));
-            }
         });
-        self.agents_hit = agents_rect;
         self.status_hits = hits;
         self.copy_hit = copy_rect;
         if copy_clicked {
             self.copy_error_report(ui.ctx());
         }
         self.error_details(ui.ctx());
-    }
-
-    /// Where the status bar's agents item was drawn in the last frame:
-    /// `None` while agents are not allowed.
-    pub fn agents_status_rect(&self) -> Option<egui::Rect> {
-        self.agents_hit
     }
 
     /// Where the status bar's "Copy details" was drawn in the last frame:

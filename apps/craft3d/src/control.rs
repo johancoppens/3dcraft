@@ -88,6 +88,34 @@ struct Open {
     authenticated: bool,
     /// The name its client gave in `auth`.
     client: Option<String>,
+    /// When it authenticated, and what it did last (an unnamed client's).
+    since_ms: u64,
+    command: Option<(String, u64)>,
+}
+
+/// A client that named itself in `auth`.
+struct Seen {
+    /// Its last request.
+    last: Instant,
+    /// When it was first heard from, in milliseconds since the epoch.
+    since_ms: u64,
+    /// The name its MCP client gave in `initialize` (`clientInfo.name`).
+    name: Option<String>,
+    /// What it did last, and when (milliseconds since the epoch).
+    command: Option<(String, u64)>,
+}
+
+/// One client connected now, for the window.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClientInfo {
+    /// The name its MCP client gave (`Claude Code`), else the one it gave
+    /// in `auth`, else "control connection".
+    pub name: String,
+    /// Since when, in milliseconds since the Unix epoch.
+    pub since_ms: u64,
+    /// What it did last (`feature.edit`), and when.
+    pub command: Option<String>,
+    pub command_ms: u64,
 }
 
 /// Who is connected, and who was sent away.
@@ -96,7 +124,7 @@ struct Clients {
     next: u64,
     open: BTreeMap<u64, Open>,
     /// Clients that named themselves, with their last request.
-    seen: BTreeMap<String, Instant>,
+    seen: BTreeMap<String, Seen>,
     /// Clients disconnected by the person: refused for the rest of the run.
     dismissed: BTreeSet<String>,
 }
@@ -214,13 +242,118 @@ fn admit(shared: &Shared, id: u64, client: Option<&String>) -> Result<(), String
         if clients.dismissed.contains(name) {
             return Err("auth: this agent was disconnected in the 3DCraft window; restart it to connect again (in Claude Code: /mcp, then reconnect)".to_string());
         }
-        clients.seen.insert(name.clone(), Instant::now());
+        let now = Instant::now();
+        clients
+            .seen
+            .entry(name.clone())
+            .and_modify(|seen| seen.last = now)
+            .or_insert_with(|| Seen {
+                last: now,
+                since_ms: now_ms(),
+                name: None,
+                command: None,
+            });
     }
     if let Some(open) = clients.open.get_mut(&id) {
         open.authenticated = true;
         open.client = client.cloned();
+        open.since_ms = now_ms();
     }
     Ok(())
+}
+
+fn now_ms() -> u64 {
+    craft3d_automation::discovery::now_ms()
+}
+
+/// What a request says about its client: the name an MCP client gives in
+/// `initialize` (`clientInfo.name`), and what it does, as the window shows
+/// it (`feature.edit`, `ui.screenshot`); `None` for a request that only
+/// reads or sets up (`ui.get`, `tools/list`).
+fn what_it_does(line: &str) -> (Option<String>, Option<String>) {
+    let Ok(request) = serde_json::from_str::<Value>(line) else {
+        return (None, None);
+    };
+    let text = |value: Option<&Value>| value.and_then(Value::as_str).map(clean);
+    let params = request.get("params");
+    match request.get("method").and_then(Value::as_str) {
+        Some("engine.execute") => (None, text(params.and_then(|p| p.get("command")))),
+        Some("batch") => (None, Some("batch".to_string())),
+        Some("ui.get" | "methods" | "engine.commands") | None => (None, None),
+        Some("mcp.message") => {
+            let message = params
+                .and_then(|p| p.get("line"))
+                .and_then(Value::as_str)
+                .and_then(|line| serde_json::from_str::<Value>(line).ok());
+            let Some(message) = message else {
+                return (None, None);
+            };
+            let inner = message.get("params");
+            match message.get("method").and_then(Value::as_str) {
+                Some("initialize") => (
+                    text(
+                        inner
+                            .and_then(|p| p.get("clientInfo"))
+                            .and_then(|c| c.get("name")),
+                    ),
+                    None,
+                ),
+                Some("tools/call") => {
+                    let arguments = inner.and_then(|p| p.get("arguments"));
+                    let command = match inner.and_then(|p| p.get("name")).and_then(Value::as_str) {
+                        Some("command_run") => text(arguments.and_then(|a| a.get("id"))),
+                        Some("command_batch") => Some("batch".to_string()),
+                        Some("control_call") => text(arguments.and_then(|a| a.get("method"))),
+                        Some("command_list") => None,
+                        Some(tool) => Some(clean(tool)),
+                        None => None,
+                    };
+                    (None, command)
+                }
+                _ => (None, None),
+            }
+        }
+        Some(method) => (None, Some(clean(method))),
+    }
+}
+
+/// A name or a command as the window shows it: printable, at most 60
+/// characters.
+fn clean(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_control())
+        .take(60)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+/// Notes what a request of the connection `id` (named `client`) does.
+fn note_request(shared: &Shared, id: u64, client: Option<&String>, line: &str) {
+    let (name, command) = what_it_does(line);
+    let now = Instant::now();
+    let stamp = command.map(|command| (command, now_ms()));
+    let mut clients = shared.clients();
+    match client {
+        Some(key) => {
+            if let Some(seen) = clients.seen.get_mut(key) {
+                seen.last = now;
+                if let Some(name) = name.filter(|n| !n.is_empty()) {
+                    seen.name = Some(name);
+                }
+                if stamp.is_some() {
+                    seen.command = stamp;
+                }
+            }
+        }
+        None => {
+            if let Some(open) = clients.open.get_mut(&id)
+                && stamp.is_some()
+            {
+                open.command = stamp;
+            }
+        }
+    }
 }
 
 /// Serves one connection until its peer goes away, misbehaves at the
@@ -246,6 +379,8 @@ fn serve(stream: TcpStream, shared: &Shared) {
                 stream: handle,
                 authenticated: false,
                 client: None,
+                since_ms: 0,
+                command: None,
             },
         );
         id
@@ -297,9 +432,7 @@ fn serve(stream: TcpStream, shared: &Shared) {
                     Some(rpc::ok_reply(&request_id(line), &json!({ "bye": true })))
                 }
                 Ok(line) => {
-                    if let Some(name) = &client {
-                        shared.clients().seen.insert(name.clone(), Instant::now());
-                    }
+                    note_request(shared, id, client.as_ref(), line);
                     match dispatch(shared, line.to_string()) {
                         Ok(reply) => reply,
                         Err(why) => Some(rpc::error_reply(&Value::Null, &why)),
@@ -445,34 +578,44 @@ impl ControlServer {
         self.shared.connections.load(Ordering::SeqCst)
     }
 
-    /// The clients connected now, by name, in order: those that named
-    /// themselves and were heard from within `active_for` or have a
-    /// connection open, then one "control connection" per authenticated
-    /// connection without a name.
-    pub fn clients(&self) -> Vec<String> {
+    /// The clients connected now, in order: those that named themselves
+    /// and were heard from within `active_for` or have a connection open,
+    /// then each authenticated connection without a name.
+    pub fn clients(&self) -> Vec<ClientInfo> {
         let clients = self.shared.clients();
         let now = Instant::now();
         let active = self.shared.config.active_for;
-        let mut named: BTreeSet<String> = clients
+        let open_names: BTreeSet<&String> = clients
+            .open
+            .values()
+            .filter(|open| open.authenticated)
+            .filter_map(|open| open.client.as_ref())
+            .collect();
+        let mut list: Vec<ClientInfo> = clients
             .seen
             .iter()
-            .filter(|(_, last)| now.saturating_duration_since(**last) <= active)
-            .map(|(name, _)| name.clone())
+            .filter(|(key, seen)| {
+                now.saturating_duration_since(seen.last) <= active || open_names.contains(key)
+            })
+            .map(|(key, seen)| ClientInfo {
+                name: seen.name.clone().unwrap_or_else(|| key.clone()),
+                since_ms: seen.since_ms,
+                command: seen.command.as_ref().map(|(c, _)| c.clone()),
+                command_ms: seen.command.as_ref().map_or(0, |(_, at)| *at),
+            })
             .collect();
-        let mut anonymous = 0_usize;
-        for open in clients.open.values().filter(|open| open.authenticated) {
-            match &open.client {
-                Some(name) => {
-                    named.insert(name.clone());
-                }
-                None => anonymous += 1,
-            }
+        for open in clients
+            .open
+            .values()
+            .filter(|open| open.authenticated && open.client.is_none())
+        {
+            list.push(ClientInfo {
+                name: "control connection".to_string(),
+                since_ms: open.since_ms,
+                command: open.command.as_ref().map(|(c, _)| c.clone()),
+                command_ms: open.command.as_ref().map_or(0, |(_, at)| *at),
+            });
         }
-        let mut list: Vec<String> = named.into_iter().collect();
-        list.extend(std::iter::repeat_n(
-            "control connection".to_string(),
-            anonymous,
-        ));
         list
     }
 

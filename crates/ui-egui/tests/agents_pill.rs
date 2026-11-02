@@ -1,0 +1,238 @@
+//! The status bar's agents pill and its popover (2026-11-02): always at
+//! the bar's left, opened with a click or `ui.set {"dialogs": {"agents":
+//! true}}`, with the same controls as the start screen's "Connect an AI
+//! agent" block, and inside the window at 1024 × 700 and on a phone.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+
+use craft3d_engine::{Session, Workspace};
+use craft3d_ui_egui::shell::agents::PillKind;
+use craft3d_ui_egui::{AgentClient, AgentRoot, AgentsStatus, Shell};
+use egui::{Event, Pos2, vec2};
+use serde_json::json;
+
+struct Window {
+    ctx: egui::Context,
+    time: f64,
+    size: egui::Vec2,
+}
+
+impl Window {
+    fn sized(width: f32, height: f32) -> Self {
+        Self {
+            ctx: egui::Context::default(),
+            time: 0.0,
+            size: vec2(width, height),
+        }
+    }
+
+    fn frame(&mut self, shell: &mut Shell, session: &mut Session, events: Vec<Event>) {
+        self.time += 1.0 / 60.0;
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, self.size)),
+            time: Some(self.time),
+            events,
+            ..Default::default()
+        };
+        let mut output = self.ctx.run_ui(input, |ui| shell.ui(ui, session));
+        output.textures_delta.clear();
+    }
+
+    fn click(&mut self, shell: &mut Shell, session: &mut Session, at: Pos2) {
+        self.frame(shell, session, vec![Event::PointerMoved(at)]);
+        let button = |pressed| Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        self.frame(shell, session, vec![button(true)]);
+        self.frame(shell, session, vec![button(false)]);
+        self.frame(shell, session, Vec::new());
+    }
+}
+
+fn on(clients: Vec<AgentClient>) -> AgentsStatus {
+    AgentsStatus {
+        available: true,
+        allowed: true,
+        port: Some(7990),
+        connected: clients.len(),
+        clients,
+        work_folder: Some("/home/me/Documents/3DCraft".to_string()),
+        document_folder: true,
+        roots: vec![AgentRoot {
+            path: "/home/me/Documents/3DCraft".to_string(),
+            from: "chosen".to_string(),
+            read: true,
+            write: true,
+        }],
+        home: Some("/home/me".to_string()),
+        ..AgentsStatus::default()
+    }
+}
+
+fn names(hits: &[(String, egui::Rect)]) -> Vec<String> {
+    let mut names: Vec<String> = hits.iter().map(|(name, _)| name.clone()).collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn the_pill_opens_the_popover_with_the_start_screens_controls() {
+    let mut session = Session::new(Workspace::none());
+    let mut shell = Shell::new();
+    shell.set_agents_status(on(vec![AgentClient {
+        name: "Claude Code".to_string(),
+        since_ms: 1,
+        last_command: Some("feature.edit".to_string()),
+        last_ms: 2,
+    }]));
+    let mut window = Window::sized(1400.0, 900.0);
+    for _ in 0..3 {
+        window.frame(&mut shell, &mut session, Vec::new());
+    }
+    // The start screen's block: its controls.
+    let block: Vec<String> = names(shell.start_hits())
+        .into_iter()
+        .filter(|name| {
+            [
+                "agents-switch",
+                "change-folder",
+                "open-folder",
+                "document-folder",
+                "copy-command",
+                "copy-config",
+                "disconnect-all",
+            ]
+            .contains(&name.as_str())
+        })
+        .collect();
+    assert_eq!(block.len(), 7, "{block:?}");
+    // The pill is at the status bar's left.
+    let pill = shell.agents_pill_rect().unwrap();
+    assert!(pill.left() < 40.0 && pill.bottom() > 850.0, "{pill:?}");
+    assert_eq!(shell.agents_pill_view().kind, PillKind::Connected);
+    assert!(shell.agents_popover_hits().is_empty());
+    window.click(&mut shell, &mut session, pill.center());
+    assert!(shell.state.dialogs.agents, "a click opens it");
+    assert_eq!(names(shell.agents_popover_hits()), block, "the same panel");
+    // Every control of the popover lies above the pill and in the window.
+    for (name, rect) in shell.agents_popover_hits() {
+        assert!(rect.bottom() <= pill.top() + 0.5, "{name}: {rect:?}");
+        assert!(
+            rect.right() <= 1400.0 && rect.left() >= 0.0,
+            "{name}: {rect:?}"
+        );
+    }
+    // ui.get reads it; Escape closes it.
+    let got = shell
+        .handle_method(&mut session, "ui.get", None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(got["state"]["dialogs"]["agents"], true);
+    assert_eq!(got["agents"]["clients"][0]["name"], "Claude Code");
+    window.frame(
+        &mut shell,
+        &mut session,
+        vec![Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+    assert!(!shell.state.dialogs.agents);
+    // ui.set opens it, for an agent showing the person around.
+    shell
+        .handle_method(
+            &mut session,
+            "ui.set",
+            Some(&json!({"dialogs": {"agents": true}})),
+        )
+        .unwrap()
+        .unwrap();
+    window.frame(&mut shell, &mut session, Vec::new());
+    assert!(!shell.agents_popover_hits().is_empty());
+    // A click on the switch reaches the host.
+    let switch = shell
+        .agents_popover_hits()
+        .iter()
+        .find(|(name, _)| name == "agents-switch")
+        .unwrap()
+        .1;
+    window.click(
+        &mut shell,
+        &mut session,
+        switch.left_center() + vec2(8.0, 0.0),
+    );
+    assert_eq!(shell.take_agents_switch(), Some(false));
+}
+
+#[test]
+fn off_the_pill_is_an_invitation_and_the_help_menu_opens_the_popover() {
+    let mut session = Session::new(Workspace::none());
+    let mut shell = Shell::new();
+    shell.set_agents_status(AgentsStatus {
+        available: true,
+        ..AgentsStatus::default()
+    });
+    let mut window = Window::sized(1024.0, 700.0);
+    for _ in 0..3 {
+        window.frame(&mut shell, &mut session, Vec::new());
+    }
+    let view = shell.agents_pill_view();
+    assert_eq!(
+        (view.kind, view.label.as_str()),
+        (PillKind::Off, "Connect AI agent")
+    );
+    shell.show_agents_popover(true);
+    window.frame(&mut shell, &mut session, Vec::new());
+    // Off: the switch, and nothing to copy yet.
+    let hits = names(shell.agents_popover_hits());
+    assert_eq!(hits, ["agents-switch"]);
+}
+
+/// Neither the pill nor the popover runs past the window: at 1024 × 700
+/// and on a phone, with a long client name and the popover open.
+#[test]
+fn the_pill_and_the_popover_fit_small_windows() {
+    for (width, height) in [(1024.0, 700.0), (390.0, 844.0)] {
+        let mut session = Session::new(Workspace::none());
+        session.execute("file.new", &json!({})).unwrap();
+        let mut shell = Shell::new();
+        shell.set_agents_status(on(vec![AgentClient {
+            name: "A very long client name that goes on and on and on".to_string(),
+            since_ms: 1,
+            last_command: Some("feature.edit".to_string()),
+            last_ms: 1_000,
+        }]));
+        // Doing something now: the longest label.
+        shell.set_agents_clock(Some(1_200));
+        shell.show_agents_popover(true);
+        let mut window = Window::sized(width, height);
+        for _ in 0..4 {
+            window.frame(&mut shell, &mut session, Vec::new());
+        }
+        assert_eq!(shell.agents_pill_view().kind, PillKind::Active);
+        let pill = shell.agents_pill_rect().unwrap();
+        assert!(
+            pill.left() >= 0.0 && pill.right() <= width * 0.5 + 1.0,
+            "{width}: {pill:?}"
+        );
+        assert!(!shell.agents_popover_hits().is_empty());
+        for (name, rect) in shell.agents_popover_hits() {
+            assert!(
+                rect.left() >= -0.5 && rect.right() <= width + 0.5,
+                "{width}: {name} {rect:?}"
+            );
+            assert!(rect.top() >= -0.5, "{width}: {name} {rect:?}");
+        }
+    }
+}

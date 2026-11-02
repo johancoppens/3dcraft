@@ -332,13 +332,53 @@ pub struct AgentsStatus {
     /// The clients connected now (an MCP bridge counts while it is heard
     /// from, or until it says goodbye).
     pub connected: usize,
-    /// Their names, as they gave them (`MCP bridge (process 4242)`).
-    pub clients: Vec<String>,
-    /// The folder agents may read and write files in, when the window
-    /// gave them one.
+    /// Who they are and what they did last.
+    pub clients: Vec<AgentClient>,
+    /// The folder agents may read and write files in: the one chosen
+    /// with Change… (by default `Documents/3DCraft`), absolute; while the
+    /// switch is on and the command line gave no roots.
     pub work_folder: Option<String>,
+    /// The command line gave the roots (`--automation-read-root`,
+    /// `--automation-write-root`): they win, Change… is off.
+    pub command_line: bool,
+    /// "Also the open document's folder" (on by default, remembered).
+    pub document_folder: bool,
+    /// The roots agents have now, in order (relative paths go beneath the
+    /// first), and where each came from.
+    pub roots: Vec<AgentRoot>,
     /// Why the switch could not be turned on, or what went wrong around it.
     pub error: Option<String>,
+    /// The person's home folder, to write paths beneath it with `~`; not
+    /// reported.
+    #[serde(skip)]
+    pub home: Option<String>,
+}
+
+/// One client connected to the window.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AgentClient {
+    /// The name its MCP client gave (`Claude Code`), else the one it gave
+    /// when it authenticated (`MCP bridge (process 4242)`), else "control
+    /// connection".
+    pub name: String,
+    /// Since when, in milliseconds since the Unix epoch.
+    pub since_ms: u64,
+    /// The command it ran last (`feature.edit`), and when.
+    pub last_command: Option<String>,
+    pub last_ms: u64,
+}
+
+/// One folder agents may read or write files in.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AgentRoot {
+    pub path: String,
+    /// `chosen` (the switch's folder), `document` (the open document's
+    /// folder) or `command line`.
+    pub from: String,
+    pub read: bool,
+    pub write: bool,
 }
 
 /// What the viewport draws besides the bodies' faces.
@@ -374,6 +414,9 @@ impl Default for Show {
 pub struct Dialogs {
     pub about: bool,
     pub shortcuts: bool,
+    /// The agents popover over the status bar's agents pill (2026-11-02):
+    /// the same panel as the start screen's "Connect an AI agent".
+    pub agents: bool,
 }
 
 /// The history player under the feature list: playing through the
@@ -1471,6 +1514,8 @@ mod tests {
             dialogs: Dialogs {
                 about: true,
                 shortcuts: false,
+                // Added with the agents pill (2026-11-02).
+                agents: true,
             },
             // Added with the history player (2026-10-23).
             timeline: Playback {

@@ -77,7 +77,8 @@ Environment: CRAFT3D_CONTROL_PORT, CRAFT3D_CONTROL_TOKEN_FILE, CRAFT3D_STATE_DIR
 CRAFT3D_AUTOMATION_READ_ROOT, CRAFT3D_AUTOMATION_WRITE_ROOT,
 CRAFT3D_RENDERER, CRAFT3D_RECOVERY_DIR, CRAFT3D_AUTOSAVE_INTERVAL,
 CRAFT3D_RECENT_FILE and CRAFT3D_WINDOW_SIZE stand in for the flags of the
-same name.
+same name. CRAFT3D_AGENT_PORT is the first port Allow AI agents tries
+(default 7878; a test's window keeps off the person's port with it).
 
 Mouse: drag to orbit, right-drag or shift-drag to pan, wheel to zoom, F to
 fly to the selection (or frame everything).
@@ -113,6 +114,10 @@ pub struct Options {
     /// file, the discovery entries and the remembered switch for agents.
     /// Parsing fills in the platform's default, as for `recovery_dir`.
     pub state_dir: Option<PathBuf>,
+    /// The first port the switch Allow AI agents tries
+    /// (`CRAFT3D_AGENT_PORT`; 7878 when not given): a test's or an agent's
+    /// window keeps off the person's port with it. 0 takes any free port.
+    pub agent_port: Option<u16>,
 }
 
 /// What the command line asked for.
@@ -273,6 +278,9 @@ pub fn parse(
                 .map_err(|e| format!("CRAFT3D_AUTOSAVE_INTERVAL: {e}"))?,
         );
     }
+    if let Some(value) = from_env("CRAFT3D_AGENT_PORT") {
+        options.agent_port = Some(port(&value, "CRAFT3D_AGENT_PORT")?);
+    }
     if options.window_size.is_none()
         && let Some(value) = from_env("CRAFT3D_WINDOW_SIZE")
     {
@@ -399,6 +407,7 @@ mod tests {
                 recent_file: None,
                 window_size: None,
                 state_dir: None,
+                agent_port: None,
             }
         );
         // Port 0 asks for a free one.
@@ -627,6 +636,14 @@ mod tests {
         assert_eq!((none.recovery_dir, none.recent_file), (None, None));
         let env = |name: &str| (name == "CRAFT3D_STATE_DIR").then(|| "/v/state".to_string());
         assert_eq!(with(&env, &[]).state_dir, Some(PathBuf::from("/v/state")));
+        let env = |name: &str| (name == "CRAFT3D_AGENT_PORT").then(|| "7990".to_string());
+        assert_eq!(with(&env, &[]).agent_port, Some(7990));
+        let bad = |name: &str| (name == "CRAFT3D_AGENT_PORT").then(|| "x".to_string());
+        assert!(
+            super::parse(Vec::new(), &bad)
+                .unwrap_err()
+                .contains("CRAFT3D_AGENT_PORT")
+        );
         assert!(
             run(&["--state-dir="])
                 .unwrap_err()
