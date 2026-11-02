@@ -66,6 +66,7 @@ fn spec(k: f64, gap: f64) -> (Spec, Tolerance) {
             },
         }],
         cutouts: Vec::new(),
+        jogs: Vec::new(),
         ids: Vec::new(),
     };
     (spec, tol)

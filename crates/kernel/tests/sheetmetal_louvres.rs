@@ -247,6 +247,7 @@ impl Wall {
             corner: Closing::OPEN,
             corners,
             cutouts: (0..slots).map(|j| self.slot(j)).collect(),
+            jogs: Vec::new(),
             ids: Vec::new(),
         }
     }

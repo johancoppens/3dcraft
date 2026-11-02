@@ -58,7 +58,8 @@ pub use repoint::{Inserted, MAX_INSERTED, Recorded, Repointed, Restored};
 pub use sets::{MAX_SET_QUERY_BYTES, MAX_SETS, NamedSet};
 pub use sheetmetal::{
     BendDirection, CornerClose, CornerKind, CornerRelief, Flange, FlangeFrom, FlangeOn, FlangeSide,
-    MAX_FLANGE_ID, MAX_SHEET_FLANGES, Pick, ReliefShape, SheetCorner, SheetMetal,
+    FormedLouvre, HoodEnds, Jog, MAX_FLANGE_ID, MAX_SHEET_FLANGES, Pick, ReliefShape, SheetCorner,
+    SheetMetal,
 };
 pub use table::{MAX_TABLES, Table, TableCell, TableColumn};
 pub use text::{
@@ -2439,6 +2440,24 @@ impl Document {
                 return Err(DocError::Invalid(format!(
                     "the sheet-metal part `{}`: {fault}",
                     feature.name
+                )));
+            }
+            if let FeatureKind::SheetMetal(part) = &feature.kind
+                && part.jogs.len() > MAX_SHEET_FLANGES
+            {
+                return Err(DocError::Invalid(format!(
+                    "the sheet-metal part `{}` has {} jogs; the most is {MAX_SHEET_FLANGES}",
+                    feature.name,
+                    part.jogs.len()
+                )));
+            }
+            if let FeatureKind::SheetMetal(part) = &feature.kind
+                && part.formed_louvres.len() > MAX_SHEET_FLANGES
+            {
+                return Err(DocError::Invalid(format!(
+                    "the sheet-metal part `{}` has {} formed louvres; the most is {MAX_SHEET_FLANGES}",
+                    feature.name,
+                    part.formed_louvres.len()
                 )));
             }
             if let FeatureKind::SheetMetal(part) = &feature.kind
