@@ -286,7 +286,7 @@ about the vertical axis, `ground`, `ao` and `shadows` switch the ground, the dar
 the shadows off, `tonemap` chooses how bright light is fitted into the picture (`agx`, the
 default, `aces` or `linear`), and `background` `plain` keeps the window's own background colour behind the
 model while the environment still lights it (`environment`, the default, shows the environment). The look is a view: the document does not change. In the browser on older
-graphics (WebGL2) the studio look has no shadows and no darkening in corners.
+graphics (WebGL2) the studio look has no shadows and no darkening in corners. In the browser the studio look is drawn simpler while you turn, pan or zoom the view (no darkening in corners, reflections or depth of field, at a lower resolution), and in full again a moment after you let go.
 
 The studio look also has a second layer of polish, on by default:
 

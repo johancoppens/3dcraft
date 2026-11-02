@@ -131,6 +131,14 @@ fn studio(shell: &mut Shell, s: &mut Session) {
         json!({"look": {"mode": "studio", "accumulate": 4,
                         "dof": {"fstop": 1.4, "focus": "centre"}}}),
     );
+    // The look's popover closed: it would lie over the middle of the
+    // viewport, where the drags begin.
+    call(
+        shell,
+        s,
+        "ui.set",
+        json!({"panels": {"lookOptions": false}}),
+    );
     shell.prepare_look().unwrap();
 }
 
