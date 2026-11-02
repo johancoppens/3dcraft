@@ -610,5 +610,68 @@ fn jogs_are_refused_with_the_reason() {
         );
         let (_, reason) = refused(&s, &tol);
         assert!(reason.contains("another jog's"), "{reason}");
+        // A line crossing a rounded corner's arc two tolerances from its
+        // start leaves an arc piece shorter than the sliver floor:
+        // refused, as a line's piece is (review of 4116ed3e: arcs were
+        // let through).
+        let rounded = |k: f64| {
+            let s = |p: [f64; 2]| [p[0] * k, p[1] * k];
+            let curves = vec![
+                SketchCurve {
+                    id: 1,
+                    curve: Curve2::Line {
+                        start: s([0.0, 0.0]),
+                        end: s([90.0, 0.0]),
+                    },
+                },
+                SketchCurve {
+                    id: 2,
+                    curve: Curve2::Arc {
+                        center: s([90.0, 10.0]),
+                        start: s([90.0, 0.0]),
+                        end: s([100.0, 10.0]),
+                    },
+                },
+                SketchCurve {
+                    id: 3,
+                    curve: Curve2::Line {
+                        start: s([100.0, 10.0]),
+                        end: s([100.0, 40.0]),
+                    },
+                },
+                SketchCurve {
+                    id: 4,
+                    curve: Curve2::Line {
+                        start: s([100.0, 40.0]),
+                        end: s([0.0, 40.0]),
+                    },
+                },
+                SketchCurve {
+                    id: 5,
+                    curve: Curve2::Line {
+                        start: s([0.0, 40.0]),
+                        end: s([0.0, 0.0]),
+                    },
+                },
+            ];
+            detect_profiles(&curves, &tolerance(k)).unwrap().remove(0)
+        };
+        let x = 90.0 + 2e-6;
+        let s = spec(
+            rounded(k),
+            t,
+            Vec::new(),
+            vec![at([x, -5.0], [x, 45.0], 9.0 * k, PI / 3.0)],
+        );
+        let (_, reason) = refused(&s, &tol);
+        assert!(reason.contains("of curve 2"), "{reason}");
+        // Clear of the arc's end it is built.
+        let s = spec(
+            rounded(k),
+            t,
+            Vec::new(),
+            vec![at([92.0, -5.0], [92.0, 45.0], 9.0 * k, PI / 3.0)],
+        );
+        build(&s, &tol).unwrap_or_else(|e| panic!("scale {k}: {e}"));
     }
 }

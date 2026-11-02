@@ -340,6 +340,7 @@ pub(super) fn split(
     let mut points: Vec<P2> = Vec::new();
     let mut breaks: Vec<usize> = Vec::new();
     let mut far = first_far;
+    let mut hashes: std::collections::BTreeMap<u64, SegId> = std::collections::BTreeMap::new();
     for (k, s) in flat.outer.iter().enumerate() {
         let id = flat.ids.get(k).copied().ok_or_else(|| {
             no(format!(
@@ -351,6 +352,13 @@ pub(super) fn split(
             None => pieces.push((s.clone(), id, far, Some(k))),
             Some(cross) => {
                 let h = hashed(&id);
+                // Two edges whose ids hash alike (one in 2⁴⁷ per pair)
+                // would give their pieces one name: refused, never shared.
+                if let Some(other) = hashes.insert(h, id).filter(|other| *other != id) {
+                    return Err(no(format!(
+                        "jog {g}: the edges {other:?} and {id:?} it cuts hash to one name (a one in 2^47 chance); move the jog"
+                    )));
+                }
                 let mut from = s.start;
                 for (j, &p) in cross.iter().enumerate() {
                     let piece_id = [15, numbers[0], h, u64::from(far) * 4 + j as u64];
@@ -367,10 +375,16 @@ pub(super) fn split(
         }
     }
     let floor = SLIVER_TOLERANCES * tol;
-    if let Some((short, _, _, _)) = pieces
-        .iter()
-        .find(|(s, _, _, _)| !(distance(s.start, s.end) > floor) && matches!(s.shape, Shape::Line))
-    {
+    // Every piece's length: a line's chord, an arc's `r · sweep` (review
+    // of 4116ed3e: arcs were let through, so a line crossing an arc next
+    // to its end left a sliver of an arc). A whole circle or a spline is
+    // never cut (refused above), and kept whole is no sliver.
+    let length = |seg: &Segment| match &seg.shape {
+        Shape::Line => distance(seg.start, seg.end),
+        &Shape::Arc { radius, .. } => seg.angles().map_or(0.0, |(_, sweep)| radius * sweep.abs()),
+        Shape::Circle { .. } | Shape::Spline(_) => f64::INFINITY,
+    };
+    if let Some((short, _, _, _)) = pieces.iter().find(|(s, _, _, _)| !(length(s) > floor)) {
         return Err(no(format!(
             "jog {g}: its line crosses the edge of curve {} within {floor} ({SLIVER_TOLERANCES} tolerances) of its end; move it so that it crosses edges clear of their ends",
             short.source
