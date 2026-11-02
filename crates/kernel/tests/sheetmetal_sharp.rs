@@ -543,6 +543,14 @@ fn sharp_refusals_by_reason() {
         let (f, why) = refused(&corner, &tol);
         assert_eq!(f, Some(1));
         assert!(why.contains("touch along the corner"), "{why}");
+        // Bent opposite ways the walls part: built, the sum of the pieces.
+        let mut apart = corner.clone();
+        apart.flanges[1].direction = Direction::Down;
+        let part = build(&apart, &tol).unwrap();
+        healthy(&part, &tol);
+        let (w, d) = (40.0 * k, 30.0 * k);
+        let v = w * d * t + (w + d) * (l * t + FRAC_PI_2 * t * t / 2.0);
+        near(volume(&part), v, 1e-9 * v, "walls bent opposite ways");
 
         let mut across = one(FRAC_PI_2, 0.4, 0.0);
         across.cutouts = circles(&[([20.0, 0.0], 2.0)], k);

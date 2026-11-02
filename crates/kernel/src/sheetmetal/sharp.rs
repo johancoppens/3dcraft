@@ -75,18 +75,20 @@ pub(super) fn check(
 
 /// What the parts with a sharp bend do not build yet, each refused with
 /// the reason: a hole across a bend (the cells of a strip with no face of
-/// its own), a trimmed sharp bend, and two sharp bends meeting at an open
-/// corner without a relief, whose walls would touch along the corner's
-/// line (each wall's inner skin runs through its bend's axis, so the two
-/// walls share that line: not one solid).
+/// its own), a trimmed sharp bend, and two sharp bends turning the same
+/// way that meet at an open corner without a relief, whose walls would
+/// touch along a piece of the corner's vertical (each wall's inner skin
+/// runs through its bend's axis, so square walls share that line, and one
+/// leaning out reaches over it: not one solid). Bent opposite ways the
+/// walls lie on either side of the base and meet only at its corner.
 pub(super) fn refused(bends: &[Bend], corners: &[Corner], cuts: &[Cut]) -> Result<(), KernelError> {
-    if let Some(i) = bends.iter().position(Bend::sharp) {
-        if !cuts.is_empty() {
-            return Err(refuse(
-                Some(i),
-                "its bend is sharp (inner radius 0), and the part has a hole across a bend: a hole across a bend in a part with a sharp bend is not built (owed); give the bends a radius, or keep the holes inside the flats",
-            ));
-        }
+    if let Some(i) = bends.iter().position(Bend::sharp)
+        && !cuts.is_empty()
+    {
+        return Err(refuse(
+            Some(i),
+            "its bend is sharp (inner radius 0), and the part has a hole across a bend: a hole across a bend in a part with a sharp bend is not built (owed); give the bends a radius, or keep the holes inside the flats",
+        ));
     }
     for (i, b) in bends.iter().enumerate() {
         if b.sharp() && b.trim.iter().any(Option::is_some) {
@@ -98,8 +100,19 @@ pub(super) fn refused(bends: &[Bend], corners: &[Corner], cuts: &[Cut]) -> Resul
     }
     for c in corners {
         let [a, b] = c.bends;
-        let sharp = |x: usize| bends.get(x).is_some_and(Bend::sharp);
-        if c.closing.kind == CornerKind::Open && c.relief.is_none() && sharp(a) && sharp(b) {
+        let (Some(ba), Some(bb)) = (bends.get(a), bends.get(b)) else {
+            continue;
+        };
+        // Bent opposite ways the walls part at the corner (one stands above
+        // the base, the other below it); bent the same way each wall's
+        // inner skin runs through the corner's point at the bends' axes.
+        let same_way = (ba.angle > 0.0) == (bb.angle > 0.0);
+        if c.closing.kind == CornerKind::Open
+            && c.relief.is_none()
+            && ba.sharp()
+            && bb.sharp()
+            && same_way
+        {
             return Err(refuse(
                 Some(b),
                 format!(
