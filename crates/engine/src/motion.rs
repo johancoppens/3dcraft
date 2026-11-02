@@ -2569,13 +2569,19 @@ fn view_trace(session: &mut Session, params: &Value) -> Run {
         let name = trace_name(open, given_name);
         if let Some(asm) = copy.assembly.as_mut() {
             asm.asm.deferred.clear();
+            // A trace's samples are not the play's frames: the copy keeps
+            // little of what it builds, and gives none of it to the motion
+            // (taken in, hundreds of configurations pushed a bake's frames
+            // out of the budget and the play built them again: the
+            // developer's field test of 2026-11-02, headless).
+            asm.asm
+                .set_config_budget(TRACE_CONFIG_BUDGET.min(asm.asm.config_budget()));
         }
         let described = point.describe();
         let (job_base, job_point, job_name) = (Arc::clone(&base), point.clone(), name.clone());
         let job_in_assembly = in_assembly.clone();
         let job: crate::motion_build::GridJob =
             Box::new(move |let_go: crate::motion_build::Cancel| {
-                let before = copy.assembly.as_ref().map(|a| a.asm.config_keys());
                 if let Some(asm) = copy.assembly.as_mut() {
                     asm.asm.cancel = Some(Arc::clone(&let_go));
                 }
@@ -2587,12 +2593,7 @@ fn view_trace(session: &mut Session, params: &Value) -> Run {
                     samples,
                     &|| let_go(),
                 );
-                let built = match (copy.assembly.as_ref(), before) {
-                    (Some(asm), Some(before)) => asm.asm.configs_since(&before),
-                    _ => Vec::new(),
-                };
                 crate::motion_build::Worked {
-                    built,
                     trace: Some(points.map(|points| Trace {
                         base: job_base,
                         generation,
@@ -2655,6 +2656,11 @@ fn view_trace(session: &mut Session, params: &Value) -> Run {
         open, base, generation, given_name, point, points, range, samples, grow,
     )
 }
+
+/// The configurations a trace worked out in the background keeps while it
+/// works (its own copy of the motion's state): each sample asks for its
+/// own, used once.
+const TRACE_CONFIG_BUDGET: usize = 256 << 20;
 
 /// The name a new trace gets: the one given, else `Trace <n>` free.
 fn trace_name(open: &mut OpenDocument, given: Option<String>) -> String {
