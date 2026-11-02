@@ -203,6 +203,9 @@ pub struct Report {
     pub unproven_edges: usize,
     pub loose_vertices: usize,
     pub largest_tolerance: f64,
+    /// The work reading the body took (`craft3d_geom::allowance` units),
+    /// against [`IMPORT_WORK`].
+    pub work: u64,
 }
 
 /// One placed item as a body.
@@ -356,7 +359,7 @@ impl Imported {
 /// one to three million a second): past it the body is refused, naming
 /// the stage and the entity where the work ran out (2026-11-02: ABC
 /// models of tens of thousands of edges took minutes to prove).
-pub const IMPORT_WORK: u64 = 40_000_000;
+pub const IMPORT_WORK: u64 = 4_000_000_000;
 
 /// A parsed file with its items found.
 #[derive(Debug)]
@@ -674,9 +677,13 @@ impl Parsed {
         // Bounded work (`craft3d_geom::allowance`, counted, so the same
         // file gives the same answer on every machine): a body whose
         // proofs would take minutes is refused naming where the work went.
-        let mut read = craft3d_geom::allowance::within(work, || {
+        let before = craft3d_geom::allowance::spent();
+        let built = craft3d_geom::allowance::within(work, || {
             topology::build(&reader, item, options, &mut report)
-        })?;
+        });
+        let spent = craft3d_geom::allowance::spent().saturating_sub(before);
+        let mut read = built?;
+        read.report.work = spent;
         read.color = style::color_of(self, item.id, &read.face_ids);
         if !placed.steps.is_empty() {
             let transform = self.placement_transform(placed, options)?;

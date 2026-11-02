@@ -382,7 +382,7 @@ fn measure_curve_with(
     let mut target = (2.0 * sampled).max(tolerance.linear);
     let mut stopped = 0.5 * (range.0 + range.1);
     while target.is_finite() && target <= 2.0 * cap {
-        match curve_on_surface(
+        let proof = curve_on_surface(
             &bounded,
             range,
             surface,
@@ -392,7 +392,9 @@ fn measure_curve_with(
                 target,
                 most: PROOF_PIECES,
             },
-        ) {
+        );
+        charge_pieces(proof.as_ref().map_or(PROOF_PIECES, |p| p.pieces));
+        match proof {
             Ok(proven) => {
                 let mut bound = proven.bound.max(sampled);
                 let mut pieces = proven.pieces;
@@ -411,16 +413,16 @@ fn measure_curve_with(
                     }
                 }
                 let prove = |t: f64, most: usize| {
-                    curve_on_surface(
+                    let proof = curve_on_surface(
                         &bounded,
                         range,
                         surface,
                         start,
                         &[],
                         Within { target: t, most },
-                    )
-                    .ok()
-                    .map(|p| (p.bound.max(sampled), p.pieces))
+                    );
+                    charge_pieces(proof.as_ref().map_or(most, |p| p.pieces));
+                    proof.ok().map(|p| (p.bound.max(sampled), p.pieces))
                 };
                 if !tight {
                     // No entity made loose that is not.
@@ -446,6 +448,21 @@ fn measure_curve_with(
         target *= 2.0;
     }
     Err(stopped)
+}
+
+/// Work charged per piece of a proof (`craft3d_geom::allowance`): a
+/// piece on an analytic surface evaluates nothing the allowance counts,
+/// yet takes the time of a few evaluations; charged here, in the measure,
+/// so that an import's bound sees it (2026-11-02: an ABC model of 28 000
+/// edges on cylinders and planes ran for minutes counting nothing).
+const UNITS_PER_PIECE: u64 = 4;
+
+fn charge_pieces(pieces: usize) {
+    craft3d_geom::allowance::charge(
+        u64::try_from(pieces)
+            .unwrap_or(u64::MAX)
+            .saturating_mul(UNITS_PER_PIECE),
+    );
 }
 
 /// How many times a bound that will be recorded is proven again nearer

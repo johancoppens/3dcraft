@@ -192,6 +192,11 @@ impl ModelRun {
             .filter_map(|r| r.get("looseEdges").and_then(Value::as_u64))
             .sum();
         self.set("largestTolerance", largest);
+        let work: u64 = reports
+            .iter()
+            .filter_map(|r| r.get("work").and_then(Value::as_u64))
+            .sum();
+        self.set("work", work);
         // Which entity is the loosest, of the solid that has it.
         if let Some(l) = reports
             .iter()
