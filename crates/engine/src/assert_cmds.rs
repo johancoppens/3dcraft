@@ -398,7 +398,7 @@ fn rewritten_measure(measure: &str, rewrite: &dyn Fn(&str) -> Option<String>) ->
             }
             Value::Object(map) if depth < 4 => {
                 for (k, item) in map.iter_mut() {
-                    if ["point", "tol"].contains(&k.as_str()) {
+                    if ["point", "tol", "through", "pad"].contains(&k.as_str()) {
                         walk(item, rewrite, depth + 1);
                     }
                 }

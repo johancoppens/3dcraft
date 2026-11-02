@@ -8,9 +8,11 @@
 //!   40 between its tangent lines, R = T = 1): a disc about the axis
 //!   keeps its distance to every piece the parent carries as the legs
 //!   turn about the axis, so the first bend's least distance is the other
-//!   strip's near edge, `√(40² + R²) − a`, and the second's the standing
-//!   wall's inner face, `40 − R − a`, at every stroke angle; the same rod
-//!   as an octagon set flat towards the wall is `a (1 − cos π/8)` further.
+//!   strip's near edge at the top skin, `√(40² + R²) − a`, and the
+//!   second's the same, the standing wall's bend there (it curls outwards
+//!   from the tangent line), at every stroke angle; the same rod drawn as
+//!   an octagon round the circle (as a polygon had to be, outside the
+//!   arc) comes nearer, by up to `a (1/cos(π/8) − 1)`.
 //! - A rack panel's ears over a V die whose shoulders are rounded (an arc
 //!   tangent to its top and its flank) are proven in the die's opening.
 //! - Bad arcs are errors: a point in a line with its side's ends, a
@@ -97,9 +99,8 @@ fn a_rod_punch_keeps_its_closed_form_distance() {
         );
         assert_eq!(out["feasible"], true, "scale {k}: {out}");
         let tol = 1e-6 * k;
-        let first = (40.0_f64 * 40.0 + r * r).sqrt() - a;
-        let second = 40.0 - r - a;
-        for (step, exact) in out["steps"].as_array().unwrap().iter().zip([first, second]) {
+        let exact = (40.0_f64 * 40.0 + r * r).sqrt() - a;
+        for step in out["steps"].as_array().unwrap() {
             let least = step["least"].as_f64().unwrap();
             let proven = step["proven"].as_f64().unwrap();
             // Proven from the mesh less what it can be off by: at most
@@ -113,12 +114,16 @@ fn a_rod_punch_keeps_its_closed_form_distance() {
             assert!(proven <= least && proven >= clearance, "scale {k}: {step}");
         }
 
-        // The same rod as an octagon, a side square to the wall: its
-        // flat side stands `a cos(π/8)` from the axis.
+        // The same rod as an octagon round the circle, its sides square
+        // to the axes: at the stroke's start its side faces the strip's
+        // edge `a` from the axis, so it is nearer than the rod by about
+        // `40 + a − √(40² + R²) − a`; never by more than its corners'
+        // `a / cos(π/8) − a`.
+        let corner = a / (PI / 8.0).pcos();
         let octagon: Vec<[f64; 2]> = (0..8)
             .map(|i| {
                 let t = PI / 8.0 + PI / 4.0 * f64::from(i);
-                [a * k * t.pcos(), a * k * t.psin()]
+                [corner * k * t.pcos(), corner * k * t.psin()]
             })
             .collect();
         let out = run(
@@ -127,12 +132,13 @@ fn a_rod_punch_keeps_its_closed_form_distance() {
             json!({"feature": "U", "punch": octagon, "die": scaled(&DIE, k),
                    "order": [0, 1]}),
         );
-        let least = out["steps"][1]["least"].as_f64().unwrap();
-        let exact = (40.0 - r - a * (PI / 8.0).pcos()) * k;
-        assert!(
-            least <= exact + 1e-9 * k && least >= exact - 4.0 * tol,
-            "scale {k}: octagon {least} against {exact}"
-        );
+        for step in out["steps"].as_array().unwrap() {
+            let least = step["least"].as_f64().unwrap();
+            assert!(
+                least <= (40.0 - a) * k + 1e-9 * k && least >= (exact + a - corner) * k - 4.0 * tol,
+                "scale {k}: octagon {least}: {step}"
+            );
+        }
     }
 }
 

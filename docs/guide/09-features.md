@@ -474,7 +474,11 @@ collides for certain), and is *notProven* otherwise, never passed: a step that i
 colliding, or a search that used up its `maxWork` (distances measured, 20000 at most, shared by the parts).
 For one part, `order` checks a sequence you give instead of searching (its `maxWork` may then be larger),
 and `formed` lists flanges made before the press brake by a tool of their own (a louvre on a punch press,
-a jog by an offset die): they are made from the start and not checked themselves. A part with a hole
+a jog by an offset die): they are made from the start and not checked themselves. `hem` presses
+flanges bent 180 degrees flat in two strokes, an air bend to `preBend` degrees with the punch and die,
+then a flatten stroke between a flat die under the part and a `pad` (an outline as the punch's, its body
+above its `y = 0`) that stands on the hem: `"hem": {"flanges": [3], "preBend": 150, "pad": [[-20, 0], [20, 0], [20, 30], [-20, 30]]}`;
+the steps list both (`stage` `pre-bend` and `flatten`). A part with a hole
 across a bend is checked too: a strip not yet bent that a hole may cross (by the boxes of the hole and
 the strip) stands as its whole slab, so a clearance to it is proven, while a collision with it is never
 counted as certain (the tool may pass through the hole): such a part is then *notProven*, never `false`.
