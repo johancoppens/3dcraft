@@ -19,8 +19,11 @@ const OPERATIONS: usize = 48;
 const ROUNDS: usize = 7;
 
 fn operation(n: usize) {
-    let height = 2.0 + 0.001 * n as f64;
-    let dome = domed_block(&Frame::WORLD, 4.0, 3.0, height, n % 2 == 1)
+    operation_at(2.0 + 0.001 * n as f64, n % 2 == 1);
+}
+
+fn operation_at(height: f64, nurbs: bool) {
+    let dome = domed_block(&Frame::WORLD, 4.0, 3.0, height, nurbs)
         .unwrap()
         .body;
     let block = boxed(1.0, [0.5, 0.5, 1.0], [3.5, 2.5, 4.0]);
@@ -53,7 +56,7 @@ fn median(mut values: Vec<f64>) -> f64 {
 #[ignore = "prints timings only"]
 fn freeform_booleans_side_by_side() {
     // Warm up (the first operation pays for one-time work).
-    operation(1_000_000);
+    operation_at(1.9, false);
     let mut base = 0;
     let mut times: Vec<Vec<f64>> = vec![Vec::new(); 3];
     for round in 0..ROUNDS {
