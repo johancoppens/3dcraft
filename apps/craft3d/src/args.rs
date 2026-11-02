@@ -120,8 +120,10 @@ pub struct Options {
     pub agent_port: Option<u16>,
 }
 
-/// What the command line asked for.
+/// What the command line asked for. Made once per start and taken apart
+/// at once, so the size of `Run` does not matter.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub enum Parsed {
     Run(Options),
     Help,

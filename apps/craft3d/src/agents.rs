@@ -1629,7 +1629,7 @@ mod tests {
         );
         assert_eq!(
             discovery::read_preferences(&state.join("craft")).folders,
-            [project.clone()],
+            std::slice::from_ref(&project),
             "remembered"
         );
         // New document, a 10 mm cube, saved in the project folder.
