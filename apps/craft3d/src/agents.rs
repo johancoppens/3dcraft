@@ -265,6 +265,13 @@ impl Agents {
             let (Some(key), Some(cwd)) = (client.key, client.cwd) else {
                 continue;
             };
+            // Asked under the name the person knows (its MCP client's,
+            // from `initialize`), or once it has done something without
+            // giving one: not in the moment between its `auth` and its
+            // first message.
+            if !client.named && client.command.is_none() {
+                continue;
+            }
             if self.asked.contains(&key) || self.prompts.len() >= MAX_PROMPTS {
                 continue;
             }

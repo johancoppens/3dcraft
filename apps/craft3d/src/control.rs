@@ -127,6 +127,9 @@ pub struct ClientInfo {
     /// What it did last (`feature.edit`), and when.
     pub command: Option<String>,
     pub command_ms: u64,
+    /// Whether `name` is the one its MCP client gave (`initialize`), not
+    /// the bridge's own.
+    pub named: bool,
     /// The name it gave in `auth` (the key it is known by), and the
     /// folder it works in.
     pub key: Option<String>,
@@ -771,6 +774,7 @@ impl ControlServer {
                 since_ms: seen.since_ms,
                 command: seen.command.as_ref().map(|(c, _)| c.clone()),
                 command_ms: seen.command.as_ref().map_or(0, |(_, at)| *at),
+                named: seen.name.is_some(),
                 key: Some(key.clone()),
                 cwd: seen.cwd.clone(),
             })
@@ -785,6 +789,7 @@ impl ControlServer {
                 since_ms: open.since_ms,
                 command: open.command.as_ref().map(|(c, _)| c.clone()),
                 command_ms: open.command.as_ref().map_or(0, |(_, at)| *at),
+                named: false,
                 key: None,
                 cwd: None,
             });
