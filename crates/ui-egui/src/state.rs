@@ -185,6 +185,135 @@ pub struct Panels {
     /// an analysis is on. The Analysis caret opens and closes it;
     /// switching an analysis on opens it.
     pub analysis_options: bool,
+    /// The side panel's tab (`shell/sidepanel`). The tabs offered follow
+    /// the document: a part has Features, Variables and Bodies; an
+    /// assembly Assembly and Variables; a Jig in use (and an assembly
+    /// with joints to set) Parameters first. A tab the document does not
+    /// offer shows the nearest one it does (Features for Assembly and the
+    /// other way round, else the first).
+    pub side_tab: SideTab,
+}
+
+/// A tab of the side panel ([`Panels::side_tab`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SideTab {
+    #[default]
+    Features,
+    Variables,
+    Bodies,
+    Parameters,
+    Assembly,
+}
+
+impl SideTab {
+    /// As the tab bar writes it.
+    pub fn label(self) -> &'static str {
+        match self {
+            SideTab::Features => "Features",
+            SideTab::Variables => "Variables",
+            SideTab::Bodies => "Bodies",
+            SideTab::Parameters => "Parameters",
+            SideTab::Assembly => "Assembly",
+        }
+    }
+}
+
+/// Most rows kept unfolded in the side panel's lists.
+pub const MAX_UNFOLDED: usize = 512;
+/// Longest filter text kept.
+pub const MAX_FILTER_CHARS: usize = 200;
+
+/// What the side panel shows besides its tab (`shell/sidepanel`): view
+/// state, nothing of the document changes. `ui.set {"sidePanel":
+/// {"hover": "F3"}}` shows a row's dependencies as the pointer on it
+/// does; `{"menu": "F11"}` opens a row's context menu.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct SidePanelView {
+    /// The Features tab's filter: rows whose name, kind or key value hold
+    /// it (any case) are listed, with what they are nested in.
+    pub filter: String,
+    /// The Variables tab's filter, on names and formulas.
+    pub variable_filter: String,
+    /// The Bodies tab's filter, on names and materials.
+    pub body_filter: String,
+    /// The rows opened: a feature that has a sketch nested under it, a
+    /// group of datums (by its first datum's id), a group of variables
+    /// (`group:NAME`; groups are open unless listed under `folded`).
+    pub unfolded: Vec<String>,
+    /// The groups of variables folded shut, by name.
+    pub folded: Vec<String>,
+    /// The checks under the feature list are open (they fold to one line
+    /// while something is selected, whatever this says).
+    pub checks_open: bool,
+    /// The Bodies tab also lists the bodies booleans used up (folded
+    /// away by default).
+    pub show_consumed: bool,
+    /// The body whose card the Bodies tab shows, by its feature's id.
+    pub body: Option<String>,
+    /// The feature whose dependencies are shown, as the pointer on its
+    /// row shows them (by id).
+    pub hover: Option<String>,
+    /// The feature whose context menu is open (by id).
+    pub menu: Option<String>,
+}
+
+impl Default for SidePanelView {
+    fn default() -> Self {
+        Self {
+            filter: String::new(),
+            variable_filter: String::new(),
+            body_filter: String::new(),
+            unfolded: Vec::new(),
+            folded: Vec::new(),
+            checks_open: true,
+            show_consumed: false,
+            body: None,
+            hover: None,
+            menu: None,
+        }
+    }
+}
+
+impl SidePanelView {
+    /// Holds what a patch may have made too long to bounds: the filters
+    /// to [`MAX_FILTER_CHARS`], the lists to [`MAX_UNFOLDED`], the ids to
+    /// [`MAX_SELECTION_CHARS`].
+    pub fn bounded(&mut self) {
+        for text in [
+            &mut self.filter,
+            &mut self.variable_filter,
+            &mut self.body_filter,
+        ] {
+            if text.chars().count() > MAX_FILTER_CHARS {
+                *text = text.chars().take(MAX_FILTER_CHARS).collect();
+            }
+        }
+        self.unfolded.truncate(MAX_UNFOLDED);
+        self.folded.truncate(MAX_UNFOLDED);
+        for id in [&mut self.body, &mut self.hover, &mut self.menu] {
+            if id
+                .as_ref()
+                .is_some_and(|id| id.chars().count() > MAX_SELECTION_CHARS)
+            {
+                *id = None;
+            }
+        }
+    }
+
+    /// Whether `key` is unfolded.
+    pub fn is_open(&self, key: &str) -> bool {
+        self.unfolded.iter().any(|k| k == key)
+    }
+
+    /// Opens or folds `key`.
+    pub fn set_open(&mut self, key: &str, open: bool) {
+        self.unfolded.retain(|k| k != key);
+        if open && self.unfolded.len() < MAX_UNFOLDED {
+            self.unfolded.push(key.to_string());
+        }
+    }
 }
 
 /// Work the window is doing on its engine thread while it keeps drawing:
@@ -311,6 +440,123 @@ pub struct Closing {
     pub jig: bool,
 }
 
+/// Whether AI agents may drive this window, and who does: what the start
+/// screen's "Connect an AI agent" block, the Help menu's switch and the
+/// status bar show, and `ui.get` reports under `agents`. The host fills it
+/// in; it is read-only over the control channel: a request cannot turn the
+/// channel it came over off (that is the person's switch), and nothing can
+/// turn it on over a channel that is off. In the browser `available` is
+/// false.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AgentsStatus {
+    /// The host can let agents in (the desktop app).
+    pub available: bool,
+    /// The switch: agents are allowed, and the window listens.
+    pub allowed: bool,
+    /// Turned on by `--control PORT` on the command line.
+    pub forced: bool,
+    /// The port it listens on, while it does.
+    pub port: Option<u16>,
+    /// The clients connected now (an MCP bridge counts while it is heard
+    /// from, or until it says goodbye).
+    pub connected: usize,
+    /// Who they are and what they did last.
+    pub clients: Vec<AgentClient>,
+    /// The folder agents may read and write files in: the one chosen
+    /// with Change… (by default `Documents/3DCraft`), absolute; while the
+    /// switch is on and the command line gave no roots.
+    pub work_folder: Option<String>,
+    /// The command line gave the roots (`--automation-read-root`,
+    /// `--automation-write-root`): they win, Change… is off.
+    pub command_line: bool,
+    /// "Also the open document's folder" (on by default, remembered).
+    pub document_folder: bool,
+    /// The roots agents have now, in order (relative paths go beneath the
+    /// first), and where each came from.
+    pub roots: Vec<AgentRoot>,
+    /// The questions the window asks the person about agents, oldest
+    /// first: a client's working folder when it connects, a path outside
+    /// every root. Only the person's click answers them: nothing on the
+    /// control channel does (an agent approving its own access would
+    /// defeat them).
+    pub prompts: Vec<AgentPrompt>,
+    /// Why the switch could not be turned on, or what went wrong around it.
+    pub error: Option<String>,
+    /// The person's home folder, to write paths beneath it with `~`; not
+    /// reported.
+    #[serde(skip)]
+    pub home: Option<String>,
+}
+
+/// One client connected to the window.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AgentClient {
+    /// The name its MCP client gave (`Claude Code`), else the one it gave
+    /// when it authenticated (`MCP bridge (process 4242)`), else "control
+    /// connection".
+    pub name: String,
+    /// Since when, in milliseconds since the Unix epoch.
+    pub since_ms: u64,
+    /// The command it ran last (`feature.edit`), and when.
+    pub last_command: Option<String>,
+    pub last_ms: u64,
+    /// The folder it works in (its MCP client's working folder, which the
+    /// bridge sends), absolute.
+    pub cwd: Option<String>,
+}
+
+/// A question about an agent's access, waiting for the person.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AgentPrompt {
+    pub id: u64,
+    /// `connect` (the client's working folder), `read` or `write` (a path
+    /// a command wants, outside every root).
+    pub kind: String,
+    /// The client, by the name it gave.
+    pub client: String,
+    /// The full path: the folder for `connect`, the file otherwise.
+    pub path: String,
+    /// The folder: what "Always allow" grants (for `connect`, the path
+    /// itself); shown on a line of its own.
+    pub folder: String,
+    /// The file's name, shown on a line of its own (empty for `connect`).
+    pub file_name: String,
+    /// The command that asks (`file.save`), for `read` and `write`.
+    pub command: Option<String>,
+}
+
+/// The person's answer to an [`AgentPrompt`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PromptAnswer {
+    /// Allow the folder, remembered (connect), or allow this folder for
+    /// the agents from now on (a path).
+    Folder,
+    /// The folder for this run only (connect).
+    Session,
+    /// This one command only (a path).
+    Once,
+    /// No.
+    Deny,
+}
+
+/// One folder agents may read or write files in.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AgentRoot {
+    pub path: String,
+    /// `chosen` (the switch's folder), `allowed` (a folder the person
+    /// allowed, remembered), `session` (allowed for this run), `once` (for
+    /// one command), `document` (the open document's folder) or
+    /// `command line`.
+    pub from: String,
+    pub read: bool,
+    pub write: bool,
+}
+
 /// What the viewport draws besides the bodies' faces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
@@ -344,6 +590,9 @@ impl Default for Show {
 pub struct Dialogs {
     pub about: bool,
     pub shortcuts: bool,
+    /// The agents popover over the status bar's agents pill (2026-11-02):
+    /// the same panel as the start screen's "Connect an AI agent".
+    pub agents: bool,
 }
 
 /// The history player under the feature list: playing through the
@@ -461,6 +710,7 @@ impl Default for Panels {
             drawer: false,
             look_options: true,
             analysis_options: true,
+            side_tab: SideTab::Features,
         }
     }
 }
@@ -719,6 +969,9 @@ pub struct UiState {
     /// (`view.render`, `ui.screenshot`'s viewport): the viewport is not
     /// themed. `ui.set {"appearance": "dark"}` sets it.
     pub appearance: Appearance,
+    /// The side panel's filters, folds, hover and menu
+    /// (`shell/sidepanel`).
+    pub side_panel: SidePanelView,
 }
 
 /// Which colours the panels have (`theme::Palette`): the system's choice
@@ -1303,6 +1556,7 @@ impl UiState {
             // edit would undo the request.
             next.camera.auto_fit = false;
         }
+        next.side_panel.bounded();
         *self = next.validated()?;
         Ok(())
     }
@@ -1372,6 +1626,39 @@ mod tests {
         assert_eq!(Appearance::Dark.name(), "dark");
     }
 
+    /// The side panel's tab and view are camelCase JSON, set by a patch;
+    /// an unknown tab is refused with nothing changed, and what is too
+    /// long is cut.
+    #[test]
+    fn the_side_panel_reads_writes_and_bounds() {
+        let mut state = UiState::default();
+        let json = serde_json::to_value(&state).unwrap();
+        assert_eq!(json["panels"]["sideTab"], "features");
+        assert_eq!(json["sidePanel"]["checksOpen"], true);
+        assert_eq!(json["sidePanel"]["showConsumed"], false);
+        state
+            .apply_patch(&json!({"panels": {"sideTab": "variables"}, "sidePanel": {"hover": "F3", "unfolded": ["F8"]}}))
+            .unwrap();
+        assert_eq!(state.panels.side_tab, SideTab::Variables);
+        assert_eq!(state.side_panel.hover.as_deref(), Some("F3"));
+        assert!(state.side_panel.is_open("F8"));
+        // The rest of the panels as they were.
+        assert!(state.panels.tree);
+        let before = state.clone();
+        assert!(
+            state
+                .apply_patch(&json!({"panels": {"sideTab": "agentx"}}))
+                .is_err()
+        );
+        assert_eq!(state, before);
+        let long = "x".repeat(MAX_FILTER_CHARS * 2);
+        state.apply_patch(&json!({"sidePanel": {"filter": long, "menu": "y".repeat(MAX_SELECTION_CHARS + 1)}})).unwrap();
+        assert_eq!(state.side_panel.filter.chars().count(), MAX_FILTER_CHARS);
+        assert_eq!(state.side_panel.menu, None);
+        state.side_panel.set_open("F8", false);
+        assert!(!state.side_panel.is_open("F8"));
+    }
+
     #[test]
     fn the_state_round_trips_through_json() {
         let state = UiState {
@@ -1393,6 +1680,8 @@ mod tests {
                 // The popovers' options (2026-10-31).
                 look_options: false,
                 analysis_options: true,
+                // The side panel's tabs (2026-11-02).
+                side_tab: SideTab::Bodies,
             },
             selected_feature: Some("F3".to_string()),
             notice: "Step 2: the post".to_string(),
@@ -1461,6 +1750,8 @@ mod tests {
             dialogs: Dialogs {
                 about: true,
                 shortcuts: false,
+                // Added with the agents pill (2026-11-02).
+                agents: true,
             },
             // Added with the history player (2026-10-23).
             timeline: Playback {
@@ -1533,6 +1824,19 @@ mod tests {
             },
             // Added with the appearance (2026-11-02).
             appearance: Appearance::Dark,
+            // The side panel (2026-11-02).
+            side_panel: SidePanelView {
+                filter: "bore".to_string(),
+                variable_filter: "hole".to_string(),
+                body_filter: String::new(),
+                unfolded: vec!["F3".to_string(), "datums:F13".to_string()],
+                folded: vec!["Holes".to_string()],
+                checks_open: false,
+                show_consumed: true,
+                body: Some("F23".to_string()),
+                hover: Some("F3".to_string()),
+                menu: None,
+            },
         };
         let json = serde_json::to_value(&state).unwrap();
         assert_eq!(
@@ -1542,7 +1846,12 @@ mod tests {
                            "pitch": -20.0, "projection": "orthographic", "fovY": 45.0,
                            "autoFit": false},
                 "panels": {"tree": false, "status": true, "recovery": false, "treeWidth": 320.0,
-                           "drawer": true, "lookOptions": false, "analysisOptions": true},
+                           "drawer": true, "lookOptions": false, "analysisOptions": true,
+                           "sideTab": "bodies"},
+                "sidePanel": {"filter": "bore", "variableFilter": "hole", "bodyFilter": "",
+                              "unfolded": ["F3", "datums:F13"], "folded": ["Holes"],
+                              "checksOpen": false, "showConsumed": true, "body": "F23",
+                              "hover": "F3", "menu": null},
                 "selectedFeature": "F3",
                 "notice": "Step 2: the post",
                 "quality": {"chordal": 1e-4, "maxTriangles": 500_000, "angle": 20.0},
@@ -1566,7 +1875,7 @@ mod tests {
                            "quality": "fine",
                            "drawing": {"view": "top", "perspective": false, "dashed": true},
                            "width": "600 mm", "gap": "", "name": "box.dxf"},
-                "dialogs": {"about": true, "shortcuts": false},
+                "dialogs": {"about": true, "shortcuts": false, "agents": true},
                 "timeline": {"playing": true, "speed": 2.0, "loop": true, "orbit": false, "motion": true, "bounce": true, "collisions": true, "playQuality": "full"},
                 "look": {"mode": "studio", "environment": "workshop", "exposure": -0.5,
                          "rotation": 90.0, "ground": false, "ao": true, "shadows": false,

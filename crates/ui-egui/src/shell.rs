@@ -24,6 +24,7 @@ use craft3d_render::{Highlight, Section};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+pub mod agents;
 mod bake_hint;
 mod calm;
 mod controls;
@@ -41,6 +42,7 @@ mod popover;
 pub mod recent;
 mod report;
 mod selection;
+pub mod sidepanel;
 pub mod start;
 mod tabs;
 mod timeline;
@@ -75,6 +77,16 @@ pub const DEFAULT_VIEWPORT: [u32; 2] = [960, 640];
 /// [`crate::direct`]: there every frame is the viewport's full size, with
 /// multisampling, and nothing is read back.)
 pub const MOVING_DIVISOR: u32 = 2;
+/// What the status bar says when the viewport leaves the window's graphics
+/// device after an error the device reported ([`Shell::leave_gpu`]).
+pub const LEFT_GPU_NOTICE: &str = "The graphics card reported an error; the viewport now draws without it (slower). Reload the page to try again.";
+
+/// How long after the camera last moved the studio look stays light where
+/// the host asked for that ([`Shell::interacting_light`], the browser), in
+/// seconds of input time: long enough to bridge the gaps between the
+/// wheel's notches and a drag's pauses, short enough that the full look
+/// follows as soon as the hand rests.
+pub const STILL_DELAY: f64 = 0.3;
 /// Supersampling per axis of the image at rest, when the budget allows.
 pub const REST_SSAA: u32 = 2;
 /// Most samples (pixels times supersampling squared) in one image. The
@@ -616,6 +628,9 @@ fn epoch_now() -> Option<u64> {
 
 pub struct Shell {
     pub state: UiState,
+    /// The side panel's memory: what it read, what it asked for, what is
+    /// being typed (`shell/sidepanel`).
+    side: sidepanel::SideMemory,
     /// A frame-exact recording keeps the clock (`record.rs`): nothing
     /// measured on the wall clock is drawn (a picture's milliseconds in
     /// the status bar), so the same requests give the same window.
@@ -628,6 +643,23 @@ pub struct Shell {
     /// by frame): a playing motion is then drawn at the full quality, not
     /// lighter ([`Self::playing_light`]).
     recording: bool,
+    /// The studio look is drawn lighter while the camera moves
+    /// ([`Self::interacting_light`]): set by the host, on in the browser,
+    /// whose one thread and integrated GPUs cannot draw the full look at
+    /// the rate a turn of the camera asks for.
+    light_while_moving: bool,
+    /// The input time of the last frame in which the camera moved (a drag,
+    /// the wheel, a pinch, a fly to a view, the player's orbit), while the
+    /// look is drawn light for it.
+    moved_at: Option<f64>,
+    /// The camera moved within [`STILL_DELAY`] of this frame
+    /// ([`Self::interacting_light`]).
+    interacting: bool,
+    /// While [`Self::interacting_light`], the direct path draws the
+    /// viewport this many times smaller per side, stretched over it (1:
+    /// at its full size). Set by the host with
+    /// [`Self::set_light_while_moving`].
+    moving_divisor: u32,
     pub tokens: Tokens,
     pub last_command: Option<CommandReport>,
     /// The work indicator and the texts of the status bar, held so they
@@ -676,6 +708,8 @@ pub struct Shell {
     direct: Option<Direct>,
     /// Why the direct path is not used although the GPU was wanted.
     direct_fallback: Option<String>,
+    /// Why the viewport left the window's device ([`Shell::leave_gpu`]).
+    left_gpu: Option<String>,
     /// True when the picture on screen is the direct path's texture.
     direct_shown: bool,
     stats: Option<RenderStats>,
@@ -858,6 +892,8 @@ pub struct Shell {
     /// The Parameters tab: its list, the field being changed, the commit
     /// waiting for the host (`shell/params.rs`).
     params: params::ParamForm,
+    /// Whether AI agents may drive the window (`shell/agents.rs`).
+    agents: agents::AgentsMemory,
     /// The Help menu, the recent files and the start screen.
     help: help::HelpMemory,
     recent: recent::RecentMemory,
@@ -1067,7 +1103,7 @@ impl Shell {
         // While a motion plays the window draws lighter; still pictures,
         // captures and recordings never come through here lightened
         // ([`Self::playing_light`]).
-        if self.playing_light() {
+        if self.playing_light() || self.interacting_light() {
             studio.look = player::light_look(studio.look);
         }
         Some(studio)
@@ -1168,9 +1204,14 @@ impl Shell {
     pub fn with_renderer(choice: RendererChoice) -> Self {
         Self {
             state: UiState::default(),
+            side: sidepanel::SideMemory::default(),
             frame_exact: false,
             capturing: false,
             recording: false,
+            light_while_moving: false,
+            moved_at: None,
+            interacting: false,
+            moving_divisor: 1,
             tokens: Tokens::default(),
             last_command: None,
             calm: Calm::default(),
@@ -1195,6 +1236,7 @@ impl Shell {
             shown_report: None,
             direct: None,
             direct_fallback: None,
+            left_gpu: None,
             direct_shown: false,
             stats: None,
             renders: 0,
@@ -1279,6 +1321,7 @@ impl Shell {
             dialogs: dialogs::Dialogs::default(),
             tree_view: None,
             params: params::ParamForm::default(),
+            agents: agents::AgentsMemory::default(),
             help: help::HelpMemory::default(),
             recent: recent::RecentMemory::default(),
             start: start::StartMemory::default(),
@@ -1457,6 +1500,68 @@ impl Shell {
             && !self.recording
     }
 
+    /// Draw the studio look lighter while the camera moves
+    /// ([`Self::interacting_light`]); the browser's host turns it on.
+    pub fn set_light_while_moving(&mut self, light: bool) {
+        self.light_while_moving = light;
+        if !light {
+            self.moving_divisor = 1;
+            self.interacting = false;
+        }
+    }
+
+    /// While the camera moves ([`Self::interacting_light`]) the direct
+    /// path draws the viewport `divisor` times smaller per side (1 to 4),
+    /// stretched over it, its lines thinner by as much so they look the
+    /// same; at rest it is drawn at its full size again. Only with
+    /// [`Self::set_light_while_moving`] on.
+    pub fn set_moving_divisor(&mut self, divisor: u32) {
+        self.moving_divisor = divisor.clamp(1, 4);
+    }
+
+    /// Whether the studio look is drawn lighter while the camera moves
+    /// ([`Self::set_light_while_moving`]).
+    pub fn light_while_moving(&self) -> bool {
+        self.light_while_moving
+    }
+
+    /// True while the viewport draws lighter because the camera moves (a
+    /// drag, the wheel, a pinch, a fly to a view, the player's orbit) or
+    /// moved less than [`STILL_DELAY`] ago, where the host asked for it
+    /// ([`Self::set_light_while_moving`], the browser): the same light look
+    /// as a playing motion (`player::light_look`: one frame, no depth of
+    /// field, no occlusion, no screen-space reflections, no contact or
+    /// specular shadows). Once the camera rests the full look is drawn and
+    /// settles as before. Never for what is recorded or captured.
+    pub fn interacting_light(&self) -> bool {
+        self.interacting && !self.exact_pictures() && !self.recording
+    }
+
+    /// Notes whether the camera `moving` in this frame, at input time
+    /// `now`, and returns how long the light look still lasts when the
+    /// camera stands still, to look again then.
+    fn note_interaction(&mut self, moving: bool, now: f64) -> Option<f64> {
+        if !self.light_while_moving {
+            self.interacting = false;
+            self.moved_at = None;
+            return None;
+        }
+        if moving && now.is_finite() {
+            self.moved_at = Some(now);
+        }
+        let left = self.moved_at.and_then(|at| {
+            let since = now - at;
+            // A clock that went back (another context) ends it too.
+            (since.is_finite() && (0.0..STILL_DELAY).contains(&since))
+                .then_some(STILL_DELAY - since)
+        });
+        if left.is_none() {
+            self.moved_at = None;
+        }
+        self.interacting = left.is_some();
+        left.filter(|_| !moving)
+    }
+
     /// True while what the viewport draws is recorded or captured (a
     /// frame-exact recording, a picture of the window): a playing motion
     /// then shows each moment exactly (`Session::set_motion_live` off, the
@@ -1507,12 +1612,31 @@ impl Shell {
     /// host that learns of a failure of the device the shell cannot see
     /// itself (the browser reports errors of WebGPU later, to a handler
     /// of the page's).
+    ///
+    /// When the viewport was drawn on that device, the status bar says so
+    /// once (the error's first line with it), and `ui.get`'s
+    /// `renderer.leftGpu` keeps why: a silent, slower fallback hid a
+    /// shader the browser refused (docs/design/rendering.md › *The
+    /// browser*, 2026-11-02).
     pub fn leave_gpu(&mut self, why: String) {
         if self.direct.take().is_some() {
+            let first = why.lines().next().unwrap_or_default();
+            self.last_command = Some(CommandReport {
+                label: "graphics".to_string(),
+                ok: false,
+                text: format!("{LEFT_GPU_NOTICE} ({first})"),
+            });
+            self.left_gpu = Some(why.clone());
             self.direct_fallback = Some(why);
             self.direct_shown = false;
             self.shown_report = None;
         }
+    }
+
+    /// Why the viewport left the window's graphics device
+    /// ([`Self::leave_gpu`]), when it did.
+    pub fn left_gpu(&self) -> Option<&str> {
+        self.left_gpu.as_deref()
     }
 
     /// The quality the viewport asks the engine for: the display rule
@@ -2073,6 +2197,7 @@ impl Shell {
         self.mark_zoomable(scene.as_deref());
         self.assertion_rows = session.assertion_states();
         self.sync_params(session, scene.as_ref());
+        self.sync_side(session, scene.as_deref());
         self.sync_tabs(session);
         self.note_recent(session);
         self.shown_status = session.document_status();
@@ -2369,6 +2494,9 @@ impl Shell {
     }
 
     fn ui_with(&mut self, ui: &mut egui::Ui, mut session: Option<&mut Session>) {
+        // Worked out again where the viewport is drawn this frame; a frame
+        // without it (the start screen) leaves no stale light look.
+        self.interacting = false;
         // Set again where the drawer is drawn.
         self.drawer_sliding = false;
         // The viewport may show a provisional moment of a playing motion,
@@ -2541,6 +2669,21 @@ impl Shell {
         if self.motion_settling() {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(33));
+        }
+        // What the side panel asked for: edits, each one undo step.
+        if let Some(session) = session.as_deref_mut()
+            && self.apply_side_requests(session)
+        {
+            self.sync(session);
+            ui.ctx().request_repaint();
+        }
+        // A tab chosen since the last sync that shows what was not read.
+        if let Some(session) = session.as_deref_mut()
+            && self.side_stale()
+        {
+            let scene = self.shown_scene.clone();
+            self.sync_side(session, scene.as_deref());
+            ui.ctx().request_repaint();
         }
         // What the mouse selected, now that the session is here.
         if let Some(session) = session
@@ -2988,7 +3131,12 @@ impl Shell {
                 }
             })
             .collect();
-        let available = ui.available_width();
+        // The agents pill at the far left, always (`shell/agents.rs`): its
+        // room, at most two fifths of the bar, is kept out of what the
+        // items get.
+        let pill_most = (ui.available_width() * 0.4).max(80.0);
+        let pill_width = self.agents_pill_width(ui, pill_most);
+        let available = (ui.available_width() - pill_width - tokens.status_gap).max(0.0);
         // "Copy details" after the answer of a command that failed
         // (`shell/report.rs`): its room is kept out of what the items get.
         let copy = self
@@ -3016,6 +3164,8 @@ impl Shell {
         let mut copy_rect = None;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
+            self.agents_pill(ui, pill_most);
+            ui.add_space(tokens.status_gap);
             let mut used = 0.0;
             let mut first = true;
             let mut copy_button = |ui: &mut egui::Ui, used: &mut f32| {
@@ -3799,7 +3949,9 @@ impl Shell {
         let size = [side(rect.width()), side(rect.height())];
         // A window being resized changes size every frame: those frames are
         // drawn like a moving camera, and the sharp image follows.
-        let resized = size != self.size && self.texture.is_some();
+        // (On the direct path there is no texture of the CPU's; a picture
+        // it showed counts the same.)
+        let resized = size != self.size && (self.texture.is_some() || self.direct_shown);
         if size != self.size {
             self.size = size;
             // The model was framed for another shape of viewport.
@@ -3817,6 +3969,12 @@ impl Shell {
         let turning = self.advance_turn(ui, scene);
         let moving =
             self.pointer(ui, &response, rect, scene) || resized || turning || self.orbiting;
+        if let Some(left) = self.note_interaction(moving, ui.input(|i| i.time)) {
+            // Back to the full look once the camera has rested.
+            ui.ctx().request_repaint_after(
+                std::time::Duration::try_from_secs_f64(left).unwrap_or_default(),
+            );
+        }
         let [width, height] = self.size;
         let pixel = |at: egui::Pos2| {
             let across = |from: f32, to: f32, at: f32, pixels: u32| {
@@ -3911,7 +4069,7 @@ impl Shell {
             look: self.state.look.clone(),
             analysis: self.analysis_serial,
             look_ready: self.look_ready(),
-            light: self.playing_light(),
+            light: self.playing_light() || self.interacting_light(),
             tokens,
         };
         // The environment is being prepared on a thread, which cannot
@@ -4356,6 +4514,13 @@ impl Shell {
     fn direct_frame(&mut self, scene: Option<&Scene>, key: &FrameKey) -> bool {
         let studio = self.studio();
         let marks = self.frame_marks(scene, key);
+        // Smaller while the camera moves, where the host asked for it.
+        let divisor = if self.interacting_light() && studio.is_some() {
+            self.moving_divisor.max(1)
+        } else {
+            1
+        };
+        let (size, _) = moving_size(key.size, self.pixels_per_point, divisor);
         let Some(direct) = &mut self.direct else {
             return false;
         };
@@ -4364,10 +4529,13 @@ impl Shell {
         direct.set_studio(studio);
         direct.set_analysis(self.analysis_view.clone());
         direct.set_marks(marks);
+        // The lines stay uploaded at the viewport's pixels per point and
+        // are drawn thinner in the smaller picture.
+        direct.set_ink(1.0 / divisor as f32);
         let outcome = direct.frame(
             scene,
             &key.camera,
-            key.size,
+            size,
             key.selected.as_deref(),
             &key.tokens,
             self.pixels_per_point,
@@ -4542,6 +4710,24 @@ impl Shell {
         self.overlay_density = None;
         self.render_problem = None;
     }
+}
+
+/// The size the direct path draws a viewport of `size` at, `divisor`
+/// times smaller per side (at least one pixel), and the pixels per point
+/// of that smaller picture. The lines stay uploaded at the viewport's
+/// pixels per point and are drawn `1 / divisor` as wide
+/// (`Direct::set_ink`), so stretched over the viewport they look as wide
+/// as at its full size.
+pub fn moving_size(size: [u32; 2], pixels_per_point: f32, divisor: u32) -> ([u32; 2], f32) {
+    if divisor <= 1 {
+        return (size, pixels_per_point);
+    }
+    let side = |pixels: u32| pixels.div_ceil(divisor).max(1);
+    let [width, height] = size;
+    (
+        [side(width), side(height)],
+        pixels_per_point / divisor as f32,
+    )
 }
 
 /// How to render the image for a viewport of `size` pixels on the CPU:

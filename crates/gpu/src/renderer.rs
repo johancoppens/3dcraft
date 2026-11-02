@@ -2879,4 +2879,218 @@ pub(crate) mod template_tests {
             }
         }
     }
+
+    /// The bits of the constant expression `handle` of `arena` (literal
+    /// integers, a splat or composition of them, a named constant), or
+    /// `None` when it is not such a constant.
+    fn constant_bits(
+        module: &naga::Module,
+        arena: &naga::Arena<naga::Expression>,
+        handle: naga::Handle<naga::Expression>,
+        depth: u32,
+    ) -> Option<Vec<u32>> {
+        if depth > 16 {
+            return None;
+        }
+        match arena.try_get(handle).ok()? {
+            naga::Expression::Literal(naga::Literal::U32(x)) => Some(vec![*x]),
+            naga::Expression::Literal(naga::Literal::I32(x)) => Some(vec![*x as u32]),
+            naga::Expression::Literal(naga::Literal::AbstractInt(x)) => Some(vec![*x as u32]),
+            naga::Expression::Splat { size, value } => {
+                let one = constant_bits(module, arena, *value, depth + 1)?;
+                Some(one.repeat(*size as usize))
+            }
+            naga::Expression::Compose { components, .. } => {
+                let mut bits = Vec::new();
+                for component in components {
+                    bits.extend(constant_bits(module, arena, *component, depth + 1)?);
+                }
+                Some(bits)
+            }
+            naga::Expression::Constant(constant) => {
+                let init = module.constants.try_get(*constant).ok()?.init;
+                constant_bits(module, &module.global_expressions, init, depth + 1)
+            }
+            _ => None,
+        }
+    }
+
+    /// The places of `module` where a constant holds an infinity or a NaN:
+    /// a float literal (what naga's constant evaluation folds), or a
+    /// bitcast to floats of constant bits (which naga leaves as it is in
+    /// a function), over the module's constant expressions and every
+    /// function's and entry point's own.
+    pub(crate) fn non_finite_constants(module: &naga::Module) -> Vec<String> {
+        let mut found = Vec::new();
+        let mut scan = |place: &str, arena: &naga::Arena<naga::Expression>| {
+            for (handle, expression) in arena.iter() {
+                let bad = match expression {
+                    naga::Expression::Literal(naga::Literal::F32(x)) => !x.is_finite(),
+                    naga::Expression::Literal(
+                        naga::Literal::F64(x) | naga::Literal::AbstractFloat(x),
+                    ) => !x.is_finite(),
+                    naga::Expression::As {
+                        expr,
+                        kind: naga::ScalarKind::Float,
+                        convert: None,
+                    } => constant_bits(module, arena, *expr, 0)
+                        .is_some_and(|bits| bits.iter().any(|b| !f32::from_bits(*b).is_finite())),
+                    _ => false,
+                };
+                if bad {
+                    found.push(format!("{place}: {expression:?} ({handle:?})"));
+                }
+            }
+        };
+        scan("module constants", &module.global_expressions);
+        for (_, function) in module.functions.iter() {
+            let name = function.name.clone().unwrap_or_default();
+            scan(&format!("fn {name}"), &function.expressions);
+        }
+        for entry in &module.entry_points {
+            scan(
+                &format!("entry point {}", entry.name),
+                &entry.function.expressions,
+            );
+        }
+        found
+    }
+
+    /// Every WGSL module the GPU crate makes: each composition of the
+    /// scene shader in each variant, the overlay's (both depth variants),
+    /// the blend (both), and the shaders that stand alone. Every `.wgsl`
+    /// file of the crate is in one of them (checked by name).
+    fn every_module_source() -> Vec<(String, String)> {
+        let mut sources = Vec::new();
+        for (name, multisampled, more) in compositions() {
+            for fragment_depth in [false, true] {
+                sources.push((
+                    format!("{name}, fragment depth {fragment_depth}"),
+                    scene_source_for(fragment_depth, multisampled, multisampled, &more),
+                ));
+            }
+        }
+        for samples in [1, 4] {
+            let overlay = crate::onscreen::overlay_sources(samples);
+            sources.push((format!("lines, {samples}"), overlay.lines));
+            sources.push((format!("fills, {samples}"), overlay.fills));
+            sources.push((format!("distance, {samples}"), overlay.distance));
+            sources.push((format!("depth_read, {samples}"), overlay.depth_read));
+        }
+        for multisampled in [false, true] {
+            sources.push((
+                format!("blend, {multisampled}"),
+                crate::peel::blend_source(multisampled),
+            ));
+        }
+        for (name, source) in [
+            ("accumulate", include_str!("accumulate.wgsl")),
+            ("edge_tiles", include_str!("edge_tiles.wgsl")),
+            ("present", include_str!("present.wgsl")),
+            ("resolve", include_str!("resolve.wgsl")),
+        ] {
+            sources.push((name.to_string(), source.to_string()));
+        }
+        sources
+    }
+
+    /// No module holds a constant infinity or NaN: Chrome's WGSL compiler
+    /// (Tint) refuses one (`value inf cannot be represented as 'f32'`) and
+    /// the whole module with it, where naga takes it. 2026-11-02: the
+    /// studio shader's `bitcast<f32>` of the bits of infinity made the
+    /// browser's viewport fall back to the CPU renderer, a third of a
+    /// second a frame. Parsed with naga, so a named constant, a vector and
+    /// a composition of templates are seen as the device sees them; the
+    /// text scan of `studio.rs` is a second net.
+    #[test]
+    fn no_module_holds_a_constant_infinity() {
+        let sources = every_module_source();
+        // Every file is in a module checked here.
+        let covered = [
+            "scene",
+            "studio",
+            "polish",
+            "peel",
+            "peel_samples",
+            "cut",
+            "cut_flat",
+            "cut_samples",
+            "depth_test",
+            "lines",
+            "fills",
+            "distance",
+            "depth_read",
+            "blend",
+            "accumulate",
+            "edge_tiles",
+            "present",
+            "resolve",
+        ];
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|e| e == "wgsl") {
+                let stem = path.file_stem().unwrap().to_string_lossy().to_string();
+                assert!(
+                    covered.contains(&stem.as_str()),
+                    "{stem}.wgsl is in no module this test checks: add it to every_module_source"
+                );
+            }
+        }
+        for (label, source) in &sources {
+            let module = naga::front::wgsl::parse_str(source)
+                .unwrap_or_else(|e| panic!("{label}: {}", e.emit_to_string(source)));
+            let found = non_finite_constants(&module);
+            assert!(
+                found.is_empty(),
+                "{label}: constant infinity or NaN: {found:?}"
+            );
+        }
+        assert!(sources.len() >= 26, "{}", sources.len());
+    }
+
+    /// The check sees a constant infinity made in each way a shader could:
+    /// a bitcast in a function, a named constant, a vector, a NaN in a
+    /// named vector.
+    #[test]
+    fn the_infinity_check_sees_every_way_of_making_one() {
+        let shaders = [
+            (
+                "in a function",
+                "fn f() -> f32 { return bitcast<f32>(0x7f800000u); }",
+            ),
+            (
+                "a named constant's bits",
+                "const BITS: u32 = 0x7f800000u;\nfn f() -> f32 { return bitcast<f32>(BITS); }",
+            ),
+            (
+                "a vector",
+                "fn f() -> vec3<f32> { return bitcast<vec3<f32>>(vec3<u32>(0xff800000u)); }",
+            ),
+            (
+                "a NaN",
+                "const N: vec2<u32> = vec2<u32>(0x7fc00000u, 0u);\nfn f() -> vec2<f32> { return bitcast<vec2<f32>>(N); }",
+            ),
+        ];
+        for (how, source) in shaders {
+            let module = naga::front::wgsl::parse_str(source)
+                .unwrap_or_else(|e| panic!("{how}: {}", e.emit_to_string(source)));
+            assert!(
+                !non_finite_constants(&module).is_empty(),
+                "{how}: not seen in {module:#?}"
+            );
+        }
+        // naga refuses a bitcast in a `const` declaration itself (not a
+        // constant expression to it), so a constant infinity reaches a
+        // module only through the ways above.
+        assert!(
+            naga::front::wgsl::parse_str("const NONE: f32 = bitcast<f32>(0x7f800000u);").is_err()
+        );
+        // And the largest finite f32 is not one.
+        let module = naga::front::wgsl::parse_str(
+            "const MOST: f32 = 3.4028234663852886e38;\nfn f() -> f32 { return MOST; }",
+        )
+        .unwrap();
+        assert!(non_finite_constants(&module).is_empty());
+    }
 }

@@ -2197,6 +2197,45 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
     use super::*;
 
+    /// No shader makes an infinity or a NaN out of constant bits: Chrome's
+    /// WGSL compiler (Tint) refuses `bitcast<f32>(0x7f800000u)` as a
+    /// constant expression, and the browser's whole studio shader with it
+    /// (2026-11-02: the viewport fell back to the CPU renderer, a third of
+    /// a second a frame); naga takes it, so no desktop test saw it.
+    #[test]
+    fn no_shader_bitcasts_constant_bits_to_an_infinity() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|e| e != "wgsl") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).unwrap();
+            checked += 1;
+            for (at, _) in source.match_indices("bitcast<f32>(") {
+                let arg: String = source[at + "bitcast<f32>(".len()..]
+                    .chars()
+                    .take_while(|c| *c != ')')
+                    .collect();
+                let arg = arg.trim().trim_end_matches('u').to_lowercase();
+                if let Some(hex) = arg.strip_prefix("0x") {
+                    let bits = u32::from_str_radix(hex, 16).unwrap_or(0);
+                    assert!(
+                        f32::from_bits(bits).is_finite(),
+                        "{}: bitcast<f32>({arg}) is not a finite constant",
+                        path.display()
+                    );
+                }
+            }
+        }
+        assert!(
+            checked >= 5,
+            "the shaders were not found in {}",
+            dir.display()
+        );
+    }
+
     /// The numbers the shaders hold as constants are the CPU's.
     #[test]
     fn the_shaders_constants_are_the_cpus() {

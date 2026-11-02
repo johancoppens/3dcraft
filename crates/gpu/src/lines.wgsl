@@ -39,7 +39,8 @@ struct Lines {
     size: vec4<f32>,
     // x: the opacity of what is hidden, 0 to 1. y: the grain of the depth
     // test, in pixels (`craft3d_render::SUBPIXEL_GRAIN`). z: the side of a
-    // tile of the density, in pixels.
+    // tile of the density, in pixels. w: the widths' scale (`EdgeLook::ink`),
+    // applied after their least width.
     look: vec4<f32>,
     // xyz: the eye, relative to the origin the line positions are stored
     // against.
@@ -200,8 +201,10 @@ fn quad(in: VertexIn, ink: bool) -> VertexOut {
         d = vec2<f32>(1.0, 0.0);
     }
     let n = vec2<f32>(-d.y, d.x);
-    let half = clamp(in.width * 0.5, 0.35, 64.0);
-    let outline_half = clamp(in.outline_width * 0.5, 0.35, 64.0);
+    // The least width in the viewport's own pixels, then scaled to the
+    // picture's (`EdgeLook::ink`: 1 unless it is drawn smaller).
+    let half = clamp(in.width * 0.5, 0.35, 64.0) * lines.look.w;
+    let outline_half = clamp(in.outline_width * 0.5, 0.35, 64.0) * lines.look.w;
     var widest = half;
     if edge && !ink {
         widest = max(half, outline_half);

@@ -454,7 +454,8 @@ fn the_assertions_heading_is_there_with_a_hint_while_there_are_none() {
     let mut window = Window::new();
     window.frame(&mut shell, &mut session, 0.0, Vec::new());
     let drawn = window.frame(&mut shell, &mut session, 0.02, Vec::new());
-    assert!(drawn.iter().any(|t| t == "Assertions"), "{drawn:?}");
+    // Called Checks since the side panel (2026-11-02).
+    assert!(drawn.iter().any(|t| t == "Checks"), "{drawn:?}");
     assert!(drawn.iter().any(|t| t == NO_ASSERTIONS_HINT), "{drawn:?}");
     // With no features yet too.
     let mut empty = Session::new(Workspace::none());
@@ -473,7 +474,8 @@ fn the_assertions_heading_is_there_with_a_hint_while_there_are_none() {
     let mut window = Window::new();
     window.frame(&mut shell, &mut session, 0.0, Vec::new());
     let drawn = window.frame(&mut shell, &mut session, 0.02, Vec::new());
-    assert!(drawn.iter().any(|t| t == "Assertions"), "{drawn:?}");
+    // Called Checks since the side panel (2026-11-02).
+    assert!(drawn.iter().any(|t| t == "Checks"), "{drawn:?}");
     assert!(drawn.iter().any(|t| t == "Big enough"), "{drawn:?}");
     assert!(!drawn.iter().any(|t| t == NO_ASSERTIONS_HINT), "{drawn:?}");
 }

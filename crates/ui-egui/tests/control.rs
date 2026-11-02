@@ -254,7 +254,7 @@ fn ui_get_reports_the_state_the_scene_and_the_tree() {
     );
     assert_eq!(
         empty["viewport"],
-        json!({"width": DEFAULT_VIEWPORT[0], "height": DEFAULT_VIEWPORT[1], "pixelsPerPoint": 1.0})
+        json!({"width": DEFAULT_VIEWPORT[0], "height": DEFAULT_VIEWPORT[1], "pixelsPerPoint": 1.0, "interactingLight": false})
     );
     assert_eq!(empty["document"], Value::Null);
     assert_eq!(empty["scene"], Value::Null);
@@ -330,7 +330,7 @@ fn ui_set_changes_the_state_or_nothing() {
     assert_eq!(
         set["state"]["panels"],
         json!({"tree": false, "status": true, "recovery": true, "treeWidth": 260.0, "drawer": false,
-               "lookOptions": true, "analysisOptions": true})
+               "lookOptions": true, "analysisOptions": true, "sideTab": "features"})
     );
     assert_eq!(set["state"]["notice"], "Step 1");
     assert_eq!(set["state"]["selectedFeature"], "F2");

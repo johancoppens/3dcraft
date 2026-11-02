@@ -520,7 +520,14 @@ impl Page {
         // the depth buffer (the lines' distances, see-through bodies, the
         // section's layers) sample it with the nearest filter, which
         // OpenGL ES 3.0 needs of a depth texture (`craft3d_gpu::peel`).
-        let shell = Shell::threaded_with_gpu(choice, state);
+        let mut shell = Shell::threaded_with_gpu(choice, state);
+        // The studio look drawn light while the camera moves: the full look
+        // at the page's frame rate stutters on a laptop's GPU
+        // (`Shell::interacting_light`); it settles once the camera rests.
+        // `?fullmove` draws it in full, `?movescale=N` N times smaller per
+        // side meanwhile (2 unless given).
+        shell.set_light_while_moving(!flags.full_move);
+        shell.set_moving_divisor(flags.move_scale.unwrap_or(2));
         log::info!("viewport renderer: {}", shell.renderer_report().describe());
         let mut host = WebHost::new(shell);
         // The long work a piece per frame: the page's one thread draws

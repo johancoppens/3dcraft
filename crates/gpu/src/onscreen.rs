@@ -137,6 +137,12 @@ pub struct EdgeLook {
     /// ink, `w` the line's width and `c` the blur radius at its distance
     /// (`craft3d_ui_egui::viewport::EdgeBlur`, the oracle).
     pub soft: bool,
+    /// The lines' widths in pixels of the picture are their uploaded
+    /// widths times this (0 < ink <= 1; 1 normally), applied after their
+    /// least width: a picture drawn smaller than the viewport and
+    /// stretched over it (`craft3d_ui_egui::moving_size`) keeps its lines
+    /// as wide as at the full size without uploading them again.
+    pub ink: f64,
 }
 
 impl EdgeLook {
@@ -152,11 +158,21 @@ impl EdgeLook {
         fade_floor: 1.0,
         tile: 16,
         soft: false,
+        ink: 1.0,
     };
 
     /// The side of a tile, within what the passes take.
     fn tile(&self) -> u32 {
         self.tile.clamp(4, 64)
+    }
+
+    /// [`Self::ink`], 1 for one that is not a number in (0, 1].
+    fn ink_scale(&self) -> f64 {
+        if self.ink > 0.0 && self.ink <= 1.0 {
+            self.ink
+        } else {
+            1.0
+        }
     }
 }
 
@@ -3154,7 +3170,7 @@ fn lines_uniforms(
         f64::from(overlay.hidden_opacity) / 255.0,
         craft3d_render::SUBPIXEL_GRAIN,
         f64::from(edges.tile()),
-        0.0,
+        edges.ink_scale(),
         eye.x,
         eye.y,
         eye.z,

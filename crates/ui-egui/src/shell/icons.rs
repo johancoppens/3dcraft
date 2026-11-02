@@ -45,6 +45,9 @@ pub enum Icon {
     Orbit,
     /// Zoom to a feature (a row of the feature list): a target, ⌖.
     ZoomTo,
+    /// An AI agent (the status bar's agents pill): a four-pointed spark
+    /// and a small one beside it.
+    Agent,
 }
 
 /// Paints `icon` centred in `place` (its shorter side is the icon's).
@@ -210,6 +213,33 @@ pub fn paint(painter: &egui::Painter, icon: Icon, place: Rect, ink: Color32, tok
         ],
         Icon::StepBack => vec![bar(-0.55), triangle(-0.45, -1.0, 1.0)],
         Icon::Play => vec![triangle(0.75, 1.0, 1.3)],
+        Icon::Agent => {
+            // A spark: four points with waisted sides, filled, from convex
+            // pieces (a filled path must be convex): a small diamond in
+            // the middle and a triangle to each point.
+            let spark = |cx: f32, cy: f32, r: f32| {
+                let w = r * 0.28;
+                let waist = [
+                    p(cx + w, cy - w),
+                    p(cx + w, cy + w),
+                    p(cx - w, cy + w),
+                    p(cx - w, cy - w),
+                ];
+                let tips = [p(cx, cy - r), p(cx + r, cy), p(cx, cy + r), p(cx - r, cy)];
+                let mut shapes = vec![Shape::convex_polygon(waist.to_vec(), ink, Stroke::NONE)];
+                // Each tip between the two waist points beside it.
+                let sides = [(3, 0), (0, 1), (1, 2), (2, 3)];
+                for (tip, (a, b)) in tips.iter().zip(sides) {
+                    if let (Some(a), Some(b)) = (waist.get(a), waist.get(b)) {
+                        shapes.push(Shape::convex_polygon(vec![*tip, *b, *a], ink, Stroke::NONE));
+                    }
+                }
+                shapes
+            };
+            let mut shapes = spark(-0.15, 0.15, 0.85);
+            shapes.extend(spark(0.62, -0.62, 0.38));
+            shapes
+        }
         Icon::Pause => vec![
             Shape::rect_filled(Rect::from_min_max(p(-0.55, -0.7), p(-0.15, 0.7)), 0.0, ink),
             Shape::rect_filled(Rect::from_min_max(p(0.15, -0.7), p(0.55, 0.7)), 0.0, ink),

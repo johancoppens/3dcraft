@@ -323,10 +323,20 @@ fn split_sum(nv: f32, r: f32) -> vec2<f32> {
     return top + (bottom - top) * fy;
 }
 
+// What `shadow_at` reads outside the map: nothing in the way. The CPU's
+// `ShadowMap::at` returns infinity; the largest finite `f32` compares the
+// same against any distance (`s < d - bias`, `s >= d - bias` are all it is
+// used for). Not infinity itself: a constant infinity is not a WGSL value
+// (Chrome's compiler, Tint, refuses the bits of infinity bitcast to f32 as a
+// constant, and with it the whole studio shader, so the browser's viewport
+// fell back to the CPU renderer; naga takes it), and WGSL lets a compiler
+// assume no infinities in arithmetic.
+const NO_BLOCKER: f32 = 3.4028234663852886e38;
+
 // ShadowMap::at.
 fn shadow_at(x: f32, y: f32) -> f32 {
     if !(x >= 0.0 && y >= 0.0 && x < SHADOW_SIZE && y < SHADOW_SIZE) {
-        return bitcast<f32>(0x7f800000u);
+        return NO_BLOCKER;
     }
     return bitcast<f32>(textureLoad(shadow_map, vec2<u32>(u32(floor(x)), u32(floor(y))), 0).r);
 }

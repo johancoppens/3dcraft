@@ -1434,7 +1434,7 @@ fn upstream_failure() -> Session {
 }
 
 #[test]
-fn the_tree_shows_failed_suppressed_and_rolled_back_features_and_follows_a_cause() {
+fn the_tree_shows_failed_suppressed_and_rolled_back_features_and_dims_what_a_failure_skips() {
     let mut session = upstream_failure();
     let inspected = run(&mut session, "document.inspect", json!({}));
     let mut shell = Shell::new();
@@ -1513,14 +1513,32 @@ fn the_tree_shows_failed_suppressed_and_rolled_back_features_and_follows_a_cause
     );
     assert!(features[3]["error"].as_str().unwrap().contains("Plate"));
 
-    // The one link in the tree is under the hole, and a click on it
-    // selects the plate.
-    let links = shell.cause_hits().to_vec();
-    assert_eq!(links.len(), 1, "{links:?}");
-    let (row, cause, rect) = &links[0];
-    assert_eq!((row.as_str(), cause.as_str()), ("F4", "F2"));
-    assert!(rect.right() < shell.viewport_rect().unwrap().left());
-    let at = rect.center();
+    // The side panel (2026-11-02, the approved design: "a failure is a
+    // reason, not a cascade"): the hole, made from the plate, is not
+    // rebuilt and is dimmed, with no link of its own; the plate is the
+    // failed row, with Show where. A click on the plate's row selects it.
+    // (Before, a "caused by" link under the hole led there: replaced with
+    // the dimming, which `side_panel_tabs.rs` pins on the housing.)
+    use craft3d_ui_egui::shell::sidepanel::features::{failed_itself, not_rebuilt};
+    assert!(shell.cause_hits().is_empty());
+    assert!(not_rebuilt(&rows[3]));
+    assert!(failed_itself(&rows[1]));
+    assert!(
+        shell
+            .side_hits()
+            .targets
+            .iter()
+            .any(|(t, _)| t == "show where:F2")
+    );
+    let at = shell
+        .side_hits()
+        .rows
+        .iter()
+        .find(|(id, _)| id == "F2")
+        .unwrap()
+        .1
+        .center();
+    assert!(at.x < shell.viewport_rect().unwrap().left());
     let _ = window.frame(&mut shell, &mut session, vec![Event::PointerMoved(at)]);
     window.button(&mut shell, &mut session, at, PointerButton::Primary, true);
     window.button(&mut shell, &mut session, at, PointerButton::Primary, false);
@@ -1528,12 +1546,6 @@ fn the_tree_shows_failed_suppressed_and_rolled_back_features_and_follows_a_cause
     assert_eq!(shell.state.selected_feature.as_deref(), Some("F2"));
     let selected: Vec<bool> = shell.tree_rows().iter().map(|r| r.selected).collect();
     assert_eq!(selected, [false, true, false, false, false, false]);
-    // A second click keeps it selected: a link goes somewhere, it does not
-    // toggle.
-    window.button(&mut shell, &mut session, at, PointerButton::Primary, true);
-    window.button(&mut shell, &mut session, at, PointerButton::Primary, false);
-    window.idle(&mut shell, &mut session, 1);
-    assert_eq!(shell.state.selected_feature.as_deref(), Some("F2"));
     let got = shell
         .handle_method(&mut session, "ui.get", None)
         .unwrap()

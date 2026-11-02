@@ -1071,12 +1071,16 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
         suppressed,
         when,
         kind,
+        made_by,
+        last_changed_by,
     } = feature;
     manifest::Feature {
         id: *id,
         name: name.clone(),
         suppressed: *suppressed,
         when: when.as_ref().map(|when| when.source().to_string()),
+        made_by: made_by.clone(),
+        last_changed_by: last_changed_by.clone(),
         kind: match kind {
             doc::FeatureKind::Block(doc::Block {
                 position,
@@ -3039,12 +3043,16 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
         suppressed,
         when,
         kind,
+        made_by,
+        last_changed_by,
     } = feature;
     doc::Feature {
         id: doc::FeatureId(id),
         name,
         suppressed,
         when: when.map(doc::Expr),
+        made_by,
+        last_changed_by,
         kind: match kind {
             manifest::FeatureKind::Block {
                 position,
