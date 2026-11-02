@@ -397,8 +397,18 @@ fn on_the_direct_path_a_resize_draws_light_until_it_rests() {
     window.frame(&mut shell, &mut s, 1.0 / 60.0, Vec::new());
     assert!(shell.interacting_light(), "a resize draws light");
     assert!(interacting(&mut shell, &mut s));
-    window.frame(&mut shell, &mut s, STILL_DELAY * 2.0, Vec::new());
-    assert!(!shell.interacting_light(), "full once it rests");
+    // The layout settles to the new size over a frame or two (each a
+    // resize of the viewport), then rests.
+    let mut sizes = Vec::new();
+    for _ in 0..6 {
+        window.frame(&mut shell, &mut s, STILL_DELAY * 2.0, Vec::new());
+        sizes.push(shell.viewport_size());
+    }
+    assert!(!shell.interacting_light(), "full once it rests: {sizes:?}");
+    assert_eq!(
+        sizes[4], sizes[5],
+        "the viewport keeps changing size: {sizes:?}"
+    );
 }
 
 /// When the page leaves the window's graphics device after an error the
