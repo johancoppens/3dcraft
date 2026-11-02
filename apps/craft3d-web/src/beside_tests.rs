@@ -503,3 +503,57 @@ fn an_edit_that_needs_the_bodies_is_made_in_the_worker_and_undone_here() {
     page.settle();
     assert_eq!(page.host.session.work_here(), work);
 }
+
+/// Diagnosis (temporary): which state of a session changes the drawing
+/// of the model as seen.
+#[test]
+fn diagnose_the_model_drawing() {
+    let bytes = model();
+    let dxf = |host: &mut WebHost| -> Vec<u8> {
+        wanted(host, &ExportWhat::Model, ExportFormat::Dxf)
+            .remove(0)
+            .bytes
+    };
+    let first = dxf(&mut in_process(&bytes));
+    let mut meshed = in_process(&bytes);
+    meshed
+        .session
+        .scene_with(craft3d_engine::SceneQuality::display())
+        .unwrap();
+    let meshed = dxf(&mut meshed);
+    let mut after = in_process(&bytes);
+    for format in [
+        ExportFormat::Step,
+        ExportFormat::Stl,
+        ExportFormat::ThreeMf,
+        ExportFormat::Obj,
+    ] {
+        wanted(&mut after, &ExportWhat::Model, format);
+    }
+    let after = dxf(&mut after);
+    let mut stepwise = WebHost::new(Shell::new());
+    stepwise.set_stepwise(true);
+    stepwise
+        .receive("model.3dcraft", bytes.clone(), None)
+        .unwrap();
+    while stepwise.prepare(|| false) {}
+    let stepwise = dxf(&mut stepwise);
+    let mut page = opened(&bytes, false);
+    let worker = page
+        .export(&ExportWhat::Model, ExportFormat::Dxf)
+        .downloads
+        .remove(0)
+        .bytes;
+    println!(
+        "diagnose: meshed {} after-exports {} stepwise {} worker {}",
+        meshed == first,
+        after == first,
+        stepwise == first,
+        worker == first
+    );
+    println!(
+        "diagnose: worker==stepwise {} worker==meshed {}",
+        worker == stepwise,
+        worker == meshed
+    );
+}
