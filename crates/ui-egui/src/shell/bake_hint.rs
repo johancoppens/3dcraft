@@ -156,19 +156,19 @@ pub(crate) struct Baking {
     whole: usize,
     /// Pieces in a row that left as much as before ([`STALLED_PIECES`]).
     stalled: u32,
+    /// The most done shown so far: the bar never goes back when the
+    /// builder finds more to do (it asks for the frames' configurations
+    /// a few at a time).
+    shown: f64,
     /// Started by itself (a light motion shown provisionally), not by the
     /// Bake button.
     auto: bool,
 }
 
 impl Baking {
-    /// How far it is, from 0 to 1.
+    /// How far it is, from 0 to 1, as last seen ([`Self::see`]).
     pub(crate) fn progress(&self) -> f64 {
-        if self.whole == 0 {
-            return 0.0;
-        }
-        let done = self.whole.saturating_sub(self.left);
-        (done as f64 / self.whole as f64).clamp(0.0, 1.0)
+        self.shown
     }
 
     /// Takes in the answer of a call of `motion.bake`: whether another
@@ -217,6 +217,10 @@ impl Baking {
     pub(crate) fn see(&mut self, left: usize) {
         self.left = left;
         self.whole = self.whole.max(left);
+        if self.whole > 0 {
+            let done = self.whole.saturating_sub(left) as f64 / self.whole as f64;
+            self.shown = self.shown.max(done.clamp(0.0, 1.0));
+        }
     }
 
     /// Whether it is done: answered, and nothing left (in pieces: the
@@ -393,7 +397,8 @@ impl Shell {
                 (Ok(_), None) => {}
             }
         }
-        let building = self.timeline.motion.as_ref().map(|m| m.building);
+        // What the builder has left, by steps of about equal work.
+        let building = self.timeline.motion.as_ref().map(|m| m.work_left);
         let Some(baking) = self.player.hint.baking.as_mut() else {
             return false;
         };
@@ -421,32 +426,41 @@ impl Shell {
             Hint::None => {}
             Hint::Offer => {
                 let ms = self.player.hint.heavy.median().unwrap_or(0.0);
-                let body = format!(
+                let question = "This motion is heavy — bake first?";
+                let reason = format!(
                     "Each moment takes about {:.0} ms to make. Baking makes the moments \
                      of a play ahead; then it plays smoothly.",
                     ms.round()
                 );
+                // The title does not wrap: in a narrow panel the question
+                // opens the body instead, so the banner never widens it.
+                let t = &kit.t;
+                let around =
+                    2.0 * (t.inset + 2.0) + t.info_bar_width + t.nav_icon_size + t.nav_icon_gap;
+                let wide = kit
+                    .galley(ui, question, kit.medium_font(ui), kit.skin.text)
+                    .size()
+                    .x;
+                let (title, body) = if wide + around <= ui.available_width() {
+                    (Some(question), reason)
+                } else {
+                    (None, format!("{question} {reason}"))
+                };
                 let mut bake = false;
                 let mut dismiss = false;
                 let mut hit = None;
-                kit.banner(
-                    ui,
-                    BannerKind::Attention,
-                    Some("This motion is heavy — bake first?"),
-                    &body,
-                    |kit, ui| {
-                        let button = kit.button(ui, Button::primary("Bake")).on_hover_text(
-                            "Make the moments of a play ahead (motion.bake), in the \
+                kit.banner(ui, BannerKind::Attention, title, &body, |kit, ui| {
+                    let button = kit.button(ui, Button::primary("Bake")).on_hover_text(
+                        "Make the moments of a play ahead (motion.bake), in the \
                              background: it goes on playing meanwhile",
-                        );
-                        hit = Some(button.rect);
-                        bake = button.clicked();
-                        dismiss = kit
-                            .button(ui, Button::quiet("Not now"))
-                            .on_hover_text("Do not offer it again for this document")
-                            .clicked();
-                    },
-                );
+                    );
+                    hit = Some(button.rect);
+                    bake = button.clicked();
+                    dismiss = kit
+                        .button(ui, Button::quiet("Not now"))
+                        .on_hover_text("Do not offer it again for this document")
+                        .clicked();
+                });
                 self.player.hint.bake_hit = hit;
                 if bake {
                     self.bake_from_hint();
@@ -806,6 +820,11 @@ mod tests {
         b.see(10);
         assert_eq!(b.progress(), 0.75);
         assert!(!b.done());
+        // The builder found more to do: the bar does not go back.
+        b.see(30);
+        assert_eq!(b.progress(), 0.75);
+        b.see(5);
+        assert_eq!(b.progress(), 0.875);
         b.see(0);
         assert_eq!(b.progress(), 1.0);
         assert!(b.done());

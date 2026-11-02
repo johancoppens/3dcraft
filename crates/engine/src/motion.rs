@@ -270,6 +270,10 @@ struct AsmSweep {
     last_carried: Option<(f64, Carried)>,
 }
 
+/// The frames of a bake in the background built by one run of the
+/// builder ([`Sweep::queue_baked`]).
+const BAKE_FRAMES_PER_RUN: usize = 8;
+
 /// Most frames whose solves a motion keeps: a bake asks for at most 1001.
 const MAX_SOLVES: usize = 4_096;
 
@@ -839,7 +843,7 @@ impl Sweep {
         // Frames per run, and runs at once: the frames' configurations are
         // worked out and built on copies of the motion's state, off the
         // thread that asked.
-        const PER_RUN: usize = 8;
+        const PER_RUN: usize = BAKE_FRAMES_PER_RUN;
         const RUNS: usize = 1;
         while builder.frames_busy() < RUNS {
             let ts: Vec<f64> = match self.assembly.as_mut() {
@@ -893,6 +897,16 @@ impl Sweep {
             }
         }
         Ok(())
+    }
+
+    /// Grid points between the nearest solved one and the target the
+    /// background solves toward: what a run of the grid has left at most.
+    pub(crate) fn grid_left(&self) -> usize {
+        let Some(target) = self.assembly.as_ref().and_then(|a| a.grid_target) else {
+            return 0;
+        };
+        let solved = self.nearest_solved(target);
+        usize::try_from(target.abs_diff(solved)).unwrap_or(usize::MAX)
     }
 
     /// Frames of a bake in the background not looked at yet.
@@ -1835,6 +1849,26 @@ impl OpenDocument {
             .saturating_add(self.motion.builder.traces_busy())
     }
 
+    /// [`Self::motion_building`] counted in steps of about equal work, for
+    /// a progress bar: a run of the grid as the grid points it has left, a
+    /// run of a bake's frames as its frames. Zero exactly when
+    /// `motion_building` is.
+    pub(crate) fn motion_work_left(&self) -> usize {
+        let builder = &self.motion.builder;
+        let sweep = self.motion.sweep.as_ref().map(|(_, _, sweep)| sweep);
+        let grid = if builder.grid_busy() {
+            sweep.map_or(0, Sweep::grid_left).max(1)
+        } else {
+            0
+        };
+        builder
+            .pending()
+            .saturating_add(sweep.map_or(0, Sweep::bake_queued))
+            .saturating_add(grid)
+            .saturating_add(builder.frames_busy().saturating_mul(BAKE_FRAMES_PER_RUN))
+            .saturating_add(builder.traces_busy())
+    }
+
     /// Drops what the background builder has queued (`motion.bake
     /// {cancel: true}`); returns how much was left
     /// ([`Self::motion_building`]: configurations, runs, frames of a bake
@@ -2098,6 +2132,10 @@ pub struct MotionView {
     /// The frames of the last bake (`motion.bake {frames}`): a player that
     /// rounds its `t` to `k / frames` asks for nothing new.
     pub baked: Option<u64>,
+    /// What `building` counts, in steps of about equal work (a run of the
+    /// grid as its grid points left, a run of a bake's frames as its
+    /// frames): for a progress bar. Zero exactly when `building` is.
+    pub work_left: usize,
 }
 
 /// A trace as a viewer draws it ([`Session::traces`]).
@@ -2169,6 +2207,7 @@ impl Session {
             _ => Vec::new(),
         };
         let building = open.motion_building();
+        let work_left = open.motion_work_left();
         let baked = open
             .motion
             .sweep
@@ -2187,6 +2226,7 @@ impl Session {
                 .unwrap_or_default(),
             building,
             baked,
+            work_left,
         })
     }
 

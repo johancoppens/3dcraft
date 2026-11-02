@@ -3606,7 +3606,7 @@ mod tests {
         assert_eq!(played["ok"], true, "{played}");
         // Playing unbaked until the hint offers the bake.
         let start = Instant::now();
-        let button = loop {
+        let _offered = loop {
             pass(&mut desk, Vec::new(), false);
             if let Some(rect) = desk.host.shell.bake_hint_button() {
                 break rect;
@@ -3626,20 +3626,46 @@ mod tests {
         if let Some(frame) = pass(&mut desk, Vec::new(), true) {
             save("offer", &frame);
         }
-        // Its Bake button, clicked.
-        let at = button.center();
-        let click = |pressed| egui::Event::PointerButton {
-            pos: at,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: egui::Modifiers::NONE,
-        };
-        pass(
-            &mut desk,
-            vec![egui::Event::PointerMoved(at), click(true)],
-            false,
-        );
-        pass(&mut desk, vec![click(false)], false);
+        // Its Bake button, clicked: in passes that draw the shell (not
+        // while the engine thread has the session), again until the bake
+        // runs.
+        let clicked = Instant::now();
+        loop {
+            let Some(at) = desk.host.shell.bake_hint_button().map(|r| r.center()) else {
+                pass(&mut desk, Vec::new(), false);
+                continue;
+            };
+            let click = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            while desk.away() {
+                pass(&mut desk, Vec::new(), false);
+                std::thread::sleep(Duration::from_millis(4));
+            }
+            pass(
+                &mut desk,
+                vec![egui::Event::PointerMoved(at), click(true)],
+                false,
+            );
+            while desk.away() {
+                pass(&mut desk, Vec::new(), false);
+                std::thread::sleep(Duration::from_millis(4));
+            }
+            pass(&mut desk, vec![click(false)], false);
+            pass(&mut desk, Vec::new(), false);
+            if !heavy(&desk)["baking"].is_null() || desk.host.shell.bake_hint_button().is_none() {
+                break;
+            }
+            assert!(
+                clicked.elapsed().as_secs_f64() < 30.0,
+                "the click never landed: {}",
+                heavy(&desk)
+            );
+        }
+        println!("HINT clicked: {}", heavy(&desk));
         let baking = Instant::now();
         let mut saved = false;
         let mut last = Instant::now();

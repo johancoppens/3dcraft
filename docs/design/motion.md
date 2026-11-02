@@ -213,8 +213,10 @@ the document (by its id, for the session) shows *This motion is heavy — bake f
 provisionally (configurations still built in the background, which only a bake makes ahead: an assembly whose
 configurations follow `t` asks for new ones at every unrounded moment) is baked by itself, once per document
 state and not once dismissed, as the player did since 2026-11-01, with the same progress bar (`baking.auto`). Bake queues `motion.bake {frames: 120, background: true,
-limit: 1}`: an assembly on the desktop hands it to the builder, and the progress bar (`Kit::progress`) follows the
-motion's `building` against the most seen; a part, or the browser, bakes in the window's thread a piece per
+limit: 1}`: an assembly on the desktop hands it to the builder, and the progress bar (`Kit::progress`) follows
+`MotionView::work_left` against the most seen, never going back (`building` counted in steps of about equal
+work: a run of the grid as its grid points left, a run of a bake's frames as its 8 frames; zero exactly when
+`building` is; with `building` alone the router's bar stood at 99 % for the last 20 s); a part, or the browser, bakes in the window's thread a piece per
 frame, the next piece asked for while the last answered `done: false`, the bar following `remaining`. When it is
 done the hint goes. An edit or another document forgets what was weighed and the bake (the engine lets go of it
 too); the dismissal stays. `ui.get` › `timeline.heavy` gives the same to agents.
@@ -523,3 +525,20 @@ pieces until the hint goes), and a dismissal per document that outlives an edit.
   all 176 bodies' edges each moment) and the moment's solve off the window's thread; resident memory is twice
   the live (glibc keeps what the builds freed); `built_bytes` counts bodies only (regeneration caches, meshes per
   configuration and the open assembly's own `AsmState` beside the sweep's are not in the budget).
+- 2026-11-02 (player phase 2): lighter drawing while a motion plays and the bake hint (*The player*). Measured
+  with `play_light_against_full_headless` (`apps/craft3d/src/app.rs`, ignored: a desk as the window plays, engine
+  thread, GPU viewport, a pass every 1/60 s, 1280 × 720 points) on the developer's laptop (Intel Meteor Lake
+  iGPU, release), in the studio look with a lens (f/2.8) and 16 frames averaged, each phase 15 s; GPU time from
+  the i915 driver's per-client counters (`/proc/self/fdinfo`), CPU from `/proc/self/stat`. The router baked at
+  120 frames: full 9.5 moments a second, 22.6 viewport frames drawn a second (the averaging restarts at every
+  moment, so most of them are thrown away), GPU 566 ms a second, CPU 98 %; light 13.2 moments a second, 13.2
+  frames, GPU 285 ms a second, CPU 79 % (then the window's thread is the limit: the plain look plays 13.8). In
+  a first run with a busier machine and the light look only one frame without a lens, full 5.7 → light 9.4
+  moments a second (GPU 909 → 573 ms a second); leaving out one pass more from there: the shadows 12.5 a second
+  (GPU 452), ambient occlusion 13.8 (288), the screen-space reflections with the contact and specular shadows
+  12.7 (269), the plain look 13.9 (250), hence the light look without ambient occlusion and the screen-space
+  passes; without the shadows as well it gains nothing more (13.8 a second, GPU 283), so they stay. A lighter
+  assembly (`axis.3dcraftasm`): full 23.9 moments a second (33 frames, GPU 572 ms a second, CPU 62 %), light 29.9
+  (the player's 30 a second; GPU 364, CPU 41 %). Standing still nothing is drawn (CPU 6-9 %). Unbaked, the
+  router's moments cost the window 126 ms each (300 ms in the busier run), all of them provisional: offered;
+  the axis's 48 ms, all provisional: baked by itself (10 s for 238 configurations).
