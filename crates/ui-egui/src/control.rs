@@ -286,12 +286,22 @@ impl Shell {
         params: Option<&Value>,
     ) -> Result<Value, String> {
         fields("ui.get", params, &[])?;
-        let (scene, status) = match session {
+        // The agent log only while the session is here (not while a
+        // command runs on the engine thread).
+        let (scene, status, agent_log) = match session {
             Some(session) => {
                 self.sync_trace_states(session);
-                (self.sync(session), session.document_status())
+                (
+                    self.sync(session),
+                    session.document_status(),
+                    session.agent_log_json(100),
+                )
             }
-            None => (self.shown_scene_arc(), self.shown_status().cloned()),
+            None => (
+                self.shown_scene_arc(),
+                self.shown_status().cloned(),
+                Value::Null,
+            ),
         };
         let [width, height] = self.viewport_size();
         let vec3 = |v: craft3d_math::Vec3| json!([v.x, v.y, v.z]);
