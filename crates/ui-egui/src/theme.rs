@@ -1284,13 +1284,6 @@ impl Tokens {
                 self.status_fill,
             ),
             ("chrome_ok on status_fill", self.chrome_ok, self.status_fill),
-            // The agents pill: outlined (off) and filled (on).
-            ("info_code on status_fill", self.info_code, self.status_fill),
-            (
-                "plate_text on info_accent",
-                self.plate_text,
-                self.info_accent,
-            ),
             (
                 "chrome_failed on status_fill",
                 self.chrome_failed,

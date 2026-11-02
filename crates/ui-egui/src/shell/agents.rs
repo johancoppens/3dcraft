@@ -68,6 +68,8 @@ pub enum PillKind {
     Connected,
     /// Connected and doing something now: the dot pulses.
     Active,
+    /// A question waits for the person's answer (a folder, a file).
+    Asks,
 }
 
 /// The pill's words and look.
@@ -92,6 +94,9 @@ pub fn pill_view(status: &AgentsStatus, now_ms: u64, web: bool) -> PillView {
     }
     if !status.allowed {
         return plain(PillKind::Off, "Connect AI agent");
+    }
+    if let Some(prompt) = status.prompts.first() {
+        return plain(PillKind::Asks, &format!("{} asks…", prompt.client));
     }
     if status.clients.is_empty() {
         return plain(PillKind::Waiting, "Agents on — waiting");
@@ -134,20 +139,32 @@ pub fn pill_colours(
     crate::theme::Rgb,
     Option<crate::theme::Rgb>,
 ) {
+    // The kit's chrome tokens for the agent's pill (`kit/status.rs`): the
+    // same in both appearances, the status bar being chrome.
     match kind {
-        PillKind::Web => (
+        PillKind::Web | PillKind::Off => (
             None,
-            Some(tokens.chrome_text_dim),
+            Some(tokens.pill_off_rim),
             tokens.chrome_text_dim,
             None,
         ),
-        PillKind::Off => (None, Some(tokens.info_code), tokens.info_code, None),
-        PillKind::Waiting => (Some(tokens.info_accent), None, tokens.plate_text, None),
-        PillKind::Connected | PillKind::Active => (
-            Some(tokens.info_accent),
+        PillKind::Waiting => (
             None,
-            tokens.plate_text,
+            Some(tokens.pill_connected),
+            tokens.pill_wait_text,
+            None,
+        ),
+        PillKind::Connected | PillKind::Active => (
+            Some(tokens.pill_connected),
+            None,
+            tokens.chrome_text,
             Some(tokens.agent_dot),
+        ),
+        PillKind::Asks => (
+            Some(tokens.plate_attention_fill),
+            Some(tokens.accent),
+            tokens.pill_asks_text,
+            Some(tokens.accent),
         ),
     }
 }
@@ -953,26 +970,49 @@ mod tests {
         );
         status.clients.push(client("Cursor", None, 0));
         assert_eq!(pill_view(&status, now, false).label, "2 agents connected");
-        // The colours: outlined indigo off, filled indigo on, a green dot
-        // when connected; all from the tokens.
+        // The colours: the kit's chrome pill tokens.
         let (fill, outline, text, dot) = pill_colours(PillKind::Off, &tokens);
         assert_eq!(
             (fill, outline, text, dot),
-            (None, Some(tokens.info_code), tokens.info_code, None)
+            (
+                None,
+                Some(tokens.pill_off_rim),
+                tokens.chrome_text_dim,
+                None
+            )
         );
-        let (fill, outline, text, dot) = pill_colours(PillKind::Waiting, &tokens);
+        let (fill, outline, text, _) = pill_colours(PillKind::Waiting, &tokens);
         assert_eq!(
-            (fill, outline, text, dot),
-            (Some(tokens.info_accent), None, tokens.plate_text, None)
+            (fill, outline, text),
+            (None, Some(tokens.pill_connected), tokens.pill_wait_text)
         );
-        let (fill, _, _, dot) = pill_colours(PillKind::Connected, &tokens);
+        let (fill, _, text, dot) = pill_colours(PillKind::Connected, &tokens);
         assert_eq!(
-            (fill, dot),
-            (Some(tokens.info_accent), Some(tokens.agent_dot))
+            (fill, text, dot),
+            (
+                Some(tokens.pill_connected),
+                tokens.chrome_text,
+                Some(tokens.agent_dot)
+            )
         );
         assert_eq!(
             pill_colours(PillKind::Active, &tokens),
             pill_colours(PillKind::Connected, &tokens)
+        );
+        let (fill, _, text, _) = pill_colours(PillKind::Asks, &tokens);
+        assert_eq!(
+            (fill, text),
+            (Some(tokens.plate_attention_fill), tokens.pill_asks_text)
+        );
+        // A question waiting: the pill says so before anything else.
+        status.prompts = vec![crate::state::AgentPrompt {
+            client: "Claude Code".to_string(),
+            ..crate::state::AgentPrompt::default()
+        }];
+        let asks = pill_view(&status, now, false);
+        assert_eq!(
+            (asks.kind, asks.label.as_str()),
+            (PillKind::Asks, "Claude Code asks…")
         );
     }
 
