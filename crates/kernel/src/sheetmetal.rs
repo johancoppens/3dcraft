@@ -804,19 +804,27 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
 
     // Corners between two flanged edges, and the base's outline with its
     // reliefs. A corner is where two flanges reach the point two edges of
-    // the base's outer loop share (an inset flange does not reach it, and
-    // a flange with an outline of its own takes no corner).
-    let reaches = |i: usize, end: usize| {
-        spec.flanges
-            .get(i)
-            .is_some_and(|f| f.outline.is_none() && f.inset.get(end).is_some_and(|&x| x <= tol))
+    // the base's outer loop share (an inset flange does not reach it; a
+    // flange with an outline of its own reaches it when its outline's line
+    // on the edge ends there, or a relief's size short of it with a
+    // relief, where the relief shortens the edge).
+    let gap = spec.relief.map_or(0.0, |relief| relief.size);
+    let reaches = |i: usize, k: usize, end: usize| {
+        spec.flanges.get(i).is_some_and(|f| match &f.outline {
+            None => f.inset.get(end).is_some_and(|&x| x <= tol),
+            Some(profile) => outer
+                .get(k)
+                .and_then(|seg| outline_gaps(profile, seg.start, seg.end, tol))
+                .and_then(|g| g.get(end).copied())
+                .is_some_and(|g| (g - gap).abs() <= tol),
+        })
     };
     let reaching = |k: usize, end: usize| -> Option<usize> {
         on_base
             .get(&(None, k))?
             .iter()
             .copied()
-            .find(|&i| reaches(i, end))
+            .find(|&i| reaches(i, k, end))
     };
     let mut corners: Vec<Corner> = Vec::new();
     let mut corner_at_end: BTreeMap<usize, usize> = BTreeMap::new();
@@ -1248,15 +1256,25 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
     for (flat, transform) in flats.iter_mut().zip(&folded.transforms) {
         flat.transform = *transform;
     }
-    close_corners(
+    let early: Vec<usize> = placed.iter().flatten().map(|&(f, _)| f).collect();
+    let moved = close_corners(
         &mut flats,
         &mut bends,
         &corners,
         t,
         spec.bend_relief,
         &mut bend_ends,
+        &early,
         tolerance,
     )?;
+    if moved {
+        // Flanges moved with a side to a closed corner's end: placed
+        // again by their bends (the rest place as before, bit for bit).
+        let folded = fold(&flats, &bends, tolerance)?;
+        for (flat, transform) in flats.iter_mut().zip(&folded.transforms) {
+            flat.transform = *transform;
+        }
+    }
     bend_reliefs_fit(&flats, &bends, &bend_ends, tolerance)?;
     let done: Vec<bool> = placed.iter().map(Option::is_some).collect();
     let across = place_cutouts(&mut flats, &spec.cutouts, &done, tolerance)?;
@@ -2103,6 +2121,7 @@ struct Reach {
 /// - miter: each to the plane through the line where the outer skins meet
 ///   with the normal `out_A − out_B` (the points as far from both outer
 ///   skins), moved `g/2` towards its own wall.
+#[allow(clippy::too_many_arguments)]
 fn close_corners(
     flats: &mut [Flat],
     bends: &mut [Bend],
@@ -2110,8 +2129,10 @@ fn close_corners(
     thickness: f64,
     bend_relief: Option<Relief>,
     bend_ends: &mut Vec<BendEnd>,
+    early: &[usize],
     tolerance: &Tolerance,
-) -> Result<(), KernelError> {
+) -> Result<bool, KernelError> {
+    let mut moved_any = false;
     // Per flange: the plane its extension ends on at its start and at its
     // end (the corner at its edge's start or end).
     let mut at_start: BTreeMap<usize, (Vec3, Vec3)> = BTreeMap::new();
@@ -2217,36 +2238,45 @@ fn close_corners(
         let range = |k: usize| -> Option<std::ops::Range<usize>> {
             Some(*pieces.get(k)?..*pieces.get(k + 1)?)
         };
-        let (Some(tangent), Some(first), Some(tip_range), Some(last)) =
-            (range(0), range(1), range(2), range(3))
+        // The outline as laid out, segment by segment: its tangent line,
+        // the side at the bend's start, what lies between (a rectangle's
+        // tip, or an outline's own pieces), the side at its end. An
+        // extension replaces a side at a closed end and runs its
+        // neighbour on to the end (docs/design/sheetmetal.md › *Closed
+        // corners*).
+        let m = pieces.len().saturating_sub(1);
+        let (Some(tangent), Some(first), Some(last)) =
+            (range(0), range(1), m.checked_sub(1).and_then(range))
         else {
-            return Err(refuse(
-                Some(x),
-                "a closed corner runs a flange's rectangle on past its bend; this flange has an outline of its own, so its corner cannot be closed (not supported, owed): open it",
-            ));
+            return Err(refuse(Some(x), "a flange's outline is missing a piece"));
         };
-        if flat.outlined || pieces.len() != 5 || tangent != (0..1) {
+        let tip_range = first.end..last.start;
+        if tangent != (0..1) || m < 4 || tip_range.is_empty() {
             return Err(refuse(
                 Some(x),
-                "a closed corner runs a flange's rectangle on past its bend; this flange has an outline of its own, so its corner cannot be closed (not supported, owed): open it",
+                "a closed corner replaces a flange's side at its bend's end and runs the outline's next piece on to the corner; this flange's outline has no piece between its two sides (a triangle), so its corner cannot be closed (not supported, owed): open it",
             ));
         }
-        for (closed, side, which) in [
-            (at_start.contains_key(&x), &first, "start"),
-            (at_end.contains_key(&x), &last, "end"),
-        ] {
-            let carried = flat
-                .seats
-                .iter()
-                .find(|s| s.hole.is_none() && side.contains(&s.seg));
-            if closed && (carried.is_some() || side.len() != 1) {
-                return Err(refuse(
-                    Some(x),
-                    format!(
-                        "its corner at the {which} of its bend is closed, which makes its side there the corner's end, and that side carries flange {}: open that corner, or put the flange on the other side or the tip",
-                        carried.map_or_else(|| "?".to_string(), |s| s.bend.to_string())
-                    ),
-                ));
+        // A side that carries flanges: closed, the side moves to the
+        // corner's end with its flanges (only when the end lies along it).
+        let mut carried: [Vec<usize>; 2] = [Vec::new(), Vec::new()];
+        for (k, (closed, side)) in [
+            (at_start.contains_key(&x), &first),
+            (at_end.contains_key(&x), &last),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if !closed {
+                continue;
+            }
+            if let Some(list) = carried.get_mut(k) {
+                *list = flat
+                    .seats
+                    .iter()
+                    .filter(|s| s.hole.is_none() && side.contains(&s.seg))
+                    .map(|s| s.bend)
+                    .collect();
             }
         }
         let d = unit(sub(b.end, b.start)).ok_or_else(|| refuse(Some(x), "a bend has no length"))?;
@@ -2259,17 +2289,54 @@ fn close_corners(
             .map(|f| f.transform)
             .ok_or_else(|| refuse(Some(x), "a flange's parent is missing"))?;
         let (a0, a1) = b.far_line();
-        let (b0, b1) = tip(b);
+        // The pieces next to the sides, which an extension runs on: their
+        // ends at the sides and their directions away from them.
+        let (Some(next_start), Some(next_end)) = (
+            flat.outer.get(tip_range.start),
+            flat.outer.get(tip_range.end.saturating_sub(1)),
+        ) else {
+            return Err(refuse(Some(x), "a flange's outline is missing a piece"));
+        };
+        let (b0, b1) = (next_start.start, next_end.end);
+        let away = |seg: &Segment, from_end: bool| -> Result<P2, KernelError> {
+            let dir = if from_end {
+                sub(seg.end, seg.start)
+            } else {
+                sub(seg.start, seg.end)
+            };
+            match (&seg.shape, unit(dir)) {
+                (Shape::Line, Some(e)) => Ok(e),
+                _ => Err(refuse(
+                    Some(x),
+                    "a closed corner runs the outline's piece next to the side on to the corner; that piece is not straight (not supported, owed): open the corner",
+                )),
+            }
+        };
+        let e_start = if at_start.contains_key(&x) {
+            away(next_start, false)?
+        } else {
+            scale(d, -1.0)
+        };
+        let e_end = if at_end.contains_key(&x) {
+            away(next_end, true)?
+        } else {
+            d
+        };
         // How far along `e` from `near` and `far` the plane meets the
         // flat's bottom skin: past the bend's end (an extension), within
         // the tolerance of it (the end as it is), or short of it (the flat
         // trimmed, and where that is at the tangent line, the bend too:
         // docs/design/sheetmetal.md › *Trimming a bend*).
-        let reach = |plane: (Vec3, Vec3), e: P2, near: P2, far: P2| -> Result<Reach, KernelError> {
+        let reach = |plane: (Vec3, Vec3),
+                     e: P2,
+                     e_far: P2,
+                     near: P2,
+                     far: P2|
+         -> Result<Reach, KernelError> {
             let (q, n) = (back.point(plane.0), back.vector(plane.1));
-            let den = n.dot(lift(e));
+            let (den, den_far) = (n.dot(lift(e)), n.dot(lift(e_far)));
             let tilted = n.length() * tolerance.angular;
-            if !(den.abs() > tilted) {
+            if !(den.abs() > tilted && den_far.abs() > tilted) {
                 return Err(refuse(
                     Some(x),
                     "a closed corner's end runs along the flange, so the flange cannot reach it",
@@ -2277,7 +2344,7 @@ fn close_corners(
             }
             let snap = |v: f64| if v.abs() <= tolerance.linear { 0.0 } else { v };
             let s_near = snap(n.dot(q - lift(near)) / den);
-            let s_far = snap(n.dot(q - lift(far)) / den);
+            let s_far = snap(n.dot(q - lift(far)) / den_far);
             if !(s_near.is_finite() && s_far.is_finite()) {
                 return Err(refuse(Some(x), "a closed corner's end plane is not finite"));
             }
@@ -2285,16 +2352,16 @@ fn close_corners(
                 near: s_near,
                 far: s_far,
                 near_point: add(near, scale(e, s_near)),
-                far_point: add(far, scale(e, s_far)),
+                far_point: add(far, scale(e_far, s_far)),
                 trim: None,
             })
         };
         let mut start = match at_start.get(&x) {
-            Some(&plane) => Some(reach(plane, scale(d, -1.0), a0, b0)?),
+            Some(&plane) => Some(reach(plane, scale(d, -1.0), e_start, a0, b0)?),
             None => None,
         };
         let mut end = match at_end.get(&x) {
-            Some(&plane) => Some(reach(plane, d, a1, b1)?),
+            Some(&plane) => Some(reach(plane, d, e_end, a1, b1)?),
             None => None,
         };
         for (which, side, plane) in [
@@ -2315,17 +2382,41 @@ fn close_corners(
                 r.trim = Some(t);
             }
         }
+        // A side that carries flanges moves to the end with them: the end
+        // must lie along the side (the same reach at both its ends) and run
+        // the flat on, not cut it back.
+        let mut shift: [Option<P2>; 2] = [None, None];
+        for (k, r) in [(0usize, &start), (1usize, &end)] {
+            let (Some(r), Some(list)) = (r.as_ref(), carried.get(k)) else {
+                continue;
+            };
+            if list.is_empty() {
+                continue;
+            }
+            let (near, far) = if k == 0 { (a0, b0) } else { (a1, b1) };
+            let v = sub(r.near_point, near);
+            let w = sub(r.far_point, far);
+            if !(distance(v, w) <= tolerance.linear && r.near >= 0.0 && r.far >= 0.0) {
+                return Err(refuse(
+                    Some(x),
+                    format!(
+                        "its corner at the {} of its bend is closed, which moves its side there to the corner's end, and that side carries flange {}: the end does not lie along the side (walls leaning or not square to each other) or cuts the flange back, so the flange cannot move with it (not supported): open that corner, make the walls square, or put the flange on the tip",
+                        if k == 0 { "start" } else { "end" },
+                        list.first().copied().unwrap_or(0)
+                    ),
+                ));
+            }
+            if let Some(slot) = shift.get_mut(k) {
+                *slot = Some(v);
+            }
+        }
         // What is left of the tangent line and the tip between the two
         // ends must not be a sliver (or nothing).
         let floor = SLIVER_TOLERANCES * tolerance.linear;
         let along = |p: P2| dot(sub(p, a0), d);
-        let (near_lo, far_lo) = start.as_ref().map_or((along(a0), along(b0)), |r| {
-            (along(r.near_point), along(r.far_point))
-        });
-        let (near_hi, far_hi) = end.as_ref().map_or((along(a1), along(b1)), |r| {
-            (along(r.near_point), along(r.far_point))
-        });
-        if !(near_hi - near_lo >= floor && far_hi - far_lo >= floor) {
+        let near_lo = start.as_ref().map_or(along(a0), |r| along(r.near_point));
+        let near_hi = end.as_ref().map_or(along(a1), |r| along(r.near_point));
+        if !(near_hi - near_lo >= floor) {
             return Err(refuse(
                 Some(x),
                 format!(
@@ -2360,6 +2451,43 @@ fn close_corners(
                     .ok_or_else(|| refuse(Some(x), "a flange's outline is missing a piece"))?;
                 remap.insert(j, outer.len());
                 outer.push(seg.clone());
+                was.push(Some(j));
+                added.push(None);
+            }
+            Ok(())
+        };
+        // A side that carries flanges, moved by `v` to the corner's end
+        // (the line `from → to`): its pieces keep their names and seats;
+        // those that lie on the end and carry no bend end on its plane.
+        let seated: Vec<usize> = flat
+            .seats
+            .iter()
+            .filter(|s| s.hole.is_none())
+            .map(|s| s.seg)
+            .collect();
+        let moved = |outer: &mut Vec<Segment>,
+                     was: &mut Vec<Option<usize>>,
+                     added: &mut Vec<Option<usize>>,
+                     remap: &mut BTreeMap<usize, usize>,
+                     ends: &mut Vec<(usize, Option<(Vec3, Vec3)>)>,
+                     r: std::ops::Range<usize>,
+                     v: P2,
+                     on: (P2, P2, Option<(Vec3, Vec3)>)|
+         -> Result<(), KernelError> {
+            let (from, to, plane) = on;
+            let line_dir = unit(sub(to, from));
+            let on_end =
+                |p: P2| line_dir.is_some_and(|e| cross(e, sub(p, from)).abs() <= tolerance.linear);
+            for j in r {
+                let seg = old
+                    .get(j)
+                    .ok_or_else(|| refuse(Some(x), "a flange's outline is missing a piece"))?;
+                let seg = shifted(seg, v);
+                if !seated.contains(&j) && on_end(seg.start) && on_end(seg.end) {
+                    ends.push((outer.len(), plane));
+                }
+                remap.insert(j, outer.len());
+                outer.push(seg);
                 was.push(Some(j));
                 added.push(None);
             }
@@ -2467,16 +2595,16 @@ fn close_corners(
                     .collect::<Vec<_>>()
             };
             Ok(if which == 0 {
-                let stop = sub(p, scale(d, relief.size));
-                let mut pieces = notch(p, scale(d, -1.0), into, relief)?;
+                let stop = add(p, scale(e_start, relief.size));
+                let mut pieces = notch(p, e_start, into, relief)?;
                 pieces.push(line(deep, p));
                 let mut out = plain(far, stop);
                 out.extend(numbered(pieces));
                 out
             } else {
-                let stop = add(p, scale(d, relief.size));
+                let stop = add(p, scale(e_end, relief.size));
                 let mut pieces = vec![line(p, deep)];
-                pieces.extend(notch(p, into, d, relief)?);
+                pieces.extend(notch(p, into, e_end, relief)?);
                 let mut out = numbered(pieces);
                 out.extend(plain(stop, far));
                 out
@@ -2508,10 +2636,24 @@ fn close_corners(
                     was.push(None);
                     added.push(Some(1));
                 }
-                ends.push((outer.len(), at_start.get(&x).copied()));
-                outer.push(line(r.near_point, r.far_point));
-                was.push(Some(first.start));
-                added.push(None);
+                match shift.first().copied().flatten() {
+                    Some(v) => moved(
+                        &mut outer,
+                        &mut was,
+                        &mut added,
+                        &mut remap,
+                        &mut ends,
+                        first.clone(),
+                        v,
+                        (r.near_point, r.far_point, at_start.get(&x).copied()),
+                    )?,
+                    None => {
+                        ends.push((outer.len(), at_start.get(&x).copied()));
+                        outer.push(line(r.near_point, r.far_point));
+                        was.push(Some(first.start));
+                        added.push(None);
+                    }
+                }
                 let t = touching(tip_range.start);
                 if r.far > 0.0 {
                     let pieces = along_tip(t, 0, b0, r.far_point, at_start.get(&x).copied())?;
@@ -2524,7 +2666,9 @@ fn close_corners(
             None => keep(&mut outer, &mut was, &mut added, &mut remap, first.clone())?,
         }
         let tip_at = outer.len();
-        let tip_place = if start.is_some() { 4 } else { 2 };
+        // The places, as if each side were one segment, of the pieces the
+        // end's extension adds: after the pieces between the sides.
+        let tip_place = if start.is_some() { 4 } else { 2 } + m.saturating_sub(4);
         keep(
             &mut outer,
             &mut was,
@@ -2557,10 +2701,11 @@ fn close_corners(
             let seg = outer
                 .get_mut(at)
                 .ok_or_else(|| refuse(Some(x), "a flange's tip is missing"))?;
+            let dir = unit(sub(seg.end, seg.start)).unwrap_or(d);
             let left = if which == 0 {
-                dot(sub(seg.end, r.far_point), d)
+                dot(sub(seg.end, r.far_point), dir)
             } else {
-                dot(sub(r.far_point, seg.start), d)
+                dot(sub(r.far_point, seg.start), dir)
             };
             if !(matches!(seg.shape, Shape::Line) && left >= floor) {
                 return Err(refuse(
@@ -2595,10 +2740,24 @@ fn close_corners(
                         tip_place + 1,
                     );
                 }
-                ends.push((outer.len(), at_end.get(&x).copied()));
-                outer.push(line(r.far_point, r.near_point));
-                was.push(Some(last.start));
-                added.push(None);
+                match shift.get(1).copied().flatten() {
+                    Some(v) => moved(
+                        &mut outer,
+                        &mut was,
+                        &mut added,
+                        &mut remap,
+                        &mut ends,
+                        last.clone(),
+                        v,
+                        (r.far_point, r.near_point, at_end.get(&x).copied()),
+                    )?,
+                    None => {
+                        ends.push((outer.len(), at_end.get(&x).copied()));
+                        outer.push(line(r.far_point, r.near_point));
+                        was.push(Some(last.start));
+                        added.push(None);
+                    }
+                }
                 if r.near > 0.0 {
                     outer.push(line(r.near_point, a1));
                     was.push(None);
@@ -2631,7 +2790,7 @@ fn close_corners(
         flat.was = was;
         flat.added = added;
         flat.notches = notches;
-        flat.tip = Some(tip_at);
+        flat.tip = flat.tip.map(|_| tip_at);
         // A bend on a hole's edge keeps its place: the holes are not
         // touched.
         for seat in flat.seats.iter_mut().filter(|s| s.hole.is_none()) {
@@ -2656,9 +2815,60 @@ fn close_corners(
         if let Some(bend) = bends.get_mut(x) {
             bend.trim = trims;
         }
+        // The flanges on a side moved to the corner's end move with it,
+        // and every flange beyond them: their pattern by `v` (the fold
+        // places them again from their bends).
+        for (k, v) in shift.iter().enumerate() {
+            let (Some(v), Some(list)) = (*v, carried.get(k)) else {
+                continue;
+            };
+            let mut set: std::collections::BTreeSet<usize> = list
+                .iter()
+                .filter_map(|&i| bends.get(i).map(|b| b.child))
+                .collect();
+            for _ in 0..bends.len() {
+                let more: Vec<usize> = bends
+                    .iter()
+                    .filter(|b| set.contains(&b.parent) && !set.contains(&b.child))
+                    .map(|b| b.child)
+                    .collect();
+                if more.is_empty() {
+                    break;
+                }
+                set.extend(more);
+            }
+            if let Some(f) = early.iter().find(|f| set.contains(f)) {
+                return Err(refuse(
+                    f.checked_sub(1),
+                    format!(
+                        "it carries a flange on a cut-out's edge and moves with flange {x}'s side to the closed corner's end, which would move the cut-out away from where it is drawn (not supported): open that corner"
+                    ),
+                ));
+            }
+            for &f in &set {
+                if let Some(fl) = flats.get_mut(f) {
+                    fl.outer = fl.outer.iter().map(|s| shifted(s, v)).collect();
+                    fl.holes = fl
+                        .holes
+                        .iter()
+                        .map(|h| h.iter().map(|s| shifted(s, v)).collect())
+                        .collect();
+                }
+            }
+            for (i, bend) in bends.iter_mut().enumerate() {
+                if set.contains(&bend.child) {
+                    bend.start = add(bend.start, v);
+                    bend.end = add(bend.end, v);
+                    for e in bend_ends.iter_mut().filter(|e| e.bend == i) {
+                        e.point = add(e.point, v);
+                    }
+                }
+            }
+            moved_any = true;
+        }
     }
     bend_ends.sort_by(|a, b| a.bend.cmp(&b.bend).then(a.end.cmp(&b.end)));
-    Ok(())
+    Ok(moved_any)
 }
 
 /// The number the piece at place `seg` of flat `flat`'s outline that a
@@ -3011,6 +3221,28 @@ fn reach_along(seg: &Segment, o: P2, n: P2) -> (f64, f64) {
             .map(|&p| at(p))
             .fold(ends, |(lo, hi), x| (lo.min(x), hi.max(x))),
     }
+}
+
+/// How far the one line of `profile`'s outer loop on the edge `s → e`
+/// (running against it) stands back from the edge's start and its end;
+/// `None` when there is not exactly one such line.
+fn outline_gaps(profile: &Profile, s: P2, e: P2, tol: f64) -> Option<[f64; 2]> {
+    let len = distance(s, e);
+    let d = unit(sub(e, s))?;
+    let across = [d[1], -d[0]];
+    let off = |p: P2| dot(sub(p, s), across);
+    let along = |p: P2| dot(sub(p, s), d);
+    let mut on_line = profile.outer.segments.iter().filter(|g| {
+        matches!(g.shape, Shape::Line)
+            && off(g.start).abs() <= tol
+            && off(g.end).abs() <= tol
+            && along(g.end) < along(g.start)
+    });
+    let g = on_line.next()?;
+    if on_line.next().is_some() {
+        return None;
+    }
+    Some([along(g.end), len - along(g.start)])
 }
 
 /// The flat of flange `i` from its own outline `profile`, drawn against

@@ -266,16 +266,18 @@ fn bad_corner_treatments_are_errors_or_fail_the_part() {
         let reason = failed(&mut s, "feature.sheetMetal", part(corner.clone()));
         assert!(reason.contains(says), "{corner}: {reason}");
     }
-    // Leaning in (120 degrees), closing would cut the flanges back.
+    // Leaning in (120 degrees), closing cuts the flats back to the mitre
+    // (until 2026-11-02 refused: docs/design/sheetmetal.md › *Trimming a
+    // bend*; the closed forms in the kernel's `sheetmetal_trims.rs`).
     let leaning = json!([{"edge": lines[0], "length": "10 mm", "angle": "120 deg"},
                          {"edge": lines[1], "length": "10 mm", "angle": "120 deg"}]);
-    let reason = failed(
+    let made = run(
         &mut s,
         "feature.sheetMetal",
         json!({"sketch": "Base", "thickness": "1 mm", "radius": "1 mm", "kFactor": 0.4,
                "flanges": leaning, "corner": {"kind": "miter", "gap": "0.2 mm"}}),
     );
-    assert!(reason.contains("cut the flange back"), "{reason}");
+    assert_eq!(made["status"], "ok", "{made}");
     let reason = failed(
         &mut s,
         "feature.sheetMetal",

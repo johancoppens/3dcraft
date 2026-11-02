@@ -541,13 +541,15 @@ also stopping `gap` short of flush. `miter`: both run to the plane that halves t
 walls, `gap` apart there (their ends bevelled; `mitre`, as plates spell it, is accepted too). At each corner the flange on the edge that arrives at it
 (going round the base counter-clockwise) covers it; `corners` treats one corner its own way, named by
 its two flanges, with `over` for the flange that covers it. Bend angles and corner angles other than 90
-degrees close the same way (the ends are then slanted in the flat pattern). `kind` and the relief's
+degrees close the same way (the ends are then slanted in the flat pattern); where the end comes nearer
+than the bend's end (walls that lean towards each other, a wide corner without a relief) the flange is cut
+back to it, its tip shortened and, where the end crosses the bend, the bend trimmed by it too. `kind` and the relief's
 `shape` may be expressions that pick by number, as a Jig's choice parameter counts (`corner`: 1 open, 2
 butt, 3 overlap, 4 miter; `shape`: 1 rect, 2 round, 3 tear), so a form can offer them. Opening or closing a corner keeps every face's name: a
 side's end is named as the side was. The measure
 `cornerGap` is the least gap at the closed corners, measured on the part. Refused, with the reason: a
 gap that is not more than the tolerance (a butt's must also be less than the thickness), two flanges
-bent opposite ways, walls that lean so far towards each other that a flange would have to be cut back,
+bent opposite ways, a corner whose end would cut one skin of a bend and not the other (give it a relief),
 and extensions that overlap in the flat pattern or run into each other when bent. A tray with closed
 corners, one of them covered the other way round:
 
@@ -584,7 +586,8 @@ its outline's lines instead, `"line": {"flange": 0, "edge": "e14"}` (the line's 
 sketch; not the line on the edge, which is the bend): a lip on a rail's leg. The flat pattern is checked as a whole, so tabs whose flats would
 overlap in it are refused naming them. A flange added later changes no name the part had but the end
 along the edge it is bent from. Corner reliefs and closed corners are for flanges that reach a corner of
-the base; a corner with an inset flange is not one. Where a bend ends inside its edge (an inset flange, a
+the base; a corner with an inset flange is not one, while a flange with an outline reaches it when its
+outline's line on the edge ends there (with a relief, the relief's size short of it). Where a bend ends inside its edge (an inset flange, a
 tab), `bendRelief` (`{"shape": "rect", "size": "1.5 mm"}`, the shapes of `relief`) cuts a notch beside the
 bend's end, `size` along the edge and `size` deep into the flat it is bent from, so the sheet does not tear
 there (a tear, the disc tangent to the edge and the bend's end, reaches twice `size` both ways); the
@@ -593,7 +596,10 @@ wall's tip that spans the tip, where a closed corner runs the wall on past it, g
 extension. A notch that would cut across another edge of its flat (a tear on a short wall with a large
 bend radius) is refused, naming the flange: make it smaller or use round or rect. A
 wall whose tip carries tabs (screw tabs) closes its corners like any other; a side that carries a flange
-cannot be closed at that end (it would be the corner's end). A cover with an inset wall, a tab on its side, an ear
+moves to the corner's end with its flange when that end lies along it (walls square to the base and
+to each other: a tab round the corner over the other wall), and is refused where the end slants across
+the wall. An outlined flange closes
+its corner too: its side there is replaced by the corner's end and its outline's next line run on to it. A cover with an inset wall, a tab on its side, an ear
 of its own outline with a hole, and a tab bent down out of a cut-out:
 
 ```json
