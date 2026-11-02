@@ -410,6 +410,12 @@ impl Shell {
         self.state
             .apply_patch(patch)
             .map_err(|e| format!("ui.set: {e}"))?;
+        // A highlight set here is the agent's, not the last click's light:
+        // it stays when the selection changes, and is drawn under the
+        // studio look's lens.
+        let agent_highlight = ["highlight", "highlightEdge", "highlightVertex"]
+            .iter()
+            .any(|key| patch.get(*key).is_some());
         // The side panel's width is held to the tokens' range here, as it
         // is when the panel is drawn, so `ui.get` says the width in use.
         if patch.pointer("/panels/treeWidth").is_some() {
@@ -530,6 +536,9 @@ impl Shell {
                 self.clear_section_lost();
             }
             return Err(format!("ui.set: {why}"));
+        }
+        if agent_highlight {
+            self.highlight_set_elsewhere();
         }
         Ok(json!({ "state": self.state_json()? }))
     }

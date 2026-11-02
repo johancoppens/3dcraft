@@ -28,6 +28,10 @@ pub const SETTLE_PASSES: u32 = 256;
 /// Passes a picture of the window runs before it is read back: what came
 /// before it (a `ui.set`) is laid out and drawn as in the window's frames.
 pub const PICTURE_PASSES: u32 = 3;
+/// Most passes a picture of the window runs after those, a pass apart on
+/// its clock, while a popover is still fading in (egui's animation time
+/// is 1/12 s, five passes at 60 a second).
+pub const FADE_PASSES: u32 = 12;
 /// How long one picture or frame may take to settle (its passes, and the
 /// CPU renderer's sharp image) on the thread that draws the window: then
 /// it is taken as it is, said to be unsettled.

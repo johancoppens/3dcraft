@@ -7,8 +7,8 @@ use crate::control::{ControlConfig, ControlServer, Wake};
 use crate::files::{self, Choice, Picker, SystemDialogs};
 use crate::host::{Host, Request, Route, answer_on_engine, report, route};
 use crate::recording::{
-    ADVANCE_SETTLE, ADVANCE_SLICE, ADVANCE_TICK, Advance, PICTURE_PASSES, Rec, SETTLE_PASSES,
-    SETTLE_TIME,
+    ADVANCE_SETTLE, ADVANCE_SLICE, ADVANCE_TICK, Advance, FADE_PASSES, PICTURE_PASSES, Rec,
+    SETTLE_PASSES, SETTLE_TIME,
 };
 use crate::refine::{Poll, Refiner};
 use crate::tabs;
@@ -1077,7 +1077,10 @@ impl Desk {
     /// Before a frame: asks egui for a picture of the frame once a
     /// capture has waited its frames.
     fn ask_capture(&mut self, ctx: &egui::Context) {
-        let converging = self.host.shell.converging();
+        // Still averaging, or the look on its way (the environment being
+        // prepared, a popover fading in): not yet.
+        let now = ctx.input(|i| i.time);
+        let converging = self.host.shell.converging() || self.host.shell.look_settling(ctx, now);
         self.ask_capture_when(ctx, converging);
     }
 
@@ -1503,7 +1506,13 @@ impl Desk {
         {
             let time = self.rec.now();
             self.rec.pass_dt = 1.0 / 60.0;
-            let picture = self.settled_frame(ctx, time, Vec::new(), PICTURE_PASSES, SETTLE_PASSES);
+            // The picture shows the look asked for: its environment is
+            // prepared now rather than the plain look drawn meanwhile (a
+            // look that cannot be prepared is drawn plain, as on screen).
+            let _ = self.host.shell.prepare_look();
+            let picture = self
+                .settled_frame(ctx, time, Vec::new(), PICTURE_PASSES, SETTLE_PASSES)
+                .and_then(|(frame, settled)| self.faded_in(ctx, time, frame, settled));
             match picture {
                 Ok((frame, _)) => {
                     if let Some(capture) = self.capture.as_mut() {
@@ -1528,6 +1537,33 @@ impl Desk {
             changed = true;
         }
         changed
+    }
+
+    /// `frame`, painted at `time`, or a later one once no popover is
+    /// fading in any more: egui fades an area in over its animation time
+    /// once it becomes visible, and the passes of a picture are all at one
+    /// moment, so one opened by the request before it would be caught
+    /// half drawn. Further passes step the clock by a pass each, at most
+    /// [`FADE_PASSES`].
+    fn faded_in(
+        &mut self,
+        ctx: &egui::Context,
+        time: f64,
+        frame: craft3d_ui_egui::record::Frame,
+        settled: bool,
+    ) -> Result<(craft3d_ui_egui::record::Frame, bool), String> {
+        let mut frame = frame;
+        let mut at = time;
+        for _ in 0..FADE_PASSES {
+            if !self.host.shell.popover_fading(ctx, at) {
+                break;
+            }
+            at += f64::from(self.rec.pass_dt);
+            if let Some(next) = self.offscreen_pass(ctx, at, Vec::new(), true)? {
+                frame = next;
+            }
+        }
+        Ok((frame, settled))
     }
 
     /// The next frame of a real-time recording, when it is due.

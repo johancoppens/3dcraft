@@ -555,3 +555,71 @@ fn the_selection_is_lit_when_the_lens_blurs_nothing() {
         craft3d_render::Highlight::NONE
     );
 }
+
+/// After a click selected and lit a face, a face an agent points at with
+/// `ui.set {"highlight": …}` is its own, not the click's light: under the
+/// lens it is lit when it is not selected (and a selected one is said by
+/// the outline).
+#[test]
+fn a_face_ui_set_points_at_after_a_click_is_lit_under_the_lens() {
+    let (mut session, mut shell, ctx) = two_cubes();
+    call(
+        &mut shell,
+        &mut session,
+        "ui.pick",
+        json!({"x": 70, "y": 120, "width": 320, "height": 240, "select": true}),
+    );
+    frame(&ctx, &mut shell, &mut session);
+    let scene = shell.shown_scene_arc();
+    assert!(shell.lens_on());
+    assert_eq!(
+        shell.face_highlight(scene.as_deref()),
+        craft3d_render::Highlight::NONE,
+        "the click's own light"
+    );
+    // The far cube's +x face, not selected.
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"highlight": {"feature": "Far", "face": "F2:face(5)"}}),
+    );
+    frame(&ctx, &mut shell, &mut session);
+    let far = scene
+        .as_deref()
+        .unwrap()
+        .faces_named(Some("Far"), "F2:face(5)")
+        .unwrap()
+        .ids;
+    let lit = shell.face_highlight(scene.as_deref());
+    assert_ne!(lit, craft3d_render::Highlight::NONE, "the agent's face");
+    assert!(far.iter().all(|&id| lit.contains(id)), "{far:?}");
+    // The selection does not take the agent's light off.
+    run(
+        &mut session,
+        "select.set",
+        json!({"items": [{"kind": "body", "feature": "Near"}]}),
+    );
+    frame(&ctx, &mut shell, &mut session);
+    let lit = shell.face_highlight(scene.as_deref());
+    assert!(far.iter().all(|&id| lit.contains(id)), "kept: {far:?}");
+    // A refused ui.set leaves the click's light as it was.
+    let (mut session, mut shell, ctx) = two_cubes();
+    call(
+        &mut shell,
+        &mut session,
+        "ui.pick",
+        json!({"x": 70, "y": 120, "width": 320, "height": 240, "select": true}),
+    );
+    frame(&ctx, &mut shell, &mut session);
+    let scene = shell.shown_scene_arc();
+    refused(
+        &mut shell,
+        &mut session,
+        json!({"highlight": {"feature": "Far", "face": "F2:face(5)"}, "look": {"tonemap": "x"}}),
+    );
+    assert_eq!(
+        shell.face_highlight(scene.as_deref()),
+        craft3d_render::Highlight::NONE
+    );
+}

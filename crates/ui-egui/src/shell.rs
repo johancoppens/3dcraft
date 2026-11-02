@@ -1082,6 +1082,25 @@ impl Shell {
         }
     }
 
+    /// Prepares the studio look's environment now, waiting for it (once
+    /// per environment, on the desktop): for a picture of the window,
+    /// which must show the look asked for and not the plain one drawn
+    /// meanwhile. Nothing to do for the plain look.
+    pub fn prepare_look(&self) -> Result<(), String> {
+        if !self.state.look.is_studio() {
+            return Ok(());
+        }
+        self.state.look.spec()?.prepared().map(|_| ())
+    }
+
+    /// Whether what the window shows is still on its way at egui's time
+    /// `now`: the studio look's environment being prepared (the plain
+    /// look is drawn meanwhile), or a popover fading in. A picture of the
+    /// window waits for both.
+    pub fn look_settling(&self, ctx: &egui::Context, now: f64) -> bool {
+        !self.look_ready() || self.popover_fading(ctx, now)
+    }
+
     /// Whether the look can be drawn as asked now: the plain look, or the
     /// studio look with its environment prepared.
     fn look_ready(&self) -> bool {

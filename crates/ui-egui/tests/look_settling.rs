@@ -1,0 +1,120 @@
+//! What a picture of the window waits for besides the viewport's
+//! averaging (`Shell::look_settling`): the studio look's environment
+//! prepared (`Shell::prepare_look`; the plain look is drawn meanwhile) and
+//! a popover done fading in (`Shell::popover_fading`: egui fades an area in
+//! over its animation time once it becomes visible). Driven by frames at
+//! chosen times, so it does not depend on the clock.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+
+use craft3d_engine::{Session, Workspace};
+use craft3d_ui_egui::Shell;
+use egui::{Pos2, vec2};
+use serde_json::{Value, json};
+
+fn call(shell: &mut Shell, session: &mut Session, method: &str, params: Value) -> Value {
+    shell
+        .handle_method(session, method, Some(&params))
+        .unwrap()
+        .unwrap_or_else(|e| panic!("{method} {params}: {e}"))
+}
+
+fn frame(ctx: &egui::Context, shell: &mut Shell, session: &mut Session, time: f64) {
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 800.0))),
+        time: Some(time),
+        ..Default::default()
+    };
+    let mut output = ctx.run_ui(input, |ui| shell.ui(ui, session));
+    output.textures_delta.clear();
+}
+
+#[test]
+fn a_picture_waits_for_the_look_and_the_popover_to_settle() {
+    let mut session = Session::new(Workspace::none());
+    session
+        .execute("file.new", &json!({"units": "mm"}))
+        .unwrap();
+    session
+        .execute("feature.block", &json!({"size": [20, 20, 10]}))
+        .unwrap();
+    let mut shell = Shell::new();
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut shell, &mut session, 1.0);
+    // The plain look: nothing on its way, no popover.
+    assert!(!shell.look_settling(&ctx, 1.0));
+    assert!(!shell.popover_fading(&ctx, 1.0));
+    // The studio look switched on opens its popover, which becomes
+    // visible in the next frame and fades in from there.
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"look": {"mode": "studio"}}),
+    );
+    shell.prepare_look().unwrap();
+    // A new area's first pass may only size it (drawn invisibly): two
+    // passes at the same moment, as a picture of the window runs.
+    frame(&ctx, &mut shell, &mut session, 2.0);
+    frame(&ctx, &mut shell, &mut session, 2.0);
+    assert!(!shell.look_hits().is_empty(), "the popover is drawn");
+    let fade = f64::from(ctx.global_style().animation_time);
+    assert!(fade > 0.0);
+    assert!(shell.popover_fading(&ctx, 2.0));
+    assert!(shell.look_settling(&ctx, 2.0 + fade * 0.5));
+    // Faded in: settled, the environment prepared.
+    assert!(!shell.popover_fading(&ctx, 2.0 + fade));
+    assert!(!shell.look_settling(&ctx, 2.0 + fade));
+    // Frames later it stays settled; closed and opened again it fades in
+    // again from that frame.
+    frame(&ctx, &mut shell, &mut session, 3.0);
+    assert!(!shell.look_settling(&ctx, 3.0));
+    let caret = shell.look_caret().unwrap().center();
+    for (t, events) in [
+        (3.1, vec![egui::Event::PointerMoved(caret)]),
+        (
+            3.2,
+            vec![egui::Event::PointerButton {
+                pos: caret,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        ),
+        (
+            3.3,
+            vec![egui::Event::PointerButton {
+                pos: caret,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        ),
+        (3.4, vec![egui::Event::PointerGone]),
+    ] {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 800.0))),
+            time: Some(t),
+            events,
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| shell.ui(ui, &mut session));
+        output.textures_delta.clear();
+    }
+    assert!(!shell.look_panel_open(), "the caret closed it");
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"panels": {"lookOptions": true}}),
+    );
+    frame(&ctx, &mut shell, &mut session, 5.0);
+    frame(&ctx, &mut shell, &mut session, 5.0);
+    assert!(shell.popover_fading(&ctx, 5.0));
+    assert!(!shell.popover_fading(&ctx, 5.0 + fade));
+}
