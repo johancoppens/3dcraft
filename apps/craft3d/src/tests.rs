@@ -416,14 +416,16 @@ fn the_window_and_the_client_prove_the_token_to_each_other() {
     let answer = client.ok("challenge", json!({"nonce": ours}));
     let theirs = answer["nonce"].as_str().unwrap().to_string();
     assert!(proof::is_nonce(&theirs));
+    let (port, pid) = (rig.address.port(), std::process::id());
+    assert_eq!(answer["pid"], pid);
     assert_eq!(
         answer["proof"],
-        proof::proof(TOKEN, proof::WINDOW, &ours, &theirs),
-        "the window's proof"
+        proof::proof(TOKEN, proof::WINDOW, port, pid, &ours, &theirs),
+        "the window's proof, for its own port and process"
     );
     let reply = client.call(
         "auth",
-        json!({"proof": proof::proof(TOKEN, proof::CLIENT, &theirs, &ours), "client": "test"}),
+        json!({"proof": proof::proof(TOKEN, proof::CLIENT, port, pid, &theirs, &ours), "client": "test"}),
     );
     assert_eq!(reply["ok"], true, "{reply}");
     assert_eq!(client.ok("ui.get", json!({}))["document"], Value::Null);
@@ -435,7 +437,7 @@ fn the_window_and_the_client_prove_the_token_to_each_other() {
     let theirs = answer["nonce"].as_str().unwrap().to_string();
     let reply = wrong.call(
         "auth",
-        json!({"proof": proof::proof(&"0".repeat(64), proof::CLIENT, &theirs, &ours)}),
+        json!({"proof": proof::proof(&"0".repeat(64), proof::CLIENT, port, pid, &theirs, &ours)}),
     );
     assert_eq!(reply["ok"], false);
     assert_eq!(wrong.read(), None);
@@ -452,6 +454,72 @@ fn the_window_and_the_client_prove_the_token_to_each_other() {
     twice.ok("challenge", json!({"nonce": ours}));
     assert_eq!(twice.call("challenge", json!({"nonce": ours}))["ok"], false);
     assert_eq!(rig.dispatched.load(Ordering::SeqCst), before);
+}
+
+/// A program on another port that relays the bridge's challenge to the
+/// real window (re-review, 2026-11-02): the window's proof is for its own
+/// port, so the bridge, which checks it with the port it connected to,
+/// sends nothing further.
+#[test]
+fn a_relayed_proof_does_not_pass() {
+    use craft3d_automation::bridge::{self, BridgeConfig};
+    let rig = Rig::start(Workspace::none());
+    let window = rig.address;
+    let relay = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let relay_address = relay.local_addr().unwrap();
+    // The relay copies every byte both ways, and keeps what it saw.
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let for_relay = Arc::clone(&seen);
+    std::thread::spawn(move || {
+        let Ok((client, _)) = relay.accept() else {
+            return;
+        };
+        let Ok(server) = TcpStream::connect(window) else {
+            return;
+        };
+        let (mut client_in, mut server_out) =
+            (client.try_clone().unwrap(), server.try_clone().unwrap());
+        let copy_up = std::thread::spawn(move || {
+            let mut buffer = [0_u8; 4096];
+            while let Ok(n) = std::io::Read::read(&mut client_in, &mut buffer) {
+                if n == 0 {
+                    break;
+                }
+                for_relay.lock().unwrap().extend_from_slice(&buffer[..n]);
+                if server_out.write_all(&buffer[..n]).is_err() {
+                    break;
+                }
+            }
+            let _ = server_out.shutdown(std::net::Shutdown::Both);
+        });
+        let (mut server_in, mut client_out) = (server, client);
+        let mut buffer = [0_u8; 4096];
+        while let Ok(n) = std::io::Read::read(&mut server_in, &mut buffer) {
+            if n == 0 || client_out.write_all(&buffer[..n]).is_err() {
+                break;
+            }
+        }
+        let _ = client_out.shutdown(std::net::Shutdown::Both);
+        let _ = copy_up.join();
+    });
+    let message = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
+    let mut output = Vec::new();
+    bridge::serve(
+        &BridgeConfig::new(relay_address, TOKEN.to_string()),
+        format!("{message}\n").as_bytes(),
+        &mut output,
+    )
+    .unwrap();
+    let reply: Value = serde_json::from_slice(&output).unwrap();
+    let error = reply["error"]["message"].as_str().unwrap();
+    assert!(error.contains("nothing was sent"), "{error}");
+    let seen = String::from_utf8(seen.lock().unwrap().clone()).unwrap();
+    assert!(
+        !seen.contains("\"auth\""),
+        "no auth went through the relay: {seen}"
+    );
+    assert!(!seen.contains(TOKEN));
+    assert_eq!(rig.dispatched.load(Ordering::SeqCst), 0);
 }
 
 #[test]

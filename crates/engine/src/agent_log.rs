@@ -190,6 +190,19 @@ const NOT_LOGGED: [&str; 10] = [
     "recovery.list",
 ];
 
+/// Commands that bring back a document as it was (undo, redo, opening,
+/// recovering): they note no provenance; what they bring back keeps its
+/// own.
+const NO_PROVENANCE: [&str; 7] = [
+    "edit.undo",
+    "edit.redo",
+    "file.open",
+    "file.new",
+    "recovery.open",
+    "file.activate",
+    "history.rollback",
+];
+
 /// The active document's id and the document as it is: a shared handle,
 /// nothing copied.
 fn snapshot(session: &Session) -> Option<(u64, std::sync::Arc<craft3d_doc::Document>)> {
@@ -216,20 +229,98 @@ impl Session {
         }
     }
 
-    /// Runs `run` (one command) and logs it for the acting agent.
+    /// Runs the commands `f` runs as `actor` (an agent's name, or the
+    /// person), with `grant` (a file the person allowed once, and whether
+    /// for writing) in the workspace; the actor and the workspace are put
+    /// back when `f` returns or unwinds.
+    pub fn acting<T>(
+        &mut self,
+        actor: Option<&str>,
+        grant: Option<(&std::path::Path, bool)>,
+        f: impl FnOnce(&mut Session) -> T,
+    ) -> T {
+        struct Acting<'a> {
+            session: &'a mut Session,
+            saved: Option<crate::Workspace>,
+        }
+        impl Drop for Acting<'_> {
+            fn drop(&mut self) {
+                if let Some(saved) = self.saved.take() {
+                    self.session.set_workspace(saved);
+                }
+                self.session.set_actor(None);
+            }
+        }
+        let saved = grant.map(|(file, write)| {
+            let saved = self.workspace().clone();
+            self.set_workspace(saved.with_file(file, write));
+            saved
+        });
+        self.set_actor(actor);
+        let scope = Acting {
+            session: self,
+            saved,
+        };
+        f(scope.session)
+    }
+
+    /// Runs `f` with `intent` as the acting agent's intent, cleared again
+    /// when `f` returns or unwinds.
+    pub fn with_intent<T>(&mut self, intent: Option<&str>, f: impl FnOnce(&mut Session) -> T) -> T {
+        struct Intent<'a>(&'a mut Session);
+        impl Drop for Intent<'_> {
+            fn drop(&mut self) {
+                self.0.set_intent(None);
+            }
+        }
+        self.set_intent(intent);
+        let scope = Intent(self);
+        f(scope.0)
+    }
+
+    /// Runs `run` (one command): notes in the document who made and who
+    /// last changed its features (`Feature::made_by`, `last_changed_by`),
+    /// and logs it for the acting agent.
+    ///
+    /// Who made a feature is set once, when the feature appears: the agent
+    /// acting, or nobody (the person); a feature that comes as a copy of
+    /// another (a paste, should there be one) does not keep the original's.
+    /// Who changed it last is the agent of the latest change, and cleared
+    /// when the person changes it: absent means the person (or nobody) made
+    /// the latest change. Undo, redo, opening and recovering bring back
+    /// documents as they were and note nothing.
     pub(crate) fn logged(
         &mut self,
         id: &str,
         run: impl FnOnce(&mut Self) -> Result<Value, CommandError>,
     ) -> Result<Value, CommandError> {
-        let Some(actor) = self.actor.clone() else {
-            return run(self);
-        };
-        if NOT_LOGGED.contains(&id) {
-            return run(self);
-        }
         let before = snapshot(self);
         let outcome = run(self);
+        let after = snapshot(self);
+        let actor = self.actor.clone();
+        let (mut created, mut changed) = (Vec::new(), Vec::new());
+        if let (Some((was, old)), Some((is, new))) = (&before, &after)
+            && was == is
+            && !std::sync::Arc::ptr_eq(old, new)
+            && !NO_PROVENANCE.contains(&id)
+        {
+            let old: BTreeMap<_, _> = old.features.iter().map(|f| (f.id, f)).collect();
+            for feature in &new.features {
+                match old.get(&feature.id) {
+                    None => created.push(feature.id),
+                    Some(previous) if *previous != feature => changed.push(feature.id),
+                    Some(_) => {}
+                }
+            }
+        }
+        let agent = actor.as_ref().map(|actor| actor.client.clone());
+        self.note_provenance(&created, &changed, agent.as_deref());
+        let Some(actor) = actor else {
+            return outcome;
+        };
+        if NOT_LOGGED.contains(&id) {
+            return outcome;
+        }
         let label = Self::command(id).map_or_else(
             || id.to_string(),
             |spec: &CommandSpec| spec.label.to_string(),
@@ -238,21 +329,6 @@ impl Session {
             Ok(result) => (true, result_line(result)),
             Err(e) => (false, one_line(e.message())),
         };
-        let after = snapshot(self);
-        let (mut created, mut changed) = (Vec::new(), Vec::new());
-        if let (Some((was, old)), Some((is, new))) = (&before, &after)
-            && was == is
-            && !std::sync::Arc::ptr_eq(old, new)
-        {
-            let old: BTreeMap<_, _> = old.features.iter().map(|f| (f.id, f)).collect();
-            for feature in &new.features {
-                match old.get(&feature.id) {
-                    None => created.push(feature.id.to_string()),
-                    Some(previous) if *previous != feature => changed.push(feature.id.to_string()),
-                    Some(_) => {}
-                }
-            }
-        }
         let entry = Entry {
             client: actor.client,
             time_ms: now_ms(),
@@ -260,30 +336,50 @@ impl Session {
             label,
             ok,
             message,
-            created,
-            changed,
+            created: created.iter().map(ToString::to_string).collect(),
+            changed: changed.iter().map(ToString::to_string).collect(),
             intent: actor.intent,
         };
         if let Ok(open) = self.document_mut() {
-            // Who made or changed a feature goes into the document itself
-            // (saved since format 63), as no undo step of its own: the
-            // document makes the same bodies either way.
-            if !entry.created.is_empty() || !entry.changed.is_empty() {
-                let (created, changed, client) = (&entry.created, &entry.changed, &entry.client);
-                open.history.annotate(|doc| {
-                    for feature in &mut doc.features {
-                        let id = feature.id.to_string();
-                        if created.contains(&id) {
-                            feature.made_by = Some(client.clone());
-                        } else if changed.contains(&id) {
-                            feature.last_changed_by = Some(client.clone());
-                        }
-                    }
-                });
-            }
             open.agent_log.push(entry);
         }
         outcome
+    }
+
+    /// Writes who made `created` and who changed `changed` into the active
+    /// document, in place (`History::annotate`: no undo step, the same
+    /// bodies), only where it differs from what is there.
+    fn note_provenance(
+        &mut self,
+        created: &[craft3d_doc::FeatureId],
+        changed: &[craft3d_doc::FeatureId],
+        agent: Option<&str>,
+    ) {
+        if created.is_empty() && changed.is_empty() {
+            return;
+        }
+        let Ok(open) = self.document_mut() else {
+            return;
+        };
+        let agent = agent.map(str::to_string);
+        let differs = open.history.current().features.iter().any(|feature| {
+            (created.contains(&feature.id)
+                && (feature.made_by != agent || feature.last_changed_by.is_some()))
+                || (changed.contains(&feature.id) && feature.last_changed_by != agent)
+        });
+        if !differs {
+            return;
+        }
+        open.history.annotate(|doc| {
+            for feature in &mut doc.features {
+                if created.contains(&feature.id) {
+                    feature.made_by.clone_from(&agent);
+                    feature.last_changed_by = None;
+                } else if changed.contains(&feature.id) {
+                    feature.last_changed_by.clone_from(&agent);
+                }
+            }
+        });
     }
 
     /// The active document's log, newest first, at most `limit` entries,
@@ -536,5 +632,75 @@ mod tests {
             .unwrap();
         assert!(session.person_document_file().is_some());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Provenance (re-review, 2026-11-02): who made a feature is set once,
+    /// a mirror the person makes of an agent's feature is the person's,
+    /// the person's later edit clears who changed it last, and undo and
+    /// redo bring each state back with its own provenance.
+    #[test]
+    fn provenance_is_set_once_follows_the_person_and_survives_undo() {
+        let mut session = Session::new(Workspace::none());
+        session.execute("file.new", &json!({})).unwrap();
+        let made = |s: &Session, name: &str| {
+            let doc = s.document().unwrap().history.current().clone();
+            let f = doc.features.iter().find(|f| f.name == name).unwrap();
+            (f.made_by.clone(), f.last_changed_by.clone())
+        };
+        session.set_actor(Some("A"));
+        session
+            .execute(
+                "feature.block",
+                &json!({"name": "Bar", "size": [10, 2, 2], "position": [5, 0, 0]}),
+            )
+            .unwrap();
+        session.set_actor(None);
+        assert_eq!(made(&session, "Bar"), (Some("A".into()), None));
+        // Another agent changes it: made_by stays, last_changed_by is B.
+        session.set_actor(Some("B"));
+        session
+            .execute(
+                "feature.edit",
+                &json!({"feature": "Bar", "size": [12, 2, 2]}),
+            )
+            .unwrap();
+        session.set_actor(None);
+        assert_eq!(made(&session, "Bar"), (Some("A".into()), Some("B".into())));
+        // The person mirrors it: the mirror is the person's.
+        session
+            .execute(
+                "feature.mirror",
+                &json!({"source": "Bar", "normal": [1, 0, 0], "name": "Left"}),
+            )
+            .unwrap();
+        assert_eq!(made(&session, "Left"), (None, None));
+        // The person edits it: last changed by the person (cleared).
+        session
+            .execute(
+                "feature.edit",
+                &json!({"feature": "Bar", "size": [14, 2, 2]}),
+            )
+            .unwrap();
+        assert_eq!(made(&session, "Bar"), (Some("A".into()), None));
+        // Undo and redo, as an agent too: each state as it was.
+        session.set_actor(Some("C"));
+        session.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(made(&session, "Bar"), (Some("A".into()), Some("B".into())));
+        session.execute("edit.redo", &json!({})).unwrap();
+        session.set_actor(None);
+        assert_eq!(made(&session, "Bar"), (Some("A".into()), None));
+        for _ in 0..3 {
+            session.execute("edit.undo", &json!({})).unwrap();
+        }
+        assert_eq!(
+            made(&session, "Bar"),
+            (Some("A".into()), None),
+            "as first made"
+        );
+        for _ in 0..3 {
+            session.execute("edit.redo", &json!({})).unwrap();
+        }
+        assert_eq!(made(&session, "Bar"), (Some("A".into()), None));
+        assert_eq!(made(&session, "Left"), (None, None));
     }
 }

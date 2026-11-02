@@ -230,12 +230,11 @@ fn dispatch(
             )?;
             let command = p.required_str("command")?;
             let command_params = p.object("params")?;
-            session.set_intent(p.str("intent")?);
-            let outcome = session
-                .execute(command, command_params)
-                .map_err(|e| e.message().to_string());
-            session.set_intent(None);
-            outcome
+            session.with_intent(p.str("intent")?, |session| {
+                session
+                    .execute(command, command_params)
+                    .map_err(|e| e.message().to_string())
+            })
         }
         "engine.commands" => {
             let p = Fields::new(method, "parameter", params, &["filter"])?;

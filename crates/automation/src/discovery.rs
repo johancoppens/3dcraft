@@ -221,23 +221,54 @@ fn port_answers(port: u16, timeout: Duration) -> bool {
 }
 
 /// On Linux, whether the socket listening on 127.0.0.1:`port` belongs to
-/// process `pid` (from `/proc/net/tcp` and the process's open files);
-/// `None` where that cannot be told (another system, another user's
-/// process, no `/proc`).
+/// process `pid` (from `/proc/net/tcp`, `/proc/net/tcp6` and the
+/// process's open files). The window always listens on 127.0.0.1 (IPv4)
+/// only, so with `/proc` readable this fails closed: no 127.0.0.1 listener
+/// on the port, a listener on another address of it (`0.0.0.0`, any IPv6
+/// one: a squatter), or a process whose open files cannot be read
+/// (another user's, a recycled process id) is `Some(false)`. `None` only
+/// where it cannot be told at all (another system, no `/proc`).
 pub fn listener_belongs_to(pid: u32, port: u16) -> Option<bool> {
     if !cfg!(target_os = "linux") {
         return None;
     }
     let table = std::fs::read_to_string("/proc/net/tcp").ok()?;
-    let wanted = format!("0100007F:{port:04X}");
+    let ours = format!("0100007F:{port:04X}");
+    let on_port = format!(":{port:04X}");
+    let mut inode = None;
     // Fields: sl local remote state ... uid timeout inode.
-    let inode = table.lines().skip(1).find_map(|line| {
+    for line in table.lines().skip(1) {
         let fields: Vec<&str> = line.split_whitespace().collect();
-        let (local, state, inode) = (fields.get(1)?, fields.get(3)?, fields.get(9)?);
-        (*local == wanted && *state == "0A").then(|| inode.to_string())
-    })?;
+        let (Some(local), Some(state), Some(node)) = (fields.get(1), fields.get(3), fields.get(9))
+        else {
+            continue;
+        };
+        if *state != "0A" || !local.ends_with(&on_port) {
+            continue;
+        }
+        if *local == ours {
+            inode = Some(node.to_string());
+        } else {
+            return Some(false);
+        }
+    }
+    if let Ok(table6) = std::fs::read_to_string("/proc/net/tcp6") {
+        let listening6 = table6.lines().skip(1).any(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            matches!((fields.get(1), fields.get(3)), (Some(local), Some(state))
+                if *state == "0A" && local.ends_with(&on_port))
+        });
+        if listening6 {
+            return Some(false);
+        }
+    }
+    let Some(inode) = inode else {
+        return Some(false);
+    };
     let socket = format!("socket:[{inode}]");
-    let fds = std::fs::read_dir(format!("/proc/{pid}/fd")).ok()?;
+    let Ok(fds) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
+        return Some(false);
+    };
     Some(fds.filter_map(Result::ok).take(65_536).any(|fd| {
         std::fs::read_link(fd.path()).is_ok_and(|target| target.as_os_str() == socket.as_str())
     }))
@@ -267,7 +298,18 @@ pub fn check_private(path: &Path) -> Result<(), String> {
                 "the control token file `{shown}` can be read or changed by other users (mode {mode:o}); make it private with `chmod 600` and try again"
             ));
         }
-        if let Ok(me) = std::fs::metadata("/proc/self").map(|m| m.uid())
+        // Who "this user" is: the process's own owner where /proc says it
+        // (Linux), else the owner of the folder the file is in (the state
+        // folder, for the default one; macOS).
+        let me = std::fs::metadata("/proc/self")
+            .map(|m| m.uid())
+            .ok()
+            .or_else(|| {
+                path.parent()
+                    .and_then(|folder| std::fs::metadata(folder).ok())
+                    .map(|m| m.uid())
+            });
+        if let Some(me) = me
             && meta.uid() != me
         {
             return Err(format!(
@@ -576,6 +618,23 @@ mod tests {
             assert!(!is_live(&entry));
         }
         drop(listener);
+        // Nothing on the port: not the window.
+        assert_eq!(listener_belongs_to(std::process::id(), port), Some(false));
+        // A squatter on every address, or on IPv6: not the window, even
+        // when it is this very process.
+        let any = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap();
+        let any_port = any.local_addr().unwrap().port();
+        assert_eq!(
+            listener_belongs_to(std::process::id(), any_port),
+            Some(false)
+        );
+        if let Ok(six) = TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, 0)) {
+            let six_port = six.local_addr().unwrap().port();
+            assert_eq!(
+                listener_belongs_to(std::process::id(), six_port),
+                Some(false)
+            );
+        }
     }
 
     #[test]

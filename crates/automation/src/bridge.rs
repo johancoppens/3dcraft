@@ -91,6 +91,8 @@ impl BridgeConfig {
 struct Target {
     address: SocketAddr,
     token: String,
+    /// The window's process, when discovery named it.
+    pid: Option<u32>,
 }
 
 /// The bridge while it runs: its configuration and the window it chose.
@@ -117,6 +119,7 @@ impl Bridge {
             Window::Fixed { address, token } => Ok(Target {
                 address: *address,
                 token: token.clone(),
+                pid: None,
             }),
             Window::Discover { folder, port } => {
                 if let Some(chosen) = &self.chosen {
@@ -130,6 +133,7 @@ impl Bridge {
                 let target = Target {
                     address: SocketAddr::from((Ipv4Addr::LOCALHOST, entry.port)),
                     token,
+                    pid: Some(entry.pid),
                 };
                 self.chosen = Some(target.clone());
                 Ok(target)
@@ -168,6 +172,7 @@ impl Bridge {
             Window::Fixed { address, token } => Some(Target {
                 address: *address,
                 token: token.clone(),
+                pid: None,
             }),
             Window::Discover { .. } => None,
         }) else {
@@ -293,12 +298,32 @@ fn call(
         .get("nonce")
         .and_then(Value::as_str)
         .filter(|nonce| crate::proof::is_nonce(nonce))
-        .ok_or_else(|| not_the_window("it gave no nonce"))?;
+        .ok_or_else(|| not_the_window("it gave no nonce"))?
+        .to_ascii_lowercase();
+    let pid = answer
+        .get("pid")
+        .and_then(Value::as_u64)
+        .and_then(|pid| u32::try_from(pid).ok())
+        .ok_or_else(|| not_the_window("it gave no process id"))?;
+    if target.pid.is_some_and(|wanted| wanted != pid) {
+        return Err(not_the_window(
+            "another process than the one that announced the window",
+        ));
+    }
     let shown = answer
         .get("proof")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let expected = crate::proof::proof(&target.token, crate::proof::WINDOW, &ours, theirs);
+    // The port this bridge connected to: a proof the window made for its
+    // own port does not pass here when relayed from another one.
+    let expected = crate::proof::proof(
+        &target.token,
+        crate::proof::WINDOW,
+        at.port(),
+        pid,
+        &ours,
+        &theirs,
+    );
     if !crate::proof::same(shown, &expected) {
         let hint = if fixed {
             "; give the bridge the token file the window was started with"
@@ -308,7 +333,7 @@ fn call(
         return Err(not_the_window(&format!("its proof does not match{hint}")));
     }
     let mut auth = json!({
-        "proof": crate::proof::proof(&target.token, crate::proof::CLIENT, theirs, &ours)
+        "proof": crate::proof::proof(&target.token, crate::proof::CLIENT, at.port(), pid, &theirs, &ours)
     });
     if let (Some(client), Value::Object(params)) = (&config.client, &mut auth) {
         params.insert("client".to_string(), Value::String(client.clone()));

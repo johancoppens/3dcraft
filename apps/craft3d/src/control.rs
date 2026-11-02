@@ -77,6 +77,8 @@ impl ControlConfig {
 
 struct Shared {
     config: ControlConfig,
+    /// The port it listens on (what the challenge's proofs are made for).
+    port: u16,
     requests: Mutex<Sender<Request>>,
     wake: Wake,
     connections: AtomicUsize,
@@ -214,6 +216,7 @@ fn authenticate(
     line: &str,
     expected: &str,
     challenge: Option<&(String, String)>,
+    port: u16,
 ) -> (bool, String, Option<String>) {
     let refuse = |id: &Value, why: &str| (false, rpc::error_reply(id, why), None);
     let first = r#"the first request must be {"id": ..., "method": "auth", "params": {"token": "<the control token>"}}, or a challenge first (docs/control-protocol.md, "Authentication")"#;
@@ -229,9 +232,17 @@ fn authenticate(
     let accepted = match (text("proof"), text("token"), challenge) {
         // After a challenge: the proof, which only a holder of the token
         // makes; the token itself never crosses the socket.
-        (Some(given), _, Some((theirs, ours))) => {
-            proof::same(given, &proof::proof(expected, proof::CLIENT, ours, theirs))
-        }
+        (Some(given), _, Some((theirs, ours))) => proof::same(
+            given,
+            &proof::proof(
+                expected,
+                proof::CLIENT,
+                port,
+                std::process::id(),
+                ours,
+                theirs,
+            ),
+        ),
         (Some(_), _, None) => {
             return refuse(id, "auth: a proof needs a challenge first");
         }
@@ -252,7 +263,11 @@ fn authenticate(
 /// The answer to `challenge {nonce}`: a nonce of the window's own and the
 /// window's proof over both, and the two nonces for the `auth` that
 /// follows; `Err` with the reply for anything else.
-fn answer_challenge(line: &str, token: &str) -> Result<(String, (String, String)), String> {
+fn answer_challenge(
+    line: &str,
+    token: &str,
+    port: u16,
+) -> Result<(String, (String, String)), String> {
     let request: Value = serde_json::from_str(line).unwrap_or(Value::Null);
     let id = request.get("id").cloned().unwrap_or(Value::Null);
     let theirs = request
@@ -266,12 +281,18 @@ fn answer_challenge(line: &str, token: &str) -> Result<(String, (String, String)
                 "challenge: `nonce` must be 32 to 128 hexadecimal characters",
             )
         })?;
+    let theirs = theirs.to_ascii_lowercase();
     let ours = proof::nonce().map_err(|e| rpc::error_reply(&id, &format!("challenge: {e}")))?;
+    let pid = std::process::id();
     let reply = rpc::ok_reply(
         &id,
-        &json!({ "nonce": ours, "proof": proof::proof(token, proof::WINDOW, theirs, &ours) }),
+        &json!({
+            "nonce": ours,
+            "pid": pid,
+            "proof": proof::proof(token, proof::WINDOW, port, pid, &theirs, &ours),
+        }),
     );
-    Ok((reply, (theirs.to_ascii_lowercase(), ours)))
+    Ok((reply, (theirs, ours)))
 }
 
 fn is_challenge(line: &str) -> bool {
@@ -538,7 +559,7 @@ fn serve(stream: TcpStream, shared: &Shared) {
                 // the token before the client says anything that depends
                 // on it.
                 Ok(line) if !authenticated && challenge.is_none() && is_challenge(line) => {
-                    match answer_challenge(line, &shared.config.token) {
+                    match answer_challenge(line, &shared.config.token, shared.port) {
                         Ok((reply, nonces)) => {
                             challenge = Some(nonces);
                             if send_line(&mut output, &reply).is_err() {
@@ -551,7 +572,7 @@ fn serve(stream: TcpStream, shared: &Shared) {
                 }
                 Ok(line) if !authenticated => {
                     let (accepted, reply, name) =
-                        authenticate(line, &shared.config.token, challenge.as_ref());
+                        authenticate(line, &shared.config.token, challenge.as_ref(), shared.port);
                     if !accepted {
                         let _ = send_line(&mut output, &reply);
                         break;
@@ -697,6 +718,7 @@ impl ControlServer {
             .map_err(|e| format!("cannot read the control channel's address: {e}"))?;
         let shared = Arc::new(Shared {
             config,
+            port: address.port(),
             requests: Mutex::new(requests),
             wake,
             connections: AtomicUsize::new(0),

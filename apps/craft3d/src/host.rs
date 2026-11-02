@@ -487,21 +487,25 @@ impl Host {
         // An agent's commands go into the document's agent log, under the
         // name its MCP client gave (`craft3d_engine::agent_log`).
         let actor = request.origin.as_ref().map(|origin| origin.name.clone());
-        self.session.set_actor(actor.as_deref());
         // A file the person allowed once: for this request alone.
         let grant = request.origin.as_ref().and_then(|o| o.grant.clone());
-        let saved = grant.map(|(file, write)| {
+        self.shell.set_agents_viewer(actor.as_deref());
+        // Put back below in every case: `handle_line` catches whatever
+        // unwinds in it (the last-resort guard), so nothing skips the
+        // restore here. (The engine thread's closure, which has no such
+        // guard around it, uses `Session::acting`.)
+        let saved = grant.as_ref().map(|(file, write)| {
             let saved = self.session.workspace().clone();
-            self.session.set_workspace(saved.with_file(&file, write));
+            self.session.set_workspace(saved.with_file(file, *write));
             saved
         });
-        self.shell.set_agents_viewer(actor.as_deref());
+        self.session.set_actor(actor.as_deref());
         let reply = self.handle_line(&request.line);
-        self.shell.set_agents_viewer(None);
+        self.session.set_actor(None);
         if let Some(saved) = saved {
             self.session.set_workspace(saved);
         }
-        self.session.set_actor(None);
+        self.shell.set_agents_viewer(None);
         let _ = request.reply.send(reply);
     }
 

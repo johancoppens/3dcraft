@@ -125,9 +125,9 @@ pub(crate) fn run_batch(
     let (mut completed, mut failed) = (0_usize, 0_usize);
     for (index, step) in steps.iter().enumerate() {
         // A step's own intent, else the batch's.
-        session.set_intent(step.intent.or(intent));
-        let outcome = session.execute(step.command, step.params);
-        session.set_intent(None);
+        let outcome = session.with_intent(step.intent.or(intent), |session| {
+            session.execute(step.command, step.params)
+        });
         match outcome {
             Ok(result) => {
                 completed = completed.saturating_add(1);

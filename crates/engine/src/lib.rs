@@ -1050,6 +1050,13 @@ impl Session {
         self.document().ok()?.person_file.clone()
     }
 
+    /// The file of open document `index` when the person opened or saved
+    /// it there themselves (an agent's file is `None`): what a host may
+    /// list among the person's recent files.
+    pub fn person_file_of(&self, index: usize) -> Option<String> {
+        self.documents.get(index)?.person_file.clone()
+    }
+
     pub(crate) fn document(&self) -> Result<&OpenDocument, CommandError> {
         self.documents.get(self.active).ok_or_else(|| {
             CommandError::new("no document is open; run file.new or file.open first")

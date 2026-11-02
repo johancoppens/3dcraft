@@ -738,17 +738,12 @@ impl Desk {
                             Box::new(move |session| {
                                 // An agent's commands go into the agent log;
                                 // a file allowed once is this request's alone.
-                                session.set_actor(actor.as_deref());
-                                let saved = grant.map(|(file, write)| {
-                                    let saved = session.workspace().clone();
-                                    session.set_workspace(saved.with_file(&file, write));
-                                    saved
+                                // Both are put back also when it unwinds.
+                                let grant =
+                                    grant.as_ref().map(|(file, write)| (file.as_path(), *write));
+                                let reply = session.acting(actor.as_deref(), grant, |session| {
+                                    answer_on_engine(session, &line)
                                 });
-                                let reply = answer_on_engine(session, &line);
-                                if let Some(saved) = saved {
-                                    session.set_workspace(saved);
-                                }
-                                session.set_actor(None);
                                 Outcome::Reply(reply)
                             }),
                         );

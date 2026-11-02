@@ -694,9 +694,7 @@ fn tool_command_run(
     )?;
     let id = a.required_str("id")?;
     let params = a.object("params")?;
-    session.set_intent(a.str("intent")?);
-    let outcome = session.execute(id, params);
-    session.set_intent(None);
+    let outcome = session.with_intent(a.str("intent")?, |session| session.execute(id, params));
     match outcome {
         Ok(result) => Ok(ToolOutput::json(&result)),
         Err(error) => Err(ToolFailure::Failed(error.message().to_string())),

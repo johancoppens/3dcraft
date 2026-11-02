@@ -2,11 +2,12 @@
 //! docs/control-protocol.md, "Threat model").
 //!
 //! The bridge opens with `challenge {nonce}`; the window answers with a
-//! nonce of its own and `HMAC-SHA256(token, "3dcraft window" | bridge
-//! nonce | window nonce)`, which only a holder of the token can make. The
-//! bridge checks it before it sends anything that depends on the token,
-//! then authenticates with `HMAC-SHA256(token, "3dcraft client" | window
-//! nonce | bridge nonce)`. A program that took the port (another user's,
+//! nonce of its own, its process id and `HMAC-SHA256(token, "3dcraft
+//! window" | port | pid | bridge nonce | window nonce)`, which only a
+//! holder of the token can make, for the port it listens on. The bridge
+//! checks it with the port it connected to before it sends anything that
+//! depends on the token, then authenticates with `HMAC-SHA256(token,
+//! "3dcraft client" | port | pid | window nonce | bridge nonce)`. A program that took the port (another user's,
 //! or one that came after a window crashed) learns nothing it could use:
 //! the token never crosses the socket.
 //!
@@ -46,9 +47,17 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// The proof of `role` over the two nonces, as hexadecimal.
-pub fn proof(token: &str, role: &str, first: &str, second: &str) -> String {
-    let message = format!("{role}\n{first}\n{second}");
+/// The proof of `role` for the window listening on 127.0.0.1:`port` as
+/// process `pid`, over the two nonces (lower case), as hexadecimal. The
+/// port and the process are in it so that a proof the window made for a
+/// program on another port (relaying a client's challenge to the real
+/// window) does not pass where the client connected.
+pub fn proof(token: &str, role: &str, port: u16, pid: u32, first: &str, second: &str) -> String {
+    let message = format!(
+        "{role}\nport {port}\npid {pid}\n{}\n{}",
+        first.to_ascii_lowercase(),
+        second.to_ascii_lowercase()
+    );
     hex(&hmac_sha256(token.as_bytes(), message.as_bytes()))
 }
 
@@ -120,12 +129,20 @@ mod tests {
     #[test]
     fn proofs_depend_on_the_token_the_role_and_the_order_of_the_nonces() {
         let (token, a, b) = ("ab".repeat(32), "1".repeat(64), "2".repeat(64));
-        let window = proof(&token, WINDOW, &a, &b);
+        let window = proof(&token, WINDOW, 7878, 42, &a, &b);
         assert_eq!(window.len(), 64);
-        assert_ne!(window, proof(&token, CLIENT, &a, &b));
-        assert_ne!(window, proof(&token, WINDOW, &b, &a));
-        assert_ne!(window, proof(&"cd".repeat(32), WINDOW, &a, &b));
-        assert!(same(&window, &proof(&token, WINDOW, &a, &b)));
+        assert_ne!(window, proof(&token, CLIENT, 7878, 42, &a, &b));
+        assert_ne!(window, proof(&token, WINDOW, 7878, 42, &b, &a));
+        assert_ne!(window, proof(&"cd".repeat(32), WINDOW, 7878, 42, &a, &b));
+        // Another port or process: another proof (a relay does not pass).
+        assert_ne!(window, proof(&token, WINDOW, 7879, 42, &a, &b));
+        assert_ne!(window, proof(&token, WINDOW, 7878, 43, &a, &b));
+        // Nonces in either case are the same nonces.
+        assert_eq!(
+            window,
+            proof(&token, WINDOW, 7878, 42, &a.to_uppercase(), &b)
+        );
+        assert!(same(&window, &proof(&token, WINDOW, 7878, 42, &a, &b)));
         assert!(!same(&window, &window[..63]));
         assert!(!same("", ""));
         assert!(is_nonce(&a) && !is_nonce("12") && !is_nonce(&"g".repeat(64)));

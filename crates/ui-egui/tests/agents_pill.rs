@@ -338,3 +338,36 @@ fn an_agent_sees_its_own_entry_only() {
     assert!(own["prompts"].as_array().unwrap().is_empty());
     shell.set_agents_viewer(None);
 }
+
+/// A file an agent opened or wrote stays out of the recent files: opening
+/// it from there later would quietly give its folder to agents.
+#[test]
+fn an_agents_files_stay_out_of_the_recent_files() {
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("agents-recent");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = |name: &str| dir.join(name).to_str().unwrap().to_string();
+    let mut session = Session::new(Workspace::unrestricted());
+    let mut shell = Shell::new();
+    session.set_actor(Some("Claude Code"));
+    session.execute("file.new", &json!({})).unwrap();
+    session
+        .execute("file.save", &json!({"path": path("agent.3dcraft")}))
+        .unwrap();
+    session.set_actor(None);
+    shell.sync(&mut session);
+    assert!(
+        shell.recent_list().paths().is_empty(),
+        "{:?}",
+        shell.recent_list().paths()
+    );
+    session.execute("file.new", &json!({})).unwrap();
+    session
+        .execute("file.save", &json!({"path": path("mine.3dcraft")}))
+        .unwrap();
+    shell.sync(&mut session);
+    let listed = shell.recent_list().paths().to_vec();
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert!(listed[0].ends_with("mine.3dcraft"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
