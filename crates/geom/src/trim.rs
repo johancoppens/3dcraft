@@ -361,7 +361,7 @@ fn inner_breaks(knots: &[f64], lo: f64, hi: f64) -> Vec<f64> {
 
 /// The index of the span `[breaks[i], breaks[i + 1]]` holding `x`
 /// (clamped to the first and the last).
-fn span_of(breaks: &[f64], x: f64) -> usize {
+pub(crate) fn span_of(breaks: &[f64], x: f64) -> usize {
     let n = breaks.len().saturating_sub(1);
     let mut i = breaks.partition_point(|b| *b <= x).saturating_sub(1);
     if i >= n {
@@ -973,35 +973,9 @@ pub fn project_points(
     within: f64,
     tolerance: f64,
 ) -> Result<(NurbsCurve, f64), TrimError> {
-    let (a, b) = range;
-    if !(a.is_finite() && b.is_finite() && b > a) {
-        return refuse("a curve projected onto a surface needs an increasing range".into());
-    }
     let mut count = 16usize;
     loop {
-        let mut params = Vec::with_capacity(count + 1);
-        let mut uv: Vec<(f64, f64)> = Vec::with_capacity(count + 1);
-        let mut last: Option<(f64, f64)> = None;
-        for i in 0..=count {
-            let t = a + (b - a) * i as f64 / count as f64;
-            let at = project_point(surface, curve.eval(t), how, last, tolerance)?;
-            params.push(t);
-            uv.push(at);
-            last = Some(at);
-        }
-        let c = uv_through(&params, &uv)?;
-        // Midpoints: the curve on the surface against the projection.
-        let mut worst = 0.0_f64;
-        for i in 0..count {
-            let t = a + (b - a) * (i as f64 + 0.5) / count as f64;
-            let start = uv.get(i).copied();
-            let target = project_point(surface, curve.eval(t), how, start, tolerance)?;
-            let q = c.eval(t);
-            let gap = surface
-                .eval(q.x, q.y)
-                .distance(surface.eval(target.0, target.1));
-            worst = worst.max(gap);
-        }
+        let (c, worst) = fit_projection(surface, curve, range, how, count, tolerance, None)?;
         if worst <= within {
             return Ok((c, worst));
         }
@@ -1012,6 +986,193 @@ pub fn project_points(
         }
         count *= 2;
     }
+}
+
+/// The cubic through the projections of `count + 1` evenly spaced points
+/// of `curve` over `range`, and the largest distance at the midpoints
+/// between them from `S(c(t))` to the projection of the curve's point.
+/// `first`, when given, is taken as the first point's parameters (where a
+/// piece before it ended, so the two meet exactly).
+fn fit_projection(
+    surface: &Surface,
+    curve: &crate::Curve3,
+    range: (f64, f64),
+    how: Projection,
+    count: usize,
+    tolerance: f64,
+    first: Option<(f64, f64)>,
+) -> Result<(NurbsCurve, f64), TrimError> {
+    let (a, b) = range;
+    if !(a.is_finite() && b.is_finite() && b > a) {
+        return refuse("a curve projected onto a surface needs an increasing range".into());
+    }
+    let mut params = Vec::with_capacity(count + 1);
+    let mut uv: Vec<(f64, f64)> = Vec::with_capacity(count + 1);
+    let mut last: Option<(f64, f64)> = None;
+    for i in 0..=count {
+        let t = a + (b - a) * i as f64 / count as f64;
+        let at = match (i, first) {
+            (0, Some(given)) => given,
+            _ => project_point(surface, curve.eval(t), how, last, tolerance)?,
+        };
+        params.push(t);
+        uv.push(at);
+        last = Some(at);
+    }
+    let c = uv_through(&params, &uv)?;
+    // Midpoints: the curve on the surface against the projection.
+    let mut worst = 0.0_f64;
+    for i in 0..count {
+        let t = a + (b - a) * (i as f64 + 0.5) / count as f64;
+        let start = uv.get(i).copied();
+        let target = project_point(surface, curve.eval(t), how, start, tolerance)?;
+        let q = c.eval(t);
+        let gap = surface
+            .eval(q.x, q.y)
+            .distance(surface.eval(target.0, target.1));
+        worst = worst.max(gap);
+    }
+    Ok((c, worst))
+}
+
+/// A curve taken onto a spline surface with its edge proven near the
+/// true projection everywhere ([`project_proven`]).
+#[derive(Clone, Debug)]
+pub struct ProvenProjection {
+    /// The curve in the surface's parameters, over the curve's domain.
+    pub uv: NurbsCurve,
+    /// The proven bound on the distance between `S(c(t))` and the
+    /// projection of the curve's point, over every `t`.
+    pub proven: f64,
+    /// The largest distance found at the midpoints between samples (a
+    /// lower estimate of the true largest gap, at most `proven`).
+    pub sampled: f64,
+    /// Samples taken along the curve.
+    pub samples: usize,
+    /// Pieces the proof took.
+    pub pieces: usize,
+}
+
+/// Most pieces a projected curve is fitted in ([`project_proven`]).
+pub const MAX_PROJECTED_PIECES: usize = 4096;
+
+/// [`project_points`] with a proof. The curve is cut where it is only
+/// `C¹` or less (an interior knot of multiplicity at least its degree less
+/// one: an arc's quarter joins, a polyline's corners), since a cubic
+/// through samples cannot follow a jump in curvature; on each piece, the
+/// cubic through the projections of 16 samples, doubled (at most
+/// [`MAX_PROJECTED_SAMPLES`]) until both the distance at the midpoints
+/// and the proven bound on the distance between `S(c(t))` and the true
+/// projection, at every `t` ([`crate::projection_proof::projection_bound`]),
+/// are within `within`. The pieces meet at exactly the same parameters and
+/// are joined into one curve over the curve's own parameter. Refused,
+/// with both numbers, when no number of samples allowed gets there, or
+/// where the projection cannot be proven at all.
+pub fn project_proven(
+    spline: &NurbsSurface,
+    curve: &NurbsCurve,
+    how: Projection,
+    within: f64,
+    tolerance: f64,
+) -> Result<ProvenProjection, TrimError> {
+    let surface = Surface::Nurbs(spline.clone());
+    let (a, b) = curve.domain();
+    let p = curve.degree();
+    let mut breaks = vec![a];
+    for k in inner_breaks(curve.knots(), a, b) {
+        let times = curve.knots().iter().filter(|x| **x == k).count();
+        if times + 1 >= p {
+            breaks.push(k);
+        }
+    }
+    breaks.push(b);
+    if breaks.len() > MAX_PROJECTED_PIECES + 1 {
+        return refuse(format!(
+            "a curve projected onto the surface has more than {MAX_PROJECTED_PIECES} pieces that meet with less than C2"
+        ));
+    }
+    let mut fitted: Vec<(NurbsCurve, f64, f64)> = Vec::with_capacity(breaks.len());
+    let (mut proven, mut sampled, mut samples, mut pieces) = (0.0_f64, 0.0_f64, 0usize, 0usize);
+    let mut joint: Option<(f64, f64)> = None;
+    for w in breaks.windows(2) {
+        let (Some(&from), Some(&to)) = (w.first(), w.get(1)) else {
+            return Err(internal());
+        };
+        let piece = crate::refine::piece(curve, from, to)?;
+        let curve3 = crate::Curve3::Nurbs(piece.clone());
+        let mut count = 16usize;
+        let mut best = f64::INFINITY;
+        let made = loop {
+            let (c, worst) =
+                fit_projection(&surface, &curve3, (0.0, 1.0), how, count, tolerance, joint)?;
+            if worst <= within {
+                let gap = crate::projection_proof::projection_bound(spline, &piece, &c, how)?;
+                best = gap.bound;
+                if gap.bound <= within {
+                    break (c, worst, gap);
+                }
+            }
+            if count * 2 > MAX_PROJECTED_SAMPLES {
+                return refuse(format!(
+                    "a curve projected onto the surface is not proven within {within:e} by {MAX_PROJECTED_SAMPLES} samples between t = {from} and {to} (proven bound {best:e}, off by {worst:e} at the midpoints)"
+                ));
+            }
+            count *= 2;
+        };
+        let (c, worst, gap) = made;
+        let end = c.eval(1.0);
+        joint = Some((end.x, end.y));
+        proven = proven.max(gap.bound);
+        sampled = sampled.max(worst);
+        samples += count;
+        pieces += gap.pieces;
+        fitted.push((c, from, to));
+    }
+    Ok(ProvenProjection {
+        uv: joined(&fitted)?,
+        proven,
+        sampled,
+        samples,
+        pieces,
+    })
+}
+
+/// Polynomial pieces over `[0, 1]` each, of one degree, meeting end to
+/// end, as one curve over `[from, to]` of each in turn (knots of the
+/// degree's multiplicity between them).
+fn joined(pieces: &[(NurbsCurve, f64, f64)]) -> Result<NurbsCurve, TrimError> {
+    let Some((first, _, _)) = pieces.first() else {
+        return Err(internal());
+    };
+    let p = first.degree();
+    let mut knots: Vec<f64> = Vec::new();
+    let mut ctrl: Vec<Vec3> = Vec::new();
+    for (i, (c, from, to)) in pieces.iter().enumerate() {
+        if c.degree() != p {
+            return Err(internal());
+        }
+        let map = |k: f64| {
+            if k <= 0.0 {
+                *from
+            } else if k >= 1.0 {
+                *to
+            } else {
+                from + (to - from) * k
+            }
+        };
+        let ks: Vec<f64> = c.knots().iter().map(|k| map(*k)).collect();
+        let last = i + 1 == pieces.len();
+        let take_from = if i == 0 { 0 } else { p + 1 };
+        let take_to = if last {
+            ks.len()
+        } else {
+            ks.len().saturating_sub(1)
+        };
+        knots.extend(ks.get(take_from..take_to).ok_or_else(internal)?);
+        let skip = usize::from(i > 0);
+        ctrl.extend(c.control_points().iter().skip(skip).copied());
+    }
+    Ok(NurbsCurve::polynomial(p, knots, ctrl)?)
 }
 
 /// The surface of revolution about `axis` (its z), a full turn from the
