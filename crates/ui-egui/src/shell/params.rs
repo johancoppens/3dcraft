@@ -1382,6 +1382,78 @@ impl Shell {
     }
 
     /// The Parameters tab.
+    /// The Jig's parameters as a half sheet under the model, on a phone
+    /// (board m8): the form, as the Parameters tab has it, over the lower
+    /// half of the viewport, so every change shows at once above it.
+    pub(super) fn parameters_sheet(&mut self, ui: &mut egui::Ui) {
+        let tokens = self.tokens;
+        let Some(viewport) = self.rect else {
+            self.params_sheet_rect = None;
+            return;
+        };
+        let height = (viewport.height() * tokens.half_sheet_share)
+            .max(4.0 * tokens.touch_target)
+            .min(viewport.height());
+        let place = egui::Rect::from_min_max(
+            egui::pos2(viewport.left(), viewport.bottom() - height),
+            viewport.max,
+        );
+        let pad = tokens.dialog_padding;
+        let r = tokens.dialog_radius.saturating_mul(2);
+        let kit = crate::kit::Kit::panel(&tokens);
+        let shown = egui::Area::new(egui::Id::new("craft3d-params-sheet"))
+            .order(egui::Order::Middle)
+            .fixed_pos(place.min)
+            .constrain(false)
+            .show(ui.ctx(), |ui| {
+                ui.set_min_size(place.size());
+                ui.set_max_size(place.size());
+                ui.style_mut().visuals = tokens.panel_visuals();
+                egui::Frame::new()
+                    .fill(color(tokens.panel_fill))
+                    .stroke(egui::Stroke::new(1.0, color(tokens.divider)))
+                    .corner_radius(egui::CornerRadius {
+                        nw: r,
+                        ne: r,
+                        sw: 0,
+                        se: 0,
+                    })
+                    .inner_margin(egui::Margin::same(pad.clamp(0.0, 32.0) as i8))
+                    .show(ui, |ui| {
+                        ui.set_width((place.width() - 2.0 * pad).max(0.0));
+                        ui.set_height((place.height() - 2.0 * pad).max(0.0));
+                        let (grab, _) = ui.allocate_exact_size(
+                            egui::vec2(ui.available_width(), tokens.nav_spacing * 2.0),
+                            egui::Sense::hover(),
+                        );
+                        ui.painter().rect_filled(
+                            egui::Rect::from_center_size(grab.center(), egui::vec2(36.0, 4.0)),
+                            egui::CornerRadius::same(2),
+                            color(tokens.field_stroke),
+                        );
+                        ui.label(
+                            egui::RichText::new("Parameters")
+                                .font(egui::FontId::new(
+                                    tokens.dialog_title_font,
+                                    kit.medium_font(ui).family,
+                                ))
+                                .color(color(tokens.text)),
+                        );
+                        egui::ScrollArea::vertical()
+                            .id_salt("craft3d-params-sheet-scroll")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| self.parameters_tab(ui));
+                    });
+            });
+        self.params_sheet_rect = Some(shown.response.rect.intersect(place));
+    }
+
+    /// Where the Jig's parameters' half sheet was drawn in the last frame
+    /// (a phone), `None` without it.
+    pub fn parameters_sheet_rect(&self) -> Option<egui::Rect> {
+        self.params_sheet_rect
+    }
+
     pub(super) fn parameters_tab(&mut self, ui: &mut egui::Ui) {
         let tokens = self.tokens;
         let dim = color(tokens.text_dim);

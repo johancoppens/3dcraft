@@ -385,6 +385,9 @@ pub struct Tokens {
     pub popover_pointer: f32,
     /// The one width of the sliders in a popover, in points.
     pub popover_slider_width: f32,
+    /// The popovers' rows (board s1): the label's column, the value's.
+    pub popover_label_width: f32,
+    pub popover_value_width: f32,
     /// A popover's fill: `plate_fill` at this opacity (0 to 255), more
     /// opaque than a plate's so its rows read over any model.
     pub popover_opacity: u8,
@@ -613,6 +616,15 @@ pub struct Tokens {
     /// The room a banner over the viewport keeps for its button (Back to
     /// last good).
     pub banner_button_room: f32,
+    /// A bottom sheet's share of the viewport's height (Studio and
+    /// Analysis on a phone, m4 and m5), and of the window's for the Jig's
+    /// parameters (m8).
+    pub sheet_share: f32,
+    pub half_sheet_share: f32,
+    /// The side panel docked beside a Jig's model on a tablet (t2), and
+    /// the narrowest window that docks it.
+    pub docked_panel_width: f32,
+    pub docked_min_window: f32,
 }
 
 /// The colours that change with the appearance (light or dark): the
@@ -946,6 +958,8 @@ impl Tokens {
             touch_caret_width: 30.0,
             popover_pointer: 6.0,
             popover_slider_width: 130.0,
+            popover_label_width: 96.0,
+            popover_value_width: 56.0,
             popover_opacity: 242,
             popover_widget_opacity: 110,
             narrow_width: 800.0,
@@ -1057,6 +1071,10 @@ impl Tokens {
             log_dot_radius: 4.0,
             log_rail_width: 2.0,
             banner_button_room: 170.0,
+            sheet_share: 0.5,
+            half_sheet_share: 0.5,
+            docked_panel_width: 300.0,
+            docked_min_window: 600.0,
         }
     }
 

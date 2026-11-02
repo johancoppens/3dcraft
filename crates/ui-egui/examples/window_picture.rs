@@ -264,6 +264,7 @@ fn main() -> Result<(), String> {
     if let Some(recent) = recent {
         shell.set_recent_files(recent);
     }
+    let asks = agents.as_ref().is_some_and(|a| !a.prompts.is_empty());
     if let Some(status) = agents {
         let latest = status.clients.iter().map(|c| c.last_ms).max().unwrap_or(0);
         shell.set_agents_clock(Some(latest.saturating_add(500)));
@@ -316,7 +317,16 @@ fn main() -> Result<(), String> {
     for frame in 0..frames {
         // The last frame half a second later: the work indicator shows
         // only for work that has run a while (`Tokens::work_after_seconds`).
+        // With questions waiting (`--agents`), the last frames a second
+        // on: the questions' buttons take clicks by then, as a person
+        // sees them.
+        let armed = if asks && frame + 2 >= frames {
+            1.0
+        } else {
+            0.0
+        };
         let time = frame as f64 * 0.1
+            + armed
             + if frame + 1 == frames && !idle {
                 0.5
             } else {

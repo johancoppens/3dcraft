@@ -357,11 +357,16 @@ impl Shell {
         let mut chosen = None;
         let mut remember = self.agents.remember;
         let kit = Kit::panel(&tokens);
+        // On a phone a bottom sheet with the answers one under the other,
+        // the amber one first (board m7).
+        let phone = ctx.content_rect().width() < tokens.narrow_width;
         let dialog = Dialog::new(egui::Id::new("craft3d-agent-prompt"), &title)
             .icon(icon.0, icon.1)
             .width(tokens.dialog_wide_width)
-            .closable(false);
+            .closable(false)
+            .sheet(phone);
         let mut left_hits = Vec::new();
+        let t_gap = tokens.nav_spacing;
         kit.dialog(ctx, dialog, |kit, ui| {
             kit.paragraph(ui, &question, false);
             kit.code_line(ui, "", &path);
@@ -377,6 +382,32 @@ impl Shell {
                 }
                 response
             };
+            if phone {
+                // Stacked, full width: the amber answer first, "no" last.
+                ui.add_space(t_gap);
+                let folder = if remember {
+                    PromptAnswer::Folder
+                } else {
+                    PromptAnswer::Session
+                };
+                let stack: Vec<(&str, Button<'_>, PromptAnswer)> = if connect {
+                    vec![
+                        ("Allow this folder", Button::primary("Allow this folder"), folder),
+                        ("Only the work folder", Button::secondary("Only the work folder"), PromptAnswer::Deny),
+                        ("Refuse", Button::quiet("Refuse"), PromptAnswer::Deny),
+                    ]
+                } else {
+                    vec![
+                        ("Allow once", Button::primary("Allow once"), PromptAnswer::Once),
+                        ("Allow this folder", Button::secondary("Allow this folder"), PromptAnswer::Folder),
+                        ("Deny", Button::danger("Deny"), PromptAnswer::Deny),
+                    ]
+                };
+                for (label, button, to) in stack {
+                    answer(ui, label, button.wide(true), to);
+                }
+                return;
+            }
             kit.dialog_footer(ui, |ui| {
                 if connect {
                     answer(ui, "Refuse", Button::quiet("Refuse"), PromptAnswer::Deny);
@@ -425,9 +456,14 @@ impl Shell {
         });
         // In reading order: the left one, then the right ones from the
         // left (they were laid out from the right).
-        let (first, rest) = hits.split_at(hits.len().min(1));
-        let mut ordered: Vec<(String, egui::Rect)> = first.to_vec();
-        ordered.extend(rest.iter().rev().cloned());
+        let mut ordered: Vec<(String, egui::Rect)> = if phone {
+            hits
+        } else {
+            let (first, rest) = hits.split_at(hits.len().min(1));
+            let mut ordered = first.to_vec();
+            ordered.extend(rest.iter().rev().cloned());
+            ordered
+        };
         ordered.extend(left_hits);
         self.agents.remember = remember;
         self.agents.prompt_hits = ordered;

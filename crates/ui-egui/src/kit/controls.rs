@@ -36,6 +36,9 @@ pub struct Button<'a> {
     pub enabled: bool,
     /// Drawn as under the pointer (the gallery shows the state).
     pub shown_hovered: bool,
+    /// As wide as the room there is, its words in the middle (a phone's
+    /// stacked buttons, board m7).
+    pub wide: bool,
 }
 
 impl<'a> Button<'a> {
@@ -46,6 +49,7 @@ impl<'a> Button<'a> {
             icon: None,
             enabled: true,
             shown_hovered: false,
+            wide: false,
         }
     }
     pub fn primary(text: &'a str) -> Self {
@@ -76,6 +80,11 @@ impl<'a> Button<'a> {
     #[must_use]
     pub fn hovered(mut self, hovered: bool) -> Self {
         self.shown_hovered = hovered;
+        self
+    }
+    #[must_use]
+    pub fn wide(mut self, wide: bool) -> Self {
+        self.wide = wide;
         self
     }
 }
@@ -189,7 +198,12 @@ impl Kit {
             }
         };
         let galley = self.galley(ui, button.text, font, ink);
-        let width = galley.size().x + 2.0 * pad + icon.unwrap_or(0.0);
+        let natural = galley.size().x + 2.0 * pad + icon.unwrap_or(0.0);
+        let width = if button.wide {
+            natural.max(ui.available_width())
+        } else {
+            natural
+        };
         let visual = vec2(width, t.control_height);
         let sense = if button.enabled {
             Sense::click()
@@ -221,7 +235,7 @@ impl Kit {
                 stroke.map_or(Stroke::NONE, |c| Stroke::new(1.0, color(c))),
                 StrokeKind::Inside,
             ));
-            let mut x = rect.left() + pad;
+            let mut x = rect.left() + pad + (width - natural) * 0.5;
             if let Some(glyph) = button.icon {
                 let place = centred_left(
                     Rect::from_min_max(pos2(x, rect.top()), rect.max),

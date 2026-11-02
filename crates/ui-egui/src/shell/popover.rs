@@ -14,7 +14,7 @@
 
 use super::Shell;
 use super::controls::ControlsLayout;
-use crate::theme::{Tokens, color_alpha};
+use crate::theme::{Tokens, color, color_alpha};
 use egui::{Rect, pos2, vec2};
 
 /// The plates and the triad a popover, or the cube moved under it, must
@@ -46,6 +46,21 @@ fn bottom_in(area: Rect, layout: &ControlsLayout, gap: f32, left: f32, right: f3
 /// display bar and the triad where its columns cross them. The cube does
 /// not bound it: the cube moves out of its way ([`cube_out_of_the_way`]).
 /// `None` when there is no room for two rows.
+/// Where a popover goes as a bottom sheet in the narrow layout: across
+/// the viewport `rect`, its lower `sheet_share` (at least room for a few
+/// rows), never over the camera plate, whose chips open and close it.
+pub fn sheet_place(rect: Rect, layout: &ControlsLayout, tokens: &Tokens) -> Option<Rect> {
+    let height = (rect.height() * tokens.sheet_share)
+        .max(6.0 * tokens.control_height)
+        .min(rect.height());
+    let mut top = rect.bottom() - height;
+    if let Some(plate) = layout.camera_plate {
+        top = top.max(plate.bottom() + tokens.nav_gap);
+    }
+    (rect.is_finite() && rect.width() > 0.0 && top < rect.bottom())
+        .then(|| Rect::from_min_max(pos2(rect.left(), top), rect.max))
+}
+
 pub fn popover_place(rect: Rect, layout: &ControlsLayout, tokens: &Tokens) -> Option<Rect> {
     if !rect.is_finite() {
         return None;
@@ -124,12 +139,17 @@ impl Shell {
         chip: Rect,
         options: impl FnOnce(&mut Self, &mut egui::Ui),
     ) -> Rect {
+        if self.narrow() {
+            return self.sheet(ui, id, place, options);
+        }
         let tokens = self.tokens;
         let stroke = 1.0;
         let inset = tokens.nav_inset;
         let inner_width = (place.width() - 2.0 * (inset + stroke)).max(0.0);
-        let fill = color_alpha(tokens.plate_fill, tokens.popover_opacity);
-        let rim = color_alpha(tokens.plate_rim, tokens.plate_rim_opacity);
+        // The kit's popover (board s1): its fill, one step lighter in the
+        // dark appearance, and its faint rim.
+        let fill = color(tokens.popover_fill);
+        let rim = color_alpha(tokens.plate_rim, tokens.popover_rim_opacity);
         let area = egui::Area::new(egui::Id::new(id))
             .fixed_pos(place.min)
             .constrain(false)
@@ -137,7 +157,7 @@ impl Shell {
                 // Its own room, not the size the area had last frame.
                 let room = Rect::from_min_size(ui.max_rect().min, place.size());
                 ui.scope_builder(egui::UiBuilder::new().max_rect(room), |ui| {
-                    ui.style_mut().visuals = tokens.plate_visuals();
+                    ui.style_mut().visuals = tokens.menu_visuals();
                     egui::Frame::new()
                         .fill(fill)
                         .stroke(egui::Stroke::new(stroke, rim))
@@ -183,6 +203,90 @@ impl Shell {
             }
         }
         panel
+    }
+
+    /// The popover as a bottom sheet in the narrow layout (boards m4, m5):
+    /// dark, across the viewport's width at `place` (its lower part),
+    /// with a grabber, its title and a close ×; the options scroll in it.
+    fn sheet(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: &str,
+        place: Rect,
+        options: impl FnOnce(&mut Self, &mut egui::Ui),
+    ) -> Rect {
+        let tokens = self.tokens;
+        let kit = crate::kit::Kit::plate(&tokens);
+        let studio = id == "studio-options";
+        let title = if studio { "Studio" } else { "Surface analysis" };
+        let pad = tokens.dialog_padding;
+        let r = tokens.dialog_radius.saturating_mul(2);
+        let mut close = false;
+        let area = egui::Area::new(egui::Id::new(id))
+            .order(egui::Order::Foreground)
+            .fixed_pos(place.min)
+            .constrain(false)
+            .show(ui.ctx(), |ui| {
+                ui.set_min_size(place.size());
+                ui.set_max_size(place.size());
+                ui.style_mut().visuals = tokens.menu_visuals();
+                egui::Frame::new()
+                    .fill(color(tokens.popover_fill))
+                    .corner_radius(egui::CornerRadius {
+                        nw: r,
+                        ne: r,
+                        sw: 0,
+                        se: 0,
+                    })
+                    .inner_margin(egui::Margin::same(pad.clamp(0.0, 32.0) as i8))
+                    .show(ui, |ui| {
+                        ui.set_width((place.width() - 2.0 * pad).max(0.0));
+                        // The grabber.
+                        let (grab, _) = ui.allocate_exact_size(
+                            vec2(ui.available_width(), tokens.nav_spacing * 2.0),
+                            egui::Sense::hover(),
+                        );
+                        ui.painter().rect_filled(
+                            Rect::from_center_size(grab.center(), vec2(36.0, 4.0)),
+                            egui::CornerRadius::same(2),
+                            color_alpha(tokens.plate_text_dim, 160),
+                        );
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(title)
+                                    .font(egui::FontId::new(
+                                        tokens.dialog_title_font,
+                                        kit.medium_font(ui).family,
+                                    ))
+                                    .color(color(tokens.plate_text)),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    close = kit
+                                        .icon_button(ui, crate::kit::Glyph::Close, false, "Close")
+                                        .on_hover_text("Close (Esc)")
+                                        .clicked();
+                                },
+                            );
+                        });
+                        let room = ui.available_height().max(0.0);
+                        egui::ScrollArea::vertical()
+                            .id_salt((id, "sheet"))
+                            .auto_shrink([false, false])
+                            .max_height(room)
+                            .show(ui, |ui| options(self, ui));
+                    });
+            });
+        if close {
+            if studio {
+                self.state.panels.look_options = false;
+            } else {
+                self.state.panels.analysis_options = false;
+            }
+            ui.ctx().request_repaint();
+        }
+        area.response.rect.intersect(place)
     }
 
     /// Escape closes the narrow layout's open drawer, else an open

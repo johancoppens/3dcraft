@@ -618,3 +618,108 @@ fn an_assemblys_mates_and_checks_stay_inside() {
         assert!(window.inside(panel), "{width}: {panel:?}");
     }
 }
+
+/// A Jig in use on a phone: its parameters are a half sheet under the
+/// model (board m8); on a 768-point tablet the side panel docks beside it
+/// (t2) and there is no drawer.
+#[test]
+fn a_jig_on_a_phone_and_a_tablet() {
+    let open = || {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/examples/published/planetary-gearbox.3dcraftjig");
+        let mut session = Session::new(Workspace::unrestricted());
+        session
+            .execute("file.open", &json!({"path": path.to_str().unwrap()}))
+            .unwrap();
+        session
+    };
+    let mut session = open();
+    let mut shell = Shell::new();
+    let mut window = Window::sized(390.0, 844.0);
+    window.frames(&mut shell, &mut session, 4);
+    let sheet = shell.parameters_sheet_rect().expect("the half sheet");
+    let viewport = shell.viewport_rect().unwrap();
+    assert!(
+        viewport.expand(0.5).contains_rect(sheet),
+        "{sheet:?} in {viewport:?}"
+    );
+    assert!(
+        (sheet.bottom() - viewport.bottom()).abs() < 0.5,
+        "{sheet:?}"
+    );
+    assert!(
+        sheet.height() < viewport.height() * 0.75,
+        "the model stays in view above: {sheet:?}"
+    );
+    // Its form is the Parameters tab's: Reset all is there.
+    let reset = shell
+        .parameter_hits()
+        .iter()
+        .find(|(n, _)| n == "Reset all")
+        .map(|(_, r)| *r)
+        .expect("Reset all");
+    assert!(sheet.contains_rect(reset), "{reset:?} in {sheet:?}");
+    // A tablet: docked, no drawer and no sheet.
+    let mut session = open();
+    let mut shell = Shell::new();
+    let mut window = Window::sized(768.0, 1024.0);
+    window.frames(&mut shell, &mut session, 4);
+    assert!(shell.narrow());
+    assert!(shell.parameters_sheet_rect().is_none());
+    assert!(
+        shell.drawer_button_rect().is_none(),
+        "no drawer beside a docked panel"
+    );
+    let panel = shell.tree_panel_rect().expect("the docked panel");
+    assert!(panel.left() < 1.0 && panel.width() >= 200.0, "{panel:?}");
+    let viewport = shell.viewport_rect().unwrap();
+    assert!(
+        viewport.left() >= panel.right() - 0.5,
+        "{viewport:?} beside {panel:?}"
+    );
+}
+
+/// On a phone the questions about access are a bottom sheet with the
+/// answers one under the other, the amber one first (board m7).
+#[test]
+fn a_question_on_a_phone_is_a_sheet() {
+    use craft3d_ui_egui::AgentPrompt;
+    let mut session = Session::new(Workspace::none());
+    session.execute("file.new", &json!({})).unwrap();
+    let mut shell = Shell::new();
+    let mut status = connected();
+    status.prompts = vec![AgentPrompt {
+        id: 4,
+        kind: "write".to_string(),
+        client: "Claude Code".to_string(),
+        path: "/home/me/Downloads/housing.step".to_string(),
+        folder: "/home/me/Downloads".to_string(),
+        file_name: "housing.step".to_string(),
+        command: Some("file.export".to_string()),
+    }];
+    shell.set_agents_status(status);
+    let mut window = Window::sized(390.0, 844.0);
+    window.frames(&mut shell, &mut session, 30);
+    let hits = shell.agent_prompt_hits().to_vec();
+    let names: Vec<&str> = hits.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["Allow once", "Allow this folder", "Deny"]);
+    for pair in hits.windows(2) {
+        assert!(
+            pair[0].1.bottom() <= pair[1].1.top() + 0.5,
+            "stacked: {hits:?}"
+        );
+    }
+    for (name, rect) in &hits {
+        assert!(window.inside(*rect), "{name}: {rect:?}");
+        assert!(
+            rect.width() > 390.0 * 0.7,
+            "{name} spans the sheet: {rect:?}"
+        );
+    }
+    let once = hits[0].1.center();
+    window.click(&mut shell, &mut session, once);
+    assert_eq!(
+        shell.take_agent_prompt_answer(),
+        Some((4, craft3d_ui_egui::PromptAnswer::Once))
+    );
+}

@@ -804,6 +804,8 @@ pub struct Shell {
     /// The player drew its `t` this frame, and in the last one: the
     /// caption over the viewport leaves it to the player then.
     player_shown: bool,
+    /// Where the Jig's parameters' half sheet was drawn (a phone, m8).
+    params_sheet_rect: Option<egui::Rect>,
     /// Where the player's row drew its parts (`player.rs`).
     player_hits: Vec<(&'static str, egui::Rect)>,
     /// Who made each feature (an agent's name), for the document and
@@ -1340,6 +1342,7 @@ impl Shell {
             touch_gesture: false,
             player_shown: false,
             player_hits: Vec::new(),
+            params_sheet_rect: None,
             provenance: (None, std::collections::BTreeMap::new()),
             player_shown_last: false,
             cause_hits: Vec::new(),
@@ -2714,8 +2717,14 @@ impl Shell {
         }
         self.cause_hits.clear();
         // Put away while the welcome shows (`start.rs`).
-        let drawer = self.narrow && self.state.panels.tree && !self.welcome();
-        if self.state.panels.tree && !self.welcome() && !self.narrow {
+        // A Jig in use on a phone: its form is a half sheet under the model
+        // (board m8); on a tablet the side panel docks beside it (t2).
+        let window = ui.ctx().content_rect().width();
+        let jig = self.jig_in_use() && !self.welcome();
+        let docked = self.narrow && jig && window >= tokens.docked_min_window;
+        let half_sheet = self.narrow && jig && !docked;
+        let drawer = self.narrow && !docked && self.state.panels.tree && !self.welcome();
+        if self.state.panels.tree && !self.welcome() && (!self.narrow || docked) {
             // No margin on the right: the list's scroll bar lies against
             // the panel's edge, the split it is resized by.
             let frame = egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin {
@@ -2727,11 +2736,11 @@ impl Shell {
             // The width is the person's: exact, so a long row is cut or
             // wrapped inside it and never widens it; only the split,
             // dragged, changes it (`tree_split`).
-            let width = tree_width(
-                &tokens,
-                self.state.panels.tree_width,
-                ui.ctx().content_rect().width(),
-            );
+            let width = if docked {
+                tokens.docked_panel_width.min(window * 0.5)
+            } else {
+                tree_width(&tokens, self.state.panels.tree_width, window)
+            };
             let panel = egui::Panel::left("craft3d-tree")
                 .resizable(false)
                 .exact_size(width)
@@ -2749,10 +2758,18 @@ impl Shell {
         }
         // In the narrow layout the side panel is a drawer over the
         // viewport, opened by the button in the menu bar.
-        if drawer {
+        if drawer && !half_sheet {
             self.drawer(ui, status.is_some());
-        } else if self.narrow {
+        } else if self.narrow && !docked {
             self.tree_panel = None;
+        }
+        if half_sheet && !self.state.panels.drawer {
+            self.parameters_sheet(ui);
+        } else {
+            self.params_sheet_rect = None;
+        }
+        if half_sheet && self.state.panels.drawer {
+            self.drawer(ui, status.is_some());
         }
         // A parameter's value that broke the model, and the way back.
         self.trouble_banner(ui);
@@ -2836,7 +2853,10 @@ impl Shell {
     }
 
     fn menu_bar(&mut self, ui: &mut egui::Ui, status: Option<&DocumentStatus>) {
-        let drawer = self.narrow && self.state.panels.tree && !self.welcome();
+        // No drawer where a Jig's panel is docked (a tablet, t2).
+        let docked =
+            self.jig_in_use() && ui.ctx().content_rect().width() >= self.tokens.docked_min_window;
+        let drawer = self.narrow && !docked && self.state.panels.tree && !self.welcome();
         // The menus are the kit's plates, whatever the panels' appearance.
         let menus = self.tokens.menu_visuals();
         let config =

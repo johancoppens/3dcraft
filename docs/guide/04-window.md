@@ -196,6 +196,14 @@ foot. The bodies that booleans used up are folded under *Tool bodies*; open it t
 **A Jig** opens on **Parameters** (its form); its other tabs are there to look at.
 
 
+### On a phone or a tablet
+
+In a narrow window (a phone, a tablet, the browser on a small screen) the Studio and Analysis options open as a
+sheet from the bottom of the view, with **Light**, **Scene** and **Lens** as tabs for the studio look; × or the
+chip closes it. A Jig in use shows its parameters as a sheet under the model on a phone, so every change shows
+at once above it; on a tablet the side panel stays docked beside the model. A question about an agent's access
+comes as a sheet with the answers one under the other.
+
 ### The Agent tab
 
 While agents are allowed, or once an agent has worked on the document, the side panel has an **Agent** tab:

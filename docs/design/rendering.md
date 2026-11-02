@@ -1531,6 +1531,21 @@ Part B, as far as it went on 2026-11-02:
   the window goes, also when it goes while the monitor is being started (a `stopped` flag under the same lock).
   Known limit: when 3DCraft dies without unwinding (SIGKILL, an abort) the `gsettings monitor` it started
   lives on until the setting next changes and its write finds no reader.
-- **Not built in part B** (open): the Studio and Analysis popovers' restyle (s1) and the view and display bars
-  with their compact form (s2, s2b) are as phase 1 left them; on the phone the Studio and Analysis bottom
-  sheets, the agent sheet, the consent sheet and the Jig parameters as a half sheet (m4–m8, t1–t2).
+- **The Studio and Analysis popovers** (board s1, `look_panel.rs`, `layout.rs` › `analysis_options`): the kit's
+  plate (`popover_fill`, its rim), grouped by section headers: *Light* (Environment, Rotation, Exposure, Tone
+  curve, Shadows/AO/Reflections, Bloom), *Scene* (Background, Ground as a switch, Reflection), *Lens* (its switch
+  in the heading, Aperture with the hint under it, Focus as a full-width segmented row with its note); *Surface
+  analysis* (the kind as a segmented control, its rows) and *Combs*. Rows are a label column
+  (`popover_label_width`) and the kit's control; sliders are `Kit::slider` (their hit is the track, as egui's
+  was, so `look_hits` keep their meaning). Studio is drawn off while an analysis is on (s2b).
+- **Bottom sheets on a phone or small tablet** (the narrow layout; m4, m5): the same options as a dark sheet
+  across the viewport (`popover::sheet_place`: its lower `sheet_share`, never over the camera plate), with a
+  grabber, the title and ×; Studio splits into Light | Scene | Lens tabs (`sheet.light` …). The bars under it
+  wait until it closes. The questions about access are a light bottom sheet with the answers stacked full
+  width, the amber one first (`Dialog::sheet`, `Button::wide`, m7). A Jig in use on a phone has its parameters
+  as a half sheet under the model (`Shell::parameters_sheet`, `half_sheet_share`, m8); on a tablet from
+  `docked_min_window` (600) the side panel docks beside it at `docked_panel_width` (300) with no drawer (t2).
+- **The view and display bars** (s2, s2b) were already the kit's shape from phase 1; their compact form is the
+  layout's own (icons only where the names do not fit), not a fixed 1000-point switch.
+- **Pictures**: the window pictures (`window_picture`) draw the plain look: the studio look's environment needs
+  the window's settled GPU frames, so w1's model is plain while its popover is the studio's.

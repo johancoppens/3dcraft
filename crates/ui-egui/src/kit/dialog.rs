@@ -26,6 +26,9 @@ pub struct Dialog<'a> {
     pub modal: bool,
     /// A close × beside the title.
     pub closable: bool,
+    /// A bottom sheet across the window (a phone, board m7) rather than a
+    /// box in its middle.
+    pub sheet: bool,
 }
 
 impl<'a> Dialog<'a> {
@@ -37,6 +40,7 @@ impl<'a> Dialog<'a> {
             width: f32::INFINITY,
             modal: true,
             closable: true,
+            sheet: false,
         }
     }
     #[must_use]
@@ -52,6 +56,11 @@ impl<'a> Dialog<'a> {
     #[must_use]
     pub fn modal(mut self, modal: bool) -> Self {
         self.modal = modal;
+        self
+    }
+    #[must_use]
+    pub fn sheet(mut self, sheet: bool) -> Self {
+        self.sheet = sheet;
         self
     }
     #[must_use]
@@ -102,11 +111,27 @@ impl Kit {
         let t = kit.t;
         let s = kit.skin;
         let pad = t.dialog_padding;
-        let width = kit.dialog_width(dialog.width, ctx.content_rect().width());
+        let screen = ctx.content_rect().width();
+        let width = if dialog.sheet {
+            screen
+        } else {
+            kit.dialog_width(dialog.width, screen)
+        };
+        let round = if dialog.sheet {
+            let r = t.dialog_radius.saturating_mul(2);
+            CornerRadius {
+                nw: r,
+                ne: r,
+                sw: 0,
+                se: 0,
+            }
+        } else {
+            CornerRadius::same(t.dialog_radius)
+        };
         let frame = Frame::new()
             .fill(color(s.fill))
             .stroke(egui::Stroke::new(1.0, color(s.field_stroke)))
-            .corner_radius(CornerRadius::same(t.dialog_radius))
+            .corner_radius(round)
             .inner_margin(Margin::same(pad.clamp(0.0, 64.0) as i8))
             .shadow(Shadow {
                 offset: [0, t.shadow_drop.saturating_mul(2)],
@@ -118,6 +143,18 @@ impl Kit {
         let mut close_clicked = false;
         let content = |ui: &mut Ui| {
             ui.set_width((width - 2.0 * pad).max(0.0));
+            if dialog.sheet {
+                // The grabber.
+                let (grab, _) = ui.allocate_exact_size(
+                    sane(vec2(ui.available_width(), t.nav_spacing * 2.0)),
+                    Sense::hover(),
+                );
+                ui.painter().rect_filled(
+                    Rect::from_center_size(grab.center(), vec2(36.0, 4.0)),
+                    CornerRadius::same(2),
+                    color(s.field_stroke),
+                );
+            }
             ui.spacing_mut().item_spacing.y = t.nav_spacing * 2.0;
             // The title row: icon, title, ×.
             let title_font = egui::FontId::new(t.dialog_title_font, heading_family(ui));
@@ -187,7 +224,14 @@ impl Kit {
             content(&kit, ui)
         };
         let (inner, rect, beside) = if dialog.modal {
-            let shown = egui::Modal::new(dialog.id)
+            let mut modal = egui::Modal::new(dialog.id);
+            if dialog.sheet {
+                modal = modal.area(
+                    egui::Modal::default_area(dialog.id)
+                        .anchor(egui::Align2::CENTER_BOTTOM, egui::Vec2::ZERO),
+                );
+            }
+            let shown = modal
                 .frame(frame)
                 .backdrop_color(color_alpha(t.view_cube_shadow, t.shadow_opacity))
                 .show(ctx, content);
