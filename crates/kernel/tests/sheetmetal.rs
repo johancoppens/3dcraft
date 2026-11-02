@@ -1435,12 +1435,15 @@ fn a_closed_box_and_slanted_corners() {
             .map(|c| flange(On::Base(c), l, FRAC_PI_2, Direction::Up, r, 0.4))
             .collect();
         // Without a relief the covered flange's wall already reaches past
-        // the cover's inside face at so wide a corner: refused.
+        // the cover's inside face at so wide a corner, and with the gap
+        // 0.3 the end plane cuts its bend's outside skin but not its
+        // inside one (a step the sheet cannot make): refused. (A gap that
+        // cuts both is built, trimming the bend: `sheetmetal_trims.rs`.)
         let mut sp = spec(hex.clone(), t, two.clone(), None);
         sp.corner = closing(CornerKind::Overlap, g);
         let (flange, why) = refused(&sp, &tol);
         assert_eq!(flange, Some(1));
-        assert!(why.contains("cut the flange back"), "{why}");
+        assert!(why.contains("but not its top skin"), "{why}");
         let relief = Some(Relief {
             kind: ReliefKind::Round,
             size: 3.0 * k,
