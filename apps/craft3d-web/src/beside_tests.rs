@@ -217,9 +217,19 @@ fn model() -> Vec<u8> {
 }
 
 /// A host that regenerates itself (no worker): the bytes to compare.
+///
+/// It does what the page does without its workers (`?pageregen`): the
+/// long work a piece at a time, all of it done before the click. The
+/// drawing of the model as seen depends on what was meshed in the
+/// session before it, in its last bits (2026-11-02: a fresh session's
+/// differs from one that drew a quick first picture or exported meshes
+/// first, a determinism fault of its own, docs/design/engine.md), so the
+/// page is compared with the same steps on a session of its own.
 fn in_process(bytes: &[u8]) -> WebHost {
     let mut host = WebHost::new(Shell::new());
+    host.set_stepwise(true);
     host.receive("model.3dcraft", bytes.to_vec(), None).unwrap();
+    while host.prepare(|| false) {}
     host
 }
 
@@ -258,9 +268,6 @@ fn wanted(host: &mut WebHost, what: &ExportWhat, format: ExportFormat) -> Vec<Do
 #[test]
 fn every_export_from_the_menu_is_made_where_the_bodies_are() {
     let bytes = model();
-    let mut want = in_process(&bytes);
-    let mut page = opened(&bytes, false);
-    let work = page.host.session.work_here();
     let cases = [
         (ExportWhat::Model, ExportFormat::Step),
         (ExportWhat::Model, ExportFormat::Stl),
@@ -272,50 +279,50 @@ fn every_export_from_the_menu_is_made_where_the_bodies_are() {
         (ExportWhat::SheetMetal("Part".into()), ExportFormat::Dxf),
     ];
     for (what, format) in &cases {
-        let want = wanted(&mut want, what, *format);
+        let want = wanted(&mut in_process(&bytes), what, *format);
         assert!(!want.is_empty(), "{what:?} {format:?}");
+        let mut page = opened(&bytes, false);
+        let work = page.host.session.work_here();
         let got = page.export(what, *format);
         assert_eq!(files(&got.downloads), files(&want), "{what:?} {format:?}");
         assert!(page.host.shell.error_dialog().is_none(), "{what:?}");
         assert!(page.host.session.file_names().is_empty());
         assert_eq!(page.host.session.work_here(), work, "{what:?} {format:?}");
     }
-    // A face selected (a click, answered by the worker): the dialog
-    // offers the selection, and its outline is the selection's; one body
-    // selected, its mesh only.
-    for (name, format) in [("Plate", ExportFormat::Stl)] {
-        let click = json!({"names": [name]});
+    // The selection, chosen by a click (answered by the worker): one body
+    // to a mesh holds that body only; a flat face to DXF its outline.
+    let face = {
+        let mut s = in_process(&bytes);
+        let top = s
+            .session
+            .execute(
+                "select.query",
+                &json!({"kind": "face", "where": {"in": "Plate", "normal": {"along": "z"}}}),
+            )
+            .unwrap();
+        top["items"][0]["name"].as_str().unwrap().to_string()
+    };
+    for (click, format) in [
+        (json!({"names": ["Plate"]}), ExportFormat::Stl),
+        (
+            json!({"items": [{"kind": "face", "name": face, "feature": "F1"}]}),
+            ExportFormat::Dxf,
+        ),
+    ] {
+        let mut want = in_process(&bytes);
         want.session.execute("select.set", &click).unwrap();
+        let want = wanted(&mut want, &ExportWhat::Selection, format);
+        let mut page = opened(&bytes, false);
+        let work = page.host.session.work_here();
         page.host
             .session
             .execute_deferrable("select.set", &click)
             .unwrap();
         page.settle();
-        let want = wanted(&mut want, &ExportWhat::Selection, format);
         let got = page.export(&ExportWhat::Selection, format);
-        assert_eq!(files(&got.downloads), files(&want), "{name}");
-        assert_eq!(page.host.session.work_here(), work, "{name}");
+        assert_eq!(files(&got.downloads), files(&want), "{click}");
+        assert_eq!(page.host.session.work_here(), work, "{click}");
     }
-    let top = want
-        .session
-        .execute(
-            "select.query",
-            &json!({"kind": "face", "where": {"in": "Plate", "normal": {"along": "z"}}, "then": "replace"}),
-        )
-        .unwrap();
-    let face = top["items"][0]["name"].as_str().unwrap().to_string();
-    page.host
-        .session
-        .execute_deferrable(
-            "select.set",
-            &json!({"items": [{"kind": "face", "name": face, "feature": "F1"}]}),
-        )
-        .unwrap();
-    page.settle();
-    let want = wanted(&mut want, &ExportWhat::Selection, ExportFormat::Dxf);
-    let got = page.export(&ExportWhat::Selection, ExportFormat::Dxf);
-    assert_eq!(files(&got.downloads), files(&want));
-    assert_eq!(page.host.session.work_here(), work);
 }
 
 /// With the system's file dialogs: the export is made in the worker
@@ -502,58 +509,4 @@ fn an_edit_that_needs_the_bodies_is_made_in_the_worker_and_undone_here() {
     );
     page.settle();
     assert_eq!(page.host.session.work_here(), work);
-}
-
-/// Diagnosis (temporary): which state of a session changes the drawing
-/// of the model as seen.
-#[test]
-fn diagnose_the_model_drawing() {
-    let bytes = model();
-    let dxf = |host: &mut WebHost| -> Vec<u8> {
-        wanted(host, &ExportWhat::Model, ExportFormat::Dxf)
-            .remove(0)
-            .bytes
-    };
-    let first = dxf(&mut in_process(&bytes));
-    let mut meshed = in_process(&bytes);
-    meshed
-        .session
-        .scene_with(craft3d_engine::SceneQuality::display())
-        .unwrap();
-    let meshed = dxf(&mut meshed);
-    let mut after = in_process(&bytes);
-    for format in [
-        ExportFormat::Step,
-        ExportFormat::Stl,
-        ExportFormat::ThreeMf,
-        ExportFormat::Obj,
-    ] {
-        wanted(&mut after, &ExportWhat::Model, format);
-    }
-    let after = dxf(&mut after);
-    let mut stepwise = WebHost::new(Shell::new());
-    stepwise.set_stepwise(true);
-    stepwise
-        .receive("model.3dcraft", bytes.clone(), None)
-        .unwrap();
-    while stepwise.prepare(|| false) {}
-    let stepwise = dxf(&mut stepwise);
-    let mut page = opened(&bytes, false);
-    let worker = page
-        .export(&ExportWhat::Model, ExportFormat::Dxf)
-        .downloads
-        .remove(0)
-        .bytes;
-    println!(
-        "diagnose: meshed {} after-exports {} stepwise {} worker {}",
-        meshed == first,
-        after == first,
-        stepwise == first,
-        worker == first
-    );
-    println!(
-        "diagnose: worker==stepwise {} worker==meshed {}",
-        worker == stepwise,
-        worker == meshed
-    );
 }

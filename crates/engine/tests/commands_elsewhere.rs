@@ -378,11 +378,13 @@ fn an_edit_that_needs_the_bodies_is_made_where_they_are() {
                 json!({"from": "B:nowhere", "name": "Lost"}),
                 None,
             ),
-            // A fillet of one body's edges needs no bodies to be added.
+            // A fillet of one body's edges: whether it needs the bodies
+            // depends on the state (a failing feature before it is
+            // reported from a regeneration).
             (
                 "feature.fillet",
                 json!({"edges": [[top, side]], "radius": format!("{} mm", s), "name": "Round"}),
-                Some(false),
+                None,
             ),
             (
                 "feature.block",
