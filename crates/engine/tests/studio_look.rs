@@ -222,6 +222,21 @@ fn too_many_frames_are_refused() {
     assert!(started.elapsed().as_secs() < 60, "refused before drawing");
 }
 
+/// A point `[x, y, z]` within 1e-9 of `want` (the model's box is the
+/// B-rep's, to its rounding).
+fn at(value: &Value, want: [f64; 3]) {
+    let got: Vec<f64> = value
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_f64().unwrap())
+        .collect();
+    assert!(
+        got.len() == 3 && got.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-9),
+        "{value} {want:?}"
+    );
+}
+
 /// `view.render`'s lens on the selection: it focuses on the centre of the
 /// session's selection and says so under `lens`; with the selection
 /// cleared it focuses on the model's centre and says why; an orthographic
@@ -254,12 +269,7 @@ fn view_render_focuses_the_lens_on_the_selection() {
         json!({"items": [{"kind": "body", "feature": "Near"}]}),
     );
     let picture = render(&mut s, json!({}));
-    assert_eq!(
-        picture["lens"]["focus"],
-        json!([45.0, -20.0, 0.0]),
-        "{}",
-        picture["lens"]
-    );
+    at(&picture["lens"]["focus"], [45.0, -20.0, 0.0]);
     assert_eq!(picture["lens"]["fallback"], Value::Null);
     assert_eq!(picture["lens"]["noBlur"], Value::Null);
     run(
