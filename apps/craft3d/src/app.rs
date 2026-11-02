@@ -2993,6 +2993,61 @@ mod tests {
         assert!(failures.is_empty(), "{} processes failed", failures.len());
     }
 
+    /// This whole test binary (its tests that are not ignored) over and
+    /// over, one run at a time, while this process keeps the machine busy
+    /// as the Gate's other test binaries do (windows recording on devices
+    /// of their own, sessions regenerating). `CRAFT3D_STRESS_ROUNDS` (20).
+    #[test]
+    #[ignore = "stress test: run by hand or on the Strix"]
+    fn the_whole_binary_over_and_over_beside_other_work() {
+        let rounds: usize = std::env::var("CRAFT3D_STRESS_ROUNDS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(20);
+        let exe = std::env::current_exe().unwrap();
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let failed = std::thread::scope(|scope| {
+            let stop = &stop;
+            for k in 0..3 {
+                scope.spawn(move || {
+                    let Ok(state) = craft3d_ui_egui::direct::headless_render_state() else {
+                        return;
+                    };
+                    let mut round = 0usize;
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        let _ = recorded_moment(
+                            &state,
+                            &format!("busy-{k}-{}", round % 2),
+                            round % 2 == 1,
+                        );
+                        round += 1;
+                    }
+                });
+            }
+            let mut failed = None;
+            for round in 0..rounds {
+                let out = std::process::Command::new(&exe)
+                    .current_dir(env!("CARGO_MANIFEST_DIR"))
+                    .output()
+                    .unwrap();
+                if !out.status.success() {
+                    failed = Some(format!(
+                        "round {round}:\n{}\n{}",
+                        String::from_utf8_lossy(&out.stdout),
+                        String::from_utf8_lossy(&out.stderr)
+                    ));
+                    break;
+                }
+            }
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            failed
+        });
+        if let Some(why) = failed {
+            println!("FAILURE {why}");
+            panic!("the binary failed beside other work");
+        }
+    }
+
     #[test]
     fn a_step_recording_of_a_provisional_moment_records_the_exact_one() {
         let state = match craft3d_ui_egui::direct::headless_render_state() {
