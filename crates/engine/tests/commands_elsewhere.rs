@@ -339,7 +339,7 @@ fn undo_label(session: &Session) -> Option<String> {
 }
 
 /// An edit that needs the bodies (a measured variable, an assertion, a
-/// fillet on edges named by their faces) is made where they are and
+/// datum plane on a face) is made where they are and
 /// applied here from its answer: the same document as the desktop's, one
 /// undo step with the desktop's label (undone and redone as any), the
 /// result a page that regenerates itself gives, and the page never
@@ -355,32 +355,39 @@ fn an_edit_that_needs_the_bodies_is_made_where_they_are() {
         let top = face(&mut desktop, "B", "z");
         let side = face(&mut desktop, "B", "x");
         let cube = 512.0 * s * s * s;
+        // `None`: either way (whether its trial needs the bodies).
         for (id, params, handed) in [
             (
                 "variable.measure",
                 json!({"of": "B", "name": "VB", "measure": "volume"}),
-                true,
+                Some(true),
             ),
             (
                 "assert.add",
                 json!({"name": "cube", "measure": "volume", "of": "B", "eq": format!("{cube} * (1 mm)^3"), "tol": format!("{} * (1 mm)^3", cube * 1e-6)}),
-                true,
+                Some(true),
             ),
+            // A datum plane on a face, which says where it lies.
+            (
+                "datum.plane",
+                json!({"from": top, "distance": format!("{} mm", 2.0 * s), "name": "OnTop"}),
+                Some(true),
+            ),
+            (
+                "datum.plane",
+                json!({"from": "B:nowhere", "name": "Lost"}),
+                None,
+            ),
+            // A fillet of one body's edges needs no bodies to be added.
             (
                 "feature.fillet",
                 json!({"edges": [[top, side]], "radius": format!("{} mm", s), "name": "Round"}),
-                true,
-            ),
-            // A wrong one: the same error, nothing changed.
-            (
-                "feature.fillet",
-                json!({"edges": [["B:nowhere", side]], "radius": format!("{} mm", s)}),
-                true,
+                Some(false),
             ),
             (
                 "feature.block",
                 json!({"size": [1, 1, 1], "name": "C"}),
-                false,
+                Some(false),
             ),
         ] {
             let want = alone
@@ -388,7 +395,9 @@ fn an_edit_that_needs_the_bodies_is_made_where_they_are() {
                 .map_err(|e| e.message().to_string());
             let _ = desktop.execute(id, &params);
             let (got, deferred) = on_page(&mut page, id, &params);
-            assert_eq!(deferred, handed, "{id} handed over at {s}");
+            if let Some(handed) = handed {
+                assert_eq!(deferred, handed, "{id} handed over at {s}");
+            }
             assert_eq!(got, want, "{id} {params} at {s}");
             assert_eq!(
                 page.document_bytes(),
