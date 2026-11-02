@@ -374,3 +374,223 @@ fn a_twisted_strip_whose_row_stands_still_is_refused() {
         );
     }
 }
+
+/// A flat rectangular sheet `w` by `h` as a spline of degree 1 by 1 whose
+/// u parameter has `spans` spans, its control points along u at
+/// `spacing(i)` (from 0 to 1): a plane, its parametrisation as given.
+fn plane_sheet(k: f64, spans: usize, spacing: impl Fn(usize) -> f64) -> Body {
+    let (w, h) = (100.0 * k, 30.0 * k);
+    let o = Vec3::new(5.0, -3.0, 2.0) * k;
+    let mut knots = vec![0.0, 0.0];
+    for i in 1..spans {
+        knots.push(i as f64 / spans as f64);
+    }
+    knots.extend([1.0, 1.0]);
+    let (mut lower, mut upper) = (Vec::new(), Vec::new());
+    for i in 0..=spans {
+        let x = spacing(i) * w;
+        lower.push(o + Vec3::new(x, 0.0, 0.0));
+        upper.push(o + Vec3::new(x, h, 0.0));
+    }
+    let mut ctrl = Vec::new();
+    for (p, q) in lower.iter().zip(&upper) {
+        ctrl.push(*p);
+        ctrl.push(*q);
+    }
+    let surface = NurbsSurface::new(
+        1,
+        1,
+        knots.clone(),
+        vec![0.0, 0.0, 1.0, 1.0],
+        spans + 1,
+        2,
+        ctrl,
+        vec![1.0; 2 * (spans + 1)],
+    )
+    .unwrap();
+    let a = NurbsCurve::polynomial(1, knots.clone(), lower.clone()).unwrap();
+    let b = NurbsCurve::polynomial(1, knots, upper.clone()).unwrap();
+    let mut body = Body::new(BodyKind::Sheet);
+    let (a0, a1, b0, b1) = (lower[0], lower[spans], upper[0], upper[spans]);
+    let (va0, va1, vb1, vb0) = (
+        body.add_vertex(a0),
+        body.add_vertex(a1),
+        body.add_vertex(b1),
+        body.add_vertex(b0),
+    );
+    let ea = body.add_edge(Curve3::Nurbs(a), (0.0, 1.0), va0, va1);
+    let end = body.add_edge(
+        Curve3::Line(Line::through(a1, b1).unwrap()),
+        (0.0, h),
+        va1,
+        vb1,
+    );
+    let eb = body.add_edge(Curve3::Nurbs(b), (0.0, 1.0), vb0, vb1);
+    let start = body.add_edge(
+        Curve3::Line(Line::through(a0, b0).unwrap()),
+        (0.0, h),
+        va0,
+        vb0,
+    );
+    let coedge = |edge, reversed| Coedge { edge, reversed };
+    let lp = body.add_loop(vec![
+        coedge(ea, false),
+        coedge(end, false),
+        coedge(eb, true),
+        coedge(start, true),
+    ]);
+    let face = body.add_face(Surface::Nurbs(surface), false, vec![lp]);
+    body.add_shell(vec![face]);
+    body
+}
+
+/// A face whose spline has 65 535 knot spans (the most a spline holds) (review of 2026-11-02: the
+/// images are integrated span by span, so a face of very many spans made
+/// the unfold's work grow with them) is refused at once, before it is
+/// measured or sampled, with how many it has; at three scales.
+#[test]
+fn a_face_of_very_many_knot_spans_is_refused_at_once() {
+    for k in SCALES {
+        let spans = (1 << 16) - 1;
+        let body = plane_sheet(k, spans, |i| i as f64 / spans as f64);
+        let started = std::time::Instant::now();
+        let refused = develop(&body, &[FaceId(0)], &tol(k))
+            .map(|d| d.error())
+            .expect_err("too many spans");
+        let took = started.elapsed();
+        let why = refused.to_string();
+        assert!(why.contains("65535 knot spans"), "{k}: {why}");
+        assert!(took.as_secs_f64() < 1.0, "{k}: refused after {took:?}");
+    }
+}
+
+/// A plane whose parametrisation kinks at an inner knot (degree 1, its
+/// control points closer on one side: the derivative along u jumps) is
+/// refused by name, as the images are joined across knots in the
+/// direction they arrive in; the same plane evenly parametrised is laid
+/// flat to its rectangle. At three scales.
+#[test]
+fn a_face_whose_parametrisation_kinks_at_a_knot_is_refused() {
+    for k in SCALES {
+        let kinked = plane_sheet(k, 2, |i| [0.0, 0.3, 1.0][i]);
+        let refused = develop(&kinked, &[FaceId(0)], &tol(k))
+            .map(|d| d.error())
+            .expect_err("a kinked parametrisation");
+        let why = refused.to_string();
+        assert!(
+            why.contains("is not smooth in its parameters across the knot u = 0.5"),
+            "{k}: {why}"
+        );
+        let even = plane_sheet(k, 2, |i| [0.0, 0.5, 1.0][i]);
+        let dev = develop(&even, &[FaceId(0)], &tol(k)).unwrap_or_else(|e| panic!("{k}: {e}"));
+        let flat = dev.flat_body(&Frame::WORLD, &tol(k)).unwrap();
+        let area: f64 = craft3d_topo::face_areas(&flat.body)
+            .iter()
+            .map(|a| *a.as_ref().unwrap())
+            .sum();
+        let want = 3000.0 * k * k;
+        assert!((area - want).abs() <= 1e-9 * want, "{k}: {area}");
+    }
+}
+
+/// A fan of the same cone, its apex at `o`: `o + v b g(x(u))`, its apex
+/// row (v = 0) one point, of size `k`.
+fn fan(k: f64, o: Vec3) -> Body {
+    let g0 = g(X0);
+    let g1 = g0 + Vec3::new(1.0, X0, X0) * (0.5 * L);
+    let g2 = g(X0 + L);
+    let far = [o + g0 * (B * k), o + g1 * (B * k), o + g2 * (B * k)];
+    let knots = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+    let mut ctrl = Vec::new();
+    for q in far {
+        ctrl.push(o);
+        ctrl.push(q);
+    }
+    let surface = NurbsSurface::new(
+        2,
+        1,
+        knots.clone(),
+        vec![0.0, 0.0, 1.0, 1.0],
+        3,
+        2,
+        ctrl,
+        vec![1.0; 6],
+    )
+    .unwrap();
+    let row = NurbsCurve::polynomial(2, knots, far.to_vec()).unwrap();
+    let mut body = Body::new(BodyKind::Sheet);
+    let (va, v0, v1) = (
+        body.add_vertex(o),
+        body.add_vertex(far[0]),
+        body.add_vertex(far[2]),
+    );
+    let ray = |body: &mut Body, q: Vec3, end| {
+        body.add_edge(
+            Curve3::Line(Line::through(o, q).unwrap()),
+            (0.0, o.distance(q)),
+            va,
+            end,
+        )
+    };
+    let (r0, r1) = (ray(&mut body, far[0], v0), ray(&mut body, far[2], v1));
+    let e = body.add_edge(Curve3::Nurbs(row), (0.0, 1.0), v0, v1);
+    let coedge = |edge, reversed| Coedge { edge, reversed };
+    let lp = body.add_loop(vec![coedge(r1, false), coedge(e, true), coedge(r0, true)]);
+    let face = body.add_face(Surface::Nurbs(surface), false, vec![lp]);
+    body.add_shell(vec![face]);
+    body
+}
+
+/// A small fan far from the origin (review of 2026-11-02): a part of size
+/// 1e-3 whose apex lies 1e3 and 1e4 away (the three-scale tests scale
+/// about the origin). Laid flat it is the polar sector of the cone's
+/// development: its rays keep their lengths and open by the closed form
+/// `Δψ`, a ray's middle lies halfway along its image, every edge keeps
+/// its length. The boundary's sample at the apex takes its neighbour's
+/// parameter within the rounding of its coordinates as well as a
+/// millionth of the way to that neighbour; that floor only decides
+/// beyond a ratio of about 1e8 between the distance and the size, where
+/// the apex is not told as collapsed (`collapsed_at`, refused at 1e5
+/// here: "a boundary that does not close"), so this pins the fan, not
+/// the floor.
+#[test]
+fn a_small_fan_far_from_the_origin_is_laid_flat() {
+    let k = 1e-3;
+    for o in [Vec3::new(1e3, -7e2, 4e2), Vec3::new(1e4, -7e3, 4e3)] {
+        let body = fan(k, o);
+        let tolerance = Tolerance::new(1e-6 * k, 1e-9).unwrap();
+        let dev = develop(&body, &[FaceId(0)], &tolerance).unwrap_or_else(|e| panic!("{o:?}: {e}"));
+        let e = dev.error();
+        assert!(e.map <= 0.5e-6 * k && e.length <= 1e-6, "{o:?}: {e:?}");
+        let surface = &body.faces[0].surface;
+        let flat = |u: f64, v: f64| dev.to_flat(FaceId(0), surface.eval(u, v)).unwrap();
+        let apex = flat(0.5, 0.0);
+        let (first, last) = (flat(0.0, 1.0), flat(1.0, 1.0));
+        let (a, b) = (
+            [first[0] - apex[0], first[1] - apex[1]],
+            [last[0] - apex[0], last[1] - apex[1]],
+        );
+        let opened = (a[0] * b[1] - a[1] * b[0])
+            .abs()
+            .patan2(a[0] * b[0] + a[1] * b[1]);
+        let want = (polar(1.0, 1.0).1 - polar(0.0, 1.0).1).abs();
+        assert!(
+            (opened - want).abs() <= 1e-6,
+            "{o:?}: opens by {opened}, the cone's development {want}"
+        );
+        for (u, ray) in [(0.0, a), (1.0, b)] {
+            let length = B * ((X0 + L * u).ppowi(2) + 1.0) / 2f64.sqrt() * k;
+            let got = ray[0].phypot(ray[1]);
+            assert!(
+                (got - length).abs() <= 1e-6 * k,
+                "{o:?}: ray {u}: {got} for {length}"
+            );
+        }
+        let (m, end) = (flat(0.4, 0.5), flat(0.4, 1.0));
+        let half = [0.5 * (apex[0] + end[0]), 0.5 * (apex[1] + end[1])];
+        assert!(
+            (m[0] - half[0]).phypot(m[1] - half[1]) <= 1e-6 * k,
+            "{o:?}: a ray's middle off its image's"
+        );
+    }
+}

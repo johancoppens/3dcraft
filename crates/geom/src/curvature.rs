@@ -342,17 +342,77 @@ fn basis_derivatives(knots: &[f64], degree: usize, span: usize, t: f64) -> [[f64
     out
 }
 
+/// The knot span of `t` taken from below: where `t` is an inner knot,
+/// the span that ends there (`knots[span] < t <= knots[span + 1]`), not
+/// the one that starts there as [`span_of`] gives.
+fn span_below(knots: &[f64], degree: usize, count: usize, t: f64) -> usize {
+    let mut span = span_of(knots, degree, count, t);
+    // Down past the knots equal to `t`: at most `count` steps.
+    while span > degree && knots.get(span).is_some_and(|k| *k >= t) {
+        span -= 1;
+    }
+    span
+}
+
+/// `(S_u, S_v, S_uu, S_uv, S_vv)` at `(u, v)`, each parameter's span taken
+/// from below where `below` says so and from above otherwise: at an inner
+/// knot of a spline, the derivatives of the span on that side (a spline
+/// evaluated at a knot takes the span after it, whose second derivative
+/// differs where the spline is less than twice differentiable there).
+/// Elsewhere, and for the analytic kinds and Bézier patches (no inner
+/// knots), the surface's own derivatives.
+pub fn one_sided_derivatives(
+    surface: &Surface,
+    u: f64,
+    v: f64,
+    below: [bool; 2],
+) -> (Vec3, Vec3, Vec3, Vec3, Vec3) {
+    if let Surface::Nurbs(s) = surface {
+        let ((pu, pv), (nu, nv)) = (s.degrees(), s.counts());
+        let (ku, kv) = (s.knots_u(), s.knots_v());
+        let span_u = if below[0] {
+            span_below(ku, pu, nu, u)
+        } else {
+            span_of(ku, pu, nu, u)
+        };
+        let span_v = if below[1] {
+            span_below(kv, pv, nv, v)
+        } else {
+            span_of(kv, pv, nv, v)
+        };
+        return nurbs_in_spans(s, u, v, span_u, span_v);
+    }
+    let (_, su, sv) = surface.derivatives(u, v);
+    let (suu, suv, svv) = second_derivatives(surface, u, v);
+    (su, sv, suu, suv, svv)
+}
+
 /// `(S_uu, S_uv, S_vv)` of a NURBS surface: the derivatives of the
 /// homogeneous surface `A = Σ N_i N_j w_ij P_ij`, `w = Σ N_i N_j w_ij`,
 /// then the quotient rule.
 fn nurbs_second(s: &NurbsSurface, u: f64, v: f64) -> (Vec3, Vec3, Vec3) {
-    let zero = (Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
+    let ((pu, pv), (nu, nv)) = (s.degrees(), s.counts());
+    let (ku, kv) = (s.knots_u(), s.knots_v());
+    let (span_u, span_v) = (span_of(ku, pu, nu, u), span_of(kv, pv, nv, v));
+    let (_, _, suu, suv, svv) = nurbs_in_spans(s, u, v, span_u, span_v);
+    (suu, suv, svv)
+}
+
+/// `(S_u, S_v, S_uu, S_uv, S_vv)` of a NURBS surface at `(u, v)` from the
+/// knot spans given ([`nurbs_second`]).
+fn nurbs_in_spans(
+    s: &NurbsSurface,
+    u: f64,
+    v: f64,
+    span_u: usize,
+    span_v: usize,
+) -> (Vec3, Vec3, Vec3, Vec3, Vec3) {
+    let zero = (Vec3::ZERO, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
     let ((pu, pv), (nu, nv)) = (s.degrees(), s.counts());
     if pu >= ROOM || pv >= ROOM || nu == 0 || nv == 0 {
         return zero;
     }
     let (ku, kv) = (s.knots_u(), s.knots_v());
-    let (span_u, span_v) = (span_of(ku, pu, nu, u), span_of(kv, pv, nv, v));
     let bu = basis_derivatives(ku, pu, span_u, u);
     let bv = basis_derivatives(kv, pv, span_v, v);
     let (points, weights) = (s.control_points(), s.weights());
@@ -399,7 +459,7 @@ fn nurbs_second(s: &NurbsSurface, u: f64, v: f64) -> (Vec3, Vec3, Vec3) {
     let suu = (a20 - su * (2.0 * w10) - p * w20) * inv;
     let suv = (a11 - su * w01 - sv * w10 - p * w11) * inv;
     let svv = (a02 - sv * (2.0 * w01) - p * w02) * inv;
-    (suu, suv, svv)
+    (su, sv, suu, suv, svv)
 }
 
 #[cfg(test)]
@@ -613,6 +673,61 @@ mod tests {
             let fd = (spline.derivatives(t + h).1 - spline.derivatives(t - h).1) * (0.5 / h);
             let exact = curve_second_derivative(&spline, t).unwrap();
             assert!((fd - exact).length() <= 1e-6 * (1.0 + exact.length()));
+        }
+    }
+
+    /// At an inner knot where a quadratic spline is only once
+    /// differentiable, the one-sided derivatives are the limits from each
+    /// side: the first derivatives agree, the second ones jump, and away
+    /// from knots (and at the ends of the domain) both sides give the
+    /// surface's own.
+    #[test]
+    fn one_sided_derivatives_are_the_limits_of_each_span() {
+        use crate::NurbsSurface;
+        let row = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 2.0, 0.0),
+            Vec3::new(3.0, -1.0, 1.0),
+            Vec3::new(4.0, 1.0, 0.0),
+        ];
+        let mut ctrl = Vec::new();
+        for p in row {
+            ctrl.push(p);
+            ctrl.push(p + Vec3::new(0.0, 0.0, 2.0));
+        }
+        let s = Surface::Nurbs(
+            NurbsSurface::new(
+                2,
+                1,
+                vec![0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0],
+                vec![0.0, 0.0, 1.0, 1.0],
+                4,
+                2,
+                ctrl,
+                vec![1.0; 8],
+            )
+            .unwrap(),
+        );
+        let near = |a: Vec3, b: Vec3| (a - b).length() <= 1e-6 * (1.0 + b.length());
+        let h = 1e-9;
+        let (below, above) = (
+            one_sided_derivatives(&s, 0.5, 0.3, [true, false]),
+            one_sided_derivatives(&s, 0.5, 0.3, [false, false]),
+        );
+        let left = one_sided_derivatives(&s, 0.5 - h, 0.3, [false, false]);
+        let right = one_sided_derivatives(&s, 0.5 + h, 0.3, [false, false]);
+        assert!(near(below.0, left.0) && near(above.0, right.0));
+        assert!(near(below.0, above.0), "C1 at the knot");
+        assert!(near(below.2, left.2) && near(above.2, right.2));
+        assert!((below.2 - above.2).length() > 1.0, "S_uu jumps");
+        let (_, su, _) = s.derivatives(0.25, 0.3);
+        let (suu, _, _) = second_derivatives(&s, 0.25, 0.3);
+        for side in [true, false] {
+            let d = one_sided_derivatives(&s, 0.25, 0.3, [side, side]);
+            assert!(near(d.0, su) && near(d.2, suu));
+            let lo = one_sided_derivatives(&s, 0.0, 0.0, [side, side]);
+            let hi = one_sided_derivatives(&s, 1.0, 1.0, [side, side]);
+            assert!(lo.0.length() > 0.0 && hi.0.length() > 0.0);
         }
     }
 }

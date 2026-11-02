@@ -739,7 +739,11 @@ fn a_fan_that_lands_where_the_other_branch_turns_back_is_followed_by_a_second() 
 /// every edge's flat length within 1e-6 of its length on the part, the
 /// map's error within half the tolerance, and points of every face,
 /// across it and next to its corners, mapped to the pattern and back to
-/// the same face and point.
+/// the same face and point; and the shape, by an oracle the layout does
+/// not use: every face's rulings (its iso-lines across, straight lines on
+/// the part, degree 1) keep their length, so each ruling's two ends lie
+/// in the pattern at their distance on the part, within 1e-6 of the
+/// sheet's size.
 fn assert_unfolds_keeping_area_lengths_and_map(made: &Connected, k: f64) {
     let faces: Vec<FaceId> = (0..made.body.faces.len() as u32).map(FaceId).collect();
     let dev = develop(&made.body, &faces, &tol(k)).unwrap_or_else(|e| panic!("{k}: {e}"));
@@ -786,6 +790,30 @@ fn assert_unfolds_keeping_area_lengths_and_map(made: &Connected, k: f64) {
             );
         }
     }
+    let mut rulings = 0;
+    for (i, face) in made.body.faces.iter().enumerate() {
+        let Surface::Nurbs(s) = &face.surface else {
+            continue;
+        };
+        assert_eq!(s.degrees().1, 1, "{k}: face {i}'s rulings are lines");
+        let ((u0, u1), (v0, v1)) = s.domain();
+        for j in 0..=32 {
+            let u = u0 + (u1 - u0) * f64::from(j) / 32.0;
+            let (p, q) = (face.surface.eval(u, v0), face.surface.eval(u, v1));
+            let (fp, fq) = (
+                dev.to_flat(FaceId(i as u32), p).unwrap(),
+                dev.to_flat(FaceId(i as u32), q).unwrap(),
+            );
+            let flat = (fp[0] - fq[0]).phypot(fp[1] - fq[1]);
+            assert!(
+                (flat - p.distance(q)).abs() <= 1e-6 * k,
+                "{k}: face {i}'s ruling at u = {u} is {} on the part, {flat} in the pattern",
+                p.distance(q)
+            );
+            rulings += 1;
+        }
+    }
+    assert!(rulings > 0, "{k}");
 }
 
 /// The fan along that follows a fan landed on a branch that already
