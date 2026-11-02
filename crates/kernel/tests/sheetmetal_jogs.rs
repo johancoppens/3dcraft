@@ -92,6 +92,7 @@ fn flange(on: On, length: f64, angle: f64, direction: Direction, r: f64, kf: f64
 }
 
 /// A jog across the line from `a` to `b` (scaled by `k`).
+#[allow(clippy::too_many_arguments)]
 fn jog(
     a: [f64; 2],
     b: [f64; 2],
