@@ -1505,6 +1505,12 @@ impl Desk {
     /// moment of a motion is exact by then: while a recording or a capture
     /// runs, nothing provisional is shown ([`Self::sync_exact_pictures`]).
     fn settled(&mut self) -> bool {
+        // The session may have come back from the engine thread since the
+        // last turn, with the viewport live as it left: off again before
+        // the scene is looked at, else the frame shows the provisional
+        // moment that scene was built of (a Gate run of 2026-11-02 caught
+        // a recorded frame so).
+        self.sync_exact_pictures();
         !self.away() && self.capture.is_none() && self.scene_ready() && !self.refining()
     }
 
@@ -2620,20 +2626,12 @@ mod tests {
         assert_eq!(file_stem("plate.step").as_deref(), Some("plate.step"));
     }
 
-    /// The frame of a frame-exact recording (`ui.record {step: true}`)
-    /// of a motion whose moment the viewport shows provisionally: the
-    /// desk turns the viewport's provisional moments off while it records
-    /// (`Desk::sync_exact_pictures`), so the frame is the one a desk that
-    /// showed the exact moment records (the review of 2026-11-02).
-    fn recorded_moment(state: &eframe::egui_wgpu::RenderState, name: &str, ready: bool) -> Vec<u8> {
-        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join(format!("../../target/tmp/craft3d-desk-moment-{name}"));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let dir = craft3d_engine::canonical(&dir).unwrap();
+    /// A bar part in `dir` and an assembly of a fixed bar and a bar whose
+    /// length follows `t`: a configuration of its own at every moment.
+    fn stretching_session(dir: &std::path::Path) -> Session {
         let mut session = Session::new(Workspace {
-            read: Access::Root(dir.clone()),
-            write: Access::Root(dir.clone()),
+            read: Access::Root(dir.to_path_buf()),
+            write: Access::Root(dir.to_path_buf()),
         });
         let mut run = |id: &str, params: Value| {
             session
@@ -2673,19 +2671,55 @@ mod tests {
             "mate.add",
             json!({"kind": "fixed", "a": "world/z", "b": "Belt/End1", "name": "Hold", "flip": true}),
         );
+        session
+    }
+
+    /// Serialises the tests that hold the whole pool (two at once would
+    /// each wait for the other's threads).
+    static POOL_FROZEN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Every thread of the process's pool, held until dropped: a motion's
+    /// background builder builds nothing meanwhile.
+    fn freeze_pool() -> (
+        std::sync::MutexGuard<'static, ()>,
+        Vec<craft3d_math::pool::Lease>,
+    ) {
+        let one = POOL_FROZEN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut held = Vec::new();
+        let mut have = 0;
+        let deadline = Instant::now() + Duration::from_secs(120);
+        while have < craft3d_math::pool::SHARED_THREADS {
+            let lease = craft3d_math::pool::lease(craft3d_math::pool::SHARED_THREADS);
+            have += lease.threads();
+            held.push(lease);
+            assert!(Instant::now() < deadline, "the pool never came back");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        (one, held)
+    }
+
+    /// The frame of a frame-exact recording (`ui.record {step: true}`)
+    /// of a motion whose moment the viewport shows provisionally: the
+    /// desk turns the viewport's provisional moments off while it records
+    /// (`Desk::sync_exact_pictures`), so the frame is the one a desk that
+    /// showed the exact moment records (the review of 2026-11-02).
+    fn recorded_moment(state: &eframe::egui_wgpu::RenderState, name: &str, ready: bool) -> Vec<u8> {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("../../target/tmp/craft3d-desk-moment-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = craft3d_engine::canonical(&dir).unwrap();
+        let mut session = stretching_session(&dir);
         // The background builder gets no thread (every thread of the
         // pool held): only the exact path can make the moment exact.
-        let frozen = ready.then(|| {
-            let mut held = Vec::new();
-            let mut have = 0;
-            while have < craft3d_math::pool::SHARED_THREADS {
-                let lease = craft3d_math::pool::lease(craft3d_math::pool::SHARED_THREADS);
-                have += lease.threads();
-                held.push(lease);
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            held
-        });
+        let frozen = ready.then(freeze_pool);
+        let mut run = |id: &str, params: Value| {
+            session
+                .execute(id, &params)
+                .unwrap_or_else(|e| panic!("{id}: {e}"));
+        };
         let shapes = if ready { "ready" } else { "exact" };
         run("view.motion", json!({"t": 0.5, "shapes": shapes}));
         session.set_motion_live(true);
@@ -2744,6 +2778,44 @@ mod tests {
         frames.sort();
         drop(frozen);
         std::fs::read(frames.first().unwrap()).unwrap()
+    }
+
+    /// The window has settled for a frame-exact frame only once the scene
+    /// of the exact moment is built: a session that comes back from the
+    /// engine thread with the viewport live (the scene of a provisional
+    /// moment ready) is made exact first (`Desk::settled`).
+    #[test]
+    fn a_session_back_live_is_not_settled_on_a_provisional_scene() {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/tmp/craft3d-desk-back-live");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = craft3d_engine::canonical(&dir).unwrap();
+        let session = stretching_session(&dir);
+        if craft3d_math::available_threads() < 2 {
+            return;
+        }
+        let frozen = freeze_pool();
+        let mut session = session;
+        session
+            .execute("view.motion", &json!({"t": 0.5, "shapes": "ready"}))
+            .unwrap();
+        session.set_motion_live(true);
+        assert!(!session.motion().unwrap().exact);
+        let (_requests, incoming) = mpsc::channel();
+        let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
+        let mut desk = Desk::new(Host::new(session), incoming, picker);
+        // The scene of the provisional moment, as the live viewport has it.
+        let quality = desk.host.shell.scene_quality();
+        desk.host.session.scene_with(quality).unwrap();
+        assert!(desk.scene_ready());
+        // A frame-exact recording runs, and the session is here again
+        // with the viewport live.
+        desk.host.shell.set_frame_exact(true);
+        desk.host.session.set_motion_live(true);
+        assert!(!desk.settled(), "settled on the provisional moment's scene");
+        assert!(desk.host.session.motion().unwrap().exact);
+        drop(frozen);
     }
 
     #[test]
@@ -2959,6 +3031,11 @@ mod tests {
                     shown_longest,
                 );
                 moments = 0;
+                if !desk.away() {
+                    let building = desk.host.session.motion().map(|m| m.building);
+                    let traced = desk.host.session.traces().len();
+                    println!("PLAY building {building:?}, traces {traced}");
+                }
                 window = (Instant::now(), cpu());
                 longest = 0.0;
                 stalls = 0;
