@@ -2105,7 +2105,7 @@ mod tests {
                 Ok(Some(_))
             ));
             asked += 1;
-            if asked % MAX_PROMPTS_PER_CLIENT == 0 {
+            if asked.is_multiple_of(MAX_PROMPTS_PER_CLIENT) {
                 client += 1;
             }
         }
