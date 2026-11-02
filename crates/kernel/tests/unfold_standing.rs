@@ -1,0 +1,373 @@
+//! The unfold of a strip whose rail stands still at a corner and whose
+//! knots crowd towards it, as the strip beside a fan at a fold does (its
+//! rail stands still where the zero set turned, and the walk's rulings,
+//! the fitted face's knots, crowd there): docs/design/developable.md ›
+//! *Distances in the layout* (span by span). Held by a strip of a cone of
+//! half-angle 45° about its apex `O`, `S(u, v) = O + t(u, v) g(x(u))` with
+//! `g(x) = (x, (x² − 1)/2, (x² + 1)/2)` (the cone's section by the plane
+//! `z = y + 1`, a parabola) and `t = (1 − v) q(u) + v b`, where the lower
+//! row's `q` is a C¹ piecewise quadratic on spans that halve towards `u =
+//! 1` (its second derivative jumping between 1 and 3 at every knot) with
+//! `q(1) = q'(1) = 0`: the lower row runs into the apex and stands still
+//! there. The face is a B-spline of degree 4 by 1, exactly on the cone, so
+//! laid flat it is the polar region `ρ = t |g|`, `ψ = φ(x)/√2` (`φ =
+//! atan2((x² − 1)/2, x)`, `|g| = (x² + 1)/√2`), and its area, its edges'
+//! lengths and the flat distance between any two of its points are known in
+//! closed form. At three scales, far from the origin.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+
+use craft3d_geom::{Curve3, Line, NurbsCurve, NurbsSurface, Surface};
+use craft3d_kernel::unfold::develop;
+use craft3d_math::Portable;
+use craft3d_math::{Frame, Tolerance, Vec3};
+use craft3d_topo::{Body, BodyKind, Coedge, FaceId};
+
+const SCALES: [f64; 3] = [1e-3, 1.0, 1e6];
+
+fn tol(scale: f64) -> Tolerance {
+    Tolerance::new(1e-6 * scale, 1e-9).unwrap()
+}
+
+/// The strip's constants: `x` from `X0` over `L`, the upper row `b`
+/// along the cone's rays, and how many times the spans halve towards
+/// `u = 1` (the last one `2⁻¹²` of the face, as the fold strip's spans of
+/// 4.5e-4 at its standing corner).
+const X0: f64 = -0.5;
+const L: f64 = 1.5;
+const B: f64 = 2.0;
+const HALVINGS: i32 = 12;
+
+/// The cone's apex, away from the origin.
+fn apex(k: f64) -> Vec3 {
+    Vec3::new(3.0, -2.0, 5.0) * k
+}
+
+fn g(x: f64) -> Vec3 {
+    Vec3::new(x, 0.5 * (x * x - 1.0), 0.5 * (x * x + 1.0))
+}
+
+/// The knots of the lower row: 0, then `1 − 2⁻ⁿ` for n = 1 to
+/// [`HALVINGS`], then 1.
+fn breaks() -> Vec<f64> {
+    let mut out = vec![0.0];
+    for n in 1..=HALVINGS {
+        out.push(1.0 - 0.5f64.ppowi(n));
+    }
+    out.push(1.0);
+    out
+}
+
+/// `q` and `q'` at `u`: integrated back from `q(1) = q'(1) = 0` with `q''`
+/// 1 on the last span, 3 on the one before, and so on.
+fn lower(u: f64) -> (f64, f64) {
+    let knots = breaks();
+    let (mut q, mut dq) = (0.0, 0.0);
+    let spans = knots.len() - 1;
+    for s in (0..spans).rev() {
+        let (lo, hi) = (knots[s], knots[s + 1]);
+        let a = if (spans - 1 - s) % 2 == 0 { 1.0 } else { 3.0 };
+        let to = u.max(lo);
+        let h = to - hi;
+        q += dq * h + 0.5 * a * h * h;
+        dq += a * h;
+        if u >= lo {
+            break;
+        }
+    }
+    (q, dq)
+}
+
+/// The point of the strip at `(u, v)`.
+fn point(k: f64, u: f64, v: f64) -> Vec3 {
+    let t = (1.0 - v) * lower(u).0 + v * B;
+    apex(k) + g(X0 + L * u) * (t * k)
+}
+
+/// The point's polar coordinates in the cone's development about its apex.
+fn polar(u: f64, v: f64) -> (f64, f64) {
+    let x = X0 + L * u;
+    let t = (1.0 - v) * lower(u).0 + v * B;
+    let rho = t * (x * x + 1.0) / 2f64.sqrt();
+    let psi = (0.5 * (x * x - 1.0)).patan2(x) / 2f64.sqrt();
+    (rho, psi)
+}
+
+/// The flat distance between two points of the strip, times `k`.
+fn flat_distance(k: f64, (u1, v1): (f64, f64), (u2, v2): (f64, f64)) -> f64 {
+    let (r1, p1) = polar(u1, v1);
+    let (r2, p2) = polar(u2, v2);
+    (r1 * r1 + r2 * r2 - 2.0 * r1 * r2 * (p1 - p2).pcos())
+        .max(0.0)
+        .sqrt()
+        * k
+}
+
+/// The strip's area, `∫ ½ (b² − q²) (x² + 1)/√2 L du`, times `k²`: on
+/// each span a polynomial of degree 6 in `u`, so Gauss–Legendre at four
+/// points per span gives it exactly (up to rounding).
+fn closed_area(k: f64) -> f64 {
+    let nodes = [
+        (-0.861_136_311_594_052_6, 0.347_854_845_137_453_8),
+        (-0.339_981_043_584_856_3, 0.652_145_154_862_546_1),
+        (0.339_981_043_584_856_3, 0.652_145_154_862_546_1),
+        (0.861_136_311_594_052_6, 0.347_854_845_137_453_8),
+    ];
+    let mut sum = 0.0;
+    for w in breaks().windows(2) {
+        let (lo, hi) = (w[0], w[1]);
+        for (z, weight) in nodes {
+            let u = lo + 0.5 * (z + 1.0) * (hi - lo);
+            let x = X0 + L * u;
+            let q = lower(u).0;
+            let f = 0.5 * (B * B - q * q) * (x * x + 1.0) / 2f64.sqrt() * L;
+            sum += 0.5 * (hi - lo) * weight * f;
+        }
+    }
+    sum * k * k
+}
+
+/// The length of the upper row, `b ∫ |g'| dx` with `|g'| = √(1 + 2x²)`,
+/// times `k`.
+fn closed_upper_length(k: f64) -> f64 {
+    let primitive = |x: f64| {
+        let r2 = 2f64.sqrt();
+        0.5 * x * (1.0 + 2.0 * x * x).sqrt() + (r2 * x).pasinh() / (2.0 * r2)
+    };
+    B * (primitive(X0 + L) - primitive(X0)) * k
+}
+
+/// The Bernstein coefficients, at degree 4, of the product of a scalar
+/// and a point quadratic given by theirs at degree 2.
+fn product(q: [f64; 3], p: [Vec3; 3]) -> [Vec3; 5] {
+    let binomial = [[1.0, 0.0, 0.0], [1.0, 2.0, 1.0]];
+    let c2 = binomial[1];
+    let c4 = [1.0, 4.0, 6.0, 4.0, 1.0];
+    let mut out = [Vec3::ZERO; 5];
+    for (m, slot) in out.iter_mut().enumerate() {
+        for i in 0..3 {
+            if m >= i && m - i < 3 {
+                let j = m - i;
+                *slot = *slot + p[j] * (c2[i] * c2[j] / c4[m] * q[i]);
+            }
+        }
+    }
+    out
+}
+
+/// The strip as a one-face sheet, its upper row lifted off the cone by
+/// `twist u (1 − u)` (in units of the strip's size) across the cone (0
+/// for the developable strip).
+fn strip(k: f64, twist: f64) -> Body {
+    let o = apex(k);
+    let lift = Vec3::new(0.0, -1.0, 1.0) * (twist * k);
+    let knots_at = breaks();
+    let (mut lower_ctrl, mut upper_ctrl) = (vec![], vec![]);
+    let mut knots = vec![0.0; 5];
+    for (s, w) in knots_at.windows(2).enumerate() {
+        let (lo, hi) = (w[0], w[1]);
+        let d = hi - lo;
+        // `g`, `q` and the lift `u (1 − u)` on the span, at degree 2.
+        let (x0, x1) = (X0 + L * lo, X0 + L * hi);
+        let gs = [g(x0), g(x0) + Vec3::new(1.0, x0, x0) * (0.5 * L * d), g(x1)];
+        let (q0, dq0) = lower(lo);
+        let qs = [q0, q0 + 0.5 * d * dq0, lower(hi).0];
+        let f = |u: f64| u * (1.0 - u);
+        let fs = [f(lo), f(lo) + 0.5 * d * (1.0 - 2.0 * lo), f(hi)];
+        let low = product(qs, gs);
+        let up = product([1.0; 3], gs);
+        let lifted = product(fs, [lift; 3]);
+        for m in 0..5 {
+            if s > 0 && m == 0 {
+                continue;
+            }
+            lower_ctrl.push(o + low[m] * k);
+            upper_ctrl.push(o + up[m] * (B * k) + lifted[m]);
+        }
+        let end = if s + 2 == knots_at.len() { 5 } else { 4 };
+        knots.extend(std::iter::repeat_n(hi, end));
+    }
+    let count = lower_ctrl.len();
+    let mut ctrl = Vec::new();
+    for (p, q) in lower_ctrl.iter().zip(&upper_ctrl) {
+        ctrl.push(*p);
+        ctrl.push(*q);
+    }
+    let surface = NurbsSurface::new(
+        4,
+        1,
+        knots.clone(),
+        vec![0.0, 0.0, 1.0, 1.0],
+        count,
+        2,
+        ctrl,
+        vec![1.0; 2 * count],
+    )
+    .unwrap();
+    let a = NurbsCurve::polynomial(4, knots.clone(), lower_ctrl.clone()).unwrap();
+    let b = NurbsCurve::polynomial(4, knots, upper_ctrl.clone()).unwrap();
+    let mut body = Body::new(BodyKind::Sheet);
+    let (a0, a1) = (lower_ctrl[0], lower_ctrl[count - 1]);
+    let (b0, b1) = (upper_ctrl[0], upper_ctrl[count - 1]);
+    let (va0, va1, vb1, vb0) = (
+        body.add_vertex(a0),
+        body.add_vertex(a1),
+        body.add_vertex(b1),
+        body.add_vertex(b0),
+    );
+    let ea = body.add_edge(Curve3::Nurbs(a), (0.0, 1.0), va0, va1);
+    let end = body.add_edge(
+        Curve3::Line(Line::through(a1, b1).unwrap()),
+        (0.0, a1.distance(b1)),
+        va1,
+        vb1,
+    );
+    let eb = body.add_edge(Curve3::Nurbs(b), (0.0, 1.0), vb0, vb1);
+    let start = body.add_edge(
+        Curve3::Line(Line::through(a0, b0).unwrap()),
+        (0.0, a0.distance(b0)),
+        va0,
+        vb0,
+    );
+    let lp = body.add_loop(vec![
+        Coedge {
+            edge: ea,
+            reversed: false,
+        },
+        Coedge {
+            edge: end,
+            reversed: false,
+        },
+        Coedge {
+            edge: eb,
+            reversed: true,
+        },
+        Coedge {
+            edge: start,
+            reversed: true,
+        },
+    ]);
+    let face = body.add_face(Surface::Nurbs(surface), false, vec![lp]);
+    body.add_shell(vec![face]);
+    body
+}
+
+/// The strip is laid flat: its area and every edge's length are those of
+/// the cone's development in closed form within 1e-6 relative, the flat
+/// distance between pairs of points across the face (along its rays,
+/// across them, and diagonally, some next to the standing corner) is the
+/// polar one within 1e-6 of the strip's size, and points mapped there and
+/// back return. Refused before 2026-11-02 in three ways, each fixed and
+/// each failing this test alone when undone: the layout's images
+/// integrated across knots ("does not lie flat … do not converge", or
+/// "the grid … cannot be laid flat near" the apex), their rates at a
+/// piece's end taken at the knot, in the next span (7.7 tolerances between
+/// the layouts), and the apex corner's boundary sample given its
+/// neighbour's parameter ("the flat image of an edge … departs from the
+/// pattern's map by 5.4e-7" at 1e-3).
+#[test]
+fn a_cone_strip_whose_row_stands_still_at_the_apex_is_laid_flat() {
+    for k in SCALES {
+        let body = strip(k, 0.0);
+        let surface = &body.faces[0].surface;
+        for (u, v) in [(0.0, 0.0), (0.3, 0.7), (1.0, 1.0), (0.99, 0.01)] {
+            assert!(
+                surface.eval(u, v).distance(point(k, u, v)) <= 1e-12 * k * 10.0,
+                "{k}: the patch is the cone at ({u}, {v})"
+            );
+        }
+        let dev = develop(&body, &[FaceId(0)], &tol(k)).unwrap_or_else(|e| panic!("{k}: {e}"));
+        let e = dev.error();
+        eprintln!("{k}: {e:?}");
+        assert!(e.map <= 0.5e-6 * k, "{k}: {e:?}");
+        assert!(e.length <= 1e-6 && e.area <= 1e-6, "{k}: {e:?}");
+        // The pattern's area, measured on the flat sheet, against the
+        // closed form.
+        let flat = dev.flat_body(&Frame::WORLD, &tol(k)).unwrap();
+        let area: f64 = craft3d_topo::face_areas(&flat.body)
+            .iter()
+            .map(|a| *a.as_ref().unwrap())
+            .sum();
+        let want = closed_area(k);
+        assert!(
+            (area - want).abs() <= 1e-6 * want,
+            "{k}: the pattern's area {area}, the development's {want}"
+        );
+        // Every edge keeps its length; the rays and the upper row against
+        // their closed forms.
+        let rays = [
+            (B - lower(0.0).0) * (X0 * X0 + 1.0) / 2f64.sqrt() * k,
+            B * ((X0 + L) * (X0 + L) + 1.0) / 2f64.sqrt() * k,
+        ];
+        let upper = closed_upper_length(k);
+        let mut matched = 0;
+        for c in dev.outline() {
+            assert!(
+                (c.length_flat - c.length_3d).abs() <= 1e-6 * c.length_3d,
+                "{k}: an edge {} long on the part, {} flat",
+                c.length_3d,
+                c.length_flat
+            );
+            for want in rays.iter().chain([&upper]) {
+                if (c.length_3d - want).abs() <= 1e-6 * want {
+                    assert!((c.length_flat - want).abs() <= 1e-6 * want, "{k}");
+                    matched += 1;
+                }
+            }
+        }
+        assert_eq!(matched, 3, "{k}: the two rays and the upper row");
+        // Distances in the pattern: along rays, across them (one pair on
+        // the standing row's side, a ten-thousandth from the apex), and
+        // diagonally.
+        let to_flat = |(u, v): (f64, f64)| dev.to_flat(FaceId(0), point(k, u, v)).unwrap();
+        let pairs = [
+            ((0.2, 0.0), (0.2, 1.0)),
+            ((0.9999, 0.0), (0.9999, 1.0)),
+            ((0.0, 0.5), (1.0, 0.5)),
+            ((0.98, 0.001), (0.9999, 0.001)),
+            ((0.5, 0.0), (1.0, 0.0)),
+            ((0.1, 0.9), (0.95, 0.05)),
+            ((0.0, 0.0), (1.0, 1.0)),
+        ];
+        for (p, q) in pairs {
+            let (fp, fq) = (to_flat(p), to_flat(q));
+            let d = (fp[0] - fq[0]).phypot(fp[1] - fq[1]);
+            let want = flat_distance(k, p, q);
+            assert!(
+                (d - want).abs() <= 1e-6 * k,
+                "{k}: {p:?} to {q:?} is {d} flat, {want} in the development"
+            );
+        }
+        // There and back.
+        for p in [(0.2, 0.3), (0.5, 0.9), (0.97, 0.02), (0.8, 0.5)] {
+            let x = point(k, p.0, p.1);
+            let (face, y) = dev.to_3d(to_flat(p)).unwrap();
+            assert_eq!(face, FaceId(0));
+            assert!(y.distance(x) <= 1e-6 * k, "{k}: {x:?} came back as {y:?}");
+        }
+    }
+}
+
+/// The same strip with its upper row lifted off the cone by a hundredth
+/// of its size (a ruled face that is not developable, its corner still
+/// standing and its knots still crowded) is refused, with its curvature,
+/// at three scales.
+#[test]
+fn a_twisted_strip_whose_row_stands_still_is_refused() {
+    for k in SCALES {
+        let body = strip(k, 1e-2);
+        let refused = develop(&body, &[FaceId(0)], &tol(k))
+            .map(|d| d.error())
+            .expect_err("a twisted strip is not developable");
+        let why = refused.to_string();
+        assert!(
+            why.contains("is not developable: its Gaussian curvature reaches"),
+            "{k}: {why}"
+        );
+    }
+}

@@ -403,10 +403,77 @@ fn normal_near(surface: &Surface, p: P2, q: P2) -> Option<Vec3> {
 /// / |c'|²`: the angle and the end together by Simpson's rule, step by
 /// step from each step's start, middle and end (the angle at the middle
 /// by the rule's own interpolant), so both are of the fourth order.
+///
+/// Span by span (2026-11-02): the line is split where it crosses the
+/// surface's knots, as the curve's geodesic curvature jumps there (a
+/// cubic's second derivative), and each piece is integrated within its
+/// span, the next laid from the end of the one before in the direction
+/// its image has turned to. A rule across a knot is of the second order
+/// only, and the fitted faces of a developable put their knots where its
+/// rulings are, which crowd where the walk slows (towards a fold: the
+/// strip beside a fold's fan has spans of 4e-4 of the face at the corner
+/// where its rail stands still, a cell of its grid crossing a dozen), so
+/// the map between the grid's nodes, an image across a cell, did not
+/// settle there, and the strip was refused (r1-kayakplates, 2026-10-27,
+/// where it was put down to the corner standing still). The edges of the
+/// outline were already developed span by span ([`developed`]).
 fn planar_image(surface: &Surface, outward: bool, p: P2, q: P2) -> P2 {
+    let d = sub2(q, p);
+    let mut cuts: Vec<f64> = vec![0.0];
+    if let Surface::Nurbs(s) = surface {
+        for (k, knots) in [s.knots_u(), s.knots_v()].into_iter().enumerate() {
+            let (Some(&from), Some(&step)) = (p.get(k), d.get(k)) else {
+                continue;
+            };
+            if step == 0.0 || !step.is_finite() {
+                continue;
+            }
+            let (lo, hi) = (from.min(from + step), from.max(from + step));
+            let first = knots.partition_point(|x| *x <= lo);
+            for x in knots.get(first..).unwrap_or(&[]) {
+                if *x >= hi {
+                    break;
+                }
+                cuts.push((x - from) / step);
+            }
+        }
+    }
+    cuts.push(1.0);
+    cuts.sort_by(f64::total_cmp);
+    cuts.dedup();
+    let at = |t: f64| [p[0] + t * d[0], p[1] + t * d[1]];
+    let (mut end, mut theta) = ([0.0, 0.0], 0.0_f64);
+    for w in cuts.windows(2) {
+        let [a, b] = w else { continue };
+        if !(b > a) {
+            continue;
+        }
+        let (piece, turn) = planar_image_piece(surface, outward, at(*a), at(*b));
+        let (sin, cos) = theta.psin_cos();
+        end = [
+            end[0] + cos * piece[0] - sin * piece[1],
+            end[1] + sin * piece[0] + cos * piece[1],
+        ];
+        theta += turn;
+    }
+    end
+}
+
+/// How far inside a piece of [`planar_image`] the rates at its two ends
+/// are taken, as a share of the piece: so the rate at a knot is the
+/// piece's own span's (a spline is evaluated at a knot in the span after
+/// it, and where it is only once differentiable there, its second
+/// derivative jumps), and at a corner where the surface's row stands
+/// still, where `|c'|` is 0 and the turning has only a limit, that limit.
+const KNOT_INSET: f64 = 1e-9;
+
+/// One piece of [`planar_image`], within one span of the surface: its end
+/// and the angle its image has turned by there.
+fn planar_image_piece(surface: &Surface, outward: bool, p: P2, q: P2) -> (P2, f64) {
     // The steps doubled until two results agree to 1e-12 of the segment's
     // length (a curve whose turning varies quickly, as a fitted face's
-    // rows between close rulings, is followed as finely as it needs).
+    // rows between close rulings, is followed as finely as it needs), and
+    // the angle, by which the next piece is laid, to 1e-12.
     // Relative to each segment, as each is laid from the ones before it:
     // the images' errors add up along a face, so a long one (the sea
     // kayak's 5 m panels, 2026-10-27, laid in rows of 400 cells) needs
@@ -417,19 +484,23 @@ fn planar_image(surface: &Surface, outward: bool, p: P2, q: P2) -> P2 {
     while steps < MAX_IMAGE_STEPS {
         steps *= 2;
         let next = planar_image_steps(surface, outward, p, q, steps);
-        let change = len2(sub2(next, last));
+        let change = len2(sub2(next.0, last.0));
+        let turned = (next.1 - last.1).abs();
         last = next;
-        if change <= 1e-12 * len2(next) {
+        if change <= 1e-12 * len2(next.0) && turned <= 1e-12 {
             break;
         }
     }
     last
 }
 
-/// Most Simpson steps along one curve of the layout.
+/// Most Simpson steps along one piece of a curve of the layout.
 const MAX_IMAGE_STEPS: usize = 256;
 
-fn planar_image_steps(surface: &Surface, outward: bool, p: P2, q: P2, steps: usize) -> P2 {
+/// The end of a piece's image and the angle it has turned by there, by
+/// `steps` steps; the rates at its two ends taken [`KNOT_INSET`] of the
+/// way inside them.
+fn planar_image_steps(surface: &Surface, outward: bool, p: P2, q: P2, steps: usize) -> (P2, f64) {
     let steps = steps.max(1);
     let d = sub2(q, p);
     let mut last_normal: Option<Vec3> = None;
@@ -454,11 +525,15 @@ fn planar_image_steps(surface: &Surface, outward: bool, p: P2, q: P2, steps: usi
     };
     let h = 1.0 / steps as f64;
     let (mut theta, mut end) = (0.0_f64, [0.0, 0.0]);
-    let mut here = rate(0.0);
+    let mut here = rate(KNOT_INSET);
     for k in 0..steps {
         let t = k as f64 * h;
         let mid = rate(t + 0.5 * h);
-        let next = rate(if k + 1 == steps { 1.0 } else { t + h });
+        let next = rate(if k + 1 == steps {
+            1.0 - KNOT_INSET
+        } else {
+            t + h
+        });
         let (w0, wm, w1) = (here.1, mid.1, next.1);
         let theta_m = theta + h / 24.0 * (5.0 * w0 + 8.0 * wm - w1);
         let theta_1 = theta + h / 6.0 * (w0 + 4.0 * wm + w1);
@@ -475,7 +550,7 @@ fn planar_image_steps(surface: &Surface, outward: bool, p: P2, q: P2, steps: usi
         theta = theta_1;
         here = next;
     }
-    end
+    (end, theta)
 }
 
 /// One face's place in the pattern.
@@ -918,10 +993,20 @@ fn boundary(
                     .flatten()
                     .find(|&m| same_edge(m) && !degenerate.get(m).copied().unwrap_or(true))
             });
-            if let Some(u) = found.and_then(|m| uvs.get(m)).map(|uv| uv[0])
+            // Only along a row that is one point of the part (an apex row,
+            // a pole): at a corner where a row stands still but goes on
+            // (a cone's apex at a corner of a strip, 2026-11-02) the
+            // neighbour's parameter is the neighbour's point, and the
+            // corner's own image was laid there instead.
+            if let Some(near) = found.and_then(|m| uvs.get(m))
                 && let Some(slot) = pieces.get_mut(i).and_then(|(_, s)| s.get_mut(j))
             {
-                slot.1[0] = u;
+                let here = surface.eval(slot.1[0], slot.1[1]);
+                let moved = surface.eval(near[0], slot.1[1]);
+                let beside = surface.eval(near[0], near[1]);
+                if moved.distance(here) <= 1e-6 * beside.distance(here) {
+                    slot.1[0] = near[0];
+                }
             }
         }
         loops.push(pieces);

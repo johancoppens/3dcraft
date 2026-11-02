@@ -687,8 +687,9 @@ fn branches_that_pass_closer_than_a_step_are_followed_into_the_fold() {
 /// still turns back in A, and a fan along (apex on A, from the first fan's
 /// end) closes that. The two fans share their ruling, both on the zero
 /// set, so the sheet is smooth across it; every ruling on the zero set,
-/// the faces flat and tangent across every edge, its unfold refused at
-/// the strip beside a fan (the owed layout of a standing corner); at
+/// the faces flat and tangent across every edge, and the sheet laid flat
+/// as one piece (refused until 2026-11-02 at the strips beside the fans,
+/// [`assert_unfolds_keeping_area_lengths_and_map`]); at
 /// three scales.
 #[test]
 fn a_fan_that_lands_where_the_other_branch_turns_back_is_followed_by_a_second() {
@@ -727,28 +728,63 @@ fn a_fan_that_lands_where_the_other_branch_turns_back_is_followed_by_a_second() 
         for v in [0.0, 0.5, 1.0] {
             assert!(close(first.eval(1.0, v), second.eval(0.0, v)), "{k}: {v}");
         }
-        // The unfold is refused at the strip beside a fold's fan (face 1
-        // before the first fan, face 4 after the second), the owed layout
-        // of a face whose parametrisation stands still at a corner
-        // (docs/design/developable.md, Open), never a wrong pattern. Since
-        // the rows leave their end rulings along the rails (2026-10-29)
-        // the row of B stands still where the zero set turned, as the true
-        // developable's does, at every scale; before, the fit's end
-        // tangents were off by its error, which let it unfold at 1e-3 and
-        // 1. Pinned as a refusal at every scale (final review of
-        // 2026-10-29): the unfold of the standing-corner layout, when it
-        // lands, flips this deliberately to a laid-flat piece whose area
-        // and every edge's length are kept within 1e-6 (as
-        // `a_fan_is_laid_flat_about_its_apex` checks).
-        let faces: Vec<FaceId> = (0..made.body.faces.len() as u32).map(FaceId).collect();
-        let refused = develop(&made.body, &faces, &tol(k))
-            .map(|dev| dev.error())
-            .expect_err("the strip beside a fold's fan is refused (owed layout)");
-        let why = refused.to_string();
+        // Laid flat as one piece (flipped deliberately from the refusal
+        // pinned on 2026-10-29, as that pin asked).
+        assert_unfolds_keeping_area_lengths_and_map(&made, k);
+    }
+}
+
+/// The sheet of `made` laid flat as one piece: the pattern's area (measured
+/// on the flat sheet) within 1e-6 of the part's (measured on its faces),
+/// every edge's flat length within 1e-6 of its length on the part, the
+/// map's error within half the tolerance, and points of every face,
+/// across it and next to its corners, mapped to the pattern and back to
+/// the same face and point.
+fn assert_unfolds_keeping_area_lengths_and_map(made: &Connected, k: f64) {
+    let faces: Vec<FaceId> = (0..made.body.faces.len() as u32).map(FaceId).collect();
+    let dev = develop(&made.body, &faces, &tol(k)).unwrap_or_else(|e| panic!("{k}: {e}"));
+    let e = dev.error();
+    eprintln!("{k}: the folded sheet laid flat, {e:?}");
+    assert!(e.map <= 0.5e-6 * k, "{k}: {e:?}");
+    assert!(e.length <= 1e-6 && e.area <= 1e-6, "{k}: {e:?}");
+    let part: f64 = craft3d_topo::face_areas(&made.body)
+        .iter()
+        .map(|a| *a.as_ref().unwrap())
+        .sum();
+    let flat = dev.flat_body(&Frame::WORLD, &tol(k)).unwrap();
+    let pattern: f64 = craft3d_topo::face_areas(&flat.body)
+        .iter()
+        .map(|a| *a.as_ref().unwrap())
+        .sum();
+    assert!(
+        (pattern - part).abs() <= 1e-6 * part,
+        "{k}: the pattern's area {pattern}, the part's {part}"
+    );
+    for c in dev.outline() {
         assert!(
-            why.contains("converge") && (why.contains("face 1 ") || why.contains("face 4 ")),
-            "{k}: {refused}"
+            (c.length_flat - c.length_3d).abs() <= 1e-6 * c.length_3d.max(1e-6 * k),
+            "{k}: an edge {} long on the part, {} flat",
+            c.length_3d,
+            c.length_flat
         );
+    }
+    for (i, face) in made.body.faces.iter().enumerate() {
+        for (u, v) in [
+            (0.5, 0.5),
+            (0.01, 0.5),
+            (0.99, 0.5),
+            (0.02, 0.98),
+            (0.98, 0.02),
+        ] {
+            let p = face.surface.eval(u, v);
+            let there = dev.to_flat(FaceId(i as u32), p).unwrap();
+            let (back, q) = dev.to_3d(there).unwrap();
+            assert_eq!(back, FaceId(i as u32), "{k}: ({u}, {v})");
+            assert!(
+                q.distance(p) <= 1e-6 * k,
+                "{k}: face {i} ({u}, {v}) came back as {q:?} from {p:?}"
+            );
+        }
     }
 }
 
@@ -909,22 +945,13 @@ fn branches_that_pass_each_other_at_an_inflection_are_bridged_by_a_fan() {
             (measured - area).abs() <= 1e-6 * area,
             "{k}: the fan's area {measured} for {area}"
         );
-        // Laid flat, the fan opens by the length of its stretch's image on
-        // the unit sphere, `∫ |d(B / |B|)|` (an isometry keeps the angle at
-        // the apex). Owed (docs/design/developable.md, Open): the layout of
-        // a strip beside the fan does not converge at its standing corner;
-        // until then the unfold is refused with that reason, never a wrong
-        // pattern.
+        // Laid flat as one piece (refused until 2026-11-02, the strips
+        // beside the fan), the fan opens by the length of its stretch's
+        // image on the unit sphere, `∫ |d(B / |B|)|` (an isometry keeps the
+        // angle at the apex).
+        assert_unfolds_keeping_area_lengths_and_map(&made, k);
         let faces: Vec<FaceId> = (0..made.body.faces.len() as u32).map(FaceId).collect();
-        let dev = match develop(&made.body, &faces, &tol(k)) {
-            Ok(dev) => dev,
-            Err(e) => {
-                assert!(e.to_string().contains("converge"), "{k}: {e}");
-                continue;
-            }
-        };
-        let e = dev.error();
-        assert!(e.area < 1e-6 && e.length < 1e-6, "{k}: {e:?}");
+        let dev = develop(&made.body, &faces, &tol(k)).unwrap_or_else(|e| panic!("{k}: {e}"));
         let flat = |p: Vec3| dev.to_flat(FaceId(fan as u32), p).unwrap();
         let (apex, first, last) = (
             flat(surface.eval(0.5, 0.0)),
