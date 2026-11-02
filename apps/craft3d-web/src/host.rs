@@ -364,7 +364,7 @@ pub struct WebHost {
     worker_restart: bool,
     /// A dialog over the page answered while an edit waits: done once it
     /// is applied, in the order asked ([`WebHost::pump`]).
-    held_answer: Option<HeldAnswer>,
+    held_answers: Vec<HeldAnswer>,
     /// The long work is done a piece per frame ([`WebHost::prepare`]), as
     /// the page does: its one thread draws between the pieces.
     stepwise: bool,
@@ -405,6 +405,9 @@ pub const WEB_SCENE_BUDGET: usize = 256 << 20;
 /// so with Cancel, in seconds (the work indicator's own wait).
 const EDIT_NOTE_AFTER: f64 = 0.35;
 
+/// Most dialog answers kept while an edit waits.
+const MAX_HELD: usize = 8;
+
 /// What an edit the person cancelled while it was made says.
 pub const CANCELLED: &str = "cancelled: the edit was not made";
 
@@ -428,7 +431,7 @@ impl WebHost {
             form_job: None,
             edit_since: None,
             worker_restart: false,
-            held_answer: None,
+            held_answers: Vec::new(),
             stepwise: false,
             about: None,
             fetching: None,
@@ -935,11 +938,13 @@ impl WebHost {
             }
             return outcome;
         }
-        // A dialog answered while the edit waited: done now, after it.
-        match self.held_answer.take() {
-            Some(HeldAnswer::Export(request)) => return self.export_request(*request),
-            Some(HeldAnswer::Name(dialog)) => return self.answer(dialog, true),
-            None => {}
+        // The dialogs answered while the edit waited: done now, after it,
+        // one per frame, in the order answered.
+        if !self.held_answers.is_empty() {
+            return match self.held_answers.remove(0) {
+                HeldAnswer::Export(request) => self.export_request(*request),
+                HeldAnswer::Name(dialog) => self.answer(dialog, true),
+            };
         }
         if let Some(action) = self.shell.take_file_action() {
             outcome = self.file_action(action);
@@ -1053,6 +1058,20 @@ impl WebHost {
         self.worker_restart |= self.session.edit_posted();
         let answered = self.session.edits_failed(CANCELLED);
         self.answered(answered)
+    }
+
+    /// Keeps a dialog's answer until the edit that waits is applied: in
+    /// order, at most [`MAX_HELD`] (one more is said, not kept).
+    fn hold(&mut self, held: HeldAnswer) {
+        if self.held_answers.len() < MAX_HELD {
+            self.held_answers.push(held);
+        } else {
+            self.note_error(
+                "file.export",
+                "too many dialogs answered while an edit is made; answer it again once it is done"
+                    .to_string(),
+            );
+        }
     }
 
     /// True once after an edit the worker had was cancelled: the page
@@ -1611,7 +1630,7 @@ impl WebHost {
             // An edit waits: the export is of the document it leaves, as
             // on the desktop, and is made once it is there.
             if self.session.edits_waiting() {
-                self.held_answer = Some(HeldAnswer::Export(Box::new(request)));
+                self.hold(HeldAnswer::Export(Box::new(request)));
                 return Outcome::default();
             }
             return self.export_request(request);
@@ -1655,7 +1674,7 @@ impl WebHost {
             });
         match answer {
             Some(true) if self.session.edits_waiting() => {
-                self.held_answer = Some(HeldAnswer::Name(dialog));
+                self.hold(HeldAnswer::Name(dialog));
                 Outcome::default()
             }
             Some(confirmed) => self.answer(dialog, confirmed),

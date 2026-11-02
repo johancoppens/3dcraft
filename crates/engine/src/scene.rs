@@ -530,33 +530,20 @@ pub struct Scene {
     /// what pictures are framed on (`view.render`, `view.pick`), so that
     /// the camera and the picture's tolerance do not depend on the mesh.
     pub bodies_box: Bbox3,
+    /// The box a window frames the model on ([`Scene::frame_box`]).
+    pub frame: Bbox3,
 }
 
 impl Scene {
-    /// The box a window frames the model on: the bodies' box from their
-    /// B-rep ([`Scene::bodies_box`]) with the sketches' points and the
-    /// ends of their curves, none of which depends on how finely the scene
-    /// was sampled, so the quick first picture and the display scene of
-    /// one state are framed alike (a camera that follows the model does
-    /// not move when the one turns into the other, and a drawing of the
-    /// view seen is the same whichever was there). Without bodies, the
-    /// box around the sketches as drawn.
+    /// The box a window frames the model on ([`frame_of`]): the box
+    /// around the sketches as drawn when there is none (a scene read
+    /// from an older form).
     pub fn frame_box(&self) -> Bbox3 {
-        if self.bodies_box.is_empty() {
-            return self.bbox;
+        if self.frame.is_empty() {
+            self.bbox
+        } else {
+            self.frame
         }
-        let mut frame = self.bodies_box;
-        for sketch in &self.sketches {
-            for point in sketch
-                .polylines
-                .iter()
-                .flat_map(|p| p.points.first().into_iter().chain(p.points.last()))
-                .chain(&sketch.points)
-            {
-                frame.add(*point);
-            }
-        }
-        snapped(frame)
     }
 
     /// How the bodies were sampled: the chordal tolerance and the angle
@@ -943,11 +930,11 @@ fn preview_size(regen: &Regen, doc: &Document) -> f64 {
 pub const PICTURE_PIXEL_SHARE: f64 = 0.5;
 
 /// `frame` with its corners on a grid of a power of two near a billionth
-/// of its size: the B-rep box of a cylinder or a sphere reaches its round
-/// extremes to within a few units in the last place (19.999999999999574
-/// for 20), which a window would carry into its camera; on the grid it is
-/// the round number, the same for every sampling. Scaling by a power of
-/// two and rounding are exact, so the grid moves nothing else.
+/// of its size. Cosmetic: the B-rep box of a cylinder or a sphere reaches
+/// its round extremes to within a few units in the last place
+/// (19.999999999999574 for 20), which a window would show in its camera's
+/// numbers; on the grid it is the round number. Scaling by a power of two
+/// and rounding are exact, so the grid moves nothing else.
 fn snapped(frame: Bbox3) -> Bbox3 {
     let Some((low, high)) = frame.corners() else {
         return frame;
@@ -964,6 +951,89 @@ fn snapped(frame: Bbox3) -> Bbox3 {
     };
     let snap3 = |p: Vec3| Vec3::new(snap(p.x), snap(p.y), snap(p.z));
     Bbox3::from_corners(snap3(low), snap3(high))
+}
+
+/// The box a window frames the model on, the same at every sampling of
+/// the scene where it can be: each body's box from its B-rep (exact for
+/// planes, cylinders, cones, spheres and tori, `Body::held_bbox`), and,
+/// for a body with a freeform face (whose B-rep box is its surfaces'
+/// control nets, much larger than a trimmed face) or whose box cannot be
+/// found, its mesh's box widened by the scene's chordal tolerance (that
+/// body alone may move the camera between samplings); with every sketch
+/// and helix sampled at a tolerance of the model's own size (not the
+/// scene's), widened by it, so a circle or an arc counts whole.
+fn frame_of(doc: &Document, regen: &Regen, scene: &Scene) -> Bbox3 {
+    let mut frame = Bbox3::EMPTY;
+    let take = |frame: &mut Bbox3, b: Bbox3, pad: f64| {
+        if let Some((low, high)) = b.corners() {
+            let pad = if pad.is_finite() && pad > 0.0 {
+                pad
+            } else {
+                0.0
+            };
+            frame.add(low - Vec3::new(pad, pad, pad));
+            frame.add(high + Vec3::new(pad, pad, pad));
+        }
+    };
+    for (id, body) in regen.bodies().filter(|(id, _)| !doc.is_hidden(*id)) {
+        let freeform = body.faces.iter().any(|f| f.surface.is_freeform());
+        match held_box(body).filter(|_| !freeform) {
+            Some(held) => take(&mut frame, held, 0.0),
+            None => {
+                let name = id.to_string();
+                if let Some(drawn) = scene.bodies.iter().find(|b| b.feature == name) {
+                    take(&mut frame, drawn.mesh.bbox(), scene.tolerance);
+                }
+            }
+        }
+    }
+    let size = if scene.bodies_box.is_empty() {
+        doc.tolerance.linear * 1e6
+    } else {
+        scene.bodies_box.diagonal()
+    };
+    let sampling = size * 1e-3;
+    if sampling.is_finite() && sampling > 0.0 {
+        for feature in doc.features.iter().filter(|f| !doc.is_hidden(f.id)) {
+            let Some(outcome) = regen.feature(feature.id) else {
+                continue;
+            };
+            let drawn = match (&feature.kind, outcome.sketch.as_deref(), &outcome.status) {
+                (FeatureKind::Sketch(sketch), Some(solved), Status::Ok | Status::Failed(_)) => {
+                    Some(scene_sketch(feature, sketch, solved, sampling))
+                }
+                _ => match (outcome.datum, &outcome.status) {
+                    (Some(craft3d_regen::Datum::Helix(helix)), Status::Ok) => {
+                        scene_helix(feature, &helix, sampling)
+                    }
+                    _ => None,
+                },
+            };
+            if let Some(drawn) = drawn {
+                // A line's ends and the points are exact; a curve's samples
+                // lie on it, and it reaches past them by the sampling at
+                // most.
+                for polyline in &drawn.polylines {
+                    let points = Bbox3::from_points(polyline.points.iter().copied());
+                    let pad = if polyline.curve == SketchCurve::Line {
+                        0.0
+                    } else {
+                        sampling
+                    };
+                    take(&mut frame, points, pad);
+                }
+                take(
+                    &mut frame,
+                    Bbox3::from_points(drawn.points.iter().copied()),
+                    0.0,
+                );
+            }
+        }
+    }
+    if frame.is_empty() {
+        return frame;
+    }
+    snapped(frame)
 }
 
 /// The box around the bodies of `regen` that are not hidden in the view
@@ -1509,6 +1579,7 @@ fn build(
         notices: Vec::new(),
         bbox: Bbox3::EMPTY,
         bodies_box: bodies_box(doc, regen),
+        frame: Bbox3::EMPTY,
     };
     // How much of the model is done, for the estimate when the budget is
     // exceeded: by faces, which every body has and which cost nothing to
@@ -1752,6 +1823,7 @@ fn build(
         }
     }
     scene.bbox = bbox;
+    scene.frame = frame_of(doc, regen, &scene);
     scene.datums = scene_datums(doc, regen, &bbox);
     // A face colour whose face an edit took away colours nothing (never
     // another face); said here so the window shows it. It is no problem

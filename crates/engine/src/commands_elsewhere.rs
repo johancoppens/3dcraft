@@ -373,6 +373,17 @@ impl Session {
             .collect()
     }
 
+    /// Every command that waits, answered with `why`, as
+    /// [`Session::commands_failed`] does but kept out of the bug report:
+    /// none of them failed (their worker was ended for a cancel).
+    pub fn commands_dropped(&mut self, why: &str) -> Vec<Answered> {
+        let tokens: Vec<u64> = self.commands.jobs.iter().map(|j| j.token).collect();
+        tokens
+            .into_iter()
+            .filter_map(|token| self.answered_recording(token, Err(why.to_string()), false))
+            .collect()
+    }
+
     /// True when an edit that waits was posted to the other side: it may
     /// be what that side works on now (a cancel then ends it there).
     pub fn edit_posted(&self) -> bool {

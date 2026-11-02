@@ -295,7 +295,7 @@ impl<T: Transport> Scenes<T> {
         self.transport.stop();
         self.busy = None;
         self.commands_since = None;
-        session.commands_failed(RESTARTED)
+        session.commands_dropped(RESTARTED)
     }
 
     fn go_home(&mut self, session: &mut Session, why: &str, done: &mut Frame) {

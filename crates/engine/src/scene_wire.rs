@@ -40,7 +40,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// What the bytes of a scene start with, with the form's version.
-const MAGIC: &[u8; 8] = b"C3DSCN\x00\x04";
+const MAGIC: &[u8; 8] = b"C3DSCN\x00\x05";
 
 /// The scene's bytes. The revision is the page's own and is left out.
 pub(crate) fn encode(scene: &Scene) -> Vec<u8> {
@@ -165,6 +165,7 @@ pub(crate) fn encode(scene: &Scene) -> Vec<u8> {
     w.texts(&scene.notices);
     w.bbox(&scene.bbox);
     w.bbox(&scene.bodies_box);
+    w.bbox(&scene.frame);
     w.out
 }
 
@@ -342,6 +343,7 @@ pub(crate) fn decode(bytes: &[u8], doc: &Document, revision: u64) -> Result<Scen
     let notices = r.texts()?;
     let bbox = r.bbox()?;
     let bodies_box = r.bbox()?;
+    let frame = r.bbox()?;
     if r.at != bytes.len() {
         return Err("the scene has bytes past its end".into());
     }
@@ -361,6 +363,7 @@ pub(crate) fn decode(bytes: &[u8], doc: &Document, revision: u64) -> Result<Scen
         notices,
         bbox,
         bodies_box,
+        frame,
     })
 }
 
