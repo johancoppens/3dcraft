@@ -20,6 +20,12 @@ pub struct Flags {
     /// own thread, a piece per frame, also where the worker could do it
     /// (to compare, or for a worker that misbehaves).
     pub page_regen: bool,
+    /// `?fullmove`: the studio look drawn in full while the camera moves
+    /// too, as on the desktop (to compare).
+    pub full_move: bool,
+    /// `?movescale=N`: while the camera moves the studio look is drawn N
+    /// times smaller per side (1 to 4; 2 unless given).
+    pub move_scale: Option<u32>,
     /// `?open=<url>`: a `.3dcraft`, `.3dcraftjig` or STEP file of the same site, opened
     /// at the start.
     pub open: Option<String>,
@@ -41,6 +47,8 @@ pub fn parse(search: &str) -> Flags {
             "cpu" => flags.cpu = true,
             "download" => flags.download = true,
             "pageregen" => flags.page_regen = true,
+            "fullmove" => flags.full_move = true,
+            "movescale" => flags.move_scale = value.parse::<u32>().ok().map(|n| n.clamp(1, 4)),
             "open" => flags.open = decode(value).filter(|url| same_site(url)),
             _ => {}
         }
@@ -118,6 +126,10 @@ mod tests {
         assert_eq!(flags.open.as_deref(), Some("models/a b.3dcraft"));
         assert!(parse("webgl=1").webgl);
         assert!(parse("?webgl&download").download);
+        assert!(parse("?fullmove").full_move);
+        assert_eq!(parse("?movescale=3").move_scale, Some(3));
+        assert_eq!(parse("?movescale=9").move_scale, Some(4));
+        assert_eq!(parse("?movescale=x").move_scale, None);
         assert!(!parse("?webgl").download);
         assert!(parse("?pageregen").page_regen && !parse("?cpu").page_regen);
     }

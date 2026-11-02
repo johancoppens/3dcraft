@@ -60,9 +60,9 @@ pub use backend::{Backend, BodyRenderer, RendererChoice, RendererReport};
 pub use control::{QuitMode, UI_METHODS, UiMethod, quit_mode};
 pub use shell::{
     CloseAnswer, CommandReport, DocAction, EditAction, EditRequest, FLY_SECONDS, FileAction,
-    MIN_FLY_CONTEXT, ParamAsk, RecoveryAction, RenderStats, STATUS_YIELD, Shell, ShellCommand,
-    StatusFit, StatusSlot, TabPart, TreeRow, ZOOM_TOOLTIP, autosave_text, doc_tabs, fit_status,
-    run_edit, window_title,
+    MIN_FLY_CONTEXT, ParamAsk, RecoveryAction, RenderStats, STATUS_YIELD, STILL_DELAY, Shell,
+    ShellCommand, StatusFit, StatusSlot, TabPart, TreeRow, ZOOM_TOOLTIP, autosave_text, doc_tabs,
+    fit_status, moving_size, run_edit, window_title,
 };
 pub use state::{
     CameraState, Closing, DocTab, Panels, ParametersView, PlayQuality, Playback, ProjectionKind,

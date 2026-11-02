@@ -75,6 +75,12 @@ pub const DEFAULT_VIEWPORT: [u32; 2] = [960, 640];
 /// [`crate::direct`]: there every frame is the viewport's full size, with
 /// multisampling, and nothing is read back.)
 pub const MOVING_DIVISOR: u32 = 2;
+/// How long after the camera last moved the studio look stays light where
+/// the host asked for that ([`Shell::interacting_light`], the browser), in
+/// seconds of input time: long enough to bridge the gaps between the
+/// wheel's notches and a drag's pauses, short enough that the full look
+/// follows as soon as the hand rests.
+pub const STILL_DELAY: f64 = 0.3;
 /// Supersampling per axis of the image at rest, when the budget allows.
 pub const REST_SSAA: u32 = 2;
 /// Most samples (pixels times supersampling squared) in one image. The
@@ -628,6 +634,23 @@ pub struct Shell {
     /// by frame): a playing motion is then drawn at the full quality, not
     /// lighter ([`Self::playing_light`]).
     recording: bool,
+    /// The studio look is drawn lighter while the camera moves
+    /// ([`Self::interacting_light`]): set by the host, on in the browser,
+    /// whose one thread and integrated GPUs cannot draw the full look at
+    /// the rate a turn of the camera asks for.
+    light_while_moving: bool,
+    /// The input time of the last frame in which the camera moved (a drag,
+    /// the wheel, a pinch, a fly to a view, the player's orbit), while the
+    /// look is drawn light for it.
+    moved_at: Option<f64>,
+    /// The camera moved within [`STILL_DELAY`] of this frame
+    /// ([`Self::interacting_light`]).
+    interacting: bool,
+    /// While [`Self::interacting_light`], the direct path draws the
+    /// viewport this many times smaller per side, stretched over it (1:
+    /// at its full size). Set by the host with
+    /// [`Self::set_light_while_moving`].
+    moving_divisor: u32,
     pub tokens: Tokens,
     pub last_command: Option<CommandReport>,
     /// The work indicator and the texts of the status bar, held so they
@@ -1067,7 +1090,7 @@ impl Shell {
         // While a motion plays the window draws lighter; still pictures,
         // captures and recordings never come through here lightened
         // ([`Self::playing_light`]).
-        if self.playing_light() {
+        if self.playing_light() || self.interacting_light() {
             studio.look = player::light_look(studio.look);
         }
         Some(studio)
@@ -1171,6 +1194,10 @@ impl Shell {
             frame_exact: false,
             capturing: false,
             recording: false,
+            light_while_moving: false,
+            moved_at: None,
+            interacting: false,
+            moving_divisor: 1,
             tokens: Tokens::default(),
             last_command: None,
             calm: Calm::default(),
@@ -1455,6 +1482,70 @@ impl Shell {
             && self.playing_motion()
             && !self.exact_pictures()
             && !self.recording
+    }
+
+    /// Draw the studio look lighter while the camera moves
+    /// ([`Self::interacting_light`]); the browser's host turns it on.
+    pub fn set_light_while_moving(&mut self, light: bool) {
+        self.light_while_moving = light;
+        if !light {
+            self.moving_divisor = 1;
+        }
+        if !light {
+            self.interacting = false;
+        }
+    }
+
+    /// While the camera moves ([`Self::interacting_light`]) the direct
+    /// path draws the viewport `divisor` times smaller per side (1 to 4),
+    /// stretched over it, its lines thinner by as much so they look the
+    /// same; at rest it is drawn at its full size again. Only with
+    /// [`Self::set_light_while_moving`] on.
+    pub fn set_moving_divisor(&mut self, divisor: u32) {
+        self.moving_divisor = divisor.clamp(1, 4);
+    }
+
+    /// Whether the studio look is drawn lighter while the camera moves
+    /// ([`Self::set_light_while_moving`]).
+    pub fn light_while_moving(&self) -> bool {
+        self.light_while_moving
+    }
+
+    /// True while the viewport draws lighter because the camera moves (a
+    /// drag, the wheel, a pinch, a fly to a view, the player's orbit) or
+    /// moved less than [`STILL_DELAY`] ago, where the host asked for it
+    /// ([`Self::set_light_while_moving`], the browser): the same light look
+    /// as a playing motion (`player::light_look`: one frame, no depth of
+    /// field, no occlusion, no screen-space reflections, no contact or
+    /// specular shadows). Once the camera rests the full look is drawn and
+    /// settles as before. Never for what is recorded or captured.
+    pub fn interacting_light(&self) -> bool {
+        self.interacting && !self.exact_pictures() && !self.recording
+    }
+
+    /// Notes whether the camera `moving` in this frame, at input time
+    /// `now`, and returns how long the light look still lasts when the
+    /// camera stands still, to look again then.
+    fn note_interaction(&mut self, moving: bool, now: f64) -> Option<f64> {
+        if !self.light_while_moving {
+            self.interacting = false;
+            self.moved_at = None;
+            return None;
+        }
+        if moving && now.is_finite() {
+            self.moved_at = Some(now);
+        }
+        let left = self.moved_at.and_then(|at| {
+            let since = now - at;
+            // A clock that went back (another context) ends it too.
+            (since.is_finite() && (0.0..STILL_DELAY).contains(&since))
+                .then_some(STILL_DELAY - since)
+        });
+        if left.is_none() {
+            self.moved_at = None;
+        }
+        self.interacting = left.is_some();
+        left.filter(|_| !moving)
     }
 
     /// True while what the viewport draws is recorded or captured (a
@@ -3817,6 +3908,11 @@ impl Shell {
         let turning = self.advance_turn(ui, scene);
         let moving =
             self.pointer(ui, &response, rect, scene) || resized || turning || self.orbiting;
+        if let Some(left) = self.note_interaction(moving, ui.input(|i| i.time)) {
+            // Back to the full look once the camera has rested.
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs_f64(left.max(0.0)));
+        }
         let [width, height] = self.size;
         let pixel = |at: egui::Pos2| {
             let across = |from: f32, to: f32, at: f32, pixels: u32| {
@@ -3911,7 +4007,7 @@ impl Shell {
             look: self.state.look.clone(),
             analysis: self.analysis_serial,
             look_ready: self.look_ready(),
-            light: self.playing_light(),
+            light: self.playing_light() || self.interacting_light(),
             tokens,
         };
         // The environment is being prepared on a thread, which cannot
@@ -4356,6 +4452,13 @@ impl Shell {
     fn direct_frame(&mut self, scene: Option<&Scene>, key: &FrameKey) -> bool {
         let studio = self.studio();
         let marks = self.frame_marks(scene, key);
+        // Smaller while the camera moves, where the host asked for it.
+        let divisor = if self.interacting_light() && studio.is_some() {
+            self.moving_divisor.max(1)
+        } else {
+            1
+        };
+        let (size, scale) = moving_size(key.size, self.pixels_per_point, divisor);
         let Some(direct) = &mut self.direct else {
             return false;
         };
@@ -4367,10 +4470,10 @@ impl Shell {
         let outcome = direct.frame(
             scene,
             &key.camera,
-            key.size,
+            size,
             key.selected.as_deref(),
             &key.tokens,
-            self.pixels_per_point,
+            scale,
         );
         match outcome {
             Ok(None) => true,
@@ -4542,6 +4645,22 @@ impl Shell {
         self.overlay_density = None;
         self.render_problem = None;
     }
+}
+
+/// The size and pixels per point the direct path draws a viewport of
+/// `size` at, `divisor` times smaller per side (at least one pixel), and
+/// its lines as much thinner, so that stretched over the viewport they
+/// look as wide as at its full size.
+pub fn moving_size(size: [u32; 2], pixels_per_point: f32, divisor: u32) -> ([u32; 2], f32) {
+    if divisor <= 1 {
+        return (size, pixels_per_point);
+    }
+    let side = |pixels: u32| pixels.div_ceil(divisor).max(1);
+    let [width, height] = size;
+    (
+        [side(width), side(height)],
+        pixels_per_point / divisor as f32,
+    )
 }
 
 /// How to render the image for a viewport of `size` pixels on the CPU:
