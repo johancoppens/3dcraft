@@ -357,13 +357,12 @@ fn an_edit_that_needs_the_bodies_is_made_where_they_are() {
         let cube = 512.0 * s * s * s;
         // `None`: either way (whether its trial needs the bodies).
         for (id, params, handed) in [
-            // Needs no bodies: done here at once (first: once the document
-            // has a measured variable or a failing feature, adding one
-            // reads the bodies).
+            // A feature added: its result reads the bodies on this
+            // document (what failed before it), so it may cross too.
             (
                 "feature.block",
                 json!({"size": [1, 1, 1], "name": "C"}),
-                Some(false),
+                None,
             ),
             (
                 "variable.measure",
