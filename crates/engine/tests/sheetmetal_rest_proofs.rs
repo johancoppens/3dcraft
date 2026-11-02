@@ -251,3 +251,49 @@ fn ears_past_the_bend_line_are_proven_in_the_die_opening() {
         assert_eq!(c["certain"], true, "scale {k}: {c}");
     }
 }
+
+/// A die of many corners (the wide V with its bottom a zigzag of 140
+/// corners, 140 triangles more when cut) costs the proof past the bend
+/// line a lowest point per half of each piece and per triangle: `maxWork`
+/// counts them, so the work reported is at least the triangles twice over
+/// once that proof runs, and a cap below it stops the search with the way
+/// out (review of cc7b9228: the proof was counted once per call, so the
+/// cap did not bound its time on a die of many corners).
+#[test]
+fn the_work_cap_counts_the_proof_past_the_bend_line_per_triangle() {
+    let k = 1.0;
+    let dir = workdir("sheetmetal-rest-proofs", "work");
+    let mut s = session_in(&dir);
+    new_document(&mut s, k);
+    rack_panel(&mut s, k);
+    let mut die: Vec<[f64; 2]> = Vec::new();
+    let n = 140;
+    for i in 0..=n {
+        let x = -20.0 + 40.0 * f64::from(i) / f64::from(n);
+        let y = -20.0 - if i % 2 == 1 { 0.5 } else { 0.0 };
+        die.push([x, y]);
+    }
+    let mut v: Vec<[f64; 2]> = vec![
+        [20.0, 0.0],
+        [8.0, 0.0],
+        [0.0, -8.0],
+        [-8.0, 0.0],
+        [-20.0, 0.0],
+    ];
+    v.extend(die);
+    let out = sequence(&mut s, k, &v, json!({}));
+    assert_eq!(out["feasible"], true, "{out}");
+    let work = out["work"].as_u64().unwrap();
+    let triangles = (v.len() - 2) as u64;
+    assert!(
+        work >= 2 * triangles,
+        "work {work} against {triangles} triangles"
+    );
+    let got = common::checked::error(
+        &mut s,
+        "sheetMetal.bendSequence",
+        json!({"feature": "P", "punch": scaled(&NARROW, k), "die": scaled(&v, k),
+               "maxWork": 2 * triangles - 1}),
+    );
+    assert!(got.contains("maxWork"), "{got}");
+}

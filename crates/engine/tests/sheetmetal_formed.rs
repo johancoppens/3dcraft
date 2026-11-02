@@ -150,6 +150,68 @@ fn a_formed_louvre_by_command() {
             added.iter().all(|n| n.contains("face(15,2,")),
             "scale {k}: {added:?}"
         );
+        // A wider and higher hood keeps every face's name on the face of
+        // the same role, and of the same kind of surface (names by role,
+        // not by place: review of cc7b9228).
+        let roles = |s: &mut Session| -> Vec<(String, String)> {
+            let found = run(
+                s,
+                "select.query",
+                json!({"kind": "face", "where": {"in": "Plate", "name": "*face(15,2,*"}, "context": true}),
+            );
+            let mut out: Vec<(String, String)> = found["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|i| {
+                    (
+                        i["name"].as_str().unwrap().to_string(),
+                        i["surface"]["type"]
+                            .as_str()
+                            .or_else(|| i["surface"].as_str())
+                            .unwrap_or("?")
+                            .to_string(),
+                    )
+                })
+                .collect();
+            out.sort();
+            out
+        };
+        let first = roles(&mut s);
+        // Each name says its role: `16 p + c`, the piece (0 the swept
+        // middle, 1 and 2 the turned ends) and the section's curve that
+        // swept it (1 and 3 the first arc's skins, 4 and 6 the second's,
+        // 2 the lip's rim): the middle's arcs sweep cylinders, the ends'
+        // first arc (about the lip's end) spheres and second arc tori.
+        let want: Vec<(String, String)> = {
+            let mut w: Vec<(String, String)> = vec![("F2:face(15,2,0,1)".into(), "plane".into())];
+            for (role, kind) in [
+                (1, "cylinder"),
+                (2, "plane"),
+                (3, "cylinder"),
+                (4, "cylinder"),
+                (6, "cylinder"),
+            ] {
+                w.push((format!("F2:face(15,2,1,{role})"), kind.into()));
+            }
+            for piece in [1u64, 2] {
+                for (c, kind) in [(1u64, "sphere"), (3, "sphere"), (4, "torus"), (6, "torus")] {
+                    w.push((format!("F2:face(15,2,1,{})", 16 * piece + c), kind.into()));
+                }
+            }
+            w.sort();
+            w
+        };
+        assert_eq!(first, want, "scale {k}");
+        let bigger = json!({"line": lance, "width": mm(9.0 * k), "height": mm(3.5 * k), "id": 2});
+        let out = run(
+            &mut s,
+            "sheetMetal.edit",
+            json!({"feature": "Plate", "formedLouvres": [bigger]}),
+        );
+        assert_eq!(out["status"], "ok", "scale {k}: {out}");
+        assert_eq!(roles(&mut s), first, "scale {k}");
+        run(&mut s, "edit.undo", json!({}));
         // A flange added on another edge renames none of the louvre's.
         let lip = json!({"edge": lines[3], "length": mm(10.0 * k), "angle": "90 deg"});
         let out = run(
@@ -178,6 +240,20 @@ fn a_formed_louvre_by_command() {
                    "max": format!("{}", stretch - 1e-6)}),
         );
         assert_eq!(check["status"], "failed", "scale {k}: {check}");
+        // The press brake does not see the hood: said in `unchecked`.
+        let check = run(
+            &mut s,
+            "sheetMetal.bendSequence",
+            json!({"feature": "Plate", "punch": [[-k, 0.0], [1.0 * k, 0.0], [1.0 * k, 50.0 * k], [-k, 50.0 * k]],
+                   "die": [[-10.0 * k, 0.0], [10.0 * k, 0.0], [10.0 * k, -10.0 * k], [-10.0 * k, -10.0 * k]]}),
+        );
+        assert!(
+            check["unchecked"]
+                .as_str()
+                .unwrap()
+                .contains("formed louvres' hoods (1)"),
+            "scale {k}: {check}"
+        );
         // The flat pattern: the lance cut, the footprint on `form`.
         let out = run(
             &mut s,

@@ -343,9 +343,55 @@ fn section(f: &Formed, t: f64, tolerance: &Tolerance) -> Result<Profile, KernelE
     }
 }
 
+/// A body with the role of each of its faces ([`bodies`]).
+pub type WithRoles = (Body, Vec<u64>);
+
+/// The role a face of an extrusion or a revolution of a profile has: the
+/// curve that swept it (its id: the section's 1 the first arc's bottom
+/// skin, 2 the lip's rim, 3 the first arc's top skin, 4 the second arc's
+/// top skin, 5 the back rim, 6 the second arc's bottom skin; the
+/// footprint's 1 the lance, 2 to 4 the rest of its outline), 7 the cap
+/// at the start of the sweep, 8 at its end; `swap` exchanges 7 and 8.
+fn role_of(origin: &crate::extrude::Origin, swap: bool) -> Result<u64, KernelError> {
+    use crate::extrude::Role;
+    let bad = || refuse(None, "a formed louvre's face has no role");
+    if origin.piece != 0 {
+        return Err(bad());
+    }
+    match origin.role {
+        Role::Side => origin
+            .sources
+            .first()
+            .copied()
+            .filter(|&c| (1..=6).contains(&c))
+            .ok_or_else(bad),
+        Role::StartCap => Ok(if swap { 8 } else { 7 }),
+        Role::EndCap => Ok(if swap { 7 } else { 8 }),
+        _ => Err(bad()),
+    }
+}
+
+fn roles(made: &OpResult, swap: bool, piece: u64) -> Result<Vec<u64>, KernelError> {
+    made.origins
+        .faces
+        .iter()
+        .map(|o| role_of(o, swap).map(|r| piece * 16 + r))
+        .collect()
+}
+
 /// The footprint's prism through the sheet and the hood, both in the
-/// world (`world` the flat's motion then the part's plane).
-pub fn bodies(part: &Part, f: &Formed, tolerance: &Tolerance) -> Result<(Body, Body), KernelError> {
+/// world (`world` the flat's motion then the part's plane), each with the
+/// **role** of each face, what names it (docs/design/sheetmetal.md ›
+/// *Formed louvres* › *Names*): `16 p + r`, `p` the piece (0 the swept
+/// middle, 1 the end turned at the lance's start, 2 at its end; the prism
+/// 0) and `r` the face's role in it ([`role_of`]: the curve that swept it,
+/// 7 the cap on the lance's start side, 8 on its end side), the same
+/// whatever the width, height or length.
+pub fn bodies(
+    part: &Part,
+    f: &Formed,
+    tolerance: &Tolerance,
+) -> Result<(WithRoles, WithRoles), KernelError> {
     let t = part.thickness;
     let flat = part
         .flats
@@ -358,14 +404,14 @@ pub fn bodies(part: &Part, f: &Formed, tolerance: &Tolerance) -> Result<(Body, B
     };
     // The footprint through the thickness.
     let bottom = frame_at(Vec3::ZERO, Vec3::Z, Vec3::X)?;
-    let prism = extrude(
+    let prism_made = extrude(
         std::slice::from_ref(&f.footprint),
         &bottom,
         0.0,
         t,
         tolerance,
-    )?
-    .body;
+    )?;
+    let prism = (prism_made.body.clone(), roles(&prism_made, false, 0)?);
     // The section's frame at the middle's start: x back, y up.
     let [a, b] = f.spec.lance;
     let d = unit(super::sub(b, a)).ok_or_else(|| refuse(None, "a lance has no length"))?;
@@ -389,7 +435,10 @@ pub fn bodies(part: &Part, f: &Formed, tolerance: &Tolerance) -> Result<(Body, B
     // `normal` is `d` for a hood up, `−d` down.
     let forward = normal.dot(along) > 0.0;
     let (from, to) = if forward { (0.0, l) } else { (-l, 0.0) };
-    let mut hood = extrude(std::slice::from_ref(&sect), &plane0, from, to, tolerance)?.body;
+    let middle = extrude(std::slice::from_ref(&sect), &plane0, from, to, tolerance)?;
+    // Down, the sweep runs from the lance's end side to its start side.
+    let mut hood_roles = roles(&middle, !forward, 0)?;
+    let mut hood = middle.body;
     if f.spec.ends == HoodEnds::Closed {
         // Turning `back` a quarter about `up` by a positive angle gives
         // `up × back`; at the middle's start the end turns towards `−d`,
@@ -398,7 +447,7 @@ pub fn bodies(part: &Part, f: &Formed, tolerance: &Tolerance) -> Result<(Body, B
         let quarter = std::f64::consts::FRAC_PI_2;
         let o1 = origin(start + l);
         let plane1 = frame_at(o1, normal, back)?;
-        for (plane, positive) in [(plane0, toward_start), (plane1, !toward_start)] {
+        for (piece, plane, positive) in [(1u64, plane0, toward_start), (2, plane1, !toward_start)] {
             let (lo, hi) = if positive {
                 (0.0, quarter)
             } else {
@@ -419,8 +468,22 @@ pub fn bodies(part: &Part, f: &Formed, tolerance: &Tolerance) -> Result<(Body, B
                 crate::boolean::BooleanOp::Union,
                 tolerance,
             )?;
+            let cap_roles = roles(&cap, false, piece)?;
+            hood_roles = joined
+                .faces
+                .iter()
+                .map(|src| {
+                    let list = match src.operand {
+                        crate::boolean::Operand::A => &hood_roles,
+                        crate::boolean::Operand::B => &cap_roles,
+                    };
+                    list.get(src.face.0 as usize)
+                        .copied()
+                        .ok_or_else(|| refuse(None, "a formed louvre's face has no role"))
+                })
+                .collect::<Result<_, _>>()?;
             hood = joined.body;
         }
     }
-    Ok((prism, hood))
+    Ok((prism, (hood, hood_roles)))
 }

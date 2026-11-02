@@ -118,7 +118,9 @@ fn a_formed_louvre_is_held_to_its_closed_forms() {
                     (cut - expect_cut).abs() <= 1e-9 * expect_cut,
                     "{what}: lance {cut}"
                 );
-                let (prism, hood) = bodies(&part, f, &tol).unwrap();
+                let ((prism, prism_roles), (hood, hood_roles)) = bodies(&part, f, &tol).unwrap();
+                assert_eq!(prism_roles.len(), prism.faces.len(), "{what}");
+                assert_eq!(hood_roles.len(), hood.faces.len(), "{what}");
                 let fp = f.footprint_area();
                 let fp_exact = if ends == HoodEnds::Closed {
                     l * w + PI * w * w / 2.0
@@ -132,7 +134,24 @@ fn a_formed_louvre_is_held_to_its_closed_forms() {
                     "{what}: prism {v_prism}"
                 );
                 let v_hood = mass_properties(&hood).unwrap().volume;
-                let exact = f.hood_volume(t);
+                // The hood's volume in closed form, written here apart from
+                // the code: the section's area 2αρT along the middle, and
+                // closed the two quarter turns by Pappus, π ∫ x dA over
+                // the section's two annular bands.
+                let exact = {
+                    let c = alpha.pcos();
+                    let cube = |x: f64| x * x * x;
+                    let first = (cube(rho + t) - cube(rho)) / 3.0 * (1.0 - c);
+                    let second = w * alpha * (rho * rho - (rho - t) * (rho - t)) / 2.0
+                        + (cube(rho) - cube(rho - t)) / 3.0 * (c - 1.0);
+                    let swept = 2.0 * alpha * rho * t * l;
+                    if ends == HoodEnds::Closed {
+                        swept + PI * (first + second)
+                    } else {
+                        swept
+                    }
+                };
+                assert!((f.hood_volume(t) - exact).abs() <= 1e-12 * exact, "{what}");
                 assert!(
                     (v_hood - exact).abs() <= 1e-8 * exact,
                     "{what}: hood {v_hood} against {exact}"

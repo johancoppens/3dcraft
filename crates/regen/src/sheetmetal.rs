@@ -683,16 +683,15 @@ pub(crate) fn build(
     Ok((body, names, Arc::new(built)))
 }
 
-/// The name of face `k` of a formed louvre's footprint prism (`what` 0)
-/// or of its hood (`what` 1): `F9:face(LOUVRE, id, what, k)`, by the
-/// louvre's id, so adding, deleting or moving another louvre or a flange
-/// renames none of them (docs/design/sheetmetal.md › *Formed louvres*).
-pub fn formed_face_name(feature: FeatureId, id: u64, what: u64, k: usize) -> PersistentName {
-    PersistentName::new(
-        feature,
-        NameRole::Face,
-        vec![FORMED_TAG, id, what, k as u64],
-    )
+/// The name of the face of role `role` of a formed louvre's footprint
+/// prism (`what` 0) or of its hood (`what` 1): `F9:face(15, id, what,
+/// role)`, by the louvre's id and the face's role (`formed::bodies`: the
+/// piece and the curve that swept it), so adding, deleting or moving
+/// another louvre or a flange renames none of them, and a change of width
+/// or height keeps each name on the face of the same role
+/// (docs/design/sheetmetal.md › *Formed louvres*).
+pub fn formed_face_name(feature: FeatureId, id: u64, what: u64, role: u64) -> PersistentName {
+    PersistentName::new(feature, NameRole::Face, vec![FORMED_TAG, id, what, role])
 }
 
 /// What a formed louvre's face names start with: no sheet face's name
@@ -715,19 +714,22 @@ fn form_louvres(
     let tolerance = built.tolerance;
     for (g, (formed, louvre)) in built.formed.iter().zip(&built.formed_ids).enumerate() {
         let what = |e: String| format!("formedLouvres.{g}: {e}");
-        let (prism, hood) = sheetmetal::formed::bodies(&built.part, formed, &tolerance)
-            .map_err(|e| what(format!("its hood could not be made: {e}")))?;
-        for (op, tool, which, verb) in [
+        let ((prism, prism_roles), (hood, hood_roles)) =
+            sheetmetal::formed::bodies(&built.part, formed, &tolerance)
+                .map_err(|e| what(format!("its hood could not be made: {e}")))?;
+        for (op, tool, which, roles, verb) in [
             (
                 BooleanOp::Subtract,
                 &prism,
                 0u64,
+                &prism_roles,
                 "taking its footprint out of the part",
             ),
             (
                 BooleanOp::Union,
                 &hood,
                 1u64,
+                &hood_roles,
                 "joining its hood to the part",
             ),
         ] {
@@ -747,7 +749,9 @@ fn form_louvres(
                     if operand == 0 {
                         names.faces.get(face).cloned()
                     } else {
-                        Some(formed_face_name(id, *louvre, which, face))
+                        roles
+                            .get(face)
+                            .map(|&role| formed_face_name(id, *louvre, which, role))
                     }
                 };
                 let mut all = sources.iter().filter_map(name_of);
