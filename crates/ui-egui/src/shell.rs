@@ -29,7 +29,7 @@ mod controls;
 mod dialogs;
 mod edit;
 pub mod help;
-mod icons;
+pub(crate) mod icons;
 mod joints;
 mod layout;
 pub mod look_panel;
@@ -748,6 +748,9 @@ pub struct Shell {
     /// The box the camera was last fitted to automatically.
     framed: Bbox3,
     themed: bool,
+    /// Whether the panels have the dark appearance now: the state's
+    /// `appearance` resolved against the system's preference each frame.
+    dark: bool,
     /// The interface's fonts: Inter and JetBrains Mono once they are here
     /// (`crate::fonts`).
     fonts: crate::fonts::UiFonts,
@@ -1206,6 +1209,7 @@ impl Shell {
             section_lost: None,
             framed: Bbox3::EMPTY,
             themed: false,
+            dark: false,
             fonts: crate::fonts::UiFonts::default(),
             quit: false,
             quit_discards: false,
@@ -2278,7 +2282,11 @@ impl Shell {
     fn ui_with(&mut self, ui: &mut egui::Ui, mut session: Option<&mut Session>) {
         // Set again where the drawer is drawn.
         self.drawer_sliding = false;
-        if !self.themed {
+        // The appearance: the panels' colours follow the state's choice,
+        // or the system's (`Appearance::System`), from this frame on.
+        let dark = self.state.appearance.is_dark(ui.ctx().system_theme());
+        if !self.themed || dark != self.dark {
+            self.set_appearance(dark);
             self.tokens.apply(ui.ctx());
             self.themed = true;
         }
@@ -3005,6 +3013,27 @@ impl Shell {
     /// Where the items of the status bar were drawn in the last frame.
     pub fn status_hits(&self) -> &[(StatusSlot, egui::Rect)] {
         &self.status_hits
+    }
+
+    /// The panels' colours of the dark or the light appearance, with the
+    /// sizes kept (touch sizes too, and the desktop's kept aside for when
+    /// they end).
+    fn set_appearance(&mut self, dark: bool) {
+        self.dark = dark;
+        let palette = if dark {
+            crate::theme::Palette::dark()
+        } else {
+            crate::theme::Palette::light()
+        };
+        self.tokens = self.tokens.with_palette(palette);
+        if let Some((tokens, _)) = self.wide.as_mut() {
+            *tokens = tokens.with_palette(palette);
+        }
+    }
+
+    /// Whether the panels have the dark appearance now.
+    pub fn dark(&self) -> bool {
+        self.dark
     }
 
     /// Into touch sizes or out of them (the narrow layout, or a finger seen
@@ -3852,7 +3881,7 @@ impl Shell {
                 egui::Align2::CENTER_CENTER,
                 text,
                 egui::FontId::proportional(15.0),
-                color(tokens.text_dim),
+                color(tokens.viewport_text),
             );
         };
         let start = self.welcome();

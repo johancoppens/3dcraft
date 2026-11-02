@@ -694,6 +694,46 @@ pub struct UiState {
     /// highlight lines, a curvature map, draft) and curvature combs. View
     /// state; the document does not change.
     pub analysis: AnalysisState,
+    /// Light or dark panels, or what the system prefers (the default). A
+    /// preference of the window, never part of a document or of a picture
+    /// (`view.render`, `ui.screenshot`'s viewport): the viewport is not
+    /// themed. `ui.set {"appearance": "dark"}` sets it.
+    pub appearance: Appearance,
+}
+
+/// Which colours the panels have (`theme::Palette`): the system's choice
+/// (the desktop's light or dark setting; in the browser
+/// `prefers-color-scheme`), light, or dark.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Appearance {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl Appearance {
+    /// Whether the panels are dark, given what the system prefers
+    /// (`egui::Context::system_theme`: eframe reads it from the desktop and
+    /// from the browser's `prefers-color-scheme`). A system that says
+    /// nothing (tests, a headless pass) is light, so pictures made without
+    /// a window stay as they were.
+    pub fn is_dark(self, system: Option<egui::Theme>) -> bool {
+        match self {
+            Appearance::Light => false,
+            Appearance::Dark => true,
+            Appearance::System => system == Some(egui::Theme::Dark),
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Appearance::System => "system",
+            Appearance::Light => "light",
+            Appearance::Dark => "dark",
+        }
+    }
 }
 
 /// The surface analysis of the viewport (`craft3d_engine::analysis`, the
@@ -1273,6 +1313,45 @@ mod tests {
     use craft3d_math::Portable;
     use serde_json::json;
 
+    /// The appearance is a lower-case name, System by default; a patch sets
+    /// it and an unknown name is refused with nothing changed; System
+    /// follows the system and is light when the system says nothing.
+    #[test]
+    fn the_appearance_reads_writes_and_resolves() {
+        let mut state = UiState::default();
+        assert_eq!(state.appearance, Appearance::System);
+        let json = serde_json::to_value(&state).unwrap();
+        assert_eq!(json["appearance"], json!("system"));
+        state.apply_patch(&json!({"appearance": "dark"})).unwrap();
+        assert_eq!(state.appearance, Appearance::Dark);
+        let before = state.clone();
+        assert!(state.apply_patch(&json!({"appearance": "dusk"})).is_err());
+        assert!(state.apply_patch(&json!({"appearance": 1})).is_err());
+        assert!(state.apply_patch(&json!({"appearance": "Dark"})).is_err());
+        assert_eq!(state, before);
+        let back: UiState = serde_json::from_value(serde_json::to_value(&state).unwrap()).unwrap();
+        assert_eq!(back.appearance, Appearance::Dark);
+        // An older state without the field reads as System.
+        let old: UiState = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(old.appearance, Appearance::System);
+        use egui::Theme;
+        for (appearance, system, dark) in [
+            (Appearance::System, None, false),
+            (Appearance::System, Some(Theme::Light), false),
+            (Appearance::System, Some(Theme::Dark), true),
+            (Appearance::Light, Some(Theme::Dark), false),
+            (Appearance::Dark, None, true),
+            (Appearance::Dark, Some(Theme::Light), true),
+        ] {
+            assert_eq!(
+                appearance.is_dark(system),
+                dark,
+                "{appearance:?} {system:?}"
+            );
+        }
+        assert_eq!(Appearance::Dark.name(), "dark");
+    }
+
     #[test]
     fn the_state_round_trips_through_json() {
         let state = UiState {
@@ -1430,6 +1509,8 @@ mod tests {
                 combs: Some(serde_json::json!({"edges": true, "density": 20})),
                 legend: false,
             },
+            // Added with the appearance (2026-11-02).
+            appearance: Appearance::Dark,
         };
         let json = serde_json::to_value(&state).unwrap();
         assert_eq!(
@@ -1476,6 +1557,7 @@ mod tests {
                              "offset": 0.5, "pull": [0.0, 1.0, 0.0], "minDraft": 2.0,
                              "curvature": "mean", "range": [-0.5, 0.5],
                              "combs": {"edges": true, "density": 20}, "legend": false},
+                "appearance": "dark",
             })
         );
         let back: UiState = serde_json::from_value(json).unwrap();

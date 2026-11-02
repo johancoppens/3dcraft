@@ -25,6 +25,8 @@
 //! - [`frames`]: which image is on screen, and the thread that makes the
 //!   sharp one.
 //! - [`view_cube`]: the view cube's geometry.
+//! - [`kit`]: the component kit, every control painted from the tokens
+//!   on a panel or a plate, with its line icons.
 //! - [`shell`]: the panels, the tabs of the open documents and the mouse.
 //! - [`control`]: the `ui.*` methods of the control protocol.
 //! - [`encoder`]: which video encoder a recording asks ffmpeg for.
@@ -45,6 +47,7 @@ pub mod encoder;
 pub mod files;
 pub mod fonts;
 pub mod frames;
+pub mod kit;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod record;
 pub mod shell;

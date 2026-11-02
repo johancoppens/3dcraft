@@ -714,7 +714,7 @@ impl Shell {
         // arm and a letter on either side ([`super::layout`]).
         let reach = triad_reach(&tokens, place);
         let width = tokens.nav_triad_width;
-        painter.circle_filled(origin, width * 1.4, color(tokens.text));
+        painter.circle_filled(origin, width * 1.4, color(tokens.view_cube_label));
         for arm in arms {
             let ink = tokens.axes.get(arm.axis).copied().unwrap_or(tokens.text);
             let alpha = if arm.toward < -0.05 { 150 } else { 255 };

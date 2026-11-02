@@ -1299,3 +1299,58 @@ The CPU renderer left out every triangle with a corner at or behind the eye plan
 ### Grainy highlights on a class-A tank (2026-10-31)
 
 The coordinator saw a grainy, dithered pattern inside the clear coat's highlights on the class-A tank in the studio environment. Isolated: the pattern is the same bit for bit with screen-space reflections, ambient occlusion, the specular shadow, all shadows off, and with one frame or eight (`speck/isolate.png` in the run's evidence), and a car-paint sphere shows it too; it is the environment picture itself. `assets/environments/studio.hdr` (1024 × 512) has two octagonal softboxes with egg-crate grids in front of them, and a clear coat of roughness 0.04 on a gently curved panel is a mirror that magnifies them: the grid is reflected. Not a renderer defect. The tank's pictures use the workshop environment (windows, no grid) with the ACES curve, as the thumbnails do since METHOD v4, and the key light raised (`look.light` [200, 78]) so its shadow falls under the body and it stands on the ground. Owed, if wanted: a studio picture with plain softboxes, or the studio environment turned so the grids are not what a class-A panel reflects.
+
+### The appearance and the component kit (2026-11-02)
+
+Phase 1 of the UI overhaul (plan `plan/mockups/ui-overhaul`, the developer's approval of 2026-11-02): tokens, a dark
+set, the appearance switch and a component kit, without converting a screen yet.
+
+- **New tokens** (`theme::Tokens`): the kit's fills `row_hover_fill`, `divider`, `field_fill`, `field_stroke`,
+  `info_fill`, `failed_fill` (#FBEBE8, 4.67:1 for `failed` on it), `chip_fill`, `attention_fill`, `track`,
+  `knob_fill`, `knob_rim`, the list icons' `icon_sketch` and `icon_datum`, the popovers' `popover_fill`,
+  `popover_field`, `popover_hover`, `popover_rim_opacity`; on the plates `plate_ok` (a green that reads there;
+  `chrome_ok` is amber), `plate_field`, `plate_field_stroke`, `plate_selection_fill`, `plate_info_fill`,
+  `plate_failed_fill`, `plate_attention_fill`, `plate_info_accent`, `plate_datum`; the agent's pill
+  (`pill_connected`, `pill_off_rim`, `pill_wait_text`, `pill_asks_text`); sizes (`row_height` 22, `control_height` 24,
+  `label_row_height` 22, `chip_height` 20, `pill_height` 18, `menu_item_height` 26, `panel_tab_height` 34,
+  `menu_radius` 8, `menu_width`, `check_size` 15, `switch_size` 30 × 18, `knob_size` 14 / `touch_knob` 24,
+  `progress_height` 4, `popover_pointer_width` 12, `icon_stroke` 1.4, `hit_min`, the shadow's `shadow_*`,
+  `app_icon_rim_opacity`); and `viewport_text`, the empty viewport's hint, which keeps the light set's dim ink.
+  `Tokens::touch` raises rows, controls and menu items to `touch_target` (40, the developer's decision: not 44) and
+  sets `hit_min`, the least side of any kit target.
+- **The dark set:** `theme::Palette` is the colours that change with the appearance (the panels, their text, the
+  kit's fills, the popovers' step); `Palette::light()` is Mission's, `Palette::dark()` the plan's dark set
+  (`panel_fill` #1C1B19, `text` #EDEAE4, `selection_fill` #5C4220, `info_ink` #A9B3EC, popovers #262523 one step
+  lighter, …). `Tokens::dark()` is Mission with the dark palette; `with_palette` swaps the colours and keeps every
+  size, so touch sizes survive a switch. The chrome, the plates over the viewport and **the viewport are not themed**
+  (the developer's decision): its background, bodies, sketches, datums and the selection's copper on it are the same
+  in both, so `view.render`, `ui.screenshot`, the guide's and the tests' pictures stay as they were
+  (`theme::tests::the_dark_set_leaves_the_viewport_the_chrome_and_the_plates`). `theme::tests` holds both sets to
+  every pair of `text_pairs` (4.5:1) and of `kit_pairs` (text 4.5, parts and icons 3), and to the plan's figures.
+- **The appearance:** `state::Appearance` (`system`, the default, `light`, `dark`) in `UiState::appearance`, so
+  `ui.set {"appearance": "dark"}` sets it and `ui.get` has it under `state.appearance`, with `appearance` (top level)
+  saying which set is in force. `System` follows `egui::Context::system_theme`, which eframe fills from the
+  desktop's setting and from the browser's `prefers-color-scheme`; with none (tests, headless passes) it is light.
+  The shell resolves it every frame and swaps the palette when it changes (`Shell::set_appearance`, also into the
+  desktop tokens kept aside while touch sizes are on). The web page remembers it with its other preferences
+  (`apps/craft3d-web/src/prefs.rs`); the desktop does not keep it between runs yet (owed with the View menu).
+- **The kit** (`crates/ui-egui/src/kit/`): each component a method of `kit::Kit` (tokens plus a `Ground`: `Panel`,
+  light or dark with the appearance, or `Plate`, the dark popovers, menus and bars, a step lighter in the dark set),
+  painted from the tokens alone and returning its `Response`: buttons (primary, secondary, quiet, link, danger, with
+  an icon, disabled), icon buttons, chips, segmented controls (text or icons), check boxes, switches, sliders with
+  label, value and hint, number fields with a unit and an error ring, text fields with a hint and an icon, dropdowns
+  (a menu under the field), captions, section and fold headers, label/value rows, list rows (icon, value, hover,
+  selected in copper with the value in `text`, failed, dimmed, indented, eye), the panel's tab bar, tooltips
+  (`hover_tip` after egui's delay), popovers with a pointer (`popover_frame`, `popover` under an anchor), menus and
+  context menus, the agent's pill in its six states, banners (error, info, attention), progress bars and the
+  spinner. A target is never smaller than `hit_min`; a field's whole box focuses it. **Icons** (`kit::glyphs`): line
+  icons painted on a 16-unit square, one per feature kind (`Glyph::for_feature`, booleans by operation), the
+  documents' simplified icons (part, assembly, Jig: the plan's middle way inside the UI), the controls' icons, and
+  the viewport bars' own (`Glyph::Nav`). **The app icon** (`kit::brand`) is the installers' PNGs built in (16 from
+  the drawing for 16 px, 32, 64, 128), with the faint rim on dark grounds, for where 3DCraft shows itself.
+- **The gallery** (`kit::gallery`, `examples/kit_gallery.rs`): the boards c1 (light, panel and plate), c3 (dark),
+  c2 (menus, popover, tooltips, pills) in both sets, the icons, and the components at 390 points with touch sizes,
+  painted offscreen to `target/work-uikit/`. `tests/kit.rs` draws every board at 1024 × 700 and 390 × 844 in both
+  sets with and without touch sizes (nothing outside the window; every target 40 × 40 or more with touch sizes,
+  buttons 24 and rows 22 without), clicks segments, a check box, a slider, buttons, a dropdown and a context menu,
+  draws hostile values, keeps every icon in its place, and switches the appearance over `ui.set`.

@@ -459,6 +459,242 @@ pub struct Tokens {
     pub status_least: f32,
     /// The size of the problem text over the viewport, in points.
     pub problem_font: f32,
+    /// The hint in the middle of an empty viewport: drawn on the viewport,
+    /// which is not themed (light in both appearances), so it keeps the
+    /// light set's dim ink whatever the panels are.
+    pub viewport_text: Rgb,
+    // The component kit (`crate::kit`, docs/design/rendering.md › *The
+    // component kit*), 2026-11-02. The colours from here to
+    // `popover_rim_opacity` change with the appearance ([`Palette`]).
+    /// A row under the pointer, on a panel.
+    pub row_hover_fill: Rgb,
+    /// A rule between two sections of a panel.
+    pub divider: Rgb,
+    /// A field, a secondary button, a segmented control's track, and their
+    /// outline.
+    pub field_fill: Rgb,
+    pub field_stroke: Rgb,
+    /// The fill behind information: an info banner, the agent's card, an
+    /// info chip (with `info_ink` on it).
+    pub info_fill: Rgb,
+    /// The fill of a failure: an error banner, a failed row, a failed chip
+    /// (with `failed` on it).
+    pub failed_fill: Rgb,
+    /// A chip at rest.
+    pub chip_fill: Rgb,
+    /// The fill of what waits for a decision (the recovery bar, an
+    /// attention banner).
+    pub attention_fill: Rgb,
+    /// A slider's rail, a switch that is off, a progress bar's rail.
+    pub track: Rgb,
+    /// A slider's knob and its rim.
+    pub knob_fill: Rgb,
+    pub knob_rim: Rgb,
+    /// The feature icons of a sketch and a datum in a list: the colours
+    /// they have in the viewport (`sketch`, `datum`) where those read on
+    /// the panel, a lighter tint of the same hue on a dark panel.
+    pub icon_sketch: Rgb,
+    pub icon_datum: Rgb,
+    /// Popovers and menus (always dark): their fill, the fill of a field
+    /// and of a row under the pointer on them, and the opacity of their
+    /// white rim. In the dark appearance they sit one step lighter than
+    /// the panel, so they still lift off it.
+    pub popover_fill: Rgb,
+    pub popover_field: Rgb,
+    pub popover_hover: Rgb,
+    pub popover_rim_opacity: u8,
+    /// On the plates (dark in both appearances): an "ok" that reads there
+    /// (`chrome_ok` is the amber of the status bar), a field and its
+    /// outline (also a slider's rail), the selected row, and the fills of
+    /// information, a failure and what waits (as on a panel, dark).
+    pub plate_ok: Rgb,
+    pub plate_field: Rgb,
+    pub plate_field_stroke: Rgb,
+    pub plate_selection_fill: Rgb,
+    pub plate_info_fill: Rgb,
+    pub plate_failed_fill: Rgb,
+    pub plate_attention_fill: Rgb,
+    /// The info accent (a section's bar, a spinner) and a datum's icon on
+    /// a plate: lighter tints that read on the dark plates.
+    pub plate_info_accent: Rgb,
+    pub plate_datum: Rgb,
+    /// The agent's status pill on the status bar: the rim of "off", the
+    /// text of "waiting" and of "asks".
+    pub pill_off_rim: Rgb,
+    pub pill_wait_text: Rgb,
+    pub pill_asks_text: Rgb,
+    /// The fill of the pill while an agent is connected: the light set's
+    /// info accent in both appearances (the status bar is chrome).
+    pub pill_connected: Rgb,
+    /// The kit's sizes, in points: a row of a list, a control (button,
+    /// field, segmented, icon button), a chip, the status pill, a menu's
+    /// item, a panel's tab bar.
+    pub row_height: f32,
+    pub control_height: f32,
+    /// A row that is only read (a label and its value, a section's
+    /// heading): 22 with touch sizes too, since nothing there is hit.
+    pub label_row_height: f32,
+    pub chip_height: f32,
+    pub pill_height: f32,
+    pub menu_item_height: f32,
+    pub panel_tab_height: f32,
+    /// A menu's corner radius, and the width a menu takes at least.
+    pub menu_radius: u8,
+    pub menu_width: f32,
+    /// A check box's side, a switch's width and height, a slider's knob
+    /// (with touch sizes: `touch_knob`), a progress bar's height.
+    pub check_size: f32,
+    pub switch_size: [f32; 2],
+    pub knob_size: f32,
+    pub touch_knob: f32,
+    pub progress_height: f32,
+    /// The width of the pointer of a popover (its height is
+    /// `popover_pointer`).
+    pub popover_pointer_width: f32,
+    /// The width of the line icons' strokes at 16 points (feature and
+    /// document icons; they scale with their size).
+    pub icon_stroke: f32,
+    /// The least side of what a finger hits: 0 with a mouse, `touch_target`
+    /// with touch sizes ([`Tokens::touch`]). A kit control smaller than
+    /// this to the eye takes this much room for its target.
+    pub hit_min: f32,
+    /// The rim of the app icon on a dark ground: white at this opacity.
+    pub app_icon_rim_opacity: u8,
+    /// The shadow under a popover, a menu and a tooltip: `view_cube_shadow`
+    /// at this opacity, `shadow_blur` points soft, `shadow_drop` points
+    /// down.
+    pub shadow_opacity: u8,
+    pub shadow_blur: u8,
+    pub shadow_drop: i8,
+}
+
+/// The colours that change with the appearance (light or dark): the
+/// panels, their text and the kit's fills. The chrome (menu bar, tabs,
+/// status bar), the plates over the viewport and the viewport itself keep
+/// their colours in both ([`Tokens::with_palette`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Palette {
+    pub panel_fill: Rgb,
+    pub text: Rgb,
+    pub text_dim: Rgb,
+    pub inactive: Rgb,
+    pub ok: Rgb,
+    pub failed: Rgb,
+    pub attention: Rgb,
+    pub selection_fill: Rgb,
+    pub info_accent: Rgb,
+    pub info_ink: Rgb,
+    pub row_hover_fill: Rgb,
+    pub divider: Rgb,
+    pub field_fill: Rgb,
+    pub field_stroke: Rgb,
+    pub info_fill: Rgb,
+    pub failed_fill: Rgb,
+    pub chip_fill: Rgb,
+    pub attention_fill: Rgb,
+    pub track: Rgb,
+    pub knob_fill: Rgb,
+    pub knob_rim: Rgb,
+    pub icon_sketch: Rgb,
+    pub icon_datum: Rgb,
+    pub popover_fill: Rgb,
+    pub popover_field: Rgb,
+    pub popover_hover: Rgb,
+    pub popover_rim_opacity: u8,
+}
+
+/// Copies the palette's fields between [`Tokens`] and [`Palette`].
+macro_rules! palette_fields {
+    ($($field:ident),* $(,)?) => {
+        impl Tokens {
+            /// The colours of these tokens that change with the appearance.
+            pub fn palette(&self) -> Palette {
+                Palette { $($field: self.$field),* }
+            }
+
+            /// These tokens with the colours of `palette`; every size and
+            /// every other colour kept (the touch sizes too).
+            #[must_use]
+            pub fn with_palette(mut self, palette: Palette) -> Self {
+                $(self.$field = palette.$field;)*
+                self
+            }
+        }
+    };
+}
+
+palette_fields!(
+    panel_fill,
+    text,
+    text_dim,
+    inactive,
+    ok,
+    failed,
+    attention,
+    selection_fill,
+    info_accent,
+    info_ink,
+    row_hover_fill,
+    divider,
+    field_fill,
+    field_stroke,
+    info_fill,
+    failed_fill,
+    chip_fill,
+    attention_fill,
+    track,
+    knob_fill,
+    knob_rim,
+    icon_sketch,
+    icon_datum,
+    popover_fill,
+    popover_field,
+    popover_hover,
+    popover_rim_opacity,
+);
+
+impl Palette {
+    /// The light appearance: Mission's panels (2026-10-21) and the kit's
+    /// fills of the UI overhaul (2026-11-02).
+    pub fn light() -> Self {
+        Tokens::mission().palette()
+    }
+
+    /// The dark appearance (plan of the UI overhaul, 2026-11-02): warm
+    /// near-black panels, light warm text, the selection's copper darkened,
+    /// the info accent and its ink lightened so they read on the dark
+    /// panel; popovers one step lighter than the panel.
+    pub fn dark() -> Self {
+        Self {
+            panel_fill: [0x1C, 0x1B, 0x19],
+            text: [0xED, 0xEA, 0xE4],
+            text_dim: [0xA3, 0x9E, 0x95],
+            inactive: [0x7A, 0x75, 0x6E],
+            ok: [0x6C, 0xC0, 0x8A],
+            failed: [0xF0, 0x67, 0x5A],
+            attention: [0xE8, 0xB6, 0x5A],
+            selection_fill: [0x5C, 0x42, 0x20],
+            info_accent: [0x7F, 0x8A, 0xD0],
+            info_ink: [0xA9, 0xB3, 0xEC],
+            row_hover_fill: [0x28, 0x27, 0x25],
+            divider: [0x30, 0x2E, 0x2B],
+            field_fill: [0x26, 0x25, 0x23],
+            field_stroke: [0x3A, 0x38, 0x36],
+            info_fill: [0x26, 0x2A, 0x44],
+            failed_fill: [0x3B, 0x20, 0x1D],
+            chip_fill: [0x2C, 0x2B, 0x29],
+            attention_fill: [0x3A, 0x2E, 0x19],
+            track: [0x3A, 0x38, 0x36],
+            knob_fill: [0xF5, 0xF2, 0xEC],
+            knob_rim: [0x7A, 0x75, 0x6E],
+            icon_sketch: [0x86, 0x92, 0xD6],
+            icon_datum: [0x4F, 0xB3, 0xAE],
+            popover_fill: [0x26, 0x25, 0x23],
+            popover_field: [0x30, 0x2E, 0x2B],
+            popover_hover: [0x33, 0x31, 0x2E],
+            popover_rim_opacity: 31,
+        }
+    }
 }
 
 impl Default for Tokens {
@@ -697,7 +933,85 @@ impl Tokens {
             status_gap: 13.0,
             status_least: 48.0,
             problem_font: 13.0,
+            viewport_text: [104, 100, 94],
+            // The kit's light fills (plan of the side panel and of the UI
+            // overhaul, 2026-11-02).
+            row_hover_fill: [0xED, 0xEB, 0xE6],
+            divider: [0xE2, 0xDF, 0xD9],
+            field_fill: [0xEE, 0xEC, 0xE7],
+            field_stroke: [0xD3, 0xCE, 0xC6],
+            info_fill: [0xE6, 0xE8, 0xF3],
+            failed_fill: [0xFB, 0xEB, 0xE8],
+            chip_fill: [0xEA, 0xE7, 0xE1],
+            attention_fill: [0xF8, 0xEE, 0xDC],
+            track: [0xDA, 0xD6, 0xCF],
+            knob_fill: [255, 255, 255],
+            knob_rim: [0xB4, 0xAE, 0xA4],
+            icon_sketch: [76, 90, 166],
+            icon_datum: [46, 125, 122],
+            popover_fill: [22, 21, 20],
+            popover_field: [0x26, 0x25, 0x23],
+            popover_hover: [44, 43, 41],
+            popover_rim_opacity: 30,
+            plate_ok: [0x6C, 0xC0, 0x8A],
+            plate_field: [0x26, 0x25, 0x23],
+            plate_field_stroke: [0x3A, 0x38, 0x36],
+            plate_selection_fill: [0x5A, 0x45, 0x26],
+            plate_info_fill: [0x26, 0x2A, 0x44],
+            plate_failed_fill: [0x3B, 0x20, 0x1D],
+            plate_attention_fill: [0x3A, 0x2E, 0x19],
+            plate_info_accent: [0x7F, 0x8A, 0xD0],
+            plate_datum: [0x4F, 0xB3, 0xAE],
+            pill_off_rim: [0x4A, 0x47, 0x43],
+            pill_wait_text: [0xC9, 0xCE, 0xF2],
+            pill_asks_text: [0xF2, 0xD4, 0x9A],
+            pill_connected: [76, 90, 166],
+            row_height: 22.0,
+            control_height: 24.0,
+            label_row_height: 22.0,
+            chip_height: 20.0,
+            pill_height: 18.0,
+            menu_item_height: 26.0,
+            panel_tab_height: 34.0,
+            menu_radius: 8,
+            menu_width: 200.0,
+            check_size: 15.0,
+            switch_size: [30.0, 18.0],
+            knob_size: 14.0,
+            touch_knob: 24.0,
+            progress_height: 4.0,
+            popover_pointer_width: 12.0,
+            icon_stroke: 1.4,
+            hit_min: 0.0,
+            app_icon_rim_opacity: 56,
+            shadow_opacity: 64,
+            shadow_blur: 12,
+            shadow_drop: 3,
         }
+    }
+
+    /// The light appearance: Mission ([`Tokens::mission`]).
+    pub fn light() -> Self {
+        Self::mission()
+    }
+
+    /// The dark appearance: Mission with the dark [`Palette`]. The chrome,
+    /// the plates over the viewport and the viewport itself (its plain
+    /// look's background, the bodies, sketches, datums and the selection's
+    /// copper on them) are the light set's: the viewport is not themed
+    /// (the developer's decision, 2026-11-02), so pictures stay the same.
+    pub fn dark() -> Self {
+        Self::mission().with_palette(Palette::dark())
+    }
+
+    /// The tokens of an appearance: dark or light.
+    pub fn for_appearance(dark: bool) -> Self {
+        if dark { Self::dark() } else { Self::light() }
+    }
+
+    /// Whether these tokens have the dark appearance's panels.
+    pub fn is_dark(&self) -> bool {
+        !is_light(self.panel_fill)
     }
 
     /// The tokens of the narrow layout: the controls over the viewport and
@@ -710,6 +1024,14 @@ impl Tokens {
         // A finger reaches the caret of a split button: as high as a chip,
         // and as wide as still keeps the camera plate on a phone.
         t.nav_caret_width = t.nav_caret_width.max(t.touch_caret_width);
+        // The kit: rows and controls a finger's size, the slider's knob
+        // larger, every target at least `touch_target` (2026-11-02: it
+        // stays 40, the developer's decision).
+        t.row_height = t.row_height.max(t.touch_target);
+        t.control_height = t.control_height.max(t.touch_target);
+        t.menu_item_height = t.menu_item_height.max(t.touch_target);
+        t.knob_size = t.knob_size.max(t.touch_knob);
+        t.hit_min = t.hit_min.max(t.touch_target);
         t
     }
 
@@ -1007,8 +1329,8 @@ impl Tokens {
                 ),
             ),
             (
-                "text_dim on viewport_background",
-                self.text_dim,
+                "viewport_text on viewport_background",
+                self.viewport_text,
                 self.viewport_background,
             ),
             (
@@ -1017,6 +1339,255 @@ impl Tokens {
                 self.viewport_background,
             ),
         ]
+    }
+}
+
+impl Tokens {
+    /// The kit's pairs of ink and ground (docs/design/rendering.md › *The
+    /// component kit*), each with the least contrast it must keep: 4.5 for
+    /// text, 3 for a part of a control or an icon (WCAG 2). Both
+    /// appearances are held to them (`theme::tests`).
+    pub fn kit_pairs(&self) -> Vec<(&'static str, Rgb, Rgb, f64)> {
+        const TEXT: f64 = 4.5;
+        const PART: f64 = 3.0;
+        let mut pairs = vec![
+            // Panels and dialogs.
+            (
+                "text on row_hover_fill",
+                self.text,
+                self.row_hover_fill,
+                TEXT,
+            ),
+            (
+                "text_dim on row_hover_fill",
+                self.text_dim,
+                self.row_hover_fill,
+                TEXT,
+            ),
+            ("text on field_fill", self.text, self.field_fill, TEXT),
+            (
+                "text_dim on field_fill",
+                self.text_dim,
+                self.field_fill,
+                TEXT,
+            ),
+            ("text on chip_fill", self.text, self.chip_fill, TEXT),
+            ("text_dim on chip_fill", self.text_dim, self.chip_fill, TEXT),
+            ("info_ink on info_fill", self.info_ink, self.info_fill, TEXT),
+            ("text on info_fill", self.text, self.info_fill, TEXT),
+            ("failed on failed_fill", self.failed, self.failed_fill, TEXT),
+            ("text on failed_fill", self.text, self.failed_fill, TEXT),
+            (
+                "text on attention_fill",
+                self.text,
+                self.attention_fill,
+                TEXT,
+            ),
+            (
+                "failed on field_fill (a danger button)",
+                self.failed,
+                self.field_fill,
+                TEXT,
+            ),
+            (
+                "info_ink on field_fill",
+                self.info_ink,
+                self.field_fill,
+                TEXT,
+            ),
+            ("knob on accent", self.knob, self.accent, TEXT),
+            // Popovers and menus (dark in both appearances).
+            (
+                "plate_text on popover_fill",
+                self.plate_text,
+                self.popover_fill,
+                TEXT,
+            ),
+            (
+                "plate_text_dim on popover_fill",
+                self.plate_text_dim,
+                self.popover_fill,
+                TEXT,
+            ),
+            (
+                "info_code on popover_fill",
+                self.info_code,
+                self.popover_fill,
+                TEXT,
+            ),
+            (
+                "chrome_failed on popover_fill",
+                self.chrome_failed,
+                self.popover_fill,
+                TEXT,
+            ),
+            (
+                "plate_ok on popover_fill",
+                self.plate_ok,
+                self.popover_fill,
+                TEXT,
+            ),
+            (
+                "plate_text on popover_hover",
+                self.plate_text,
+                self.popover_hover,
+                TEXT,
+            ),
+            (
+                "plate_text_dim on popover_hover",
+                self.plate_text_dim,
+                self.popover_hover,
+                TEXT,
+            ),
+            (
+                "plate_text on popover_field",
+                self.plate_text,
+                self.popover_field,
+                TEXT,
+            ),
+            (
+                "plate_text_dim on popover_field",
+                self.plate_text_dim,
+                self.popover_field,
+                TEXT,
+            ),
+            // The plates over the viewport.
+            (
+                "plate_ok on plate_fill",
+                self.plate_ok,
+                self.plate_fill,
+                TEXT,
+            ),
+            (
+                "plate_text_dim on plate_field",
+                self.plate_text_dim,
+                self.plate_field,
+                TEXT,
+            ),
+            (
+                "plate_text on plate_selection_fill",
+                self.plate_text,
+                self.plate_selection_fill,
+                TEXT,
+            ),
+            (
+                "plate_text_dim on tab_active_fill",
+                self.plate_text_dim,
+                self.tab_active_fill,
+                TEXT,
+            ),
+            (
+                "info_code on plate_info_fill",
+                self.info_code,
+                self.plate_info_fill,
+                TEXT,
+            ),
+            (
+                "chrome_failed on plate_failed_fill",
+                self.chrome_failed,
+                self.plate_failed_fill,
+                TEXT,
+            ),
+            (
+                "plate_text on plate_failed_fill",
+                self.plate_text,
+                self.plate_failed_fill,
+                TEXT,
+            ),
+            (
+                "plate_text on plate_attention_fill",
+                self.plate_text,
+                self.plate_attention_fill,
+                TEXT,
+            ),
+            // The agent's pill on the status bar.
+            (
+                "chrome_text on pill_connected",
+                self.chrome_text,
+                self.pill_connected,
+                TEXT,
+            ),
+            (
+                "pill_wait_text on status_fill",
+                self.pill_wait_text,
+                self.status_fill,
+                TEXT,
+            ),
+            (
+                "pill_asks_text on plate_attention_fill",
+                self.pill_asks_text,
+                self.plate_attention_fill,
+                TEXT,
+            ),
+            (
+                "chrome_text_dim on status_fill",
+                self.chrome_text_dim,
+                self.status_fill,
+                TEXT,
+            ),
+            // Parts and icons.
+            (
+                "info_accent on panel_fill",
+                self.info_accent,
+                self.panel_fill,
+                PART,
+            ),
+            (
+                "attention on attention_fill (an icon)",
+                self.attention,
+                self.attention_fill,
+                PART,
+            ),
+            (
+                "icon_sketch on panel_fill",
+                self.icon_sketch,
+                self.panel_fill,
+                PART,
+            ),
+            (
+                "icon_datum on panel_fill",
+                self.icon_datum,
+                self.panel_fill,
+                PART,
+            ),
+            (
+                "text (a selected row's icon) on selection_fill",
+                self.text,
+                self.selection_fill,
+                PART,
+            ),
+            (
+                "info_code on plate_fill (a focus ring)",
+                self.info_code,
+                self.plate_fill,
+                PART,
+            ),
+            ("accent on plate_fill", self.accent, self.plate_fill, PART),
+            (
+                "plate_info_accent on popover_fill",
+                self.plate_info_accent,
+                self.popover_fill,
+                PART,
+            ),
+            (
+                "plate_datum on popover_fill",
+                self.plate_datum,
+                self.popover_fill,
+                PART,
+            ),
+            (
+                "info_code (a sketch's icon) on popover_fill",
+                self.info_code,
+                self.popover_fill,
+                PART,
+            ),
+        ];
+        // On a dark panel the amber reads as a part by itself; on the light
+        // one it always carries the knob's ink (a filled button, a switch).
+        if self.is_dark() {
+            pairs.push(("accent on panel_fill", self.accent, self.panel_fill, PART));
+        }
+        pairs
     }
 }
 
@@ -1093,16 +1664,107 @@ mod tests {
 
     #[test]
     fn every_text_keeps_a_contrast_of_four_and_a_half() {
-        let tokens = Tokens::default();
-        let mut low = Vec::new();
-        for (what, ink, fill) in tokens.text_pairs() {
-            let ratio = contrast(ink, fill);
-            println!("{what}: {ratio:.2}");
-            if ratio < 4.5 {
-                low.push(format!("{what} {ratio:.2}"));
+        for (set, tokens) in [("light", Tokens::light()), ("dark", Tokens::dark())] {
+            let mut low = Vec::new();
+            for (what, ink, fill) in tokens.text_pairs() {
+                let ratio = contrast(ink, fill);
+                println!("{set}: {what}: {ratio:.2}");
+                if ratio < 4.5 {
+                    low.push(format!("{what} {ratio:.2}"));
+                }
             }
+            assert!(low.is_empty(), "{set}: {low:?}");
         }
-        assert!(low.is_empty(), "{low:?}");
+    }
+
+    /// Every pair of the kit, in both appearances: text 4.5:1, parts and
+    /// icons 3:1.
+    #[test]
+    fn every_pair_of_the_kit_keeps_its_contrast_in_both_appearances() {
+        for (set, tokens) in [("light", Tokens::light()), ("dark", Tokens::dark())] {
+            let pairs = tokens.kit_pairs();
+            assert!(pairs.len() > 30, "{set}: {}", pairs.len());
+            let mut low = Vec::new();
+            for (what, ink, fill, least) in pairs {
+                let ratio = contrast(ink, fill);
+                println!("{set}: {what}: {ratio:.2} (at least {least})");
+                if ratio < least {
+                    low.push(format!("{what} {ratio:.2} < {least}"));
+                }
+            }
+            assert!(low.is_empty(), "{set}: {low:?}");
+        }
+    }
+
+    /// The figures of the overhaul's plan (plan/mockups/ui-overhaul,
+    /// *Contrast*), the design's own check of the dark set.
+    #[test]
+    fn the_dark_set_has_the_planned_figures() {
+        let d = Tokens::dark();
+        for (ink, fill, ratio) in [
+            (d.text, d.panel_fill, 14.33),
+            (d.text_dim, d.panel_fill, 6.46),
+            (d.text_dim, d.row_hover_fill, 5.60),
+            (d.text, d.selection_fill, 7.76),
+            (d.info_ink, d.info_fill, 6.91),
+            (d.failed, d.failed_fill, 4.82),
+            (d.attention, d.attention_fill, 7.11),
+            (d.plate_text_dim, d.popover_fill, 6.11),
+        ] {
+            let got = contrast(ink, fill);
+            assert!((got - ratio).abs() < 0.01, "{ink:?} on {fill:?}: {got:.2}");
+        }
+        let l = Tokens::light();
+        assert!((contrast(l.failed, l.failed_fill) - 4.67).abs() < 0.01);
+        assert!((contrast(l.info_ink, l.info_fill) - 6.82).abs() < 0.01);
+    }
+
+    /// The dark set changes the panels and nothing that is drawn on the
+    /// viewport, on the chrome or on the plates: pictures stay the same in
+    /// both appearances.
+    #[test]
+    fn the_dark_set_leaves_the_viewport_the_chrome_and_the_plates() {
+        let (l, d) = (Tokens::light(), Tokens::dark());
+        assert!(d.is_dark() && !l.is_dark());
+        assert_ne!(l.panel_fill, d.panel_fill);
+        assert_ne!(l.popover_fill, d.popover_fill);
+        for (what, a, b) in [
+            (
+                "viewport_background",
+                l.viewport_background,
+                d.viewport_background,
+            ),
+            ("body", l.body, d.body),
+            ("face_highlight", l.face_highlight, d.face_highlight),
+            ("sketch", l.sketch, d.sketch),
+            ("datum", l.datum, d.datum),
+            ("datum_ink", l.datum_ink, d.datum_ink),
+            ("viewport_text", l.viewport_text, d.viewport_text),
+            ("menu_fill", l.menu_fill, d.menu_fill),
+            ("status_fill", l.status_fill, d.status_fill),
+            ("plate_fill", l.plate_fill, d.plate_fill),
+            ("plate_text", l.plate_text, d.plate_text),
+            ("accent", l.accent, d.accent),
+            ("pill_connected", l.pill_connected, d.pill_connected),
+            ("view_cube_label", l.view_cube_label, d.view_cube_label),
+        ] {
+            assert_eq!(a, b, "{what}");
+        }
+        // A palette round-trips, and touch sizes keep it.
+        assert_eq!(Tokens::light().with_palette(Palette::dark()), d);
+        assert_eq!(d.touch().palette(), Palette::dark());
+        assert_eq!(Palette::light(), l.palette());
+        assert_eq!(Tokens::for_appearance(true), d);
+    }
+
+    /// Touch sizes make every kit target a finger's size.
+    #[test]
+    fn touch_sizes_raise_the_kit_targets() {
+        let t = Tokens::default().touch();
+        assert_eq!(t.touch_target, 40.0);
+        assert!(t.row_height >= t.touch_target && t.control_height >= t.touch_target);
+        assert!(t.hit_min >= t.touch_target && t.knob_size >= 24.0);
+        assert_eq!(Tokens::default().hit_min, 0.0);
     }
 
     /// Secondary text is one legible size, the body text's: egui's body
