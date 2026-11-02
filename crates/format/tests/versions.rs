@@ -103,6 +103,12 @@ const FROZEN: &[(u32, usize, u64)] = &[
     (62, 13537, 0x7926_09b8_a310_cc27),
     // Who made and changed a feature (madeBy, lastChangedBy).
     (63, 1933, 0xda6d_3be2_d46b_5d4a),
+    // A sheet-metal plate jogged across a flat (jogs), a wall and a hole
+    // on its far side.
+    (64, 7241, 0xb5f3_8e80_1abc_4f5d),
+    // A sheet-metal panel with a wall and two formed louvres
+    // (formed_louvres), one closed and up, one open and down.
+    (65, 7845, 0xe7a4_3eda_4716_4089),
 ];
 
 fn dir() -> PathBuf {
