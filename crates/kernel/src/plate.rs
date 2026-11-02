@@ -223,6 +223,10 @@ pub enum Made {
     Back(FaceId),
     /// The rim along this boundary edge of the input.
     Rim(EdgeId),
+    /// A face the plate's caller joined to it, numbered by the caller
+    /// (sheet metal's sharp bends: docs/design/sheetmetal.md › *Sharp
+    /// bends*); [`plate`] itself makes none.
+    Joined(u32),
 }
 
 /// A plate and what each of its faces was made from (`faces[i]` for face

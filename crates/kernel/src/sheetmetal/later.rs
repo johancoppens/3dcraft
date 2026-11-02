@@ -243,7 +243,9 @@ fn new_edges(
             .filter_map(|(_, made)| match made {
                 Made::Back(s) => Some((0usize, *s)),
                 Made::Front(s) => Some((1usize, *s)),
-                Made::Rim(_) => None,
+                // A sharp bend's outer skin is no skin a later cut is
+                // laid flat from (owed): a cut across it is not carried.
+                Made::Rim(_) | Made::Joined(_) => None,
             })
             .collect();
         // Several skins may share a surface (the faces a hole across a

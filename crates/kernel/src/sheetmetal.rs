@@ -67,6 +67,7 @@ pub mod formed;
 mod jog;
 mod later;
 pub mod sequence;
+pub mod sharp;
 mod trim;
 pub use cuts::Cut;
 pub use jog::{JogSpec, web_length};
@@ -359,6 +360,14 @@ impl Bend {
     /// The angle's size θ.
     pub fn theta(&self) -> f64 {
         self.angle.abs()
+    }
+
+    /// Whether the bend is sharp: its inner radius 0 (one within the
+    /// tolerance of 0 is set to 0 when the part is laid out), its inner
+    /// skin a line and its outer a cylinder of radius `T`
+    /// (docs/design/sheetmetal.md › *Sharp bends*).
+    pub fn sharp(&self) -> bool {
+        self.radius == 0.0
     }
 
     /// The radius of the neutral fibre, `R + K T`.
@@ -678,7 +687,7 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
         ));
     }
     for (i, f) in spec.flanges.iter().enumerate() {
-        check_flange(i, f, tol)?;
+        check_flange(i, f, t, tol, tolerance.angular)?;
     }
     let marks = flange_marks(spec)?;
     for (what, relief) in [("relief", spec.relief), ("bend relief", spec.bend_relief)] {
@@ -1229,7 +1238,8 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
         let d = unit(sub(e, s)).ok_or_else(|| refuse(Some(i), "the edge has no length"))?;
         let across = [d[1], -d[0]];
         let theta = f.angle;
-        let neutral = f.radius + f.k * t;
+        let radius = sharp::snapped(f.radius, tol);
+        let neutral = radius + f.k * t;
         let allowance = theta * neutral;
         let shift = scale(across, allowance);
         let number = flange_number(&marks, i).ok_or_else(|| refuse(Some(i), "it has no id"))?;
@@ -1259,7 +1269,7 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
                                 "a length to the outside mould line needs an angle below 180 degrees (at 180 the outside surfaces never meet); measure it from the tangent line",
                             ));
                         }
-                        f.length - (f.radius + t) * half.ptan()
+                        f.length - (radius + t) * half.ptan()
                     }
                 };
                 if !(flat_length > tol) {
@@ -1329,7 +1339,7 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
             parent,
             child: i + 1,
             angle: signed,
-            radius: f.radius,
+            radius,
             k: f.k,
             thickness: t,
             allowance,
@@ -1451,7 +1461,22 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
         .iter()
         .map(|(edge, surface)| (*edge, crate::plate::Joint::Onto(surface)))
         .collect();
-    let solid = plate(&sheet, &faces, t, Side::Out, &joints, tolerance)?;
+    let solid = if bends.iter().any(Bend::sharp) {
+        sharp::refused(&bends, &corners, &cuts)?;
+        sharp::plate(
+            &sheet,
+            &sheet_faces,
+            &edge_keys,
+            &flats,
+            &bends,
+            &spec.plane,
+            t,
+            &joints,
+            tolerance,
+        )?
+    } else {
+        plate(&sheet, &faces, t, Side::Out, &joints, tolerance)?
+    };
     Ok(Part {
         plane: spec.plane,
         thickness: t,
@@ -2297,7 +2322,13 @@ fn bend_reliefs_fit(
     Ok(())
 }
 
-fn check_flange(i: usize, f: &FlangeSpec, tol: f64) -> Result<(), KernelError> {
+fn check_flange(
+    i: usize,
+    f: &FlangeSpec,
+    t: f64,
+    tol: f64,
+    angular: f64,
+) -> Result<(), KernelError> {
     if let Some(x) = f.inset.iter().find(|x| !(x.is_finite() && **x >= 0.0)) {
         return Err(refuse(
             Some(i),
@@ -2331,11 +2362,8 @@ fn check_flange(i: usize, f: &FlangeSpec, tol: f64) -> Result<(), KernelError> {
             ),
         ));
     }
-    if !(f.radius > tol) {
-        return Err(refuse(
-            Some(i),
-            "a sharp bend (an inner radius within the tolerance of zero) is not supported: its inner skin would be an edge and its outer a cylinder of radius T over the angle, which the one offset (the plate of a sheet tangent across its bends) cannot make, and a bend at some smallest radius in its place would be a part other than the one asked for; give the inner radius the tooling makes (in air bending about a sixth of the die opening)",
-        ));
+    if f.radius <= tol {
+        sharp::check(i, f.angle, f.k, t, tol, angular)?;
     }
     if !(f.k.is_finite() && (0.0..=1.0).contains(&f.k)) {
         return Err(refuse(
@@ -4392,6 +4420,15 @@ fn folded_sheet(
         let wc = w_of(bend.child)?;
         let wp = w_of(bend.parent)?;
         let ring = b.ring(&flat.outer, &wc)?;
+        if bend.sharp() {
+            // A sharp bend has no face of the bottom skin: its two tangent
+            // lines end the flats' sheets, and its material is joined to
+            // their plates (`sharp::plate`).
+            if let Some(slot) = made_rings.get_mut(bend.child) {
+                *slot = Some(ring);
+            }
+            continue;
+        }
         let (Some(&a1), Some(&a0)) = (ring.0.first(), ring.0.get(1)) else {
             return Err(refuse(Some(i), "a flange's flat has no corners"));
         };
@@ -4564,6 +4601,9 @@ fn folded_sheet(
         roles.push(SheetFace::Flat(i));
     }
     for (i, (bend, edges)) in bends.iter().zip(&bend_loops).enumerate() {
+        if bend.sharp() {
+            continue;
+        }
         let wp = w_of(bend.parent)?;
         let t = bend.thickness;
         let zc = if bend.angle > 0.0 {
@@ -4584,7 +4624,15 @@ fn folded_sheet(
         faces.push(b.body.add_face(surface, bend.angle > 0.0, vec![lp]));
         roles.push(SheetFace::Bend(i));
     }
-    b.body.add_shell(faces);
+    if bends.iter().any(Bend::sharp) {
+        // Sharp bends have no face here: the sheet falls into pieces, each
+        // a shell of its own.
+        for piece in sharp::pieces(&b.body) {
+            b.body.add_shell(piece);
+        }
+    } else {
+        b.body.add_shell(faces);
+    }
     // What each edge is: the outlines' segments by their open places, the
     // holes', the bends' arcs.
     let mut keys: Vec<Option<EdgeKey>> = vec![None; b.body.edges.len()];
@@ -4726,6 +4774,16 @@ pub fn developed_allowance(bend: &Bend, tolerance: &Tolerance) -> Result<f64, Ke
 /// The inner radius of a bend as the solid has it: the smaller radius of
 /// the two skins the plate made of the bend's face.
 pub fn measured_radius(part: &Part, bend: usize) -> Option<f64> {
+    // A sharp bend's inner skin is the line on its axis, of radius 0; its
+    // outer skin is the one cylinder the solid has of it.
+    if part.bends.get(bend)?.sharp() {
+        return part
+            .solid
+            .faces
+            .iter()
+            .any(|m| matches!(m, crate::plate::Made::Joined(k) if sharp::joined(*k) == (bend, sharp::SharpFace::Skin)))
+            .then_some(0.0);
+    }
     let face = part
         .sheet_faces
         .iter()
@@ -4736,7 +4794,7 @@ pub fn measured_radius(part: &Part, bend: usize) -> Option<f64> {
     for (i, made) in part.solid.faces.iter().enumerate() {
         let of = match made {
             crate::plate::Made::Front(f) | crate::plate::Made::Back(f) => *f,
-            crate::plate::Made::Rim(_) => continue,
+            crate::plate::Made::Rim(_) | crate::plate::Made::Joined(_) => continue,
         };
         if of != face {
             continue;
@@ -4773,6 +4831,7 @@ pub fn flat_faces(part: &Part, flat: usize) -> Vec<usize> {
         .filter(|(_, made)| match made {
             crate::plate::Made::Front(f) | crate::plate::Made::Back(f) => faces.contains(f),
             crate::plate::Made::Rim(e) => edges.contains(e),
+            crate::plate::Made::Joined(_) => false,
         })
         .map(|(i, _)| i)
         .collect()

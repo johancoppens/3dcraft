@@ -618,7 +618,10 @@ fn refusals_by_reason() {
     };
     let f = |on, radius, k, angle| flange(on, 10.0, angle, Direction::Up, radius, k);
     assert!(reason(vec![f(On::Base(1), -1.0, 0.4, 1.0)], None).contains("below zero"));
-    assert!(reason(vec![f(On::Base(1), 0.0, 0.4, 1.0)], None).contains("sharp bend"));
+    // A sharp bend is built (sheetmetal_sharp.rs); at K = 0 (a strip of no
+    // width) and at 180 degrees (a closed hem) it is refused.
+    assert!(reason(vec![f(On::Base(1), 0.0, 0.0, 1.0)], None).contains("sharp bend"));
+    assert!(reason(vec![f(On::Base(1), 0.0, 0.4, PI)], None).contains("closed hem"));
     assert!(reason(vec![f(On::Base(1), 1.0, 1.5, 1.0)], None).contains("K-factor"));
     assert!(reason(vec![f(On::Base(1), 1.0, -0.1, 1.0)], None).contains("K-factor"));
     assert!(reason(vec![f(On::Base(1), 1.0, 0.4, 0.0)], None).contains("angle"));

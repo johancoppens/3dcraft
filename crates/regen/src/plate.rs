@@ -252,6 +252,7 @@ pub(crate) fn plate_names(
         sheet,
         sheet_names,
         &|edge| sheet_names.edge_name(edge),
+        &|_| None,
         picked,
         made_by,
         tolerance,
@@ -268,6 +269,7 @@ pub(crate) fn plate_names_with(
     sheet: &Body,
     sheet_names: &Names,
     edge_name: &dyn Fn(usize) -> Option<PersistentName>,
+    joined_name: &dyn Fn(u32) -> Option<PersistentName>,
     picked: &[FaceId],
     made_by: &str,
     tolerance: f64,
@@ -301,6 +303,8 @@ pub(crate) fn plate_names_with(
                 }
                 rim
             }
+            Made::Joined(code) => joined_name(*code)
+                .ok_or_else(|| "the plate has a face its caller did not name".to_string())?,
         };
         name.check().map_err(crate::too_long)?;
         names.faces.push(name);

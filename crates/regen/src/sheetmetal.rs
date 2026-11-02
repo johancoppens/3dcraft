@@ -661,12 +661,35 @@ pub(crate) fn build(
             sheetmetal::edge_numbers(part, key)?,
         ))
     };
+    // A sharp bend's faces are named as the same bend's with a radius:
+    // its outer skin as that skin, its ends as the rims along its arcs
+    // (its inner skin, a line, has no face; docs/design/sheetmetal.md ›
+    // *Sharp bends*).
+    let joined_name = |code: u32| -> Option<PersistentName> {
+        let (bend, what) = sheetmetal::sharp::joined(code);
+        let face = sheet_face_name(id, part, SheetFace::Bend(bend))?;
+        match what {
+            sheetmetal::sharp::SharpFace::Skin => {
+                let up = part.bends.get(bend)?.angle > 0.0;
+                Some(PersistentName::copy(id, u64::from(up), face))
+            }
+            sheetmetal::sharp::SharpFace::End(end) => {
+                let edge = PersistentName::new(
+                    id,
+                    NameRole::Edge,
+                    sheetmetal::edge_numbers(part, sheetmetal::EdgeKey::Arc { bend, end })?,
+                );
+                Some(PersistentName::rim(id, &edge, face))
+            }
+        }
+    };
     let names = crate::plate::plate_names_with(
         id,
         &part.solid,
         &part.sheet,
         &sheet_names,
         &edge_name,
+        &joined_name,
         &picked,
         &made_by,
         tolerance.linear,
