@@ -2495,6 +2495,11 @@ fn close_corners(
     // half the gap (a point of it and its normal), what decides whether
     // the bend's root may reach past its end plane (`trim::untrimmed_cut`).
     let mut halving: BTreeMap<(usize, usize), (Vec3, Vec3)> = BTreeMap::new();
+    // Per flange end at a closed corner, the corner's other flange.
+    let mut other_of: BTreeMap<(usize, usize), usize> = BTreeMap::new();
+    // The bends whose end plane cuts into them where they are not
+    // trimmed: decided once every extension is laid out (below).
+    let mut pending: Vec<(usize, usize, &'static str, f64, f64)> = Vec::new();
     for c in corners {
         let [fa, fb] = c.bends;
         let g = c.closing.gap;
@@ -2568,6 +2573,8 @@ fn close_corners(
                 }
             }
         };
+        other_of.insert((fa, 1), fb);
+        other_of.insert((fb, 0), fa);
         for (x, plane) in planes {
             // Flange fa's edge arrives at the corner (its end), fb's leaves
             // it (its start).
@@ -2758,14 +2765,7 @@ fn close_corners(
                 });
                 trim::untrimmed_cut(x, b, &parent_tf, which, plane, root_allowed, tolerance)?
             } {
-                return Err(refuse(
-                    Some(x),
-                    format!(
-                        "the closed corner at its bend's {} has its end plane cut into the bend's {skin} skin by {depth} at {} degrees from the parent's tangent line, where the flange itself is not cut back (a bend down whose outside is cut, or a cut through the middle of the bend only): trimming such a bend is not supported (owed); give the corner a relief (or a larger one), mitre it, or open it",
-                        if which == 0 { "start" } else { "end" },
-                        phi.to_degrees()
-                    ),
-                ));
+                pending.push((x, which, skin, phi, depth));
             }
         }
         // A side that carries flanges moves to the end with them: the end
@@ -3253,8 +3253,96 @@ fn close_corners(
             moved_any = true;
         }
     }
+    // A bend its end plane cuts into where it is not trimmed is kept when
+    // the other flange's flat, extension and all, lies wholly past the
+    // bend's square end: the bend's material lies on its own side of the
+    // plane square to its tangent line through its end (it runs along the
+    // line only that far), the other bend meets it there only at the
+    // corner's point (square ends at a convex corner), so a flat beyond
+    // that plane by more than the tolerance cannot meet it, whatever the
+    // closing plane does. The flat's least along the line, over its folded
+    // outline on both skins: lines at their ends, arcs and circles at their
+    // ends and the one angle where the least lies, a spline over its
+    // control points (a lower bound, safe). Otherwise refused: nothing
+    // proves the cut is clear (review of cc7b9228).
+    for (x, which, skin, phi, depth) in pending {
+        let b = bends
+            .get(x)
+            .ok_or_else(|| refuse(Some(x), "a corner's flange is missing"))?;
+        let clear = other_of.get(&(x, which)).is_some_and(|&o| {
+            past_the_end(flats, b, which, o, thickness).is_some_and(|m| m > tolerance.linear)
+        });
+        if !clear {
+            return Err(refuse(
+                Some(x),
+                format!(
+                    "the closed corner at its bend's {} has its end plane cut into the bend's {skin} skin by {depth} at {} degrees from the parent's tangent line, where the flange itself is not cut back, and the other flange's flat comes back over the bend's end (a bend down whose outside is cut, a cut through the middle of the bend, a mitre of walls unlike each other): trimming such a bend is not supported (owed); give the corner a relief (or a larger one), mitre it, or open it",
+                    if which == 0 { "start" } else { "end" },
+                    phi.to_degrees()
+                ),
+            ));
+        }
+    }
     bend_ends.sort_by(|a, b| a.bend.cmp(&b.bend).then(a.end.cmp(&b.end)));
     Ok(moved_any)
+}
+
+/// How far flange `other`'s flat (as folded, its outline on both skins)
+/// lies at least past bend `b`'s square end at `which` (0 its start, 1
+/// its end), along the bend's tangent line away from the bend: lines at
+/// their ends, arcs and circles also at the angle where the least lies, a
+/// spline at its control points (a lower bound). `None` when a flat is
+/// missing or a number is not finite.
+fn past_the_end(flats: &[Flat], b: &Bend, which: usize, other: usize, t: f64) -> Option<f64> {
+    let parent = flats.get(b.parent)?;
+    let flat = flats.get(other + 1)?;
+    let d = unit(sub(b.end, b.start))?;
+    let (corner, sign) = if which == 0 {
+        (b.start, -1.0)
+    } else {
+        (b.end, 1.0)
+    };
+    let dir = parent.transform.vector(lift(d)) * sign;
+    let p = parent.transform.point(lift(corner));
+    let tr = flat.transform;
+    let f = |q: P2, z: f64| dir.dot(tr.point(Vec3::new(q[0], q[1], z)) - p);
+    let mut least = f64::INFINITY;
+    for z in [0.0, t] {
+        // The gradient of `f` in the flat's own axes.
+        let (g0, gx, gy) = (f([0.0, 0.0], z), f([1.0, 0.0], z), f([0.0, 1.0], z));
+        let grad = [gx - g0, gy - g0];
+        for seg in &flat.outer {
+            least = least.min(f(seg.start, z)).min(f(seg.end, z));
+            match &seg.shape {
+                Shape::Line => {}
+                &Shape::Arc { center, radius } | &Shape::Circle { center, radius } => {
+                    let norm = grad[0].phypot(grad[1]);
+                    if norm > 0.0 {
+                        let at = [
+                            center[0] - radius * grad[0] / norm,
+                            center[1] - radius * grad[1] / norm,
+                        ];
+                        let inside = match seg.angles() {
+                            Some((begin, sweep)) => {
+                                let a = (at[1] - center[1]).patan2(at[0] - center[0]);
+                                (a - begin).rem_euclid(std::f64::consts::TAU) <= sweep
+                            }
+                            None => true,
+                        };
+                        if inside {
+                            least = least.min(f(at, z));
+                        }
+                    }
+                }
+                Shape::Spline(sp) => {
+                    for &c in &sp.control {
+                        least = least.min(f(c, z));
+                    }
+                }
+            }
+        }
+    }
+    least.is_finite().then_some(least)
 }
 
 /// The number the piece at place `seg` of flat `flat`'s outline that a

@@ -520,43 +520,61 @@ fn trims_refused_by_reason() {
 }
 
 /// A mitre of walls unlike each other (inner radius 1 on one, 3 on the
-/// other, both square to the base) at a corner without a relief: the
-/// halving plane does not pass through the corner's point, so one bend's
-/// root reaches past its end plane by more than half the gap and nothing
-/// proves the other bend leaves room: refused with the reason (review of
-/// cc7b9228: it was let through, its root's cut taken as the corner's
-/// own). With a relief the bends end short of the corner and the part is
-/// built, a valid solid.
+/// other) at a corner without a relief: the halving plane does not pass
+/// through the corner's point, so one bend's root reaches past its end
+/// plane by more than half the gap (review of cc7b9228: let through as the
+/// corner's own cut, with nothing proving the other wall leaves room). It
+/// is kept only when the other flange's flat lies wholly past the bend's
+/// square end: square walls (the wall `R + T` out from its edge, every
+/// point of it past the bend's end) build, a valid solid, both bends left
+/// square; a wall leaning in at 120 degrees beside a square one of
+/// another radius, whose flat comes back over the square one's bend end,
+/// is refused by reason, never left square.
 #[test]
-fn a_mitre_of_unlike_walls_without_a_relief_is_refused() {
+fn a_mitre_of_unlike_walls_is_kept_only_where_the_other_wall_is_clear() {
     for k in SCALES {
         let tol = tolerance(k);
         let (t, l) = (1.0 * k, 10.0 * k);
         let base = polygon(&[[0.0, 0.0], [60.0, 0.0], [60.0, 40.0], [0.0, 40.0]], k);
-        let mut sp = spec(
-            base,
+        let corner = Closing {
+            kind: CornerKind::Miter,
+            gap: 0.3 * k,
+            over: None,
+        };
+        let square = spec(
+            base.clone(),
             t,
             vec![
                 flange(1, l, FRAC_PI_2, 1.0 * k, 0.4),
                 flange(2, l, FRAC_PI_2, 3.0 * k, 0.4),
             ],
-            Closing {
-                kind: CornerKind::Miter,
-                gap: 0.3 * k,
-                over: None,
-            },
+            corner,
         );
-        let (f, why) = refused(&sp, &tol);
-        assert!(f.is_some(), "scale {k}: {why}");
+        let part = build(&square, &tol).unwrap_or_else(|e| panic!("scale {k}: {e}"));
+        assert!(check(&part.solid.body, &tol).is_empty(), "scale {k}");
         assert!(
-            why.contains("not supported") && why.contains("relief"),
+            part.bends.iter().all(|b| b.trim == [None, None]),
+            "scale {k}"
+        );
+        // The wall of radius 1 leaning in at 120 degrees, the other square
+        // with radius 3: the plane cuts the square wall's bend at its root
+        // by about 2, and the leaning wall's flat comes back over that
+        // bend's end: refused, naming why (before: the plate failed with a
+        // reason about its own corners).
+        let leaning = spec(
+            base,
+            t,
+            vec![
+                flange(1, l, 2.0 * PI / 3.0, 1.0 * k, 0.4),
+                flange(2, l, FRAC_PI_2, 3.0 * k, 0.4),
+            ],
+            corner,
+        );
+        let (f, why) = refused(&leaning, &tol);
+        assert_eq!(f, Some(1), "scale {k}: {why}");
+        assert!(
+            why.contains("comes back over the bend's end"),
             "scale {k}: {why}"
         );
-        sp.relief = Some(craft3d_kernel::sheetmetal::Relief {
-            kind: craft3d_kernel::sheetmetal::ReliefKind::Rect,
-            size: 5.0 * k,
-        });
-        let part = build(&sp, &tol).unwrap_or_else(|e| panic!("scale {k}: {e}"));
-        assert!(check(&part.solid.body, &tol).is_empty(), "scale {k}");
     }
 }
