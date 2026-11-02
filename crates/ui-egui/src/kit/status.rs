@@ -366,8 +366,15 @@ impl Kit {
         let s = &self.skin;
         let galley = self.galley(ui, text, self.font(), s.text);
         let side = t.work_spinner.max(4.0);
+        // Without words, the arc and half a gap (the status bar's words
+        // follow in a label of their own).
+        let gap = if text.is_empty() {
+            side * 0.5
+        } else {
+            t.nav_icon_gap
+        };
         let (rect, response) = ui.allocate_exact_size(
-            sane(vec2(side + t.nav_icon_gap + galley.size().x, t.row_height)),
+            sane(vec2(side + gap + galley.size().x, t.row_height)),
             Sense::hover(),
         );
         let c = pos2(rect.left() + side * 0.5, rect.center().y);
@@ -385,7 +392,7 @@ impl Kit {
         ui.ctx().request_repaint();
         ui.painter().galley(
             pos2(
-                rect.left() + side + t.nav_icon_gap,
+                rect.left() + side + gap,
                 rect.center().y - galley.size().y * 0.5,
             ),
             galley,

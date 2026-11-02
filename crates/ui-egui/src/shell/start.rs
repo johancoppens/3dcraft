@@ -867,13 +867,21 @@ impl Shell {
         if !sections.contains(&self.start.section) {
             self.start.section = sections.first().copied().unwrap_or_default();
         }
-        let segments: Vec<Segment<'_>> = sections
+        // With the line icons where they fit, else the words alone (a
+        // narrow phone).
+        let mut segments: Vec<Segment<'_>> = sections
             .iter()
             .map(|section| match section.glyph() {
                 Some(glyph) => Segment::IconText(glyph, section.title()),
                 None => Segment::Text(section.title()),
             })
             .collect();
+        if kit.segmented_width(ui, &segments) > width {
+            segments = sections
+                .iter()
+                .map(|section| Segment::Text(section.title()))
+                .collect();
+        }
         let mut chosen = sections
             .iter()
             .position(|s| *s == self.start.section)

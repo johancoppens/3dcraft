@@ -1114,7 +1114,7 @@ mod tests {
         assert!(!phone.settings && !phone.orbit);
         let tablet = player_parts(PLAYER_TOUCH_FULL_WIDTH, true);
         assert!(tablet.settings && tablet.orbit);
-        for width in [f32::NAN, f32::INFINITY, -1.0] {
+        for width in [f32::NAN, f32::NEG_INFINITY, -1.0] {
             let parts = player_parts(width, true);
             assert!(!parts.settings, "{width}");
         }

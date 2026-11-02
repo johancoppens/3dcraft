@@ -320,13 +320,13 @@ impl Kit {
         response
     }
 
-    /// A segmented control: one of `segments`, the chosen one amber.
-    pub fn segmented(&self, ui: &mut Ui, chosen: &mut usize, segments: &[Segment<'_>]) -> Choice {
+    /// The widths of a segmented control's segments.
+    fn segment_widths(&self, ui: &Ui, segments: &[Segment<'_>]) -> Vec<f32> {
         let t = &self.t;
         let s = &self.skin;
         let pad = t.field_inset;
         let font = self.font();
-        let widths: Vec<f32> = segments
+        segments
             .iter()
             .map(|segment| {
                 let w = match segment {
@@ -343,7 +343,20 @@ impl Kit {
                 };
                 w.max(t.hit_min)
             })
-            .collect();
+            .collect()
+    }
+
+    /// How wide a segmented control of `segments` is, in points.
+    pub fn segmented_width(&self, ui: &Ui, segments: &[Segment<'_>]) -> f32 {
+        self.segment_widths(ui, segments).iter().sum::<f32>() + 2.0 * self.t.nav_segment_inset
+    }
+
+    /// A segmented control: one of `segments`, the chosen one amber.
+    pub fn segmented(&self, ui: &mut Ui, chosen: &mut usize, segments: &[Segment<'_>]) -> Choice {
+        let t = &self.t;
+        let s = &self.skin;
+        let font = self.font();
+        let widths = self.segment_widths(ui, segments);
         let inset = t.nav_segment_inset;
         let total: f32 = widths.iter().sum::<f32>() + 2.0 * inset;
         let (outer, mut response) = ui.allocate_exact_size(
