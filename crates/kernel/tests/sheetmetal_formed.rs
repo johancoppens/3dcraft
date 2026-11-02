@@ -107,9 +107,7 @@ fn a_formed_louvre_is_held_to_its_closed_forms() {
                 let cut: f64 = f
                     .lance
                     .iter()
-                    .map(|s| {
-                        ((s.end[0] - s.start[0]).powi(2) + (s.end[1] - s.start[1]).powi(2)).sqrt()
-                    })
+                    .map(|s| (s.end[0] - s.start[0]).phypot(s.end[1] - s.start[1]))
                     .sum();
                 let expect_cut = if ends == HoodEnds::Closed {
                     40.0 * k
