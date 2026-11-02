@@ -1895,8 +1895,9 @@ pub(super) const HELD_BYTES: usize = 512 << 20;
 /// [`HELD_BYTES`].
 pub(super) const TOO_MUCH_HELD: Reason = "the freeform faces it meets need more memory for their indexes than one operation may take (too many freeform faces, or faces of too many pieces)";
 
-/// Freeform operations (outermost [`holding`]s) that run at once in the
-/// whole process, at most; a thread that works in the background
+/// Freeform operations (outermost [`holding`]s that ask for a tree of a
+/// freeform surface) that run at once in the whole process, at most (an
+/// operation on planes and quadrics alone takes no slot); a thread that works in the background
 /// (`craft3d_math::pool::alone`: a motion's builder) takes one fewer, so
 /// the work someone waits for always finds a slot. [`HELD_BYTES`] bounds
 /// one operation's trees, deterministically (it refuses the same whatever
@@ -1989,6 +1990,8 @@ struct Held {
     /// that (a caller that takes a face it cannot outline for one that
     /// does not hold a point would otherwise answer wrongly).
     refused: bool,
+    /// Its slot of [`OPERATIONS_AT_ONCE`], taken before its first tree.
+    slot: Option<Slot>,
 }
 
 /// [`holding`] with a budget of `limit` bytes.
@@ -2024,9 +2027,6 @@ fn holding_within<T>(
         d.set(was.saturating_add(1));
         was
     });
-    // Taken before `Leave`, so it is given back after the trees are let
-    // go of.
-    let _slot = (depth == 0).then(Slot::take);
     let _leave = Leave;
     if depth == 0 {
         HELD.with(|held| {
@@ -2036,6 +2036,7 @@ fn holding_within<T>(
                     bytes: 0,
                     limit,
                     refused: false,
+                    slot: None,
                 });
             }
         });
@@ -2071,6 +2072,11 @@ fn held_within_budget(tree: Option<(u64, usize)>) -> Result<(), Reason> {
         let Some(held) = held.as_mut() else {
             return Ok(());
         };
+        if held.slot.is_none() {
+            // Before its first tree is built or found: waits while the
+            // process holds as many operations' trees as it may.
+            held.slot = Some(Slot::take());
+        }
         if let Some((id, size)) = tree
             && held.ids.insert(id)
         {
@@ -3500,7 +3506,8 @@ mod tests {
 
     /// At most [`OPERATIONS_AT_ONCE`] freeform operations run at once in
     /// the whole process, and one fewer of those of background threads;
-    /// the others wait and then run (2026-11-02).
+    /// the others wait and then run; one that asks for no tree takes no
+    /// slot (2026-11-02).
     #[test]
     fn freeform_operations_at_once_are_bounded_process_wide() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -3516,6 +3523,8 @@ mod tests {
                             craft3d_math::pool::work_alone();
                         }
                         let ran = holding(|| {
+                            // As before a freeform face's tree: takes the slot.
+                            held_within_budget(None).unwrap();
                             let now = inside.fetch_add(1, Ordering::SeqCst) + 1;
                             most.fetch_max(now, Ordering::SeqCst);
                             most_anywhere.fetch_max(operations_running(), Ordering::SeqCst);
@@ -3538,6 +3547,14 @@ mod tests {
             assert!(most.load(Ordering::SeqCst) >= 1);
             assert!(most_anywhere.load(Ordering::SeqCst) <= OPERATIONS_AT_ONCE);
         }
+        // Without a tree: no slot; with one, a slot.
+        let has_slot = || HELD.with(|h| h.borrow().as_ref().is_some_and(|h| h.slot.is_some()));
+        assert!(!holding(|| Ok(has_slot())).unwrap());
+        let with_tree = holding(|| {
+            held_within_budget(None).unwrap();
+            Ok(has_slot())
+        });
+        assert!(with_tree.unwrap());
     }
 
     fn dome() -> Surface {

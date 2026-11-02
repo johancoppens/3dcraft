@@ -301,7 +301,8 @@ solved, and the solve reads the instance's geometry). What keeps that affordable
   helpers (`work_alone`), so a regeneration it runs (a pattern's unions, `derive::in_order`) runs on that one
   thread, and the background and the work someone waits for stay within the pool together. Freeform booleans
   are bounded process-wide: at most `OPERATIONS_AT_ONCE` (3) hold their trees at once, two of them from
-  background threads (`craft3d_kernel` › `freeform::holding`); each holds at most `HELD_BYTES` (2 GiB), so the
+  background threads (`craft3d_kernel` › `freeform::holding`; the slot is taken before an operation's first
+  freeform tree, so booleans of planes and quadrics never wait); each holds at most `HELD_BYTES` (2 GiB), so the
   trees of the whole process stay below 6 GiB plus the shelf (768 MiB), whatever the builder does (before, the
   2 GiB were per thread: three builder threads, the window's and the unions' helpers could each hold them). An
   operation beyond the slots waits, which changes when it runs, never its answer. The builder's own memory: at
