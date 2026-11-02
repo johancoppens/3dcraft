@@ -390,10 +390,9 @@ impl Desk {
         if self.host.shell.take_agents_folder()
             && let Some(picker) = &mut self.agents_picker
             && !picker.busy()
+            && let Err(e) = picker.ask_folder(agents.folder())
         {
-            if let Err(e) = picker.ask_folder(agents.folder()) {
-                agents.note_error(format!("The folder picker could not be shown: {e}"));
-            }
+            agents.note_error(format!("The folder picker could not be shown: {e}"));
         }
         if let Some(choice) = self.agents_picker.as_mut().and_then(Picker::poll) {
             match choice {
