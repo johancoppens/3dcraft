@@ -31,6 +31,8 @@ pub enum Glyph {
     Union,
     Subtract,
     Intersect,
+    /// Sheets joined along the edges they share.
+    Sew,
     Fillet,
     Chamfer,
     DatumPlane,
@@ -97,6 +99,7 @@ impl Glyph {
             "boolean" => match op {
                 Some("subtract" | "difference" | "cut") => Glyph::Subtract,
                 Some("intersect" | "intersection" | "common") => Glyph::Intersect,
+                Some("sew") => Glyph::Sew,
                 _ => Glyph::Union,
             },
             "fillet" => Glyph::Fillet,
@@ -146,7 +149,7 @@ impl Glyph {
     }
 
     /// The feature icons, for the gallery and the tests.
-    pub const FEATURES: [Glyph; 37] = [
+    pub const FEATURES: [Glyph; 38] = [
         Glyph::Sketch,
         Glyph::Extrude,
         Glyph::Revolve,
@@ -155,6 +158,7 @@ impl Glyph {
         Glyph::Union,
         Glyph::Subtract,
         Glyph::Intersect,
+        Glyph::Sew,
         Glyph::Fillet,
         Glyph::Chamfer,
         Glyph::DatumPlane,
@@ -366,6 +370,13 @@ pub fn paint(painter: &egui::Painter, glyph: Glyph, place: Rect, ink: Color32, t
             dashed(s, (14.0, 6.0), (14.0, 14.0));
             dashed(s, (6.0, 14.0), (14.0, 14.0));
             closed(s, &[(6.0, 6.0), (10.0, 6.0), (10.0, 10.0), (6.0, 10.0)]);
+        }
+        Glyph::Sew => {
+            curve(s, [(1.5, 12.0), (3.5, 5.0), (6.0, 4.0), (8.0, 8.0)]);
+            curve(s, [(8.0, 8.0), (10.0, 12.0), (12.5, 11.0), (14.5, 4.0)]);
+            for (x, y) in [(5.0, 4.6), (8.0, 8.0), (11.0, 11.4)] {
+                line(s, &[(x - 1.4, y + 1.4), (x + 1.4, y - 1.4)]);
+            }
         }
         Glyph::Fillet => {
             line(s, &[(3.0, 2.0), (3.0, 7.0)]);

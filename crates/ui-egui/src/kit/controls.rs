@@ -238,12 +238,16 @@ impl Kit {
             }
             painter.galley(at, galley, color(ink));
         }
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, button.enabled, button.text)
+        });
         response
     }
 
     /// A square button with an icon: dim at rest, the text's ink under the
-    /// pointer, amber with the knob's ink when `on`.
-    pub fn icon_button(&self, ui: &mut Ui, glyph: Glyph, on: bool) -> Response {
+    /// pointer, amber with the knob's ink when `on`. `label` names it for
+    /// assistive technology (and is the tooltip a caller may show).
+    pub fn icon_button(&self, ui: &mut Ui, glyph: Glyph, on: bool, label: &str) -> Response {
         let t = &self.t;
         let s = &self.skin;
         let side = t.control_height;
@@ -262,7 +266,8 @@ impl Kit {
             if let Some(fill) = fill {
                 ui.painter().rect_filled(rect, self.radius(), color(fill));
             }
-            let icon = (side - 2.0 * t.nav_spacing - 4.0).clamp(8.0, t.nav_icon_size);
+            let icon = super::clamped(side - 2.0 * t.nav_spacing - 4.0, 8.0, t.nav_icon_size)
+                .unwrap_or(t.nav_icon_size);
             glyphs::paint(
                 ui.painter(),
                 glyph,
@@ -271,6 +276,8 @@ impl Kit {
                 t,
             );
         }
+        response
+            .widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, label));
         response
     }
 
@@ -307,6 +314,7 @@ impl Kit {
             ui.painter()
                 .galley(rect.center() - galley.size() * 0.5, galley, color(ink));
         }
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, text));
         response
     }
 
@@ -344,6 +352,14 @@ impl Kit {
             x += width;
             let id = response.id.with(i);
             let hit = ui.interact(cell, id, Sense::click());
+            let picked = *chosen == i;
+            hit.widget_info(|| {
+                let label = match segment {
+                    Segment::Text(text) => (*text).to_string(),
+                    Segment::Icon(glyph) => format!("{glyph:?}"),
+                };
+                egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, picked, label)
+            });
             if hit.clicked() && *chosen != i {
                 *chosen = i;
                 response.mark_changed();
@@ -433,6 +449,10 @@ impl Kit {
                 color(s.text),
             );
         }
+        let state = *on;
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, state, text)
+        });
         response
     }
 
@@ -486,6 +506,10 @@ impl Kit {
                 color(s.text),
             );
         }
+        let state = *on;
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, state, text)
+        });
         response
     }
 
@@ -584,6 +608,8 @@ impl Kit {
                 color(s.text_dim),
             );
         }
+        let value = *slider.value;
+        response.widget_info(|| egui::WidgetInfo::slider(slider.enabled, value, slider.label));
         response
     }
 
@@ -837,6 +863,9 @@ impl Kit {
             }
         }
         ui.data_mut(|d| d.insert_temp(id, open));
+        let label = options.get(*chosen).copied().unwrap_or("").to_string();
+        response
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, &label));
         response
     }
 }

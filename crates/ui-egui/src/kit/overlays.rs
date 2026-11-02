@@ -168,16 +168,23 @@ impl Kit {
             .shadow(plate.shadow())
             .show(ui, |ui| {
                 ui.set_width((width - 2.0 * pad).max(0.0));
-                add(ui)
+                ui.vertical(add).inner
             });
         if let Some(x) = pointer_x {
             let rect = inner.response.rect;
             let half = t.popover_pointer_width * 0.5;
-            let x = (rect.left() + x).clamp(
-                rect.left() + f32::from(t.nav_radius) + half,
-                (rect.right() - f32::from(t.nav_radius) - half).max(rect.left()),
-            );
+            // Between the rounded corners; on a popover too narrow for
+            // that, at its left corner (never `f32::clamp`, which panics on
+            // crossed or NaN bounds).
+            let lo = rect.left() + f32::from(t.nav_radius) + half;
+            let hi = rect.right() - f32::from(t.nav_radius) - half;
+            let Some(x) = super::clamped(rect.left() + x, lo, hi) else {
+                return inner;
+            };
             let top = rect.top();
+            if !top.is_finite() {
+                return inner;
+            }
             let points = vec![
                 pos2(x - half, top + 0.5),
                 pos2(x, top - tip),
@@ -236,8 +243,12 @@ impl Kit {
             .shadow(plate.shadow())
             .show(ui, |ui| {
                 ui.set_width((width.max(t.menu_width) - 2.0 * pad).max(0.0));
-                ui.spacing_mut().item_spacing.y = 0.0;
-                add(ui)
+                // Items one under the other, whatever the layout around.
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    add(ui)
+                })
+                .inner
             })
     }
 
@@ -317,6 +328,14 @@ impl Kit {
                 color(s.text_dim),
             );
         }
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(
+                egui::WidgetType::Button,
+                item.enabled,
+                item.checked,
+                item.label,
+            )
+        });
         response
     }
 

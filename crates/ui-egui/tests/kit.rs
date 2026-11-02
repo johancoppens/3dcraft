@@ -107,6 +107,20 @@ fn every_component_draws_at_a_window_and_a_phone_width() {
                     "{set} {size:?}: no {what}"
                 );
             }
+            // A menu's items stand one under the other (laid out in a row
+            // they once ran over each other).
+            let mut tops: Vec<i64> = targets
+                .iter()
+                .filter(|(w, _)| *w == "menu item")
+                .map(|(_, r)| r.top().round() as i64)
+                .collect();
+            tops.sort_unstable();
+            tops.dedup();
+            assert!(
+                tops.len() >= 7,
+                "{set} {size:?}: menu items in {} rows",
+                tops.len()
+            );
             for (what, rect) in &targets {
                 assert!(
                     rect.left() >= -0.5 && rect.right() <= size[0] + 0.5,
@@ -357,6 +371,43 @@ fn hostile_values_draw_without_a_panic() {
             kit.progress(ui, "", f32::NAN, -1.0);
             kit.pill(ui, PillState::Working, "");
             kit.list_row(ui, ListRow::new("").indent(255));
+            // Popovers too narrow for their pointer, or of no size at all
+            // (crossed bounds once panicked in `f32::clamp`).
+            for (width, pointer) in [
+                (0.0, Some(0.0)),
+                (10.0, Some(5.0)),
+                (31.0, Some(30.0)),
+                (f32::NAN, Some(1.0)),
+                (100.0, Some(f32::NAN)),
+                (100.0, Some(f32::INFINITY)),
+                (-50.0, None),
+            ] {
+                kit.popover_frame(ui, width, pointer, |ui| {
+                    ui.label("x");
+                });
+            }
+            for anchor in [
+                Rect::NOTHING,
+                Rect::from_min_size(Pos2::ZERO, vec2(0.0, 0.0)),
+                Rect::from_min_max(pos2(f32::NAN, 0.0), pos2(f32::NAN, 1.0)),
+            ] {
+                for width in [0.0, 20.0, f32::NAN, 5000.0] {
+                    kit.popover(
+                        ui.ctx(),
+                        ui.id().with(("p", width.to_bits())),
+                        anchor,
+                        width,
+                        |ui| {
+                            ui.label("x");
+                        },
+                    );
+                }
+            }
+            kit.menu_frame(ui, f32::NAN, |ui| {
+                kit.menu_item(ui, MenuItem::new(""));
+            });
+            kit.tooltip_box(ui, "a tip", f32::NAN);
+            kit.tooltip_box(ui, "", 0.0);
         });
     }
 }
@@ -387,25 +438,40 @@ fn every_icon_stays_in_its_place() {
             );
         }
     }
-    // Every feature kind has an icon; an unknown one the generic one.
-    for kind in [
-        "sketch",
-        "extrude",
-        "fillet",
-        "datumPlane",
-        "shell",
-        "sheetMetal",
-    ] {
+    // Every feature kind has an icon of its own, read from the document
+    // model's own list (`FeatureKind::type_name`), so a kind added later
+    // fails here until it has one; an unknown one gets the generic icon.
+    let source = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../doc/src/lib.rs"),
+    )
+    .unwrap();
+    let named = |prefix: &str| -> Vec<String> {
+        source
+            .lines()
+            .map(str::trim_start)
+            .filter(|l| l.starts_with(prefix) && l.contains("=> \"") && l.ends_with("\","))
+            .filter_map(|l| l.split('"').nth(1).map(str::to_string))
+            .collect()
+    };
+    let kinds = named("FeatureKind::");
+    assert!(kinds.len() >= 37, "{kinds:?}");
+    for kind in &kinds {
         assert_ne!(
             glyphs::Glyph::for_feature(kind, None),
             glyphs::Glyph::Feature,
-            "{kind}"
+            "the feature kind `{kind}` has no icon"
         );
     }
-    assert_eq!(
-        glyphs::Glyph::for_feature("boolean", Some("subtract")),
-        glyphs::Glyph::Subtract
-    );
+    // Each boolean operation (`BooleanOp::name`) its own icon, sheets
+    // joined (sew) too.
+    let ops = named("BooleanOp::");
+    assert!(ops.contains(&"sew".to_string()), "{ops:?}");
+    let mut seen = Vec::new();
+    for op in &ops {
+        let glyph = glyphs::Glyph::for_feature("boolean", Some(op));
+        assert!(!seen.contains(&glyph), "`{op}` shares its icon");
+        seen.push(glyph);
+    }
     assert_eq!(
         glyphs::Glyph::for_feature("nonsense", None),
         glyphs::Glyph::Feature
@@ -453,6 +519,9 @@ fn the_appearance_is_set_and_read_over_the_control_channel() {
         json!({"appearance": "dark"}),
     )
     .unwrap();
+    // Said at once, before a frame has drawn it.
+    let got = call(&mut shell, &mut session, "ui.get", json!({})).unwrap();
+    assert_eq!(got["appearance"], json!("dark"));
     frame(&mut shell, &mut session);
     let got = call(&mut shell, &mut session, "ui.get", json!({})).unwrap();
     assert_eq!(got["state"]["appearance"], json!("dark"));
@@ -484,4 +553,67 @@ fn the_appearance_is_set_and_read_over_the_control_channel() {
     frame(&mut shell, &mut session);
     assert_eq!(shell.tokens.panel_fill, Tokens::light().panel_fill);
     assert!(!shell.dark());
+}
+
+/// What the window paints over the viewport, as text: every shape that
+/// lies wholly inside the viewport's place.
+fn viewport_shapes(shell: &mut Shell, session: &mut Session, ctx: &egui::Context) -> Vec<String> {
+    let mut last = None;
+    for _ in 0..3 {
+        last = Some(run(ctx, input([1024.0, 700.0], Vec::new()), |ui| {
+            shell.ui(ui, session);
+        }));
+    }
+    let output = last.unwrap();
+    let place = shell.viewport_rect().expect("a viewport");
+    let mut shapes: Vec<String> = output
+        .shapes
+        .iter()
+        .filter(|c| {
+            let b = c.shape.visual_bounding_rect();
+            b.is_positive() && place.contains_rect(b)
+        })
+        .map(|c| format!("{:?}", c.shape))
+        .collect();
+    shapes.sort();
+    shapes
+}
+
+/// The viewport is not themed: what is painted over it (a failed
+/// feature's problem, the axes, the plates of the controls, the view
+/// cube) is the same shape for shape in both appearances.
+#[test]
+fn the_viewport_is_painted_the_same_in_both_appearances() {
+    let mut session = Session::new(Workspace::none());
+    for (id, params) in [
+        ("file.new", json!({})),
+        (
+            "feature.block",
+            json!({"name": "Block", "size": [10, 10, 10]}),
+        ),
+        (
+            "feature.fillet",
+            json!({"edges": [["F1:face(0)", "F1:face(2)"]], "radius": 100}),
+        ),
+    ] {
+        let _ = session.execute(id, &params);
+    }
+    let mut shell = Shell::new();
+    let ctx = egui::Context::default();
+    let light = viewport_shapes(&mut shell, &mut session, &ctx);
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"appearance": "dark"}),
+    )
+    .unwrap();
+    let dark = viewport_shapes(&mut shell, &mut session, &ctx);
+    assert!(shell.dark());
+    assert!(light.len() > 5, "{}", light.len());
+    let differ: Vec<_> = light.iter().filter(|s| !dark.contains(s)).take(3).collect();
+    assert!(
+        differ.is_empty() && light.len() == dark.len(),
+        "{differ:#?}"
+    );
 }

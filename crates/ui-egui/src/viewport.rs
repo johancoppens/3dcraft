@@ -357,7 +357,11 @@ impl LineKind {
             LineKind::Sketch => tokens.sketch,
             LineKind::Construction => tokens.sketch_construction,
             LineKind::Selected => tokens.sketch_selected,
-            LineKind::Axis(axis) => tokens.axes.get(axis).copied().unwrap_or(tokens.text_dim),
+            LineKind::Axis(axis) => tokens
+                .axes
+                .get(axis)
+                .copied()
+                .unwrap_or(tokens.viewport_text),
             LineKind::Edge => tokens.edge,
             LineKind::Highlight => tokens.face_highlight,
             LineKind::Datum => tokens.datum,

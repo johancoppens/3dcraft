@@ -247,6 +247,14 @@ The developer follows development and automated testing live. Three ways, cheape
 2. **Evidence images.** Tests and scripts that render write PNGs under `target/evidence/…` ([`testing.md`](testing.md)). After a visual change, name the files to open. `craft3d-cli render` produces a picture of any document with the CPU renderer: no window, no GPU, no focus stealing.
 3. **The live viewer.** `cargo build --release -p craft3d -p craft3d-cli`, then `target/release/craft3d --control 7878 --control-token-file .private/control.token --automation-write-root target/work --recovery-dir none`; launch it once and the window stays on the developer's screen. Agents then build and edit the model through the control channel or `craft3d-cli mcp --bridge`, and the viewport updates after every command: the developer sees the part grow feature by feature. Use `ui.set` to frame the camera on what changed, `ui.fit` to fly to a feature, and `ui.notice` to show a one-line caption of the current step. A scripted demo with a delay between steps: `cargo run --release -p craft3d --example demo -- --port 7878 --token-file .private/control.token --delay-ms 1500 --part plate`. Once a model is built, the history player under the feature list (or `ui.set {"timeline": {"playing": true}}`) replays it step by step.
 
+**The appearance and evidence (2026-11-02).** Pictures meant as evidence are light. Headless passes (tests,
+`examples/window_picture.rs`, `examples/kit_gallery.rs`, `ui_audit_evidence`) have no system preference, so
+`appearance: system` resolves light there, whatever the desktop. A live window's `ui.screenshot {window: true}` and
+`ui.record` show the window as it is: before taking evidence from a window, `ui.set {"appearance": "light"}` (or
+`"dark"` when the dark set is what is to be shown) so it does not depend on the developer's desktop. On Linux the
+desktop's setting is not seen at all today: winit 0.30 answers `None` for the system theme on both X11 and Wayland
+(GNOME's `color-scheme` is not read), so `system` is light there; macOS, Windows and the browser report theirs.
+
 Rules:
 
 - Never launch a second window when one is already running under control; reuse it.

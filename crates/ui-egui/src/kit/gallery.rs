@@ -138,15 +138,19 @@ pub fn components(ui: &mut Ui, kit: &Kit, state: &mut GalleryState) {
 
     section(ui, kit, "Icon buttons · chips");
     ui.horizontal_wrapped(|ui| {
-        for (glyph, on) in [
-            (Glyph::Nav(crate::shell::icons::Icon::Fit), false),
-            (Glyph::Nav(crate::shell::icons::Icon::Studio), true),
-            (Glyph::Nav(crate::shell::icons::Icon::Loop), false),
-            (Glyph::Nav(crate::shell::icons::Icon::Orbit), false),
-            (Glyph::Copy, false),
-            (Glyph::Close, false),
+        for (glyph, on, label) in [
+            (Glyph::Nav(crate::shell::icons::Icon::Fit), false, "Fit"),
+            (
+                Glyph::Nav(crate::shell::icons::Icon::Studio),
+                true,
+                "Studio",
+            ),
+            (Glyph::Nav(crate::shell::icons::Icon::Loop), false, "Loop"),
+            (Glyph::Nav(crate::shell::icons::Icon::Orbit), false, "Orbit"),
+            (Glyph::Copy, false, "Copy"),
+            (Glyph::Close, false, "Close"),
         ] {
-            let r = kit.icon_button(ui, glyph, on);
+            let r = kit.icon_button(ui, glyph, on, label);
             state.hit("icon button", &r);
         }
         ui.add_space(t.inset);

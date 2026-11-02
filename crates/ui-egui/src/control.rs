@@ -383,7 +383,7 @@ impl Shell {
             "timeline": self.timeline_json(),
             "export": self.export_report(),
             "lens": self.lens_focus().map(|lens| lens.json()),
-            "appearance": if self.dark() { "dark" } else { "light" },
+            "appearance": if self.resolved_dark() { "dark" } else { "light" },
         }))
     }
 

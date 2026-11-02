@@ -751,6 +751,9 @@ pub struct Shell {
     /// Whether the panels have the dark appearance now: the state's
     /// `appearance` resolved against the system's preference each frame.
     dark: bool,
+    /// The system's preference as the last frame saw it (`None`: it said
+    /// none), so `ui.get` resolves a change of the state at once.
+    system_theme: Option<egui::Theme>,
     /// The interface's fonts: Inter and JetBrains Mono once they are here
     /// (`crate::fonts`).
     fonts: crate::fonts::UiFonts,
@@ -1210,6 +1213,7 @@ impl Shell {
             framed: Bbox3::EMPTY,
             themed: false,
             dark: false,
+            system_theme: None,
             fonts: crate::fonts::UiFonts::default(),
             quit: false,
             quit_discards: false,
@@ -2284,7 +2288,8 @@ impl Shell {
         self.drawer_sliding = false;
         // The appearance: the panels' colours follow the state's choice,
         // or the system's (`Appearance::System`), from this frame on.
-        let dark = self.state.appearance.is_dark(ui.ctx().system_theme());
+        self.system_theme = ui.ctx().system_theme();
+        let dark = self.state.appearance.is_dark(self.system_theme);
         if !self.themed || dark != self.dark {
             self.set_appearance(dark);
             self.tokens.apply(ui.ctx());
@@ -2976,7 +2981,7 @@ impl Shell {
                     inside.add(
                         egui::Spinner::new()
                             .size(tokens.work_spinner)
-                            .color(color(tokens.info_accent)),
+                            .color(color(tokens.chrome_work)),
                     );
                     inside.add_space(tokens.work_spinner * 0.5);
                 }
@@ -3031,9 +3036,16 @@ impl Shell {
         }
     }
 
-    /// Whether the panels have the dark appearance now.
+    /// Whether the panels have the dark appearance now (as drawn by the
+    /// last frame).
     pub fn dark(&self) -> bool {
         self.dark
+    }
+
+    /// Whether the panels are dark by the state as it is now, against the
+    /// system's preference the last frame saw: what the next frame draws.
+    pub fn resolved_dark(&self) -> bool {
+        self.state.appearance.is_dark(self.system_theme)
     }
 
     /// Into touch sizes or out of them (the narrow layout, or a finger seen
@@ -3967,16 +3979,25 @@ impl Shell {
         let layout = self.controls_layout.unwrap_or_default();
         let font = egui::FontId::proportional(tokens.problem_font);
         let natural = painter
-            .layout_no_wrap(problem.to_string(), font.clone(), color(tokens.failed))
+            .layout_no_wrap(
+                problem.to_string(),
+                font.clone(),
+                color(tokens.viewport_failed),
+            )
             .size()
             .x;
         let Some([left, width, bottom]) = layout::problem_place(rect, &layout, &tokens, natural)
         else {
             return;
         };
-        let galley = painter.layout(problem.to_string(), font, color(tokens.failed), width);
+        let galley = painter.layout(
+            problem.to_string(),
+            font,
+            color(tokens.viewport_failed),
+            width,
+        );
         let top = bottom - galley.size().y;
-        painter.galley(egui::pos2(left, top), galley, color(tokens.failed));
+        painter.galley(egui::pos2(left, top), galley, color(tokens.viewport_failed));
     }
 
     /// Moves the camera along the turn a click on the view cube started:

@@ -463,6 +463,16 @@ pub struct Tokens {
     /// which is not themed (light in both appearances), so it keeps the
     /// light set's dim ink whatever the panels are.
     pub viewport_text: Rgb,
+    /// Why the viewport shows no picture or not the right one, written on
+    /// the viewport: the same in both appearances, the light set's failure
+    /// red a touch darker (#C0352A) so it keeps 4.5:1 on the viewport's
+    /// background (`failed` itself has 4.46 there).
+    pub viewport_failed: Rgb,
+    /// On the black chrome, the same in both appearances: the status bar's
+    /// work spinner (the light set's info accent) and a tab's unsaved mark
+    /// (the light set's attention amber).
+    pub chrome_work: Rgb,
+    pub chrome_attention: Rgb,
     // The component kit (`crate::kit`, docs/design/rendering.md › *The
     // component kit*), 2026-11-02. The colours from here to
     // `popover_rim_opacity` change with the appearance ([`Palette`]).
@@ -934,6 +944,9 @@ impl Tokens {
             status_least: 48.0,
             problem_font: 13.0,
             viewport_text: [104, 100, 94],
+            viewport_failed: [0xC0, 0x35, 0x2A],
+            chrome_work: [76, 90, 166],
+            chrome_attention: [168, 106, 18],
             // The kit's light fills (plan of the side panel and of the UI
             // overhaul, 2026-11-02).
             row_hover_fill: [0xED, 0xEB, 0xE6],
@@ -1331,6 +1344,11 @@ impl Tokens {
             (
                 "viewport_text on viewport_background",
                 self.viewport_text,
+                self.viewport_background,
+            ),
+            (
+                "viewport_failed (a problem) on viewport_background",
+                self.viewport_failed,
                 self.viewport_background,
             ),
             (
@@ -1740,6 +1758,9 @@ mod tests {
             ("datum", l.datum, d.datum),
             ("datum_ink", l.datum_ink, d.datum_ink),
             ("viewport_text", l.viewport_text, d.viewport_text),
+            ("viewport_failed", l.viewport_failed, d.viewport_failed),
+            ("chrome_work", l.chrome_work, d.chrome_work),
+            ("chrome_attention", l.chrome_attention, d.chrome_attention),
             ("menu_fill", l.menu_fill, d.menu_fill),
             ("status_fill", l.status_fill, d.status_fill),
             ("plate_fill", l.plate_fill, d.plate_fill),
@@ -1755,6 +1776,10 @@ mod tests {
         assert_eq!(d.touch().palette(), Palette::dark());
         assert_eq!(Palette::light(), l.palette());
         assert_eq!(Tokens::for_appearance(true), d);
+        // The viewport's and the chrome's own inks are the light set's.
+        assert_eq!(l.viewport_text, Palette::light().text_dim);
+        assert_eq!(l.chrome_work, Palette::light().info_accent);
+        assert_eq!(l.chrome_attention, Palette::light().attention);
     }
 
     /// Touch sizes make every kit target a finger's size.

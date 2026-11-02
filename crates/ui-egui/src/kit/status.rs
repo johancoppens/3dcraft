@@ -137,6 +137,7 @@ impl Kit {
             galley,
             color(ink),
         );
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, text));
         response
     }
 

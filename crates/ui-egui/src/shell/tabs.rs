@@ -526,13 +526,13 @@ impl Shell {
                                 let mark = painter.layout_no_wrap(
                                     UNSAVED_MARK.to_string(),
                                     egui::FontId::proportional(20.0),
-                                    color(tokens.attention),
+                                    color(tokens.chrome_attention),
                                 );
                                 let size = mark.size();
                                 painter.galley(
                                     egui::pos2(left, rect.center().y - size.y * 0.5),
                                     mark,
-                                    color(tokens.attention),
+                                    color(tokens.chrome_attention),
                                 );
                                 left += size.x + 4.0;
                             }

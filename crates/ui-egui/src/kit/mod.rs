@@ -29,6 +29,8 @@
 
 pub mod brand;
 pub mod controls;
+// Pictures and tests only: not in the browser build.
+#[cfg(not(target_arch = "wasm32"))]
 pub mod gallery;
 pub mod glyphs;
 pub mod overlays;
@@ -262,6 +264,15 @@ pub struct Choice {
 pub(crate) fn sane(size: Vec2) -> Vec2 {
     let f = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
     vec2(f(size.x), f(size.y))
+}
+
+/// `v` held between `lo` and `hi` without a panic: crossed bounds give
+/// `lo`, and `None` when anything is not a number.
+pub(crate) fn clamped(v: f32, lo: f32, hi: f32) -> Option<f32> {
+    if v.is_nan() || lo.is_nan() || hi.is_nan() {
+        return None;
+    }
+    Some(v.max(lo).min(hi.max(lo)))
 }
 
 /// `rect` of `size`, centred vertically in `outer` at its left.

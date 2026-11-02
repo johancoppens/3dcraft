@@ -716,7 +716,11 @@ impl Shell {
         let width = tokens.nav_triad_width;
         painter.circle_filled(origin, width * 1.4, color(tokens.view_cube_label));
         for arm in arms {
-            let ink = tokens.axes.get(arm.axis).copied().unwrap_or(tokens.text);
+            let ink = tokens
+                .axes
+                .get(arm.axis)
+                .copied()
+                .unwrap_or(tokens.view_cube_label);
             let alpha = if arm.toward < -0.05 { 150 } else { 255 };
             let tip = origin + vec2(arm.tip[0] as f32, arm.tip[1] as f32) * reach;
             let length = arm.tip[0].phypot(arm.tip[1]);

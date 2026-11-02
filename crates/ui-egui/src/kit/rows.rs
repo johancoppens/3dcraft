@@ -222,6 +222,10 @@ impl Kit {
                 );
             }
         }
+        let state = *open;
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::CollapsingHeader, true, state, title)
+        });
         response
     }
 
@@ -355,6 +359,14 @@ impl Kit {
             name,
             color(name_ink),
         );
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(
+                egui::WidgetType::SelectableLabel,
+                true,
+                row.selected,
+                row.name,
+            )
+        });
         response
     }
 
@@ -395,6 +407,9 @@ impl Kit {
             let cell = Rect::from_min_size(pos2(x, rect.top()), vec2(w, rect.height()));
             x += w;
             let hit = ui.interact(cell, response.id.with(i), Sense::click());
+            hit.widget_info(|| {
+                egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, on, tab.label)
+            });
             if hit.clicked() && !on {
                 *active = i;
                 response.mark_changed();
