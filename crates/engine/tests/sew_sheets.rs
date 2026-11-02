@@ -47,6 +47,14 @@ fn session_with_sides() -> Session {
     s
 }
 
+/// The sewn sheet's seams are uncut, 887 mm, so their curvature threshold
+/// is 1.127e-12 per mm (`angular / L`). Their bounds were 1.35e-12 (right)
+/// and 1.70e-12 (left), undecided with the measure's work spent, until
+/// 2026-11-02: a half is cut from the piece it came from, not from its
+/// parent, and a rounding counts `u = 2⁻⁵³` (`continuity.rs`); now right
+/// 1.025e-12 (9 % to spare) and left 1.034e-12 (8 %), in 43 and 45
+/// pieces. Counting roundings in `u` rather than `ε` is what carries that
+/// margin: with `ε` the left seam stays over the threshold.
 #[test]
 fn a_side_held_in_curvature_is_sewn_to_its_crown_where_a_union_refuses() {
     let mut s = session_with_sides();

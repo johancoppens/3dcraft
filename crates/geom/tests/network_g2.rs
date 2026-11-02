@@ -1038,3 +1038,98 @@ fn two_curvature_edges_whose_lines_are_crossed_at_different_parameters_are_refus
     ];
     assert!(gordon(&net(&us, &vs, agreeing, 1.0)).is_ok());
 }
+
+/// `b` of a knotted seam: degree `p` along the edge (the x axis, `l`
+/// long) with the single knots `inner`, the profile `z = c N_j(u)` (the
+/// basis function nearest the middle, scaled so that its largest
+/// curvature along the edge is `peak`), swept along +y; and `a` the flat
+/// sheet on the −y side, of the same degree and knots. The seam is G1
+/// (the profile's slope stays far within the angular tolerance) and its
+/// curvature along is `b`'s profile's: the gap along is `κ(u)` itself.
+fn knotted(l: f64, p: usize, inner: &[f64], peak: f64) -> (NurbsSurface, NurbsSurface, f64) {
+    let mut knots = vec![0.0; p + 1];
+    knots.extend_from_slice(inner);
+    knots.extend(vec![1.0; p + 1]);
+    let nu = knots.len() - p - 1;
+    let greville: Vec<f64> = (0..nu)
+        .map(|i| knots[i + 1..=i + p].iter().sum::<f64>() / p as f64)
+        .collect();
+    // The basis function whose support is centred nearest the middle.
+    let j = (0..nu)
+        .min_by(|&x, &y| {
+            let centre = |i: usize| 0.5 * (knots[i] + knots[i + p + 1]) - 0.5;
+            centre(x).abs().total_cmp(&centre(y).abs())
+        })
+        .unwrap();
+    let sheet = |side: f64, z: &dyn Fn(usize) -> f64| {
+        let mut points = Vec::new();
+        for (i, g) in greville.iter().enumerate() {
+            for k in 0..3 {
+                points.push(v(g * l, side * 0.05 * l * f64::from(k), z(i)));
+            }
+        }
+        NurbsSurface::new(
+            p,
+            2,
+            knots.clone(),
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            nu,
+            3,
+            points,
+            vec![1.0; nu * 3],
+        )
+        .unwrap()
+    };
+    // The largest curvature along of the unit profile, sampled finely
+    // and at the knots from both sides.
+    let unit = Surface::Nurbs(sheet(1.0, &|i| if i == j { l } else { 0.0 }));
+    let mut most = 0.0_f64;
+    let mut at: Vec<f64> = (0..=4000).map(|k| f64::from(k) / 4000.0).collect();
+    for k in inner {
+        at.extend([k - 1e-12, *k + 1e-12]);
+    }
+    for u in at {
+        let (suu, _, _) = second_derivatives(&unit, u, 0.0);
+        let x = l; // the speed along: linear in u (Greville abscissae)
+        most = most.max(suu.z.abs() / (x * x));
+    }
+    let c = peak / most;
+    let b = sheet(1.0, &|i| if i == j { c * l } else { 0.0 });
+    let a = sheet(-1.0, &|_| 0.0);
+    (a, b, most * c)
+}
+
+/// The breaks of a knotted `b` (`Between`): a seam whose curvature along
+/// peaks just above the threshold among `b`'s single knots is not proven G2,
+/// whether `b`'s rows are C¹ through them (degree 4: the expansion along
+/// `b` goes on into the neighbour, `Between::Smooth`) or not (degree 3:
+/// its second derivatives jump there, `Between::Rough`); at half the
+/// threshold it is proven G2. Three scales.
+#[test]
+fn a_curvature_peak_at_a_knot_of_b_just_past_the_threshold_is_not_g2() {
+    let inner = [0.2, 0.4, 0.45, 0.5, 0.55, 0.6, 0.8];
+    for scale in SCALES {
+        let (tol, ang) = (1e-6 * scale, 1e-9);
+        let threshold = (ang / scale).min(2.0 * tol / (scale * scale));
+        let edge = line(v(0.0, 0.0, 0.0), v(scale, 0.0, 0.0));
+        for p in [3, 4] {
+            for (times, order) in [(1.2, Order::G1), (0.5, Order::G2)] {
+                let (a, b, peak) = knotted(scale, p, &inner, times * threshold);
+                let c =
+                    continuity(&Surface::Nurbs(a), &Surface::Nurbs(b), &edge, tol, ang).unwrap();
+                assert_eq!(
+                    c.order, order,
+                    "scale {scale}, degree {p}, {times} thresholds: {c:?}"
+                );
+                assert!(
+                    c.along.bound >= peak * (1.0 - 1e-6),
+                    "scale {scale}, degree {p}: bound {:e} below the peak {peak:e}",
+                    c.along.bound
+                );
+                if order == Order::G1 {
+                    assert!(c.angle.within(), "{c:?}");
+                }
+            }
+        }
+    }
+}

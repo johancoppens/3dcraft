@@ -428,6 +428,10 @@ const SEAM_KEEP: f64 = 1e-2;
 /// the seam beside it.
 const SEAM_RISE: f64 = 1e-4;
 
+/// How many times the farthest a point within the tolerance of both
+/// surfaces can lie along their seam [`turn_onto_seam`] may move a vertex.
+const SEAM_REACH: f64 = 4.0;
+
 /// Most secant steps of [`turn_onto_seam`].
 const SECANTS: usize = 8;
 
@@ -476,9 +480,17 @@ fn turn_onto_seam(
     // The first step: the distance is about `k e²` and its rate `2 k e`, so
     // the seam is `−2 v / r` away; then secant steps on the rate.
     let mut step = if r0 != 0.0 { -2.0 * v0 / r0 } else { 0.0 };
+    // How fast the rate grows along the curve, `2k`, from the first secant.
+    let mut slope = f64::NAN;
     for _ in 0..SECANTS {
-        if !(step.is_finite() && step != 0.0) || craft3d_geom::allowance::pass() {
+        if !(step.is_finite() && step != 0.0) {
             break;
+        }
+        // The operation's work bound reached: no move is taken half-way
+        // (the vertex keeps its place) and the operation, which asks the
+        // bound after its steps, refuses saying so (`allowance`).
+        if craft3d_geom::allowance::pass() {
+            return None;
         }
         let (r, a, p) = last;
         let Some((r1, v1, a1, p1)) = rate_at(p + a * step, &mut trial) else {
@@ -495,6 +507,11 @@ fn turn_onto_seam(
         let moved = (p1 - p).dot(a);
         last = (r1, a1, p1);
         let change = r1 - r;
+        // From the first secant, the longest: the later ones near the
+        // root are steps of rounding.
+        if slope.is_nan() && moved != 0.0 {
+            slope = (change / moved).abs();
+        }
         step = if change != 0.0 {
             -r1 * moved / change
         } else {
@@ -507,6 +524,16 @@ fn turn_onto_seam(
     let (rate, point, found) = best;
     // A rate that is not a number never counts as fallen.
     if rate.partial_cmp(&r0.abs()) != Some(std::cmp::Ordering::Less) {
+        return None;
+    }
+    // Within reach of the seam the start lies on: a point within `tol` of
+    // both lies at most `√(tol / k)` along it (the distance `k e²`, `2k`
+    // the rate's slope the first secant measured), so a move of more than
+    // [`SEAM_REACH`] times that went to another place the curve comes
+    // near `silent`, not to this seam; and with no slope measured there
+    // is no seam to place.
+    let reach = SEAM_REACH * (2.0 * tol / slope).sqrt();
+    if !(reach.is_finite() && point.distance(start) <= reach) {
         return None;
     }
     let mut check = found.clone();

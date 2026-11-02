@@ -269,14 +269,17 @@ impl Poly {
         if self.unknown() {
             return f64::NEG_INFINITY;
         }
-        self.c.iter().copied().fold(f64::INFINITY, f64::min) - self.e
+        // `min − e` is one rounding: taken down by a margin of its size.
+        let v = self.c.iter().copied().fold(f64::INFINITY, f64::min) - self.e;
+        v - v.abs() * gamma(2)
     }
 
     fn hi(&self) -> f64 {
         if self.unknown() {
             return f64::INFINITY;
         }
-        self.c.iter().copied().fold(f64::NEG_INFINITY, f64::max) + self.e
+        let v = self.c.iter().copied().fold(f64::NEG_INFINITY, f64::max) + self.e;
+        v + v.abs() * gamma(2)
     }
 
     /// The rounding of a product of degrees `m` and `n`, relative to the
@@ -472,7 +475,10 @@ fn dot4(a: &P4, b: &P4) -> Poly {
 }
 
 /// The largest norm over the piece of a vector polynomial (an upper
-/// bound), with its rounding.
+/// bound), with its rounding. Each sum of three squares is three
+/// roundings deep (a square, two additions) and its root halves that and
+/// adds one; the rounding of the coefficients (`√Σ e²`, as deep) and the
+/// final addition: [`up`] with 5.
 fn norm_hi(v: &V3) -> f64 {
     let d = v.iter().map(Poly::degree).max().unwrap_or(0);
     let e: Vec<Poly> = v.iter().map(|p| p.elevated(d)).collect();
@@ -481,43 +487,60 @@ fn norm_hi(v: &V3) -> f64 {
     for k in 0..=d {
         let s: f64 = e
             .iter()
-            .map(|p| p.c.get(k).copied().unwrap_or(0.0).ppowi(2))
+            .map(|p| {
+                let x = p.c.get(k).copied().unwrap_or(0.0);
+                x * x
+            })
             .sum();
         best = best.max(s.sqrt());
     }
-    best + err
+    up(best + err, 5)
 }
 
-/// A lower bound on the norm of a vector polynomial over the piece.
+/// A lower bound on the norm of a vector polynomial over the piece: the
+/// root of the least value of its square ([`Poly::lo`], already a lower
+/// bound), one rounding.
 fn norm_lo(v: &V3) -> f64 {
-    dot(v, v).lo().max(0.0).sqrt()
+    down(dot(v, v).lo().max(0.0).sqrt(), 1)
 }
 
-/// The value of a constant vector polynomial, less its rounding.
+/// The value of a constant vector polynomial, less its rounding: the
+/// norm as in [`norm_hi`], taken down, less the rounding taken up.
 fn norm_value_lo(v: &V3) -> f64 {
     let err = v.iter().map(|p| p.e * p.e).sum::<f64>().sqrt();
     let s: f64 = v
         .iter()
-        .map(|p| p.c.first().copied().unwrap_or(0.0).ppowi(2))
+        .map(|p| {
+            let x = p.c.first().copied().unwrap_or(0.0);
+            x * x
+        })
         .sum();
-    (s.sqrt() - err).max(0.0)
+    down((down(s.sqrt(), 4) - up(err, 4)).max(0.0), 1)
 }
 
 fn norm_value_hi(v: &V3) -> f64 {
     let err = v.iter().map(|p| p.e * p.e).sum::<f64>().sqrt();
     let s: f64 = v
         .iter()
-        .map(|p| p.c.first().copied().unwrap_or(0.0).ppowi(2))
+        .map(|p| {
+            let x = p.c.first().copied().unwrap_or(0.0);
+            x * x
+        })
         .sum();
-    s.sqrt() + err
+    up(s.sqrt() + err, 5)
 }
 
+/// An upper bound on `|p|` over the piece: the largest coefficient and
+/// the rounding, one addition.
 fn abs_hi(p: &Poly) -> f64 {
-    p.mag() + p.e
+    up(p.mag() + p.e, 1)
 }
 
 fn abs_value_lo(p: &Poly) -> f64 {
-    (p.c.first().copied().unwrap_or(0.0).abs() - p.e).max(0.0)
+    down(
+        (p.c.first().copied().unwrap_or(0.0).abs() - p.e).max(0.0),
+        1,
+    )
 }
 
 /// A lower bound on `|p|` over the piece (zero where it may change sign).
@@ -711,6 +734,21 @@ impl ImplicitForm {
 fn gamma(k: usize) -> f64 {
     let ke = k as f64 * UNIT;
     ke / (1.0 - ke).max(0.5)
+}
+
+/// An upper bound on a nonnegative exact value that `x` was computed
+/// from in `k` roundings (each within `u` of its result, the values
+/// along the way nonnegative): `x (1 + γ_{k+2})`, the two more covering
+/// the margin's own multiplication rounded down (`(1 + γ_k) ≤ (1 −
+/// u)(1 + γ_{k+2})`). A NaN stays NaN.
+fn up(x: f64, k: usize) -> f64 {
+    x * (1.0 + gamma(k + 2))
+}
+
+/// A lower bound on a nonnegative exact value that `x ≥ 0` was computed
+/// from in `k` roundings: `x (1 − γ_{k+2})` ([`up`]'s other side).
+fn down(x: f64, k: usize) -> f64 {
+    x * (1.0 - gamma(k + 2))
 }
 
 /// A homogeneous coefficient (`x w`, `y w`, `z w`, `w`) with a bound on
@@ -1177,6 +1215,12 @@ struct Piece {
     root: std::sync::Arc<Vec<P4>>,
     t0: f64,
     t1: f64,
+    /// The ends of that first piece along the edge: this piece's length
+    /// is `(t1 − t0)(root_b − root_a)` ([`Piece::len`]), not the
+    /// difference of its own ends, which are midpoints rounded apart from
+    /// the exact `[t0, t1]`.
+    root_a: f64,
+    root_b: f64,
     depth: usize,
     /// Distinct among the pieces of one measure (the breaks' [`Cross`]
     /// are kept by the pair).
@@ -1193,6 +1237,8 @@ impl Piece {
             rows,
             t0: 0.0,
             t1: 1.0,
+            root_a: a,
+            root_b: b,
             depth: 0,
             id,
         }
@@ -1216,6 +1262,8 @@ impl Piece {
                 root: self.root.clone(),
                 t0,
                 t1: tm,
+                root_a: self.root_a,
+                root_b: self.root_b,
                 depth: self.depth + 1,
                 id: ids.0,
             },
@@ -1226,10 +1274,21 @@ impl Piece {
                 root: self.root.clone(),
                 t0: tm,
                 t1,
+                root_a: self.root_a,
+                root_b: self.root_b,
                 depth: self.depth + 1,
                 id: ids.1,
             },
         )
+    }
+
+    /// Lower and upper bounds on the piece's length along the edge:
+    /// `t1 − t0` is a power of two exactly (halvings of `[0, 1]`), so the
+    /// product with the first piece's length is exact and that length's
+    /// difference is the one rounding.
+    fn len(&self) -> (f64, f64) {
+        let h = (self.t1 - self.t0) * (self.root_b - self.root_a);
+        (down(h, 1), up(h, 1))
     }
 
     /// The rows at a local parameter, as constants.
@@ -1262,7 +1321,8 @@ fn ratio(num_hi: f64, den_lo: f64) -> f64 {
     if den_lo <= 0.0 {
         return f64::INFINITY;
     }
-    num_hi / den_lo
+    // One rounding, the quotient's.
+    up(num_hi / den_lo, 1)
 }
 
 fn add3(a: &V3, b: &V3) -> V3 {
@@ -1329,9 +1389,15 @@ fn derivative_poly(p: &Poly) -> Poly {
     }
 }
 
-/// The rounding the final few operations of a bound may add, beyond what
-/// its factors carry: every closing formula below is at most 32 roundings
-/// deep.
+/// The rounding the closing formula of a bound may add, beyond what its
+/// factors carry: `room(k)` multiplies a formula of nonnegative bounds
+/// (products, quotients, sums, a square root: each one rounding of `u`
+/// relative to its result, and none a difference) whose longest chain of
+/// operations is at most `k + 30` deep, `k` the roundings counted on the
+/// sizes it takes ([`Sizes::k`]); the result times `1 + γ_{k+32}` then
+/// bounds the exact value, the two more covering the margin's own
+/// multiplication ([`up`]). Every use below is such a formula: a few
+/// products and quotients of bounds, each at most a dozen deep.
 fn room(k: usize) -> f64 {
     1.0 + gamma(k + 32)
 }
@@ -1365,8 +1431,11 @@ fn b_speed(rows: &[P4]) -> (f64, f64) {
         ),
         &times(&q0, &dom.mul(&dom).scale(2.0)),
     );
-    let m = (1.0 - gamma(4)) * ratio_lo(norm_lo(&v1), om_hi * om_hi);
-    let m2 = (1.0 + gamma(4)) * ratio(norm_hi(&v2), om_lo * om_lo * om_lo);
+    // The norms and quotients are bounds after their own rounding
+    // ([`norm_lo`], [`ratio`]); the powers of `ω` are one and two
+    // roundings, taken the way that keeps the quotient a bound.
+    let m = ratio_lo(norm_lo(&v1), up(om_hi * om_hi, 1));
+    let m2 = ratio(norm_hi(&v2), down(om_lo * om_lo * om_lo, 2));
     (m, m2)
 }
 
@@ -1395,21 +1464,26 @@ fn b_speed(rows: &[P4]) -> (f64, f64) {
 /// `2B / m`; otherwise only `Δ ≤ ℓ`, and halving narrows it.
 fn shift_window(position: f64, speed: f64, accel: f64, reach: f64) -> f64 {
     let (b, m, m2, l) = (position, speed, accel, reach);
-    if b.is_finite()
-        && m.is_finite()
-        && m2.is_finite()
-        && m > 0.0
-        && m2 * l <= m * (1.0 - gamma(4))
-        && m * l - 0.5 * m2 * l * l > 2.0 * b * (1.0 + gamma(8))
-    {
-        // The root rounded down.
-        let root = ((1.0 - gamma(4)) * (m * m - 4.0 * m2 * b * (1.0 + gamma(4))))
-            .max(0.0)
-            .sqrt();
-        ((1.0 + gamma(8)) * 4.0 * b / (m + (1.0 - gamma(2)) * root)).min(l)
-    } else {
-        l
+    // Every product and quotient taken the way that keeps the conclusion
+    // ([`up`], [`down`]); a difference is one more rounding of its own
+    // size, taken off its lower bound.
+    let low = |x: f64| x - x.abs() * gamma(2);
+    if !(b.is_finite() && m.is_finite() && m2.is_finite() && m > 0.0 && b >= 0.0) {
+        return l;
     }
+    // `M₂ ℓ ≤ m`, and `m ℓ − M₂ ℓ² / 2 > 2B` from a lower bound of the
+    // left side.
+    let rises = up(m2 * l, 1) <= m;
+    let reach = low(down(m * l, 1) - up(0.5 * m2 * l * l, 2));
+    if !(rises && reach > 2.0 * b) {
+        return l;
+    }
+    // `m² − 4 M₂ B` from below (the difference may cancel: its rounding
+    // is of its own size, and of the terms' through their bounds), its
+    // root from below, and the window from above.
+    let disc = low(down(m * m, 1) - up(4.0 * m2 * b, 1)).max(0.0);
+    let root = down(disc.sqrt(), 1);
+    up(4.0 * b / down(m + root, 1), 1).min(l)
 }
 
 /// What a piece knows of itself for the correspondence terms, in the
@@ -1473,12 +1547,12 @@ fn piece_info(piece: &Piece, other: &Other, parent: f64) -> Result<Info, Network
             info.implicit = implicit_terms(&piece.rows, other, plain[0])?;
         }
         Other::Spline => {
-            let h = piece.b - piece.a;
+            let (h, h_hi) = piece.len();
             let (x, y) = split_rows(&piece.rows)?;
             let y = y.ok_or_else(internal)?;
             let (m, m2) = b_speed(&piece.rows);
-            info.speed = m / h;
-            info.accel = m2 / (h * h);
+            info.speed = down(m / h_hi, 1);
+            info.accel = up(m2 / down(h * h, 1), 1);
             let lift = |rows: &[P4; 6], d: bool| rows.clone().map(|r| r.map(|p| dual_of(&p, d)));
             let size = |rows: &[P4; 6], b: bool| rows.clone().map(|r| r.map(|p| sizes_of(&p, b)));
             let d = spline_parts(&lift(&x, false), &lift(&y, true));
@@ -1506,13 +1580,13 @@ fn piece_info(piece: &Piece, other: &Other, parent: f64) -> Result<Info, Network
                     (f64::INFINITY, f64::INFINITY)
                 };
                 if let (Some(a), Some(b)) = (info.s1.get_mut(k), info.s2.get_mut(k)) {
-                    *a = first / h;
-                    *b = second / (h * h);
+                    *a = up(first / h, 1);
+                    *b = up(second / down(h * h, 1), 1);
                 }
             }
             let dwb = [d.wb[0].d.clone(), d.wb[1].d.clone(), d.wb[2].d.clone()];
             let wb = [d.wb[0].v.clone(), d.wb[1].v.clone(), d.wb[2].v.clone()];
-            info.nb = room(0) * ratio(norm_hi(&dwb), norm_lo(&wb)) / h;
+            info.nb = up(room(0) * ratio(norm_hi(&dwb), norm_lo(&wb)) / h, 1);
         }
     }
     Ok(info)
@@ -1561,7 +1635,7 @@ enum Between {
 /// `p`. Sizes bound each factor over its own piece, so the product holds
 /// over `p × n`.
 fn remainder_across(p: &Piece, n: &Piece) -> Result<[f64; 3], NetworkError> {
-    let hn = n.b - n.a;
+    let (hn, _) = n.len();
     let (xp, _) = split_rows(&p.rows)?;
     let (_, yn) = split_rows(&n.rows)?;
     let yn = yn.ok_or_else(internal)?;
@@ -1601,7 +1675,7 @@ fn remainder_across(p: &Piece, n: &Piece) -> Result<[f64; 3], NetworkError> {
 /// break) and `b` in `n` at `tb`; `b`'s normal on `p`'s side from `p`'s
 /// own rows at `ta`.
 fn break_cross(p: &Piece, ta: f64, n: &Piece, tb: f64) -> Result<Cross, NetworkError> {
-    let (hp, hn) = (p.b - p.a, n.b - n.a);
+    let ((hp, _), (hn, _)) = (p.len(), n.len());
     let (xp, _) = split_rows(&p.rows)?;
     let (_, yn) = split_rows(&n.rows)?;
     let yn = yn.ok_or_else(internal)?;
@@ -1768,7 +1842,7 @@ fn implicit_terms(rows: &[P4], other: &Other, position: f64) -> Result<[f64; GAP
         _ => return Ok(out),
     };
     let g = xyz4(&apply(q, &x[0]));
-    let big_g = (1.0 - gamma(4)) * ratio_lo(2.0 * norm_lo(&g), w0_hi);
+    let big_g = ratio_lo(2.0 * norm_lo(&g), w0_hi);
     let hb = room(0) * h * b;
     if !b.is_finite() || big_g.partial_cmp(&hb) != Some(std::cmp::Ordering::Greater) {
         for x in out.iter_mut().skip(1) {
@@ -1827,14 +1901,14 @@ fn combine(
             }
             Other::Spline => {}
         }
-        let h = piece.b - piece.a;
+        let (_, h) = piece.len();
         let left = i.checked_sub(1).and_then(|j| work.get(j));
         let right = work.get(i + 1);
         let (mut speed, mut accel, mut reach) = (info.speed, info.accel, h);
         for (n, ninfo) in left.iter().chain(right.iter()).map(|(p, x)| (p, x)) {
             speed = speed.min(ninfo.speed);
             accel = accel.max(ninfo.accel);
-            reach += (n.b - n.a).min(h);
+            reach = up(reach + n.len().1.min(h), 1);
         }
         let d = shift_window(info.plain[0], speed, accel, reach);
         let r = room(0);
@@ -1983,7 +2057,7 @@ fn unknown_infinite(mut hi: [f64; GAPS]) -> [f64; GAPS] {
 
 /// `num / den` rounded down, 0 where it is not a positive finite number.
 fn ratio_lo(num: f64, den: f64) -> f64 {
-    let r = num / den;
+    let r = down(num / den, 1);
     if r.is_finite() && r > 0.0 { r } else { 0.0 }
 }
 
@@ -2905,7 +2979,7 @@ fn measure(
                 ts: &[f64],
                 found: &mut [(f64, f64, Vec3); GAPS]|
      -> Result<(), NetworkError> {
-        let h = piece.b - piece.a;
+        let (h, _) = piece.len();
         for &t in ts {
             let at = piece.at(t);
             let mut lo = gaps(&at, &other)?.lo;
@@ -3027,16 +3101,21 @@ fn measure(
     let gap = |q: usize, as_angle: bool| {
         let (f, param, at) = found.get(q).copied().unwrap_or((0.0, 0.0, origin));
         let b = bound(q);
-        let conv = |x: f64| {
+        // The sine's bound and lower bound as angles: `pasin` agrees with
+        // the platform's `asin` within two ulps (`craft3d_math::portable`)
+        // and that is within an ulp or two of the exact value, so the
+        // angle is taken up or down by eight roundings of `u`.
+        let conv = |x: f64, rise: bool| {
             if as_angle {
-                x.clamp(0.0, 1.0).pasin()
+                let a = x.clamp(0.0, 1.0).pasin();
+                if rise { up(a, 8) } else { down(a, 8) }
             } else {
                 x
             }
         };
         Gap {
-            bound: conv(b),
-            found: conv(f),
+            bound: conv(b, true),
+            found: conv(f, false),
             param,
             at,
             threshold: thr.get(q.min(2)).copied().unwrap_or(0.0),
@@ -3910,6 +3989,42 @@ mod tests {
             let exact = d[n];
             let off = (cut.c[k] - exact.0) - exact.1;
             assert!(off.abs() <= cut.e, "coefficient {k}: {off:e} > {:e}", cut.e);
+        }
+        // Apart from the blossom: the cut is the first polynomial on
+        // `[t0, t1]`. Its value at `s`, as a sum of the Bernstein basis in
+        // double-double, against the first polynomial's at
+        // `t0 + s (t1 − t0)` (exact: dyadic), summed the same way.
+        let bernstein = |coeffs: &[Dd], t: f64| -> Dd {
+            let mut sum: Dd = (0.0, 0.0);
+            for (i, ci) in coeffs.iter().enumerate() {
+                // C(n, i) t^i (1 − t)^(n − i), in double-double.
+                let mut b: Dd = (1.0, 0.0);
+                for _ in 0..i {
+                    b = mul(b, t);
+                }
+                for _ in i..n {
+                    b = mul(b, 1.0 - t);
+                }
+                let choose = binomials(n)[i];
+                let term = mul(mul(b, choose), ci.0);
+                sum = add(sum, term);
+            }
+            sum
+        };
+        let first: Vec<Dd> = c.iter().map(|x| (*x, 0.0)).collect();
+        let piece_dd: Vec<Dd> = cut.c.iter().map(|x| (*x, 0.0)).collect();
+        for k in 0..=8 {
+            let s = f64::from(k) / 8.0;
+            let t = t0 + s * (t1 - t0);
+            let (here, there) = (bernstein(&piece_dd, s), bernstein(&first, t));
+            let off = (here.0 - there.0) + (here.1 - there.1);
+            // The cut's allowance, and the sums' own rounding (each a
+            // few units of 2⁻¹⁰⁶ of the magnitude).
+            assert!(
+                off.abs() <= cut.e + 1e-28 * mag,
+                "at {s}: {off:e} > {:e}",
+                cut.e
+            );
         }
     }
 }
