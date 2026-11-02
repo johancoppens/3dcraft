@@ -282,6 +282,9 @@ pub struct Preferences {
     pub folder: Option<PathBuf>,
     /// Also the open document's folder (on unless turned off).
     pub document_folder: bool,
+    /// Folders the person allowed when an agent asked (its working folder,
+    /// or the folder of a file it wanted), until taken back.
+    pub folders: Vec<PathBuf>,
 }
 
 impl Default for Preferences {
@@ -290,6 +293,7 @@ impl Default for Preferences {
             allow_agents: false,
             folder: None,
             document_folder: true,
+            folders: Vec::new(),
         }
     }
 }
@@ -317,6 +321,16 @@ pub fn read_preferences(folder: &Path) -> Preferences {
             .get("documentFolder")
             .and_then(Value::as_bool)
             .unwrap_or(defaults.document_folder),
+        folders: value
+            .get("folders")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .take(64)
+            .filter_map(Value::as_str)
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .collect(),
     }
 }
 
@@ -333,6 +347,11 @@ pub fn write_preferences(folder: &Path, preferences: &Preferences) -> Result<(),
             "allowAgents": preferences.allow_agents,
             "folder": chosen,
             "documentFolder": preferences.document_folder,
+            "folders": preferences
+                .folders
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
         })
         .to_string(),
     )
@@ -523,6 +542,7 @@ mod tests {
                 allow_agents: false,
                 folder: Some(chosen.clone()),
                 document_folder: false,
+                folders: vec![chosen.join("allowed")],
             },
         )
         .unwrap();
@@ -532,8 +552,9 @@ mod tests {
             read,
             Preferences {
                 allow_agents: true,
-                folder: Some(chosen),
-                document_folder: false
+                folder: Some(chosen.clone()),
+                document_folder: false,
+                folders: vec![chosen.join("allowed")],
             }
         );
         // A relative folder is not believed; the document's folder is on

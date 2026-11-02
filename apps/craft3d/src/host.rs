@@ -17,6 +17,9 @@ use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 pub struct Request {
     pub line: String,
     pub reply: Sender<Option<String>>,
+    /// Who sent it, when it came over the control channel from a client
+    /// that authenticated (`consent.rs`); `None` for the window's own.
+    pub origin: Option<crate::consent::Origin>,
 }
 
 /// Longest result or error shown in the status bar, in characters.

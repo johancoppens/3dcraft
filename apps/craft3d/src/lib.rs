@@ -32,6 +32,7 @@
 pub mod agents;
 pub mod app;
 pub mod args;
+pub mod consent;
 pub mod control;
 pub mod files;
 pub mod host;

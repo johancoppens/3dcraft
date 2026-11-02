@@ -25,15 +25,18 @@
 //! reads it from the file.
 
 use crate::args::Options;
+use crate::consent::{Origin, Protected, Wanted};
 use crate::control::{ControlConfig, ControlServer, Wake};
 use crate::host::Request;
 use crate::token;
 use craft3d_automation::discovery::{self, Preferences, WindowEntry};
 use craft3d_engine::{Access, Workspace};
-use craft3d_ui_egui::{AgentClient, AgentRoot, AgentsStatus};
+use craft3d_ui_egui::{AgentClient, AgentPrompt, AgentRoot, AgentsStatus, PromptAnswer};
+use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
+use std::time::Instant;
 
 /// What the switch works with.
 #[derive(Clone, Debug, Default)]
@@ -138,6 +141,34 @@ pub struct Agents {
     workspace: Option<Workspace>,
     started_at: u64,
     focused_at: u64,
+    /// Folders allowed for this run (This session only).
+    session_folders: Vec<PathBuf>,
+    /// Folders allowed for one command (Allow once), until it ran.
+    once_folders: Vec<PathBuf>,
+    /// The questions waiting for the person, oldest first.
+    prompts: Vec<Pending>,
+    next_prompt: u64,
+    /// The clients asked about their working folder this run.
+    asked: BTreeSet<String>,
+    /// What is never offered.
+    protected: Protected,
+}
+
+/// A question waiting for the person.
+#[derive(Clone, Debug)]
+pub struct Pending {
+    pub prompt: AgentPrompt,
+    /// When it was asked: a command waits [`crate::consent::PROMPT_WAIT`].
+    pub asked: Instant,
+}
+
+/// What the person's answer means for the request that waited.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Verdict {
+    /// Run it (its folder allowed, for once or for good).
+    Run,
+    /// Refuse it, with this reason.
+    Refuse(String),
 }
 
 impl Agents {
@@ -165,7 +196,222 @@ impl Agents {
             workspace: None,
             started_at: discovery::now_ms(),
             focused_at: 0,
+            session_folders: Vec::new(),
+            once_folders: Vec::new(),
+            prompts: Vec::new(),
+            next_prompt: 1,
+            asked: BTreeSet::new(),
+            protected: Protected::default(),
         }
+    }
+
+    /// What is never offered to an agent (`consent.rs`); the state folder
+    /// is added to it.
+    #[must_use]
+    pub fn with_protected(mut self, mut protected: Protected) -> Self {
+        if let Some(state) = &self.config.state_dir {
+            protected.state =
+                Some(craft3d_engine::canonical(state).unwrap_or_else(|_| state.clone()));
+        }
+        self.protected = protected;
+        self
+    }
+
+    /// True while the person's switch lets agents in: only then is the
+    /// person asked (a window `--control` opened for a script is not).
+    pub fn asks(&self) -> bool {
+        self.server.is_some() && self.switched
+    }
+
+    /// The session's roots as they are now.
+    pub fn workspace(&self) -> &Workspace {
+        &self.current
+    }
+
+    /// Whether `folder` lies beneath one of the agents' roots now.
+    fn reachable(&self, folder: &Path) -> bool {
+        let workspace = &self.current;
+        workspace
+            .read
+            .roots()
+            .iter()
+            .chain(workspace.write.roots().iter())
+            .any(|root| {
+                folder.starts_with(root)
+                    || craft3d_engine::canonical(root).is_ok_and(|real| folder.starts_with(real))
+            })
+    }
+
+    /// Asks the person about the working folders of the clients that
+    /// connected, once per client and run: one that is reachable already,
+    /// protected, or missing is not asked about.
+    pub fn ask_about_clients(&mut self) {
+        if !self.asks() {
+            return;
+        }
+        let clients = self
+            .server
+            .as_ref()
+            .map(ControlServer::clients)
+            .unwrap_or_default();
+        for client in clients {
+            let (Some(key), Some(cwd)) = (client.key, client.cwd) else {
+                continue;
+            };
+            if self.asked.contains(&key) {
+                continue;
+            }
+            self.asked.insert(key);
+            let Ok(folder) = craft3d_engine::canonical(&cwd) else {
+                continue;
+            };
+            if !folder.is_dir()
+                || self.reachable(&folder)
+                || self.protected.reason(&folder).is_some()
+            {
+                continue;
+            }
+            let text = folder.to_string_lossy().into_owned();
+            self.push_prompt(AgentPrompt {
+                id: 0,
+                kind: "connect".to_string(),
+                client: client.name,
+                path: text.clone(),
+                folder: text,
+                command: None,
+            });
+        }
+    }
+
+    fn push_prompt(&mut self, mut prompt: AgentPrompt) -> u64 {
+        let id = self.next_prompt;
+        self.next_prompt = self.next_prompt.saturating_add(1);
+        prompt.id = id;
+        self.prompts.push(Pending {
+            prompt,
+            asked: Instant::now(),
+        });
+        id
+    }
+
+    /// What to do with a request of `origin` that names `wanted` paths:
+    /// `Ok(None)` runs it (nothing outside the roots, or nothing to ask
+    /// about: the command then says what is wrong itself), `Ok(Some(id))`
+    /// holds it for prompt `id`, `Err` refuses it at once (a protected
+    /// place).
+    pub fn screen(&mut self, origin: &Origin, wanted: &[Wanted]) -> Result<Option<u64>, String> {
+        if !self.asks() {
+            return Ok(None);
+        }
+        for want in wanted {
+            let resolved = if want.write {
+                self.current.resolve_write(&want.path)
+            } else {
+                self.current.resolve_read(&want.path)
+            };
+            if resolved.is_ok() {
+                continue;
+            }
+            let Some(folder) = crate::consent::folder_of(want) else {
+                continue;
+            };
+            if let Some(why) = self.protected.reason(&folder) {
+                return Err(format!(
+                    "{}: 3DCraft never gives an agent `{}`: {why}",
+                    want.command, want.path
+                ));
+            }
+            let id = self.push_prompt(AgentPrompt {
+                id: 0,
+                kind: if want.write { "write" } else { "read" }.to_string(),
+                client: origin.name.clone(),
+                path: want.path.clone(),
+                folder: folder.to_string_lossy().into_owned(),
+                command: Some(want.command.clone()),
+            });
+            return Ok(Some(id));
+        }
+        Ok(None)
+    }
+
+    /// The person answered prompt `id`; what it means for the request
+    /// that waited on it (none for a connect question).
+    pub fn answer(&mut self, id: u64, answer: PromptAnswer) -> Option<Verdict> {
+        let index = self.prompts.iter().position(|p| p.prompt.id == id)?;
+        let pending = self.prompts.remove(index);
+        let prompt = pending.prompt;
+        let folder = PathBuf::from(&prompt.folder);
+        let connect = prompt.kind == "connect";
+        match answer {
+            PromptAnswer::Folder => {
+                if !self.preferences.folders.contains(&folder) {
+                    self.preferences.folders.push(folder);
+                    self.remember();
+                }
+            }
+            PromptAnswer::Session => {
+                if !self.session_folders.contains(&folder) {
+                    self.session_folders.push(folder);
+                }
+            }
+            PromptAnswer::Once if !connect => self.once_folders.push(folder),
+            PromptAnswer::Once | PromptAnswer::Deny => {}
+        }
+        self.recompute();
+        if connect {
+            return None;
+        }
+        Some(match answer {
+            PromptAnswer::Deny => Verdict::Refuse(denied(&prompt)),
+            _ => Verdict::Run,
+        })
+    }
+
+    /// The prompts asked before `now - wait`: taken off, with the reason
+    /// for their requests. A connect question simply goes.
+    pub fn expire(&mut self, now: Instant) -> Vec<(u64, String)> {
+        let mut gone = Vec::new();
+        self.prompts.retain(|pending| {
+            let late = now.saturating_duration_since(pending.asked) >= crate::consent::PROMPT_WAIT;
+            if late && pending.prompt.kind != "connect" {
+                gone.push((pending.prompt.id, denied(&pending.prompt)));
+            }
+            !late || pending.prompt.kind == "connect"
+        });
+        gone
+    }
+
+    /// When the oldest command prompt times out, if any.
+    pub fn next_deadline(&self) -> Option<Instant> {
+        self.prompts
+            .iter()
+            .filter(|p| p.prompt.kind != "connect")
+            .map(|p| p.asked + crate::consent::PROMPT_WAIT)
+            .min()
+    }
+
+    /// Takes back the folders allowed for one command.
+    pub fn clear_once(&mut self) {
+        if !self.once_folders.is_empty() {
+            self.once_folders.clear();
+            self.recompute();
+        }
+    }
+
+    /// True while a folder is allowed for one command.
+    pub fn has_once(&self) -> bool {
+        !self.once_folders.is_empty()
+    }
+
+    /// The person took a folder back (Remove).
+    pub fn revoke(&mut self, folder: &Path) {
+        let before = self.preferences.folders.len();
+        self.preferences.folders.retain(|f| f != folder);
+        if self.preferences.folders.len() != before {
+            self.remember();
+        }
+        self.session_folders.retain(|f| f != folder);
+        self.recompute();
     }
 
     /// What the window starts with: listening when `--control` asks for it
@@ -323,6 +569,20 @@ impl Agents {
                             }
                         }
                     }
+                }
+            }
+            for (folders, from) in [
+                (self.preferences.folders.clone(), "allowed"),
+                (self.session_folders.clone(), "session"),
+                (self.once_folders.clone(), "once"),
+            ] {
+                for folder in folders {
+                    if !folder.is_dir() || roots.iter().any(|r| Path::new(&r.path) == folder) {
+                        continue;
+                    }
+                    roots.push(entry(&folder, from, true, true));
+                    read.push(folder.clone());
+                    write.push(folder);
                 }
             }
             if self.preferences.document_folder
@@ -502,6 +762,7 @@ impl Agents {
                     since_ms: client.since_ms,
                     last_command: client.command,
                     last_ms: client.command_ms,
+                    cwd: client.cwd.map(|cwd| cwd.to_string_lossy().into_owned()),
                 })
                 .collect(),
             work_folder: self
@@ -511,10 +772,20 @@ impl Agents {
             command_line: self.config.command_line.is_some(),
             document_folder: self.preferences.document_folder,
             roots: self.roots.clone(),
+            prompts: self.prompts.iter().map(|p| p.prompt.clone()).collect(),
             error: self.error.clone(),
             home: self.config.home.clone(),
         }
     }
+}
+
+/// What a refused or unanswered request is told.
+fn denied(prompt: &AgentPrompt) -> String {
+    format!(
+        "{}: the person has not given access to `{}`; ask them to confirm in the 3DCraft window (or to allow its folder in the agents panel)",
+        prompt.command.as_deref().unwrap_or("file access"),
+        prompt.path
+    )
 }
 
 /// `folder` made when missing and checked to be a folder; its spelling
@@ -1214,6 +1485,480 @@ mod tests {
             assert!(workspace.resolve_read(&bad).is_err(), "{bad}");
         }
         assert!(workspace.resolve_write("in/x.stl").is_ok());
+        let _ = std::fs::remove_dir_all(&state);
+    }
+
+    // ------------------------------------------------------------ consent
+
+    /// A desk (no engine thread: requests are answered in its turns) whose
+    /// switch is on, with the chosen folder in `state/Documents/3DCraft`.
+    fn consent_desk(state: &Path) -> crate::app::Desk {
+        use crate::app::Desk;
+        use crate::files::{Picker, SystemDialogs};
+        // 3DCraft's own folder beside the test's folders, not above them:
+        // it is protected.
+        let mut config = config(&state.join("craft"));
+        config.work_folder = Some(state.join("Documents").join("3DCraft"));
+        let (requests, incoming) = mpsc::channel();
+        let protected = crate::consent::Protected {
+            home: Some(state.join("home")),
+            ..crate::consent::Protected::default()
+        };
+        let agents = Agents::new(config, requests, Arc::new(|| {})).with_protected(protected);
+        let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
+        let mut desk = Desk::new(Host::new(Session::new(Workspace::none())), incoming, picker)
+            .with_agents(agents);
+        desk.host.shell.request_agents(true);
+        desk.turn();
+        desk
+    }
+
+    /// A bridge that works in `cwd` and finds the desk's window.
+    fn bridge_in(state: &Path, cwd: &Path) -> Bridge {
+        let mut config = BridgeConfig::discover(state.join("craft"), None);
+        config.cwd = Some(craft3d_engine::canonical(cwd).unwrap());
+        config.client = Some(format!("MCP bridge (test {})", cwd.display()));
+        Bridge::new(config)
+    }
+
+    /// Sends `message` through `bridge` while the desk takes its turns;
+    /// `until` is turned in between (to answer a prompt), and returns true
+    /// once it did what it waited for.
+    fn relay_turning(
+        desk: &mut crate::app::Desk,
+        bridge: Bridge,
+        message: Value,
+        mut until: impl FnMut(&mut crate::app::Desk) -> bool,
+    ) -> (Bridge, Value) {
+        let thread = std::thread::spawn(move || {
+            let mut bridge = bridge;
+            let reply = bridge::relay(&mut bridge, &message.to_string());
+            (bridge, reply)
+        });
+        let start = Instant::now();
+        let mut done = false;
+        while !thread.is_finished() {
+            assert!(start.elapsed() < Duration::from_secs(60), "no reply");
+            desk.turn();
+            if !done {
+                done = until(desk);
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let (bridge, reply) = thread.join().unwrap();
+        (bridge, serde_json::from_str(&reply.unwrap()).unwrap())
+    }
+
+    fn initialize() -> Value {
+        json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                       "clientInfo": {"name": "Claude Code", "version": "2"}}})
+    }
+
+    fn run(id: u64, command: &str, params: Value) -> Value {
+        json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
+               "params": {"name": "command_run", "arguments": {"id": command, "params": params}}})
+    }
+
+    fn prompts(desk: &crate::app::Desk) -> Vec<AgentPrompt> {
+        desk.host.shell.agents_status().prompts.clone()
+    }
+
+    /// Answers the first prompt of `kind` as the person's click does.
+    fn click(desk: &mut crate::app::Desk, kind: &str, answer: PromptAnswer) -> bool {
+        let Some(prompt) = prompts(desk).into_iter().find(|p| p.kind == kind) else {
+            return false;
+        };
+        desk.host.shell.answer_agent_prompt(prompt.id, answer);
+        true
+    }
+
+    fn tool_text(reply: &Value) -> String {
+        reply["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// The developer's scenario: Claude Code opened in a project folder
+    /// connects; the person allows that folder; the agent makes a new
+    /// document with a 10 mm cube and saves it there.
+    #[test]
+    fn an_agent_saves_a_new_cube_in_the_folder_it_works_in_once_allowed() {
+        let state = workdir("consent-scenario");
+        let project = state.join("home").join("projects").join("bracket");
+        std::fs::create_dir_all(&project).unwrap();
+        let project = craft3d_engine::canonical(&project).unwrap();
+        let mut desk = consent_desk(&state);
+        // Connecting: the bridge sends the folder; the person is asked.
+        let (bridge, reply) =
+            relay_turning(&mut desk, bridge_in(&state, &project), initialize(), |_| {
+                true
+            });
+        assert_eq!(reply["result"]["serverInfo"]["name"], "craft3d", "{reply}");
+        desk.turn();
+        let status = desk.host.shell.agents_status().clone();
+        assert_eq!(
+            status.clients[0].cwd.as_deref(),
+            project.to_str(),
+            "the cwd came along"
+        );
+        let asked = prompts(&desk);
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        assert_eq!(
+            (
+                asked[0].kind.as_str(),
+                asked[0].client.as_str(),
+                asked[0].path.as_str()
+            ),
+            ("connect", "Claude Code", project.to_str().unwrap())
+        );
+        assert!(click(&mut desk, "connect", PromptAnswer::Folder));
+        desk.turn();
+        assert!(prompts(&desk).is_empty());
+        let roots = desk.host.shell.agents_status().roots.clone();
+        assert!(
+            roots
+                .iter()
+                .any(|r| r.from == "allowed" && r.path == project.to_str().unwrap()),
+            "{roots:?}"
+        );
+        assert_eq!(
+            discovery::read_preferences(&state.join("craft")).folders,
+            [project.clone()],
+            "remembered"
+        );
+        // New document, a 10 mm cube, saved in the project folder.
+        let cube = project.join("cube.3dcraft");
+        let mut bridge = bridge;
+        for (id, command, params) in [
+            (2, "file.new", json!({"units": "mm"})),
+            (
+                3,
+                "feature.block",
+                json!({"name": "Cube", "size": [10, 10, 10]}),
+            ),
+            (4, "file.save", json!({"path": cube.to_str().unwrap()})),
+        ] {
+            let (back, reply) =
+                relay_turning(&mut desk, bridge, run(id, command, params), |_| true);
+            bridge = back;
+            assert_eq!(reply["result"]["isError"], false, "{command}: {reply}");
+        }
+        assert!(cube.is_file(), "saved in the client's folder");
+        let mut check = Session::new(Workspace::unrestricted());
+        check
+            .execute("file.open", &json!({"path": cube.to_str().unwrap()}))
+            .unwrap();
+        let volume = check.execute("document.measure", &json!({})).unwrap()["volume"]
+            .as_f64()
+            .unwrap();
+        assert!((volume - 1000.0).abs() < 1e-6, "{volume}");
+        assert!(prompts(&desk).is_empty(), "no prompt for a folder allowed");
+        let _ = std::fs::remove_dir_all(&state);
+    }
+
+    /// The connect question: This session only (not remembered) and No.
+    #[test]
+    fn the_connect_question_for_this_session_or_not_at_all() {
+        let state = workdir("consent-connect");
+        let (a, b) = (state.join("work").join("a"), state.join("work").join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let mut desk = consent_desk(&state);
+        let _ = relay_turning(&mut desk, bridge_in(&state, &a), initialize(), |_| true);
+        desk.turn();
+        assert!(click(&mut desk, "connect", PromptAnswer::Session));
+        desk.turn();
+        let a = craft3d_engine::canonical(&a).unwrap();
+        assert!(
+            desk.host
+                .shell
+                .agents_status()
+                .roots
+                .iter()
+                .any(|r| r.from == "session" && Path::new(&r.path) == a)
+        );
+        assert!(
+            discovery::read_preferences(&state.join("craft"))
+                .folders
+                .is_empty(),
+            "not remembered"
+        );
+        // Asked once per client: another message asks nothing.
+        let mut second = bridge_in(&state, &b);
+        let (back, _) = relay_turning(&mut desk, second, initialize(), |_| true);
+        second = back;
+        desk.turn();
+        assert!(click(&mut desk, "connect", PromptAnswer::Deny));
+        desk.turn();
+        let _ = relay_turning(&mut desk, second, initialize(), |_| true);
+        desk.turn();
+        assert!(prompts(&desk).is_empty(), "not asked again");
+        let b = craft3d_engine::canonical(&b).unwrap();
+        assert!(
+            !desk
+                .host
+                .shell
+                .agents_status()
+                .roots
+                .iter()
+                .any(|r| Path::new(&r.path) == b)
+        );
+        // Remove takes a session folder back.
+        desk.host.shell.request_agents_revoke(a.to_str().unwrap());
+        desk.turn();
+        assert!(
+            !desk
+                .host
+                .shell
+                .agents_status()
+                .roots
+                .iter()
+                .any(|r| Path::new(&r.path) == a)
+        );
+        let _ = std::fs::remove_dir_all(&state);
+    }
+
+    /// A path outside every root waits for the person: Allow once runs
+    /// that command only, Allow this folder from then on, Deny and a
+    /// timeout refuse with what to do; the window answers other requests
+    /// meanwhile.
+    #[test]
+    fn a_path_outside_every_root_waits_for_the_person() {
+        let state = workdir("consent-path");
+        let outside = state.join("elsewhere");
+        std::fs::create_dir_all(&outside).unwrap();
+        let outside = craft3d_engine::canonical(&outside).unwrap();
+        let mut desk = consent_desk(&state);
+        // Works in the chosen folder: nothing to ask about at connect.
+        let chosen = state.join("Documents").join("3DCraft");
+        let (mut bridge, _) =
+            relay_turning(&mut desk, bridge_in(&state, &chosen), initialize(), |_| {
+                true
+            });
+        desk.turn();
+        assert!(prompts(&desk).is_empty());
+        let (back, _) = relay_turning(&mut desk, bridge, run(2, "file.new", json!({})), |_| true);
+        bridge = back;
+        let save = |id: u64, name: &str| {
+            run(
+                id,
+                "file.save",
+                json!({"path": outside.join(name).to_str().unwrap()}),
+            )
+        };
+        // Allow once: this save only. Meanwhile the window answers.
+        let (back, reply) = relay_turning(&mut desk, bridge, save(3, "once.3dcraft"), |desk| {
+            let asked = prompts(desk);
+            if asked.is_empty() {
+                return false;
+            }
+            assert_eq!(asked[0].kind, "write");
+            assert_eq!(
+                asked[0].path,
+                outside.join("once.3dcraft").to_str().unwrap(),
+                "the full path"
+            );
+            assert_eq!(asked[0].command.as_deref(), Some("file.save"));
+            click(desk, "write", PromptAnswer::Once)
+        });
+        bridge = back;
+        assert_eq!(reply["result"]["isError"], false, "{reply}");
+        assert!(outside.join("once.3dcraft").is_file());
+        desk.turn();
+        assert!(
+            !desk
+                .host
+                .shell
+                .agents_status()
+                .roots
+                .iter()
+                .any(|r| r.from == "once"),
+            "taken back"
+        );
+        // Deny: a tool error that says what to do.
+        let (back, reply) = relay_turning(&mut desk, bridge, save(4, "denied.3dcraft"), |desk| {
+            click(desk, "write", PromptAnswer::Deny)
+        });
+        bridge = back;
+        assert_eq!(reply["result"]["isError"], true, "{reply}");
+        let text = tool_text(&reply);
+        assert!(
+            text.contains("has not given access") && text.contains("3DCraft window"),
+            "{text}"
+        );
+        assert!(!outside.join("denied.3dcraft").exists());
+        // Nobody answers: refused after the wait (an injected clock).
+        let (back, reply) = relay_turning(&mut desk, bridge, save(5, "late.3dcraft"), |desk| {
+            if prompts(desk).is_empty() {
+                return false;
+            }
+            desk.expire_prompts(
+                Instant::now() + crate::consent::PROMPT_WAIT + Duration::from_secs(1),
+            );
+            true
+        });
+        bridge = back;
+        assert!(
+            tool_text(&reply).contains("has not given access"),
+            "{reply}"
+        );
+        // Allow this folder: from then on without asking.
+        let (back, reply) = relay_turning(&mut desk, bridge, save(6, "folder.3dcraft"), |desk| {
+            click(desk, "write", PromptAnswer::Folder)
+        });
+        bridge = back;
+        assert_eq!(reply["result"]["isError"], false, "{reply}");
+        let (_, reply) = relay_turning(&mut desk, bridge, save(7, "again.3dcraft"), |desk| {
+            assert!(prompts(desk).is_empty(), "asked again");
+            false
+        });
+        assert_eq!(reply["result"]["isError"], false, "{reply}");
+        assert!(outside.join("again.3dcraft").is_file());
+        let _ = std::fs::remove_dir_all(&state);
+    }
+
+    /// Protected places are refused at once, never asked about; a path
+    /// through a link or with `..` is not offered either.
+    #[test]
+    fn protected_places_and_escapes_are_refused_without_asking() {
+        let state = workdir("consent-protected");
+        let home = state.join("home");
+        std::fs::create_dir_all(home.join(".ssh")).unwrap();
+        std::fs::create_dir_all(state.join("outside")).unwrap();
+        let mut desk = consent_desk(&state);
+        let chosen = state.join("Documents").join("3DCraft");
+        let (mut bridge, _) =
+            relay_turning(&mut desk, bridge_in(&state, &chosen), initialize(), |_| {
+                true
+            });
+        let (back, _) = relay_turning(&mut desk, bridge, run(2, "file.new", json!({})), |_| true);
+        bridge = back;
+        let home = craft3d_engine::canonical(&home).unwrap();
+        let state_real = craft3d_engine::canonical(&state).unwrap();
+        let mut bad: Vec<String> = vec![
+            home.join("x.3dcraft").to_str().unwrap().to_string(),
+            home.join(".ssh")
+                .join("x.3dcraft")
+                .to_str()
+                .unwrap()
+                .to_string(),
+            state_real
+                .join("windows-x.3dcraft")
+                .to_str()
+                .unwrap()
+                .to_string(),
+        ];
+        #[cfg(unix)]
+        {
+            let chosen = craft3d_engine::canonical(&chosen).unwrap();
+            std::os::unix::fs::symlink(state_real.join("outside"), chosen.join("out")).unwrap();
+            bad.push(
+                chosen
+                    .join("out")
+                    .join("x.3dcraft")
+                    .to_str()
+                    .unwrap()
+                    .to_string(),
+            );
+            bad.push(format!("{}/../outside/x.3dcraft", chosen.display()));
+        }
+        for (index, path) in bad.iter().enumerate() {
+            let id = 10 + index as u64;
+            let (back, reply) = relay_turning(
+                &mut desk,
+                bridge,
+                run(id, "file.save", json!({"path": path})),
+                |desk| {
+                    assert!(prompts(desk).is_empty(), "{path}: asked");
+                    false
+                },
+            );
+            bridge = back;
+            assert_eq!(reply["result"]["isError"], true, "{path}: {reply}");
+        }
+        assert!(!home.join("x.3dcraft").exists());
+        let _ = std::fs::remove_dir_all(&state);
+    }
+
+    /// An agent cannot answer its own prompt: no ui.set or other method
+    /// of the control channel or of MCP reaches it.
+    #[test]
+    fn an_agent_cannot_approve_its_own_request() {
+        let state = workdir("consent-self");
+        let outside = state.join("elsewhere");
+        std::fs::create_dir_all(&outside).unwrap();
+        let outside = craft3d_engine::canonical(&outside).unwrap();
+        let mut desk = consent_desk(&state);
+        let chosen = state.join("Documents").join("3DCraft");
+        let (mut bridge, _) =
+            relay_turning(&mut desk, bridge_in(&state, &chosen), initialize(), |_| {
+                true
+            });
+        let (back, _) = relay_turning(&mut desk, bridge, run(2, "file.new", json!({})), |_| true);
+        bridge = back;
+        let target = outside.join("self.3dcraft");
+        let mut tried = false;
+        let control = |id: u64, method: &str, params: Value| {
+            json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
+                   "params": {"name": "control_call", "arguments": {"method": method, "params": params}}})
+        };
+        let (_, reply) = relay_turning(
+            &mut desk,
+            bridge,
+            run(3, "file.save", json!({"path": target.to_str().unwrap()})),
+            |desk| {
+                let asked = prompts(desk);
+                if asked.is_empty() || tried {
+                    return false;
+                }
+                tried = true;
+                let id = asked[0].id;
+                // A second agent connection tries every way it has.
+                let mut other = bridge_in(&state, &chosen);
+                for (n, (method, params)) in [
+                    ("ui.set", json!({"agents": {"prompts": []}})),
+                    ("ui.set", json!({"prompts": [{"id": id, "answer": "folder"}]})),
+                    ("ui.set", json!({"agents": {"allowed": true, "roots": [{"path": outside.to_str().unwrap()}]}})),
+                    ("ui.set", json!({"dialogs": {"agents": true, "prompt": id}})),
+                    ("ui.answer", json!({"id": id, "answer": "folder"})),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let message = control(100 + n as u64, method, params);
+                    let thread = std::thread::spawn({
+                        let mut moved = std::mem::replace(&mut other, bridge_in(&state, &chosen));
+                        move || bridge::relay(&mut moved, &message.to_string())
+                    });
+                    while !thread.is_finished() {
+                        desk.turn();
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    let _ = thread.join();
+                    desk.turn();
+                }
+                // Still asked, still unanswered; then the person says no.
+                let still = prompts(desk);
+                assert_eq!(still.len(), 1, "{still:?}");
+                assert_eq!(still[0].id, id);
+                assert!(
+                    !desk
+                        .host
+                        .shell
+                        .agents_status()
+                        .roots
+                        .iter()
+                        .any(|r| Path::new(&r.path) == outside)
+                );
+                desk.host.shell.answer_agent_prompt(id, PromptAnswer::Deny);
+                true
+            },
+        );
+        assert!(tried);
+        assert_eq!(reply["result"]["isError"], true, "{reply}");
+        assert!(!target.exists());
         let _ = std::fs::remove_dir_all(&state);
     }
 }

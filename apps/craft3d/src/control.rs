@@ -66,7 +66,9 @@ impl ControlConfig {
             token,
             max_connections: 16,
             idle_timeout: Duration::from_secs(30),
-            reply_timeout: Duration::from_secs(120),
+            // Longer than a command waits for the person's answer
+            // (`consent::PROMPT_WAIT`).
+            reply_timeout: Duration::from_secs(300),
             active_for: Duration::from_secs(300),
         }
     }
@@ -103,6 +105,8 @@ struct Seen {
     name: Option<String>,
     /// What it did last, and when (milliseconds since the epoch).
     command: Option<(String, u64)>,
+    /// The folder it works in, as it said in `auth`.
+    cwd: Option<std::path::PathBuf>,
 }
 
 /// One client connected now, for the window.
@@ -116,6 +120,10 @@ pub struct ClientInfo {
     /// What it did last (`feature.edit`), and when.
     pub command: Option<String>,
     pub command_ms: u64,
+    /// The name it gave in `auth` (the key it is known by), and the
+    /// folder it works in.
+    pub key: Option<String>,
+    pub cwd: Option<std::path::PathBuf>,
 }
 
 /// Who is connected, and who was sent away.
@@ -142,6 +150,15 @@ fn client_name(params: Option<&Value>) -> Option<String> {
     let fits =
         !name.is_empty() && name.chars().count() <= 80 && name.chars().all(|c| !c.is_control());
     fits.then(|| name.to_string())
+}
+
+/// The folder a client works in, as it gives it in `auth` (`cwd`):
+/// absolute, at most 4096 bytes; anything else is none.
+fn client_cwd(line: &str) -> Option<std::path::PathBuf> {
+    let request: Value = serde_json::from_str(line).ok()?;
+    let cwd = request.get("params")?.get("cwd")?.as_str()?;
+    let path = std::path::PathBuf::from(cwd);
+    (cwd.len() <= 4096 && !cwd.contains('\0') && path.is_absolute()).then_some(path)
 }
 
 /// True for a line that starts like an HTTP request: a browser's, sent to
@@ -213,13 +230,21 @@ fn authenticate(line: &str, expected: &str) -> (bool, String, Option<String>) {
 }
 
 /// Hands a line to the session's thread and waits for its reply.
-fn dispatch(shared: &Shared, line: String) -> Result<Option<String>, String> {
+fn dispatch(
+    shared: &Shared,
+    line: String,
+    origin: Option<crate::consent::Origin>,
+) -> Result<Option<String>, String> {
     let (reply, answer) = mpsc::channel();
     let sent = shared
         .requests
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .send(Request { line, reply });
+        .send(Request {
+            line,
+            reply,
+            origin,
+        });
     if sent.is_err() {
         return Err("the application is closing".to_string());
     }
@@ -236,7 +261,12 @@ fn dispatch(shared: &Shared, line: String) -> Result<Option<String>, String> {
 
 /// Lets a connection in that authenticated as `client`, unless the
 /// person sent that client away. The reply to send when it may not.
-fn admit(shared: &Shared, id: u64, client: Option<&String>) -> Result<(), String> {
+fn admit(
+    shared: &Shared,
+    id: u64,
+    client: Option<&String>,
+    cwd: Option<std::path::PathBuf>,
+) -> Result<(), String> {
     let mut clients = shared.clients();
     if let Some(name) = client {
         if clients.dismissed.contains(name) {
@@ -246,12 +276,18 @@ fn admit(shared: &Shared, id: u64, client: Option<&String>) -> Result<(), String
         clients
             .seen
             .entry(name.clone())
-            .and_modify(|seen| seen.last = now)
+            .and_modify(|seen| {
+                seen.last = now;
+                if cwd.is_some() {
+                    seen.cwd.clone_from(&cwd);
+                }
+            })
             .or_insert_with(|| Seen {
                 last: now,
                 since_ms: now_ms(),
                 name: None,
                 command: None,
+                cwd: cwd.clone(),
             });
     }
     if let Some(open) = clients.open.get_mut(&id) {
@@ -326,6 +362,26 @@ fn clean(text: &str) -> String {
         .collect::<String>()
         .trim()
         .to_string()
+}
+
+/// Who a request of an authenticated connection comes from: its client's
+/// key, name and folder; a connection that gave no name is "an agent".
+fn origin_of(shared: &Shared, client: Option<&String>) -> Option<crate::consent::Origin> {
+    let clients = shared.clients();
+    Some(
+        match client.and_then(|key| clients.seen.get(key).map(|seen| (key, seen))) {
+            Some((key, seen)) => crate::consent::Origin {
+                key: key.clone(),
+                name: seen.name.clone().unwrap_or_else(|| key.clone()),
+                cwd: seen.cwd.clone(),
+            },
+            None => crate::consent::Origin {
+                key: String::new(),
+                name: "An agent".to_string(),
+                cwd: None,
+            },
+        },
+    )
 }
 
 /// Notes what a request of the connection `id` (named `client`) does.
@@ -410,7 +466,7 @@ fn serve(stream: TcpStream, shared: &Shared) {
                         let _ = send_line(&mut output, &reply);
                         break;
                     }
-                    if let Err(why) = admit(shared, id, name.as_ref()) {
+                    if let Err(why) = admit(shared, id, name.as_ref(), client_cwd(line)) {
                         let _ = send_line(&mut output, &rpc::error_reply(&Value::Null, &why));
                         break;
                     }
@@ -433,7 +489,8 @@ fn serve(stream: TcpStream, shared: &Shared) {
                 }
                 Ok(line) => {
                     note_request(shared, id, client.as_ref(), line);
-                    match dispatch(shared, line.to_string()) {
+                    let origin = origin_of(shared, client.as_ref());
+                    match dispatch(shared, line.to_string(), origin) {
                         Ok(reply) => reply,
                         Err(why) => Some(rpc::error_reply(&Value::Null, &why)),
                     }
@@ -602,6 +659,8 @@ impl ControlServer {
                 since_ms: seen.since_ms,
                 command: seen.command.as_ref().map(|(c, _)| c.clone()),
                 command_ms: seen.command.as_ref().map_or(0, |(_, at)| *at),
+                key: Some(key.clone()),
+                cwd: seen.cwd.clone(),
             })
             .collect();
         for open in clients
@@ -614,6 +673,8 @@ impl ControlServer {
                 since_ms: open.since_ms,
                 command: open.command.as_ref().map(|(c, _)| c.clone()),
                 command_ms: open.command.as_ref().map_or(0, |(_, at)| *at),
+                key: None,
+                cwd: None,
             });
         }
         list

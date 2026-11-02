@@ -227,6 +227,13 @@ pub struct Desk {
     agents: Option<Agents>,
     /// The folder picker of the agents' Change….
     agents_picker: Option<Picker>,
+    /// Requests that wait for the person's answer to a prompt, by its id
+    /// (`consent.rs`), and those whose answer came, until they run.
+    held: Vec<(u64, Request)>,
+    released: Vec<Request>,
+    /// The request that runs with a folder allowed once: the folder is
+    /// taken back when it has run.
+    once: Option<String>,
 }
 
 /// A request for a picture of the window: it is answered once egui hands
@@ -322,6 +329,9 @@ impl Desk {
             rec: Rec::default(),
             agents: None,
             agents_picker: None,
+            held: Vec::new(),
+            released: Vec::new(),
+            once: None,
         }
     }
 
@@ -399,16 +409,122 @@ impl Desk {
                 .map(std::path::PathBuf::from);
             agents.set_document(path.as_deref());
         }
+        if let Some(folder) = self.host.shell.take_agents_revoke() {
+            agents.revoke(std::path::Path::new(&folder));
+            changed = true;
+        }
+        agents.ask_about_clients();
+        // The person's click on a prompt; and prompts nobody answered.
+        if let Some((id, answer)) = self.host.shell.take_agent_prompt_answer() {
+            let verdict = agents.answer(id, answer);
+            changed = true;
+            if let Some(index) = self.held.iter().position(|(held, _)| *held == id) {
+                let (_, request) = self.held.remove(index);
+                match verdict {
+                    Some(crate::agents::Verdict::Run) => {
+                        if answer == craft3d_ui_egui::PromptAnswer::Once {
+                            self.once = Some(request.line.clone());
+                        }
+                        self.released.push(request);
+                    }
+                    Some(crate::agents::Verdict::Refuse(why)) => {
+                        let _ = request
+                            .reply
+                            .send(Some(crate::consent::refusal(&request.line, &why)));
+                    }
+                    None => self.released.push(request),
+                }
+            }
+        }
+        self.expire_prompts(Instant::now());
+        let Some(agents) = &mut self.agents else {
+            return changed;
+        };
+        // A folder allowed once is taken back when its request has run.
+        if let Some(line) = &self.once
+            && self.waiting.is_none()
+            && !self.queue.iter().any(|r| &r.line == line)
+            && !self.released.iter().any(|r| &r.line == line)
+        {
+            agents.clear_once();
+            self.once = None;
+        }
         if self.waiting.is_none()
             && let Some(workspace) = agents.take_workspace()
         {
             self.host.session.set_workspace(workspace);
             changed = true;
         }
+        // Released requests go first, in the order they came, once the
+        // session has the roots their answer gave.
+        if !self.released.is_empty() && self.waiting.is_none() {
+            for request in std::mem::take(&mut self.released).into_iter().rev() {
+                // Asked again: a batch may name another path outside.
+                if let Some(request) = self.screen(request) {
+                    self.queue.push_front(request);
+                }
+            }
+            changed = true;
+        }
+        let Some(agents) = &mut self.agents else {
+            return changed;
+        };
         if self.host.shell.set_agents_status(agents.status()) {
             changed = true;
         }
         changed
+    }
+
+    /// Refuses the requests whose prompt nobody answered by `now`.
+    pub fn expire_prompts(&mut self, now: Instant) {
+        let Some(agents) = &mut self.agents else {
+            return;
+        };
+        for (id, why) in agents.expire(now) {
+            if let Some(index) = self.held.iter().position(|(held, _)| *held == id) {
+                let (_, request) = self.held.remove(index);
+                let _ = request
+                    .reply
+                    .send(Some(crate::consent::refusal(&request.line, &why)));
+            }
+        }
+    }
+
+    /// A request as it comes in: on its way (`Some`), or held for the
+    /// person's answer, or refused at once, when it names a path outside
+    /// every root (`consent.rs`).
+    fn screen(&mut self, request: Request) -> Option<Request> {
+        let (Some(origin), Some(agents)) = (&request.origin, &mut self.agents) else {
+            return Some(request);
+        };
+        let wanted = crate::consent::wanted(&request.line);
+        if wanted.is_empty() {
+            return Some(request);
+        }
+        match agents.screen(origin, &wanted) {
+            Ok(None) => Some(request),
+            Ok(Some(id)) => {
+                // Woken when it times out, frame or no frame.
+                if let Some(wake) = self.wake.clone() {
+                    let _ = std::thread::Builder::new()
+                        .name("craft3d-prompt-deadline".to_string())
+                        .spawn(move || {
+                            std::thread::sleep(
+                                crate::consent::PROMPT_WAIT + Duration::from_millis(50),
+                            );
+                            wake();
+                        });
+                }
+                self.held.push((id, request));
+                None
+            }
+            Err(why) => {
+                let _ = request
+                    .reply
+                    .send(Some(crate::consent::refusal(&request.line, &why)));
+                None
+            }
+        }
     }
 
     /// Paints the window's frames offscreen from now on, on the device and
@@ -495,7 +611,9 @@ impl Desk {
         if self.worker.is_none() {
             let mut answered = self.settle_capture() || agents;
             while let Ok(request) = self.requests.try_recv() {
-                self.queue.push_back(request);
+                if let Some(request) = self.screen(request) {
+                    self.queue.push_back(request);
+                }
             }
             let mut served = 0;
             while served < MAX_PER_TURN {
@@ -651,7 +769,7 @@ impl Desk {
                 self.show_work();
                 let reply = self.answer_away(&request.line);
                 let _ = request.reply.send(reply);
-            } else {
+            } else if let Some(request) = self.screen(request) {
                 self.queue.push_back(request);
             }
         }
@@ -3379,7 +3497,13 @@ mod tests {
     fn ask(requests: &mpsc::Sender<Request>, line: &str) -> Receiver<Option<String>> {
         let (reply, answer) = mpsc::channel();
         let line = line.to_string();
-        requests.send(Request { line, reply }).unwrap();
+        requests
+            .send(Request {
+                line,
+                reply,
+                origin: None,
+            })
+            .unwrap();
         answer
     }
 

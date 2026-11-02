@@ -313,6 +313,7 @@ impl Shell {
             self.shortcuts_window(ui.ctx());
         }
         self.agents_popover(ui.ctx());
+        self.agent_prompt(ui.ctx());
     }
 
     fn about_window(&mut self, ctx: &egui::Context) {

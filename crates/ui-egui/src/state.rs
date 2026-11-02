@@ -346,6 +346,12 @@ pub struct AgentsStatus {
     /// The roots agents have now, in order (relative paths go beneath the
     /// first), and where each came from.
     pub roots: Vec<AgentRoot>,
+    /// The questions the window asks the person about agents, oldest
+    /// first: a client's working folder when it connects, a path outside
+    /// every root. Only the person's click answers them: nothing on the
+    /// control channel does (an agent approving its own access would
+    /// defeat them).
+    pub prompts: Vec<AgentPrompt>,
     /// Why the switch could not be turned on, or what went wrong around it.
     pub error: Option<String>,
     /// The person's home folder, to write paths beneath it with `~`; not
@@ -367,6 +373,42 @@ pub struct AgentClient {
     /// The command it ran last (`feature.edit`), and when.
     pub last_command: Option<String>,
     pub last_ms: u64,
+    /// The folder it works in (its MCP client's working folder, which the
+    /// bridge sends), absolute.
+    pub cwd: Option<String>,
+}
+
+/// A question about an agent's access, waiting for the person.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AgentPrompt {
+    pub id: u64,
+    /// `connect` (the client's working folder), `read` or `write` (a path
+    /// a command wants, outside every root).
+    pub kind: String,
+    /// The client, by the name it gave.
+    pub client: String,
+    /// The full path: the folder for `connect`, the file otherwise.
+    pub path: String,
+    /// What "Allow this folder" grants (for `connect`, the path itself).
+    pub folder: String,
+    /// The command that asks (`file.save`), for `read` and `write`.
+    pub command: Option<String>,
+}
+
+/// The person's answer to an [`AgentPrompt`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PromptAnswer {
+    /// Allow the folder, remembered (connect), or allow this folder for
+    /// the agents from now on (a path).
+    Folder,
+    /// The folder for this run only (connect).
+    Session,
+    /// This one command only (a path).
+    Once,
+    /// No.
+    Deny,
 }
 
 /// One folder agents may read or write files in.
@@ -374,8 +416,10 @@ pub struct AgentClient {
 #[serde(rename_all = "camelCase", default)]
 pub struct AgentRoot {
     pub path: String,
-    /// `chosen` (the switch's folder), `document` (the open document's
-    /// folder) or `command line`.
+    /// `chosen` (the switch's folder), `allowed` (a folder the person
+    /// allowed, remembered), `session` (allowed for this run), `once` (for
+    /// one command), `document` (the open document's folder) or
+    /// `command line`.
     pub from: String,
     pub read: bool,
     pub write: bool,

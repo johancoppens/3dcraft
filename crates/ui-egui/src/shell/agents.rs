@@ -35,6 +35,12 @@ pub(crate) struct AgentsMemory {
     clock: Option<u64>,
     /// Where the popover's controls were drawn in the last frame.
     popover_hits: Vec<(String, egui::Rect)>,
+    /// The person's answer to a prompt, until the host takes it.
+    answer: Option<(u64, crate::state::PromptAnswer)>,
+    /// A folder the person took back (Remove), until the host takes it.
+    revoke: Option<String>,
+    /// Where the prompt's buttons were drawn in the last frame.
+    prompt_hits: Vec<(String, egui::Rect)>,
 }
 
 /// How long the pill shows what an agent did, in milliseconds.
@@ -254,6 +260,127 @@ impl Shell {
             || self.agents.disconnect
             || self.agents.change_folder
             || self.agents.document_folder.is_some()
+            || self.agents.answer.is_some()
+            || self.agents.revoke.is_some()
+    }
+
+    /// Answers prompt `id` as the person's click does. Only the window's
+    /// own buttons (and the host's tests) call this: no `ui.*` method
+    /// reaches it, so an agent cannot approve its own access.
+    pub fn answer_agent_prompt(&mut self, id: u64, answer: crate::state::PromptAnswer) {
+        self.agents.answer = Some((id, answer));
+    }
+
+    pub fn take_agent_prompt_answer(&mut self) -> Option<(u64, crate::state::PromptAnswer)> {
+        self.agents.answer.take()
+    }
+
+    /// Takes back a folder the person allowed (Remove).
+    pub fn request_agents_revoke(&mut self, folder: &str) {
+        self.agents.revoke = Some(folder.to_string());
+    }
+
+    pub fn take_agents_revoke(&mut self) -> Option<String> {
+        self.agents.revoke.take()
+    }
+
+    /// Where the prompt's buttons were drawn in the last frame, by name.
+    pub fn agent_prompt_hits(&self) -> &[(String, egui::Rect)] {
+        &self.agents.prompt_hits
+    }
+
+    /// The oldest question about an agent's access, as a window in the
+    /// middle of the screen, with its buttons.
+    pub(super) fn agent_prompt(&mut self, ctx: &egui::Context) {
+        use crate::state::PromptAnswer;
+        self.agents.prompt_hits.clear();
+        let Some(prompt) = self.agents.status.prompts.first().cloned() else {
+            return;
+        };
+        let tokens = self.tokens;
+        let home = self.agents.status.home.clone();
+        let shown = |path: &str| shown_path(path, home.as_deref());
+        let (title, text, buttons): (&str, String, Vec<(&str, PromptAnswer)>) =
+            if prompt.kind == "connect" {
+                (
+                    "An AI agent connected",
+                    format!(
+                        "{} is connected and works in {}. May it read and write files there?",
+                        prompt.client,
+                        shown(&prompt.path)
+                    ),
+                    vec![
+                        ("Allow", PromptAnswer::Folder),
+                        ("This session only", PromptAnswer::Session),
+                        ("No", PromptAnswer::Deny),
+                    ],
+                )
+            } else {
+                let verb = if prompt.kind == "read" {
+                    "open"
+                } else {
+                    "save to"
+                };
+                (
+                    "An AI agent asks for a file",
+                    format!("{} wants to {verb} {}", prompt.client, prompt.path),
+                    vec![
+                        ("Allow once", PromptAnswer::Once),
+                        ("Allow this folder", PromptAnswer::Folder),
+                        ("Deny", PromptAnswer::Deny),
+                    ],
+                )
+            };
+        let mut hits = Vec::new();
+        let mut chosen = None;
+        let width = tokens
+            .dialog_width
+            .min(ctx.content_rect().width() - 32.0)
+            .max(200.0);
+        egui::Window::new(title)
+            .id(egui::Id::new("craft3d-agent-prompt"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                ui.set_width(width);
+                // The indigo bar of information and connection.
+                ui.horizontal(|ui| {
+                    let (bar, _) = ui.allocate_exact_size(
+                        egui::vec2(tokens.info_bar_width, 18.0),
+                        egui::Sense::hover(),
+                    );
+                    ui.painter().rect_filled(
+                        bar,
+                        egui::CornerRadius::same(tokens.info_bar_radius),
+                        color(tokens.info_accent),
+                    );
+                    ui.add(egui::Label::new(text).wrap());
+                });
+                if prompt.kind != "connect" && prompt.folder != prompt.path {
+                    ui.colored_label(
+                        color(tokens.text_dim),
+                        format!("\"Allow this folder\" allows {}", shown(&prompt.folder)),
+                    );
+                }
+                ui.add_space(tokens.inset * 0.5);
+                ui.horizontal_wrapped(|ui| {
+                    for (label, answer) in &buttons {
+                        let button = ui.button(*label);
+                        hits.push(((*label).to_string(), button.rect));
+                        if button.clicked() {
+                            chosen = Some(*answer);
+                        }
+                    }
+                });
+            });
+        self.agents.prompt_hits = hits;
+        if let Some(answer) = chosen {
+            self.answer_agent_prompt(prompt.id, answer);
+        }
+        // The host times a prompt out; looked at again now and then.
+        ctx.request_repaint_after(std::time::Duration::from_millis(500));
     }
 
     /// The clock the pill reads (milliseconds since the epoch); `None`
@@ -392,6 +519,29 @@ impl Shell {
         hits.push(("document-folder".to_string(), check.rect));
         if check.changed() {
             self.request_agents_document_folder(document);
+        }
+        // The folders the person allowed when an agent asked: each can be
+        // taken back.
+        for root in status
+            .roots
+            .iter()
+            .filter(|root| root.from == "allowed" || root.from == "session")
+        {
+            ui.horizontal_wrapped(|ui| {
+                let note = if root.from == "session" {
+                    " (this session)"
+                } else {
+                    ""
+                };
+                ui.colored_label(dim, format!("Also {}{note}", shown_path(&root.path, home)));
+                let remove = ui
+                    .small_button("Remove")
+                    .on_hover_text("Agents may no longer read and write files there");
+                hits.push((format!("remove:{}", root.path), remove.rect));
+                if remove.clicked() {
+                    self.request_agents_revoke(&root.path);
+                }
+            });
         }
         hits
     }
@@ -718,6 +868,7 @@ mod tests {
             since_ms: 1_000,
             last_command: command.map(str::to_string),
             last_ms: at,
+            cwd: None,
         }
     }
 

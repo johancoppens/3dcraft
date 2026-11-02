@@ -51,8 +51,15 @@ pub struct BridgeConfig {
     /// been quiet for a while.
     pub client: Option<String>,
     pub connect_timeout: Duration,
-    /// How long one message may take in the app (a large regeneration).
+    /// How long one message may take in the app (a large regeneration,
+    /// or the person's answer to a prompt: the window waits two minutes
+    /// for that, so this is longer).
     pub reply_timeout: Duration,
+    /// The folder the MCP client works in (this process's working folder,
+    /// as the client starts the bridge there), absolute with its links
+    /// resolved; sent in `auth`, so the window can ask the person whether
+    /// the agent may read and write files there.
+    pub cwd: Option<PathBuf>,
 }
 
 impl BridgeConfig {
@@ -70,7 +77,11 @@ impl BridgeConfig {
             window,
             client: Some(format!("MCP bridge (process {})", std::process::id())),
             connect_timeout: Duration::from_secs(3),
-            reply_timeout: Duration::from_secs(120),
+            reply_timeout: Duration::from_secs(330),
+            cwd: std::env::current_dir()
+                .ok()
+                .and_then(|dir| std::fs::canonicalize(dir).ok())
+                .map(craft3d_engine::plain),
         }
     }
 }
@@ -277,6 +288,11 @@ fn call(
     let mut auth = json!({ "token": target.token });
     if let (Some(client), Value::Object(params)) = (&config.client, &mut auth) {
         params.insert("client".to_string(), Value::String(client.clone()));
+    }
+    if let (Some(cwd), Value::Object(params)) =
+        (config.cwd.as_ref().and_then(|c| c.to_str()), &mut auth)
+    {
+        params.insert("cwd".to_string(), Value::String(cwd.to_string()));
     }
     send(
         &mut stream,

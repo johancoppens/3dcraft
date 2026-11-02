@@ -1013,6 +1013,7 @@ fn the_window_pumps_the_same_channel_between_frames() {
             .send(Request {
                 line: line.to_string(),
                 reply,
+                origin: None,
             })
             .unwrap();
         replies.push(answer);
@@ -1034,6 +1035,7 @@ fn the_window_pumps_the_same_channel_between_frames() {
         .send(Request {
             line: r#"{"id": 3, "method": "ui.get"}"#.to_string(),
             reply,
+            origin: None,
         })
         .unwrap();
     assert_eq!(host.pump(&incoming), 1);
@@ -1045,6 +1047,7 @@ fn the_window_pumps_the_same_channel_between_frames() {
             .send(Request {
                 line: r#"{"id": 4, "method": "methods"}"#.to_string(),
                 reply,
+                origin: None,
             })
             .unwrap();
     }

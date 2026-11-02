@@ -92,6 +92,7 @@ fn the_pill_opens_the_popover_with_the_start_screens_controls() {
         since_ms: 1,
         last_command: Some("feature.edit".to_string()),
         last_ms: 2,
+        cwd: None,
     }]));
     let mut window = Window::sized(1400.0, 900.0);
     for _ in 0..3 {
@@ -212,6 +213,7 @@ fn the_pill_and_the_popover_fit_small_windows() {
             since_ms: 1,
             last_command: Some("feature.edit".to_string()),
             last_ms: 1_000,
+            cwd: None,
         }]));
         // Doing something now: the longest label.
         shell.set_agents_clock(Some(1_200));
