@@ -186,6 +186,16 @@ watching**.
 > shortcut (a symbolic link) that leads out of those folders. Everything you open or save yourself from
 > the File menu stays yours to choose.
 
+**3DCraft asks you first.** When your AI tool connects from a project folder (Claude Code opened in
+`~/projects/bracket`, say), 3DCraft asks: *"Claude Code is connected and works in ~/projects/bracket.
+May it read and write files there?"*. **Allow** remembers that folder (it appears in the panel, where
+**Remove** takes it back), **This session only** allows it until you close 3DCraft, **No** keeps it out.
+Then "make a new document with a 10 mm cube and save it in our folder" just works. When the agent wants
+a file anywhere else, 3DCraft shows the full path, *"Claude Code wants to save to …"*, with **Allow
+once**, **Allow this folder** and **Deny**; the agent waits for you (up to two minutes) and is told when
+you say no. Only you can answer these questions: the agent cannot answer them for itself. 3DCraft never
+offers your home folder itself, the folders of your keys and settings, or the system's folders.
+
 If no window allows agents, the agent's requests get an answer that says to turn on **Allow AI agents**,
 and it can carry on as soon as you do. With several 3DCraft windows open, the agent works in the one you
 used last (click into it before you ask).
