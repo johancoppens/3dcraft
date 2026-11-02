@@ -60,6 +60,10 @@ pub struct AgentsConfig {
     pub command_line: Option<(Access, Access)>,
     /// The person's home folder, to show paths beneath it with `~`.
     pub home: Option<String>,
+    /// What is never offered to an agent (`consent.rs`): the home folder,
+    /// keys and settings, the system; the state folder is added to it
+    /// whatever is given here.
+    pub protected: Protected,
     /// The process id the discovery entry goes under.
     pub pid: u32,
 }
@@ -95,6 +99,7 @@ impl AgentsConfig {
             work_folder: crate::places::suggested_work_folder(env).map(PathBuf::from),
             command_line,
             home: home.filter(|home| !home.is_empty()),
+            protected: Protected::from_env(env, options.state_dir.as_deref()),
             pid: std::process::id(),
         }
     }
@@ -143,8 +148,6 @@ pub struct Agents {
     focused_at: u64,
     /// Folders allowed for this run (This session only).
     session_folders: Vec<PathBuf>,
-    /// Folders allowed for one command (Allow once), until it ran.
-    once_folders: Vec<PathBuf>,
     /// The questions waiting for the person, oldest first.
     prompts: Vec<Pending>,
     next_prompt: u64,
@@ -154,8 +157,13 @@ pub struct Agents {
     protected: Protected,
 }
 
-/// Most questions waiting for the person at once.
+/// Most questions waiting for the person at once, and per client.
 pub const MAX_PROMPTS: usize = 32;
+pub const MAX_PROMPTS_PER_CLIENT: usize = 4;
+/// How long a connect question stays when nobody answers it.
+pub const CONNECT_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
+/// Most clients remembered as asked about (then the list starts again).
+const MAX_ASKED: usize = 1024;
 
 /// A question waiting for the person.
 #[derive(Clone, Debug)]
@@ -168,8 +176,10 @@ pub struct Pending {
 /// What the person's answer means for the request that waited.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Verdict {
-    /// Run it (its folder allowed, for once or for good).
+    /// Run it (its folder allowed from now on).
     Run,
+    /// Run it with this one file allowed, in this direction, for it alone.
+    Once { file: PathBuf, write: bool },
     /// Refuse it, with this reason.
     Refuse(String),
 }
@@ -182,6 +192,13 @@ impl Agents {
             .map(discovery::read_preferences)
             .unwrap_or_default();
         let current = config.base_workspace();
+        // The state folder (the token, the remembered choices) is never
+        // offered, whatever the configuration says.
+        let mut protected = config.protected.clone();
+        if let Some(state) = &config.state_dir {
+            protected.state =
+                Some(craft3d_engine::canonical(state).unwrap_or_else(|_| state.clone()));
+        }
         Self {
             config,
             requests,
@@ -200,24 +217,11 @@ impl Agents {
             started_at: discovery::now_ms(),
             focused_at: 0,
             session_folders: Vec::new(),
-            once_folders: Vec::new(),
             prompts: Vec::new(),
             next_prompt: 1,
             asked: BTreeSet::new(),
-            protected: Protected::default(),
+            protected,
         }
-    }
-
-    /// What is never offered to an agent (`consent.rs`); the state folder
-    /// is added to it.
-    #[must_use]
-    pub fn with_protected(mut self, mut protected: Protected) -> Self {
-        if let Some(state) = &self.config.state_dir {
-            protected.state =
-                Some(craft3d_engine::canonical(state).unwrap_or_else(|_| state.clone()));
-        }
-        self.protected = protected;
-        self
     }
 
     /// True while the person's switch lets agents in: only then is the
@@ -264,7 +268,13 @@ impl Agents {
             if self.asked.contains(&key) || self.prompts.len() >= MAX_PROMPTS {
                 continue;
             }
+            if self.asked.len() >= MAX_ASKED {
+                self.asked.clear();
+            }
             self.asked.insert(key);
+            if cwd.to_string_lossy().chars().any(crate::consent::deceptive) {
+                continue;
+            }
             let Ok(folder) = craft3d_engine::canonical(&cwd) else {
                 continue;
             };
@@ -281,6 +291,7 @@ impl Agents {
                 client: client.name,
                 path: text.clone(),
                 folder: text,
+                file_name: String::new(),
                 command: None,
             });
         }
@@ -308,9 +319,14 @@ impl Agents {
         }
         // Bounded: a flood of requests is refused, not queued for the
         // person.
-        if self.prompts.len() >= MAX_PROMPTS {
+        let theirs = self
+            .prompts
+            .iter()
+            .filter(|p| p.prompt.client == origin.name)
+            .count();
+        if self.prompts.len() >= MAX_PROMPTS || theirs >= MAX_PROMPTS_PER_CLIENT {
             return Err(format!(
-                "{MAX_PROMPTS} requests already wait for the person to answer in the 3DCraft window; wait for those first"
+                "requests already wait for the person to answer in the 3DCraft window ({theirs} of yours, at most {MAX_PROMPTS_PER_CLIENT}); wait for those first"
             ));
         }
         for want in wanted {
@@ -322,6 +338,14 @@ impl Agents {
             if resolved.is_ok() {
                 continue;
             }
+            // A name that could read as something else in the dialog (a
+            // line break, a direction override) is never asked about.
+            if want.path.chars().any(crate::consent::deceptive) {
+                return Err(format!(
+                    "{}: the path holds a control, direction or invisible character; 3DCraft does not ask the person about such a path (rename it)",
+                    want.command
+                ));
+            }
             let Some(folder) = crate::consent::folder_of(want) else {
                 continue;
             };
@@ -331,12 +355,17 @@ impl Agents {
                     want.command, want.path
                 ));
             }
+            let file_name = Path::new(&want.path)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
             let id = self.push_prompt(AgentPrompt {
                 id: 0,
                 kind: if want.write { "write" } else { "read" }.to_string(),
                 client: origin.name.clone(),
                 path: want.path.clone(),
                 folder: folder.to_string_lossy().into_owned(),
+                file_name,
                 command: Some(want.command.clone()),
             });
             return Ok(Some(id));
@@ -364,7 +393,8 @@ impl Agents {
                     self.session_folders.push(folder);
                 }
             }
-            PromptAnswer::Once if !connect => self.once_folders.push(folder),
+            // Once: the file for that request only, given to it alone by
+            // the desk (`Verdict::Once`); nothing here changes.
             PromptAnswer::Once | PromptAnswer::Deny => {}
         }
         self.recompute();
@@ -373,6 +403,10 @@ impl Agents {
         }
         Some(match answer {
             PromptAnswer::Deny => Verdict::Refuse(denied(&prompt)),
+            PromptAnswer::Once => Verdict::Once {
+                file: PathBuf::from(&prompt.path),
+                write: prompt.kind == "write",
+            },
             _ => Verdict::Run,
         })
     }
@@ -382,11 +416,16 @@ impl Agents {
     pub fn expire(&mut self, now: Instant) -> Vec<(u64, String)> {
         let mut gone = Vec::new();
         self.prompts.retain(|pending| {
-            let late = now.saturating_duration_since(pending.asked) >= crate::consent::PROMPT_WAIT;
-            if late && pending.prompt.kind != "connect" {
+            let waited = now.saturating_duration_since(pending.asked);
+            if pending.prompt.kind == "connect" {
+                // A connect question nobody answered goes quietly.
+                return waited < CONNECT_WAIT;
+            }
+            let late = waited >= crate::consent::PROMPT_WAIT;
+            if late {
                 gone.push((pending.prompt.id, denied(&pending.prompt)));
             }
-            !late || pending.prompt.kind == "connect"
+            !late
         });
         gone
     }
@@ -398,19 +437,6 @@ impl Agents {
             .filter(|p| p.prompt.kind != "connect")
             .map(|p| p.asked + crate::consent::PROMPT_WAIT)
             .min()
-    }
-
-    /// Takes back the folders allowed for one command.
-    pub fn clear_once(&mut self) {
-        if !self.once_folders.is_empty() {
-            self.once_folders.clear();
-            self.recompute();
-        }
-    }
-
-    /// True while a folder is allowed for one command.
-    pub fn has_once(&self) -> bool {
-        !self.once_folders.is_empty()
     }
 
     /// The person took a folder back (Remove).
@@ -483,7 +509,13 @@ impl Agents {
         }
         let checked = std::path::absolute(folder)
             .map_err(|e| format!("`{}`: cannot use this folder: {e}", folder.display()))
-            .and_then(|folder| usable_folder(&folder).map(|_| folder));
+            .and_then(|folder| {
+                let real = usable_folder(&folder)?;
+                match self.protected.reason(&real) {
+                    Some(why) => Err(format!("3DCraft never gives agents this folder: {why}")),
+                    None => Ok(folder),
+                }
+            });
         let folder = match checked {
             Ok(folder) => folder,
             Err(e) => {
@@ -566,7 +598,15 @@ impl Agents {
                 }
                 None => {
                     if let Some(folder) = self.chosen_folder() {
-                        match usable_folder(&folder) {
+                        let usable = usable_folder(&folder).and_then(|real| {
+                            match self.protected.reason(&real) {
+                                Some(why) => {
+                                    Err(format!("3DCraft never gives agents this folder: {why}"))
+                                }
+                                None => Ok(real),
+                            }
+                        });
+                        match usable {
                             Ok(real) => {
                                 roots.push(entry(&real, "chosen", true, true));
                                 read.push(real.clone());
@@ -584,10 +624,12 @@ impl Agents {
             for (folders, from) in [
                 (self.preferences.folders.clone(), "allowed"),
                 (self.session_folders.clone(), "session"),
-                (self.once_folders.clone(), "once"),
             ] {
                 for folder in folders {
-                    if !folder.is_dir() || roots.iter().any(|r| Path::new(&r.path) == folder) {
+                    if !folder.is_dir()
+                        || roots.iter().any(|r| Path::new(&r.path) == folder)
+                        || self.protected.reason(&folder).is_some()
+                    {
                         continue;
                     }
                     roots.push(entry(&folder, from, true, true));
@@ -597,6 +639,7 @@ impl Agents {
             }
             if self.preferences.document_folder
                 && let Some(document) = &self.document
+                && self.protected.reason(document).is_none()
             {
                 roots.push(entry(document, "document", true, true));
                 read.push(document.clone());
@@ -868,6 +911,7 @@ mod tests {
             work_folder: None,
             command_line: None,
             home: None,
+            protected: Protected::default(),
             pid: std::process::id(),
         }
     }
@@ -1516,11 +1560,11 @@ mod tests {
         let mut config = config(&state.join("craft"));
         config.work_folder = Some(state.join("Documents").join("3DCraft"));
         let (requests, incoming) = mpsc::channel();
-        let protected = crate::consent::Protected {
+        config.protected = crate::consent::Protected {
             home: Some(state.join("home")),
             ..crate::consent::Protected::default()
         };
-        let agents = Agents::new(config, requests, Arc::new(|| {})).with_protected(protected);
+        let agents = Agents::new(config, requests, Arc::new(|| {}));
         let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
         let mut desk = Desk::new(Host::new(Session::new(Workspace::none())), incoming, picker)
             .with_agents(agents);
@@ -2031,6 +2075,7 @@ mod tests {
             key: "k".to_string(),
             name: "Claude Code".to_string(),
             cwd: None,
+            grant: None,
         };
         let want = |n: usize| Wanted {
             command: "file.export".to_string(),

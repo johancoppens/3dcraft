@@ -123,21 +123,9 @@ impl Bridge {
                     return Ok(chosen.clone());
                 }
                 let live = crate::discovery::live_entries(folder, None);
-                let entry = match crate::discovery::choose(&live, *port) {
-                    Ok(entry) => entry,
-                    // A port given, and no entry for it (a window started
-                    // with a state folder of its own): the default token.
-                    Err(why) => match port {
-                        Some(port) => crate::discovery::WindowEntry {
-                            pid: 0,
-                            port: *port,
-                            token_file: crate::discovery::default_token_file(folder),
-                            focused_at: 0,
-                            started_at: 0,
-                        },
-                        None => return Err(why),
-                    },
-                };
+                // A port with no entry is not a window that allows agents:
+                // the token is offered to no program but a discovered one.
+                let entry = crate::discovery::choose(&live, *port)?;
                 let token = crate::discovery::read_token(&entry.token_file)?;
                 let target = Target {
                     address: SocketAddr::from((Ipv4Addr::LOCALHOST, entry.port)),
@@ -285,7 +273,43 @@ fn call(
     stream.set_write_timeout(Some(timeout)).map_err(timed)?;
     let _ = stream.set_nodelay(true);
     let mut reader = BufReader::new(stream.try_clone().map_err(timed)?);
-    let mut auth = json!({ "token": target.token });
+    // The window proves it holds the token first; the token itself never
+    // crosses the socket (`proof.rs`).
+    let ours = crate::proof::nonce().map_err(Failure::Other)?;
+    send(
+        &mut stream,
+        &json!({ "id": 0, "method": "challenge", "params": { "nonce": ours } }),
+    )
+    .map_err(Failure::Other)?;
+    let not_the_window = |why: &str| {
+        Failure::Other(format!(
+            "the program at {at} is not the 3DCraft window that holds this token ({why}); nothing was sent to it"
+        ))
+    };
+    let answer = receive(&mut reader)
+        .map_err(Failure::Other)?
+        .map_err(|reason| not_the_window(&reason))?;
+    let theirs = answer
+        .get("nonce")
+        .and_then(Value::as_str)
+        .filter(|nonce| crate::proof::is_nonce(nonce))
+        .ok_or_else(|| not_the_window("it gave no nonce"))?;
+    let shown = answer
+        .get("proof")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let expected = crate::proof::proof(&target.token, crate::proof::WINDOW, &ours, theirs);
+    if !crate::proof::same(shown, &expected) {
+        let hint = if fixed {
+            "; give the bridge the token file the window was started with"
+        } else {
+            ""
+        };
+        return Err(not_the_window(&format!("its proof does not match{hint}")));
+    }
+    let mut auth = json!({
+        "proof": crate::proof::proof(&target.token, crate::proof::CLIENT, theirs, &ours)
+    });
     if let (Some(client), Value::Object(params)) = (&config.client, &mut auth) {
         params.insert("client".to_string(), Value::String(client.clone()));
     }
@@ -296,17 +320,12 @@ fn call(
     }
     send(
         &mut stream,
-        &json!({ "id": 0, "method": "auth", "params": auth }),
+        &json!({ "id": 1, "method": "auth", "params": auth }),
     )
     .map_err(Failure::Other)?;
     if let Err(reason) = receive(&mut reader).map_err(Failure::Other)? {
-        let hint = if fixed {
-            "; give the bridge the token file the window was started with"
-        } else {
-            ""
-        };
         return Err(Failure::Other(format!(
-            "the 3DCraft window at {at} refused the control token ({reason}){hint}"
+            "the 3DCraft window at {at} refused this agent ({reason})"
         )));
     }
     send(&mut stream, request).map_err(Failure::Other)?;

@@ -732,6 +732,17 @@ pub struct Feature {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub when: Option<String>,
     pub kind: FeatureKind,
+    /// The AI agent that made it (the name its client gave); absent when
+    /// the person did. Since format 63.
+    #[serde(default, rename = "madeBy", skip_serializing_if = "Option::is_none")]
+    pub made_by: Option<String>,
+    /// The AI agent that changed it last. Since format 63.
+    #[serde(
+        default,
+        rename = "lastChangedBy",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub last_changed_by: Option<String>,
 }
 
 /// How a primitive is turned: `axis` is the direction of its local z axis

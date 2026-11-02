@@ -78,6 +78,7 @@ pub fn load_or_create(path: &Path) -> Result<String, String> {
         Ok(text) => {
             let token = text.trim();
             if is_token(token) {
+                craft3d_automation::discovery::check_private(path)?;
                 Ok(token.to_ascii_lowercase())
             } else {
                 Err(format!(
@@ -114,6 +115,7 @@ fn load_existing(path: &Path) -> Result<String, String> {
         .map_err(|e| format!("cannot read the control token file `{shown}`: {e}"))?;
     let token = text.trim();
     if is_token(token) {
+        craft3d_automation::discovery::check_private(path)?;
         Ok(token.to_ascii_lowercase())
     } else {
         Err(format!(
@@ -186,6 +188,14 @@ mod tests {
         let path = dir.join("t");
         let token = "0123456789ABCDEF".repeat(4);
         std::fs::write(&path, format!("  {token}\r\n")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // Readable by others: refused (2026-11-02), until made private.
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(load_or_create(&path).unwrap_err().contains("other users"));
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
         assert_eq!(load_or_create(&path).unwrap(), token.to_ascii_lowercase());
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -1350,6 +1350,12 @@ fn mcp_bridge_checks_its_flags_and_reports_a_window_that_is_not_there() {
     let dir = workdir("bridge");
     let token = path(&dir, "control.token");
     std::fs::write(&token, format!("{}\n", "ab".repeat(32))).unwrap();
+    // Private, as a token file must be.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
     let request = r#"{"jsonrpc":"2.0","id":4,"method":"tools/list"}"#;
     let notification = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
     let input = format!("{request}\n{notification}\n{request}\n");
@@ -1415,9 +1421,14 @@ fn mcp_bridge_checks_its_flags_and_reports_a_window_that_is_not_there() {
         Some(&input),
     )
     .ok();
+    // A port with no entry is no window that allows agents: no token is
+    // offered to whatever listens there.
     for reply in &on_port.json_lines() {
         let message = reply["error"]["message"].as_str().unwrap();
-        assert!(message.contains("control token file"), "{message}");
+        assert!(
+            message.contains(&format!("listens on port {port}")),
+            "{message}"
+        );
     }
     for (args, code, word) in [
         (

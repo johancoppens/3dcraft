@@ -1544,7 +1544,12 @@ fn the_bridge_tells_the_agent_when_the_window_cannot_be_used() {
     assert_eq!(replies.len(), 1);
     assert_eq!(replies[0]["id"], "a");
     let message = replies[0]["error"]["message"].as_str().unwrap();
-    assert!(message.contains("refused the control token"), "{message}");
+    // Since 2026-11-02 the window proves it holds the token first: with
+    // another token its proof does not match, and nothing is sent.
+    assert!(
+        message.contains("holds this token") && message.contains("nothing was sent"),
+        "{message}"
+    );
     // Nothing reached the session's thread.
     assert_eq!(rig.dispatched.load(Ordering::SeqCst), 0);
 

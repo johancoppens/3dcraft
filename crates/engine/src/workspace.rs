@@ -17,6 +17,10 @@ pub enum Access {
     /// relative path is beneath the first; an absolute one beneath the
     /// first that holds it. Made with [`Access::from_roots`].
     Roots(Vec<PathBuf>),
+    /// `base`, and this one file as well (2026-11-02: the person allowed it
+    /// once, for one request, `Workspace::with_file`). Only that absolute
+    /// path, spelled as given, with no link in its folder or as itself.
+    Grant { base: Box<Access>, file: PathBuf },
     /// Any path: for a trusted local user at the command line.
     Unrestricted,
     /// The session's own files in memory ([`crate::Session::put_file`],
@@ -33,6 +37,7 @@ impl Access {
         match self {
             Access::Root(root) => vec![root.as_path()],
             Access::Roots(roots) => roots.iter().map(PathBuf::as_path).collect(),
+            Access::Grant { base, .. } => base.roots(),
             Access::None | Access::Unrestricted | Access::Memory => Vec::new(),
         }
     }
@@ -75,6 +80,26 @@ impl Workspace {
         Self {
             read: Access::Unrestricted,
             write: Access::Unrestricted,
+        }
+    }
+
+    /// This workspace with one more file, in one direction: what "Allow
+    /// this file once" gives the one request it was asked for.
+    pub fn with_file(&self, file: &Path, write: bool) -> Workspace {
+        let grant = |base: &Access| Access::Grant {
+            base: Box::new(base.clone()),
+            file: file.to_path_buf(),
+        };
+        if write {
+            Workspace {
+                read: self.read.clone(),
+                write: grant(&self.write),
+            }
+        } else {
+            Workspace {
+                read: grant(&self.read),
+                write: self.write.clone(),
+            }
         }
     }
 
@@ -220,6 +245,12 @@ fn resolve(access: &Access, path: &str, direction: &str) -> Result<PathBuf, Comm
             "this session has no {direction} access to files; start it with a {direction} root to allow `{path}`"
         ))),
         Access::Root(root) => beneath(root, path, direction),
+        Access::Grant { base, file } => {
+            if Path::new(path) == file.as_path() && granted_file(file) {
+                return Ok(file.clone());
+            }
+            resolve(base, path, direction)
+        }
         Access::Roots(roots) => {
             let Some(first) = roots.first() else {
                 return Err(CommandError::new(format!(
@@ -259,6 +290,22 @@ fn resolve(access: &Access, path: &str, direction: &str) -> Result<PathBuf, Comm
             checked_join(&PathBuf::new(), Path::new(path), path, direction)
         }
     }
+}
+
+/// Whether a file granted once is still the file the person was shown:
+/// absolute, without `..`, its folder spelled as its resolved spelling (no
+/// link on the way) and not itself a link.
+fn granted_file(file: &Path) -> bool {
+    let plain = file.is_absolute()
+        && !file
+            .components()
+            .any(|c| matches!(c, Component::ParentDir | Component::CurDir));
+    let Some(folder) = file.parent() else {
+        return false;
+    };
+    let folder_real = canonical(folder).is_ok_and(|real| real == folder);
+    let not_link = std::fs::symlink_metadata(file).map_or(true, |m| !m.file_type().is_symlink());
+    plain && folder_real && not_link
 }
 
 /// `path` beneath the one directory `root` ([`resolve`]).
@@ -370,8 +417,23 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), CommandError
     temp_name.push(format!(".{}.tmp", std::process::id()));
     let temp = path.with_file_name(temp_name);
     let result = (|| {
-        let mut file =
-            std::fs::File::create(&temp).map_err(|e| fail("create a temporary file for", e))?;
+        // A new file, never through a link someone put there; a file
+        // left by an earlier run of this process id is taken away first
+        // (removing a link removes the link, not what it points to).
+        let open = || {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp)
+        };
+        let mut file = match open() {
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                std::fs::remove_file(&temp).map_err(|e| fail("create a temporary file for", e))?;
+                open()
+            }
+            other => other,
+        }
+        .map_err(|e| fail("create a temporary file for", e))?;
         file.write_all(bytes).map_err(|e| fail("write", e))?;
         file.sync_all().map_err(|e| fail("write", e))?;
         std::fs::rename(&temp, path).map_err(|e| fail("replace", e))
@@ -692,5 +754,58 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    /// A file allowed once: that file only, in that direction only.
+    #[test]
+    fn a_file_allowed_once_is_that_file_only() {
+        let (root, _) = real_root("once-root");
+        let (other, _) = real_root("once-other");
+        let file = other.join("part.stl");
+        let workspace = Workspace {
+            read: Access::Root(root.clone()),
+            write: Access::Root(root.clone()),
+        }
+        .with_file(&file, true);
+        assert_eq!(
+            workspace.resolve_write(file.to_str().unwrap()).unwrap(),
+            file
+        );
+        assert!(
+            workspace.resolve_read(file.to_str().unwrap()).is_err(),
+            "write only"
+        );
+        assert!(
+            workspace
+                .resolve_write(other.join("else.stl").to_str().unwrap())
+                .is_err()
+        );
+        assert!(
+            workspace
+                .resolve_write(&format!(
+                    "{}/../{}/part.stl",
+                    other.display(),
+                    other.file_name().unwrap().to_str().unwrap()
+                ))
+                .is_err()
+        );
+        assert_eq!(
+            workspace.resolve_write("x.stl").unwrap(),
+            root.join("x.stl"),
+            "the roots stay"
+        );
+        assert_eq!(workspace.write.roots(), [root.as_path()]);
+        #[cfg(unix)]
+        {
+            let link = other.join("link.stl");
+            std::os::unix::fs::symlink(root.join("a.3dcraft"), &link).unwrap();
+            let through = Workspace::none().with_file(&link, false);
+            assert!(
+                through.resolve_read(link.to_str().unwrap()).is_err(),
+                "a link is not the file"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&other);
     }
 }

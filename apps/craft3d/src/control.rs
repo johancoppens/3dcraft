@@ -23,6 +23,7 @@
 
 use crate::host::Request;
 use crate::token;
+use craft3d_automation::proof;
 use craft3d_automation::{Line, MAX_REQUEST_BYTES, read_line, rpc};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -82,6 +83,10 @@ struct Shared {
     stopping: AtomicBool,
     clients: Mutex<Clients>,
 }
+
+/// Most clients that named themselves kept at once, and most names sent
+/// away.
+const MAX_CLIENTS: usize = 256;
 
 /// One connection being served.
 struct Open {
@@ -204,9 +209,13 @@ fn send_line(stream: &mut TcpStream, reply: &str) -> std::io::Result<()> {
 
 /// The reply to a connection's first request, whether it let it in, and
 /// the name the client gave.
-fn authenticate(line: &str, expected: &str) -> (bool, String, Option<String>) {
+fn authenticate(
+    line: &str,
+    expected: &str,
+    challenge: Option<&(String, String)>,
+) -> (bool, String, Option<String>) {
     let refuse = |id: &Value, why: &str| (false, rpc::error_reply(id, why), None);
-    let first = r#"the first request must be {"id": ..., "method": "auth", "params": {"token": "<the control token>"}}"#;
+    let first = r#"the first request must be {"id": ..., "method": "auth", "params": {"token": "<the control token>"}}, or a challenge first (docs/control-protocol.md, "Authentication")"#;
     let Ok(Value::Object(request)) = serde_json::from_str::<Value>(line) else {
         return refuse(&Value::Null, &format!("not authenticated: {first}"));
     };
@@ -214,19 +223,66 @@ fn authenticate(line: &str, expected: &str) -> (bool, String, Option<String>) {
     if request.get("method").and_then(Value::as_str) != Some("auth") {
         return refuse(id, &format!("not authenticated: {first}"));
     }
-    let given = request
-        .get("params")
-        .and_then(|params| params.get("token"))
-        .and_then(Value::as_str);
-    match given {
-        Some(given) if token::matches(expected, given) => (
+    let params = request.get("params");
+    let text = |key: &str| params.and_then(|p| p.get(key)).and_then(Value::as_str);
+    let accepted = match (text("proof"), text("token"), challenge) {
+        // After a challenge: the proof, which only a holder of the token
+        // makes; the token itself never crosses the socket.
+        (Some(given), _, Some((theirs, ours))) => {
+            proof::same(given, &proof::proof(expected, proof::CLIENT, ours, theirs))
+        }
+        (Some(_), _, None) => {
+            return refuse(id, "auth: a proof needs a challenge first");
+        }
+        (None, Some(given), _) => token::matches(expected, given),
+        (None, None, _) => return refuse(id, &format!("auth: missing `token`; {first}")),
+    };
+    if accepted {
+        (
             true,
             rpc::ok_reply(id, &json!({ "authenticated": true })),
-            client_name(request.get("params")),
-        ),
-        Some(_) => refuse(id, "auth: wrong token"),
-        None => refuse(id, &format!("auth: missing `token`; {first}")),
+            client_name(params),
+        )
+    } else {
+        refuse(id, "auth: wrong token")
     }
+}
+
+/// The answer to `challenge {nonce}`: a nonce of the window's own and the
+/// window's proof over both, and the two nonces for the `auth` that
+/// follows; `Err` with the reply for anything else.
+fn answer_challenge(line: &str, token: &str) -> Result<(String, (String, String)), String> {
+    let request: Value = serde_json::from_str(line).unwrap_or(Value::Null);
+    let id = request.get("id").cloned().unwrap_or(Value::Null);
+    let theirs = request
+        .get("params")
+        .and_then(|p| p.get("nonce"))
+        .and_then(Value::as_str)
+        .filter(|nonce| proof::is_nonce(nonce))
+        .ok_or_else(|| {
+            rpc::error_reply(
+                &id,
+                "challenge: `nonce` must be 32 to 128 hexadecimal characters",
+            )
+        })?;
+    let ours = proof::nonce().map_err(|e| rpc::error_reply(&id, &format!("challenge: {e}")))?;
+    let reply = rpc::ok_reply(
+        &id,
+        &json!({ "nonce": ours, "proof": proof::proof(token, proof::WINDOW, theirs, &ours) }),
+    );
+    Ok((reply, (theirs.to_ascii_lowercase(), ours)))
+}
+
+fn is_challenge(line: &str) -> bool {
+    serde_json::from_str::<Value>(line)
+        .ok()
+        .and_then(|request| {
+            request
+                .get("method")
+                .and_then(Value::as_str)
+                .map(|m| m == "challenge")
+        })
+        .unwrap_or(false)
 }
 
 /// Hands a line to the session's thread and waits for its reply.
@@ -273,6 +329,19 @@ fn admit(
             return Err("auth: this agent was disconnected in the 3DCraft window; restart it to connect again (in Claude Code: /mcp, then reconnect)".to_string());
         }
         let now = Instant::now();
+        // Bounded: clients not heard from for a while are forgotten when
+        // the list is full; a list full of active ones takes no more.
+        if clients.seen.len() >= MAX_CLIENTS && !clients.seen.contains_key(name) {
+            let quiet = shared.config.active_for;
+            clients
+                .seen
+                .retain(|_, seen| now.saturating_duration_since(seen.last) <= quiet);
+            if clients.seen.len() >= MAX_CLIENTS {
+                return Err(format!(
+                    "auth: {MAX_CLIENTS} agents are connected already; disconnect some in the 3DCraft window"
+                ));
+            }
+        }
         clients
             .seen
             .entry(name.clone())
@@ -357,7 +426,7 @@ fn what_it_does(line: &str) -> (Option<String>, Option<String>) {
 /// characters.
 fn clean(text: &str) -> String {
     text.chars()
-        .filter(|c| !c.is_control())
+        .filter(|c| !crate::consent::deceptive(*c))
         .take(60)
         .collect::<String>()
         .trim()
@@ -374,11 +443,13 @@ fn origin_of(shared: &Shared, client: Option<&String>) -> Option<crate::consent:
                 key: key.clone(),
                 name: seen.name.clone().unwrap_or_else(|| key.clone()),
                 cwd: seen.cwd.clone(),
+                grant: None,
             },
             None => crate::consent::Origin {
                 key: String::new(),
                 name: "An agent".to_string(),
                 cwd: None,
+                grant: None,
             },
         },
     )
@@ -447,6 +518,8 @@ fn serve(stream: TcpStream, shared: &Shared) {
     let mut input = BufReader::new(stream);
     let mut authenticated = false;
     let mut client: Option<String> = None;
+    // The nonces of a challenge (the client's, the window's).
+    let mut challenge: Option<(String, String)> = None;
     loop {
         if shared.stopping.load(Ordering::SeqCst) {
             break;
@@ -460,8 +533,24 @@ fn serve(stream: TcpStream, shared: &Shared) {
                 Ok(line) if line.trim().is_empty() => continue,
                 // A browser's request: nothing of it is read further.
                 Ok(line) if !authenticated && is_http(line) => break,
+                // One challenge, before `auth`: the window proves it holds
+                // the token before the client says anything that depends
+                // on it.
+                Ok(line) if !authenticated && challenge.is_none() && is_challenge(line) => {
+                    match answer_challenge(line, &shared.config.token) {
+                        Ok((reply, nonces)) => {
+                            challenge = Some(nonces);
+                            if send_line(&mut output, &reply).is_err() {
+                                break;
+                            }
+                            continue;
+                        }
+                        Err(reply) => Some(reply),
+                    }
+                }
                 Ok(line) if !authenticated => {
-                    let (accepted, reply, name) = authenticate(line, &shared.config.token);
+                    let (accepted, reply, name) =
+                        authenticate(line, &shared.config.token, challenge.as_ref());
                     if !accepted {
                         let _ = send_line(&mut output, &reply);
                         break;
@@ -693,6 +782,14 @@ impl ControlServer {
             .chain(clients.open.values().filter_map(|open| open.client.clone()))
             .collect();
         clients.dismissed.extend(names);
+        // Bounded: the oldest sent-away names are forgotten (BTreeSet:
+        // in name order, which is as good as any for a list this long).
+        while clients.dismissed.len() > MAX_CLIENTS {
+            let Some(first) = clients.dismissed.iter().next().cloned() else {
+                break;
+            };
+            clients.dismissed.remove(&first);
+        }
         clients.seen.clear();
         for open in clients.open.values() {
             let _ = open.stream.shutdown(Shutdown::Both);

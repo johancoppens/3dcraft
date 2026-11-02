@@ -2059,7 +2059,10 @@ impl FeatureKind {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Equal when what it makes is equal: who made or changed it
+/// ([`Feature::made_by`], [`Feature::last_changed_by`]) is not compared, so
+/// writing it down rebuilds nothing.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Feature {
     pub id: FeatureId,
     pub name: String,
@@ -2073,6 +2076,33 @@ pub struct Feature {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub when: Option<Expr>,
     pub kind: FeatureKind,
+    /// The AI agent that made it, by the name its client gave (`Claude
+    /// Code`); `None` when the person made it. Provenance, not geometry:
+    /// not compared, not regenerated (since format 63).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub made_by: Option<String>,
+    /// The AI agent that changed it last, likewise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_changed_by: Option<String>,
+}
+
+impl PartialEq for Feature {
+    fn eq(&self, other: &Self) -> bool {
+        let Feature {
+            id,
+            name,
+            suppressed,
+            when,
+            kind,
+            made_by: _,
+            last_changed_by: _,
+        } = self;
+        *id == other.id
+            && *name == other.name
+            && *suppressed == other.suppressed
+            && *when == other.when
+            && *kind == other.kind
+    }
 }
 
 impl Feature {
@@ -3025,6 +3055,8 @@ impl Document {
             suppressed: false,
             when: None,
             kind,
+            made_by: None,
+            last_changed_by: None,
         });
         Ok(id)
     }

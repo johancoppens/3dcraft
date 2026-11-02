@@ -1,6 +1,8 @@
 //! What agents did to a document (2026-11-02): one entry per command an
 //! agent ran, with who, when, what it made or changed, how it went and the
-//! intent the agent gave, newest last; and which agent made each feature.
+//! intent the agent gave, newest last. Which agent made and last changed
+//! each feature is written into the document itself (`Feature::made_by`,
+//! saved since format 63).
 //!
 //! Session state, per open document, like the selection: not saved in the
 //! `.3dcraft` file and not undone. A host says who is acting
@@ -64,19 +66,10 @@ impl Entry {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct AgentLog {
     entries: VecDeque<Entry>,
-    /// Which agent made each feature, and which changed it last.
-    made_by: BTreeMap<String, String>,
-    changed_by: BTreeMap<String, String>,
 }
 
 impl AgentLog {
     fn push(&mut self, entry: Entry) {
-        for id in &entry.created {
-            self.made_by.insert(id.clone(), entry.client.clone());
-        }
-        for id in &entry.changed {
-            self.changed_by.insert(id.clone(), entry.client.clone());
-        }
         if self.entries.len() >= MAX_ENTRIES {
             self.entries.pop_front();
         }
@@ -117,10 +110,30 @@ pub fn clean_intent(text: &str) -> Option<String> {
     Some(out)
 }
 
+/// A direction mark or override, or an invisible format character: left
+/// out of what is shown, so it cannot make a text read otherwise.
+fn invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}'
+            | '\u{061C}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{E0001}'
+            | '\u{E0020}'..='\u{E007F}'
+    )
+}
+
 /// One line of at most [`MAX_MESSAGE_CHARS`] characters.
 fn one_line(text: &str) -> String {
     let flat: String = text
         .chars()
+        .filter(|c| !invisible(*c))
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect();
     let flat = flat.trim();
@@ -172,10 +185,11 @@ const NOT_LOGGED: [&str; 10] = [
     "recovery.list",
 ];
 
-/// The active document's id and its features as they are.
-fn snapshot(session: &Session) -> Option<(u64, Vec<craft3d_doc::Feature>)> {
+/// The active document's id and the document as it is: a shared handle,
+/// nothing copied.
+fn snapshot(session: &Session) -> Option<(u64, std::sync::Arc<craft3d_doc::Document>)> {
     let open = session.document().ok()?;
-    Some((open.id, open.history.current().features.clone()))
+    Some((open.id, std::sync::Arc::clone(open.history.current())))
 }
 
 impl Session {
@@ -223,11 +237,13 @@ impl Session {
         let (mut created, mut changed) = (Vec::new(), Vec::new());
         if let (Some((was, old)), Some((is, new))) = (&before, &after)
             && was == is
+            && !std::sync::Arc::ptr_eq(old, new)
         {
-            for feature in new {
-                match old.iter().find(|f| f.id == feature.id) {
+            let old: BTreeMap<_, _> = old.features.iter().map(|f| (f.id, f)).collect();
+            for feature in &new.features {
+                match old.get(&feature.id) {
                     None => created.push(feature.id.to_string()),
-                    Some(previous) if previous != feature => changed.push(feature.id.to_string()),
+                    Some(previous) if *previous != feature => changed.push(feature.id.to_string()),
                     Some(_) => {}
                 }
             }
@@ -244,6 +260,22 @@ impl Session {
             intent: actor.intent,
         };
         if let Ok(open) = self.document_mut() {
+            // Who made or changed a feature goes into the document itself
+            // (saved since format 63), as no undo step of its own: the
+            // document makes the same bodies either way.
+            if !entry.created.is_empty() || !entry.changed.is_empty() {
+                let (created, changed, client) = (&entry.created, &entry.changed, &entry.client);
+                open.history.annotate(|doc| {
+                    for feature in &mut doc.features {
+                        let id = feature.id.to_string();
+                        if created.contains(&id) {
+                            feature.made_by = Some(client.clone());
+                        } else if changed.contains(&id) {
+                            feature.last_changed_by = Some(client.clone());
+                        }
+                    }
+                });
+            }
             open.agent_log.push(entry);
         }
         outcome
@@ -268,13 +300,10 @@ impl Session {
             .current()
             .features
             .iter()
-            .filter_map(|feature| {
-                let id = feature.id.to_string();
-                let made = log.made_by.get(&id);
-                let changed = log.changed_by.get(&id);
-                (made.is_some() || changed.is_some()).then(|| {
-                    json!({"id": id, "name": feature.name, "madeBy": made, "changedBy": changed})
-                })
+            .filter(|feature| feature.made_by.is_some() || feature.last_changed_by.is_some())
+            .map(|feature| {
+                json!({"id": feature.id.to_string(), "name": feature.name,
+                       "madeBy": feature.made_by, "changedBy": feature.last_changed_by})
             })
             .collect();
         json!({
@@ -317,6 +346,11 @@ mod tests {
         assert_eq!(
             clean_intent("a\u{0}b\u{1b}[31mc").as_deref(),
             Some("a b [31mc")
+        );
+        assert_eq!(
+            clean_intent("safe\u{202E}txt.exe\u{200B}").as_deref(),
+            Some("safetxt.exe"),
+            "no direction override, no invisible character"
         );
         assert_eq!(clean_intent(" \n\t "), None);
         assert_eq!(clean_intent(""), None);

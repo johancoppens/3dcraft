@@ -220,9 +220,64 @@ fn port_answers(port: u16, timeout: Duration) -> bool {
     TcpStream::connect_timeout(&address, timeout).is_ok()
 }
 
-/// Whether the window of an entry still listens.
+/// On Linux, whether the socket listening on 127.0.0.1:`port` belongs to
+/// process `pid` (from `/proc/net/tcp` and the process's open files);
+/// `None` where that cannot be told (another system, another user's
+/// process, no `/proc`).
+pub fn listener_belongs_to(pid: u32, port: u16) -> Option<bool> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let table = std::fs::read_to_string("/proc/net/tcp").ok()?;
+    let wanted = format!("0100007F:{port:04X}");
+    // Fields: sl local remote state ... uid timeout inode.
+    let inode = table.lines().skip(1).find_map(|line| {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let (local, state, inode) = (fields.get(1)?, fields.get(3)?, fields.get(9)?);
+        (*local == wanted && *state == "0A").then(|| inode.to_string())
+    })?;
+    let socket = format!("socket:[{inode}]");
+    let fds = std::fs::read_dir(format!("/proc/{pid}/fd")).ok()?;
+    Some(fds.filter_map(Result::ok).take(65_536).any(|fd| {
+        std::fs::read_link(fd.path()).is_ok_and(|target| target.as_os_str() == socket.as_str())
+    }))
+}
+
+/// Whether the window of an entry still listens: its process runs, its
+/// port answers and (on Linux, where it can be told) the listening socket
+/// is that process's.
 pub fn is_live(entry: &WindowEntry) -> bool {
-    process_may_run(entry.pid) && port_answers(entry.port, Duration::from_millis(500))
+    process_may_run(entry.pid)
+        && port_answers(entry.port, Duration::from_millis(500))
+        && listener_belongs_to(entry.pid, entry.port) != Some(false)
+}
+
+/// Refuses a token file that other users could read or that is not the
+/// person's own (on Unix): the token is only a secret while it is private.
+pub fn check_private(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let shown = path.display();
+        let meta = std::fs::metadata(path)
+            .map_err(|e| format!("cannot read the control token file `{shown}`: {e}"))?;
+        let mode = meta.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            return Err(format!(
+                "the control token file `{shown}` can be read or changed by other users (mode {mode:o}); make it private with `chmod 600` and try again"
+            ));
+        }
+        if let Ok(me) = std::fs::metadata("/proc/self").map(|m| m.uid())
+            && meta.uid() != me
+        {
+            return Err(format!(
+                "the control token file `{shown}` belongs to another user; 3DCraft uses only a token file of its own user"
+            ));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
 }
 
 /// The entries of windows that still listen; the files of the others
@@ -381,6 +436,7 @@ pub fn read_token(path: &Path) -> Result<String, String> {
     })?;
     let token = text.trim();
     if token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit()) {
+        check_private(path)?;
         Ok(token.to_ascii_lowercase())
     } else {
         Err(format!(
@@ -498,6 +554,30 @@ mod tests {
         let _ = std::fs::remove_dir_all(&folder);
     }
 
+    /// On Linux the listening socket is checked to be the entry's
+    /// process's: a port another process took is not the window.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_listener_of_another_process_is_not_the_window() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert_eq!(listener_belongs_to(std::process::id(), port), Some(true));
+        // Process 1 (init) does not hold our socket (or cannot be looked
+        // into: then it cannot be told).
+        assert_ne!(listener_belongs_to(1, port), Some(true));
+        let entry = WindowEntry {
+            pid: 1,
+            port,
+            token_file: std::path::absolute("t").unwrap(),
+            focused_at: 0,
+            started_at: 0,
+        };
+        if listener_belongs_to(1, port) == Some(false) {
+            assert!(!is_live(&entry));
+        }
+        drop(listener);
+    }
+
     #[test]
     fn the_bridge_picks_the_only_or_the_last_focused_window() {
         assert!(choose(&[], None).unwrap_err().contains("Allow AI agents"));
@@ -576,6 +656,18 @@ mod tests {
         assert!(read_token(&path).unwrap_err().contains("cannot read"));
         let token = "AB".repeat(32);
         std::fs::write(&path, format!("{token}\n")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // Readable by others: refused, whatever it holds.
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            let error = read_token(&path).unwrap_err();
+            assert!(
+                error.contains("other users") && error.contains("chmod 600"),
+                "{error}"
+            );
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
         assert_eq!(read_token(&path).unwrap(), token.to_ascii_lowercase());
         std::fs::write(&path, "secret").unwrap();
         let error = read_token(&path).unwrap_err();

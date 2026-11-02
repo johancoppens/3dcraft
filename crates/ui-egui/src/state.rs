@@ -390,8 +390,11 @@ pub struct AgentPrompt {
     pub client: String,
     /// The full path: the folder for `connect`, the file otherwise.
     pub path: String,
-    /// What "Allow this folder" grants (for `connect`, the path itself).
+    /// The folder: what "Always allow" grants (for `connect`, the path
+    /// itself); shown on a line of its own.
     pub folder: String,
+    /// The file's name, shown on a line of its own (empty for `connect`).
+    pub file_name: String,
     /// The command that asks (`file.save`), for `read` and `write`.
     pub command: Option<String>,
 }

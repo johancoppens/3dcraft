@@ -107,7 +107,9 @@ Options:
   --new JSON      Params of file.new for the new document, e.g.
                   '{\"units\": \"mm\"}'. Default {}. Not with FILE
   --script FILE   A JSON array of steps, run before any --cmd. A step is
-                  [\"id\", {params}] or {\"command\": \"id\", \"params\": {...}}
+                  [\"id\", {params}] or {\"command\": \"id\", \"params\": {...},
+                  \"agent\": name}; with an agent, the features the step
+                  makes or changes are noted as that agent's (madeBy)
   --cmd ID        A command to run; may be repeated
   --params JSON   The params of the --cmd before it, as a JSON object
   --out FILE      Save the document as a .3dcraft file afterwards

@@ -62,6 +62,8 @@ fn bridge_token(path: &str) -> Result<String, CliError> {
     })?;
     let token = text.trim();
     if token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit()) {
+        craft3d_automation::discovery::check_private(std::path::Path::new(path))
+            .map_err(|e| CliError::Failed(format!("`--control-token-file {path}`: {e}")))?;
         Ok(token.to_ascii_lowercase())
     } else {
         Err(CliError::Failed(format!(

@@ -405,7 +405,7 @@ impl Shell {
             "parameters": self.parameters_report(),
             "recent": self.recent_json(),
             "startScreen": self.start_shown(),
-            "agents": serde_json::to_value(self.agents_status()).unwrap_or(Value::Null),
+            "agents": serde_json::to_value(self.agents_status_for_viewer()).unwrap_or(Value::Null),
             "agentLog": agent_log,
             "timeline": self.timeline_json(),
             "export": self.export_report(),

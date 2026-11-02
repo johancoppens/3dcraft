@@ -231,9 +231,6 @@ pub struct Desk {
     /// (`consent.rs`), and those whose answer came, until they run.
     held: Vec<(u64, Request)>,
     released: Vec<Request>,
-    /// The request that runs with a folder allowed once: the folder is
-    /// taken back when it has run.
-    once: Option<String>,
 }
 
 /// A request for a picture of the window: it is answered once egui hands
@@ -331,7 +328,6 @@ impl Desk {
             agents_picker: None,
             held: Vec::new(),
             released: Vec::new(),
-            once: None,
         }
     }
 
@@ -406,12 +402,14 @@ impl Desk {
             changed = true;
         }
         if self.waiting.is_none() {
-            // The open document's folder follows the active tab.
+            // The open document's folder follows the active tab: only for a
+            // document the person opened or saved and made active
+            // themselves, never one an agent opened, saved elsewhere or
+            // activated, nor a recovered one.
             let path = self
                 .host
                 .session
-                .document_status()
-                .and_then(|status| status.path)
+                .person_document_file()
                 .map(std::path::PathBuf::from);
             agents.set_document(path.as_deref());
         }
@@ -427,9 +425,11 @@ impl Desk {
             if let Some(index) = self.held.iter().position(|(held, _)| *held == id) {
                 let (_, request) = self.held.remove(index);
                 match verdict {
-                    Some(crate::agents::Verdict::Run) => {
-                        if answer == craft3d_ui_egui::PromptAnswer::Once {
-                            self.once = Some(request.line.clone());
+                    Some(crate::agents::Verdict::Run) => self.released.push(request),
+                    Some(crate::agents::Verdict::Once { file, write }) => {
+                        let mut request = request;
+                        if let Some(origin) = &mut request.origin {
+                            origin.grant = Some((file, write));
                         }
                         self.released.push(request);
                     }
@@ -446,15 +446,6 @@ impl Desk {
         let Some(agents) = &mut self.agents else {
             return changed;
         };
-        // A folder allowed once is taken back when its request has run.
-        if let Some(line) = &self.once
-            && self.waiting.is_none()
-            && !self.queue.iter().any(|r| &r.line == line)
-            && !self.released.iter().any(|r| &r.line == line)
-        {
-            agents.clear_once();
-            self.once = None;
-        }
         if self.waiting.is_none()
             && let Some(workspace) = agents.take_workspace()
         {
@@ -503,7 +494,12 @@ impl Desk {
         let (Some(origin), Some(agents)) = (&request.origin, &mut self.agents) else {
             return Some(request);
         };
-        let wanted = crate::consent::wanted(&request.line);
+        // The file allowed once for this request is asked about no more.
+        let granted = origin.grant.as_ref().map(|(file, _)| file.clone());
+        let wanted: Vec<crate::consent::Wanted> = crate::consent::wanted(&request.line)
+            .into_iter()
+            .filter(|want| granted.as_deref() != Some(std::path::Path::new(&want.path)))
+            .collect();
         if wanted.is_empty() {
             return Some(request);
         }
@@ -734,14 +730,24 @@ impl Desk {
                         let subject = request_subject(&request.line);
                         let line = request.line.clone();
                         let actor = request.origin.as_ref().map(|origin| origin.name.clone());
+                        let grant = request.origin.as_ref().and_then(|o| o.grant.clone());
                         self.start_about(
                             Waiting::Request(request),
                             label,
                             subject,
                             Box::new(move |session| {
-                                // An agent's commands go into the agent log.
+                                // An agent's commands go into the agent log;
+                                // a file allowed once is this request's alone.
                                 session.set_actor(actor.as_deref());
+                                let saved = grant.map(|(file, write)| {
+                                    let saved = session.workspace().clone();
+                                    session.set_workspace(saved.with_file(&file, write));
+                                    saved
+                                });
                                 let reply = answer_on_engine(session, &line);
+                                if let Some(saved) = saved {
+                                    session.set_workspace(saved);
+                                }
                                 session.set_actor(None);
                                 Outcome::Reply(reply)
                             }),
@@ -778,7 +784,10 @@ impl Desk {
             any = true;
             if self.away() && route(&request.line) == Route::Anytime {
                 self.show_work();
+                let viewer = request.origin.as_ref().map(|o| o.name.clone());
+                self.host.shell.set_agents_viewer(viewer.as_deref());
                 let reply = self.answer_away(&request.line);
+                self.host.shell.set_agents_viewer(None);
                 let _ = request.reply.send(reply);
             } else if let Some(request) = self.screen(request) {
                 self.queue.push_back(request);
@@ -797,7 +806,10 @@ impl Desk {
         let queued = std::mem::take(&mut self.queue);
         for request in queued {
             if route(&request.line) == Route::Anytime {
+                let viewer = request.origin.as_ref().map(|o| o.name.clone());
+                self.host.shell.set_agents_viewer(viewer.as_deref());
                 let reply = self.answer_away(&request.line);
+                self.host.shell.set_agents_viewer(None);
                 let _ = request.reply.send(reply);
             } else {
                 self.queue.push_back(request);

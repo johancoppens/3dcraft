@@ -25,23 +25,60 @@ pub struct Origin {
     pub key: String,
     pub name: String,
     pub cwd: Option<PathBuf>,
+    /// A file the person allowed once for this request alone, and whether
+    /// for writing (`Workspace::with_file`).
+    pub grant: Option<(PathBuf, bool)>,
+}
+
+/// Whether `c` is a control character, a direction mark or override, or
+/// an invisible format character (Unicode's Cf, the common ones): what
+/// could make a path or a name read as something else in a dialog.
+pub fn deceptive(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{00AD}'
+                | '\u{061C}'
+                | '\u{180E}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{2028}'..='\u{202E}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{2066}'..='\u{206F}'
+                | '\u{FEFF}'
+                | '\u{FFF9}'..='\u{FFFB}'
+                | '\u{E0001}'
+                | '\u{E0020}'..='\u{E007F}'
+        )
 }
 
 /// How long a command waits for the person's answer.
 pub const PROMPT_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 
-/// Folders beneath the home folder that hold secrets or settings.
-const HOME_SECRETS: [&str; 11] = [
+/// Folders beneath the home folder that hold secrets, settings, or
+/// programs that run (a file planted there would run).
+const HOME_SECRETS: [&str; 23] = [
     ".ssh",
     ".gnupg",
     ".config",
     ".local/share/keyrings",
+    ".local/bin",
+    ".local/share/applications",
     ".aws",
     ".azure",
     ".kube",
     ".docker",
     ".password-store",
     ".mozilla",
+    ".thunderbird",
+    ".mozilla-thunderbird",
+    ".icedove",
+    ".evolution",
+    ".local/share/evolution",
+    ".cargo",
+    ".rustup",
+    ".claude",
+    ".var/app",
+    "snap",
     "Library",
 ];
 
@@ -118,6 +155,12 @@ impl Protected {
     /// agent; `None` when it may be.
     pub fn reason(&self, folder: &Path) -> Option<String> {
         let shown = folder.display();
+        // A network or device path (`\\server\share`, `\\?\C:\`,
+        // `\\localhost\C$`): never offered, its identity cannot be told.
+        let text = folder.to_string_lossy();
+        if text.starts_with("\\\\") || text.starts_with("//") {
+            return Some(format!("`{shown}` is a network or device path"));
+        }
         if folder.parent().is_none() || !folder.is_absolute() {
             return Some(format!(
                 "`{shown}` is the root of a drive or of the file system"
@@ -347,6 +390,11 @@ mod tests {
             "/home/ann",
             "/home/ann/.ssh",
             "/home/ann/.ssh/keys",
+            "/home/ann/.cargo/bin",
+            "/home/ann/.local/bin",
+            "/home/ann/.claude",
+            "/home/ann/snap/app",
+            "//server/share/x",
             "/home/ann/.gnupg",
             "/home/ann/.config/app",
             "/home/ann/.local/share/keyrings",

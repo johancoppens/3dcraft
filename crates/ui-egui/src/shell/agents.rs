@@ -41,7 +41,16 @@ pub(crate) struct AgentsMemory {
     revoke: Option<String>,
     /// Where the prompt's buttons were drawn in the last frame.
     prompt_hits: Vec<(String, egui::Rect)>,
+    /// The question shown, and since when (egui's clock).
+    prompt_since: Option<(u64, f64)>,
+    /// The agent that asks `ui.get` now: it sees its own entry only.
+    viewer: Option<String>,
 }
+
+/// How long a question takes no click after it appears or changes, in
+/// seconds: a click or a double click meant for what was under the cursor
+/// never answers it.
+pub const PROMPT_ARMING: f64 = 0.7;
 
 /// How long the pill shows what an agent did, in milliseconds.
 pub const ACTIVITY_MS: u64 = 1500;
@@ -216,6 +225,24 @@ impl Shell {
         &self.agents.status
     }
 
+    /// Which agent reads the window's state now (`ui.get` over the control
+    /// channel), `None` for the person and the host: an agent sees its own
+    /// client, its own questions and the roots, not other agents' folders
+    /// and questions.
+    pub fn set_agents_viewer(&mut self, agent: Option<&str>) {
+        self.agents.viewer = agent.map(str::to_string);
+    }
+
+    /// The status as the current reader may see it ([`Self::set_agents_viewer`]).
+    pub(crate) fn agents_status_for_viewer(&self) -> AgentsStatus {
+        let mut status = self.agents.status.clone();
+        if let Some(viewer) = &self.agents.viewer {
+            status.clients.retain(|client| &client.name == viewer);
+            status.prompts.retain(|prompt| &prompt.client == viewer);
+        }
+        status
+    }
+
     /// Asks the host to allow agents (`true`) or not, as the switch does.
     pub fn request_agents(&mut self, on: bool) {
         self.agents.switch = Some(on);
@@ -290,47 +317,69 @@ impl Shell {
     }
 
     /// The oldest question about an agent's access, as a window in the
-    /// middle of the screen, with its buttons.
+    /// middle of the screen. The folder and the file's name are on lines
+    /// of their own, escaped; "no" comes first; and the buttons take no
+    /// click for [`PROMPT_ARMING`] seconds after a question appears or
+    /// changes, so a click meant for something else (or a double click)
+    /// never answers it.
     pub(super) fn agent_prompt(&mut self, ctx: &egui::Context) {
         use crate::state::PromptAnswer;
         self.agents.prompt_hits.clear();
         let Some(prompt) = self.agents.status.prompts.first().cloned() else {
+            self.agents.prompt_since = None;
             return;
         };
+        let now = ctx.input(|i| i.time);
+        let since = match self.agents.prompt_since {
+            Some((id, at)) if id == prompt.id => at,
+            _ => {
+                self.agents.prompt_since = Some((prompt.id, now));
+                now
+            }
+        };
+        let armed = now - since >= PROMPT_ARMING;
         let tokens = self.tokens;
+        let dim = color(tokens.text_dim);
         let home = self.agents.status.home.clone();
-        let shown = |path: &str| shown_path(path, home.as_deref());
-        let (title, text, buttons): (&str, String, Vec<(&str, PromptAnswer)>) =
-            if prompt.kind == "connect" {
-                (
-                    "An AI agent connected",
-                    format!(
-                        "{} is connected and works in {}. May it read and write files there?",
-                        prompt.client,
-                        shown(&prompt.path)
-                    ),
-                    vec![
-                        ("Allow", PromptAnswer::Folder),
-                        ("This session only", PromptAnswer::Session),
-                        ("No", PromptAnswer::Deny),
-                    ],
-                )
+        let escaped = |text: &str| {
+            text.chars()
+                .flat_map(char::escape_debug)
+                .collect::<String>()
+        };
+        let shown = |path: &str| escaped(&shown_path(path, home.as_deref()));
+        let connect = prompt.kind == "connect";
+        let (title, question, buttons): (&str, String, Vec<(&str, PromptAnswer)>) = if connect {
+            (
+                "An AI agent connected",
+                format!(
+                    "{} is connected and works in this folder. May it read and write files there?",
+                    escaped(&prompt.client)
+                ),
+                vec![
+                    ("No", PromptAnswer::Deny),
+                    ("This session only", PromptAnswer::Session),
+                    ("Always allow (all agents)", PromptAnswer::Folder),
+                ],
+            )
+        } else {
+            let verb = if prompt.kind == "read" {
+                "open a file"
             } else {
-                let verb = if prompt.kind == "read" {
-                    "open"
-                } else {
-                    "save to"
-                };
-                (
-                    "An AI agent asks for a file",
-                    format!("{} wants to {verb} {}", prompt.client, prompt.path),
-                    vec![
-                        ("Allow once", PromptAnswer::Once),
-                        ("Allow this folder", PromptAnswer::Folder),
-                        ("Deny", PromptAnswer::Deny),
-                    ],
-                )
+                "save a file"
             };
+            (
+                "An AI agent asks for a file",
+                format!("{} wants to {verb}:", escaped(&prompt.client)),
+                vec![
+                    ("Deny", PromptAnswer::Deny),
+                    ("Allow this file once", PromptAnswer::Once),
+                    (
+                        "Always allow this folder (all agents)",
+                        PromptAnswer::Folder,
+                    ),
+                ],
+            )
+        };
         let mut hits = Vec::new();
         let mut chosen = None;
         let width = tokens
@@ -345,29 +394,22 @@ impl Shell {
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
                 ui.set_width(width);
-                // The indigo bar of information and connection.
-                ui.horizontal(|ui| {
-                    let (bar, _) = ui.allocate_exact_size(
-                        egui::vec2(tokens.info_bar_width, 18.0),
-                        egui::Sense::hover(),
-                    );
-                    ui.painter().rect_filled(
-                        bar,
-                        egui::CornerRadius::same(tokens.info_bar_radius),
-                        color(tokens.info_accent),
-                    );
-                    ui.add(egui::Label::new(text).wrap());
-                });
-                if prompt.kind != "connect" && prompt.folder != prompt.path {
-                    ui.colored_label(
-                        color(tokens.text_dim),
-                        format!("\"Allow this folder\" allows {}", shown(&prompt.folder)),
-                    );
+                ui.add(egui::Label::new(question).wrap());
+                ui.add_space(tokens.inset * 0.3);
+                let field = |ui: &mut egui::Ui, name: &str, value: String| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.colored_label(dim, name);
+                        ui.label(egui::RichText::new(value).monospace());
+                    });
+                };
+                field(ui, "Folder:", shown(&prompt.folder));
+                if !connect {
+                    field(ui, "File:", escaped(&prompt.file_name));
                 }
                 ui.add_space(tokens.inset * 0.5);
                 ui.horizontal_wrapped(|ui| {
                     for (label, answer) in &buttons {
-                        let button = ui.button(*label);
+                        let button = ui.add_enabled(armed, egui::Button::new(*label));
                         hits.push(((*label).to_string(), button.rect));
                         if button.clicked() {
                             chosen = Some(*answer);
@@ -379,8 +421,15 @@ impl Shell {
         if let Some(answer) = chosen {
             self.answer_agent_prompt(prompt.id, answer);
         }
-        // The host times a prompt out; looked at again now and then.
-        ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        if armed {
+            // The host times a request's question out: looked at again
+            // now and then.
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(
+                (PROMPT_ARMING - (now - since)).max(0.05),
+            ));
+        }
     }
 
     /// The clock the pill reads (milliseconds since the epoch); `None`
@@ -528,12 +577,18 @@ impl Shell {
             .filter(|root| root.from == "allowed" || root.from == "session")
         {
             ui.horizontal_wrapped(|ui| {
-                let note = if root.from == "session" {
-                    " (this session)"
+                let text = if root.from == "session" {
+                    format!(
+                        "Allowed for all agents this session: {}",
+                        shown_path(&root.path, home)
+                    )
                 } else {
-                    ""
+                    format!(
+                        "Always allowed for all agents: {}",
+                        shown_path(&root.path, home)
+                    )
                 };
-                ui.colored_label(dim, format!("Also {}{note}", shown_path(&root.path, home)));
+                ui.colored_label(dim, text);
                 let remove = ui
                     .small_button("Remove")
                     .on_hover_text("Agents may no longer read and write files there");

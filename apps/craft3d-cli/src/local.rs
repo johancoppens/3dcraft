@@ -132,6 +132,10 @@ struct Step {
     command: String,
     /// A JSON object, or null for none.
     params: Value,
+    /// The AI agent the step runs for (a script step's `agent`): what the
+    /// window would note as having made or changed its features. `None`:
+    /// the person.
+    agent: Option<String>,
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -179,6 +183,7 @@ fn parse_run(mut args: Args) -> Result<Parsed<RunOptions>, CliError> {
                     options.steps.push(Step {
                         command: args.value(&name, inline)?,
                         params: Value::Null,
+                        agent: None,
                     });
                     params_given = false;
                 }
@@ -241,7 +246,7 @@ fn parse_script(name: &str, text: &str) -> Result<Vec<Step>, CliError> {
                 "step {index} must be [\"id\", {{params}}] or {{\"command\": \"id\", \"params\": {{...}}}}"
             ))
         };
-        let (command, params) = match item {
+        let (command, params, agent) = match item {
             Value::Array(pair) => {
                 let mut parts = pair.into_iter();
                 let (Some(Value::String(command)), params, None) =
@@ -249,19 +254,28 @@ fn parse_script(name: &str, text: &str) -> Result<Vec<Step>, CliError> {
                 else {
                     return Err(shape());
                 };
-                (command, params.unwrap_or(Value::Null))
+                (command, params.unwrap_or(Value::Null), None)
             }
             Value::Object(mut map) => {
                 let Some(Value::String(command)) = map.remove("command") else {
                     return Err(shape());
                 };
                 let params = map.remove("params").unwrap_or(Value::Null);
+                let agent = match map.remove("agent") {
+                    None => None,
+                    Some(Value::String(agent)) if !agent.trim().is_empty() => Some(agent),
+                    Some(_) => {
+                        return Err(fail(format!(
+                            "step {index}: `agent` must be the name of an AI agent, a non-empty string"
+                        )));
+                    }
+                };
                 if let Some(unknown) = map.keys().next() {
                     return Err(fail(format!(
-                        "step {index} has an unknown key `{unknown}`; a step has `command` and `params`"
+                        "step {index} has an unknown key `{unknown}`; a step has `command`, `params` and `agent`"
                     )));
                 }
-                (command, params)
+                (command, params, agent)
             }
             _ => return Err(shape()),
         };
@@ -270,7 +284,11 @@ fn parse_script(name: &str, text: &str) -> Result<Vec<Step>, CliError> {
                 "step {index} (`{command}`): params must be a JSON object"
             )));
         }
-        steps.push(Step { command, params });
+        steps.push(Step {
+            command,
+            params,
+            agent,
+        });
     }
     Ok(steps)
 }
@@ -313,11 +331,12 @@ pub(crate) fn run(args: Args) -> Result<Parsed<()>, CliError> {
     // was, so what the others built is kept and saved.
     let mut failed: Vec<String> = Vec::new();
     for (index, step) in steps.iter().enumerate() {
-        match execute(&mut session, &step.command, &step.params).and_then(|result| {
-            match set_but_failing(&step.command, &result) {
-                Some(error) => Err(CliError::Failed(error)),
-                None => Ok(result),
-            }
+        session.set_actor(step.agent.as_deref());
+        let ran = execute(&mut session, &step.command, &step.params);
+        session.set_actor(None);
+        match ran.and_then(|result| match set_but_failing(&step.command, &result) {
+            Some(error) => Err(CliError::Failed(error)),
+            None => Ok(result),
         }) {
             Ok(result) => print_json(&result)?,
             Err(CliError::Failed(error)) if options.keep_going => {
@@ -753,6 +772,7 @@ mod tests {
         Step {
             command: command.to_string(),
             params,
+            agent: None,
         }
     }
 

@@ -488,7 +488,19 @@ impl Host {
         // name its MCP client gave (`craft3d_engine::agent_log`).
         let actor = request.origin.as_ref().map(|origin| origin.name.clone());
         self.session.set_actor(actor.as_deref());
+        // A file the person allowed once: for this request alone.
+        let grant = request.origin.as_ref().and_then(|o| o.grant.clone());
+        let saved = grant.map(|(file, write)| {
+            let saved = self.session.workspace().clone();
+            self.session.set_workspace(saved.with_file(&file, write));
+            saved
+        });
+        self.shell.set_agents_viewer(actor.as_deref());
         let reply = self.handle_line(&request.line);
+        self.shell.set_agents_viewer(None);
+        if let Some(saved) = saved {
+            self.session.set_workspace(saved);
+        }
         self.session.set_actor(None);
         let _ = request.reply.send(reply);
     }

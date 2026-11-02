@@ -33,6 +33,7 @@ pub mod discovery;
 mod fields;
 mod lines;
 pub mod mcp;
+pub mod proof;
 mod registry;
 pub mod rpc;
 
