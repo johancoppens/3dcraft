@@ -341,7 +341,11 @@ pub(super) fn split(
     let mut breaks: Vec<usize> = Vec::new();
     let mut far = first_far;
     for (k, s) in flat.outer.iter().enumerate() {
-        let id = flat.ids.get(k).copied().unwrap_or([12, 0, k as u64, 0]);
+        let id = flat.ids.get(k).copied().ok_or_else(|| {
+            no(format!(
+                "jog {g}: an edge of the flat it crosses has no name"
+            ))
+        })?;
         let at = cut.iter().find(|(j, _)| *j == k).map(|(_, p)| p.as_slice());
         match at {
             None => pieces.push((s.clone(), id, far, Some(k))),
