@@ -390,3 +390,111 @@ fn a_tab_says_its_kind() {
     let got = call(&mut shell, &mut session, "ui.get", json!({}));
     assert_eq!(got["tabs"][0]["assembly"], true);
 }
+
+/// A part with three steps: its history plays.
+fn three_steps() -> Session {
+    let mut session = Session::new(Workspace::none());
+    session.execute("file.new", &json!({})).unwrap();
+    session
+        .execute(
+            "feature.block",
+            &json!({"size": [10, 10, 10], "name": "Box"}),
+        )
+        .unwrap();
+    session
+        .execute("feature.sphere", &json!({"radius": 3, "name": "Ball"}))
+        .unwrap();
+    session
+        .execute(
+            "feature.cylinder",
+            &json!({"radius": 1, "height": 30, "name": "Rod"}),
+        )
+        .unwrap();
+    session
+}
+
+/// The planetary gearbox assembly: its motion plays.
+fn gearbox() -> Session {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/examples/published/planetary-gearbox.3dcraftasm");
+    let mut session = Session::new(Workspace::unrestricted());
+    session
+        .execute("file.open", &json!({"path": path.to_str().unwrap()}))
+        .unwrap();
+    session
+}
+
+/// The player is one row (board s8) that fits where it shows: in the side
+/// panel at 1400 × 900 and 1024 × 700, and at 480 and 390 points both in
+/// the drawer and on the strip over the viewport, for a history and for
+/// an assembly's motion. Its parts are inside the window and the panel,
+/// and none overlaps another.
+#[test]
+fn the_player_fits_at_every_size() {
+    for (name, make) in [
+        ("history", three_steps as fn() -> Session),
+        ("motion", gearbox as fn() -> Session),
+    ] {
+        for (width, height) in SIZES {
+            for drawer in [false, true] {
+                let narrow = width < 800.0;
+                if drawer && !narrow {
+                    continue;
+                }
+                let mut session = make();
+                let mut shell = Shell::new();
+                let mut window = Window::sized(width, height);
+                window.frames(&mut shell, &mut session, 3);
+                if drawer {
+                    call(
+                        &mut shell,
+                        &mut session,
+                        "ui.set",
+                        json!({"panels": {"drawer": true}}),
+                    );
+                }
+                // The drawer slides in over a tenth of a second.
+                window.frames(&mut shell, &mut session, 10);
+                let hits = shell.player_hits().to_vec();
+                let what = format!("{name} {width}×{height} drawer {drawer}");
+                assert!(!hits.is_empty(), "{what}: no player");
+                let parts: Vec<&str> = hits.iter().map(|(p, _)| *p).collect();
+                if name == "history" || !narrow || drawer {
+                    for part in ["back", "play", "forward", "position"] {
+                        assert!(parts.contains(&part), "{what}: no {part} in {parts:?}");
+                    }
+                } else {
+                    // The motion's strip over the viewport: play, slider, t.
+                    for part in ["play", "slider", "position"] {
+                        assert!(parts.contains(&part), "{what}: no {part} in {parts:?}");
+                    }
+                }
+                if !narrow {
+                    for part in ["speed", "loop", "orbit"] {
+                        assert!(parts.contains(&part), "{what}: no {part} in {parts:?}");
+                    }
+                }
+                // No ⏮ or ⏭ (decision 5).
+                assert!(!parts.contains(&"first") && !parts.contains(&"last"));
+                let panel = shell.tree_panel_rect();
+                for (part, rect) in &hits {
+                    assert!(window.inside(*rect), "{what}: {part} {rect:?} outside");
+                    if let (Some(panel), true) = (panel, !narrow || drawer) {
+                        assert!(
+                            panel.expand(0.5).contains_rect(*rect),
+                            "{what}: {part} {rect:?} outside the panel {panel:?}"
+                        );
+                    }
+                }
+                for (i, (a, ra)) in hits.iter().enumerate() {
+                    for (b, rb) in hits.iter().skip(i + 1) {
+                        assert!(
+                            !ra.shrink(0.5).intersects(rb.shrink(0.5)),
+                            "{what}: {a} {ra:?} over {b} {rb:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

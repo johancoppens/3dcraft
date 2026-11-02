@@ -12,7 +12,7 @@ open, save, import and export files, and let you look, play, click and select.
 
 | | Part | What it is for |
 |---|---|---|
-| 1 | **File**, **Edit** and **Help** menus | Files, recent files, Jigs; Undo and Redo; the guide, the keys, About |
+| 1 | **File**, **Edit**, **View** and **Help** menus | Files, recent files, Jigs; Undo and Redo; panels and light or dark; the guide, the keys, About |
 | 2 | **Tabs** | One per open document |
 | 3 | **Feature list** | The history of the design, in order, with each step's status |
 | 4 | **Eye** | Hides a feature's body, sketch or datum in the view |
@@ -32,31 +32,43 @@ opened file has something to show, the middle of the viewport says *Opening weld
 of the status bar change at most a few times a second; while a motion plays it says *Playing* and the
 moment's `t`. An error shows at once and stays.
 
+At the right end of the status bar is the **agent pill**: its colour says how agents stand. Outlined
+grey, *Agents off*; outlined indigo, *Waiting for an agent*; indigo, *Claude Code connected*; with a
+turning mark, what the agent does at this moment (*Claude Code · feature.fillet*); amber, when an agent
+asks you something (*Claude Code asks for a folder*). Click it for the agent panel
+([chapter 1](01-install.md#connect-an-ai-agent-over-mcp)). The browser has no pill: agents drive the
+desktop app only.
+
 ## The start screen
 
 Without a document, the window shows the **start screen** (picture in [chapter 2](02-first-steps.md)):
 
-- **New document** and **Open…**;
+- **New part**, **New assembly** and **Open…**;
 - **Examples**, in four sections you pick above the cards: **Parts**, ten of the [example
   models](../examples/README.md), each built in a new tab by a click from the same command script an agent
   would send; **Showcase**, parts that show what the surfacing can do (a class-A fuel tank and a class-A
-  mouse whose seams are proven G2), built the same way; **Jigs**, three published Jigs (a planetary gearbox, a gear reducer, a Jansen linkage leg, after the mechanism of Theo Jansen's Strandbeests) that
-  open on their **Parameters** tab ([chapter 5](05-jigs.md)); and **Assemblies**, three assemblies (the
-  same gearbox and reducer, and a Jansen linkage walker of four legs) that open ready to play their motion
-  ([chapter 17](17-assemblies.md#motion)). These six come from the [3DCraft Jigs
-  collection](https://github.com/johancoppens/3dcraft-jigs), under CC BY 4.0;
-- **Recent**: the files you opened or saved last;
-- **Connect an AI agent**: the two command lines that connect an agent to this window, with this window's
-  own port and token file when it listens (it was started with `--control`). **Copy configuration** puts
-  the MCP configuration on the clipboard, **Copy for Claude Code** the `claude mcp add` line, and **How it
-  works** opens the part of this guide that explains it. In the browser, the start screen says that an
-  agent cannot drive 3DCraft there yet.
+  mouse whose seams are proven G2), built the same way, each card with the 3DCraft icon of its kind;
+  **Assemblies**, three assemblies (the same gearbox and reducer, and a Jansen linkage walker of four
+  legs) that open ready to play their motion ([chapter 17](17-assemblies.md#motion)); and **Jigs**,
+  three published Jigs (a planetary gearbox, a gear reducer, a Jansen linkage leg, after the mechanism
+  of Theo Jansen's Strandbeests) that open on their **Parameters** tab ([chapter 5](05-jigs.md)). These
+  six come from the [3DCraft Jigs collection](https://github.com/johancoppens/3dcraft-jigs), under CC BY
+  4.0;
+- **Recent**: the files you opened or saved last, each with the icon of its kind and how long ago it
+  changed;
+- **Connect an AI agent**: the same panel as the agent pill's ([chapter
+  1](01-install.md#connect-an-ai-agent-over-mcp)): the **Allow AI agents** switch, the work folder, the
+  `claude mcp add` line with **Copy command**, **Copy MCP configuration**, and **Other clients** with a
+  ready configuration for Claude Desktop, Cursor, VS Code or any client that starts a server over stdio.
+  In the browser, the start screen says that an agent cannot drive 3DCraft there yet.
 
 The start screen comes back when you close the last tab.
 
 ## Menus and tabs
 
-**Tabs** along the top, one per open document; a dot marks unsaved changes. **Ctrl+Tab** goes to the next
+**Tabs** along the top, one per open document, each with a small icon of its kind (a part, an assembly,
+a Jig); a Jig opened to be used also says **Jig**. An amber dot at the tab's right marks unsaved changes
+(the close × takes its place under the pointer). **Ctrl+Tab** goes to the next
 tab and **Ctrl+Shift+Tab** to the previous one; **Ctrl+W** closes one, asking first when it has unsaved
 changes (**Save**, **Don't Save**, **Cancel**). On a Mac, ⌘ takes the place of Ctrl.
 
@@ -64,7 +76,8 @@ The **File** menu:
 
 | Item | Keys | Does |
 |---|---|---|
-| **New** | Ctrl+N | A new, empty document in a new tab |
+| **New Part** | Ctrl+N | A new, empty part in a new tab |
+| **New Assembly** | Ctrl+Shift+N | A new, empty assembly in a new tab ([chapter 17](17-assemblies.md)) |
 | **Open…** | Ctrl+O | Opens a `.3dcraft` document or a `.3dcraftjig` Jig (a STEP file is imported with Import…) |
 | **Open for editing** | | For a Jig in use: a new untitled model of it, to change as you like ([chapter 5](05-jigs.md)) |
 | **Save** | Ctrl+S | Saves to the document's file (asks for a name the first time) |
@@ -72,7 +85,7 @@ The **File** menu:
 | **Import…** | Ctrl+I | Reads a STEP file or a FreeCAD document into the document |
 | **Export…** | Ctrl+E | Writes STEP, STL, 3MF, OBJ, DXF or SVG ([chapter 12](12-files.md)) |
 | **Export as Jig…** | | Publishes a document with parameters as a `.3dcraftjig` ([chapter 5](05-jigs.md)) |
-| **Recent files** | | The last ten files opened or saved, by you or by an agent, newest first; **Clear recent** empties the list |
+| **Open recent** | | The last ten files opened or saved, by you or by an agent, newest first, each with the icon of its kind; **Clear recent** empties the list |
 | **Close** | Ctrl+W | Closes the active tab |
 
 Under them, the open documents: click one to switch to it.
@@ -92,12 +105,26 @@ An item is greyed out when there is nothing to undo or redo, and while a paramet
 or an agent over MCP. While you type into a field, Ctrl+Z undoes your typing instead. In a Jig in use
 the only changes are those of its parameters, so Undo takes back the last parameter you set.
 
+The **View** menu:
+
+| Item | Keys | Does |
+|---|---|---|
+| **Side panel** | Ctrl+B | Shows or puts away the panel on the left |
+| **Status bar** | | Shows or puts away the bar at the bottom |
+| **System**, **Light**, **Dark** | | The **Appearance**: the panels and dialogs light or dark. **System** (the default) follows your desktop's setting, and in the browser the browser's |
+| **Full screen** | F11 | The window over the whole screen (the desktop app) |
+
+The appearance changes the panels, the start screen and the dialogs; the menu bar, the tabs, the status
+bar, the menus and the popovers stay dark, and the model's view stays as it is, so pictures look the same
+whichever you choose. An agent can switch it too: `ui.set {"appearance": "dark"}`.
+
 The **Help** menu:
 
 - **User guide** opens this guide in your browser.
 - **Keyboard shortcuts** (also **F1**) lists every key and mouse action ([chapter 15](15-reference.md#keys-and-mouse)).
 - **Open data folder** shows 3DCraft's folder: the autosaves, what can be recovered after a crash, and the
   recent files (not in the browser).
+- **Connect an AI agent…** opens the agent panel over the pill (not in the browser).
 - **About 3DCraft** gives the version and the commit it was built from, the platform, the licence (MIT),
   links to the guide and the source, and the renderer in use. **Copy system info** copies those lines
   for a bug report.

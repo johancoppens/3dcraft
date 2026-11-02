@@ -488,24 +488,21 @@ impl Shell {
     pub(crate) fn timeline_ui(&mut self, ui: &mut egui::Ui) {
         let tokens = self.tokens;
         let steps = self.timeline.steps;
-        if steps == 0 {
-            // An assembly has no history of its own, but its motion
-            // plays (docs/design/motion.md › *Assemblies*).
-            if self.timeline.has_timeline {
-                self.motion_ui(ui);
-                if self.playing_motion() {
-                    self.player_controls(ui);
-                }
-            }
+        if steps == 0 && !self.timeline.has_timeline {
             return;
         }
+        // One timeline and one row (board s8): History or Motion, the
+        // slider of the one chosen, the player's row.
+        self.player_mode(ui);
+        if self.playing_motion_mode() {
+            self.motion_slider(ui);
+            self.player_controls(ui);
+            self.motion_extras(ui);
+            return;
+        }
+        let _ = tokens;
         let shown = self.timeline.shown_step().clamp(1, steps);
         let mut step = shown;
-        let name = self
-            .rows
-            .get(step.saturating_sub(1))
-            .map(|row| row.name.clone())
-            .unwrap_or_default();
         ui.horizontal(|ui| {
             ui.spacing_mut().slider_width = (ui.available_width() - 8.0).max(40.0);
             let slider = egui::Slider::new(&mut step, 1..=steps)
@@ -521,17 +518,7 @@ impl Shell {
             ui.ctx().request_repaint();
         }
         let scrubbed = self.timeline.position.clone();
-        self.motion_ui(ui);
         self.player_controls(ui);
-        ui.horizontal(|ui| {
-            let text = format!("Step {shown}/{steps}  {name}");
-            let label = if scrubbed.is_some() || self.state.timeline.playing {
-                egui::RichText::new(text).color(color(tokens.attention))
-            } else {
-                egui::RichText::new(text).color(color(tokens.text_dim))
-            };
-            ui.label(label);
-        });
         ui.horizontal(|ui| {
             let here = ui
                 // A Jig in use is looked at and played, not changed.

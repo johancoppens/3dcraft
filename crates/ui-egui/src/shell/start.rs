@@ -600,15 +600,18 @@ impl StartLayout {
     }
 
     /// How many cards go to a row in `width` with `gap` between them, and
-    /// the thumbnail's size: at most `per_row`, at least one, each as
-    /// wide as the row allows up to `thumb`.
+    /// the thumbnail's size: two on a phone, three on a tablet (boards m1
+    /// and t3), else `per_row`; each as wide as the row allows up to
+    /// `thumb`.
     pub fn cards(&self, width: f32, gap: f32) -> (usize, egui::Vec2) {
-        let least = (self.thumb.x * 0.6).max(96.0);
-        let fit = ((width + gap) / (least + gap)).floor();
-        let per_row = if fit.is_finite() && fit >= 1.0 {
-            (fit as usize).min(self.per_row)
-        } else {
+        let per_row = if !width.is_finite() || width < 220.0 {
             1
+        } else if width < 600.0 {
+            2
+        } else if width < 900.0 {
+            3
+        } else {
+            self.per_row.max(1)
         };
         let n = per_row as f32;
         let each = ((width - (n - 1.0) * gap) / n).min(self.thumb.x);
@@ -1106,6 +1109,8 @@ mod tests {
         // On a phone, two to a row.
         let phone = StartLayout::for_room(egui::vec2(358.0, 780.0));
         assert_eq!(phone.cards(358.0, 20.0).0, 2);
+        let tablet = StartLayout::for_room(egui::vec2(728.0, 900.0));
+        assert_eq!(tablet.cards(728.0, 20.0).0, 3);
         for room in [
             egui::vec2(1240.0, 716.0),
             egui::vec2(1326.0, 684.0),

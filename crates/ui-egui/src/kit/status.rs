@@ -203,6 +203,20 @@ impl Kit {
         }
     }
 
+    /// Whether a banner `width` wide holds `title` on its one line, beside
+    /// its bar, its icon and its padding: a caller whose title would not
+    /// fit puts it in the body instead, so the banner never widens what
+    /// holds it (the bake hint in a narrow panel).
+    pub fn banner_title_fits(&self, ui: &Ui, title: &str, width: f32) -> bool {
+        let t = &self.t;
+        let around = 2.0 * (t.inset + 2.0) + t.info_bar_width + t.nav_icon_size + t.nav_icon_gap;
+        let wide = self
+            .galley(ui, title, self.medium_font(ui), self.skin.text)
+            .size()
+            .x;
+        wide + around <= width
+    }
+
     /// A banner across the width there is: the bar of its kind at the
     /// left, an icon, the title in its ink, the body, then `actions` (kit
     /// buttons) in a row.

@@ -1430,3 +1430,64 @@ Phase 2a of the UI overhaul (plan `plan/mockups/sidepanel`, boards 01–20, the 
   in `target/work-sidepanel/`. `tests/side_panel_tabs.rs` holds the tabs, the lines, the dependencies, the
   failure, the checks, an edit as one undo step, the bodies and the selection's closed forms, and that every
   target lies inside the panel at 1024 × 700 and at 390.
+
+### The window's chrome, start screen, menus, tabs and dialogs (2026-11-02)
+
+Phase 2b of the UI overhaul, part A (plan `plan/mockups/ui-overhaul`, boards s3, s4, s5, s6, f1, f2, w3, w4; the
+developer's decisions of 2026-11-02), on the kit:
+
+- **The status bar** (`shell.rs` `status_bar`, `shell/agents.rs`): the agents pill is the bar's last item, at its
+  right end, and the kit's (`Kit::pill_within`, cut with an ellipsis to two fifths of the bar; `kit::PillState`
+  from the window's `PillKind`, `None` in the browser, where the bar has no pill). Its room is kept out of what the
+  other items get, so they elide and drop as before and never run into it. The work indicator is the kit's spinner
+  on the plate's inks. The agent popover is a kit plate (`Kit::popover_frame_pointing`, the pointer at the bottom
+  pointing down at the pill), its right edge in line with the pill's, scrolling on a short window.
+- **One agent panel** (`Shell::agents_panel(ui, kit)`) on two grounds: the popover's plate and the start screen's
+  panel. The heading carries the switch (`Kit::toggle`; the shell's own toggle is gone), then the work folder as a
+  read-only field with Change… and Open folder, *Connect*: the `claude mcp add …` code line (`Kit::code_line`),
+  Copy command (amber), Copy MCP configuration and *Other clients*, a menu that copies a ready configuration for
+  Claude Desktop, Cursor, VS Code or any stdio client (`start::McpClient`, `AgentSetup::client_config`); then who is
+  connected, as cards, and Disconnect all. No token is shown: the bridge reads it itself.
+- **The consent prompts** are kit dialogs (`kit/dialog.rs`): the plug in the info ink or the shield in amber
+  before the title, the question, the folder or file on a code line, *Remember for this folder* at connect; "no"
+  at the left (Refuse quiet, Deny as a danger button), the amber answer last at the right. At connect Refuse and
+  Only the work folder answer `deny` (the connection stays, decision 6); Allow this folder answers `session`, or
+  `folder` with the box ticked. The buttons still take no click for `PROMPT_ARMING` seconds.
+- **The dialog layout** (`Kit::dialog`, `dialog_footer`, `footer_right`): a 17-point title (`dialog_title_font`)
+  with an optional icon and a close ×, the body, then the footer: quiet Copy actions at the left, the buttons at
+  the right laid out from the right so the amber one is last. Modal ones use `egui::Modal` with the kit's frame
+  (a click beside or Escape closes them, as before); About and the shortcuts float without a backdrop. The error
+  dialog (warning in red, Copy details, OK), the question before closing (Don't Save at the left, Cancel, Save),
+  About (the app icon, the facts in two columns, Copy system info, Close), the shortcuts (keycaps, the groups in two
+  columns from 760 points) and the export dialog (a label column; What as a segmented control while the offered
+  choices fit, else one per row; Format and View as dropdowns; Quality, Projection and Hidden lines segmented;
+  `Shell::export_what_hits` says where each choice of What is) all use it.
+- **The recovery bar** is the attention banner (`attention_fill`, Recover amber with the undo icon, Later quiet,
+  Discard all as a danger button); **Back to last good** is a dark plate with the failure's bar, the warning and
+  why in red and the amber button with the undo icon.
+- **The start screen** (`shell/start.rs`, board f1): on the panel's ground across the viewport, at most
+  `START_WIDTH` (1000) wide, from the top: the app icon (`kit::brand`, with its rim in the dark appearance), the
+  name and version, the line that says what 3DCraft is, **New part** (amber, `file.new`), **New assembly**
+  (`FileAction::NewAssembly`, `assembly.new`) and **Open…**; *Examples* with the sections as a segmented control at
+  the right (Parts, Showcase, Assemblies, Jigs; the line icons of the plan's middle way, none for the Showcase);
+  the cards with their name and summary, the app icon's badge only in the Showcase (where kinds mix); *Recent*
+  with the documents' line icons and how long ago each file changed (its modification time, read natively); and
+  the agent panel. Five cards to a row from 900 points, three on a tablet, two on a phone (`StartLayout::cards`).
+  In the browser the Connect block is an info banner: agents need the desktop app.
+- **The menus** (`shell/menus.rs`): File · Edit · View · Help are kit plates (`Tokens::menu_visuals`, applied to
+  egui's menu popups through the menu bar's `MenuConfig`) with kit items (`Kit::menu_item`, `menu_caption`,
+  `MenuItem::icon_room` so labels line up). File › New Part and New Assembly carry the documents' line icons, Open
+  recent › is a submenu (`egui::containers::menu::SubMenu` on a kit item) with each file's icon, and the open
+  documents are listed under *Documents*. The new **View** menu: Side panel (Ctrl+B), Status bar, *Appearance*
+  System / Light / Dark, Full screen (F11, the desktop's `ViewportCommand::Fullscreen`). `Shell::menu_titles` and
+  `menu_items` say where they were drawn.
+- **The tabs** (`shell/tabs.rs`): each tab starts with its document's line icon (`tab_glyph`: a Jig in use, an
+  assembly — a `.3dcraftasm` or one seen to be while active, `DocTab::assembly` — else by the file's extension);
+  a Jig in use has the indigo *Jig* chip after its name; the unsaved mark is an amber dot where the close × is, the
+  × under the pointer.
+- **Tests**: `tests/window_overhaul.rs` (the pill last and inside at 1400 × 900, 1024 × 700, 480 and 390; the start
+  screen inside at those sizes and New assembly asking for an assembly; the View menu's items, Dark from the menu,
+  Light through `ui.set`, the status bar put away, Ctrl+B; File › New Assembly; the amber button last in the
+  question before closing at 1024 and 390; the tabs' icons and `ui.get` › `tabs[].assembly`),
+  `tests/agents_pill.rs` (the pill at the right, the popover's controls, the two questions' buttons in order and
+  what each answers, Remember for this folder), the unit tests of `agents.rs` and `start.rs`.

@@ -801,6 +801,8 @@ pub struct Shell {
     /// The player drew its `t` this frame, and in the last one: the
     /// caption over the viewport leaves it to the player then.
     player_shown: bool,
+    /// Where the player's row drew its parts (`player.rs`).
+    player_hits: Vec<(&'static str, egui::Rect)>,
     player_shown_last: bool,
     /// The point a zoom at the pointer keeps in place, while the pointer
     /// and the camera stay as that zoom left them: one look at the model
@@ -822,6 +824,9 @@ pub struct Shell {
     /// The system's preference as the last frame saw it (`None`: it said
     /// none), so `ui.get` resolves a change of the state at once.
     system_theme: Option<egui::Theme>,
+    /// The desktop's light or dark setting as the host read it, for when
+    /// the windowing library reports none.
+    desktop_theme: Option<egui::Theme>,
     /// The interface's fonts: Inter and JetBrains Mono once they are here
     /// (`crate::fonts`).
     fonts: crate::fonts::UiFonts,
@@ -1297,6 +1302,7 @@ impl Shell {
             drawer_button: None,
             touch_gesture: false,
             player_shown: false,
+            player_hits: Vec::new(),
             player_shown_last: false,
             cause_hits: Vec::new(),
             section_cache: None,
@@ -1305,6 +1311,7 @@ impl Shell {
             themed: false,
             dark: false,
             system_theme: None,
+            desktop_theme: None,
             fonts: crate::fonts::UiFonts::default(),
             quit: false,
             quit_discards: false,
@@ -2543,7 +2550,9 @@ impl Shell {
         }
         // The appearance: the panels' colours follow the state's choice,
         // or the system's (`Appearance::System`), from this frame on.
-        self.system_theme = ui.ctx().system_theme();
+        // The desktop's own setting where the windowing library has none
+        // (Linux: the host reads it, `apps/craft3d/src/desktop_theme.rs`).
+        self.system_theme = ui.ctx().system_theme().or(self.desktop_theme);
         let dark = self.state.appearance.is_dark(self.system_theme);
         if !self.themed || dark != self.dark {
             self.set_appearance(dark);
@@ -2552,6 +2561,7 @@ impl Shell {
         }
         self.fonts.update(ui);
         self.player_shown_last = std::mem::take(&mut self.player_shown);
+        self.player_hits.clear();
         // A finger was seen: touch sizes from now on, at any width.
         if ui.input(egui::InputState::any_touches) {
             self.touch_seen = true;
@@ -3350,6 +3360,13 @@ impl Shell {
         if let Some((tokens, _)) = self.wide.as_mut() {
             *tokens = tokens.with_palette(palette);
         }
+    }
+
+    /// The desktop's light or dark setting, as the host read it where the
+    /// windowing library reports none (GNOME on Linux); `None` for no
+    /// preference. Appearance › System follows it.
+    pub fn set_desktop_theme(&mut self, theme: Option<egui::Theme>) {
+        self.desktop_theme = theme;
     }
 
     /// Whether the panels have the dark appearance now (as drawn by the
