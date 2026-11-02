@@ -1687,7 +1687,7 @@ impl Check<'_> {
                 .zip(gc)
                 .map(|(x, y)| x.min(*y))
                 .fold(f64::NEG_INFINITY, f64::max);
-            if !(best >= self.clearance) {
+            if best.is_nan() || best < self.clearance {
                 return Ok(None);
             }
             if best - sag >= self.clearance {
@@ -2560,13 +2560,14 @@ fn hem_checked(
         if formed.contains(&b) {
             return Err(format!("flange {b} is both a hem and `formed`"));
         }
-        if !((x.theta() - std::f64::consts::PI).abs() <= tol.angular) {
+        let off = (x.theta() - std::f64::consts::PI).abs();
+        if off.is_nan() || off > tol.angular {
             return Err(format!(
                 "flange {b} is bent {:.3} degrees: a hem pressed flat is bent 180",
                 degrees(x.theta())
             ));
         }
-        if !(spec.pre < x.theta()) {
+        if spec.pre.is_nan() || spec.pre >= x.theta() {
             return Err("`hem.preBend` must be less than the hem's 180 degrees".into());
         }
         if !tooling.segmented()

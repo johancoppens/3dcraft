@@ -920,6 +920,9 @@ pub fn circle_through(a: [f64; 2], m: [f64; 2], b: [f64; 2]) -> Option<([f64; 2]
         .then_some((centre, radius, cross > 0.0))
 }
 
+/// A tool's side: its start, its end, the point an arc passes through.
+type Side = ([f64; 2], [f64; 2], Option<[f64; 2]>);
+
 impl Tool {
     /// A tool of straight sides only.
     pub fn polygon(corners: Vec<[f64; 2]>) -> Tool {
@@ -931,7 +934,7 @@ impl Tool {
     }
 
     /// Side `i`: its start, its end and the point it passes through.
-    fn side(&self, i: usize) -> Option<([f64; 2], [f64; 2], Option<[f64; 2]>)> {
+    fn side(&self, i: usize) -> Option<Side> {
         let n = self.corners.len();
         Some((
             *self.corners.get(i)?,
